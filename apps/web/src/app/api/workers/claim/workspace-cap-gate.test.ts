@@ -11,7 +11,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-import { checkWorkspaceCap, DEFAULT_MAX_CONCURRENT_TASKS } from './workspace-cap-gate';
+import { checkWorkspaceCap, DEFAULT_MAX_CONCURRENT_TASKS, workspaceCapGate } from './workspace-cap-gate';
 
 const WORKSPACE_ID = 'ws-abc';
 
@@ -90,5 +90,35 @@ describe('checkWorkspaceCap — the active-worker query', () => {
     expect(text).toContain('"workers"."workspace_id" = $1');
     expect(text).toContain('"workers"."status" in ($2, $3, $4)');
     expect(params).toEqual([WORKSPACE_ID, 'running', 'starting', 'idle']);
+  });
+});
+
+// ─── A seat is a worker on an OPEN task ─────────────────────────────────────
+//
+// A worker row can outlive its task: a local (claim_task) session whose PR the
+// merge webhook completed keeps its row `running`, and no reaper touches an
+// interactive worker. Counted, those phantom seats fill the cap, and the claim
+// query then drops every woken task in the workspace — a new reviewer on a
+// green PR answered `no_pending_tasks` to the runner its wake reached, with an
+// idle runner and nothing actually running. The count must ignore any worker
+// whose task has already ended, in both the claim WHERE and checkWorkspaceCap.
+
+describe('workspace cap — workers on an ended task hold no seat', () => {
+  const dialect = new PgDialect();
+
+  it('the claim gate counts only workers whose task is not terminal', () => {
+    const { sql: text } = dialect.sqlToQuery(workspaceCapGate());
+    expect(text).toMatch(/t3\.status NOT IN \('completed', 'failed', 'cancelled'\)/);
+    // The existing scope stays: same workspace, live statuses, other tasks only.
+    expect(text).toContain("w2.status IN ('running', 'starting', 'idle')");
+    expect(text).toMatch(/t3\.id != "tasks"\."id"/);
+  });
+
+  it('checkWorkspaceCap applies the same open-task rule', async () => {
+    mockWorkersFindMany.mockResolvedValue([]);
+    await checkWorkspaceCap(WORKSPACE_ID, 3);
+    const args = mockWorkersFindMany.mock.calls.at(-1)![0] as { where: any };
+    const { sql: text } = dialect.sqlToQuery(args.where);
+    expect(text).toMatch(/NOT IN \('completed', 'failed', 'cancelled'\)/);
   });
 });

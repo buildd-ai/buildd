@@ -69,6 +69,8 @@ import {
   type StoredRunReport,
 } from './run-report';
 import { otelContainerEnv, type OtelEnv } from './otel';
+import type { RunInterruption } from './run-report';
+import type { RunnerSize, RunnerSizeDecision } from './runner-class';
 
 /** The slice of `ctx.container` (workers-types `Container`) the supervisor uses. */
 export interface ContainerPort {
@@ -95,8 +97,10 @@ export interface ProcessPort {
 export interface SupervisorConfig extends ContainerEnvSource, OtelEnv {
   inactivityTimeoutMs: number;
   startTimeoutMs: number;
-  /** For the run report: the configured container instance type (CONTAINER_INSTANCE_TYPE). */
+  /** For the run report: this class's container instance type (runner-class.ts instanceTypeFor). */
   instanceType?: string;
+  /** The container class this agent is (WorkerAgent standard, WorkerAgentLarge large). Absent: standard. */
+  runnerSize?: RunnerSize;
   /** For the run report: the Durable Object ID the container is bound to. */
   containerInstanceId?: string;
   /** RESUMABLE_RUNS on (and the binding present): park an orphaned running container on restart. */
@@ -134,6 +138,8 @@ export interface ScheduledDispatchPayload {
   notBefore: number;
   /** See DispatchRequest.deferredRetry — carried through the alarm so the fire can pass it on. */
   deferredRetry?: boolean;
+  /** buildd's class decision from the `task.scheduled` webhook, for the run it starts. */
+  runnerSize?: RunnerSizeDecision;
 }
 
 /**
@@ -229,6 +235,9 @@ export class TaskSupervisor {
       // attempt — any other dispatch (a real retry webhook, a resume, the
       // very first attempt) resets the streak to 0 by omitting this key.
       ...(request.deferredRetry ? { deferredRetryCount: state.deferredRetryCount ?? 0 } : {}),
+      // buildd's class decision for the run report. The agent's own retries
+      // and resumes carry none and keep the last one that reached it.
+      ...((request.runnerSize ?? state.runnerSize) ? { runnerSize: request.runnerSize ?? state.runnerSize } : {}),
       // A resume continues the parked worker: its id is known up front (for
       // the snapshot scope and a crash report), and no claim line will come.
       ...(resume ? { workerId: resume, resumed: true, ...(state.endedAt !== undefined ? { parkedAt: state.endedAt } : {}) } : {}),
@@ -253,16 +262,20 @@ export class TaskSupervisor {
    * still finishing, and the wake fires after it has. A `notBefore` already
    * past is a dispatch now. Bounds on how far ahead are the caller's (http.ts).
    */
-  async scheduleDispatch(notBefore: number, opts: { deferredRetry?: boolean } = {}): Promise<ScheduleDispatchResult> {
+  async scheduleDispatch(notBefore: number, opts: { deferredRetry?: boolean; runnerSize?: RunnerSizeDecision } = {}): Promise<ScheduleDispatchResult> {
     const previous = this.d.getState().scheduleId;
     if (notBefore <= this.d.now()) {
       if (previous) {
         this.patch({ scheduledFor: undefined, scheduleId: undefined });
         this.cancelSchedule(previous);
       }
-      return { scheduled: false, ...this.dispatch({ scheduledFor: notBefore, deferredRetry: opts.deferredRetry }) };
+      return { scheduled: false, ...this.dispatch({ scheduledFor: notBefore, deferredRetry: opts.deferredRetry, runnerSize: opts.runnerSize }) };
     }
-    const id = await this.d.scheduler.scheduleAt(notBefore, { notBefore, ...(opts.deferredRetry ? { deferredRetry: true } : {}) });
+    const id = await this.d.scheduler.scheduleAt(notBefore, {
+      notBefore,
+      ...(opts.deferredRetry ? { deferredRetry: true } : {}),
+      ...(opts.runnerSize ? { runnerSize: opts.runnerSize } : {}),
+    });
     // Re-read after the await: whatever happened meanwhile, this wake is the latest.
     const replaced = this.d.getState().scheduleId;
     this.patch({ scheduledFor: notBefore, scheduleId: id });
@@ -285,7 +298,7 @@ export class TaskSupervisor {
     }
     const scheduledFor = state.scheduledFor ?? payload.notBefore;
     this.patch({ scheduledFor: undefined, scheduleId: undefined });
-    return { fired: true, ...this.dispatch({ scheduledFor, deferredRetry: payload.deferredRetry }) };
+    return { fired: true, ...this.dispatch({ scheduledFor, deferredRetry: payload.deferredRetry, runnerSize: payload.runnerSize }) };
   }
 
   private cancelSchedule(id: string): void {
@@ -320,7 +333,7 @@ export class TaskSupervisor {
   private async parkOrphanThenResume(workerId: string, state: RunState): Promise<void> {
     const parked = await this.d.keepAliveWhile(() => this.parkOrphan(workerId));
     if (!parked || !(await this.markParked(workerId))) return this.crashOrphan(state);
-    await this.finish({ code: EXIT_PARKED, outcome: 'parked' });
+    await this.finish({ code: EXIT_PARKED, outcome: 'parked', interruption: 'agent_restart' });
     this.dispatch({ resumeWorkerId: workerId });
   }
 
@@ -349,7 +362,7 @@ export class TaskSupervisor {
   private async crashOrphan(state: RunState): Promise<void> {
     this.d.log(`[cloud-runner] task ${this.d.taskId}: attempt ${state.attempt} was ${state.status} when the agent restarted; marking it crashed`);
     const error = 'The agent restarted during the run and could not re-attach to the runner process.';
-    await this.finish({ code: null, outcome: 'crashed', error });
+    await this.finish({ code: null, outcome: 'crashed', error, interruption: 'agent_restart' });
   }
 
   /** Exec the orphan park in the still-running container. True only on a clean exit 4. */
@@ -404,6 +417,7 @@ export class TaskSupervisor {
     let code: number | null = null;
     let error: string | undefined;
     let configError = false;
+    let interruption: RunInterruption | undefined;
     let otelEnv: Record<string, string>;
     try {
       try {
@@ -444,6 +458,9 @@ export class TaskSupervisor {
       else if (settled.kind === 'exec_error') error = `runner process failed: ${describe(settled.error)}`;
       else if (settled.kind === 'container_error') error = `container failed: ${describe(settled.error)}`;
       else error = 'container stopped while the runner was running';
+      // The container itself went away under a live runner (OOM, a platform
+      // stop): what buildd's size rule counts as a restart.
+      if (settled.kind === 'container_exited' || settled.kind === 'container_error') interruption = 'container_stopped';
     } catch (err) {
       error = describe(err);
     }
@@ -461,7 +478,7 @@ export class TaskSupervisor {
         ? 'start_deferred'
         : outcomeForExitCode(code);
     this.d.log(`[cloud-runner] task ${this.d.taskId}: attempt ${attempt} exited code=${code ?? 'none'} outcome=${outcome}${error ? ` (${error})` : ''}`);
-    await this.finish({ code, outcome, error });
+    await this.finish({ code, outcome, error, interruption });
   }
 
   /**
@@ -470,7 +487,7 @@ export class TaskSupervisor {
    * dispatch that arrives during cleanup is ignored instead of starting an
    * attempt whose state this cleanup would then overwrite.
    */
-  private async finish(r: { code: number | null; outcome: RunOutcome; error?: string }): Promise<void> {
+  private async finish(r: { code: number | null; outcome: RunOutcome; error?: string; interruption?: RunInterruption }): Promise<void> {
     if (this.d.getState().timings?.exitedAt === undefined) this.patchTimings({ exitedAt: this.d.now() });
     await this.stopContainer(r.outcome === 'crashed' ? 'run crashed' : r.outcome === 'parked' ? 'run parked' : 'run finished');
     const crashReport = await this.reportCrashIfNeeded(r);
@@ -482,6 +499,10 @@ export class TaskSupervisor {
       workerId: state.workerId,
       containerInstanceId: this.d.config.containerInstanceId,
       instanceType: this.d.config.instanceType,
+      runnerSize: this.d.config.runnerSize,
+      runnerSizeDecision: state.runnerSize,
+      // A park the runner chose itself is a question waiting for an answer.
+      interruption: r.interruption ?? (r.outcome === 'parked' ? 'question' : null),
       dispatchReceivedAt: state.startedAt,
       timings: state.timings,
       egress: this.egress,

@@ -72,7 +72,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   create_pr: 'tasks:write', record_pr_supersession: 'workers:write', send_agent_message: 'workers:admin',
   emit_event: 'tasks:write', query_events: 'tasks:read', post_note: 'tasks:write', suggest_schedule_update: 'workers:write',
   list_prs: 'tasks:read', get_pr: 'tasks:read', get_pr_review: 'tasks:read',
-  merge_pr: 'tasks:write', close_pr: 'tasks:write', request_pr_review: 'tasks:write',
+  merge_pr: 'tasks:write', close_pr: 'tasks:write', update_pr: 'tasks:write', request_pr_review: 'tasks:write',
   list_artifacts: 'tasks:read', get_artifact: 'tasks:read', list_artifact_templates: 'tasks:read',
   create_artifact: 'tasks:write', upload_artifact: 'tasks:write', update_artifact: 'tasks:write',
   list_schedules: 'tasks:read', trace_schedule: 'tasks:read', create_schedule: 'schedules:write', update_schedule: 'schedules:write', pause_schedules: 'schedules:write', delete_schedule: 'schedules:write',

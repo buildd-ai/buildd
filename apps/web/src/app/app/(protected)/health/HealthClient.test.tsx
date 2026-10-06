@@ -410,15 +410,34 @@ describe('HealthClient — Trend', () => {
     expect(head).not.toContain('get_pr');
     expect(section).toContain('Show all 12 tools');
     // The expander lists every tool, exactly once, under its server.
-    expect(section.match(/data-testid="consumption-all-tools-row"/g)?.length).toBe(12);
+    const all = section.slice(section.indexOf('data-testid="consumption-all-tools"'));
+    expect(all.match(/data-testid="tool-breakdown-row"/g)?.length).toBe(12);
     for (const n of names) expect(section).toContain(`title="${n}"`);
     const groups = section.slice(section.indexOf('data-testid="consumption-all-tools"'));
     expect(groups.indexOf('Built-in')).toBeLessThan(groups.indexOf('>buildd<'));
     expect(groups.indexOf('>buildd<')).toBeLessThan(groups.indexOf('Other MCP'));
-    // Links on to the drill-down for the finer breakdowns.
-    expect(groups).toContain('href="/app/health/usage?window=7d"');
+    // The breakdowns open in place, so there is no hop to the drill-down here.
+    expect(groups).not.toContain('Shell buckets, graph tools and buildd actions');
     // Coverage label and floor marking are unchanged.
     expect(section).toContain('≥31/40');
+  });
+
+  it('opens Bash into what the commands were for and buildd into its actions, in place', () => {
+    const byTool = [
+      { name: 'Bash', calls: 30, share: 0.6, tasks: 3, exactCalls: 30, exactTasks: 3 },
+      { name: 'mcp__buildd__buildd', calls: 20, share: 0.4, tasks: 3, exactCalls: 20, exactTasks: 3 },
+    ];
+    const html = render({
+      consumption: consumption({
+        tools: { ...consumption().tools, byTool },
+        bashBuckets: { histogramTasks: 3, classifiedTasks: 3, bashCalls: 30, classifiedCalls: 30, buckets: [{ key: 'file_read', calls: 30, share: 1 }] },
+        builddActions: { totalCalls: 20, actions: [{ action: 'update_progress', calls: 20 }] },
+      } as any),
+    });
+    const section = html.slice(html.indexOf('data-testid="health-section-consumption"'), html.indexOf('data-testid="consumption-by-model"'));
+    expect(section).toContain('file read');
+    expect(section).toContain('Read does this');
+    expect(section).toContain('update_progress');
   });
 
   it('offers no expander when the top rows already list every tool', () => {

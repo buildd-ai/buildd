@@ -1,6 +1,6 @@
 {
-  "id": "5a17c6ff-7326-4e99-85e6-a8587fbfa690",
-  "prevId": "e7a7ea63-3873-4550-96fe-41e152f631b4",
+  "id": "a53361de-db5a-475b-9e9f-bc3c9429f4a0",
+  "prevId": "f1631344-901b-4688-abc7-44f0585511ce",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -13259,6 +13259,58 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.stripe_events": {
+      "name": "stripe_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "processed_at": {
+          "name": "processed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "stripe_events_team_id_teams_id_fk": {
+          "name": "stripe_events_team_id_teams_id_fk",
+          "tableFrom": "stripe_events",
+          "tableTo": "teams",
+          "columnsFrom": [
+            "team_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.subscriptions": {
       "name": "subscriptions",
       "schema": "",
@@ -14506,6 +14558,12 @@
         },
         "pending_suggestion": {
           "name": "pending_suggestion",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "delegation": {
+          "name": "delegation",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
@@ -16374,6 +16432,37 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
+        },
+        "plan": {
+          "name": "plan",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'free'"
+        },
+        "billing_status": {
+          "name": "billing_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stripe_customer_id": {
+          "name": "stripe_customer_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stripe_subscription_id": {
+          "name": "stripe_subscription_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "paid_seats": {
+          "name": "paid_seats",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -16382,6 +16471,21 @@
           "columns": [
             {
               "expression": "slug",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "teams_stripe_customer_id_idx": {
+          "name": "teams_stripe_customer_id_idx",
+          "columns": [
+            {
+              "expression": "stripe_customer_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

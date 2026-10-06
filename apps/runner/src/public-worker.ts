@@ -119,6 +119,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   lastEditedFile: true,
   toolCounts: true,
   bashCommandCounts: true,
+  fileToolAreas: true,
   degradedConnectors: true,
   assertionConnectors: true,
   promptSuggestions: true,

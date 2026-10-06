@@ -119,6 +119,36 @@ describe('seams that have shipped stay cut', () => {
     ]);
   });
 
+  test('the GitHub webhook reaches the review reactions to a PR closing and to a GitHub review only through emit()', () => {
+    // Verdict flows: review capture and the GitHub verdict note, the merge-vs-
+    // verdict telemetry, supersession detection and reconcile, dead-PR
+    // shutdown, and the on-close activity comment and review callback.
+    const imported = Object.keys(current.backend['apps/web/src/app/api/github/webhook/route.ts'] ?? {});
+    expect(imported.filter(f => [
+      'apps/web/src/lib/review-feedback.ts',
+      'apps/web/src/lib/supersession.ts',
+      'apps/web/src/lib/pr-supersession-detect.ts',
+      'apps/web/src/lib/dead-pr-shutdown.ts',
+    ].includes(f))).toEqual([]);
+  });
+
+  test('the GitHub webhook reaches reviewer dispatch, re-review and the CI-fix retry only through emit() and the PR-opened slot', () => {
+    // What is left is core: landing, auto-merge safety, the merge-policy chain,
+    // the verdict reads the check_suite merge door and the release door gate
+    // on, and the PR's claim-scope reconcile.
+    const imported = Object.entries(current.backend['apps/web/src/app/api/github/webhook/route.ts'] ?? {});
+    expect(imported.filter(([, mod]) => mod === 'reviews-merge').map(([f]) => f).sort()).toEqual([
+      'apps/web/src/lib/auto-merge.ts',
+      'apps/web/src/lib/merge-policy.ts',
+      'apps/web/src/lib/pr-landing.ts',
+      'apps/web/src/lib/pr-review-request.ts',
+      'apps/web/src/lib/pr-review-status.ts',
+      'apps/web/src/lib/pr-scope-reconcile-trigger.ts',
+      'apps/web/src/lib/review-verdict-gate.ts',
+    ]);
+    expect(imported.map(([f]) => f)).not.toContain('apps/web/src/lib/migration-inspector.ts');
+  });
+
   test('no core file writes the subscriptions ledger directly; it is a notifications subscriber', () => {
     const writers = pairs(current, 'backend').filter(p => p.endsWith('-> apps/web/src/lib/subscriptions.ts'));
     expect(writers).toEqual([]);

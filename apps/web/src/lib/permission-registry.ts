@@ -88,6 +88,11 @@ export const PERMISSIONS = {
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: null,
   },
+  manage_billing: {
+    description: "Start a paid plan, change seats and open the team's Stripe billing portal.",
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: null,
+  },
   // ── API keys and runners ─────────────────────────────────────────────────
   manage_team_keys: {
     description: 'Regenerate API keys, flag host-runner keys, and mint or approve admin-level keys and admin scopes.',
@@ -185,7 +190,7 @@ export type Permission = keyof typeof PERMISSIONS;
 /** How the settings matrix groups permissions, in registry order. Every permission is in exactly one. */
 export const PERMISSION_GROUPS: ReadonlyArray<{ title: string; permissions: readonly Permission[] }> = [
   { title: 'Team membership', permissions: ['manage_team_members', 'assign_team_owner'] },
-  { title: 'Team settings', permissions: ['manage_team_settings', 'delete_team', 'manage_team_permissions', 'seed_team_timezone', 'manage_chat_retro', 'activate_chat_retro_dogfood', 'view_team_usage'] },
+  { title: 'Team settings', permissions: ['manage_team_settings', 'delete_team', 'manage_team_permissions', 'seed_team_timezone', 'manage_chat_retro', 'activate_chat_retro_dogfood', 'view_team_usage', 'manage_billing'] },
   { title: 'API keys and runners', permissions: ['manage_team_keys'] },
   { title: 'Model access and spend', permissions: ['manage_team_model_keys', 'manage_inference_providers', 'manage_model_tiers', 'manage_ai_budget', 'use_chat_admin_tools'] },
   { title: 'Workspaces', permissions: ['manage_workspace_settings', 'delete_workspace', 'migrate_workspace', 'manage_github_installation', 'review_memory'] },
@@ -218,6 +223,8 @@ export const LOCKED_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>([
   'manage_team_permissions',
   'seed_team_timezone',
   'activate_chat_retro_dogfood',
+  // Spending the team's money stays with owners and admins.
+  'manage_billing',
 ]);
 
 function isPermission(value: unknown): value is Permission {

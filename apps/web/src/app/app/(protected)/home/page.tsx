@@ -17,7 +17,8 @@ import { workerNotDependencyBotPr } from '@/lib/dependency-bot-pr';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
-import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { isActionableChip, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { describeConflictReason } from '@/lib/merge-blocker';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { actionCardTaskLink } from '@/lib/action-card-context';
 import { missionTaskHref } from '@/lib/mission-task-href';
@@ -27,7 +28,7 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { ResolvedEscalationItem, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
-import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
+import { DEFAULT_MAX_CONFLICT_ITERATIONS, isAutoResolveMergeConflictsEnabled } from '@/lib/conflict-retry';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { resolveGatedReleaseState } from '@/lib/release-baseline';
 import { notMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
@@ -58,6 +59,8 @@ import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { ActionQueueCard } from './ActionQueueCard';
 import { StatStrip } from './StatStrip';
+import { MobileHome, type HomeFlightRow } from './MobileHome';
+import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
 import { FleetStrip } from './FleetStrip';
 import { ActivityTicker } from './ActivityTicker';
 import { NeedsYouStack, type HomeShippedMission } from './NeedsYouStack';
@@ -200,6 +203,9 @@ export default async function HomePage({
     waitingMinutes: number | null;
     conflictRetryTaskId: string | null;
     conflictRetryIteration: number | null;
+    /** See EscalationRawItem.conflictAutoResolve / conflictReason. */
+    conflictAutoResolve: boolean;
+    conflictReason: string | null;
     /** Freshness inputs — buildActionQueue refuses a merge CTA on stale state. */
     prLifecycleStatus: string | null;
     prOpenedAt: Date | null;
@@ -262,6 +268,7 @@ export default async function HomePage({
   // the compact missions rows and the Needs-you stack's own cards.
   let fleetData: HomeFleetData | null = null;
   let homeMissionRows: HomeMissionRow[] = [];
+  let phoneMissionRows: HomeMissionRow[] = [];
   let heldMissions: HomeHeldMission[] = [];
   let shippedMissions: HomeShippedMission[] = [];
   let missionTotal = 0;
@@ -602,6 +609,7 @@ export default async function HomePage({
             listed.flatMap(r => (r.model.strand ? [{ row: r.row as unknown as MissionCardRow & { teamId?: string | null }, strand: r.model.strand }] : [])),
             { now: nowMs, userId: user.id },
           );
+          phoneMissionRows = listed.map(({ view, model }) => ({ view, model }));
           homeMissionRows = listed
             .filter(r => r.model.kind === 'active' || r.model.kind === 'recurring' || r.model.kind === 'done')
             .sort((a, b) => ({ active: 0, recurring: 1, done: 2 } as Record<string, number>)[a.model.kind] - ({ active: 0, recurring: 1, done: 2 } as Record<string, number>)[b.model.kind])
@@ -1012,20 +1020,32 @@ export default async function HomePage({
             // While a conflict-retry task is live for a PR, the card renders as
             // RESOLVING rather than asking the human to merge.
             const conflictRetryMap = new Map<string, { taskId: string; iteration: number }>();
-            if (openPrWorkers.length > 0) {
+            // The newest conflict retry per PR, live or not: its failure context
+            // names the conflict in one line (describeConflictReason).
+            const conflictReasonMap = new Map<string, string>();
+            const openPrNumbers = [...new Set(
+              openPrWorkers.map(w => w.prNumber).filter((n): n is number => n != null),
+            )];
+            if (openPrNumbers.length > 0) {
               const conflictRetryTasks = await db.query.tasks.findMany({
                 where: and(
                   inArray(tasks.workspaceId, wsIds),
                   sql`${tasks.creationSource} = 'conflict'`,
-                  isNotNull(tasks.conflictRetryPrNumber),
-                  inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+                  inArray(tasks.conflictRetryPrNumber, openPrNumbers),
                 ),
-                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true },
+                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true, status: true },
+                orderBy: [desc(tasks.createdAt)],
               });
               for (const t of conflictRetryTasks) {
                 if (t.conflictRetryPrNumber == null) continue;
                 const key = `${t.workspaceId}:${t.conflictRetryPrNumber}`;
                 const ctx = (t.context ?? {}) as Record<string, unknown>;
+                if (!conflictReasonMap.has(key)) {
+                  const reason = describeConflictReason(ctx.failureContext);
+                  if (reason) conflictReasonMap.set(key, reason);
+                }
+                if (!(LIVE_TASK_STATUSES as readonly string[]).includes(t.status)) continue;
+                if (conflictRetryMap.has(key)) continue;
                 const iteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 1;
                 conflictRetryMap.set(key, { taskId: t.id, iteration });
               }
@@ -1293,6 +1313,8 @@ export default async function HomePage({
                   conflictRetryIteration: conflictRetry?.iteration ?? null,
                   deadZoneExhausted: !!deadZoneInfo,
                   deadZoneLastRetryTaskId: deadZoneInfo?.lastRetryTaskId ?? null,
+                  conflictAutoResolve: isAutoResolveMergeConflictsEnabled(ws?.gitConfig),
+                  conflictReason: w.prNumber != null ? conflictReasonMap.get(`${w.workspaceId}:${w.prNumber}`) ?? null : null,
                   // Read from persisted columns only (I-9): the sweep owns all
                   // GitHub resolution, this layer only judges how old that
                   // resolution is.
@@ -1970,11 +1992,32 @@ export default async function HomePage({
     .filter(r => lanesRoles.size === 0 || lanesRoles.has(r.slug))
     .map(r => ({ slug: r.slug, name: r.name, color: r.color ?? null }));
 
+  const { items: phoneAttention } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
+  const phoneFlight = new Map<string, HomeFlightRow>();
+  const flightLabels: Record<string, string> = { FIXING_CI: 'fixing tests', CI_RUNNING: 'tests running', FIXING_SPEC: 'updating docs', RESOLVING: 'resolving conflicts', FIXING_REVIEW: 'applying review', REVIEW_RUNNING: 'reviewing', AUTO_MERGE: 'merging' };
+  for (const item of inFlightItems) {
+    const key = item.taskId ?? item.subjectKey;
+    phoneFlight.set(key, { key, title: item.taskTitle ?? item.missionTitle ?? 'Work in progress', agent: flightLabels[item.chip] ?? 'agent working', href: actionCardTaskLink(item), age: '', fixing: item.chip === 'FIXING_CI' });
+  }
+  for (const item of activeItems) {
+    if (item.workerStatus === 'waiting_input') continue;
+    const key = item.taskId;
+    if (!phoneFlight.has(key)) phoneFlight.set(key, { key, title: item.taskTitle, agent: item.roleSlug ?? 'agent', href: homeTaskHref({ missionId: item.missionId, taskId: item.taskId, from: 'home', mode: 'sheet' }), age: item.startedAt ? timeAgo(item.startedAt) : '', fixing: false });
+  }
+  for (const item of [...agentReviewingPrs, ...reviewQueuedPrs]) {
+    const key = item.taskId;
+    if (!phoneFlight.has(key)) phoneFlight.set(key, { key, title: item.taskTitle ?? 'Changes in review', agent: 'reviewing', href: actionCardTaskLink(item), age: '', fixing: false });
+  }
+  const phoneAsk = chatPlacement.kind === 'chat' && chatTeamId
+    ? <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={[]} initialWorkspaceId={wsFilter ?? null} phoneInbox />
+    : <Link href={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : '/app/chat'} className="mb-7 flex min-h-12 items-center justify-between border border-border-strong bg-[var(--chat-surface)] pl-3 font-convo text-lede text-text-muted"><span>Describe the work, or ask…</span><span className="flex min-h-12 w-14 items-center justify-center border-l border-border-strong bg-accent text-[var(--on-accent)]">↑</span></Link>;
+
   return (
     <SwipeProvider>
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <HomeAutoRefresh workspaceIds={refreshWorkspaceIds} />
-      <div className="mx-auto max-w-[1320px]">
+      <MobileHome items={phoneAttention} ask={phoneAsk} live={live} capacity={fleetData?.fleet.capacity ?? 0} mergedToday={stats?.mergedToday ?? 0} inCi={stats?.prsInCi.length ?? 0} shipped={shippedMissions} flight={[...phoneFlight.values()]} timeZone={teamTz} />
+      <div className="mx-auto hidden max-w-[1320px] md:block">
         <header className="mb-5 flex flex-col gap-3 md:mb-6 md:flex-row md:items-end md:justify-between">
           <div className="min-w-0">
             <div className="section-label hidden text-text-muted md:block">Home{teamName ? ` · ${teamName}` : ''}</div>

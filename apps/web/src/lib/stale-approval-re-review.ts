@@ -156,7 +156,7 @@ async function run(input: StaleApprovalReReviewInput, deps: StaleApprovalReRevie
       repoFullName: input.repoFullName,
       prNumber,
       entry: {
-        kind: 'reviewing',
+        kind: 'review_queued',
         detail: input.staleReason
           ? `verdict went stale · ${input.staleReason}`
           : plan.kind === 'delta'

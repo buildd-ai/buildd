@@ -14,19 +14,27 @@ import MissionBoardVisualFixture from './MissionBoardVisualFixture';
 import MissionListExecutorFixture from './MissionListExecutorFixture';
 import MissionTaskStripFixture from './MissionTaskStripFixture';
 import MissionCheckInsFixture from './MissionCheckInsFixture';
+import GoalCriteriaFixture from './GoalCriteriaFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
+import ModelProvidersFixture from './ModelProvidersFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
 import AgentAccessFixture from './AgentAccessFixture';
+import ToolBreakdownFixture from './tool-breakdown-fixture';
+import RunnerSizeFixture from './RunnerSizeFixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
+    RUNNER_SIZE_FIXTURE_STATE,
+    MODEL_PROVIDERS_FIXTURE_STATE,
+    TOOL_BREAKDOWN_FIXTURE_STATE,
     FIXTURE_VIEWS,
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
     MISSION_LIST_EXECUTOR_FIXTURE_STATE,
     MISSION_TASK_STRIP_FIXTURE_STATE,
     MISSION_CHECK_INS_FIXTURE_STATE,
+    GOAL_CRITERIA_FIXTURE_STATE,
     ONBOARDING_FIXTURE_STATE,
     TASK_EVIDENCE_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
@@ -99,15 +107,29 @@ export default function DevFixturesPage() {
         return <MissionCheckInsFixture />;
     }
 
+    if (state === GOAL_CRITERIA_FIXTURE_STATE) {
+        return <GoalCriteriaFixture />;
+    }
+
     if (state === AGENT_ACCESS_FIXTURE_STATE) {
         return <AgentAccessFixture />;
     }
+
     if (state === ANSWER_STATES_FIXTURE_STATE) {
         return <AnswerStatesFixture />;
     }
 
+    if (state === TOOL_BREAKDOWN_FIXTURE_STATE) {
+        return <ToolBreakdownFixture />;
+    }
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
+    }
+    if (state === RUNNER_SIZE_FIXTURE_STATE) {
+        return <RunnerSizeFixture />;
+    }
+    if (state === MODEL_PROVIDERS_FIXTURE_STATE) {
+        return <ModelProvidersFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {

@@ -36,7 +36,7 @@ import {
   ERROR_TRACE_GATED_SINCE,
   ERROR_PATTERN_ROW_LIMIT,
 } from '@/lib/error-pattern-cost-query';
-import { countWorkersInWindow } from '@/lib/action-events';
+import { countWorkersInWindow, fetchActionEvents } from '@/lib/action-events';
 import { loadHealthExperiments } from '@/lib/health-experiments';
 import { getDispatchHealth } from '@/lib/dispatch-health';
 import { loadAgentAccessReport, type AgentAccessReport } from '@/lib/agent-capabilities/access-log';
@@ -130,6 +130,8 @@ export interface ConsumptionStats extends Omit<UsageRollup, 'groups'> {
    * out loud rather than leaving the reader to assume full coverage.
    */
   scan: ScanBounds;
+  /** buildd tool calls per action over the same window, for the tool list's buildd row. Null when unavailable. */
+  builddActions: { totalCalls: number; actions: Array<{ action: string; calls: number }> } | null;
 }
 
 export interface RecentFailure {
@@ -434,8 +436,13 @@ need('budgetForecast') ? getBudgetForecast(activeTeamId, scopedWsIds).catch(() =
     need('consumption')
       ? (async (): Promise<ConsumptionStats | null> => {
       const windowStart = new Date(Date.now() - parseWindowMs(window));
-      const rows = await fetchUsageRows({ workspaceIds: scopedWsIds, windowStart });
+      const [rows, actionRows] = await Promise.all([
+        fetchUsageRows({ workspaceIds: scopedWsIds, windowStart }),
+        // A failure here costs the buildd row its breakdown, not the section.
+        fetchActionEvents({ workspaceIds: scopedWsIds, windowStart }).catch(() => null),
+      ]);
       if (rows.length === 0) return null;
+      const builddActions = actionRows ? countActions(actionRows) : null;
 
       const stats = computeUsageStats(rows, 'role');
       const scan = describeScan(rows, windowStart, USAGE_ROW_LIMIT);
@@ -456,6 +463,7 @@ need('budgetForecast') ? getBudgetForecast(activeTeamId, scopedWsIds).catch(() =
         ...stats,
         window,
         scan,
+        builddActions,
         groups: stats.groups.map(g => ({
           ...g,
           label: g.key === UNASSIGNED_ROLE
@@ -674,4 +682,14 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       now,
     },
   };
+}
+
+/** buildd action events counted per action, most-called first. */
+function countActions(rows: ReadonlyArray<{ action: string | null }>): { totalCalls: number; actions: Array<{ action: string; calls: number }> } {
+  const counts = new Map<string, number>();
+  for (const r of rows) if (r.action) counts.set(r.action, (counts.get(r.action) ?? 0) + 1);
+  const actions = [...counts.entries()]
+    .map(([action, calls]) => ({ action, calls }))
+    .sort((a, b) => b.calls - a.calls || a.action.localeCompare(b.action));
+  return { totalCalls: actions.reduce((sum, a) => sum + a.calls, 0), actions };
 }
