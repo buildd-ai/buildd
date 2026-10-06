@@ -857,6 +857,14 @@ export interface ResultMeta {
    */
   bashCommandCounts?: BashCommandCounts;
   /**
+   * File tool calls (Read, Edit, Write, MultiEdit, NotebookEdit) per repo area:
+   * tool -> area -> calls. The area is the worktree's top-level directory (two
+   * levels for apps/ and packages/), "(repo root)", "(outside the repo)" or
+   * "(other)" past a per-tool cap. Never a path or content. Absent on workers
+   * that predate the capture or made no file tool call.
+   */
+  fileToolAreas?: Record<string, Record<string, number>>;
+  /**
    * Outcome of the one-shot "closing turn" the runner gives a session that
    * ended without the agent calling `complete_task`, before it falls back to
    * `summarySource: 'fallback'`. 'authored' = the closing turn called
