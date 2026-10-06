@@ -167,17 +167,19 @@ function RunnerBlock({ runner, rows, first, now }: { runner: FleetRunner; rows: 
         style={{ '--runner-rows': `span ${rows.length}` } as CSSProperties}
       >
         {/* Wraps to two lines before it truncates; the title always has the whole name. */}
-        <span title={runner.name} className="min-w-0 font-mono text-[13px] font-semibold leading-tight text-text-primary [overflow-wrap:anywhere] md:line-clamp-2 md:text-[14px]">
+        <span title={runner.elastic && !roomy && runner.machine ? `${runner.name} · ${runner.machine}` : runner.name} className="min-w-0 font-mono text-[13px] font-semibold leading-tight text-text-primary [overflow-wrap:anywhere] md:line-clamp-2 md:text-[14px]">
           {runner.name}
         </span>
         {runner.elastic ? (
           // An elastic group has no fixed size to draw: its slots are its live
-          // runs. One line under the name ("Cloudflare · elastic · 2 running")
-          // so a one-run group still fits a single slot row's height.
-          <span className="truncate font-mono text-[11px] text-text-muted md:text-[12px]">
-            {runner.machine && <>{runner.machine}{' · '}</>}
-            <b data-testid="fleet-elastic-running" className="font-semibold tabular-nums text-accent-text">{runner.elastic.running} running</b>
-          </span>
+          // runs. The column is too narrow for "Cloudflare · elastic · 2
+          // running" on one line, so the count gets its own. A one-run group
+          // fits one 50px row like a one-row machine: name only on desktop
+          // (its single row already is the run; the executor is in the title).
+          <>
+            {runner.machine && <span className={`max-w-full truncate font-mono text-[11px] text-text-muted md:text-[12px] ${roomy ? '' : 'md:hidden'}`}>{runner.machine}</span>}
+            <b data-testid="fleet-elastic-running" className={`font-mono text-[11px] font-semibold tabular-nums text-accent-text md:text-[12px] ${roomy ? '' : 'md:hidden'}`}>{runner.elastic.running} running</b>
+          </>
         ) : (
           <>
             {runner.machine && <span className={`truncate font-mono text-[11px] text-text-muted md:text-[12px] ${roomy ? '' : 'md:hidden'}`}>{runner.machine}</span>}
