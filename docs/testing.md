@@ -101,6 +101,15 @@ cd apps/web && bun run build:only   # next build only, no migration, no DATABASE
 No dummy env vars or extra flags (`--webpack` etc.) are required — `build:only` compiles
 cleanly on its own.
 
+**Both this and the full unit suite run well past a typical shell tool's default command
+timeout.** `build:only` takes roughly 5-8 minutes wall-clock; `bun run test` (every file in
+its own process, see below) takes roughly 4-6 minutes. An agent driving a sandboxed shell
+tool whose default per-command timeout is shorter than that (e.g. 120s) gets the process
+killed with SIGTERM/exit 143 partway through, with no digest and nothing useful in the log —
+indistinguishable at first glance from a real hang. Pass an explicit timeout long enough to
+cover the full run (both commands fit comfortably under 10 minutes today) rather than relying
+on a tool's default.
+
 ## Visual Review
 
 Screenshot any UI change at phone and desktop width before calling it done. Full
