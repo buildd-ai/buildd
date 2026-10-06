@@ -14,6 +14,11 @@ describe('phone Home attention', () => {
     expect(items).toEqual([]);
     expect(homeAttentionCopy(items)).toEqual({ count: 0, headline: 'Nothing needs you.', subline: 'The fleet is working without you.' });
   });
+  it('suppresses an older merge ask when a fix owns the same PR, in either order', () => {
+    for (const queue of [[pr('ready'), pr('fix', undefined, 'FIXING_CI')], [pr('fix', undefined, 'FIXING_CI'), pr('ready')]]) {
+      expect(deriveHomeAttention({ queue, missions: [], questions: [], held: [] })).toEqual([]);
+    }
+  });
   it('keeps the safer stale reading when two sources describe one PR', () => {
     const items = deriveHomeAttention({ queue: [pr('ready'), pr('stale', undefined, 'STALE')], missions: [], questions: [], held: [] });
     expect(items).toHaveLength(1);

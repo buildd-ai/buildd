@@ -20,6 +20,7 @@ function AttentionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key
   const [error, setError] = useState<string | null>(null);
   const [reply, setReply] = useState('');
   const [retrySafe, setRetrySafe] = useState(true);
+  useEffect(() => { setConfirm(false); setError(null); setRetrySafe(true); }, [item]);
   const q = item.queue;
   const merge = q?.chip === 'MERGE' && q.prNumber != null && !!q.workspaceId;
   const ci = item.label === 'tests failing' && q?.prNumber != null && !!q.workspaceId;
@@ -39,6 +40,8 @@ function AttentionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key
         if (outcome.kind === 'merged' || outcome.kind === 'stale') {
           onDone(item.key, outcome.kind === 'stale' ? 'resolved' : 'merged');
         } else if (outcome.kind === 'pending' || outcome.kind === 'conflict_dispatched') {
+          setRetrySafe(false);
+          setConfirm(false);
           router.refresh();
           setError(outcome.kind === 'pending' ? outcome.message : 'An agent is resolving the conflicts.');
           return;
@@ -54,7 +57,7 @@ function AttentionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key
         onDone(item.key, label);
       }
       router.refresh();
-    } catch (e) { setError(e instanceof Error ? e.message : 'Could not reach the server.'); }
+    } catch (e) { if (merge) setRetrySafe(false); setError(e instanceof Error ? e.message : 'Could not reach the server.'); }
     finally { setBusy(false); }
   }
   let actions: ReactNode;
