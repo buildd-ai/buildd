@@ -298,6 +298,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
             blockedByCount={blockedByCount}
             backend={t.backend}
             lastError={null}
+            failureKind={t.failureKind}
             worker={t.workerId ? { id: t.workerId, waitingFor: t.waitingFor } : null}
             historyHref={taskPageHref({ taskId: t.id, missionId: link.missionId })}
             roleSlug={t.roleSlug}

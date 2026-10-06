@@ -67,6 +67,7 @@ import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence
 import { evidenceViewOf } from '@/lib/task-evidence';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
+import { loadTaskFailureKind } from '@/lib/task-failure-kind-load';
 import RunnerReachBanner from './RunnerReachBanner';
 import { loadRunnerReachDiagnosis } from '@/lib/runner-reach';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
@@ -757,6 +758,9 @@ export default async function TaskDetailPage({
     isSubjectDead: subjectDead,
     isMissionBudgetExhausted: missionBudgetExhausted,
   });
+  const failureKind = phase === 'failed'
+    ? await loadTaskFailureKind({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null)
+    : null;
   // Triage metadata (priority / runner / backend) only earns top-level space in
   // the pending family; everywhere else it demotes into the Details disclosure.
   const isPendingFamily = phase === 'pending' || phase === 'blocked' || phase === 'budget_paused' || phase === 'assigned' || phase === 'subject_dead' || phase === 'mission_budget_exhausted';
@@ -1215,6 +1219,7 @@ export default async function TaskDetailPage({
               isBlocked={isBlocked}
               blockedByCount={unresolvedDeps.length}
               backend={(task.backend as 'claude' | 'codex' | null) ?? null}
+              failureKind={failureKind}
               lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}
               worker={null}
               roleSlug={task.roleSlug}

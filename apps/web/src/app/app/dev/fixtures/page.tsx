@@ -21,6 +21,7 @@ import ModelProvidersFixture from './ModelProvidersFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
+import FailureKindsFixture from './FailureKindsFixture';
 import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
 import RunnerSizeFixture from './RunnerSizeFixture';
@@ -41,6 +42,7 @@ import {
     COMMIT_CHECKS_FIXTURE_STATE,
     ANSWER_STATES_FIXTURE_STATE,
     AGENT_ACCESS_FIXTURE_STATE,
+    FAILURE_KINDS_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
@@ -113,6 +115,10 @@ export default function DevFixturesPage() {
 
     if (state === AGENT_ACCESS_FIXTURE_STATE) {
         return <AgentAccessFixture />;
+    }
+
+    if (state === FAILURE_KINDS_FIXTURE_STATE) {
+        return <FailureKindsFixture />;
     }
 
     if (state === ANSWER_STATES_FIXTURE_STATE) {

@@ -17,6 +17,7 @@ import TaskSummary from '@/components/task/TaskSummary';
 import AiFeedback from '@/components/AiFeedback';
 import { deriveDisplayStatus } from '@/lib/task-presentation';
 import { taskActionPhase } from '@/lib/task-actions';
+import type { TaskFailureKind } from '@/lib/task-failure-kind';
 import { taskPageHref } from '@/lib/mission-task-href';
 import { CHANNEL_PREFIX, getPusherClient, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 import { subscribeCatchUp } from '@/lib/app-freshness';
@@ -65,6 +66,8 @@ export interface TaskPanelData {
   } | null;
   lastError: { excerpt: string; pattern: string | null; ts: string } | null;
   blockedByCount: number;
+  /** `classifyTaskFailure`: null unless the task failed. */
+  failureKind?: TaskFailureKind | null;
   /** What the task produced (W4 "Records"); absent from older responses. */
   records?: Array<{ id: string; type: string; title: string | null; href: string }>;
   /** Provenance from `deriveTaskOrigin` (U6); null when nothing is stored. */
@@ -308,6 +311,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         blockedByCount={data.blockedByCount}
         backend={data.backend}
         lastError={data.lastError}
+        failureKind={data.failureKind ?? null}
         worker={w ? { id: w.id, waitingFor: w.waitingFor } : null}
         historyHref={taskPageHref({ taskId: data.id, missionId: data.missionId })}
         roleSlug={data.roleSlug}
