@@ -1281,14 +1281,22 @@ export async function PATCH(req: NextRequest) {
   }
 
   try {
-    const body = await req.json();
-    const { workerId, prNumber } = body;
+    const requestBody = await req.json();
+    const { workerId, prNumber, body: newPrBody } = requestBody;
+    // Presence of `body` switches this call from closing the PR to rewriting
+    // its body — the two things this route's only caller set ever needed
+    // from a bare PATCH. See update_pr in mcp-tools.ts.
+    const isBodyUpdate = newPrBody !== undefined;
+    const capability = isBodyUpdate ? 'pr.update_body' as const : 'pr.close' as const;
 
     if (!workerId) {
       return NextResponse.json({ error: 'workerId required' }, { status: 400 });
     }
     if (!prNumber || typeof prNumber !== 'number') {
       return NextResponse.json({ error: 'prNumber required' }, { status: 400 });
+    }
+    if (isBodyUpdate && typeof newPrBody !== 'string') {
+      return NextResponse.json({ error: 'body must be a string' }, { status: 400 });
     }
 
     const worker = await db.query.workers.findFirst({
@@ -1303,15 +1311,15 @@ export async function PATCH(req: NextRequest) {
     if (!(await canActOnWorkerPr(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
-    // A per-task token, and an agent run on its runner's key, may close only a
+    // A per-task token, and an agent run on its runner's key, may act only on a
     // PR its task owns: its own worker's PR or one the task names.
     if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !(await agentRunMayActOnPr(account, worker, prNumber))) {
-      void recordCapabilityDecision({ capability: 'pr.close', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
-      return NextResponse.json({ error: 'A task token may close only its own PR' }, { status: 403 });
+      void recordCapabilityDecision({ capability, decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
+      return NextResponse.json({ error: `A task token may ${isBodyUpdate ? 'update' : 'close'} only its own PR` }, { status: 403 });
     }
     if (!account.taskScope && !(await agentRunMayActOnPr(account, worker, prNumber))) {
-      void recordCapabilityDecision({ capability: 'pr.close', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
-      return NextResponse.json({ error: `An agent run may close only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
+      void recordCapabilityDecision({ capability, decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
+      return NextResponse.json({ error: `An agent run may ${isBodyUpdate ? 'update' : 'close'} only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
     }
 
     const workspace = worker.workspace;
@@ -1328,14 +1336,14 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
     }
 
-    void recordCapabilityDecision({ capability: 'pr.close', decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}` });
+    void recordCapabilityDecision({ capability, decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}` });
     const prData = await githubApi(
       repo.installation.installationId,
       `/repos/${repo.fullName}/pulls/${prNumber}`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state: 'closed' }),
+        body: JSON.stringify(isBodyUpdate ? { body: newPrBody } : { state: 'closed' }),
       }
     );
 
@@ -1349,8 +1357,8 @@ export async function PATCH(req: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('Close PR error:', error);
-    const message = error instanceof Error ? error.message : 'Failed to close PR';
+    console.error('Update PR error:', error);
+    const message = error instanceof Error ? error.message : 'Failed to update PR';
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

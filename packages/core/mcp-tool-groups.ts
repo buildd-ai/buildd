@@ -65,6 +65,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   get_pr_review: 'prs',
   merge_pr: 'prs',
   close_pr: 'prs',
+  update_pr: 'prs',
   request_pr_review: 'prs',
   list_releases: 'prs',
   get_release: 'prs',
@@ -207,7 +208,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   prs: {
     parts: [
-      { text: 'pull requests', actions: ['list_prs', 'get_pr', 'merge_pr', 'close_pr'] },
+      { text: 'pull requests', actions: ['list_prs', 'get_pr', 'merge_pr', 'close_pr', 'update_pr'] },
       { text: 'reviews', actions: ['get_pr_review', 'request_pr_review'] },
       { text: 'releases', actions: ['list_releases', 'get_release', 'release_status'] },
     ],
@@ -299,6 +300,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_pr_review: 'where a PR review stands',
   merge_pr: 'merge a PR',
   close_pr: 'close a PR',
+  update_pr: 'replace a PR\'s body',
   request_pr_review: 'hand a PR to a reviewer agent',
   list_releases: 'releases, newest first',
   get_release: 'one release with its tasks',
@@ -523,7 +525,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
   ],
   prs: [
-    param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'get_pr_review', 'request_pr_review'] }]),
+    param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'update_pr', 'get_pr_review', 'request_pr_review'] }]),
   ],
   artifacts: [
     param('artifactId', str, [{ text: 'Artifact UUID', actions: ['get_artifact', 'update_artifact'] }]),
