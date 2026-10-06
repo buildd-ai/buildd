@@ -327,7 +327,7 @@ export default async function TaskDetailPage({
         .then(([diagnosis, overrides]) => diagnosis ? { diagnosis, canFix: canAdministerTeamKeys(access.role, overrides) } : null)
         .catch(() => null)
     : Promise.resolve(null);
-  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems] = await Promise.all([
+  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
     // Artifacts for all workers on this task
     workerIds.length > 0
       ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
@@ -416,6 +416,9 @@ export default async function TaskDetailPage({
     // What this task's runs were given and refused (agent_capability_decisions).
     // A read failure hides the section; it never fails the page.
     loadTaskAccess(id).catch(() => []),
+    // Worker vs verification failure. Costs no query unless the task failed;
+    // joined here rather than awaited after the phase is derived.
+    loadTaskFailureKind({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null),
   ]);
   const shippedRelease = ship.shippedRelease;
   // Runners by hostname, never their raw URL (runner-display).
@@ -758,9 +761,7 @@ export default async function TaskDetailPage({
     isSubjectDead: subjectDead,
     isMissionBudgetExhausted: missionBudgetExhausted,
   });
-  const failureKind = phase === 'failed'
-    ? await loadTaskFailureKind({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null)
-    : null;
+  const failureKind = phase === 'failed' ? failureKindRaw : null;
   // Triage metadata (priority / runner / backend) only earns top-level space in
   // the pending family; everywhere else it demotes into the Details disclosure.
   const isPendingFamily = phase === 'pending' || phase === 'blocked' || phase === 'budget_paused' || phase === 'assigned' || phase === 'subject_dead' || phase === 'mission_budget_exhausted';
