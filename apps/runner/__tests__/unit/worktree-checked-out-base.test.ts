@@ -125,3 +125,67 @@ describe('Git Workflow when the mission integration branch was missing at checko
     expect(built.promptText).not.toContain('was not on the remote when this worktree was cut');
   });
 });
+
+// Regression (task 19e95341 / PR #3502): the "was not on the remote" note is a
+// snapshot of worktree-cut time, but `worktreeBaseRef` is never updated after.
+// Once a sibling's `create_pr` created the integration branch and more work
+// merged into it, every later prompt still said "do not fetch or reset onto
+// it" — and the conflict retry merged dev alone, leaving GitHub still dirty.
+// The prompt re-probes the branch at render time and says what is there now.
+describe('Git Workflow when the mission integration branch appeared after checkout', () => {
+  const task = {
+    mission: { workingBranch: INTEGRATION_BRANCH, integrationBranchEnabled: true },
+    missionId: 'mission-1',
+  };
+  const build = (probe?: (branch: string, beyond: string) => unknown, worker: Record<string, unknown> = { worktreeBaseRef: 'origin/dev' }) => {
+    const c = ctx(task, worker);
+    if (probe) c.probeMissionBase = probe;
+    return buildPromptWithComposition(c).promptText;
+  };
+
+  test('names the commit count and says to fetch and merge it, not origin/dev alone', () => {
+    const calls: Array<[string, string]> = [];
+    const text = build((branch, beyond) => {
+      calls.push([branch, beyond]);
+      return { state: 'present', commitsAhead: 4 };
+    });
+    expect(calls).toEqual([[INTEGRATION_BRANCH, 'dev']]);
+    expect(text).not.toContain('Do not try to fetch or reset onto it');
+    expect(text).toContain(`\`${INTEGRATION_BRANCH}\` was not on the remote when this worktree was cut`);
+    expect(text).toContain("has since been created on the remote with 4 commits beyond `origin/dev`");
+    expect(text).toContain(`git fetch origin ${INTEGRATION_BRANCH} && git merge origin/${INTEGRATION_BRANCH}`);
+    expect(text).toContain('not `origin/dev` alone');
+  });
+
+  test('singular commit', () => {
+    expect(build(() => ({ state: 'present', commitsAhead: 1 }))).toContain('with 1 commit beyond');
+  });
+
+  test('present but nothing beyond the checkout base: no merge demanded, no "do not fetch" either', () => {
+    const text = build(() => ({ state: 'present', commitsAhead: 0 }));
+    expect(text).not.toContain('Do not try to fetch or reset onto it');
+    expect(text).not.toContain('git merge origin/');
+    expect(text).toContain(`\`${INTEGRATION_BRANCH}\` now exists on the remote but carries nothing beyond \`origin/dev\``);
+  });
+
+  test('still missing: keeps the original "do not fetch or reset" guidance', () => {
+    const text = build(() => ({ state: 'missing' }));
+    expect(text).toContain(`\`${INTEGRATION_BRANCH}\` was not on the remote when this worktree was cut`);
+    expect(text).toContain('Do not try to fetch or reset onto it');
+  });
+
+  test('probe could not tell, or no probe wired: original guidance', () => {
+    expect(build(() => ({ state: 'unknown' }))).toContain('Do not try to fetch or reset onto it');
+    expect(build()).toContain('Do not try to fetch or reset onto it');
+  });
+
+  test('a probe that throws does not break prompt assembly', () => {
+    expect(build(() => { throw new Error('git exploded'); })).toContain('Do not try to fetch or reset onto it');
+  });
+
+  test('not probed when the worktree was cut from the integration branch itself', () => {
+    let called = false;
+    build(() => { called = true; return { state: 'missing' }; }, { worktreeBaseRef: `origin/${INTEGRATION_BRANCH}` });
+    expect(called).toBe(false);
+  });
+});

@@ -461,6 +461,50 @@ export function ensureRemoteBranch(repoPath: string, branch: string, opts: Ensur
   }
 }
 
+export type BranchBeyondProbe =
+  /** The remote has no such branch. */
+  | { state: 'missing' }
+  /** `origin/<branch>` exists; `commitsAhead` = commits on it not on `origin/<beyond>`. */
+  | { state: 'present'; commitsAhead: number }
+  /** Could not tell (fetch failed with no local ref, or the count failed). */
+  | { state: 'unknown' };
+
+const PROBE_FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * Does `origin/<branch>` exist on the remote NOW, and how many commits does it
+ * carry beyond `origin/<beyond>`? Always fetches `<branch>` fresh — the point
+ * is to see a branch that appeared (or moved) after this clone last looked, so
+ * a present local ref is not an answer. One attempt, no retries: this runs on
+ * the prompt-render path. Never throws.
+ */
+export function probeBranchBeyond(
+  repoPath: string,
+  branch: string,
+  beyond: string,
+  opts: { run?: GitCwdRun } = {},
+): BranchBeyondProbe {
+  if (!isSafeBranchName(branch) || !isSafeBranchName(beyond)) return { state: 'unknown' };
+  const run = opts.run ?? gitIn(repoPath);
+  try {
+    const fetched = run(remoteBranchFetchArgs(repoPath, branch, run), PROBE_FETCH_TIMEOUT_MS);
+    if (fetched.status !== 0) {
+      if (/couldn't find remote ref/i.test(String(fetched.stderr ?? ''))) return { state: 'missing' };
+      // Offline or throttled: a ref fetched earlier is still a fair answer.
+      if (!remoteRefPresent(run, branch)) return { state: 'unknown' };
+    }
+    const count = run(
+      ['rev-list', '--count', `refs/remotes/origin/${beyond}..refs/remotes/origin/${branch}`],
+      LOCAL_GIT_TIMEOUT_MS,
+    );
+    const n = Number.parseInt(String(count.stdout ?? '').trim(), 10);
+    if (count.status !== 0 || !Number.isFinite(n)) return { state: 'unknown' };
+    return { state: 'present', commitsAhead: n };
+  } catch {
+    return { state: 'unknown' };
+  }
+}
+
 /** `origin/<branch>` (or `refs/remotes/origin/<branch>`) → `<branch>`; anything else → null. */
 export function branchOfRemoteRef(ref: string | null | undefined): string | null {
   if (!ref) return null;
