@@ -20,19 +20,23 @@ export function requiresThinkingEnabled(modelId: string): boolean {
 
 /**
  * Returns true for models that reject `thinking: { type: "disabled" }` at EVERY
- * effort level, not only xhigh/max: on Fable and Mythos thinking is always on
- * and the parameter has to be omitted entirely, so any explicit disable is a 400.
+ * effort level, not only xhigh/max. Fable/Mythos require thinking; Sonnet/Haiku
+ * 5.5 use a different thinking mode instead of "disabled". Omit the override
+ * so the API chooses its default ("between_tools" is effort-limited).
  *
  * Load-bearing for the `premium-plus` tier, which points at Fable — a workspace
  * carrying `thinking: disabled` would otherwise 400 on every task routed there.
  */
 export function rejectsDisabledThinking(modelId: string): boolean {
-  return /claude-(fable|mythos)/i.test(modelId);
+  return (
+    /claude-(fable|mythos)/i.test(modelId) ||
+    /claude-(sonnet|haiku)-5-5(?:-|$)/i.test(modelId)
+  );
 }
 
 /**
  * Resolve the effective thinking config, stripping a "disabled" override when
- * the model requires thinking at xhigh/max effort (API returns 400 otherwise).
+ * the model rejects it outright or requires thinking at xhigh/max effort.
  */
 export function resolveEffectiveThinking(
   model: string,
@@ -41,7 +45,7 @@ export function resolveEffectiveThinking(
 ): ThinkingConfig {
   const id = model || '';
   const mustStrip =
-    // Fable/Mythos: disabled is rejected regardless of effort.
+    // Fable/Mythos and Sonnet/Haiku 5.5 reject disabled regardless of effort.
     rejectsDisabledThinking(id) ||
     // Opus 5: disabled is accepted at effort `high` or below, 400 above it.
     (/claude-opus-5/i.test(id) && (configuredEffort === 'xhigh' || configuredEffort === 'max'));

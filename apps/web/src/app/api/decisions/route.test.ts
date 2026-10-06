@@ -6,7 +6,7 @@ const user = mock(async () => null as any);
 const account = mock(async (..._args: any[]) => null as any);
 const teams = mock(async () => ['team']);
 const workspaces = mock(async () => [{ id: 'ws', teamId: 'team-1' }]);
-const ledger = mock(async () => [{ id: 'd1', capability: 'task_role_shadow' }]);
+const ledger = mock(async (..._args: any[]) => ({ rows: [{ id: 'd1', capability: 'task_role_shadow', createdAt: new Date('2026-01-01T00:00:00Z') }] as any[], outcomes: [] as any[], truncated: false }));
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: user }));
 mock.module('@/lib/api-auth', () => ({
@@ -17,7 +17,7 @@ mock.module('@/lib/api-auth', () => ({
 }));
 mock.module('@/lib/team-access', () => ({ resolveAccountTeamIds: teams }));
 mock.module('@buildd/core/db', () => ({ db: { query: { workspaces: { findMany: workspaces } } } }));
-mock.module('@buildd/core/decision-ledger', () => ({ queryDecisionLedger: ledger }));
+mock.module('@buildd/core/decision-ledger', () => ({ readDecisionLedgerPage: ledger, summarizeDecisionLedger: (rows: unknown[]) => ({ total: rows.length }) }));
 
 const { GET } = await import('./route');
 
@@ -25,6 +25,7 @@ beforeEach(() => {
   user.mockResolvedValue(null);
   account.mockResolvedValue(null);
   ledger.mockClear();
+  ledger.mockImplementation(async () => ({ rows: [{ id: 'd1', capability: 'task_role_shadow', createdAt: new Date('2026-01-01T00:00:00Z') }], outcomes: [], truncated: false }));
 });
 
 const req = (query = '') => new NextRequest(`http://localhost/api/decisions${query}`);
@@ -60,7 +61,54 @@ it('resolves the workspace team and passes filters through', async () => {
   expect(filters.since).toBeInstanceOf(Date);
   expect(limit).toBeUndefined();
   const body = await res.json();
-  expect(body.decisions).toEqual([{ id: 'd1', capability: 'task_role_shadow' }]);
+  expect(body.status).toBe('OK');
+  expect(body.decisions).toEqual([{ id: 'd1', capability: 'task_role_shadow', createdAt: '2026-01-01T00:00:00.000Z', outcomes: [] }]);
+});
+
+it('says NO_DATA when the read succeeded and nothing matched', async () => {
+  user.mockResolvedValue({ id: 'user' });
+  ledger.mockImplementation(async () => ({ rows: [], outcomes: [], truncated: false }));
+  const res = await GET(req('?workspaceId=ws&capability=question_gate'));
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(body.status).toBe('NO_DATA');
+  expect(body.count).toBe(0);
+});
+
+it('a store failure is a 503 TOOL_UNAVAILABLE, never an empty page', async () => {
+  user.mockResolvedValue({ id: 'user' });
+  ledger.mockImplementation(async () => { throw new Error('connection reset'); });
+  const res = await GET(req('?workspaceId=ws&capability=question_gate'));
+  expect(res.status).toBe(503);
+  const body = await res.json();
+  expect(body.status).toBe('TOOL_UNAVAILABLE');
+  expect(body.decisions).toBeUndefined();
+});
+
+it('pins an explicit since/until window and attaches outcome labels', async () => {
+  user.mockResolvedValue({ id: 'user' });
+  ledger.mockImplementation(async () => ({
+    rows: [{ id: 'd1', createdAt: new Date('2026-01-03T00:00:00Z') }, { id: 'd2', createdAt: new Date('2026-01-02T00:00:00Z') }],
+    outcomes: [{ decisionRecordId: 'd2', source: 'human', label: 'wrong' }],
+    truncated: true,
+  }));
+  const res = await GET(req('?workspaceId=ws&since=2026-01-01T00:00:00Z&until=2026-01-08T00:00:00Z'));
+  expect(res.status).toBe(200);
+  const [filters] = ledger.mock.calls[0];
+  expect(filters.since.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+  expect(filters.until.toISOString()).toBe('2026-01-08T00:00:00.000Z');
+  const body = await res.json();
+  expect(body.window).toBe('explicit');
+  expect(body.decisions[1].outcomes).toEqual([{ decisionRecordId: 'd2', source: 'human', label: 'wrong' }]);
+  expect(body.nextUntil).toBe('2026-01-02T00:00:00.000Z');
+});
+
+it('rejects a malformed or oversized explicit window', async () => {
+  user.mockResolvedValue({ id: 'user' });
+  expect((await GET(req('?workspaceId=ws&since=yesterday'))).status).toBe(400);
+  expect((await GET(req('?workspaceId=ws&since=2026-01-08T00:00:00Z&until=2026-01-01T00:00:00Z'))).status).toBe(400);
+  expect((await GET(req('?workspaceId=ws&since=2026-01-01T00:00:00Z&until=2026-03-01T00:00:00Z'))).status).toBe(400);
+  expect(ledger).not.toHaveBeenCalled();
 });
 
 it('serves an authenticated worker key scoped to analytics:read', async () => {

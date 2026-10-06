@@ -22,7 +22,12 @@ export interface SheetProps {
    * `full`: full phone viewport, centered large panel on desktop for evidence.
    */
   height?: 'auto' | 'tall' | 'peek' | 'expanded' | 'full';
-  /** Keep the underlying chart visible and interactive, without a modal backdrop. */
+  /**
+   * Keep the underlying chart visible and interactive, without a modal backdrop.
+   * At md+ this also renders inline, right where the sheet sits in the tree,
+   * instead of overlaying the viewport bottom — a fixed overlay has no idea a
+   * sibling card may sit in its path below the anchor (see §4 Sheet).
+   */
   contextual?: boolean;
   /** `default` (max-w-lg) or `wide` (max-w-3xl) — for a sheet with its own side rail. */
   width?: 'default' | 'wide';
@@ -89,6 +94,20 @@ function useCanPortal(): boolean {
   return useSyncExternalStore(noopSubscribe, () => true, () => false);
 }
 
+const CONTEXTUAL_INLINE_QUERY = '(min-width: 768px)';
+function subscribeContextualInline(onChange: () => void) {
+  if (typeof window === 'undefined' || !window.matchMedia) return () => {};
+  const mq = window.matchMedia(CONTEXTUAL_INLINE_QUERY);
+  mq.addEventListener('change', onChange);
+  return () => mq.removeEventListener('change', onChange);
+}
+const readContextualInline = () =>
+  typeof window !== 'undefined' && !!window.matchMedia?.(CONTEXTUAL_INLINE_QUERY).matches;
+/** Mobile-first: false on the server and below md, so a contextual sheet only goes inline once md+ is confirmed client-side. */
+function useContextualInline(): boolean {
+  return useSyncExternalStore(subscribeContextualInline, readContextualInline, () => false);
+}
+
 /** Hide overflow on `el`; the returned function restores the previous value. */
 export function lockScroll(el: HTMLElement): () => void {
   const prev = el.style.overflow;
@@ -133,6 +152,8 @@ export default function Sheet({
   trapRef.current = trapFocus;
 
   const canPortal = useCanPortal();
+  const contextualInline = useContextualInline();
+  const inlineAtDesktop = contextual && contextualInline;
 
   // Declared before the focus effect below so it records the trigger before
   // the panel takes focus. Keyed on `open` alone: re-portalling must not
@@ -186,6 +207,47 @@ export default function Sheet({
   const tall = height !== 'auto';
   const full = height === 'full';
 
+  const header = (
+    <div className="sticky top-0 z-10 flex items-center justify-between gap-3 px-4 py-3 border-b border-border-default bg-surface-1">
+      <h2 className="min-w-0 truncate text-title font-semibold text-text-primary">{title}</h2>
+      <button
+        type="button"
+        onClick={onClose}
+        className="-mr-2 w-11 h-11 shrink-0 flex items-center justify-center text-text-muted hover:text-text-primary transition-colors"
+        aria-label="Close"
+      >
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M18 6L6 18M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+  );
+
+  // md+: inline, right where it sits in the tree — a fixed viewport overlay
+  // can't tell whether a sibling card sits below the anchor, so it overlays
+  // whatever happens to occupy that part of the screen instead.
+  if (inlineAtDesktop) {
+    const maxHClass =
+      height === 'peek' ? 'max-h-[35vh]' : height === 'expanded' ? 'max-h-[55vh]' : height === 'tall' ? 'max-h-[88vh]' : 'max-h-[85vh]';
+    return (
+      <div className="mt-3 flex justify-center" role="presentation">
+        <div
+          ref={panelRef}
+          role="dialog"
+          aria-modal="false"
+          aria-label={title}
+          data-testid={testId}
+          tabIndex={trapFocus ? -1 : undefined}
+          className={`relative w-full ${width === 'wide' ? 'max-w-3xl' : 'max-w-lg'} bg-surface-1 border-t-2 border-border-strong shadow-lg focus:outline-none ${maxHClass} overflow-y-auto`}
+        >
+          {handle}
+          {header}
+          <div className={flush ? '' : 'p-4'}>{children}</div>
+        </div>
+      </div>
+    );
+  }
+
   const sheet = (
     <div className={`fixed inset-0 z-50 flex ${full ? 'md:items-center md:p-6' : 'items-end'} justify-center ${contextual ? 'pointer-events-none' : ''}`} role="presentation">
       {!contextual && <div
@@ -205,19 +267,7 @@ export default function Sheet({
         }`}
       >
         {handle}
-        <div className="sticky top-0 z-10 flex items-center justify-between gap-3 px-4 py-3 border-b border-border-default bg-surface-1">
-          <h2 className="min-w-0 truncate text-title font-semibold text-text-primary">{title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="-mr-2 w-11 h-11 shrink-0 flex items-center justify-center text-text-muted hover:text-text-primary transition-colors"
-            aria-label="Close"
-          >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M18 6L6 18M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
+        {header}
         <div className={`${tall ? 'flex-1 min-h-0 overflow-y-auto overscroll-contain' : ''} ${flush ? '' : 'p-4'}`}>{children}</div>
       </div>
     </div>

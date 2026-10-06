@@ -1,5 +1,5 @@
 {
-  "id": "c729eec1-f8e8-4900-9db2-ace913210d0e",
+  "id": "6bd632a8-5d84-4a9f-9544-d6d25f730b72",
   "prevId": "e7a7ea63-3873-4550-96fe-41e152f631b4",
   "version": "7",
   "dialect": "postgresql",
@@ -14510,6 +14510,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "delegation": {
+          "name": "delegation",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_by_user_id": {
           "name": "created_by_user_id",
           "type": "uuid",
@@ -15108,12 +15114,6 @@
         },
         "category_decision": {
           "name": "category_decision",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "verdict_decision": {
-          "name": "verdict_decision",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

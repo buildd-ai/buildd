@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.280.0",
+  "version": "0.281.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -122,6 +122,7 @@
     "./task-size-bucket-decision": "./task-size-bucket-decision.ts",
     "./task-size-bucket-source": "./task-size-bucket-source.ts",
     "./decision-ledger": "./decision-ledger.ts",
+    "./token-delegation": "./token-delegation.ts",
     "./decision-kinds": "./decision-kinds.ts",
     "./decision-policy": "./decision-policy.ts",
     "./decision-outcomes": "./decision-outcomes.ts",
@@ -235,7 +236,7 @@
     "./prompt-seed-source": "./prompt-seed-source.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.280",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.290",
     "@ast-grep/napi": "^0.45.0",
     "@builddai/ai-kit": "workspace:*",
     "@buildd/dispatch-contract": "workspace:*",
