@@ -40,6 +40,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { dependencyReleases, tasks, type WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { resolveEarlyReleaseMode, type EarlyReleaseMode } from '@/lib/early-release-mode';
 import { readPinnedPrScope, type GithubGet } from '@buildd/core/pr-scope-read';
 import { githubApi } from '@/lib/github';
 import {
@@ -83,14 +84,7 @@ interface EarlyReleaseRawInput {
   sizeBucket: EarlyReleaseFeatures['sizeBucket'];
 }
 
-export const EARLY_RELEASE_MODES = ['off', 'rule_only', 'rule_and_jev'] as const;
-export type EarlyReleaseMode = (typeof EARLY_RELEASE_MODES)[number];
-
-/** Absent / anything unrecognized reads as `'off'` — the workspace must opt in. */
-export function resolveEarlyReleaseMode(gitConfig: WorkspaceGitConfig | null | undefined): EarlyReleaseMode {
-  const mode = gitConfig?.earlyRelease?.mode;
-  return mode === 'rule_only' || mode === 'rule_and_jev' ? mode : 'off';
-}
+export { EARLY_RELEASE_MODES, resolveEarlyReleaseMode, type EarlyReleaseMode } from '@/lib/early-release-mode';
 
 export interface EarlyReleasePendingDependent {
   id: string;

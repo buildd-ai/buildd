@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { fetchCoordinationStats } from '@/lib/coordination-stats-query';
 import { fetchOrchestrationDecisionStats } from '@/lib/orchestration-decision-stats-query';
+import { fetchEarlyReleaseStats } from '@/lib/early-release-metrics';
 
 /** Read-only aggregate coordination metrics, scoped to the caller's teams. */
 export async function GET(req: NextRequest) {
@@ -22,7 +23,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'missionId must be a full UUID' }, { status: 400 });
   }
   const metric = params.get('metric');
-  if (metric && !['manifest', 'pathClaims', 'orchestrationDecisions'].includes(metric)) return NextResponse.json({ error: 'Invalid metric' }, { status: 400 });
+  if (metric && !['manifest', 'pathClaims', 'orchestrationDecisions', 'earlyRelease'].includes(metric)) return NextResponse.json({ error: 'Invalid metric' }, { status: 400 });
   const teamIds = await resolveAccountTeamIds(user, account);
   const allowed = teamIds.length ? await db.query.workspaces.findMany({
     where: inArray(workspaces.teamId, teamIds), columns: { id: true },
@@ -36,6 +37,11 @@ export async function GET(req: NextRequest) {
   };
   // The decision ledger is its own read: never part of the unfiltered report.
   if (metric === 'orchestrationDecisions') return NextResponse.json(await fetchOrchestrationDecisionStats(filters));
-  const stats = await fetchCoordinationStats(filters);
-  return NextResponse.json(metric === 'manifest' ? stats.manifestCoverage : metric === 'pathClaims' ? stats.pathClaims : stats);
+  if (metric === 'earlyRelease') return NextResponse.json(await fetchEarlyReleaseStats(filters));
+  if (metric) {
+    const stats = await fetchCoordinationStats(filters);
+    return NextResponse.json(metric === 'manifest' ? stats.manifestCoverage : stats.pathClaims);
+  }
+  const [stats, earlyRelease] = await Promise.all([fetchCoordinationStats(filters), fetchEarlyReleaseStats(filters)]);
+  return NextResponse.json({ ...stats, earlyRelease });
 }
