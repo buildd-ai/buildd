@@ -28,6 +28,12 @@ const BANDS: BandKey[] = [...STACK, 'lost'];
 
 const fill = (k: BandKey) => `var(--flow-${k})`;
 
+/** Which bucket the readout shows: hovered, else tapped, else the latest; none when empty. */
+export function readoutIndex(hover: number | null, picked: number | null, last: number): number | null {
+  if (last < 0) return null;
+  return hover ?? picked ?? last;
+}
+
 /** Whole numbers stay whole ("1", not "1.0"); only a value that rounds to less than 1 shows a decimal. */
 export function fmtCount(v: number): string {
   if (v === 0) return '0';
@@ -59,8 +65,7 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
   const geo = useMemo(() => buildGeometry(series, VIEW_W, VIEW_H), [series, VIEW_W, VIEW_H]);
   const svgRef = useRef<SVGSVGElement>(null);
   const [hover, setHover] = useState<number | null>(null);
-  // Touch has no pointerleave, so a hover tooltip opened by a tap would stay on
-  // top of the chart. On touch the picked panel below carries the same numbers.
+  // Touch has no pointerleave: a tap picks a time instead of hovering one.
   const [touch, setTouch] = useState(false);
   const [picked, setPicked] = useState<{ i: number; band: BandKey } | null>(null);
   const last = series.buckets.length - 1;
@@ -102,7 +107,8 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
     }
   };
 
-  const hb = hover != null ? series.buckets[hover] : null;
+  const ri = readoutIndex(hover, picked?.i ?? null, last);
+  const rb = ri != null ? series.buckets[ri] : null;
   // The crosshair follows the pointer, or marks the picked time on touch.
   const markIndex = hover ?? (touch && picked ? picked.i : null);
   const mb = markIndex != null ? series.buckets[markIndex] : null;
@@ -186,29 +192,29 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
             <line x1={geo.xOf((mb.start + mb.end) / 2)} x2={geo.xOf((mb.start + mb.end) / 2)} y1={geo.plot.top} y2={geo.plot.bottom} stroke="var(--text-primary)" strokeWidth={1} />
           )}
         </svg>
-
-        {hover != null && hb && !touch && (
-          <div
-            data-testid="flow-tooltip"
-            className="pointer-events-none absolute top-1 z-10 border-2 border-border-strong bg-surface-2 px-3 py-2 text-meta shadow-md min-w-[11rem]"
-            style={hover > series.buckets.length / 2 ? { right: '0.25rem' } : { left: '2.5rem' }}
-          >
-            <div className="text-text-muted mb-1">{fmtWhen(hb.start, series.bucketMs)}</div>
-            {[...BANDS].reverse().map(k => (
-              <div key={k} className="flex items-center gap-2">
-                <span aria-hidden className="inline-block w-3 h-0.5" style={{ background: fill(k) }} />
-                <span className="font-semibold text-text-primary" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtCount(bandValue(hb, k))}</span>
-                <span className="text-text-secondary">{BAND_LABEL[k]}</span>
-              </div>
-            ))}
-            {Object.keys(hb.running).length > 0 && (
-              <div className="mt-1 pt-1 border-t border-border-default text-text-muted">
-                {Object.entries(hb.running).sort((a, b) => b[1] - a[1]).map(([role, v]) => `${role} ${fmtCount(v)}`).join(' · ')}
-              </div>
-            )}
-          </div>
-        )}
       </div>
+
+      {/* Readout under the plot, never over it: the hovered time, else the
+          tapped one, else the latest. */}
+      {rb && (
+        <div data-testid="flow-readout" className="mt-2 border-t border-border-default pt-2 text-meta" aria-live="polite">
+          <div className="text-text-muted">{fmtWhen(rb.start, series.bucketMs)}</div>
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+            {[...BANDS].reverse().map(k => (
+              <span key={k} className="inline-flex items-center gap-1.5">
+                <span aria-hidden className="inline-block w-3 h-0.5" style={{ background: fill(k) }} />
+                <span className="font-semibold text-text-primary" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtCount(bandValue(rb, k))}</span>
+                <span className="text-text-secondary">{BAND_LABEL[k]}</span>
+              </span>
+            ))}
+          </div>
+          {Object.keys(rb.running).length > 0 && (
+            <div className="mt-1 text-text-muted">
+              {Object.entries(rb.running).sort((a, b) => b[1] - a[1]).map(([role, v]) => `${role} ${fmtCount(v)}`).join(' · ')}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Legend: always present, swatch beside text-token labels. */}
       <ul className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5" data-testid="flow-legend">
