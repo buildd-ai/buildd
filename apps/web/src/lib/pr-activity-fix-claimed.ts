@@ -1,5 +1,5 @@
 /**
- * "A worker has the fix" — the one signal that lets the PR activity comment move
+ * "A worker has the fix" (and "a worker has the review") — the one signal that lets the PR activity comment move
  * from `fix N of M queued` to `Fixing`.
  *
  * The comment used to say "buildd is pushing fixes to this branch" the moment a
@@ -78,6 +78,39 @@ export async function announceFixClaimed(task: ClaimedTaskShape): Promise<void> 
     });
   } catch (err) {
     console.warn(`[pr-activity] could not announce fix claim for task ${task.id}:`, err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * The PR this claimed reviewer task reviews, or null when it is not a reviewer.
+ * `createReviewerTask` writes `reviewerFor` and `prNumber` into the context.
+ */
+export function reviewerClaimOf(task: ClaimedTaskShape): { prNumber: number } | null {
+  const ctx = (task.context && typeof task.context === 'object' ? task.context : {}) as Record<string, unknown>;
+  if (typeof ctx.reviewerFor !== 'string' || !ctx.reviewerFor) return null;
+  return typeof ctx.prNumber === 'number' ? { prNumber: ctx.prNumber } : null;
+}
+
+/**
+ * A worker claimed a reviewer task — the one signal that moves the PR comment
+ * from `Review queued` to `Reviewing`. Filing the reviewer only says queued:
+ * a reviewer no worker would take used to read "Reviewing" for hours.
+ */
+export async function announceReviewClaimed(task: ClaimedTaskShape): Promise<void> {
+  const review = reviewerClaimOf(task);
+  if (!review) return;
+  try {
+    const repo = await workspaceRepo(task.workspaceId);
+    if (!repo) return;
+    await appendPrActivity({
+      ...repo,
+      prNumber: review.prNumber,
+      entry: { kind: 'reviewing', taskUrl: taskActivityUrl(task.id) },
+      onlyIfPresent: true,
+      workspaceId: task.workspaceId,
+    });
+  } catch (err) {
+    console.warn(`[pr-activity] could not announce review claim for task ${task.id}:`, err instanceof Error ? err.message : err);
   }
 }
 
