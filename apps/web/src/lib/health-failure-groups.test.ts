@@ -126,6 +126,20 @@ describe('buildFailureGroups', () => {
     expect(view).toMatchObject({ platformFailures: 1, workFailures: 2, totalFailedWorkers: 3 });
   });
 
+  // A claim-time model substitution lands on nearly every claimed worker and
+  // the run continues on the fallback model, so listing it under a failure
+  // cause reads as the cause when it is only background.
+  it('does not list a model substitution as seen in a failure', () => {
+    const view = buildFailureGroups({
+      failures: [worker({ workerId: 'w1' })],
+      traces: [
+        { workerId: 'w1', pattern: 'dispatch_model_rejected' },
+        { workerId: 'w1', pattern: 'git_error' },
+      ],
+    });
+    expect(view.groups[0].patterns.map(p => p.pattern)).toEqual(['git_error']);
+  });
+
   it('is empty, not broken, with no failures', () => {
     expect(buildFailureGroups({ failures: [], traces: [] })).toMatchObject({ groups: [], totalFailedWorkers: 0, stopped: 0 });
   });
