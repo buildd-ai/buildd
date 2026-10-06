@@ -138,6 +138,64 @@ describe('TaskActionZone — inline Force start', () => {
   });
 });
 
+describe('TaskActionZone — raise workspace cap stepper', () => {
+  const gatedCapBody = { gateReason: 'workspace_cap_reached', canForce: true, canExempt: true, blockClass: 'policy', cap: 3, active: 3, error: 'Workspace is full' };
+
+  it('keeps −/value/+ in their own group, separate from the label and Save & start, so they never split across lines', async () => {
+    stubFetch({ status: 422, body: gatedCapBody });
+    await mount();
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    const lower = button('−')!;
+    const raise = button('+')!;
+    expect(lower.parentElement).toBe(raise.parentElement);
+    const group = lower.parentElement!;
+    expect(group.contains(container.querySelector('.tabular-nums'))).toBe(true);
+    expect(group.contains(button('Save & start')!)).toBe(false);
+  });
+
+  it('steps the target between cap+1 and 20, then raising saves the workspace cap and restarts the task', async () => {
+    // A dedicated stub: the shared stubFetch's "first /start call" heuristic
+    // can't also distinguish the PATCH /api/workspaces/[id] raiseCapAndStart
+    // makes, since that call doesn't end in "/start" either.
+    calls = [];
+    let startCallCount = 0;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      calls.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (u === '/api/tasks/t1/start') {
+        startCallCount += 1;
+        if (startCallCount === 1) return { ok: false, status: 422, json: async () => gatedCapBody } as Response;
+        return { ok: true, status: 200, json: async () => ({}) } as Response;
+      }
+      if (u === '/api/workspaces/ws1') {
+        return { ok: true, status: 200, json: async () => ({ maxConcurrentTasks: 5 }) } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+
+    await mount();
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    const value = () => container.querySelector('.tabular-nums')!.textContent;
+    expect(value()).toBe('4'); // cap (3) + 1
+
+    await act(async () => { button('−')!.click(); }); // floor is cap+1: no-op
+    await flush();
+    expect(value()).toBe('4');
+
+    await act(async () => { button('+')!.click(); });
+    await flush();
+    expect(value()).toBe('5');
+
+    await act(async () => { button('Save & start')!.click(); });
+    await flush();
+    const patch = calls.find(c => c.url === '/api/workspaces/ws1');
+    expect(patch?.body).toEqual({ maxConcurrentTasks: 5 });
+    expect(startCallCount).toBe(2);
+  });
+});
+
 describe('TaskActionZone — a provider sign-in failure', () => {
   it('says what to do in plain words, links the credential setting, and folds the raw text', async () => {
     stubFetch({ status: 200, body: {} });
