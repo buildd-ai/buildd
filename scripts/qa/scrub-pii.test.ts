@@ -279,7 +279,7 @@ describe('scrub-pii.sql covers the schema', () => {
       workspaces: ['name', 'repo', 'local_path', 'memory', 'projects'],
       github_repos: ['full_name', 'name', 'owner', 'html_url', 'description'],
       github_installations: ['account_login'],
-      missions: ['title', 'description', 'working_branch', 'primary_pr_url', 'goal_criteria'],
+      missions: ['title', 'description', 'working_branch', 'primary_pr_url', 'goal_criteria', 'branch_refresh_lease_token'],
       initiatives: ['title', 'description', 'kpis'],
       tasks: ['title', 'description', 'context', 'result', 'external_url', 'subject_branch'],
       workers: ['branch', 'pr_url', 'current_action', 'waiting_for', 'error', 'milestones', 'result_meta', 'runner'],

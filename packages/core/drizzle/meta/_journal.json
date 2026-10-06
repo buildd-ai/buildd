@@ -1674,6 +1674,13 @@
       "when": 1791255816860,
       "tag": "0244_breezy_alice",
       "breakpoints": true
+    },
+    {
+      "idx": 245,
+      "version": "7",
+      "when": 1791257688834,
+      "tag": "0245_magical_sentry",
+      "breakpoints": true
     }
   ]
 }

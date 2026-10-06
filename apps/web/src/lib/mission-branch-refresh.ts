@@ -45,6 +45,7 @@
  * Together these coalesce any burst into exactly one real merge attempt.
  */
 
+import { randomUUID } from 'node:crypto';
 import { db } from '@buildd/core/db';
 import { missions, missionNotes, tasks, workspaces, githubRepos } from '@buildd/core/db/schema';
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
@@ -121,23 +122,6 @@ export async function refreshMissionIntegrationBranch(
     return { kind: 'skipped', reason: 'mission_terminal', detail: mission.status };
   }
 
-  // A conflict task is still live: stop retrying until it finishes (self-heals
-  // once it observes the task reached a terminal status).
-  if (mission.branchRefreshConflictTaskId) {
-    const conflictTask = await db.query.tasks.findFirst({
-      where: eq(tasks.id, mission.branchRefreshConflictTaskId),
-      columns: { id: true, status: true },
-    });
-    const terminal = !conflictTask || (TERMINAL_TASK_STATUSES as readonly string[]).includes(conflictTask.status);
-    if (!terminal) {
-      return { kind: 'skipped', reason: 'conflict_task_open', conflictTaskId: mission.branchRefreshConflictTaskId };
-    }
-    await db
-      .update(missions)
-      .set({ branchRefreshConflictTaskId: null })
-      .where(and(eq(missions.id, missionId), eq(missions.branchRefreshConflictTaskId, mission.branchRefreshConflictTaskId)));
-  }
-
   // The mission's own PR into trunk already merged — the mission's one shot at
   // trunk has been taken, and refreshing a branch nothing will ever merge again
   // wastes a GitHub call on every future trigger forever.
@@ -173,9 +157,11 @@ export async function refreshMissionIntegrationBranch(
     workspace.gitConfig?.targetBranch || workspace.gitConfig?.defaultBranch || repo.defaultBranch || 'main';
 
   // Single-flight claim. Released on every exit path below.
+  const leaseToken = randomUUID();
+  const ownsLease = and(eq(missions.id, missionId), eq(missions.branchRefreshLeaseToken, leaseToken));
   const [claimed] = await db
     .update(missions)
-    .set({ branchRefreshLeaseUntil: new Date(Date.now() + BRANCH_REFRESH_LEASE_MS) })
+    .set({ branchRefreshLeaseUntil: new Date(Date.now() + BRANCH_REFRESH_LEASE_MS), branchRefreshLeaseToken: leaseToken })
     .where(and(
       eq(missions.id, missionId),
       or(isNull(missions.branchRefreshLeaseUntil), lt(missions.branchRefreshLeaseUntil, new Date())),
@@ -185,9 +171,29 @@ export async function refreshMissionIntegrationBranch(
     return { kind: 'skipped', reason: 'in_flight' };
   }
   const releaseLease = () =>
-    db.update(missions).set({ branchRefreshLeaseUntil: null }).where(eq(missions.id, missionId));
+    db.update(missions).set({ branchRefreshLeaseUntil: null, branchRefreshLeaseToken: null }).where(ownsLease);
 
   try {
+    // The pre-lease snapshot may be stale after another caller finishes.
+    const current = await db.query.missions.findFirst({ where: eq(missions.id, missionId) });
+    if (!current || current.branchRefreshLeaseToken !== leaseToken) return { kind: 'skipped', reason: 'in_flight' };
+    // A conflict task is still live: stop retrying until it finishes (self-heals
+    // once it observes the task reached a terminal status).
+    if (current.branchRefreshConflictTaskId) {
+      const conflictTask = await db.query.tasks.findFirst({
+        where: eq(tasks.id, current.branchRefreshConflictTaskId),
+        columns: { id: true, status: true },
+      });
+      const terminal = conflictTask && (TERMINAL_TASK_STATUSES as readonly string[]).includes(conflictTask.status);
+      if (!terminal) {
+        return { kind: 'skipped', reason: 'conflict_task_open', conflictTaskId: current.branchRefreshConflictTaskId };
+      }
+      await db
+        .update(missions)
+        .set({ branchRefreshConflictTaskId: null })
+        .where(and(eq(missions.id, missionId), eq(missions.branchRefreshConflictTaskId, current.branchRefreshConflictTaskId), eq(missions.branchRefreshLeaseToken, leaseToken)));
+    }
+
     let trunkSha: string;
     try {
       const trunkRef = await githubApi(installationId, `/repos/${repo.fullName}/git/ref/heads/${trunk}`);
@@ -201,7 +207,7 @@ export async function refreshMissionIntegrationBranch(
 
     // Idempotency debounce: dev has not moved past the last refresh this
     // mission actually landed, so there is nothing new to merge in.
-    if (mission.branchRefreshHeadSha === trunkSha) {
+    if (current.branchRefreshHeadSha === trunkSha) {
       return { kind: 'skipped', reason: 'already_current' };
     }
 
@@ -211,9 +217,17 @@ export async function refreshMissionIntegrationBranch(
     }
     if (ensured.created) {
       // Freshly cut from trunk — already current by construction.
-      await db.update(missions).set({ branchRefreshHeadSha: trunkSha }).where(eq(missions.id, missionId));
+      await db.update(missions).set({ branchRefreshHeadSha: trunkSha }).where(ownsLease);
       return { kind: 'skipped', reason: 'already_current' };
     }
+
+    // Slow repo/ref work can outlive the lease. Fence the API call against a
+    // successor that already acquired ownership or reserved a conflict task.
+    const [renewed] = await db.update(missions)
+      .set({ branchRefreshLeaseUntil: new Date(Date.now() + BRANCH_REFRESH_LEASE_MS) })
+      .where(and(ownsLease, isNull(missions.branchRefreshConflictTaskId)))
+      .returning({ id: missions.id });
+    if (!renewed) return { kind: 'skipped', reason: 'in_flight' };
 
     let merged: { sha?: string } | null;
     try {
@@ -235,7 +249,9 @@ export async function refreshMissionIntegrationBranch(
           trunk,
           workspaceId: workspace.id,
           repoFullName: repo.fullName,
+          leaseToken,
         });
+        if (!conflict) return { kind: 'skipped', reason: 'in_flight' };
         fireGateEvent({
           gate: GATE_SLUGS.MISSION_BRANCH_REFRESH,
           surface: 'mission-branch-refresh',
@@ -252,7 +268,7 @@ export async function refreshMissionIntegrationBranch(
     }
 
     // 204 → null (githubApi): GitHub says the branch already contains trunk.
-    await db.update(missions).set({ branchRefreshHeadSha: trunkSha }).where(eq(missions.id, missionId));
+    await db.update(missions).set({ branchRefreshHeadSha: trunkSha }).where(ownsLease);
     if (!merged) {
       return { kind: 'skipped', reason: 'already_current' };
     }
@@ -292,9 +308,8 @@ async function postRefreshNote(missionId: string, body: string): Promise<void> {
 
 /**
  * Dispatch the one conflict-resolution task this mission is allowed to have in
- * flight. Returns the existing task when one is already open (the single
- * caller here only reaches this after confirming the column was null, but a
- * concurrent dispatch could still race the UPDATE below).
+ * flight. Atomically reserves the pointer under the lease owner's token before
+ * insertion, so an expired caller cannot dispatch alongside its successor.
  */
 async function dispatchBranchRefreshConflictTask(args: {
   mission: { id: string; title: string };
@@ -302,8 +317,22 @@ async function dispatchBranchRefreshConflictTask(args: {
   trunk: string;
   workspaceId: string;
   repoFullName: string;
-}): Promise<{ taskId: string; dispatched: boolean }> {
-  const { mission, branch, trunk, workspaceId, repoFullName } = args;
+  leaseToken: string;
+}): Promise<{ taskId: string; dispatched: boolean } | null> {
+  const { mission, branch, trunk, workspaceId, repoFullName, leaseToken } = args;
+
+  // Reserve the pointer before insertion. A missing task behind this pointer
+  // is an in-progress reservation, never permission to dispatch another task.
+  const taskId = randomUUID();
+  const [reserved] = await db.update(missions)
+    .set({ branchRefreshConflictTaskId: taskId })
+    .where(and(eq(missions.id, mission.id), eq(missions.branchRefreshLeaseToken, leaseToken), isNull(missions.branchRefreshConflictTaskId)))
+    .returning({ id: missions.id });
+  if (!reserved) {
+    const current = await db.query.missions.findFirst({ where: eq(missions.id, mission.id) });
+    return current?.branchRefreshConflictTaskId
+      ? { taskId: current.branchRefreshConflictTaskId, dispatched: false } : null;
+  }
 
   const description = `Merging \`${trunk}\` into this mission's integration branch \`${branch}\` hit merge conflicts. This is routine upkeep (docs/design/mission-delivery-arc.md P5, superseded) — dev is kept merged into every active mission branch automatically, and this is the one case that needs a person's judgment.
 
@@ -322,43 +351,40 @@ async function dispatchBranchRefreshConflictTask(args: {
 
 **This PR must land as a merge commit, not a squash** — a squash would drop \`${trunk}\`'s commits from this branch's ancestry, and the exact same conflict would reappear on the very next refresh. Say so in the PR body. If you call \`merge_pr\` yourself, pass \`mergeMethod: "merge"\` explicitly.`;
 
-  const [newTask] = await db
-    .insert(tasks)
-    .values({
-      workspaceId,
-      title: `chore(mission): merge ${trunk} into the ${mission.title} integration branch`,
-      description,
-      missionId: mission.id,
-      taskClass: 'work',
-      kind: 'engineering',
-      creationSource: 'conflict',
-      status: 'pending',
-      priority: 8,
-      outputRequirement: 'pr_required',
-      pathManifest: ['**'],
-      context: {
-        baseBranch: branch,
-        requireMergeCommit: true,
-        failureContext: {
-          summary: `${branch} has merge conflicts with ${trunk}. Merge the integration branch in and resolve on the merits.`,
-          errorType: 'merge_conflict' as const,
+  let newTask;
+  try {
+    [newTask] = await db
+      .insert(tasks)
+      .values({
+        id: taskId,
+        workspaceId,
+        title: `chore(mission): merge ${trunk} into the ${mission.title} integration branch`,
+        description,
+        missionId: mission.id,
+        taskClass: 'work',
+        kind: 'engineering',
+        creationSource: 'conflict',
+        status: 'pending',
+        priority: 8,
+        outputRequirement: 'pr_required',
+        pathManifest: ['**'],
+        context: {
+          baseBranch: branch,
+          requireMergeCommit: true,
+          failureContext: {
+            summary: `${branch} has merge conflicts with ${trunk}. Merge the integration branch in and resolve on the merits.`,
+            errorType: 'merge_conflict' as const,
+          },
         },
-      },
-    })
-    .onConflictDoNothing()
-    .returning();
-
-  if (!newTask) {
-    // Extremely unlikely race: another caller inserted first. Re-read whatever
-    // the column now holds rather than reporting a phantom dispatch.
-    const current = await db.query.missions.findFirst({
-      where: eq(missions.id, mission.id),
-      columns: { branchRefreshConflictTaskId: true },
-    });
-    return { taskId: current?.branchRefreshConflictTaskId ?? '', dispatched: false };
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (!newTask) throw new Error('Conflict task insertion returned no task');
+  } catch (error) {
+    await db.update(missions).set({ branchRefreshConflictTaskId: null })
+      .where(and(eq(missions.id, mission.id), eq(missions.branchRefreshConflictTaskId, taskId)));
+    throw error;
   }
-
-  await db.update(missions).set({ branchRefreshConflictTaskId: newTask.id }).where(eq(missions.id, mission.id));
 
   const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) });
   if (workspace) {

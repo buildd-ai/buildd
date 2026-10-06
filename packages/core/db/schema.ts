@@ -1070,6 +1070,8 @@ export const missions = pgTable('missions', {
   // concurrency half of debouncing a burst) only proceeds once it is null or
   // in the past. Always cleared at the end of the attempt that set it.
   branchRefreshLeaseUntil: timestamp('branch_refresh_lease_until', { withTimezone: true }),
+  /** Ownership token prevents expired callers from changing a successor's refresh. */
+  branchRefreshLeaseToken: text('branch_refresh_lease_token'),
   // The open conflict-resolution task dispatched after a 409 merging dev into
   // this mission's integration branch — at most one at a time (mirrors
   // conflict-retry's one-live-retry-per-PR rule). Non-null and non-terminal

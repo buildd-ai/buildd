@@ -1,0 +1,1 @@
+ALTER TABLE "missions" ADD COLUMN "branch_refresh_lease_token" text;

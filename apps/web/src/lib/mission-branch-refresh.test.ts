@@ -18,6 +18,7 @@ let tasksById: Record<string, any> = {};
 let nextTaskId = 1;
 const insertedNotes: any[] = [];
 const insertedTasks: any[] = [];
+const mockTaskInsert = mock(() => Promise.resolve());
 
 function resetFixtures() {
   missionRow = {
@@ -86,7 +87,7 @@ mock.module('@buildd/core/db', () => ({
       githubRepos: { findFirst: (...args: any[]) => mockGithubReposFindFirst(...args) },
       tasks: {
         findFirst: (args: any) => {
-          const id = args?.where?.[1] ?? args?.where?.value ?? args?.where;
+          const id = args?.where?.args?.[1];
           const task = typeof id === 'string' ? tasksById[id] : undefined;
           return Promise.resolve(task ?? null);
         },
@@ -97,17 +98,33 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+function matches(p: any): boolean {
+  if ('isNull' in p) return missionRow[p.isNull] == null;
+  if (p.op === 'and') return p.args.every(matches);
+  if (p.op === 'or') return p.args.some(matches);
+  const [field, value] = p.args;
+  const actual = missionRow[field];
+  if (p.op === 'lt') return actual != null && actual < value;
+  return actual instanceof Date && value instanceof Date
+    ? actual.getTime() === value.getTime() : actual === value;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(r => { resolve = r; });
+  return { promise, resolve };
+}
+
 function makeUpdateChain(table: any) {
   let setVals: any;
+  let predicate: any;
   const exec = () => {
-    if (table === 'missions') {
+    if (String(table) === 'missions') {
+      if (predicate && !matches(predicate)) return { rows: [] };
+      if (Object.prototype.hasOwnProperty.call(setVals, 'branchRefreshLeaseToken')) missionRow.branchRefreshLeaseToken = setVals.branchRefreshLeaseToken;
       if (Object.prototype.hasOwnProperty.call(setVals, 'branchRefreshLeaseUntil')) {
         const claiming = setVals.branchRefreshLeaseUntil instanceof Date;
         if (claiming) {
-          const held = missionRow.branchRefreshLeaseUntil instanceof Date
-            ? missionRow.branchRefreshLeaseUntil.getTime() > Date.now()
-            : false;
-          if (held) return { rows: [] };
           missionRow.branchRefreshLeaseUntil = setVals.branchRefreshLeaseUntil;
           return { rows: [{ id: missionRow.id }] };
         }
@@ -129,7 +146,8 @@ function makeUpdateChain(table: any) {
       setVals = v;
       return chain;
     },
-    where(_w: any) {
+    where(w: any) {
+      predicate = w;
       return chain;
     },
     returning(_sel?: any) {
@@ -149,12 +167,15 @@ function makeInsertChain(table: any) {
   return {
     values: (v: any) => {
       if (table === 'tasks') {
-        const id = `task-${nextTaskId++}`;
+        const id = v.id ?? `task-${nextTaskId++}`;
         const row = { id, status: 'pending', ...v };
-        tasksById[id] = row;
-        insertedTasks.push(row);
         return {
-          onConflictDoNothing: () => ({ returning: () => Promise.resolve([row]) }),
+          onConflictDoNothing: () => ({ returning: async () => {
+            await mockTaskInsert();
+            tasksById[id] = row;
+            insertedTasks.push(row);
+            return [row];
+          } }),
         };
       }
       if (table === 'missionNotes') {
@@ -167,7 +188,7 @@ function makeInsertChain(table: any) {
 }
 
 mock.module('@buildd/core/db/schema', () => ({
-  missions: 'missions',
+  missions: Object.assign(new String('missions'), Object.fromEntries(['id', 'branchRefreshLeaseUntil', 'branchRefreshLeaseToken', 'branchRefreshConflictTaskId'].map(k => [k, k]))),
   missionNotes: 'missionNotes',
   tasks: 'tasks',
   workspaces: 'workspaces',
@@ -175,12 +196,12 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 mock.module('drizzle-orm', () => ({
-  eq: (...args: any[]) => args,
-  and: (...args: any[]) => args,
+  eq: (...args: any[]) => ({ op: 'eq', args }),
+  and: (...args: any[]) => ({ op: 'and', args }),
   inArray: (...args: any[]) => args,
   isNull: (field: any) => ({ isNull: field }),
-  lt: (...args: any[]) => args,
-  or: (...args: any[]) => args,
+  lt: (...args: any[]) => ({ op: 'lt', args }),
+  or: (...args: any[]) => ({ op: 'or', args }),
   sql: (...args: any[]) => args,
 }));
 
@@ -239,6 +260,8 @@ function githubError(status: number, body: unknown): Error {
 describe('refreshMissionIntegrationBranch', () => {
   beforeEach(() => {
     resetFixtures();
+    mockTaskInsert.mockReset();
+    mockTaskInsert.mockResolvedValue(undefined);
     mockMissionsFindMany.mockReset();
     mockWorkspacesFindMany.mockReset();
     mockGithubApi.mockReset();
@@ -317,6 +340,110 @@ describe('refreshMissionIntegrationBranch', () => {
     expect(insertedTasks.length).toBe(1); // no second task
   });
 
+  it('rechecks the conflict pointer when a delayed reader acquires the released lease', async () => {
+    const entered = deferred<void>();
+    const resume = deferred<any>();
+    mockFindMissionPrOwner.mockImplementationOnce(() => { entered.resolve(); return resume.promise; });
+    let merges = 0;
+    mockGithubApi.mockImplementation(((_i: number, path: string) => {
+      if (path.endsWith('/merges')) { merges++; return Promise.reject(githubError(409, 'conflict')); }
+      return Promise.resolve({ object: { sha: 'dev-new' } });
+    }) as any);
+    const delayed = refreshMissionIntegrationBranch('m-1');
+    await entered.promise;
+    await refreshMissionIntegrationBranch('m-1');
+    resume.resolve(null);
+    expect(await delayed).toMatchObject({ kind: 'skipped', reason: 'conflict_task_open' });
+    expect(insertedTasks).toHaveLength(1);
+    expect(merges).toBe(1);
+  });
+
+  it('an expired caller cannot dispatch twice or release its successor lease', async () => {
+    const entered = deferred<void>();
+    const resume = deferred<any>();
+    let merges = 0;
+    mockGithubApi.mockImplementation(((_i: number, path: string) => {
+      if (path.endsWith('/merges')) {
+        merges++;
+        if (merges === 1) { entered.resolve(); return resume.promise; }
+        return Promise.reject(githubError(409, 'conflict'));
+      }
+      return Promise.resolve({ object: { sha: 'dev-new' } });
+    }) as any);
+    const expired = refreshMissionIntegrationBranch('m-1');
+    await entered.promise;
+    missionRow.branchRefreshLeaseUntil = new Date(Date.now() - 1);
+    const announced = deferred<void>();
+    const finishAnnouncement = deferred<void>();
+    mockAnnounceTaskCreated.mockImplementationOnce(() => { announced.resolve(); return finishAnnouncement.promise; });
+    const successor = refreshMissionIntegrationBranch('m-1');
+    await announced.promise;
+    const successorLease = missionRow.branchRefreshLeaseUntil;
+    resume.resolve(Promise.reject(githubError(409, 'conflict')));
+    await expired;
+    expect(missionRow.branchRefreshLeaseUntil).toEqual(successorLease);
+    expect(insertedTasks).toHaveLength(1);
+    expect(await refreshMissionIntegrationBranch('m-1')).toMatchObject({ kind: 'skipped', reason: 'in_flight' });
+    expect(merges).toBe(2);
+    finishAnnouncement.resolve();
+    await successor;
+    expect(await refreshMissionIntegrationBranch('m-1')).toMatchObject({ kind: 'skipped', reason: 'conflict_task_open' });
+    expect(merges).toBe(2);
+    expect(insertedTasks).toHaveLength(1);
+  });
+
+  it('does not merge after its lease expires and a successor opens a conflict task', async () => {
+    const entered = deferred<void>();
+    const resume = deferred<any>();
+    mockEnsureMissionIntegrationBranch.mockImplementationOnce(() => { entered.resolve(); return resume.promise; });
+    let merges = 0;
+    mockGithubApi.mockImplementation(((_i: number, path: string) => {
+      if (path.endsWith('/merges')) { merges++; return Promise.reject(githubError(409, 'conflict')); }
+      return Promise.resolve({ object: { sha: 'dev-new' } });
+    }) as any);
+    const expired = refreshMissionIntegrationBranch('m-1');
+    await entered.promise;
+    missionRow.branchRefreshLeaseUntil = new Date(Date.now() - 1);
+    await refreshMissionIntegrationBranch('m-1');
+    resume.resolve({ ok: true, created: false, branch: missionRow.workingBranch });
+    await expired;
+    expect(merges).toBe(1);
+    expect(insertedTasks).toHaveLength(1);
+  });
+
+  it('keeps an in-progress task reservation when insertion outlives the lease', async () => {
+    const entered = deferred<void>();
+    const resume = deferred<void>();
+    mockTaskInsert.mockImplementationOnce(() => { entered.resolve(); return resume.promise; });
+    let merges = 0;
+    mockGithubApi.mockImplementation(((_i: number, path: string) => {
+      if (path.endsWith('/merges')) { merges++; return Promise.reject(githubError(409, 'conflict')); }
+      return Promise.resolve({ object: { sha: 'dev-new' } });
+    }) as any);
+    const first = refreshMissionIntegrationBranch('m-1');
+    await entered.promise;
+    expect(insertedTasks).toHaveLength(0);
+    missionRow.branchRefreshLeaseUntil = new Date(Date.now() - 1);
+    expect(await refreshMissionIntegrationBranch('m-1')).toMatchObject({ kind: 'skipped', reason: 'conflict_task_open' });
+    resume.resolve();
+    await first;
+    expect(insertedTasks).toHaveLength(1);
+    expect(merges).toBe(1);
+  });
+
+  it('clears its reservation and releases the lease if task insertion fails', async () => {
+    mockTaskInsert.mockRejectedValueOnce(new Error('insert failed'));
+    mockGithubApi.mockImplementation(((_i: number, path: string) => {
+      if (path.endsWith('/merges')) return Promise.reject(githubError(409, 'conflict'));
+      return Promise.resolve({ object: { sha: 'dev-new' } });
+    }) as any);
+    await expect(refreshMissionIntegrationBranch('m-1')).rejects.toThrow('insert failed');
+    expect(missionRow.branchRefreshConflictTaskId).toBeNull();
+    expect(missionRow.branchRefreshLeaseUntil).toBeNull();
+    expect(missionRow.branchRefreshLeaseToken).toBeNull();
+    expect(insertedTasks).toHaveLength(0);
+  });
+
   it('self-heals and resumes refreshing once the conflict task reaches a terminal status', async () => {
     missionRow.branchRefreshConflictTaskId = 'task-old';
     tasksById['task-old'] = { id: 'task-old', status: 'completed' };
@@ -391,6 +518,8 @@ describe('refreshMissionIntegrationBranch', () => {
 describe('sweepMissionBranchRefresh', () => {
   beforeEach(() => {
     resetFixtures();
+    mockTaskInsert.mockReset();
+    mockTaskInsert.mockResolvedValue(undefined);
     mockMissionsFindMany.mockReset();
     mockGithubApi.mockReset();
     mockGithubApi.mockImplementation(((_i: number, path: string) => {
