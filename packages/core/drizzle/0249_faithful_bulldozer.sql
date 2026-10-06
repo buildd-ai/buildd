@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "chat_retro_dogfood_at" timestamp with time zone;
