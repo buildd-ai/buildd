@@ -5915,6 +5915,74 @@ describe('Retry PR body generation', () => {
     // the old "resume failed; new branch" line rather than appending beside it.
     expect(patchedBody).toBe('Original body\n\n---\n_Attempt 2/3 — updated this PR._');
   });
+
+  it('replaces a stale dedup body with freshly supplied content instead of only stamping the footer', async () => {
+    const taskId = 'ccccdddd-eeee-ffff-0000-111122223333';
+
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      taskId,
+      prUrl: null,
+      prNumber: null,
+      name: 'test-worker',
+      workspace: WORKSPACE_OK,
+      task: { missionId: null, parentTaskId: null, title: null, context: { iteration: 1, maxIterations: 3 } },
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    // An existing PR left over from the previous attempt, carrying stale
+    // verification notes and a stale attempt footer.
+    mockGithubApi.mockResolvedValueOnce([
+      {
+        number: 88,
+        html_url: 'https://github.com/owner/repo/pull/88',
+        state: 'open',
+        title: 'Fix: retry',
+        body: 'Stale verification notes from attempt 1.\n\n---\n_Attempt 1/3 — resume failed; new branch._',
+        additions: 5,
+        deletions: 2,
+        changed_files: 1,
+      },
+    ]);
+
+    let patchedBody = '';
+    mockGithubApi.mockImplementation(async (installationId: any, path: string, opts?: any) => {
+      if (path.includes('/pulls') && opts?.method === 'PATCH') {
+        patchedBody = JSON.parse(opts.body).body;
+      }
+      return {
+        number: 88,
+        html_url: 'https://github.com/owner/repo/pull/88',
+        state: 'open',
+        title: 'Fix: retry',
+        body: patchedBody,
+        base: { sha: 'basesha', ref: 'main' },
+      };
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        workerId: 'w-1',
+        title: 'Fix: retry',
+        head: 'retry-branch',
+        lede: 'Verified against the new screenshots.',
+        body: 'Fresh verification notes: screenshot at https://example.com/shot2.png',
+      },
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+
+    // The fresh body (and lede) replace the stale stored content — not
+    // appended beneath it — and the footer still advances to attempt 2/3.
+    expect(patchedBody).toContain('Fresh verification notes: screenshot at https://example.com/shot2.png');
+    expect(patchedBody).not.toContain('Stale verification notes from attempt 1.');
+    expect(patchedBody).toContain('Verified against the new screenshots.');
+    expect(patchedBody).toContain('_Attempt 2/3 — updated this PR._');
+  });
 });
 
 // ── The lede leads the PR body ───────────────────────────────────────────────
