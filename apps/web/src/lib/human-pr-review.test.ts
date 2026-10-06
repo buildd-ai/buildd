@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveHumanPrReview } from './reviewer-gate';
+import { resolveHumanPrReview, isCurrentReviewApproved } from './reviewer-gate';
 import { buildActionQueue, isActionableChip } from './action-queue';
 import { deriveHomeAttention } from './home-attention';
 import { readFileSync } from 'node:fs';
@@ -64,4 +64,24 @@ it('request-changes remains machine-owned while a fix is available, without an e
   expect(action).toBeNull();
   const item = card(action, { ciGate: { kind: 'fixing', fixKind: 'review', taskId: 'fix' } });
   expect(item.chip).toBe('FIXING_REVIEW');
+});
+
+it('a human-approved escalation reaches manual merge after CI, never auto merge', () => {
+  const input = { ...base, github: { reviewDecision: 'APPROVED', humanApproved: true } };
+  const approved = isCurrentReviewApproved(input);
+  expect(approved).toBe(true);
+  expect(card(resolveHumanPrReview(input), { policyTier: 'agent-review', reviewApproved: approved, prLifecycleStatus: 'ci_running' }).chip).toBe('CI_RUNNING');
+  expect(card(resolveHumanPrReview(input), { policyTier: 'agent-review', reviewApproved: approved, prLifecycleStatus: 'ci_green' }).chip).toBe('MERGE');
+  expect(isCurrentReviewApproved({ ...input, github: { reviewDecision: 'REVIEW_REQUIRED', humanApproved: true } })).toBe(false);
+  expect(isCurrentReviewApproved({ ...input, github: { reviewDecision: null, humanApproved: false } })).toBe(false);
+  expect(isCurrentReviewApproved({ ...input, reviewerTask: { ...escalation, result: { structuredOutput: { verdict: 'request-changes' } } } })).toBe(false);
+});
+
+it('Home feeds human approval into manual readiness without enabling automatic merging', () => {
+  const source = readFileSync(new URL('../app/app/(protected)/home/page.tsx', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('if (!humanReview && isCurrentReviewApproved'), source.indexOf('const reviewInFlight ='));
+  expect(block).toContain('github: githubApprovalByWorkerId.get(w.id)');
+  const automatic = block.slice(block.indexOf('reviewApprovedTaskIds.add'));
+  expect(automatic).toContain('if (isCurrentReviewApproved({');
+  expect(automatic).not.toContain('github:');
 });

@@ -999,9 +999,13 @@ export default async function HomePage({
               if (!humanReview && isCurrentReviewApproved({
                 reviewerTask: rt ? { status: rt.status as ReviewerTaskStatus, result: rt.result, context: rt.context } : null,
                 currentHeadSha: w.lastCommitSha ?? null,
+                github: githubApprovalByWorkerId.get(w.id) ?? null,
               })) {
                 reviewApprovedTaskIds.add(w.taskId);
-                if (policy.tier === 'auto-threshold' || (policy.tier === 'agent-review' && policy.agentReview?.gateCondition !== 'approve-only')) {
+                if (isCurrentReviewApproved({
+                  reviewerTask: rt ? { status: rt.status as ReviewerTaskStatus, result: rt.result, context: rt.context } : null,
+                  currentHeadSha: w.lastCommitSha ?? null,
+                }) && (policy.tier === 'auto-threshold' || (policy.tier === 'agent-review' && policy.agentReview?.gateCondition !== 'approve-only'))) {
                   approvedAutoMergeTaskIds.add(w.taskId);
                 }
               }

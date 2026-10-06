@@ -5205,7 +5205,7 @@ describe('pull_request → workers.prBaseRef sync', () => {
         number: 9,
         merged: false,
         draft: false,
-        head: { ref: 'buildd/abc12345-fix', sha: 'sha-9' },
+        head: { ref: 'buildd/abc12345-fix', sha: 'sha-9', repo: { full_name: 'test-org/test-repo' } },
         base: { ref: 'mission/example-slug-0a1b2c3d' },
         html_url: 'https://github.com/test-org/test-repo/pull/9',
       },
@@ -5239,6 +5239,17 @@ describe('pull_request → workers.prBaseRef sync', () => {
     const adopted = updateCalls.find(c => c.setValues?.prUrl);
     expect(adopted?.setValues).toMatchObject({ prNumber: 9, prLifecycleStatus: 'pr_open', prBaseRef: 'mission/example-slug-0a1b2c3d' });
     expect(adopted?.condition).toBeDefined();
+  });
+
+  it.each(['test-org/fork', null])('does not adopt a PR from a fork or deleted head repo (%s)', async headRepo => {
+    const payload = makeRetargetPayload({ action: 'opened', changes: undefined });
+    await POST(createWebhookRequest('pull_request', {
+      ...payload,
+      pull_request: { ...payload.pull_request, head: {
+        ...payload.pull_request.head, repo: headRepo ? { full_name: headRepo } : null,
+      } },
+    }));
+    expect(updateCalls.find(c => c.setValues?.prUrl)).toBeUndefined();
   });
 
   // Change intents recorded at create_pr carry the base the PR had then. A

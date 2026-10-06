@@ -626,7 +626,7 @@ async function handlePullRequestEvent(event: {
     merged: boolean;
     draft?: boolean;
     merge_commit_sha?: string | null;
-    head: { ref: string; sha: string };
+    head: { ref: string; sha: string; repo?: { full_name: string } | null };
     base?: { ref: string; sha?: string };
     html_url: string;
     mergeable?: boolean | null;
@@ -637,7 +637,7 @@ async function handlePullRequestEvent(event: {
 }) {
   const { action, pull_request: pr, repository } = event;
   if (action === 'opened' || action === 'reopened' || action === 'synchronize' || action === 'ready_for_review') {
-    await registerLocalPr({ branch: pr.head.ref, repo: repository.full_name, number: pr.number,
+    await registerLocalPr({ branch: pr.head.ref, repo: repository.full_name, headRepo: pr.head.repo?.full_name ?? null, number: pr.number,
       url: pr.html_url, headSha: pr.head.sha, baseRef: pr.base?.ref ?? null, draft: pr.draft ?? false });
   }
 

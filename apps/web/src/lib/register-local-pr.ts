@@ -2,6 +2,8 @@
 export interface LocalPrRegistration {
   branch: string;
   repo: string;
+  /** Source repository must match: branch names alone cannot identify fork ownership. */
+  headRepo: string | null;
   number: number;
   url: string;
   headSha: string;
@@ -11,7 +13,8 @@ export interface LocalPrRegistration {
 export async function registerLocalPr(input: LocalPrRegistration,
   write: (input: LocalPrRegistration) => Promise<void> = persistLocalPr,
 ): Promise<void> {
-  if (!input.branch || !input.repo || !input.number) return;
+  if (!input.branch || !input.repo || !input.number ||
+      input.headRepo?.toLowerCase() !== input.repo.toLowerCase()) return;
   await write(input);
 }
 async function persistLocalPr(input: LocalPrRegistration): Promise<void> {

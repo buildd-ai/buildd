@@ -418,8 +418,14 @@ export function resolveHumanPrReview(input: {
   return null;
 }
 
-/** Same current-head approval predicate used by the merge verdict gate. */
-export function isCurrentReviewApproved(input: Pick<StoredVerdictFallbackInput, 'reviewerTask' | 'currentHeadSha'>): boolean {
+/** Home manual readiness: canonical agent approval or a satisfied human escalation.
+ * Omit GitHub facts when checking eligibility for unattended merging. */
+export function isCurrentReviewApproved(input: Pick<StoredVerdictFallbackInput, 'reviewerTask' | 'currentHeadSha'> & { github?: GithubApprovalFacts | null }): boolean {
   const status = derivePrReviewStatus({ reviewTask: input.reviewerTask ? { id: '', ...input.reviewerTask } : null, worker: null });
+  // A current human approval satisfies an escalation's review handoff. This
+  // only changes Home's manual action: merge doors still require an explicit
+  // human override of the stored escalation, never an unattended merge.
+  if (status.state === 'escalated' && input.github?.humanApproved &&
+      input.github.reviewDecision !== 'REVIEW_REQUIRED' && input.github.reviewDecision !== 'CHANGES_REQUESTED') return true;
   return status.state === 'approved' && !evaluateReviewVerdictGate(status, input.currentHeadSha).blocks;
 }
