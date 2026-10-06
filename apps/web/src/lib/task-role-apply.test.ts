@@ -47,7 +47,7 @@ describe('applyTaskRoleDecision', () => {
     expect(res.outcome).toBe('applied');
     expect(write).toHaveBeenCalledTimes(1);
     expect(write.mock.calls[0]).toEqual(['task-1', {
-      slug: 'builder', confidence: 0.97, model: JEV, candidates: 2, at: '2026-10-02T12:00:00.000Z',
+      source: 'decision', slug: 'builder', confidence: 0.97, model: JEV, candidates: 2, at: '2026-10-02T12:00:00.000Z',
     }] as never);
     expect(lines[0].startsWith(`${DECISION_APPLY_LOG_PREFIX} `)).toBe(true);
     expect(JSON.parse(lines[0].slice(DECISION_APPLY_LOG_PREFIX.length + 1))).toMatchObject({ outcome: 'applied', decision: 'builder' });
