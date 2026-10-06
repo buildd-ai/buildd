@@ -93,8 +93,13 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
   const onKey = (e: KeyboardEvent<SVGSVGElement>) => {
     if (last < 0) return;
     const cur = hover ?? picked?.i ?? last;
-    if (e.key === 'ArrowLeft') { e.preventDefault(); setHover(Math.max(0, cur - 1)); }
-    if (e.key === 'ArrowRight') { e.preventDefault(); setHover(Math.min(last, cur + 1)); }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      const i = Math.max(0, Math.min(last, cur + (e.key === 'ArrowLeft' ? -1 : 1)));
+      setHover(i);
+      setReleaseIndex(null);
+      if (picked) setPicked({ ...picked, i });
+    }
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       const b = series.buckets[cur];
@@ -124,7 +129,7 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
           viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
           className="w-full h-auto block touch-pan-y select-none"
           role="img"
-          aria-label="Tasks by stage over time. Use left and right arrows to move, Enter to list the tasks."
+          aria-label="Tasks by stage over time. Use left and right arrows to move, Enter to inspect."
           tabIndex={0}
           onPointerMove={e => {
             if (e.pointerType === 'touch') return;
@@ -218,25 +223,15 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
         <Sheet open={detailOpen} onClose={() => setDetailOpen(false)} title={releaseIndex != null ? `Release ${geo.releases[releaseIndex]?.version ?? ''}` : BAND_LABEL[picked.band]}
           contextual height={expanded ? 'expanded' : 'peek'} testId="flow-picked" returnFocusRef={detailTrigger}
           handle={<button data-testid="flow-expand" type="button" className="w-full min-h-[44px] text-meta text-text-muted" aria-expanded={expanded} onClick={() => setExpanded(v => !v)}>{expanded ? 'Show less' : 'Expand details'}</button>}>
-          <div className="flex items-baseline justify-between gap-3">
-            <h3 className="text-title font-semibold">
-              {BAND_LABEL[picked.band]} <span className="font-normal text-text-muted">· {fmtWhen(pickedBucket.start, series.bucketMs)}</span>
-            </h3>
-          </div>
-          <p className="text-meta text-text-muted">{BAND_HINT[picked.band]}</p>
-          <div className="mt-2 flex flex-wrap gap-1" role="group" aria-label="Stage">
-            {BANDS.map(k => (
-              <button
-                key={k}
-                type="button"
-                aria-pressed={picked.band === k}
-                onClick={() => { setReleaseIndex(null); setPicked({ i: picked.i, band: k }); }}
-                className={`px-2 min-h-[44px] border border-border-strong text-chip uppercase tracking-wider ${picked.band === k ? 'bg-surface-3 text-text-primary' : 'text-text-muted'}`}
-              >
-                {BAND_LABEL[k]}
-              </button>
-            ))}
-          </div>
+          <p className="text-meta text-text-muted">{fmtWhen(pickedBucket.start, series.bucketMs)}</p>
+          <label className="mt-2 flex items-center gap-2 text-meta text-text-secondary">
+            Stage
+            <select aria-label="Stage" className="min-h-[44px] min-w-0 flex-1 bg-surface-2 text-text-primary px-2"
+              value={picked.band} onChange={e => { setReleaseIndex(null); setPicked({ i: picked.i, band: e.target.value as BandKey }); }}>
+              {BANDS.map(k => <option key={k} value={k}>{BAND_LABEL[k]}</option>)}
+            </select>
+          </label>
+          {expanded && <p className="mt-2 text-meta text-text-muted">{BAND_HINT[picked.band]}</p>}
           {pickedTasks.length === 0 ? (
             <p className="mt-3 text-body text-text-muted">No tasks in this stage then.</p>
           ) : (

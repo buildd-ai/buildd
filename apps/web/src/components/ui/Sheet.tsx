@@ -18,6 +18,7 @@ export interface SheetProps {
   /**
    * `auto` (default): content height, capped at 85vh.
    * `tall`: a fixed 88% sheet whose body scrolls — the task sheet over a mission.
+   * `peek` / `expanded`: 35% / 55% heights for context-preserving inspection.
    */
   height?: 'auto' | 'tall' | 'peek' | 'expanded';
   /** Keep the underlying chart visible and interactive, without a modal backdrop. */
