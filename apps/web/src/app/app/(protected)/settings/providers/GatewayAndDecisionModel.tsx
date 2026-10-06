@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { keyHealthPill, keyHealthTone, type KeyHealth } from '@/lib/provider-keys-client';
+import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
 
 /**
  * Settings → Model providers: the team's LiteLLM gateway and which model
@@ -15,6 +17,9 @@ interface MaskedGateway {
   lastVerificationError: string | null;
 }
 
+/** The gateway's health in a provider key's words, so its card reads like theirs. */
+const GATEWAY_HEALTH: Record<MaskedGateway['health'], KeyHealth> = { healthy: 'ok', revoked: 'failing', unknown: 'unknown' };
+
 type DecisionModel = { endpoint: 'systemone' | 'chat'; model: string; via: 'openrouter' | 'litellm' } | null;
 
 const INPUT = 'w-full h-10 px-3 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-xs';
@@ -24,37 +29,58 @@ async function errorText(res: Response): Promise<string> {
   return typeof body.error === 'string' ? body.error : `Request failed (HTTP ${res.status})`;
 }
 
+/** Both parts together; the decision model reloads when the gateway changes. */
 export default function GatewayAndDecisionModel({ teamId, canManage }: { teamId: string; canManage: boolean }) {
-  const [gateway, setGateway] = useState<MaskedGateway | null | undefined>(undefined);
-  const [decision, setDecision] = useState<DecisionModel | undefined>(undefined);
-  const [error, setError] = useState<string | null>(null);
+  const [rev, setRev] = useState(0);
+  return (
+    <>
+      <GatewayCard teamId={teamId} canManage={canManage} onChanged={() => setRev((r) => r + 1)} />
+      <DecisionModelPicker teamId={teamId} canManage={canManage} rev={rev} />
+    </>
+  );
+}
 
+function useGateway(teamId: string, rev = 0) {
+  const [gateway, setGateway] = useState<MaskedGateway | null | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => {
     try {
-      const [g, t] = await Promise.all([
-        fetch(`/api/teams/${teamId}/litellm-gateway`, { cache: 'no-store' }),
-        fetch(`/api/teams/${teamId}`, { cache: 'no-store' }),
-      ]);
+      const g = await fetch(`/api/teams/${teamId}/litellm-gateway`, { cache: 'no-store' });
       if (!g.ok) throw new Error(await errorText(g));
       setGateway(((await g.json()) as { gateway: MaskedGateway | null }).gateway);
-      if (t.ok) {
-        const team = (await t.json()) as { team?: { decisionModel?: DecisionModel }; decisionModel?: DecisionModel };
-        setDecision(team.team?.decisionModel ?? team.decisionModel ?? null);
-      }
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load');
     }
   }, [teamId]);
+  useEffect(() => { void load(); }, [load, rev]);
+  return { gateway, error, load };
+}
 
-  useEffect(() => { void load(); }, [load]);
-
+/**
+ * The gateway as one more provider card under Team keys: it is where agents,
+ * chat and decisions reach models when a provider has no key of its own.
+ */
+export function GatewayCard({ teamId, canManage, onChanged }: { teamId: string; canManage: boolean; onChanged?: () => void }) {
+  const { gateway, error, load } = useGateway(teamId);
   return (
-    <>
-      <GatewaySection teamId={teamId} canManage={canManage} gateway={gateway} error={error} onChanged={load} />
-      <DecisionModelSection teamId={teamId} canManage={canManage} value={decision} hasGateway={!!gateway} onChanged={load} />
-    </>
+    <GatewaySection teamId={teamId} canManage={canManage} gateway={gateway} error={error}
+      onChanged={async () => { await load(); onChanged?.(); }} />
   );
+}
+
+/** Which model answers decision calls. `rev` reloads it after the gateway changes. */
+export function DecisionModelPicker({ teamId, canManage, rev = 0 }: { teamId: string; canManage: boolean; rev?: number }) {
+  const { gateway } = useGateway(teamId, rev);
+  const [decision, setDecision] = useState<DecisionModel | undefined>(undefined);
+  const load = useCallback(async () => {
+    const t = await fetch(`/api/teams/${teamId}`, { cache: 'no-store' }).catch(() => null);
+    if (!t?.ok) return;
+    const team = (await t.json()) as { team?: { decisionModel?: DecisionModel }; decisionModel?: DecisionModel };
+    setDecision(team.team?.decisionModel ?? team.decisionModel ?? null);
+  }, [teamId]);
+  useEffect(() => { void load(); }, [load]);
+  return <DecisionModelSection teamId={teamId} canManage={canManage} value={decision} hasGateway={!!gateway} onChanged={load} />;
 }
 
 function GatewaySection({ teamId, canManage, gateway, error, onChanged }: {
@@ -103,19 +129,31 @@ function GatewaySection({ teamId, canManage, gateway, error, onChanged }: {
     }
   }
 
-  const status = gateway === undefined
-    ? 'Loading…'
-    : gateway
-      ? `${gateway.baseURL} · key …${gateway.last4}${gateway.health === 'revoked' ? ' · rejected' : ''}`
-      : 'Not connected';
+  const pill = gateway === undefined
+    ? { tone: 'idle' as const, label: 'loading' }
+    : keyHealthPill(gateway ? { health: GATEWAY_HEALTH[gateway.health] } : null);
+  const tone = gateway === undefined ? 'muted' : keyHealthTone(gateway ? { health: GATEWAY_HEALTH[gateway.health] } : null);
 
   return (
-    <section aria-labelledby="gateway-h" data-testid="litellm-gateway">
-      <h2 id="gateway-h" className="section-label mb-3">LiteLLM gateway</h2>
-      <div className="card p-4 space-y-2 text-xs">
-        <p className="text-sm text-text-primary" data-testid="litellm-gateway-status">{status}</p>
+    <div className="card" data-testid="litellm-gateway">
+      {/* The same header as a provider key card (ProviderKeyCard). */}
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 min-w-0 px-3 py-2.5 border-b border-border-default">
+        <span aria-hidden className={`w-2.5 h-2.5 shrink-0 ${STATUS_TONE_SQUARE[tone]}`} />
+        <b className="min-w-0 break-words text-body font-semibold text-text-primary">LiteLLM gateway</b>
+        <span className={`status-pill status-pill-${pill.tone} shrink-0 ml-auto`} data-testid="litellm-gateway-health">{pill.label}</span>
+      </div>
+      <div className="px-3 pt-2 pb-3 space-y-1.5 text-xs">
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-text-muted shrink-0">Team key</span>
+          {gateway
+            ? <span className="min-w-0 text-right font-mono text-text-primary break-all" data-testid="litellm-gateway-status">{gateway.baseURL} · key …{gateway.last4}</span>
+            : <span className="text-text-muted" data-testid="litellm-gateway-status">{gateway === undefined ? '' : 'none'}</span>}
+        </div>
+        {gateway?.health === 'revoked' && gateway.lastVerificationError && (
+          <p className="text-status-error break-words">Last check failed: {gateway.lastVerificationError}</p>
+        )}
         <p className="text-text-muted">
-          Used when a tier&apos;s provider has no key here: chat, goal grading and decisions call the same model as
+          For providers with no key here: chat, goal grading, decisions and agent runs call
           <span className="font-mono"> provider/model</span> on your proxy.
         </p>
         {error && <p role="alert" className="text-status-error">{error}</p>}
@@ -133,7 +171,7 @@ function GatewaySection({ teamId, canManage, gateway, error, onChanged }: {
           </div>
         )}
         {canManage && !editing && (
-          <div className="flex flex-wrap items-center gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-2 pt-2">
             <button className="btn" onClick={() => { setEditing(true); setBaseUrl(gateway?.baseURL ?? ''); setMsg(null); }} disabled={busy || gateway === undefined}>
               {gateway ? 'Replace' : 'Connect'}
             </button>
@@ -142,7 +180,7 @@ function GatewaySection({ teamId, canManage, gateway, error, onChanged }: {
         )}
         {msg && <p role="alert" className="text-status-error">{msg}</p>}
       </div>
-    </section>
+    </div>
   );
 }
 
