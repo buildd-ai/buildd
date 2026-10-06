@@ -530,16 +530,23 @@ const resolver = createWorkspaceResolver(projectRoots, config.workspaceIsolation
 // claim loop, Pusher assignment, self-updater, update canary/drain, worktree
 // sweeps). Hand off before any of it starts.
 if (ONCE_RUN) {
+  // The run leaves its pid and exit code on disk so a restarted cloud agent
+  // can re-attach (run-attach.ts). The park and attach helpers are not runs.
+  const isRun = !ONCE_RUN.parkOrphanWorkerId && !ONCE_RUN.attachOrphanWorkerId;
+  const recordTask = ONCE_RUN.taskId || ONCE_RUN.resumeWorkerId || '';
+  if (isRun) await (await import('./run-attach')).recordRunStart(BUILDD_DIR, recordTask);
   const code = await runOnceFromCli({
     taskId: ONCE_RUN.taskId,
     resumeWorkerId: ONCE_RUN.resumeWorkerId,
     parkOrphanWorkerId: ONCE_RUN.parkOrphanWorkerId,
+    attachOrphanWorkerId: ONCE_RUN.attachOrphanWorkerId,
     config,
     resolver,
     builddHome: BUILDD_DIR,
     host: hostname(),
     env: process.env as Record<string, string | undefined>,
   });
+  if (isRun) await (await import('./run-attach')).recordRunExit(BUILDD_DIR, recordTask, code);
   process.exit(code);
 }
 

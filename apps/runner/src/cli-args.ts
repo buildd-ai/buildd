@@ -43,7 +43,7 @@ const HELP = new Set(['--help', '-h', 'help']);
 /** Flags that stand alone. */
 const BOOLEAN_FLAGS = new Set(['--debug', '--version', '--doctor', '--fix', '--env-verify', '--json', '--once']);
 /** Flags that take the next argument (or `=value`) as their value. */
-const VALUE_FLAGS = new Set(['--task', '--resume-worker', '--park-orphan']);
+const VALUE_FLAGS = new Set(['--task', '--resume-worker', '--park-orphan', '--attach-orphan']);
 /** Positional subcommands the runner itself understands, as word sequences. */
 const SUBCOMMANDS: string[][] = [['version'], ['env', 'verify']];
 
