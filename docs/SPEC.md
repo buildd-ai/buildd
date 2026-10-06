@@ -72,6 +72,18 @@ by the token's list. An unrestricted token is auto-linked to open workspaces
 only; linking a token to a restricted workspace takes a team owner or admin. `account_workspaces` is the
 M2M grant of which workspaces an account `canClaim` / `canCreate` from.
 
+A per-task token (`bldt_`) is confined to its own task's workspace. The one
+exception is a **schedule delegation** (`task_schedules.delegation`,
+`packages/core/schedule-delegation.ts`): a team owner or admin may grant the tasks
+one schedule spawns `analytics:read` (decision ledger, decision/coordination stats,
+gate ledger, workspace name resolution) and/or `tasks:create` (the normal create
+path, no mission, dependencies or foreign parent) on named workspaces of the same
+team. It is stored on the schedule, never the task, records who granted it and
+when, is re-read on every request, and never exceeds the minting account's reach.
+Analytics reads a reviewer depends on report `status` — `OK` / `NO_DATA` reached
+the data; `FORBIDDEN` / `UNAUTHORIZED` / `TOOL_UNAVAILABLE` did not and are never
+evidence of zero rows.
+
 > **Deprecated:** the `accounts.oauthToken` column — credentials now live in the
 > `secrets` table. Kept for back-compat, slated for removal. The parallel
 > `anthropicApiKey` column has already been dropped.

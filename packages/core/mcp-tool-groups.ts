@@ -517,6 +517,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('window', { type: 'string', enum: ['24h', '7d', '30d'] }, [{ text: 'Window (default 7d)', actions: ['get_usage_stats', 'get_failure_analytics', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] }]),
     param('family', { type: 'string', enum: ['gate'] }, [{ text: 'Gate ledger, including changeIntent warnings', actions: ['get_failure_analytics'] }]),
     param('errorPrefix', str, [{ text: 'Literal reason/signature prefix', actions: ['get_failure_analytics'] }]),
+    param('capability', str, [{ text: 'Ledger rows, e.g. question_gate', actions: ['get_decision_stats'] }]),
   ],
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors'] }]),
@@ -531,6 +532,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   ],
   schedules: [
     param('scheduleId', str, [{ text: 'Schedule UUID', actions: ['update_schedule', 'delete_schedule'] }]),
+    param('delegation', { type: 'object' }, [{ text: 'Cross-workspace grant', actions: ['update_schedule'] }]),
   ],
   work: [],
   admin: [],

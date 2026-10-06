@@ -10,7 +10,7 @@ import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
-import { authenticateTaskScopedCaller, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, isDelegatedReach, taskScopeAllowsDelegated, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { emit } from '@/lib/core-emit';
 import { withDispatchHint } from '@buildd/core/dispatch-outbox';
@@ -410,8 +410,8 @@ export async function POST(req: NextRequest) {
       outputRequirement: rawOutputRequirement,
       // Project scoping
       project,
-      // Mission linking
-      missionId,
+      // Mission linking (reassigned below only to drop an inherited link on a delegated follow-up)
+      missionId: requestedMissionId,
       // Workflow DAG: task IDs that must complete before this task is claimable
       dependsOn,
       // Role routing — only runners with this skill can claim the task
@@ -444,6 +444,7 @@ export async function POST(req: NextRequest) {
       subjectAnchor: rawSubjectAnchor,
       fileAnywayReason,
     } = body;
+    let missionId: string | undefined = requestedMissionId;
 
     gateCaller = gateCallerOrigin({ apiAccount, user, workerId: createdByWorkerId });
 
@@ -554,8 +555,25 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) {
       return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
     }
-    if (apiAccount && !taskScopeAllowsWorkspace(apiAccount, workspaceId)) {
-      return NextResponse.json({ error: 'A task token may create tasks only in its own workspace' }, { status: 403 });
+    // A task token files in its own workspace, or in one its schedule's
+    // delegation grants tasks:create on (packages/core/schedule-delegation.ts).
+    if (apiAccount && !taskScopeAllowsDelegated(apiAccount, workspaceId, 'tasks:create')) {
+      return NextResponse.json({ error: 'A task token may create tasks only in its own workspace, or one its schedule delegates tasks:create on' }, { status: 403 });
+    }
+    // A delegated follow-up is a plain task: it never joins a mission or a
+    // dependency graph in the other workspace, so it cannot steer work there.
+    // Its parent is the filing task itself (derived from the worker), which
+    // is the audit link back to the run that filed it.
+    if (apiAccount?.taskScope && isDelegatedReach(apiAccount, workspaceId)) {
+      // MCP create_task fills in the filing task's own mission by default;
+      // that link stays home rather than refusing the follow-up.
+      if (missionId && await taskScopeAllowsMission(apiAccount, missionId)) missionId = undefined;
+      if (missionId || (Array.isArray(dependsOn) && dependsOn.length > 0)) {
+        return NextResponse.json({ error: 'A delegated task cannot set missionId or dependsOn' }, { status: 400 });
+      }
+      if (parentTaskId && parentTaskId !== apiAccount.taskScope.taskId) {
+        return NextResponse.json({ error: 'A delegated task can only name its filing task as parent' }, { status: 400 });
+      }
     }
     gateWorkspaceId = workspaceId;
 

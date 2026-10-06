@@ -131,6 +131,30 @@ describe('GET /api/workspaces', () => {
     expect(data.workspaces[0].runners).toBeDefined();
   });
 
+  it('a per-task token lists only its own workspace and the ones its schedule delegates, without fleet detail', async () => {
+    // authenticateTaskScopedCaller hands back the account with its resolved task scope.
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-run', teamId: 'team-1', workspaceIds: null,
+      taskScope: { taskId: 't-1', workspaceId: 'ws-own', expiresAt: Date.now() + 60_000, delegations: [{ workspaceId: 'ws-target', capabilities: ['analytics:read'] }] },
+    });
+    mockGetCurrentUser.mockResolvedValue(null);
+    const all = [
+      { id: 'ws-own', name: 'notes', teamId: 'team-1', accessMode: 'open', accountWorkspaces: [{ account: { type: 'user', name: 'r' } }] },
+      { id: 'ws-target', name: 'product', teamId: 'team-1', accessMode: 'open' },
+      { id: 'ws-sibling', name: 'other', teamId: 'team-1', accessMode: 'open' },
+    ];
+    mockWorkspacesFindMany.mockImplementation((args: any) => {
+      const ids = args?.where?.type === 'inArray' ? args.where.values : null;
+      return Promise.resolve(ids ? all.filter(w => ids.includes(w.id)) : all) as any;
+    });
+    const res = await GET(createMockGetRequest({ authorization: 'Bearer bld_task' }));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workspaces.map((w: any) => w.id).sort()).toEqual(['ws-own', 'ws-target']);
+    expect(data.workspaces[0].connectedAccounts).toBeUndefined();
+    expect(data.workspaces[0].runners).toBeUndefined();
+  });
+
   it('returns workspaces for API key auth', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockGetCurrentUser.mockResolvedValue(null);

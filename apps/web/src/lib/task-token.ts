@@ -47,6 +47,15 @@ import { TOKEN_PRESETS, hasTokenScope, type TokenScope } from '@buildd/core/toke
  * knowledge maintenance) is reachable, and every route's generic admin gate
  * (`hasTokenRouteAdminAccess`) stays closed to a task token of either level.
  *
+ * A task spawned by a schedule that carries a delegation
+ * (packages/core/schedule-delegation.ts) may also reach the workspaces that
+ * delegation names, for exactly its capabilities: analytics reads (decision
+ * ledger, decision and coordination stats, failure and gate analytics,
+ * workspace name resolution) and filing a plain task. The grant is read from
+ * the schedule row at authentication (`TaskScope.delegations`), never from the
+ * token or the task, and only routes that call `taskScopeAllowsDelegated`
+ * honour it.
+ *
  * The token also carries the task's workspace (so routes can confine it to
  * that workspace without another lookup) and a binding to the minting key:
  * regenerating or deleting that key ends every token it minted.

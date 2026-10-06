@@ -2,12 +2,13 @@ import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, workspaces } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace, type TaskScopedAccount } from '@/lib/task-token-auth';
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
-import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, canCallerAdminTeam } from '@/lib/team-access';
+import { parseScheduleDelegationInput, type ScheduleDelegation } from '@buildd/core/schedule-delegation';
 
 type RouteParams = { params: Promise<{ id: string; scheduleId: string }> };
 
@@ -26,7 +27,7 @@ async function resolveAuth(
   const user = await getCurrentUser();
   if (user) {
     const access = await verifyWorkspaceAccess(user.id, workspaceId);
-    if (access) return { userId: user.id };
+    if (access) return { kind: 'user' as const, userId: user.id as string };
   }
 
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
@@ -36,10 +37,55 @@ async function resolveAuth(
   if (account) {
     if (requireAdmin && !hasTokenRouteAdminAccess(account, req)) return null;
     const hasAccess = taskScopeAllowsWorkspace(account, workspaceId) && await verifyAccountWorkspaceAccess(account.id, workspaceId);
-    if (hasAccess) return { accountId: account.id };
+    if (hasAccess) return { kind: 'account' as const, accountId: account.id, teamId: account.teamId as string, level: account.level as string | null };
   }
 
   return null;
+}
+
+type ScheduleAuth = NonNullable<Awaited<ReturnType<typeof resolveAuth>>>;
+
+/**
+ * Validate and stamp a `delegation` write (packages/core/schedule-delegation.ts).
+ * Granting reach is an admin act: only a team admin/owner session or an admin
+ * key of the schedule's team may set it, every target must be a workspace of
+ * that same team, and the granter must itself reach each target. Clearing it
+ * (null) needs the same authority. The stored row records who and when.
+ */
+async function resolveDelegationWrite(
+  auth: ScheduleAuth,
+  scheduleWorkspaceId: string,
+  input: unknown,
+): Promise<{ ok: true; value: ScheduleDelegation | null } | { ok: false; status: number; error: string }> {
+  const parsed = parseScheduleDelegationInput(input, scheduleWorkspaceId);
+  if (!parsed.ok) return { ok: false, status: 400, error: parsed.error };
+  const own = await db.query.workspaces.findFirst({ where: eq(workspaces.id, scheduleWorkspaceId), columns: { teamId: true } });
+  if (!own?.teamId) return { ok: false, status: 404, error: 'Workspace not found' };
+  if (!(await canCallerAdminTeam(auth, own.teamId))) {
+    return { ok: false, status: 403, error: 'Setting a schedule delegation requires team admin or owner' };
+  }
+  if (parsed.grants === null) return { ok: true, value: null };
+  const targets = parsed.grants.map(g => g.workspaceId);
+  const rows = await db.query.workspaces.findMany({ where: inArray(workspaces.id, targets), columns: { id: true, teamId: true } });
+  for (const target of targets) {
+    const row = rows.find(r => r.id === target);
+    if (!row || row.teamId !== own.teamId) {
+      return { ok: false, status: 400, error: `workspace ${target} is not a workspace of this schedule's team` };
+    }
+    const reaches = auth.kind === 'user'
+      ? !!(await verifyWorkspaceAccess(auth.userId, target))
+      : await verifyAccountWorkspaceAccess(auth.accountId, target);
+    if (!reaches) return { ok: false, status: 403, error: `you cannot grant access to workspace ${target}: you do not reach it yourself` };
+  }
+  return {
+    ok: true,
+    value: {
+      grants: parsed.grants,
+      grantedByUserId: auth.kind === 'user' ? auth.userId : null,
+      grantedByAccountId: auth.kind === 'account' ? auth.accountId : null,
+      grantedAt: new Date().toISOString(),
+    },
+  };
 }
 
 // GET /api/workspaces/[id]/schedules/[scheduleId] - Get a single schedule
@@ -93,7 +139,20 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
     if (body.oneShot !== undefined) updates.oneShot = body.oneShot;
     if (body.maxConcurrentFromSchedule !== undefined) updates.maxConcurrentFromSchedule = body.maxConcurrentFromSchedule;
     if (body.pauseAfterFailures !== undefined) updates.pauseAfterFailures = body.pauseAfterFailures;
-    if (body.workspaceId !== undefined) updates.workspaceId = body.workspaceId;
+    if (body.workspaceId !== undefined) {
+      updates.workspaceId = body.workspaceId;
+      // A grant is made for one schedule in one workspace; it never travels.
+      if (body.workspaceId !== existing.workspaceId) updates.delegation = null;
+    }
+
+    if (body.delegation !== undefined) {
+      if (body.workspaceId !== undefined && body.workspaceId !== existing.workspaceId) {
+        return NextResponse.json({ error: 'Move the schedule and set its delegation in separate requests' }, { status: 400 });
+      }
+      const delegation = await resolveDelegationWrite(authResult, id, body.delegation);
+      if (!delegation.ok) return NextResponse.json({ error: delegation.error }, { status: delegation.status });
+      updates.delegation = delegation.value;
+    }
 
     // If cron or timezone changed, recompute nextRunAt
     const newCron = body.cronExpression ?? existing.cronExpression;
