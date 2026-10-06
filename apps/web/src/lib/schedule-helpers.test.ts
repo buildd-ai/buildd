@@ -22,9 +22,14 @@ describe('schedule-helpers', () => {
 
   describe('computeNextRunAt', () => {
     it('returns a future date for valid expressions', () => {
+      // Capture the reference time before the call: '* * * * *' lands exactly
+      // on the next minute boundary, so comparing against Date.now() taken
+      // AFTER the call is racy — on a slow CI runner the boundary can tick
+      // over in the gap between the two calls.
+      const before = Date.now();
       const next = computeNextRunAt('* * * * *');
       expect(next).toBeInstanceOf(Date);
-      expect(next!.getTime()).toBeGreaterThan(Date.now());
+      expect(next!.getTime()).toBeGreaterThanOrEqual(before);
     });
 
     it('returns null for invalid expressions', () => {
