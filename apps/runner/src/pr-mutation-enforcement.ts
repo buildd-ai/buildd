@@ -33,8 +33,8 @@ export const PR_MUTATION_BASH_DENY: readonly string[] = [
 
 /**
  * Known PR-write tool names on the GitHub MCP server surface a workspace
- * might mount as a connector — the same tool the `merge_pr`/`close_pr`
- * action docs already steer callers away from (`update_pull_request`).
+ * might mount as a connector — the same tool the `merge_pr`/`close_pr`/
+ * `update_pr` action docs already steer callers away from (`update_pull_request`).
  *
  * Blocked on ANY mounted MCP server by exact tool name, not by connector
  * name: a connector's name is admin-chosen and not knowable ahead of time
