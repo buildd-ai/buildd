@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import Sheet from '@/components/ui/Sheet';
+import { Select } from '@/components/ui/Select';
 import type { FlowSeries } from '@/lib/insights-flow';
 import {
   BAND_HINT,
@@ -224,13 +225,12 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
           contextual height={expanded ? 'expanded' : 'peek'} testId="flow-picked" returnFocusRef={detailTrigger}
           handle={<button data-testid="flow-expand" type="button" className="w-full min-h-[44px] text-meta text-text-muted" aria-expanded={expanded} onClick={() => setExpanded(v => !v)}>{expanded ? 'Show less' : 'Expand details'}</button>}>
           <p className="text-meta text-text-muted">{fmtWhen(pickedBucket.start, series.bucketMs)}</p>
-          <label className="mt-2 flex items-center gap-2 text-meta text-text-secondary">
-            Stage
-            <select aria-label="Stage" className="min-h-[44px] min-w-0 flex-1 bg-surface-2 text-text-primary px-2"
-              value={picked.band} onChange={e => { setReleaseIndex(null); setPicked({ i: picked.i, band: e.target.value as BandKey }); }}>
-              {BANDS.map(k => <option key={k} value={k}>{BAND_LABEL[k]}</option>)}
-            </select>
-          </label>
+          <div className="mt-2 flex items-center gap-2 text-meta text-text-secondary">
+            <span>Stage</span>
+            <Select<BandKey> aria-label="Stage" className="min-w-0 flex-1" value={picked.band}
+              options={BANDS.map(k => ({ value: k, label: BAND_LABEL[k] }))}
+              onChange={band => { setReleaseIndex(null); setPicked({ i: picked.i, band }); }} />
+          </div>
           {expanded && <p className="mt-2 text-meta text-text-muted">{BAND_HINT[picked.band]}</p>}
           {pickedTasks.length === 0 ? (
             <p className="mt-3 text-body text-text-muted">No tasks in this stage then.</p>

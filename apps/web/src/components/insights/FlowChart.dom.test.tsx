@@ -50,9 +50,11 @@ it('a touch picks a point before opening details, and stages remain available fo
   expect(q('flow-summary')).not.toBeNull();
   expect(q('flow-picked')).toBeNull();
   act(() => q('flow-details-trigger')!.click());
-  const select = q('flow-picked')!.querySelector<HTMLSelectElement>('select')!;
-  expect(select.options).toHaveLength(6);
-  act(() => { select.value = 'lost'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  const select = q('flow-picked')!.querySelector<HTMLElement>('[role=combobox]')!;
+  act(() => select.click());
+  expect(document.querySelectorAll('[role=option]')).toHaveLength(6);
+  act(() => select.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })));
+  act(() => select.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
   expect(q('flow-summary')!.textContent).toContain('Failed or abandoned');
   expect(q('flow-selection')).not.toBeNull();
 });
