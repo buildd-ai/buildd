@@ -390,6 +390,22 @@ describe('buildConflictRetryTask', () => {
       expect(result!.description).not.toContain('merge conflicts with the base branch');
     });
 
+    it('names the bound PR head up front when it differs from the worker branch', () => {
+      const result = buildConflictRetryTask(makeInput({
+        migrationCollision: collision,
+        prRefs: { headRef: 'mission/m-1', baseRef: 'dev' },
+      }));
+      expect(result!.description).toContain('Bound PR lineage');
+      expect(result!.description).toContain('Push to `mission/m-1`');
+      expect(result!.description).toContain('409');
+    });
+
+    it('omits the lineage note when the PR head is the worker branch', () => {
+      const result = buildConflictRetryTask(makeInput({ migrationCollision: collision }));
+      expect(result!.description).not.toContain('Bound PR lineage');
+      expect(result!.description).toContain('Push to the existing branch');
+    });
+
     it('sets errorType to migration_collision in failureContext', () => {
       const result = buildConflictRetryTask(makeInput({ migrationCollision: collision }));
       expect((result!.context.failureContext as any).errorType).toBe('migration_collision');
