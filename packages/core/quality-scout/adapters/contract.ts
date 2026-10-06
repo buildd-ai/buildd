@@ -6,7 +6,7 @@
 
 import type { VerificationObservation } from '../../verification-check';
 import { classifyPageLoad } from '../../visual-qa-page-source';
-import { CLAUSE_SPLIT, CONTAINS, evidenceRefs } from './shared';
+import { CONTAINS, splitClauses, evidenceRefs } from './shared';
 
 /** The evidence key an HTTP exchange produces. */
 export const CONTRACT_EVIDENCE_KEY = 'http-exchange';
@@ -39,7 +39,7 @@ export const READ_ONLY_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'O
 export function parseHttpExpectation(raw: string | undefined): ScoutHttpExpectation | null {
   const out: ScoutHttpExpectation = { status: '2xx' };
   if (raw === undefined || !raw.trim()) return out;
-  for (const clause of raw.trim().split(CLAUSE_SPLIT).filter(Boolean)) {
+  for (const clause of splitClauses(raw)) {
     let m: RegExpMatchArray | null;
     if ((m = clause.match(/^(?:status\s+|returns\s+|responds\s+)?([1-5])xx$/i))) out.status = `${Number(m[1]) as 1 | 2 | 3 | 4 | 5}xx`;
     else if ((m = clause.match(/^(?:status\s+|returns\s+|responds\s+)?([1-5]\d\d)$/i))) out.status = Number(m[1]);

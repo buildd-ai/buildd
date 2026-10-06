@@ -4,7 +4,7 @@
  */
 
 import type { VerificationObservation } from '../../verification-check';
-import { CLAUSE_SPLIT, CONTAINS, evidenceRefs, tail } from './shared';
+import { CONTAINS, splitClauses, evidenceRefs, tail } from './shared';
 
 /** The evidence key a command run produces. */
 export const COMMAND_EVIDENCE_KEY = 'command-output';
@@ -37,7 +37,7 @@ export interface ScoutCommandExpectation {
 export function parseCommandExpectation(raw: string | undefined): ScoutCommandExpectation | null {
   const out: ScoutCommandExpectation = { exit: 0 };
   if (raw === undefined || !raw.trim()) return out;
-  for (const clause of raw.trim().split(CLAUSE_SPLIT).filter(Boolean)) {
+  for (const clause of splitClauses(raw)) {
     let m: RegExpMatchArray | null;
     if (/^(?:succeeds?|success|passes|ok|exits?\s+(?:cleanly|successfully))$/i.test(clause)) out.exit = 0;
     else if (/^(?:fails?|exits?\s+non-?zero|non-?zero(?:\s+exit)?)$/i.test(clause)) out.exit = 'nonzero';
@@ -75,6 +75,20 @@ export function unsafeCommandRule(command: string): string | null {
   return SCOUT_UNSAFE_COMMAND_RULES.find((r) => r.pattern.test(command))?.id ?? null;
 }
 
+/** Words a failing run prints; a stream without them (a dotenv banner, progress lines) is not the failure. */
+const FAILURE_MARKER = /\b(?:fail(?:ed|ure|s)?|error|assert(?:ion)?|expected|exception|panic(?:ked)?|traceback|fatal)\b|✗|✘/i;
+
+/** The stream that carries the failure; both, labelled, when it cannot tell. */
+function failureExcerpt(output: ScoutCommandOutput): string {
+  const err = tail(output.stderrTail);
+  const out = tail(output.stdoutTail);
+  if (!err || !out) return err || out;
+  const errFails = FAILURE_MARKER.test(err);
+  const outFails = FAILURE_MARKER.test(out);
+  if (errFails !== outFails) return errFails ? err : out;
+  return `stderr: ${err} | stdout: ${out}`;
+}
+
 /** Judge one command run against its expectation. Synchronous substrate executor body. */
 export function judgeCommand({ expect, output }: { expect: ScoutCommandExpectation; output: ScoutCommandOutput | null }): VerificationObservation {
   if (!output) return { verdict: 'inconclusive', observed: 'The command produced no result.' };
@@ -87,7 +101,7 @@ export function judgeCommand({ expect, output }: { expect: ScoutCommandExpectati
   const outputOk = outputIncludes === undefined || text.includes(outputIncludes);
   const summary = `exit ${output.exitCode} (expected ${exit === 'nonzero' ? 'non-zero' : exit})${outputIncludes !== undefined ? `; output ${outputOk ? 'includes' : 'lacks'} "${outputIncludes}"` : ''}`;
   if (exitOk && outputOk) return { verdict: 'pass', observed: summary, evidenceRefs: refs, confidence: 1 };
-  const err = tail(output.stderrTail) || tail(output.stdoutTail);
+  const err = failureExcerpt(output);
   return {
     verdict: 'fail',
     observed: err ? `${summary}; ${err}` : summary,

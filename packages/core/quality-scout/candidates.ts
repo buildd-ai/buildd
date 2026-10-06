@@ -19,6 +19,9 @@
  *   after an odd result appears.
  * - **Bounded.** Inputs, text fields, path lists and the candidate set are all
  *   capped; the most severe candidates survive the cap.
+ * - **Only what can run.** A candidate is bound to a capability an executor
+ *   exercises, preferring a journey scoped to its paths; unscoped journeys
+ *   take turns rather than the first one declared shadowing the rest.
  * - **Unsupported is recorded.** A candidate whose preconditions no usable
  *   capability meets keeps `supported: false` and the reason, rather than
  *   being dropped.
@@ -27,6 +30,7 @@
 import { createHash } from 'crypto';
 import type { ScoutProbeKind } from '../decision-kind-scout-probe-selection';
 import type { ScoutCapability, ScoutCapabilityKind, ScoutCapabilityProfile } from '../scout-capabilities';
+import { SCOUT_ADAPTER_BY_KIND } from './adapters/kinds';
 
 export type ScoutProbeFamily = 'state-transition' | 'surface' | 'contract' | 'persistence' | 'release';
 export type ScoutSeverity = 'critical' | 'high' | 'medium' | 'low';
@@ -221,22 +225,46 @@ function candidateId(family: ScoutProbeFamily, probeKind: ScoutProbeKind, anchor
   return `sc_${createHash('sha256').update(`${family}|${probeKind}|${anchor}`).digest('hex').slice(0, 12)}`;
 }
 
+/** How many candidates each pool of interchangeable capabilities has served, in generation order. */
+type ExecutorRotation = Map<string, number>;
+
+/** Picks among usable capabilities of one kind; journeys are matched by their declared paths, else rotated. */
+function pickCapability(usable: readonly ScoutCapability[], paths: readonly string[], rotation: ExecutorRotation): ScoutCapability | null {
+  const scope = (c: ScoutCapability) => c.journey?.paths ?? [];
+  const matched = usable.filter((c) => scope(c).some((pattern) => paths.some((p) => matchesPathPattern(p, pattern))));
+  // A journey scoped to other paths says nothing about this change; a candidate with no paths can use any.
+  const pool = matched.length > 0 ? matched : paths.length > 0 ? usable.filter((c) => scope(c).length === 0) : [...usable];
+  if (pool.length <= 1) return pool[0] ?? null;
+  // Rotate in generation order so journeys 2..n run instead of hiding behind the first one declared.
+  const key = pool.map((c) => c.id).join('|');
+  const turn = rotation.get(key) ?? 0;
+  rotation.set(key, turn + 1);
+  return pool[turn % pool.length];
+}
+
 function resolveExecutor(
   preconditions: readonly ScoutCapabilityKind[],
   profile: ScoutCapabilityProfile,
+  paths: readonly string[],
+  rotation: ExecutorRotation,
 ): { executor: ScoutCapability | null; reason?: string } {
-  for (const kind of preconditions) {
-    const usable = profile.capabilities.find((c) => c.kind === kind && c.usable);
+  // A kind no adapter exercises (e.g. migrations) can never run the probe; it must not shadow a later one that can.
+  const runnable = preconditions.filter((kind) => SCOUT_ADAPTER_BY_KIND[kind]);
+  for (const kind of runnable) {
+    const usable = pickCapability(profile.capabilities.filter((c) => c.kind === kind && c.usable), paths, rotation);
     if (usable) return { executor: usable };
   }
-  const blocked = preconditions
+  const blocked = runnable
     .map((kind) => profile.capabilities.find((c) => c.kind === kind))
     .find((c): c is ScoutCapability => !!c);
+  const adapterless = preconditions.filter((kind) => !SCOUT_ADAPTER_BY_KIND[kind] && profile.capabilities.some((c) => c.kind === kind));
   return {
     executor: null,
     reason: blocked
       ? `${blocked.id}: ${blocked.blockedReason ?? 'not usable'}`
-      : `No capability of kind ${preconditions.join(' / ')} is declared or detected.`,
+      : adapterless.length > 0
+        ? `No Scout executor exercises ${adapterless.join(' / ')} capabilities yet.`
+        : `No capability of kind ${preconditions.join(' / ')} is declared or detected.`,
   };
 }
 
@@ -436,6 +464,7 @@ export function generateScoutCandidates(
 
   // Draft → candidate, merging drafts that land on the same id.
   const byId = new Map<string, ScoutProbeCandidate>();
+  const rotation: ExecutorRotation = new Map();
   for (const d of drafts) {
     const probeKind = d.probeKind ?? FAMILY_PROBE_KIND[d.family];
     const preconditions = d.preconditions ?? FAMILY_PRECONDITIONS[d.family];
@@ -448,7 +477,7 @@ export function generateScoutCandidates(
       continue;
     }
     const paths = boundPaths(d.paths);
-    const { executor, reason } = resolveExecutor(preconditions, profile);
+    const { executor, reason } = resolveExecutor(preconditions, profile, paths, rotation);
     byId.set(id, {
       id,
       family: d.family,

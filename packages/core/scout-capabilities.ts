@@ -32,9 +32,10 @@ export type ScoutCapabilityKind =
 
 export type ScoutCapabilityStatus = 'available' | 'absent' | 'unknown';
 
+/** `paths`: repo path patterns the journey exercises; Scout prefers it for a change under them. */
 export type ScoutJourney =
-  | { name: string; kind: 'cli'; command: string; mutates: boolean; expect?: string }
-  | { name: string; kind: 'api'; method: string; path: string; mutates: boolean; expect?: string };
+  | { name: string; kind: 'cli'; command: string; mutates: boolean; expect?: string; paths?: string[] }
+  | { name: string; kind: 'api'; method: string; path: string; mutates: boolean; expect?: string; paths?: string[] };
 
 export interface ScoutCapability {
   /** Stable: the kind, or `<kind>:<name>` for a journey. */
@@ -120,6 +121,9 @@ const DECLARED_ONLY: ReadonlySet<ScoutCapabilityKind> = new Set([
 const COMMAND_KINDS: ReadonlySet<ScoutCapabilityKind> = new Set(['verification-command', 'typecheck-command', 'build-command']);
 const READ_ONLY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const HTTP_METHODS = new Set([...READ_ONLY_METHODS, 'POST', 'PUT', 'PATCH', 'DELETE']);
+const MAX_JOURNEY_PATHS = 20;
+/** A named script (`<tool> run <script>`) or make target: the command names a body it does not show. */
+const OPAQUE_SCRIPT = /^(?:\S+\s+run|yarn|make)\s+\S/;
 
 // ─── Extension resolution ────────────────────────────────────────────────────
 
@@ -137,6 +141,12 @@ function resolveJourney(raw: unknown, index: number, warnings: string[]): ScoutJ
     return null;
   }
   const expect = nonBlank(raw.expect);
+  let paths: string[] = [];
+  if (raw.paths !== undefined) {
+    if (Array.isArray(raw.paths)) paths = [...new Set(raw.paths.map(nonBlank).filter((p): p is string => !!p))].slice(0, MAX_JOURNEY_PATHS);
+    else warnings.push(`journey "${name}" has paths that are not an array; ignored.`);
+  }
+  const scope = paths.length > 0 ? { paths } : {};
   const declaredMutates = typeof raw.mutates === 'boolean' ? raw.mutates : undefined;
   if (raw.kind === 'cli') {
     const command = nonBlank(raw.command);
@@ -145,7 +155,7 @@ function resolveJourney(raw: unknown, index: number, warnings: string[]): ScoutJ
       return null;
     }
     // Effects of an arbitrary command are unknown until the owner says otherwise.
-    return { name, kind: 'cli', command, mutates: declaredMutates ?? true, ...(expect ? { expect } : {}) };
+    return { name, kind: 'cli', command, mutates: declaredMutates ?? true, ...(expect ? { expect } : {}), ...scope };
   }
   if (raw.kind === 'api') {
     const path = nonBlank(raw.path);
@@ -162,7 +172,7 @@ function resolveJourney(raw: unknown, index: number, warnings: string[]): ScoutJ
     }
     // A write method is mutating whatever the declaration claims.
     const mutates = !READ_ONLY_METHODS.has(method) || declaredMutates === true;
-    return { name, kind: 'api', method, path, mutates, ...(expect ? { expect } : {}) };
+    return { name, kind: 'api', method, path, mutates, ...(expect ? { expect } : {}), ...scope };
   }
   warnings.push(`journey "${name}" has unknown kind ${JSON.stringify(raw.kind)} (expected "cli" or "api"); ignored.`);
   return null;
@@ -353,6 +363,14 @@ export function discoverScoutCapabilities(input: ScoutCapabilityInput): ScoutCap
         ...verify.evidence.map((e) => `Readiness: ${e}`),
       ],
     } satisfies Partial<ScoutCapability>);
+  }
+
+  const build = byKind('build-command');
+  if (build.value && OPAQUE_SCRIPT.test(build.value)) {
+    // The command screen sees `pnpm run build`, not the script body, and a
+    // build script commonly migrates a database or regenerates code first.
+    build.mutates = true;
+    build.evidence = [...build.evidence, `\`${build.value}\` runs a script Scout cannot see into; treated as mutating.`];
   }
 
   const ui = byKind('ui-surface');
