@@ -3292,6 +3292,59 @@ describe('PATCH /api/github/pr', () => {
     const data = await res.json();
     expect(data.error).toContain('403');
   });
+
+  // update_pr: passing `body` rewrites the PR body via the GitHub App token
+  // instead of closing the PR — the sanctioned path around the GitHub
+  // connector's update_pull_request 403 (see mcp-tools.ts `update_pr`).
+  it('returns 400 when body is not a string', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, body: 123 },
+    });
+    const res = await PATCH(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('body must be a string');
+  });
+
+  it('updates PR body successfully and returns the updated PR data', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      prNumber: 42,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValue({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'open',
+      title: 'Old feature PR',
+    });
+
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, body: 'Corrected body with no screenshot URL.' },
+    });
+    const res = await PATCH(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.pr.number).toBe(42);
+    expect(data.pr.state).toBe('open');
+
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+    const [, path, options] = mockGithubApi.mock.calls[0];
+    expect(path).toBe('/repos/owner/repo/pulls/42');
+    expect(options.method).toBe('PATCH');
+    const parsedBody = JSON.parse(options.body);
+    expect(parsedBody.body).toBe('Corrected body with no screenshot URL.');
+    expect(parsedBody.state).toBeUndefined();
+  });
+
 });
 
 // ── PUT /api/github/pr (merge) ────────────────────────────────────────────────
@@ -6314,6 +6367,20 @@ describe('per-task token on close / merge / get', () => {
     const res = await GET(createGetRequest('w-x', 9));
     expect(res.status).toBe(404);
   });
+
+  it('updates the body of its own PR', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker());
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 42, body: 'corrected body' } }));
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses to update another PR’s body through its own worker, before calling GitHub', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker());
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 7, body: 'corrected body' } }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('A task token may update only its own PR');
+    expect(githubWrites()).toEqual([]);
+  });
 });
 
 // An agent run on its runner's key (an orchestration-free session whose token
@@ -6387,5 +6454,20 @@ describe('agent run on the runner key — close / merge', () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'person-1', teamId: 'team-1' });
     mockWorkersFindFirst.mockResolvedValue(runWorker());
     expect((await close(7)).status).toBe(200);
+  });
+
+  const updateBody = (prNumber: number) => PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-run', prNumber, body: 'corrected body' } }));
+
+  it('refuses to update the body of a PR its task does not name, before calling GitHub', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker());
+    const res = await updateBody(7);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('may update only its own PR (#42)');
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('updates the body of a PR its task names', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'fix: PR #7 body correction' }));
+    expect((await updateBody(7)).status).toBe(200);
   });
 });
