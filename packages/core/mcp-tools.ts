@@ -4170,7 +4170,7 @@ export async function handleBuilddAction(
     }
 
     case 'get_artifact': {
-      if (!params.artifactId) throw new Error('artifactId is required');
+      if (!params.artifactId) throw new Error(`artifactId is required${params.id ? ' (you passed "id" — the field for this action is artifactId)' : ''}`);
 
       const data = await api(`/api/artifacts/${params.artifactId}`);
       const art = data.artifact;
@@ -4192,7 +4192,7 @@ export async function handleBuilddAction(
     }
 
     case 'update_artifact': {
-      if (!params.artifactId) throw new Error('artifactId is required');
+      if (!params.artifactId) throw new Error(`artifactId is required${params.id ? ' (you passed "id" — the field for this action is artifactId)' : ''}`);
 
       const updateBody: Record<string, unknown> = {};
       if (params.title !== undefined) updateBody.title = params.title;
