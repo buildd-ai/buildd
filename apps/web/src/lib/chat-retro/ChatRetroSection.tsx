@@ -35,6 +35,19 @@ function lessonLine(l: LessonListItem): string {
   return `${cause}${l.fixClass ? `, fix: ${l.fixClass.replace(/_/g, ' ')}` : ''}${l.satisfied ? `, satisfied: ${l.satisfied}` : ''}`;
 }
 
+/** h-11 md:h-8 matches the page's other controls: 44px tap target on mobile, .btn's 32px on desktop. */
+export function DogfoodActivationRow({ onActivate }: { onActivate: () => void }) {
+  return (
+    <div className="flex items-start justify-between gap-3 px-4 py-3">
+      <span className="min-w-0">
+        <span className="block text-sm text-text-primary">Keep on for every team I own</span>
+        <span className="block text-xs text-text-muted">Lessons and suggestions on for all your teams, including ones you create later.</span>
+      </span>
+      <button type="button" className="btn btn-quiet shrink-0 h-11 md:h-8" onClick={onActivate}>Turn on</button>
+    </div>
+  );
+}
+
 export default function ChatRetroSection({ teamId, isAdmin }: { teamId: string; isAdmin: boolean }) {
   const [settings, setSettings] = useState<ChatRetroSettings>({ ...CHAT_RETRO_DEFAULT });
   const [globallyEnabled, setGloballyEnabled] = useState(true);
@@ -174,13 +187,7 @@ export default function ChatRetroSection({ teamId, isAdmin }: { teamId: string; 
           />
         </div>
         {isAdmin && loaded && !dogfood && canActivateDogfood && (
-          <div className="flex items-start justify-between gap-3 px-4 py-3">
-            <span className="min-w-0">
-              <span className="block text-sm text-text-primary">Keep on for every team I own</span>
-              <span className="block text-xs text-text-muted">Lessons and suggestions on for all your teams, including ones you create later.</span>
-            </span>
-            <button type="button" className="btn btn-quiet shrink-0" onClick={() => void activateDogfood()}>Turn on</button>
-          </div>
+          <DogfoodActivationRow onActivate={() => void activateDogfood()} />
         )}
         {isAdmin && settings.lessons && (
           <div className="px-4 py-3" data-testid="chat-retro-lessons">
