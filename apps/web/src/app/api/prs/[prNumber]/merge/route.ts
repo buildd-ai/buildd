@@ -664,18 +664,20 @@ export async function POST(
             { status: 409 },
           );
         }
-        if (dispatchResult.disabled) {
-          // Feature disabled — fall through to standard error
-        } else {
-          // Duplicate dedup hit — already handling it
+        if (dispatchResult.inFlightTaskId) {
+          // A conflict retry is already working this PR: the card shows it,
+          // not a Retry that would only re-hit the same conflict.
           return NextResponse.json(
             {
               error: `PR #${prNumber} has merge conflicts. A conflict-resolution task is already in progress.`,
-              conflictRetryDispatched: false,
+              conflictRetryDispatched: true,
+              conflictRetryTaskId: dispatchResult.inFlightTaskId,
             },
             { status: 409 },
           );
         }
+        // Anything else (disabled, a refusal, a lost race) falls through to
+        // the conflict error below, flagged so the card offers no merge Retry.
       }
     }
 
@@ -687,7 +689,12 @@ export async function POST(
       : /method not allowed|405/i.test(rawMessage)
       ? 'PR is not in a mergeable state — check CI status and branch protection rules'
       : `GitHub rejected the merge: ${rawMessage}`;
-    return NextResponse.json({ error: userMessage }, { status: 422 });
+    // `mergeConflict`: the same merge cannot succeed until the branch changes,
+    // so a Retry would only repeat this refusal (lib/merge-outcome.ts).
+    return NextResponse.json(
+      { error: userMessage, ...(failureClass === 'conflict' ? { mergeConflict: true } : {}) },
+      { status: 422 },
+    );
   }
 
   return finalizeSuccessfulMerge();
