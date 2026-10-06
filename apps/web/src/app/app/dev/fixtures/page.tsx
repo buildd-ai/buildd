@@ -23,8 +23,10 @@ import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
 import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
+import RunnerSizeFixture from './RunnerSizeFixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
+    RUNNER_SIZE_FIXTURE_STATE,
     MODEL_PROVIDERS_FIXTURE_STATE,
     TOOL_BREAKDOWN_FIXTURE_STATE,
     FIXTURE_VIEWS,
@@ -122,6 +124,9 @@ export default function DevFixturesPage() {
     }
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
+    }
+    if (state === RUNNER_SIZE_FIXTURE_STATE) {
+        return <RunnerSizeFixture />;
     }
     if (state === MODEL_PROVIDERS_FIXTURE_STATE) {
         return <ModelProvidersFixture />;

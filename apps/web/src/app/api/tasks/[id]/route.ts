@@ -20,7 +20,7 @@ function validateTaskId(id: string): NextResponse | null {
 }
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { authenticateTaskScopedCaller, isOrchestrationTaskToken, taskScopeAllowsMissionTask, taskScopeAllowsTask } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, isOrchestrationTaskToken, taskScopeAllowsMissionTask, taskScopeAllowsMissionTaskRead, taskScopeAllowsTask } from '@/lib/task-token-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -115,7 +115,7 @@ export async function GET(
     if (!task) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
-    if (apiAccount && !(await taskScopeAllowsMissionTask(apiAccount, task))) {
+    if (apiAccount && !(await taskScopeAllowsMissionTaskRead(apiAccount, task))) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 

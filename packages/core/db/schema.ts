@@ -378,6 +378,13 @@ export interface WorkspaceGitConfig {
   // resolveVisualQaConfig(). See docs/design/visual-qa-auditor.md → "Page source".
   visualQa?: import('../visual-qa-page-source').VisualQaConfig;
 
+  // Cloud-runner container class. Absent = derived from recent run reports
+  // (apps/web/src/lib/runner-size.ts); an explicit value always wins.
+  runnerSize?: 'standard' | 'large';
+  // Written by buildd, never by the settings form: the first derivation that
+  // moved this workspace to `large`, kept so one light run does not move it back.
+  runnerSizeDerived?: { size: 'large'; reason: 'memory_pressure' | 'low_disk' | 'container_restart' | 'large_checkout'; at: string };
+
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached
   maxBudgetUsd?: number;
