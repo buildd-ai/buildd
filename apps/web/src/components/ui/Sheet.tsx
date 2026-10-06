@@ -18,8 +18,11 @@ export interface SheetProps {
   /**
    * `auto` (default): content height, capped at 85vh.
    * `tall`: a fixed 88% sheet whose body scrolls — the task sheet over a mission.
+   * `peek` / `expanded`: 35% / 55% heights for context-preserving inspection.
    */
-  height?: 'auto' | 'tall';
+  height?: 'auto' | 'tall' | 'peek' | 'expanded';
+  /** Keep the underlying chart visible and interactive, without a modal backdrop. */
+  contextual?: boolean;
   /** `default` (max-w-lg) or `wide` (max-w-3xl) — for a sheet with its own side rail. */
   width?: 'default' | 'wide';
   /** `data-testid` on the dialog panel. */
@@ -107,6 +110,7 @@ export default function Sheet({
   children,
   lockTarget,
   height = 'auto',
+  contextual = false,
   width = 'default',
   testId,
   handle,
@@ -169,33 +173,33 @@ export default function Sheet({
       }
     }
     document.addEventListener('keydown', handleKey);
-    const unlock = lockScroll(resolveLockTarget(lockTargetRef.current, findScrollRoot(document)));
+    const unlock = contextual ? () => {} : lockScroll(resolveLockTarget(lockTargetRef.current, findScrollRoot(document)));
     return () => {
       document.removeEventListener('keydown', handleKey);
       unlock();
     };
-  }, [open, canPortal]);
+  }, [open, canPortal, contextual]);
 
   if (!open) return null;
 
-  const tall = height === 'tall';
+  const tall = height !== 'auto';
 
   const sheet = (
-    <div className="fixed inset-0 z-50 flex items-end justify-center" role="presentation">
-      <div
+    <div className={`fixed inset-0 z-50 flex items-end justify-center ${contextual ? 'pointer-events-none' : ''}`} role="presentation">
+      {!contextual && <div
         className="absolute inset-0 bg-black/50"
         onClick={onClose}
         aria-hidden="true"
-      />
+      />}
       <div
         ref={panelRef}
         role="dialog"
-        aria-modal="true"
+        aria-modal={!contextual}
         aria-label={title}
         data-testid={testId}
         tabIndex={trapFocus ? -1 : undefined}
-        className={`relative w-full ${width === 'wide' ? 'max-w-3xl' : 'max-w-lg'} bg-surface-1 border-t-2 border-border-strong shadow-lg pb-[env(safe-area-inset-bottom)] focus:outline-none ${
-          tall ? 'flex flex-col h-[88dvh] overflow-hidden' : 'max-h-[85vh] overflow-y-auto'
+        className={`relative pointer-events-auto w-full ${width === 'wide' ? 'max-w-3xl' : 'max-w-lg'} bg-surface-1 border-t-2 border-border-strong shadow-lg pb-[env(safe-area-inset-bottom)] focus:outline-none ${
+          tall ? `flex flex-col ${height === 'peek' ? 'h-[35dvh]' : height === 'expanded' ? 'h-[55dvh]' : 'h-[88dvh]'} overflow-hidden` : 'max-h-[85vh] overflow-y-auto'
         }`}
       >
         {handle}
