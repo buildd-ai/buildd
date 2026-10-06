@@ -233,3 +233,10 @@ neither.
   enforces that for direct dependencies.
 - **Vercel previews have two auth walls.** See "Preview recipe" below. For buildd
   itself there are no per-PR previews, so use the dispatch.
+- **This recipe (local Chromium, `visual-qa.yml`) has no dependency on the
+  provider-backed browser work** (`docs/specs/visual-qa-browser-providers.md`,
+  a Cloudflare-backed browser provider layered on top of this path). That spec's
+  own "current state" section lists this workflow as reused unchanged, and its
+  "out of scope" section says so explicitly. A failed task in that work (or its
+  mission) is not evidence this recipe is broken — verify it directly with a
+  fresh dispatch before treating a mission's visual-audit capability as regressed.

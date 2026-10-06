@@ -11,7 +11,8 @@ export const FLIGHT_STRIP_CONCURRENCY_FILL: Record<1 | 2 | 3, string> = {
   2: '#8fd9b0',
   3: '#c4f2d8',
 };
-export const FLIGHT_STRIP_FAILURE_FILL = '#d2584b';
+/** Canonical error token (globals.css --status-error) — resolved by the browser per theme, never a static hex. */
+export const FLIGHT_STRIP_FAILURE_FILL = 'var(--status-error)';
 export const FLIGHT_STRIP_NOW_COLOR = '#f0a05a';
 export const FLIGHT_STRIP_HUMAN_COLOR = '#e0873a';
 export const FLIGHT_STRIP_ORCHESTRATOR_STROKE = '#9a9488';
