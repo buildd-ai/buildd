@@ -26,14 +26,15 @@ export function StateChip({ label, tone, pulse = false }: { label: string; tone:
   );
 }
 
-/** A mission's chip label → its tone. */
+/** A mission's chip label → its tone. Matches status-tone.ts for consistency. */
 export function missionTone(stateLabel: string, status: string): Tone {
   const s = `${stateLabel} ${status}`.toLowerCase();
-  if (/need|question|decision/.test(s)) return 'attention';
-  if (/fail|error|blocked|stalled|budget/.test(s)) return 'bad';
-  if (/complete|done|shipped|verified/.test(s)) return 'ok';
-  if (/held|paused|queued|archived|draft/.test(s)) return 'idle';
-  return 'live';
+  if (/fail|error|blocked|budget/.test(s)) return 'bad';
+  if (/stalled|held|stranded|waiting|decision|verification|paused/.test(s)) return 'attention';
+  if (/complete|done|shipped|verified|review/.test(s)) return 'ok';
+  if (/manual|idle|queued|archived|draft/.test(s)) return 'idle';
+  if (/running|local|active/.test(s)) return 'live';
+  return 'idle';
 }
 
 export function Eyebrow({ children, className = '' }: { children: ReactNode; className?: string }) {
@@ -73,7 +74,7 @@ export function ObjectPlaceholder({ objRef, error }: { objRef: BuilddObjectRef; 
 
 /** "◂ In the pane" / "Expand ↑" / "Open" — the card's way to the full view. */
 export function OpenButton({ inPane, onOpen, label }: { inPane: boolean; onOpen: () => void; label?: string }) {
-  const cls = 'font-mono text-[11px] font-bold uppercase tracking-[1.5px] text-accent-text';
+  const cls = 'font-mono text-[11px] font-bold uppercase tracking-[1.5px] text-text-muted';
   return (
     <>
       {/* Phone: there is no pane, the full view opens as a sheet. */}
@@ -83,7 +84,7 @@ export function OpenButton({ inPane, onOpen, label }: { inPane: boolean; onOpen:
       {inPane ? (
         <span data-testid="object-in-pane" className={`hidden md:inline ${cls}`}>◂ In the pane</span>
       ) : (
-        <button type="button" data-testid="object-open" onClick={onOpen} className={`hidden md:inline ${cls} hover:underline`}>
+        <button type="button" data-testid="object-open" onClick={onOpen} className={`hidden md:inline ${cls} hover:text-text-primary`}>
           {label ?? 'Open in pane ▸'}
         </button>
       )}

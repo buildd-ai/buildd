@@ -63,7 +63,7 @@ export function AgentAvatar({ agent, size = 'md' }: { agent: ChatAgent; size?: '
   return (
     <span
       aria-hidden="true"
-      className={`grid shrink-0 place-items-center font-mono font-bold text-white ${dim} ${agent.color ? '' : 'bg-text-primary'}`}
+      className={`grid shrink-0 place-items-center font-mono font-bold ${dim} ${agent.color ? 'text-white' : isBuildd ? 'border-2 border-text-primary text-text-primary' : 'bg-text-primary text-white'}`}
       style={agent.color ? { background: agent.color } : undefined}
     >
       {isBuildd ? '✳' : agent.name.charAt(0).toUpperCase()}

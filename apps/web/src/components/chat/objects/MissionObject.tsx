@@ -112,7 +112,7 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
         {!inPane && (
           <div className="hidden md:block">
             <header className="flex items-center gap-3 border-b border-border-default px-5 py-3">
-              <Eyebrow className="text-accent-text">Mission</Eyebrow>
+              <Eyebrow>Mission</Eyebrow>
               <StateChip label={view.stateLabel} tone={tone} pulse={tone === 'live'} />
               {view.workspaceName && <span className="ml-auto font-mono text-[12px] text-text-muted">{view.workspaceName}</span>}
             </header>
