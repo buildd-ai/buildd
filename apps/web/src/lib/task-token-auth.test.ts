@@ -13,7 +13,7 @@ mock.module('@buildd/core/db/schema', () => ({ accounts: { id: 'id' } }));
 mock.module('drizzle-orm', () => ({ eq: (f: unknown, v: unknown) => ({ f, v }) }));
 
 import {
-  authenticateTaskScopedCaller, isOrchestrationTaskToken, taskScopeAllowsMissionTask, taskScopeAllowsInitiative, taskScopeAllowsMission, taskScopeAllowsTask,
+  authenticateTaskScopedCaller, isOrchestrationTaskToken, taskScopeAllowsMissionTask, taskScopeAllowsMissionTaskRead, taskScopeAllowsInitiative, taskScopeAllowsMission, taskScopeAllowsTask,
   taskScopeAllowsWorker, taskScopeAllowsWorkerId, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace,
 } from './task-token-auth';
 import { mintTaskToken } from './task-token';
@@ -309,5 +309,17 @@ describe('taskScopeAllowsMissionTask', () => {
   it('refuses an admin token whose own task has no mission', async () => {
     mockTasksFindFirst.mockResolvedValue({ missionId: null, workspaceId: 'ws-1', mission: null });
     expect(await taskScopeAllowsMissionTask(admin, sibling)).toBe(false);
+  });
+});
+
+describe('taskScopeAllowsMissionTaskRead', () => {
+  const worker = { level: 'worker', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+
+  it('lets a task token read an unrelated task on no mission in its own workspace', async () => {
+    expect(await taskScopeAllowsMissionTaskRead(worker, { id: 'task-9', workspaceId: 'ws-1', missionId: null })).toBe(true);
+  });
+
+  it('still refuses a task in another workspace', async () => {
+    expect(await taskScopeAllowsMissionTaskRead(worker, { id: 'task-9', workspaceId: 'ws-2', missionId: null })).toBe(false);
   });
 });
