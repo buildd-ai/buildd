@@ -178,18 +178,21 @@ export async function taskScopeAllowsWorkerId(
 }
 
 /**
- * True unless the caller is a task token and `task` is neither its own task
- * nor, for an orchestration (admin) token, a task on its own task's mission
- * in its own workspace. For reading and steering sibling tasks: approving or
- * rejecting their plans, instructing their workers. A worker-level token
- * reaches only its own task, exactly as `taskScopeAllowsTask`.
+ * True unless the caller is a task token and `task` is neither its own task,
+ * nor a child task of its own task, nor, for an orchestration (admin) token,
+ * a task on its own task's mission in its own workspace. For reading and
+ * steering sibling tasks: approving or rejecting their plans, instructing
+ * their workers. A worker-level token reaches its own task and its child
+ * tasks.
  */
 export async function taskScopeAllowsMissionTask(
   account: { level?: string | null; taskScope?: TaskScope },
-  task: { id: string; workspaceId: string | null; missionId: string | null },
+  task: { id: string; workspaceId: string | null; missionId: string | null; parentTaskId?: string | null },
 ): Promise<boolean> {
   if (!account.taskScope) return true;
   if (task.id === account.taskScope.taskId) return true;
+  // Worker-level tokens can also read their own child tasks
+  if (task.parentTaskId === account.taskScope.taskId && task.workspaceId === account.taskScope.workspaceId) return true;
   if (!isOrchestrationTaskToken(account)) return false;
   if (task.workspaceId !== account.taskScope.workspaceId || !task.missionId) return false;
   return taskScopeAllowsMission(account, task.missionId);

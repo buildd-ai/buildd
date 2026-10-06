@@ -33,6 +33,7 @@ export function taskState(view: TaskObjectView): { label: string; tone: Tone; li
 
 const EDGE: Record<Tone, string> = {
   live: 'before:bg-accent',
+  neutral: 'before:bg-text-primary',
   attention: 'before:bg-status-warning',
   ok: 'before:bg-status-success',
   bad: 'before:bg-status-error',

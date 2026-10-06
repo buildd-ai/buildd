@@ -3214,6 +3214,10 @@ export interface LaneBar {
   /** Role colour from the role's own data; null = neutral. */
   color: string | null;
   roleSlug?: string | null;
+  /** The role's display name ("Builder"), for the hover card. */
+  roleName?: string | null;
+  /** The PR this run opened, if any. */
+  prNumber?: number | null;
   state: 'running' | 'waiting' | 'done' | 'failed';
   href?: string | null;
 }

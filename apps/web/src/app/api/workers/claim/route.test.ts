@@ -338,9 +338,13 @@ mock.module('@/lib/task-dependencies', () => ({
 const mockDiagnoseExplicitTaskExclusion = mock((_opts: any) => Promise.resolve(null as any));
 const mockStampLastClaimAttempt = mock((_opts: any) => Promise.resolve());
 const mockEvaluateForcedGates = mock((_opts: any) => Promise.resolve([] as string[]));
+const mockExplicitExclusionGateEvent = mock((opts: any) => ({
+  gate: 'claim_loop_deferral', outcome: 'deferred', reason: opts.exclusion.code, taskId: opts.taskId, workspaceId: opts.workspaceId,
+}));
 mock.module('./explicit-task-exclusion', () => ({
   diagnoseExplicitTaskExclusion: mockDiagnoseExplicitTaskExclusion,
   evaluateForcedGates: mockEvaluateForcedGates,
+  explicitExclusionGateEvent: mockExplicitExclusionGateEvent,
   stampLastClaimAttempt: mockStampLastClaimAttempt,
 }));
 
@@ -2152,11 +2156,11 @@ describe('POST /api/workers/claim', () => {
         id, canonicalId: null, openRouterId: `anthropic/${id}`, provider: 'anthropic', displayName: id,
         contextLength: 1_000_000, created: 1_790_000_000 + createdDay * 86_400, input, output: input * 5, cacheRead: 0, cacheWrite: 0,
       });
-      // opus-5-5 is the newest model with a recorded CLI floor; sonnet-5-5 postdates it.
+      // Sonnet 5.5 has a recorded floor; hypothetical Sonnet 6 is still unvouched.
       const CATALOG = [
-        entry('claude-sonnet-5', 0), entry('claude-opus-5', 1, 5), entry('claude-opus-5-5', 10, 4), entry('claude-sonnet-5-5', 15),
+        entry('claude-sonnet-5', 0), entry('claude-opus-5', 1, 5), entry('claude-opus-5-5', 10, 4), entry('claude-sonnet-5-5', 15), entry('claude-sonnet-6', 20),
       ];
-      const BAD = 'claude-sonnet-5-5';
+      const BAD = 'claude-sonnet-6';
 
       beforeEach(() => {
         mockGetCatalog.mockResolvedValue(CATALOG as any);
@@ -2183,12 +2187,12 @@ describe('POST /api/workers/claim', () => {
 
         const claimSet = sets.find(v => v.status === 'assigned');
         expect(claimSet.predictedModel).not.toBe(BAD);
-        expect(claimSet.context.model).toBe('claude-sonnet-5');
+        expect(claimSet.context.model).toBe('claude-sonnet-5-5');
 
         expect(errorTraceRows).toHaveLength(1);
         expect(errorTraceRows[0]).toMatchObject({ workerId: 'worker-1', taskId: 'task-1', pattern: 'dispatch_model_rejected', source: 'claim' });
         expect(errorTraceRows[0].excerpt).toContain(`"${BAD}" from pin (newer_than_floor_table)`);
-        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5"');
+        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5-5"');
       });
 
       it('a pool challenger on an unvouched id never reaches the runner: the incumbent is served and the arm is un-served', async () => {
@@ -2200,11 +2204,11 @@ describe('POST /api/workers/claim', () => {
         await POST(claimReq());
 
         const claimSet = sets.find(v => v.status === 'assigned');
-        expect(claimSet.predictedModel).toBe('claude-sonnet-5');
-        expect(claimSet.context.model).toBe('claude-sonnet-5');
+        expect(claimSet.predictedModel).toBe('claude-sonnet-5-5');
+        expect(claimSet.context.model).toBe('claude-sonnet-5-5');
         expect(errorTraceRows).toHaveLength(1);
         expect(errorTraceRows[0].excerpt).toContain(`"${BAD}" from tier_pool_arm`);
-        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5"');
+        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5-5"');
       });
 
       it('an arm the guard rejects after it was served is un-served in the recorded assignment', async () => {
@@ -2214,11 +2218,11 @@ describe('POST /api/workers/claim', () => {
         mockApplyAgentPoolArm.mockReturnValue({ model: BAD, provider: 'anthropic' });
         await POST(claimReq());
 
-        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5');
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5-5');
         expect(draw.served).toBe(false);
-        expect(draw.assignedModel).toBe('claude-sonnet-5');
+        expect(draw.assignedModel).toBe('claude-sonnet-5-5');
         expect(draw.eligibility).toMatchObject({ fallback: 'model_unrecognized' });
-        expect(mockRecordAgentPoolAssignment.mock.calls[0][1]).toMatchObject({ resolvedModel: 'claude-sonnet-5' });
+        expect(mockRecordAgentPoolAssignment.mock.calls[0][1]).toMatchObject({ resolvedModel: 'claude-sonnet-5-5' });
       });
 
       it('a recognised model is left alone and leaves no trace', async () => {
@@ -2757,6 +2761,37 @@ describe('POST /api/workers/claim', () => {
     expect(mockStampLastClaimAttempt.mock.calls[0][0]).toMatchObject({
       taskId: 'task-held', workspaceIds: ['ws-1'], reason: 'no_pending_tasks',
     });
+  });
+
+  // The PR #3678 reviewer: filed, woken, and the runner's wake claim named it
+  // within a second — but a WHERE gate (the workspace cap) dropped it, so the
+  // runner heard only `no_pending_tasks` and nothing recorded why. The exact
+  // exclusion must reach the task's gate history and its stamp.
+  it('a wake claim the WHERE refuses records the exact gate on the task (ledger + stamp)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', maxConcurrentWorkers: 10, type: 'user', authType: 'oauth',
+    });
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValueOnce([]);
+    const exclusion = { code: 'workspace_cap', detail: 'The workspace is at its concurrent-task cap.' };
+    mockDiagnoseExplicitTaskExclusion.mockReset();
+    mockDiagnoseExplicitTaskExclusion.mockResolvedValueOnce(exclusion);
+    mockStampLastClaimAttempt.mockReset();
+    mockFireDeferralEvent.mockClear();
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'coder-workspace', taskId: 'reviewer-task', workspaceId: 'ws-1' },
+    }));
+    const data = await res.json();
+    expect(data.diagnostics).toMatchObject({ reason: 'no_pending_tasks', taskExclusion: exclusion });
+
+    await new Promise((r) => setTimeout(r, 0));
+    const events = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).filter((e: any) => e.taskId === 'reviewer-task');
+    expect(events).toEqual([expect.objectContaining({ gate: 'claim_loop_deferral', reason: 'workspace_cap', workspaceId: 'ws-1' })]);
+    expect(mockStampLastClaimAttempt.mock.calls[0][0]).toMatchObject({ taskId: 'reviewer-task', exclusion });
   });
 
   it('an explicit claim rejected for no_slots still stamps, scoped to the claimable workspaces', async () => {

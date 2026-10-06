@@ -21,7 +21,7 @@ assertions:
 # Design System
 
 **Status:** Implemented (tokens describe what ships; the §3 type scale and the §4 primitives are built)
-**Related:** `apps/web/src/app/globals.css`, `apps/web/tailwind.config.ts`, `apps/web/src/app/mobile-type-floor.test.ts`, `apps/web/src/components/BottomSheet.tsx`, `apps/web/src/components/StatusBadge.tsx`, `apps/web/src/app/app/(protected)/missions/[id]/HeartbeatStatusBadge.tsx`, `apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx`, `docs/design/mobile-feed-spec.md` (mobile layout), `knowledge-base: buildd/design/chat-canvas.md` (the one soft surface), `knowledge-base: buildd/plans/ios-app-mvp.md` (iOS tokens), `.claude/skills/ui_designer/`
+**Related:** `apps/web/src/app/globals.css`, `apps/web/tailwind.config.ts`, `apps/web/src/app/mobile-type-floor.test.ts`, `apps/web/src/components/BottomSheet.tsx`, `apps/web/src/components/StatusBadge.tsx`, `apps/web/src/app/app/(protected)/missions/[id]/HeartbeatStatusBadge.tsx`, `apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx`, `docs/design/mobile-feed-spec.md` (mobile layout), `knowledge-base: buildd/design/chat-canvas.md` (chat-specific geometry and tokens), `knowledge-base: buildd/plans/ios-app-mvp.md` (iOS tokens), `.claude/skills/ui_designer/`
 
 **This is the one design reference.** Read this file before writing UI. The
 `ui_designer` skill, its `references/` files and `mobile-feed-spec.md` point here
@@ -71,26 +71,59 @@ On top of the tokens sit a fixed type scale (§3) and a small primitive layer
 ## 1. Direction
 
 **Brutalist / editorial: "a control room in print. The borders do the
-talking."** This is what ships (adopted mid-2026 across the dashboard).
+talking."** The general material rules below apply to every page; §2 records
+current executable tokens and classes.
 
 - **Square.** Corner radius is 0. `tailwind.config.ts` zeroes the whole
   `borderRadius` scale, `full` included, so `rounded-*` renders square.
 - **Hard shadows.** Every shadow is a solid offset with no blur. The Tailwind
   `boxShadow` scale is redefined as offsets of `var(--border-strong)`.
-- **Visible ink borders.** Cards, buttons, inputs and segmented controls carry a
-  2px `--border-strong` frame. Hairlines inside them are 1px `--border`.
-- **Mono is the voice.** IBM Plex Mono is the body font (`body` in
-  `globals.css`, and `sans`/`display`/`mono` in Tailwind all map to it).
+- **Borders carry meaning.** Things the user acts on get a 2px ink frame and
+  a hard offset shadow; other frames use a 1px `--border` hairline (§1.1).
+- **Voice and objects have different type.** Newsreader is Buildd’s voice;
+  IBM Plex Mono names fleet objects. Card descriptions may use Plex Sans (§1.1).
 - **One accent.** Orange `#f4811f` means action, progress or live. Status
   colours mean state. Nothing coloured is decorative.
 - **Two themes.** Night (warm charcoal, the default) and Day (warm linen),
   switched with `[data-theme]`. Components use tokens only, so both work.
 
-**One sanctioned exception: the chat canvas.** The conversation is soft (Plex
-Sans, Newsreader for the voice, rounded bubbles via `--kit-radius-soft`, the
-blurred "sea"). Fleet objects inside it stay square. See
-`knowledge-base: buildd/design/chat-canvas.md`; the chat tokens (`--chat-*`, `--mood-*`,
-`--sea-*`, `--kit-*`) are owned there and not repeated below.
+### 1.1 Voice and hard objects
+
+**The crux is the two materials, on every page.** Buildd speaks in a human
+voice; the fleet has hard edges. This is a general composition rule, including
+Home, detail pages and chat.
+
+- **Voice:** when Buildd speaks to the user, use Newsreader (`.font-voice`).
+  This includes a page's headline sentence ("N things need you."), its italic
+  sub-line and agent messages. Use sentence case. A named page or object title
+  remains mono; a sentence addressing the reader is voice.
+- **Fleet objects:** tasks, missions, PRs, questions and approval cards stay
+  square, with IBM Plex Mono titles and ink borders. Descriptive sentences
+  inside these cards may use IBM Plex Sans (`.font-convo`); this does not
+  soften the card's geometry.
+- **Border weight:** needs-you and approval cards, and other things requiring
+  the user's action, use a 2px `--border-strong` ink border plus a hard offset
+  shadow with no blur. Everything else uses a 1px `--border` hairline. A
+  passive card with a navigation link does not become an approval card.
+- **Orange:** reserve it for action or live activity, such as a primary
+  action, send control or live indicator. Status labels and chips use status
+  colours or ink, never orange: MISSION is ink, STALLED uses warning/error as
+  appropriate, and AWAITING VERIFICATION uses warning or ink. A live indicator
+  may be orange beside a label; the label itself stays in ink.
+- **Labels:** all-caps tracked labels are for section headers only. Chips,
+  status words, statistics and object metadata use sentence case or lowercase
+  without section-header tracking.
+
+These are the rules for new page composition. The §2 tables describe existing
+CSS, including defaults that still need migration; they do not override §1.1.
+In particular, an existing 2px `.card`, uppercase chip or accent status tone
+is not a prescription for a new passive card or status label.
+
+**Chat-specific exceptions.** Bubble radius, the soft sea, composer geometry
+and chat tokens (`--chat-*`, `--mood-*`, `--sea-*`, `--kit-*`) stay in
+`knowledge-base: buildd/design/chat-canvas.md`. They do not grant other pages
+rounded fleet objects or blurred shadows. The public [chat-canvas pointer](chat-canvas.md)
+links back to this general rule.
 
 **iOS.** The native app's `Theme.swift` table in `knowledge-base: buildd/plans/ios-app-mvp.md` is
 meant to mirror these tokens. Today it mirrors the old mobile-feed-spec values
@@ -196,9 +229,9 @@ scale. Recurring values worth matching: card/inset padding `10px 12px`
 
 | Family | Variable | Role |
 |---|---|---|
-| IBM Plex Mono 400/500/600/700 | `--font-ibm-plex-mono` | Everything app-owned (the default) |
-| IBM Plex Sans | `--font-plex-sans` | Chat conversation (`.font-convo`) |
-| Newsreader | `--font-newsreader` | Chat voice (`.font-voice`) |
+| IBM Plex Mono 400/500/600/700 | `--font-ibm-plex-mono` | Default UI, fleet-object titles and metadata |
+| IBM Plex Sans | `--font-plex-sans` | Conversation and descriptive card sentences (`.font-convo`) |
+| Newsreader | `--font-newsreader` | Buildd speaking to the user on any page (`.font-voice`) |
 | Outfit | `--font-outfit` | Loaded; long-form markdown where mono hurts reading |
 | Fraunces | `--font-fraunces` | Loaded; marketing only, never product UI |
 
@@ -245,8 +278,8 @@ by a wide margin) so most call sites move by 0–1px. Nothing on mobile is under
 
 | Role | Mobile | Desktop | Weight | Case / tracking | Line height | Use |
 |---|---|---|---|---|---|---|
-| `chip` | 11 | 10 | 600 | UPPERCASE, 0.5px | 1 | Status chips, pills, tags (= `.status-pill`) |
-| `eyebrow` | 11 | 11 | 700 | UPPERCASE, 2px | 1.2 | Label above a title or section (= `.section-label`) |
+| `chip` | 11 | 10 | 600 | sentence / lowercase, normal | 1 | Status chips, pills, tags (= `.status-pill`) |
+| `eyebrow` | 11 | 11 | 700 | UPPERCASE, 2px | 1.2 | Section header only (= `.section-label`) |
 | `meta` | 12 | 12 | 400 | sentence | 1.4 | Timestamps, `role · model`, counts, captions. `--text-muted` |
 | `body` | 13 | 13 | 400 | sentence | 1.5 | Default UI text, rows, descriptions |
 | `title` | 14 | 14 | 600 | sentence | 1.35 | Card, row and sheet titles |
@@ -280,7 +313,8 @@ touch targets ≥ 44px on mobile.
 ### Chip
 
 **Purpose:** the one way to show a state word. Square, 1px border, mono
-uppercase, optional leading square dot (the `.status-pill` look).
+sentence case or lowercase, optional leading square dot. Existing uppercase
+styles are recorded in §2.8; new composition follows §1.1.
 
 **Built:** `components/ui/Chip.tsx`.
 
@@ -293,8 +327,9 @@ uppercase, optional leading square dot (the `.status-pill` look).
 - `components/StatusBadge.tsx`: becomes a thin wrapper mapping `status → { tone, label }`
   over `Chip`. Keep the `StatusBadge` default export and the `STATUS_COLORS` /
   `STATUS_LABELS` exports, since several call sites import them. The two raw
-  `#D97706` entries map to a token tone: `waiting_on_you → accent`,
-  `infra_stalled → warning`. `StatusBadge` and `HeartbeatStatusBadge` use the
+  `#D97706` entries currently map to a token tone: `waiting_on_you → accent`,
+  `infra_stalled → warning`. The accent status mapping is legacy; new status
+  labels use warning or ink per §1.1. `StatusBadge` and `HeartbeatStatusBadge` use the
   `soft` variant so the tinted fill they had survives the swap.
 - `missions/[id]/HeartbeatStatusBadge.tsx`: `LastCheckTone` maps 1:1 onto
   `success | warning | error | muted`; the relative time goes in `trailing`.
@@ -308,8 +343,8 @@ tier), `StageChip.tsx`, `LoopStatusChip`, and the `.health-pill` /
 
 ### Eyebrow
 
-**Purpose:** the small uppercase label above a title, a card or a section
-(type role `eyebrow`).
+**Purpose:** the small uppercase tracked section header (type role `eyebrow`).
+Do not use it for card metadata or status labels (§1.1).
 
 **Props:** `children`, `as?: 'span' | 'p' | 'h2' | 'h3'` (default `span`),
 `tone?: 'default' | 'muted' | 'accent'`, `className?`.
@@ -450,8 +485,8 @@ notification text) follows the same rules as a PR lede:
 
 ## Open questions
 
-- ~~**`waiting_on_you` tone.**~~ Decided: `accent` (orange means "this is for
-  you to act on").
+- **Status tone.** Existing `waiting_on_you → accent` is legacy. New status
+  labels use warning or ink; orange belongs to the action or live indicator (§1.1).
 - ~~**Desktop `chip` at 10px vs 11px.**~~ Decided: 10px on desktop, 11px below
   md, held in `--type-chip`.
 - **`.filter-pill` radius and hard-coded fills.** Lean: square it and move its
@@ -486,7 +521,7 @@ the baseline — it lowers counts to today's and never raises them. To deliberat
 
 ## Non-goals
 
-- No colour, radius or shadow changes; every token is documented as shipped.
+- No code changes here; §1.1 defines composition while §2 records shipped tokens.
 - The chat canvas's own tokens and rules stay in `knowledge-base: buildd/design/chat-canvas.md`.
 - Mobile page layouts (sections, data mapping, the Missions Feed artboard) stay
   in `docs/design/mobile-feed-spec.md`.
