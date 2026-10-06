@@ -1,4 +1,5 @@
-// The plan limits, enforced: members and the knowledge-base document cap.
+// The plan limits, enforced: the knowledge-base document cap. The member/seat
+// limit lives in ./billing.ts (`seatDecision`), also driven by entitlements.
 // Every check reads `entitlements(team)` (./entitlements.ts) and nothing else,
 // and every check is a no-op while BILLING_ENFORCED is off — it returns "allowed"
 // before touching the database.
@@ -8,7 +9,7 @@
 //
 // What a limit never does: delete, hide or stop serving anything already
 // stored. A team over its cap (it was over before enforcement, or it downgraded)
-// keeps every member and every document; only additions are refused.
+// keeps every document; only additions are refused.
 //
 // The DB client is imported lazily so the pure parts load in a plain bun script
 // and route tests can inject their own deps.
@@ -20,7 +21,6 @@ type Env = Record<string, string | undefined>;
 /** Where every refusal points. The page is the billing settings section. */
 export const BILLING_SETTINGS_HINT = 'Settings → Billing';
 
-export const MEMBER_LIMIT_CODE = 'plan_member_limit' as const;
 export const KNOWLEDGE_BASE_LIMIT_CODE = 'plan_knowledge_base_limit' as const;
 
 function plural(n: number, one: string, many: string): string {
@@ -59,79 +59,6 @@ async function loadTeamPlanRow(teamId: string): Promise<EntitlementTeam | null> 
     columns: { plan: true, paidSeats: true },
   });
   return row ?? null;
-}
-
-// ── Members ──────────────────────────────────────────────────────────────────
-
-export type MemberCapacity =
-  | { ok: true }
-  | { ok: false; code: typeof MEMBER_LIMIT_CODE; maxMembers: number; current: number; message: string };
-
-export interface MemberCapacityDeps {
-  loadTeam?: (teamId: string) => Promise<EntitlementTeam | null>;
-  countMembers?: (teamId: string) => Promise<number>;
-  /** Pending, unexpired invitations — each one is a seat already promised. */
-  countPendingInvites?: (teamId: string) => Promise<number>;
-  env?: Env;
-}
-
-/** The plain refusal a person sees when the team is full. */
-export function memberLimitMessage(maxMembers: number, current: number, opts: { countsInvites?: boolean } = {}): string {
-  const has = opts.countsInvites
-    ? `${plural(current, 'member or pending invitation', 'members and pending invitations')}`
-    : plural(current, 'member', 'members');
-  return `Your plan includes ${plural(maxMembers, 'member', 'members')} and this team already has ${has}. ` +
-    `To add more people, upgrade the plan in ${BILLING_SETTINGS_HINT}.`;
-}
-
-/**
- * May one more person join (or be invited to) this team? `includePendingInvites`
- * counts outstanding invitations as seats, so inviting can't promise more seats
- * than the plan has; accepting an invitation counts members only, since the
- * invitation being accepted is one of the pending ones.
- */
-export async function checkMemberCapacity(
-  teamId: string,
-  opts: { includePendingInvites?: boolean } & MemberCapacityDeps = {},
-): Promise<MemberCapacity> {
-  const ent = await loadTeamEntitlements(teamId, { env: opts.env, loadTeam: opts.loadTeam });
-  if (ent.maxMembers === null) return { ok: true };
-  try {
-    const members = await (opts.countMembers ?? countTeamMembers)(teamId);
-    const invites = opts.includePendingInvites ? await (opts.countPendingInvites ?? countPendingInvites)(teamId) : 0;
-    const current = members + invites;
-    if (current < ent.maxMembers) return { ok: true };
-    return {
-      ok: false,
-      code: MEMBER_LIMIT_CODE,
-      maxMembers: ent.maxMembers,
-      current,
-      message: memberLimitMessage(ent.maxMembers, current, { countsInvites: invites > 0 }),
-    };
-  } catch (e) {
-    console.warn(`[billing] member count failed for team ${teamId}:`, e);
-    return { ok: true };
-  }
-}
-
-async function countTeamMembers(teamId: string): Promise<number> {
-  const [{ db }, { teamMembers }, { eq, sql }] = await Promise.all([
-    import('./db'), import('./db/schema'), import('drizzle-orm'),
-  ]);
-  const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(teamMembers).where(eq(teamMembers.teamId, teamId));
-  return Number(row?.n ?? 0);
-}
-
-async function countPendingInvites(teamId: string): Promise<number> {
-  const [{ db }, { teamInvitations }, { and, eq, gt, sql }] = await Promise.all([
-    import('./db'), import('./db/schema'), import('drizzle-orm'),
-  ]);
-  const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(teamInvitations).where(and(
-    eq(teamInvitations.teamId, teamId),
-    eq(teamInvitations.status, 'pending'),
-    gt(teamInvitations.expiresAt, new Date()),
-  ));
-  return Number(row?.n ?? 0);
 }
 
 // ── Knowledge base ───────────────────────────────────────────────────────────

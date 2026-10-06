@@ -5,7 +5,7 @@ import { eq, and } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import crypto from 'crypto';
 import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
-import { checkMemberCapacity } from '@buildd/core/billing-limits';
+import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
 
 // GET /api/teams/[id]/invitations — list pending invitations
 export async function GET(
@@ -117,12 +117,10 @@ export async function POST(
       return NextResponse.json({ error: 'A pending invitation already exists for this email' }, { status: 409 });
     }
 
-    // Plan member limit: a pending invitation is a promised seat, so it counts
-    // (no-op while BILLING_ENFORCED is off).
-    const capacity = await checkMemberCapacity(teamId, { includePendingInvites: true });
-    if (!capacity.ok) {
-      return NextResponse.json({ error: capacity.message, code: capacity.code }, { status: 402 });
-    }
+    // A pending invite holds a seat. Past the paid seats: refuse and point the
+    // owner at Billing to add seats, never charge silently.
+    const seat = await checkSeatForNewMember(teamId, { countPending: true });
+    if (!seat.ok) return seatsExhaustedResponse(seat, 'manager');
 
     const token = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days

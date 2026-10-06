@@ -12,6 +12,7 @@ export type SettingsSectionId =
   | 'account'
   | 'team'
   | 'budgets'
+  | 'billing'
   | 'runners'
   | 'providers'
   | 'github'
@@ -30,6 +31,8 @@ export interface SettingsNavItem {
   description: string;
   /** Other path prefixes that belong to this section (detail pages). */
   alsoMatches?: string[];
+  /** Listed only while BILLING_ENFORCED is on (see settingsNavFor). */
+  billingOnly?: boolean;
 }
 
 export interface SettingsNavGroup {
@@ -65,6 +68,13 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         label: 'Budgets',
         href: '/app/settings/budgets',
         description: 'What you and the team spend, and daily caps.',
+      },
+      {
+        id: 'billing',
+        label: 'Billing',
+        href: '/app/settings/billing',
+        description: 'Your plan, seats and invoices.',
+        billingOnly: true,
       },
     ],
   },
@@ -141,6 +151,17 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
 ];
 
 export const SETTINGS_ITEMS: SettingsNavItem[] = SETTINGS_NAV.flatMap((g) => g.items);
+
+/**
+ * The nav as a viewer sees it. Billing is hidden entirely while
+ * BILLING_ENFORCED is off; the caller (a server component) reads the switch
+ * and passes it in, so this module stays env-free for the client sub-nav.
+ */
+export function settingsNavFor(opts: { billing: boolean }): SettingsNavGroup[] {
+  return SETTINGS_NAV
+    .map((g) => ({ ...g, items: g.items.filter((i) => opts.billing || !i.billingOnly) }))
+    .filter((g) => g.items.length > 0);
+}
 
 /** The section a settings path belongs to, or null (the index, or not settings). */
 export function settingsItemFor(pathname: string): SettingsNavItem | null {

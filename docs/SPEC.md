@@ -45,9 +45,15 @@ subscription ids, `billingStatus` and `paidSeats`). Gates read only
 `entitlements(team)` (`packages/core/entitlements.ts`): members, knowledge-base
 document cap, and whether decision calls run on buildd's key. The `BILLING_ENFORCED`
 env switch is off by default, and while off every team is unlimited.
-When on (`packages/core/billing-limits.ts`): adding a member, inviting one (pending
-invitations count as seats) or accepting an invitation past `maxMembers` is refused
-with HTTP 402 `plan_member_limit`; new `docs`-corpus documents past
+Stripe is the billing system: the signed, event-id-idempotent webhook
+(`POST /api/webhooks/stripe`, ledger `stripe_events`) is the only writer of plan,
+billing status, subscription id and paid seats. Owners/admins (`manage_billing`,
+locked) open Checkout, the customer portal, or change Team seats under
+`/api/teams/[id]/billing/*`; Settings → Billing renders it. Team is per seat,
+minimum 5; adding, inviting (pending invitations hold a seat) or accepting a member
+past the paid seats is refused with a 402 that points the owner at adding seats,
+never charged silently. Rules: `packages/core/billing.ts`.
+When on (`packages/core/billing-limits.ts`): new `docs`-corpus documents past
 `knowledgeBaseCap` (distinct files across the team's workspaces) are not ingested,
 while updates to stored documents, the code index and recall are unaffected and
 nothing stored is ever removed. Decision calls (not chat, not agent work) for a team

@@ -36,6 +36,7 @@
     "./backend-policy": "./backend-policy.ts",
     "./entitlements": "./entitlements.ts",
     "./billing-limits": "./billing-limits.ts",
+    "./billing": "./billing.ts",
     "./branch-names": "./branch-names.ts",
     "./budget-alerts": "./budget-alerts.ts",
     "./oauth-budget": "./oauth-budget.ts",

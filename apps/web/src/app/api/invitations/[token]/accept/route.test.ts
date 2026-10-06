@@ -16,9 +16,11 @@ mock.module('@/lib/auth-helpers', () => ({
 }));
 
 let capacity: any = { ok: true };
-let capacityCalls = 0;
-mock.module('@buildd/core/billing-limits', () => ({
-  checkMemberCapacity: async () => { capacityCalls++; return capacity; },
+const capacityCalls: any[] = [];
+mock.module('@/lib/billing/seats', () => ({
+  checkSeatForNewMember: async (teamId: string, opts: any) => { capacityCalls.push({ teamId, opts }); return capacity; },
+  seatsExhaustedResponse: (d: any, audience: string) =>
+    Response.json({ ...d, error: audience === 'invitee' ? 'no free seats' : d.message }, { status: 402 }),
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -61,7 +63,7 @@ beforeEach(() => {
   invitationUpdates.length = 0;
   existingMember = undefined;
   capacity = { ok: true };
-  capacityCalls = 0;
+  capacityCalls.length = 0;
 });
 
 describe('POST /api/invitations/[token]/accept — plan member limit', () => {
@@ -73,19 +75,20 @@ describe('POST /api/invitations/[token]/accept — plan member limit', () => {
   });
 
   it('refuses a full team and leaves the invitation pending', async () => {
-    capacity = { ok: false, code: 'plan_member_limit', maxMembers: 1, current: 1, message: 'full — see Settings → Billing' };
+    capacity = { ok: false, code: 'seats_exhausted', action: 'upgrade', paidSeats: 1, used: 1, message: 'full — see Settings → Billing' };
     const res = await accept();
     expect(res.status).toBe(402);
-    expect((await res.json()).code).toBe('plan_member_limit');
+    expect((await res.json()).code).toBe('seats_exhausted');
+    expect(capacityCalls).toEqual([{ teamId: TEAM, opts: { countPending: false } }]);
     expect(memberInserts).toHaveLength(0);
     expect(invitationUpdates).toHaveLength(0);
   });
 
   it('someone already in the team is not counted against the limit', async () => {
     existingMember = { userId: 'joiner' };
-    capacity = { ok: false, code: 'plan_member_limit', maxMembers: 1, current: 1, message: 'full' };
+    capacity = { ok: false, code: 'seats_exhausted', action: 'upgrade', paidSeats: 1, used: 1, message: 'full — see Settings → Billing' };
     const res = await accept();
     expect(res.status).toBe(200);
-    expect(capacityCalls).toBe(0);
+    expect(capacityCalls).toHaveLength(0);
   });
 });

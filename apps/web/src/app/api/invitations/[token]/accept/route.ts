@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { teamInvitations, teamMembers, teams } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
-import { checkMemberCapacity } from '@buildd/core/billing-limits';
+import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
 
 // POST /api/invitations/[token]/accept — accept an invitation
 export async function POST(
@@ -37,18 +37,16 @@ export async function POST(
       return NextResponse.json({ error: 'Invitation has expired' }, { status: 410 });
     }
 
-    // Plan member limit (no-op while BILLING_ENFORCED is off). Someone already
-    // in the team takes no new seat. A refused invitation stays pending, so it
-    // can still be accepted once the plan has room.
+    // The invite held a seat, so only members count here. Someone already in
+    // the team takes no new seat. A team that lost seats since (downgrade) is
+    // refused; the invitation stays pending.
     const alreadyMember = await db.query.teamMembers.findFirst({
       where: and(eq(teamMembers.teamId, invitation.teamId), eq(teamMembers.userId, user.id)),
       columns: { userId: true },
     });
     if (!alreadyMember) {
-      const capacity = await checkMemberCapacity(invitation.teamId);
-      if (!capacity.ok) {
-        return NextResponse.json({ error: capacity.message, code: capacity.code }, { status: 402 });
-      }
+      const seat = await checkSeatForNewMember(invitation.teamId, { countPending: false });
+      if (!seat.ok) return seatsExhaustedResponse(seat, 'invitee');
     }
 
     // Add user to team

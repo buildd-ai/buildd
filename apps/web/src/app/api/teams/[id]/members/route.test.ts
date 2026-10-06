@@ -12,9 +12,8 @@ const TEAM = '11111111-1111-4111-8111-111111111111';
 
 let memberships: Record<string, { role: string } | undefined> = {};
 const inserted: any[] = [];
-// Billing: the plan the team row reports and the member count the gate sees.
-let teamPlan: { plan: string; paidSeats?: number | null } | null = null;
-let memberCount = 0;
+// The billing seat gate's view of the team: its plan row and head counts.
+let billing: { plan: string; paidSeats: number | null; members: number; pending: number };
 
 mock.module('@/lib/auth-helpers', () => ({
   requireSessionUser: async () => ({ user: { id: 'caller' } }),
@@ -24,12 +23,13 @@ mock.module('@/lib/auth-helpers', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ type: 'eq', a, b }),
   and: (...args: any[]) => ({ type: 'and', args }),
-  sql: () => ({ type: 'sql' }),
+  count: () => 'count(*)',
 }));
 
 mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   teamMembers: { teamId: 'teamMembers.teamId', userId: 'teamMembers.userId', role: 'teamMembers.role' },
   users: { id: 'users.id' },
+  teamInvitations: { teamId: 'teamInvitations.teamId', status: 'teamInvitations.status' },
 }));
 
 function userIdIn(where: any): string | undefined {
@@ -38,7 +38,7 @@ function userIdIn(where: any): string | undefined {
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: { teams: { findFirst: async (q: any) => (q?.columns?.plan ? teamPlan : null) },
+    query: { teams: { findFirst: async () => ({ plan: billing.plan, paidSeats: billing.paidSeats, permissionOverrides: null }) },
       teamMembers: {
         findFirst: async (q: any) => {
           const userId = userIdIn(q.where);
@@ -50,7 +50,11 @@ mock.module('@buildd/core/db', () => ({
       users: { findFirst: async () => ({ id: 'target' }) },
     },
     insert: () => ({ values: async (v: any) => { inserted.push(v); } }),
-    select: () => ({ from: () => ({ where: async () => [{ n: memberCount }] }) }),
+    select: () => ({
+      from: (table: any) => ({
+        where: async () => [{ n: 'status' in table ? billing.pending : billing.members }],
+      }),
+    }),
   },
 }));
 
@@ -72,9 +76,8 @@ function post(body: unknown) {
 beforeEach(() => {
   memberships = {};
   inserted.length = 0;
-  teamPlan = null;
-  memberCount = 0;
   delete process.env.BILLING_ENFORCED;
+  billing = { plan: 'free', paidSeats: null, members: 1, pending: 0 };
 });
 
 describe('POST /api/teams/[id]/members', () => {
@@ -119,38 +122,32 @@ describe('POST /api/teams/[id]/members', () => {
     expect(res.status).toBe(200);
     expect(inserted).toEqual([{ teamId: TEAM, userId: 'target', role: 'owner' }]);
   });
-});
 
-describe('POST /api/teams/[id]/members — plan member limit', () => {
-  it('billing off: a full free team still adds the member', async () => {
-    memberships.caller = { role: 'owner' };
-    teamPlan = { plan: 'free' };
-    memberCount = 1;
-    const res = await post({ userId: 'target', role: 'member' });
-    expect(res.status).toBe(200);
-    expect(inserted).toHaveLength(1);
-  });
+  describe('paid seats (BILLING_ENFORCED on)', () => {
+    beforeEach(() => { process.env.BILLING_ENFORCED = '1'; });
 
-  it('billing on: past maxMembers is refused with a plain message pointing to billing', async () => {
-    process.env.BILLING_ENFORCED = '1';
-    memberships.caller = { role: 'owner' };
-    teamPlan = { plan: 'free' };
-    memberCount = 1;
-    const res = await post({ userId: 'target', role: 'member' });
-    expect(res.status).toBe(402);
-    const body = await res.json();
-    expect(body.code).toBe('plan_member_limit');
-    expect(body.error).toContain('Settings → Billing');
-    expect(inserted).toHaveLength(0);
-  });
+    it('adds a member while the Team plan has a free seat', async () => {
+      memberships.caller = { role: 'owner' };
+      billing = { plan: 'team', paidSeats: 6, members: 5, pending: 0 };
+      const res = await post({ userId: 'target', role: 'member' });
+      expect(res.status).toBe(200);
+      expect(inserted).toHaveLength(1);
+    });
 
-  it('billing on: a team plan with a free seat adds the member', async () => {
-    process.env.BILLING_ENFORCED = '1';
-    memberships.caller = { role: 'owner' };
-    teamPlan = { plan: 'team', paidSeats: 6 };
-    memberCount = 5;
-    const res = await post({ userId: 'target', role: 'member' });
-    expect(res.status).toBe(200);
-    expect(inserted).toHaveLength(1);
+    it('refuses past the paid seats and points the owner at adding seats', async () => {
+      memberships.caller = { role: 'owner' };
+      billing = { plan: 'team', paidSeats: 6, members: 5, pending: 1 };
+      const res = await post({ userId: 'target', role: 'member' });
+      expect(res.status).toBe(402);
+      expect(await res.json()).toMatchObject({ code: 'seats_exhausted', action: 'add_seats', paidSeats: 6, billingUrl: '/app/settings/billing' });
+      expect(inserted).toHaveLength(0);
+    });
+
+    it('with billing off, seat counts never block', async () => {
+      delete process.env.BILLING_ENFORCED;
+      memberships.caller = { role: 'owner' };
+      billing = { plan: 'team', paidSeats: 5, members: 50, pending: 9 };
+      expect((await post({ userId: 'target', role: 'member' })).status).toBe(200);
+    });
   });
 });

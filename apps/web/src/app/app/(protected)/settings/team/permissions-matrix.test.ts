@@ -10,7 +10,7 @@ function api(overrides: Partial<Record<Permission, string[]>> = {}): ApiPermissi
     description: PERMISSIONS[name].description,
     defaultRoles: [...PERMISSIONS[name].defaultRoles],
     roles: overrides[name] ?? [...PERMISSIONS[name].defaultRoles],
-    locked: ['assign_team_owner', 'delete_team', 'manage_team_permissions', 'seed_team_timezone'].includes(name),
+    locked: ['assign_team_owner', 'delete_team', 'manage_team_permissions', 'seed_team_timezone', 'manage_billing'].includes(name),
     overridden: overrides[name] !== undefined,
   }));
 }
