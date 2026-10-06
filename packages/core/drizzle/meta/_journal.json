@@ -1676,17 +1676,17 @@
       "breakpoints": true
     },
     {
-      "idx": 247,
-      "version": "7",
-      "when": 1791288179657,
-      "tag": "0247_striped_arclight",
-      "breakpoints": true
-    },
-    {
       "idx": 248,
       "version": "7",
       "when": 1791289248947,
       "tag": "0248_powerful_maddog",
+      "breakpoints": true
+    },
+    {
+      "idx": 249,
+      "version": "7",
+      "when": 1791309677721,
+      "tag": "0249_heavy_wild_child",
       "breakpoints": true
     }
   ]
