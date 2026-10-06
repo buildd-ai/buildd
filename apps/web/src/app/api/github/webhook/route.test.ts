@@ -377,9 +377,20 @@ const mockCanCompleteMission = mock(() => Promise.resolve({
   code: 'ok',
   reason: 'All goal criteria pass',
 }) as any);
+const mockCompleteMissionIfVerified = mock(async (_missionId: string, _opts: any) => ({ completed: false }) as any);
 mock.module('@/lib/mission-completion', () => ({
   canCompleteMission: mockCanCompleteMission,
+  completeMissionIfVerified: mockCompleteMissionIfVerified,
 }));
+
+// What a held release's resolution records: the evidence write (task.terminal),
+// the outcome-analytics row and the runner failure detector.
+const mockPersistTaskEvidence = mock(async (..._args: unknown[]) => null);
+mock.module('@/lib/task-evidence-store', () => ({ persistTaskEvidence: mockPersistTaskEvidence }));
+const mockRecordTaskOutcome = mock(async (_input: any) => true);
+mock.module('@buildd/core/routing-analytics', () => ({ recordTaskOutcome: mockRecordTaskOutcome }));
+const mockRecordRunnerOutcome = mock(async (_outcome: string) => {});
+mock.module('@buildd/core/runner-health', () => ({ recordRunnerOutcome: mockRecordRunnerOutcome }));
 
 // Mock workflow dispatch so tests don't hit real GitHub or block on setTimeout polling
 const mockDispatchWorkflowRelease = mock(() =>
@@ -5903,6 +5914,8 @@ describe('release PR CI success pins the live head', () => {
 // or task.failed is emitted (the PATCH emits neither while held).
 describe('held release: the release PR\'s CI emits the task\'s terminal event', () => {
   const HEAD = 'a'.repeat(40);
+  // What the worker PATCH would have recorded, kept on the task while held.
+  const HELD = { accountId: 'acct-1', actualModel: 'model-x', totalCostUsd: '1.5', totalTurns: 7, durationMs: 1000, wasRetried: false, exitCause: null, workerId: 'w-rel' };
   beforeEach(() => {
     resetAll();
     mockRecordEvent.mockClear();
@@ -5916,9 +5929,14 @@ describe('held release: the release PR\'s CI emits the task\'s terminal event', 
       return null;
     };
     mockTasksFindFirst.mockResolvedValue({
-      id: 'release-task', title: 'Ship it', workspaceId: 'ws-release',
+      id: 'release-task', title: 'Ship it', workspaceId: 'ws-release', missionId: 'mission-1',
+      context: { releasePrPending: true, releasePrNumber: 42, heldReleaseOutcome: HELD },
       workspace: { name: 'W', teamId: 'team-1', dataClass: null },
     });
+    mockPersistTaskEvidence.mockClear();
+    mockRecordTaskOutcome.mockClear();
+    mockRecordRunnerOutcome.mockClear();
+    mockCompleteMissionIfVerified.mockClear();
   });
 
   const ledger = () => mockRecordEvent.mock.calls.map(c => c[0]).filter((e: any) => e.type?.startsWith('task.'));
@@ -5981,6 +5999,56 @@ describe('held release: the release PR\'s CI emits the task\'s terminal event', 
       type: 'task.failed', taskId: 'release-task', workerId: 'w-rel', title: null, workspaceId: 'ws-release', reason: 'Release CI failed',
     }]);
     expect((pushes()[0]![2] as any).message).toBe('Task failed (content redacted)\nRelease CI failed');
+  });
+
+  // The held task's analytics row, mission completion attempt and evidence
+  // record wait for this resolution and then follow its status, once each.
+  const outcomeRows = () => mockRecordTaskOutcome.mock.calls.map(c => c[0]);
+  const missionVerdicts = () => mockCompleteMissionIfVerified.mock.calls.map(c => [c[0], c[1]]);
+  const evidenceWrites = () => mockPersistTaskEvidence.mock.calls;
+
+  it('held then resolved success: outcome completed, the mission hears completed, one evidence write', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: HEAD } });
+    mockAllCheckSuitesPassed.mockResolvedValue(true);
+    mockMergePullRequest.mockResolvedValue({ merged: true });
+    await deliverSuccess();
+    expect(outcomeRows()).toEqual([{ ...HELD, taskId: 'release-task', outcome: 'completed' }]);
+    expect(mockRecordRunnerOutcome.mock.calls).toEqual([['completed']]);
+    expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task release-task reached completed' }]]);
+    expect(evidenceWrites()).toEqual([['release-task', 'w-rel', { isSensitive: false }]]);
+  });
+
+  it('held then resolved failure (CI red): outcome failed, the mission hears failed, one evidence write', async () => {
+    await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+    expect(outcomeRows()).toEqual([{ ...HELD, taskId: 'release-task', outcome: 'failed' }]);
+    expect(mockRecordRunnerOutcome.mock.calls).toEqual([['failed']]);
+    expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task release-task reached failed' }]]);
+    expect(evidenceWrites()).toEqual([['release-task', 'w-rel', { isSensitive: false }]]);
+  });
+
+  it('held then resolved failure (merge rejected): outcome failed, the mission hears failed, one evidence write', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: HEAD } });
+    mockAllCheckSuitesPassed.mockResolvedValue(true);
+    mockMergePullRequest.mockResolvedValue({ merged: false, message: 'Base branch was modified' });
+    await deliverSuccess();
+    expect(outcomeRows()).toEqual([{ ...HELD, taskId: 'release-task', outcome: 'failed' }]);
+    expect(mockRecordRunnerOutcome.mock.calls).toEqual([['failed']]);
+    expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task release-task reached failed' }]]);
+    expect(evidenceWrites()).toEqual([['release-task', 'w-rel', { isSensitive: false }]]);
+  });
+
+  it('a held task with no kept analytics row (held before this shipped): a bare outcome row, the rest still runs', async () => {
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'release-task', title: 'Ship it', workspaceId: 'ws-release', missionId: 'mission-1',
+      context: { releasePrPending: true, releasePrNumber: 42 },
+      workspace: { name: 'W', teamId: 'team-1', dataClass: null },
+    });
+    await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+    // The outcome is still the release's, with what the row can tell.
+    expect(outcomeRows()).toEqual([{ taskId: 'release-task', outcome: 'failed', workerId: 'w-rel' }]);
+    expect(mockRecordRunnerOutcome.mock.calls).toEqual([['failed']]);
+    expect(missionVerdicts()).toHaveLength(1);
+    expect(evidenceWrites()).toHaveLength(1);
   });
 });
 
