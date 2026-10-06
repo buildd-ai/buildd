@@ -331,7 +331,7 @@ export const workerActions = [
   // read-only over rows the caller's workspace access already covers.
   'list_discrepancies', 'get_discrepancy',
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
-  'create_pr', 'close_pr', 'merge_pr', 'get_pr', 'list_prs', 'request_pr_review', 'get_pr_review',
+  'create_pr', 'close_pr', 'update_pr', 'merge_pr', 'get_pr', 'list_prs', 'request_pr_review', 'get_pr_review',
   'record_pr_supersession',
   'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
@@ -628,6 +628,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
       + `lede (required) — ${LEDE_FIELD_SPEC}\n\n`
       + 'The lede leads the PR body; `body` follows it, unchanged and uncapped, under its own headings. Nothing inspects or grades what you write — the only way `lede` can fail is by being absent, and then no PR is created and you simply call again.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
+    update_pr: '{ workerId?, prNumber (required), body (required) } — Replace a pull request\'s body via the workspace\'s GitHub App installation, same as close_pr but rewriting content instead of state. Use this instead of the GitHub connector\'s update_pull_request (returns 403 Resource not accessible by integration on most installations) and instead of create_pr\'s dedup-adoption path for a PR create_pr did not open or was not asked to refresh — e.g. correcting a PR body after the fact (removing a disclosed URL, fixing a no-prod-data gate trip). Only an agent run or team member that owns the PR (its own worker\'s, or one its task names) may call this; a task token is confined to its own task\'s PR the same way close_pr is.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
     get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments?, includeCiFailures? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. When the PR has fix attempts (after CI #N / after review #N, including one that opened a PR of its own after a failed resume) they are listed with each attempt\'s errorClass, first key line and any mismatch flag. Stored run-evidence objects (kind, size, id) are listed when the task has any; read one with read_evidence. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state. When CI is red and you need to know why, pass includeCiFailures:true: for each failing check it returns the job, the failing step and the last ~150 log lines (timestamps and escape codes stripped, secrets and production figures redacted, size-capped); a job whose log is unavailable comes back as its name and URL only.',
     list_prs: '{ state? ("open" default | "attention" = conflicts and red CI | "conflict" | "ci_failed" | "merged"), workspaceId? (omit: every workspace you reach), sinceDays? (merged: default 7, max 90), limit? (default 20, max 50) } — PRs buildd opened or adopted, one line each: number, state, task title, workspace, mission, task id, url, plus when it matters: NEEDS YOU (why), CI fix attempts so far, an agent already fixing or reviewing it, a mission-branch base, a stale state. Order: waiting on you, red nobody is fixing, red being fixed, the rest. attention lists only conflicts, red CI and PRs waiting on you. Closed PRs are never listed; read one with get_pr.',
@@ -2560,6 +2561,20 @@ export async function handleBuilddAction(
 
       const titlePart = data.pr.title ? ` — ${data.pr.title}` : '';
       return text(`Pull request #${data.pr.number} closed${titlePart}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`);
+    }
+
+    case 'update_pr': {
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      if (!params.prNumber) throw new Error('prNumber is required');
+      if (typeof params.body !== 'string') throw new Error('body is required');
+
+      const data = await api('/api/github/pr', {
+        method: 'PATCH',
+        body: JSON.stringify({ workerId, prNumber: params.prNumber, body: params.body }),
+      });
+
+      const titlePart = data.pr.title ? ` — ${data.pr.title}` : '';
+      return text(`Pull request #${data.pr.number} body updated${titlePart}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`);
     }
 
     case 'merge_pr': {
