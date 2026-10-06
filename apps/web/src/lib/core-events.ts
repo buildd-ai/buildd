@@ -274,7 +274,20 @@ export type CoreEvent =
     }
   /** A GitHub Actions workflow run completed (any workflow, any repo linked to an installation). */
   | { type: 'workflow_run.completed'; run: WorkflowRunFact; installationId: number | null }
-  | { type: 'pr.ci_failed'; repoFullName: string; prNumber: number; headSha: string };
+  /** A check suite completed red on a PR. Every delivery, once per PR in the suite. */
+  | { type: 'pr.ci_failed'; repoFullName: string; prNumber: number; headSha: string; installationId: number }
+  /**
+   * A push (`synchronize`) to an open PR a buildd worker owns: every delivery,
+   * redeliveries included. `worker` is the newest row owning the PR (a retry
+   * continues on the same PR). Subscribers must be idempotent.
+   */
+  | {
+      type: 'pr.synchronized';
+      installationId: number;
+      repoFullName: string;
+      pr: { number: number; headSha: string; htmlUrl: string; baseRef: string | null; body: string | null; draft: boolean };
+      worker: { id: string; workspaceId: string; taskId: string | null; branch: string };
+    };
 
 /** The worker that owns a PR, as the webhook resolved it. */
 export interface PrOwnerFact {
