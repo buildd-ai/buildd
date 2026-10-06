@@ -258,8 +258,10 @@ mock.module('@/lib/pusher', () => ({
   triggerEvent: mock(() => Promise.resolve()),
 }));
 const mockAnnounceFixClaimed = mock(() => Promise.resolve());
+const mockAnnounceReviewClaimed = mock(() => Promise.resolve());
 mock.module('@/lib/pr-activity-fix-claimed', () => ({
   announceFixClaimed: mockAnnounceFixClaimed,
+  announceReviewClaimed: mockAnnounceReviewClaimed,
 }));
 mock.module('@/lib/notify', () => ({
   notify: mock(() => {}),
@@ -1064,6 +1066,37 @@ describe('POST /api/workers/claim', () => {
       expect(res.status).toBe(200);
       expect(data.workers.length).toBe(1);
       expect(data.workers[0].taskId).toBe('task-1');
+    });
+
+    // Filing a reviewer only says "Review queued" on the PR; the claim is what
+    // makes "Reviewing" true. One claim, one announcement.
+    it('announces a claimed reviewer task to the PR comment exactly once', async () => {
+      const loginAccount = { id: 'acct-login', type: 'user', teamId: 'team-personal' };
+      mockAuthenticateApiKey.mockResolvedValue({
+        ...loginAccount, authType: 'api', level: 'worker', maxConcurrentWorkers: 3, workspaceIds: null,
+      });
+      mockGetAccountWorkspacePermissions.mockResolvedValue(linksFor(loginAccount));
+      mockWorkspacesFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValueOnce([{ id: 'ws-mine' }]);
+      mockTasksFindMany.mockResolvedValueOnce([{
+        ...pendingTask(),
+        title: 'Review PR #42: First task',
+        context: { reviewerFor: 'task-0', prNumber: 42 },
+      }]);
+      setupClaimWrites();
+      mockAnnounceReviewClaimed.mockClear();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+      expect(res.status).toBe(200);
+      expect((await res.json()).workers).toHaveLength(1);
+      expect(mockAnnounceReviewClaimed).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceReviewClaimed).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'task-1',
+        context: expect.objectContaining({ reviewerFor: 'task-0', prNumber: 42 }),
+      }));
     });
 
     it("another team's token still cannot claim there", async () => {
@@ -2156,11 +2189,11 @@ describe('POST /api/workers/claim', () => {
         id, canonicalId: null, openRouterId: `anthropic/${id}`, provider: 'anthropic', displayName: id,
         contextLength: 1_000_000, created: 1_790_000_000 + createdDay * 86_400, input, output: input * 5, cacheRead: 0, cacheWrite: 0,
       });
-      // opus-5-5 is the newest model with a recorded CLI floor; sonnet-5-5 postdates it.
+      // Sonnet 5.5 has a recorded floor; hypothetical Sonnet 6 is still unvouched.
       const CATALOG = [
-        entry('claude-sonnet-5', 0), entry('claude-opus-5', 1, 5), entry('claude-opus-5-5', 10, 4), entry('claude-sonnet-5-5', 15),
+        entry('claude-sonnet-5', 0), entry('claude-opus-5', 1, 5), entry('claude-opus-5-5', 10, 4), entry('claude-sonnet-5-5', 15), entry('claude-sonnet-6', 20),
       ];
-      const BAD = 'claude-sonnet-5-5';
+      const BAD = 'claude-sonnet-6';
 
       beforeEach(() => {
         mockGetCatalog.mockResolvedValue(CATALOG as any);
@@ -2187,12 +2220,12 @@ describe('POST /api/workers/claim', () => {
 
         const claimSet = sets.find(v => v.status === 'assigned');
         expect(claimSet.predictedModel).not.toBe(BAD);
-        expect(claimSet.context.model).toBe('claude-sonnet-5');
+        expect(claimSet.context.model).toBe('claude-sonnet-5-5');
 
         expect(errorTraceRows).toHaveLength(1);
         expect(errorTraceRows[0]).toMatchObject({ workerId: 'worker-1', taskId: 'task-1', pattern: 'dispatch_model_rejected', source: 'claim' });
         expect(errorTraceRows[0].excerpt).toContain(`"${BAD}" from pin (newer_than_floor_table)`);
-        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5"');
+        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5-5"');
       });
 
       it('a pool challenger on an unvouched id never reaches the runner: the incumbent is served and the arm is un-served', async () => {
@@ -2204,11 +2237,11 @@ describe('POST /api/workers/claim', () => {
         await POST(claimReq());
 
         const claimSet = sets.find(v => v.status === 'assigned');
-        expect(claimSet.predictedModel).toBe('claude-sonnet-5');
-        expect(claimSet.context.model).toBe('claude-sonnet-5');
+        expect(claimSet.predictedModel).toBe('claude-sonnet-5-5');
+        expect(claimSet.context.model).toBe('claude-sonnet-5-5');
         expect(errorTraceRows).toHaveLength(1);
         expect(errorTraceRows[0].excerpt).toContain(`"${BAD}" from tier_pool_arm`);
-        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5"');
+        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5-5"');
       });
 
       it('an arm the guard rejects after it was served is un-served in the recorded assignment', async () => {
@@ -2218,11 +2251,11 @@ describe('POST /api/workers/claim', () => {
         mockApplyAgentPoolArm.mockReturnValue({ model: BAD, provider: 'anthropic' });
         await POST(claimReq());
 
-        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5');
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5-5');
         expect(draw.served).toBe(false);
-        expect(draw.assignedModel).toBe('claude-sonnet-5');
+        expect(draw.assignedModel).toBe('claude-sonnet-5-5');
         expect(draw.eligibility).toMatchObject({ fallback: 'model_unrecognized' });
-        expect(mockRecordAgentPoolAssignment.mock.calls[0][1]).toMatchObject({ resolvedModel: 'claude-sonnet-5' });
+        expect(mockRecordAgentPoolAssignment.mock.calls[0][1]).toMatchObject({ resolvedModel: 'claude-sonnet-5-5' });
       });
 
       it('a recognised model is left alone and leaves no trace', async () => {

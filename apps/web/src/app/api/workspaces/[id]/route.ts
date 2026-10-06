@@ -10,7 +10,7 @@ import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
-import { findRemovedPathFieldInGitConfig, isWorkspaceExecutor, removedPolicyPathFieldError } from '@buildd/shared';
+import { findRemovedPathFieldInGitConfig, isRunnerSize, isWorkspaceExecutor, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 import { AGENT_GITHUB_CREDENTIALS_OPT_OUT } from '@buildd/core/agent-github-credentials';
@@ -358,6 +358,24 @@ export async function PATCH(
             { status: 400 },
           );
         }
+      }
+      // Cloud-runner container class: exact values only. The derived marker is
+      // buildd's to write; an admin may only clear it (null), which lets the
+      // next dispatch derive the size afresh.
+      if ('runnerSize' in gitConfig) {
+        const value = (gitConfig as Record<string, unknown>).runnerSize;
+        if (value !== null && !isRunnerSize(value)) {
+          return NextResponse.json(
+            { error: "gitConfig.runnerSize must be 'standard', 'large' or null" },
+            { status: 400 },
+          );
+        }
+      }
+      if ('runnerSizeDerived' in gitConfig && (gitConfig as Record<string, unknown>).runnerSizeDerived !== null) {
+        return NextResponse.json(
+          { error: 'gitConfig.runnerSizeDerived is set by buildd; send null to clear it' },
+          { status: 400 },
+        );
       }
       // GitHub credentials opt-out for self-hosted agents: the one accepted
       // value is 'runner', so a typo cannot hand agents the operator's token.

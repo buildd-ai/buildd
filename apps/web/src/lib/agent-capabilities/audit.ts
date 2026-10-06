@@ -19,9 +19,11 @@ export type CapabilityName =
   | 'github.repo_grant'
   | 'model.endpoint'
   | 'task_token.mint'
+  | 'runner.size'
   | 'pr.create'
   | 'pr.adopt'
   | 'pr.close'
+  | 'pr.update_body'
   | 'pr.merge';
 
 export interface CapabilityDecisionRecord {

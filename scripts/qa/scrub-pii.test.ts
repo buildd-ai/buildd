@@ -157,7 +157,8 @@ const SAFE: Record<string, string[]> = {
   teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes', 'enabled_decision_shadows', 'decision_model',
     'chat_default_tier', // a chat tier name (CHAT_TIER_NAMES) or null
     'chat_retro', // { lessons, proposals } booleans (apps/web/src/lib/chat-retro/settings.ts)
-    'permission_overrides'], // permission names -> team role names, both fixed sets (lib/permission-registry.ts)
+    'permission_overrides', // permission names -> team role names, both fixed sets (lib/permission-registry.ts)
+    'plan', 'billing_status'], // fixed vocabularies (packages/core/entitlements.ts); stripe ids are wiped
   team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
     'chat_composer_prefs'], // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
   users: ['timezone'],
@@ -198,7 +199,9 @@ const SAFE: Record<string, string[]> = {
     'workspace_ids', 'runner_commit', 'runner_version', 'current_commit', 'disk_commit',
     'tracked_branch',
   ],
-  task_schedules: ['cron_expression', 'timezone', 'last_heartbeat_state_hash'],
+  // delegation: workspace/user/account ids, a fixed capability vocabulary and a
+  // timestamp (packages/core/token-delegation.ts). No free text.
+  task_schedules: ['cron_expression', 'timezone', 'last_heartbeat_state_hash', 'delegation'],
   github_installations: ['permissions'],
   github_repos: ['default_branch'],
   workspace_skills: ['content_hash', 'model', 'color', 'config_hash', 'config_storage_key'],

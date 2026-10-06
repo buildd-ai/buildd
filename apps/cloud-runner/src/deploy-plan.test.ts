@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { SNAPSHOT_BUCKET, deployNames, renderWranglerConfig, planDeploy, describePlan, dispatchUrl, DISPATCH_EVENTS, type DeployInputs, type DeployStep } from './deploy-plan';
+import { SNAPSHOT_BUCKET, containerClasses, deployNames, renderWranglerConfig, planDeploy, describePlan, dispatchUrl, DISPATCH_EVENTS, type DeployInputs, type DeployStep } from './deploy-plan';
 
 const URL_ = 'https://buildd-cloud-runner.example.workers.dev';
 const DISPATCH = `${URL_}/dispatch`;
@@ -61,6 +61,20 @@ describe('deploy names', () => {
     // The fleet shows this deployment's runs as one group under its own name.
     expect(b.vars.RUNNER_GROUP).toBe('agent-runtime-spike');
     expect({ ...b, name: a.name, r2_buckets: a.r2_buckets, vars: { ...b.vars, RUNNER_GROUP: a.vars.RUNNER_GROUP } }).toEqual(a);
+  });
+
+  it('both container classes, each with its own instance type and ceiling, survive a custom-named render', () => {
+    const want = [
+      { className: 'WorkerAgent', instanceType: 'standard-1', maxInstances: expect.any(Number) },
+      { className: 'WorkerAgentLarge', instanceType: 'standard-3', maxInstances: expect.any(Number) },
+    ];
+    expect(containerClasses(base())).toEqual(want);
+    expect(containerClasses(renderWranglerConfig(base(), deployNames('agent-runtime-spike')))).toEqual(want);
+  });
+
+  it('refuses to render a config that lost a container class', () => {
+    const oneClass = base().replace('"WorkerAgentLarge"', '"SomethingElse"');
+    expect(() => renderWranglerConfig(oneClass, deployNames('agent-runtime-spike'))).toThrow(/WorkerAgentLarge/);
   });
 
   it('fails loudly if wrangler.jsonc no longer has the fields it rewrites', () => {
@@ -213,6 +227,16 @@ describe('describePlan (--dry-run output)', () => {
     expect(text).toContain('https://buildd.example');
     expect(text).not.toContain(GEN);
     expect(text).not.toContain('bld_runner_key');
+  });
+
+  it('the deploy line names both container classes with their instance types and max_instances', () => {
+    const classes = [
+      { className: 'WorkerAgent', instanceType: 'standard-1', maxInstances: 10 },
+      { className: 'WorkerAgentLarge', instanceType: 'standard-3', maxInstances: 4 },
+    ];
+    const deployLine = describePlan(planDeploy(inputs()), deployNames(), classes).find(l => l.startsWith('wrangler deploy'))!;
+    expect(deployLine).toContain('WorkerAgent standard-1 max 10');
+    expect(deployLine).toContain('WorkerAgentLarge standard-3 max 4');
   });
 
   it('prints the error for a refused plan', () => {

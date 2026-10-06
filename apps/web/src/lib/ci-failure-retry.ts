@@ -402,6 +402,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
       outputRequirement: tasks.outputRequirement,
       ciRetryPrNumber: tasks.ciRetryPrNumber,
       ciRetryHeadSha: tasks.ciRetryHeadSha,
+      conflictRetryPrNumber: tasks.conflictRetryPrNumber,
       context: tasks.context,
       createdAt: tasks.createdAt,
     })

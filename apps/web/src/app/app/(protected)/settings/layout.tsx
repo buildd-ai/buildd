@@ -1,3 +1,4 @@
+import { isBillingEnforced } from '@buildd/core/entitlements';
 import SettingsSubNav from './_components/SettingsSubNav';
 
 /**
@@ -8,7 +9,7 @@ import SettingsSubNav from './_components/SettingsSubNav';
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="md:flex min-h-full">
-      <SettingsSubNav />
+      <SettingsSubNav billing={isBillingEnforced()} />
       <div className="flex-1 min-w-0">{children}</div>
     </div>
   );

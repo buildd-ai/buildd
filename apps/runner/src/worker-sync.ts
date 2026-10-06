@@ -104,7 +104,15 @@ function computeTouchedPaths(worktreePath: string, baseRef: string | undefined):
  */
 function computeDirtyWorktree(worktreePath: string): boolean {
   try {
-    const output = execSync('git status --porcelain', { cwd: worktreePath, timeout: 5000 }).toString();
+    // Runs every sync tick against the worker's own live worktree, so it can
+    // race an agent `git add`/`git commit` there for the same index.lock —
+    // GIT_OPTIONAL_LOCKS=0 skips the opportunistic index write-back `status`
+    // would otherwise do, without changing the porcelain output read below.
+    const output = execSync('git status --porcelain', {
+      cwd: worktreePath,
+      timeout: 5000,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    }).toString();
     return output.split('\n').some(line => line.length > 0 && !line.startsWith('??'));
   } catch {
     return false;

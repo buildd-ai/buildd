@@ -1,6 +1,6 @@
 {
-  "id": "f664e121-0866-4a4d-8258-e8d494787fc7",
-  "prevId": "e7a7ea63-3873-4550-96fe-41e152f631b4",
+  "id": "81cb6f85-f7cb-4838-bc70-3a0913d2df3b",
+  "prevId": "f1631344-901b-4688-abc7-44f0585511ce",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -4062,6 +4062,136 @@
           "tableTo": "workspaces",
           "columnsFrom": [
             "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.dependency_releases": {
+      "name": "dependency_releases",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "dependent_task_id": {
+          "name": "dependent_task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "upstream_task_id": {
+          "name": "upstream_task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "upstream_pr_number": {
+          "name": "upstream_pr_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decision": {
+          "name": "decision",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason_code": {
+          "name": "reason_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_branch": {
+          "name": "base_branch",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_reason": {
+          "name": "revoked_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "dependency_releases_dependent_upstream_idx": {
+          "name": "dependency_releases_dependent_upstream_idx",
+          "columns": [
+            {
+              "expression": "dependent_task_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "upstream_task_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "dependency_releases_dependent_task_id_tasks_id_fk": {
+          "name": "dependency_releases_dependent_task_id_tasks_id_fk",
+          "tableFrom": "dependency_releases",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "dependent_task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "dependency_releases_upstream_task_id_tasks_id_fk": {
+          "name": "dependency_releases_upstream_task_id_tasks_id_fk",
+          "tableFrom": "dependency_releases",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "upstream_task_id"
           ],
           "columnsTo": [
             "id"
@@ -8582,6 +8712,12 @@
         "branch_refresh_lease_until": {
           "name": "branch_refresh_lease_until",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "branch_refresh_lease_token": {
+          "name": "branch_refresh_lease_token",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -13277,6 +13413,58 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.stripe_events": {
+      "name": "stripe_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "processed_at": {
+          "name": "processed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "stripe_events_team_id_teams_id_fk": {
+          "name": "stripe_events_team_id_teams_id_fk",
+          "tableFrom": "stripe_events",
+          "tableTo": "teams",
+          "columnsFrom": [
+            "team_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.subscriptions": {
       "name": "subscriptions",
       "schema": "",
@@ -14524,6 +14712,12 @@
         },
         "pending_suggestion": {
           "name": "pending_suggestion",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "delegation": {
+          "name": "delegation",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
@@ -16392,6 +16586,37 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
+        },
+        "plan": {
+          "name": "plan",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'free'"
+        },
+        "billing_status": {
+          "name": "billing_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stripe_customer_id": {
+          "name": "stripe_customer_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stripe_subscription_id": {
+          "name": "stripe_subscription_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "paid_seats": {
+          "name": "paid_seats",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -16400,6 +16625,21 @@
           "columns": [
             {
               "expression": "slug",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "teams_stripe_customer_id_idx": {
+          "name": "teams_stripe_customer_id_idx",
+          "columns": [
+            {
+              "expression": "stripe_customer_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
