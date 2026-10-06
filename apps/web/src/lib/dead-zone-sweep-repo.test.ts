@@ -78,6 +78,7 @@ mock.module('@/lib/conflict-retry', () => ({
   buildConflictRetryTask: mockBuildConflictRetryTask,
   DEFAULT_MAX_CONFLICT_ITERATIONS: 3,
   isAutoResolveMergeConflictsEnabled: () => true,
+  releaseSpentConflictRetryKey: async () => null,
 }));
 
 // The dispatch authority's full surface: mock.module is process-global.
