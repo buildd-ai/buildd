@@ -13,10 +13,12 @@ import { WaitingOnYouReviewCard } from '@/components/WaitingOnYouReviewCard';
 import { WaitingOnYouDecideCard } from '@/components/WaitingOnYouDecideCard';
 import { WaitingOnYouDiscrepancyCard } from '@/components/WaitingOnYouDiscrepancyCard';
 import { AgentHandledCard } from '@/components/AgentHandledCard';
+import { MergeBlockerCard } from '@/components/MergeBlockerCard';
 import { FixCiButton } from '@/components/FixCiButton';
 import { AgentRecommendation } from '@/components/AgentRecommendation';
 import { actionCardTaskLink, resolveActionCardContext } from '@/lib/action-card-context';
 import type { ActionQueueItem } from '@/lib/action-queue';
+import { describeMergeBlocker } from '@/lib/merge-blocker';
 
 export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
     const arc = resolveActionCardContext(item);
@@ -145,6 +147,27 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
             {item.taskTitle}
           </div>
         </Link>
+      );
+    }
+    // A merge conflict (resolving, or blocked on a person): state, one reason,
+    // one next step; the rest behind Details. Red-CI BLOCKED keeps its card below.
+    const mergeBlocker = describeMergeBlocker(item);
+    if (mergeBlocker) {
+      return (
+        <MergeBlockerCard
+          key={item.subjectKey}
+          item={item}
+          view={mergeBlocker}
+          links={{
+            task: item.taskId ? actionCardTaskLink(item) : null,
+            action: mergeBlocker.action.kind === 'view_task'
+              ? actionCardTaskLink(item, { taskId: mergeBlocker.action.taskId, page: true })
+              : null,
+            lastAttempt: item.deadZoneLastRetryTaskId
+              ? actionCardTaskLink(item, { taskId: item.deadZoneLastRetryTaskId, page: true })
+              : null,
+          }}
+        />
       );
     }
     if (item.chip === 'RESOLVING') {

@@ -16,6 +16,13 @@ export type MergeOutcome =
   | { kind: 'conflict_dispatched'; taskId: string | null }
   | { kind: 'conflict_exhausted' }
   /**
+   * GitHub refused the merge for conflicts and no automatic fix was filed
+   * (automatic resolution is off, or the dispatch was refused). The same merge
+   * cannot succeed until the branch changes, so this is never a Retry: the
+   * card points at the conflict instead.
+   */
+  | { kind: 'conflict_blocked'; message: string }
+  /**
    * The merge request itself got no usable answer from GitHub (empty/unparseable
    * body, timeout, network failure) — NOT a rejection. The server already
    * re-read the PR's live state before returning this: `open` means the merge
@@ -56,6 +63,7 @@ export function resolveMergeOutcome(
   if (body?.conflictExhausted) return { kind: 'conflict_exhausted' };
 
   const message = typeof body?.error === 'string' ? body.error : '';
+  if (body?.mergeConflict) return { kind: 'conflict_blocked', message: message || 'The PR has merge conflicts' };
   if (status === 404 && ALREADY_MERGED_RE.test(message)) return { kind: 'stale' };
 
   const landing = body?.landing;
