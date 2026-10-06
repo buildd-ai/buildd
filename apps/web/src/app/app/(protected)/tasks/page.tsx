@@ -14,7 +14,7 @@ import TaskGrid from './TaskGrid';
 import { can } from '@/lib/permissions';
 import { loadFlowSeries } from '@/lib/insights-flow-query';
 import { parseBandFilter } from '@/components/insights/usage-model';
-import { tasksInBand } from '@/components/insights/flow-chart-model';
+import { BAND_LABEL, tasksInBand } from '@/components/insights/flow-chart-model';
 import { backendLabel } from '@buildd/core/backend-policy';
 
 export default async function TasksPage({
@@ -112,7 +112,7 @@ export default async function TasksPage({
             ? await loadFlowSeries(wsIds, bandFilter.to - bandFilter.from <= 7 * 86400000 ? '7d' : '30d', bandFilter.to)
             : null;
           const bandIds = bandSeries && bandFilter
-            ? tasksInBand(bandSeries, Math.floor((bandFilter.at - bandSeries.window.from) / bandSeries.bucketMs), bandFilter.band).map(t => t.key)
+            ? tasksInBand(bandSeries, Math.floor((bandFilter.at - bandSeries.window.from) / bandSeries.bucketMs), bandFilter.band).map(t => t.key).filter(key => !key.startsWith('worker:'))
             : null;
           // Band membership is historical, so it must not use current task status.
           // Fetch recent tasks (last 30 days, limit 200)
@@ -416,6 +416,7 @@ export default async function TasksPage({
 
   return (
     <TaskGrid
+      bandFilterLabel={bandFilter ? `${BAND_LABEL[bandFilter.band]} · ${new Date(bandFilter.band === 'released' || bandFilter.band === 'lost' ? bandFilter.from : bandFilter.at).toLocaleString()} – ${new Date(bandFilter.at + (bandFilter.to - bandFilter.from <= 7 * 86400000 ? 3600000 : 6 * 3600000)).toLocaleString()}` : undefined}
       tasks={gridTasks}
       missionFilter={missionId || null}
       missionTitle={missionTitle}
