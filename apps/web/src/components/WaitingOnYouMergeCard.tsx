@@ -30,7 +30,8 @@ type Optimistic =
   | { kind: 'merged' }
   | { kind: 'stale' }
   | { kind: 'conflict_dispatched'; taskId: string | null }
-  | { kind: 'conflict_exhausted' };
+  | { kind: 'conflict_exhausted' }
+  | { kind: 'conflict_blocked'; message: string };
 
 /** How long the ✓ / stale confirmation shows before the server re-render lands. */
 const RESOLVE_REFRESH_MS = 1200;
@@ -125,6 +126,11 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
           break;
         case 'conflict_exhausted':
           setOptimistic({ kind: 'conflict_exhausted' });
+          router.refresh();
+          break;
+        case 'conflict_blocked':
+          // Retrying the same merge cannot help: no Retry, no Dismiss.
+          setOptimistic({ kind: 'conflict_blocked', message: outcome.message });
           router.refresh();
           break;
         case 'review_blocked':
@@ -471,11 +477,14 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
         </div>
       )}
 
-      {/* Conflict exhausted strip — retries maxed, human must act */}
-      {optimistic?.kind === 'conflict_exhausted' && (
-        <div className="mt-2 pt-2 border-t border-status-error/20">
-          <p className="text-[11px] text-status-error mb-1.5">
-            Agents ran out of conflict-resolution retries.
+      {/* Conflict strip — retries maxed or no automatic fix filed; a person
+          resolves it. Never a Retry: the same merge would hit the same conflict. */}
+      {(optimistic?.kind === 'conflict_exhausted' || optimistic?.kind === 'conflict_blocked') && (
+        <div className="mt-2 pt-2 border-t border-status-error/20" data-testid="merge-card-conflict">
+          <p className="text-[11px] text-status-error mb-1.5 break-words">
+            {optimistic.kind === 'conflict_blocked'
+              ? optimistic.message
+              : 'Agents ran out of conflict-resolution retries.'}
           </p>
           <div className="flex items-center gap-3">
             {item.prUrl && (

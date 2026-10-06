@@ -167,6 +167,12 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           setState('conflict_dispatched');
           break;
         case 'conflict_exhausted':
+          setErrorMsg('');
+          setState('conflict_exhausted');
+          break;
+        case 'conflict_blocked':
+          // Retrying the same merge cannot help: no Retry, no Dismiss.
+          setErrorMsg(outcome.message);
           setState('conflict_exhausted');
           break;
         case 'review_blocked':
@@ -578,8 +584,8 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
 
           {state === 'conflict_exhausted' && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20">
-              <p className="text-[11px] text-status-error mb-1.5">
-                Agents ran out of conflict-resolution retries.
+              <p className="text-[11px] text-status-error mb-1.5 break-words">
+                {errorMsg || 'Agents ran out of conflict-resolution retries.'}
               </p>
               <div className="flex items-center gap-3">
                 {item.prUrl && (

@@ -92,6 +92,13 @@ export interface MergeChipInput {
   deadZoneExhausted?: boolean;
   /** A conflict-resolution retry is live. */
   conflictRetryTaskId?: string | null;
+  /**
+   * Automatic conflict resolution is on for the PR's workspace
+   * (`isAutoResolveMergeConflictsEnabled`). Decides who owns a conflicting PR
+   * with no live retry: the conflict-retry machinery (RESOLVING), or a person
+   * (BLOCKED). Absent = on, the same default as the workspace flag.
+   */
+  conflictAutoResolve?: boolean;
   ciGate?: CiGate | null;
   /** Persisted `workers.prLifecycleStatus`. */
   prLifecycleStatus?: string | null;
@@ -121,14 +128,19 @@ function pendingCiState(input: Pick<MergeChipInput, 'ciGate' | 'prLifecycleStatu
  *   1. BLOCKED         conflict retries exhausted (a person must resolve)
  *   2. RESOLVING       an agent is resolving conflicts
  *   3. FIXING_*        an open CI or reviewer fix attempt (ci-gate `fixing`)
- *   4. CI_RUNNING      checks running
- *   5. BLOCKED         CI red, nobody fixing it
- *   6. REVIEW_RUNNING  a review round is queued or running on the PR
- *   7. CI_RUNNING      PR opened, no CI result reported yet (bounded window)
- *   8. AUTO_MERGE      every gate has passed and the platform merges it
- *   9. REVIEW / MERGE  every gate has passed and the policy leaves it to a person
+ *   4. RESOLVING       the PR conflicts with its base and the conflict-retry
+ *                      machinery owns it (the landing or dead-zone sweep files
+ *                      the attempt); BLOCKED when automatic resolution is off
+ *   5. CI_RUNNING      checks running
+ *   6. BLOCKED         CI red, nobody fixing it
+ *   7. REVIEW_RUNNING  a review round is queued or running on the PR
+ *   8. CI_RUNNING      PR opened, no CI result reported yet (bounded window)
+ *   9. AUTO_MERGE      every gate has passed and the platform merges it
+ *  10. REVIEW / MERGE  every gate has passed and the policy leaves it to a person
  *
- * Only 1, 5 and 9 ask anything of a human.
+ * Only the BLOCKED rows and 10 ask anything of a human. A conflicting PR never
+ * reaches 10: a merge tap on it can only be refused again, so the card must
+ * not offer one (nor the Retry that follows a refusal).
  */
 export function resolveMergeChip(input: MergeChipInput): { chip: ActionChip; pendingGates: PendingGates | null } {
   const ciGate = input.ciGate ?? null;
@@ -136,6 +148,9 @@ export function resolveMergeChip(input: MergeChipInput): { chip: ActionChip; pen
   if (input.conflictRetryTaskId) return { chip: 'RESOLVING', pendingGates: null };
   if (ciGate?.kind === 'fixing') {
     return { chip: ciGate.fixKind === 'review' ? 'FIXING_REVIEW' : 'FIXING_CI', pendingGates: null };
+  }
+  if (input.prLifecycleStatus === 'conflict') {
+    return { chip: input.conflictAutoResolve === false ? 'BLOCKED' : 'RESOLVING', pendingGates: null };
   }
   const ci = pendingCiState(input);
   const review = input.reviewInFlight ?? null;
@@ -360,6 +375,14 @@ export interface EscalationRawItem {
   deadZoneExhausted?: boolean;
   /** The last conflict retry task ID — used as the CTA target on BLOCKED cards. */
   deadZoneLastRetryTaskId?: string | null;
+  /** See {@link MergeChipInput.conflictAutoResolve}. */
+  conflictAutoResolve?: boolean;
+  /**
+   * One concrete line naming the conflict, from the newest conflict retry's
+   * failure context (see `describeConflictReason`). Null falls back to a
+   * generic line.
+   */
+  conflictReason?: string | null;
   /**
    * Persisted lifecycle value. `'unresolvable'` is terminal and drops the row
    * out of the queue entirely — it belongs on the health/orphans surface, not
@@ -456,6 +479,14 @@ export interface ActionQueueItem {
   deadZoneExhausted?: boolean;
   /** Link target for the BLOCKED card's primary CTA. */
   deadZoneLastRetryTaskId?: string | null;
+  /**
+   * Set when the chip comes from a merge conflict (RESOLVING, or BLOCKED for a
+   * conflict rather than red CI). Renders the compact merge-blocker card; see
+   * {@link describeMergeBlocker}.
+   */
+  mergeConflict?: boolean;
+  /** See {@link EscalationRawItem.conflictReason}. */
+  conflictReason?: string | null;
   /** Set when chip === 'RECONNECT' — the connector needing re-auth. */
   connectorId?: string;
   connectorName?: string;
@@ -1154,6 +1185,7 @@ export function buildActionQueue(
     const { chip: baseChip, pendingGates } = resolveMergeChip({
       deadZoneExhausted: item.deadZoneExhausted,
       conflictRetryTaskId: item.conflictRetryTaskId,
+      conflictAutoResolve: item.conflictAutoResolve,
       ciGate,
       prLifecycleStatus: item.prLifecycleStatus,
       prLifecycleUpdatedAt: item.prLifecycleUpdatedAt,
@@ -1174,6 +1206,11 @@ export function buildActionQueue(
         })
       : null;
     const chip: ActionChip = staleGate ? 'STALE' : baseChip;
+    // Which RESOLVING/BLOCKED readings come from a conflict, not from red CI.
+    const mergeConflict =
+      (chip === 'RESOLVING' || chip === 'BLOCKED')
+      && (!!item.deadZoneExhausted || !!item.conflictRetryTaskId || item.prLifecycleStatus === 'conflict')
+      && ciGate?.kind !== 'blocked';
 
     map.set(key, {
       subjectKey: key,
@@ -1211,6 +1248,7 @@ export function buildActionQueue(
       conflictRetryIteration: item.conflictRetryIteration ?? undefined,
       deadZoneExhausted: item.deadZoneExhausted ?? undefined,
       deadZoneLastRetryTaskId: item.deadZoneLastRetryTaskId ?? undefined,
+      ...(mergeConflict ? { mergeConflict: true, conflictReason: item.conflictReason ?? null } : {}),
       missionMergeBlockedReason: item.missionMergeBlockedReason ?? null,
       pendingGates,
     });
