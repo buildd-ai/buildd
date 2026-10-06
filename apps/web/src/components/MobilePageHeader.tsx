@@ -4,6 +4,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } fro
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { TeamSwitcher } from './TeamSwitcher';
+import { useTheme } from './ThemeProvider';
 import UserAvatarMenu from './UserAvatarMenu';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { mobileBackHref, mobilePageTitle, showsWorkspaceFilter } from '@/lib/nav-config';
@@ -34,6 +35,8 @@ export default function MobilePageHeader({
   banners?: ReactNode;
 }) {
   const pathname = usePathname();
+  const { resolved, setTheme } = useTheme();
+  const phoneHome = pathname === '/app/home';
   const title = mobilePageTitle(pathname);
   const backHref = mobileBackHref(pathname);
   const currentTeam = teams.find(t => t.id === currentTeamId) ?? teams[0] ?? null;
@@ -86,8 +89,8 @@ export default function MobilePageHeader({
             </svg>
           </Link>
         )}
-        <span className="shrink-0 font-semibold text-text-primary">{title}</span>
-        {currentTeam && (
+        {phoneHome && showSwitcher ? <WorkspaceSwitcher workspaces={workspaces} teamName={currentTeam?.name ?? null} /> : <span className="shrink-0 font-semibold text-text-primary">{phoneHome ? 'buildd' : title}</span>}
+        {currentTeam && !phoneHome && (
           <>
             <span className="text-text-muted shrink-0" aria-hidden="true">·</span>
             <TeamSwitcher teams={teams} currentTeamId={currentTeamId} />
@@ -95,7 +98,8 @@ export default function MobilePageHeader({
         )}
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        {showSwitcher && <WorkspaceSwitcher workspaces={workspaces} teamName={currentTeam?.name ?? null} />}
+        {showSwitcher && !phoneHome && <WorkspaceSwitcher workspaces={workspaces} teamName={currentTeam?.name ?? null} />}
+        {phoneHome && <button type="button" onClick={() => setTheme(resolved === 'dark' ? 'light' : 'dark')} aria-label={resolved === 'dark' ? 'Switch to Day' : 'Switch to Night'} className="flex h-11 w-11 items-center justify-center border border-border-default text-text-primary">{resolved === 'dark' ? '☀' : '☾'}</button>}
         <UserAvatarMenu userInitial={userInitial} direction="down" active={isAccountRoute(pathname)} />
       </div>
     </div>
