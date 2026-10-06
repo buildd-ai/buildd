@@ -4,6 +4,7 @@ import { accountWorkspaces, githubRepos, workspaces, type WorkspaceGitConfig } f
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib/team-access';
@@ -27,7 +28,10 @@ export async function GET(req: NextRequest) {
   // Check API key auth first
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token lists only its own task's workspace and the ones its
+  // schedule's delegation names, so a delegated task can resolve a workspace
+  // by name; it learns nothing about the rest of the team.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   // Fall back to session auth
   const user = await getCurrentUser();
@@ -37,6 +41,17 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    if (apiAccount?.taskScope) {
+      const reachable = await listReachableWorkspaceIds({ account: apiAccount });
+      const ids = reachable.filter(id =>
+        taskScopeAllowsDelegated(apiAccount, id, 'analytics:read') || taskScopeAllowsDelegated(apiAccount, id, 'tasks:create'));
+      const rows = ids.length
+        ? await db.query.workspaces.findMany({ where: inArray(workspaces.id, ids), orderBy: desc(workspaces.createdAt) })
+        : [];
+      // No runner or connected-account detail: a task token needs the name, not the fleet.
+      return NextResponse.json({ workspaces: rows.map(ws => toPublicWorkspace(ws)) });
+    }
+
     // Both paths list exactly the workspaces the caller can reach
     // (lib/workspace-access.ts) — the same rule task and mission creation
     // apply. For an API account that is its own team's open workspaces plus

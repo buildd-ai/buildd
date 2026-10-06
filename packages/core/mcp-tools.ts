@@ -18,6 +18,7 @@ import type { DispatchHistoryEntry } from './dispatch-outbox';
 import { formatEvidenceObjects, formatTaskEvidence, formatTaskMismatch } from './task-evidence-format';
 import { runGetVisualReview, runListRunners } from './mcp-visual-review';
 import { normalizeProject, workspaceProjectKey } from './project-scope';
+import { formatAnalyticsReadFailure, readScheduleDelegation } from './token-delegation';
 import { saveMemory, updateMemory } from './memory-write';
 import {
   LEDE_FIELD_SPEC,
@@ -645,7 +646,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, roleSlug? (role every spawned task runs as; applied only while that role exists in the workspace, else the task files role-less), trigger?, workspaceId? } [admin]',
-    update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
+    update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId?, delegation? ({ grants: [{ workspaceId (UUID), capabilities: (\"analytics:read\" | \"tasks:create\")[] }] } or null to clear) } [admin] — delegation lets the tasks this schedule spawns read the named workspaces\' analytics (decision ledger, decision/coordination stats, gate ledger) and/or file tasks there, and nothing else. Same team only; team admin or owner only; recorded with who granted it and when.',
     delete_schedule: '{ scheduleId (required), workspaceId? } — remove a schedule permanently; prefer pause_schedules if you might need to re-enable it. [admin]',
     list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name), type? ("heartbeat" | "workspace" | "all", default "all" — heartbeat schedules are mission-owned and not independently pausable/editable; pass "workspace" for the schedules you can actually act on) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
     trace_schedule: '{ taskId? OR minutesAgo? OR taskTitleContains?, workspaceId? } — reverse-lookup: given a stray task or a recent notification, find the schedule that spawned it. taskId is the strongest signal (uses the schedule_id FK); minutesAgo lists schedules that fired within the window; taskTitleContains matches on the task template title.',
@@ -677,7 +678,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude learned floor pressure (forecast, not provider usage; source, observation age, sample basis) and Codex exhaustion, monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — learned pressure is advisory and must not be treated as a hard budget wall; use provider exhaustion or monthly depletion for startAfter: "budget_reset".',
     get_manifest_coverage: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — aggregate share of tasks created in the window with concrete, wildcard-only, or missing path manifests. Includes workspace, mission and kind breakdowns; concreteShare is a fraction in [0,1], null for no tasks.',
     get_path_claim_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — check_path_claim call counts and claimed, blocked, deadlock and rejected outcomes from the decision ledger, with transport breakdown and explicit instrumentation coverage. Historical unrecorded successful calls cannot be reconstructed.',
-    get_decision_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — orchestration decision-shadow ledger counts (orchestration_decisions, orchestration_manifest_predictions): totals, applied/suggested/fallback, labelled vs unlabelled, by decision group (capability, decisionId, fingerprint, policy, arm), by UTC day and by fallback reason, plus each workspace\'s opt-in state so zero rows can be told apart from a disabled capability. The DB-free substitute for querying the ledger directly.',
+    get_decision_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d), capability?, since?, until?, limit?, overriddenOnly?, disagreementOnly? } — with capability (e.g. \"question_gate\"): the generic decision ledger for that capability in one workspace — every decision with verdict (for the question gate its decide / hold / ask disposition), confidence, reason, the answer in effect, any later human override and outcome labels, plus a summary; since/until (ISO, at most 31 days) pin a stable window, limit (max 500) bounds the page and truncated + nextUntil continue it. Every answer starts with status: OK or NO_DATA reached the data; FORBIDDEN, UNAUTHORIZED or TOOL_UNAVAILABLE did not, and is never evidence of zero decisions. A scheduled task reads another workspace only when its schedule delegates analytics:read on it. Without capability: orchestration decision-shadow ledger counts (orchestration_decisions, orchestration_manifest_predictions): totals, applied/suggested/fallback, labelled vs unlabelled, by decision group (capability, decisionId, fingerprint, policy, arm), by UTC day and by fallback reason, plus each workspace\'s opt-in state so zero rows can be told apart from a disabled capability. The DB-free substitute for querying the ledger directly.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="role" reports a routed role (one the decision model filled in) as its own "<Role> · inferred" group beside the stated one, and every role group carries median/p90 time-to-claim. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor. Also returns every tool, Bash intent buckets and code-search shapes (exact-histogram tasks only) and per-action buildd calls (recorded since capture began), each with its own coverage line.',
     read_evidence: '{ taskId? | prNumber? | evidenceId? (one is required; taskId: full UUID or 8+ char prefix), workspaceId? (with prNumber or evidenceId; defaults to the session workspace), kind? ("command_output"|"test_report"|"ci_job_log"|"transcript"|"pr_diff"), tail? (last N lines, max 10000), grep? (case-insensitive regex, max 200 chars, at most one * or +), cursor? (from a previous truncated read) } — read the stored run evidence behind a task or PR: full failing command output, test reports, CI job logs. With no tail/grep (and no evidenceId) it lists the objects; with tail or grep it reads the newest matching object. Text is redacted and capped at 64 KB; a truncated read says so and returns a cursor. Never returns a download URL.',
     dispatch_health: '{ workspaceId? } — read-only Dispatch transport health for the caller\'s team (or one of its workspaces). Leads with a one-line verdict (healthy, or what is wrong), then the outbox counts (pending, due, overdue, delivering, stuck, handed off, unacked, unacked past the in-app fallback, orphaned, failed in 24h), deliveries in 24h by route (delivered_via), delivery latency p50/p95 (delivered_at minus not_before), whether the Dispatch Worker answers /health, the last hourly floor run\'s reconcile counts (platform-wide; any repair there is a bug signal), and workspaces not on the dispatch transport (the kill switch). Counts come from Postgres, which receipts keep in step with the Worker; the only Worker call is the /health probe. For one task\'s wakes use get_task include:["dispatch"]; for why a pending task has not started use explain.',
@@ -1375,6 +1376,16 @@ async function resolveWorkspaceId(
   if (match) return match.id;
   if (explicit) throw new Error(unknownWorkspaceMessage(explicit, workspaces));
   return null;
+}
+
+/** One audit line for a schedule's delegation, or '' when it has none. */
+export function describeScheduleDelegation(value: unknown): string {
+  const grants = readScheduleDelegation(value);
+  if (!grants.length) return '';
+  const d = value as { grantedAt?: string; grantedByUserId?: string | null; grantedByAccountId?: string | null };
+  const who = d.grantedByUserId ? `user ${d.grantedByUserId}` : d.grantedByAccountId ? `account ${d.grantedByAccountId}` : 'unknown';
+  const list = grants.map(g => `${g.workspaceId} (${g.capabilities.join(', ')})`).join('; ');
+  return `Delegates: ${list}; granted by ${who}${d.grantedAt ? ` at ${d.grantedAt}` : ''}`;
 }
 
 /** `Could not resolve workspace "x": not visible to this key. You can see: a, b.` */
@@ -3428,6 +3439,8 @@ export async function handleBuilddAction(
       if (params.enabled !== undefined) updateBody.enabled = params.enabled;
       if (params.name !== undefined) updateBody.name = params.name;
       if (params.taskTemplate !== undefined) updateBody.taskTemplate = params.taskTemplate;
+      // Explicit cross-workspace reach for this schedule's tasks; null clears it (team admin only).
+      if (params.delegation !== undefined) updateBody.delegation = params.delegation;
 
       if (params.skillSlugs && Array.isArray(params.skillSlugs) && !params.taskTemplate) {
         const current = await api(`/api/workspaces/${wsId}/schedules/${params.scheduleId}`);
@@ -3442,7 +3455,7 @@ export async function handleBuilddAction(
       }
 
       if (Object.keys(updateBody).length === 0) {
-        throw new Error('At least one field (cronExpression, timezone, enabled, name, taskTemplate, skillSlugs, workspaceId) must be provided');
+        throw new Error('At least one field (cronExpression, timezone, enabled, name, taskTemplate, skillSlugs, delegation) must be provided');
       }
 
       const updated = await api(`/api/workspaces/${wsId}/schedules/${params.scheduleId}`, {
@@ -3451,7 +3464,8 @@ export async function handleBuilddAction(
       });
 
       const updSched = updated.schedule;
-      return text(`Schedule updated: "${updSched.name}" (ID: ${updSched.id})\nCron: ${updSched.cronExpression} (${updSched.timezone})\nEnabled: ${updSched.enabled}\nNext run: ${updSched.nextRunAt || 'not scheduled'}`);
+      const delegationLine = describeScheduleDelegation(updSched.delegation);
+      return text(`Schedule updated: "${updSched.name}" (ID: ${updSched.id})\nCron: ${updSched.cronExpression} (${updSched.timezone})\nEnabled: ${updSched.enabled}\nNext run: ${updSched.nextRunAt || 'not scheduled'}${delegationLine ? `\n${delegationLine}` : ''}`);
     }
 
     case 'delete_schedule': {
@@ -3498,7 +3512,9 @@ export async function handleBuilddAction(
         const err = s.lastError ? `\n  ⚠ Last error: ${String(s.lastError).slice(0, 200)}` : '';
         const channel = describeOutputChannel(s.taskTemplate);
         const channelLine = channel ? `\n  Sends: ${channel}` : '';
-        return `- **${s.name}**${status}${wsTag}\n  Cron: ${s.cronExpression} (${s.timezone})\n  Next: ${s.nextRunAt || 'N/A'} | ${last} | Runs: ${s.totalRuns}${failures}\n  Task: ${s.taskTemplate.title}${channelLine}${err}\n  ID: ${s.id}`;
+        const delegation = describeScheduleDelegation(s.delegation);
+        const delegationLine = delegation ? `\n  ${delegation}` : '';
+        return `- **${s.name}**${status}${wsTag}\n  Cron: ${s.cronExpression} (${s.timezone})\n  Next: ${s.nextRunAt || 'N/A'} | ${last} | Runs: ${s.totalRuns}${failures}\n  Task: ${s.taskTemplate.title}${channelLine}${delegationLine}${err}\n  ID: ${s.id}`;
       };
 
       // If workspace specified, list its schedules; otherwise aggregate across all workspaces
@@ -4589,14 +4605,43 @@ export async function handleBuilddAction(
       if (rawWindow !== null && !(USAGE_WINDOW_VALUES as readonly string[]).includes(rawWindow)) {
         return errorResult(`Invalid window "${rawWindow}". Expected one of ${USAGE_WINDOW_VALUES.join(', ')}.`);
       }
-      const rawWsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
-      const wsId = rawWsId ? await resolveWorkspaceId(api, rawWsId, ctx) : null;
-      const query = new URLSearchParams({ metric: 'orchestrationDecisions' });
-      if (wsId) query.set('workspace', wsId);
-      if (typeof params.missionId === 'string') query.set('mission', params.missionId);
-      if (rawWindow) query.set('window', rawWindow);
-      const data = await api(`/api/stats/coordination?${query}`);
-      return text(JSON.stringify(data ?? {}, null, 2));
+      const capability = typeof params.capability === 'string' && params.capability.trim() ? params.capability.trim() : null;
+      if (!capability && ['since', 'until', 'limit', 'overriddenOnly', 'disagreementOnly'].some(k => params[k] !== undefined)) {
+        return errorResult('since, until, limit, overriddenOnly and disagreementOnly read the decision ledger: pass capability (e.g. "question_gate") with them.');
+      }
+      // Every outcome carries `status`: OK / NO_DATA reached the data; a
+      // failed read is FORBIDDEN / UNAUTHORIZED / TOOL_UNAVAILABLE and is
+      // never evidence of zero rows (a review that cannot see must say so).
+      const subject = capability ? `decision ledger (${capability})` : 'orchestration decision stats';
+      try {
+        const rawWsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
+        const wsId = rawWsId ? await resolveWorkspaceId(api, rawWsId, ctx) : null;
+        if (capability) {
+          // The generic decision ledger (decision_records): one row per decision
+          // with confidence, reason, the answer in effect, any human override
+          // and late outcome labels. For the question gate, `verdict` is the
+          // decide / hold / ask disposition and `taskId` links the question.
+          const target = wsId ?? (await ctx.getWorkspaceId());
+          if (!target) return errorResult('Could not determine workspace. Provide workspaceId.');
+          const query = new URLSearchParams({ workspaceId: target, capability });
+          if (rawWindow) query.set('window', rawWindow);
+          for (const k of ['since', 'until'] as const) if (typeof params[k] === 'string') query.set(k, params[k] as string);
+          if (params.limit !== undefined) query.set('limit', String(params.limit));
+          if (params.overriddenOnly === true) query.set('overriddenOnly', 'true');
+          if (params.disagreementOnly === true) query.set('disagreementOnly', 'true');
+          const data = await api(`/api/decisions?${query}`);
+          return text(JSON.stringify(data ?? {}, null, 2));
+        }
+        const query = new URLSearchParams({ metric: 'orchestrationDecisions' });
+        if (wsId) query.set('workspace', wsId);
+        if (typeof params.missionId === 'string') query.set('mission', params.missionId);
+        if (rawWindow) query.set('window', rawWindow);
+        const data = await api(`/api/stats/coordination?${query}`);
+        const total = Number(data?.decisions?.total ?? 0) + Number(data?.manifestPredictions?.total ?? 0);
+        return text(JSON.stringify({ status: total > 0 ? 'OK' : 'NO_DATA', ...(data ?? {}) }, null, 2));
+      } catch (err) {
+        return errorResult(formatAnalyticsReadFailure(err, subject));
+      }
     }
 
     case 'get_usage_stats': {
