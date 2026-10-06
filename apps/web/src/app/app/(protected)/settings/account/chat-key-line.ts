@@ -28,8 +28,8 @@ export function chatKeyLine(
     return { text: only ? `Add your ${label(only)} key` : 'Add your own key', action: null };
   }
   return ctx.isAdmin
-    ? { text: 'Not set up yet', action: { href: '/app/settings/providers', label: 'Set it up' } }
-    : { text: 'Not set up yet · ask an admin', action: null };
+    ? { text: 'Not set up', action: { href: '/app/settings/providers', label: 'Set it up' } }
+    : { text: 'Not set up · ask an admin', action: null };
 }
 
 /**

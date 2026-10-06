@@ -9,6 +9,7 @@ import {
   OPENROUTER_AGENT_BASE_URL,
   agentBaseUrlFromGateway,
   agentEndpointProbeModel,
+  endpointAppliesTo,
   mapAgentModel,
   parseAgentEndpointBlob,
   resolveEndpointFromBlob,
@@ -76,6 +77,32 @@ describe('agent endpoint blob', () => {
     for (const b of bad) expect(validateAgentEndpointInput(b).ok).toBe(false);
   });
 
+  it('appliesTo: absent = all workspaces; a list is trimmed and de-duplicated; both kinds keep it', () => {
+    const none = validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'sk-or-1', appliesTo: null });
+    expect(none.ok && 'appliesTo' in none.blob).toBe(false);
+    const v = validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'sk-or-1', appliesTo: [' ws-a ', 'ws-b', 'ws-a'] });
+    expect(v.ok && v.blob.appliesTo).toEqual(['ws-a', 'ws-b']);
+    const g = validateAgentEndpointInput({ kind: 'gateway', appliesTo: ['ws-a'] });
+    expect(g.ok && g.blob).toEqual({ kind: 'gateway', appliesTo: ['ws-a'] });
+    if (v.ok) expect(parseAgentEndpointBlob(serializeAgentEndpoint(v.blob))).toEqual(v.blob);
+  });
+
+  it('appliesTo: refuses an empty list or a non-string entry', () => {
+    for (const appliesTo of [[], 'ws-a', [1], [''], ['has space'], {}]) {
+      expect(validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'k', appliesTo }).ok).toBe(false);
+    }
+  });
+
+  it('endpointAppliesTo: team rows honour the list, workspace rows always apply', () => {
+    const blob = { kind: 'gateway' as const, appliesTo: ['ws-a'] };
+    expect(endpointAppliesTo(blob, null, 'ws-a')).toBe(true);
+    expect(endpointAppliesTo(blob, null, 'ws-b')).toBe(false);
+    expect(endpointAppliesTo(blob, null, null)).toBe(false);
+    expect(endpointAppliesTo(blob, 'ws-b', 'ws-b')).toBe(true);
+    expect(endpointAppliesTo({ kind: 'gateway' }, null, null)).toBe(true);
+    expect(endpointAppliesTo({ kind: 'gateway' }, null, 'ws-b')).toBe(true);
+  });
+
   it('reads anything malformed as no endpoint', () => {
     expect(parseAgentEndpointBlob(null)).toBeNull();
     expect(parseAgentEndpointBlob('sk-plain')).toBeNull();
@@ -95,16 +122,33 @@ describe('gateway reference → agent base', () => {
     const gw = { baseURL: 'https://litellm.example.com/v1', apiKey: 'sk-gw' };
     expect(resolveEndpointFromBlob({ kind: 'gateway' }, gw)).toEqual({
       kind: 'gateway', baseUrl: 'https://litellm.example.com', apiKey: 'sk-gw', authHeader: 'authorization', models: {},
+      // The OpenAI-compatible root for Codex is the gateway's own root, unaffected by the Anthropic-side derivation above.
+      openAiBaseUrl: 'https://litellm.example.com/v1',
     });
     expect(resolveEndpointFromBlob({ kind: 'gateway', agentBaseUrl: 'https://litellm.example.com/anthropic' }, gw)?.baseUrl)
       .toBe('https://litellm.example.com/anthropic');
+    expect(resolveEndpointFromBlob({ kind: 'gateway', agentBaseUrl: 'https://litellm.example.com/anthropic' }, gw)?.openAiBaseUrl)
+      .toBe('https://litellm.example.com/v1');
     // A reference with no gateway to point at routes nothing.
     expect(resolveEndpointFromBlob({ kind: 'gateway' }, null)).toBeNull();
   });
 
   it('a self-contained blob ignores the gateway', () => {
     const r = resolveEndpointFromBlob({ kind: 'openrouter', baseUrl: OPENROUTER_AGENT_BASE_URL, apiKey: 'sk-or', authHeader: 'authorization' }, { baseURL: 'https://litellm.example.com/v1', apiKey: 'sk-gw' });
-    expect(r).toEqual({ kind: 'openrouter', baseUrl: OPENROUTER_AGENT_BASE_URL, apiKey: 'sk-or', authHeader: 'authorization', models: {} });
+    expect(r).toEqual({
+      kind: 'openrouter', baseUrl: OPENROUTER_AGENT_BASE_URL, apiKey: 'sk-or', authHeader: 'authorization', models: {},
+      openAiBaseUrl: `${OPENROUTER_AGENT_BASE_URL}/v1`,
+    });
+  });
+
+  it('anthropic-compatible has no OpenAI-compatible route: openAiBaseUrl is absent', () => {
+    const r = resolveEndpointFromBlob({ kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', apiKey: 'sk-agent', authHeader: 'authorization' }, null);
+    expect(r?.openAiBaseUrl).toBeUndefined();
+  });
+
+  it('openrouter\'s OpenAI-compatible root is its Anthropic-compatible root plus /v1', () => {
+    const r = resolveEndpointFromBlob({ kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', apiKey: 'sk-or', authHeader: 'authorization' }, null);
+    expect(r?.openAiBaseUrl).toBe('https://openrouter.ai/api/v1');
   });
 });
 

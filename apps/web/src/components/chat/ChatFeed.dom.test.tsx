@@ -64,6 +64,12 @@ const q = (sel: string) => container.querySelector(sel) as HTMLElement | null;
 const qa = (sel: string) => [...container.querySelectorAll(sel)] as HTMLElement[];
 /** A Thinking panel row's visible label (the kit adds a screen-reader state after it). */
 const stepText = (li: HTMLElement) => li.querySelector('.kit-step-mark + span')?.textContent?.trim();
+/** The live line's label while a turn streams. */
+const liveLabel = () => container.querySelector('[data-testid="kit-thinking-live"] .kit-live-label')?.textContent ?? null;
+/** Tap the live line open. */
+async function expand() {
+  await act(async () => { (container.querySelector('[data-testid="kit-thinking-live"]') as HTMLButtonElement).click(); });
+}
 /** Tap every finished turn's folded line open (happy-dom fires `toggle` when `open` flips). */
 async function unfold() {
   for (const d of qa('[data-testid="kit-thinking"][data-settled]') as HTMLDetailsElement[]) {
@@ -73,6 +79,109 @@ async function unfold() {
 }
 
 // One card per turn, a row per write (docs/design/chat-write-approval-v2.md).
+describe('the live line while a turn streams', () => {
+  const live = async (messages: Msgs, status: 'streaming' | 'submitted' = 'streaming') => {
+    const views = fixtures.fixtureViews('split');
+    const source = { load: async (r: { kind: string; id: string }) => views[`${r.kind}:${r.id}`] ?? { title: r.id } };
+    await act(async () => {
+      root.render(
+        <ObjectStoreProvider source={source}>
+          <ChatActionsProvider value={DEFAULT_CHAT_ACTIONS}>
+            <ChatFeed messages={messages} agent={fixtures.ORGANIZER} status={status} />
+          </ChatActionsProvider>
+        </ObjectStoreProvider>,
+      );
+    });
+  };
+  const panelText = () => q('[data-testid="kit-thinking"]')?.textContent ?? '';
+
+  it('a long turn collapsed: the square, the live step and one pinned key step; no header, no rail, no list', async () => {
+    await live(fixtures.chatFixture('streaming-long').messages as Msgs);
+    expect(liveLabel()).toBe('Looking through recent activity');
+    expect(q('[data-testid="kit-thinking-live"] .kit-step-mark')).not.toBeNull();
+    expect(q('[data-testid="kit-thinking-pinned"]')?.textContent).toContain('Check it with you');
+    expect(qa('[data-testid="kit-thinking-pinned"]')).toHaveLength(1);
+    expect(container.textContent?.toLowerCase()).not.toContain('thinking');
+    expect(q('.buildd-thinking-title')).toBeNull();
+    expect(qa('[data-testid="kit-thinking"] > .kit-steps')).toHaveLength(0);
+    expect(panelText()).not.toMatch(/Read 2 tasks|Looked over|Couldn't/);
+  });
+
+  it('expanded: key steps in order, routine runs folded with their count, the live step last', async () => {
+    await live(fixtures.chatFixture('streaming-long').messages as Msgs);
+    await expand();
+    expect(q('[data-testid="kit-thinking-live"]')!.getAttribute('aria-expanded')).toBe('true');
+    const rows = qa('[data-testid="kit-thinking"] > .kit-steps > li').map(li => (li.classList.contains('kit-step-fold')
+      ? `fold ${li.querySelector('.kit-step-fold-count')!.textContent}`
+      : `${li.dataset.weight} ${stepText(li)}`));
+    expect(rows).toEqual([
+      'fold 3 routine steps', "key Couldn't check the change", 'fold 4 routine steps', 'key Drafted a mission',
+      'fold 2 routine steps', 'key Check it with you', 'routine Checked the budget', 'routine Looking through recent activity',
+    ]);
+  });
+
+  it('sent, nothing streamed yet: the square alone, no words', async () => {
+    await live(fixtures.chatFixture('starting').messages as Msgs, 'submitted');
+    const line = q('[data-testid="kit-thinking-live"]')!;
+    expect(line.querySelector('.kit-step-mark')).not.toBeNull();
+    expect(line.getAttribute('aria-label')).toBe('Buildd is working');
+    expect(panelText()).toBe('');
+  });
+
+  it('a streaming message with no steps yet is the square alone too', async () => {
+    await live([
+      { id: 'u', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+      { id: 'a', role: 'assistant', parts: [{ type: 'step-start' }] },
+    ] as unknown as Msgs);
+    expect(q('[data-testid="kit-thinking-live"] .kit-step-mark')).not.toBeNull();
+    expect(panelText()).toBe('');
+  });
+
+  it('a write without a card pins as the object it filed, and the next write replaces it; reads never pin', async () => {
+    const write = (id: string, taskId: string, title: string) => [
+      { type: 'tool-create_task', toolCallId: id, state: 'output-available', input: { title }, output: { data: {}, objects: [{ kind: 'task', id: taskId, fallbackText: title }] } },
+      { type: 'data-step', id, data: { id, label: 'Drafted a task', state: 'done', weight: 'key' } },
+    ];
+    const read = (id: string, state = 'done') => [
+      { type: 'tool-get_task', toolCallId: id, state: state === 'done' ? 'output-available' : 'input-available', input: {}, output: { data: {}, objects: [{ kind: 'task', id: `r-${id}`, fallbackText: 'Read one' }] } },
+      { type: 'data-step', id, data: { id, label: state === 'done' ? 'Read a task' : 'Reading a task', state, weight: 'routine' } },
+    ];
+    const msg = (parts: unknown[]) => [{ id: 'a', role: 'assistant', parts }] as unknown as Msgs;
+    await live(msg([...read('r1'), ...read('r2', 'active')]));
+    expect(q('[data-testid="kit-thinking-pinned"]')).toBeNull();
+    await live(msg([...read('r1'), ...write('w1', 'task-a', 'First'), ...read('r2', 'active')]));
+    expect(q('[data-testid="kit-thinking-pinned"] [data-testid="feed-objects"]')?.textContent).toContain('First');
+    await live(msg([...read('r1'), ...write('w1', 'task-a', 'First'), ...write('w2', 'task-b', 'Second'), ...read('r2', 'active')]));
+    expect(qa('[data-testid="kit-thinking-pinned"]')).toHaveLength(1);
+    expect(q('[data-testid="kit-thinking-pinned"]')!.textContent).toContain('Second');
+    expect(q('[data-testid="kit-thinking-pinned"]')!.textContent).not.toContain('First');
+  });
+
+  it('a message saved before steps were weighed still unfolds sensibly: its failure is key', async () => {
+    await live([{ id: 'a', role: 'assistant', parts: [
+      { type: 'data-step', id: 'a1', data: { id: 'a1', label: 'Read a task', state: 'done' } },
+      { type: 'data-step', id: 'a2', data: { id: 'a2', label: 'Looked over the tasks', state: 'done' } },
+      { type: 'data-step', id: 'a3', data: { id: 'a3', label: "Couldn't open the task", state: 'done' } },
+      { type: 'data-step', id: 'a4', data: { id: 'a4', label: 'Reading a mission', state: 'active' } },
+    ] }] as unknown as Msgs);
+    expect(q('[data-testid="kit-thinking-pinned"]')?.textContent).toContain("Couldn't open the task");
+    await expand();
+    expect(qa('[data-testid="kit-thinking"] > .kit-steps > li').map(li => li.querySelector('.kit-step-fold-count')?.textContent ?? `${li.dataset.weight} ${stepText(li)}`)).toEqual([
+      '2 routine steps', "key Couldn't open the task", 'routine Reading a mission',
+    ]);
+  });
+
+  it('a done long turn folds to its summary and unfolds into the same filtered list', async () => {
+    await render(fixtures.chatFixture('streaming-long').messages as Msgs);
+    expect(q('[data-testid="kit-thinking-summary"]')?.textContent).toBe('Did 14 steps · filed 1 mission');
+    await unfold();
+    const rows = qa('[data-testid="kit-thinking"] > .kit-steps > li').map(li => li.querySelector('.kit-step-fold-count')?.textContent ?? stepText(li));
+    expect(rows).toEqual([
+      '3 routine steps', "Couldn't check the change", '4 routine steps', 'Drafted a mission', '2 routine steps', 'Check it with you', '2 routine steps',
+    ]);
+  });
+});
+
 describe('approval rows', () => {
   const rows = () => qa('[data-testid="kit-approval-row"]');
 
@@ -168,7 +277,7 @@ describe('approval card', () => {
   it('the head names the write and its workspace; the draft is the card body', async () => {
     await render(fixtures.chatFixture('propose').messages as Msgs, 'split', { workspaceName: (id: string) => (id === fixtures.WS.id ? fixtures.WS.name : null) });
     const head = q('[data-testid="approval-card"] .kit-card-head')!;
-    expect(head.querySelector('.kit-eyebrow')?.textContent).toBe('Needs your OK');
+    expect(head.querySelector('.kit-eyebrow')?.textContent).toBe('Approval needed');
     expect(head.querySelector('.kit-card-tag')?.textContent).toBe('New mission');
     expect(head.querySelector('[data-testid="approval-workspace"]')?.textContent).toBe(fixtures.WS.name);
     expect(q('[data-testid="approval-card"] .kit-card-title')?.textContent).toBe('Multi-currency invoices');
@@ -312,16 +421,19 @@ describe('tool rows', () => {
     expect(write.querySelector('[data-testid="tool-call-allowed"]')).not.toBeNull();
   });
 
-  it('while a turn streams, the Thinking panel shows the server\'s steps, in plain words', async () => {
+  it('while a turn streams, the panel is one live line with the server\'s current step, in plain words', async () => {
     await act(async () => {
       root.render(<ChatFeed messages={fixtures.chatFixture('streaming').messages as Msgs} agent={fixtures.ORGANIZER} status="streaming" />);
     });
-    const steps = qa('.kit-step');
-    expect(steps.map(s => [stepText(s), s.dataset.state])).toEqual([
+    expect(liveLabel()).toBe('Searching what buildd remembers');
+    expect(q('[data-testid="kit-thinking-live"]')!.getAttribute('aria-label')).toBe('Buildd is working: Searching what buildd remembers');
+    expect(qa('li.kit-step')).toHaveLength(0);
+    expect(container.textContent).not.toContain('recall');
+    await expand();
+    expect(qa('li.kit-step').map(s => [stepText(s), s.dataset.state])).toEqual([
       ['Looked over the missions', 'done'],
       ['Searching what buildd remembers', 'active'],
     ]);
-    expect(container.textContent).not.toContain('recall');
   });
 
   it('the panel reads only data-step parts: a streaming message\'s labels come from the server, not its tool names', async () => {
@@ -333,7 +445,9 @@ describe('tool rows', () => {
       ] },
     ] as unknown as Msgs;
     await act(async () => { root.render(<ChatFeed messages={msgs} agent={fixtures.ORGANIZER} status="streaming" />); });
-    expect(qa('.kit-step').map(stepText)).toEqual(['Read a task', 'Thinking it through']);
+    expect(liveLabel()).toBe('Thinking it through');
+    await expand();
+    expect(qa('li.kit-step').map(stepText)).toEqual(['Read a task', 'Thinking it through']);
   });
 
   it('a settled turn folds its steps and tool rows under one line, and unfolds on tap', async () => {
@@ -345,7 +459,10 @@ describe('tool rows', () => {
     // The answer stays out in the open.
     expect(q('[data-testid="feed-text"]')?.textContent).toContain('Nothing in flight touches currency');
     await unfold();
-    expect(qa('.kit-step').map(stepText)).toEqual(['Looked over the missions', 'Searching what buildd remembers']);
+    // Two routine steps in a row: one dim row that unfolds in place.
+    expect(q('.kit-step-fold-count')?.textContent).toBe('2 routine steps');
+    await act(async () => { (q('.kit-step-fold-btn') as HTMLButtonElement).click(); });
+    expect(qa('li.kit-step').map(stepText)).toEqual(['Looked over the missions', 'Searching what buildd remembers']);
     expect(qa('[data-testid="tool-call-row"]').length).toBeGreaterThan(0);
     // Folding again hides the rows.
     await act(async () => { fold.open = false; });
@@ -526,7 +643,7 @@ describe('a fired watch', () => {
     expect(link.getAttribute('href')).toBe('https://github.com/harborline/billing-web/pull/418');
     expect(link.textContent).toContain('Open PR');
 
-    expect(notices[1].querySelector('p.font-voice')?.textContent).toBe('Dual-currency CSV needs your answer.');
+    expect(notices[1].querySelector('p.font-voice')?.textContent).toBe('Dual-currency CSV asked a question.');
     expect((notices[1].querySelector('a') as HTMLAnchorElement).getAttribute('href')).toBe('/app/tasks/task-export');
     expect(notices[2].querySelector('p.font-voice')?.textContent).toBe('CI failed on #421.');
 
@@ -541,5 +658,99 @@ describe('a fired watch', () => {
       expect(n.className).not.toMatch(/rounded/);
       expect(n.textContent).not.toMatch(/list_watches|unwatch|pr\.merged|task\.needs_input|\/api\//);
     }
+  });
+});
+
+// Task b4f273ac: prose written early in a long turn shows at once; the final
+// answer replaces it in place, and a finished turn shows only the final answer.
+describe("a turn's answer: live, then replaced in place", () => {
+  const frames = fixtures.revisedFrames();
+  const show = async (f: { messages: Msgs | ReturnType<typeof fixtures.revisedFrames>[number]['messages']; status: 'streaming' | 'ready' }) => {
+    const views = fixtures.fixtureViews('split');
+    const source = { load: async (r: { kind: string; id: string }) => views[`${r.kind}:${r.id}`] ?? { title: r.id } };
+    await act(async () => {
+      root.render(
+        <ObjectStoreProvider source={source}>
+          <ChatActionsProvider value={DEFAULT_CHAT_ACTIONS}>
+            <ChatFeed messages={f.messages as Msgs} agent={fixtures.ORGANIZER} status={f.status} />
+          </ChatActionsProvider>
+        </ObjectStoreProvider>,
+      );
+    });
+  };
+  /** The turn's answer regions (one assistant turn in these frames). */
+  const regions = () => qa('[data-role="assistant"] [data-testid="kit-answer"]');
+
+  it('the early prose shows while the turn works, as the answer (not a thinking row)', async () => {
+    await show(frames[1]);
+    expect(regions()).toHaveLength(1);
+    expect(regions()[0].textContent).toContain(fixtures.REVISED_EARLY);
+    expect(regions()[0].dataset.answer).toBe('live');
+    expect(regions()[0].querySelector('[data-testid="feed-text"]')).not.toBeNull();
+    // The live line still says what the tools are doing, apart from the answer.
+    expect(q('[data-testid="kit-thinking-live"]')).not.toBeNull();
+  });
+
+  it('the final answer replaces the early prose in the same node; one region from start to settle', async () => {
+    await show(frames[0]);
+    const node = regions()[0];
+    expect(node.textContent).toContain(fixtures.REVISED_EARLY.slice(0, 20));
+    for (const f of frames.slice(1)) {
+      await show(f);
+      expect(regions()).toHaveLength(1);
+      expect(regions()[0]).toBe(node);
+      expect(qa('[data-role="assistant"] [data-testid="feed-text"]')).toHaveLength(1);
+    }
+    expect(node.dataset.answer).toBe('settled');
+    expect(node.textContent).toContain(fixtures.REVISED_FINAL);
+  });
+
+  it('the contradicted hypothesis is gone once the turn settles, even with the turn unfolded', async () => {
+    await show(frames[3]);
+    expect(container.textContent).not.toContain(fixtures.REVISED_EARLY);
+    await unfold();
+    expect(container.textContent).not.toContain(fixtures.REVISED_EARLY);
+    expect(q('[data-testid="kit-thinking-summary"]')?.textContent).toContain('Did');
+  });
+
+  it('a reload hydrates straight into the final answer', async () => {
+    // Stored parts carry no streaming state.
+    const stored = frames[3].messages.map(m => ({ ...m, parts: m.parts.map(p => (p.type === 'text' ? { type: 'text', text: (p as { text: string }).text } : p)) }));
+    await show({ messages: stored as Msgs, status: 'ready' });
+    expect(regions().map(r => r.textContent?.trim())).toEqual([fixtures.REVISED_FINAL]);
+    expect(container.textContent).not.toContain(fixtures.REVISED_EARLY);
+  });
+
+  it('an interrupted turn keeps the useful prose it had, never a blank or a cut-off stub', async () => {
+    const [ask, turn] = frames[1].messages;
+    const cut = { ...turn, parts: [...turn.parts, { type: 'step-start' }, { type: 'text', text: 'I chec', state: 'streaming' }, { type: 'data-turn-error', data: { code: 'aborted', message: 'Stopped.' } }] };
+    await show({ messages: [ask, cut] as Msgs, status: 'ready' });
+    expect(regions()).toHaveLength(1);
+    expect(regions()[0].textContent).toContain(fixtures.REVISED_EARLY);
+    expect(container.textContent).not.toContain('I chec');
+    expect(q('[data-turn-error]')?.textContent).toBe('Stopped.');
+  });
+
+  it('an approval continuation settles on the prose after the decision, the card kept', async () => {
+    const messages = fixtures.chatFixture('propose').messages;
+    await show({ messages, status: 'ready' });
+    const turn = messages.at(-1)!;
+    const asking = regions().at(-1)!;
+    const card = q('[data-testid="approval-card"]') ?? q('[data-testid="kit-approval"]');
+    expect(card).not.toBeNull();
+    const resumed = [...messages.slice(0, -1), {
+      ...turn,
+      parts: [
+        ...turn.parts.map(p => ((p as { approval?: { id: string } }).approval
+          ? { ...p, state: 'output-available', approval: { id: (p as { approval: { id: string } }).approval.id, approved: true }, output: { summary: 'mission filed', data: {}, objects: [fixtures.missionRef] } }
+          : p)),
+        { type: 'step-start' },
+        { type: 'text', text: 'Filed it. Planning starts now; I will post here when the first tasks are out.' },
+      ],
+    }];
+    await show({ messages: resumed as Msgs, status: 'ready' });
+    expect(regions().at(-1)).toBe(asking);
+    expect(regions().at(-1)!.textContent).toContain('Filed it.');
+    expect(qa('[data-role="assistant"]').at(-1)!.querySelectorAll('[data-testid="kit-answer"]')).toHaveLength(1);
   });
 });

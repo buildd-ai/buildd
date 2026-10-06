@@ -1,10 +1,13 @@
+import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
 import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
+import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
+import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
-import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
+import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
@@ -15,42 +18,41 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam, notifyTeamOf } from '@/lib/notify';
-import { isCredentialExpiredError } from '@/lib/notify-rules';
+import { markHoldDue, resolveHold, type HoldResolution } from '@/lib/question-hold';
 import { sendTaskCallback } from '@/lib/task-callback';
-import { recordEvent, taskCompletedEvent, taskFailedEvent, taskNeedsInputEvent } from '@/lib/subscriptions';
+import { emit } from '@/lib/core-emit';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
 import { recordTaskAreaOutcome } from '@buildd/core/task-area-prediction-source';
 import { recordOrchestrationTouchLabel } from '@buildd/core/orchestration-ledger-source';
-import { detectCbmFleetDisabled, detectCbmEnforcedUnused, CBM_HEALTH_TERMINAL_STATUSES } from '@buildd/core/cbm-health';
 import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-prices';
 import { applyBudgetUsage, countsTowardAgentSdkCreditPool } from '@buildd/core/budget-alerts';
-import { executeRelease } from '@/lib/release-executor';
 import { lineageStamp } from '@/lib/attempt-lineage';
-import { persistTaskEvidence } from '@/lib/task-evidence-store';
-import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
-import { completeMissionIfVerified } from '@/lib/mission-completion';
-import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
-import { handleProseEvalOutcome, isProseEvalTask } from '@/lib/mission-criteria-prose';
-import { handleCriteriaWorkerEvalOutcome, isCriteriaWorkerEvalTask } from '@/lib/mission-criteria-worker-eval';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
-import { backendLabel } from '@buildd/core/backend-policy';
+import { backendLabel, isBackendPinned } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import { dispatchNewTask, dispatchRetriedTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { wakeOldestPendingTaskOnCapacityFreed } from '@/lib/capacity-freed-wake';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
-import { enforceServerSideEscalation, supersedeFixTaskOnApproval } from '@/lib/reviewer';
+import { enforceServerSideEscalation } from '@/lib/reviewer';
+import {
+  checkDispatch,
+  guardDispatchedTask,
+  reconcileSubjectEvent,
+  type DispatchProposal,
+  type SubjectEvent,
+} from '@/lib/supersession';
 import { parseReviewerOutput, applyConfidenceGate, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
-import { findReviewTaskForPr } from '@/lib/pr-review-request';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { recordReviewerCriteriaFindings } from '@/lib/criteria-reviewer-findings';
@@ -67,7 +69,6 @@ import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
-import { scheduleMemoryUseLabels, shouldLabelMemoryUses } from '@/lib/memory-decisions';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
@@ -75,12 +76,12 @@ import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { secrets as secretsTable } from '@buildd/core/db/schema';
 import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
-import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
-import type { LoopHistoryEntry, TaskHandoff, PathCollisionNotice } from '@buildd/shared';
+import type { LoopVerdict } from '@/lib/completion-policy';
+import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
+import { COMPLETION_POLICIES } from '@/modules';
+import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
-import { loadVisualAuditEvidence, formatVisualEvidenceRejection } from '@/lib/visual-audit-evidence';
 import { classifyReportedFailure, isConcurrencyConflictError, isModelIdRejectedError, isSilentStartShape, isUnrecognizedModelError, MODEL_REJECTION_CONTEXT_KEY, rejectedModelId, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
-import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -94,6 +95,8 @@ import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsDelivered } from '@/lib/worker-instructions';
 import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
+import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capabilities/reported-pr';
+import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 /**
@@ -208,7 +211,7 @@ async function workerConflictResponse(id: string, extra?: Record<string, unknown
  * Why this exists: the documented worker workflow has the agent call the buildd
  * MCP `complete_task` itself. That marks the worker terminal server-side and
  * pushes worker:completed, so the runner's own completion PATCH — the sole
- * carrier of `resultMeta` (CBM metrics, tool histogram, model attribution),
+ * carrier of `resultMeta` (tool histogram, model attribution),
  * token counts, reported cost, git stats and subagent spans — arrives on a
  * terminal row and is refused with 409 {abort:true}. A large share of completed
  * workers therefore had result_meta NULL with zero cost and zero tokens, and
@@ -834,6 +837,9 @@ export async function PATCH(
     // Set by the runner's startup reconciliation (worker-sync.ts
     // restoreWorkersFromDisk) when it finds a local session whose process died
     // without ever reporting a terminal status — never sent by a live session.
+    // The cloud runner's supervisor (apps/cloud-runner/src/supervisor.ts) sends
+    // it for the same fact: the container or the runner process died before the
+    // runner reported. Either way it rides the infra-retry budget below.
     // Distinguishes a terminal record's outcome ('crashed') from an ordinary
     // agent-reported failure, since both arrive as status: 'failed'.
     crashReconciled,
@@ -1063,6 +1069,8 @@ export async function PATCH(
   if (verificationEvidence && typeof verificationEvidence === 'object' && !Array.isArray(verificationEvidence)) {
     updates.verificationEvidence = verificationEvidence as Record<string, unknown>;
   }
+  // Set when the incoming question carries a `hold` tag; null = an ordinary ask.
+  let hold: HoldResolution | null = null;
   // Waiting state — sensitive: store type only, drop prompt prose
   if (waitingFor !== undefined) {
     // Contract violation: the agent stopped and asked, but stated no real
@@ -1078,12 +1086,33 @@ export async function PATCH(
     const briefed = waitingFor !== null && waitingFor?.type === 'question'
       ? withSanitizedBrief(waitingFor)
       : waitingFor;
+    // A held question (lib/question-hold.ts): the server decides whether the
+    // runner's `hold` tag stands — never on a hard rail, a sensitive
+    // workspace or with the gate off — and bounds its deadline.
+    let stored = briefed;
+    if (briefed && briefed.type === 'question' && (briefed as { disposition?: unknown }).disposition === 'hold') {
+      const holdTask = worker.taskId
+        ? await db.query.tasks.findFirst({ where: eq(tasks.id, worker.taskId), columns: { pathManifest: true } })
+        : null;
+      hold = resolveHold({
+        waitingFor: briefed as Record<string, unknown>,
+        stored: worker.waitingFor as Record<string, unknown> | null,
+        sensitive: isSensitive,
+        gitConfig: wsForSensitivity?.gitConfig ?? null,
+        pathManifest: holdTask?.pathManifest ?? null,
+        nowMs: Date.now(),
+      });
+      stored = hold.waitingFor as typeof briefed;
+    }
     updates.waitingFor = (isSensitive && waitingFor !== null)
       ? { type: waitingFor.type, ...(isContentlessQuestion ? { contractViolation: true } : {}) }
-      : (briefed !== null && isContentlessQuestion ? { ...briefed, contractViolation: true } : briefed);
+      : (stored !== null && isContentlessQuestion ? { ...stored, contractViolation: true } : stored);
   }
-  // Pushover notification when agent needs input — sensitive: generic message only
-  if (waitingFor?.type === 'question') {
+  // Notification when agent needs input — sensitive: generic message only.
+  // Team Pushover channel + the originating chat conversation. A held question
+  // is not notified now: the resurface sweep notifies it at its deadline if it
+  // is still unanswered (lib/question-hold.ts).
+  if (waitingFor?.type === 'question' && !hold?.held) {
     const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
     // Short by design: the question, one line of context, the recommended default.
     const note = questionNotificationText(
@@ -1126,9 +1155,52 @@ export async function PATCH(
   if (Array.isArray(subagentSpans)) updates.subagentSpans = subagentSpans;
   if (typeof subagentSpansObserved === 'number') updates.subagentSpansObserved = subagentSpansObserved;
   if (typeof backgroundAgentMs === 'number') updates.backgroundAgentMs = backgroundAgentMs;
-  // Self-reported PR (for runners that open PRs outside the create_pr MCP action)
-  if (typeof selfReportedPrUrl === 'string' && selfReportedPrUrl) updates.prUrl = selfReportedPrUrl;
-  if (typeof selfReportedPrNumber === 'number' && selfReportedPrNumber > 0) updates.prNumber = selfReportedPrNumber;
+  // Self-reported PR (for runners that open PRs outside the create_pr MCP
+  // action). An agent run's report is held to create_pr's questions — linked
+  // repo, a head the task owns, the mission base — before it is recorded
+  // (lib/agent-capabilities/reported-pr.ts). A refused report drops only the
+  // PR fields; the rest of this PATCH still applies. A person's session on
+  // the shared account, and a workspace with no App to verify against, keep
+  // recording it as given.
+  const reportedPrUrl = typeof selfReportedPrUrl === 'string' && selfReportedPrUrl ? selfReportedPrUrl : null;
+  const reportedPrNumber = typeof selfReportedPrNumber === 'number' && selfReportedPrNumber > 0 ? selfReportedPrNumber : null;
+  if (reportedPrUrl || reportedPrNumber) {
+    let verdict: ReportedPrVerdict = { accept: true, verified: false, pr: { url: reportedPrUrl, number: reportedPrNumber } };
+    if (!(account as { sessionUserId?: string | null }).sessionUserId && worker.workspaceId) {
+      const reportingTask = worker.taskId
+        ? await db.query.tasks.findFirst({
+            where: eq(tasks.id, worker.taskId),
+            columns: { id: true, title: true, description: true, context: true, dependsOn: true, missionId: true, taskClass: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true },
+          })
+        : null;
+      verdict = await verifyReportedWorkerPr({
+        worker: { id: worker.id, branch: worker.branch, workspaceId: worker.workspaceId, taskId: worker.taskId },
+        task: reportingTask ?? null,
+        reported: { url: reportedPrUrl, number: reportedPrNumber },
+      });
+    }
+    if (verdict.accept) {
+      if (verdict.verified) {
+        updates.prUrl = verdict.pr.url;
+        updates.prNumber = verdict.pr.number;
+      } else {
+        if (reportedPrUrl) updates.prUrl = reportedPrUrl;
+        if (reportedPrNumber) updates.prNumber = reportedPrNumber;
+      }
+    } else {
+      fireGateEvent({
+        gate: GATE_SLUGS.PR_OWNERSHIP,
+        surface: 'PATCH /api/workers/[id]',
+        outcome: 'rejected',
+        reason: verdict.reasonCode,
+        workspaceId: worker.workspaceId,
+        taskId: worker.taskId,
+        workerId: worker.id,
+        callerOrigin: 'worker',
+      });
+      console.warn(`[workers/${id}] self-reported PR not recorded: ${verdict.reasonCode}`);
+    }
+  }
 
   // Status audit trail: record terminal transitions in milestones for debugging
   if (status === 'completed' || status === 'failed') {
@@ -1178,9 +1250,149 @@ export async function PATCH(
   // outputReq !== 'none') so the planning-contract guard can see a PR that was
   // auto-detected from GitHub even on a task with no output requirement.
   let workerHasPR = !!worker.prUrl;
-  // Fetch mission ownership for every terminal transition. Completion also uses
-  // outputRequirement; failed/error transitions still need missionId so their
-  // final recorded cost can enforce the mission budget.
+  const sessionActualModel = resolveSessionActualModel(
+    actualModel,
+    (resultMeta ?? worker.resultMeta) as Parameters<typeof resolveSessionActualModel>[1],
+  );
+  // Call only after winning terminal ownership, including a silent refusal.
+  const accumulateTerminalSpend = async () => {
+    // Accumulate monthly spend + fire budget-threshold alerts (non-fatal).
+    // Guarded by the worker's prior status so a duplicate terminal PATCH can't
+    // double-count. Prefers the SDK's reported cost; falls back to a token-derived
+    // estimate (list prices) when cost is $0 — the OAuth / credit-pool case.
+    const wasTerminal = worker.status === 'completed' || worker.status === 'failed';
+    if (!wasTerminal) {
+      try {
+        const reportedCost = typeof costUsd === 'number'
+          ? costUsd
+          : parseFloat((worker.costUsd as string | null) ?? '0');
+        const usageForCost = (resultMeta?.modelUsage ?? (worker.resultMeta as any)?.modelUsage) as
+          | Parameters<typeof estimateCostUsd>[0]
+          | undefined;
+        // Per-model attribution first. It is EMPTY on seat/OAuth auth — the very
+        // case this estimate exists for — so fall back to pricing the session
+        // totals (which OAuth does populate) against the session's actual model.
+        const perModelEstimate = estimateCostUsd(usageForCost);
+        const totalsForCost = (resultMeta?.totalUsage ?? (worker.resultMeta as any)?.totalUsage) as
+          | Parameters<typeof estimateCostUsdFromTotals>[0]
+          | undefined;
+        const estimatedCost = perModelEstimate > 0
+          ? perModelEstimate
+          : estimateCostUsdFromTotals(totalsForCost, sessionActualModel);
+        const effectiveCost = reportedCost > 0 ? reportedCost : estimatedCost;
+
+        // Write effectiveCost back to the worker row so per-worker aggregations
+        // (e.g. mission spend) see a non-null value for OAuth workers that don't
+        // self-report costUsd. Only overwrite when the runner didn't report a
+        // positive cost (reportedCost > 0 means line 387 already set the right value).
+        if (effectiveCost > 0 && reportedCost <= 0) {
+          updates.costUsd = effectiveCost.toString();
+        }
+
+        // Codex and tenant-credential spend are billed elsewhere, so they do
+        // not draw on the pool. The worker row above still carries the cost
+        // either way.
+        const poolTaskRow = terminalTaskRow[0];
+        const countsTowardPool = countsTowardAgentSdkCreditPool({
+          backend: poolTaskRow?.backend ?? null,
+          authType: account.authType,
+          tenantId: ((poolTaskRow?.context as Record<string, unknown> | null)?.tenantContext as { tenantId?: string } | undefined)?.tenantId ?? null,
+        });
+
+        if (effectiveCost > 0 && countsTowardPool) {
+          // Aggregate budget is tracked at the team level so all token-accounts
+          // under the same owner share one monthly cap (the Claude Agent SDK
+          // credit pool is a single pool per subscription).
+          //
+          // Optimistic locking: read the team budget, compute the next state, then
+          // commit only if the row is unchanged since we read it (CAS on cost+month).
+          // neon-http has no interactive transactions, so we retry on contention —
+          // concurrent worker completions under the same team must not lose spend
+          // or mis-fire threshold alerts by racing on a read-modify-write.
+          const envBudget = process.env.BUDGET_MONTHLY_USD ? parseFloat(process.env.BUDGET_MONTHLY_USD) : null;
+          let committed = false;
+
+          for (let attempt = 0; attempt < 5 && !committed; attempt++) {
+            // Explicit column list: an unfiltered teams query selects every column
+            // in schema.ts, so dropping one breaks this loop for the length of a
+            // build. These four are the whole budget CAS working set.
+            const team = await db.query.teams.findFirst({
+              where: eq(teams.id, account.teamId),
+              columns: {
+                monthlyBudgetUsd: true,
+                monthlyCostUsd: true,
+                monthlyCostMonth: true,
+                budgetAlertsSent: true,
+              },
+            });
+            if (!team) break;
+
+            const budgetUsd = team.monthlyBudgetUsd != null
+              ? parseFloat(team.monthlyBudgetUsd.toString())
+              : envBudget;
+            const prevCost = (team.monthlyCostUsd as string | null) ?? '0';
+            const prevMonth = team.monthlyCostMonth ?? null;
+
+            const result = applyBudgetUsage(
+              {
+                monthlyCostUsd: parseFloat(prevCost),
+                monthlyCostMonth: prevMonth,
+                alertsSent: (team.budgetAlertsSent ?? []) as number[],
+              },
+              effectiveCost,
+              budgetUsd,
+              new Date(),
+            );
+
+            // CAS guard: a concurrent writer that won the race will have changed
+            // cost or month (cost strictly moves on every charge), failing this
+            // WHERE and returning no rows, so we re-read and retry.
+            const rows = await db
+              .update(teams)
+              .set({
+                monthlyCostUsd: result.monthlyCostUsd.toFixed(6),
+                monthlyCostMonth: result.monthlyCostMonth,
+                budgetAlertsSent: result.alertsSent,
+              })
+              .where(and(
+                eq(teams.id, account.teamId),
+                eq(teams.monthlyCostUsd, prevCost),
+                prevMonth === null ? isNull(teams.monthlyCostMonth) : eq(teams.monthlyCostMonth, prevMonth),
+              ))
+              .returning({ id: teams.id });
+
+            if (rows.length === 0) continue; // lost the race — re-read and retry
+            committed = true;
+
+            for (const threshold of result.crossed) {
+              void notifyTeamOf({ teamId: account.teamId }, 'needsAttention', {
+                priority: threshold >= 100 ? 1 : 0,
+                title: `Buildd budget ${threshold}% used`,
+                message: budgetUsd != null
+                  ? `$${result.monthlyCostUsd.toFixed(2)} of $${budgetUsd.toFixed(2)} Agent SDK credit used this month (${result.monthlyCostMonth}).`
+                  : `$${result.monthlyCostUsd.toFixed(2)} spent this month (${result.monthlyCostMonth}).`,
+              });
+            }
+          }
+
+          if (!committed) {
+            console.warn(`[Worker ${id}] budget update lost contention after retries; charge of $${effectiveCost.toFixed(4)} not recorded`);
+          }
+        }
+      } catch (budgetErr) {
+        console.error(`[Worker ${id}] budget tracking failed:`, budgetErr);
+      }
+    }
+  };
+
+  const releaseTerminalSeat = async () => {
+    if ((LIVE_WORKER_STATUSES as readonly string[]).includes(worker.status) && account.authType === 'oauth') {
+      await db.update(accounts)
+        .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - 1, 0)` })
+        .where(eq(accounts.id, account.id));
+    }
+  };
+
   const isTerminalStatus = status === 'completed' || status === 'failed' || status === 'error';
 
   // §6d Passive observed-touches accumulation.
@@ -1190,6 +1402,11 @@ export async function PATCH(
   // which must not re-offer the whole accumulated list every tick: that would
   // put a SELECT plus an INSERT attempt for up to 500 paths on the hot sync
   // path to discover, every time, that they are all already held.
+  const sessionObservedTouches = [...new Set([
+    ...(Array.isArray(worker.observedTouches) ? worker.observedTouches as string[] : []),
+    ...(Array.isArray(touchedPaths)
+      ? touchedPaths.filter((path: unknown): path is string => typeof path === 'string') : []),
+  ])];
   let newlyObservedPaths: string[] = [];
   if (isTerminalStatus) {
     // Ground truth for the task-area-prediction experiment, captured HERE
@@ -1254,6 +1471,9 @@ export async function PATCH(
     newlyObservedPaths = (updates.observedTouches as string[]).filter(p => !existingSet.has(p));
   }
 
+  // Fetch mission ownership for every terminal transition. Completion also uses
+  // outputRequirement; failed/error transitions still need missionId so their
+  // final recorded cost can enforce the mission budget.
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
         // `taskClass` is here for the Option A′ auto-detect guard below:
@@ -1262,7 +1482,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber })
+        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, dependsOn: tasks.dependsOn })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1285,7 +1505,7 @@ export async function PATCH(
   // Captured outside the closure: narrowing of `worker` does not survive into a
   // function body.
   const workerStartedAt = worker.startedAt ?? null;
-  async function hasDeliverableArtifact(): Promise<boolean> {
+  async function hasDeliverableArtifact(strict = false): Promise<boolean> {
     // startedAt is written on the first `running` PATCH, so a completing worker
     // has one; epoch keeps a null from excluding everything.
     const workStart = workerStartedAt ? new Date(workerStartedAt) : new Date(0);
@@ -1299,7 +1519,14 @@ export async function PATCH(
           and(eq(artifacts.missionId, taskMissionId), isNull(artifacts.workerId), gte(artifacts.updatedAt, workStart)),
         )
       : eq(artifacts.workerId, id);
-    const rows = await db.query.artifacts.findMany({ where, limit: 1 });
+    const rows = await db.query.artifacts.findMany({
+      where: strict ? and(where,
+        sql`COALESCE(${artifacts.metadata}->>'salvaged', 'false') <> 'true'`,
+        sql`COALESCE(${artifacts.key}, '') NOT LIKE 'cloud-run-report:%'`,
+        or(not(inArray(artifacts.type, ['screenshot', 'diff', 'file', 'data', 'link', 'recording', 'calendar_event'])), isNotNull(artifacts.key)),
+      ) : where,
+      limit: 1,
+    });
     return rows.length > 0;
   }
 
@@ -1486,11 +1713,30 @@ export async function PATCH(
                 : null,
               head: worker.branch,
             });
+            // Same escape hatch as `create_pr` (POST /api/github/pr): a
+            // multi-repo mission's integration branch may be real in the
+            // mission's home repo and absent from THIS task's own repo, in
+            // which case refusing the adoption for disagreeing with it would
+            // refuse the only base that can actually exist here.
+            let autoDetectIntegrationBaseMissing = false;
+            if (guard.enforced && terminalTaskRow[0]?.missionId && guard.integrationBase) {
+              const ready = await ensureIntegrationBaseForTaskPr({
+                missionId: terminalTaskRow[0].missionId,
+                integrationBase: guard.integrationBase,
+                taskTitle: terminalTaskRow[0].title,
+                workspaceId: worker.workspaceId,
+                taskId: worker.taskId,
+                workerId: worker.id,
+              });
+              autoDetectIntegrationBaseMissing = !ready.usable;
+            }
             const detectedBaseRef = typeof prs[0].base?.ref === 'string' ? prs[0].base.ref : null;
-            autoDetectRefusal = guard.refusal(detectedBaseRef, {
-              prNumber: prs[0].number,
-              action: 'adopt',
-            });
+            autoDetectRefusal = autoDetectIntegrationBaseMissing
+              ? null
+              : guard.refusal(detectedBaseRef, {
+                  prNumber: prs[0].number,
+                  action: 'adopt',
+                });
             if (!autoDetectRefusal) {
               // Found PR — update worker and let validation pass
               await db.update(workers).set({
@@ -1553,6 +1799,32 @@ export async function PATCH(
               effectiveLastCommitSha && pr?.head?.sha && pr.head.sha === effectiveLastCommitSha,
             );
             if (pr?.merged || headShaMatch) {
+              // Named by the task, so it is owned unless its head is a
+              // protected branch; it still needs the linked repo and the
+              // mission base, like every other door.
+              if (!(account as { sessionUserId?: string | null }).sessionUserId && worker.workspaceId) {
+                const row = terminalTaskRow[0];
+                const verdict = await verifyReportedWorkerPr({
+                  worker: { id: worker.id, branch: worker.branch, workspaceId: worker.workspaceId, taskId: worker.taskId },
+                  task: row && worker.taskId ? { ...row, id: worker.taskId } : null,
+                  reported: { number: prNumber },
+                  view: pr,
+                });
+                if (!verdict.accept) {
+                  fireGateEvent({
+                    gate: GATE_SLUGS.PR_OWNERSHIP,
+                    surface: 'PATCH /api/workers/[id]',
+                    outcome: 'rejected',
+                    reason: verdict.reasonCode,
+                    workspaceId: worker.workspaceId,
+                    missionId: row?.missionId ?? null,
+                    taskId: worker.taskId,
+                    workerId: worker.id,
+                    callerOrigin: 'worker',
+                  });
+                  continue;
+                }
+              }
               await db.update(workers).set({
                 prUrl: pr.html_url,
                 prNumber: pr.number,
@@ -1588,7 +1860,7 @@ export async function PATCH(
         // future arm cannot be added that persists the payload and forgets the
         // ledger (or the reverse).
         const frictionSignature = fireGateEvent({
-          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          gate: reason === 'silent_completion' ? GATE_SLUGS.SILENT_COMPLETION : GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
           outcome: 'rejected',
           reason: `completion refused: outputRequirement ${reason} not satisfied`,
@@ -1666,37 +1938,96 @@ export async function PATCH(
         return frictionSignature;
       };
 
-      // A visual-auditor task (the mission's [surface audit]) is gated on its
-      // own evidence, which REPLACES hasDeliverableArtifact: a summary, a PR or
-      // a sibling's mission artifact must not pass an audit that never looked.
-      // Every required route × {mobile, desktop} needs a screenshot from this
-      // worker with a finding and a stored object, and every issue a fix task.
-      // Checked ahead of every outputRequirement arm so no `hasPR` shortcut
-      // can satisfy it. See lib/visual-audit-evidence.ts.
-      const isVisualAuditorTask = terminalTaskRow[0]?.roleSlug === VISUAL_AUDITOR_ROLE_SLUG;
-      if (isVisualAuditorTask && worker.taskId) {
-        const evidence = await loadVisualAuditEvidence({
+      if (isSilentCompletion({
+        status, outputRequirement: outputReq, kind: terminalTaskRow[0]?.kind,
+        pathManifest: terminalTaskRow[0]?.pathManifest, taskClass: terminalTaskRow[0]?.taskClass,
+        isReviewer: isReviewerTask, commitCount: effectiveCommits,
+        filesChanged: Math.max(filesChanged ?? 0, worker.filesChanged ?? 0),
+        dirtyWorktree: effectiveDirtyWorktree,
+        observedTouches: sessionObservedTouches,
+        hasPR, mergedAt: worker.mergedAt, discardEdits,
+        summary: body.summary, summarySource: body.summarySource,
+      }) && !(await hasDeliverableArtifact(true))) {
+        const frictionSignature = await persistRejectedCompletionPayload('silent_completion');
+        const message = 'Silent completion refused: no editing evidence or deliverable, and the summary is unauthored narration or a fragment.';
+        // Fence on the active worker: duplicate completion requests cannot spend
+        // the retry budget twice or overwrite another attempt's outcome.
+        const failed = await db.update(workers).set({
+          status: 'failed', error: message, exitCause: 'code_failure',
+          completedAt: new Date(), updatedAt: new Date(),
+        }).where(and(eq(workers.id, id), not(inArray(workers.status, TERMINAL_WORKER_STATUSES)))).returning({ id: workers.id });
+        if (!failed.length) return workerConflictResponse(id);
+        await accumulateTerminalSpend();
+        // Persist metrics before the mission's spend aggregation reads them.
+        await db.update(workers).set({ ...updates, status: 'failed', error: message,
+          exitCause: 'code_failure', completedAt: new Date() }).where(eq(workers.id, id));
+        await releaseTerminalSeat();
+        if (taskMissionId) {
+          try { await checkAndExhaustMissionBudget(taskMissionId); }
+          catch (err) { console.error(`[Worker ${id}] Mission budget check failed:`, err); }
+        }
+        if (worker.taskId) {
+          const previousContext = (terminalTaskRow[0]?.context ?? {}) as Record<string, unknown>;
+          const next = silentCompletionRetryContext(previousContext);
+          const settled = await db.update(tasks).set({
+            status: next.retry ? 'pending' : 'failed', context: next.context,
+            claimedBy: null, claimedAt: null, startAt: null,
+            result: { summarySource: 'fallback' },
+            updatedAt: new Date(),
+          }).where(and(
+            eq(tasks.id, worker.taskId),
+            eq(tasks.status, terminalTaskRow[0]!.status),
+            sql`COALESCE(${tasks.context}->>'silentCompletionRetryCount', '0') = ${String(previousContext.silentCompletionRetryCount ?? 0)}`,
+          )).returning({ id: tasks.id });
+          if (settled.length && !next.retry) {
+            await db.insert(missionNotes).values({
+              missionId: taskMissionId, taskId: worker.taskId,
+              authorType: 'system', type: 'warning', status: 'open',
+              title: 'Silent completion retry exhausted', body: message,
+            });
+          }
+          await releaseAndNotify(worker.taskId, 'abandoned');
+          if (settled.length) {
+            await triggerEvent(channels.workspace(worker.workspaceId), events.TASK_UPDATED, { taskId: worker.taskId, status: next.retry ? 'pending' : 'failed' });
+            if (!next.retry) await resolveCompletedTask(worker.taskId, worker.workspaceId);
+          }
+          await triggerEvent(channels.worker(id), events.WORKER_FAILED, { workerId: id, taskId: worker.taskId, status: 'failed', error: message });
+          await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_FAILED, { workerId: id, taskId: worker.taskId, status: 'failed', error: message });
+        }
+        return NextResponse.json({ error: message, hint: 'silent_completion', gate: GATE_SLUGS.SILENT_COMPLETION, frictionSignature }, { status: 400 });
+      }
+
+      // Evidence slot (lib/completion-policy.ts). A task the evidence policy
+      // owns (a visual-auditor's [surface audit]) is judged on its own
+      // evidence, which REPLACES the output-requirement gates below: a summary,
+      // a PR or a sibling's mission artifact must not pass an audit that never
+      // looked. Checked ahead of every outputRequirement arm so no `hasPR`
+      // shortcut can satisfy it.
+      const evidenceVerdict = worker.taskId
+        ? await COMPLETION_POLICIES.evidence({
           workerId: id,
           taskId: worker.taskId,
           missionId: taskMissionId,
           workspaceId: worker.workspaceId,
+          roleSlug: terminalTaskRow[0]?.roleSlug ?? null,
           workerStartedAt,
-        });
-        if (!evidence.ok) {
-          const frictionSignature = await persistRejectedCompletionPayload('visual_evidence');
-          return NextResponse.json({
-            error: formatVisualEvidenceRejection(evidence),
-            hint: 'visual_evidence',
-            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
-            frictionSignature,
-          }, { status: 400 });
-        }
-        // Screenshots are the deliverable; the auditor ships nothing to merge.
-        skipRelease = true;
+        })
+        : null;
+      const evidenceIsDeliverable = evidenceVerdict !== null;
+      if (evidenceVerdict?.kind === 'fail') {
+        const frictionSignature = await persistRejectedCompletionPayload(evidenceVerdict.hint);
+        return NextResponse.json({
+          error: evidenceVerdict.reason,
+          hint: evidenceVerdict.hint,
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          frictionSignature,
+        }, { status: 400 });
       }
+      // The evidence is the deliverable; there is nothing to merge.
+      if (evidenceVerdict?.kind === 'pass') skipRelease = true;
 
       // pr_required: always require a PR (regardless of commits)
-      if (outputReq === 'pr_required' && !hasPR && !isVisualAuditorTask) {
+      if (outputReq === 'pr_required' && !hasPR && !evidenceIsDeliverable) {
         const frictionSignature = await persistRejectedCompletionPayload('pr_required');
         return NextResponse.json({
           error: 'This task requires a pull request before completing. Use create_pr to open one.',
@@ -1711,7 +2042,7 @@ export async function PATCH(
       }
 
       // artifact_required: require PR or artifact (regardless of commits)
-      if (outputReq === 'artifact_required' && !hasPR && !isVisualAuditorTask) {
+      if (outputReq === 'artifact_required' && !hasPR && !evidenceIsDeliverable) {
         if (!(await hasDeliverableArtifact())) {
           const frictionSignature = await persistRejectedCompletionPayload('artifact_required');
           return NextResponse.json({
@@ -2071,6 +2402,12 @@ export async function PATCH(
   // it is infra, and it rides the infra retry budget below rather than the
   // task's retry count — which is 0 for a non-mission task.
   const isCrashReconciled = status === 'failed' && crashReconciled === true;
+  // The runner's clone of the workspace repo was throttled by GitHub (429 or a
+  // secondary rate limit) after its own bounded retries (apps/runner/src/
+  // git-clone.ts). Nothing ran; rides the infra retry budget below, with its
+  // backoff, so the next attempt lands after GitHub's window instead of the
+  // task failing outright.
+  const isGithubThrottled = status === 'failed' && body.githubThrottled === true;
   // The CLI's model version gate: this runner cannot serve the model the task
   // was routed to. A deterministic 400 before the first turn, so it is infra
   // and rides the infra retry budget below; the claim route's capability gate
@@ -2092,6 +2429,7 @@ export async function PATCH(
     updates.exitCause = classifyReportedFailure({
       taskCancelled: taskCancelledUnderSession,
       crashReconciled: isCrashReconciled,
+      githubThrottled: isGithubThrottled,
       unrecognizedModel: isUnrecognizedModel,
       needsInput: isNeedsInput,
       budgetLimited: isBudgetError,
@@ -2174,6 +2512,9 @@ export async function PATCH(
           });
         }
       }
+      // Wake now: the claim route's single-flight and path-lease gates decide
+      // whether it may run yet, and re-evaluating is all a wake asks for.
+      await wakeTask(worker.taskId, 'task.requeued');
     }
     isBudgetReset = true; // reuse the "held for retry" machinery (no fail notif, re-broadcast pending)
   }
@@ -2329,7 +2670,9 @@ export async function PATCH(
     // now, waking at that moment beats sleeping through our own (later) reset —
     // the claim route re-runs the same failover decision when the task wakes.
     let earliestAlternateReset: Date | null = null;
-    if (taskForBudget?.workspaceId && teamId) {
+    // A backend the creator asked for explicitly is never failed over: the task
+    // waits out its own provider's reset (provider-failover spec, pinned backends).
+    if (taskForBudget?.workspaceId && teamId && !isBackendPinned(taskForBudget?.context)) {
       try {
         const decision = await resolveFailoverBackend({
           from: walledBackend,
@@ -2358,6 +2701,13 @@ export async function PATCH(
     // immediately on Codex when a failover backend was resolved.
     // Guard: don't re-queue a cancelled task even when its worker hit a budget wall.
     const existingCtx = (taskForBudget?.context || {}) as Record<string, unknown>;
+    const budgetStartAt = failoverBackend ? null : (() => {
+      const wakeAt = earliestAlternateReset && earliestAlternateReset < budgetResetsAt
+        ? earliestAlternateReset
+        : budgetResetsAt;
+      // An explicit deferral floor already on the task still wins.
+      return taskForBudget?.startAt && taskForBudget.startAt > wakeAt ? taskForBudget.startAt : wakeAt;
+    })();
     if (taskForBudget?.status !== 'cancelled') await db
       .update(tasks)
       .set({
@@ -2367,15 +2717,7 @@ export async function PATCH(
         expiresAt: null,
         updatedAt: new Date(),
         ...(failoverBackend && { backend: failoverBackend }),
-        ...(!failoverBackend && {
-          startAt: (() => {
-            const wakeAt = earliestAlternateReset && earliestAlternateReset < budgetResetsAt
-              ? earliestAlternateReset
-              : budgetResetsAt;
-            // An explicit deferral floor already on the task still wins.
-            return taskForBudget?.startAt && taskForBudget.startAt > wakeAt ? taskForBudget.startAt : wakeAt;
-          })(),
-        }),
+        ...(budgetStartAt && { startAt: budgetStartAt }),
         context: {
           ...existingCtx,
           budgetExhausted: true,
@@ -2387,6 +2729,18 @@ export async function PATCH(
         },
       })
       .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+
+    // A failover is claimable on the other provider now. A deferral wakes at
+    // the reset and not before: an instant wake would re-claim straight into
+    // the same wall (the 2026-06-25 session-limit storm). notBefore keys the
+    // wake onto the trigger's start_at row and publishes its timer.
+    if (taskForBudget?.status !== 'cancelled') {
+      await wakeTask(
+        worker.taskId,
+        budgetStartAt ? 'budget.available' : 'task.requeued',
+        budgetStartAt ? { notBefore: budgetStartAt } : {},
+      );
+    }
 
     if (failoverBackend) {
       console.log(
@@ -2456,6 +2810,7 @@ export async function PATCH(
           .update(tasks)
           .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: new Date() })
           .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+        await wakeTask(worker.taskId, 'task.requeued');
       }
       isBudgetReset = true; // reuse hold-for-retry UX: skip fail notification, re-broadcast pending
     }
@@ -2502,6 +2857,7 @@ export async function PATCH(
 
         if (
           !alreadyFlipped &&
+          !isBackendPinned(authTaskCtx) &&
           authTeamId &&
           authTask?.workspaceId &&
           authTask?.status !== 'cancelled'
@@ -2541,6 +2897,8 @@ export async function PATCH(
                 })
                 .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
 
+              // Another provider can carry it now; no delay to honour.
+              await wakeTask(worker.taskId, 'task.requeued');
               isAuthFailover = true;
               isBudgetReset = true; // gates normal task-update block + skips fail notifications
               console.log(`[workers PATCH] Task ${worker.taskId} failed over to ${authFailoverBackend} after auth failure (${authSeverity})`);
@@ -2564,209 +2922,45 @@ export async function PATCH(
   if (status === 'completed' || status === 'failed' || status === 'error') {
     updates.completedAt = new Date();
 
-    // Resolved once: the cost estimate needs it to price seat-session totals and
-    // the routing-outcome row needs it for task_outcomes.actual_model.
-    const sessionActualModel = resolveSessionActualModel(
-      actualModel,
-      (resultMeta ?? worker.resultMeta) as Parameters<typeof resolveSessionActualModel>[1],
-    );
-
-    // Accumulate monthly spend + fire budget-threshold alerts (non-fatal).
-    // Guarded by the worker's prior status so a duplicate terminal PATCH can't
-    // double-count. Prefers the SDK's reported cost; falls back to a token-derived
-    // estimate (list prices) when cost is $0 — the OAuth / credit-pool case.
-    const wasTerminal = worker.status === 'completed' || worker.status === 'failed';
-    if (!wasTerminal) {
-      try {
-        const reportedCost = typeof costUsd === 'number'
-          ? costUsd
-          : parseFloat((worker.costUsd as string | null) ?? '0');
-        const usageForCost = (resultMeta?.modelUsage ?? (worker.resultMeta as any)?.modelUsage) as
-          | Parameters<typeof estimateCostUsd>[0]
-          | undefined;
-        // Per-model attribution first. It is EMPTY on seat/OAuth auth — the very
-        // case this estimate exists for — so fall back to pricing the session
-        // totals (which OAuth does populate) against the session's actual model.
-        const perModelEstimate = estimateCostUsd(usageForCost);
-        const totalsForCost = (resultMeta?.totalUsage ?? (worker.resultMeta as any)?.totalUsage) as
-          | Parameters<typeof estimateCostUsdFromTotals>[0]
-          | undefined;
-        const estimatedCost = perModelEstimate > 0
-          ? perModelEstimate
-          : estimateCostUsdFromTotals(totalsForCost, sessionActualModel);
-        const effectiveCost = reportedCost > 0 ? reportedCost : estimatedCost;
-
-        // Write effectiveCost back to the worker row so per-worker aggregations
-        // (e.g. mission spend) see a non-null value for OAuth workers that don't
-        // self-report costUsd. Only overwrite when the runner didn't report a
-        // positive cost (reportedCost > 0 means line 387 already set the right value).
-        if (effectiveCost > 0 && reportedCost <= 0) {
-          updates.costUsd = effectiveCost.toString();
-        }
-
-        // Codex and tenant-credential spend are billed elsewhere, so they do
-        // not draw on the pool. The worker row above still carries the cost
-        // either way.
-        const poolTaskRow = terminalTaskRow[0];
-        const countsTowardPool = countsTowardAgentSdkCreditPool({
-          backend: poolTaskRow?.backend ?? null,
-          authType: account.authType,
-          tenantId: ((poolTaskRow?.context as Record<string, unknown> | null)?.tenantContext as { tenantId?: string } | undefined)?.tenantId ?? null,
-        });
-
-        if (effectiveCost > 0 && countsTowardPool) {
-          // Aggregate budget is tracked at the team level so all token-accounts
-          // under the same owner share one monthly cap (the Claude Agent SDK
-          // credit pool is a single pool per subscription).
-          //
-          // Optimistic locking: read the team budget, compute the next state, then
-          // commit only if the row is unchanged since we read it (CAS on cost+month).
-          // neon-http has no interactive transactions, so we retry on contention —
-          // concurrent worker completions under the same team must not lose spend
-          // or mis-fire threshold alerts by racing on a read-modify-write.
-          const envBudget = process.env.BUDGET_MONTHLY_USD ? parseFloat(process.env.BUDGET_MONTHLY_USD) : null;
-          let committed = false;
-
-          for (let attempt = 0; attempt < 5 && !committed; attempt++) {
-            // Explicit column list: an unfiltered teams query selects every column
-            // in schema.ts, so dropping one breaks this loop for the length of a
-            // build. These four are the whole budget CAS working set.
-            const team = await db.query.teams.findFirst({
-              where: eq(teams.id, account.teamId),
-              columns: {
-                monthlyBudgetUsd: true,
-                monthlyCostUsd: true,
-                monthlyCostMonth: true,
-                budgetAlertsSent: true,
-              },
-            });
-            if (!team) break;
-
-            const budgetUsd = team.monthlyBudgetUsd != null
-              ? parseFloat(team.monthlyBudgetUsd.toString())
-              : envBudget;
-            const prevCost = (team.monthlyCostUsd as string | null) ?? '0';
-            const prevMonth = team.monthlyCostMonth ?? null;
-
-            const result = applyBudgetUsage(
-              {
-                monthlyCostUsd: parseFloat(prevCost),
-                monthlyCostMonth: prevMonth,
-                alertsSent: (team.budgetAlertsSent ?? []) as number[],
-              },
-              effectiveCost,
-              budgetUsd,
-              new Date(),
-            );
-
-            // CAS guard: a concurrent writer that won the race will have changed
-            // cost or month (cost strictly moves on every charge), failing this
-            // WHERE and returning no rows, so we re-read and retry.
-            const rows = await db
-              .update(teams)
-              .set({
-                monthlyCostUsd: result.monthlyCostUsd.toFixed(6),
-                monthlyCostMonth: result.monthlyCostMonth,
-                budgetAlertsSent: result.alertsSent,
-              })
-              .where(and(
-                eq(teams.id, account.teamId),
-                eq(teams.monthlyCostUsd, prevCost),
-                prevMonth === null ? isNull(teams.monthlyCostMonth) : eq(teams.monthlyCostMonth, prevMonth),
-              ))
-              .returning({ id: teams.id });
-
-            if (rows.length === 0) continue; // lost the race — re-read and retry
-            committed = true;
-
-            for (const threshold of result.crossed) {
-              void notifyTeamOf({ teamId: account.teamId }, 'needsAttention', {
-                priority: threshold >= 100 ? 1 : 0,
-                title: `Buildd budget ${threshold}% used`,
-                message: budgetUsd != null
-                  ? `$${result.monthlyCostUsd.toFixed(2)} of $${budgetUsd.toFixed(2)} Agent SDK credit used this month (${result.monthlyCostMonth}).`
-                  : `$${result.monthlyCostUsd.toFixed(2)} spent this month (${result.monthlyCostMonth}).`,
-              });
-            }
-          }
-
-          if (!committed) {
-            console.warn(`[Worker ${id}] budget update lost contention after retries; charge of $${effectiveCost.toFixed(4)} not recorded`);
-          }
-        }
-      } catch (budgetErr) {
-        console.error(`[Worker ${id}] budget tracking failed:`, budgetErr);
-      }
-    }
+    await accumulateTerminalSpend();
 
     // Update task status + snapshot deliverables
     // Skip task update for budget errors — already handled above
     if (worker.taskId && !isBudgetReset) {
-      // ── Loop dispatch ────────────────────────────────────────────────────────
-      // Evaluate the exit condition at completion time — the ONLY authority that
-      // may evaluate conditions and increment loopIteration. Stale cleanup and
-      // webhooks are explicitly forbidden from calling this logic.
-      let loopDispatchResult: LoopDispatchResult | null = null;
+      // ── Loop slot ────────────────────────────────────────────────────────────
+      // A loop task's exit condition is evaluated here, at completion time, by
+      // the loop policy (lib/completion-policy.ts): the ONLY authority that may
+      // evaluate it and advance loopIteration. Stale cleanup and webhooks never do.
+      let loop: LoopVerdict = null;
+      // A slot that fails a task its worker reported completed (loop exhausted,
+      // release failed), or a release held for CI. The outcome event below
+      // follows these, never the reported status alone.
+      let slotFailure: SlotFailure | null = null;
+      let releaseHeld = false;
       // Declared here so the requeue case (inside the loop block below) can populate it.
       let taskCtxForRetry: Record<string, unknown> = {};
       if (status === 'completed') {
-        const loopRows = await db
-          .select({
-            loopConfig: tasks.loopConfig,
-            loopIteration: tasks.loopIteration,
-            loopState: tasks.loopState,
-            startAt: tasks.startAt,
-            context: tasks.context,
-          })
-          .from(tasks)
-          .where(eq(tasks.id, worker.taskId))
-          .limit(1);
-        const loopData = loopRows[0];
-        const loopConfig = loopData?.loopConfig ?? null;
+        loop = await COMPLETION_POLICIES.loop({
+          taskId: worker.taskId,
+          workerId: id,
+          workerBranch: worker.branch ?? null,
+          workerLastCommitSha: worker.lastCommitSha ?? null,
+          // The runner's own completion carries evidence in the body; the
+          // agent's complete_task does not, so use what the runner recorded
+          // on the row before that call (see the verificationEvidence column).
+          verificationEvidence: verificationEvidence ?? worker.verificationEvidence ?? undefined,
+          structuredOutput: body.structuredOutput,
+        });
 
-        if (loopConfig) {
-          const freshWorkerForLoop = await db.query.workers.findFirst({
-            where: eq(workers.id, id),
-            columns: { prLifecycleStatus: true, prNumber: true, mergedAt: true },
-          });
-          const existingLoopCtx = ((loopData?.context ?? {}) as Record<string, unknown>);
-          const existingHistory = (existingLoopCtx.loopHistory as LoopHistoryEntry[] | undefined) ?? [];
+        // condition_unmet is expected control flow — does NOT consume retry attempts.
+        if (loop && loop.kind !== 'pass') {
+          updates.exitCause = 'condition_unmet';
+        }
 
-          loopDispatchResult = dispatchLoopIteration({
-            loopConfig,
-            currentIteration: loopData?.loopIteration ?? 0,
-            existingHistory,
-            existingStartAt: loopData?.startAt ?? null,
-            workerId: id,
-            workerBranch: worker.branch ?? null,
-            workerLastCommitSha: worker.lastCommitSha ?? null,
-            // The runner's own completion carries evidence in the body; the
-            // agent's complete_task does not, so use what the runner recorded
-            // on the row before that call (see the verificationEvidence column).
-            verificationEvidence: verificationEvidence ?? worker.verificationEvidence ?? undefined,
-            structuredOutput: body.structuredOutput,
-            prLifecycleStatus: freshWorkerForLoop?.prLifecycleStatus ?? null,
-            prNumber: freshWorkerForLoop?.prNumber ?? null,
-            workerMergedAt: freshWorkerForLoop?.mergedAt ?? null,
-          });
-
-          // condition_unmet is expected control flow — does NOT consume retry attempts.
-          if (loopDispatchResult.kind !== 'satisfied') {
-            updates.exitCause = 'condition_unmet';
-          }
-
-          // Requeue: piggyback on the shouldAutoRetry machinery to reset to pending.
-          if (loopDispatchResult.kind === 'requeue') {
-            shouldAutoRetry = true;
-            const r = loopDispatchResult;
-            taskCtxForRetry = {
-              ...existingLoopCtx,
-              loopHistory: r.loopHistory,
-              ...(r.resumeBranch ? { resumeBranch: r.resumeBranch } : {}),
-              ...(r.lastCommitSha ? { lastCommitSha: r.lastCommitSha } : {}),
-              failureContext: r.failureContext,
-            };
-          }
+        // Requeue: piggyback on the shouldAutoRetry machinery to reset to pending.
+        if (loop?.kind === 'hold') {
+          shouldAutoRetry = true;
+          taskCtxForRetry = loop.retryContext;
         }
       }
       // ────────────────────────────────────────────────────────────────────────
@@ -2844,8 +3038,9 @@ export async function PATCH(
         // to the ordinary retry budget. A crash-reconciled restart rides it for
         // the same reason: without it, one runner self-update permanently
         // failed every in-flight non-mission task. A model version-gate 400
-        // rides it too: bounded, backed off, and uncharged.
-        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        // rides it too: bounded, backed off, and uncharged. So does a clone GitHub
+        // throttled: the backoff is the point, GitHub needs time.
+        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;
@@ -3265,7 +3460,7 @@ export async function PATCH(
       // Snapshot worker stats into task.result on completion.
       // Skip for loop requeue: the task continues, so no terminal result snapshot yet.
       // Skip for contract violations (planning/review): error result set above.
-      if (status === 'completed' && !contractViolation && loopDispatchResult?.kind !== 'requeue') {
+      if (status === 'completed' && !contractViolation && loop?.kind !== 'hold') {
         // Clean summary: strip shell artifacts like HEREDOC syntax from commit commands
         let summary = body.summary || undefined;
         if (typeof summary === 'string') {
@@ -3350,24 +3545,25 @@ export async function PATCH(
       }
 
       // Inject loop state columns into taskUpdate.
-      if (loopDispatchResult) {
-        taskUpdate.loopIteration = loopDispatchResult.loopIteration;
-        if (loopDispatchResult.kind === 'satisfied') {
+      if (loop) {
+        taskUpdate.loopIteration = loop.progress.iteration;
+        if (loop.kind === 'pass') {
           taskUpdate.loopState = 'satisfied';
           const existingResult = (taskUpdate.result ?? {}) as Record<string, unknown>;
-          taskUpdate.result = { ...existingResult, loopHistory: loopDispatchResult.loopHistory };
-        } else if (loopDispatchResult.kind === 'requeue') {
+          taskUpdate.result = { ...existingResult, loopHistory: loop.progress.history };
+        } else if (loop.kind === 'hold') {
           taskUpdate.loopState = 'condition_unmet';
-          if (loopDispatchResult.effectiveStartAt) {
-            taskUpdate.startAt = loopDispatchResult.effectiveStartAt;
+          if (loop.startAt) {
+            taskUpdate.startAt = loop.startAt;
           }
-        } else if (loopDispatchResult.kind === 'exhausted') {
+        } else {
           // Worker reported completed but loop iterations are exhausted → task is failed.
           taskUpdate.status = 'failed';
+          slotFailure = { slot: 'loop', label: 'Loop attempts exhausted', reason: loop.reason };
           taskUpdate.loopState = 'exhausted';
           taskUpdate.result = {
-            error: `Loop condition unmet after ${loopDispatchResult.loopIteration} attempt(s)`,
-            loopHistory: loopDispatchResult.loopHistory,
+            error: loop.reason,
+            loopHistory: loop.progress.history,
           };
         }
       }
@@ -3379,23 +3575,41 @@ export async function PATCH(
         .set(taskUpdate)
         .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
 
+      // The routing-outcome analytics row this report produces, minus the
+      // outcome. Built here so a release held for CI can keep it on the task:
+      // the release PR's CI records it with the real outcome
+      // (lib/task-outcome-event.ts), not this PATCH.
+      const durationMs = worker.startedAt
+        ? Date.now() - new Date(worker.startedAt).getTime()
+        : null;
+      const outcomeAnalytics: HeldOutcomeAnalytics = {
+        accountId: worker.accountId,
+        actualModel: sessionActualModel,
+        totalCostUsd: updates.costUsd ?? worker.costUsd ?? null,
+        totalTurns: typeof updates.turns === 'number' ? updates.turns : (worker.turns ?? null),
+        durationMs,
+        wasRetried: ((taskCtxForRetry.retryCount as number | undefined) ?? 0) > 0,
+        // Taxonomy follow-up: code_failure is still the catch-all here, so a
+        // readout must treat it as "unclassified", not "the model's fault".
+        exitCause: (updates.exitCause as string | null | undefined) ?? worker.exitCause ?? null,
+        workerId: id,
+      };
+
       // Run release sequence on successful completion.
       // IMPORTANT: a failed release overrides the task status to 'failed' — the
       // task is not truly done until the release PR lands and prod is healthy.
       // Skip when skipRelease is set (artifact_required satisfied by artifact, no PR).
-      if (status === 'completed' && !shouldAutoRetry && !skipRelease && loopDispatchResult?.kind !== 'exhausted') {
+      if (status === 'completed' && !shouldAutoRetry && !skipRelease && loop?.kind !== 'fail') {
+        const releaseInput = { taskId: worker.taskId, workerId: id, workspaceId: worker.workspaceId, missionId: taskMissionId };
         try {
-          const releaseResult = await executeRelease({
-            taskId: worker.taskId,
-            workerId: id,
-            workspaceId: worker.workspaceId,
-          });
+          const release = await COMPLETION_POLICIES.release.evaluate(releaseInput);
+          const releaseResult = release.record;
           const resultWithRelease = {
             ...((taskUpdate.result ?? {}) as Record<string, unknown>),
-            releaseSummary: releaseResult.message,
+            releaseSummary: release.summary,
           };
 
-          if (releaseResult.status === 'failed') {
+          if (release.kind === 'fail') {
             // Release explicitly failed (CI red, merge conflict, no PR found…) —
             // flip the task to FAILED so it never shows as "completed" successfully.
             await db
@@ -3408,19 +3622,22 @@ export async function PATCH(
               })
               .where(eq(tasks.id, worker.taskId));
             taskUpdate.result = resultWithRelease;
+            slotFailure = { slot: 'release', label: 'Release failed', reason: release.reason };
 
             // Alert: release failure needs immediate human attention.
-            const prLink = releaseResult.releasePrUrl ? ` ${releaseResult.releasePrUrl}` : '';
+            const prLink = release.prUrl ? ` ${release.prUrl}` : '';
             void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
               title: 'Release failed',
-              message: `${releaseResult.error ?? releaseResult.message}${prLink}`,
+              message: `${release.reason}${prLink}`,
               priority: 1,
-              url: releaseResult.releasePrUrl || `https://buildd.dev/app/tasks/${worker.taskId}`,
-              urlTitle: releaseResult.releasePrUrl ? 'Open PR' : 'View task',
+              url: release.prUrl || `https://buildd.dev/app/tasks/${worker.taskId}`,
+              urlTitle: release.prUrl ? 'Open PR' : 'View task',
             });
-          } else if (releaseResult.status === 'pending_ci') {
+          } else if (release.kind === 'hold') {
             // Release PR found but CI not yet green — store tracking info and let
             // the check_suite webhook complete/fail the task when CI resolves.
+            // That resolution emits the outcome event; this PATCH emits none.
+            releaseHeld = true;
             const existingCtx = (
               await db
                 .select({ context: tasks.context })
@@ -3436,8 +3653,9 @@ export async function PATCH(
                 context: {
                   ...existingCtx,
                   releasePrPending: true,
-                  releasePrNumber: releaseResult.releasePrNumber,
-                  releasePrUrl: releaseResult.releasePrUrl,
+                  releasePrNumber: release.prNumber,
+                  releasePrUrl: release.prUrl,
+                  heldReleaseOutcome: outcomeAnalytics,
                 },
                 updatedAt: new Date(),
               })
@@ -3453,65 +3671,40 @@ export async function PATCH(
         } catch (releaseErr) {
           console.error(`[Worker ${id}] Release execution failed:`, releaseErr);
         }
-
-        // on_mission_complete: fire the mission-level release once when all tasks
-        // in the mission reach terminal state. Fire-and-forget — same pattern as
-        // other post-completion hooks. The helper checks the workspace trigger
-        // policy and deduplicates via missions.releasedAt.
-        if (taskMissionId) {
-          fireMissionReleaseIfComplete(worker.workspaceId, taskMissionId, worker.taskId, id)
-            .catch((err) => console.error(`[Worker ${id}] Mission release check failed:`, err));
-        }
+        // Whatever the verdict: the release policy's follow-up (the mission-level
+        // release once every mission task is terminal). Fire-and-forget.
+        COMPLETION_POLICIES.release.settled(releaseInput);
       }
 
-      // Evidence: a compact record of why the task failed, or of the caveat on a
-      // success, so "did it fail, why" is answerable from buildd alone. Skipped
-      // when the task is going back to the queue (no terminal outcome yet).
-      // Awaited — a serverless function may freeze an un-awaited write — and
-      // contained: it never throws.
-      if (!shouldAutoRetry && loopDispatchResult?.kind !== 'requeue') {
-        await persistTaskEvidence(worker.taskId, id, { isSensitive });
+      // The outcome is settled: not going back to the queue, and not a release
+      // still waiting on CI (its resolution emits this, once, when the status
+      // is real: the evidence record reads the task's status off the row).
+      // Subscribers (the evidence record) are awaited — a serverless function
+      // may freeze an un-awaited write — and isolated by emit, which never throws.
+      if (!shouldAutoRetry && loop?.kind !== 'hold' && !releaseHeld) {
+        await emit({ type: 'task.terminal', taskId: worker.taskId, workerId: id, workspaceId: worker.workspaceId, sensitive: isSensitive });
       }
 
       // Record routing outcome for analytics/calibration. Skipped on retry
-      // (we only want one row per terminal outcome). Fire-and-forget.
+      // (we only want one row per terminal outcome) and while a release is
+      // held (its CI resolution records the row). The outcome is the FINAL
+      // status: a contract guard or a completion-policy slot that failed a
+      // reported completion records failed. Fire-and-forget.
+      const effectiveOutcome = contractViolation || slotFailure ? 'failed' : status;
       if (!shouldAutoRetry) {
-        const durationMs = worker.startedAt
-          ? Date.now() - new Date(worker.startedAt).getTime()
-          : null;
-        const retryCount =
-          ((taskCtxForRetry.retryCount as number | undefined) ?? 0);
-        const effectiveOutcome = contractViolation ? 'failed' : status;
-        recordTaskOutcome({
-          taskId: worker.taskId,
-          accountId: worker.accountId,
-          outcome: effectiveOutcome,
-          actualModel: sessionActualModel,
-          totalCostUsd: updates.costUsd ?? worker.costUsd ?? null,
-          totalTurns: typeof updates.turns === 'number' ? updates.turns : (worker.turns ?? null),
+        if (!releaseHeld) {
+          recordTaskOutcome({ ...outcomeAnalytics, taskId: worker.taskId, outcome: effectiveOutcome }).catch(() => {});
+        }
+        // Model policy: the run's duration and cost against the policy decision
+        // the claim stored. A no-op unless a policy service issued it.
+        await reportTaskPolicyOutcome(worker.taskId, codingRunObservations({
           durationMs,
-          wasRetried: retryCount > 0,
-          // Taxonomy follow-up: code_failure is still the catch-all here, so a
-          // readout must treat it as "unclassified", not "the model's fault".
-          exitCause: (updates.exitCause as string | null | undefined) ?? worker.exitCause ?? null,
-          workerId: id,
-        }).catch(() => {});
+          costUsd: updates.costUsd ?? worker.costUsd ?? null,
+        }));
         // Systemic-failure detector: pages (critical) when tasks start failing
         // in a row, so an "all tasks failing on the runner" outage is caught fast.
-        recordRunnerOutcome(effectiveOutcome === 'completed' ? 'completed' : 'failed').catch(() => {});
-        // Fleet CBM-disabled detector: pages (error) when every recent worker in
-        // this workspace has binary_absent — a broken platform capability, not just
-        // one bad task. Passes the current worker's CBM outcome directly to avoid a
-        // timing gap between the DB write and the query.
-        // All three terminal statuses set completedAt and carry resultMeta.cbm, and
-        // the detectors' own history query covers all three — gating the call on
-        // 'completed' alone meant an all-failing workspace (the exact shape of a
-        // missing-binary outage) never reached the widened query.
-        if (CBM_HEALTH_TERMINAL_STATUSES.includes(status)) {
-          const currentCbm = (resultMeta as Record<string, unknown> | undefined)?.cbm ?? null;
-          detectCbmFleetDisabled(worker.workspaceId, currentCbm).catch(() => {});
-          // Same shape, opposite condition: mounted-and-ignored rather than absent.
-          detectCbmEnforcedUnused(worker.workspaceId, currentCbm).catch(() => {});
+        if (!releaseHeld) {
+          recordRunnerOutcome(effectiveOutcome === 'completed' ? 'completed' : 'failed').catch(() => {});
         }
       }
 
@@ -3599,71 +3792,22 @@ export async function PATCH(
         }
       });
 
-      // A finished goal-criterion verification task owns one criterion's verdict.
-      // Hand the runner's evidence back before the completion attempt below, so a
-      // criterion turning green completes the mission in the same request.
-      await runStep('criteria-verification-outcome', async () => {
-        const [taskForCriteria] = await db
-          .select({ context: tasks.context })
-          .from(tasks)
-          .where(eq(tasks.id, taskId))
-          .limit(1);
-        if (!isCriteriaVerificationTask(taskForCriteria?.context)) return;
-        await handleCriteriaVerificationOutcome(taskId, verificationEvidence);
-      });
-
-      // A finished prose grading task owns the verdicts for the criteria it was
-      // asked about. Same ordering rationale: apply before the completion attempt
-      // below so criteria turning green complete the mission in this request.
-      await runStep('criteria-prose-outcome', async () => {
-        const [taskForProse] = await db
-          .select({ context: tasks.context })
-          .from(tasks)
-          .where(eq(tasks.id, taskId))
-          .limit(1);
-        if (!isProseEvalTask(taskForProse?.context)) return;
-        await handleProseEvalOutcome(taskId, body.structuredOutput);
-      });
-
-      // A finished worker-eval task owns verdicts for all LLM-eligible + command
-      // criteria it was asked about. Apply before the completion attempt so criteria
-      // turning green complete the mission in this request.
-      await runStep('criteria-worker-eval-outcome', async () => {
-        const [taskForWorkerEval] = await db
-          .select({ context: tasks.context })
-          .from(tasks)
-          .where(eq(tasks.id, taskId))
-          .limit(1);
-        if (!isCriteriaWorkerEvalTask(taskForWorkerEval?.context)) return;
-        await handleCriteriaWorkerEvalOutcome(taskId, body.structuredOutput);
-      });
-
-      // Attempt mission completion. The predicate pulls a goal-criteria verdict
-      // when the work is done, refuses when it cannot get one, and is a cheap
-      // no-op while deliverables are still open — so this is safe to run on every
-      // task completion and is what makes the verdict a precondition rather than
-      // a side effect. `proposed: false`: nothing asserted completion here, so a
-      // still-working mission does not post a note.
-      await runStep('mission-completion-attempt', async () => {
-        if (taskMissionId) {
-          await completeMissionIfVerified(taskMissionId, { path: 'criteria_eval', predicate: `task ${taskId} reached ${status}` });
-        }
-      });
-
-      // Reconciliation sweep on retry completion: if this task had a subject
-      // PR anchor, sweep all tasks anchored to that PR to update their subject
-      // state now that a retry has completed. Best-effort, error-isolated.
-      await runStep('subject-anchor-sweep', async () => {
-        if (!worker.workspaceId) return;
-        const [taskForSweep] = await db
-          .select({ subjectPrNumber: tasks.subjectPrNumber })
-          .from(tasks)
-          .where(eq(tasks.id, taskId))
-          .limit(1);
-        if (taskForSweep?.subjectPrNumber) {
-          await sweepSubjectAnchoredTasks(worker.workspaceId, taskForSweep.subjectPrNumber);
-        }
-      });
+      // Module reactions to the report: the criteria verdict handlers, the
+      // mission completion attempt and the subject-anchor sweep
+      // (lib/mission-subscribers.ts), in that order. Each runs under runStep,
+      // so a failure pages under its own label and the next one still runs.
+      await emit({
+        type: 'worker.reported',
+        taskId,
+        workerId: id,
+        workspaceId: worker.workspaceId,
+        missionId: taskMissionId,
+        status,
+        finalStatus: shouldAutoRetry || releaseHeld ? null : effectiveOutcome === 'completed' ? 'completed' : 'failed',
+        releaseHeld,
+        structuredOutput: body.structuredOutput,
+        verificationEvidence,
+      }, { isolate: runStep });
 
       // Dead-PR shutdown on retry completion: if this worker's PR was merged,
       // close any competing buildd-authored PRs for the same subject.
@@ -3700,7 +3844,7 @@ export async function PATCH(
       // which the completed task page leads with. Merged into result, never
       // a rewrite; a failure leaves the page on its title-only fallback.
       await runStep('task-shipped', async () => {
-        if (status === 'completed' && loopDispatchResult?.kind !== 'requeue') {
+        if (status === 'completed' && loop?.kind !== 'hold') {
           const { storeTaskShippedRecord } = await import('@/lib/task-shipped-store');
           await storeTaskShippedRecord({ taskId, structuredOutput: body.structuredOutput, summarySource: body.summarySource });
         }
@@ -3709,7 +3853,7 @@ export async function PATCH(
       // Auto-create/upsert artifact from structured output or summary.
       // Skip for loop requeue — the task is still running; artifact will be created on final completion.
       await runStep('auto-artifact', async () => {
-        if (status === 'completed' && loopDispatchResult?.kind !== 'requeue') {
+        if (status === 'completed' && loop?.kind !== 'hold') {
           const [taskForArtifact] = await db
             .select({ context: tasks.context, missionId: tasks.missionId, title: tasks.title })
             .from(tasks)
@@ -3760,6 +3904,7 @@ export async function PATCH(
                   ...(!isSensitive && structuredOutput && typeof structuredOutput === 'object' ? { structuredOutput } : {}),
                   ...(isHeartbeat && structuredOutput ? { heartbeatStatus: (structuredOutput as any)?.status } : {}),
                 },
+                taskId,
               });
             }
           }
@@ -3769,7 +3914,7 @@ export async function PATCH(
       // BT-7/8/9: Reviewer outcome handling — runs when a reviewer task completes.
       await runStep('reviewer-outcome', async () => {
         // Skip for loop requeue — reviewer logic only applies to terminal completions.
-        if (status !== 'completed' || loopDispatchResult?.kind === 'requeue') return;
+        if (status !== 'completed' || loop?.kind === 'hold') return;
         await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput);
         // AFTER the outcome is applied, so an on=merge callback sees the merge
         // this verdict may just have triggered. Single-fire and best-effort.
@@ -3780,7 +3925,7 @@ export async function PATCH(
       await runStep('notify', async () => {
         const taskRecord = await db.query.tasks.findFirst({
           where: eq(tasks.id, taskId),
-          // The dispatch fields feed the auto-retry wake-up below.
+          // startAt feeds the auto-retry wake below.
           columns: {
             id: true, title: true, description: true, workspaceId: true, mode: true, priority: true,
             missionId: true, backend: true, roleSlug: true, runnerPreference: true, startAt: true,
@@ -3794,6 +3939,14 @@ export async function PATCH(
             },
           },
         });
+        if (shouldAutoRetry && taskRecord) {
+          // The requeue is already durable (tasks trigger); this labels it and
+          // kicks delivery. A backoff/loop startAt keys the wake onto the
+          // trigger's scheduled row instead of spending an immediate no-op one.
+          const retryAt = taskRecord.startAt ? new Date(taskRecord.startAt) : null;
+          const deferred = retryAt && retryAt.getTime() > Date.now() ? retryAt : undefined;
+          await wakeTask(worker.taskId!, 'task.requeued', deferred ? { notBefore: deferred } : {});
+        }
         const notifyTeamId = (taskRecord?.workspace as { teamId?: string } | undefined)?.teamId;
         if (taskRecord && notifyTeamId) {
           // A contract violation (planning/review) reports `status:'completed'`
@@ -3802,71 +3955,28 @@ export async function PATCH(
           // here reported a permanently-failed review-contract violation as
           // "Task done" (see recordTaskOutcome's `effectiveOutcome`, which
           // already applies this same correction).
-          const isDone = status === 'completed' && !contractViolation;
-          if (shouldAutoRetry) {
-            // Wake runners for the requeued task: the workspace webhook when one
-            // is configured (a push runner has no Pusher subscription), else a
-            // TASK_ASSIGNED broadcast to any connected worker, as before.
-            await dispatchRetriedTask(
-              {
-                ...taskRecord,
-                id: worker.taskId!,
-                workspaceId: worker.workspaceId,
-                description: taskRecord.description ?? null,
-                mode: taskRecord.mode ?? undefined,
-                priority: taskRecord.priority ?? undefined,
-              },
-              taskRecord.workspace ?? {},
-            );
-            // A retry is a (transient) failure — gate it on the taskFailed toggle.
-            void notifyTeam(notifyTeamId, 'taskFailed', {
-              title: 'Task retrying',
-              message: `Auto-retrying: ${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
-              url: `https://buildd.dev/app/tasks/${worker.taskId}`,
-              urlTitle: 'View task',
-              priority: 0,
-            });
-          } else {
-            // Sensitive: send a redacted stub — event type only, no task title/workspace prose
-            if (isDone) {
-              // Agent chat: "plan ready" for a chat-filed mission, posted back
-              // into its conversation. Lazy + best-effort.
-              void import('@/lib/chat/mission-events')
-                .then(m => m.postTaskCompletedEvent({ taskId }))
-                .catch(() => {});
-            }
-            // Subscriptions ledger. Fire-and-forget; never throws. Title omitted for sensitive workspaces.
-            void recordEvent((isDone ? taskCompletedEvent : taskFailedEvent)({
-              taskId,
-              workerId: id,
-              title: isSensitive ? null : taskRecord.title,
-              workspaceId: worker.workspaceId,
-            }));
-            void notifyTeam(notifyTeamId, isDone ? 'taskCompleted' : 'taskFailed', {
-              title: isDone ? 'Task done' : 'Task failed',
-              message: isSensitive
-                ? `Task ${isDone ? 'completed' : 'failed'} (content redacted)`
-                : `${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
-              url: `https://buildd.dev/app/tasks/${worker.taskId}`,
-              urlTitle: 'View task',
-              priority: isDone ? -1 : 0,
-            });
-
-            // Credential-expiry alert: a failure caused by an invalid/expired
-            // agent-backend credential (e.g. "401 Invalid authentication
-            // credentials") gets its own actionable alert so the owner re-sets
-            // the credential before more tasks burn. Distinct from a generic
-            // failure and from a budget/rate-limit pause (handled separately above).
-            if (!isDone && isCredentialExpiredError(error)) {
-              void notifyTeam(notifyTeamId, 'credentialExpired', {
-                title: '🔑 Agent credential expired',
-                message: `Your Claude credential is expired or invalid — set it again under Settings, Runners.\nTask: ${taskRecord.title}`,
-                url: `https://buildd.dev/app/settings/runners`,
-                urlTitle: 'Open settings',
-                priority: 1,
-              });
-            }
-          }
+          // A completion-policy slot overrides the report the same way: a
+          // loop that ran out of attempts or a failed release is a failure,
+          // and a release held for CI is not an outcome yet (the release
+          // PR's CI emits it, github/webhook).
+          const isDone = status === 'completed' && !contractViolation && !slotFailure;
+          if (releaseHeld && !shouldAutoRetry) return;
+          // Who hears about it (the team's channel, the subscriptions ledger,
+          // a chat-filed mission's conversation) is the modules' business.
+          await emit({
+            type: shouldAutoRetry ? 'task.retrying' : isDone ? 'task.completed' : 'task.failed',
+            via: 'worker',
+            taskId,
+            workerId: id,
+            workspaceId: worker.workspaceId,
+            missionId: taskMissionId,
+            title: taskRecord.title,
+            sensitive: isSensitive,
+            teamId: notifyTeamId,
+            workspaceName: taskRecord.workspace?.name ?? null,
+            error: error ?? null,
+            failure: shouldAutoRetry ? null : slotFailure,
+          }, { isolate: (_label, fn) => runStep('notify', fn) });
         }
       });
 
@@ -3948,10 +4058,14 @@ export async function PATCH(
   // Subscriptions ledger: "tell me when this task needs input". Only after the
   // worker write landed, so a conflicted PATCH records nothing. The key is per
   // question, so the runner re-sending the same waitingFor writes one row.
-  // Fire-and-forget: recordEvent catches its own errors and adds no latency.
-  if (waitingFor?.type === 'question' && worker.taskId) {
-    void recordEvent(taskNeedsInputEvent({ taskId: worker.taskId, workerId: id, prompt: waitingFor.prompt }));
+  // Fire-and-forget: emit never throws, and the ledger write adds no latency.
+  // A held question records nothing now; the resurface pass records it.
+  if (waitingFor?.type === 'question' && worker.taskId && !hold?.held) {
+    void emit({ type: 'task.needs_input', taskId: worker.taskId, workerId: id, prompt: waitingFor.prompt });
   }
+  // A held question's deadline, for the resurface sweep's gated tick. After
+  // the write landed, like the ledger row; best effort, the floor tick re-seeds.
+  if (hold?.held === true) void markHoldDue(id, hold.resurfaceAtMs);
 
   // One terminal record per worker, on every path that lands here: a real
   // completion, a real failure, a runner-reconciled process death reported as
@@ -3990,32 +4104,38 @@ export async function PATCH(
     });
   }
 
-  // Memory use labels (Jev, knowledge-base: buildd/design/memory-done-right.md): did the final
-  // summary act on each memory this task was shown? Writes memory_uses.outcome
-  // after the response, at most a bounded handful of calls, never on the claim
-  // path. Only on the transition into completed, and only for a standard
-  // workspace by the shared predicate (either sensitivity marker, or a missing
-  // workspace, skips): a sensitive summary is never sent out.
-  if (worker.taskId && shouldLabelMemoryUses({
-    status,
-    previousStatus: worker.status,
-    taskId: worker.taskId,
-    workspace: wsForSensitivity ? { dataClass: wsForSensitivity.dataClass, gitConfig: wsForSensitivity.gitConfig as { dataClass?: string } | null } : null,
-    serverRefusal: isServerRefusal,
-  })) {
-    scheduleMemoryUseLabels({ taskId: worker.taskId, accountId: account.id, summary: typeof body.summary === 'string' ? body.summary : null });
+  // The worker's terminal write landed. Module reactions: memory use labels
+  // (lib/knowledge-subscribers.ts), scheduled after the response. The first
+  // subscriber starts synchronously, so its after() is inside this request.
+  if (isTerminalStatus && worker.taskId) {
+    void emit({
+      type: 'worker.finished',
+      taskId: worker.taskId,
+      workerId: id,
+      accountId: account.id,
+      status,
+      previousStatus: worker.status,
+      serverRefusal: isServerRefusal,
+      summary: typeof body.summary === 'string' ? body.summary : null,
+      workspace: wsForSensitivity ? { dataClass: wsForSensitivity.dataClass, gitConfig: wsForSensitivity.gitConfig as { dataClass?: string } | null } : null,
+    });
   }
 
   // Release the concurrency seat for OAuth accounts on terminal worker transitions.
   // activeSessions is incremented at claim time; every path that moves a live worker
   // to a terminal state must decrement it so Gate B (maxConcurrentSessions) doesn't
   // permanently block claims after all real work is done.
-  if (isTerminalStatus && (LIVE_WORKER_STATUSES as readonly string[]).includes(worker.status) && account.authType === 'oauth') {
-    await db
-      .update(accounts)
-      .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - 1, 0)` })
-      .where(eq(accounts.id, account.id));
-  }
+  if (isTerminalStatus) await releaseTerminalSeat();
+
+  // This worker's terminal transition also frees a slot against the
+  // account's maxConcurrentWorkers cap (apps/web/src/app/api/workers/claim/
+  // route.ts) — the capacity wall a cloud container's claim can be refused
+  // for. Nothing else proactively re-checks a task deferred for exactly that
+  // reason; wake the oldest pending claimable task in the SAME workspace so a
+  // cloud-dispatched workspace gets a fresh attempt within seconds rather
+  // than waiting for the cloud runner's own backoff retry or a slow sweep.
+  // No-ops for a workspace with no active cloud-dispatch webhook.
+  if (isTerminalStatus) await wakeOldestPendingTaskOnCapacityFreed(worker.workspaceId, worker.taskId ?? null);
 
   // Release path claims on terminal status so waiting tasks can proceed.
   //
@@ -4403,11 +4523,9 @@ export async function PATCH(
   }
 
   // Broadcast budget-reset task status change for dashboard visibility.
-  // Intentionally NOT sending TASK_ASSIGNED here: that event tells the runner
-  // to immediately re-claim, which triggers a refire before the runner's
-  // circuit breaker (trip-on-error) can prevent it — reproducing the exact
-  // burst observed in the 2026-06-25 session-limit storm. The task is already
-  // pending and the runner's next poll picks it up when the budget resets.
+  // Not a wake: each requeue above already called wakeTask. A budget deferral
+  // wakes at its reset (notBefore = startAt), never now — an instant re-claim
+  // into the same wall was the 2026-06-25 session-limit storm.
   if (isBudgetReset && worker.taskId) {
     // Auth failover: signal backend change, not a budget pause
     const taskResetPayload = isAuthFailover
@@ -4625,7 +4743,7 @@ async function handleReviewerOutcomeIfNeeded(
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, reviewerTaskId),
-    columns: { id: true, category: true, context: true, missionId: true, title: true },
+    columns: { id: true, category: true, context: true, missionId: true, title: true, createdAt: true },
   });
 
   if (!reviewerTask) return;
@@ -4850,6 +4968,9 @@ async function handleReviewerOutcomeIfNeeded(
     });
   }
 
+  // Model policy: the verdict on the builder's run, as typed observations.
+  await reportTaskPolicyOutcome(originalTaskId, reviewVerdictObservations(effectiveVerdict));
+
   // Post the verdict to GitHub as a real review — mission-scoped or not. Without
   // this, buildd's own store is the only place the verdict ever existed: GitHub
   // branch protection requiring an approving review can never be satisfied by an
@@ -4899,22 +5020,26 @@ async function handleReviewerOutcomeIfNeeded(
     }
   }
 
+  // The verdict is recorded: let the supersession table cancel what it made
+  // obsolete — every open review fix on an approve, and on any verdict a
+  // not-yet-started fix that answers an older round. Before the switch, so an
+  // approve's merge below never races a fix that is about to push. Never throws.
+  const verdictEvent: SubjectEvent = {
+    kind: 'verdict',
+    verdict: effectiveVerdict,
+    workspaceId,
+    prNumber,
+    reviewerTaskId,
+    headSha,
+    roundCreatedAt: reviewerTask.createdAt ?? null,
+    originalTaskId,
+    door: 'PATCH /api/workers/[id] (reviewer verdict)',
+    pr: { installationId, repoFullName },
+  };
+  await reconcileSubjectEvent(verdictEvent);
+
   switch (effectiveVerdict) {
     case 'approve': {
-      // An earlier changes-requested verdict may still have a fix task queued
-      // or running on this PR — that verdict is now stale. Cancel it before it
-      // can push a commit and force a re-review on an already-approved PR
-      // (task d57ba617).
-      await supersedeFixTaskOnApproval({
-        workspaceId,
-        originalTaskId,
-        installationId,
-        repoFullName,
-        prNumber,
-      }).catch((err) =>
-        console.error(`[reviewer] supersedeFixTaskOnApproval threw for PR #${prNumber}:`, err),
-      );
-
       // BT-7: Approve path — trigger auto-merge (unless gateCondition is 'approve-only')
       const approvePolicy = reviewPolicy;
 
@@ -5130,10 +5255,20 @@ async function handleReviewerOutcomeIfNeeded(
         return;
       }
 
-      // Any newer round supersedes this verdict, including unfinished rounds.
-      const newestReviewTask = await findReviewTaskForPr(workspaceId, prNumber);
-      if (newestReviewTask?.id !== reviewerTaskId) {
-        console.log(`[reviewer] Skipping stale fix dispatch for PR #${prNumber}`);
+      // Dispatch guard: the supersession table in skip_dispatch mode. A newer
+      // round (finished or not), an approve, or a merged/closed PR means this
+      // fix would be cancelled the moment it existed — so it is never created.
+      const fixProposal: DispatchProposal = {
+        kind: 'fix',
+        workspaceId,
+        prNumber,
+        parentTaskId: originalTaskId,
+        triggeringReviewTaskId: reviewerTaskId,
+        door: 'PATCH /api/workers/[id] (request-changes fix)',
+      };
+      const dispatchCheck = await checkDispatch(fixProposal);
+      if (dispatchCheck.verdict === 'skip_dispatch') {
+        console.log(`[reviewer] Skipping fix dispatch for PR #${prNumber}: ${dispatchCheck.rule}`);
         return;
       }
 
@@ -5209,17 +5344,12 @@ async function handleReviewerOutcomeIfNeeded(
       const workspace = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, workspaceId),
       });
-      // Approval can sweep zero fixes after the initial check but before our
-      // insert. Re-read after insertion; together with the approval sweep this
-      // closes that gap. Target only our row so a newer round's fix is kept.
-      const dispatchReviewTask = await findReviewTaskForPr(workspaceId, prNumber);
-      if (dispatchReviewTask?.id !== reviewerTaskId) {
-        await supersedeFixTaskOnApproval({
-          workspaceId, originalTaskId, installationId, repoFullName, prNumber,
-          fixTaskId: retryTask.id, reason: 'newer_review',
-        });
-        return;
-      }
+      // A newer round or an approve can land between the check above and the
+      // insert, and the approve's own reconcile may have found nothing to
+      // cancel yet. Re-run the guard against the inserted row; it cancels only
+      // this row (through the same CAS and ledger), so a newer round's fix is
+      // kept.
+      if (await guardDispatchedTask(fixProposal, retryTask.id, verdictEvent)) return;
       // Approval may have cancelled the row while we read the newest round.
       const liveRetry = await db.query.tasks.findFirst({
         where: eq(tasks.id, retryTask.id), columns: { status: true },
@@ -5227,7 +5357,8 @@ async function handleReviewerOutcomeIfNeeded(
       if (liveRetry?.status !== 'pending') return;
 
       if (workspace) {
-        await dispatchNewTask(retryTask, workspace);
+        await announceTaskCreated(retryTask, workspace);
+        await wakeTask(retryTask.id, 'review.fix_requested');
         console.log(`[reviewer] Created retry task ${retryTask.id} for PR #${prNumber}@${headSha.slice(0, 7)} (iteration ${currentIteration + 1}/${maxIterations})`);
         // The retry inherited the original's manifest; shrink it (and the
         // finished reviewer's leases) to the PR's actual diff at this head.
@@ -5244,6 +5375,7 @@ async function handleReviewerOutcomeIfNeeded(
             maxIterations,
             note: output.feedback ?? output.summary ?? null,
             taskUrl: taskActivityUrl(retryTask.id),
+            taskTitle: retryTask.title,
           },
           workspaceId,
         });

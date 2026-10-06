@@ -105,30 +105,6 @@ export function isMissionPrTask(task: { title?: string | null; taskClass?: strin
 }
 
 /**
- * Should a merged pull request announce that a mission integration base moved?
- *
- * Extracted rather than inlined at the webhook because that is the only place
- * the decision is observable: the webhook's own test fixtures cannot reach this
- * branch without standing up most of the merge path, and a condition that no
- * test can reach is a condition that can be silently inverted.
- *
- * Two halves, and both matter:
- *  - `merged` — a PR *closed* against a mission branch moved nothing. Announcing
- *    then would refresh a graph for a base that did not advance.
- *  - the shape heuristic, not `isMissionIntegrationBase` — this runs where the
- *    PR's base ref is known but the mission row is not, and the cost of being
- *    wrong is one no-op refresh. Trunk is excluded deliberately: it advances
- *    constantly, its seed is the default slot on the ordinary cooldown, and
- *    announcing every trunk merge would rebuild it every time.
- */
-export function shouldAnnounceBaseAdvance(pr: {
-  merged?: boolean | null;
-  baseRef?: string | null;
-}): boolean {
-  return pr.merged === true && looksLikeMissionIntegrationBranch(pr.baseRef);
-}
-
-/**
  * Is `baseRef` a legal base for a mission task's pull request?
  *
  * The one predicate for "buildd did not open this PR (or its base moved after

@@ -136,8 +136,22 @@ mock.module('@/lib/schedule-helpers', () => ({
   classifyScheduleCadence: () => ({ kind: 'standard', complexity: 'medium', classifiedBy: 'default' }),
 }));
 
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mock(() => Promise.resolve()),
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mock(() => Promise.resolve()),
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
 }));
 
 mock.module('@/lib/pusher', () => ({
@@ -253,6 +267,14 @@ let effectiveRoles = new Set<string>();
 const mockResolveEffectiveRoleSlugs = mock((_ws: string) => Promise.resolve(effectiveRoles));
 mock.module('@/lib/effective-roles', () => ({ resolveEffectiveRoleSlugs: mockResolveEffectiveRoleSlugs }));
 
+// The creation-manifest shadow's post-insert hook (lib/task-manifest-prediction.ts,
+// whose own test covers eligibility): here only that a schedule-filed task
+// reaches it, and that it can neither change nor fail the tick.
+const mockScheduleCreationManifestShadow = mock((..._args: any[]) => true as boolean);
+mock.module('@/lib/task-manifest-prediction', () => ({
+  scheduleCreationManifestShadow: mockScheduleCreationManifestShadow,
+}));
+
 import { GET } from './route';
 
 function makeRequest(headers: Record<string, string> = {}) {
@@ -355,18 +377,19 @@ describe('GET /api/cron/schedules', () => {
     mockWorkersFindMany.mockResolvedValue([]);
   });
 
-  it('alerts via reportOps when a runner heartbeat goes stale even with no active workers', async () => {
-    // Idle-but-wedged runner: heartbeat is stale but it has no running workers,
-    // so the orphan-failover finds nothing. We must still alert.
+  it('leaves stale runner heartbeats to the core maintenance cron', async () => {
+    // Stale-worker cleanup (and its runner-offline alert) moved to
+    // /api/cron/maintenance so a core-only cron profile keeps it. The tick must
+    // not run it too, or it would run twice an hour. Covered there:
+    // cron/maintenance/stale-workers.test.ts.
     mockWorkerHeartbeatsFindMany.mockResolvedValue([{ id: 'hb-1', accountId: 'acct-1' }]);
-    mockWorkersFindMany.mockResolvedValue([]); // no orphaned workers
+    mockWorkersFindMany.mockResolvedValue([]);
 
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);
 
-    const call = mockReportOps.mock.calls.find((c: any[]) => c[0]?.source === 'runner-offline');
-    expect(call).toBeTruthy();
-    expect(call[0].severity).toBe('error');
+    expect(mockReportOps.mock.calls.find((c: any[]) => c[0]?.source === 'runner-offline')).toBeUndefined();
+    expect(mockWorkerHeartbeatsFindMany).not.toHaveBeenCalled();
   });
 
   it('should resolve workspace from mission when schedule.workspaceId is null', async () => {
@@ -688,6 +711,33 @@ describe('GET /api/cron/schedules', () => {
       heartbeat: true,
     }));
     expect(tasksInsertValues?.context?.triggerSource).toBe('backstop');
+  });
+
+  describe('creation-manifest shadow', () => {
+    beforeEach(() => { mockScheduleCreationManifestShadow.mockReset(); });
+
+    it('a schedule-filed task goes to the post-insert hook with its row and the workspace team', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([makeSchedule()]);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test Workspace', teamId: 'team-1' });
+      const res = await GET(makeRequest());
+      expect((await res.json()).created).toBe(1);
+      expect(mockScheduleCreationManifestShadow).toHaveBeenCalledTimes(1);
+      const [row, ctx, schedule] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
+      expect(row).toMatchObject({ id: 'task-1', workspaceId: 'ws-1', title: 'Test Task', taskClass: 'work' });
+      expect(ctx).toEqual({ teamId: 'team-1' });
+      expect(typeof schedule).toBe('function');
+      // The prediction never writes the manifest.
+      expect(tasksInsertValues.pathManifest).toBeUndefined();
+    });
+
+    it('a throwing hook never fails the tick', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([makeSchedule()]);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test Workspace', teamId: 'team-1' });
+      mockScheduleCreationManifestShadow.mockImplementationOnce(() => { throw new Error('boom'); });
+      const body = await (await GET(makeRequest())).json();
+      expect(body.created).toBe(1);
+      expect(body.errors).toBe(0);
+    });
   });
 
   describe('heartbeat circuit breaker', () => {

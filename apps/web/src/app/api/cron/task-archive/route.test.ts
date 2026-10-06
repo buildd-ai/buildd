@@ -48,11 +48,13 @@ mock.module('drizzle-orm', () => ({
 process.env.CRON_SECRET = 'test-secret';
 
 import { GET } from './route';
-import { watcherEvents, workerActionEvents } from '@buildd/core/db/schema';
+import { agentCapabilityDecisions, watcherEvents, workerActionEvents } from '@buildd/core/db/schema';
 
 function findDelete(table: unknown): CapturedDelete | undefined {
   return capturedDeletes.find(d => d.table === table);
 }
+
+const isOutboxPrune = (q: any) => (q?.strings ?? []).join('').includes('dispatch_outbox:prune');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -92,7 +94,8 @@ describe('GET /api/cron/task-archive', () => {
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(body.archived).toBe(3);
-    expect(mockDbExecute).toHaveBeenCalledTimes(1);
+    // One archive UPDATE; the other execute is the outbox prune.
+    expect(mockDbExecute.mock.calls.filter(([q]) => !isOutboxPrune(q))).toHaveLength(1);
   });
 
   it('is a no-op (archived: 0) when nothing qualifies — idempotent re-runs', async () => {
@@ -191,6 +194,39 @@ describe('GET /api/cron/task-archive — retention prunes', () => {
     const body = await res.json();
     expect(body.prunedActionEvents).toBe(0);
     expect(body.prunedWatcherEvents).toBe(1);
-    expect(capturedDeletes.map(d => d.table)).toEqual([workerActionEvents, watcherEvents]);
+    expect(capturedDeletes.map(d => d.table)).toEqual([workerActionEvents, watcherEvents, agentCapabilityDecisions]);
+  });
+
+  it('prunes agent_capability_decisions after 90 days and reports the count', async () => {
+    const now = Date.now();
+    deleteRows.set(agentCapabilityDecisions, [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }]);
+    const body = await (await GET(makeRequest())).json();
+    expect(body.prunedCapabilityDecisions).toBe(3);
+    const pruned = findDelete(agentCapabilityDecisions);
+    expect(pruned!.predicate.op).toBe('lt');
+    expect(pruned!.predicate.column).toBe(agentCapabilityDecisions.occurredAt);
+    expect(retentionDays(pruned!.predicate, now)).toBe(90);
+  });
+
+  // Delivered/failed dispatch intents are kept for the "why did it (not)
+  // start" read, then pruned here (packages/core/dispatch-outbox.ts).
+
+  it('prunes old dispatch outbox rows and reports the count', async () => {
+    mockDbExecute.mockImplementation(async (q: any) => (isOutboxPrune(q) ? { rows: [{ n: 3 }] } : { rows: [] }));
+    const body = await (await GET(makeRequest())).json();
+    expect(mockDbExecute.mock.calls.some(([q]) => isOutboxPrune(q))).toBe(true);
+    expect(body.prunedDispatchOutbox).toBe(3);
+  });
+
+  it('survives a failing outbox prune without losing the archive', async () => {
+    mockDbExecute.mockImplementation(async (q: any) => {
+      if (isOutboxPrune(q)) throw new Error('prune exploded');
+      return { rows: [{ id: 't1' }] };
+    });
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.archived).toBe(1);
+    expect(body.prunedDispatchOutbox).toBe(0);
   });
 });

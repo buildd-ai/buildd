@@ -31,7 +31,7 @@ describe('Home live workers', () => {
   it('operators get the fleet panel up top; members get it as a compact line after their missions', () => {
     // The role is read alongside chat availability (one wait), then mapped.
     expect(home).toContain('getUserTeamRole(user.id, activeTeamId)');
-    expect(home).toContain('audience = homeAudience(role)');
+    expect(home).toContain('audience = homeAudience(role, overrides)');
     const operator = home.indexOf("audience === 'operator' && fleetData && <FleetStrip");
     const missions = home.indexOf('<HomeMissionsSummary');
     const member = home.indexOf("audience === 'member' && fleetData");

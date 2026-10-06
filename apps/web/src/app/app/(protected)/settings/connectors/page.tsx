@@ -24,7 +24,6 @@ export default async function ConnectorsSettingsPage({
   return (
     <SettingsPage
       title="MCP connectors"
-      description="Outside tools your agents can call through MCP. Add one, then choose which workspaces get it."
     >
       <ConnectionsClient connectedId={connected} errorMsg={error} embedded />
       <ConnectorsSection

@@ -53,6 +53,26 @@ steps:
     highlightText: ["Nothing in flight touches currency."]
     hold: 900
 
+  # 2a. The spec beat: the same draft card, with the ask line and each criterion
+  # row (its label and its check line) boxed, so the beat can light the ask,
+  # then the rows one at a time. Nothing is pressed in this beat.
+  - id: s02b-spec
+    goto: /app/chat/{C1}
+    waitFor: [approval-card, approval-draft-criteria]
+    fullPage: true
+    # Scoped to the card: the same words appear in Maya's message above it.
+    highlightText:
+      - { text: "Let customers see, pay, and get receipts for invoices in their own currency.", within: approval-card }
+      - { text: "invoices in the customer's currency", within: approval-card }
+      - { text: "pnpm test --filter web -- invoice-currency", within: approval-card }
+      - { text: "public API backward compatible", within: approval-card }
+      - { text: "pnpm test --filter api -- contract-v2", within: approval-card }
+      - { text: "a EUR invoice pays end to end", within: approval-card }
+      - { text: "e2e-eur-invoice", within: approval-card }
+      - { text: "rounding rule written down", within: approval-card }
+      - { text: "fx-rounding-decision", within: approval-card }
+    hold: 900
+
   # 2b. The spec is the draft card above (Done when, Constraints, Plan), and
   # you confirm it before any agent starts: a mission's plan then self-approves
   # (shouldAutoApprovePlan), so this card is the human gate the film shows.

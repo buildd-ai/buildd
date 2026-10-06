@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 // ── Module mocks (must be before import) ────────────────────────────────────
 const mockTriggerEvent = mock(() => Promise.resolve());
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
@@ -10,8 +10,22 @@ mock.module('@/lib/pusher', () => ({
   events: { RELEASE_UPDATED: 'release:updated' },
 }));
 
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
 }));
 
 const mockGithubApi = mock((_installationId: number, _path: string) => Promise.resolve({ status: 'diverged' }));
@@ -139,7 +153,8 @@ function makeMockDb(opts: {
 
 function resetAll() {
   mockTriggerEvent.mockClear();
-  mockDispatchNewTask.mockClear();
+  mockAnnounceTaskCreated.mockClear();
+  mockWakeTask.mockClear();
   mockGithubApi.mockClear();
   mockGithubApi.mockResolvedValue({ status: 'diverged' } as any);
   globalThis.fetch = undefined as any;
@@ -187,7 +202,8 @@ describe('autoFileDegradationTask', () => {
     expect(inserted.title).toContain('rel-aaaa'.slice(0, 8));
     expect(inserted.category).toBe('bug');
 
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
   });
 
   it('skips task creation when an open degradation task already exists (dedup)', async () => {
@@ -196,7 +212,8 @@ describe('autoFileDegradationTask', () => {
     await autoFileDegradationTask(release, db, 'HTTP 503');
 
     expect(db._insertCalls).toHaveLength(0);
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 });
 
@@ -231,7 +248,8 @@ describe('autoFileDegradationTask — role (role-routing §1 row 9)', () => {
   it('files role-less when no candidate resolves', async () => {
     const inserted = await file([]);
     expect(inserted.roleSlug).toBeNull();
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
   });
 });
 

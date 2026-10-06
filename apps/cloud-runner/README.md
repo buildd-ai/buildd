@@ -34,14 +34,25 @@ Both need `Authorization: Bearer <DISPATCH_TOKEN>`.
   as soon as the run is starting. A duplicate while a run is live returns
   `202` with `accepted: false` (a non-2xx would make buildd fall back to
   Pusher).
-- `GET /tasks/:taskId`: the agent's state, for debugging.
+  - `event: 'task.resume'` with `workerId` continues a parked worker
+    (Resumable runs, below).
+  - `event: 'task.scheduled'` with `notBefore` (an ISO date-time) starts the
+    run at that time instead of now (Scheduled dispatch, below). Returns
+    `202` with `{ taskId, scheduled: true, scheduledFor, replaced }`; a
+    `notBefore` already past dispatches at once (`scheduled: false` plus the
+    dispatch result). `400 invalid_not_before` for a missing or non-ISO value,
+    `400 not_before_too_far` for more than 24 h ahead (plus 5 minutes of
+    clock slack).
+- `GET /tasks/:taskId`: the agent's state, for debugging. A pending scheduled
+  wake shows as `scheduledFor` (epoch ms) and `scheduleId`.
 
 ## Lifecycle
 
 `idle → starting → running → exited`. A dispatch while `starting` or
 `running` is ignored. A dispatch after `exited` starts the next attempt in a
 fresh container. The agent never starts a run by itself: retries are buildd
-firing a new webhook, and there are no alarms or timers that poll buildd.
+firing a new webhook, and there are no timers that poll buildd. The one alarm
+is the one-shot a `task.scheduled` webhook asks for (Scheduled dispatch).
 
 | Exit | Outcome | Agent does |
 |---|---|---|
@@ -63,6 +74,19 @@ reads it from the exec'd process's output and stores it. A crash before that
 line has no worker to mark (the claim never finished, or finished just before
 the crash); server-side stale detection covers that case.
 
+The report is `PATCH /api/workers/<id>` with `status: failed` and
+`crashReconciled: true`, the flag the runner's own boot reconciliation sends
+for a session its process lost. buildd treats it as an infrastructure failure:
+the task goes back to `pending` on the infra-retry budget (backoff 5, 15, 30
+minutes, counted in `context.infraRetryCount`), and after the last attempt the
+task fails as `infra_stalled`. The requeue's durable wake is scheduled for the
+end of the backoff. With `task.scheduled` in the webhook's events (the deploy
+script sets it), buildd also sends an advance notice at once with that time as
+`notBefore`, and the agent starts the retry then. Either way the `dispatch-drain`
+tick delivers the wake when due, as `task.retry` to a webhook that lists that
+event: the backstop. Only a `crashed` outcome is reported;
+the runner's own exits (1 failed, 3 refused, 4 parked, 64 usage) are not.
+
 **Restarts.** If the Durable Object is evicted mid-run (deploy, limits), the
 exec'd process cannot be re-attached. On the next start the agent finds the
 run marked live, destroys the container, and records `crashed` (and reports
@@ -82,6 +106,8 @@ it as above).
 | `RUNNER_GROUP` | var | no | The Worker name (`wrangler.jsonc`; `deploy.ts --name` rewrites it). Every container reports it as `BUILDD_RUNNER_GROUP`, so the dashboard fleet shows this deployment as one elastic group, not one runner per run. Default `buildd-cloud-runner`. Takes effect on redeploy |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
 | `WARM_REPOS` | var | no | `1` turns on warm repos (below). Default off. Needs the `SNAPSHOTS` R2 binding |
+| `WARM_MAX_BUNDLE_BYTES` | var | no | Largest warm bundle or (compressed) cache tarball, in bytes, for workspaces that set no cap of their own. Default 1 GiB. A workspace's `gitConfig.warmSnapshot.maxBytes` (bounded at 8 GiB by buildd, delivered with the GitHub grant) overrides it for that workspace. Passed to the container (which skips the upload past it) and enforced by the snapshot route |
+| `ALLOW_DEBUG_KILL` | var / secret | no | `1` enables `POST /tasks/:taskId/kill` (dispatch token required): destroys that task's container as an OOM kill or platform stop would, for recovery testing. Default off (the route is 404) |
 | `RESUMABLE_RUNS` | var | no | `1` turns on resumable runs (below). Default off. Needs the `SNAPSHOTS` R2 binding and a webhook that lists `task.resume` |
 | `SNAPSHOTS` | R2 binding | for warm repos / resumable runs | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
 
@@ -114,11 +140,13 @@ any other status. The result is `report.delivery`: `sent`, `rejected`, `error`,
 | `containerInstanceId` | The Durable Object ID (`ctx.id`). `ctx.container` exposes no instance ID; Cloudflare documents the Durable Object ID (the container's `CLOUDFLARE_DURABLE_OBJECT_ID`) as what identifies the instance on the dashboard. One agent reuses it across attempts |
 | `runLabel` | `<taskId>.<attempt>`, also set as the container label `bd_run`, so analytics can be joined per attempt |
 | `instanceType` | `CONTAINER_INSTANCE_TYPE` |
-| `egress.{model,github,passthrough}` | Per class: `requests`, `rejected` (refused by the handler), `responseBytes` (decoded body bytes the container read to the end; a lower bound). Only intercepted hosts are seen; other egress is not counted |
-| `egressDetail.{model,github,passthrough}` | Why requests failed, as counts only: `rejectReasons` (`path`, `unconfigured`, `plain_http`, `port`, `unparseable`, `other`) for refusals by the handler, `rejectedPaths` (where `path` refusals were going, as fixed labels: `api_hello`, `event_logging`, `oauth`, `claude_code_api`, `other_api`, `files`, `batches`, `other_v1`, `other`), and `errorStatuses` (upstream 4xx/5xx by code, e.g. a proxy's 403 for a model the key may not use). No URL or header is recorded |
+| `egress.{model,github,passthrough}` | Per class: `requests`, `rejected` (refused by the handler), `responseBytes` (model: decoded body bytes the container read to the end; GitHub and passthrough: `content-length` when present, so chunked git packs are not counted — those bodies stream natively, never through JavaScript; a lower bound). Only intercepted hosts are seen; other egress is not counted |
+| `egressDetail.{model,github,passthrough}` | Why requests failed, as counts only: `rejectReasons` (`path`, `unconfigured`, `plain_http`, `port`, `unparseable`, `merge_blocked`, `other`) for refusals by the handler, `rejectedPaths` (where `path` refusals were going, as fixed labels: `api_hello`, `event_logging`, `oauth`, `claude_code_api`, `other_api`, `files`, `batches`, `other_v1`, `other`), and `errorStatuses` (upstream 4xx/5xx by code, e.g. a proxy's 403 for a model the key may not use). No URL or header is recorded |
 | `egressDetail.github.credentialed`, `.unauthenticated` | Forwarded GitHub requests that carried the injected installation token, and those that did not, by fixed reason: `no_grant` (the agent had no live run), `grant_fetch_failed` (buildd's `/api/runner/github-token` refused or failed, or the agent is backing off after that), `grant_expired`, `out_of_scope` (not the task's repo: another repo, `/user`, codeload) |
 | `egressDetail.github.unauthenticatedErrorStatuses` | Upstream 4xx/5xx on the unauthenticated forwards only, by code. A 429 here is an anonymous rate limit; a 429 only in `errorStatuses` was sent with the token |
 | `egressDetail.github.grantFetchFailures` | The github-token endpoint's refusals by status (`error`: nothing answered). The Worker log has the same line with the task ID |
+| `egressDetail.github.rateLimit` | Present only when GitHub throttled the run: every 429, and a 403 that carries a rate-limit signal (a permission 403 is only in `errorStatuses`). `throttled` (count), `statuses` (by code), `hosts` (`github.com` is git, `api.github.com` the REST/GraphQL API), `retryAfter` (`retry-after` by bucket: `none`, `0`, `1-10`, `11-60`, `61-300`, `301+` seconds), `retryAfterMax`, `remainingMin` (lowest `x-ratelimit-remaining`), `resources` (`x-ratelimit-resource`: `core`, `graphql`, `search`, ...; `none` when absent, `other` when unknown) and `secondary` (answers whose first 512 body bytes say "secondary rate limit"; the body is not kept). Reading it: `remainingMin: 0` with a resource is the installation's primary limit; `secondary > 0` is a secondary (abuse) limit; a 429 on `github.com` with no resource and no `secondary` is git-side throttling. Each throttled answer also logs one Worker line: `[cloud-runner] task <id>: GitHub throttled <status> host=<host> retry-after=<s> remaining=<n> resource=<r> secondary=<bool>` |
+| `schedule.scheduledFor`, `.startedAt`, `.lateMs` | A run started by a `task.scheduled` wake: the time it was due, when the attempt started (= `dispatchReceivedAt`) and the difference. `scheduledFor` and `lateMs` are null for any other start (report version 4) |
 | `exitCode`, `outcome`, `crashReport`, `attempt`, `taskId`, `workerId` | As in the state |
 
 The report is built from an allowlist of typed fields; identifiers that do not
@@ -128,11 +156,19 @@ the agent is evicted mid-run (the orphan report has what was persisted).
 
 The `repo` section (report version 2) says how the repo got onto the disk:
 `source` `warm` or `clone`, `fallbackReason` for a clone (`disabled`,
-`no_snapshot`, `unavailable`, `disk`, `restore_failed`), `snapshotAgeMs`, and
-`bytes.{clone,restore,fetch,cache,upload}`. `durationsMs.restoreWarm`,
-`durationsMs.fetch` and `durationsMs.warmUpload` time the warm path the way
-`durationsMs.clone` times a clone. All come from the runner's `BUILDD_PHASE=`,
-`BUILDD_METRIC=` and `BUILDD_REPO_SOURCE=` lines (`docs/runner-container.md`).
+`no_snapshot`, `unavailable`, `disk`, `restore_failed`), `snapshotAgeMs`,
+`warmUploadSkipReason` (`too_large` when a warm upload was due but the repo was
+over the cap, else null), `cacheSkipped` (version 6: `{ part, bytes, cap }`
+when the pnpm store, `part: 'pnpm-store'`, or the whole cache tarball,
+`part: 'cache'`, was left out of the upload for size, else null), and
+`bytes.{clone,restore,fetch,cache,cacheRaw,upload,warmRepo}` (`warmRepo`: the
+clone's size as measured against the cap; `cache`: the cache tarball as
+stored, zstd-compressed; `cacheRaw`: the same tarball before compression).
+`durationsMs.restoreWarm`, `durationsMs.restoreCache`, `durationsMs.fetch`
+and `durationsMs.warmUpload` time the warm path the way `durationsMs.clone`
+times a clone. All come from the runner's `BUILDD_PHASE=`, `BUILDD_METRIC=`,
+`BUILDD_REPO_SOURCE=`, `BUILDD_WARM_UPLOAD=` and `BUILDD_CACHE_SKIPPED=` lines
+(`docs/runner-container.md`).
 
 ### Eval report
 
@@ -289,13 +325,14 @@ never calls that route. It then:
 2. `wrangler secret put` `BUILDD_SERVER` (`--worker-server`, default the
    buildd URL), `BUILDD_API_KEY` (the runner key) and a freshly generated
    `DISPATCH_TOKEN`
-3. `PATCH /api/workspaces/:id` with `webhookConfig = { url: <worker>/dispatch, token, enabled: true, events: ['task.created', 'task.unblocked', 'task.retry'] }`
+3. `PATCH /api/workspaces/:id` with `webhookConfig = { url: <worker>/dispatch, token, enabled: true, events: ['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled'] }`
 
 `events` is the opt-in. A webhook without it gets what webhooks always got:
 new and unblocked tasks. Retries, approved-plan children and deferred-start
 re-dispatches reach a webhook only when it lists the event (`task.retry` for
 retries and the deferred sweep, `task.created` for plan children); otherwise
-they wake runners over Pusher. A re-run adds any event the workspace's webhook
+they wake runners over Pusher. `task.scheduled` makes buildd send a deferred
+task at once with its start time (Scheduled dispatch, below). A re-run adds any event the workspace's webhook
 is missing, without touching the token. PATCH merges `webhookConfig`, so keys
 it does not manage (the issue-ingest settings) are kept, and plain `http` is
 accepted only for `localhost`, `127.0.0.1` and `host.docker.internal`.
@@ -348,6 +385,38 @@ only then adds the Worker's credential. Plain HTTP and non-443 ports to these
 hosts are refused (`403`). Upstream redirects are returned to the container
 (`redirect: 'manual'`), so an injected credential never follows a redirect.
 
+### Merge guard
+
+The installation token above carries `pull_requests:write` + `contents:write`
+— enough on its own to merge a PR or overwrite a branch directly, bypassing
+buildd's own merge policy (`resolvePolicy`/`evaluateAutoMergeSafety`, `docs/
+SPEC.md` §4a). Before any credential is attached, `rewriteOutbound` refuses:
+
+- `PUT /repos/<owner>/<repo>/pulls/<n>/merge` (the REST merge endpoint)
+- a `POST api.github.com/graphql` whose body names the `mergePullRequest` or
+  `enablePullRequestAutoMerge` mutation
+- a `POST .../git-receive-pack` push whose ref-update lines name a branch in
+  the grant's `protectedBranches` (the workspace trunk, release branch, and
+  the repo's own GitHub default branch — set by `/api/runner/github-token`)
+
+All three come back `403` with a message pointing at buildd's `merge_pr` MCP
+action.
+
+GitHub cannot scope the token to a branch, so the grant also carries
+`pushableBranches`: the worker's own branch, plus the task's pinned shared
+working branch if it has one, never a protected branch. When it is present,
+the only refs an agent can move are `refs/heads/<b>` for those branches —
+by `git push`, by REST (`git/refs`, `contents`, `merges`, ...) or by a
+ref-moving GraphQL mutation (refused by name). Tags and every other ref are
+refused, and so is any push or ref write whose target cannot be read (a
+compressed or truncated push, an unparseable JSON body): `403`,
+`reason: 'push_not_allowed'`. An older buildd server that sends no
+`pushableBranches` gets the deny-list above only.
+
+See `docs/specs/cloud-egress-merge-guard.md` for the full contract,
+including what is deliberately NOT covered (GitHub's own branch-protection
+rules API, and what the deny-list alone does not inspect).
+
 ### Warm repos
 
 Design Phase 2, "Warm repos". Off unless `WARM_REPOS=1` and the `SNAPSHOTS`
@@ -365,6 +434,9 @@ binding, streaming bodies both ways.
   the query string is ignored. No grant (no GitHub App link, token refused):
   `503`, and the runner clones as usual.
 - **Layout.** `warm/<workspaceId>/<generation>/{repo.bundle,bun-cache.tar,manifest.json}`
+  (`bun-cache.tar` keeps its name but holds a zstd-compressed tarball when
+  the image has zstd; the restore's `zstd -d -f` passes an older plain
+  tarball through unchanged)
   plus `warm/<workspaceId>/lock`. The kind comes first so a prefix-only R2
   lifecycle rule can cover it.
 - **Refresh.** One in flight per workspace: `POST /warm/begin` takes the lock
@@ -375,12 +447,55 @@ binding, streaming bodies both ways.
 - **Retention.** The lifecycle rule `warm/` at 14 days is the backstop
   (`deploy.ts` adds it; by hand: `wrangler r2 bucket lifecycle add
   buildd-cloud-runner-snapshots warm-expiry warm/ --expire-days 14`).
-- **Limits.** `content-length` is required on uploads, at most 5 GB (single
-  part). The runner skips the warm path when the snapshot is over a quarter of
-  free disk.
+- **Streamed uploads.** The runner streams `git bundle create -` and
+  `tar -cf -` straight up, with no file staged and at most one 32 MiB part in
+  memory, as an R2 multipart upload: `POST /warm/<gen>/repo|cache/multipart`
+  (201 `{uploadId}`), `PUT .../multipart/<n>` per part, `POST
+  .../multipart/complete` with `{parts}`, `DELETE .../multipart` to abort; the
+  upload id travels in `x-buildd-upload-id`, the key is still the Worker's.
+  Every body, single or part, is piped into R2 through a `FixedLengthStream`,
+  never read into Worker memory.
+- **Limits.** `content-length` is required on every PUT (a single PUT at most
+  5 GB, a part at most 512 MiB). The workspace's `gitConfig.warmSnapshot.maxBytes`
+  (from the grant, at most 8 GiB), else `WARM_MAX_BUNDLE_BYTES` (default
+  1 GiB), caps a warm part, and `GET /warm/limits` tells the runner which: a single PUT past it is refused, a completed multipart object
+  past it is deleted (413). The runner measures the clone before bundling and
+  skips the upload past the same cap (`warmUploadSkipReason: too_large` in
+  the run report), so a repo too big to snapshot clones every time instead of
+  spending minutes and memory on a bundle. It also skips the warm restore when
+  the snapshot is over a quarter of free disk.
+- **Narrow restore.** A restored clone fetches the default branch only, like
+  the cloud clone itself (depth 1, one branch); other branches come in on
+  demand (`docs/runner-container.md`, "Clone shape").
 
 What goes in a snapshot and what the runner refuses to upload:
 `docs/runner-container.md`, "Warm repos".
+
+### Scheduled dispatch
+
+A task buildd defers to a future `startAt` (the crash retry's backoff, a
+budget-reset deferral, a deferred-start task) is not claimable until then.
+Without help, a push-only runner hears about it only from buildd's hourly
+deferred-dispatch sweep. With `task.scheduled` in the webhook's `events`,
+buildd sends it at once instead (`notBefore` = `startAt`, at most 24 h ahead;
+anything further is left to the sweep), and the agent wakes itself:
+
+- **Schedule.** The agent creates a one-shot with the Agents SDK
+  (`this.schedule(new Date(notBefore), 'runScheduledDispatch', …)`, backed by
+  the Durable Object alarm) and records `scheduledFor` and `scheduleId` in its
+  state. A run that is live does not block this: the crash retry is requeued
+  while the crashed run is still finishing.
+- **Replace.** A later `task.scheduled` for the same task replaces the pending
+  one (last write wins): the old alarm is cancelled, and if it fires anyway
+  its id no longer matches and it does nothing.
+- **Fire.** When the alarm fires, the wake is cleared and handed to the normal
+  dispatch path. A live run makes it a no-op. A dispatch that started a run
+  before the alarm (any event) consumes the pending wake.
+- **Backstop.** buildd's sweep still sends `task.retry` once `startAt`
+  passes. If the scheduled run is live by then, that is a duplicate and is
+  ignored; if the alarm was lost, it starts the run.
+- **Report.** A run started by a wake carries `schedule.scheduledFor`,
+  `schedule.startedAt` and `schedule.lateMs` in its run report.
 
 ### Resumable runs
 
@@ -421,11 +536,19 @@ Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
 | Route | Selected when | Forwarded to | Credential added |
 |---|---|---|---|
 | `direct` | `ALLOW_DIRECT_ANTHROPIC=1` and `ANTHROPIC_DIRECT_API_KEY` (**local development only**) | `https://api.anthropic.com/...` unchanged | `x-api-key: <ANTHROPIC_DIRECT_API_KEY>` |
+| team's own Anthropic key (`proxy` shape) | buildd returns the task's own `anthropic_api_key` for this task — it won the same ranking a self-hosted runner applies (docs/credentials-architecture.md) | `https://api.anthropic.com/...` unchanged | `x-api-key: <the team's key>` |
 | `proxy` | `MODEL_PROXY_URL` is set | `<MODEL_PROXY_URL><original path and query>`, e.g. `https://litellm.example.com/v1/messages` | `Authorization: Bearer <MODEL_PROXY_KEY>` (default), or `x-api-key: <MODEL_PROXY_KEY>` with `MODEL_PROXY_AUTH_HEADER=x-api-key` |
-| team endpoint (`proxy` shape) | Neither of the above, and buildd returns the team's agent model endpoint for this task (Settings → Model providers) | `<endpoint baseUrl><original path and query>` | The endpoint's key, as `Authorization: Bearer` or `x-api-key` per its setting |
+| team endpoint (`proxy` shape) | Neither of the above, and buildd returns the team's `agent_endpoint` for this task (Settings → Model providers) | `<endpoint baseUrl><original path and query>` | The endpoint's key, as `Authorization: Bearer` or `x-api-key` per its setting |
 | `gateway` | `AI_GATEWAY_ACCOUNT_ID`, `AI_GATEWAY_ID` and `AI_GATEWAY_TOKEN` are set | `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic/...` | `cf-aig-authorization: Bearer <AI_GATEWAY_TOKEN>`; the Anthropic key lives in AI Gateway (BYOK) or Unified Billing |
 
 If none applies, model requests get `503`.
+
+**The team's own Anthropic key jumps ahead of `MODEL_PROXY_URL`** — the one
+precedence flip here. Storing a plain API key is not an opt-in to route agents
+through anything (unlike an `agent_endpoint`, which is exactly that opt-in), so
+an operator's Worker-level proxy pin must not silently spend the team's own
+credential on a different route instead. `agent_endpoint` vs `MODEL_PROXY_URL`
+is unchanged: the operator override still wins there, same as always.
 
 **Proxy** is any service that speaks the Anthropic Messages API, such as a
 LiteLLM proxy. The handler appends the container's path, so point
@@ -448,17 +571,24 @@ route. LiteLLM accepts its virtual or master key in either header. Rules:
 
 **Team endpoint.** The Worker asks buildd (`POST /api/runner/model-endpoint`,
 runner API key plus `DISPATCH_TOKEN`, like the GitHub token) on the task's
-first model request, only when neither `direct` nor `MODEL_PROXY_URL`
-applies. It is held in the `WorkerAgent`'s memory for the run: never in agent
-storage and never in the container env. A `404` means the team has none (or
-the task's own Anthropic credential outranks it) and egress falls through to
-AI Gateway. Any other failure, or a `401`/`403` from the endpoint, refuses
-model requests (`503`) for a short backoff and then asks again, so a rotated
-key takes effect mid-run and a buildd outage never silently moves spend to the
-gateway. `MODEL_PROXY_URL` stays the operator override: it pins the Worker to
-one proxy whatever team claims through it. Model aliases are not applied on
-this route: the container sends the claim's native model ids (design open
-question 2).
+first model request, whenever `direct` does not apply — including when
+`MODEL_PROXY_URL` is set, so the team's own Anthropic key (if that's what
+actually wins for this task) can still outrank it. It is held in the
+`WorkerAgent`'s memory for the run: never in agent storage and never in the
+container env. A `404` means the team has neither an `agent_endpoint` nor its
+own plain Anthropic key for this task (an OAuth seat or Claude credential
+winning instead also reads as `404` here — cloud egress does not carry a seat
+token), and egress falls through to `MODEL_PROXY_URL` or AI Gateway. Any other
+failure, or a `401`/`403` from the endpoint, refuses model requests (`503`)
+for a short backoff and then asks again, so a rotated key takes effect mid-run
+and a buildd outage never silently moves spend to a different route —
+including, now, `MODEL_PROXY_URL`: a transient lookup failure defers to it
+exactly as before, but is never treated as the confirmed "team has nothing"
+that a real `404` is. `MODEL_PROXY_URL` stays the operator override for
+everything *except* the team's own key (see "Model routes" above): it still
+pins the Worker to one proxy whatever team claims through an `agent_endpoint`.
+Model aliases are not applied on this route: the container sends the claim's
+native model ids (design open question 2).
 
 **GitHub token.** Minted by buildd, not the Worker: the App key stays in one
 place. On the container's first GitHub request (after the claim; the clone

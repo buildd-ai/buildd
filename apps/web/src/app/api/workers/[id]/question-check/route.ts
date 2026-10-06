@@ -20,7 +20,7 @@ import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { parseQuestionGateRequest } from '@buildd/core/question-gate';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { isUuid } from '@/lib/uuid';
-import { checkQuestion } from '@/lib/question-gate-check';
+import { checkQuestion, gateEnabledFromGitConfig, hardRailContextFromGitConfig } from '@/lib/question-gate-check';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 10;
@@ -49,13 +49,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, worker.workspaceId),
-    columns: { id: true, teamId: true, dataClass: true },
+    columns: { id: true, teamId: true, dataClass: true, gitConfig: true },
   });
   if (!workspace?.teamId) return notFound();
 
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, worker.taskId),
-    columns: { title: true },
+    columns: { title: true, pathManifest: true, missionId: true },
   });
 
   const reply = await checkQuestion(
@@ -64,9 +64,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       workspaceId: workspace.id,
       accountId: worker.accountId,
       taskId: worker.taskId,
+      missionId: task?.missionId ?? null,
       workerId: worker.id,
       taskTitle: task?.title ?? null,
       sensitive: workspace.dataClass === 'sensitive',
+      gateEnabled: gateEnabledFromGitConfig(workspace.gitConfig),
+      hardRail: {
+        ...hardRailContextFromGitConfig(workspace.gitConfig),
+        pathManifest: task?.pathManifest ?? null,
+      },
     },
     parsed.value,
   );

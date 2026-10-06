@@ -4,11 +4,13 @@ import { missions, artifacts } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsMission, taskScopeAllowsTask } from '@/lib/task-token-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { ARTIFACT_TYPES, ArtifactType, isArtifactType } from '@buildd/shared';
 import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
 
 
 /**
@@ -26,11 +28,15 @@ export async function POST(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token writes only to its own task's mission.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
   const user = await getCurrentUser();
 
   if (!apiAccount && !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (apiAccount && !(await taskScopeAllowsMission(apiAccount, id))) {
+    return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
   }
 
   // Verify mission exists and belongs to user's team
@@ -56,7 +62,7 @@ export async function POST(
   }
 
   const body = await req.json();
-  const { type, title, content, url, metadata, key } = body;
+  const { type, title, content, url, metadata, key, taskId } = body;
 
   // Single vocabulary (@buildd/shared ARTIFACT_TYPES) — see the note in
   // packages/shared/src/types.ts on why no route keeps its own list.
@@ -74,6 +80,10 @@ export async function POST(
   if (type === ArtifactType.LINK && !url) {
     return NextResponse.json({ error: 'url is required for link artifacts' }, { status: 400 });
   }
+  // `taskId` addresses a review notification: a task token names only its own task.
+  if (apiAccount && taskId && !taskScopeAllowsTask(apiAccount, taskId)) {
+    return NextResponse.json({ error: 'A task token may name only its own task' }, { status: 403 });
+  }
 
   const artifactMetadata = {
     ...(metadata || {}),
@@ -90,6 +100,13 @@ export async function POST(
         eq(artifacts.key, key),
       ),
     });
+
+    // A key is unique per workspace, so the upsert can land on any artifact
+    // there. A task token may take over only this mission's own
+    // mission-level artifact, never a worker's or another mission's.
+    if (existing && apiAccount?.taskScope && (existing.missionId !== id || existing.workerId || existing.initiativeId)) {
+      return NextResponse.json({ error: 'That key belongs to an artifact outside this mission' }, { status: 409 });
+    }
 
     if (existing) {
       const [updated] = await db
@@ -109,6 +126,15 @@ export async function POST(
       const shareUrl = updated.shareToken && updated.visibility === 'public'
         ? `${baseUrl}/share/${updated.shareToken}`
         : null;
+
+      // Notify if this artifact is meant for review, the task opted in, and content or title changed.
+      if (taskId && mission.workspaceId) {
+        const shouldNotify = await shouldNotifyOnArtifact(updated, taskId);
+        if (shouldNotify && (existing.content !== (content || null) || existing.title !== title)) {
+          await notifyArtifactReady(updated, taskId, mission.workspaceId);
+        }
+      }
+
       return NextResponse.json({ artifact: { ...updated, shareUrl }, upserted: true });
     }
   }
@@ -129,6 +155,14 @@ export async function POST(
       metadata: artifactMetadata,
     })
     .returning();
+
+  // Notify if this artifact is meant for review and the task opted in.
+  if (taskId && mission.workspaceId) {
+    const shouldNotify = await shouldNotifyOnArtifact(artifact, taskId);
+    if (shouldNotify) {
+      await notifyArtifactReady(artifact, taskId, mission.workspaceId);
+    }
+  }
 
   return NextResponse.json({ artifact: { ...artifact, shareUrl: null } });
 }

@@ -95,6 +95,7 @@ function harness(opts: { key?: boolean; model?: MockLanguageModelV4; limits?: ()
     now: () => new Date('2026-09-26T21:30:00Z'),
     allowedToolGroups: new Set(opts.allowedGroups ?? []) as any,
     limits: opts.limits ?? (async () => ({ ok: true as const, budgetWarning: false })),
+    permissionOverrides: async () => ({}),
     route: opts.route ?? (async () => ({ tier: 'standard' as const, allowWrites: true, source: 'fallback' as const })),
     routingAccess: async () => ({ ok: false as const, error: { kind: 'missing_key' as const } }),
     resolveModel: async (o: any) => { resolveCalls.push(o); tiersAsked.push(o.tier); return (opts.key ?? true)
@@ -734,6 +735,16 @@ describe('tool groups: the model sees only this turn\'s groups', () => {
     expect(names).toContain('explain');
     expect(names).not.toContain('list_schedules');
     expect(names).not.toContain('manage_workspaces');
+  });
+
+  it('admin tools follow the use_chat_admin_tools permission: owner and admin get them, member does not', async () => {
+    const route = async () => ({ tier: 'standard' as const, allowWrites: true, source: 'decision' as const, area: 'admin' });
+    for (const [teamRole, expected] of [['owner', true], ['admin', true], ['member', false]] as const) {
+      const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+      const { turn } = harness({ model, route, user: { ...user, teamRole } as any });
+      await turn(userMsg('change the workspace config'));
+      expect(sentTools(model).includes('manage_workspaces')).toBe(expected);
+    }
   });
 
   it('turnGroups: a member never gets admin, even when routing names it', async () => {
@@ -1384,5 +1395,25 @@ describe('the turn\'s wall clock', () => {
     expect(seen[0].toolChoice?.type).not.toBe('none');
     expect(seen[1].toolChoice).toEqual({ type: 'none' });
     expect(JSON.stringify(seen[1].prompt)).toContain('Do not call any more tools');
+  });
+});
+
+describe("a turn's canonical answer (task b4f273ac)", () => {
+  it('the next turn is routed with the previous turn\'s final answer, not the hypothesis it wrote before its tools ran', async () => {
+    messages = [{
+      id: 'a-prev', conversationId: 'conv-1', role: 'assistant', createdAt: new Date(),
+      parts: [
+        { type: 'step-start' },
+        { type: 'text', text: 'A fix is already queued; checking why it has not been claimed.', state: 'done' },
+        { type: 'tool-list_tasks', toolCallId: 'c1', state: 'output-available', input: {}, output: {} },
+        { type: 'step-start' },
+        { type: 'text', text: 'No fix is queued: the task is held on an open question.', state: 'done' },
+      ],
+    }];
+    const seen: any[] = [];
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, route: async (a?: any) => { seen.push(a); return { tier: 'standard', allowWrites: true, source: 'fallback' }; } });
+    await turn(userMsg('so who answers it?'));
+    expect(seen[0].previous).toBe('No fix is queued: the task is held on an open question.');
   });
 });

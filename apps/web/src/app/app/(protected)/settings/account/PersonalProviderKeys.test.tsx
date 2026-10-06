@@ -179,7 +179,7 @@ describe('Chat uses: the provider and scope chat actually resolves to', () => {
 
   it('with nothing resolving, a member is told to ask an admin', async () => {
     await mount();
-    expect(line()).toBe('Not set up yet · ask an admin');
+    expect(line()).toBe('Not set up · ask an admin');
     expect(host.textContent).not.toContain('not connected');
   });
 });

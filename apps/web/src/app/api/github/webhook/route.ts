@@ -1,80 +1,49 @@
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, releases, reviewFeedback } from '@buildd/core/db/schema';
+import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
+import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes } from '@buildd/core/db/schema';
 import { and, eq, sql, inArray, isNull, not, or, ne, desc } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
-import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } from '@buildd/core/db/schema';
-import { dispatchNewTask } from '@/lib/task-dispatch';
-import { notifyMissionPrReady } from '@/lib/mission-notifications';
-import { retryCiFailureForPr } from '@/lib/ci-failure-retry';
-import {
-  reviewRowFromEvent,
-  commentRowFromEvent,
-  withOwner,
-  type ReviewFeedbackRow,
-  type PrOwner,
-} from '@/lib/review-feedback';
+import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { notifyOperator } from '@/lib/pushover';
 import { notifyTeamOf } from '@/lib/notify';
-import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
-import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
-import {
-  isMissionIntegrationBase,
-  isMissionPrTask,
-  shouldAnnounceBaseAdvance,
-} from '@buildd/core/mission-integration';
+import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { checkDependsOnResolved, resolveCompletedTask } from '@/lib/task-dependencies';
-import { wakeMissionAfterResponse } from '@/lib/mission-wake';
-import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
-import {
-  countPendingTasksForMission,
-  claimMissionReleaseAttempt,
-  commitMissionRelease,
-  abandonMissionReleaseAttempt,
-  recordDispatchedRelease,
-} from '@/lib/mission-release';
-import { canCompleteMission } from '@/lib/mission-completion';
+import { detachInteractiveWorkersOfEndedTasks } from '@/lib/interactive-detach';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, enqueuePushIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
-import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
-import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
-import { applyPolicyConfigToMergePolicy } from '@/lib/workspace-policy';
-import { reviewerTitle } from '@/lib/task-title';
-import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
-import { tryDispatchMigrationCollisionRetry } from '@/lib/migration-collision-retry';
+import { resolvePolicy } from '@/lib/merge-policy';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
-import { recordAndDispatchRelease } from '@/lib/release/record';
-import { detectArchetype } from '@buildd/core/release-archetype';
-import { buildWorkflowRunOutcome, isConfiguredReleaseRun, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
-import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
-import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
-import { verifyReleaseDeployment } from '@/lib/release-verification';
-import { recordDirectProdMerge, advanceGatedReleaseOnPrMerge } from '@/lib/release-executor';
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
-import { recordEvent, prMergedEvent, prCiFailedEvent, taskCompletedEvent } from '@/lib/subscriptions';
+import { emit } from '@/lib/core-emit';
+import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
+import { PR_OPENED_POLICY } from '@/modules';
+import type { PrOwnerFact } from '@/lib/core-events';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
-import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
-import { conformanceManifest } from '@/lib/path-declaration';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
-import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { deliverPrReviewCallback, readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
-import { isApprovalSelfMergeable, pickReviewerRole } from '@/lib/pr-review-status';
+import { readPrReviewStatus } from '@/lib/pr-review-request';
+import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
-import { guardReviewVerdict, classifyMergeAgainstReview } from '@/lib/review-verdict-gate';
+import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
-import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
-import { detectPrSupersession } from '@/lib/pr-supersession-detect';
+import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
+import { runPromptEval } from '@/lib/prompt-evals/run';
+import { promptEvalDeps } from '@/lib/prompt-evals/store';
+
+// A push to the prompts repo runs the prompt eval in after() (up to ~240s).
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -317,7 +286,8 @@ async function createTaskFromIssue(
     .returning();
 
   if (newTask) {
-    await dispatchNewTask(newTask, workspace);
+    await announceTaskCreated(newTask, workspace);
+    await wakeTask(newTask.id, 'task.created');
   }
 }
 
@@ -444,13 +414,15 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
           taskId: worker.taskId,
         });
+        // Model policy: CI on the run's PR is its tests observation.
+        await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: false }]);
       }
     }
-    // Subscriptions ledger: "tell me if CI goes red on PR N". One row per head SHA.
+    // Per PR: the subscriptions ledger records "CI went red on PR N" (one row
+    // per head SHA), then the reviews module asks for a bounded CI-fix task.
     for (const pr of check_suite.pull_requests) {
-      await recordEvent(prCiFailedEvent({ repoFullName: repository.full_name, prNumber: pr.number, headSha }));
+      await emit({ type: 'pr.ci_failed', repoFullName: repository.full_name, prNumber: pr.number, headSha, installationId: installation.id });
     }
-    await handleCheckSuiteFailure(check_suite, repository, installation.id);
     await handleReleasePrCiFailure(check_suite.pull_requests, repository.full_name);
     return;
   }
@@ -499,6 +471,10 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
             .update(workers)
             .set({ prLifecycleStatus: 'ci_green', updatedAt: new Date() })
             .where(eq(workers.id, worker.id));
+          // Model policy: every check suite passed on the run's PR.
+          if (worker.prLifecycleStatus !== 'ci_green') {
+            await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: true }]);
+          }
         }
 
         // Resolve merge policy via the single precedence chain:
@@ -527,7 +503,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         if (policy.tier === 'human') {
           console.log(`PR held for human review (policy.tier=human) — ${repository.full_name}#${pr.number}`);
           if (workerTask?.missionId) {
-            await notifyMissionPrReady(workerTask.missionId, {
+            await emit({ type: 'pr.needs_human', missionId: workerTask.missionId,
               title: 'PR ready — awaiting human review',
               prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
               prNumber: pr.number,
@@ -794,15 +770,7 @@ async function handlePullRequestEvent(event: {
         action === 'edited' && typeof retargetFrom === 'string' && retargetFrom
         && retargetFrom !== settledBaseRef && !pr.merged && intentWorkspaceId
       ) {
-        const toBase = settledBaseRef;
-        const retargetIntents = () => import('@/lib/surface-ordering')
-          .then((m) => m.retargetSurfaceIntents({ workspaceId: intentWorkspaceId, prNumber: pr.number, fromBase: retargetFrom, toBase }))
-          .then(() => {}, (e) => console.error(`[webhook] surface intent retarget failed for PR #${pr.number}:`, e));
-        try {
-          after(retargetIntents);
-        } catch {
-          await retargetIntents();
-        }
+        await emit({ type: 'pr.base_changed', workspaceId: intentWorkspaceId, prNumber: pr.number, fromBase: retargetFrom, toBase: settledBaseRef });
       }
     } catch (err) {
       // Never fail the webhook over bookkeeping — a missed sync self-heals on the
@@ -880,51 +848,34 @@ async function handlePullRequestEvent(event: {
         });
       }
 
-      // Follow-up push on a PR buildd is already working (CI fix or review fix).
-      // onlyIfPresent: no sticky comment yet means we haven't claimed this PR,
-      // so a bare "fixes pushed" note would be noise.
+      // A push to a PR buildd owns: the reviews module notes it on the PR and,
+      // after a non-approving verdict, re-dispatches a reviewer at the new head.
       if (event.installation && action === 'synchronize') {
-        await appendPrActivity({
+        await emit({
+          type: 'pr.synchronized',
           installationId: event.installation.id,
           repoFullName: repository.full_name,
-          prNumber: pr.number,
-          entry: {
-            kind: 'changes_pushed',
-            sha: pr.head.sha.slice(0, 7),
-            url: `${pr.html_url}/commits/${pr.head.sha}`,
-          },
-          onlyIfPresent: true,
-          workspaceId: openWorker.workspaceId,
+          pr: { number: pr.number, headSha: pr.head.sha, htmlUrl: pr.html_url, baseRef: pr.base?.ref ?? null, body: pr.body ?? null, draft: !!pr.draft },
+          worker: { id: openWorker.id, workspaceId: openWorker.workspaceId, taskId: openWorker.taskId ?? null, branch: openWorker.branch },
         });
       }
     }
 
-    // On PR open (not synchronize/reopen), check merge policy and possibly dispatch reviewer
+    // On PR open (not synchronize/reopen): the PR-opened policy slot (reviews)
+    // may take the PR (a reviewer dispatched, a human escalation, a mechanical
+    // fix), and a PR it holds skips core's no-CI auto-merge below.
     if (!pr.draft && event.installation && action === 'opened' && openWorker?.taskId) {
-      const dispatched = await maybeDispatchReviewer(
-        event.installation.id,
-        repository.full_name,
-        pr,
-        openWorker as typeof openWorker & { taskId: string },
-      );
-      if (dispatched) {
+      const { held } = await PR_OPENED_POLICY({
+        installationId: event.installation.id,
+        repoFullName: repository.full_name,
+        pr: { number: pr.number, headSha: pr.head.sha, htmlUrl: pr.html_url, baseRef: pr.base?.ref ?? null, body: pr.body ?? null },
+        worker: { id: openWorker.id, workspaceId: openWorker.workspaceId, taskId: openWorker.taskId, branch: openWorker.branch },
+      });
+      if (held) {
         // Work-tracker update still fires; skip no-CI auto-merge path
         maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, false).catch(() => {});
         return;
       }
-    }
-
-    // A push to an already-open PR: if the PR carries an existing terminal,
-    // non-approving verdict (changes_requested/escalated), re-dispatch a
-    // reviewer against the new head. Without this the review loop never
-    // closes — see maybeReDispatchReviewer's doc comment.
-    if (!pr.draft && event.installation && action === 'synchronize' && openWorker?.taskId) {
-      await maybeReDispatchReviewer(
-        event.installation.id,
-        repository.full_name,
-        pr,
-        openWorker as typeof openWorker & { taskId: string },
-      );
     }
 
     // A freshly-opened (or un-drafted) PR on a repo with NO CI: auto-merge here,
@@ -1012,43 +963,6 @@ async function handlePullRequestEvent(event: {
     );
   }
 
-  // Record a `releases` row for a merge into a workspace's configured prod
-  // branch, regardless of whether a buildd worker owns this PR. The release
-  // PR (dev → prod) and hotfix PR (feature → prod) that ship this repo are
-  // opened by `scripts/release.sh` via the `gh` CLI and merged by CI/a human —
-  // no worker ever owns either PR, so the worker-scoped release recording
-  // below never runs for them. Idempotent on (workspaceId, headSha), so this
-  // is a no-op when a worker-owned merge already recorded the same headSha.
-  if (pr.merged && event.installation && pr.base?.ref) {
-    recordDirectProdMerge({
-      repoFullName: repository.full_name,
-      installationId: event.installation.id,
-      baseRef: pr.base.ref,
-      headSha: pr.merge_commit_sha ?? undefined,
-      previousSha: pr.base.sha,
-    }).catch(e =>
-      console.error(`[webhook] recordDirectProdMerge failed for PR #${pr.number} on ${repository.full_name}:`, e),
-    );
-
-    // A `gated` + `workflow_dispatch` workspace's release PR merging into
-    // prodBranch is its only real deploy signal — recordDirectProdMerge above
-    // is a no-op for it (branch_merge strategy only). Advance the release row
-    // already recorded at dispatch time, or record the merge as its own
-    // release when no dispatched row shipped in it (hotfix, direct merge).
-    advanceGatedReleaseOnPrMerge({
-      repoFullName: repository.full_name,
-      baseRef: pr.base.ref,
-      prHeadSha: pr.head.sha,
-      installationId: event.installation.id,
-      mergeCommitSha: pr.merge_commit_sha ?? null,
-      baseSha: pr.base.sha ?? null,
-      prTitle: pr.title ?? null,
-      prNumber: pr.number,
-    }).catch(e =>
-      console.error(`[webhook] advanceGatedReleaseOnPrMerge failed for PR #${pr.number} on ${repository.full_name}:`, e),
-    );
-  }
-
   // Strategy 1: Match by prNumber on workers table (agent-created PRs)
   const worker = await db.query.workers.findFirst({
     where: workerOwnsPr(repository.full_name, pr.number),
@@ -1063,38 +977,33 @@ async function handlePullRequestEvent(event: {
 
   // Subscriptions ledger: any merged PR, buildd-opened or not. Idempotent on
   // the dedupe key, so a redelivery or the reconcile sweep writes nothing new.
+  // The releases module also records a merge into a prod branch here, whether
+  // or not a worker owns the PR, on every delivery (idempotent on headSha).
   if (pr.merged) {
-    await recordEvent(prMergedEvent({ repoFullName: repository.full_name, prNumber: pr.number, url: pr.html_url }));
-  }
-
-  // Resolve the sticky activity comment: the PR closing is the last word, so a
-  // header left on a working state ("Review passed — merging once checks are
-  // green") must stop spinning even though no buildd step ran after it.
-  // onlyIfPresent: a PR buildd never announced on stays comment-free.
-  if (event.installation) {
-    await appendPrActivity({
-      installationId: event.installation.id,
-      repoFullName: repository.full_name,
-      prNumber: pr.number,
-      entry: pr.merged
-        ? { kind: 'merged', detail: pr.base?.ref ? `into \`${pr.base.ref}\`` : null }
-        : { kind: 'closed_unmerged' },
-      onlyIfPresent: true,
-      workspaceId: worker?.workspaceId ?? null,
+    await emit({
+      type: 'pr.merged', repoFullName: repository.full_name, prNumber: pr.number, url: pr.html_url,
+      delivery: {
+        installationId: event.installation?.id ?? null,
+        baseRef: pr.base?.ref ?? null,
+        baseSha: pr.base?.sha ?? null,
+        headSha: pr.head.sha,
+        mergeCommitSha: pr.merge_commit_sha ?? null,
+        title: pr.title ?? null,
+      },
     });
   }
 
-  // An on-demand review can be waiting on the PR itself rather than on the
-  // verdict (`callbackOn: 'merge'`), and a PR closed mid-review will never
-  // reach a verdict at all — either way the close is the moment to tell the
-  // requester. Single-fire and best-effort inside the helper.
-  if (worker?.workspaceId) {
-    await deliverPrReviewCallback({
-      workspaceId: worker.workspaceId,
-      prNumber: pr.number,
-      repoFullName: repository.full_name,
-    });
-  }
+  // Every close delivery: the reviews module resolves the sticky activity
+  // comment and tells an on-demand review waiting on this PR that it closed.
+  await emit({
+    type: 'pr.close_delivered',
+    repoFullName: repository.full_name,
+    prNumber: pr.number,
+    merged: !!pr.merged,
+    baseRef: pr.base?.ref ?? null,
+    installationId: event.installation?.id ?? null,
+    workspaceId: worker?.workspaceId ?? null,
+  });
 
   if (worker) {
     if (pr.merged) {
@@ -1108,6 +1017,12 @@ async function handlePullRequestEvent(event: {
         prNumber: pr.number,
         mergedAt: new Date(),
       });
+      // Model policy: the merge, once (a redelivery is not a second merge).
+      // A close without merge is not reported: superseded and abandoned PRs
+      // close too, and that is not evidence about the model.
+      if (mergeIsNew) {
+        await reportTaskPolicyOutcome(worker.taskId, [{ type: 'merged', merged: true }]);
+      }
       // A merged doc fix gets its conformance re-run now, not whenever the
       // next dev push happens to evaluate the doc (spec-conformance.md §9).
       // Best-effort; the hourly pr-reconcile sweep is the backstop.
@@ -1122,35 +1037,12 @@ async function handlePullRequestEvent(event: {
           await recheck();
         }
       }
-      await reconcileReviewWithMerge({
-        workspaceId: worker.workspaceId,
-        taskId: worker.taskId,
-        workerId: worker.id,
-        prNumber: pr.number,
-        mergedHeadSha: pr.head.sha,
-        mergeIsNew,
-        installationId: event.installation?.id ?? null,
-        repoFullName: repository.full_name,
-      });
     } else {
       // PR closed without merge (abandoned/superseded)
       await db
         .update(workers)
         .set({ prLifecycleStatus: 'closed', updatedAt: new Date() })
         .where(eq(workers.id, worker.id));
-      // Where did the work go? Claims and sibling tasks only nominate; an edge
-      // is recorded only if the content verifies (lib/pr-supersession-detect.ts).
-      // GitHub-heavy, so after(); the hourly pr-reconcile sweep is the backstop.
-      const closedWorkerId = worker.id;
-      const detect = () => detectPrSupersession({ workerId: closedWorkerId, via: 'webhook' }).then(
-        r => console.log(`[webhook] supersession detection for PR #${pr.number}: ${r.outcome}`),
-        e => console.error(`[webhook] supersession detection failed for PR #${pr.number}:`, e),
-      );
-      try {
-        after(detect);
-      } catch {
-        await detect();
-      }
     }
     await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
@@ -1177,42 +1069,24 @@ async function handlePullRequestEvent(event: {
       }
     }
 
-    // Close any open changeIntent rows for this PR — surfaces are now free —
-    // drop its merge reservations, and re-drive the PR that was waiting behind
-    // it on each serialized surface (conflict-aware-orchestration.md §3). The
-    // wake is network work, so it runs in after(); settle never throws.
-    {
-      const settleWorkspaceId = worker.workspaceId;
-      const settle = () => import('@/lib/surface-ordering')
-        .then((m) => m.settleSurfaceIntentsOnClose({ workspaceId: settleWorkspaceId, prNumber: pr.number }))
-        .then(() => {}, (e) => console.error(`[webhook] surface settle failed for PR #${pr.number}:`, e));
-      try {
-        after(settle);
-      } catch {
-        await settle();
-      }
-    }
-
-    // Reconciliation sweep: update subject state for tasks anchored to this PR.
-    // Best-effort — sweep failure must never fail the webhook response.
-    sweepSubjectAnchoredTasks(worker.workspaceId, pr.number).catch(e =>
-      console.error(`[webhook] subject sweep failed for PR #${pr.number}:`, e),
-    );
-
-    // Dead-PR shutdown: close buildd-authored loser PRs superseded by this one.
-    // Only fires when the workspace has autoCloseBuilddSupersededPrs=true.
-    // Best-effort — shutdown failure must never fail the webhook response.
-    if (event.installation) {
-      shutdownDeadBuilddPrs(
-        worker.workspaceId,
-        pr.number,
-        pr.merged,
-        event.installation.id,
-        repository.full_name,
-      ).catch(e =>
-        console.error(`[webhook] dead-pr-shutdown failed for PR #${pr.number}:`, e),
-      );
-    }
+    // Close any open changeIntent rows for this PR, drop its merge
+    // reservations and re-drive the PR waiting behind it (missions). Then the
+    // reviews module measures a merge against its verdict (first delivery
+    // only, before the reviewer is superseded), looks for where an unmerged
+    // PR's work went, cancels what the close made obsolete, and shuts down
+    // superseded buildd PRs.
+    await emit({
+      type: 'pr.closed',
+      workspaceId: worker.workspaceId,
+      prNumber: pr.number,
+      merged: !!pr.merged,
+      mergeIsNew: !!pr.merged && mergeIsNew,
+      workerId: worker.id,
+      taskId: worker.taskId ?? null,
+      headSha: pr.head.sha,
+      repoFullName: repository.full_name,
+      installationId: event.installation?.id ?? null,
+    });
   }
 
   if (pr.merged && worker?.task) {
@@ -1223,73 +1097,17 @@ async function handlePullRequestEvent(event: {
       console.error(`[webhook] checkDependsOnResolved failed for task ${worker.task!.id}:`, e)
     );
 
-    // Advance any task waiting on a pr_merged loop condition for this PR.
-    // The worker's mergedAt was stamped above; evaluateAndAdvanceLoopOnMerge
-    // reads it and marks the task completed if the condition is now satisfied.
-    if (worker.taskId && worker.workspaceId) {
-      evaluateAndAdvanceLoopOnMerge(worker.id, worker.taskId, worker.workspaceId).catch((e) =>
-        console.error(`[webhook] evaluateAndAdvanceLoopOnMerge failed for task ${worker.taskId}:`, e)
-      );
-    }
-
-    // A merge onto a mission integration branch moved the base that every
-    // sibling task's codebase-graph seed is keyed on. Tell the runner, which
-    // owns the seed cache (a directory on its own host) and already has the
-    // keying and the one-refresh-in-flight bound.
-    //
-    // Keyed on the BASE REF alone, deliberately not on `task.missionId`: the
-    // stale thing is a seed keyed on that ref, and it is stale whether or not
-    // the merging task's row happens to carry a mission link. Requiring the
-    // link would make graph freshness depend on task bookkeeping.
-    //
-    // Also deliberately the SHAPE heuristic, where the release guard below uses
-    // the authoritative `isMissionIntegrationBase`. The asymmetry is the cost of
-    // being wrong: a false positive on a release decision suppresses a release
-    // the workspace asked for, while a false positive here costs one no-op
-    // refresh of a slot nobody reads.
-    if (shouldAnnounceBaseAdvance({ merged: pr.merged, baseRef: pr.base?.ref }) && worker.workspaceId) {
-      await triggerEvent(channels.workspace(worker.workspaceId), events.GRAPH_BASE_ADVANCED, {
-        repoFullName: repository.full_name,
-        baseRef: pr.base!.ref,
-      }).catch(e =>
-        // Advisory: the next claim in this mission refreshes the seed anyway, so
-        // a failed publish must never affect the merge path.
-        console.error(`[webhook] graph:base-advanced publish failed for ${repository.full_name}:`, e),
-      );
-    }
-
-    // Option A′: a task PR landing on the mission's integration branch is the
-    // event that can make the mission's work complete, so it is where the one
-    // mission PR gets opened. Awaited, not fire-and-forget: this opens a PR,
-    // and a detached promise in a serverless handler can be killed mid-call,
-    // which would leave a mission whose work is done and whose PR never
-    // appeared — the exact silent stall A′ exists to remove.
-    //
-    // `assumeCompletedTaskIds` because `tasks.status` for THIS task is stamped
-    // further down; `workers.mergedAt` is already stamped above.
-    if (worker.task.missionId && pr.base?.ref) {
-      const opened = await maybeOpenMissionIntegrationPr(worker.task.missionId, {
-        assumeCompletedTaskIds: [worker.task.id],
-      }).catch(e => {
-        console.error(`[webhook] mission PR open failed for mission ${worker.task!.missionId}:`, e);
-        return null;
-      });
-      if (opened && !opened.ok && opened.reason !== 'work_incomplete') {
-        // `work_incomplete` is the normal answer on all but the last merge and
-        // is not worth a line. Anything else means an opted-in mission finished
-        // its work and still has no PR, which must not be silent.
-        console.error(
-          `[webhook] mission ${worker.task.missionId} work is done but its PR did not open: `
-          + `${opened.reason}${opened.detail ? ` (${opened.detail})` : ''}`,
-        );
-        // Console-only was the silence the comment above already names: a
-        // no-op for every reason but the two that can recur forever with no
-        // self-correction (see `noteMissionPrOpenFailure`).
-        noteMissionPrOpenFailure(worker.task.missionId, opened).catch(e =>
-          console.error(`[webhook] mission PR failure note failed for ${worker.task!.missionId}:`, e),
-        );
-      }
-    }
+    // Every merged delivery: the missions module advances a loop waiting on
+    // this merge and, for a task PR landing on a mission integration branch,
+    // opens the one mission PR (awaited inside its subscriber).
+    await emit({
+      type: 'task.pr_merge_delivered',
+      taskId: worker.task.id,
+      workerId: worker.id,
+      workspaceId: worker.workspaceId,
+      missionId: worker.task.missionId ?? null,
+      baseRef: pr.base?.ref ?? null,
+    });
   }
 
   if (pr.merged && worker?.task) {
@@ -1308,6 +1126,7 @@ async function handlePullRequestEvent(event: {
     // gate — nor the Path-B release trigger. A downstream mission waited
     // forever, and only when the human clicked Merge on GitHub rather than in
     // buildd, because the dashboard merge route raises the signal itself.
+    let transition: 'flipped' | 'already_completed' | 'not_flipped' = 'already_completed';
     if (worker.task.status !== 'completed') {
       // Guarded on the row, not only on the copy read above: the worker's own
       // completion (PATCH /api/workers/[id]) can land between that read and
@@ -1318,10 +1137,11 @@ async function handlePullRequestEvent(event: {
         .set({ status: 'completed', updatedAt: new Date() })
         .where(and(eq(tasks.id, worker.task.id), ne(tasks.status, 'completed')))
         .returning({ id: tasks.id });
+      transition = flipped ? 'flipped' : 'not_flipped';
       if (flipped) {
         console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
         // Same fact as the worker route's completion, same dedupe key: one row.
-        await recordEvent(taskCompletedEvent({ taskId: worker.task.id, workerId: worker.id, workspaceId: worker.workspaceId }));
+        await emit({ type: 'task.completed', via: 'merge', taskId: worker.task.id, workerId: worker.id, workspaceId: worker.workspaceId });
 
         // Work-tracker: post completion comment and transition issue to "Done".
         // Stays inside the transition guard deliberately: a "Done" comment is a
@@ -1340,18 +1160,13 @@ async function handlePullRequestEvent(event: {
             console.error(`[webhook] resolveCompletedTask failed for task ${worker.task!.id}:`, e),
           );
         }
-        // An attempt task's completion deliberately does not re-plan
-        // (mission-loop.ts). The merge it carried still should.
-        if (worker.task.taskClass === 'attempt' && worker.task.missionId && mergeIsNew) {
-          wakeMissionAfterResponse(worker.task.missionId, 'pr_merged');
-        }
       }
-    } else if (mergeIsNew && worker.task.missionId) {
-      // The task was already completed (its worker finished with the PR open),
-      // so no completion fires now — but the mission's loop may be paused on
-      // exactly this open PR (evaluateMissionOpenPrGate). Wake it.
-      wakeMissionAfterResponse(worker.task.missionId, 'pr_merged');
     }
+
+    // A local (claim_task) session that opened this PR is usually still open.
+    // The task is done, so its worker stops holding a seat now. Idempotent,
+    // and a no-op unless the task row is terminal.
+    await detachInteractiveWorkersOfEndedTasks({ taskId: worker.task.id, graceMs: 0 });
 
     // ── Effects of the merge itself ──────────────────────────────────────────
     //
@@ -1360,201 +1175,23 @@ async function handlePullRequestEvent(event: {
     // that by accident, and `workers.mergedAt` (captured before this handler
     // stamped it) is the honest version of the same question.
     if (mergeIsNew) {
-      // PR merged: unblock any missions waiting on this mission's PRs to merge.
-      // Safe to run for an already-completed task: the helper re-checks the
-      // mission-wide predicate itself and its write is guarded on
-      // `dependencyMetAt IS NULL`, so it is idempotent by construction.
-      if (worker.task.missionId) {
-        checkAndUnblockDependentMissions(worker.task.missionId, 'merged').catch(e =>
-          console.error(`[webhook] unblock failed for merged PR mission ${worker.task!.missionId}:`, e)
-        );
-      }
-
-      // Post-merge release trigger — Path B (webhook side).
-      //
-      // Invariant enforced here:
-      //   branch_merge workspaces → Path A (worker PATCH + executeRelease) is authoritative.
-      //                              Path B must NOT fire to prevent double-fire.
-      //   workflow_dispatch workspaces → Path A skips; Path B fires the workflow.
-      //   trigger=manual → neither path auto-fires.
-      //   trigger=on_mission_complete → only fire when mission is all-terminal + atomic dedup.
-      //
-      // Option A′ adds one more: a merge into a mission integration branch is NOT
-      // a release-triggering merge. `workflow_dispatch` does not go through
-      // `executeRelease` (which refuses this case itself), so without this guard a
-      // mission whose last task PR landed on the integration branch would dispatch
-      // a release of trunk — a release recorded against the mission that does not
-      // contain the mission's work. That is the same class of lie as a mission
-      // marked released with nothing deployed.
-      const mergedTask = worker.task;
-      // The authoritative predicate, not the `mission/` name heuristic: a mission
-      // that has NOT opted in must behave exactly as before, even if its branch
-      // happens to carry that prefix. Costs one two-column read, and only for a
-      // mission task on a merged PR.
-      const mergedTaskMission = mergedTask.missionId
-        ? await db.query.missions.findFirst({
-            where: eq(missions.id, mergedTask.missionId),
-            columns: { workingBranch: true, integrationBranchEnabled: true },
-          })
-        : null;
-      const mergedOntoIntegrationBranch = isMissionIntegrationBase({
-        baseRef: pr.base?.ref,
-        mission: mergedTaskMission,
+      // Effects of the merge itself, once per merge: the missions module wakes
+      // the mission and unblocks missions gated on this one's merges; the
+      // releases module runs the post-merge release trigger (Path B).
+      await emit({
+        type: 'task.pr_merged',
+        via: 'worker',
+        transition,
+        taskClass: worker.task.taskClass ?? null,
+        taskId: worker.task.id,
+        workerId: worker.id,
+        workspaceId: worker.task.workspaceId,
+        missionId: worker.task.missionId ?? null,
+        release: worker.task.release ?? null,
+        repoFullName: repository.full_name,
+        baseRef: pr.base?.ref ?? null,
+        installationId: event.installation?.id ?? null,
       });
-      if (mergedTask.release !== 'false' && event.installation && !mergedOntoIntegrationBranch) {
-        const mergedWorkspace = await db.query.workspaces.findFirst({
-          where: eq(workspaces.id, mergedTask.workspaceId),
-        });
-        const shouldRelease =
-          mergedTask.release === 'true' ||
-          (mergedTask.release === 'inherit' && mergedWorkspace?.releaseConfig?.enabled === true);
-
-        if (shouldRelease && mergedWorkspace) {
-          const releaseConfig = mergedWorkspace.releaseConfig;
-          const resolution = resolveReleaseStrategy(releaseConfig);
-
-          if (resolution.ok) {
-            // branch_merge: Path A already handled the merge on task completion — skip.
-            if (resolution.strategy.kind === 'branch_merge') {
-              // no-op: Path A is authoritative for branch_merge workspaces
-            } else if (resolution.strategy.kind === 'workflow_dispatch') {
-              const trigger = resolveReleaseTrigger(releaseConfig);
-
-              if (trigger === 'manual') {
-                // no-op: owner fires trigger_release manually
-              } else if (trigger === 'on_mission_complete') {
-                // Only dispatch if this task's mission is now all-terminal
-                if (mergedTask.missionId) {
-                  const missionId = mergedTask.missionId;
-                  const pending = await countPendingTasksForMission(missionId);
-                  if (pending === 0) {
-                    // Same predicate as every other completion path, including the
-                    // goal-criteria gate. This side used to check only "no pending
-                    // tasks" and dispatch, so a mission whose criteria read `fail`
-                    // could be shipped here and refused by the completion path in
-                    // the same minute. `evaluateCriteria: false` — a release READS a
-                    // verdict, it does not manufacture one.
-                    const decision = await canCompleteMission(missionId, {
-                      path: 'release_trigger',
-                      acceptCompleted: true,
-                      evaluateCriteria: false,
-                    });
-                    if (!decision.ok) {
-                      console.log(
-                        `[webhook] mission ${missionId}: not releasing — ${decision.code}: ${decision.reason}`,
-                      );
-                    } else if (await claimMissionReleaseAttempt(missionId)) {
-                      // Phase 1 claimed the ATTEMPT. Both exits below resolve it.
-                      const { workflowFile, ref, inputs } = resolution.strategy;
-                      const [owner, name] = repository.full_name.split('/');
-                      // Only the dispatch itself belongs in this try. Everything
-                      // after it is bookkeeping for a release that HAS gone out:
-                      // reporting `dispatch_failed` for a failed write claims prod
-                      // did not ship when it did, and handing the claim back frees
-                      // the next merge in this mission to dispatch a SECOND
-                      // release. See recordDispatchedRelease in lib/mission-release.
-                      const recorded = await recordAndDispatchRelease({
-                        workspaceId: mergedTask.workspaceId,
-                        archetype: detectArchetype({
-                          name: mergedWorkspace.name,
-                          releaseConfig: mergedWorkspace.releaseConfig,
-                          gitConfig: mergedWorkspace.gitConfig,
-                        }),
-                        installationId: event.installation.id,
-                        owner,
-                        name,
-                        repoFullName: repository.full_name,
-                        workflowFile,
-                        ref,
-                        prodBranch: releaseConfig?.prodBranch ?? mergedWorkspace.gitConfig?.defaultBranch ?? 'main',
-                        inputs: { force: 'false', ...inputs },
-                        triggeredBy: 'auto',
-                      });
-
-                      if (!recorded.ok) {
-                        await abandonMissionReleaseAttempt(
-                          missionId,
-                          'dispatch_failed',
-                          `Dispatching ${workflowFile}@${ref} for ${repository.full_name} failed: ${recorded.error}`,
-                        );
-                      } else {
-                        console.log(`[webhook] Mission ${missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name} (release=${recorded.releaseId}, runId=${recorded.runId ?? 'pending'})`);
-                        await recordDispatchedRelease(missionId, `${workflowFile}@${ref}`);
-
-                        const releaseResult: ReleaseResult = {
-                          status: 'pending_ci',
-                          message: `Release: dispatched ${workflowFile}@${ref} for mission ${missionId} — awaiting workflow completion`,
-                          runId: recorded.runId,
-                          runUrl: recorded.runUrl,
-                          releaseId: recorded.releaseId,
-                        };
-                        try {
-                          await db
-                            .update(tasks)
-                            .set({ releaseResult, updatedAt: new Date() })
-                            .where(eq(tasks.id, mergedTask.id));
-                        } catch (err) {
-                          console.error(`[webhook] Mission ${missionId}: dispatched ${workflowFile}@${ref} but could not annotate task ${mergedTask.id}:`, err);
-                        }
-                      }
-                    }
-                  }
-                }
-              } else {
-                // every_merge (or future values): dispatch on each merged PR.
-                //
-                // Goes through recordAndDispatchRelease so this dispatch leaves
-                // a `releases` row. It used to write only tasks.releaseResult,
-                // and because every automatic path into maybeCreateReleaseRow
-                // filters on strategy branch_merge first, a gated +
-                // workflow_dispatch workspace could never get a row at all —
-                // the Releases page, the queue baseline and the health cron
-                // were blind to every release that actually shipped.
-                const { workflowFile, ref, inputs } = resolution.strategy;
-                const [owner, name] = repository.full_name.split('/');
-                const recorded = await recordAndDispatchRelease({
-                  workspaceId: mergedTask.workspaceId,
-                  archetype: detectArchetype({
-                    name: mergedWorkspace.name,
-                    releaseConfig: mergedWorkspace.releaseConfig,
-                    gitConfig: mergedWorkspace.gitConfig,
-                  }),
-                  installationId: event.installation.id,
-                  owner,
-                  name,
-                  repoFullName: repository.full_name,
-                  workflowFile,
-                  ref,
-                  prodBranch: releaseConfig?.prodBranch ?? mergedWorkspace.gitConfig?.defaultBranch ?? 'main',
-                  inputs: { force: 'false', ...inputs },
-                  triggeredBy: 'auto',
-                });
-
-                if (!recorded.ok) {
-                  console.error(`[webhook] Release dispatch failed for ${repository.full_name}: ${recorded.error}`);
-                } else if (!recorded.deduped) {
-                  const releaseResult: ReleaseResult = {
-                    status: 'pending_ci',
-                    message: `Release: dispatched ${workflowFile}@${ref} for ${repository.full_name} — awaiting workflow completion`,
-                    runId: recorded.runId,
-                    runUrl: recorded.runUrl,
-                    releaseId: recorded.releaseId,
-                  };
-                  try {
-                    await db
-                      .update(tasks)
-                      .set({ releaseResult, updatedAt: new Date() })
-                      .where(eq(tasks.id, mergedTask.id));
-                  } catch (err) {
-                    console.error(`[webhook] could not annotate task ${mergedTask.id} with the release result:`, err);
-                  }
-                  console.log(`[webhook] Triggered ${workflowFile}@${ref} for ${repository.full_name} (task ${mergedTask.id}, release=${recorded.releaseId}, runId=${recorded.runId ?? 'pending'})`);
-                }
-              }
-            }
-          }
-        }
-      }
     }
 
     return;
@@ -1583,16 +1220,26 @@ async function handlePullRequestEvent(event: {
       if (!flipped) return;
       console.log(`Auto-completed task ${matchingTask.id} via branch match on merged PR #${pr.number}`);
 
-      if (matchingTask.missionId) {
-        checkAndUnblockDependentMissions(matchingTask.missionId, 'merged').catch(e =>
-          console.error(`[webhook] unblock failed for branch-match merged PR mission ${matchingTask.missionId}:`, e)
-        );
-      }
+      await emit({
+        type: 'task.pr_merged',
+        via: 'branch_match',
+        transition: 'flipped',
+        taskClass: matchingTask.taskClass ?? null,
+        taskId: matchingTask.id,
+        workerId: null,
+        workspaceId: matchingTask.workspaceId,
+        missionId: matchingTask.missionId ?? null,
+        release: matchingTask.release ?? null,
+        repoFullName: repository.full_name,
+        baseRef: pr.base?.ref ?? null,
+        installationId: event.installation?.id ?? null,
+      });
 
       // Dependents, mission completion and re-planning, as for any completion.
       await resolveCompletedTask(matchingTask.id, matchingTask.workspaceId).catch(e =>
         console.error(`[webhook] resolveCompletedTask failed for branch-matched task ${matchingTask.id}:`, e),
       );
+      await detachInteractiveWorkersOfEndedTasks({ taskId: matchingTask.id, graceMs: 0 });
     }
   }
 }
@@ -1640,7 +1287,9 @@ async function reportMissionGateRetarget(opts: {
   } catch (err) {
     console.error(`[webhook] failed to record gate-retarget note for PR #${opts.prNumber}:`, err);
   }
-  await notifyMissionPrReady(opts.missionId, {
+  await emit({
+    type: 'pr.needs_human',
+    missionId: opts.missionId,
     title: opts.restored
       ? `PR #${opts.prNumber} restored to the mission integration branch`
       : `PR #${opts.prNumber} retargeted off the mission integration branch`,
@@ -1649,548 +1298,12 @@ async function reportMissionGateRetarget(opts: {
     headSha: opts.headSha,
     reason: 'base_retargeted',
     message,
-  }).catch(err =>
-    console.error(`[webhook] failed to notify gate-retarget for PR #${opts.prNumber}:`, err),
-  );
+  });
   console.error(
     `[webhook] PR #${opts.prNumber} (mission ${opts.missionId}) based on '${opts.toBase}' `
     + `instead of integration branch '${opts.fromBase}' — `
     + (opts.restored ? 'base restored by buildd' : 'review gate lost'),
   );
-}
-
-/**
- * CI check suite failed → hand each PR in the suite to `retryCiFailureForPr`
- * (lib/ci-failure-retry.ts), which files a bounded CI-fix task or records why
- * not. The red-PR sweep (lib/ci-red-sweep.ts) calls the same function for a PR
- * this event could not act on.
- */
-async function handleCheckSuiteFailure(
-  checkSuite: GitHubCheckSuiteEvent['check_suite'],
-  repository: GitHubCheckSuiteEvent['repository'],
-  installationId: number,
-) {
-  for (const pr of checkSuite.pull_requests) {
-    try {
-      await retryCiFailureForPr({
-        repoFullName: repository.full_name,
-        prNumber: pr.number,
-        headSha: checkSuite.head_sha,
-        installationId,
-        surface: 'webhook:check_suite',
-      });
-    } catch (error) {
-      console.error(`Error creating CI retry task for PR #${pr.number} on ${repository.full_name}:`, error);
-    }
-  }
-}
-
-/**
- * BT-5 / BT-10: Check merge policy for an opened PR and dispatch a reviewer task
- * if the workspace is configured for agent-review.
- *
- * Returns true if we handled the PR (reviewer task created or pre-flight escalated)
- * and the caller should skip the normal no-CI auto-merge path.
- */
-/**
- * A PR merged — on github.com, with `gh pr merge`, or through a buildd door —
- * measured against, and then closing, its agent review.
- *
- *  1. Telemetry (first delivery only): a merge while a request-changes or
- *     escalate verdict was outstanding is `merged_over_verdict`; a merge no
- *     verdict covered is `merged_unreviewed`. Read BEFORE step 2, because
- *     superseding the reviewer changes the state being measured.
- *  2. Supersede a still-live reviewer. A GitHub-side merge passes no buildd
- *     door, so without this the reviewer runs on (or is claimed later) against
- *     a PR that has already landed. Idempotent: the dashboard merge door
- *     already calls the same helper, and a redelivery finds nothing live.
- *
- * Best-effort throughout: nothing here may fail the merge bookkeeping.
- */
-async function reconcileReviewWithMerge(params: {
-  workspaceId: string;
-  taskId: string | null;
-  workerId: string;
-  prNumber: number;
-  mergedHeadSha: string;
-  mergeIsNew: boolean;
-  installationId: number | null;
-  repoFullName: string;
-}): Promise<void> {
-  if (params.mergeIsNew) {
-    try {
-      const status = await readPrReviewStatus({ workspaceId: params.workspaceId, prNumber: params.prNumber });
-      const merge = classifyMergeAgainstReview(status, params.mergedHeadSha);
-      if (merge) {
-        fireGateEvent({
-          gate: GATE_SLUGS.REVIEW_VERDICT,
-          surface: 'webhook pull_request.closed (merged)',
-          outcome: merge.event === 'merged_over_verdict' ? 'bypassed' : 'warned',
-          reason: merge.event === 'merged_over_verdict'
-            ? 'PR merged while a reviewer verdict against it was outstanding'
-            : 'PR merged with no reviewer verdict covering the merged commit',
-          workspaceId: params.workspaceId,
-          taskId: params.taskId,
-          workerId: params.workerId,
-          callerOrigin: 'system',
-          detail: {
-            event: merge.event,
-            prNumber: params.prNumber,
-            mergedHeadSha: params.mergedHeadSha,
-            reviewState: merge.state,
-            reviewKind: merge.kind,
-            reviewTaskId: merge.reviewTaskId,
-            reviewHeadSha: merge.reviewHeadSha,
-          },
-        });
-      }
-    } catch (err) {
-      console.error(`[webhook] merge review telemetry failed for PR #${params.prNumber}:`, err);
-    }
-  }
-
-  if (params.taskId && params.installationId) {
-    const superseded = await supersedeReviewerTaskOnMerge({
-      originalTaskId: params.taskId,
-      installationId: params.installationId,
-      repoFullName: params.repoFullName,
-      prNumber: params.prNumber,
-    });
-    if (superseded.superseded) {
-      console.log(
-        `[webhook] PR #${params.prNumber} merged — superseded live reviewer task ${superseded.reviewerTaskId}`,
-      );
-    }
-  }
-}
-
-/**
- * The role a webhook-dispatched review runs as, checked against the roles the
- * workspace actually has — the same `pickReviewerRole` rule the create_pr,
- * manual-review and re-review routes apply. The policy's role slug is only a
- * preference: a reviewer task routed to a role no runner advertises is never
- * claimed. Null when the workspace has no role at all.
- */
-async function resolveReviewerRoleForDispatch(
-  workspace: { id: string; teamId: string },
-  policyRole: string | null,
-  prNumber: number,
-): Promise<string | null> {
-  const roles = await listWorkspaceRoles(workspace.id, workspace.teamId);
-  const picked = pickReviewerRole({ requested: null, policyRole, available: roles });
-  if (!picked.role) {
-    console.warn(`[reviewer] Not dispatching a reviewer for PR #${prNumber}: ${picked.error}`);
-    return null;
-  }
-  if (policyRole && picked.role !== policyRole) {
-    console.warn(
-      `[reviewer] PR #${prNumber}: policy reviewer role '${policyRole}' does not exist in this workspace — using '${picked.role}'`,
-    );
-  }
-  return picked.role;
-}
-
-async function maybeDispatchReviewer(
-  installationId: number,
-  repoFullName: string,
-  // `body` is read for its lede only — see renderLedeGuidance in @/lib/reviewer.
-  pr: { number: number; head: { sha: string }; html_url: string; base?: { ref: string }; body?: string | null },
-  openWorker: { id: string; workspaceId: string; taskId: string; branch: string },
-): Promise<boolean> {
-  try {
-    const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, openWorker.workspaceId),
-    });
-    if (!workspace) return false;
-
-    const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, openWorker.taskId),
-      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
-    });
-    if (!task) return false;
-
-    // Load mission separately to resolve merge policy
-    type PolicyMission = {
-      mergePolicy?: import('@buildd/shared').MergePolicy | null;
-      requiresReview?: boolean;
-      workingBranch?: string | null;
-      integrationBranchEnabled?: boolean;
-    };
-    let mission: PolicyMission | null = null;
-    if (task.missionId) {
-      const row = await db.query.missions.findFirst({
-        where: eq(missions.id, task.missionId),
-        columns: RESOLVE_POLICY_MISSION_COLUMNS,
-      });
-      if (row) mission = row as PolicyMission;
-    }
-    // Take the base ref straight off the webhook payload rather than re-reading
-    // workers.prBaseRef: this runs on PR open, where the DB write from the create
-    // call and this event race. The payload is authoritative and race-free.
-    const basePolicy = resolvePolicy(workspace, mission, null, { baseRef: pr.base?.ref ?? null });
-
-    // Fetch PR files first (needed for policyConfig override AND pre-flight check)
-    let prFiles: Array<{
-      filename: string;
-      status: string;
-      additions: number;
-      deletions: number;
-      patch?: string | null;
-      previous_filename?: string | null;
-    }> = [];
-    try {
-      const raw = await githubApi(installationId, `/repos/${repoFullName}/pulls/${pr.number}/files?per_page=300`);
-      if (Array.isArray(raw)) prFiles = raw;
-    } catch (err) {
-      console.warn(`[reviewer] Could not fetch PR files for pre-flight check on #${pr.number}:`, err);
-    }
-
-    // Classify migrations first: the schema risk class keys off the verdict
-    // (EXPAND passes), not off the mere presence of a schema/migration path.
-    const migrationSafety = await inspectPullRequestMigrations({
-      installationId,
-      repoFullName,
-      prNumber: pr.number,
-      headSha: pr.head.sha,
-      files: prFiles,
-      baseRef: pr.base?.ref ?? null,
-    });
-
-    // A migration-number collision this PR owns (see `classifyPullRequestMigrations`)
-    // is a mechanical fix, not a policy decision — dispatch a renumber task
-    // through the conflict-retry machinery instead of escalating to a human,
-    // regardless of merge-policy tier. Only when the dispatch didn't handle it
-    // (retries exhausted, feature disabled) does this fall through to the
-    // normal tier/escalation logic below, unchanged.
-    if (!migrationSafety.safe && migrationSafety.collision) {
-      const collisionRetry = await tryDispatchMigrationCollisionRetry({
-        collision: migrationSafety.collision,
-        workerId: openWorker.id,
-        taskId: task.id,
-        prNumber: pr.number,
-        headSha: pr.head.sha,
-        repoFullName,
-        workspaceId: openWorker.workspaceId,
-        installationId,
-      }).catch((err) => {
-        console.error(`[reviewer] migration-collision retry dispatch failed for PR #${pr.number}:`, err);
-        return { handled: false };
-      });
-      if (collisionRetry.handled) return true;
-    }
-
-    // Apply semantic risk-class policy override (detected policyConfig paths)
-    const policyConfig = workspace.gitConfig?.policyConfig ?? null;
-    const policy = applyPolicyConfigToMergePolicy(
-      basePolicy,
-      policyConfig,
-      prFiles.map((f) => f.filename),
-      migrationSafety,
-    );
-
-    if (policy.tier !== 'agent-review' && policy.tier !== 'human') return false;
-
-    // BT-10: Pre-flight escalation guard (also handles human-tier from policyConfig)
-    const preflight = preflightEscalationCheck(prFiles, policy, migrationSafety, policyConfig ?? undefined);
-    const shouldEscalateToHuman = preflight.shouldEscalate || policy.tier === 'human';
-    if (shouldEscalateToHuman) {
-      const reason = preflight.shouldEscalate ? preflight.reason : `workspace policy requires human review`;
-      console.log(`[reviewer] Pre-flight escalation for PR #${pr.number}: ${reason}`);
-      if (task.missionId) {
-        await db.insert(missionNotes).values({
-          missionId: task.missionId,
-          taskId: task.id,
-          authorType: 'system',
-          type: 'reviewer_escalated',
-          title: `PR #${pr.number} escalated to human (pre-flight)`,
-          body: reason,
-          status: 'open',
-        });
-        await notifyMissionPrReady(task.missionId, {
-          title: `PR #${pr.number} requires human review`,
-          prUrl: pr.html_url,
-          prNumber: pr.number,
-          headSha: pr.head.sha,
-          reason: 'auto_merge_blocked',
-          message: `${task.title} — ${reason}`,
-        });
-      }
-      void notifyTeamOf({ workspaceId: workspace.id }, 'needsAttention', {
-        title: `PR #${pr.number} escalated`,
-        message: reason,
-        url: pr.html_url,
-        urlTitle: 'View PR',
-      });
-      await appendPrActivity({
-        installationId,
-        repoFullName,
-        prNumber: pr.number,
-        entry: { kind: 'human_review_required', note: reason },
-        workspaceId: openWorker.workspaceId,
-      });
-      return true; // handled — skip auto-merge
-    }
-
-    if (policy.tier !== 'agent-review') return false;
-
-    const reviewerRole = await resolveReviewerRoleForDispatch(workspace, policy.agentReview?.reviewerRole ?? null, pr.number);
-    if (!reviewerRole) {
-      // No role can run the review. Hold the PR for a human rather than fall
-      // through to auto-merge: the policy asked for a review.
-      await appendPrActivity({
-        installationId,
-        repoFullName,
-        prNumber: pr.number,
-        entry: { kind: 'human_review_required', note: 'the workspace has no role that can run the agent review' },
-        workspaceId: openWorker.workspaceId,
-      });
-      return true;
-    }
-
-    // iteration/maxIterations are stored in task.context JSONB (not columns)
-    const taskCtx = (task.context ?? {}) as Record<string, unknown>;
-    const originalTask = {
-      title: task.title,
-      description: task.description,
-      backend: task.backend,
-      missionId: task.missionId ?? null,
-      pathManifest: conformanceManifest(task),
-      iteration: typeof taskCtx.iteration === 'number' ? taskCtx.iteration : null,
-      maxIterations: typeof taskCtx.maxIterations === 'number' ? taskCtx.maxIterations : null,
-    };
-
-    // Create reviewer task
-    const reviewerTask = await createReviewerTask({
-      workspaceId: openWorker.workspaceId,
-      originalTaskId: task.id,
-      originalTask,
-      worker: { branch: openWorker.branch },
-      prNumber: pr.number,
-      prUrl: pr.html_url,
-      headSha: pr.head.sha,
-      reviewerRole,
-      confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
-      installationId,
-      repoFullName,
-      policyConfig: policyConfig ?? undefined,
-      migrationSafety,
-      // Already fetched above for the policy override and the pre-flight
-      // check — passing it through saves a second identical GitHub call.
-      prFiles,
-      // The webhook payload already carries the body; the reviewer reads it for
-      // its lede only. Passing it saves a GET the context builder would
-      // otherwise make per reviewed PR.
-      prBody: pr.body ?? null,
-      // Same for the base branch the reviewer diffs against.
-      baseRef: pr.base?.ref ?? null,
-    });
-
-    // A deduplicated result is another producer's reviewer: it was dispatched
-    // and announced by whoever created it.
-    if (reviewerTask && !reviewerTask.deduplicated) {
-      // dispatchNewTask needs more than just the id — pass the reviewer task details
-      // we know from the params rather than re-querying the DB.
-      const reviewerTaskFull = {
-        id: reviewerTask.id,
-        title: reviewerTitle(pr.number, task.title),
-        description: null as null,
-        workspaceId: openWorker.workspaceId,
-        missionId: task.missionId ?? null,
-        backend: originalTask.backend,
-        roleSlug: reviewerRole,
-      };
-      await dispatchNewTask(reviewerTaskFull, workspace);
-      console.log(`[reviewer] Dispatched reviewer task ${reviewerTask.id} for PR #${pr.number} on ${repoFullName}`);
-      // Tell the PR (not just the dashboard) that an agent has this.
-      await appendPrActivity({
-        installationId,
-        repoFullName,
-        prNumber: pr.number,
-        entry: { kind: 'reviewing' },
-        workspaceId: openWorker.workspaceId,
-      });
-    }
-
-    return true; // handled — skip auto-merge
-  } catch (err) {
-    console.error(`[reviewer] maybeDispatchReviewer failed for PR #${pr.number}:`, err);
-    return false;
-  }
-}
-
-/**
- * On a push to an already-open PR (`synchronize`), re-dispatch a reviewer
- * when the PR's current review verdict is a TERMINAL, NON-APPROVING one
- * (`changes_requested` / `escalated`) made against a commit the push has now
- * superseded.
- *
- * Closes the gap `maybeDispatchReviewer` leaves: that function only ever
- * fires on `action === 'opened'`, so the fix a retry task pushes after a
- * request-changes verdict was never re-reviewed — the review loop opened and
- * never closed (see review-verdict-gate.ts's module doc for the other half
- * of that bug, the gate's own stale-SHA handling).
- *
- * An `approved` verdict is deliberately NOT re-dispatched here — see
- * review-verdict-gate.ts: a push after an approval makes the gate itself
- * treat that approval as stale (blocking) rather than this function firing a
- * fresh agent review on every push after every approval, which is by far the
- * common case and usually merges before another push ever lands.
- *
- * Single-flight: skips when a review round is already `queued`/`reviewing`
- * for this PR — the same one-reviewer-per-PR-at-a-time rule the manual
- * `POST /api/prs/[prNumber]/re-review` route and the MCP `request_pr_review`
- * force path apply, so a rapid run of pushes dispatches at most one reviewer.
- * `createReviewerTask`'s own (workspace, PR, headSha) dedup guard is a
- * second, independent backstop against a redelivered webhook.
- *
- * The dispatched round inherits the SAME iteration/maxIterations the request-
- * changes retry loop already tracks on whichever task currently owns the PR
- * (the original task, or the newest retry) — so the existing cap in
- * `handleReviewerOutcomeIfNeeded` (apps/web/src/app/api/workers/[id]/route.ts,
- * default 3) keeps capping the round count and escalating on exhaustion; this
- * function does not need a cap of its own.
- */
-async function maybeReDispatchReviewer(
-  installationId: number,
-  repoFullName: string,
-  pr: { number: number; head: { sha: string }; html_url: string; base?: { ref: string }; body?: string | null },
-  openWorker: { id: string; workspaceId: string; taskId: string; branch: string },
-): Promise<void> {
-  try {
-    const status = await readPrReviewStatus({ workspaceId: openWorker.workspaceId, prNumber: pr.number });
-
-    if (status.state === 'queued' || status.state === 'reviewing') {
-      fireGateEvent({
-        gate: GATE_SLUGS.REVIEWER_SINGLE_FLIGHT,
-        surface: 'webhook synchronize',
-        outcome: 'deferred',
-        reason: 'a reviewer is already working this PR',
-        workspaceId: openWorker.workspaceId,
-        taskId: openWorker.taskId,
-        workerId: openWorker.id,
-        callerOrigin: 'system',
-        detail: { prNumber: pr.number, reviewTaskId: status.reviewTaskId },
-      });
-      return;
-    }
-
-    // An approval is not re-reviewed on push. If the push left the PR diff
-    // unchanged (rebase / base merge), record that the approval covers the
-    // new head so the review gate does not treat it as stale; otherwise the
-    // gate blocks it as stale_approval, as before.
-    if (status.state === 'approved') {
-      if (pr.base?.ref) {
-        await carryForwardApprovalIfUnchanged({
-          installationId,
-          repoFullName,
-          workspaceId: openWorker.workspaceId,
-          prNumber: pr.number,
-          baseRef: pr.base.ref,
-          headSha: pr.head.sha,
-          deps: { readStatus: async () => status },
-        });
-      }
-      return;
-    }
-
-    if (status.state !== 'changes_requested' && status.state !== 'escalated') return;
-    const priorVerdictKind = status.verdict;
-    if (priorVerdictKind !== 'request-changes' && priorVerdictKind !== 'escalate') return;
-    // No recorded SHA, or the head hasn't actually moved since the verdict
-    // (a redelivered/duplicate synchronize) — nothing to re-review.
-    const priorHeadSha = status.reviewHeadSha;
-    if (!priorHeadSha || priorHeadSha === pr.head.sha) return;
-
-    const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, openWorker.workspaceId) });
-    if (!workspace) return;
-
-    const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, openWorker.taskId),
-      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
-    });
-    if (!task) return;
-
-    let mission: {
-      mergePolicy?: import('@buildd/shared').MergePolicy | null;
-      requiresReview?: boolean;
-      workingBranch?: string | null;
-      integrationBranchEnabled?: boolean;
-    } | null = null;
-    if (task.missionId) {
-      const row = await db.query.missions.findFirst({
-        where: eq(missions.id, task.missionId),
-        columns: RESOLVE_POLICY_MISSION_COLUMNS,
-      });
-      if (row) mission = row;
-    }
-    const policy = resolvePolicy(workspace, mission, null, { baseRef: pr.base?.ref ?? null });
-    // The PR was already dispatched to a reviewer once under this policy — a
-    // tier change since then (workspace policy edited mid-review) means the
-    // workspace no longer wants an agent re-reviewing it.
-    if (policy.tier !== 'agent-review') return;
-
-    const reviewerRole = await resolveReviewerRoleForDispatch(workspace, policy.agentReview?.reviewerRole ?? null, pr.number);
-    if (!reviewerRole) return;
-
-    const taskCtx = (task.context ?? {}) as Record<string, unknown>;
-    const originalTask = {
-      title: task.title,
-      description: task.description,
-      backend: task.backend,
-      missionId: task.missionId ?? null,
-      pathManifest: conformanceManifest(task),
-      iteration: typeof taskCtx.iteration === 'number' ? taskCtx.iteration : null,
-      maxIterations: typeof taskCtx.maxIterations === 'number' ? taskCtx.maxIterations : null,
-    };
-
-    const reviewerTask = await createReviewerTask({
-      workspaceId: openWorker.workspaceId,
-      originalTaskId: task.id,
-      originalTask,
-      worker: { branch: openWorker.branch },
-      prNumber: pr.number,
-      prUrl: pr.html_url,
-      headSha: pr.head.sha,
-      reviewerRole,
-      confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
-      installationId,
-      repoFullName,
-      policyConfig: workspace.gitConfig?.policyConfig ?? undefined,
-      baseRef: pr.base?.ref ?? null,
-      priorVerdict: {
-        headSha: priorHeadSha,
-        verdict: priorVerdictKind,
-        confidence: status.confidence ?? 0,
-        summary: status.summary ?? '',
-        feedback: status.feedback,
-        escalationReason: status.escalationReason,
-      },
-    });
-
-    if (!reviewerTask || reviewerTask.deduplicated) return;
-
-    const reviewerTaskFull = {
-      id: reviewerTask.id,
-      title: reviewerTitle(pr.number, task.title),
-      description: null as null,
-      workspaceId: openWorker.workspaceId,
-      missionId: task.missionId ?? null,
-      backend: originalTask.backend,
-      roleSlug: reviewerRole,
-    };
-    await dispatchNewTask(reviewerTaskFull, workspace);
-    console.log(`[reviewer] Re-dispatched reviewer task ${reviewerTask.id} for PR #${pr.number} on ${repoFullName} (was ${status.state} at ${priorHeadSha.slice(0, 7)})`);
-    await appendPrActivity({
-      installationId,
-      repoFullName,
-      prNumber: pr.number,
-      // The renderer words this "Re-reviewing · after fix N" from the log.
-      entry: { kind: 'reviewing' },
-      workspaceId: openWorker.workspaceId,
-    });
-  } catch (err) {
-    console.error(`[reviewer] maybeReDispatchReviewer failed for PR #${pr.number}:`, err);
-  }
 }
 
 // For a newly-opened worker PR on a repo with no CI, attempt auto-merge now.
@@ -2369,6 +1482,7 @@ async function handleReleasePrCiSuccess(
         })
         .where(eq(tasks.id, task.id));
       console.log(`[release-pr] Task ${task.id} completed after PR #${prNumber} merged on ${repoFullName}`);
+      await emitHeldReleaseOutcome(task.id, null);
     } else {
       const errMsg = mergeResult.message;
       const releaseResult = {
@@ -2396,6 +1510,7 @@ async function handleReleasePrCiSuccess(
         urlTitle: 'Open PR',
       });
       console.error(`[release-pr] Task ${task.id} FAILED: merge of PR #${prNumber} rejected: ${errMsg}`);
+      await emitHeldReleaseOutcome(task.id, { slot: 'release', label: 'Release merge failed', reason: errMsg });
     }
   }
 }
@@ -2449,6 +1564,7 @@ async function handleReleasePrCiFailure(
         urlTitle: 'Open PR',
       });
       console.error(`[release-pr] Task ${task.id} FAILED: CI failed on release PR #${pr.number}`);
+      await emitHeldReleaseOutcome(task.id, { slot: 'release', label: 'Release CI failed', reason: releaseResult.error });
     }
   }
 }
@@ -2490,6 +1606,21 @@ async function handlePushEvent(event: {
   commits?: Array<{ id?: string; message?: string; added?: string[]; modified?: string[]; removed?: string[] }>;
   head_commit?: { message?: string } | null;
 }): Promise<void> {
+  // A push to the private prompts repo scores the pushed text that changed (lib/prompt-evals/run.ts).
+  // Network + model work, so after(); never fails the webhook.
+  const promptEvalRef = promptEvalRefForPush(event);
+  if (promptEvalRef) {
+    try {
+      after(() =>
+        runPromptEval({ trigger: 'push', ref: promptEvalRef }, promptEvalDeps())
+          .then(out => console.log(`[prompt-evals] push ${promptEvalRef.slice(0, 7)}: ${out.status}`))
+          .catch(err => console.error('[prompt-evals] push eval failed:', err instanceof Error ? err.message : String(err))),
+      );
+    } catch (err) {
+      console.warn('[prompt-evals] after() unavailable; this push is not scored (run POST /api/admin/prompt-evals):', err);
+    }
+  }
+
   const repo = event.repository?.full_name;
   const branch = event.ref?.startsWith('refs/heads/') ? event.ref.slice('refs/heads/'.length) : null;
   if (!repo || !isDefaultBranch(branch, event.repository?.default_branch)) return;
@@ -2564,273 +1695,9 @@ async function handleWorkflowRunEvent(event: {
     }).catch(err => console.error(`[webhook] recordPrReverts failed for run ${run.id}:`, err));
   }
 
-  // Find the task whose releaseResult.runId matches this workflow run.
-  //
-  // This runs for EVERY completed workflow_run — every CI workflow on every
-  // push, not just release runs — so the predicate is on a hot path carrying
-  // the whole repo's CI volume. Two things make it cheap and safe:
-  //
-  //   - Compared as TEXT, not `::bigint`. The cast is evaluated per row while
-  //     scanning, so one task whose release_result->>'runId' is not numeric
-  //     raises 22P02 and every workflow_run delivery 500s — which GitHub then
-  //     retries, amplifying the failure. Text equality cannot throw. runId is
-  //     always written as a JS number, and JSONB renders an integer back
-  //     through ->> as plain digits, so String(run.id) matches exactly.
-  //   - `IS NOT NULL` first. It is semantically free (a NULL release_result
-  //     could never match) and it is what lets the planner use the partial
-  //     index `tasks_release_run_id_idx`, which is indexed
-  //     WHERE release_result IS NOT NULL — a few release-dispatching rows
-  //     instead of the whole tasks table.
-  const matchingTask = await db
-    .select({
-      id: tasks.id,
-      releaseResult: tasks.releaseResult,
-      missionId: tasks.missionId,
-      workspaceId: tasks.workspaceId,
-    })
-    .from(tasks)
-    .where(
-      sql`${tasks.releaseResult} IS NOT NULL AND ${tasks.releaseResult}->>'runId' = ${String(run.id)}`,
-    )
-    .limit(1)
-    .then((rows) => rows[0] ?? null);
-
-  // Advance the releases row state — runs for ALL workflow_run events regardless
-  // of whether a task carries this runId (the two lookups are independent).
-  await advanceReleaseStateFromWorkflowRun(run, event.installation?.id);
-
-  if (!matchingTask) return;
-
-  const previous = (matchingTask.releaseResult ?? { status: 'pending_ci', message: '' }) as ReleaseResult;
-  const updatedResult = buildWorkflowRunOutcome(previous, run);
-  const succeeded = updatedResult.status === 'completed';
-
-  await db
-    .update(tasks)
-    .set({ releaseResult: updatedResult, updatedAt: new Date() })
-    .where(eq(tasks.id, matchingTask.id));
-
-  console.log(
-    `[webhook:workflow_run] Task ${matchingTask.id} release ${updatedResult.status} — run ${run.id} (${run.name}) on ${run.repository.full_name}`,
-  );
-
-  if (!succeeded) {
-    void notifyTeamOf({ taskId: matchingTask.id }, 'needsAttention', {
-      title: `Release workflow failed — ${run.name}`,
-      message: `Conclusion: ${run.conclusion ?? 'unknown'}. Prod has NOT shipped. Check the run for details.`,
-      url: run.html_url,
-      urlTitle: 'View workflow run',
-      priority: 1,
-    });
-  }
-}
-
-// Re-fetch a workflow run directly from the GitHub API, returning its current
-// conclusion (or undefined if the fetch itself fails — distinct from `null`,
-// which means the run genuinely has no conclusion yet). Used to arbitrate a
-// second, contradictory `workflow_run.completed` delivery for a run whose
-// first delivery already resolved the release row — see the call site.
-async function fetchLiveWorkflowRunConclusion(
-  installationId: number | undefined,
-  repoFullName: string,
-  runId: number,
-): Promise<string | null | undefined> {
-  if (!installationId) return undefined;
-  try {
-    const data = await githubApi(installationId, `/repos/${repoFullName}/actions/runs/${runId}`);
-    return (data?.conclusion ?? null) as string | null;
-  } catch (err) {
-    console.error(`[webhook:workflow_run] live refetch failed for run ${runId}:`, err);
-    return undefined;
-  }
-}
-
-/**
- * When a workflow_run completes, find the releases row tracking that run and
- * advance its state:
- *   conclusion=success → 'deploying'  (workflow passed; deploy underway), or
- *                        'pending_external' for a gated release
- *   any other terminal conclusion → 'failed'
- *
- * The row is matched by run_url = html_url first. Only when no row carries this
- * url does the head-sha fallback run, and it matches only when ALL hold:
- *   - the row has no run url yet (a row that recorded its run is owned by it);
- *   - the run is a `workflow_dispatch` of the workspace's configured
- *     `releaseConfig.workflowFile`;
- *   - the run's repository is the workspace's linked repo.
- * Every other run on the same sha (CI Auto-Fix, Sync-dev, Build & Test) is a
- * no-op here whatever its conclusion — see isConfiguredReleaseRun.
- *
- * Emits a Pusher event so the UI refreshes in realtime.
- */
-async function advanceReleaseStateFromWorkflowRun(
-  run: {
-    id: number;
-    name: string;
-    conclusion: string | null;
-    html_url: string;
-    head_sha: string;
-    event?: string;
-    path?: string;
-    repository: { full_name: string };
-  },
-  installationId?: number,
-): Promise<void> {
-  const newState = mapWorkflowConclusionToReleaseState(run.conclusion);
-  if (!newState) return;
-
-  // Resolve the row by run URL first, then by the commit the run was for.
-  //
-  // The URL alone was a single point of failure. `dispatchWorkflowRelease`
-  // polls for at most ~15s and, when the run has not surfaced yet, returns no
-  // `runUrl` at all — the column stays NULL and no later event can ever match
-  // it. It could also record the WRONG url: before the stale-readback fix
-  // (3cb9ea16) the readback could return a run from weeks earlier, whose
-  // workflow_run event had long since fired. Both cases leave a row stranded
-  // in `dispatched` forever, blocking any further non-forced release of that
-  // commit. The head sha is the durable identity — for a workflow_dispatch
-  // release it is exactly the ref head the row recorded — so fall back to it
-  // and backfill the url we should have had.
-  //
-  // But the sha is shared by every workflow that ran on that commit. Before
-  // the fallback was restricted, a CI Auto-Fix run's `skipped` on the release
-  // sha stamped a shipped release `failed`, and the real Release success that
-  // arrived later was dropped by the terminal-state guard below. So the
-  // fallback only ever considers rows with no url, and only accepts the
-  // workspace's own configured release workflow (checked after the lookup,
-  // since the workflow file lives on the workspace).
-  const byUrl = await db
-    .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl, archetype: releases.archetype })
-    .from(releases)
-    .where(eq(releases.runUrl, run.html_url))
-    .limit(1);
-
-  let matchingRelease = byUrl[0];
-  if (!matchingRelease) {
-    // Cheap pre-filter on the hot path: every CI run in every linked repo
-    // lands here, and none but a workflow_dispatch can be a release.
-    if (run.event !== 'workflow_dispatch') return;
-
-    const [candidate] = await db
-      .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl, archetype: releases.archetype })
-      .from(releases)
-      .where(
-        and(
-          eq(releases.headSha, run.head_sha),
-          isNull(releases.runUrl),
-          inArray(releases.state, ['dispatched', 'deploying', 'pending_external']),
-        ),
-      )
-      .orderBy(desc(releases.createdAt))
-      .limit(1);
-    if (!candidate || candidate.runUrl) return;
-
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, candidate.workspaceId),
-      columns: { id: true, releaseConfig: true },
-      with: { githubRepo: { columns: { fullName: true } } },
-    });
-    const isRelease = isConfiguredReleaseRun(run, {
-      workflowFile: ws?.releaseConfig?.workflowFile,
-      repoFullName: (ws as { githubRepo?: { fullName?: string } | null } | undefined)?.githubRepo?.fullName,
-    });
-    if (!isRelease) {
-      console.log(
-        `[webhook:workflow_run] run ${run.id} (${run.name}) shares release ${candidate.id}'s sha but is not its ` +
-          `configured release workflow — ignoring conclusion=${run.conclusion}`,
-      );
-      return;
-    }
-    matchingRelease = candidate;
-  }
-
-  // Don't regress from a terminal state.
-  if (matchingRelease.state === 'healthy' || matchingRelease.state === 'failed') return;
-
-  // A successful workflow_dispatch run for a `gated` release has only opened
-  // the release PR (dev → prodBranch) — nothing has actually deployed yet.
-  // Treating it as 'deploying' let `verifyReleaseDeployment` probe the
-  // PREVIOUS deploy (still live), stamp the release 'healthy' minutes after
-  // dispatch — before the release PR was even reviewed — and get caught out
-  // later by the separate deploy-identity check degrading it. The real
-  // deploy signal for a gated release is the release PR itself merging into
-  // prodBranch (see advanceGatedReleaseOnPrMerge in release-executor.ts,
-  // called from the `pull_request` handler below), which is what advances
-  // this row to 'deploying' instead.
-  //
-  // Until then the row moves to 'pending_external', not 'dispatched': the
-  // 24h stale-`dispatched` sweep in the release-health-check cron exists for
-  // "no workflow_run ever arrived, dispatch outcome unknown" — no longer true
-  // once dispatch has succeeded. `pending_external` already means "known
-  // in-flight, waiting on something outside buildd's control" everywhere else
-  // it's read, which is exactly this.
-  const isGatedDispatchSuccess = newState === 'deploying' && matchingRelease.archetype === 'gated';
-
-  // A gated row already in `deploying` got there from its release PR merging
-  // (advanceGatedReleaseOnPrMerge) — a gated dispatch success only ever moves
-  // a row to `pending_external`. Any dispatch-run conclusion arriving after
-  // that — a late or redelivered event, success or not — describes the run
-  // that opened the PR, not the release that shipped. A success would move it
-  // back to waiting on a merge that already happened; a failure would stamp a
-  // shipped release `failed`. Verification owns the row from here.
-  if (matchingRelease.archetype === 'gated' && matchingRelease.state === 'deploying') {
-    console.log(
-      `[webhook:workflow_run] Ignoring conclusion=${run.conclusion} for gated release ${matchingRelease.id} — ` +
-        `its release PR already merged`,
-    );
-    return;
-  }
-
-  // GitHub can deliver two `workflow_run.completed` events for the identical
-  // run with different reported conclusions — observed for a release job that
-  // calls out to a reusable workflow via `uses:`, where the outer run's
-  // completed event fires once per inner conclusion before it settles. A run
-  // that's actually done doesn't change conclusion, so if this row already
-  // advanced from a prior success delivery for this exact run (matched by run
-  // URL, not the head-sha fallback) — to 'deploying', or to 'pending_external'
-  // for a gated release — a second delivery that disagrees is the same known
-  // inconsistency, not new information. Re-fetch the run live and trust that
-  // over the webhook payload — mirrors the reconciliation pattern in
-  // pr-reconcile.ts for PR state — rather than regressing an already-resolved
-  // release to failed on a stale signal.
-  if (
-    (matchingRelease.state === 'deploying' || matchingRelease.state === 'pending_external') &&
-    newState !== 'deploying' &&
-    byUrl[0]
-  ) {
-    const liveConclusion = await fetchLiveWorkflowRunConclusion(installationId, run.repository.full_name, run.id);
-    if (liveConclusion !== 'failure') {
-      console.log(
-        `[webhook:workflow_run] Ignoring conflicting conclusion=${run.conclusion} for release ${matchingRelease.id} — ` +
-          `run ${run.id} already resolved success (live check: ${liveConclusion ?? 'unavailable'})`,
-      );
-      return;
-    }
-  }
-
-  const resolvedState = isGatedDispatchSuccess ? 'pending_external' : newState;
-  const updateFields: Record<string, unknown> = { state: resolvedState };
-  if (!matchingRelease.runUrl) updateFields.runUrl = run.html_url;
-  if (resolvedState === 'deploying') {
-    updateFields.deployedAt = new Date();
-  } else if (resolvedState === 'failed') {
-    updateFields.failureReason = `workflow conclusion: ${run.conclusion}`;
-  }
-
-  await db.update(releases).set(updateFields).where(eq(releases.id, matchingRelease.id));
-
-  console.log(
-    `[webhook:workflow_run] Release ${matchingRelease.id} → ${resolvedState} (run ${run.id} on ${run.repository.full_name})`,
-  );
-
-  await triggerEvent(channels.workspace(matchingRelease.workspaceId), events.RELEASE_UPDATED, {
-    releaseId: matchingRelease.id,
-    state: resolvedState,
-  });
-
-  if (resolvedState === 'deploying') {
-    setTimeout(() => verifyReleaseDeployment(matchingRelease.id, db).catch(console.error), 0);
-  }
+  // Read the run back into its release row and the task that dispatched it:
+  // the releases module's business.
+  await emit({ type: 'workflow_run.completed', run, installationId: event.installation?.id ?? null });
 }
 
 // Work-tracker helper: if the PR belongs to a task with externalIssueId set and the
@@ -2867,61 +1734,6 @@ async function maybePostWorkTrackerIssueUpdate(
 }
 
 
-/**
- * A human (or an outside bot) reviewed a PR in GitHub's own UI.
- *
- * Until this existed, that produced no state in buildd at all: the event was not
- * in the switch, so approval was only ever observable through the reviewer
- * task's own completion PATCH. A maintainer clicking Approve left the mission
- * feed showing nothing, and "who cleared this?" had no answer.
- *
- * Deliberately record-only. It writes the reviewer note types the schema already
- * carries and changes NO merge behaviour: it does not satisfy the `agent-review`
- * gate, does not trigger auto-merge, and does not complete a task. Whether a
- * human approval in GitHub should clear buildd's review gate is a policy
- * question (see docs/design/mission-delivery-arc.md — the merge-policy tier
- * placement crux), and answering it by side effect here would be a silent
- * change to when things merge. So the default is a no-op on merging.
- */
-/**
- * Persist one piece of review feedback for later retrieval.
- *
- * Deliberately separate from the `mission_notes` write below, which is a
- * timeline entry and stays exactly as it was. This row exists so the next agent
- * about to edit a file can be shown what a reviewer already said about it — see
- * the `reviewFeedback` table comment.
- *
- * Two properties this has to hold:
- *
- *  - **Idempotent on GitHub's id.** The webhook both drops and redelivers
- *    events, so `onConflictDoNothing` against the unique `github_id` is the
- *    dedupe, not an insert-time check.
- *  - **Never throws into the webhook.** A failure here must not cost us the
- *    retry and merge handling that runs alongside it.
- *
- * Row construction lives in `@/lib/review-feedback` so it is testable without
- * stubbing the database.
- */
-async function captureReviewFeedback(
-  row: ReviewFeedbackRow | null,
-  owner: PrOwner,
-  pr: { repoFullName: string; prNumber: number },
-): Promise<void> {
-  if (!row) return;
-  if (!owner?.workspaceId) return;
-
-  try {
-    await db.insert(reviewFeedback).values({
-      ...withOwner(row, owner),
-      workspaceId: owner.workspaceId,
-      repoFullName: pr.repoFullName,
-      prNumber: pr.prNumber,
-    }).onConflictDoNothing();
-  } catch (err) {
-    console.warn('[webhook] review feedback capture failed (non-fatal):', err);
-  }
-}
-
 /** Resolve the worker that owns a PR, plus the workspace the row needs. */
 async function resolvePrOwner(repoFullName: string, prNumber: number) {
   return db.query.workers.findFirst({
@@ -2931,99 +1743,42 @@ async function resolvePrOwner(repoFullName: string, prNumber: number) {
   });
 }
 
+/** The owner fact a review event carries. */
+function ownerFact(w: Awaited<ReturnType<typeof resolvePrOwner>>): PrOwnerFact | null {
+  if (!w) return null;
+  return { workerId: w.id, taskId: w.taskId ?? null, workspaceId: w.workspaceId ?? null, missionId: w.task?.missionId ?? null };
+}
+
 /**
- * Inline review comments — `pull_request_review_comment`.
- *
- * These are the highest-value feedback the system sees and were previously
- * discarded entirely: unlike a top-level review they carry `path`, `line`, and
- * `diff_hunk` from GitHub, which is exactly what makes an objection retrievable
- * by the file it concerns.
+ * Inline review comments — `pull_request_review_comment`. Only `created`:
+ * an edit or delete mutates a comment already captured. The reviews module
+ * captures it for retrieval by the file it concerns.
  */
 async function handlePullRequestReviewCommentEvent(event: any): Promise<void> {
-  const action = event?.action as string | undefined;
   const comment = event?.comment;
   const pr = event?.pull_request;
   const repository = event?.repository;
-
-  // 'edited' and 'deleted' mutate a comment already captured. Re-capturing an
-  // edit would need a different conflict policy than dedupe, so it is out of
-  // scope rather than silently half-handled.
-  if (action !== 'created') return;
+  if (event?.action !== 'created') return;
   if (!comment || !pr?.number || !repository?.full_name) return;
 
   const owner = await resolvePrOwner(repository.full_name, pr.number);
   if (!owner?.workspaceId) return;
-
-  await captureReviewFeedback(
-    commentRowFromEvent(comment),
-    owner,
-    { repoFullName: repository.full_name, prNumber: pr.number },
-  );
-
-  console.log(
-    `[webhook] review comment captured: PR #${pr.number} ${comment.path ?? '(no path)'}`,
-  );
+  await emit({ type: 'pr.review_comment_created', repoFullName: repository.full_name, prNumber: pr.number, comment, owner: ownerFact(owner) });
 }
 
+/**
+ * `pull_request_review`, `submitted` only: the action that carries a verdict.
+ * The reviews module captures the text and records a person's verdict on a
+ * mission PR. Neither merges, completes a task, nor clears buildd's review
+ * gate: whether a GitHub approval should is a policy question.
+ */
 async function handlePullRequestReviewEvent(event: any): Promise<void> {
-  const action = event?.action as string | undefined;
   const review = event?.review;
   const pr = event?.pull_request;
   const repository = event?.repository;
-
-  // 'submitted' is the only action that carries a verdict; 'edited' and
-  // 'dismissed' change a review that was already recorded.
-  if (action !== 'submitted') return;
+  if (event?.action !== 'submitted') return;
   if (!review || !pr?.number || !repository?.full_name) return;
 
-  // GitHub sends 'approved' | 'changes_requested' | 'commented'. A bare comment
-  // is not a verdict — recording it would turn every drive-by remark into a
-  // decision row.
-  const state = String(review.state ?? '').toLowerCase();
-  const noteType =
-    state === 'approved' ? 'reviewer_approved' as const
-    : state === 'changes_requested' ? 'reviewer_request_changes' as const
-    : null;
-
-  const worker = await resolvePrOwner(repository.full_name, pr.number);
-
-  // Capture runs BEFORE both gates below, and that ordering is the point.
-  //
-  // The verdict gate is right for the timeline — a drive-by `commented` review
-  // is not a decision — but a reviewer explaining a problem without formally
-  // requesting changes is exactly the engineering content we want retrievable.
-  // The mission gate is right for the timeline too, and was silently discarding
-  // review text for the majority of PR-owning workers (measured at well over
-  // half). Retrieval has no reason to care about either distinction.
-  await captureReviewFeedback(
-    reviewRowFromEvent(review),
-    worker,
-    { repoFullName: repository.full_name, prNumber: pr.number },
-  );
-
-  if (!noteType) return;
-
-  const reviewer = typeof review.user?.login === 'string' ? review.user.login : 'a reviewer';
-  const verdict = noteType === 'reviewer_approved' ? 'approved' : 'requested changes';
-  const body = String(review.body ?? '').trim();
-
-  const missionId = worker?.task?.missionId;
-  if (!missionId) return;
-
-  await db.insert(missionNotes).values({
-    missionId,
-    taskId: worker?.taskId ?? null,
-    workerId: worker?.id ?? null,
-    // 'user' — a person acting on the PR in GitHub, not a worker inside a task.
-    authorType: 'user',
-    type: noteType,
-    title: `PR #${pr.number} ${verdict} on GitHub`,
-    body: body.length > 0 ? body : null,
-    actorLabel: `${reviewer} (GitHub review)`,
-  });
-
-  console.log(
-    `[webhook] pull_request_review: ${reviewer} ${verdict} PR #${pr.number} ` +
-    `(mission ${missionId}) — recorded, merge behaviour unchanged`,
-  );
+  const owner = await resolvePrOwner(repository.full_name, pr.number);
+  await emit({ type: 'pr.review_submitted', repoFullName: repository.full_name, prNumber: pr.number, review, owner: ownerFact(owner) });
 }

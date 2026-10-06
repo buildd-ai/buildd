@@ -1,5 +1,5 @@
 /**
- * Individual memory operations — proxies to memory service.
+ * Individual memory operations on the team memory pool (the memories table).
  *
  * PATCH  /api/workspaces/:id/memory/:memoryId  → update a memory, or, with
  *        `{ action: 'promote' | 'dismiss' | 'reverified' }`, apply a review
@@ -11,7 +11,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, canCallerAdminTeam } from '@/lib/team-access';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, holdsInWorkspace } from '@/lib/team-access';
 import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
 import { updateMemory, transitionMemory } from '@buildd/core/memory-write';
 import { isMemoryReviewAction } from '@buildd/core/memory-candidates';
@@ -19,6 +19,7 @@ import { buildNamespace } from '@buildd/core/knowledge-store';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { normalizeProject } from '@buildd/core/project-scope';
 import type { MemoryStore } from '@buildd/core/memory-store';
+import { can } from '@/lib/permissions';
 
 const REVIEW_VERB = { promote: 'promoted', dismiss: 'dismissed', reverified: 'marked re-verified' } as const;
 
@@ -75,9 +76,9 @@ async function verifyAccess(auth: NonNullable<Awaited<ReturnType<typeof authenti
  */
 async function isTeamAdmin(auth: NonNullable<Awaited<ReturnType<typeof authenticateRequest>>>, workspaceId: string, teamId: string): Promise<boolean> {
   if (auth.type === 'session') {
-    return !!(await verifyWorkspaceAccess(auth.user.id, workspaceId, 'admin'));
+    return holdsInWorkspace(auth.user.id, workspaceId, 'review_memory');
   } else if (auth.type === 'api') {
-    return canCallerAdminTeam({ kind: 'account', accountId: auth.account.id, teamId: auth.account.teamId, level: auth.account.scopes?.some(scope => scope === 'admin' || scope === 'knowledge:admin') ? 'admin' : auth.account.level }, teamId);
+    return can({ kind: 'account', accountId: auth.account.id, teamId: auth.account.teamId, level: auth.account.scopes?.some(scope => scope === 'admin' || scope === 'knowledge:admin') ? 'admin' : auth.account.level }, 'review_memory', teamId);
   }
   return true; // dev mode
 }
@@ -124,7 +125,7 @@ export async function PATCH(
       }
       return NextResponse.json({ memory: data.memory, supersededIds: data.supersededIds });
     } catch (err) {
-      console.error('Memory service error:', err);
+      console.error('Memory route error:', err);
       return NextResponse.json({ error: 'Failed to update memory' }, { status: 500 });
     }
   }
@@ -145,7 +146,7 @@ export async function PATCH(
     }, { teamId: memClient.teamId, knowledgeStore: getMemoryIndexStore(), via: 'dashboard:update' });
     return NextResponse.json({ memory: data.memory, observation: data.memory });
   } catch (err) {
-    console.error('Memory service error:', err);
+    console.error('Memory route error:', err);
     return NextResponse.json({ error: 'Failed to update memory' }, { status: 500 });
   }
 }
@@ -178,7 +179,7 @@ export async function DELETE(
     );
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error('Memory service error:', err);
+    console.error('Memory route error:', err);
     return NextResponse.json({ error: 'Failed to delete memory' }, { status: 500 });
   }
 }

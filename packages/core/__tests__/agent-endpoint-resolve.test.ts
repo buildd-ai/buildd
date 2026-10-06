@@ -17,14 +17,20 @@ mock.module('../db', () => ({ db: { query: { secrets: { findMany: async () => ro
 mock.module('../secrets', () => ({ decrypt: (v: string) => v }));
 mock.module('../inference-keys', () => ({ loadInferenceKeyPolicy: async () => policy }));
 
-const { resolveAgentEndpoint, resolveAgentModelRoute, endpointWinsRanking } = await import('../agent-endpoint');
+const { resolveAgentEndpoint, resolveAgentModelRoute, endpointWinsRanking, hasOpenAiCompatibleAgentEndpoint } = await import('../agent-endpoint');
 
 const WS = 'ws-1';
 const ACC = 'acc-1';
 const custom = (baseUrl: string, apiKey: string) => JSON.stringify({ kind: 'anthropic-compatible', baseUrl, apiKey, authHeader: 'authorization' });
+const openRouter = (apiKey: string) => JSON.stringify({ kind: 'openrouter', apiKey, authHeader: 'authorization' });
 const endpointRow = (o: Partial<Row> & { id: string }): Row => ({
   purpose: 'agent_endpoint', workspaceId: null, accountId: null, userId: null, healthStatus: 'unknown',
   updatedAt: new Date('2026-01-01'), encryptedValue: custom('https://litellm.example.com', `key-${o.id}`), ...o,
+});
+/** An endpoint with an OpenAI-compatible route (openrouter kind), for Codex. */
+const openAiEndpointRow = (o: Partial<Row> & { id: string }): Row => ({
+  purpose: 'agent_endpoint', workspaceId: null, accountId: null, userId: null, healthStatus: 'unknown',
+  updatedAt: new Date('2026-01-01'), encryptedValue: openRouter(`key-${o.id}`), ...o,
 });
 const cred = (purpose: string, o: Partial<Row> = {}): Row => ({
   id: `${purpose}-${o.workspaceId ?? o.accountId ?? 'team'}`, purpose, workspaceId: null, accountId: null, healthStatus: 'healthy',
@@ -139,5 +145,115 @@ describe('resolveAgentModelRoute (§2 cases)', () => {
       cred('claude_credential', { workspaceId: WS, tokenExpiresAt: null }),
     ];
     expect((await route())?.winner).toBe('endpoint');
+  });
+});
+
+describe('resolveAgentModelRoute: backend: "codex" ranks against the Codex-side credentials', () => {
+  const route = (backend: 'claude' | 'codex' = 'codex') => resolveAgentModelRoute({ teamId: 't', workspaceId: WS, accountId: ACC, backend });
+
+  it('an Anthropic-side credential never competes for a Codex task', async () => {
+    rows = [endpointRow({ id: 'team' }), cred('anthropic_api_key', { workspaceId: WS }), cred('oauth_token', { workspaceId: WS }), cred('claude_credential', { workspaceId: WS })];
+    expect((await route('codex'))?.winner).toBe('endpoint');
+  });
+
+  it('team endpoint + team-wide openai_api_key or codex_credential ⇒ endpoint (tie)', async () => {
+    for (const p of ['openai_api_key', 'codex_credential']) {
+      rows = [endpointRow({ id: 'team' }), cred(p)];
+      expect((await route())?.winner).toBe('endpoint');
+    }
+  });
+
+  it('team endpoint + a workspace-scoped openai_api_key/codex_credential ⇒ that workspace stays on it', async () => {
+    for (const p of ['openai_api_key', 'codex_credential']) {
+      rows = [endpointRow({ id: 'team' }), cred(p, { workspaceId: WS })];
+      const d = await route();
+      expect(d?.winner).toBe('anthropic');
+      expect(d?.winner === 'anthropic' && d.beatenBy).toBe('workspace');
+    }
+  });
+
+  it('the same rows rank differently by backend: a workspace anthropic_api_key does not block Codex, and vice versa', async () => {
+    rows = [endpointRow({ id: 'team' }), cred('anthropic_api_key', { workspaceId: WS })];
+    expect((await route('codex'))?.winner).toBe('endpoint');
+    expect((await route('claude'))?.winner).toBe('anthropic');
+
+    rows = [endpointRow({ id: 'team' }), cred('openai_api_key', { workspaceId: WS })];
+    expect((await route('codex'))?.winner).toBe('anthropic');
+    expect((await route('claude'))?.winner).toBe('endpoint');
+  });
+
+  it('defaults to the Claude purposes when backend is omitted', async () => {
+    rows = [endpointRow({ id: 'team' }), cred('anthropic_api_key', { workspaceId: WS })];
+    expect((await resolveAgentModelRoute({ teamId: 't', workspaceId: WS, accountId: ACC }))?.winner).toBe('anthropic');
+  });
+});
+
+describe('hasOpenAiCompatibleAgentEndpoint', () => {
+  it('false with no endpoint row', async () => {
+    rows = [];
+    expect(await hasOpenAiCompatibleAgentEndpoint({ teamId: 't', workspaceId: WS })).toBe(false);
+  });
+
+  it('false for an anthropic-compatible-only endpoint', async () => {
+    rows = [endpointRow({ id: 'team' })];
+    expect(await hasOpenAiCompatibleAgentEndpoint({ teamId: 't', workspaceId: WS })).toBe(false);
+  });
+
+  it('true for an openrouter endpoint (has an OpenAI-compatible route)', async () => {
+    rows = [openAiEndpointRow({ id: 'team' })];
+    expect(await hasOpenAiCompatibleAgentEndpoint({ teamId: 't', workspaceId: WS })).toBe(true);
+  });
+});
+
+describe('appliesTo: a team endpoint narrowed to a list of workspaces', () => {
+  const WS2 = 'ws-2';
+  const listed = (appliesTo: string[], kind: 'custom' | 'openrouter' = 'custom') => {
+    const base = kind === 'custom'
+      ? { kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', apiKey: 'key-team', authHeader: 'authorization' }
+      : { kind: 'openrouter', apiKey: 'key-team', authHeader: 'authorization' };
+    return JSON.stringify({ ...base, appliesTo });
+  };
+
+  it('absent = all workspaces (unchanged behaviour)', async () => {
+    rows = [endpointRow({ id: 'team' })];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.secretId).toBe('team');
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS2 }))?.secretId).toBe('team');
+  });
+
+  it('a listed workspace resolves the team row', async () => {
+    rows = [endpointRow({ id: 'team', encryptedValue: listed([WS, 'ws-3']) })];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toMatchObject({ secretId: 'team', scope: 'team' });
+  });
+
+  it('an unlisted workspace gets nothing, and a call with no workspace gets nothing', async () => {
+    rows = [endpointRow({ id: 'team', encryptedValue: listed([WS]) })];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS2 })).toBeNull();
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: null })).toBeNull();
+  });
+
+  it('a workspace row beats a team row that lists the workspace, and works for an unlisted one', async () => {
+    rows = [endpointRow({ id: 'team', encryptedValue: listed([WS]) }), endpointRow({ id: 'ws', workspaceId: WS })];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.secretId).toBe('ws');
+    rows = [endpointRow({ id: 'team', encryptedValue: listed([WS]) }), endpointRow({ id: 'ws2', workspaceId: WS2 })];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS2 }))?.secretId).toBe('ws2');
+  });
+
+  it('appliesTo on a workspace row is ignored: the row is that workspace\'s own', async () => {
+    rows = [endpointRow({ id: 'ws', workspaceId: WS, encryptedValue: listed([WS2]) })];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.secretId).toBe('ws');
+  });
+
+  it('resolveAgentModelRoute honours it for both backends', async () => {
+    rows = [endpointRow({ id: 'team', encryptedValue: listed([WS], 'openrouter') })];
+    for (const backend of ['claude', 'codex'] as const) {
+      expect((await resolveAgentModelRoute({ teamId: 't', workspaceId: WS, accountId: ACC, backend }))?.winner).toBe('endpoint');
+      expect(await resolveAgentModelRoute({ teamId: 't', workspaceId: WS2, accountId: ACC, backend })).toBeNull();
+    }
+  });
+
+  it('hasOpenAiCompatibleAgentEndpoint honours it', async () => {
+    rows = [endpointRow({ id: 'team', encryptedValue: listed([WS], 'openrouter') })];
+    expect(await hasOpenAiCompatibleAgentEndpoint({ teamId: 't', workspaceId: WS })).toBe(true);
+    expect(await hasOpenAiCompatibleAgentEndpoint({ teamId: 't', workspaceId: WS2 })).toBe(false);
   });
 });

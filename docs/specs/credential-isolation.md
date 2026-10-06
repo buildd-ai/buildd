@@ -2,7 +2,8 @@
 title: Credential Isolation & MCP Injection Security Model
 status: active
 owner: builder
-last_verified: 2026-07-21
+last_verified: 2026-10-05
+verified_by: [apps/runner/__tests__/unit/runner-key-agent-exposure.test.ts, apps/runner/__tests__/unit/backends/codex-backend.test.ts, apps/runner/__tests__/unit/read-jail.test.ts, apps/runner/__tests__/unit/mcp-json-expansion.test.ts, apps/runner/__tests__/unit/capability-scope.test.ts, apps/runner/__tests__/unit/permissions.test.ts, apps/runner/__tests__/unit/mcp-preflight.test.ts, apps/runner/__tests__/unit/agent-github-credentials.test.ts]
 summary: The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
 domain: auth
 surfaces: [apps/runner/src/workers.ts, apps/runner/src/mcp-preflight.ts, apps/runner/src/hook-factory.ts, packages/core/redaction.ts]
@@ -21,6 +22,13 @@ assertions:
   - id: "mcp-preflight-tests"
     type: "test_file"
     path: "apps/runner/__tests__/unit/mcp-preflight.test.ts"
+  - id: "scoped-github-session"
+    type: "symbol"
+    name: "startScopedGitHubSession"
+    path: "apps/runner/src/agent-github-credentials.ts"
+  - id: "scoped-github-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/agent-github-credentials.test.ts"
   - id: "worker-runs-preflight"
     type: "symbol_reachable"
     symbol: "runMcpPreflight"
@@ -196,12 +204,15 @@ NOT be reachable from the agent's tool context.
 explicit allowlist of safe-to-expose keys (LLM provider vars like
 `ANTHROPIC_API_KEY`, standard system vars, task-routing vars). `BUILDD_API_KEY`,
 `mcpSecrets`, and arbitrary runner secrets are excluded. MCP header expansion
-uses a separate `headerExpansionEnv` (credentials baked in, never passed to the
-agent; the agent sees only the already-authenticated MCP connection).
+uses a separate `headerExpansionEnv`, which is never the agent's env. What it
+resolves is agent-visible, though: resolved headers reach the Claude CLI
+process, and Codex bearer tokens go into the agent env. So `headerExpansionEnv`
+does not carry the runner key either (see `${BUILDD_API_KEY}` below).
 
-*Layer 2 — `BUILDD_MCP_BEARER_TOKEN` injection*: The Buildd MCP bearer token is
-injected only where needed (Claude SDK `mcpServers.buildd` config and Codex
-`config.toml`), not into `cleanEnv`.
+*Layer 2 — the agent's own buildd credential*: the agent's buildd MCP server
+(Claude `mcpServers.buildd`, Codex `BUILDD_MCP_BEARER_TOKEN`) carries a
+per-task token minted for the session (`apps/runner/src/agent-task-token.ts`).
+Orchestration sessions, and a session whose mint failed, carry the runner key.
 
 *Layer 3 — Filesystem read blocking*: `PreToolUse` hook blocks the `Read` tool
 on paths matching `SENSITIVE_READ_PATHS` (`~/.buildd/config.json`,
@@ -214,13 +225,45 @@ on paths matching `SENSITIVE_READ_PATHS` (`~/.buildd/config.json`,
   `cleanEnv.BUILDD_API_KEY` is a bug.
 - `mcpSecrets` values MUST be resolved into MCP server headers before the SDK
   starts and MUST NOT persist in `cleanEnv` afterward.
+- `headerExpansionEnv` MUST NOT contain the runner key. `${BUILDD_API_KEY}` is a
+  reserved reference in a `.mcp.json`, and the same rules apply on both
+  backends:
+  - On a server whose URL origin is the runner's buildd server origin, it
+    expands to the agent's buildd credential, the same one its `buildd` entry
+    carries.
+  - A server on any other host that references it is not mounted. The runner
+    logs one warning naming the server and host, never a value.
+  - It is never expanded inside a URL.
+  - The `buildd` server name stays reserved, so a role's `buildd` entry is
+    always replaced by the runner's own.
+- The Codex CLI MUST be spawned with exactly the task env (`cleanEnv` plus its
+  `CODEX_HOME`), never the runner's process env.
+- Role env (file-based mapping or claim-delivered `roleEnvSecrets`) MUST NOT
+  resolve to the runner key's value. Such an entry is dropped and the runner
+  warns with the variable's name.
+- The read jail refuses the agent's file tools under `~/.buildd/` and on
+  `~/.claude.json`. Whenever the runner writes a buildd MCP entry into
+  `~/.claude.json` (`buildd login`, `buildd install --global`), it leaves the
+  file mode 0600.
+- The runner's `buildd` entry shadows a same-named entry in the operator's
+  `~/.claude.json`. The agent session loads the operator's other user-scope MCP
+  servers.
+- Assertion-mode connectors are minted with the runner key inside the runner
+  process. The agent's entry carries only the exchanged access token.
+- Limit: on a self-hosted runner, the agent runs as the same OS user as the
+  runner. Without OS-level isolation, the runner's own files stay readable to
+  that user outside the file tools. On Linux, the bwrap mount allowlist
+  (`BUILDD_SANDBOX_MOUNT_ALLOWLIST=1`, Claude sessions) binds neither
+  `~/.buildd/` nor `~/.claude.json` into the agent's namespace. Hosted and
+  container runners never give the agent's machine the runner key.
 - `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and standard shell vars (`PATH`, `HOME`,
   etc.) are intentionally in the passthrough list — these are the agent's own
   LLM credentials, not runner coordination secrets.
 - Known gap (Codex only): `BUILDD_MCP_BEARER_TOKEN` and `MCP_BEARER_<NAME>` must
   exist in the Codex subprocess env because the Codex CLI reads bearer tokens from
-  env for config.toml auth. This is tracked as a follow-up requiring a Codex CLI
-  auth model change.
+  env for config.toml auth. Neither holds the runner key except where the agent's
+  buildd credential itself is the runner key (orchestration sessions, failed
+  mint). Removing them from the env needs a Codex CLI auth model change.
 
 **Acceptance criteria**:
 - AC-1: GIVEN a Claude worker WHEN the agent subprocess starts THEN `BUILDD_API_KEY`
@@ -238,6 +281,19 @@ on paths matching `SENSITIVE_READ_PATHS` (`~/.buildd/config.json`,
 - AC-6 (Codex known gap): GIVEN a Codex worker WHEN the subprocess starts
   THEN `BUILDD_MCP_BEARER_TOKEN` is present in the Codex subprocess env
   (acknowledged exception, tracked separately).
+- AC-6a: GIVEN a `.mcp.json` server on the runner's buildd origin that
+  references `${BUILDD_API_KEY}` WHEN the session starts THEN its header carries
+  the agent's buildd credential, not the runner key (both backends).
+- AC-6b: GIVEN a server on another host, or a URL, that references
+  `${BUILDD_API_KEY}` WHEN the session starts THEN it is not mounted, one
+  warning names the server and host, and the runner key appears in no mounted
+  entry and no `MCP_BEARER_*` value.
+- AC-6c: GIVEN a runner whose process env holds secrets outside the allowlist
+  WHEN a Codex session starts THEN the Codex CLI receives exactly the task env.
+- AC-6d: GIVEN a role env entry whose value equals the runner key WHEN the
+  session starts THEN the agent env does not contain it.
+- AC-6e: GIVEN `buildd login` writes the buildd MCP entry WHEN it finishes THEN
+  `~/.claude.json` is mode 0600, and the agent's file tools are refused on it.
 
 **Code surface**:
 - Constants: `packages/shared/src/types.ts` — `SENSITIVE_READ_PATHS` (line 1014),
@@ -246,13 +302,64 @@ on paths matching `SENSITIVE_READ_PATHS` (`~/.buildd/config.json`,
   (path allowlist) and `Bash` (pattern denylist).
 - Env scoping: `apps/runner/src/workers.ts` — `cleanEnv` allowlist construction,
   `headerExpansionEnv` split, removal of explicit `BUILDD_API_KEY` re-injection.
+- `${BUILDD_API_KEY}` expansion: `apps/runner/src/mcp-json.ts`
+  (`BuilddCredentialExpansion`, `describeSkippedMcpServer`).
+- Codex spawn env: `apps/runner/src/backends/codex-backend.ts`.
+- Role env guard: `apps/runner/src/runner-key-guard.ts`
+  (`withoutRunnerKeyValues`).
+- Read jail: `apps/runner/src/read-jail.ts`. `~/.claude.json` writer:
+  `apps/runner/src/claude-json-mcp.ts`.
 - Tests: `apps/runner/__tests__/unit/permissions.test.ts` (20 new tests for
   constants), `apps/runner/__tests__/unit/capability-scope.test.ts` (15 new
-  tests for allowlist logic).
+  tests for allowlist logic),
+  `apps/runner/__tests__/unit/runner-key-agent-exposure.test.ts`,
+  `apps/runner/__tests__/unit/backends/codex-backend.test.ts`,
+  `apps/runner/__tests__/unit/read-jail.test.ts`.
 
 **Out of scope**: network-layer egress policies (not yet implemented); Codex
 bearer-token env isolation (requires Codex CLI change); filesystem jailing at the
 OS level (tracked as Tier 4 hardening).
+
+### 3a. Task-scoped GitHub credentials (self-hosted runners)
+
+**Capability statement**: Once the rollout reaches a workspace, an agent on a
+self-hosted runner MUST act on GitHub only with a short-lived GitHub App
+installation token scoped to its task's linked repository, minted by the
+server from the workspace's `github_repos` link — never from agent input — and
+refreshed before it expires. The runner operator's `GITHUB_TOKEN` / `GH_TOKEN`
+and host git/gh credentials MUST NOT be inherited. A workspace without the
+GitHub App opts out explicitly with `gitConfig.agentGitHubCredentials: 'runner'`.
+Rollout and opt-out: `docs/runner-github-credentials.md`.
+
+**Invariants**:
+- The claim's `githubCredentials` is a mode marker, never a token; it is sent
+  only to a runner declaring `scoped_github_token`, never on a cloud claim.
+- With `mode: 'scoped'`, the agent env holds no inherited GitHub token, and
+  git's command-line-level config empties every host/repo credential helper
+  before installing the scoped one. On any failure the agent has no GitHub
+  credential (fail closed), not the operator's.
+- `POST /api/runner/agent-github-token` mints only for a live worker claimed by
+  the calling account in a workspace it may still claim from.
+- Known gap (Codex only): a Codex session whose buildd credential is the runner
+  key (orchestration, failed task-token mint; see AC-6) holds that key in its
+  env, so the endpoint's account-level check is its only bound there. Still
+  repo-scoped and short-lived. Closing it needs the same Codex auth change as
+  AC-6.
+
+**Acceptance criteria**:
+- AC-7: GIVEN a scoped claim and an operator `GITHUB_TOKEN` plus a global git
+  credential helper WHEN the agent runs `git credential fill` for github.com
+  THEN it receives the task-scoped token and nothing from the operator.
+- AC-8: GIVEN the token fetch fails WHEN the agent starts THEN it has no GitHub
+  credential and its prompt tells it to report blocked.
+- AC-9: GIVEN `AGENT_GITHUB_TOKEN_ROLLOUT` unset, or a runner without the
+  feature WHEN it claims THEN the claim carries no `githubCredentials`.
+
+**Code surface**: `packages/core/agent-github-credentials.ts`,
+`apps/web/src/app/api/workers/claim/github-credential-injection.ts`,
+`apps/web/src/app/api/runner/agent-github-token/route.ts`,
+`apps/runner/src/agent-github-credentials.ts`. Tests beside each, and
+`apps/runner/__tests__/unit/agent-github-credentials.test.ts`.
 
 ---
 

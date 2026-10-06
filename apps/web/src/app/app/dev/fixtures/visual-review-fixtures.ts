@@ -7,6 +7,8 @@
  *   &reason=question|unsure|round_cap         which needs_you
  *   &view=board                               embedded like the mission board
  *   &view=deck | deck-phone | compare         the review deck (dialog, inline sheet, compare open)
+ *   &view=fix-check                           a merged fix with a new screenshot: Before / After, Fixed / Still broken
+ *   &view=fix-merged                          a merged fix with no screenshot since: settled, no buttons
  *   &view=reviewed                            the reviewed tray
  *   &expired=1                                one image that fails to load
  *
@@ -28,6 +30,8 @@ export const MISSION_LIST_EXECUTOR_FIXTURE_STATE = 'mission-list-executor';
 export const MISSION_CHECK_INS_FIXTURE_STATE = 'mission-check-ins';
 /** The task page's Evidence files section in each state (TaskEvidenceFilesFixture.tsx). */
 export const TASK_EVIDENCE_FIXTURE_STATE = 'task-evidence';
+/** The mission's Goal criteria sheet: not-verifiable and ready states (GoalCriteriaFixture.tsx). */
+export const GOAL_CRITERIA_FIXTURE_STATE = 'goal-criteria';
 
 /** The workspace onboarding card with a stubbed readiness report (OnboardingFixture.tsx). */
 export const ONBOARDING_FIXTURE_STATE = 'onboarding';
@@ -41,17 +45,21 @@ export const COMMIT_CHECKS_FIXTURE_STATE = 'commit-checks';
 
 /** A question's answer pending, recorded, already answered and failed (AnswerStatesFixture.tsx). */
 export const ANSWER_STATES_FIXTURE_STATE = 'answer-states';
+export const AGENT_ACCESS_FIXTURE_STATE = 'agent-access';
+
+/** Health's tool list with every row's breakdown, collapsed and open (tool-breakdown-fixture.tsx). */
+export const TOOL_BREAKDOWN_FIXTURE_STATE = 'tool-breakdown';
 
 /** The mission Board's Landed strip and its tethered drawer (mission-task-strip-fixtures.ts). */
 export const MISSION_TASK_STRIP_FIXTURE_STATE = 'mission-task-strip';
 
-export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE];
+export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, GOAL_CRITERIA_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, AGENT_ACCESS_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE, TOOL_BREAKDOWN_FIXTURE_STATE];
 
 export function isFixtureView(value: string | null | undefined): value is string {
   return value != null && FIXTURE_VIEWS.includes(value);
 }
 
-export const VISUAL_REVIEW_FIXTURE_VIEWS = ['tray', 'board', 'deck', 'deck-phone', 'compare', 'reviewed'] as const;
+export const VISUAL_REVIEW_FIXTURE_VIEWS = ['tray', 'board', 'deck', 'deck-phone', 'compare', 'fix-check', 'fix-merged', 'reviewed'] as const;
 export type VisualReviewFixtureView = (typeof VISUAL_REVIEW_FIXTURE_VIEWS)[number];
 
 const REASONS: readonly VisualReviewNeedsYouReason[] = ['unsure', 'question', 'round_cap'];
@@ -67,6 +75,10 @@ export interface VisualReviewFixtureParams {
 
 /** The compare view opens on the route the second round re-shot. */
 export const COMPARE_START_KEY = '/app/tasks/:id|mobile|';
+/** Its fix merged and round 2 re-shot it: a fix check. */
+export const FIX_CHECK_START_KEY = COMPARE_START_KEY;
+/** Its fix merged after the last screenshot: settled. */
+export const FIX_MERGED_START_KEY = '/app/inbox|mobile|';
 
 /** Pure: `?view=&phase=&reason=&expired=` to what the page renders. Unknown values fall back. */
 export function parseVisualReviewFixtureParams(q: URLSearchParams): VisualReviewFixtureParams {
@@ -78,7 +90,7 @@ export function parseVisualReviewFixtureParams(q: URLSearchParams): VisualReview
   const reasonParam = q.get('reason');
   const reason = (REASONS as readonly string[]).includes(reasonParam ?? '') ? (reasonParam as VisualReviewNeedsYouReason) : undefined;
   const expired = q.get('expired') === '1';
-  const deckLike = view === 'deck' || view === 'deck-phone' || view === 'compare';
+  const deckLike = view === 'deck' || view === 'deck-phone' || view === 'compare' || view === 'fix-check' || view === 'fix-merged';
 
   if (view === 'reviewed') {
     return { view, phase: 'reviewed', options: { expired }, startKey: null, compare: false };
@@ -89,7 +101,7 @@ export function parseVisualReviewFixtureParams(q: URLSearchParams): VisualReview
       view,
       phase: 'needs_you',
       options: { needsYou: 'unsure', scenario: 'deck', expired },
-      startKey: view === 'compare' ? COMPARE_START_KEY : null,
+      startKey: view === 'compare' ? COMPARE_START_KEY : view === 'fix-check' ? FIX_CHECK_START_KEY : view === 'fix-merged' ? FIX_MERGED_START_KEY : null,
       compare: view === 'compare',
     };
   }
@@ -112,6 +124,8 @@ export function visualReviewFixtureLinks(): { label: string; href: string }[] {
     { label: 'deck', href: `${base}&view=deck` },
     { label: 'deck-phone', href: `${base}&view=deck-phone` },
     { label: 'compare', href: `${base}&view=compare` },
+    { label: 'fix merged, new screenshot', href: `${base}&view=fix-check` },
+    { label: 'fix merged, no screenshot yet', href: `${base}&view=fix-merged` },
     { label: 'reviewed', href: `${base}&view=reviewed` },
     { label: 'expired', href: `${base}&view=deck-phone&expired=1` },
   ];

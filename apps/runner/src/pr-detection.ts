@@ -36,22 +36,18 @@ export function isCreatePrCall(toolName: string | undefined, input: unknown): bo
 }
 
 /**
- * A pr_required session should fail with the agent's own diagnosis (rather than
- * attempting completion and eating the server's generic 400) only when there is
- * demonstrably nothing to open a PR from: no confirmed PR AND no commits. When
- * commits exist, completion is allowed to reach the server, which can still
- * auto-detect a PR opened out-of-band via `gh pr create`.
+ * A `pr_required` session ending with no runner-confirmed PR is a candidate
+ * for session-end-classification.ts (workers.ts's post-loop branch): before
+ * either failing locally or letting the server's own output-requirement gate
+ * see it, classify why and try a label-specific push. Deliberately does not
+ * look at commit count — the mission's own motivating case (dozens of
+ * commits, no PR, a session that just stopped mid-wait) has real commits, so
+ * gating classification on zero commits would skip exactly that case. What
+ * commit count still decides, inside the branch itself, is the eventual
+ * truthful failure message when nothing resolves it.
  */
-export function shouldFailForMissingPr(args: {
-  outputRequirement?: string;
-  prCreated?: boolean;
-  commitCount: number;
-}): boolean {
-  return (
-    (args.outputRequirement || 'auto') === 'pr_required' &&
-    args.prCreated !== true &&
-    args.commitCount === 0
-  );
+export function prRequiredUnmet(args: { outputRequirement?: string; prCreated?: boolean }): boolean {
+  return (args.outputRequirement || 'auto') === 'pr_required' && args.prCreated !== true;
 }
 
 /**

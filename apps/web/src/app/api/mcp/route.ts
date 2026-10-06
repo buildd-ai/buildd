@@ -25,7 +25,7 @@ import {
 import { hasTokenScope, requiredScopeForAction, tokenWorkspaceAllowed } from "@buildd/core/token-scopes";
 import { resolveLinkedDocsWorkspaces } from "@/lib/linked-knowledge";
 import { verifyAccountWorkspaceAccess } from "@/lib/team-access";
-import { authenticateTaskScopedCaller } from "@/lib/task-token-auth";
+import { authenticateTaskScopedCaller, isOrchestrationTaskToken } from "@/lib/task-token-auth";
 import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
 import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
 import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId } from "@/lib/mcp-request-scope";
@@ -41,6 +41,7 @@ import {
   handleMemoryAction,
   handleRecallAction,
   handleLearnAction,
+  orchestrationTaskTokenRefusal,
   type ApiFn,
   type ActionContext,
 } from "@buildd/core/mcp-tools";
@@ -187,7 +188,7 @@ async function resolveWorkspaceDataClass(workspaceId: string | null | undefined)
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'legacy', tokenScopes?: string[] | null, tokenWorkspaceIds?: string[] | null) {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'legacy', tokenScopes?: string[] | null, tokenWorkspaceIds?: string[] | null, orchestrationTaskToken = false) {
   // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
   let resolvedWorkspaceId: string | null = workspaceId || null;
   const getWorkspaceId = async (): Promise<string | null> => {
@@ -420,6 +421,23 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
       if (name === "buildd" || group) {
         const action = args?.action as string;
         const params = (args?.params || {}) as Record<string, unknown>;
+
+        // An orchestration task's admin-level per-task token reaches only the
+        // admin actions its own mission needs; the rest are team-wide. Refused
+        // here, before any in-process handler (consolidate_knowledge,
+        // memory_delete) or route call.
+        if (orchestrationTaskToken) {
+          const refusal = orchestrationTaskTokenRefusal(action, params);
+          if (refusal) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify({ error: 'forbidden', reason: refusal, tokenLevel: 'admin', requiredLevel: 'admin' }),
+              }],
+              isError: true,
+            };
+          }
+        }
 
         // Block filesystem-dependent actions in remote mode
         if (action === 'register_skill' && (params.filePath || params.repo)) {
@@ -977,7 +995,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   const dataClass = await resolveWorkspaceDataClass(workspaceId);
   const isSensitive = dataClass === 'sensitive';
   const toolSurface = mcpToolSurfaceFor({ toolsParam: url.searchParams.get("tools"), workerParam, serverDefault: process.env.BUILDD_MCP_TOOL_SURFACE });
-  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id, toolSurface, account.scopes, account.workspaceIds);
+  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id, toolSurface, account.scopes, account.workspaceIds, isOrchestrationTaskToken(account));
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless

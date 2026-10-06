@@ -4,7 +4,7 @@
  * __tests__/experiment-health-source.test.ts can render it to SQL.
  *
  * What counts as an enrolled unit differs by kind:
- * - model_routing / cbm_access: experiment_assignments rows of the current
+ * - model_routing: experiment_assignments rows of the current
  *   policy version (unit = mission, else task).
  * - heartbeat_triage: heartbeat_triage_looks rows carrying the experiment id
  *   (unit = mission). Its experiment_assignments rows exist only for missions

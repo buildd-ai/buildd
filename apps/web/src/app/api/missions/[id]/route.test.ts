@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
-import { UNCLAIMED_TASK_STATUSES } from '@buildd/shared';
 
 // The goal-criteria quality shadow (lib/goal-criteria-quality-shadow.ts) runs
 // for real after the response; only its decision call is stubbed, and gate
@@ -35,6 +34,9 @@ const mockMissionsFindFirst = mock(() => ({
   priority: 0,
 }) as any);
 const mockInitiativesFindFirst = mock(() => null as any);
+// A per-task token's own task and worker, as the scope helpers read them.
+const mockTasksFindFirst = mock((_args?: any) => Promise.resolve(null as any));
+const mockWorkersFindFirst = mock((_args?: any) => Promise.resolve(null as any));
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1' }) as any);
 let updatedSetData: any = null;
 const mockMissionsUpdate = mock(() => ({
@@ -111,17 +113,31 @@ mock.module('@/lib/mission-integration-branch', () => ({
   reportMissionBranchUnresolved: mockReportMissionBranchUnresolved,
 }));
 
-let dispatchUnblockedTaskCalls: Array<any> = [];
+// Mission-release wakes: one wakeTasks call per release, carrying the cause.
+let wakeTasksCalls: Array<{ ids: string[]; cause: string }> = [];
 let shouldDispatchReject = false;
+const wokenIds = () => wakeTasksCalls.flatMap(c => c.ids);
 
-const mockDispatchUnblockedTask = mock(async (task: any, workspace: any) => {
+const mockWakeTasks = mock(async (ids: readonly string[], cause: string) => {
   if (shouldDispatchReject) {
     throw new Error('Dispatch failed');
   }
-  dispatchUnblockedTaskCalls.push({ task, workspace });
+  wakeTasksCalls.push({ ids: [...ids], cause });
 });
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchUnblockedTask: mockDispatchUnblockedTask,
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: async () => {},
+  wakeTasks: mockWakeTasks,
+  announceTaskCreated: async () => {},
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({}),
+  deliverTaskDispatch: async () => 'skipped:test',
+  routeForCause: () => ({}),
+  webhookWants: () => false,
+  primaryCause: (_c: readonly string[], fallback: string) => fallback,
+  reseedDispatchTimer: async () => {},
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
 }));
 
 let missionTasksToReturn: any[] = [];
@@ -193,9 +209,9 @@ mock.module('@buildd/core/db', () => ({
       accountWorkspaces: { findFirst: mock(() => Promise.resolve(null)) },
       initiatives: { findFirst: mockInitiativesFindFirst },
       missionNotes: { findFirst: mockMissionNotesFindFirst },
-      workers: { findFirst: mock(() => Promise.resolve(null)) },
+      workers: { findFirst: (args: any) => mockWorkersFindFirst(args) },
       tasks: {
-        findFirst: mock(() => Promise.resolve(null)),
+        findFirst: (args: any) => mockTasksFindFirst(args),
         findMany: mockTasksFindManyForExecutorChange,
       },
     },
@@ -244,7 +260,7 @@ mock.module('@buildd/core/db/schema', () => ({
   gateEvents: { gate: 'gate', missionId: 'missionId', outcome: 'outcome', detail: 'detail', occurredAt: 'occurredAt' },
 }));
 
-import { PATCH } from './route';
+import { GET, PATCH } from './route';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
 
 const makeParams = (id: string) => Promise.resolve({ id });
@@ -279,8 +295,8 @@ describe('PATCH /api/missions/[id]', () => {
     mockEscalateCriteriaFailure.mockClear();
     mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-11111111-1111-4111-8111-111111111111', created: true } as any);
     mockWakeMissionAfterResponse.mockClear();
-    dispatchUnblockedTaskCalls = [];
-    mockDispatchUnblockedTask.mockClear();
+    wakeTasksCalls = [];
+    mockWakeTasks.mockClear();
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -1569,7 +1585,7 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
       }),
     }));
     updatedSetData = null;
-    dispatchUnblockedTaskCalls = [];
+    wakeTasksCalls = [];
     shouldDispatchReject = false;
     shouldFindManyReject = false;
     tasksFindManyWhereCalls = [];
@@ -1618,11 +1634,8 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     const res = await PATCH(req, { params: makeParams(MID) });
     expect(res.status).toBe(200);
 
-    // Should have called dispatchUnblockedTask twice (once per task)
-    expect(dispatchUnblockedTaskCalls.length).toBe(2);
-    expect(dispatchUnblockedTaskCalls[0].task.id).toBe('task-1');
-    expect(dispatchUnblockedTaskCalls[1].task.id).toBe('task-2');
-    expect(dispatchUnblockedTaskCalls[0].workspace.id).toBe(WS_ID);
+    // One wake for the mission's pending tasks, labelled as a release
+    expect(wakeTasksCalls).toEqual([{ ids: ['task-1', 'task-2'], cause: 'mission.released' }]);
   });
 
   // The stranded card's "Continue on a runner" renders disabled with this same
@@ -1641,7 +1654,7 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     const body = await res.json();
     expect(body.error).toMatch(/no workspace/);
     expect(updatedSetData).toBeNull();
-    expect(dispatchUnblockedTaskCalls.length).toBe(0);
+    expect(wakeTasksCalls.length).toBe(0);
   });
 
   it('refuses local → runner on a completed mission', async () => {
@@ -1681,7 +1694,7 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     expect(res.status).toBe(200);
 
     // No dispatch when executor is unchanged
-    expect(dispatchUnblockedTaskCalls.length).toBe(0);
+    expect(wakeTasksCalls.length).toBe(0);
   });
 
   it('does not re-dispatch when executor changes from runner to local', async () => {
@@ -1708,7 +1721,7 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     expect(res.status).toBe(200);
 
     // No dispatch when changing runner -> local
-    expect(dispatchUnblockedTaskCalls.length).toBe(0);
+    expect(wakeTasksCalls.length).toBe(0);
   });
 
   it('does not re-dispatch tasks in running or completed status', async () => {
@@ -1744,21 +1757,18 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     const res = await PATCH(req, { params: makeParams(MID) });
     expect(res.status).toBe(200);
 
-    // The route filters tasks by status, so running/completed tasks never reach dispatchUnblockedTask
-    expect(dispatchUnblockedTaskCalls.length).toBe(1);
+    // The route filters tasks by status, so running/completed tasks are never woken
+    expect(wokenIds()).toEqual(['task-pending']);
 
-    // Assert that the where clause filters to pending and assigned statuses
+    // Only `pending` is claimable; a wake for anything else is skipped at delivery.
     expect(tasksFindManyWhereCalls.length).toBeGreaterThan(0);
     const whereClause = tasksFindManyWhereCalls[0];
-    // The where clause should be an array with two conditions: missionId and status filter
     expect(Array.isArray(whereClause)).toBe(true);
-    // Find the inArray condition that filters by status
-    const statusFilter = whereClause.find((cond: any) => cond.type === 'inArray' && cond.values);
+    const statusFilter = whereClause.find((cond: any) => cond.type === 'eq' && cond.value === 'pending');
     expect(statusFilter).toBeDefined();
-    expect(statusFilter.values).toEqual([...UNCLAIMED_TASK_STATUSES]);
   });
 
-  it('returns 200 even if dispatchUnblockedTask rejects', async () => {
+  it('returns 200 even if the wake rejects', async () => {
     mockMissionsFindFirst.mockReturnValue({
       id: MID,
       teamId: 'team-1',
@@ -1782,7 +1792,7 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
       },
     ];
 
-    // Make dispatchUnblockedTask reject
+    // Make the wake reject
     shouldDispatchReject = true;
 
     const req = new NextRequest(`http://localhost/api/missions/${MID}`, {
@@ -1822,10 +1832,10 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     expect(res.status).toBe(200);
     expect(updatedSetData.executor).toBe('runner');
     // No dispatch calls attempted since query failed
-    expect(dispatchUnblockedTaskCalls.length).toBe(0);
+    expect(wakeTasksCalls.length).toBe(0);
   });
 
-  it('re-dispatches only pending and assigned tasks', async () => {
+  it('wakes every task the pending query returned', async () => {
     mockMissionsFindFirst.mockReturnValue({
       id: MID,
       teamId: 'team-1',
@@ -1836,8 +1846,8 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
       priority: 0,
     });
 
-    // The route uses inArray(tasks.status, UNCLAIMED_TASK_STATUSES)
-    // so only those statuses will be returned by the mock
+    // The mock ignores the status filter, so this pins that the route wakes
+    // whatever its query returned, in order
     missionTasksToReturn = [
       {
         id: 'task-pending',
@@ -1869,10 +1879,54 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     const res = await PATCH(req, { params: makeParams(MID) });
     expect(res.status).toBe(200);
 
-    // Both pending and assigned tasks dispatched
-    expect(dispatchUnblockedTaskCalls.length).toBe(2);
-    expect(dispatchUnblockedTaskCalls[0].task.id).toBe('task-pending');
-    expect(dispatchUnblockedTaskCalls[1].task.id).toBe('task-assigned');
+    expect(wokenIds()).toEqual(['task-pending', 'task-assigned']);
+  });
+  // Arming a held mission and raising an exhausted budget used to send no wake
+  // at all: the tasks were already pending, so they waited for a runner poll.
+  const base = { id: MID, teamId: 'team-1', title: 'M', workspaceId: WS_ID, executor: 'runner', scheduleId: null, priority: 0 };
+  const send = (body: Record<string, unknown>) => PATCH(
+    new NextRequest(`http://localhost/api/missions/${MID}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    { params: makeParams(MID) },
+  );
+
+  it.each([
+    [{ arm: true }],
+    [{ startMode: 'armed' }],
+  ])('arming a held mission wakes its pending tasks as mission.released (%o)', async (body) => {
+    mockMissionsFindFirst.mockReturnValue({ ...base, isHeld: true, status: 'active' });
+    missionTasksToReturn = [{ id: 'task-1' }, { id: 'task-2' }];
+    const res = await send(body);
+    expect(res.status).toBe(200);
+    expect(wakeTasksCalls).toEqual([{ ids: ['task-1', 'task-2'], cause: 'mission.released' }]);
+  });
+
+  it('arming a mission that was not held wakes nothing', async () => {
+    mockMissionsFindFirst.mockReturnValue({ ...base, isHeld: false, status: 'active' });
+    missionTasksToReturn = [{ id: 'task-1' }];
+    await send({ arm: true });
+    expect(wakeTasksCalls).toEqual([]);
+  });
+
+  it('holding a mission wakes nothing', async () => {
+    mockMissionsFindFirst.mockReturnValue({ ...base, isHeld: false, status: 'active' });
+    missionTasksToReturn = [{ id: 'task-1' }];
+    await send({ startMode: 'held' });
+    expect(wakeTasksCalls).toEqual([]);
+  });
+
+  it('raising an exhausted budget wakes its pending tasks as budget.available', async () => {
+    mockMissionsFindFirst.mockReturnValue({ ...base, status: 'budget_exhausted', costBudgetUsd: '10' });
+    missionTasksToReturn = [{ id: 'task-1' }];
+    const res = await send({ costBudgetUsd: 20 });
+    expect(res.status).toBe(200);
+    expect(wakeTasksCalls).toEqual([{ ids: ['task-1'], cause: 'budget.available' }]);
+  });
+
+  it('a budget change that leaves the mission exhausted wakes nothing', async () => {
+    mockMissionsFindFirst.mockReturnValue({ ...base, status: 'budget_exhausted', costBudgetUsd: '10' });
+    missionTasksToReturn = [{ id: 'task-1' }];
+    await send({ costBudgetUsd: 5 });
+    expect(wakeTasksCalls).toEqual([]);
   });
 });
 
@@ -2137,5 +2191,87 @@ describe('PATCH /api/missions/[id] — goal-criteria quality shadow (docs/specs/
     expect((await patch({ goalCriteria: [strong, { type: 'command', command: 'bun run test', label: 'throw: tests pass' }] })).status).toBe(200);
     await flush();
     expect(quality()).toEqual([]);
+  });
+});
+
+describe("/api/missions/[id] — an orchestration task's admin per-task token", () => {
+  const MISSION = '11111111-1111-4111-8111-111111111111';
+  const OTHER = '22222222-2222-4222-8222-222222222222';
+  const taskScope = { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 };
+  const ADMIN_TOKEN = { id: 'acct-1', teamId: 'team-1', level: 'admin', scopes: null, workspaceIds: null, taskScope };
+  const patch = (body: Record<string, unknown>, id = MISSION) => PATCH(
+    new NextRequest(`http://localhost/api/missions/${id}`, { method: 'PATCH', body: JSON.stringify(body), headers: { authorization: 'Bearer bld_key' } }),
+    { params: makeParams(id) },
+  );
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockReturnValue(null);
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(ADMIN_TOKEN);
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue({ missionId: MISSION, workspaceId: 'ws-1', mission: { initiativeId: null } });
+    mockWorkersFindFirst.mockReset();
+    mockWorkersFindFirst.mockResolvedValue({ taskId: 'task-own', accountId: 'acct-1' });
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockReturnValue({ id: MISSION, teamId: 'team-1', title: 'Mine', workspaceId: 'ws-1', scheduleId: null, priority: 0, status: 'active' });
+    updatedSetData = null;
+    mockMissionsUpdate.mockReset();
+    mockMissionsUpdate.mockImplementation(() => ({
+      set: mock((data: any) => {
+        updatedSetData = { ...updatedSetData, ...data };
+        return { where: mock(() => ({ returning: mock(() => [{ id: MISSION, ...data }]) })) };
+      }),
+    }));
+  });
+
+  it("edits its own task's mission's descriptive fields", async () => {
+    const res = await patch({ description: 'Sharper brief', priority: 3, actorWorkerId: 'worker-own' });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.description).toBe('Sharper brief');
+  });
+
+  it('is refused every other field, naming it, and writes nothing', async () => {
+    for (const body of [
+      { workspaceId: 'ws-2' }, { initiativeId: 'i-1' }, { costBudgetUsd: 1000 }, { maxConcurrentTasks: 50 },
+      { cronExpression: '* * * * *' }, { executor: 'local' }, { model: 'x' }, { mergePolicy: {} }, { branchStrategy: 'direct' },
+      { goalCriteria: [] }, { dependsOnMission: OTHER }, { surfaceAuditWaiver: 'no visual change in this mission at all' },
+      { description: 'ok', backend: 'codex' },
+    ]) {
+      const res = await patch(body);
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain(Object.keys(body).at(-1)!);
+    }
+    expect(updatedSetData).toBeNull();
+  });
+
+  it("is refused a feed entry attributed to another task's worker", async () => {
+    mockWorkersFindFirst.mockResolvedValue({ taskId: 'task-other', accountId: 'acct-1' });
+    expect((await patch({ description: 'x', actorWorkerId: 'worker-other' })).status).toBe(403);
+    expect(updatedSetData).toBeNull();
+  });
+
+  it('is refused another mission, before reading it', async () => {
+    expect((await patch({ description: 'x' }, OTHER)).status).toBe(404);
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+    const res = await GET(new NextRequest(`http://localhost/api/missions/${OTHER}`, { headers: { authorization: 'Bearer bld_key' } }), { params: makeParams(OTHER) });
+    expect(res.status).toBe(404);
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('a worker-level task token is refused even its own mission', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...ADMIN_TOKEN, level: 'worker' });
+    expect((await patch({ description: 'x' })).status).toBe(404);
+    const res = await GET(new NextRequest(`http://localhost/api/missions/${MISSION}`, { headers: { authorization: 'Bearer bld_key' } }), { params: makeParams(MISSION) });
+    expect(res.status).toBe(404);
+    expect(updatedSetData).toBeNull();
+  });
+
+  it('an admin account key is unaffected: it may still change any field', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'admin', scopes: null });
+    expect((await patch({ maxConcurrentTasks: 4 })).status).toBe(200);
+    expect(updatedSetData.maxConcurrentTasks).toBe(4);
   });
 });

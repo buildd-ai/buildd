@@ -17,6 +17,7 @@ import {
   EXIT_PARKED,
   PARKED_LINE_PREFIX,
   RESUMED_LINE_PREFIX,
+  CLAIM_DEFERRED_LINE_PREFIX,
   type ResumePort,
   buildOnceConfig,
   classifyClaimFailure,
@@ -26,6 +27,7 @@ import {
   EXIT_COMPLETED,
   EXIT_FAILED,
   EXIT_CLAIM_REFUSED,
+  EXIT_CLAIM_DEFERRED,
   EXIT_USAGE,
   DEFAULT_ONCE_MAX_WAIT_MS,
   WORKER_ID_LINE_PREFIX,
@@ -33,6 +35,7 @@ import {
   type OnceWorkerManager,
 } from '../../src/run-once';
 import { withFleetIdentity } from '../../src/fleet-identity';
+import { GitCloneError } from '../../src/git-clone';
 
 const TASK_ID = 'task-1234abcd';
 const TASK = { id: TASK_ID, title: 'Example task', workspaceId: 'ws-1', workspace: { name: 'example', repo: 'https://github.com/example/repo' } };
@@ -90,8 +93,9 @@ function deps(wm: OnceWorkerManager, overrides: Partial<RunOnceDeps> = {}) {
 
 describe('exit codes', () => {
   test('are distinct and never collide with the launcher restart code (75)', () => {
-    const codes = [EXIT_COMPLETED, EXIT_FAILED, EXIT_CLAIM_REFUSED, EXIT_PARKED, EXIT_USAGE];
+    const codes = [EXIT_COMPLETED, EXIT_FAILED, EXIT_CLAIM_REFUSED, EXIT_CLAIM_DEFERRED, EXIT_PARKED, EXIT_USAGE];
     expect(EXIT_PARKED).toBe(4);
+    expect(EXIT_CLAIM_DEFERRED).toBe(5);
     expect(new Set(codes).size).toBe(codes.length);
     expect(codes).not.toContain(75);
     expect(EXIT_COMPLETED).toBe(0);
@@ -192,6 +196,26 @@ describe('runOnce', () => {
     expect(await runOnce({ taskId: TASK_ID }, d)).toBe(EXIT_CLAIM_REFUSED);
     expect(calls).not.toContain('abort');
     expect(calls).toContain('destroy');
+  });
+
+  test('claim deferred for capacity (workspace_cap) → deferred code, prints the reason line, no session', async () => {
+    const { wm, calls } = fakeManager({
+      claim: async () => { throw Object.assign(new Error('rejected'), { claimError: 'server_rejected', claimReason: 'no_pending_tasks', claimTaskExclusionCode: 'workspace_cap' }); },
+    });
+    const lines: string[] = [];
+    const { d } = deps(wm, { log: (m) => lines.push(m) });
+    expect(await runOnce({ taskId: TASK_ID }, d)).toBe(EXIT_CLAIM_DEFERRED);
+    expect(calls).not.toContain('abort');
+    expect(calls).toContain('destroy');
+    expect(lines).toContain(`${CLAIM_DEFERRED_LINE_PREFIX}workspace_cap`);
+  });
+
+  test('claim deferred by the account-wide cap (bare HTTP 429) → deferred code', async () => {
+    const { wm } = fakeManager({
+      claim: async () => { throw Object.assign(new Error('API error: 429 - {}'), { name: 'ServerRefusalError', status: 429 }); },
+    });
+    const { d } = deps(wm);
+    expect(await runOnce({ taskId: TASK_ID }, d)).toBe(EXIT_CLAIM_DEFERRED);
   });
 
   test('claimAndStart returning null (not started) → refused code', async () => {
@@ -514,14 +538,43 @@ describe('runOnce afterRun hook (warm-repo refresh)', () => {
 });
 
 describe('classifyClaimFailure', () => {
-  test('server_rejected and 4xx refusals are refused; workspace_not_found, 408/429, 5xx and network are failed', () => {
+  test('server_rejected with no taskExclusion and 4xx refusals are refused; workspace_not_found, 408, 5xx and network are failed; 429 is deferred', () => {
     expect(classifyClaimFailure(Object.assign(new Error(''), { claimError: 'server_rejected' }))).toBe('refused');
     expect(classifyClaimFailure(Object.assign(new Error(''), { claimError: 'workspace_not_found' }))).toBe('failed');
     expect(classifyClaimFailure(new Error('API error: 403 - {"error":"forbidden"}'))).toBe('refused');
-    expect(classifyClaimFailure(new Error('API error: 429 - {}'))).toBe('failed');
+    // The account-wide cap (route.ts: activeWorkers.length >= maxConcurrentWorkers)
+    // throws a bare 429 before any task-specific gate — the same capacity wall
+    // as `no_slots`, just via a throw instead of an empty 200.
+    expect(classifyClaimFailure(new Error('API error: 429 - {}'))).toBe('deferred');
     expect(classifyClaimFailure(new Error('API error: 408 - {}'))).toBe('failed');
     expect(classifyClaimFailure(new Error('API error: 500 - {}'))).toBe('failed');
     expect(classifyClaimFailure(new TypeError('fetch failed'))).toBe('failed');
+  });
+
+  test('server_rejected with a capacity/pacing taskExclusion code is deferred, not refused', () => {
+    for (const code of ['workspace_cap', 'mission_concurrent', 'mission_paced', 'mission_budget', 'account_cap', 'path_overlap', 'budget_paused', 'oauth_parallelism', 'runner_capability', 'deps_blocked', 'state_changed', 'runner_cooldown']) {
+      const err = Object.assign(new Error('rejected'), { claimError: 'server_rejected', claimReason: 'no_pending_tasks', claimTaskExclusionCode: code });
+      expect(classifyClaimFailure(err)).toBe('deferred');
+    }
+  });
+
+  test('server_rejected with a structural taskExclusion code stays refused', () => {
+    for (const code of ['already_claimed', 'active_worker', 'duplicate_worker', 'task_held', 'mission_held', 'mission_local', 'subject_dead', 'runner_preference', 'role_mismatch', 'workspace_executor', 'workspace_mismatch', 'capability_mismatch', 'not_found', 'not_pending']) {
+      const err = Object.assign(new Error('rejected'), { claimError: 'server_rejected', claimReason: 'no_pending_tasks', claimTaskExclusionCode: code });
+      expect(classifyClaimFailure(err)).toBe('refused');
+    }
+  });
+
+  test('server_rejected with a top-level capacity reason and no taskExclusion is deferred', () => {
+    for (const reason of ['no_slots', 'budget_exhausted', 'budget_exhausted_partial', 'context_paused', 'path_overlap_blocked', 'rate_limited', 'all_candidates_deferred']) {
+      const err = Object.assign(new Error('rejected'), { claimError: 'server_rejected', claimReason: reason });
+      expect(classifyClaimFailure(err)).toBe('deferred');
+    }
+  });
+
+  test('server_rejected with no_pending_tasks and no taskExclusion stays refused (unchanged default)', () => {
+    const err = Object.assign(new Error('rejected'), { claimError: 'server_rejected', claimReason: 'no_pending_tasks' });
+    expect(classifyClaimFailure(err)).toBe('refused');
   });
 });
 
@@ -640,6 +693,14 @@ describe('createOnceResolver', () => {
   test('preferIsolated: a failed isolated clone still falls back to the base resolver', () => {
     const r = createOnceResolver(base, '/iso', () => { throw new Error('clone failed'); }, { preferIsolated: true });
     expect(r.resolve({ id: 'ws-9', name: 'local', repo: 'https://github.com/example/local' })).toBe('/repos/local');
+  });
+
+  test('preferIsolated: a clone GitHub throttled does not fall back to a second clone through the base resolver', () => {
+    let baseCalls = 0;
+    const counting = { ...base, resolve: (ws: any) => { baseCalls++; return base.resolve(ws); } };
+    const r = createOnceResolver(counting, '/iso', () => { throw new GitCloneError('git clone was rate limited by GitHub: 429', true); }, { preferIsolated: true });
+    expect(r.resolve({ id: 'ws-9', name: 'remote', repo: 'https://github.com/example/remote' })).toBeNull();
+    expect(baseCalls).toBe(0);
   });
 });
 

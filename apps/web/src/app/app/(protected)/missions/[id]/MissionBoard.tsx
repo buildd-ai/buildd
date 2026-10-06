@@ -243,7 +243,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
     : awaiting > 0
       ? `${awaiting} ${awaiting === 1 ? 'screen' : 'screens'} to review`
       : visual?.needsYou?.reason === 'round_cap'
-        ? 'visual issues: your call'
+        ? 'visual issues: decision needed'
         : visual && STUCK_PHASES.has(visual.phase)
           // Not counted (the number is what awaits an answer), but not
           // "nothing" either: only you can unstick it.
@@ -279,7 +279,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
               </>
             ) : (
               <span data-testid="landed-empty" className="font-mono text-meta text-text-muted">
-                No tasks yet
+                No tasks
               </span>
             )}
           </>
@@ -302,7 +302,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
               ))}
             </span>
           ))}
-          {model.runners.length === 0 && <span className="font-mono text-[12px] text-text-muted">No runner has picked up work yet.</span>}
+          {model.runners.length === 0 && <span className="font-mono text-[12px] text-text-muted">No runner has claimed work.</span>}
         </div>
       </div>
       <div data-testid="needs-you-cell" className={`${cell} ${L.needs} ${needs ? 'bg-accent-soft' : ''}`}>
@@ -437,7 +437,7 @@ function Big({ n, small }: { n: number; small: string }) {
 // ── Needs you ────────────────────────────────────────────────────────────────
 
 export function AskBanner({ task, now }: { task: BoardTask; now: number }) {
-  const prompt = task.waitingFor?.prompt ?? 'Waiting on you.';
+  const prompt = task.waitingFor?.prompt ?? 'Needs input.';
   return (
     <section
       data-testid="needs-you-band"
@@ -502,8 +502,8 @@ function Tile({ task: t, model, now, span, link, popSide, compact = false, visua
         {visualStuck ? <span data-testid="board-tile-visual-stuck" className="text-status-warning">{visualStuck}</span> : t.status === 'ready' ? 'ready · next free slot' : (
           <>
             after
-            {t.deps.filter(d => !d.ok).concat(t.deps.filter(d => d.ok)).map(d => (
-              <ScopeChip key={d.id} scope={d.scope ?? d.label} tone={d.ok ? 'ok' : 'ghost'} className="max-w-full overflow-hidden" />
+            {t.deps.filter(d => !d.satisfied).concat(t.deps.filter(d => d.satisfied)).map(d => (
+              <ScopeChip key={d.id} scope={d.scope ?? d.label} tone={d.satisfied ? 'ok' : 'ghost'} className="max-w-full overflow-hidden" />
             ))}
           </>
         )}
@@ -609,7 +609,7 @@ type PopoverSide = 'left' | 'right' | 'below';
 
 function TilePopover({ task: t, model, now, side, href }: { task: BoardTask; model: MissionBoardModel; now: number; side: PopoverSide; href: string }) {
   const recent = t.milestones.slice(-4);
-  const deps = t.deps.map(d => `${d.scope ?? d.label}${d.ok ? ' ✓' : ''}`).join('  ');
+  const deps = t.deps.map(d => `${d.scope ?? d.label}${d.satisfied ? ' ✓' : ''}`).join('  ');
   const running = t.startedAt != null ? formatAge((t.endedAt ?? now) - t.startedAt) : null;
   return (
     // display:none until hovered: an `invisible` box is still laid out, and

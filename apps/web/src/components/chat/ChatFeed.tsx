@@ -17,12 +17,19 @@
  *   first), the collapsed "Also read" row, the thumbs, or a message's tag.
  * - `eventPartType` / `renderEvent`: lifecycle events (`data-buildd-event`)
  *   as their line or a fired watch's notice, with their objects.
- * - `steps` / `thinkingTitle`: the turn in flight is the Thinking panel, drawn
- *   from the `data-step` parts the server streams (lib/chat/thinking-steps.ts):
- *   steps in plain words, never a tool's name.
+ * - `steps` / `thinkingName` / `renderPinnedStep`: the turn in flight is one
+ *   live line (a pulsing square and the current step), drawn from the
+ *   `data-step` parts the server streams (lib/chat/thinking-steps.ts): steps
+ *   in plain words, never a tool's name. The server also weighs each step;
+ *   the latest key one stays pinned under the line, a write as its object.
  * - `turnFold`: once the turn is done its steps and tool rows fold to one line
  *   ("Did 6 steps · filed 2 tasks", feed-model.ts `turnFoldSummary`) that
  *   unfolds on tap, so the answer is what a finished turn shows.
+ * - `answer="replace"`: a turn has one answer, its latest prose. What the
+ *   model writes early in a long turn shows straight away, and the final
+ *   answer replaces it in place once it comes, so a finished turn reads as
+ *   what the agent concluded, not every belief it held on the way. Earlier
+ *   prose stays in the stored parts (and the model's history), off screen.
  *
  * Conversation is soft on desktop; on a phone the person's message is a
  * raised square block. Fleet objects stay hard and square
@@ -33,7 +40,8 @@ import { ChatThread, ToolCallGroup, thinkingSteps, type ChatStatus, type ThreadM
 import type { ChatMessage as KitMessage, ChatTextPart, StepData } from '@builddai/ai-kit/chat/contract';
 import MarkdownContent from '@/components/MarkdownContent';
 import { ZonedTime } from '@/components/DisplayTimezone';
-import { CHAT_EVENT_PART_TYPE, isToolPart, messageMeta, type ChatMessage, type ChatToolPart } from './chat-contract';
+import { CHAT_EVENT_PART_TYPE, isToolPart, messageMeta, objectsOf, type ChatMessage, type ChatToolPart } from './chat-contract';
+import { legacyStepWeight } from '@/lib/chat/thinking-steps';
 import { BUILDD_TOOL_CALLS, eventRefsShownLater, feedSegments, intentTag, isApprovalPart, turnFoldSummary, type FeedSegment } from './feed-model';
 import ApprovalCard, { ApprovalRows, approvalRows } from './ApprovalCard';
 import { MoreObjects, ObjectsSegment } from './objects/registry';
@@ -150,27 +158,28 @@ function AgentText({ text, streaming }: { text: string; streaming: boolean }) {
   );
 }
 
-/** BUILDD / THINKING and three ticking squares: the panel's title while a turn streams. */
-const THINKING_TITLE = (
-  <span className="buildd-thinking-title">
-    <span className="text-[var(--mood-needs)]">buildd</span>
-    <span className="text-[var(--mood-thinking-label)]">thinking</span>
-    <span aria-hidden="true" className="flex gap-[3px]">
-      <span className="thinking-tick h-1 w-1 bg-[var(--mood-thinking)]" />
-      <span className="thinking-tick h-1 w-1 bg-[var(--mood-thinking)]" />
-      <span className="thinking-tick h-1 w-1 bg-[var(--mood-thinking)]" />
-    </span>
-  </span>
-);
-
 /**
  * The turn's steps: its `data-step` parts, which the server streams (a
  * continuation of an older message gets them backfilled there), so every
  * message that can be streaming carries them. Live while it streams; once it
- * is done they sit under the folded line.
+ * is done they sit under the folded line. A step saved before the server
+ * weighed them gets the stored-step rule (failures and waiting changes key).
  */
 function turnSteps(m: KitMessage, streaming: boolean): StepData[] {
-  return thinkingSteps(m.parts, streaming);
+  return thinkingSteps(m.parts, streaming).map(s => (s.weight ? s : { ...s, weight: legacyStepWeight(s) }));
+}
+
+/**
+ * The pinned key step drawn as what it filed: a write's objects (the PR or
+ * task card). A write with an approval card already shows them under the
+ * card, and a failure or waiting change has none, so those keep the row.
+ */
+function pinnedObjects(step: StepData, m: KitMessage) {
+  const callId = step.id.replace(/^(failed|approval|denied)-/, '');
+  const part = (m as ChatMessage).parts.find(p => isToolPart(p) && p.toolCallId === callId) as ChatToolPart | undefined;
+  if (!part || part.state !== 'output-available' || isApprovalPart(part)) return undefined;
+  const refs = objectsOf(part);
+  return refs.length > 0 ? <ObjectsSegment refs={refs} /> : undefined;
 }
 
 export default function ChatFeed({
@@ -313,8 +322,10 @@ export default function ChatFeed({
         renderMessageHeader={header}
         renderMessageFooter={footer}
         steps={turnSteps}
-        thinkingTitle={THINKING_TITLE}
+        thinkingName={`${agent.name.charAt(0).toUpperCase()}${agent.name.slice(1)} is working`}
+        renderPinnedStep={pinnedObjects}
         turnFold={turnFold}
+        answer="replace"
       />
     </div>
   );

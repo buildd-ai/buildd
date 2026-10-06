@@ -20,6 +20,7 @@
  * QA" over a manual validation report.
  */
 import type { VisualReviewAuditTask, VisualReviewCell, VisualReviewModel, VisualReviewNeedsYou } from '@buildd/shared';
+import { findingIsStillThere, fixStatusLabel } from './visual-fix-label';
 
 const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 
@@ -61,7 +62,7 @@ export function describeVisualPhase(
         return { label: 'Question', detail: prompt ? `The visual audit has a question for you: ${prompt}` : 'The visual audit has a question for you.' };
       }
       if (reason === 'unsure' && n > 0) {
-        return { label: `${n} to review`, detail: `${plural(n, 'screen')} the agent was unsure about ${n === 1 ? 'needs' : 'need'} your call.` };
+        return { label: `${n} to review`, detail: `${plural(n, 'screen')} the agent was unsure about ${n === 1 ? 'needs' : 'need'} a decision.` };
       }
       return { label: 'Your call', detail: `Issues remain after ${plural(s.rounds, 'round')} of fixes. Decide whether to fix or waive them.` };
     }
@@ -72,12 +73,12 @@ export function describeVisualPhase(
       const ok = s.effectiveOk ?? s.ok;
       const issues = s.effectiveIssues ?? s.issues;
       const head = `${ok} of ${s.shots} ok`;
-      const parts = [head];
+      const parts: string[] = [];
       if (issues > 0) parts.push(plural(issues, 'issue'));
-      if (s.reviewed > 0) parts.push(`${s.reviewed} decided by you`);
+      if (s.reviewed > 0) parts.push(`${s.reviewed} reviewed`);
       // Wrong-branch shots the auditor owes: never a question for a person.
       if (s.captureGaps) parts.push(`${plural(s.captureGaps, 'capture gap')} for the auditor`);
-      return { label: head, detail: `${parts.join(', ')}.` };
+      return { label: head, detail: parts.length > 0 ? `${parts.join(', ')}.` : `${head}.` };
     }
   }
 }
@@ -233,10 +234,6 @@ function evidenceLines(ev: ReturnType<typeof otherVisualEvidence>, o: FormatVisu
 const VIEWPORT_WORD = { mobile: 'phone', desktop: 'desktop' } as const;
 const DECISION_WORD = { looks_right: 'looks right', needs_fix: 'needs fix' } as const;
 const RELATION_WORD = { agree: 'agreed', dispute: 'disagreed', waive: 'waived' } as const;
-const STATUS_WORD: Record<string, string> = {
-  pending: 'queued', assigned: 'starting', in_progress: 'in progress', waiting_input: 'waiting on you',
-  completed: 'done', failed: 'failed', cancelled: 'cancelled',
-};
 
 /** Unsure first, then issues, then ok; a route keeps its phone and desktop rows together. */
 const RANK: Record<string, number> = { unsure: 0, issue: 1, ok: 2 };
@@ -256,14 +253,19 @@ function cellLine(c: VisualReviewCell, o: FormatVisualReviewOptions): string {
     `round ${e.round}`,
     `agent: ${e.agentVerdict}`,
     e.finding ? `"${one(e.finding)}"` : 'no finding',
-    e.review
-      ? `${who}: ${DECISION_WORD[e.review.decision]} (${RELATION_WORD[e.review.relation]})${e.review.note ? `, note "${one(e.review.note)}"` : ''}`
-      : c.needsHuman ? `${who}: not reviewed yet, ${mcp ? 'needs review' : 'needs your call'}` : `${who}: not reviewed yet`,
+    c.fixCheck?.state === 'awaiting_capture'
+      ? 'fix merged, waiting for a new screenshot (nothing to decide)'
+      : e.review
+        ? `${who}: ${DECISION_WORD[e.review.decision]} (${RELATION_WORD[e.review.relation]})${e.review.note ? `, note "${one(e.review.note)}"` : ''}`
+        : c.fixCheck?.state === 'check' ? `fix merged, new screenshot to check: fixed or still broken`
+        : c.needsHuman ? `${who}: not reviewed, ${mcp ? 'needs review' : 'needs a decision'}` : `${who}: not reviewed`,
   ];
-  const fix = e.fixTask;
+  const fix = e.fixTask ?? c.fixCheck?.fix ?? null;
   if (fix) {
-    const pr = fix.prNumber ? `, PR #${fix.prNumber}${fix.mergedAt ? ' merged' : ''}` : '';
-    bits.push(`fix: ${fix.mergedAt ? 'merged' : STATUS_WORD[fix.status] ?? fix.status}${pr} (task ${mcp ? fix.id : fix.id.slice(0, 8)})`);
+    const stillPresent = e.agentVerdict === 'issue' && findingIsStillThere(e.finding);
+    const { text: fixText } = fixStatusLabel(fix, { stillPresent });
+    const pr = fix.prNumber ? `, PR #${fix.prNumber}` : '';
+    bits.push(`fix: ${fixText}${pr} (task ${mcp ? fix.id : fix.id.slice(0, 8)})`);
   }
   if (mcp) {
     const base = (o.baseUrl ?? '').replace(/\/+$/, '');
@@ -333,6 +335,11 @@ function wrongRefLines(model: VisualReviewModel, o: FormatVisualReviewOptions): 
     lines.push(`Superseded (${superseded.length}): shots from the wrong branch, replaced by a shot from ${superseded[0].expectedRef}; kept for audit, not shown for review:`);
     for (const s of superseded) lines.push(`  - ${s.route} ${VIEWPORT_WORD[s.viewport]}: captured from ${s.ref}, replaced by ${pageLink(o, s.supersededBy)}`);
   }
+  const resolved = model.resolvedElsewhere ?? [];
+  if (resolved.length > 0) {
+    lines.push(`Resolved (${resolved.length}): a merged fix's cell with no screenshot of its own since, verified instead by a later round's capture of the same route, viewport and state under a different variant; kept for audit, not shown for review:`);
+    for (const r of resolved) lines.push(`  - ${r.route} ${VIEWPORT_WORD[r.viewport]}${r.variant ? ` (${r.variant})` : ''}: resolved by ${r.resolvedBy}`);
+  }
   return lines;
 }
 
@@ -342,13 +349,13 @@ function needsYouLine(model: VisualReviewModel): string {
   const reason = model.needsYou?.reason;
   if (reason === 'question') {
     const prompt = model.needsYou?.prompt?.trim();
-    return `Needs your answer: ${prompt ? one(prompt) : 'the visual audit asked a question (see the mission page).'}`;
+    return `Question: ${prompt ? one(prompt) : 'the visual audit asked a question (see the mission page).'}`;
   }
-  if (n > 0) return `${plural(n, 'screen needs', 'screens need')} your review.`;
+  if (n > 0) return `${plural(n, 'screen', 'screens')} to review.`;
   if (reason === 'round_cap' || (model.phase === 'needs_you' && !reason)) {
-    return `Needs your decision: issues remain after ${plural(model.summary.rounds, 'round')} (fix or waive).`;
+    return `Decision needed: issues remain after ${plural(model.summary.rounds, 'round')} (fix or waive).`;
   }
-  return 'Nothing needs your review.';
+  return 'Nothing to review.';
 }
 
 export function formatVisualReview(

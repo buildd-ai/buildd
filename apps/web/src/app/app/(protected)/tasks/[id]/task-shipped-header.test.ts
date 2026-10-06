@@ -32,7 +32,7 @@ describe('open PR', () => {
   it('says Done, waits on your merge, and offers Review & merge with checks and PR number under it', () => {
     const v = buildTaskShippedView(input())!;
     expect(v.eyebrow).toBe('What shipped · Feature');
-    expect(v.chips.map(c => c.label)).toEqual(['Done', 'Waiting on your merge']);
+    expect(v.chips.map(c => c.label)).toEqual(['Done', 'Ready to merge']);
     expect(v.action).toEqual({ label: 'Review & merge', href: PR_URL, tone: 'primary' });
     expect(v.actionMeta).toBe('Checks passing · PR #416');
     expect(v.mergedLine).toBeNull();
@@ -51,6 +51,39 @@ describe('open PR', () => {
     const v = buildTaskShippedView(input({ pr: { url: PR_URL, number: 416, lifecycle: 'ci_running', merged: false } }))!;
     expect(v.actionMeta).toBe('Checks running · PR #416');
     expect(v.action?.label).toBe('Review & merge');
+  });
+});
+
+describe('open fix attempt', () => {
+  const openAttempt = { taskId: 'fix-1', title: '[reviewer retry #1] Fix flaky date parsing', iteration: 1, maxIterations: 3, claimed: false };
+
+  it('names the queued fix instead of inviting a merge the review gate would refuse', () => {
+    const v = buildTaskShippedView(input({ openAttempt }))!;
+    expect(v.chips.map(c => c.label)).toEqual(['Done', 'Fix 1 of 3 queued']);
+    expect(v.action).toEqual({ label: 'View fix 1 of 3', href: '/app/tasks/fix-1', tone: 'primary' });
+  });
+
+  it('says "in progress" once a worker claims the fix', () => {
+    const v = buildTaskShippedView(input({ openAttempt: { ...openAttempt, claimed: true } }))!;
+    expect(v.chips.map(c => c.label)).toEqual(['Done', 'Fix 1 of 3 in progress']);
+  });
+
+  it('outranks a red-checks reading too — the fix is already in flight', () => {
+    const v = buildTaskShippedView(input({
+      pr: { url: PR_URL, number: 416, lifecycle: 'ci_failed', merged: false },
+      openAttempt,
+    }))!;
+    expect(v.chips.map(c => c.label)).toEqual(['Done', 'Fix 1 of 3 queued']);
+    expect(v.action?.href).toBe('/app/tasks/fix-1');
+  });
+
+  it('never applies once the PR has merged', () => {
+    const v = buildTaskShippedView(input({
+      pr: { url: PR_URL, number: 416, lifecycle: 'merged', merged: true },
+      openAttempt,
+    }))!;
+    expect(v.chips.map(c => c.label)).toEqual(['Shipped']);
+    expect(v.action).toBeNull();
   });
 });
 

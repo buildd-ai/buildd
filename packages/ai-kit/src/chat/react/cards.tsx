@@ -4,7 +4,7 @@
  * The feed's cards: the thinking checklist, the approval card, the hand-off
  * card, the empty state and the setup card.
  */
-import { useId, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
   approvalChanges,
   approvalHeadline,
@@ -22,16 +22,33 @@ import {
   toolNameOf,
   type StepData,
 } from '@builddai/ai-kit/chat/contract';
-import { greeting, humanizeToolName } from './model';
+import { greeting, humanizeToolName, liveStep, pinnedStep, stepGroups, stepWeight, THINKING_TAIL, THINKING_TAIL_ID } from './model';
 
 // ── Thinking ──────────────────────────────────────────────────────────────────
 
 export interface ThinkingPanelProps {
   steps: readonly StepData[];
-  /** Open while the turn streams; folded to a summary once it's done. */
+  /**
+   * The turn is live. Since 0.17.0 that is one free line: a pulsing square and
+   * the live step's label (a button that unfolds the whole turn), the one
+   * pinned key step under it, nothing else. Before the first step it is the
+   * square alone. Once the turn is done it folds to a summary.
+   */
   streaming: boolean;
-  /** The summary while streaming. Default "Thinking". A node since 0.9.0. */
+  /** @deprecated 0.17.0: the live line has no header any more, so this is not drawn. */
   title?: ReactNode;
+  /**
+   * The live line's accessible name, before its label (0.17.0): "Working"
+   * reads "Working: Reading a task". Default "Working".
+   */
+  name?: string;
+  /**
+   * Draw the pinned key step yourself (0.17.0), e.g. a write as the object it
+   * returned. Undefined keeps the default row.
+   */
+  renderPinned?(step: StepData): ReactNode | undefined;
+  /** How long the live step runs before its seconds show (0.17.0). Default 20s. */
+  slowAfterMs?: number;
   /**
    * The folded line once the turn is done (0.13.0), e.g. "Did 6 steps · filed
    * 2 tasks". Default "N steps". Given, the panel shows even with no steps (a
@@ -47,31 +64,135 @@ export interface ThinkingPanelProps {
 
 const MARK_LABEL: Record<StepData['state'], string> = { done: 'done', active: 'in progress', pending: 'waiting for you' };
 
-export function ThinkingPanel({ steps, streaming, title = 'Thinking', summary: settledSummary, open, onToggle, className }: ThinkingPanelProps) {
-  if (steps.length === 0 && (streaming || settledSummary == null)) return null;
-  const summary = streaming ? title : settledSummary ?? `${steps.length} step${steps.length === 1 ? '' : 's'}`;
+function StepRow({ step }: { step: StepData }) {
   return (
-    <details
+    <li className="kit-step" data-state={step.state} data-step-id={step.id} data-weight={stepWeight(step)}>
+      <span className="kit-step-mark" aria-hidden="true" />
+      <span>{step.label}</span>
+      <span className="kit-sr-only">({MARK_LABEL[step.state]})</span>
+    </li>
+  );
+}
+
+/** Two or more routine steps in a row: one dim row, "5 routine steps", that unfolds in place. */
+function RoutineFold({ steps }: { steps: readonly StepData[] }) {
+  const [open, setOpen] = useState(false);
+  const listId = useId();
+  return (
+    <li className="kit-step-fold" data-testid="kit-step-fold" data-open={open || undefined}>
+      <button type="button" className="kit-step-fold-btn" aria-expanded={open} aria-controls={open ? listId : undefined} onClick={() => setOpen(o => !o)}>
+        <span className="kit-step-fold-count">{steps.length} routine steps</span>
+        <span className="kit-step-fold-labels">{steps.map(s => s.label).join(' · ')}</span>
+      </button>
+      {open && <ol id={listId} className="kit-steps">{steps.map(s => <StepRow key={s.id} step={s} />)}</ol>}
+    </li>
+  );
+}
+
+/** The turn's steps unfolded: key steps as rows, routine runs folded, the live step last. */
+function StepList({ steps, id }: { steps: readonly StepData[]; id?: string }) {
+  return (
+    <ol id={id} className="kit-steps">
+      {stepGroups(steps).map(g => (g.kind === 'step'
+        ? <StepRow key={g.step.id} step={g.step} />
+        : <RoutineFold key={`fold-${g.id}`} steps={g.steps} />))}
+    </ol>
+  );
+}
+
+/** Seconds the live step has run, ticking once a second while there is one. */
+function useLiveSeconds(key: string | null): number {
+  const since = useRef<{ key: string; at: number } | null>(null);
+  if (key && since.current?.key !== key) since.current = { key, at: Date.now() };
+  if (!key) since.current = null;
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!key) return;
+    const t = setInterval(() => tick(n => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [key]);
+  return since.current ? Math.floor((Date.now() - since.current.at) / 1000) : 0;
+}
+
+export function ThinkingPanel({
+  steps, streaming, name = 'Working', renderPinned, slowAfterMs = 20_000,
+  summary: settledSummary, open, onToggle, className,
+}: ThinkingPanelProps) {
+  const [expanded, setExpanded] = useState(false);
+  const listId = useId();
+  const live = streaming ? liveStep(steps) : null;
+  const tail = live?.id === THINKING_TAIL_ID ? live.label : null;
+  // Before the first step: the square alone. Writing the answer: no live line.
+  const squareOnly = streaming && (steps.length === 0 || tail === THINKING_TAIL.reading);
+  const writing = tail === THINKING_TAIL.writing;
+  const lineStep = live && !squareOnly && !writing ? live : null;
+  const seconds = useLiveSeconds(lineStep?.state === 'active' ? `${lineStep.id}:${tail ?? ''}` : null);
+
+  if (!streaming) {
+    if (steps.length === 0 && settledSummary == null) return null;
+    const summary = settledSummary ?? `${steps.length} step${steps.length === 1 ? '' : 's'}`;
+    return (
+      <details
+        className={`kit-thinking${className ? ` ${className}` : ''}`}
+        open={open || undefined}
+        data-settled
+        data-testid="kit-thinking"
+        onToggle={onToggle ? e => { const next = e.currentTarget.open; if (next !== !!open) onToggle(next); } : undefined}
+      >
+        <summary data-testid="kit-thinking-summary">{summary}</summary>
+        {steps.length > 0 && <StepList steps={steps} />}
+      </details>
+    );
+  }
+
+  const done = steps.filter(s => s.id !== THINKING_TAIL_ID);
+  const pinned = expanded ? null : pinnedStep(steps);
+  const pinnedNode = pinned ? renderPinned?.(pinned) : undefined;
+  const slow = lineStep?.state === 'active' && seconds * 1000 >= slowAfterMs;
+  const canExpand = done.length > 0 && (lineStep != null || expanded);
+  return (
+    <div
       className={`kit-thinking${className ? ` ${className}` : ''}`}
-      open={streaming || open || undefined}
-      data-streaming={streaming || undefined}
-      data-settled={!streaming || undefined}
+      data-streaming
+      data-expanded={(expanded && canExpand) || undefined}
       data-testid="kit-thinking"
-      onToggle={streaming || !onToggle ? undefined : e => { const next = e.currentTarget.open; if (next !== !!open) onToggle(next); }}
     >
-      <summary data-testid="kit-thinking-summary">{summary}</summary>
-      {steps.length > 0 && (
-        <ol className="kit-steps" aria-live={streaming ? 'polite' : undefined}>
-          {steps.map(s => (
-            <li key={s.id} className="kit-step" data-state={s.state} data-step-id={s.id}>
-              <span className="kit-step-mark" aria-hidden="true" />
-              <span>{s.label}</span>
-              <span className="kit-sr-only">({MARK_LABEL[s.state]})</span>
-            </li>
-          ))}
-        </ol>
+      {squareOnly && (
+        <div className="kit-step kit-live-line" data-state="active" role="status" aria-label={name} data-testid="kit-thinking-live">
+          <span className="kit-step-mark" aria-hidden="true" />
+        </div>
       )}
-    </details>
+      {!squareOnly && (lineStep || (expanded && canExpand)) && (
+        <button
+          type="button"
+          className="kit-step kit-live-line"
+          data-state={expanded ? undefined : lineStep!.state}
+          data-testid="kit-thinking-live"
+          aria-expanded={expanded && canExpand}
+          aria-controls={expanded ? listId : undefined}
+          aria-label={expanded ? undefined : `${name}: ${lineStep!.label}`}
+          disabled={!canExpand}
+          onClick={() => setExpanded(e => !e)}
+        >
+          {expanded
+            ? <span className="kit-live-count">{done.length} step{done.length === 1 ? '' : 's'}</span>
+            : (
+              <>
+                <span className="kit-step-mark" aria-hidden="true" />
+                <span className="kit-live-label" aria-live="polite">{lineStep!.label}</span>
+                {slow && <span className="kit-live-timer" data-testid="kit-thinking-timer">{seconds}s</span>}
+              </>
+            )}
+          {canExpand && <span className="kit-live-chevron" aria-hidden="true">›</span>}
+        </button>
+      )}
+      {expanded && canExpand && <StepList steps={writing ? done : steps} id={listId} />}
+      {pinned && (
+        <div className="kit-thinking-pinned" data-testid="kit-thinking-pinned" data-step-id={pinned.id}>
+          {pinnedNode !== undefined ? pinnedNode : <ol className="kit-steps"><StepRow step={pinned} /></ol>}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -252,8 +373,8 @@ export function ApprovalCard({
     : details == null && count > 0 ? `${count} change${count === 1 ? '' : 's'}` : null;
 
   return (
-    <section className={cls} data-state={deciding ? 'deciding' : 'awaiting'} data-approval-id={approvalId ?? undefined} aria-label={`Needs your OK: ${typeof headline === 'string' ? headline : humanizeToolName(toolNameOf(part))}`} data-testid="kit-approval">
-      {head(deciding ? (sent === 'deny' ? 'Discarding…' : 'Confirmed') : 'Needs your OK')}
+    <section className={cls} data-state={deciding ? 'deciding' : 'awaiting'} data-approval-id={approvalId ?? undefined} aria-label={`Approval needed: ${typeof headline === 'string' ? headline : humanizeToolName(toolNameOf(part))}`} data-testid="kit-approval">
+      {head(deciding ? (sent === 'deny' ? 'Discarding…' : 'Confirmed') : 'Approval needed')}
       <h3 className="kit-card-title">{headline}</h3>
       {body != null && <div className="kit-approval-body">{body}</div>}
       {foldable ? (
@@ -397,7 +518,7 @@ export function ApprovalRowsCard({
   const checkedCount = parts.filter(p => !unchecked.has(p.toolCallId)).length;
   const counts = (o: ApprovalRowOutcome) => outcomes.filter(x => x === o).length;
   const status = awaiting
-    ? 'Needs your OK'
+    ? 'Approval needed'
     : !settled
       ? (sent === 'deny' ? 'Discarding…' : 'Confirmed')
       : [counts('ran') && `${counts('ran')} done`, counts('changed') && `${counts('changed')} changed`, counts('failed') && `${counts('failed')} failed`, counts('discarded') && `${counts('discarded')} discarded`]
@@ -425,7 +546,7 @@ export function ApprovalRowsCard({
     <section
       className={`kit-card kit-approval-rows${className ? ` ${className}` : ''}`}
       data-state={awaiting ? 'awaiting' : settled ? 'done' : 'deciding'}
-      aria-label={`Needs your OK: ${shape.headline}`}
+      aria-label={`Approval needed: ${shape.headline}`}
       data-testid="kit-approval-rows"
     >
       <div className="kit-card-head">

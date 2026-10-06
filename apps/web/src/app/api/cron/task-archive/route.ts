@@ -17,15 +17,20 @@
 // Also prunes worker_action_events past ACTION_EVENTS_RETENTION_DAYS and
 // watcher_events past WATCHER_EVENTS_RETENTION_DAYS — see those constants' doc
 // comments for why these tables (not workers.mcp_calls-style capped arrays) need
-// their own age-based retention job.
+// their own age-based retention job. And prunes delivered/failed rows of
+// task_dispatch_outbox past OUTBOX_RETENTION_DAYS (packages/core/dispatch-outbox.ts):
+// every wake writes one, and only the recent trail is ever read. And prunes
+// agent_capability_decisions past CAPABILITY_DECISIONS_RETENTION_DAYS: one row
+// per grant, token mint and PR decision, read only to explain recent runs.
 //
 // Auth: Bearer token matching CRON_SECRET env var.
 // Recommended schedule: weekly.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { watcherEvents, workerActionEvents } from '@buildd/core/db/schema';
+import { agentCapabilityDecisions, watcherEvents, workerActionEvents } from '@buildd/core/db/schema';
 import { lt, sql } from 'drizzle-orm';
+import { pruneDispatchOutbox } from '@buildd/core/dispatch-outbox';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60;
@@ -39,6 +44,9 @@ const STALE_AFTER = '30 days';
  * product reason to keep this table's rows longer than that.
  */
 const ACTION_EVENTS_RETENTION_DAYS = 45;
+
+/** Capability decisions explain recent runs; older ones are never read. */
+const CAPABILITY_DECISIONS_RETENTION_DAYS = 90;
 
 /**
  * `watcher_events` retention. The table is an insert-only uniqueness ledger: the
@@ -114,9 +122,32 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     console.warn('[TaskArchive] watcher_events prune failed:', pruneErr instanceof Error ? pruneErr.message : pruneErr);
   }
 
-  const summary = { ok: true, archived, prunedActionEvents, prunedWatcherEvents };
+  let prunedCapabilityDecisions = 0;
+  try {
+    const cutoff = new Date(Date.now() - CAPABILITY_DECISIONS_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    const pruned = await db
+      .delete(agentCapabilityDecisions)
+      .where(lt(agentCapabilityDecisions.occurredAt, cutoff))
+      .returning({ id: agentCapabilityDecisions.id });
+    prunedCapabilityDecisions = pruned.length;
+    console.log(`[TaskArchive] Pruned ${prunedCapabilityDecisions} agent_capability_decisions row(s) (>${CAPABILITY_DECISIONS_RETENTION_DAYS}d)`);
+  } catch (pruneErr) {
+    // Non-fatal, same as above: a failed prune leaves rows for next week's run.
+    console.warn('[TaskArchive] agent_capability_decisions prune failed:', pruneErr instanceof Error ? pruneErr.message : pruneErr);
+  }
+
+  let prunedDispatchOutbox = 0;
+  try {
+    prunedDispatchOutbox = await pruneDispatchOutbox();
+    console.log(`[TaskArchive] Pruned ${prunedDispatchOutbox} task_dispatch_outbox row(s)`);
+  } catch (pruneErr) {
+    // Non-fatal, same as above. Pending rows are never pruned, so no wake is lost.
+    console.warn('[TaskArchive] task_dispatch_outbox prune failed:', pruneErr instanceof Error ? pruneErr.message : pruneErr);
+  }
+
+  const summary = { ok: true, archived, prunedActionEvents, prunedWatcherEvents, prunedCapabilityDecisions, prunedDispatchOutbox };
   report({
-    changed: archived + prunedActionEvents + prunedWatcherEvents,
+    changed: archived + prunedActionEvents + prunedWatcherEvents + prunedCapabilityDecisions + prunedDispatchOutbox,
     errors: 0,
     result: summary,
   });

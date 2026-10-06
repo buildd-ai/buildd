@@ -100,7 +100,15 @@ function findDrifted(body: string, known: ReadonlySet<string>, notAnAction: Read
  * Anything landing here must NOT also be a real action (guarded below), so the
  * exclusion can't quietly cover for an actual rename.
  */
-const NOT_AN_ACTION = new Set(['impl_plan', 'pr_required', 'artifact_required', 'coder_report_task', 'verified_by']);
+const NOT_AN_ACTION = new Set([
+  'impl_plan',
+  'pr_required',
+  'artifact_required',
+  'coder_report_task',
+  'verified_by',
+  'head_not_owned',
+  'head_claimed',
+]);
 
 async function knownActions(): Promise<{ topLevel: Set<string>; known: Set<string> }> {
   const { allActions } = await import('../packages/core/mcp-tools');

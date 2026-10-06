@@ -74,6 +74,18 @@ export function describeExplicitDeferral(
       const w = str(detail.liveWorkerId);
       return { code: reason, detail: `Another worker${w ? ` (${w})` : ''} took the task while this claim ran.` };
     }
+    case 'sibling_retry_open':
+      return {
+        code: reason,
+        detail: 'Another fix attempt for the same PR is already open, so this one was cancelled rather than started beside it: one retry lineage updates one PR.',
+      };
+    case 'ordered_behind': {
+      const blocker = str(detail.blockedBy);
+      return {
+        code: reason,
+        detail: `The claim planner ordered it behind ${blocker ? `${blocker}, ` : ''}work it would collide with; it is claimable once that clears.`,
+      };
+    }
     case 'runner_capability': {
       const model = str(detail.model);
       const req = str(detail.requiredVersion);

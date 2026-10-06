@@ -6,8 +6,11 @@ import { buildVisualReviewFixtureModel } from '@/lib/visual-review-model.fixture
 import { createFixtureVisualReviewTransport } from '@/components/visual-review/fixture-transport';
 import { buildDecisionRequest, VisualReviewRequestError } from '@/components/visual-review/review-transport';
 import { mockWorkers } from './fixtures-data';
+import { surfaceFixTitle } from '@buildd/core/surface-audit';
 import {
   COMPARE_START_KEY,
+  FIX_CHECK_START_KEY,
+  FIX_MERGED_START_KEY,
   FIXTURE_VIEWS,
   VISUAL_REVIEW_FIXTURE_STATE,
   isFixtureView,
@@ -24,7 +27,9 @@ import {
 function expectValidModel(m: VisualReviewModel) {
   const keys = new Set(m.cells.map(c => c.key));
   expect(keys.size).toBe(m.cells.length);
-  expect([...m.queue].sort()).toEqual([...keys].sort());
+  // Only screens awaiting a decision are queued: never a fine, decided or settled one.
+  expect([...m.queue].sort()).toEqual(m.cells.filter(c => c.standing === 'to_review').map(c => c.key).sort());
+  expect(m.summary.toReview).toBe(m.queue.length);
   for (const c of m.cells) {
     expect(c.history.length).toBeGreaterThan(0);
     expect(c.current).toEqual(c.history[c.history.length - 1]);
@@ -37,7 +42,7 @@ function expectValidModel(m: VisualReviewModel) {
 
 describe('visual review fixture', () => {
   it('is a fixture view alongside the worker states, without joining mockWorkers', () => {
-    expect(FIXTURE_VIEWS).toEqual([...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, 'mission-board-visual', 'mission-list-executor', 'mission-check-ins', 'task-evidence', 'evidence-storage', 'task-shipped', 'commit-checks', 'answer-states', 'onboarding', 'mission-task-strip']);
+    expect(FIXTURE_VIEWS).toEqual([...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, 'mission-board-visual', 'mission-list-executor', 'mission-check-ins', 'goal-criteria', 'task-evidence', 'evidence-storage', 'task-shipped', 'commit-checks', 'answer-states', 'agent-access', 'onboarding', 'mission-task-strip', 'tool-breakdown']);
     expect(VISUAL_REVIEW_FIXTURE_STATE in mockWorkers).toBe(false);
     expect(isFixtureView('visual-review')).toBe(true);
     expect(isFixtureView('waiting-input')).toBe(true);
@@ -77,6 +82,25 @@ describe('visual review fixture', () => {
     const issue = m.cells.find(c => c.current.agentVerdict === 'issue')!;
     expect(issue.current.fixTask?.prNumber).toBeGreaterThan(0);
     expect(m.cells.find(c => c.key === m.queue[0])!.current.agentVerdict).toBe('unsure');
+    // A mixed queue: screens to review beside fine and fix-under-way ones the deck must skip.
+    const standings = new Set(m.cells.map(c => c.standing));
+    expect([...standings].sort()).toEqual(['fine', 'fixing', 'to_review']);
+    expect(m.queue.length).toBeLessThan(m.cells.length);
+  });
+
+  it('links both after-the-fix cases: a new screenshot to check, and a merged fix with none yet', () => {
+    const check = parseVisualReviewFixtureParams(new URLSearchParams('view=fix-check'));
+    const merged = parseVisualReviewFixtureParams(new URLSearchParams('view=fix-merged'));
+    expect(check).toMatchObject({ view: 'fix-check', startKey: FIX_CHECK_START_KEY });
+    expect(merged).toMatchObject({ view: 'fix-merged', startKey: FIX_MERGED_START_KEY });
+    const m = buildVisualReviewFixtureModel(check.phase, check.options);
+    expect(m.cells.find(c => c.key === FIX_CHECK_START_KEY)!.fixCheck?.state).toBe('check');
+    expect(m.cells.find(c => c.key === FIX_MERGED_START_KEY)!.fixCheck?.state).toBe('awaiting_capture');
+    const hrefs = visualReviewFixtureLinks().map(l => l.href);
+    expect(hrefs.some(h => h.endsWith('view=fix-check'))).toBe(true);
+    expect(hrefs.some(h => h.endsWith('view=fix-merged'))).toBe(true);
+    // Plain words: a link label never names a round.
+    expect(visualReviewFixtureLinks().filter(l => /fix/.test(l.label)).every(l => !/round/i.test(l.label))).toBe(true);
   });
 
   it('the page no longer imports the retired strip', () => {
@@ -130,9 +154,27 @@ describe('fixture transport', () => {
     expect(err.stale?.cells.map((c: { key: string }) => c.key)).toEqual([cell.key]);
   });
 
+  it('Still broken on a fix check files a new fix for the route; Fixed files none; a settled screen is stale', async () => {
+    const broken = setup();
+    const check = broken.m.cells.find(c => c.fixCheck?.state === 'check')!;
+    const res = await broken.t.decide(buildDecisionRequest({ cells: [check], decision: 'needs_fix', note: 'Still overflows at 390px.' }));
+    expect(res.fixTaskId).not.toBeNull();
+    expect(res.model.fixTasks.find(f => f.id === res.fixTaskId)!.title).toBe(surfaceFixTitle(check.route, 'Still overflows at 390px.'));
+
+    const fixed = setup();
+    const ok = await fixed.t.decide(buildDecisionRequest({ cells: [check], decision: 'looks_right' }));
+    expect(ok.fixTaskId).toBeNull();
+    expect(ok.model.summary.fixChecks).toBe(0);
+
+    const settled = fixed.m.cells.find(c => c.fixCheck?.state === 'awaiting_capture')!;
+    const err = await fixed.t.decide(buildDecisionRequest({ cells: [settled], decision: 'needs_fix' })).catch(e => e);
+    expect(err).toBeInstanceOf(VisualReviewRequestError);
+    expect(err.status).toBe(409);
+  });
+
   it('a started fix cannot be waived away: it gets guidance instead', async () => {
     const { t, m } = setup();
-    const issue = m.cells.find(c => c.current.agentVerdict === 'issue')!;
+    const issue = m.cells.find(c => c.current.agentVerdict === 'issue' && !c.fixCheck)!;
     const res = await t.decide(buildDecisionRequest({ cells: [issue], decision: 'looks_right' }));
     expect(res.cancelledFixTaskId).toBeNull();
     expect(res.guidanceTaskId).toBe(issue.current.fixTask!.id);

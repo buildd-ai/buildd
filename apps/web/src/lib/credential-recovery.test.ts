@@ -39,6 +39,25 @@ mock.module('drizzle-orm', () => ({
 
 // Real classifier (pure) is used — not mocked.
 
+// The requeue wakes through the dispatch authority. Full export surface:
+// mock.module is process-global.
+const mockWakeTasks = mock(async (_ids: readonly string[], _cause: string) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mock(async () => {}),
+  wakeTasks: mockWakeTasks,
+  announceTaskCreated: mock(async () => {}),
+  kickDispatch: mock(() => {}),
+  enqueueTaskDispatch: mock(async () => {}),
+  drainDispatchOutbox: mock(async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 })),
+  deliverTaskDispatch: mock(async () => 'pusher'),
+  routeForCause: mock(() => ({ event: 'task.unblocked', legacyDefault: false, legacyUnfilteredRunnerPreference: false })),
+  webhookWants: mock(() => false),
+  primaryCause: mock((_c: unknown, fallback: unknown) => fallback),
+  reseedDispatchTimer: mock(async () => {}),
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+}));
+
 import { requeueAuthFailedTasks, MAX_REQUEUE } from './credential-recovery';
 
 const AUTH_ERR = 'Your access token could not be refreshed because you have since logged out or signed in to another account.';
@@ -54,6 +73,7 @@ describe('requeueAuthFailedTasks', () => {
     mockUpdate.mockClear();
     updateSet.mockClear();
     updateWhere.mockClear();
+    mockWakeTasks.mockClear();
   });
 
   it('requeues tasks whose latest worker died with an auth error', async () => {
@@ -61,6 +81,8 @@ describe('requeueAuthFailedTasks', () => {
     const res = await requeueAuthFailedTasks('team-1');
     expect(res.requeued).toEqual(['task-auth']);
     expect(mockUpdate).toHaveBeenCalledTimes(1);
+    // Woken now, labelled with why: the credential that failed them is back.
+    expect(mockWakeTasks.mock.calls).toEqual([[['task-auth'], 'credential.restored']]);
   });
 
   it('leaves genuinely-failed (non-auth) tasks alone', async () => {
@@ -68,6 +90,7 @@ describe('requeueAuthFailedTasks', () => {
     const res = await requeueAuthFailedTasks('team-1');
     expect(res.requeued).toEqual([]);
     expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockWakeTasks).not.toHaveBeenCalled();
   });
 
   it('judges a task by its LATEST worker error, not an earlier one', async () => {

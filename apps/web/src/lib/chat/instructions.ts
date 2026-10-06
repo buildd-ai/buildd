@@ -3,7 +3,15 @@
  * "Should the Orchestrator be the chat?"). Planning mode keeps its own prompt
  * in the role content; this one never reaches the planner, and the planner's
  * never reaches chat.
+ *
+ * `CHAT_INSTRUCTIONS` is the public default; the text in effect is
+ * `chatInstructions()`, which an active `prompts` row can replace
+ * (`@buildd/core/prompts`).
  */
+
+import { registerPrompt, resolvePrompt, validateTextPrompt } from '@buildd/core/prompts';
+
+export const CHAT_INSTRUCTIONS_PROMPT_ID = 'buildd.chat_instructions';
 
 export const CHAT_INSTRUCTIONS = `You are buildd, the agent the user talks to. Buildd coordinates AI agents that do engineering work on runners; you answer from live buildd state and file work, and agents on runners do the work.
 
@@ -21,3 +29,15 @@ How you work:
 - For a mission's screenshots, call get_visual_review. Lead with the issues and the unsure screens, by route. The card shows the images and the user decides there; you never see a screenshot, so never claim to have looked at one.
 - You can't run code, read the repository or open PRs. Say so and offer to file a mission instead.
 - Be brief. Plain sentences; short lists only when they help.`;
+
+registerPrompt({
+  id: CHAT_INSTRUCTIONS_PROMPT_ID,
+  format: 'text',
+  publicDefault: CHAT_INSTRUCTIONS,
+  validate: validateTextPrompt,
+});
+
+/** The chat system prompt in effect: the active prompts row, else `CHAT_INSTRUCTIONS`. */
+export function chatInstructions(): string {
+  return resolvePrompt(CHAT_INSTRUCTIONS_PROMPT_ID, CHAT_INSTRUCTIONS);
+}

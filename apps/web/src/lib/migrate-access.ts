@@ -14,6 +14,7 @@ import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
+import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 
 export type MigrationAuth =
   | { type: 'api'; teamIds: string[]; userId: null }
@@ -46,5 +47,7 @@ export async function isTeamAdmin(userId: string, teamId: string): Promise<boole
     where: and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, teamId)),
     columns: { role: true },
   });
-  return membership?.role !== 'member';
+  // No row = the caller's personal team, which they own.
+  if (!membership) return true;
+  return roleHas(membership.role, 'migrate_workspace', await getTeamPermissionOverrides(teamId));
 }

@@ -101,14 +101,14 @@ describe('thinking', () => {
     expect(q('[data-testid="kit-send"]')).toBeNull();
   });
 
-  it('the streaming turn is the Thinking panel: plain steps, no tool names, one active step', async () => {
+  it('the streaming turn is one live line: the current step in plain words, no header, no tool names', async () => {
     await render({ messages: msgs(), status: 'streaming' });
-    // The streaming message is the panel: the kit's checklist, then what the agent says.
+    // The streaming message: the live line, then what the agent says.
     const panel = q('.buildd-thread .kit-msg[data-streaming]');
     expect(panel).not.toBeNull();
-    expect(panel!.querySelector('[data-testid="kit-thinking"] .buildd-thinking-title')?.textContent).toBe('builddthinking');
-    const steps = qa('.buildd-thread .kit-step');
-    expect(steps.map(s => s.dataset.state)).toEqual(['done', 'active']);
+    expect(panel!.querySelector('.buildd-thinking-title')).toBeNull();
+    expect(panel!.querySelector('[data-testid="kit-thinking-live"] .kit-live-label')?.textContent).toBe('Searching what buildd remembers');
+    expect(qa('.buildd-thread li.kit-step')).toHaveLength(0);
     expect(panel!.textContent).not.toMatch(/manage_missions|recall\b/);
     expect(q('[data-testid="tool-call-row"]')).toBeNull();
     expect(panel!.querySelector('.stream-caret')).not.toBeNull();
@@ -140,9 +140,11 @@ describe('thinking', () => {
     expect(q('[data-testid="tool-call-row"]')).not.toBeNull();
   });
 
-  it('submitted, nothing streamed: the panel says it is reading the question', async () => {
+  it('submitted, nothing streamed: the pulsing square alone, no words', async () => {
     await render({ messages: msgs().slice(0, 1), status: 'submitted' });
-    expect(qa('.buildd-thread .kit-step').map(s => s.children[1]?.textContent)).toEqual(['Reading your question']);
+    const line = q('.buildd-thread [data-testid="kit-thinking-live"]');
+    expect(line?.querySelector('.kit-step-mark')).not.toBeNull();
+    expect(q('.buildd-thread [data-testid="kit-thinking"]')!.textContent).toBe('');
   });
 });
 
@@ -303,7 +305,7 @@ describe('empty canvas', () => {
   it('needs you: names it, row 1 is copper, the composer rule turns copper', async () => {
     await render({ pulse: { needsYou: [{ title: 'Pick a currency' }], live: 1 } });
     expect(q('[data-testid="canvas-empty"]')?.dataset.mood).toBe('needs');
-    expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('One thing needs you.');
+    expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('One to review.');
     expect(q('[data-testid="canvas-picked-status"]')?.textContent).toBe('1 blocked');
     // The overline leads with the needs square; the header reads before the rows.
     expect(q('[data-testid="canvas-empty"] .kit-empty-overline .kit-mood-dot')?.getAttribute('data-mood')).toBe('needs');
@@ -430,7 +432,7 @@ describe('mission sheet (the summoned canvas over a mission)', () => {
     expect(q('[data-testid="mission-context-status"]')?.textContent).toBe('Needs you');
     expect(q('[data-testid="mission-context-landed-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
     expect(q('[data-testid="mission-context-goal-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
-    expect(q('[data-testid="mission-context-insight"]')?.textContent).toContain('waiting on you');
+    expect(q('[data-testid="mission-context-insight"]')?.textContent).toMatch(/needs? input/);
     expect(q('[data-testid="mission-context-flag"]')).not.toBeNull();
   });
 
@@ -807,7 +809,7 @@ describe('desktop right panel (>= 1024px, docs/design/chat-v3-desktop.md "Dock")
     expect(q('[data-testid="dock-task-insight"]')?.textContent).toContain('Round per line');
     const steps = qa('[data-testid="dock-happened-row"]').map(r => r.textContent);
     expect(steps[0]).toContain('Started the change');
-    expect(steps.at(-1)).toContain('Waiting on you.');
+    expect(steps.at(-1)).toContain('Needs input.');
     expect(qa('[data-testid="dock-action"]').map(b => b.textContent)).toEqual(['Answer it', 'Ask about it']);
   });
 

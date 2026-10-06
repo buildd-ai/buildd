@@ -288,12 +288,10 @@ describe('renderTaskAreaBlock', () => {
     expect(block).toContain('path manifest');
   });
 
-  it('points at the graph only when the task has it', () => {
+  it('points at recall, not a code graph', () => {
     const hint = { arm: TASK_AREA_TREATMENT_ARM, policyVersion: 'task-area-v1', paths: ['a/b.ts'], source: 'diff' as const };
-    expect(renderTaskAreaBlock(hint)).toContain('`codebase-memory`');
-    // A CBM-withheld task must not be steered toward a tool it does not have.
-    const withheld = renderTaskAreaBlock(hint, { cbmAvailable: false });
-    expect(withheld).not.toContain('codebase-memory');
-    expect(withheld).toContain('`recall`');
+    const block = renderTaskAreaBlock(hint);
+    expect(block).not.toContain('codebase-memory');
+    expect(block).toContain('`recall`');
   });
 });

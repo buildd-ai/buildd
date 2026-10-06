@@ -25,7 +25,23 @@ const REVIEW = '55555555-5555-4555-8555-555555555555';
 
 const model = buildVisualReviewModel({ missionId: MISSION, shots: [], tasks: [], now: Date.parse('2026-03-10T11:00:00.000Z') });
 mock.module('@/lib/visual-review-load', () => ({ loadVisualReview: async () => model, toHumanShotReview: (r: any) => r }));
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: async () => {} }));
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: async () => {},
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 mock.module('@/lib/mission-surface-audit', () => ({ ensureMissionSurfaceAudit: async () => {}, detachFixFromPendingAudit: async () => ({ action: 'none' }) }));
 const mockCancelFx = mock(async (_t: any) => {});
 mock.module('@/lib/task-cancel', () => ({ applyTaskCancelSideEffects: mockCancelFx, applyTaskReopenSideEffects: async () => {} }));

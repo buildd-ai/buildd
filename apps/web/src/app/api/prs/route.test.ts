@@ -73,3 +73,24 @@ describe('GET /api/prs', () => {
     expect(mockRefresh.mock.calls[0][0]).toEqual(['ws-a']);
   });
 });
+
+describe('per-task token', () => {
+  const SCOPED = { id: 'acc', teamId: 'team', level: 'worker', taskScope: { taskId: 't-1', workspaceId: 'ws-a', expiresAt: Date.now() + 60_000 } };
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+  });
+
+  it('lists only its own task’s workspace, though the account reaches more', async () => {
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(mockListPrs.mock.calls[0][0].workspaceIds).toEqual(['ws-a']);
+    expect((await res.json()).workspaceCount).toBe(1);
+  });
+
+  it('lists nothing for another workspace of the team', async () => {
+    await GET(req('?workspaceId=ws-b'));
+    expect(mockListPrs.mock.calls[0][0].workspaceIds).toEqual([]);
+    expect(mockRefresh).not.toHaveBeenCalled();
+  });
+});

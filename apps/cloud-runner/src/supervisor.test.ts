@@ -4,8 +4,8 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { INITIAL_STATE, buildContainerEnv, type RunState } from './lifecycle';
-import { TaskSupervisor, type ContainerPort, type ProcessPort, type SupervisorDeps } from './supervisor';
+import { INITIAL_STATE, MAX_DEFERRED_RETRIES, buildContainerEnv, type RunState } from './lifecycle';
+import { TaskSupervisor, type ContainerPort, type ProcessPort, type ScheduledDispatchPayload, type SchedulerPort, type SupervisorDeps } from './supervisor';
 
 const TASK_ID = 'task-abc123';
 
@@ -63,8 +63,25 @@ function fakeContainer() {
   };
 }
 
-function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response> } = {}) {
+/** The Agents SDK schedule API, faked: records one-shots and fires them on demand. */
+function fakeScheduler() {
+  let seq = 0;
+  const scheduled = new Map<string, { at: number; payload: ScheduledDispatchPayload }>();
+  const cancelled: string[] = [];
+  const port: SchedulerPort = {
+    async scheduleAt(at, payload) {
+      const id = `sched-${++seq}`;
+      scheduled.set(id, { at, payload });
+      return id;
+    },
+    async cancel(id) { cancelled.push(id); scheduled.delete(id); },
+  };
+  return { port, scheduled, cancelled };
+}
+
+function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response>; now?: () => number } = {}) {
   let state: RunState = opts.initial ?? INITIAL_STATE;
+  const sched = fakeScheduler();
   const fc = fakeContainer();
   const fetches: Array<{ url: string; init: RequestInit }> = [];
   const logs: string[] = [];
@@ -99,13 +116,14 @@ function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus
       if (opts.fetchThrows) throw new Error('network down');
       return new Response('{}', { status: opts.fetchStatus ?? 200 });
     }) as unknown as typeof fetch,
-    now: () => Date.now(),
+    scheduler: sched.port,
+    now: opts.now ?? (() => Date.now()),
     sleep: () => new Promise(r => setTimeout(r, 1)),
     log: (m) => logs.push(m),
   };
   const sup = new TaskSupervisor(deps);
   return {
-    sup, fc, fetches, logs,
+    sup, fc, fetches, logs, sched,
     get state() { return state; },
     get keepAliveHeld() { return keepAliveHeld; },
     /** Wait for the run started by the last dispatch to settle. */
@@ -310,6 +328,41 @@ describe('crash handling', () => {
     expect(h.state.error).toMatch(/container stopped/);
   });
 
+  // A container that died under the runner is infrastructure, not the
+  // agent's verdict on the work. The report carries the same structured flag
+  // the runner's own boot reconciliation sends for a session its process lost
+  // (`crashReconciled`), so buildd puts the task on its infra-retry budget
+  // (backoff, infraRetryCount, infra_stalled at the cap) instead of failing it.
+  test.each([
+    ['signal-killed runner', (h: ReturnType<typeof harness>) => h.fc.exits[0]!.resolve(137)],
+    ['container stopped under the process', (h: ReturnType<typeof harness>) => h.fc.kill()],
+  ] as const)('a crash report for a %s is flagged as an infrastructure crash', async (_name, crash) => {
+    const h = harness();
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-infra']);
+    h.sup.dispatch();
+    await h.until(() => h.state.workerId === 'worker-infra');
+    crash(h);
+    await h.settle();
+    const patches = h.fetches.filter(f => f.init.method === 'PATCH');
+    expect(patches).toHaveLength(1);
+    const body = JSON.parse(patches[0]!.init.body as string);
+    expect(body).toMatchObject({ status: 'failed', crashReconciled: true });
+  });
+
+  test.each([
+    [0, 'done'], [1, 'failed'], [3, 'refused'], [64, 'usage'], [4, 'parked'],
+  ] as const)('exit %p (%p) sends no crash report, so nothing is flagged infra', async (code) => {
+    const h = harness();
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-own']);
+    h.sup.dispatch();
+    await h.until(() => h.state.workerId === 'worker-own');
+    h.fc.exits[0]!.resolve(code);
+    await h.settle();
+    const patches = h.fetches.filter(f => f.init.method === 'PATCH');
+    expect(patches).toHaveLength(0);
+    expect(h.fetches.some(f => typeof f.init.body === 'string' && f.init.body.includes('crashReconciled'))).toBe(false);
+  });
+
   test('a crash before any worker id is not reported (nothing to mark)', async () => {
     const h = harness();
     h.sup.dispatch();
@@ -353,12 +406,86 @@ describe('crash handling', () => {
   });
 });
 
+describe('deferred claims and container-capacity starts self-schedule a retry', () => {
+  const NOW = 2_000_000;
+
+  test('a claim deferred for capacity (exit 5) is `deferred`, not crashed; no crash report; a backoff retry is scheduled', async () => {
+    const h = harness({ now: () => NOW });
+    h.fc.setStdout(['[once] claim deferred: no_pending_tasks', 'BUILDD_CLAIM_DEFERRED=workspace_cap']);
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(5);
+    await h.settle();
+    expect(h.state).toMatchObject({ status: 'exited', exitCode: 5, outcome: 'deferred', claimDeferredReason: 'workspace_cap', deferredRetryCount: 1 });
+    // Pre-claim: no worker was ever created, so there is nothing to crash-report.
+    expect(h.fetches).toHaveLength(0);
+    expect(h.state.report).toMatchObject({ outcome: 'deferred', crashReport: null, deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'workspace_cap' } });
+    expect([...h.sched.scheduled.values()]).toEqual([{ at: NOW + 30_000, payload: { notBefore: NOW + 30_000, deferredRetry: true } }]);
+  });
+
+  test('a container-capacity start failure is `start_deferred`, not crashed, with no exec attempted; a backoff retry is scheduled', async () => {
+    const h = harness({ now: () => NOW });
+    (h.fc.container as { start: ContainerPort['start'] }).start = () => {
+      throw new Error('There is no container instance that can be provided to this Durable Object, try again later.');
+    };
+    h.sup.dispatch();
+    await h.settle();
+    expect(h.state).toMatchObject({ status: 'exited', exitCode: null, outcome: 'start_deferred', deferredRetryCount: 1 });
+    expect(h.fc.execs).toHaveLength(0); // never got past starting the container
+    expect(h.fetches).toHaveLength(0); // pre-claim: nothing to crash-report
+    expect(h.state.report).toMatchObject({ outcome: 'start_deferred', crashReport: null, deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'container_capacity' } });
+    expect([...h.sched.scheduled.values()]).toEqual([{ at: NOW + 30_000, payload: { notBefore: NOW + 30_000, deferredRetry: true } }]);
+  });
+
+  test('a container start failure for an unrelated reason stays a crash (not deferred)', async () => {
+    const h = harness({ now: () => NOW });
+    (h.fc.container as { start: ContainerPort['start'] }).start = () => { throw new Error('image pull failed: unauthorized'); };
+    h.sup.dispatch();
+    await h.settle();
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'crashed' });
+    expect(h.state.deferredRetryCount).toBeUndefined();
+    expect(h.sched.scheduled.size).toBe(0);
+  });
+
+  test('backoff increases per consecutive deferred attempt and stops at the cap, leaving the task alone', async () => {
+    const c = { t: NOW };
+    const h = harness({ now: () => c.t });
+    h.fc.setStdout(['BUILDD_CLAIM_DEFERRED=no_slots']);
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(5);
+    await h.settle();
+
+    const backoffs: number[] = [];
+    for (let retryNumber = 1; retryNumber <= MAX_DEFERRED_RETRIES; retryNumber++) {
+      expect(h.state.deferredRetryCount).toBe(retryNumber);
+      const ids = [...h.sched.scheduled.keys()];
+      const scheduleId = ids[ids.length - 1]!;
+      const entry = h.sched.scheduled.get(scheduleId)!;
+      expect(entry.payload.deferredRetry).toBe(true);
+      backoffs.push(entry.at - c.t);
+      c.t = entry.at;
+      h.fc.setStdout(['BUILDD_CLAIM_DEFERRED=no_slots']);
+      expect(h.sup.fireScheduledDispatch(entry.payload, scheduleId)).toMatchObject({ fired: true, accepted: true });
+      await h.until(() => h.state.status === 'running');
+      h.fc.exits[h.fc.exits.length - 1]!.resolve(5);
+      await h.settle();
+    }
+    // Every retry's backoff is at least as long as the one before it.
+    for (let i = 1; i < backoffs.length; i++) expect(backoffs[i]).toBeGreaterThan(backoffs[i - 1]!);
+    // One more consecutive deferral past the cap: gives up, nothing new scheduled.
+    expect(h.state.deferredRetryCount).toBe(MAX_DEFERRED_RETRIES + 1);
+    expect(h.sched.scheduled.size).toBe(MAX_DEFERRED_RETRIES);
+  });
+});
+
 describe('orphan recovery', () => {
   test('a run marked live in storage with nothing in memory is marked crashed and reported', async () => {
     const h = harness({ initial: { taskId: TASK_ID, attempt: 3, status: 'running', workerId: 'w-orphan', startedAt: 1 } });
     await h.sup.recoverOrphan();
     expect(h.state).toMatchObject({ status: 'exited', outcome: 'crashed', attempt: 3, crashReport: 'sent' });
     expect(h.fetches[0]!.url).toContain('/api/workers/w-orphan');
+    expect(JSON.parse(h.fetches[0]!.init.body as string)).toMatchObject({ status: 'failed', crashReconciled: true });
     expect(h.fc.starts).toHaveLength(0); // recovery never starts a run
   });
 
@@ -391,7 +518,16 @@ describe('never re-dispatches on its own', () => {
       const src = readFileSync(join(import.meta.dir, file), 'utf8')
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/\/\/.*$/gm, '');
-      expect(src).not.toMatch(/setInterval|setAlarm|\.schedule\(|scheduleEvery|cron/);
+      expect(src).not.toMatch(/setInterval|setAlarm|scheduleEvery|cron/);
+      // The one alarm: the one-shot a `task.scheduled` dispatch asks for, at a
+      // fixed Date, into the scheduled-dispatch callback. Never recurring.
+      const schedules = src.match(/\.schedule\(/g) ?? [];
+      if (file === 'worker-agent.ts') {
+        expect(schedules).toHaveLength(1);
+        expect(src).toMatch(/this\.schedule\(new Date\([^)]*\), 'runScheduledDispatch'/);
+      } else {
+        expect(schedules).toHaveLength(0);
+      }
     }
   });
 });
@@ -467,6 +603,9 @@ describe('run report', () => {
       'BUILDD_PHASE=fetch_end 1500',
       'BUILDD_METRIC=fetch_bytes 64',
       'BUILDD_METRIC=snapshot_age_ms 7200000',
+      'BUILDD_PHASE=restore_cache_start 1500',
+      'BUILDD_PHASE=restore_cache_end 1750',
+      'BUILDD_CACHE_SKIPPED=pnpm-store 2100000000 1073741824',
       'BUILDD_REPO_SOURCE=warm',
       'BUILDD_METRIC=bogus 1',
     ]);
@@ -475,8 +614,28 @@ describe('run report', () => {
     h.fc.exits[0]!.resolve(0);
     await h.settle();
     const r = h.state.report!;
-    expect(r.repo).toEqual({ source: 'warm', fallbackReason: null, snapshotAgeMs: 7_200_000, bytes: { clone: null, restore: 5000, fetch: 64, cache: null, upload: null } });
-    expect(r.durationsMs).toMatchObject({ restoreWarm: 400, fetch: 100, clone: null });
+    expect(r.repo).toEqual({
+      source: 'warm', fallbackReason: null, snapshotAgeMs: 7_200_000, warmUploadSkipReason: null,
+      cacheSkipped: { part: 'pnpm-store', bytes: 2_100_000_000, cap: 1_073_741_824 },
+      bytes: { clone: null, restore: 5000, fetch: 64, cache: null, cacheRaw: null, upload: null, warmRepo: null },
+    });
+    expect(r.durationsMs).toMatchObject({ restoreWarm: 400, fetch: 100, clone: null, restoreCache: 250 });
+  });
+
+  test('a warm upload skipped over the cap is reported with the measured size', async () => {
+    const h = harness();
+    h.fc.setStdout([
+      'BUILDD_WORKER_ID=worker-9',
+      'BUILDD_REPO_SOURCE=clone no_snapshot',
+      'BUILDD_METRIC=warm_repo_bytes 2600000000',
+      'BUILDD_WARM_UPLOAD=skipped too_large',
+    ]);
+    h.sup.dispatch();
+    await h.until(() => h.state.timings?.warmUpload !== undefined);
+    h.fc.exits[0]!.resolve(1);
+    await h.settle();
+    expect(h.state.report!.repo).toMatchObject({ source: 'clone', fallbackReason: 'no_snapshot', warmUploadSkipReason: 'too_large', bytes: { warmRepo: 2_600_000_000 } });
+    expect(h.state.report!.durationsMs.warmUpload).toBeNull();
   });
 
   test('a clone fallback is reported with its reason', async () => {
@@ -759,5 +918,118 @@ describe('resumable runs: park and resume', () => {
       expect(h.state.outcome).toBe('crashed');
       expect(h.fc.execs).toHaveLength(0);
     }
+  });
+});
+
+describe('scheduled dispatch (task.scheduled)', () => {
+  const NOW = 1_000_000;
+  const clock = () => { let t = NOW; return { now: () => t, set(v: number) { t = v; } }; };
+
+  test('a future notBefore schedules a one-shot and records scheduledFor; nothing starts yet', async () => {
+    const c = clock();
+    const h = harness({ now: c.now });
+    const r = await h.sup.scheduleDispatch(NOW + 300_000);
+    expect(r).toEqual({ scheduled: true, scheduledFor: NOW + 300_000, replaced: false });
+    expect([...h.sched.scheduled.values()]).toEqual([{ at: NOW + 300_000, payload: { notBefore: NOW + 300_000 } }]);
+    expect(h.state.scheduledFor).toBe(NOW + 300_000);
+    expect(h.state.scheduleId).toBe('sched-1');
+    expect(h.sup.status().scheduledFor).toBe(NOW + 300_000);
+    expect(h.fc.starts).toHaveLength(0);
+  });
+
+  test('a later task.scheduled replaces the earlier one (last write wins)', async () => {
+    const h = harness({ now: () => NOW });
+    await h.sup.scheduleDispatch(NOW + 300_000);
+    const r = await h.sup.scheduleDispatch(NOW + 900_000);
+    expect(r).toEqual({ scheduled: true, scheduledFor: NOW + 900_000, replaced: true });
+    expect(h.sched.cancelled).toEqual(['sched-1']);
+    expect([...h.sched.scheduled.keys()]).toEqual(['sched-2']);
+    expect(h.state).toMatchObject({ scheduledFor: NOW + 900_000, scheduleId: 'sched-2' });
+    // The replaced schedule firing anyway (its cancel lost) is a no-op.
+    expect(h.sup.fireScheduledDispatch({ notBefore: NOW + 300_000 }, 'sched-1')).toMatchObject({ fired: false, reason: 'superseded' });
+    expect(h.fc.starts).toHaveLength(0);
+  });
+
+  test('when it fires, the existing dispatch path starts the run; the report carries the time and the lateness', async () => {
+    const c = clock();
+    const h = harness({ now: c.now });
+    await h.sup.scheduleDispatch(NOW + 300_000);
+    c.set(NOW + 300_000 + 1_500);
+    const r = h.sup.fireScheduledDispatch({ notBefore: NOW + 300_000 }, 'sched-1');
+    expect(r).toEqual({ fired: true, accepted: true, attempt: 1 });
+    expect(h.state.scheduledFor).toBeUndefined();
+    expect(h.state.scheduleId).toBeUndefined();
+    expect(h.state.timings?.scheduledFor).toBe(NOW + 300_000);
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    expect(h.state.report?.schedule).toEqual({ scheduledFor: NOW + 300_000, startedAt: NOW + 301_500, lateMs: 1_500 });
+  });
+
+  test('a live run makes the schedule a no-op when it fires, and clears it', async () => {
+    const h = harness();
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    // The crash path: buildd requeues with a backoff while this run is still finishing.
+    await h.sup.scheduleDispatch(Date.now() + 300_000);
+    expect(h.state.status).toBe('running');
+    expect(h.state.scheduleId).toBe('sched-1');
+    const r = h.sup.fireScheduledDispatch({ notBefore: h.state.scheduledFor! }, 'sched-1');
+    expect(r).toMatchObject({ fired: true, accepted: false, reason: 'already_live' });
+    expect(h.state.scheduleId).toBeUndefined();
+    expect(h.fc.starts).toHaveLength(1);
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+  });
+
+  test('a schedule set during a live run survives that run ending, and fires the next attempt', async () => {
+    const h = harness();
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    await h.sup.scheduleDispatch(Date.now() + 300_000);
+    h.fc.exits[0]!.resolve(137);
+    await h.settle();
+    expect(h.state.status).toBe('exited');
+    expect(h.state.scheduleId).toBe('sched-1');
+    const r = h.sup.fireScheduledDispatch({ notBefore: h.state.scheduledFor! }, 'sched-1');
+    expect(r).toEqual({ fired: true, accepted: true, attempt: 2 });
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[1]!.resolve(0);
+    await h.settle();
+  });
+
+  test('a normal dispatch that starts a run consumes the pending schedule: it is cancelled and a late fire is a no-op', async () => {
+    const h = harness();
+    await h.sup.scheduleDispatch(Date.now() + 300_000);
+    expect(h.sup.dispatch()).toEqual({ accepted: true, attempt: 1 });
+    expect(h.state.scheduleId).toBeUndefined();
+    expect(h.state.scheduledFor).toBeUndefined();
+    await h.until(() => h.sched.cancelled.length === 1);
+    expect(h.sched.cancelled).toEqual(['sched-1']);
+    expect(h.sup.fireScheduledDispatch({ notBefore: 0 }, 'sched-1')).toMatchObject({ fired: false, reason: 'superseded' });
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    expect(h.fc.starts).toHaveLength(1);
+    expect(h.state.report?.schedule).toEqual({ scheduledFor: null, startedAt: expect.any(Number), lateMs: null });
+  });
+
+  test('a notBefore already past dispatches now, through the same path', async () => {
+    const h = harness({ now: () => NOW });
+    await h.sup.scheduleDispatch(NOW + 300_000);
+    const r = await h.sup.scheduleDispatch(NOW - 10);
+    expect(r).toMatchObject({ scheduled: false, accepted: true, attempt: 1 });
+    expect(h.sched.cancelled).toEqual(['sched-1']);
+    expect(h.state.scheduleId).toBeUndefined();
+    expect(h.state.timings?.scheduledFor).toBe(NOW - 10);
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+  });
+
+  test('a fire with no pending schedule (state lost or already consumed) starts nothing', () => {
+    const h = harness();
+    expect(h.sup.fireScheduledDispatch({ notBefore: 1 }, 'sched-9')).toMatchObject({ fired: false, reason: 'superseded' });
+    expect(h.fc.starts).toHaveLength(0);
   });
 });

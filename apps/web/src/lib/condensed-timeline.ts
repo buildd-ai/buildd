@@ -82,6 +82,142 @@ function allDepsGateSatisfied(task: CondensedTask, taskMap: Map<string, Condense
   return true;
 }
 
+// ─── Shared adjacency — mission-progress-strip-ordering.md §6 ────────────────
+
+export type AdjacencyWorker = {
+  prUrl: string | null;
+  mergedAt: string | Date | null;
+  prLifecycleStatus?: string | null;
+};
+
+/** What the claim gate reads of a dependency (`isGateSatisfied`). */
+export type AdjacencyGateRow = { status: string; workers: readonly AdjacencyWorker[] };
+
+export type AdjacencyTask = AdjacencyGateRow & { id: string; dependsOn?: readonly string[] | null };
+
+/** One on-set edge end, tagged by the claim gate. */
+export type AdjacencyEdge = { id: string; satisfied: boolean };
+
+export type MissionAdjacency = {
+  /** On-set dependencies per task, deduplicated, in `dependsOn` order. */
+  blockersOf: Map<string, AdjacencyEdge[]>;
+  /** On-set dependents per task, in input order. */
+  dependentsOf: Map<string, AdjacencyEdge[]>;
+  /** Unsatisfied dependencies outside the set (another mission, a non-row task), by raw id. */
+  offSetBlockersOf: Map<string, string[]>;
+  /** 1 + the longest on-set edge path from a root of the task's component. */
+  level: Map<string, number>;
+  /** Weakly connected component per task: the input index of its first member. */
+  component: Map<string, number>;
+  /** Deepest level per component. */
+  maxLevel: Map<number, number>;
+  /** Tasks Kahn never released (a cycle, or downstream of one). */
+  cycle: Set<string>;
+};
+
+/**
+ * The one walk over `dependsOn` for a set of mission tasks. The Timeline's
+ * chains, the Structure canvas's ranks, the Board's deps and the Landed
+ * strip's order all read this result; none of them walks `dependsOn` itself.
+ *
+ * - `lookup` finds the row the claim gate would judge for a raw dependency id
+ *   (default: the set itself). A dependency it cannot find is unknown: an
+ *   on-set edge to it counts as satisfied, an off-set one is ignored.
+ * - `resolveId` folds a raw id onto the cell that carries it (an attempt or a
+ *   re-creation onto its row). Default: identity.
+ *
+ * O(N + E). Cycles terminate: their members get the component's released
+ * depth + 1 (Rule CYC-1).
+ */
+export function buildMissionAdjacency(
+  tasks: readonly AdjacencyTask[],
+  opts: { lookup?: (id: string) => AdjacencyGateRow | undefined; resolveId?: (id: string) => string } = {},
+): MissionAdjacency {
+  const byId = new Map(tasks.map(t => [t.id, t]));
+  const lookup = opts.lookup ?? ((id: string) => byId.get(id));
+  const resolve = opts.resolveId ?? ((id: string) => id);
+  const satisfied = (dep: AdjacencyGateRow) => isGateSatisfied(dep, dep.workers as AdjacencyWorker[]);
+
+  const blockersOf = new Map<string, AdjacencyEdge[]>();
+  const dependentsOf = new Map<string, AdjacencyEdge[]>();
+  const offSetBlockersOf = new Map<string, string[]>();
+  for (const t of tasks) {
+    blockersOf.set(t.id, []);
+    dependentsOf.set(t.id, []);
+    offSetBlockersOf.set(t.id, []);
+  }
+
+  for (const t of tasks) {
+    const onSet = new Map<string, AdjacencyEdge>();
+    const off = offSetBlockersOf.get(t.id)!;
+    for (const raw of t.dependsOn ?? []) {
+      const target = resolve(raw);
+      if (target === t.id) continue;
+      const dep = lookup(raw);
+      if (byId.has(target)) {
+        const ok = dep ? satisfied(dep) : true;
+        const prev = onSet.get(target);
+        if (prev) prev.satisfied = prev.satisfied && ok;
+        else onSet.set(target, { id: target, satisfied: ok });
+      } else if (dep && !satisfied(dep) && !off.includes(raw)) {
+        off.push(raw);
+      }
+    }
+    blockersOf.set(t.id, [...onSet.values()]);
+  }
+  for (const t of tasks) {
+    for (const e of blockersOf.get(t.id)!) dependentsOf.get(e.id)!.push({ id: t.id, satisfied: e.satisfied });
+  }
+
+  // Components: union-find over on-set edges, named by their first member.
+  const index = new Map(tasks.map((t, i) => [t.id, i]));
+  const parent = tasks.map((_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) i = parent[i] = parent[parent[i]];
+    return i;
+  };
+  for (const t of tasks) {
+    for (const e of blockersOf.get(t.id)!) {
+      const a = find(index.get(t.id)!);
+      const b = find(index.get(e.id)!);
+      if (a !== b) parent[Math.max(a, b)] = Math.min(a, b);
+    }
+  }
+  const component = new Map(tasks.map((t, i) => [t.id, find(i)]));
+
+  // Levels: Kahn, longest path from a root.
+  const level = new Map<string, number>();
+  const inDegree = new Map(tasks.map(t => [t.id, blockersOf.get(t.id)!.length]));
+  const queue = tasks.filter(t => inDegree.get(t.id) === 0).map(t => t.id);
+  for (const id of queue) level.set(id, 1);
+  for (let head = 0; head < queue.length; head++) {
+    const id = queue[head];
+    const next = level.get(id)! + 1;
+    for (const d of dependentsOf.get(id)!) {
+      if (next > (level.get(d.id) ?? 0)) level.set(d.id, next);
+      const left = inDegree.get(d.id)! - 1;
+      inDegree.set(d.id, left);
+      if (left === 0) queue.push(d.id);
+    }
+  }
+  const released = new Set(queue);
+  const cycle = new Set(tasks.filter(t => !released.has(t.id)).map(t => t.id));
+  const maxLevel = new Map<number, number>();
+  for (const id of released) {
+    const c = component.get(id)!;
+    maxLevel.set(c, Math.max(maxLevel.get(c) ?? 0, level.get(id)!));
+  }
+  const cycleLevel = new Map<number, number>();
+  for (const id of cycle) {
+    const c = component.get(id)!;
+    if (!cycleLevel.has(c)) cycleLevel.set(c, (maxLevel.get(c) ?? 0) + 1);
+    level.set(id, cycleLevel.get(c)!);
+  }
+  for (const [c, l] of cycleLevel) maxLevel.set(c, l);
+
+  return { blockersOf, dependentsOf, offSetBlockersOf, level, component, maxLevel, cycle };
+}
+
 // ─── Grouping function ────────────────────────────────────────────────────────
 
 /**
@@ -189,26 +325,14 @@ export function identifyChains<T extends CondensedTask>(
   taskMap: Map<string, CondensedTask>,
 ): ChainUnit<T>[] {
   const taskById = new Map(tasks.map(t => [t.id, t]));
-  const taskIds = new Set(tasks.map(t => t.id));
 
-  // Pass 1: build unresolved adjacency (only within our task set)
-  const unresolvedBlockers = new Map<string, string[]>(); // id → blocker ids
-  const unresolvedDependents = new Map<string, string[]>(); // id → dependent ids
-  for (const task of tasks) {
-    unresolvedBlockers.set(task.id, []);
-    unresolvedDependents.set(task.id, []);
-  }
-  for (const task of tasks) {
-    for (const depId of task.dependsOn ?? []) {
-      if (!taskIds.has(depId)) continue; // not in set → treated as resolved
-      const dep = taskMap.get(depId);
-      if (!dep) continue;
-      if (!isGateSatisfied(dep, dep.workers)) {
-        unresolvedBlockers.get(task.id)!.push(depId);
-        unresolvedDependents.get(depId)!.push(task.id);
-      }
-    }
-  }
+  // Pass 1: the shared adjacency, narrowed to unresolved edges within our set
+  // (a dependency outside the set is treated as resolved here).
+  const adjacency = buildMissionAdjacency(tasks, { lookup: id => taskMap.get(id) });
+  const unresolved = (edges: Map<string, AdjacencyEdge[]>) =>
+    new Map(tasks.map(t => [t.id, edges.get(t.id)!.filter(e => !e.satisfied).map(e => e.id)]));
+  const unresolvedBlockers = unresolved(adjacency.blockersOf); // id → blocker ids
+  const unresolvedDependents = unresolved(adjacency.dependentsOf); // id → dependent ids
 
   // Pass 2: determine interior nodes of a linear chain.
   // Interior: exactly 1 unresolved blocker, AND that blocker has exactly 1 unresolved dependent (itself).
@@ -276,7 +400,7 @@ export function identifyChains<T extends CondensedTask>(
     }
   }
 
-  return collapseTerminalChains(chains);
+  return collapseTerminalChains(chains, adjacency);
 }
 
 // ─── Terminal chain collapse — timeline-mobile-rail.md D1 ────────────────────
@@ -300,7 +424,7 @@ const TERMINAL_STATUSES = new Set<string>(TERMINAL_TASK_STATUSES);
  * Retry lineage (`parentTaskId`) is deliberately not an input here: a retry is a
  * Lane-2 sibling, never an ordinal member (Rule D1-2).
  */
-function collapseTerminalChains<T extends CondensedTask>(chains: ChainUnit<T>[]): ChainUnit<T>[] {
+function collapseTerminalChains<T extends CondensedTask>(chains: ChainUnit<T>[], adjacency: MissionAdjacency): ChainUnit<T>[] {
   const pool = chains.filter(c => c.shape === 'standalone' && TERMINAL_STATUSES.has(c.head.status));
   if (pool.length < 2) return chains;
 
@@ -312,8 +436,9 @@ function collapseTerminalChains<T extends CondensedTask>(chains: ChainUnit<T>[])
     blockers.set(id, []);
     dependents.set(id, []);
   }
+  // The shared adjacency's edges, resolved or not, restricted to the pool.
   for (const c of pool) {
-    for (const depId of c.head.dependsOn ?? []) {
+    for (const { id: depId } of adjacency.blockersOf.get(c.head.id) ?? []) {
       if (!poolIds.has(depId)) continue;
       blockers.get(c.head.id)!.push(depId);
       dependents.get(depId)!.push(c.head.id);
@@ -499,7 +624,7 @@ export type RailNode<T> = {
 };
 
 export type RailTick = { kind: 'tick'; id: string; label: string; now: boolean };
-export type RailLabel = { kind: 'label'; id: string; text: 'waiting on you' | 'running' };
+export type RailLabel = { kind: 'label'; id: string; text: 'needs input' | 'running' };
 export type RailGoal = { total: number; passed: number | null };
 
 /**
@@ -768,7 +893,7 @@ export function buildRail<T extends RailTaskLike>(
 
   const labelAt = new Map<number, RailLabel>();
   if (waitingOnYou.length > 0) {
-    labelAt.set(0, { kind: 'label', id: 'label-waiting', text: 'waiting on you' });
+    labelAt.set(0, { kind: 'label', id: 'label-waiting', text: 'needs input' });
   }
   if (running.length > 0) {
     labelAt.set(waitingOnYou.length, {

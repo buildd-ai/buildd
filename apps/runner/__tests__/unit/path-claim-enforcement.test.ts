@@ -12,6 +12,8 @@ import { execSync } from 'child_process';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { CLOUD_BRANCH_FETCH_DEPTH, cloneRepo } from '../../src/git-clone';
+import { DEEP_ORIGIN_COMMITS, git as deepGit, makeDeepOrigin } from '../fixtures/deep-origin';
 import {
   normalizeWorktreePath,
   extractEditPaths,
@@ -286,6 +288,22 @@ describe('sweepWorktreeChanges (real git)', () => {
     expect(sweep.paths).not.toContain('src/landed-later.ts');
     expect(await refreshBaseRef(work, 'not-a-remote-ref')).toBe(false);
     expect(await refreshBaseRef(work, 'origin/no-such-branch')).toBe(false);
+  });
+
+  test('refreshBaseRef in a depth-1 single-branch (cloud) clone brings a base it lacks at a bounded depth, not its whole history', async () => {
+    const deepDir = mkdtempSync(join(tmpdir(), 'pce-deep-'));
+    try {
+      const { url } = makeDeepOrigin(deepDir);
+      const cloud = join(deepDir, 'cloud');
+      cloneRepo(url, cloud, { env: { BUILDD_EXECUTOR: 'cloud' }, branch: 'dev', log: () => {} });
+      expect(await refreshBaseRef(cloud, 'origin/main')).toBe(true);
+      expect(deepGit(cloud, 'rev-parse', '--is-shallow-repository')).toBe('true');
+      const fetched = Number(deepGit(cloud, 'rev-list', '--count', 'origin/main'));
+      expect(fetched).toBeLessThanOrEqual(CLOUD_BRANCH_FETCH_DEPTH);
+      expect(fetched).toBeLessThan(DEEP_ORIGIN_COMMITS);
+    } finally {
+      rmSync(deepDir, { recursive: true, force: true });
+    }
   });
 });
 

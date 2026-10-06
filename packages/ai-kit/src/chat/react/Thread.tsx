@@ -13,6 +13,7 @@
 import { useMemo, type ReactNode } from 'react';
 import {
   EVENT_PART_TYPE,
+  answerPartIndex,
   isHandoffPart,
   isSteerPart,
   isTextPart,
@@ -101,8 +102,15 @@ export interface ChatThreadProps {
    * called with an empty assistant message.
    */
   steps?(message: ChatMessage, streaming: boolean): readonly StepData[];
-  /** The thinking panel's summary while it streams (0.9.0). Default "Thinking". */
+  /** @deprecated 0.17.0: the live line has no header, so this is not drawn. */
   thinkingTitle?: ReactNode;
+  /** The live line's accessible name before its label (0.17.0), e.g. "Buildd is working". Default "Working". */
+  thinkingName?: string;
+  /**
+   * Draw the step pinned under the live line (0.17.0), e.g. a write as the
+   * object it returned. Undefined keeps the default row.
+   */
+  renderPinnedStep?(step: StepData, message: ChatMessage): ReactNode | undefined;
   /**
    * Fold a finished turn (0.13.0): its steps and its tool-call runs collapse
    * under one line, e.g. "Did 6 steps · filed 2 tasks", that unfolds on tap.
@@ -111,6 +119,17 @@ export interface ChatThreadProps {
    * which turns are open, so a re-render never springs one shut.
    */
   turnFold?: TurnFold;
+  /**
+   * How an assistant turn's prose lives (0.18.0). `append` (default): every
+   * text part is drawn where it arrived, as before. `replace`: the turn draws
+   * one answer region, its latest prose (`answerPartIndex`), so text written
+   * early in a long turn shows at once and the final answer replaces it in
+   * place, the same node, rather than following it. Earlier prose stays in
+   * the parts (history, audit), off screen. The region carries
+   * `data-testid="kit-answer"` and `data-answer="live" | "settled"`, and is
+   * `aria-busy` while live so a screen reader reads the settled answer once.
+   */
+  answer?: 'append' | 'replace';
   /** The person's name, for "Approved by …". */
   viewerName?: string | null;
   /** Shown instead of the list while there are no messages (`<ChatEmpty>`). */
@@ -153,7 +172,7 @@ function eventOf(m: ChatMessage, type: string): EventData | null {
 export function ChatThread({
   messages, status = 'ready', onApprovalResponse, onEditApproval, renderText = defaultText, renderObject,
   renderTool, renderToolGroup: appToolGroup, toolRows = 'line', toolCallOptions, renderEvent, eventPartType = EVENT_PART_TYPE, renderHandoff,
-  renderMessageHeader, renderMessageFooter, steps: stepsOf, thinkingTitle, turnFold,
+  renderMessageHeader, renderMessageFooter, steps: stepsOf, thinkingName, renderPinnedStep, turnFold, answer = 'append',
   viewerName = null, empty, error, label = 'Conversation', className,
 }: ChatThreadProps) {
   const handoffs = useMemo(() => latestHandoffs(messages), [messages]);
@@ -202,8 +221,28 @@ export function ChatThread({
       if (node != null && node !== false) out.push(<div key={`${m.id}:g${groupAt}`}>{node}</div>);
       group = [];
     };
+    // `replace`: one answer region per assistant turn, keyed by the message so
+    // the final prose updates the early prose's node instead of a new one.
+    const answerAt = answer === 'replace' && m.role === 'assistant' ? answerPartIndex(m.parts) : null;
     m.parts.forEach((p, i) => {
       const key = `${m.id}:${i}`;
+      if (isTextPart(p) && answerAt !== null) {
+        // Superseded prose draws nothing, so it doesn't split a run of calls either.
+        if (i !== answerAt) return;
+        flush();
+        out.push(
+          <div
+            key={`${m.id}:answer`}
+            className="kit-answer"
+            data-testid="kit-answer"
+            data-answer={ctx.streaming ? 'live' : 'settled'}
+            aria-busy={ctx.streaming || undefined}
+          >
+            {renderText(p.text, m, p)}
+          </div>,
+        );
+        return;
+      }
       if (isTextPart(p)) {
         if (p.text.trim()) flush();
         if (p.text) out.push(<div key={key}>{renderText(p.text, m, p)}</div>);
@@ -295,12 +334,21 @@ export function ChatThread({
         const steps = m.role === 'assistant' ? (stepsOf ? stepsOf(m, streaming) : thinkingSteps(m.parts, streaming)) : [];
         const foldLine = m.role === 'assistant' && !streaming && turnFold ? turnFold.summary(m, steps) : null;
         const foldOpen = foldLine != null && turnFold!.isOpen(m);
+        // An app checklist with no steps while the answer streams: nothing left to show working.
+        const answering = streaming && steps.length === 0 && m.parts.some(p => isTextPart(p) && !!p.text.trim());
         return (
           <div key={m.id} className="kit-msg" data-role={m.role} data-message-id={m.id} data-streaming={streaming || undefined} data-folded={(foldLine != null && !foldOpen) || undefined}>
             {head(m, ctx)}
             {m.role === 'assistant' && (foldLine != null
               ? <ThinkingPanel steps={steps} streaming={false} summary={foldLine} open={foldOpen} onToggle={open => turnFold!.onToggle(m, open)} />
-              : <ThinkingPanel steps={steps} streaming={streaming} title={thinkingTitle} />)}
+              : !answering && (
+                <ThinkingPanel
+                  steps={steps}
+                  streaming={streaming}
+                  name={thinkingName}
+                  renderPinned={renderPinnedStep ? s => renderPinnedStep(s, m) : undefined}
+                />
+              ))}
             {partsOf(m, ctx, foldLine != null && !foldOpen)}
             {foot(m, ctx)}
           </div>
@@ -308,7 +356,7 @@ export function ChatThread({
       })}
       {waitingForFirstChunk && (
         <div className="kit-msg" data-role="assistant" data-streaming>
-          <ThinkingPanel steps={stepsOf ? stepsOf(PENDING, true) : thinkingSteps([], true)} streaming title={thinkingTitle} />
+          <ThinkingPanel steps={stepsOf ? stepsOf(PENDING, true) : thinkingSteps([], true)} streaming name={thinkingName} />
         </div>
       )}
       {error && !lastHasTurnError && <div className="kit-error" role="alert">{error}</div>}

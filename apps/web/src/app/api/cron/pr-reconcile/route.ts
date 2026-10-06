@@ -54,11 +54,8 @@
 // completion gate refuses a mission whose PR is missing, leaving this to the
 // daily run would hold a finished mission open for a day.
 //
-// sweepDeferredDispatch() also runs on both: it is the second nudge for a task
-// requeued with a future startAt, which dispatchRetriedTask deliberately skips
-// while the task is deferred and which nothing else re-sends once startAt
-// passes (lib/deferred-dispatch-sweep.ts). It rides this hourly route instead of
-// a new cron so it opens no extra Neon wake window.
+// Deferred-startAt wakes used to ride here too (lib/deferred-dispatch-sweep.ts).
+// They are durable outbox intents now, fired on time by /api/cron/dispatch-drain.
 //
 // All three are bounded: reconcileStalePrWorkers caps its batch and rate-limits
 // its GitHub calls, and the mission sweep caps its candidate set to opted-in
@@ -74,7 +71,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { reconcileStalePrWorkers, sweepMissionIntegrationPrs } from '@/lib/pr-reconcile';
 import { sweepDeadZonePrs } from '@/lib/dead-zone-sweep';
 import { sweepStrandedTasks } from '@/lib/stranded-tasks-sweep';
-import { sweepDeferredDispatch } from '@/lib/deferred-dispatch-sweep';
 import { sweepSpecDiscrepancyRechecks } from '@/lib/spec-recheck';
 import { sweepDuplicateLineagePrs } from '@/lib/retry-pr-supersession';
 import { sweepClosedUnsupersededPrs } from '@/lib/pr-supersession-detect';
@@ -112,7 +108,7 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch, landing, refreshRedrive, ciRed, closedPrs] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -138,13 +134,6 @@ export async function GET(req: NextRequest) {
       // not happen (lib/retry-pr-supersession.ts). Hourly — a duplicate PR is
       // one merge click from shipping a rejected attempt.
       sweepDuplicateLineagePrs().catch(err => ({
-        error: err instanceof Error ? err.message : String(err),
-      })),
-      // Tasks whose deferred `startAt` has passed get the wake-up nudge the
-      // requeue skipped, so a push-only consumer (the Cloudflare dispatcher)
-      // sees them (lib/deferred-dispatch-sweep.ts). Hourly on this route rather
-      // than a new cron; isolated because it fans out to webhooks.
-      sweepDeferredDispatch().catch(err => ({
         error: err instanceof Error ? err.message : String(err),
       })),
       // The landing backstop's floor pass: enumerates from Postgres and re-seeds
@@ -208,11 +197,6 @@ export async function GET(req: NextRequest) {
         `[LineagePrSweep] candidates=${lineagePrs.candidates} closed=${lineagePrs.closed} stranded=${lineagePrs.stranded} skipped=${lineagePrs.skipped}`,
       );
     }
-    if ('error' in deferredDispatch) {
-      console.error('[DeferredDispatch] error:', deferredDispatch.error);
-    } else {
-      console.log(`[DeferredDispatch] dispatched=${deferredDispatch.dispatched} failed=${deferredDispatch.failed}`);
-    }
     if ('error' in landing) {
       console.error('[LandingSweep] error:', landing.error);
     } else {
@@ -242,7 +226,6 @@ export async function GET(req: NextRequest) {
     const strandedErrors = 'error' in stranded ? 1 : 0;
     const specRecheckErrors = 'error' in specRecheck ? 1 : specRecheck.rechecksFailed + specRecheck.followUpsFailed;
     const lineageErrors = 'error' in lineagePrs ? 1 : lineagePrs.stranded;
-    const deferredDispatchErrors = 'error' in deferredDispatch ? 1 : deferredDispatch.failed;
     const landingErrors = 'error' in landing ? 1 : landing.errors;
     const refreshRedriveErrors = 'error' in refreshRedrive ? 1 : refreshRedrive.errors;
     const ciRedErrors = 'error' in ciRed ? 1 : ciRed.errors;
@@ -260,15 +243,14 @@ export async function GET(req: NextRequest) {
         + ('error' in stranded ? 0 : stranded.stranded + stranded.cleared)
         + ('error' in specRecheck ? 0 : specRecheck.rechecksDispatched + specRecheck.followUpsDispatched)
         + ('error' in lineagePrs ? 0 : lineagePrs.closed)
-        + ('error' in deferredDispatch ? 0 : deferredDispatch.dispatched)
         + ('error' in landing ? 0 : landingChanged(landing))
         + ('error' in refreshRedrive ? 0 : refreshRedrive.merged + refreshRedrive.exhausted)
         + ('error' in ciRed ? 0 : ciRedChanged(ciRed))
         + ('error' in closedPrs ? 0 : closedPrs.recorded + closedPrs.suggested),
       errors:
         reconcile.errors + missionPrErrors + strandedErrors + specRecheckErrors + lineageErrors
-        + deferredDispatchErrors + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors,
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch, landing, refreshRedrive, ciRed, closedPrs },
+        + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors,
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs },
     });
 
     return NextResponse.json({
@@ -280,7 +262,6 @@ export async function GET(req: NextRequest) {
       stranded,
       specRecheck,
       lineagePrs,
-      deferredDispatch,
       landing,
       refreshRedrive,
       ciRed,

@@ -21,7 +21,7 @@ let insertReturning: any[] = [{ id: 'worker-eval-task-1' }];
 const insertedValues: any[] = [];
 const updateCalls: any[] = [];
 
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockCompleteMissionIfVerified = mock((_id: string, _opts: any) =>
   Promise.resolve({ completed: false, decision: { ok: false, code: 'criteria_unverified', reason: 'stub' } }) as any);
 
@@ -85,8 +85,22 @@ mock.module('@buildd/core/mission-helpers', () => ({
   },
 }));
 
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
 }));
 
 mock.module('@/lib/mission-completion', () => ({
@@ -133,7 +147,8 @@ function resetAll() {
   insertReturning = [{ id: 'worker-eval-task-1' }];
   insertedValues.length = 0;
   updateCalls.length = 0;
-  mockDispatchNewTask.mockClear();
+  mockAnnounceTaskCreated.mockClear();
+  mockWakeTask.mockClear();
   mockCompleteMissionIfVerified.mockClear();
   firedGateEvents.length = 0;
 }
@@ -200,7 +215,8 @@ describe('resolveCriteriaWorkerEval', () => {
 
     expect(res.kind).toBe('pending');
     expect((res as any).taskId).toBe('worker-eval-task-1');
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
 
     // Verify the inserted task carries the correct marker
     expect(insertedValues).toHaveLength(1);
@@ -236,7 +252,8 @@ describe('resolveCriteriaWorkerEval', () => {
 
     expect(res.kind).toBe('pending');
     expect((res as any).taskId).toBe('in-flight-task');
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('shows stall message when pending task has been waiting > 2× TTL', async () => {
@@ -284,7 +301,8 @@ describe('resolveCriteriaWorkerEval', () => {
 
     expect(res.kind).toBe('unavailable');
     expect(res.evidence).toMatch(/finished without returning verdicts/);
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('re-dispatches when prior task is stale (past TTL)', async () => {
@@ -307,7 +325,8 @@ describe('resolveCriteriaWorkerEval', () => {
     });
 
     expect(res.kind).toBe('pending');
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
   });
 });
 

@@ -6,6 +6,7 @@ import { eq } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { appBaseUrl } from '@/lib/app-url';
 import { GitConfigForm } from './GitConfigForm';
 import { WorkspaceHealthCard } from './WorkspaceHealthCard';
 import { ReadinessCard } from './ReadinessCard';
@@ -16,8 +17,13 @@ import BranchStrategySection from './BranchStrategySection';
 import WorkTrackerSection from './WorkTrackerSection';
 import KnowledgeHealthSection from './KnowledgeHealthSection';
 import SubjectPolicySection from './SubjectPolicySection';
+import ExecutorSection from './ExecutorSection';
+import ConcurrencySection from './ConcurrencySection';
+import { isWorkspaceExecutor, resolveWorkspaceExecutor } from '@buildd/shared';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 import DeleteWorkspaceButton from '../DeleteWorkspaceButton';
+import { roleHas } from '@/lib/permission-registry';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 export default async function WorkspaceConfigPage({
     params,
@@ -33,6 +39,7 @@ export default async function WorkspaceConfigPage({
 
     const access = await verifyWorkspaceAccess(user.id, id);
     if (!access) notFound();
+    const overrides = await getTeamPermissionOverrides(access.teamId);
 
     const workspace = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, id),
@@ -46,6 +53,8 @@ export default async function WorkspaceConfigPage({
             accessMode: true,
             releaseConfig: true,
             workTrackerConfig: true,
+            webhookConfig: true,
+            maxConcurrentTasks: true,
         },
     });
 
@@ -54,6 +63,10 @@ export default async function WorkspaceConfigPage({
     if (!workspace) {
         notFound();
     }
+
+    // Where its tasks run: the stored value and the one the claim route applies.
+    const storedExecutor = (workspace.gitConfig as { executor?: unknown } | null)?.executor;
+    const executor = resolveWorkspaceExecutor(workspace.gitConfig as { executor?: unknown } | null, workspace.webhookConfig);
 
     return (
         <main className="min-h-screen p-4 md:p-8">
@@ -70,7 +83,7 @@ export default async function WorkspaceConfigPage({
                 </div>
 
                 {/* Every health action is an admin write, so members do not see the card. */}
-                {(access.role === 'owner' || access.role === 'admin') && (
+                {roleHas(access.role, 'manage_workspace_settings', overrides) && (
                     <WorkspaceHealthCard
                         workspace={{ id: workspace.id, name: workspace.name, teamId: workspace.teamId }}
                         teams={userTeams.map(t => ({ id: t.id, name: t.name }))}
@@ -86,7 +99,7 @@ export default async function WorkspaceConfigPage({
                 )}
 
                 {/* Scaffold and spec routes are admin writes too. */}
-                {(access.role === 'owner' || access.role === 'admin') && (
+                {roleHas(access.role, 'manage_workspace_settings', overrides) && (
                     <ReadinessCard workspaceId={workspace.id} />
                 )}
 
@@ -99,6 +112,7 @@ export default async function WorkspaceConfigPage({
                 <ConnectClaudeSection
                     workspaceId={workspace.id}
                     workspaceName={workspace.name}
+                    serverOrigin={appBaseUrl()}
                 />
 
                 <ReleaseSection
@@ -115,6 +129,18 @@ export default async function WorkspaceConfigPage({
                     defaultBranch={(workspace.gitConfig as WorkspaceGitConfig | null)?.defaultBranch || 'main'}
                 />
 
+                <ExecutorSection
+                    workspaceId={workspace.id}
+                    explicit={isWorkspaceExecutor(storedExecutor) ? storedExecutor : null}
+                    effective={executor.executor}
+                    source={executor.source}
+                />
+
+                <ConcurrencySection
+                    workspaceId={workspace.id}
+                    initialMaxConcurrentTasks={workspace.maxConcurrentTasks}
+                />
+
                 <WorkTrackerSection
                     workspaceId={workspace.id}
                     initialWorkTrackerConfig={workspace.workTrackerConfig as WorkspaceWorkTrackerConfig | null}
@@ -127,19 +153,22 @@ export default async function WorkspaceConfigPage({
                     initialPolicy={(workspace.gitConfig as any)?.subjectPolicy ?? null}
                 />
 
-                {/* Destructive action lives here, away from the workspace header's primary actions. */}
-                <section
-                    data-testid="workspace-danger-zone"
-                    className="mt-10 border border-status-error/30 rounded-lg p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
-                >
-                    <div className="min-w-0">
-                        <h2 className="text-sm font-semibold text-status-error">Delete workspace</h2>
-                        <p className="text-xs text-text-muted mt-1">
-                            Deletes the workspace and its tasks and workers. You can&apos;t undo this.
-                        </p>
-                    </div>
-                    <DeleteWorkspaceButton workspaceId={workspace.id} workspaceName={workspace.name} />
-                </section>
+                {/* Destructive action lives here, away from the workspace header's primary actions.
+                    DELETE is owner-only, so other roles would get a button that always fails. */}
+                {roleHas(access.role, 'delete_workspace', overrides) && (
+                    <section
+                        data-testid="workspace-danger-zone"
+                        className="mt-10 border border-status-error/30 rounded-lg p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                        <div className="min-w-0">
+                            <h2 className="text-sm font-semibold text-status-error">Delete workspace</h2>
+                            <p className="text-xs text-text-muted mt-1">
+                                Deletes the workspace and its tasks and workers. You can&apos;t undo this.
+                            </p>
+                        </div>
+                        <DeleteWorkspaceButton workspaceId={workspace.id} workspaceName={workspace.name} />
+                    </section>
+                )}
             </div>
         </main>
     );

@@ -854,7 +854,6 @@ export default function NewTaskPage() {
                         { value: 'any', label: 'Any runner' },
                         { value: 'user', label: 'User runners only' },
                         { value: 'service', label: 'Service runners only' },
-                        { value: 'action', label: 'Action runners only' },
                       ]}
                     />
                     <p className="text-xs text-text-secondary mt-1">

@@ -57,6 +57,25 @@ mock.module('@/lib/task-dependencies', () => ({
 }));
 
 const mockReleaseAndNotify = mock((_taskId: string, _reason: string) => Promise.resolve());
+
+// A requeue wakes through the dispatch authority. Full export surface:
+// mock.module is process-global.
+const mockWakeTask = mock((_taskId: string, _cause: string, _opts?: unknown) => Promise.resolve());
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  announceTaskCreated: mock(async () => {}),
+  kickDispatch: mock(() => {}),
+  enqueueTaskDispatch: mock(async () => {}),
+  drainDispatchOutbox: mock(async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 })),
+  deliverTaskDispatch: mock(async () => 'pusher'),
+  routeForCause: mock(() => ({ event: 'task.retry', legacyDefault: false, legacyUnfilteredRunnerPreference: false })),
+  webhookWants: mock(() => false),
+  primaryCause: mock((_c: unknown, fallback: unknown) => fallback),
+  reseedDispatchTimer: mock(async () => {}),
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+}));
 mock.module('@/lib/path-claim-release', () => ({
   releaseAndNotify: mockReleaseAndNotify,
 }));
@@ -154,6 +173,7 @@ describe('POST /api/tasks/cleanup', () => {
     mockTasksFindFirst.mockReset();
     mockTasksFindFirst.mockResolvedValue({ context: {}, workspaceId: 'ws-1' });
     mockResolveCompletedTask.mockReset();
+    mockWakeTask.mockClear();
     mockResolveCompletedTask.mockResolvedValue(undefined);
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
@@ -468,6 +488,8 @@ describe('POST /api/tasks/cleanup', () => {
     expect(capturedSetData.status).toBe('failed');
     expect(capturedSetData.context.terminalError).toBe('retry_cap_exceeded');
     expect(capturedSetData.context.prior).toBe('context');  // preserves existing context
+    // Terminal: nothing to wake.
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('cascades to dependents when the retry cap fails a task', async () => {
@@ -534,6 +556,7 @@ describe('POST /api/tasks/cleanup', () => {
 
     expect(res.status).toBe(200);
     expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+    expect(mockWakeTask.mock.calls).toEqual([['retryable-task', 'task.requeued']]);
   });
 
   it('survives a cascade failure without aborting the cleanup pass', async () => {

@@ -9,7 +9,7 @@ let updateCalls: any[] = [];
 let workspaceFindFirstResult: any = null;
 const insertedValues: any[] = [];
 
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockTriggerEvent = mock(() => Promise.resolve());
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -75,8 +75,22 @@ mock.module('@/lib/mission-shipped-report', () => ({
   loadShippedHeroPool: async () => heroPool,
 }));
 
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
 }));
 
 mock.module('@/lib/pusher', () => ({
@@ -118,8 +132,9 @@ function resetAll() {
   insertedValues.length = 0;
   effectiveRoles = new Set();
   pickRoleCalls.length = 0;
-  mockDispatchNewTask.mockReset();
-  mockDispatchNewTask.mockImplementation(() => Promise.resolve());
+  mockAnnounceTaskCreated.mockReset();
+  mockWakeTask.mockReset();
+  mockAnnounceTaskCreated.mockImplementation(() => Promise.resolve());
   mockTriggerEvent.mockReset();
   mockTriggerEvent.mockImplementation(() => Promise.resolve());
   mockCompleteMissionIfVerified.mockReset();
@@ -259,7 +274,8 @@ describe('mission-evaluation', () => {
 
       const result = await spawnEvaluationTask('m1', 'pt1');
       expect(result).toBe('eval-task-new');
-      expect(mockDispatchNewTask).toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).toHaveBeenCalled();
+      expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     });
   });
 

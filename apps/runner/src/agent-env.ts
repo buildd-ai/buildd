@@ -14,6 +14,10 @@ export const RUNNER_ENV_PASSTHROUGH: ReadonlySet<string> = new Set([
   'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL',
   // Node / Bun runtime (needed for tools the agent runs)
   'NODE_ENV', 'NODE_PATH', 'BUN_INSTALL', 'npm_config_cache',
+  // pnpm's content-addressable store (run-once.ts defaults this inside the
+  // warm-repo dependency cache; see warm-repo.ts's pnpmStoreDir) — needed so
+  // a pnpm install the agent runs itself lands in the same warmed location.
+  'npm_config_store_dir',
   // Proxy / network (needed for egress from agent tools)
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
   'http_proxy', 'https_proxy', 'no_proxy',
@@ -30,9 +34,20 @@ export const RUNNER_ENV_PASSTHROUGH: ReadonlySet<string> = new Set([
   // LLM credentials, not runner coordination secrets. Server-managed keys (below)
   // override them when present.
   'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
-  // OpenAI key — needed for Codex tasks and any agent that calls OpenAI APIs
-  'OPENAI_API_KEY',
-  // GitHub token — needed for gh CLI (PRs, issues). Not a runner secret.
+  // A Claude subscription seat in the runner's own environment (a
+  // `claude setup-token` value). It is the machine's own login and wins over a
+  // server-delivered seat (host-seat.ts, agent-model-env.ts). Dropped again
+  // under BUILDD_HOST_SEAT=off, and never sent to a non-Anthropic endpoint.
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  // OpenAI key — needed for Codex tasks and any agent that calls OpenAI APIs.
+  // OPENAI_BASE_URL: the Codex equivalent of ANTHROPIC_BASE_URL above — a
+  // machine-level override that beats the team's agent model endpoint
+  // (agent-model-env.ts's `codexMachineOverride`).
+  'OPENAI_API_KEY', 'OPENAI_BASE_URL',
+  // The operator's GitHub token, for gh and git. Passed through only until the
+  // claim says `githubCredentials.mode = 'scoped'`: the runner then strips it
+  // and gives the agent a task-scoped installation token instead
+  // (agent-github-credentials.ts, docs/runner-github-credentials.md).
   'GITHUB_TOKEN', 'GH_TOKEN',
   // Claude Code: no telemetry, error reporting or auto-update calls. Set by the
   // --once container image (apps/runner/Dockerfile.once), where every outbound

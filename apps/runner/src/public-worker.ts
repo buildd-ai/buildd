@@ -33,6 +33,11 @@ export const WITHHELD_WORKER_FIELDS = [
   'assertionReAuthFailed',
   'roleEnvSecrets', // resolved secret VALUES (ENV_NAME -> value), never client-safe
   'modelEndpoint', // the team agent model endpoint's key
+  // Prompt text: the role persona, the skill bodies and the packaged role
+  // bundle. Not credentials, but never echoed to a client either.
+  'roleInstructions',
+  'skillBundles',
+  'roleBundle',
 ] as const satisfies ReadonlyArray<keyof LocalWorker>;
 
 export type WithheldWorkerField = (typeof WITHHELD_WORKER_FIELDS)[number];
@@ -47,6 +52,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   parentTaskId: true,
   taskMode: true,
   taskBackend: true,
+  promptBundlesLoaded: true, // a boolean, no prompt text
   workspaceId: true,
   workspaceName: true,
   workspaceDataClass: true,
@@ -63,7 +69,9 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   commits: true,
   prCreated: true,
   prUrl: true,
-  noDeliverableNudged: true,
+  sessionEndPushCount: true,
+  sessionEndPushes: true,
+  lastToolDenial: true,
   output: true,
   toolCalls: true,
   messages: true,
@@ -104,25 +112,14 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   sessionModel: true,
   reportedModel: true,
   resultMeta: true,
-  cbmOutcome: true,
-  cbmExperimentWithheld: true,
   questionGate: true,
   claudeAiArtifacts: true,
   claudeTokenScopes: true,
   questionPushbacks: true,
   lastEditedFile: true,
-  cbmDisableReason: true,
-  cbmBootstrapResult: true,
-  cbmBootstrapFailReason: true,
-  cbmBackgroundIndexLanded: true,
-  cbmSharedCache: true,
-  cbmSeedRefresh: true,
-  cbmSeedBaseMismatch: true,
-  cbmToolCounts: true,
-  cbmFileAccessCounts: true,
-  cbmInjection: true,
   toolCounts: true,
   bashCommandCounts: true,
+  fileToolAreas: true,
   degradedConnectors: true,
   assertionConnectors: true,
   promptSuggestions: true,
@@ -130,10 +127,9 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   currentPromptId: true,
   commandLifecycle: true,
   modelCapabilities: true,
-  roleInstructions: true,
-  skillBundles: true,
   roleEnvMissing: true,
   modelEndpointIgnored: true,
+  githubCredentials: true, // a mode marker; the token itself is never on the worker
 
   // Withheld — see WITHHELD_WORKER_FIELDS.
   mcpSecrets: false,
@@ -145,6 +141,9 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   codexCredential: false,
   modelEndpoint: false,
   roleConfig: false,
+  roleInstructions: false,
+  skillBundles: false,
+  roleBundle: false,
   assertionTokenCache: false,
   assertionReAuthFailed: false,
   roleEnvSecrets: false,

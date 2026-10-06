@@ -9,9 +9,7 @@ import { alias } from 'drizzle-orm/pg-core';
 import { db } from '@buildd/core/db';
 import { experiments } from '@buildd/core/db/schema';
 import { invalidateModelRoutingExperimentCache } from '@buildd/core/model-routing-experiment-source';
-import { invalidateCbmAccessExperimentCache } from '@buildd/core/cbm-access-experiment-source';
 import { invalidateHeartbeatTriageExperimentCache } from '@buildd/core/heartbeat-triage-experiment-source';
-import { invalidateQuestionGateExperimentCache } from '@buildd/core/question-gate-source';
 import type { NewExperimentValues } from './experiments';
 
 export type ExperimentRow = typeof experiments.$inferSelect;
@@ -139,8 +137,6 @@ export async function applyExperimentUpdate(
   // this process's copy so a start/pause here is visible to the next claim it
   // serves. Other instances converge within the TTL.
   invalidateModelRoutingExperimentCache(teamId);
-  invalidateCbmAccessExperimentCache(teamId);
   invalidateHeartbeatTriageExperimentCache(teamId);
-  invalidateQuestionGateExperimentCache(teamId);
   return rows[0] ?? null;
 }

@@ -15,6 +15,9 @@
  *   `DECIDE_ENGINE_VERSION`, never the kit release (0.10.0).
  * - `runDecisionEval`: accuracy and coverage at thresholds over labelled rows.
  * - Receipts (`DecisionReceipt`) are metadata only; `toModelsUsage` feeds `/models`' `recordUsage`.
+ * - Decision kinds (`./policy`): the stable contract a caller targets instead
+ *   of a model: bounded features, deterministic override, cheap model,
+ *   optional escalation slot, per-kind fallback, and every attempt recorded.
  * - Endpoints (0.7.0): `systemone` (default: Jev on OpenRouter, or another
  *   System One host via `baseURL`) or `chat` (any model behind an
  *   OpenAI-compatible API: a LiteLLM proxy, vLLM, Ollama, an open-weights
@@ -883,6 +886,14 @@ export async function runDecisionPool<T, R>(
   const concurrency = Math.max(1, Math.floor(opts.concurrency ?? DEFAULT_POOL_CONCURRENCY));
   const results: PoolResult<R>[] = items.map(() => ({ status: 'not_started' }));
   let next = 0;
+  // A real timeout firing is proof the deadline has passed; re-checking `now()`
+  // after that can still read as "before the deadline" (Date.now()'s ms
+  // resolution vs. the timer's finer-grained clock), which would otherwise let
+  // a lane dequeue one more item with ~0ms left — it also times out instantly,
+  // so the loop can cascade through several bonus "timed_out" items instead of
+  // leaving them `not_started`. Latching on the first real timeout avoids
+  // trusting the clock a second time.
+  let budgetExpired = false;
 
   const runOne = async (index: number): Promise<void> => {
     const remainingMs = deadline - now();
@@ -899,18 +910,20 @@ export async function runDecisionPool<T, R>(
       const outOfTime = new Promise<PoolResult<R>>(resolve => {
         timer = setTimeout(() => resolve({ status: 'timed_out' }), Math.max(0, remainingMs));
       });
-      results[index] = await Promise.race([work, outOfTime]);
+      const result = await Promise.race([work, outOfTime]);
+      if (result.status === 'timed_out') budgetExpired = true;
+      results[index] = result;
     } catch (error) {
       // A worker that throws synchronously.
       results[index] = { status: 'error', error };
     } finally {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
     }
   };
 
   await Promise.all(
     Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-      while (next < items.length && now() < deadline) {
+      while (next < items.length && !budgetExpired && now() < deadline) {
         await runOne(next++);
       }
     }),
@@ -943,7 +956,7 @@ export async function runDecisionPool<T, R>(
  */
 
 /** This package's version. `define.test.ts` asserts it matches package.json. Metadata, not identity. */
-export const KIT_VERSION = '0.16.0';
+export const KIT_VERSION = '0.20.0';
 
 /**
  * The version of the kit logic that turns a decision's definition into
@@ -1501,3 +1514,8 @@ export async function runDecisionEval<T, Q extends DecisionQuestions>(params: Ru
   }
   return report;
 }
+
+// ══ Decision kinds ════════════════════════════════════════════════════════════
+
+export * from './policy';
+export * from './challenger';

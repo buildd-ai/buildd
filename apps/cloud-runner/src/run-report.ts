@@ -17,8 +17,11 @@ import type { CrashReport, RunOutcome } from './lifecycle';
 /**
  * 2: adds `repo` (warm restore vs clone) and the restore/fetch/upload durations.
  * 3: adds `resume` (a parked run continued in a new container) and the park durations.
+ * 4: adds `schedule` (a `task.scheduled` start: when it was due, when it started).
+ * 5: adds `deferredRetry` (a `deferred`/`start_deferred` outcome's self-scheduled backoff retry).
+ * 6: adds `repo.cacheSkipped`, `repo.bytes.cacheRaw` and `durationsMs.restoreCache` (compressed cache tarball).
  */
-export const RUN_REPORT_VERSION = 3;
+export const RUN_REPORT_VERSION = 6;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -45,6 +48,7 @@ export const RUN_PHASES = [
   'restore_warm_start', 'restore_warm_end', 'fetch_start', 'fetch_end',
   'warm_upload_start', 'warm_upload_end',
   'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
+  'restore_cache_start', 'restore_cache_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 export type RunnerPhases = Partial<Record<RunPhase, number>>;
@@ -64,10 +68,49 @@ export function parsePhaseLine(line: string): { phase: RunPhase; at: number } | 
 export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
 export const RUN_METRICS = [
   'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
-  'park_bytes', 'resume_layer',
+  'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 export type RunnerMetrics = Partial<Record<RunMetric, number>>;
+
+export const WARM_UPLOAD_LINE_PREFIX = 'BUILDD_WARM_UPLOAD=';
+export const WARM_UPLOAD_SKIP_REASONS = ['too_large'] as const;
+export type WarmUploadSkipReason = typeof WARM_UPLOAD_SKIP_REASONS[number];
+export type WarmUploadLine = { skipped: WarmUploadSkipReason };
+const WARM_UPLOAD_LINE_RE = /^BUILDD_WARM_UPLOAD=skipped ([a-z_]+)$/;
+
+/** From a `BUILDD_WARM_UPLOAD=skipped <reason>` line, or null. */
+export function parseWarmUploadLine(line: string): WarmUploadLine | null {
+  const m = WARM_UPLOAD_LINE_RE.exec(line.trim());
+  const reason = m?.[1] as WarmUploadSkipReason | undefined;
+  return reason && WARM_UPLOAD_SKIP_REASONS.includes(reason) ? { skipped: reason } : null;
+}
+
+/**
+ * `BUILDD_CACHE_SKIPPED=<part> <bytes> <cap>`: a subtree of the dependency
+ * cache (or the whole cache tarball) was left out of the warm upload for
+ * size. `bytes` is its size on disk, `cap` the workspace's warm cap.
+ */
+export const CACHE_SKIPPED_LINE_PREFIX = 'BUILDD_CACHE_SKIPPED=';
+export const CACHE_SKIP_PARTS = ['pnpm-store', 'cache'] as const;
+export type CacheSkipPart = typeof CACHE_SKIP_PARTS[number];
+export type CacheSkippedLine = { part: CacheSkipPart; bytes: number; cap: number };
+const CACHE_SKIPPED_LINE_RE = /^BUILDD_CACHE_SKIPPED=([a-z-]+) (\d{1,16}) (\d{1,16})$/;
+
+/** From a `BUILDD_CACHE_SKIPPED=<part> <bytes> <cap>` line, or null. */
+export function parseCacheSkippedLine(line: string): CacheSkippedLine | null {
+  const m = CACHE_SKIPPED_LINE_RE.exec(line.trim());
+  if (!m || !CACHE_SKIP_PARTS.includes(m[1] as CacheSkipPart)) return null;
+  const bytes = Number(m[2]), cap = Number(m[3]);
+  return Number.isSafeInteger(bytes) && Number.isSafeInteger(cap) ? { part: m[1] as CacheSkipPart, bytes, cap } : null;
+}
+
+function cacheSkipped(v: unknown): CacheSkippedLine | null {
+  const c = v as Partial<CacheSkippedLine> | undefined;
+  if (!c || !CACHE_SKIP_PARTS.includes(c.part as CacheSkipPart)) return null;
+  const ok = (n: unknown) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  return ok(c.bytes) && ok(c.cap) ? { part: c.part as CacheSkipPart, bytes: c.bytes!, cap: c.cap! } : null;
+}
 
 export const REPO_SOURCE_LINE_PREFIX = 'BUILDD_REPO_SOURCE=';
 export const REPO_FALLBACK_REASONS = ['disabled', 'no_snapshot', 'unavailable', 'disk', 'restore_failed'] as const;
@@ -143,8 +186,14 @@ export function egressClassForKind(kind: 'anthropic' | 'github' | 'passthrough')
   return kind === 'anthropic' ? 'model' : kind;
 }
 
-/** Why the handler refused a request. Mirrors outbound.ts RejectReason. */
-export const REJECT_REASONS = ['path', 'unconfigured', 'plain_http', 'port', 'unparseable', 'other'] as const;
+/**
+ * Why the handler refused a request. Mirrors outbound.ts RejectReason.
+ * `merge_blocked`: a direct PR merge (REST or GraphQL) or a push to a
+ * protected branch — see outbound.ts "Merge guard".
+ * `push_not_allowed`: a push or ref write outside the grant's
+ * `pushableBranches` — see outbound.ts "Push allow-list".
+ */
+export const REJECT_REASONS = ['path', 'unconfigured', 'plain_http', 'port', 'unparseable', 'merge_blocked', 'push_not_allowed', 'other'] as const;
 export type RejectReason = typeof REJECT_REASONS[number];
 /** Mirrors outbound.ts RejectedPathLabel: where a `path` refusal was going, as a fixed label. */
 export const REJECTED_PATH_LABELS = ['api_hello', 'event_logging', 'oauth', 'claude_code_api', 'other_api', 'files', 'batches', 'other_v1', 'other'] as const;
@@ -174,11 +223,152 @@ export type EgressEvent =
   | { type: 'request'; cls: EgressClass; at: number; rejected?: boolean; reason?: RejectReason; pathLabel?: RejectedPathLabelName; auth?: GithubAuthLabel }
   | { type: 'bytes'; cls: EgressClass; bytes: number }
   | { type: 'status'; cls: EgressClass; status: number; auth?: GithubAuthLabel }
-  | { type: 'grant_failure'; cls: 'github'; status: number };
+  | { type: 'grant_failure'; cls: 'github'; status: number }
+  | GithubRateLimitEvent;
+
+// ── GitHub throttling ─────────────────────────────────────────────────────────
+
+/**
+ * GitHub's own rate-limit signals on a throttled answer (a 429, or a 403 that
+ * carries one), so the report can tell the installation's primary limit
+ * (`x-ratelimit-remaining: 0` with a resource) from a secondary limit (the
+ * body says so, usually with `retry-after`) from git-only throttling (a bare
+ * 429 on github.com). Numbers and fixed labels only.
+ */
+export const GITHUB_HOST_LABELS = ['github.com', 'api.github.com', 'uploads.github.com', 'codeload.github.com', 'other'] as const;
+export type GithubHostLabel = typeof GITHUB_HOST_LABELS[number];
+/** `x-ratelimit-resource` values GitHub documents; anything else is `other`, an absent header `none`. */
+export const GITHUB_RATE_LIMIT_RESOURCES = [
+  'core', 'search', 'code_search', 'graphql', 'integration_manifest', 'source_import', 'code_scanning_upload',
+  'code_scanning_autofix', 'actions_runner_registration', 'scim', 'dependency_snapshots', 'dependency_sbom',
+  'audit_log', 'audit_log_streaming', 'other', 'none',
+] as const;
+export type GithubRateLimitResource = typeof GITHUB_RATE_LIMIT_RESOURCES[number];
+export const RETRY_AFTER_BUCKETS = ['none', '0', '1-10', '11-60', '61-300', '301+'] as const;
+export type RetryAfterBucket = typeof RETRY_AFTER_BUCKETS[number];
+
+export interface GithubRateLimitEvent {
+  type: 'rate_limit';
+  cls: 'github';
+  status: number;
+  host: GithubHostLabel;
+  /** `retry-after` in seconds (an HTTP date converted), or null when absent. */
+  retryAfterS: number | null;
+  /** `x-ratelimit-remaining`, or null when absent. */
+  remaining: number | null;
+  resource: GithubRateLimitResource;
+  /** The first bytes of the body say "secondary rate limit". */
+  secondary: boolean;
+}
+
+/** How much of a throttled body is read, at most, to look for "secondary rate limit". Never stored. */
+export const THROTTLE_BODY_PREFIX_BYTES = 512;
+const MAX_RETRY_AFTER_S = 7 * 24 * 3600;
+
+function retryAfterSeconds(value: string | null, now: number): number | null {
+  const v = (value ?? '').trim();
+  if (/^\d{1,9}$/.test(v)) return Math.min(Number(v), MAX_RETRY_AFTER_S);
+  if (!/[a-z]/i.test(v)) return null;
+  const at = Date.parse(v);
+  return Number.isFinite(at) ? Math.min(MAX_RETRY_AFTER_S, Math.max(0, Math.ceil((at - now) / 1000))) : null;
+}
+
+export function retryAfterBucket(s: number | null): RetryAfterBucket {
+  if (s === null) return 'none';
+  if (s === 0) return '0';
+  if (s <= 10) return '1-10';
+  if (s <= 60) return '11-60';
+  if (s <= 300) return '61-300';
+  return '301+';
+}
+
+const hostLabel = (h: unknown): GithubHostLabel =>
+  (GITHUB_HOST_LABELS as readonly string[]).includes(h as string) && h !== 'other' ? h as GithubHostLabel : 'other';
+const resourceLabel = (r: string | null): GithubRateLimitResource => {
+  if (r === null || r.trim() === '') return 'none';
+  const v = r.trim().toLowerCase();
+  return (GITHUB_RATE_LIMIT_RESOURCES as readonly string[]).includes(v) && v !== 'none' ? v as GithubRateLimitResource : 'other';
+};
+
+/**
+ * The event for a GitHub answer, or null when it is not throttling: every
+ * 429, and a 403 only when it carries a rate-limit signal (a permission 403
+ * is already in `errorStatuses`).
+ */
+export function githubRateLimitEvent(input: { status: number; host: string; headers: Headers; bodyPrefix: string; now?: number }): GithubRateLimitEvent | null {
+  if (input.status !== 429 && input.status !== 403) return null;
+  const retryAfterS = retryAfterSeconds(input.headers.get('retry-after'), input.now ?? Date.now());
+  const rawRemaining = (input.headers.get('x-ratelimit-remaining') ?? '').trim();
+  const remaining = /^\d{1,9}$/.test(rawRemaining) ? Number(rawRemaining) : null;
+  const secondary = /secondary rate limit/i.test(input.bodyPrefix);
+  if (input.status === 403 && retryAfterS === null && remaining !== 0 && !secondary && !/rate limit/i.test(input.bodyPrefix)) return null;
+  return {
+    type: 'rate_limit',
+    cls: 'github',
+    status: input.status,
+    host: hostLabel(input.host),
+    retryAfterS,
+    remaining,
+    resource: resourceLabel(input.headers.get('x-ratelimit-resource')),
+    secondary,
+  };
+}
+
+/** Up to `max` bytes of a body as text, then cancel the rest. Pass a clone: the body is consumed. */
+async function readPrefix(res: Response, max: number): Promise<string> {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size < max) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      chunks.push(value);
+      size += value.byteLength;
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  const buf = new Uint8Array(Math.min(size, max));
+  let off = 0;
+  for (const c of chunks) {
+    const take = Math.min(c.byteLength, buf.length - off);
+    buf.set(c.subarray(0, take), off);
+    off += take;
+    if (off >= buf.length) break;
+  }
+  return new TextDecoder().decode(buf);
+}
+
+/**
+ * The throttling event for a GitHub response, reading at most
+ * THROTTLE_BODY_PREFIX_BYTES of `res`'s body (pass a clone) and only for a
+ * 403 or 429. Null otherwise.
+ */
+export async function inspectGithubThrottle(res: Response, host: string): Promise<GithubRateLimitEvent | null> {
+  if (res.status !== 429 && res.status !== 403) return null;
+  let prefix = '';
+  try { prefix = await readPrefix(res, THROTTLE_BODY_PREFIX_BYTES); } catch { /* headers alone, then */ }
+  return githubRateLimitEvent({ status: res.status, host, headers: res.headers, bodyPrefix: prefix });
+}
+
+/** The Worker console line for one throttled response: numbers, fixed labels and the task ID. */
+export function throttleLogLine(taskId: string, e: GithubRateLimitEvent): string {
+  const n = (v: number | null) => (v === null ? 'none' : String(v));
+  return `[cloud-runner] task ${taskId}: GitHub throttled ${e.status} host=${e.host} retry-after=${n(e.retryAfterS)} remaining=${n(e.remaining)} resource=${e.resource} secondary=${e.secondary}`;
+}
+
+const nullableCount = (v: unknown) => v === null || (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0);
 
 export function isEgressEvent(v: unknown): v is EgressEvent {
   const e = v as Record<string, unknown> | null;
   if (!e || !isEgressClass(e.cls)) return false;
+  if (e.type === 'rate_limit') {
+    return e.cls === 'github' && typeof e.status === 'number' && Number.isInteger(e.status)
+      && typeof e.host === 'string' && typeof e.resource === 'string' && typeof e.secondary === 'boolean'
+      && nullableCount(e.retryAfterS) && nullableCount(e.remaining);
+  }
   if (e.type === 'request') return typeof e.at === 'number' && Number.isFinite(e.at);
   if (e.type === 'bytes') return typeof e.bytes === 'number' && Number.isFinite(e.bytes) && e.bytes >= 0;
   if (e.type === 'status') return typeof e.status === 'number' && Number.isInteger(e.status);
@@ -207,6 +397,67 @@ export interface GithubAuthDetail {
   unauthenticatedErrorStatuses: Record<string, number>;
   /** buildd's github-token endpoint refusing or failing, by status (`error`: nothing answered). */
   grantFetchFailures: Record<string, number>;
+  /** Throttled GitHub answers and the signals GitHub sent with them. Absent when there were none. */
+  rateLimit?: GithubRateLimitDetail;
+}
+
+export interface GithubRateLimitDetail {
+  /** Throttled answers: every 429, and 403s that carried a rate-limit signal. */
+  throttled: number;
+  statuses: Record<string, number>;
+  hosts: Partial<Record<GithubHostLabel, number>>;
+  /** `retry-after` by bucket (`none`: absent). */
+  retryAfter: Partial<Record<RetryAfterBucket, number>>;
+  retryAfterMax: number | null;
+  /** Lowest `x-ratelimit-remaining` seen (0: a primary limit was spent). */
+  remainingMin: number | null;
+  /** `x-ratelimit-resource` (`none`: absent, as on git's own endpoints). */
+  resources: Partial<Record<GithubRateLimitResource, number>>;
+  /** Answers whose body said "secondary rate limit". */
+  secondary: number;
+}
+
+function emptyRateLimitDetail(): GithubRateLimitDetail {
+  return { throttled: 0, statuses: {}, hosts: {}, retryAfter: {}, retryAfterMax: null, remainingMin: null, resources: {}, secondary: 0 };
+}
+
+function applyRateLimit(detail: EgressDetail, e: GithubRateLimitEvent): void {
+  const r = (detail.github.rateLimit ??= emptyRateLimitDetail());
+  r.throttled += 1;
+  if (isErrorStatus(e.status)) bump(r.statuses, String(e.status));
+  const host = hostLabel(e.host);
+  r.hosts[host] = (r.hosts[host] ?? 0) + 1;
+  const retryAfterS = nullableCount(e.retryAfterS) ? e.retryAfterS : null;
+  const bucket = retryAfterBucket(retryAfterS);
+  r.retryAfter[bucket] = (r.retryAfter[bucket] ?? 0) + 1;
+  if (retryAfterS !== null) r.retryAfterMax = Math.max(r.retryAfterMax ?? 0, retryAfterS);
+  if (nullableCount(e.remaining) && e.remaining !== null) r.remainingMin = Math.min(r.remainingMin ?? e.remaining, e.remaining);
+  const resource = (GITHUB_RATE_LIMIT_RESOURCES as readonly string[]).includes(e.resource) ? e.resource : 'other';
+  r.resources[resource] = (r.resources[resource] ?? 0) + 1;
+  if (e.secondary === true) r.secondary += 1;
+}
+
+function normalizeRateLimit(input: unknown): GithubRateLimitDetail | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const src = input as Record<string, unknown>;
+  const n = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : 0);
+  const nn = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null);
+  const out = emptyRateLimitDetail();
+  out.throttled = n(src.throttled);
+  if (out.throttled === 0) return undefined;
+  for (const [k, v] of Object.entries((src.statuses ?? {}) as Record<string, unknown>).slice(0, MAX_STATUS_KEYS)) {
+    if (/^\d{3}$/.test(k) && isErrorStatus(Number(k)) && n(v)) out.statuses[k] = n(v);
+  }
+  const hosts = (src.hosts ?? {}) as Record<string, unknown>;
+  for (const l of GITHUB_HOST_LABELS) if (n(hosts[l])) out.hosts[l] = n(hosts[l]);
+  const ra = (src.retryAfter ?? {}) as Record<string, unknown>;
+  for (const b of RETRY_AFTER_BUCKETS) if (n(ra[b])) out.retryAfter[b] = n(ra[b]);
+  out.retryAfterMax = nn(src.retryAfterMax);
+  out.remainingMin = nn(src.remainingMin);
+  const res = (src.resources ?? {}) as Record<string, unknown>;
+  for (const r of GITHUB_RATE_LIMIT_RESOURCES) if (n(res[r])) out.resources[r] = n(res[r]);
+  out.secondary = n(src.secondary);
+  return out;
 }
 export type EgressDetail = Record<EgressClass, EgressClassDetail> & { github: EgressClassDetail & GithubAuthDetail };
 
@@ -229,6 +480,10 @@ const unauthReason = (v: unknown): GithubUnauthReason =>
   (GITHUB_UNAUTH_REASONS as readonly string[]).includes(v as string) ? v as GithubUnauthReason : 'no_grant';
 
 export function applyEgressDetail(detail: EgressDetail, e: EgressEvent): void {
+  if (e.type === 'rate_limit') {
+    if (e.cls === 'github') applyRateLimit(detail, e);
+    return;
+  }
   if (e.type === 'grant_failure') {
     if (e.cls === 'github') bump(detail.github.grantFetchFailures, isErrorStatus(e.status) ? String(e.status) : 'error');
     return;
@@ -279,6 +534,8 @@ function normalizeEgressDetail(input: unknown): EgressDetail {
   for (const [k, v] of Object.entries((g.grantFetchFailures ?? {}) as Record<string, unknown>).slice(0, MAX_STATUS_KEYS)) {
     if (((/^\d{3}$/.test(k) && isErrorStatus(Number(k))) || k === 'error') && n(v)) out.github.grantFetchFailures[k] = n(v);
   }
+  const rateLimit = normalizeRateLimit(g.rateLimit);
+  if (rateLimit) out.github.rateLimit = rateLimit;
   return out;
 }
 
@@ -297,6 +554,23 @@ export function applyEgressEvent(counters: EgressCounters, e: EgressEvent): void
  * end (or failed). A body the container abandons is not reported, so
  * responseBytes is a lower bound. Status and headers are kept.
  */
+/**
+ * Count a response's bytes without putting large bodies through JavaScript.
+ * Model responses (small, and their byte count matters) go through
+ * countResponseBytes. GitHub and passthrough bodies are returned untouched so
+ * they stream natively: a JS pass-through costs Worker CPU per chunk, and a
+ * ~1.5 GB git pack exceeded the invocation's CPU limit, cutting the clone a
+ * few KB before its end. Their bytes come from `content-length` when the
+ * upstream sends one (a chunked git pack sends none, so it is not counted;
+ * `responseBytes` stays a lower bound).
+ */
+export function measureResponse(res: Response, cls: EgressClass, onBytes: (bytes: number) => void): Response {
+  if (cls === 'model') return countResponseBytes(res, onBytes);
+  const len = Number(res.headers.get('content-length'));
+  if (res.headers.has('content-length') && Number.isSafeInteger(len) && len >= 0) onBytes(len);
+  return res;
+}
+
 export function countResponseBytes(res: Response, onDone: (bytes: number) => void): Response {
   if (!res.body) {
     onDone(0);
@@ -332,6 +606,12 @@ export interface RunTimings {
   runnerMetrics?: RunnerMetrics;
   /** From the `BUILDD_REPO_SOURCE=` line. */
   repoSource?: RepoSourceLine;
+  /** From a `BUILDD_WARM_UPLOAD=skipped` line. */
+  warmUpload?: WarmUploadLine;
+  /** From a `BUILDD_CACHE_SKIPPED=` line. */
+  cacheSkipped?: CacheSkippedLine;
+  /** A `task.scheduled` start: the time the wake was scheduled for. */
+  scheduledFor?: number;
 }
 
 // ── Assembly ──────────────────────────────────────────────────────────────────
@@ -376,6 +656,8 @@ export interface RunReport {
     park: number | null;
     /** Downloading and applying the park bundle in a resumed run. */
     restorePark: number | null;
+    /** Downloading and extracting the dependency cache of a warm restore (streamed). */
+    restoreCache: number | null;
     toFirstModelRequest: number | null;
     total: number | null;
   };
@@ -388,7 +670,24 @@ export interface RunReport {
     source: 'warm' | 'clone' | null;
     fallbackReason: RepoFallbackReason | null;
     snapshotAgeMs: number | null;
-    bytes: { clone: number | null; restore: number | null; fetch: number | null; cache: number | null; upload: number | null };
+    /**
+     * Why the run uploaded no warm snapshot it otherwise would have:
+     * `too_large`, the repo (or its bundle as it streamed) was over the cap.
+     * Null: uploaded, or no upload was due.
+     */
+    warmUploadSkipReason: WarmUploadSkipReason | null;
+    /**
+     * A part of the dependency cache the upload left out for size (the pnpm
+     * store, or the whole cache tarball), its size on disk and the cap.
+     * Null: nothing was left out, or no upload was due.
+     */
+    cacheSkipped: CacheSkippedLine | null;
+    /**
+     * `warmRepo`: the clone's object store as measured against the cap.
+     * `cache`: the cache tarball as stored (zstd-compressed when the image
+     * has zstd); `cacheRaw`: the same tarball before compression, on upload.
+     */
+    bytes: { clone: number | null; restore: number | null; fetch: number | null; cache: number | null; cacheRaw: number | null; upload: number | null; warmRepo: number | null };
   };
   /**
    * Resumable runs. `resumed`: this attempt continued a parked worker.
@@ -397,12 +696,28 @@ export interface RunReport {
    * text reconstruction. `parkBytes`: the park bundle this attempt uploaded.
    */
   resume: { resumed: boolean; gapMs: number | null; layer: 1 | 2 | null; parkBytes: number | null };
+  /**
+   * A start from a `task.scheduled` wake. `scheduledFor`: the time buildd
+   * asked for (the task's startAt). `startedAt`: when the attempt actually
+   * started (= timestamps.dispatchReceivedAt). `lateMs`: the difference, null
+   * when the attempt was not a scheduled start.
+   */
+  schedule: { scheduledFor: number | null; startedAt: number | null; lateMs: number | null };
   egress: EgressCounters;
   /** Why requests failed: refusal reasons and upstream error codes, per class. */
   egressDetail: EgressDetail;
   exitCode: number | null;
   outcome: RunOutcome | null;
   crashReport: CrashReport | null;
+  /**
+   * Set only when `outcome` is `deferred` or `start_deferred`: the backoff
+   * retry the supervisor scheduled itself (or declined to, past the cap).
+   * `reason`: the claim's taskExclusion/diagnostics code for `deferred`,
+   * `'container_capacity'` for `start_deferred`, null if the runner printed
+   * none. `retryNumber` is 1-indexed; `backoffMs` null means the cap
+   * (MAX_DEFERRED_RETRIES) was hit and nothing was scheduled.
+   */
+  deferredRetry: { retryNumber: number; backoffMs: number | null; reason: string | null } | null;
 }
 
 export interface RunReportInput {
@@ -421,12 +736,15 @@ export interface RunReportInput {
   resumed?: boolean;
   /** End of the parked attempt this one resumes (agent clock). */
   parkedAt?: number;
+  /** See RunReport.deferredRetry. */
+  deferredRetry?: { retryNumber: number; backoffMs: number | null; reason: string | null } | null;
 }
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const INSTANCE_TYPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
-const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'parked', 'crashed'];
+const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'parked', 'deferred', 'start_deferred', 'crashed'];
 const CRASH_REPORTS: readonly CrashReport[] = ['sent', 'rejected', 'error', 'no_worker_id'];
+const DEFERRED_REASON_RE = /^[A-Za-z0-9_]{1,64}$/;
 
 // Shapes of credentials an identifier must never be mistaken for (Anthropic,
 // buildd, GitHub, Slack, AWS, generic `key-`/`token`). Task and worker IDs are
@@ -476,6 +794,8 @@ export function assembleRunReport(input: RunReportInput): RunReport {
   const src = t.repoSource as { source?: unknown; reason?: unknown } | undefined;
   const source = src?.source === 'warm' || src?.source === 'clone' ? src.source : null;
   const fallbackReason = source === 'clone' && REPO_FALLBACK_REASONS.includes(src?.reason as RepoFallbackReason) ? src!.reason as RepoFallbackReason : null;
+  const skipped = (t.warmUpload as { skipped?: unknown } | undefined)?.skipped;
+  const warmUploadSkipReason = WARM_UPLOAD_SKIP_REASONS.includes(skipped as WarmUploadSkipReason) ? skipped as WarmUploadSkipReason : null;
   return {
     kind: RUN_REPORT_KIND,
     version: RUN_REPORT_VERSION,
@@ -496,6 +816,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       warmUpload: span(phase('warm_upload_start'), phase('warm_upload_end')),
       park: span(phase('park_start'), phase('park_end')),
       restorePark: span(phase('restore_park_start'), phase('restore_park_end')),
+      restoreCache: span(phase('restore_cache_start'), phase('restore_cache_end')),
       toFirstModelRequest: span(timestamps.claimedAt, timestamps.firstModelRequestAt),
       total: span(timestamps.dispatchReceivedAt, timestamps.exitedAt),
     },
@@ -504,12 +825,16 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       source,
       fallbackReason,
       snapshotAgeMs: metric('snapshot_age_ms'),
+      warmUploadSkipReason,
+      cacheSkipped: cacheSkipped(t.cacheSkipped),
       bytes: {
         clone: metric('clone_bytes'),
         restore: metric('restore_bytes'),
         fetch: metric('fetch_bytes'),
         cache: metric('cache_bytes'),
+        cacheRaw: metric('cache_raw_bytes'),
         upload: metric('warm_upload_bytes'),
+        warmRepo: metric('warm_repo_bytes'),
       },
     },
     resume: {
@@ -518,11 +843,23 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       layer: metric('resume_layer') === 1 ? 1 : metric('resume_layer') === 2 ? 2 : null,
       parkBytes: metric('park_bytes'),
     },
+    schedule: {
+      scheduledFor: ts(t.scheduledFor),
+      startedAt: timestamps.dispatchReceivedAt,
+      lateMs: span(ts(t.scheduledFor), timestamps.dispatchReceivedAt),
+    },
     egress,
     egressDetail: normalizeEgressDetail(input.egressDetail),
     exitCode: typeof input.exitCode === 'number' && Number.isInteger(input.exitCode) ? input.exitCode : null,
     outcome: input.outcome && OUTCOMES.includes(input.outcome) ? input.outcome : null,
     crashReport: input.crashReport && CRASH_REPORTS.includes(input.crashReport) ? input.crashReport : null,
+    deferredRetry: input.deferredRetry
+      ? {
+          retryNumber: count(input.deferredRetry.retryNumber),
+          backoffMs: ts(input.deferredRetry.backoffMs),
+          reason: typeof input.deferredRetry.reason === 'string' && DEFERRED_REASON_RE.test(input.deferredRetry.reason) ? input.deferredRetry.reason : null,
+        }
+      : null,
   };
 }
 

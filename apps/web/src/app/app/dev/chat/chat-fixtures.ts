@@ -238,8 +238,42 @@ function explore(): ChatMessage[] {
   ];
 }
 
-export type ChatFixtureState = 'empty' | 'streaming' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'capped' | 'rows' | 'rows-full' | 'rows-done' | 'watch' | 'visual';
-export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'streaming', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'capped', 'rows', 'rows-full', 'rows-done', 'watch', 'visual'];
+export type ChatFixtureState = 'empty' | 'starting' | 'streaming' | 'streaming-long' | 'revised' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'capped' | 'rows' | 'rows-full' | 'rows-done' | 'watch' | 'visual';
+export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'starting', 'streaming', 'streaming-long', 'revised', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'capped', 'rows', 'rows-full', 'rows-done', 'watch', 'visual'];
+
+/** `revised`: the hypothesis the turn writes before its tools run, which they disprove. */
+export const REVISED_EARLY = 'A fix for the rounding bug is already queued. Let me check why nobody has claimed it.';
+/** `revised`: what the turn settles on. */
+export const REVISED_FINAL = 'I checked the queue, and there is no rounding fix in it. The task I took for one is the ledger export, which merged last week. The rounding bug itself is held on an open question (round per line, or only the total?), so nothing gets filed until someone answers it.';
+
+export interface RevisedFrame { messages: ChatMessage[]; status: 'streaming' | 'ready' }
+
+/**
+ * `revised`, frame by frame: the early hypothesis streams, the tools run
+ * under it, the final answer streams in its place, the turn settles. The dev
+ * page plays them in order (`&frame=N` holds one, for screenshots).
+ */
+export function revisedFrames(): RevisedFrame[] {
+  const ask = user('m1', 'Why hasn\'t the rounding fix been picked up?', 1);
+  // The same three calls in every frame, so their ids hold across frames.
+  const reads = (last: 'running' | 'done'): ChatMessage['parts'] => { pseq = 0; return [
+    call('list_tasks', { workspace: 'billing-web', status: 'pending' }, { summary: 'nothing about rounding queued', data: [], objects: [] }),
+    call('get_task', { taskId: 'task-export' }, { summary: 'ledger export, merged', data: {}, objects: [] }),
+    last === 'done'
+      ? call('explain', { taskId: QUESTION_TASK_ID }, { summary: 'waiting on a question', data: {}, objects: [] })
+      : call('explain', { taskId: QUESTION_TASK_ID }, undefined, { state: 'input-available' }),
+  ]; };
+  const frame = (parts: ChatMessage['parts'], status: RevisedFrame['status'], durationMs?: number): RevisedFrame => (
+    { status, messages: [ask, withScope(agent('m2', 1, withSteps(parts), durationMs))] }
+  );
+  const early = (state: 'streaming' | 'done', text = REVISED_EARLY) => ({ type: 'text', text, state } as const);
+  return [
+    frame([{ type: 'step-start' }, early('streaming', REVISED_EARLY.slice(0, 44))], 'streaming'),
+    frame([{ type: 'step-start' }, early('done'), ...reads('running')], 'streaming'),
+    frame([{ type: 'step-start' }, early('done'), ...reads('done'), { type: 'step-start' }, { type: 'text', text: REVISED_FINAL.slice(0, 120), state: 'streaming' }], 'streaming'),
+    frame([{ type: 'step-start' }, early('done'), ...reads('done'), { type: 'step-start' }, { type: 'text', text: REVISED_FINAL, state: 'done' }], 'ready', 26_400),
+  ];
+}
 
 /** A visual review moment as mission-events.ts posts it: the same words and data. */
 const visualEvent = (id: string, min: number, moment: VisualReviewMoment, model: VisualReviewModel, extra: { fixes?: number; routes?: string[] } = {}): ChatMessage => ({
@@ -280,6 +314,38 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
   switch (state) {
     case 'empty':
       return { messages: [], title: null, status: 'ready' };
+    case 'starting':
+      // Sent, nothing streamed yet: the live line is the square alone.
+      return { title: null, status: 'submitted', messages: [user('m1', 'Why is the checkout task stuck?', 1)] };
+    case 'streaming-long':
+      // A long turn mid-flight: reads, a failure, a filed mission, a change
+      // waiting on the person, and one call still running.
+      return {
+        title: null, status: 'streaming',
+        messages: [
+          user('m1', 'Why is the checkout task stuck, and what should we do about it?', 1),
+          withScope(agent('m2', 1, withSteps([
+            call('list_tasks', { workspace: 'billing-web', status: 'in_progress' }, { summary: '4 in progress', data: [], objects: [] }),
+            call('get_task', { taskId: 'task-fx' }, { data: {}, objects: [] }),
+            call('get_task', { taskId: 'task-checkout' }, { data: {}, objects: [] }),
+            call('explain', { taskId: 'task-checkout' }, { summary: 'waiting on a question', data: {}, objects: [] }),
+            call('get_pr', { prNumber: 412 }, undefined, { state: 'output-error', errorText: 'Not found' }),
+            call('read_evidence', { taskId: 'task-checkout' }, { data: {}, objects: [] }),
+            call('get_error_traces', { taskId: 'task-checkout' }, { data: {}, objects: [] }),
+            call('recall', { query: 'checkout rounding' }, { data: [], objects: [] }),
+            call('manage_missions', { action: 'list', workspace: 'billing-web' }, { data: [], objects: [] }),
+            call('manage_missions', MISSION_DRAFT, { summary: 'mission filed, plan-first', data: { id: MISSION_ID }, objects: [missionRef] }, { approval: { id: 'approval-long-1', approved: true } }),
+            call('list_prs', { workspace: 'billing-web' }, { data: [], objects: [] }),
+            call('get_failure_analytics', { window: '7d' }, { data: {}, objects: [] }),
+            call('create_task', { title: 'Answer the rounding question', missionId: MISSION_ID }, undefined, { state: 'approval-responded', approval: { id: 'approval-long-2', approved: true } }),
+            call('get_budget_forecast', {}, { data: {}, objects: [] }),
+            call('query_events', { taskId: 'task-checkout' }, undefined, { state: 'input-available' }),
+          ]))),
+        ],
+      };
+    case 'revised':
+      // The early hypothesis on screen while the tools run (frame 1).
+      return { title: null, ...revisedFrames()[1] };
     case 'streaming':
       return {
         title: null, status: 'streaming',

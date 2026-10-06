@@ -31,9 +31,23 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-const mockDispatchNewTask = mock(() => Promise.resolve());
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
 }));
 
 const mockCancelSideEffects = mock((_t: any) => Promise.resolve());
@@ -71,7 +85,8 @@ beforeEach(() => {
   tasksUpdateWhere.mockClear();
   mockCancelSideEffects.mockClear();
   tasksUpdateSet.mockClear();
-  mockDispatchNewTask.mockReset(); mockDispatchNewTask.mockResolvedValue(undefined);
+  mockAnnounceTaskCreated.mockReset(); mockAnnounceTaskCreated.mockResolvedValue(undefined);
+  mockWakeTask.mockReset();
   notesFindFirst.mockReset(); notesFindFirst.mockResolvedValue(null);
   notesInsertValues.mockClear();
   mockPostVisualReviewEvent.mockClear();
@@ -100,7 +115,8 @@ describe('ensureMissionSurfaceAudit', () => {
     // Observation work: the glyph and the model router read kind.
     expect(inserted.kind).toBe('observation');
     expect(inserted.context).toEqual({ surfaceAuditTrigger: 'auto' });
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
   });
 
   it('lists the required routes derived from the builder tasks\' page files', async () => {
@@ -289,7 +305,8 @@ describe('ensureMissionSurfaceAudit — re-check rounds', () => {
       expect(inserted.description).toContain('- `/app/tasks/:id`');
       // The finished round is not touched: extending it would be inert.
       expect(tasksUpdateSet).not.toHaveBeenCalled();
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
       expect(notesInsertValues).not.toHaveBeenCalled();
     });
   }
@@ -324,7 +341,8 @@ describe('ensureMissionSurfaceAudit — re-check rounds', () => {
 
     expect(tasksInsertValues).not.toHaveBeenCalled();
     expect(tasksUpdateSet).not.toHaveBeenCalled();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
     expect(notesInsertValues).toHaveBeenCalledTimes(1);
     const note = notesInsertValues.mock.calls[0][0];
     expect(note.missionId).toBe(MISSION_ID);
@@ -431,7 +449,8 @@ describe('ensureMissionSurfaceAudit — human-origin fixes (visual review decisi
     expect(inserted.kind).toBe('observation');
     expect(inserted.context).toEqual({ surfaceAuditRound: 3, surfaceAuditTrigger: 'human', visualQa: { requiredRoutes: ['/app/missions'] } });
     expect(inserted.description).toContain('opened by a human review');
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
   });
 
   it('a second human fix while that round is still pending extends it (one open human round)', async () => {
@@ -533,7 +552,8 @@ describe('ensureMissionSurfaceAudit — mission belongs to another team', () => 
       expect(tasksInsertValues).not.toHaveBeenCalled();
       expect(tasksUpdateSet).not.toHaveBeenCalled();
       expect(notesInsertValues).not.toHaveBeenCalled();
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
   }
 

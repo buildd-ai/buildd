@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // Mock functions
@@ -15,10 +15,11 @@ mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
 
+let mockApiAccount: any = { id: 'account-1', type: 'user' };
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: async (apiKey: string | null) => {
     if (!apiKey) return null;
-    return { id: 'account-1', type: 'user' };
+    return mockApiAccount;
   },
 }));
 
@@ -73,6 +74,23 @@ mock.module('@buildd/core/db/schema', () => ({
   specDiscrepancies: schemaSpecDiscrepancies,
 }));
 
+const mockWakeTask = mock(async (_id: string, _cause: string) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: async () => {},
+  announceTaskCreated: async () => {},
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({}),
+  deliverTaskDispatch: async () => 'skipped:test',
+  routeForCause: () => ({}),
+  webhookWants: () => false,
+  primaryCause: (_c: readonly string[], fallback: string) => fallback,
+  reseedDispatchTimer: async () => {},
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+}));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 
@@ -117,6 +135,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     mockUpdateReturning.mockReturnValue([{ id: '44444444-4444-4444-8444-444444444444' }]);
     mockDiscrepancyUpdateSets.length = 0;
     mockDiscrepancyUpdateReturning = [];
+    mockWakeTask.mockClear();
 
     // Default: grant access
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
@@ -229,6 +248,8 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     expect(inserted.context.existingKey).toBe('existingValue');
     expect(inserted.context.planFeedback).toBe('Add error handling steps');
     expect(inserted.context.previousPlanTaskId).toBe('44444444-4444-4444-8444-444444444444');
+    // The revision used to reach a runner only by polling.
+    expect(mockWakeTask).toHaveBeenCalledWith('new-plan-task-1', 'task.created');
   });
 
   it('preserves missionId on revised planning task', async () => {
@@ -461,6 +482,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).taskId).toBeNull();
     expect(mockInsertValues).toHaveLength(0);
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('the rejection is still persisted on the doc-fix task itself', async () => {
@@ -472,5 +494,58 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
 
     expect(mockUpdateSetCalls).toHaveLength(1);
     expect(mockUpdateSetCalls[0].context.planRejection.feedback).toBe('No thanks');
+  });
+});
+
+describe('POST /api/tasks/[id]/reject-plan — per-task token', () => {
+  const PLAN_TASK = '44444444-4444-4444-8444-444444444444';
+  const OWN_TASK = '55555555-5555-4555-8555-555555555555';
+  const taskScope = { taskId: OWN_TASK, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 };
+  const planRow = (over: Record<string, unknown> = {}) => ({
+    id: PLAN_TASK, title: 'Plan', mode: 'planning', status: 'completed', workspaceId: 'ws-1', missionId: 'm-1',
+    context: {}, description: 'Plan', priority: 1, workspace: { id: 'ws-1' }, ...over,
+  });
+  let row: any;
+  const reject = () => callHandler(POST, createMockRequest({ headers: { Authorization: 'Bearer bld_key' }, body: { feedback: 'Narrow it' } }), PLAN_TASK);
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockInsertValues.length = 0;
+    mockUpdateSetCalls.length = 0;
+    mockInsertReturning.mockReset();
+    mockInsertReturning.mockReturnValue([{ id: 'new-plan-task-1' }]);
+    mockUpdateReturning.mockReset();
+    mockUpdateReturning.mockReturnValue([{ id: PLAN_TASK }]);
+    row = planRow();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockImplementation(async (args: any) =>
+      args?.with?.mission?.columns?.initiativeId ? { missionId: 'm-1', workspaceId: 'ws-1', mission: { initiativeId: null } } : row);
+  });
+
+  afterAll(() => { mockApiAccount = { id: 'account-1', type: 'user' }; });
+
+  it("rejects a plan on its own task's mission for an orchestration (admin) token", async () => {
+    mockApiAccount = { id: 'account-1', level: 'admin', scopes: null, taskScope };
+    expect((await reject()).status).toBe(200);
+    expect(mockUpdateSetCalls.length).toBeGreaterThan(0);
+  });
+
+  it('refuses a worker-level task token, another mission, another workspace and its own plan, writing nothing', async () => {
+    const cases: Array<[any, Record<string, unknown>]> = [
+      [{ id: 'account-1', level: 'worker', scopes: null, taskScope }, {}],
+      [{ id: 'account-1', level: 'admin', scopes: null, taskScope }, { missionId: 'm-2' }],
+      [{ id: 'account-1', level: 'admin', scopes: null, taskScope }, { workspaceId: 'ws-2' }],
+      [{ id: 'account-1', level: 'admin', scopes: null, taskScope: { ...taskScope, taskId: PLAN_TASK } }, {}],
+    ];
+    for (const [account, over] of cases) {
+      mockApiAccount = account;
+      row = planRow(over);
+      expect((await reject()).status).toBe(404);
+    }
+    expect(mockUpdateSetCalls).toHaveLength(0);
+    expect(mockInsertValues).toHaveLength(0);
   });
 });

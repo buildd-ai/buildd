@@ -5,7 +5,7 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register({ url: 'http://localhost/chat' });
 
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -322,12 +322,13 @@ describe('ChatThread', () => {
     expect(($('[data-testid="kit-thinking"]') as HTMLDetailsElement).open).toBe(false);
   });
 
-  it('while streaming: the checklist is open with one active step and a tail', async () => {
+  it('while streaming: one live line with the active step, nothing else', async () => {
     const live = [messages[0], { id: 'a2', role: 'assistant', parts: [step('r1', 'Checking the calendar', 'active')] }];
-    await render(h(kit.ChatThread, { messages: live, status: 'streaming' }));
-    const panel = $('[data-testid="kit-thinking"]') as HTMLDetailsElement;
-    expect(panel.open).toBe(true);
-    expect($$('.kit-step').map(s => [s.textContent, s.getAttribute('data-state')])).toEqual([['Checking the calendar(in progress)', 'active']]);
+    await render(h(kit.ChatThread, { messages: live, status: 'streaming', thinkingName: 'Trips is working' }));
+    const line = $('[data-testid="kit-thinking-live"]')!;
+    expect(line.getAttribute('aria-label')).toBe('Trips is working: Checking the calendar');
+    expect(line.querySelector('.kit-live-label')!.textContent).toBe('Checking the calendar');
+    expect($('summary')).toBeNull();
   });
 
   it('renders a turn error in place and does not repeat the request error under it', async () => {
@@ -346,6 +347,133 @@ describe('ChatThread', () => {
   it('shows the empty state with no messages', async () => {
     await render(h(kit.ChatThread, { messages: [], empty: h(kit.ChatEmpty, { name: 'Sam', chips: [], onChip() {} }) }));
     expect($('[data-testid="kit-empty"]')).not.toBeNull();
+  });
+});
+
+describe('ThinkingPanel (0.17.0: one live line)', () => {
+  type S = { id: string; label: string; state: 'done' | 'active' | 'pending'; weight?: 'key' | 'routine' };
+  const r = (id: string, label = id, state: S['state'] = 'done'): S => ({ id, label, state, weight: 'routine' });
+  const k = (id: string, label = id, state: S['state'] = 'done'): S => ({ id, label, state, weight: 'key' });
+  const panel = (steps: S[], extra: Record<string, unknown> = {}) => h(kit.ThinkingPanel, { steps, streaming: true, name: 'Buildd is working', ...extra });
+  const live = () => $('[data-testid="kit-thinking-live"]');
+  const pinned = () => $('[data-testid="kit-thinking-pinned"]');
+  const visibleText = () => $('[data-testid="kit-thinking"]')!.textContent;
+
+  it('collapsed: the square and the active label only; no header, no list, no count', async () => {
+    await render(panel([r('a', 'Read a task'), r('b', 'Looked over the tasks'), r('c', 'Reading a mission', 'active')]));
+    expect(live()!.tagName).toBe('BUTTON');
+    expect(live()!.getAttribute('aria-expanded')).toBe('false');
+    expect(live()!.querySelector('.kit-step-mark')).not.toBeNull();
+    expect(live()!.querySelector('.kit-live-label')!.getAttribute('aria-live')).toBe('polite');
+    expect(visibleText()).toBe('Reading a mission›');
+    expect($('summary')).toBeNull();
+    expect($('.kit-steps')).toBeNull();
+  });
+
+  it('the label swaps in place as the step changes', async () => {
+    await render(panel([r('a', 'Reading a task', 'active')]));
+    const before = live();
+    await render(panel([r('a', 'Read a task'), r('b', 'Checking the change', 'active')]));
+    expect(live()).toBe(before);
+    expect(live()!.querySelector('.kit-live-label')!.textContent).toBe('Checking the change');
+  });
+
+  it('before the first step: the square alone, no text', async () => {
+    await render(panel([]));
+    expect(live()!.querySelector('.kit-step-mark')).not.toBeNull();
+    expect(live()!.getAttribute('aria-label')).toBe('Buildd is working');
+    expect(visibleText()).toBe('');
+    await render(panel(kit.thinkingSteps([], true) as S[]));
+    expect(visibleText()).toBe('');
+    expect(live()!.tagName).not.toBe('BUTTON');
+  });
+
+  it('once the answer streams and no step is active, the square goes', async () => {
+    const steps = kit.thinkingSteps([
+      { type: 'data-step', id: 'a', data: { id: 'a', label: 'Read a task', state: 'done', weight: 'routine' } },
+      { type: 'text', text: 'So' },
+    ] as never, true) as S[];
+    await render(panel(steps));
+    expect(live()).toBeNull();
+  });
+
+  it('a completed write pins under the line, and the next write replaces it; reads never pin', async () => {
+    await render(panel([r('a', 'Read a task'), r('b', 'Reading a mission', 'active')]));
+    expect(pinned()).toBeNull();
+    await render(panel([r('a'), k('w1', 'Drafted a task'), r('b'), r('c', 'Reading', 'active')]));
+    expect(pinned()!.textContent).toContain('Drafted a task');
+    await render(panel([r('a'), k('w1', 'Drafted a task'), r('b'), k('w2', 'Drafted a mission'), r('c'), r('d', 'Reading', 'active')]));
+    expect($$('[data-testid="kit-thinking-pinned"]')).toHaveLength(1);
+    expect(pinned()!.textContent).toContain('Drafted a mission');
+    expect(pinned()!.textContent).not.toContain('Drafted a task');
+  });
+
+  it('renderPinned draws the pinned step its own way (a write as its object)', async () => {
+    await render(panel([k('w1', 'Drafted a task'), r('b', 'Reading', 'active')], {
+      renderPinned: (s: S) => h('div', { className: 'card' }, `card for ${s.id}`),
+    }));
+    expect(pinned()!.querySelector('.card')!.textContent).toBe('card for w1');
+  });
+
+  it('the live step shows its seconds only once it has run 20s', async () => {
+    const t0 = Date.now();
+    try {
+      setSystemTime(new Date(t0));
+      await render(panel([r('a', 'Reading the run logs', 'active')]));
+      setSystemTime(new Date(t0 + 19_000));
+      await render(panel([r('a', 'Reading the run logs', 'active')]));
+      expect($('[data-testid="kit-thinking-timer"]')).toBeNull();
+      setSystemTime(new Date(t0 + 23_000));
+      await render(panel([r('a', 'Reading the run logs', 'active')]));
+      expect($('[data-testid="kit-thinking-timer"]')!.textContent).toBe('23s');
+      // A new step starts its own clock.
+      await render(panel([r('a', 'Read the run logs'), r('b', 'Reading a task', 'active')]));
+      expect($('[data-testid="kit-thinking-timer"]')).toBeNull();
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  it('tap expands the turn: key rows in order, routine runs folded, the live step last; tap again collapses', async () => {
+    const steps = [r('a', 'Read a task'), r('b', 'Looked over the tasks'), r('c', 'Searched'), k('w1', 'Drafted a task'),
+      k('f1', "Couldn't open the task"), r('d', 'Read a mission'), k('p1', 'Check it with you', 'pending'), r('e', 'Read 2 tasks'), r('f', 'Checked the budget'), r('g', 'Reading the errors', 'active')];
+    await render(panel(steps));
+    await click(live());
+    expect(live()!.getAttribute('aria-expanded')).toBe('true');
+    expect(pinned()).toBeNull();
+    const rows = $$('[data-testid="kit-thinking"] > .kit-steps > li');
+    expect(rows.map(li => (li.classList.contains('kit-step-fold') ? `fold:${li.querySelector('.kit-step-fold-count')!.textContent}` : li.querySelector('.kit-step-mark + span')!.textContent))).toEqual([
+      'fold:3 routine steps', 'Drafted a task', "Couldn't open the task", 'Read a mission', 'Check it with you', 'fold:2 routine steps', 'Reading the errors',
+    ]);
+    expect(rows[1].getAttribute('data-weight')).toBe('key');
+    expect(rows.at(-1)!.getAttribute('data-state')).toBe('active');
+    expect(rows[0].querySelector('.kit-step-fold-labels')!.textContent).toBe('Read a task · Looked over the tasks · Searched');
+    // Unfold a routine run in place.
+    const fold = rows[0].querySelector('button')!;
+    expect(fold.getAttribute('aria-expanded')).toBe('false');
+    await click(fold);
+    expect(fold.getAttribute('aria-expanded')).toBe('true');
+    expect([...rows[0].querySelectorAll('.kit-step')].map(li => li.querySelector('.kit-step-mark + span')!.textContent)).toEqual(['Read a task', 'Looked over the tasks', 'Searched']);
+    await click(fold);
+    expect(rows[0].querySelector('.kit-step')).toBeNull();
+    await click(live());
+    expect(live()!.getAttribute('aria-expanded')).toBe('false');
+    expect($('.kit-steps > .kit-step-fold')).toBeNull();
+  });
+
+  it('steps without a weight: only the waiting one is key', async () => {
+    await render(panel([{ id: 'a', label: 'Read a task', state: 'done' }, { id: 'b', label: 'Read a task', state: 'done' }, { id: 'p', label: 'Check it', state: 'pending' }, { id: 'c', label: 'Reading', state: 'active' }]));
+    expect(pinned()!.textContent).toContain('Check it');
+    await click(live());
+    expect($$('[data-testid="kit-thinking"] > .kit-steps > li').map(li => li.className)).toEqual(['kit-step-fold', 'kit-step', 'kit-step']);
+  });
+
+  it('a done turn folds to its summary and unfolds into the same filtered list', async () => {
+    const steps = [r('a', 'Read a task'), r('b', 'Read a mission'), k('w1', 'Drafted a task')];
+    await render(h(kit.ThinkingPanel, { steps, streaming: false, summary: 'Did 3 steps · filed 1 task', open: true }));
+    expect($('[data-testid="kit-thinking-summary"]')!.textContent).toBe('Did 3 steps · filed 1 task');
+    expect($$('.kit-steps > li').map(li => li.className)).toEqual(['kit-step-fold', 'kit-step']);
+    expect(live()).toBeNull();
   });
 });
 

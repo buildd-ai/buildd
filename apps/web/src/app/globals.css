@@ -66,6 +66,16 @@
   --cat-design: #f59b4e;
   --cat-research: #c77bb5;
 
+  /* Insights flow chart bands (components/insights). Chart-local steps, validated
+     as one adjacent set with the dataviz palette validator: the status tokens
+     alone put orange beside yellow, which fails colour-vision separation. */
+  --flow-running: #dd7020;
+  --flow-waiting: #c8467f;
+  --flow-review: #3987e5;
+  --flow-merged: #c98500;
+  --flow-released: #199e70;
+  --flow-lost: #d97a71;
+
   --chrome-bg: rgba(26, 24, 22, 0.92);
   --chrome-sidebar: #15130f;
 
@@ -125,6 +135,13 @@
   --cat-infra: #d96e12;
   --cat-design: #d96e12;
   --cat-research: #b24c9c;
+
+  --flow-running: #d96e12;
+  --flow-waiting: #c4467a;
+  --flow-review: #2a78d6;
+  --flow-merged: #b88200;
+  --flow-released: #14905f;
+  --flow-lost: #9e3b34;
 
   --chrome-bg: rgba(247, 244, 240, 0.92);
   --chrome-sidebar: #f7f4f0;
@@ -1159,16 +1176,26 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-thread .kit-msg-foot > .buildd-feedback { align-self: flex-start; }
   /* Nothing to say (no objects, no thumbs yet): no gap either. */
   .buildd-thread .kit-msg-foot:empty { display: none; }
-  /* The turn in flight (knowledge-base: buildd/design/chat-canvas.md, "Thinking"): a square
-     panel with a plain blue left rule, BUILDD / THINKING and three ticking
-     squares, the steps in plain words, then what the agent is saying. No
-     glow here; the surface's one glow is the composer sweep. */
-  .buildd-thread .kit-msg[data-role="assistant"][data-streaming] {
-    gap: 12px; padding: 12px 16px 16px;
-    border: 1px solid var(--chat-rule); border-left: 2px solid var(--mood-thinking-rule); background: var(--chat-panel);
-  }
+  /* The turn in flight (knowledge-base: buildd/design/chat-canvas.md, "Thinking"): one
+     free line in the feed, like Claude's own loading mark: the pulsing blue
+     square and the live step in plain words. No box, no header, no rail. It
+     sits on one line, so a label swap never moves what is below it. Tap
+     unfolds the turn's steps on a blue rule; the one key step (a write, a
+     failure, a change waiting on you) stays pinned under the line. No glow
+     here; the surface's one glow is the composer sweep. */
+  .buildd-thread .kit-msg[data-role="assistant"][data-streaming] { gap: 12px; }
   .buildd-thread .kit-thinking { border: 0; background: transparent; padding: 0; }
-  .buildd-thread .kit-thinking[data-streaming] > summary { min-height: 0; pointer-events: none; cursor: default; }
+  .buildd-thread .kit-live-chevron { color: var(--chat-muted); }
+  .buildd-thread .kit-live-count { color: var(--chat-muted); }
+  .buildd-thread .kit-live-timer { color: var(--status-warning); opacity: .85; }
+  .buildd-thread .kit-thinking[data-expanded] > .kit-steps { margin-top: 4px; padding: 4px 0 4px 12px; border-left: 2px solid var(--mood-thinking-rule); }
+  .buildd-thread .kit-step[data-weight="key"][data-state="done"] { color: var(--chat-text); }
+  .buildd-thread .kit-step-fold-btn { font-family: var(--kit-font-mono); color: var(--chat-dim); }
+  .buildd-thread .kit-step-fold-btn:hover { color: var(--chat-muted); }
+  .buildd-thread .kit-step-fold-count { font-size: 13px; }
+  .buildd-thread .kit-step-fold-labels { font-size: 11.5px; }
+  .buildd-thread .kit-step-fold > .kit-steps { margin: 0 0 4px 0; }
+  .buildd-thread .kit-thinking-pinned > .kit-steps { margin-top: 0; }
   /* A finished turn: its steps and tool rows fold to one ruled line over the
      answer ("Did 6 steps · filed 2 tasks"). Tap unfolds it in place. */
   .buildd-thread .kit-thinking[data-settled] { border: 1px solid var(--chat-rule); background: var(--chat-surface); padding: 0 12px; }
@@ -1176,10 +1203,6 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-thread .kit-thinking[data-settled] > summary:hover { color: var(--chat-text); }
   .buildd-thread .kit-thinking[data-settled][open] { padding-bottom: 12px; }
   .buildd-thread .kit-thinking[data-settled] .kit-steps { margin-top: 4px; }
-  .buildd-thinking-title {
-    display: flex; align-items: center; gap: 12px;
-    font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase;
-  }
   .buildd-thread .kit-steps { margin-top: 12px; gap: 8px; }
   .buildd-thread .kit-step { gap: 12px; font-family: var(--kit-font-mono); font-size: 13px; line-height: 1.4; }
   .buildd-thread .kit-step[data-state="done"] { color: var(--chat-muted); }
@@ -1188,6 +1211,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-thread .kit-step-mark { width: 10px; height: 10px; border: 0; border-radius: 0; }
   .buildd-thread .kit-step[data-state="done"] .kit-step-mark { background: var(--mood-thinking-done); }
   .buildd-thread .kit-step[data-state="active"] .kit-step-mark { background: var(--mood-thinking); animation: mood-dot 1.6s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .buildd-thread .kit-step[data-state="active"] .kit-step-mark { animation: none; } }
   .buildd-thread .kit-step[data-state="pending"] .kit-step-mark { border: 1px solid var(--chat-dim); background: transparent; }
   /* The request failed: said once, under the turn. */
   .buildd-thread > .kit-error {

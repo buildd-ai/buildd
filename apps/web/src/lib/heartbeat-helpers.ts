@@ -2,6 +2,9 @@
  * Pure helper functions for heartbeat mission UI.
  */
 
+import { resolvePrompt, resolvePromptValue } from '@buildd/core/prompts';
+import { registerTextPrompt, registerValuePrompt } from '@buildd/core/prompts';
+
 // ── Defaults for heartbeat mission creation ──
 
 export const DEFAULT_HEARTBEAT_CHECKLIST = `# Heartbeat Checklist
@@ -28,6 +31,17 @@ export const DEFAULT_MISSION_HEARTBEAT_CHECKLIST = `- [ ] Assess mission phase: 
 - [ ] When creating a batch of build tasks: include a CONCRETE pathManifest (actual file/directory paths each task will create or modify) so the platform can serialize tasks that touch the same files. Example: pathManifest=["apps/web/src/lib/foo.ts","packages/core/db/schema.ts"]. The API auto-adds dependsOn edges between tasks whose concrete manifests overlap — you declare the paths, not the edges. A task filed WITHOUT a pathManifest defaults to the repo-wide sentinel ["**"], which means "scope not declared": it is advisory only and buys no serialization at all — no dependsOn edges in, none out, and no claim-time blocking. So an undeclared scope does not make a task safe; it makes it race. Declaring the paths is the only way to get serialization.
 - [ ] NEVER re-implement a file that is already declared in a sibling task's pathManifest or described as that task's primary deliverable. If you need code owned by a pending/active sibling task, report blocked with the sibling taskId so a dependsOn edge can be added.
 - [ ] If ALL planned work is done (tasks completed, PRs merged or delivered), set missionComplete: true in structuredOutput. This PROPOSES completion — the platform then counts open tasks and evaluates the mission's goal criteria, and refuses if either does not clear. Setting the flag is not the same as the mission closing; check the mission's goal criteria (shown below when set) before asserting it, and if completion is refused the reason is posted to the mission feed`;
+
+export const ORGANIZER_CHECKLIST_PROMPT_ID = 'buildd.heartbeat.organizer_checklist';
+
+/**
+ * The organizer checklist a new mission starts with, server-side: an active
+ * prompts row (`@buildd/core/prompts`), else `DEFAULT_MISSION_HEARTBEAT_CHECKLIST`.
+ * Client code that shows the default keeps reading the constant.
+ */
+export function organizerChecklist(): string {
+  return resolvePrompt(ORGANIZER_CHECKLIST_PROMPT_ID, DEFAULT_MISSION_HEARTBEAT_CHECKLIST);
+}
 
 // ── Hour formatting ──
 
@@ -199,6 +213,54 @@ export interface PhaseAssessment {
 }
 
 /**
+ * The organizer's required actions per mission phase. Static instructional
+ * text, resolved through the versioned prompts table
+ * (`@buildd/core/prompts`): an active row's body is JSON with exactly these
+ * keys, each a non-empty list of strings; anything else is rejected and this
+ * public default runs.
+ */
+export const PHASE_ACTIONS_PROMPT_ID = 'buildd.heartbeat.phase_actions';
+
+export const DEFAULT_PHASE_ACTIONS = {
+  building: [
+    'Monitor builder progress',
+  ],
+  reviewingPrs: [
+    'Before creating a "CI-green, awaiting approval" escalation for an open PR, call get_pr_review first — a terminal changes_requested verdict is a real defect the platform sends back for rework, not a human-approval bottleneck. Skip or reword the escalation',
+    'If all PRs merged, create next batch of tasks from the plan or summarize completion',
+  ],
+  needsWorkspace: [
+    'Create a workspace: buildd action=manage_workspaces, action=create (name + optional repoUrl)',
+    'Create a GitHub repo: buildd action=manage_workspaces, action=create_repo',
+    'Then create coding tasks from the plan with outputRequirement=pr_required, roleSlug=builder',
+  ],
+  planning: [
+    'Read the plan artifact(s) using buildd action=get_artifact',
+    'Create concrete coding tasks: each needs outputRequirement=pr_required, roleSlug=builder, correct workspaceId',
+    'Break large phases into individual tasks with clear descriptions',
+    'Set task dependencies where phases must be sequential',
+  ],
+  reviewingCompleted: [
+    'Review completed task results and PR statuses',
+    'If more phases remain in the plan, create next batch of coding tasks',
+    'If all planned work is done, create a summary artifact for human review',
+  ],
+  stalled: [
+    'Decide the next step from the completed results and the mission goal',
+    'If tasks only produced plans, create coding tasks (see planning phase)',
+    'If waiting on a human decision, escalate clearly',
+    'If the goal is met, propose completion',
+  ],
+  idle: [
+    'The initial planning task should be in flight or pending',
+    'If no tasks exist at all, the mission may need manual intervention',
+  ],
+  fallback: [
+    'Monitor task progress',
+  ],
+};
+
+/**
  * Detect the current phase of a mission from its task and artifact state.
  * Pure function — no DB access. Used by the organizer context builder to
  * generate phase-aware guidance instead of passive status reporting.
@@ -212,6 +274,7 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
   // `failedTasks` is deliberately unread: task auto-retry owns failures, so no
   // phase turns them into a "retry" action for the organizer.
   const { completedTasks, activeTasks, artifacts, hasWorkspace, prCount } = data;
+  const actions = resolvePromptValue(PHASE_ACTIONS_PROMPT_ID, DEFAULT_PHASE_ACTIONS);
 
   const builderCompleted = completedTasks.filter(t => t.roleSlug === 'builder');
   const activeBuilders = activeTasks.filter(t => t.roleSlug === 'builder');
@@ -229,9 +292,7 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
       phase: 'building',
       reason: `${activeBuilders.length} builder task(s) in progress`,
       // No "retry failed tasks" action: task auto-retry already does that.
-      actions: [
-        'Monitor builder progress',
-      ],
+      actions: [...actions.building],
     };
   }
 
@@ -243,10 +304,7 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
       // No conflict or retry actions: CI retry, the conflict sweep and
       // pr-reconcile handle a PR that conflicts or goes red, and a reviewer's
       // request-changes dispatches its own fix.
-      actions: [
-        'Before creating a "CI-green, awaiting approval" escalation for an open PR, call get_pr_review first — a terminal changes_requested verdict is a real defect the platform sends back for rework, not a human-approval bottleneck. Skip or reword the escalation',
-        'If all PRs merged, create next batch of tasks from the plan or summarize completion',
-      ],
+      actions: [...actions.reviewingPrs],
     };
   }
 
@@ -256,23 +314,14 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
       return {
         phase: 'needs_workspace',
         reason: 'Plan artifact(s) delivered but mission has no workspace/repo — cannot create coding tasks.',
-        actions: [
-          'Create a workspace: buildd action=manage_workspaces, action=create (name + optional repoUrl)',
-          'Create a GitHub repo: buildd action=manage_workspaces, action=create_repo',
-          'Then create coding tasks from the plan with outputRequirement=pr_required, roleSlug=builder',
-        ],
+        actions: [...actions.needsWorkspace],
       };
     }
 
     return {
       phase: 'planning',
       reason: 'Plan artifact(s) delivered but no coding tasks created yet.',
-      actions: [
-        'Read the plan artifact(s) using buildd action=get_artifact',
-        'Create concrete coding tasks: each needs outputRequirement=pr_required, roleSlug=builder, correct workspaceId',
-        'Break large phases into individual tasks with clear descriptions',
-        'Set task dependencies where phases must be sequential',
-      ],
+      actions: [...actions.planning],
     };
   }
 
@@ -281,11 +330,7 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
     return {
       phase: 'reviewing',
       reason: `${builderCompleted.length} builder task(s) completed. Assess if more phases remain.`,
-      actions: [
-        'Review completed task results and PR statuses',
-        'If more phases remain in the plan, create next batch of coding tasks',
-        'If all planned work is done, create a summary artifact for human review',
-      ],
+      actions: [...actions.reviewingCompleted],
     };
   }
 
@@ -294,12 +339,7 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
     return {
       phase: 'stalled',
       reason: 'Work has finished and nothing is open or planned.',
-      actions: [
-        'Decide the next step from the completed results and the mission goal',
-        'If tasks only produced plans, create coding tasks (see planning phase)',
-        'If waiting on a human decision, escalate clearly',
-        'If the goal is met, propose completion',
-      ],
+      actions: [...actions.stalled],
     };
   }
 
@@ -308,10 +348,7 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
     return {
       phase: 'idle',
       reason: 'No tasks completed or in progress yet.',
-      actions: [
-        'The initial planning task should be in flight or pending',
-        'If no tasks exist at all, the mission may need manual intervention',
-      ],
+      actions: [...actions.idle],
     };
   }
 
@@ -319,8 +356,10 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
   return {
     phase: 'building',
     reason: 'Active work in progress.',
-    actions: [
-      'Monitor task progress',
-    ],
+    actions: [...actions.fallback],
   };
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerTextPrompt(ORGANIZER_CHECKLIST_PROMPT_ID, DEFAULT_MISSION_HEARTBEAT_CHECKLIST);
+registerValuePrompt(PHASE_ACTIONS_PROMPT_ID, DEFAULT_PHASE_ACTIONS);

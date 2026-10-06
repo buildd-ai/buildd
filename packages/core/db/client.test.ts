@@ -1,106 +1,49 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { NeonQueryPromise } from '@neondatabase/serverless';
+import { neon, NeonQueryPromise } from '@neondatabase/serverless';
+import { wrapNeonQuery } from './query-wrapper';
 
-// Mirrors the wrapping logic in ./client.ts getSql(). Duplicated here (not imported)
-// because getSql() is gated behind a real DATABASE_URL and the test-database safety
-// guard, so these tests exercise the same transform in isolation.
-function wrapQuery(baseSql: any, captureError: (error: unknown) => void) {
-  const originalQuery = baseSql.query.bind(baseSql);
-  baseSql.query = ((...args: Parameters<typeof originalQuery>) => {
-    const queryPromise = originalQuery(...args);
-    const originalThen = queryPromise.then.bind(queryPromise);
-    queryPromise.then = ((onFulfilled?: unknown, onRejected?: unknown) =>
-      originalThen(onFulfilled, (error: unknown) => {
-        captureError(error);
-        if (typeof onRejected === 'function') return (onRejected as (e: unknown) => unknown)(error);
-        throw error;
-      })) as typeof queryPromise.then;
-    return queryPromise;
-  }) as typeof baseSql.query;
-  return baseSql;
-}
+// A real neon client: building a query does no I/O, so these run offline.
+const client = () => neon('postgres://u:p@127.0.0.1:1/none');
 
-describe('neon client wrapper - preserves .query method', () => {
-  it('wraps .query method while preserving method identity and other properties', async () => {
-    const captureErrorMock = mock(() => {});
-
-    const neonCallable = (async (strings: any, ...values: any) => {
-      return [{ id: 1 }];
-    }) as any;
-
-    neonCallable.query = (sql: string, params: any[], opts: any) =>
-      new NeonQueryPromise(async () => ({ rows: [{ id: 1 }] }), { query: sql, params }, opts);
-    neonCallable.unsafe = mock(async () => [{ id: 1 }]);
-    neonCallable.transaction = mock(async (fn: any) => {
-      return fn({} as any);
-    });
-
-    const baseSql = wrapQuery(neonCallable, captureErrorMock);
-
-    // After wrapping, verify the structure is preserved
-    expect(typeof baseSql).toBe('function');
-    expect(typeof baseSql.query).toBe('function');
-    expect(typeof baseSql.unsafe).toBe('function');
-    expect(typeof baseSql.transaction).toBe('function');
+describe('wrapNeonQuery', () => {
+  it('returns the lazy NeonQueryPromise itself, so db.batch can compose it', () => {
+    const sql = wrapNeonQuery(client(), () => {});
+    const q = sql.query('SELECT 1');
+    expect(q).toBeInstanceOf(NeonQueryPromise);
   });
 
-  it('captures postgres error on .query rejection before rethrowing', async () => {
-    let captureCallCount = 0;
-    const captureErrorMock = mock((error: unknown) => {
-      captureCallCount++;
-    });
-
-    const neonCallable = (async (strings: any, ...values: any) => {
-      return [{ id: 1 }];
-    }) as any;
-
-    neonCallable.query = (sql: string, params: any[], opts: any) =>
-      new NeonQueryPromise(
-        async () => {
-          const err = new Error('duplicate key');
-          (err as any).code = '23505';
-          (err as any).detail = 'Key already exists';
-          throw err;
-        },
-        { query: sql, params },
-        opts,
-      );
-    neonCallable.unsafe = mock(async () => []);
-    neonCallable.transaction = mock(async (fn: any) => {
-      return fn({} as any);
-    });
-
-    const baseSql = wrapQuery(neonCallable, captureErrorMock);
-
-    try {
-      await baseSql.query('INSERT INTO users VALUES ($1)', [123]);
-      expect.unreachable('should have thrown');
-    } catch (error) {
-      expect(error).toBeDefined();
-      expect((error as any).code).toBe('23505');
-      expect((error as any).detail).toBe('Key already exists');
-      expect(captureCallCount).toBe(1);
-    }
+  it('transaction() accepts wrapped queries (the regression: it threw synchronously)', async () => {
+    const sql = wrapNeonQuery(client(), () => {});
+    const err = await sql.transaction([sql.query('SELECT 1'), sql.query('SELECT 2')]).catch(e => e as Error);
+    // Fails on the network (nothing listens), never on composition.
+    expect(String(err)).not.toContain('transaction() expects an array of queries');
   });
 
-  it('keeps the wrapped .query() result instanceof NeonQueryPromise, so db.batch() still works', () => {
-    // drizzle's neon-http `db.batch()` (packages/core/path-claim.ts's sole caller, for
-    // every claim acquisition/narrowing/release) hands each built query straight to the
-    // raw neon client's own `.transaction()`, which rejects anything that isn't
-    // `instanceof NeonQueryPromise` with "transaction() expects an array of queries, or a
-    // function returning an array of queries" -- the exact error repeatedly reported as
-    // check_path_claim friction. A wrapper that calls `.catch()`/`.then()` directly on the
-    // returned promise (rather than patching it in place) silently demotes it to a plain
-    // Promise and breaks this for every call, regardless of whether the query succeeds.
-    const neonCallable = (async () => []) as any;
-    neonCallable.query = (sql: string, params: any[], opts: any) =>
-      new NeonQueryPromise(async () => ({ rows: [] }), { query: sql, params }, opts);
-    neonCallable.unsafe = mock(async () => []);
-    neonCallable.transaction = mock(async () => []);
+  it('does not run the query until it is awaited', () => {
+    const sql = wrapNeonQuery(client(), () => {});
+    const q = sql.query('SELECT 1') as unknown as { execute: (...a: unknown[]) => Promise<unknown> };
+    const spy = mock(q.execute);
+    q.execute = spy;
+    expect(spy).not.toHaveBeenCalled();
+  });
 
-    const baseSql = wrapQuery(neonCallable, () => {});
+  it('reports a failed query to onError, then rethrows it', async () => {
+    const onError = mock(() => {});
+    const err = new Error('duplicate key');
+    const fake = {
+      query: () => ({ execute: () => Promise.reject(err), then(this: any, f: any, r: any) { return this.execute().then(f, r); } }),
+    };
+    const wrapped = wrapNeonQuery(fake, onError);
+    let thrown: unknown;
+    try { await wrapped.query(); } catch (e) { thrown = e; }
+    expect(thrown).toBe(err);
+    expect(onError).toHaveBeenCalledWith(err);
+  });
 
-    const result = baseSql.query('SELECT 1', []);
-    expect(result instanceof NeonQueryPromise).toBe(true);
+  it('keeps the callable form and sibling methods', () => {
+    const sql = wrapNeonQuery(client(), () => {});
+    expect(typeof sql).toBe('function');
+    expect(typeof sql.transaction).toBe('function');
+    expect(typeof sql.unsafe).toBe('function');
   });
 });

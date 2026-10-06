@@ -2,16 +2,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { inArray } from 'drizzle-orm';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { fetchCoordinationStats } from '@/lib/coordination-stats-query';
+import { fetchOrchestrationDecisionStats } from '@/lib/orchestration-decision-stats-query';
 
 /** Read-only aggregate coordination metrics, scoped to the caller's teams. */
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  const account = token ? await authenticateApiKey(token, req) : null;
+  // A per-task token reads coordination stats only for its own task's workspace.
+  const account = token ? await authenticateTaskScopedCaller(token, req) : null;
   if (!user && !account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const params = new URL(req.url).searchParams;
   const window = params.get('window') ?? '7d';
@@ -21,17 +23,21 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'missionId must be a full UUID' }, { status: 400 });
   }
   const metric = params.get('metric');
-  if (metric && !['manifest', 'pathClaims'].includes(metric)) return NextResponse.json({ error: 'Invalid metric' }, { status: 400 });
+  if (metric && !['manifest', 'pathClaims', 'orchestrationDecisions'].includes(metric)) return NextResponse.json({ error: 'Invalid metric' }, { status: 400 });
   const teamIds = await resolveAccountTeamIds(user, account);
-  const allowed = teamIds.length ? await db.query.workspaces.findMany({
+  const teamWorkspaces = teamIds.length ? await db.query.workspaces.findMany({
     where: inArray(workspaces.teamId, teamIds), columns: { id: true },
   }) : [];
+  const allowed = account ? teamWorkspaces.filter(w => taskScopeAllowsWorkspace(account, w.id)) : teamWorkspaces;
   const workspace = params.get('workspaceId') ?? params.get('workspace');
   if (workspace && !allowed.some(w => w.id === workspace)) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-  const stats = await fetchCoordinationStats({
+  const filters = {
     workspaceIds: workspace ? [workspace] : allowed.map(w => w.id),
     missionId,
     window: window as '24h' | '7d' | '30d',
-  });
+  };
+  // The decision ledger is its own read: never part of the unfiltered report.
+  if (metric === 'orchestrationDecisions') return NextResponse.json(await fetchOrchestrationDecisionStats(filters));
+  const stats = await fetchCoordinationStats(filters);
   return NextResponse.json(metric === 'manifest' ? stats.manifestCoverage : metric === 'pathClaims' ? stats.pathClaims : stats);
 }

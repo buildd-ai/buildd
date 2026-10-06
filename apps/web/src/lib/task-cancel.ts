@@ -4,6 +4,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
+import { wakeTask } from '@/lib/dispatch-authority';
 
 export interface TaskRef {
   id: string;
@@ -27,13 +28,17 @@ export async function emitTaskUpdated(task: TaskRef & { status: string }): Promi
 
 /**
  * After a cancelled task is written back to `pending` outside the task PATCH
- * (e.g. its GitHub issue was reopened): broadcast the change and reopen its
- * mission if that mission had already completed — the same reopen the PATCH
- * route runs. Lazily imports mission-loop so callers that never reopen don't
- * pull in its dependency graph. Never throws.
+ * (e.g. its GitHub issue was reopened): broadcast the change, wake it, and
+ * reopen its mission if that mission had already completed — the same reopen
+ * the PATCH route runs. The status write already made the wake durable (outbox
+ * trigger); the wake labels it and kicks delivery. Lazily imports mission-loop
+ * so callers that never reopen don't pull in its dependency graph. Never throws.
  */
 export async function applyTaskReopenSideEffects(task: TaskRef, reason: string): Promise<void> {
   await emitTaskUpdated({ ...task, status: 'pending' });
+  await wakeTask(task.id, 'task.requeued').catch((err) =>
+    console.error(`[task-cancel] wake failed for reopened task ${task.id}:`, err),
+  );
   if (!task.missionId) return;
   try {
     const [{ reopenCompletedMission }, { systemActor }] = await Promise.all([
@@ -61,6 +66,11 @@ export async function applyTaskReopenSideEffects(task: TaskRef, reason: string):
  *     check. Cancelled tasks deliberately do not unblock or cascade dependents
  *     (see resolveCompletedTask).
  *  4. TASK_UPDATED on the workspace channel.
+ *  5. The supersession reconciler's `cancelled` event: open retries of this
+ *     task (CI/review/conflict attempts) go with it (`cancel_supersedes_retry`).
+ *  6. Detach an interactive (claim_task) worker. The abort push in step 1
+ *     reaches only runner-held sessions; a local one would otherwise keep its
+ *     seat (lib/interactive-detach.ts).
  *
  * Each step is independent and failures are logged, never thrown, so one broken
  * side effect cannot stop the others or fail the caller's already-committed write.
@@ -90,9 +100,13 @@ export async function applyTaskCancelSideEffects(task: TaskRef): Promise<void> {
     releaseAndNotify(id, 'abandoned'),
     resolveCompletedTask(id, workspaceId),
     emitTaskUpdated({ ...task, status: 'cancelled' }),
+    import('@/lib/supersession').then(({ reconcileSubjectEvent }) =>
+      reconcileSubjectEvent({ kind: 'cancelled', workspaceId, taskId: id, door: 'applyTaskCancelSideEffects' })),
+    import('@/lib/interactive-detach').then(({ detachInteractiveWorkersOfEndedTasks }) =>
+      detachInteractiveWorkersOfEndedTasks({ taskId: id, graceMs: 0 })),
   ]);
 
-  const labels = ['abort push', 'path-claim release', 'resolveCompletedTask', 'TASK_UPDATED'];
+  const labels = ['abort push', 'path-claim release', 'resolveCompletedTask', 'TASK_UPDATED', 'supersession', 'interactive detach'];
   results.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.error(`[task-cancel] ${labels[i]} failed for ${id}:`, r.reason);

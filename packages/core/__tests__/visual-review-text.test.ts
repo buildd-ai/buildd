@@ -44,7 +44,7 @@ const audits: VisualReviewAuditTask[] = [
 function model(over: Partial<VisualReviewModel> = {}): VisualReviewModel {
   const cells = [
     cell(SHOT1, 'mobile', 'unsure', 'Header may overlap.'),
-    { ...cell(SHOT2, 'desktop', 'issue', 'Two headings.'), current: { ...cell(SHOT2, 'desktop', 'issue', 'Two headings.').current, fixTask: { id: FIX, title: '[surface fix] x', status: 'in_progress', prUrl: null, prNumber: 12, mergedAt: null, origin: 'auditor' as const } } },
+    { ...cell(SHOT2, 'desktop', 'issue', 'Two headings.'), current: { ...cell(SHOT2, 'desktop', 'issue', 'Two headings.').current, fixTask: { id: FIX, title: '[surface fix] x', status: 'in_progress', prUrl: null, prNumber: 12, mergedAt: null, mergedInto: null, origin: 'auditor' as const } } },
   ];
   return {
     missionId: 'mission-1',
@@ -83,29 +83,29 @@ describe('formatVisualReview for MCP', () => {
 
   it('gives per cell: viewport, round, verdict, finding, decision and fix with status', () => {
     const text = formatVisualReview(model(), 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
-    expect(text).toMatch(/phone; round 2; agent: unsure; "Header may overlap\."; human: not reviewed yet, needs review/);
+    expect(text).toMatch(/phone; round 2; agent: unsure; "Header may overlap\."; human: not reviewed, needs review/);
     expect(text).toMatch(new RegExp(`fix: in progress, PR #12 \\(task ${FIX}\\)`));
-    expect(text).toContain('1 screen needs your review.');
+    expect(text).toContain('1 screen to review.');
   });
 
   it('round cap: says a decision is needed and never "0 need your review"', () => {
     const m = model({ needsYou: { reason: 'round_cap' }, roundCapOpen: true, cells: [model().cells[1]], summary: { ...model().summary, unsure: 0, awaitingHuman: 0 } });
     const text = formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
     expect(text).not.toMatch(/\b0 (screens? )?needs? your review/);
-    expect(text).toContain('Needs your decision: issues remain after 2 rounds (fix or waive).');
+    expect(text).toContain('Decision needed: issues remain after 2 rounds (fix or waive).');
   });
 
   it('question: the closing line carries the prompt', () => {
     const m = model({ needsYou: { reason: 'question', prompt: 'Is the old header intended?' } as never, summary: { ...model().summary, awaitingHuman: 0 } });
     const text = formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
-    expect(text).toContain('Needs your answer: Is the old header intended?');
+    expect(text).toContain('Question: Is the old header intended?');
     expect(text).not.toMatch(/\b0 (screens? )?needs? your review/);
   });
 
   it('nothing pending: says nobody is needed', () => {
     const m = model({ phase: 'reviewed', needsYou: null, summary: { ...model().summary, awaitingHuman: 0 } });
     const text = formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
-    expect(text).toContain('Nothing needs your review.');
+    expect(text).toContain('Nothing to review.');
   });
 
   describe('checked before the mission was completed (Q3)', () => {
@@ -191,6 +191,22 @@ describe('formatVisualReview: wrong-ref shots (visual-qa-auditor.md, "Page sourc
     const text = formatVisualReview(model(), 'Example', { audience: 'mcp' });
     expect(text).not.toContain('Capture gaps');
     expect(text).not.toContain('Superseded');
+  });
+});
+
+describe('formatVisualReview: cells resolved elsewhere (visual-qa-human-review.md, "The crux")', () => {
+  it('lists a stuck fix-merged cell resolved by a later round\'s capture under a different variant, kept for audit', () => {
+    const m = model({
+      resolvedElsewhere: [{ key: '/app/example|mobile|eur', route: '/app/example', viewport: 'mobile', variant: 'eur', resolvedBy: '/app/example|mobile|' }],
+    });
+    const text = formatVisualReview(m, 'Example', { audience: 'mcp' });
+    expect(text).toContain('Resolved (1): a merged fix\'s cell with no screenshot of its own since, verified instead by a later round\'s capture of the same route, viewport and state under a different variant; kept for audit, not shown for review:');
+    expect(text).toContain('  - /app/example phone (eur): resolved by /app/example|mobile|');
+  });
+
+  it('says nothing about it when there are none', () => {
+    const text = formatVisualReview(model(), 'Example', { audience: 'mcp' });
+    expect(text).not.toContain('Resolved (');
   });
 });
 

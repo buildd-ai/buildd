@@ -25,8 +25,24 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-const mockDispatchNewTask = mock((..._a: any[]) => Promise.resolve());
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
+const mockAnnounceTaskCreated = mock((..._a: any[]) => Promise.resolve());
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 mock.module('@/lib/task-cancel', () => ({ applyTaskCancelSideEffects: () => Promise.resolve() }));
 mock.module('@/lib/chat/mission-events', () => ({ postVisualReviewEvent: () => Promise.resolve(true) }));
 
@@ -47,7 +63,8 @@ beforeEach(() => {
   tasksFindMany.mockReset(); tasksFindMany.mockResolvedValue([]);
   tasksInsertValues.mockClear();
   tasksInsertReturning.mockReset(); tasksInsertReturning.mockResolvedValue([{ id: 'audit-1', status: 'pending' }]);
-  mockDispatchNewTask.mockReset(); mockDispatchNewTask.mockResolvedValue(undefined);
+  mockAnnounceTaskCreated.mockReset(); mockAnnounceTaskCreated.mockResolvedValue(undefined);
+  mockWakeTask.mockReset();
   gateTasks.mockReset(); gateTasks.mockResolvedValue([
     { id: 'b1', title: 'Build nav', status: 'completed', taskClass: 'work', pathManifest: ['**'] },
   ]);
@@ -66,7 +83,8 @@ describe('requestMissionSurfaceAudit', () => {
     expect(row.missionId).toBe('mission-1');
     expect(row.dependsOn).toEqual(['b1']);
     expect(row.description).toContain('`/app/missions/:id`');
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
   });
 
   it('is idempotent: an open audit is returned, not duplicated', async () => {
@@ -74,7 +92,8 @@ describe('requestMissionSurfaceAudit', () => {
     const out = await requestMissionSurfaceAudit('mission-1');
     expect(out).toEqual({ ok: true, created: false, taskId: 'audit-9', status: 'in_progress' });
     expect(tasksInsertValues).not.toHaveBeenCalled();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('returns a finished audit as is', async () => {
@@ -113,7 +132,7 @@ describe('requestMissionSurfaceAudit', () => {
   });
 
   it('a dispatch failure does not lose the filed audit', async () => {
-    mockDispatchNewTask.mockRejectedValue(new Error('pusher down'));
+    mockAnnounceTaskCreated.mockRejectedValue(new Error('pusher down'));
     expect(await requestMissionSurfaceAudit('mission-1')).toMatchObject({ ok: true, created: true });
   });
 });

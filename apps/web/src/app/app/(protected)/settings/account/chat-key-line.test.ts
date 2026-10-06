@@ -23,9 +23,9 @@ describe('chatKeyLine: the one Account row about chat', () => {
 
   it('with no team key: members learn who to ask, admins get the fix', () => {
     expect(chatKeyLine({ kind: 'none' }, { isAdmin: false }))
-      .toEqual({ text: 'Not set up yet · ask an admin', action: null });
+      .toEqual({ text: 'Not set up · ask an admin', action: null });
     expect(chatKeyLine({ kind: 'none' }, { isAdmin: true }))
-      .toEqual({ text: 'Not set up yet', action: { href: '/app/settings/providers', label: 'Set it up' } });
+      .toEqual({ text: 'Not set up', action: { href: '/app/settings/providers', label: 'Set it up' } });
   });
 
   it('when everyone brings their own key, names the one provider on offer, or none when several are', () => {

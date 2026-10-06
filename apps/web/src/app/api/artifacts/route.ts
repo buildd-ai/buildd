@@ -26,6 +26,9 @@ export async function GET(req: NextRequest) {
   try {
     let teamIds: string[] = [];
     if (apiAccount) {
+      // Reach, not a permission: the key lists across its team owner's teams.
+      // Deliberately outside the permission registry
+      // (docs/specs/team-permissions.md, oddity 5).
       const ownerMembership = await db.query.teamMembers.findFirst({
         where: and(eq(teamMembers.teamId, apiAccount.teamId), eq(teamMembers.role, 'owner')),
         columns: { userId: true },

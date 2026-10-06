@@ -79,8 +79,10 @@ every supported action.
 
 **Analytics contract**:
 - `buildd_analytics` groups explain, errors, failure/gate analytics, budget,
-  usage, runners, manifest coverage and path-claim statistics. The existing
-  Analyst role declares it; aggregate reads remain available at worker level.
+  usage, runners, Dispatch transport health (`dispatch_health {workspaceId?}`,
+  see task-dispatch-authority.md "Observability"), manifest coverage and
+  path-claim statistics. The existing Analyst role declares it; aggregate
+  reads remain available at worker level.
 - `get_manifest_coverage {workspaceId?, missionId?, window?}` reports tasks
   created in the window as concrete, advisory wildcard or missing manifests,
   with a fractional concrete share and workspace/mission/kind breakdowns.
@@ -88,6 +90,15 @@ every supported action.
   claimed, blocked, deadlock and rejected, split by transport surface. Successful
   calls start at instrumentation rollout; older ledger rows only recorded
   refusals. Invalid and unauthorized requests are excluded.
+- `get_decision_stats` takes the same filters and counts the
+  orchestration decision ledger (`orchestration_decisions`,
+  `orchestration_manifest_predictions`): totals, applied/suggested/fallback,
+  labelled vs unlabelled (an `orchestration_touch_labels` row exists for the
+  task), by decision group, by UTC day and by fallback reason. It carries each
+  workspace's opt-in state, so zero rows read as "capability disabled" when the
+  team never opted in rather than as missing evidence. Served by
+  `/api/stats/coordination?metric=orchestrationDecisions`; that metric is never
+  part of the unfiltered coordination report.
 - Change-intent conflict warnings enter `family=gate` as `change_intent` /
   `warned`, once per delivered warning note (both sides of a conflict).
 - Accepted path claims are telemetry, excluded from friction ranking and bypass

@@ -3,12 +3,13 @@ import { db } from '@buildd/core/db';
 import { initiatives, missions, artifacts } from '@buildd/core/db/schema';
 import { eq, and, or, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsInitiative, taskScopeAllowsTask, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { ARTIFACT_TYPES, ArtifactType, isArtifactType } from '@buildd/shared';
 import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
 
 
 /** Load the initiative and enforce access; returns the row or a NextResponse error. */
@@ -43,7 +44,9 @@ export async function GET(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token reads only an initiative of its own task's workspace,
+  // and only the artifacts in that workspace.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
   const user = await getCurrentUser();
 
   if (!apiAccount && !user) {
@@ -53,6 +56,9 @@ export async function GET(
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
   const { initiative, error } = await loadInitiative(id, teamIds, apiAccount?.id);
   if (error) return error;
+  if (apiAccount && !taskScopeAllowsWorkspace(apiAccount, initiative!.workspaceId)) {
+    return NextResponse.json({ error: 'Initiative not found' }, { status: 404 });
+  }
 
   // Child mission ids for the rollup.
   const childMissions = await db.query.missions.findMany({
@@ -65,7 +71,9 @@ export async function GET(
     ? or(eq(artifacts.initiativeId, id), inArray(artifacts.missionId, missionIds))
     : eq(artifacts.initiativeId, id);
 
-  const rolledUp = await db.query.artifacts.findMany({ where: filter });
+  const rows = await db.query.artifacts.findMany({ where: filter });
+  // Child missions may sit in other workspaces; a task token sees only its own.
+  const rolledUp = apiAccount?.taskScope ? rows.filter(a => taskScopeAllowsWorkspace(apiAccount, a.workspaceId)) : rows;
 
   return NextResponse.json({ artifacts: rolledUp });
 }
@@ -85,11 +93,15 @@ export async function POST(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token writes only to the initiative its own task's mission belongs to.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
   const user = await getCurrentUser();
 
   if (!apiAccount && !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (apiAccount && !(await taskScopeAllowsInitiative(apiAccount, id))) {
+    return NextResponse.json({ error: 'Initiative not found' }, { status: 404 });
   }
 
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
@@ -97,7 +109,7 @@ export async function POST(
   if (error) return error;
 
   const body = await req.json();
-  const { type, title, content, url, metadata, key } = body;
+  const { type, title, content, url, metadata, key, taskId } = body;
 
   // Single vocabulary (@buildd/shared ARTIFACT_TYPES) — see the note in
   // packages/shared/src/types.ts on why no route keeps its own list.
@@ -112,6 +124,10 @@ export async function POST(
   }
   if (type === ArtifactType.LINK && !url) {
     return NextResponse.json({ error: 'url is required for link artifacts' }, { status: 400 });
+  }
+  // `taskId` addresses a review notification: a task token names only its own task.
+  if (apiAccount && taskId && !taskScopeAllowsTask(apiAccount, taskId)) {
+    return NextResponse.json({ error: 'A task token may name only its own task' }, { status: 403 });
   }
 
   const artifactMetadata = {
@@ -129,6 +145,11 @@ export async function POST(
         eq(artifacts.key, key),
       ),
     });
+    // A key is unique per workspace: a task token may take over only this
+    // initiative's own initiative-level artifact.
+    if (existing && apiAccount?.taskScope && (existing.initiativeId !== id || existing.workerId || existing.missionId)) {
+      return NextResponse.json({ error: 'That key belongs to an artifact outside this initiative' }, { status: 409 });
+    }
     if (existing) {
       const [updated] = await db
         .update(artifacts)
@@ -146,6 +167,15 @@ export async function POST(
       const shareUrl = updated.shareToken && updated.visibility === 'public'
         ? `${baseUrl}/share/${updated.shareToken}`
         : null;
+
+      // Notify if this artifact is meant for review, the task opted in, and content or title changed.
+      if (taskId && initiative!.workspaceId) {
+        const shouldNotify = await shouldNotifyOnArtifact(updated, taskId);
+        if (shouldNotify && (existing.content !== (content || null) || existing.title !== title)) {
+          await notifyArtifactReady(updated, taskId, initiative!.workspaceId);
+        }
+      }
+
       return NextResponse.json({ artifact: { ...updated, shareUrl }, upserted: true });
     }
   }
@@ -166,6 +196,14 @@ export async function POST(
       metadata: artifactMetadata,
     })
     .returning();
+
+  // Notify if this artifact is meant for review and the task opted in.
+  if (taskId && initiative!.workspaceId) {
+    const shouldNotify = await shouldNotifyOnArtifact(artifact, taskId);
+    if (shouldNotify) {
+      await notifyArtifactReady(artifact, taskId, initiative!.workspaceId);
+    }
+  }
 
   return NextResponse.json({ artifact: { ...artifact, shareUrl: null } });
 }

@@ -17,23 +17,28 @@
  * when workerId is given, it is that worker).
  *
  * Applies the same ranking as the claim (packages/core/agent-endpoint.ts,
- * `resolveAgentModelRoute`) but only ever returns an endpoint: a task whose
- * winner is an Anthropic key or seat, a codex task, or a team with no endpoint
- * gets 404 and egress falls through to the Worker's own route.
+ * `resolveAgentModelRoute`): when an `agent_endpoint` wins, that is what
+ * comes back. When it loses (or none exists) and the task's own Anthropic
+ * credential is a plain `anthropic_api_key` — resolved with
+ * `resolveAnthropicAuth`, the same scoping a self-hosted runner would use
+ * (docs/credentials-architecture.md) — that key comes back too, flagged
+ * `source: 'anthropic_api_key'` so the dispatcher's egress handler ranks it
+ * ahead of its own `MODEL_PROXY_URL` override (apps/cloud-runner/src/outbound.ts
+ * `resolveModelRoute`): the key is the team's own metered credential, not an
+ * opt-in to any proxy, so a Worker-level pin must not silently spend it on a
+ * different route. An OAuth seat or Claude credential winning the ranking
+ * still gets 404 — cloud egress does not carry a seat token. A codex task, or
+ * a team with nothing at all, is also 404 and egress falls through to the
+ * Worker's own route.
  *
  * Design: docs/design/agent-model-endpoint.md §3.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { createHash, timingSafeEqual } from 'crypto';
-import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
-import { and, eq, inArray } from 'drizzle-orm';
 import { resolveAgentModelRoute } from '@buildd/core/agent-endpoint';
+import { resolveAnthropicAuth } from '@/lib/claude-credential';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
-import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
-import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import { isOpenWithinTeams } from '@/lib/open-workspaces';
+import { resolveDispatchPrincipal } from '@/lib/agent-capabilities/dispatch-principal';
+import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 
 /** Mirrors DISPATCH_TOKEN_HEADER in apps/cloud-runner/src/outbound.ts. */
 const DISPATCH_TOKEN_HEADER = 'x-buildd-dispatch-token';
@@ -43,13 +48,6 @@ const NO_STORE = { 'Cache-Control': 'no-store' };
 
 function fail(status: number, error: string) {
   return NextResponse.json({ error }, { status, headers: NO_STORE });
-}
-
-/** Constant-time over fixed-length digests, so neither length nor prefix leaks. */
-function safeEqual(a: string, b: string): boolean {
-  const ha = createHash('sha256').update(a).digest();
-  const hb = createHash('sha256').update(b).digest();
-  return timingSafeEqual(ha, hb);
 }
 
 export async function POST(req: NextRequest) {
@@ -74,54 +72,37 @@ export async function POST(req: NextRequest) {
     return fail(400, 'workerId must be an id');
   }
 
-  const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
-    columns: { id: true, workspaceId: true, backend: true },
-    with: {
-      workspace: { columns: { id: true, teamId: true, accessMode: true, webhookConfig: true } },
-    },
-  });
-  const ws = task?.workspace;
-  // Every "not yours" answer is the same 404.
-  if (!task || !ws || task.workspaceId !== ws.id) return fail(404, 'Task not found');
-
-  // A workspace-restricted token acts only inside its own list.
-  if (!tokenWorkspaceAllowed(account.workspaceIds, ws.id)) return fail(404, 'Task not found');
-  const ownOpen = !!account.teamId && isOpenWithinTeams(ws, [account.teamId]);
-  if (!ownOpen) {
-    const perms = await getAccountWorkspacePermissions(account.id);
-    if (!perms.some(p => p.workspaceId === ws.id && p.canClaim)) return fail(404, 'Task not found');
+  const resolved = await resolveDispatchPrincipal(account, { taskId, workerId, dispatchToken });
+  if (!resolved.ok) {
+    void recordCapabilityDecision({ capability: 'model.endpoint', decision: 'refused', accountId: account.id, principalVia: 'dispatch', resource: `task:${taskId}`, reasonCode: resolved.reasonCode });
+    return fail(resolved.status, resolved.error);
   }
-
-  const hook = ws.webhookConfig;
-  if (!hook || !hook.enabled || typeof hook.token !== 'string' || hook.token.length === 0 || !safeEqual(hook.token, dispatchToken)) {
-    return fail(403, 'Dispatch token does not match this workspace');
-  }
-
-  const liveWorkers = await db.query.workers.findMany({
-    where: and(eq(workers.taskId, taskId), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
-    columns: { id: true, accountId: true, workspaceId: true, status: true, taskId: true },
-  });
-  const live = new Set<string>(LIVE_WORKER_STATUSES);
-  const mine = liveWorkers.filter(w =>
-    w.taskId === taskId &&
-    w.workspaceId === ws.id &&
-    w.accountId === account.id &&
-    live.has(w.status) &&
-    (workerId === undefined || w.id === workerId));
-  if (mine.length === 0) return fail(409, 'Task has no live worker claimed by this account');
+  const { task, workspace: ws } = resolved;
+  const p = resolved.principal;
+  const audit = { capability: 'model.endpoint' as const, workspaceId: p.workspaceId, taskId: p.taskId, workerId: p.workerId, accountId: p.accountId, principalVia: p.via };
 
   // Codex speaks the OpenAI Responses API with its own credential (§2).
   if ((task as { backend?: string | null }).backend === 'codex') return fail(404, 'No agent model endpoint for this task');
 
   try {
     const decision = await resolveAgentModelRoute({ teamId: ws.teamId, workspaceId: ws.id, accountId: account.id });
-    if (!decision || decision.winner !== 'endpoint') return fail(404, 'No agent model endpoint for this task');
-    const e = decision.endpoint;
-    return NextResponse.json(
-      { kind: e.kind, baseUrl: e.baseUrl, key: e.apiKey, authHeader: e.authHeader, models: e.models },
-      { headers: NO_STORE },
-    );
+    if (decision && decision.winner === 'endpoint') {
+      const e = decision.endpoint;
+      void recordCapabilityDecision({ ...audit, decision: 'allowed', resource: `agent_endpoint:${e.kind}` });
+      return NextResponse.json(
+        { kind: e.kind, baseUrl: e.baseUrl, key: e.apiKey, authHeader: e.authHeader, models: e.models },
+        { headers: NO_STORE },
+      );
+    }
+    // The endpoint lost the ranking (or none exists). Only a plain Anthropic
+    // API key reaches cloud egress from here — an OAuth seat or Claude
+    // credential winning still falls through to 404, same as before.
+    const auth = await resolveAnthropicAuth({ teamId: ws.teamId, workspaceId: ws.id });
+    if (auth && auth.purpose === 'anthropic_api_key') {
+      void recordCapabilityDecision({ ...audit, decision: 'allowed', resource: 'anthropic_api_key' });
+      return NextResponse.json({ source: 'anthropic_api_key', key: auth.headers['x-api-key'] }, { headers: NO_STORE });
+    }
+    return fail(404, 'No agent model endpoint for this task');
   } catch {
     // The error could carry decrypted material; log nothing of it.
     console.error(`[model-endpoint] resolution failed for task ${taskId}`);

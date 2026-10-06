@@ -29,6 +29,24 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mock(async () => {}),
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
+
 import {
   requiredScheduleSkillSlugs,
   findMissingScheduleSkills,
@@ -55,6 +73,7 @@ beforeEach(() => {
   mockWorkspacesFindFirst.mockReset();
   mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
   insertedTask = null;
+  mockWakeTask.mockClear();
 });
 
 describe('requiredScheduleSkillSlugs', () => {
@@ -176,6 +195,7 @@ describe('fileMissingSkillFriction', () => {
     // Not 'schedule': it has no scheduleId column and is not schedule-spawned
     // work, so it must not show up in schedule analytics.
     expect(insertedTask.creationSource).toBe('webhook');
+    expect(mockWakeTask).toHaveBeenCalledWith('friction-task-1', 'task.created');
   });
 
   it('files nothing when an open friction task already carries the signature', async () => {
@@ -183,6 +203,7 @@ describe('fileMissingSkillFriction', () => {
     const outcome = await fileMissingSkillFriction(input);
     expect(outcome).toBe('exists');
     expect(insertedTask).toBeNull();
+    expect(mockWakeTask).not.toHaveBeenCalled();
     const { params } = renderWhere(mockTasksFindFirst);
     expect(params).toContain(missingSkillFrictionSignature('sched-1'));
   });

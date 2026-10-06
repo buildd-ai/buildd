@@ -5,8 +5,12 @@ import { homedir, tmpdir } from 'os';
 import { isolatedWorkspacePath } from './isolation-paths.js';
 import { timedPhase } from './phase-lines';
 import type { CloneHooks } from './warm-repo';
+import { cloneRepo, normalizeCloneUrl } from './git-clone';
 
 export { isolatedWorkspacePath };
+
+/** https://, git@, file:/// and absolute local paths, with no shell metacharacters. */
+const CLONE_URL_RE = /^(https?:\/\/|git@|file:\/\/\/|\/[\w./-]+)[\w.@:/-]*$/;
 
 /**
  * Clone a repo into the per-workspace isolation directory if the path does not
@@ -14,7 +18,7 @@ export { isolatedWorkspacePath };
  * on failure. Idempotent when the clone already exists.
  */
 export function ensureIsolatedClone(
-  workspace: { id: string; repo: string },
+  workspace: { id: string; repo: string; defaultBranch?: string | null },
   isolationRoot: string,
   /** Warm-repo restore before the clone (warm-repo.ts). Any failure there falls back to the clone. */
   hooks?: CloneHooks,
@@ -27,14 +31,11 @@ export function ensureIsolatedClone(
 
   mkdirSync(isolationRoot, { recursive: true });
 
-  let cloneUrl = workspace.repo;
   // Expand bare "owner/repo" slugs to GitHub HTTPS URLs.
-  if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(cloneUrl)) {
-    cloneUrl = `https://github.com/${cloneUrl}.git`;
-  }
+  const cloneUrl = normalizeCloneUrl(workspace.repo);
 
   // Reject invalid URL formats to prevent command injection.
-  if (!/^(https?:\/\/|git@|\/[\w./-]+)[\w.@:/-]*$/.test(cloneUrl)) {
+  if (!CLONE_URL_RE.test(cloneUrl)) {
     throw new Error(`[isolation] invalid repo URL format: "${cloneUrl}"`);
   }
 
@@ -52,15 +53,29 @@ export function ensureIsolatedClone(
 
   console.log(`[isolation] cloning "${cloneUrl}" → "${clonePath}" for workspace ${workspace.id}…`);
   // BUILDD_PHASE=clone_start/clone_end in a cloud container (phase-lines.ts).
-  timedPhase('clone', () => execSync(`git clone ${cloneUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120_000 }));
+  // Depth 1 and the default branch only in a cloud container, retried while
+  // GitHub throttles (git-clone.ts).
+  timedPhase('clone', () => cloneRepo(cloneUrl, clonePath, { branch: workspace.defaultBranch }));
   console.log(`[isolation] clone ready: ${clonePath}`);
   hooks?.afterClone(clonePath);
   return clonePath;
 }
 
+/** What the resolver is told about a workspace. */
+export interface ResolveWorkspace {
+  id: string;
+  name: string;
+  repo?: string | null;
+  /**
+   * gitConfig.defaultBranch, when the caller has it. A cloud clone takes this
+   * one branch only (git-clone.ts); absent, it takes the remote HEAD.
+   */
+  defaultBranch?: string | null;
+}
+
 export interface WorkspaceResolver {
-  resolve(workspace: { id: string; name: string; repo?: string | null }, taskContext?: Record<string, unknown> | null): string | null;
-  debugResolve(workspace: { id: string; name: string; repo?: string | null }, taskContext?: Record<string, unknown> | null): ResolveDebugInfo;
+  resolve(workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null): string | null;
+  debugResolve(workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null): ResolveDebugInfo;
   listLocalDirectories(): string[];
   getPathOverrides(): Record<string, string>;
   setPathOverride(workspaceName: string, localPath: string): void;
@@ -213,7 +228,7 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
     return gitRemoteCache;
   };
 
-  const attemptResolve = (workspace: { id: string; name: string; repo?: string | null }, taskContext?: Record<string, unknown> | null): { path: string | null; attempts: ResolveDebugInfo['attemptedPaths'] } => {
+  const attemptResolve = (workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null): { path: string | null; attempts: ResolveDebugInfo['attemptedPaths'] } => {
     const attempts: ResolveDebugInfo['attemptedPaths'] = [];
 
     // Cross-repo override from task context (e.g., conflict-retry on cross-repo PR).
@@ -230,7 +245,7 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
       attempts.push({ path: isolatedPath, exists: alreadyCloned, method: 'isolated' });
       if (alreadyCloned) return { path: isolatedPath, attempts };
       try {
-        ensureIsolatedClone({ id: workspace.id, repo: workspace.repo }, isolationRoot);
+        ensureIsolatedClone({ id: workspace.id, repo: workspace.repo, defaultBranch: workspace.defaultBranch }, isolationRoot);
         attempts[attempts.length - 1].exists = true;
         return { path: isolatedPath, attempts };
       } catch (err) {
@@ -365,14 +380,11 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
         const clonePath = join(roots[0], repoName);
 
         // Normalize to full clone URL (handle owner/repo slugs)
-        let cloneUrl = workspace.repo;
-        if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(cloneUrl)) {
-          cloneUrl = `https://github.com/${cloneUrl}.git`;
-        }
+        const cloneUrl = normalizeCloneUrl(workspace.repo);
 
         // Validate URL format to prevent command injection
-        // Allows: https://, git@, and absolute local paths (/path/to/repo)
-        if (!/^(https?:\/\/|git@|\/[\w./-]+)[\w.@:/-]*$/.test(cloneUrl)) {
+        // Allows: https://, git@, file:/// and absolute local paths (/path/to/repo)
+        if (!CLONE_URL_RE.test(cloneUrl)) {
           attempts.push({ path: clonePath, exists: false, method: 'auto-clone' });
           console.error(`Auto-clone skipped: invalid repo URL format "${cloneUrl}"`);
           return { path: null, attempts };
@@ -380,7 +392,10 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
 
         try {
           console.log(`Auto-cloning "${cloneUrl}" into "${clonePath}" for workspace "${workspace.name}"...`);
-          timedPhase('clone', () => execSync(`git clone ${cloneUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120000 }));
+          // Same clone as the isolated path: retried while GitHub throttles,
+          // and refused at once (no second request) when this repo's clone
+          // was just throttled there (git-clone.ts).
+          timedPhase('clone', () => cloneRepo(cloneUrl, clonePath, { branch: workspace.defaultBranch }));
 
           // Invalidate git cache so the new repo is discoverable
           gitRemoteCache = null;

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 const mockRequireSessionUser = mock(() => Promise.resolve(null as any));
 mock.module('@/lib/auth-helpers', () => ({
@@ -12,6 +12,7 @@ let membership: any = { teamId: '11111111-1111-4111-8111-111111111111', userId: 
 let teamRow: any = { id: '11111111-1111-4111-8111-111111111111', name: 'Team', slug: 'team', timezone: null };
 const capturedUpdates: any[] = [];
 const teamQueries: any[] = [];
+let deletedTeams = 0;
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -22,6 +23,7 @@ mock.module('@buildd/core/db', () => ({
     update: (_t: any) => ({
       set: (vals: any) => ({ where: (_c: any) => { capturedUpdates.push(vals); return Promise.resolve(); } }),
     }),
+    delete: (_t: any) => ({ where: (_c: any) => { deletedTeams++; return Promise.resolve(); } }),
   },
 }));
 
@@ -36,7 +38,7 @@ mock.module('@buildd/core/db/schema', () => ({
   users: 'users',
 }));
 
-import { GET, PATCH } from './route';
+import { DELETE, GET, PATCH } from './route';
 
 const ctx = { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) };
 
@@ -242,6 +244,52 @@ describe('PATCH /api/teams/[id] — key policy', () => {
   });
 });
 
+describe('PATCH /api/teams/[id] — optional decision capabilities', () => {
+  for (const role of ['owner', 'admin']) {
+    it(`allows a signed-in ${role} to save and clear optional decisions`, async () => {
+      membership.role = role;
+      const enabled = ['orchestration_manifest', 'orchestration_claim'];
+      expect((await PATCH(patchReq({ enabledDecisionShadows: enabled }), ctx)).status).toBe(200);
+      expect(capturedUpdates[0].enabledDecisionShadows).toEqual(enabled);
+      for (const cleared of [[], null]) {
+        capturedUpdates.length = 0;
+        expect((await PATCH(patchReq({ enabledDecisionShadows: cleared }), ctx)).status).toBe(200);
+        expect(capturedUpdates[0].enabledDecisionShadows).toBeNull();
+      }
+    });
+  }
+
+  it('rejects a member without writing optional decision settings', async () => {
+    membership.role = 'member';
+    for (const enabledDecisionShadows of [['orchestration_manifest'], null]) {
+      expect((await PATCH(patchReq({ enabledDecisionShadows }), ctx)).status).toBe(403);
+    }
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('requires the session guard for an admin MCP API key', async () => {
+    principal = { kind: 'api_key', account: { level: 'admin', teamId: teamRow.id } };
+    mockRequireSessionUser.mockResolvedValue({ response: NextResponse.json(
+      { error: 'This action requires a signed-in session' }, { status: 403 },
+    ) });
+    const req = patchReq({ enabledDecisionShadows: ['orchestration_manifest'] });
+    req.headers.set('authorization', 'Bearer bld_test');
+    const res = await PATCH(req, ctx);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('signed-in session');
+    expect(mockRequireSessionUser).toHaveBeenCalledWith(req);
+    expect(capturedUpdates).toHaveLength(0);
+    principal = null;
+  });
+
+  it('rejects invalid capabilities and preserves the setting when omitted', async () => {
+    expect((await PATCH(patchReq({ enabledDecisionShadows: ['unknown'] }), ctx)).status).toBe(400);
+    expect(capturedUpdates).toHaveLength(0);
+    expect((await PATCH(patchReq({ name: 'Renamed' }), ctx)).status).toBe(200);
+    expect(capturedUpdates[0]).not.toHaveProperty('enabledDecisionShadows');
+  });
+});
+
 describe('PATCH /api/teams/[id] — decision model', () => {
   it('stores a chat model via the LiteLLM gateway', async () => {
     const res = await PATCH(patchReq({ decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } }), ctx);
@@ -297,5 +345,43 @@ describe('PATCH /api/teams/[id] — server-side feature overrides', () => {
     await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
     expect(teamQueries[0].columns).toMatchObject({ inferenceFeatureModes: true });
     principal = null;
+  });
+});
+
+describe('DELETE /api/teams/[id]', () => {
+  const del = () =>
+    DELETE(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111', { method: 'DELETE' }), ctx);
+
+  beforeEach(() => { deletedTeams = 0; });
+
+  it('a member cannot delete the team', async () => {
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
+    expect((await del()).status).toBe(403);
+    expect(deletedTeams).toBe(0);
+  });
+
+  it('an admin cannot delete the team', async () => {
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'admin' };
+    expect((await del()).status).toBe(403);
+    expect(deletedTeams).toBe(0);
+  });
+
+  it('a non-member cannot delete the team', async () => {
+    membership = undefined;
+    expect((await del()).status).toBe(403);
+    expect(deletedTeams).toBe(0);
+  });
+
+  it('an owner deletes the team', async () => {
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'owner' };
+    expect((await del()).status).toBe(200);
+    expect(deletedTeams).toBe(1);
+  });
+
+  it('an owner still cannot delete a personal team', async () => {
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'owner' };
+    teamRow = { ...teamRow, slug: 'personal-user-1' };
+    expect((await del()).status).toBe(400);
+    expect(deletedTeams).toBe(0);
   });
 });

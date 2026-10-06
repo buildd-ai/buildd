@@ -83,6 +83,28 @@ export async function triggerEvent(
   }
 }
 
+/**
+ * triggerEvent, but says what happened, for callers whose retry depends on it
+ * (the dispatch consumer). `unconfigured` is not a failure: with no Pusher
+ * there is no live listener to miss the event.
+ */
+export async function triggerEventChecked(
+  channel: string,
+  event: string,
+  data: unknown,
+): Promise<'sent' | 'unconfigured' | 'failed'> {
+  const client = getPusher();
+  if (!client) return 'unconfigured';
+  if (JSON.stringify(data).length > PUSHER_PAYLOAD_HARD_CAP_BYTES) return 'failed';
+  try {
+    await client.trigger(channel, event, data);
+    return 'sent';
+  } catch (error) {
+    console.error('Pusher trigger failed:', error);
+    return 'failed';
+  }
+}
+
 // Optional channel prefix for environment isolation (e.g. "preview-")
 const CHANNEL_PREFIX = process.env.PUSHER_CHANNEL_PREFIX || '';
 
@@ -117,9 +139,6 @@ export const events = {
   CHILDREN_COMPLETED: 'task:children_completed',
   TASK_UNBLOCKED: 'task:unblocked',
   TASK_DEPENDENCY_FAILED: 'task:dependency_failed',
-  // Option A′: a mission integration branch advanced, so any codebase-graph seed
-  // keyed on that base ref is stale. Consumed by the runner, not the dashboard.
-  GRAPH_BASE_ADVANCED: 'graph:base-advanced',
   // Mission loop events
   MISSION_CYCLE_STARTED: 'mission:cycle_started',
   MISSION_LOOP_COMPLETED: 'mission:loop_completed',

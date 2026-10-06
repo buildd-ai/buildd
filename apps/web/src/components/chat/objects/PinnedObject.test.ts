@@ -43,7 +43,7 @@ describe('missionCountsLine', () => {
     ({ tasks: {}, phases: [], planning: null, needsYou: [], landed: { done: 0, total: 0 }, ...over }) as unknown as MissionObjectView['board'];
 
   it('before any tasks exist it never reads "0 of 0"', () => {
-    expect(missionCountsLine(board())).toBe('no tasks yet');
+    expect(missionCountsLine(board())).toBe('no tasks');
     expect(missionCountsLine(board({ planning: { roleName: 'Organizer' } }))).toBe('planning');
   });
 

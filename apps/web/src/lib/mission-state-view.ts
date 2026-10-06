@@ -762,7 +762,7 @@ function resolve(input: MissionStateInput): Resolution {
       waitingOn: {
         kind: 'human_decision',
         tone: 'warning',
-        label: 'Goal criteria escalated for your decision',
+        label: 'Goal criteria escalated: decision needed',
         detail: input.escalationDetail ?? null,
       },
       displayState: 'waiting_decision',
@@ -1077,8 +1077,8 @@ function mergeFact(input: MissionStateInput): Resolution | null {
           kind: 'merge',
           tone: 'warning',
           label: missionPrState === 'closed'
-            ? `Mission PR${prNumber ? ` #${prNumber}` : ''} was closed without merging, so the work is still only on the integration branch`
-            : 'The mission’s work has landed on its integration branch, but the mission PR has not opened yet',
+            ? `Mission PR${prNumber ? ` #${prNumber}` : ''} closed without merging. Work is still on the integration branch`
+            : 'Mission PR not opened. Work is on the integration branch',
           count: 1,
           prNumbers: missionPrState === 'closed' && prNumber != null ? [prNumber] : [],
           // No href either way: a closed PR cannot merge, and a not-yet-opened
@@ -1361,8 +1361,8 @@ function visualReviewFact(input: MissionStateInput): Resolution | null {
   if (!hold || (hold.cells <= 0 && !hold.roundCapOpen)) return null;
   const enforced = input.completion?.code === 'visual_review_open';
   const label = hold.cells > 0
-    ? `${hold.cells} ${hold.cells === 1 ? 'screen wants' : 'screens want'} your review`
-    : 'The visual audit wants your call';
+    ? `${hold.cells} ${hold.cells === 1 ? 'screen' : 'screens'} to review`
+    : 'Visual audit: decision needed';
   return {
     kind: 'awaiting_decision',
     waitingOn: {
@@ -1617,13 +1617,13 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
         return `mission PR${ref} was closed without merging`;
       }
       if (d.missionPr && d.missionPrState === 'not_opened') {
-        return 'the mission’s work has landed on its integration branch, but the mission PR has not opened yet';
+        return 'mission PR not opened; work is on the integration branch';
       }
       return d.missionPr
-        ? `waiting on you to merge the mission PR${ref}`
+        ? `mission PR${ref} ready to merge`
         : d.count === 1
-          ? `waiting on you to merge 1 open PR${ref}`
-          : `waiting on you to merge ${d.count} open PRs`;
+          ? `1 PR${ref} ready to merge`
+          : `${d.count} PRs ready to merge`;
     }
     case 'ci_red':
       return ciRedPhrase(d);
@@ -1638,11 +1638,11 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
     case 'criterion_failing': {
       const named = d.count === 1 && d.criteria[0] ? `"${d.criteria[0]}"` : `${d.count} goal criteria`;
       if (d.stale) {
-        return `waiting on you to re-run verification: ${named} failed at the last check and no task is open`;
+        return `${named} failed verification and no task is open. Re-run it`;
       }
       // While work is in flight a failing criterion is the work not being
       // finished yet, not an ask (`missionNeedsYou`), so it is stated as fact.
-      const ask = opts.running ? '' : 'waiting on you: ';
+      const ask = opts.running ? '' : 'needs input: ';
       const n = d.blockers?.length ?? 0;
       if (n > 0) {
         return `${ask}${named} ${d.count === 1 ? 'is' : 'are'} failing on ${n === 1 ? '1 task' : `${n} tasks`}`;
@@ -1663,7 +1663,7 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
     case 'human_decision':
       // These labels already read as statements ("Held until you arm the
       // mission"), so they are quoted, not re-worded.
-      return `waiting on you: ${d.label}`;
+      return d.label;
     case 'self_resolving_wait':
       return d.waitUntil
         ? `waiting (${d.reason}) until ${d.waitUntil}`

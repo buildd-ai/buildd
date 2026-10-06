@@ -8,6 +8,7 @@ import { hashApiKey, extractApiKeyPrefix, invalidateAccountCacheByHash } from '@
 import { getUserTeamIds, getUserTeamRole } from '@/lib/team-access';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { isUuid } from '@/lib/uuid';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -51,7 +52,7 @@ export async function POST(
 
     // Regenerating returns a working key, so only the team's owners and admins may do it.
     const role = await getUserTeamRole(user.id, account.teamId);
-    if (!canAdministerTeamKeys(role)) {
+    if (!canAdministerTeamKeys(role, await getTeamPermissionOverrides(account.teamId))) {
       return NextResponse.json(
         { error: 'Only team owners and admins can regenerate API keys' },
         { status: 403 },

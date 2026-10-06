@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { invalidateAccountWorkspaceCache } from '@/lib/account-workspace-cache';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 const ADMIN_ONLY = 'Only team owners and admins can change which accounts a workspace is connected to.';
 
@@ -73,7 +74,7 @@ export async function POST(
   if (!postAccess) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
-  if (!canAdministerTeamKeys(postAccess.role)) {
+  if (!canAdministerTeamKeys(postAccess.role, await getTeamPermissionOverrides(postAccess.teamId))) {
     return NextResponse.json({ error: ADMIN_ONLY }, { status: 403 });
   }
 
@@ -168,7 +169,7 @@ export async function DELETE(
   if (!deleteAccess) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
-  if (!canAdministerTeamKeys(deleteAccess.role)) {
+  if (!canAdministerTeamKeys(deleteAccess.role, await getTeamPermissionOverrides(deleteAccess.teamId))) {
     return NextResponse.json({ error: ADMIN_ONLY }, { status: 403 });
   }
 

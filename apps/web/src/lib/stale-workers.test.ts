@@ -106,10 +106,24 @@ mock.module('@/lib/worker-deliverables', () => ({
   getLatestWorkerArtifactWithStructuredOutput: mockGetLatestWorkerArtifactWithStructuredOutput,
 }));
 
-// cleanupUnresumedAnswers inserts a Continue: task and must wake runners for it.
-const mockDispatchNewTask = mock(async (_task: any, _workspace: any, _options?: any) => {});
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
+// Every requeue and continuation here wakes through the dispatch authority.
+// Full export surface: mock.module is process-global.
+const mockAnnounceTaskCreated = mock(async (_task: any, _workspace: any) => {});
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: any) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  announceTaskCreated: mockAnnounceTaskCreated,
+  kickDispatch: mock(() => {}),
+  enqueueTaskDispatch: mock(async () => {}),
+  drainDispatchOutbox: mock(async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 })),
+  deliverTaskDispatch: mock(async () => 'pusher'),
+  routeForCause: mock(() => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false })),
+  webhookWants: mock(() => false),
+  primaryCause: mock((_c: unknown, fallback: unknown) => fallback),
+  reseedDispatchTimer: mock(async () => {}),
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
 }));
 
 import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers } from './stale-workers';
@@ -258,10 +272,13 @@ describe('cleanupStuckWaitingInput', () => {
       }),
     });
 
+    mockWakeTask.mockClear();
     await cleanupStuckWaitingInput('account-1');
 
     expect(capturedValues).not.toBeNull();
     expect(capturedValues.title).toBe('Fix the bug');
+    // The retry replaces a stalled attempt: woken as a requeue, not left to a poll.
+    expect(mockWakeTask.mock.calls).toEqual([['new-task-id', 'task.requeued']]);
     expect(capturedValues.description).toContain('Fix the login bug');
     expect(capturedValues.description).toContain('IMPORTANT: Do NOT ask for user input');
     expect(capturedValues.workspaceId).toBe('ws-1');
@@ -735,12 +752,15 @@ describe('cleanupStaleWorkers — reviewer lease expiry', () => {
       }),
     });
 
+    mockWakeTask.mockClear();
     await cleanupStaleWorkers('account-1');
 
     expect(taskUpdates).toHaveLength(1);
     expect(taskUpdates[0].status).toBe('pending');
     expect(taskUpdates[0].context.infraRetryCount).toBe(1);
     expect(taskUpdates[0].startAt).toBeDefined();
+    // Woken at the end of its backoff, not now.
+    expect(mockWakeTask.mock.calls).toEqual([['review-task', 'task.requeued', { notBefore: taskUpdates[0].startAt }]]);
     // Should not have escalated to mission notes (no missionId call)
     expect(capturedInsertValues).toBeNull();
   });
@@ -1334,12 +1354,16 @@ describe('cleanupStaleWorkers — retry cap', () => {
       }),
     });
 
+    mockWakeTask.mockClear();
     await cleanupStaleWorkers('account-1');
 
     expect(taskUpdateSet).not.toBeNull();
     expect(taskUpdateSet.status).toBe('pending');
     expect(taskUpdateSet.claimedBy).toBeNull();
     expect(taskUpdateSet.claimedAt).toBeNull();
+    // Woken at the end of its backoff, not now: the backoff is what lets the
+    // infra issue settle before the next runner races in.
+    expect(mockWakeTask.mock.calls).toEqual([['task-1', 'task.requeued', { notBefore: taskUpdateSet.startAt }]]);
     // startAt should be ~5 minutes from now (first backoff slot)
     expect(taskUpdateSet.startAt).toBeInstanceOf(Date);
     const startAtMs = taskUpdateSet.startAt.getTime();
@@ -2774,8 +2798,10 @@ describe('cleanupUnresumedAnswers', () => {
     }
 
     beforeEach(() => {
-      mockDispatchNewTask.mockReset();
-      mockDispatchNewTask.mockImplementation(async () => {});
+      mockAnnounceTaskCreated.mockReset();
+      mockAnnounceTaskCreated.mockImplementation(async () => {});
+      mockWakeTask.mockReset();
+      mockWakeTask.mockImplementation(async () => {});
       mockTasksUpdate.mockReset();
       mockTasksUpdate.mockReturnValue({
         set: mock(() => ({ where: mock(() => Promise.resolve()) })),
@@ -2794,23 +2820,25 @@ describe('cleanupUnresumedAnswers', () => {
       const result = await cleanupUnresumedAnswers('account-1');
 
       expect(result.degraded).toBe(2);
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(2);
-      const calls = mockDispatchNewTask.mock.calls as any[];
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(2);
+      const calls = mockAnnounceTaskCreated.mock.calls as any[];
       expect(calls.map(([t]) => t.id)).toEqual(['continuation-1', 'continuation-2']);
       expect(calls[0][0].title).toBe('Continue: Pick a database');
       expect(calls[0][1]).toBe(workspace);
+      expect(mockWakeTask.mock.calls).toEqual([['continuation-1', 'task.created'], ['continuation-2', 'task.created']]);
     });
 
-    it("the continuation keeps the parent's runner preference, and dispatch honours it", async () => {
+    // Delivery reads runnerPreference off the task row, so the inherited value
+    // on the insert is what keeps a webhook restricted to other runners off it.
+    it("the continuation keeps the parent's runner preference", async () => {
       const worker = withWorkspace(parkedWithQueuedAnswer());
       worker.task = { ...worker.task, runnerPreference: 'service' } as any;
       mockWorkersFindMany.mockReturnValue([worker] as any);
 
       await cleanupUnresumedAnswers('account-1');
 
-      const [task, , options] = mockDispatchNewTask.mock.calls[0] as any[];
+      const [task] = mockAnnounceTaskCreated.mock.calls[0] as any[];
       expect(task.runnerPreference).toBe('service');
-      expect(options).toEqual({ runnerPreference: 'service' });
     });
 
     it('does not re-dispatch a continuation on a later pass', async () => {
@@ -2829,7 +2857,7 @@ describe('cleanupUnresumedAnswers', () => {
       const second = await cleanupUnresumedAnswers('account-1');
 
       expect(second.degraded).toBe(0);
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledTimes(1);
     });
 
     it('does not dispatch when the claiming compare-and-swap matches no row', async () => {
@@ -2838,17 +2866,20 @@ describe('cleanupUnresumedAnswers', () => {
 
       await cleanupUnresumedAnswers('account-1');
 
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
     });
 
-    it('keeps sweeping when a dispatch throws', async () => {
+    it('keeps sweeping when an announce throws', async () => {
       mockWorkersFindMany.mockReturnValue([withWorkspace(parkedWithQueuedAnswer()), secondCandidate()] as any);
-      mockDispatchNewTask.mockImplementationOnce(async () => { throw new Error('webhook exploded'); });
+      mockAnnounceTaskCreated.mockImplementationOnce(async () => { throw new Error('pusher exploded'); });
 
       const result = await cleanupUnresumedAnswers('account-1');
 
       expect(result.degraded).toBe(2);
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(2);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(2);
+      // The announce failing does not cost either continuation its wake.
+      expect(mockWakeTask).toHaveBeenCalledTimes(2);
       // Neither worker is rolled back: the continuation already exists.
       expect(capturedWorkerUpdates.some(u => u.status === 'waiting_input')).toBe(false);
       expect(capturedAccountsSet).not.toBeNull();

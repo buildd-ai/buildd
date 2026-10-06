@@ -16,7 +16,7 @@ const mockMissionsFindFirst = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
 const mockGithubReposFindFirst = mock(() => null as any);
 const mockCreateReviewerTask = mock(() => ({ id: 'review-task-9' }) as any);
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockAppendPrActivity = mock(() => Promise.resolve({ action: 'created', commentId: 1 }));
 const mockFindReviewTaskForPr = mock(() => null as any);
 const mockFindPrOwningWorker = mock(() => null as any);
@@ -43,7 +43,23 @@ mock.module('@/lib/workspace-resolver', () => ({ resolveWorkspace: mockResolveWo
 // real module) — it is a pure extraction function, and the delta-vs-full
 // branch this route is judged on depends on its actual behaviour, not a stub.
 mock.module('@/lib/reviewer', () => ({ createReviewerTask: mockCreateReviewerTask }));
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
 const mockCarryForward = mock(async (_p: any) => ({ carried: false, reason: 'PR diff changed' }));
 mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUnchanged: mockCarryForward }));
@@ -183,8 +199,9 @@ beforeEach(() => {
   mockGithubReposFindFirst.mockReturnValue(REPO);
   mockCreateReviewerTask.mockReset();
   mockCreateReviewerTask.mockReturnValue({ id: 'review-task-9' });
-  mockDispatchNewTask.mockReset();
-  mockDispatchNewTask.mockReturnValue(Promise.resolve());
+  mockAnnounceTaskCreated.mockReset();
+  mockWakeTask.mockReset();
+  mockAnnounceTaskCreated.mockReturnValue(Promise.resolve());
   mockAppendPrActivity.mockReset();
   mockAppendPrActivity.mockReturnValue(Promise.resolve({ action: 'created', commentId: 1 }));
   mockFindReviewTaskForPr.mockReset();
@@ -341,7 +358,8 @@ describe('POST /api/github/pr/review — adoption', () => {
     expect(res.status).toBe(201);
     expect((await res.json()).adopted).toBe(true);
     expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
 
     const taskInsert = insertCalls.find((c) => c.table === 'tasks_table')!;
     const { isDependencyBotPrContext } = await import('@/lib/dependency-bot-pr');
@@ -376,7 +394,8 @@ describe('POST /api/github/pr/review — adoption', () => {
       installationId: 5000,
       repoFullName: 'buildd-ai/buildd',
     });
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
     expect(mockAppendPrActivity.mock.calls[0][0]).toMatchObject({
       prNumber: 42,
@@ -671,5 +690,74 @@ describe('GET /api/github/pr/review — dashboard session', () => {
   it('does not accept a session on POST', async () => {
     const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }, {}));
     expect(res.status).toBe(401);
+  });
+});
+
+describe('per-task token', () => {
+  const SCOPED = { ...ACCOUNT, level: 'worker', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+  const owner = (taskId: string) => ({ id: 'w-1', taskId, branch: 'buildd/abc', prUrl: OPEN_PR.html_url, prLifecycleStatus: 'pr_open', mergedAt: null });
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReturnValue(SCOPED);
+  });
+
+  it('requests review of its own task’s PR', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-1'));
+    mockWorkersFindFirst.mockReturnValue({
+      ...owner('task-1'),
+      task: { id: 'task-1', title: 'Original work', description: null, backend: 'claude', missionId: null, pathManifest: null, context: {} },
+    });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(201);
+  });
+
+  it('refuses review of another task’s PR, without creating a reviewer', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  it('requests review of a PR its own task names, even though a different task’s worker owns it', async () => {
+    // A coordination/cleanup task ("resolve conflicts on #42") repairing a PR
+    // it never opened — same fallback pr/route.ts already applies to close/merge.
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({
+      id: 'task-1', title: 'Repair stale PRs', description: 'resolve conflicts on #42', context: {}, workspaceId: 'ws-1',
+    });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(201);
+  });
+
+  it('still refuses when neither its own worker nor its task names the PR', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({
+      id: 'task-1', title: 'Unrelated work', description: 'nothing about PRs here', context: {}, workspaceId: 'ws-1',
+    });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  it('does not trust another task naming the PR when the task row has drifted out of its own workspace', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({
+      id: 'task-1', title: 'Repair stale PRs', description: 'resolve conflicts on #42', context: {}, workspaceId: 'ws-2',
+    });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses review of a PR buildd does not own, rather than adopting it', async () => {
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('sees only its own workspace, even when the team has others', async () => {
+    mockGetTeamWorkspaceIds.mockReturnValue(['ws-1', 'ws-2']);
+    mockResolveWorkspace.mockReturnValue({ ...WORKSPACE, id: 'ws-2', name: 'other' });
+    const res = await GET(get('?prNumber=42&workspaceId=other'));
+    expect(res.status).toBe(404);
   });
 });

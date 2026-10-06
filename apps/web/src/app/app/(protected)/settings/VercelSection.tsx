@@ -116,14 +116,14 @@ export default function VercelSection({ teams }: Props) {
           <a href="https://vercel.com/account/tokens" target="_blank" rel="noreferrer" className="underline">
             vercel.com/account/tokens
           </a>{' '}
-          to get alerts when prod is unhealthy.
+          for prod health alerts.
         </p>
 
         {justAdded && (
           <div className="notice notice-ok space-y-2">
             <div className="font-medium text-status-success">Token ready</div>
             <p className="text-sm text-text-secondary">
-              Attach it to a watched project to get prod-deploy alerts: open the project at <strong>/app/health</strong>, set its Vercel project ID, and pick this token.
+              Attach it to a watched project in Health: set the Vercel project ID and pick this token.
             </p>
             <div className="flex items-center gap-3">
               <Link
@@ -154,7 +154,7 @@ export default function VercelSection({ teams }: Props) {
         {loading ? (
           <div className="text-sm text-text-tertiary">Loading…</div>
         ) : tokens.length === 0 ? (
-          <div className="text-sm text-text-tertiary">No tokens yet.</div>
+          <div className="text-sm text-text-tertiary">No tokens.</div>
         ) : (
           <ul className="space-y-2">
             {tokens.map((t) => (
@@ -212,7 +212,7 @@ export default function VercelSection({ teams }: Props) {
             >
               Store token
             </button>
-            <p className="text-xs text-text-muted">Stored encrypted at the team level. Never sent to runners.</p>
+            <p className="text-xs text-text-muted">Encrypted, team-wide, never sent to runners.</p>
           </div>
         )}
 

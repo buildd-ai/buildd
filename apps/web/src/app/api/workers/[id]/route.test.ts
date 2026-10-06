@@ -389,8 +389,12 @@ mock.module('@/lib/pushover', () => ({
 // escalations) go to the owning team's channel. mockNotify still sees every
 // payload; mockNotifySubject records where each one was routed.
 const mockNotifySubject = mock((_subject: any, _event: any) => {});
+// Every module reaction a worker completion fans out to, recorded in call order.
+// The characterization block at the end of this file pins the sequence.
+const fanout: Array<[string, ...unknown[]]> = [];
+const mockNotifyTeam = mock(async (...args: unknown[]) => { fanout.push(['notifyTeam', ...args]); });
 mock.module('@/lib/notify', () => ({
-  notifyTeam: mock(async () => {}),
+  notifyTeam: mockNotifyTeam,
   notifyTeamOf: async (subject: any, event: any, payload: any) => {
     mockNotifySubject(subject, event);
     mockNotify(payload);
@@ -404,7 +408,7 @@ mock.module('@/lib/task-callback', () => ({
 
 // Subscriptions ledger: builders stood in by tagged objects so a test reads
 // exactly which event the route recorded. Real builders: lib/subscriptions.test.ts.
-const mockRecordEvent = mock((_e: any) => Promise.resolve({ recorded: 0 }));
+const mockRecordEvent = mock((e: any) => { fanout.push(['recordEvent', e]); return Promise.resolve({ recorded: 0 }); });
 mock.module('@/lib/subscriptions', () => ({
   recordEvent: mockRecordEvent,
   taskCompletedEvent: (a: any) => ({ type: 'task.completed', ...a }),
@@ -412,7 +416,9 @@ mock.module('@/lib/subscriptions', () => ({
   taskNeedsInputEvent: (a: any) => ({ type: 'task.needs_input', ...a }),
 }));
 
-const mockRecordTaskOutcome = mock(() => Promise.resolve(true));
+const mockRecordTaskOutcome = mock((_input: any) => Promise.resolve(true));
+const mockRecordRunnerOutcome = mock(async (_outcome: string) => {});
+mock.module('@buildd/core/runner-health', () => ({ recordRunnerOutcome: mockRecordRunnerOutcome }));
 // The message queue writes are single SQL statements now, so a mocked db has
 // no resulting array to inspect. Mock the queue module instead and assert the
 // calls — which is also what the route's contract actually is.
@@ -435,7 +441,14 @@ mock.module('@buildd/core/routing-analytics', () => ({
 }));
 
 mock.module('@/lib/mission-release', () => ({
-  fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
+  fireMissionReleaseIfComplete: mock((...args: unknown[]) => { fanout.push(['fireMissionReleaseIfComplete', ...args]); return Promise.resolve(); }),
+}));
+
+// Default: the integration branch is always usable. Only the multi-repo
+// escape-hatch tests override this to `usable: false`.
+const mockEnsureIntegrationBaseForTaskPr = mock(() => Promise.resolve({ usable: true, recreated: false } as any));
+mock.module('@/lib/mission-integration-branch', () => ({
+  ensureIntegrationBaseForTaskPr: mockEnsureIntegrationBaseForTaskPr,
 }));
 
 // Phase 2: reviewer outcome mocks
@@ -486,14 +499,28 @@ mock.module('@/lib/merge-policy', () => ({
   },
 }));
 
-const mockDispatchNewTask = mock(() => Promise.resolve());
-const mockDispatchRetriedTask = mock((..._args: unknown[]) => Promise.resolve());
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
-  dispatchRetriedTask: mockDispatchRetriedTask,
-  dispatchUnblockedTask: mock(() => Promise.resolve()),
-  buildTaskPayload: mock((task: any) => task),
+// Every requeue/fix path wakes through the dispatch authority with a cause.
+// The full export surface is mocked: mock.module is process-global.
+const mockAnnounceTaskCreated = mock((..._args: unknown[]) => Promise.resolve());
+const mockWakeTask = mock((..._args: unknown[]) => Promise.resolve());
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(() => Promise.resolve()),
+  announceTaskCreated: mockAnnounceTaskCreated,
+  kickDispatch: mock(() => {}),
+  enqueueTaskDispatch: mock(() => Promise.resolve()),
+  drainDispatchOutbox: mock(() => Promise.resolve({ claimed: 0, delivered: 0, skipped: 0, failed: 0 })),
+  deliverTaskDispatch: mock(() => Promise.resolve('pusher')),
+  routeForCause: mock(() => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false })),
+  webhookWants: mock(() => false),
+  primaryCause: mock((_c: unknown, fallback: unknown) => fallback),
+  reseedDispatchTimer: mock(() => Promise.resolve()),
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
 }));
+/** Causes wakeTask was called with for one task, in call order. */
+const wakeCausesFor = (taskId: string) =>
+  (mockWakeTask.mock.calls as any[][]).filter(c => c[0] === taskId).map(c => c[1]);
 
 // The gate's own logic is unit-tested in lib/reviewer.test.ts. Here it is a
 // mock so these tests can pin the WIRING: that the route re-reads the PR's
@@ -502,18 +529,67 @@ const mockEnforceServerSideEscalation = mock((params: any) => ({
   verdict: params.verdict,
   overrideReason: null as string | null,
 }));
-// The cancellation logic itself is unit-tested in lib/reviewer.test.ts. Here
-// it is a mock so these tests can pin the WIRING: that an approve verdict
-// calls it with the right PR/task identity (task d57ba617).
-const mockSupersedeFixTaskOnApproval = mock(() => Promise.resolve({ superseded: false, fixTaskId: null }));
 mock.module('@/lib/reviewer', () => ({
   createReviewerTask: mock(() => Promise.resolve({ id: 'reviewer-task-1' })),
   preflightEscalationCheck: mock(() => ({ shouldEscalate: false })),
   isSchemaTouchingFile: mock(() => false),
   enforceServerSideEscalation: mockEnforceServerSideEscalation,
-  supersedeFixTaskOnApproval: mockSupersedeFixTaskOnApproval,
   REVIEWER_TASK_OUTPUT_SCHEMA: {},
 }));
+
+// The supersession rules run for real; only their store is in memory, so these
+// tests pin the WIRING — which events the verdict handler fires and which
+// rows the table cancels — without modelling the CAS in the drizzle mock. The
+// store itself is unit-tested in lib/supersession-store.test.ts. Dispatch
+// facts come from the real newest-review read (findReviewTaskForPr, through
+// `mockSelect`), the same read the route used before the table existed.
+const supersessionEvents: any[] = [];
+const supersessionLedger: Array<{ taskId: string; rule: string; event: string }> = [];
+let supersessionRows: any[] = [];
+mock.module('@/lib/supersession-store', () => ({
+  supersessionStore: {
+    loadCandidates: async (event: any) => {
+      supersessionEvents.push(event);
+      return supersessionRows.filter(r => ['pending', 'assigned', 'in_progress'].includes(r.status));
+    },
+    loadEventFacts: async () => ({}),
+    loadDispatchFacts: async (p: any) => {
+      const { findReviewTaskForPr } = await import('@/lib/pr-review-request');
+      const newest: any = p.prNumber != null ? await findReviewTaskForPr(p.workspaceId, p.prNumber) : null;
+      const open = supersessionRows.filter(r =>
+        r.taskClass === 'attempt' && ['pending', 'assigned', 'in_progress'].includes(r.status)
+        && (r.reviewerRetryPrNumber === p.prNumber || r.ciRetryPrNumber === p.prNumber));
+      const self = open.find(r => r.id === p.selfTaskId);
+      return {
+        newestReviewTaskId: newest?.id ?? null,
+        newestReviewVerdict: newest?.status === 'completed' ? newest.result?.structuredOutput?.verdict ?? null : null,
+        openRetryIds: open
+          .filter(r => r.id !== p.selfTaskId && (!self || r.createdAt < self.createdAt))
+          .map(r => r.id),
+      };
+    },
+    casCancel: async (t: any, rule: any) => {
+      const row = supersessionRows.find(r => r.id === t.id);
+      if (!row || !(rule.casStatuses ?? ['pending', 'assigned', 'in_progress']).includes(row.status)) return false;
+      row.status = 'cancelled';
+      return true;
+    },
+    applyCancelEffects: async () => {},
+    recordSupersession: async (t: any, rule: any, event: any) => {
+      supersessionLedger.push({ taskId: t.id, rule: rule.id, event: event.kind });
+    },
+    recordBulkRefusal: async () => {},
+  },
+}));
+
+function supersessionFix(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'fix-task-1', workspaceId: 'ws-1', missionId: null, status: 'pending', parentTaskId: 'original-task-1',
+    category: null, taskClass: 'attempt', creationSource: 'webhook', reviewerRetryPrNumber: 42,
+    reviewerRetryHeadSha: 'older-sha', ciRetryPrNumber: null, subjectPrNumber: null, subjectAnchor: null,
+    subjectResolution: null, context: null, createdAt: new Date(0), ownLivePrNumber: null, ...overrides,
+  };
+}
 
 // The fold and the persistence are unit-tested in lib/criteria-reviewer-findings.test.ts.
 // Here the mock pins the WIRING: that a reviewer verdict hands its criteria
@@ -562,17 +638,6 @@ const mockResolvePolicy = mock((
   return below();
 });
 mock.module('@/lib/merge-policy', () => ({ resolvePolicy: mockResolvePolicy }));
-
-// CBM fleet detectors. The real implementations are DB-backed and no-op unless
-// OPS_ALERTS_ENABLED, so stubbing them is the only way to observe the caller gate.
-// CBM_HEALTH_TERMINAL_STATUSES must be re-exported — route.ts imports it for that gate.
-const mockDetectCbmFleetDisabled = mock(() => Promise.resolve());
-const mockDetectCbmEnforcedUnused = mock(() => Promise.resolve());
-mock.module('@buildd/core/cbm-health', () => ({
-  CBM_HEALTH_TERMINAL_STATUSES: ['completed', 'failed', 'error'] as const,
-  detectCbmFleetDisabled: mockDetectCbmFleetDisabled,
-  detectCbmEnforcedUnused: mockDetectCbmEnforcedUnused,
-}));
 
 // path-claim reaches a real db client (`packages/core/db/client`, which the
 // `@buildd/core/db` stub above does not cover), so leaving it unmocked means
@@ -640,6 +705,64 @@ const mockLoadVisualAuditEvidence = mock((_opts: any) => Promise.resolve(okEvide
 mock.module('@/lib/visual-audit-evidence', () => ({
   loadVisualAuditEvidence: mockLoadVisualAuditEvidence,
   formatVisualEvidenceRejection: (v: any) => `Visual audit evidence incomplete. Missing: ${v.missing.join(', ')}`,
+}));
+
+// Module reactions to a completion (missions, knowledge, chat). Real
+// implementations are covered in their own files; here each records its call
+// into `fanout` so the order and arguments of the fan-out are observable. The
+// real module is spread in so other importers keep every export.
+import * as realMissionCompletion from '@/lib/mission-completion';
+import * as realCriteriaVerify from '@/lib/mission-criteria-verify';
+import * as realCriteriaProse from '@/lib/mission-criteria-prose';
+import * as realCriteriaWorkerEval from '@/lib/mission-criteria-worker-eval';
+import * as realSubjectSweep from '@/lib/subject-sweep';
+import * as realTaskEvidenceStore from '@/lib/task-evidence-store';
+import * as realMemoryDecisions from '@/lib/memory-decisions';
+import * as realChatMissionEvents from '@/lib/chat/mission-events';
+/** Which criteria-task kinds the next completion claims to be (default: none). */
+let criteriaKinds = { verification: false, prose: false, workerEval: false };
+/** When set, completeMissionIfVerified throws it (error-isolation characterization). */
+let missionCompletionError: Error | null = null;
+let labelMemoryUses = false;
+mock.module('@/lib/mission-completion', () => ({
+  ...realMissionCompletion,
+  completeMissionIfVerified: mock(async (...args: unknown[]) => {
+    fanout.push(['completeMissionIfVerified', ...args]);
+    if (missionCompletionError) throw missionCompletionError;
+  }),
+}));
+mock.module('@/lib/mission-criteria-verify', () => ({
+  ...realCriteriaVerify,
+  isCriteriaVerificationTask: () => criteriaKinds.verification,
+  handleCriteriaVerificationOutcome: mock(async (...args: unknown[]) => { fanout.push(['handleCriteriaVerificationOutcome', ...args]); }),
+}));
+mock.module('@/lib/mission-criteria-prose', () => ({
+  ...realCriteriaProse,
+  isProseEvalTask: () => criteriaKinds.prose,
+  handleProseEvalOutcome: mock(async (...args: unknown[]) => { fanout.push(['handleProseEvalOutcome', ...args]); }),
+}));
+mock.module('@/lib/mission-criteria-worker-eval', () => ({
+  ...realCriteriaWorkerEval,
+  isCriteriaWorkerEvalTask: () => criteriaKinds.workerEval,
+  handleCriteriaWorkerEvalOutcome: mock(async (...args: unknown[]) => { fanout.push(['handleCriteriaWorkerEvalOutcome', ...args]); }),
+}));
+mock.module('@/lib/subject-sweep', () => ({
+  ...realSubjectSweep,
+  sweepSubjectAnchoredTasks: mock(async (...args: unknown[]) => { fanout.push(['sweepSubjectAnchoredTasks', ...args]); }),
+}));
+mock.module('@/lib/task-evidence-store', () => ({
+  ...realTaskEvidenceStore,
+  persistTaskEvidence: mock(async (...args: unknown[]) => { fanout.push(['persistTaskEvidence', ...args]); }),
+}));
+mock.module('@/lib/memory-decisions', () => ({
+  ...realMemoryDecisions,
+  shouldLabelMemoryUses: () => labelMemoryUses,
+  scheduleMemoryUseLabels: mock((...args: unknown[]) => { fanout.push(['scheduleMemoryUseLabels', ...args]); }),
+}));
+mock.module('@/lib/chat/mission-events', () => ({
+  ...realChatMissionEvents,
+  postTaskCompletedEvent: mock(async (...args: unknown[]) => { fanout.push(['postTaskCompletedEvent', ...args]); }),
+  postQuestionEvent: mock(async (...args: unknown[]) => { fanout.push(['postQuestionEvent', ...args]); }),
 }));
 
 import { GET, PATCH } from './route';
@@ -893,6 +1016,8 @@ describe('GET /api/workers/[id] — dashboard session', () => {
 
 describe('PATCH /api/workers/[id]', () => {
   beforeEach(() => {
+    mockWakeTask.mockClear();
+    mockAnnounceTaskCreated.mockClear();
     mockAuthenticateApiKey.mockReset();
     mockWorkersFindFirst.mockReset();
     mockWorkersUpdate.mockReset();
@@ -1264,7 +1389,7 @@ describe('PATCH /api/workers/[id]', () => {
   // When the agent calls the buildd MCP `complete_task` itself — the documented
   // worker workflow — the SERVER marks the worker terminal and pushes
   // worker:completed. The runner's own completion PATCH, the sole carrier of
-  // resultMeta (CBM metrics, tool histogram, model attribution), then lands on
+  // resultMeta (tool histogram, model attribution), then lands on
   // an already-terminal row and is 409'd, so a large share of completed workers
   // carried no result_meta, no cost and no token counts at all. That cohort was
   // also the long-session one, which biased every adoption/cost rollup toward
@@ -1295,7 +1420,6 @@ describe('PATCH /api/workers/[id]', () => {
         numTurns: 37,
         durationMs: 1_234_567,
         modelUsage: {},
-        cbm: { outcome: 'enforced', totalCbmCalls: 20, toolCalls: { search_graph: 20 } },
         toolCounts: { Bash: 12, Read: 4 },
       },
       inputTokens: 500_000,
@@ -1342,8 +1466,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(metricsSets.length).toBe(1);
       const written = metricsSets[0];
-      // The whole point: the CBM/tool metrics reach the row.
-      expect((written.resultMeta as any).cbm.totalCbmCalls).toBe(20);
+      // The whole point: the tool metrics reach the row.
       expect((written.resultMeta as any).toolCounts.Bash).toBe(12);
       expect(written.inputTokens).toBe(500_000);
       expect(written.outputTokens).toBe(20_000);
@@ -1400,7 +1523,7 @@ describe('PATCH /api/workers/[id]', () => {
         workspaceId: 'ws-1',
         taskId: 'task-1',
         pendingInstructions: null,
-        resultMeta: { provisionFailure: { code: 'cbm_missing' } },
+        resultMeta: { provisionFailure: { code: 'node_missing' } },
         costUsd: '0',
         inputTokens: 0,
         outputTokens: 0,
@@ -1416,7 +1539,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       const written = metricsSets[0];
-      expect((written.resultMeta as any).provisionFailure.code).toBe('cbm_missing');
+      expect((written.resultMeta as any).provisionFailure.code).toBe('node_missing');
       expect((written.resultMeta as any).numTurns).toBe(4);
     });
 
@@ -2110,6 +2233,8 @@ describe('PATCH /api/workers/[id]', () => {
     const pendingUpdate = taskSetCalls.find((u) => u.status === 'pending');
     expect(pendingUpdate).toBeDefined();
     expect(taskSetCalls.some((u) => u.status === 'failed')).toBe(false);
+    // The requeue wakes now; the claim route's single-flight gate decides.
+    expect(wakeCausesFor('task-1')).toEqual(['task.requeued']);
   });
 
   it('delivers and clears pending instructions', async () => {
@@ -2465,7 +2590,7 @@ describe('PATCH /api/workers/[id]', () => {
     expect(mockTasksUpdate).not.toHaveBeenCalled();
     // The owner is still reached through the existing notification path.
     expect(mockNotify.mock.calls.some((c: any) =>
-      c[0]?.title === 'Agent needs your input' && c[0]?.url?.includes('/respond')
+      c[0]?.title === 'Agent needs input' && c[0]?.url?.includes('/respond')
     )).toBe(true);    // ...on the channel of the team that owns the workspace, never the operator's.
     expect(mockNotifySubject.mock.calls.some((c: any) => c[1] === 'needsAttention' && 'workspaceId' in c[0])).toBe(true);
   });
@@ -2508,12 +2633,65 @@ describe('PATCH /api/workers/[id]', () => {
       where: { taskTitle: 'Weekend surcharge' },
     });
     expect(capturedSet.waitingFor.options[1]).toEqual({ label: 'UTC' });
-    const call = mockNotify.mock.calls.find((c: any[]) => c[0]?.title === 'Agent needs your input');
+    const call = mockNotify.mock.calls.find((c: any[]) => c[0]?.title === 'Agent needs input');
     expect(call![0].message.split('\n')).toEqual([
       'Should it use local time or UTC?',
       'isWeekend() decides weekend surcharges.',
       'Recommended: Local time. Own calendar.',
     ]);
+  });
+
+  // Held questions (lib/question-hold.ts): the gate said `hold`, so nobody is
+  // pinged when it parks — the resurface sweep pings at the deadline. A hard
+  // rail overrides whatever the runner sent: that question always notifies.
+  describe('held questions', () => {
+    const heldQuestion = {
+      type: 'question',
+      prompt: 'Should the export use CSV or JSON?',
+      options: [{ label: 'CSV' }, { label: 'JSON' }],
+      disposition: 'hold',
+      holdReason: 'Held.',
+      resurfaceAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+    };
+    let capturedSet: any;
+    async function park(pathManifest: string[]) {
+      capturedSet = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'waiting_input', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) };
+        }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', pathManifest } as any);
+      mockNotify.mockClear();
+      mockNotifySubject.mockClear();
+      mockRecordEvent.mockClear();
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'waiting_input', waitingFor: heldQuestion },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+    }
+    const askedSomeone = () => mockNotifySubject.mock.calls.some((c: any) => c[1] === 'needsAttention');
+    const ledgered = () => mockRecordEvent.mock.calls.some((c: any) => c[0]?.type === 'task.needs_input');
+
+    it('a hold parks without notifying anyone', async () => {
+      await park(['apps/web/src/lib/export.ts']);
+      expect(capturedSet.waitingFor).toMatchObject({ type: 'question', disposition: 'hold', resurfaceAt: heldQuestion.resurfaceAt });
+      expect(askedSomeone()).toBe(false);
+      expect(ledgered()).toBe(false);
+    });
+
+    it('a hold on a rail-hit task (a migration) always notifies, and is stored as an ask', async () => {
+      await park(['packages/core/drizzle/0001_add_column.sql']);
+      expect(askedSomeone()).toBe(true);
+      expect(ledgered()).toBe(true);
+      expect(capturedSet.waitingFor.disposition).toBeUndefined();
+      expect(capturedSet.waitingFor.resurfaceAt).toBeUndefined();
+    });
   });
 
   it('clears waitingFor when worker resumes running', async () => {
@@ -3083,6 +3261,69 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedWorkerSet.filesChanged).toBe(0);
     expect(capturedWorkerSet.linesAdded).toBe(0);
     expect(capturedWorkerSet.linesRemoved).toBe(0);
+  });
+
+  describe('silent completion refusal', () => {
+    it('accepts touches first reported on completion with an agent-tagged fallback tail', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+        taskId: 'task-1', observedTouches: [], commitCount: 0, filesChanged: 0,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', kind: 'writing', outputRequirement: 'auto' });
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', touchedPaths: ['docs/example.md', 'docs/example.md', null],
+          summarySource: 'agent', summary: 'Checking the code.\n\n---\n\nNow locating the file.' },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+    });
+
+    it.each([
+      { count: 0, missionId: null },
+      { count: 0, missionId: 'mission-1' },
+      { count: 1, missionId: null },
+    ])('fails the worker and bounds the retry for %j', async ({ count, missionId }) => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running',
+        workspaceId: 'ws-1', taskId: 'task-1', commitCount: 0, filesChanged: 0,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', status: 'in_progress', kind: 'writing', missionId,
+        outputRequirement: 'auto', context: { silentCompletionRetryCount: count },
+      });
+      const workerSets: any[] = [];
+      const taskSets: any[] = [];
+      mockWorkersUpdate.mockImplementation(() => ({
+        set: mock((values: any) => {
+          workerSets.push(values);
+          return { where: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'worker-1' }])) })) };
+        }),
+      }));
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((values: any) => {
+          taskSets.push(values);
+          return { where: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'task-1' }])) })) };
+        }),
+      }));
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed', summarySource: 'agent',
+          summary: 'Checking the code.\n\n---\n\nNow locating the file.',
+        },
+      }), { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).hint).toBe('silent_completion');
+      expect(workerSets.some(v => v.status === 'failed')).toBe(true);
+      expect(workerSets.some(v => v.rejectedCompletionPayload?.reason === 'silent_completion')).toBe(true);
+      const settled = taskSets.find(v => v.context?.silentCompletionRetryCount === 1);
+      expect(settled.status).toBe(count === 0 ? 'pending' : 'failed');
+      expect(settled.claimedBy).toBeNull();
+      expect(settled.context.failureContext.priorSummaryUnauthored).toBe(true);
+      expect(mockTriggerEvent).toHaveBeenCalled();
+    });
   });
 
   describe('output requirement validation ordering', () => {
@@ -4427,6 +4668,22 @@ describe('PATCH /api/workers/[id]', () => {
         expect(data.hint).toContain(INTEGRATION_BRANCH);
       });
 
+      it("adopts a trunk-based PR when the integration branch is unusable for this task's own repo", async () => {
+        // A multi-repo mission (mission a955fed9): the integration branch
+        // lives in the mission's home repo, not necessarily this task's own
+        // repo. `ensureIntegrationBaseForTaskPr` reporting `usable: false`
+        // for THIS task must not leave completion hard-refusing the only
+        // base that can actually exist here.
+        completingWorker({ missionId: 'mission-1', taskClass: 'work', title: 'Do thing', context: null });
+        optedInMission();
+        detectedPr('dev');
+        mockEnsureIntegrationBaseForTaskPr.mockResolvedValueOnce({ usable: false, recreated: false, detail: 'no_repo' });
+
+        const res = await PATCH(completionRequest(), { params: mockParams });
+
+        expect(res.status).toBe(200);
+      });
+
       it('refuses when the auto-detected PR reports no base ref', async () => {
         completingWorker({ missionId: 'mission-1', taskClass: 'work', title: 'Do thing', context: null });
         optedInMission();
@@ -4547,7 +4804,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockGithubApi.mockImplementation((_installationId: number, path: string) => {
         if (path.includes('/pulls?head=')) return Promise.resolve([]); // no open PR on worker's own branch
         if (path === '/repos/org/repo/pulls/2165') {
-          return Promise.resolve({ number: 2165, merged: true, html_url: 'https://github.com/org/repo/pull/2165' });
+          return Promise.resolve({ number: 2165, merged: true, html_url: 'https://github.com/org/repo/pull/2165', head: { ref: 'feature/pr-2165' } });
         }
         return Promise.resolve(null);
       });
@@ -4561,6 +4818,116 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(capturedTaskSet?.result?.prNumber).toBe(2165);
+    });
+
+    // The fallback adopts a PR the task names, so ownership passes on that
+    // basis — except for a protected head: naming a release PR does not make
+    // it this task's deliverable (lib/agent-capabilities/pr-ownership.ts).
+    it('pr_required + referenced PR is merged but its head is the protected default branch → not recorded', async () => {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      const workerSets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSets.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ ...baseWorker, status: 'failed' }]) })) };
+        }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'Unblock release PR #2165',
+        description: '',
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1', fullName: 'org/repo', defaultBranch: 'dev', installation: { installationId: 123 },
+      });
+      mockGithubApi.mockImplementation((_i: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]);
+        if (path === '/repos/org/repo/pulls/2165') {
+          return Promise.resolve({ number: 2165, merged: true, html_url: 'https://github.com/org/repo/pull/2165', head: { ref: 'dev' }, base: { ref: 'main' } });
+        }
+        return Promise.resolve(null);
+      });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      }), { params: mockParams });
+
+      expect(workerSets.some(u => u.prNumber === 2165)).toBe(false);
+      expect(capturedTaskSet?.result?.prNumber).not.toBe(2165);
+      expect(res.status).not.toBe(200);
+    });
+
+    describe('self-reported PR (prUrl / prNumber in the PATCH body)', () => {
+      const workerSets: any[] = [];
+      const patch = (body: Record<string, unknown>) => PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', ...body },
+      }), { params: mockParams });
+
+      beforeEach(() => {
+        workerSets.length = 0;
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => {
+            workerSets.push(u);
+            return { where: mock(() => ({ returning: mock(() => [baseWorker]) })) };
+          }),
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockWorkersFindFirst.mockResolvedValue(baseWorker);
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', title: 'feat: auto pr', description: '', context: {}, dependsOn: [] });
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+        mockGithubReposFindFirst.mockResolvedValue({
+          id: 'repo-1', fullName: 'org/repo', defaultBranch: 'main', installation: { installationId: 123 },
+        });
+      });
+
+      const githubHead = (ref: string) => mockGithubApi.mockImplementation((_i: number, path: string) =>
+        Promise.resolve(path === '/repos/org/repo/pulls/50'
+          ? { number: 50, html_url: 'https://github.com/org/repo/pull/50', head: { ref }, base: { ref: 'main' } }
+          : null));
+
+      it('records a PR whose real head is the worker’s own branch', async () => {
+        githubHead('feature/auto-pr');
+        const res = await patch({ prUrl: 'https://github.com/org/repo/pull/50', prNumber: 50 });
+        expect(res.status).toBe(200);
+        expect(workerSets.some(u => u.prUrl === 'https://github.com/org/repo/pull/50' && u.prNumber === 50)).toBe(true);
+      });
+
+      it('drops a PR on another task’s head but still applies the rest of the update', async () => {
+        githubHead('buildd/dddd4444-someone-else');
+        const res = await patch({ prUrl: 'https://github.com/org/repo/pull/50', prNumber: 50, progress: 40 });
+        expect(res.status).toBe(200);
+        expect(workerSets.some(u => 'prUrl' in u || 'prNumber' in u)).toBe(false);
+        expect(workerSets.length).toBeGreaterThan(0);
+      });
+
+      it('drops a PR outside the linked repo without reading GitHub', async () => {
+        const res = await patch({ prUrl: 'https://github.com/elsewhere/other/pull/50' });
+        expect(res.status).toBe(200);
+        expect(workerSets.some(u => 'prUrl' in u)).toBe(false);
+        expect(mockGithubApi).not.toHaveBeenCalled();
+      });
+
+      it('records a person’s session report as given', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', sessionUserId: 'user-1' });
+        const res = await patch({ prUrl: 'https://github.com/org/repo/pull/50' });
+        expect(res.status).toBe(200);
+        expect(workerSets.some(u => u.prUrl === 'https://github.com/org/repo/pull/50')).toBe(true);
+        expect(mockGithubApi).not.toHaveBeenCalled();
+      });
     });
 
     it('pr_required + referenced PR exists but is not merged → still refuses completion', async () => {
@@ -4644,7 +5011,7 @@ describe('PATCH /api/workers/[id]', () => {
             number: 15,
             merged: false,
             html_url: 'https://github.com/org/repo/pull/15',
-            head: { sha: 'abc123def' },
+            head: { ref: 'feature/pr-15', sha: 'abc123def' },
           });
         }
         return Promise.resolve(null);
@@ -4707,7 +5074,7 @@ describe('PATCH /api/workers/[id]', () => {
             number: 15,
             merged: false,
             html_url: 'https://github.com/org/repo/pull/15',
-            head: { sha: 'fresh-push-sha' },
+            head: { ref: 'feature/pr-15', sha: 'fresh-push-sha' },
           });
         }
         return Promise.resolve(null);
@@ -4746,7 +5113,7 @@ describe('PATCH /api/workers/[id]', () => {
             number: 15,
             merged: false,
             html_url: 'https://github.com/org/repo/pull/15',
-            head: { sha: 'someone-elses-commit' },
+            head: { ref: 'feature/pr-15', sha: 'someone-elses-commit' },
           });
         }
         return Promise.resolve(null);
@@ -6532,6 +6899,42 @@ describe('PATCH /api/workers/[id]', () => {
       expect(requeue?.context?.failoverReason).toBe('budget_exhausted');
       // Failing over means claimable NOW — no deferral floor.
       expect(requeue?.startAt).toBeUndefined();
+      expect(wakeCausesFor('task-1')).toEqual(['task.requeued']);
+      expect((mockWakeTask.mock.calls[0] as any[])[2]?.notBefore).toBeUndefined();
+    });
+
+    // The creator asked for Codex: failover must not override that choice.
+    it('defers a task pinned to the walled backend instead of failing it over', async () => {
+      mockBackendPausesFindMany.mockResolvedValue([]);   // Claude pool open
+      mockAccountsFindFirst.mockResolvedValue(null);
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((vals: any) => { taskSetCalls.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+      }));
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
+        accountId: 'account-1', status: 'running', milestones: [],
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', context: { backendPinned: true }, workspaceId: 'ws-1', backend: 'codex',
+        workspace: { teamId: 'team-1', name: 'sibling-app' },
+      });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: "You've hit your usage limit - resets 11:20am (UTC)", budgetExhausted: true },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+
+      const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(requeue).toBeDefined();
+      expect(requeue?.backend).toBeUndefined();
+      expect(requeue?.context?.failedOverFrom).toBeUndefined();
+      expect(requeue?.context?.backendPinned).toBe(true);
+      // Waits out its own provider's reset.
+      expect(requeue?.startAt).toBeInstanceOf(Date);
     });
 
     it('defers instead of failing over when the alternative backend is walled too', async () => {
@@ -6565,6 +6968,11 @@ describe('PATCH /api/workers/[id]', () => {
       expect(requeue?.backend).toBeUndefined();          // stays on Codex
       expect(requeue?.startAt).toBeInstanceOf(Date);     // waits for its own reset
       expect(requeue?.context?.budgetExhausted).toBe(true);
+      // The wake is scheduled for the reset, never immediate: an instant
+      // re-claim into the same wall is the session-limit storm.
+      expect(wakeCausesFor('task-1')).toEqual(['budget.available']);
+      const wakeOpts = (mockWakeTask.mock.calls[0] as any[])[2];
+      expect(wakeOpts?.notBefore?.getTime()).toBe(requeue.startAt.getTime());
     });
 
     it('wakes at the alternate provider\'s reset when that lands before its own', async () => {
@@ -6948,6 +7356,46 @@ describe('PATCH /api/workers/[id]', () => {
       });
       return () => capturedTeamSet;
     }
+
+    it.each([true, false])('settles a charged silent refusal exactly once (reported cost: %s)', async (reported) => {
+      const getSet = setupCompletion({}, {}, {}, {
+        kind: 'writing', status: 'in_progress', missionId: 'mission-1', context: {},
+      });
+      accountsUpdateSets.length = 0;
+      const taskSets: any[] = [];
+      mockTasksUpdate.mockReturnValue({ set: mock((v: any) => {
+        taskSets.push(v);
+        return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) };
+      }) });
+      const workerSets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({ set: mock((v: any) => {
+        workerSets.push(v);
+        return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', ...v }]) })) };
+      }) });
+      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'Budgeted mission', status: 'active', costBudgetUsd: '1' });
+      mockGetMissionSpendUsd.mockResolvedValue(10);
+      const body = { status: 'completed', summarySource: 'agent',
+        summary: 'Checking the code.\n\n---\n\nNow locating the file.',
+        ...(reported ? { costUsd: 10 } : { costUsd: 0, actualModel: 'claude-sonnet-4-20250514',
+          resultMeta: { totalUsage: { inputTokens: 1000000, outputTokens: 100000 } } }),
+      };
+      const request = () => createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body });
+      expect((await PATCH(request(), { params: mockParams })).status).toBe(400);
+      expect(getSet()).not.toBeNull();
+      expect(taskSets.some(v => v.status === 'pending')).toBe(true);
+      expect(parseFloat(getSet().monthlyCostUsd)).toBeGreaterThan(0);
+      expect(workerSets.some(v => v.status === 'failed' && Number(v.costUsd) > 0)).toBe(true);
+      expect(mockExhaustMissionBudget).toHaveBeenCalledWith('mission-1', 'Budgeted mission', 10, 1);
+      const teamCharges = mockTeamsUpdate.mock.calls.length;
+      const claimsReleased = mockReleaseClaims.mock.calls.length;
+      const seatsReleased = accountsUpdateSets.filter((v: any) => v.activeSessions).length;
+      expect(seatsReleased).toBe(1);
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', status: 'failed', workspaceId: 'ws-1', taskId: 'task-1' });
+      expect((await PATCH(request(), { params: mockParams })).status).toBe(409);
+      expect(mockTeamsUpdate.mock.calls.length).toBe(teamCharges);
+      expect(mockReleaseClaims.mock.calls.length).toBe(claimsReleased);
+      expect(accountsUpdateSets.filter((v: any) => v.activeSessions).length).toBe(seatsReleased);
+    });
 
     it('accumulates reported cost on the team row and fires the 50% threshold alert', async () => {
       const getSet = setupCompletion(
@@ -7388,8 +7836,6 @@ describe('PATCH /api/workers/[id]', () => {
     beforeEach(() => {
       mockRecordTaskOutcome.mockReset();
       mockRecordTaskOutcome.mockResolvedValue(true);
-      mockDetectCbmFleetDisabled.mockClear();
-      mockDetectCbmEnforcedUnused.mockClear();
     });
 
     // task_outcomes.actual_model was NULL for every row because the caller passed
@@ -7459,26 +7905,6 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(mockRecordTaskOutcome.mock.calls[0][0].actualModel).toBeNull();
-    });
-
-    // The detectors' history query covers completed/failed/error, but the caller
-    // gate was 'completed' only — so on a workspace where every worker fails (the
-    // exact shape of a missing-binary outage) the widened query was never reached.
-    it('runs the CBM fleet detectors on failed and error, not just completed', async () => {
-      for (const status of ['completed', 'failed', 'error']) {
-        mockDetectCbmFleetDisabled.mockClear();
-        mockDetectCbmEnforcedUnused.mockClear();
-        setupTerminal();
-        const res = await PATCH(createMockRequest({
-          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
-          body: { status, error: status === 'completed' ? undefined : 'boom', resultMeta: { cbm: { outcome: 'disabled', disableReason: 'binary_absent' } } },
-        }), { params: mockParams });
-
-        expect(res.status).toBe(200);
-        expect(mockDetectCbmFleetDisabled).toHaveBeenCalledTimes(1);
-        expect(mockDetectCbmEnforcedUnused).toHaveBeenCalledTimes(1);
-        expect(mockDetectCbmFleetDisabled.mock.calls[0][1]).toEqual({ outcome: 'disabled', disableReason: 'binary_absent' });
-      }
     });
   });
 
@@ -7583,8 +8009,9 @@ describe('PATCH /api/workers/[id]', () => {
       mockEscalateReviewContractFailure.mockResolvedValue(undefined);
       mockNotify.mockReset();
       mockNotifySubject.mockReset();
-      mockDispatchNewTask.mockReset();
-      mockDispatchNewTask.mockResolvedValue(undefined);
+      mockAnnounceTaskCreated.mockReset();
+      mockAnnounceTaskCreated.mockResolvedValue(undefined);
+      mockWakeTask.mockClear();
       mockMissionsFindFirst.mockReset();
       mockMissionsFindFirst.mockResolvedValue(null); // default: no mission override
       mockPostPrReview.mockReset();
@@ -7687,7 +8114,7 @@ describe('PATCH /api/workers/[id]', () => {
         repoFullName: 'org/repo',
       });
       // No retry task
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
     });
 
     it('approve: posts exactly one GitHub APPROVE review for the verdict', async () => {
@@ -7726,26 +8153,34 @@ describe('PATCH /api/workers/[id]', () => {
     // Task d57ba617: a stale fix task must not be left queued/running once a
     // newer review approves — otherwise it can still push a commit and force
     // a re-review on an already-approved PR.
-    it('approve: cancels any queued or running fix task for this PR', async () => {
+    it('approve: fires the verdict event, which cancels a queued or running fix for this PR', async () => {
       setupReviewerTaskCompletion('approve');
-      mockSupersedeFixTaskOnApproval.mockClear();
-
-      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
-
-      expect(mockSupersedeFixTaskOnApproval).toHaveBeenCalledTimes(1);
-      expect(mockSupersedeFixTaskOnApproval.mock.calls[0][0]).toMatchObject({
-        originalTaskId: 'original-task-1',
-        prNumber: 42,
-      });
+      supersessionEvents.length = 0;
+      supersessionLedger.length = 0;
+      supersessionRows = [supersessionFix({ status: 'in_progress' })];
+      try {
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+        expect(supersessionEvents[0]).toMatchObject({
+          kind: 'verdict', verdict: 'approve', prNumber: 42, originalTaskId: 'original-task-1',
+          reviewerTaskId: 'reviewer-task-1', pr: { installationId: 5000, repoFullName: 'org/repo' },
+        });
+        expect(supersessionLedger).toEqual([{ taskId: 'fix-task-1', rule: 'approve_supersedes_fix', event: 'verdict' }]);
+      } finally {
+        supersessionRows = [];
+      }
     });
 
-    it('request-changes: does not try to cancel a fix task — nothing is dispatched yet', async () => {
+    it('request-changes: the verdict event leaves a fix for the same head alone', async () => {
       setupReviewerTaskCompletion('request-changes');
-      mockSupersedeFixTaskOnApproval.mockClear();
-
-      await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
-
-      expect(mockSupersedeFixTaskOnApproval).not.toHaveBeenCalled();
+      supersessionLedger.length = 0;
+      supersessionRows = [supersessionFix({ reviewerRetryHeadSha: 'abc123' })];
+      try {
+        await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+        expect(supersessionLedger).toEqual([]);
+        expect(supersessionRows[0].status).toBe('pending');
+      } finally {
+        supersessionRows = [];
+      }
     });
 
     // A newer review round can approve while an earlier round's
@@ -7777,7 +8212,7 @@ describe('PATCH /api/workers/[id]', () => {
         }));
         try {
           await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
-          expect(mockDispatchNewTask).not.toHaveBeenCalled();
+          expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
           expect(lastInsertValues?.reviewerRetryPrNumber).toBeUndefined();
         } finally {
           mockSelect.mockImplementation(selectAllColumns);
@@ -7787,22 +8222,15 @@ describe('PATCH /api/workers/[id]', () => {
 
     it('request-changes: cancels an inserted fix when approval is processed between freshness check and insertion', async () => {
       setupReviewerTaskCompletion('request-changes');
+      supersessionLedger.length = 0;
+      supersessionRows = [];
       let approved = false;
       let reads = 0;
       let insertedFix: any = null;
-      let cancelled = false;
       const priorWorkerRead = () => Promise.resolve({
         id: 'original-worker', workspaceId: 'ws-1', taskId: 'original-task-1', prNumber: 42,
       });
       const insertTask = mockGenericInsert.getMockImplementation()!;
-      mockSupersedeFixTaskOnApproval.mockClear();
-      mockSupersedeFixTaskOnApproval.mockImplementation(async (params: any) => {
-        if (insertedFix && (!params.fixTaskId || params.fixTaskId === insertedFix.id)) {
-          cancelled = true;
-          insertedFix.status = 'cancelled';
-        }
-        return { superseded: cancelled, fixTaskId: cancelled ? insertedFix.id : null };
-      });
       mockNewestReview(() => {
         reads++;
         return {
@@ -7811,17 +8239,10 @@ describe('PATCH /api/workers/[id]', () => {
           context: { prNumber: 42 },
         };
       });
-      // Pause at the prior-worker lookup after the initial freshness check.
-      // A terminal approval is recorded and its sweep runs while no fix exists.
+      // Pause at the prior-worker lookup, after the dispatch check passed. The
+      // approval lands here, and its own reconcile finds no fix to cancel yet.
       mockWorkersFindFirst.mockImplementation(async () => {
-        if (reads === 1 && !approved) {
-          approved = true;
-          await mockSupersedeFixTaskOnApproval({
-            workspaceId: 'ws-1', originalTaskId: 'original-task-1',
-            installationId: 5000, repoFullName: 'org/repo', prNumber: 42,
-          });
-          expect(cancelled).toBe(false);
-        }
+        if (reads === 1 && !approved) approved = true;
         return priorWorkerRead();
       });
       mockGenericInsert.mockImplementation((table: any) => {
@@ -7830,7 +8251,8 @@ describe('PATCH /api/workers/[id]', () => {
         chain.values = mock((row: any) => {
           if (row.reviewerRetryPrNumber) {
             expect(approved).toBe(true);
-            insertedFix = { id: 'new-task-id', ...row };
+            insertedFix = supersessionFix({ id: 'new-task-id', reviewerRetryHeadSha: row.reviewerRetryHeadSha, createdAt: new Date() });
+            supersessionRows.push(insertedFix);
           }
           return values(row);
         });
@@ -7840,15 +8262,68 @@ describe('PATCH /api/workers/[id]', () => {
         await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
         expect(reads).toBeGreaterThanOrEqual(2);
         expect(insertedFix?.status).toBe('cancelled');
-        expect(mockSupersedeFixTaskOnApproval).toHaveBeenCalledWith(expect.objectContaining({
-          workspaceId: 'ws-1', prNumber: 42, fixTaskId: 'new-task-id',
-        }));
-        expect(mockDispatchNewTask).not.toHaveBeenCalled();
+        // One cancellation, one ledger row, written by the post-insert guard.
+        expect(supersessionLedger).toEqual([{ taskId: 'new-task-id', rule: 'approve_supersedes_fix', event: 'verdict' }]);
+        expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
       } finally {
         mockSelect.mockImplementation(selectAllColumns);
         mockWorkersFindFirst.mockImplementation(priorWorkerRead);
         mockGenericInsert.mockImplementation(insertTask);
-        mockSupersedeFixTaskOnApproval.mockImplementation(async () => ({ superseded: false, fixTaskId: null }));
+        supersessionRows = [];
+      }
+    });
+
+    // Regression: one subject PR got two "after review #1" fixes — one per
+    // branch of the lineage — and the second, unable to check out the branch
+    // the first held, opened a second PR. A request-changes verdict while a
+    // fix for the PR is already open must file nothing.
+    it('REGRESSION (lineage fork): request-changes while a sibling fix for the PR is open files no second retry', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      supersessionLedger.length = 0;
+      supersessionRows = [supersessionFix({
+        id: 'sibling-fix', parentTaskId: 'an-attempt-of-original', status: 'in_progress', reviewerRetryHeadSha: 'older-sha',
+      })];
+      try {
+        await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+        expect(lastInsertValues?.reviewerRetryPrNumber).toBeUndefined();
+        expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+        // The open sibling is left to push; it is not cancelled for this.
+        expect(supersessionRows[0].status).toBe('in_progress');
+        expect(supersessionLedger).toEqual([]);
+      } finally {
+        supersessionRows = [];
+      }
+    });
+
+    it('request-changes: cancels its own inserted fix when a sibling fix was inserted first (fork race)', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      supersessionLedger.length = 0;
+      supersessionRows = [];
+      let insertedFix: any = null;
+      const insertTask = mockGenericInsert.getMockImplementation()!;
+      mockGenericInsert.mockImplementation((table: any) => {
+        const chain = insertTask(table);
+        const values = chain.values;
+        chain.values = mock((row: any) => {
+          if (row.reviewerRetryPrNumber) {
+            // A concurrent dispatch for the same PR won the race to the table.
+            supersessionRows.push(supersessionFix({ id: 'sibling-fix', parentTaskId: 'an-attempt-of-original', createdAt: new Date(1) }));
+            insertedFix = supersessionFix({ id: 'new-task-id', reviewerRetryHeadSha: row.reviewerRetryHeadSha, createdAt: new Date(2) });
+            supersessionRows.push(insertedFix);
+          }
+          return values(row);
+        });
+        return chain;
+      });
+      try {
+        await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+        expect(insertedFix?.status).toBe('cancelled');
+        expect(supersessionRows.find(r => r.id === 'sibling-fix')?.status).toBe('pending');
+        expect(supersessionLedger).toEqual([{ taskId: 'new-task-id', rule: 'open_retry_supersedes_duplicate', event: 'verdict' }]);
+        expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      } finally {
+        mockGenericInsert.mockImplementation(insertTask);
+        supersessionRows = [];
       }
     });
 
@@ -7860,7 +8335,7 @@ describe('PATCH /api/workers/[id]', () => {
         return readTask(query);
       });
       await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
     });
 
     it('approve: a re-review producing the same verdict does not fail the outcome even when the review was already posted (idempotent)', async () => {
@@ -8035,7 +8510,7 @@ describe('PATCH /api/workers/[id]', () => {
         // Neither legacy attempt runs, so there is no stale-head update-branch
         // refusal to misread as a conflict, and no fix task is filed.
         expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
-        expect(mockDispatchNewTask).not.toHaveBeenCalled();
+        expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
       });
 
       it('approve-after-green: the single landing call is the merge', async () => {
@@ -8410,9 +8885,12 @@ describe('PATCH /api/workers/[id]', () => {
       expect(commentCall).toBeDefined();
       const body = JSON.parse(commentCall[2].body).body as string;
       // Queued, not "applying": the fix task has no worker yet.
-      expect(body).toContain('Fix 1 of 3 queued');
+      expect(body).toContain('fix 1 of 3 queued');
       expect(body).toContain('waiting for a worker');
       expect(body).toContain('/app/tasks/');
+      // The header names the actual follow-up task, not a generic anchor.
+      expect(body).toContain('Waiting for fix task:');
+      expect(body).toContain('[Open in Buildd](');
       expect(body).not.toContain('Applying review feedback');
       // The feedback is collapsed under its row, not pasted into it.
       expect(body).toContain('<details><summary>Reviewer feedback</summary>');
@@ -8441,7 +8919,7 @@ describe('PATCH /api/workers/[id]', () => {
       // Must NOT call auto-merge — human presses merge
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
       // Must NOT create retry task
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
     });
 
     it('approve with gateCondition approve-only via mission override: does NOT auto-merge', async () => {
@@ -9299,7 +9777,9 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      // The fix task is woken with its specific cause, not a bare task.created.
+      expect(wakeCausesFor('new-task-id')).toEqual(['review.fix_requested']);
 
       // Verify retry task has baseBranch = workerBranch
       expect(lastInsertValues).toBeDefined();
@@ -9336,7 +9816,7 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
       expect(lastInsertValues?.reviewerRetryPrNumber).toBeUndefined();
     });
 
@@ -9495,7 +9975,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
       // Pushover fired
       expect(mockNotify).toHaveBeenCalledTimes(1);
       expect(mockNotify.mock.calls[0][0]).toMatchObject({
@@ -9510,7 +9990,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       // No retry task — escalated instead
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
       // escalateReviewerExhaustion called (handles CAS dedup + note + Pushover)
       expect(mockEscalateReviewerExhaustion).toHaveBeenCalledTimes(1);
       expect(mockEscalateReviewerExhaustion.mock.calls[0][2]).toBe(42); // prNumber
@@ -9551,7 +10031,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       // Duplicate suppressed — no dispatch
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
     });
 
     it('request-changes: new headSha starts a fresh fix cycle', async () => {
@@ -9590,7 +10070,7 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
       // Dedup fields reflect the new headSha
       expect(lastInsertValues.reviewerRetryPrNumber).toBe(42);
       expect(lastInsertValues.reviewerRetryHeadSha).toBe('def456');
@@ -9948,10 +10428,9 @@ describe('PATCH /api/workers/[id]', () => {
     });
 
     // The requeue used to broadcast a bare TASK_ASSIGNED, which a push-dispatched
-    // workspace (webhookConfig, no Pusher subscriber) never hears. It now goes
-    // through dispatchRetriedTask, which tries the webhook first.
-    it('auto-retry wakes runners via dispatchRetriedTask with the task and its workspace webhook', async () => {
-      mockDispatchRetriedTask.mockClear();
+    // workspace (webhookConfig, no Pusher subscriber) never hears. It now wakes
+    // through the dispatch authority, whose delivery tries the webhook first.
+    it('auto-retry wakes the requeued task through the dispatch authority as task.requeued', async () => {
       mockTasksUpdate.mockReturnValue({
         set: mock(() => ({ where: mock(() => Promise.resolve()) })),
       });
@@ -9995,18 +10474,8 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
       expect(res.status).toBe(200);
 
-      expect(mockDispatchRetriedTask).toHaveBeenCalledTimes(1);
-      const [task, workspace] = mockDispatchRetriedTask.mock.calls[0] as any[];
-      expect(task).toMatchObject({
-        id: 'task-1',
-        workspaceId: 'ws-1',
-        missionId: 'mission-1',
-        backend: 'claude',
-        roleSlug: 'builder',
-        runnerPreference: 'any',
-      });
-      expect(workspace.webhookConfig).toEqual(webhookConfig);
-      // The bare broadcast is gone: dispatchRetriedTask owns the fallback. (This
+      expect(wakeCausesFor('task-1')).toEqual(['task.requeued']);
+      // The bare broadcast is gone: delivery owns the fallback. (This
       // file's pusher mock has no TASK_ASSIGNED key, so match the assignment
       // payload's shape rather than the event name.)
       const assignments = (mockTriggerEvent.mock.calls as any[][]).filter(
@@ -10176,7 +10645,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       await PATCH(req, { params: mockParams });
 
-      const notifyCall = mockNotify.mock.calls.find((c: any[]) => c[0]?.title === 'Agent needs your input');
+      const notifyCall = mockNotify.mock.calls.find((c: any[]) => c[0]?.title === 'Agent needs input');
       expect(notifyCall).toBeDefined();
       expect(notifyCall![0].message).toBe('Agent waiting for input');
       expect(notifyCall![0].message).not.toContain('root password');
@@ -10585,6 +11054,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(taskSetCalls.some(u => u.status === 'pending')).toBe(true);
       expect(mockRecordPathCollisionDeferral).toHaveBeenCalledTimes(1);
       expect(mockRecordPathCollisionDeferral.mock.calls[0][0]).toEqual({ taskId: 'task-1', collision: pathCollision, branch: 'buildd/task-1' });
+      expect(wakeCausesFor('task-1')).toEqual(['task.requeued']);
     });
 
     it('a pathCollision body on a non-deferral failure is ignored', async () => {
@@ -10767,6 +11237,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(taskUpdate).toBeDefined();
       expect(taskUpdate.claimedBy).toBeNull();
       expect(taskUpdate.claimedAt).toBeNull();
+      expect(wakeCausesFor('task-1')).toEqual(['task.requeued']);
     });
 
     it('does not reset task to pending when mission is budget_exhausted (precedence: budget > mount-gap requeue)', async () => {
@@ -11312,6 +11783,147 @@ describe('PATCH /api/workers/[id]', () => {
 
         const failedWorker = workerSetCalls.find((u: any) => u.exitCause);
         expect(failedWorker.exitCause).toBe('budget_limited');
+      });
+
+      // The runner could not clone the workspace repo because GitHub throttled
+      // it (HTTP 429 / secondary rate limit) after its own retries. It used to
+      // report a bare {failed, "Cannot resolve workspace"}, booked code_failure:
+      // a non-mission task was failed permanently by GitHub's rate limiter.
+      describe('GitHub-throttled clone', () => {
+        const throttledBody = {
+          status: 'failed',
+          error: 'Cannot clone the workspace repo: GitHub is rate limiting this runner (HTTP 429)',
+          githubThrottled: true,
+        };
+
+        it('requeues on the infra budget with backoff and books infra_failure', async () => {
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          const before = Date.now();
+          const res = await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: throttledBody,
+          }), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+          expect(requeue).toBeDefined();
+          expect(requeue.context.infraRetryCount).toBe(1);
+          expect(requeue.context.retryCount).toBeUndefined();
+          expect(requeue.startAt.getTime()).toBeGreaterThanOrEqual(before + 5 * 60_000 - 1_000);
+          expect(taskSetCalls.some((c: any) => c.status === 'failed')).toBe(false);
+          expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('infra_failure');
+        });
+
+        it('stalls once the infra budget is spent', async () => {
+          const { taskSetCalls } = setupCrashReconcile({ infraRetryCount: 3 });
+          await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: throttledBody,
+          }), { params: mockParams });
+          expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+          expect(taskSetCalls.find((c: any) => c.status === 'failed')?.result.errorType).toBe('infra_stalled');
+        });
+
+        it('the same error text without the flag stays code_failure', async () => {
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: { status: 'failed', error: throttledBody.error },
+          }), { params: mockParams });
+          expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+          expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('code_failure');
+        });
+      });
+
+      // The cloud runner's supervisor (apps/cloud-runner/src/supervisor.ts)
+      // reports a container that died under the runner with the same flag. It
+      // used to send a bare {failed, error}, which booked code_failure and left
+      // a non-mission task failed with no retry.
+      describe('cloud runner container crash', () => {
+        const cloudCrashBody = {
+          status: 'failed',
+          error: 'Cloud runner: the container ended without the runner reporting (exit code none, attempt 1): container failed: lost',
+          crashReconciled: true,
+        };
+        const send = (body: Record<string, unknown>) => PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body,
+        }), { params: mockParams });
+
+        it('requeues with the first infra backoff and counts the attempt', async () => {
+          mockWakeTask.mockClear();
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          const webhookConfig = { url: 'https://hooks.example.test/dispatch', token: 'tok', enabled: true, events: ['task.retry'] };
+          mockTasksFindFirst.mockResolvedValue({
+            id: 'task-1', title: 'Cloud task', status: 'in_progress', workspaceId: 'ws-1', missionId: null,
+            outputRequirement: 'none', context: {}, startAt: null,
+            workspace: { id: 'ws-1', name: 'ws', teamId: 'team-1', webhookConfig },
+          });
+          const before = Date.now();
+          const res = await send(cloudCrashBody);
+
+          expect(res.status).toBe(200);
+          const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+          expect(requeue).toBeDefined();
+          expect(requeue.context.infraRetryCount).toBe(1);
+          expect(requeue.claimedBy).toBeNull();
+          const delayMs = (requeue.startAt as Date).getTime() - before;
+          expect(delayMs).toBeGreaterThanOrEqual(5 * 60_000 - 1_000);
+          expect(delayMs).toBeLessThanOrEqual(5 * 60_000 + 5_000);
+          expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('infra_failure');
+          // A durable requeue; the trigger schedules it for startAt, so no
+          // runner re-claims into the same crash before the backoff ends
+          // (scheduled-row behaviour: apps/web/tests/db/retry-wake.test.ts).
+          expect(wakeCausesFor('task-1')).toEqual(['task.requeued']);
+        });
+
+        it('backs off further on the next consecutive crash', async () => {
+          const { taskSetCalls } = setupCrashReconcile({ infraRetryCount: 1 });
+          const before = Date.now();
+          await send(cloudCrashBody);
+
+          const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+          expect(requeue.context.infraRetryCount).toBe(2);
+          const delayMs = (requeue.startAt as Date).getTime() - before;
+          expect(delayMs).toBeGreaterThanOrEqual(15 * 60_000 - 1_000);
+          expect(delayMs).toBeLessThanOrEqual(15 * 60_000 + 5_000);
+        });
+
+        it('ends infra_stalled at the cap instead of requeueing again', async () => {
+          mockWakeTask.mockClear();
+          const { taskSetCalls } = setupCrashReconcile({ infraRetryCount: 3 });
+          await send(cloudCrashBody);
+
+          expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+          const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+          expect(failing.result.errorType).toBe('infra_stalled');
+          expect(wakeCausesFor('task-1')).toEqual([]);
+        });
+
+        it("the agent's own failure (no flag) still fails the task as before", async () => {
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          await send({ status: 'failed', error: 'Agent exited with code 1' });
+
+          expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+          const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+          expect(failing).toBeDefined();
+          expect(failing.context?.infraRetryCount).toBeUndefined();
+          expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('code_failure');
+        });
+
+        it('a caller from another account cannot use the flag to requeue the task', async () => {
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          mockAuthenticateApiKey.mockResolvedValue({ id: 'account-2' });
+          const res = await send(cloudCrashBody);
+
+          expect(res.status).toBe(403);
+          expect(taskSetCalls).toHaveLength(0);
+          expect(workerSetCalls).toHaveLength(0);
+        });
       });
     });
 
@@ -12151,6 +12763,34 @@ describe('PATCH /api/workers/[id]', () => {
 
       // Must NOT also produce a permanent-failure task update
       expect(taskSetCalls.some((u: any) => u.status === 'failed')).toBe(false);
+      // A different provider can take it now: an immediate wake.
+      expect(wakeCausesFor('task-1')).toEqual(['task.requeued']);
+      expect((mockWakeTask.mock.calls[0] as any[])[2]?.notBefore).toBeUndefined();
+    });
+
+    it('does not move a task pinned to the rejected backend', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          taskSetCalls.push(vals);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api_key', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
+      mockTasksFindFirst.mockResolvedValue(makeClaudeTask({ backendPinned: true }));
+      mockHasCodexCredential.mockResolvedValue(true);
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Invalid authentication credentials. Please ensure that your API key is correct.',
+        },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(taskSetCalls.some((u: any) => u.backend === 'codex')).toBe(false);
     });
 
     it('fails normally when auth error occurs but no Codex credential is present', async () => {
@@ -15037,5 +15677,502 @@ describe('PATCH /api/workers/[id] — mission note delivery', () => {
 
     const res = await patch({ status: 'running', milestones: [], consumeInstructions: true });
     expect((await res.json()).instructions).toContain('Use the device flow');
+  });
+});
+
+// ── Characterization: what a worker completion fans out to ────────────────────
+// Pins, in order and with arguments, every module reaction the completion path
+// runs today (missions, knowledge, chat, notifications). The emit() seam moves
+// these behind subscribers; this block must stay green across that move.
+describe('PATCH /api/workers/[id] — completion fan-out (characterization)', () => {
+  const VERIFICATION = { workerId: WORKER_ID, iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' };
+  const STRUCTURED = { verdicts: [{ criterionId: 'c-1', pass: true }] };
+  const names = () => fanout.map(c => c[0]);
+  const call = (name: string) => fanout.find(c => c[0] === name);
+
+  function setup(task: Record<string, unknown> = {}, worker: Record<string, unknown> = {}) {
+    fanout.length = 0;
+    criteriaKinds = { verification: false, prose: false, workerEval: false };
+    missionCompletionError = null;
+    labelMemoryUses = false;
+    mockWakeTask.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+      branch: 'feature/test', milestones: [], pendingInstructions: null, ...worker,
+    });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', outputRequirement: 'none', missionId: 'mission-1',
+      title: 'Fix the cursor', subjectPrNumber: 42, context: {}, startAt: null,
+      workspace: { id: 'ws-1', name: 'W', teamId: 'team-1' }, ...task,
+    });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) })),
+    });
+  }
+  const patch = (body: Record<string, unknown>) => PATCH(createMockRequest({
+    method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body,
+  }), { params: mockParams });
+
+  it('a completed mission task: evidence, criteria verdicts, mission completion, subject sweep, ledger, team push, memory labels — in that order', async () => {
+    setup();
+    criteriaKinds = { verification: true, prose: true, workerEval: true };
+    labelMemoryUses = true;
+    const res = await patch({
+      status: 'completed', summary: 'Fixed the off-by-one error.', summarySource: 'agent',
+      structuredOutput: STRUCTURED, verificationEvidence: VERIFICATION,
+    });
+    expect(res.status).toBe(200);
+    // The chat post is a lazy import kicked off before the ledger write; its
+    // promise settles later, so it is asserted apart from the ordered list.
+    expect(names().filter(n => n !== 'postTaskCompletedEvent')).toEqual([
+      'fireMissionReleaseIfComplete',
+      'persistTaskEvidence',
+      'handleCriteriaVerificationOutcome',
+      'handleProseEvalOutcome',
+      'handleCriteriaWorkerEvalOutcome',
+      'completeMissionIfVerified',
+      'sweepSubjectAnchoredTasks',
+      'recordEvent',
+      'notifyTeam',
+      'scheduleMemoryUseLabels',
+    ]);
+    expect(call('persistTaskEvidence')).toEqual(['persistTaskEvidence', 'task-1', WORKER_ID, { isSensitive: false }]);
+    expect(call('handleCriteriaVerificationOutcome')).toEqual(['handleCriteriaVerificationOutcome', 'task-1', VERIFICATION]);
+    expect(call('handleProseEvalOutcome')).toEqual(['handleProseEvalOutcome', 'task-1', STRUCTURED]);
+    expect(call('handleCriteriaWorkerEvalOutcome')).toEqual(['handleCriteriaWorkerEvalOutcome', 'task-1', STRUCTURED]);
+    expect(call('completeMissionIfVerified')).toEqual(['completeMissionIfVerified', 'mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached completed' }]);
+    expect(call('sweepSubjectAnchoredTasks')).toEqual(['sweepSubjectAnchoredTasks', 'ws-1', 42]);
+    expect(call('recordEvent')).toEqual(['recordEvent', { type: 'task.completed', taskId: 'task-1', workerId: WORKER_ID, title: 'Fix the cursor', workspaceId: 'ws-1' }]);
+    expect(call('notifyTeam')).toEqual(['notifyTeam', 'team-1', 'taskCompleted', {
+      title: 'Task done', message: 'Fix the cursor\nW', url: 'https://buildd.dev/app/tasks/task-1', urlTitle: 'View task', priority: -1,
+    }]);
+    expect(call('scheduleMemoryUseLabels')).toEqual(['scheduleMemoryUseLabels', { taskId: 'task-1', accountId: 'account-1', summary: 'Fixed the off-by-one error.' }]);
+    await new Promise(r => setTimeout(r, 0));
+    expect(call('postTaskCompletedEvent')).toEqual(['postTaskCompletedEvent', { taskId: 'task-1' }]);
+  });
+
+  it('a task that is not a criteria task, with no mission or subject, still gets evidence, ledger and push only', async () => {
+    setup({ missionId: null, subjectPrNumber: null });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(names().filter(n => n !== 'postTaskCompletedEvent')).toEqual(['persistTaskEvidence', 'recordEvent', 'notifyTeam']);
+  });
+
+  it('a permanent failure: evidence, mission completion attempt, task.failed ledger and a failure push', async () => {
+    // retryCount 1 = the mission task's one automatic retry is spent.
+    setup({ context: { retryCount: 1 } });
+    await patch({ status: 'failed', error: 'Tests failed: 3 of 120' });
+    expect(names()).toEqual([
+      'persistTaskEvidence', 'completeMissionIfVerified', 'sweepSubjectAnchoredTasks', 'recordEvent', 'notifyTeam',
+    ]);
+    expect(call('completeMissionIfVerified')).toEqual(['completeMissionIfVerified', 'mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached failed' }]);
+    expect(call('recordEvent')).toEqual(['recordEvent', { type: 'task.failed', taskId: 'task-1', workerId: WORKER_ID, title: 'Fix the cursor', workspaceId: 'ws-1' }]);
+    expect(call('notifyTeam')).toEqual(['notifyTeam', 'team-1', 'taskFailed', {
+      title: 'Task failed', message: 'Fix the cursor\nW', url: 'https://buildd.dev/app/tasks/task-1', urlTitle: 'View task', priority: 0,
+    }]);
+    expect(names()).not.toContain('postTaskCompletedEvent');
+    expect(names()).not.toContain('scheduleMemoryUseLabels');
+  });
+
+  it('an auto-retried failure: no evidence, no ledger row, a retry push after the requeue wake; mission completion still attempted', async () => {
+    setup({ context: { retryCount: 0 } });
+    await patch({ status: 'failed', error: 'process exited' });
+    expect(names()).not.toContain('persistTaskEvidence');
+    expect(names()).not.toContain('recordEvent');
+    expect(call('completeMissionIfVerified')).toEqual(['completeMissionIfVerified', 'mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached failed' }]);
+    const push = fanout.filter(c => c[0] === 'notifyTeam');
+    expect(push).toHaveLength(1);
+    expect(push[0]![2]).toBe('taskFailed');
+    expect((push[0]![3] as any).title).toBe('Task retrying');
+    expect(wakeCausesFor('task-1')).toContain('task.requeued');
+  });
+
+  it('a throwing mission step is isolated: it pages once under its own label and the sweep after it still runs', async () => {
+    setup();
+    missionCompletionError = new Error('mission store down');
+    const res = await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(res.status).toBe(200);
+    const after = names().slice(names().indexOf('completeMissionIfVerified') + 1);
+    expect(after).toContain('sweepSubjectAnchoredTasks');
+    expect(after).toContain('recordEvent');
+    expect(after).toContain('notifyTeam');
+  });
+
+  it('a sensitive workspace keeps prose out of the ledger and the push', async () => {
+    setup({ missionId: null, subjectPrNumber: null, workspace: { id: 'ws-1', name: 'W', teamId: 'team-1', dataClass: 'sensitive' } });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', dataClass: 'sensitive', gitConfig: null } as any);
+    await patch({ status: 'completed', summary: 'Secret plan.', summarySource: 'agent' });
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+    expect(call('recordEvent')).toEqual(['recordEvent', { type: 'task.completed', taskId: 'task-1', workerId: WORKER_ID, title: null, workspaceId: 'ws-1' }]);
+    expect((call('notifyTeam')![3] as any).message).toBe('Task completed (content redacted)');
+    expect(call('persistTaskEvidence')).toEqual(['persistTaskEvidence', 'task-1', WORKER_ID, { isSensitive: true }]);
+  });
+
+  it('a question records task.needs_input after the worker write, and nothing from the completion path', async () => {
+    setup();
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'waiting_input', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) })),
+    });
+    await patch({ status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Which region?' } });
+    expect(names().filter(n => n === 'recordEvent' || n === 'persistTaskEvidence' || n === 'completeMissionIfVerified')).toEqual(['recordEvent']);
+    expect(call('recordEvent')).toEqual(['recordEvent', { type: 'task.needs_input', taskId: 'task-1', workerId: WORKER_ID, prompt: 'Which region?' }]);
+  });
+});
+
+// ── Characterization: the completion verdicts (loop, evidence, release) ──────
+// Pins, per outcome, the task writes the PATCH makes, whether the release and
+// the mission release run, and what the completion then fans out to. The
+// completion-policy slots move the loop, evidence and release verdicts behind
+// the composition root; this block must stay green across that move.
+describe('PATCH /api/workers/[id] — completion verdicts (characterization)', () => {
+  const taskSets: any[] = [];
+  const names = () => fanout.map(c => c[0]);
+  const call = (name: string) => fanout.find(c => c[0] === name);
+  const LOOP = { exitCondition: { type: 'command', command: 'bun test' }, maxLoops: 5, backoffMinutes: 0 };
+  const evidence = (exitCode: number) => ({ workerId: WORKER_ID, iteration: 0, conditionType: 'command', exitCode, outcome: exitCode === 0 ? 'ok' : 'failed' });
+
+  function setup(task: Record<string, unknown> = {}) {
+    fanout.length = 0;
+    taskSets.length = 0;
+    criteriaKinds = { verification: false, prose: false, workerEval: false };
+    missionCompletionError = null;
+    labelMemoryUses = false;
+    mockExecuteRelease.mockReset();
+    mockExecuteRelease.mockImplementation(async (...args: unknown[]) => {
+      fanout.push(['executeRelease', ...args]);
+      return { status: 'skipped', message: 'no release config' } as any;
+    });
+    mockNotify.mockClear();
+    mockNotifySubject.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+      branch: 'feature/test', lastCommitSha: 'abc123', milestones: [], pendingInstructions: null, waitingFor: null,
+      prUrl: null, prNumber: null, prLifecycleStatus: null,
+    });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', outputRequirement: 'none', missionId: 'mission-1',
+      title: 'Fix the cursor', subjectPrNumber: null, context: { note: 'kept' }, startAt: null,
+      loopConfig: null, loopIteration: 0, loopState: null,
+      workspace: { id: 'ws-1', name: 'W', teamId: 'team-1' }, ...task,
+    });
+    mockTasksUpdate.mockReturnValue({
+      set: mock((u: any) => { taskSets.push(u); return { where: mock(() => Promise.resolve()) }; }),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) })),
+    });
+  }
+  const releaseReturns = (outcome: Record<string, unknown>) => mockExecuteRelease.mockImplementation(async (...args: unknown[]) => {
+    fanout.push(['executeRelease', ...args]);
+    return outcome as any;
+  });
+  const patch = (body: Record<string, unknown>) => PATCH(createMockRequest({
+    method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body,
+  }), { params: mockParams });
+  /** The task-row write that carries the outcome (the first one with a status). */
+  const outcomeSet = () => taskSets.find(u => 'status' in u);
+  const releaseSets = () => taskSets.filter(u => 'releaseResult' in u);
+  const pushTitles = () => fanout.filter(c => c[0] === 'notifyTeam').map(c => (c[3] as any).title);
+
+  it('release success: completed, then the release record, then the mission release, then the terminal fan-out', async () => {
+    setup();
+    const outcome = { status: 'completed', message: 'Released to main', releasePrUrl: 'https://example.test/pr/9', releasePrNumber: 9 };
+    releaseReturns(outcome);
+    const res = await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(res.status).toBe(200);
+    expect(outcomeSet().status).toBe('completed');
+    expect(call('executeRelease')).toEqual(['executeRelease', { taskId: 'task-1', workerId: WORKER_ID, workspaceId: 'ws-1' }]);
+    expect(releaseSets()).toHaveLength(1);
+    expect(releaseSets()[0]).toMatchObject({ releaseResult: outcome, result: { summary: 'Done.', releaseSummary: 'Released to main' } });
+    expect(releaseSets()[0].status).toBeUndefined();
+    expect(call('fireMissionReleaseIfComplete')).toEqual(['fireMissionReleaseIfComplete', 'ws-1', 'mission-1', 'task-1', WORKER_ID]);
+    expect(names().slice(0, 3)).toEqual(['executeRelease', 'fireMissionReleaseIfComplete', 'persistTaskEvidence']);
+    expect(pushTitles()).toEqual(['Task done']);
+    expect(mockNotify.mock.calls.find((c: any) => c[0]?.title === 'Release failed')).toBeUndefined();
+  });
+
+  it('no release configured: the record is still written and the task stays completed', async () => {
+    setup();
+    const outcome = { status: 'not_configured', message: 'Release: no release config' };
+    releaseReturns(outcome);
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(outcomeSet().status).toBe('completed');
+    expect(releaseSets()).toHaveLength(1);
+    expect(releaseSets()[0]).toMatchObject({ releaseResult: outcome, result: { releaseSummary: 'Release: no release config' } });
+    expect(releaseSets()[0].status).toBeUndefined();
+    expect(names()).toContain('fireMissionReleaseIfComplete');
+  });
+
+  it('release failure (CI red): the task flips to failed and an attention alert names the PR', async () => {
+    setup();
+    const outcome = { status: 'failed', message: 'CI red', error: 'CI red on main', releasePrUrl: 'https://example.test/pr/9' };
+    releaseReturns(outcome);
+    const res = await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(res.status).toBe(200);
+    expect(outcomeSet().status).toBe('completed');
+    expect(releaseSets()).toHaveLength(1);
+    expect(releaseSets()[0]).toMatchObject({ status: 'failed', releaseResult: outcome, result: { releaseSummary: 'CI red' } });
+    expect(mockNotifySubject).toHaveBeenCalledWith({ workspaceId: 'ws-1' }, 'needsAttention');
+    const alert = mockNotify.mock.calls.find((c: any) => c[0]?.title === 'Release failed');
+    expect(alert![0]).toEqual({
+      title: 'Release failed', message: 'CI red on main https://example.test/pr/9', priority: 1,
+      url: 'https://example.test/pr/9', urlTitle: 'Open PR',
+    });
+    expect(names()).toContain('fireMissionReleaseIfComplete');
+    // The terminal fan-out follows the status the release slot decided.
+    expect(names()).toContain('persistTaskEvidence');
+    expect(pushTitles()).toEqual(['Task failed']);
+  });
+
+  it('release failure with no PR: the alert links the task', async () => {
+    setup();
+    releaseReturns({ status: 'failed', message: 'No PR found' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    const alert = mockNotify.mock.calls.find((c: any) => c[0]?.title === 'Release failed');
+    expect(alert![0]).toEqual({
+      title: 'Release failed', message: 'No PR found', priority: 1,
+      url: 'https://buildd.dev/app/tasks/task-1', urlTitle: 'View task',
+    });
+  });
+
+  it('release pending CI: the task holds as completed with the release PR recorded on its context', async () => {
+    setup();
+    const outcome = { status: 'pending_ci', message: 'Waiting on CI', releasePrNumber: 9, releasePrUrl: 'https://example.test/pr/9' };
+    releaseReturns(outcome);
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(outcomeSet().status).toBe('completed');
+    expect(releaseSets()).toHaveLength(1);
+    expect(releaseSets()[0]).toMatchObject({
+      releaseResult: outcome,
+      result: { releaseSummary: 'Waiting on CI' },
+      context: { note: 'kept', releasePrPending: true, releasePrNumber: 9, releasePrUrl: 'https://example.test/pr/9' },
+    });
+    expect(releaseSets()[0].status).toBeUndefined();
+    expect(names()).toContain('fireMissionReleaseIfComplete');
+    expect(mockNotify.mock.calls.find((c: any) => c[0]?.title === 'Release failed')).toBeUndefined();
+    // Held, not done: the release PR's CI settles the outcome (webhook).
+    expect(pushTitles()).toEqual([]);
+  });
+
+  it('a throwing release leaves the task completed with no record; the mission release still runs', async () => {
+    setup();
+    mockExecuteRelease.mockImplementation(async () => { fanout.push(['executeRelease']); throw new Error('github down'); });
+    const res = await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(res.status).toBe(200);
+    expect(outcomeSet().status).toBe('completed');
+    expect(releaseSets()).toHaveLength(0);
+    expect(names().slice(0, 2)).toEqual(['executeRelease', 'fireMissionReleaseIfComplete']);
+  });
+
+  it('a failed report runs no release and no mission release', async () => {
+    setup({ context: { retryCount: 1 } });
+    await patch({ status: 'failed', error: 'Tests failed' });
+    expect(names()).not.toContain('executeRelease');
+    expect(names()).not.toContain('fireMissionReleaseIfComplete');
+  });
+
+  it('loop satisfied: completed with the loop state, then the release', async () => {
+    setup({ missionId: null, loopConfig: LOOP });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent', verificationEvidence: evidence(0) });
+    expect(outcomeSet()).toMatchObject({ status: 'completed', loopState: 'satisfied', loopIteration: 1 });
+    expect(outcomeSet().result.loopHistory[0]).toMatchObject({ iteration: 0, satisfied: true });
+    expect(names()).toContain('executeRelease');
+    expect(names()).not.toContain('fireMissionReleaseIfComplete');
+    expect(pushTitles()).toEqual(['Task done']);
+  });
+
+  it('loop requeue: pending with history and resume branch; no release, no terminal fan-out, a retry push', async () => {
+    setup({ missionId: null, loopConfig: LOOP });
+    await patch({ status: 'completed', summary: 'Not yet.', summarySource: 'agent', verificationEvidence: evidence(1) });
+    const set = outcomeSet();
+    expect(set).toMatchObject({ status: 'pending', loopState: 'condition_unmet', loopIteration: 1, claimedBy: null });
+    expect(set.context).toMatchObject({ note: 'kept', resumeBranch: 'feature/test', lastCommitSha: 'abc123' });
+    expect(set.context.loopHistory[0]).toMatchObject({ iteration: 0, satisfied: false });
+    expect(set.context.failureContext).toBeDefined();
+    expect(set.result).toBeUndefined();
+    expect(names()).not.toContain('executeRelease');
+    expect(names()).not.toContain('persistTaskEvidence');
+    expect(pushTitles()).toEqual(['Task retrying']);
+  });
+
+  it('loop exhausted: failed with the loop error; no release; the terminal fan-out runs', async () => {
+    setup({ missionId: null, loopConfig: { ...LOOP, maxLoops: 1 } });
+    await patch({ status: 'completed', summary: 'Not yet.', summarySource: 'agent', verificationEvidence: evidence(1) });
+    const set = outcomeSet();
+    expect(set).toMatchObject({ status: 'failed', loopState: 'exhausted', loopIteration: 1 });
+    expect(set.result.error).toBe('Loop condition unmet after 1 attempt(s)');
+    expect(set.result.loopHistory).toHaveLength(1);
+    expect(names()).not.toContain('executeRelease');
+    expect(names()).toContain('persistTaskEvidence');
+    // The push follows the status the loop slot decided.
+    expect(pushTitles()).toEqual(['Task failed']);
+  });
+
+  it('visual audit with full evidence: completed, and nothing to release', async () => {
+    setup({ roleSlug: 'visual-auditor' });
+    mockLoadVisualAuditEvidence.mockReset();
+    mockLoadVisualAuditEvidence.mockResolvedValue(okEvidence as any);
+    const res = await patch({ status: 'completed', summary: 'Audited.', summarySource: 'agent' });
+    expect(res.status).toBe(200);
+    expect(outcomeSet().status).toBe('completed');
+    expect(names()).not.toContain('executeRelease');
+    expect(names()).not.toContain('fireMissionReleaseIfComplete');
+  });
+
+  it('visual audit missing evidence: refused with the evidence hint, and no task write', async () => {
+    setup({ roleSlug: 'visual-auditor' });
+    mockLoadVisualAuditEvidence.mockReset();
+    mockLoadVisualAuditEvidence.mockResolvedValue({ ok: false, missing: ['/app × mobile'] } as any);
+    const res = await patch({ status: 'completed', summary: 'Audited.', summarySource: 'agent' });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data).toMatchObject({ hint: 'visual_evidence', gate: 'output_requirement', error: 'Visual audit evidence incomplete. Missing: /app × mobile' });
+    expect(outcomeSet()).toBeUndefined();
+    expect(names()).not.toContain('executeRelease');
+    mockLoadVisualAuditEvidence.mockResolvedValue(okEvidence as any);
+  });
+
+  // ── The outcome event is the FINAL status, not the reported one ────────────
+  // A worker reports completed; a slot may still fail or hold the task. The
+  // event core emits (and so the ledger row, the team push and the chat post)
+  // follows what the slot decided.
+  const settle = () => new Promise(r => setTimeout(r, 0));
+  const ledger = () => fanout.filter(c => c[0] === 'recordEvent').map(c => c[1]);
+  const pushes = () => fanout.filter(c => c[0] === 'notifyTeam').map(c => c.slice(1));
+
+  it('release CI red: task.failed with the release reason; no done push, no chat post', async () => {
+    setup();
+    releaseReturns({ status: 'failed', message: 'CI red', error: 'CI red on main', releasePrUrl: 'https://example.test/pr/9' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    await settle();
+    expect(ledger()).toEqual([{
+      type: 'task.failed', taskId: 'task-1', workerId: WORKER_ID, title: 'Fix the cursor', workspaceId: 'ws-1',
+      reason: 'Release failed: CI red on main',
+    }]);
+    expect(pushes()).toEqual([['team-1', 'taskFailed', {
+      title: 'Task failed', message: 'Fix the cursor\nW\nRelease failed: CI red on main',
+      url: 'https://buildd.dev/app/tasks/task-1', urlTitle: 'View task', priority: 0,
+    }]]);
+    expect(names()).not.toContain('postTaskCompletedEvent');
+  });
+
+  it('release CI red in a sensitive workspace: the fixed label only, no title, no detail', async () => {
+    setup();
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', dataClass: 'sensitive', gitConfig: null } as any);
+    releaseReturns({ status: 'failed', message: 'CI red', error: 'CI red on main' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+    expect(ledger()).toEqual([{ type: 'task.failed', taskId: 'task-1', workerId: WORKER_ID, title: null, workspaceId: 'ws-1', reason: 'Release failed' }]);
+    expect((pushes()[0]![2] as any).message).toBe('Task failed (content redacted)\nRelease failed');
+  });
+
+  it('loop exhausted: task.failed with the loop reason; no done push, no chat post', async () => {
+    setup({ missionId: null, loopConfig: { ...LOOP, maxLoops: 1 } });
+    await patch({ status: 'completed', summary: 'Not yet.', summarySource: 'agent', verificationEvidence: evidence(1) });
+    await settle();
+    expect(ledger()).toEqual([{
+      type: 'task.failed', taskId: 'task-1', workerId: WORKER_ID, title: 'Fix the cursor', workspaceId: 'ws-1',
+      reason: 'Loop attempts exhausted: Loop condition unmet after 1 attempt(s)',
+    }]);
+    expect(pushes()).toEqual([['team-1', 'taskFailed', {
+      title: 'Task failed', message: 'Fix the cursor\nW\nLoop attempts exhausted: Loop condition unmet after 1 attempt(s)',
+      url: 'https://buildd.dev/app/tasks/task-1', urlTitle: 'View task', priority: 0,
+    }]]);
+    expect(names()).not.toContain('postTaskCompletedEvent');
+  });
+
+  it('evidence rejected: the report is refused, so no outcome event at all', async () => {
+    setup({ roleSlug: 'visual-auditor' });
+    mockLoadVisualAuditEvidence.mockReset();
+    mockLoadVisualAuditEvidence.mockResolvedValue({ ok: false, missing: ['/app × mobile'] } as any);
+    const res = await patch({ status: 'completed', summary: 'Audited.', summarySource: 'agent' });
+    await settle();
+    expect(res.status).toBe(400);
+    expect(ledger()).toEqual([]);
+    expect(pushes()).toEqual([]);
+    expect(names()).not.toContain('postTaskCompletedEvent');
+    expect(names()).not.toContain('persistTaskEvidence');
+    mockLoadVisualAuditEvidence.mockResolvedValue(okEvidence as any);
+  });
+
+  it('release held for CI: no task.completed, no push and no chat post until the CI settles it', async () => {
+    setup();
+    releaseReturns({ status: 'pending_ci', message: 'Waiting on CI', releasePrNumber: 9, releasePrUrl: 'https://example.test/pr/9' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    await settle();
+    expect(ledger()).toEqual([]);
+    expect(pushes()).toEqual([]);
+    expect(names()).not.toContain('postTaskCompletedEvent');
+  });
+
+  it('release passed: task.completed, the done push and the chat post, as before', async () => {
+    setup();
+    releaseReturns({ status: 'completed', message: 'Released to main' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    await settle();
+    expect(ledger()).toEqual([{ type: 'task.completed', taskId: 'task-1', workerId: WORKER_ID, title: 'Fix the cursor', workspaceId: 'ws-1' }]);
+    expect(pushes().map(p => p[1])).toEqual(['taskCompleted']);
+    expect(names()).toContain('postTaskCompletedEvent');
+  });
+
+  // ── Analytics, missions and evidence follow the FINAL status too ───────────
+  // The outcome-analytics row, the runner failure detector, the mission
+  // completion attempt and the evidence record were still fed the status the
+  // worker REPORTED. A slot-failed task must record as failed; a held release
+  // records nothing until the release PR's CI settles it (github/webhook).
+  const outcomes = () => mockRecordTaskOutcome.mock.calls.map(c => (c[0] as any).outcome);
+  const runnerOutcomes = () => mockRecordRunnerOutcome.mock.calls.map(c => c[0]);
+  const missionVerdicts = () => fanout.filter(c => c[0] === 'completeMissionIfVerified').map(c => c.slice(1));
+  const evidenceWrites = () => fanout.filter(c => c[0] === 'persistTaskEvidence').map(c => c.slice(1));
+  const clearAnalytics = () => { mockRecordTaskOutcome.mockClear(); mockRecordRunnerOutcome.mockClear(); };
+
+  it('release CI red: the outcome records failed, the mission hears failed, one evidence write', async () => {
+    setup();
+    clearAnalytics();
+    releaseReturns({ status: 'failed', message: 'CI red', error: 'CI red on main', releasePrUrl: 'https://example.test/pr/9' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(outcomes()).toEqual(['failed']);
+    expect(runnerOutcomes()).toEqual(['failed']);
+    expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached failed' }]]);
+    expect(evidenceWrites()).toEqual([['task-1', WORKER_ID, { isSensitive: false }]]);
+  });
+
+  it('loop exhausted: the outcome records failed, the mission hears failed, one evidence write', async () => {
+    setup({ loopConfig: { ...LOOP, maxLoops: 1 } });
+    clearAnalytics();
+    await patch({ status: 'completed', summary: 'Not yet.', summarySource: 'agent', verificationEvidence: evidence(1) });
+    expect(outcomes()).toEqual(['failed']);
+    expect(runnerOutcomes()).toEqual(['failed']);
+    expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached failed' }]]);
+    expect(evidenceWrites()).toEqual([['task-1', WORKER_ID, { isSensitive: false }]]);
+  });
+
+  it('release held for CI: no outcome row, no mission completion attempt, no evidence write; the row to record is kept on the task', async () => {
+    setup();
+    clearAnalytics();
+    releaseReturns({ status: 'pending_ci', message: 'Waiting on CI', releasePrNumber: 9, releasePrUrl: 'https://example.test/pr/9' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent', turns: 7 });
+    expect(outcomes()).toEqual([]);
+    expect(runnerOutcomes()).toEqual([]);
+    expect(missionVerdicts()).toEqual([]);
+    expect(evidenceWrites()).toEqual([]);
+    // What the PATCH would have recorded, minus the outcome the CI decides.
+    expect(releaseSets()[0].context.heldReleaseOutcome).toMatchObject({
+      accountId: 'account-1', totalTurns: 7, wasRetried: false, workerId: WORKER_ID,
+    });
+    expect(releaseSets()[0].context.heldReleaseOutcome.outcome).toBeUndefined();
+  });
+
+  it('release passed: the outcome records completed and the mission hears completed', async () => {
+    setup();
+    clearAnalytics();
+    releaseReturns({ status: 'completed', message: 'Released to main' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(outcomes()).toEqual(['completed']);
+    expect(runnerOutcomes()).toEqual(['completed']);
+    expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached completed' }]]);
+    expect(evidenceWrites()).toHaveLength(1);
   });
 });

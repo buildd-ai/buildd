@@ -21,7 +21,8 @@ const mockBuildDriftDiagnoseTask = mock((p: any) => ({
   outputRequirement: 'artifact_required',
   context: { driftDiagnosis: true, prNumber: p.prNumber },
 }));
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock((..._a: unknown[]) => Promise.resolve());
+const mockWakeTask = mock((..._a: unknown[]) => Promise.resolve());
 const mockAppendPrActivity = mock(() => Promise.resolve({ action: 'updated' } as any));
 
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null) as any);
@@ -57,7 +58,22 @@ mock.module('@/lib/ci-retry', () => ({
   }),
   DEFAULT_MAX_CI_RETRIES: 3,
 }));
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
+// Full export surface: mock.module is process-global.
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  announceTaskCreated: mockAnnounceTaskCreated,
+  kickDispatch: mock(() => {}),
+  enqueueTaskDispatch: mock(async () => {}),
+  drainDispatchOutbox: mock(async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 })),
+  deliverTaskDispatch: mock(async () => 'pusher'),
+  routeForCause: mock(() => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false })),
+  webhookWants: mock(() => false),
+  primaryCause: mock((_c: unknown, fallback: unknown) => fallback),
+  reseedDispatchTimer: mock(async () => {}),
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+}));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
 const NO_IDENTITY = { roleSlug: null, kind: null, complexity: null, missionPhaseIndex: null, missionPhaseLabel: null };
 const mockInheritAttemptIdentity = mock((_id: string) => Promise.resolve({ ...NO_IDENTITY } as any));
@@ -159,7 +175,8 @@ describe('POST /api/prs/[prNumber]/retry-ci', () => {
     mockIsBuilddWorkerCommit.mockImplementation((author: any) => !!author?.login?.includes('buildd-ai'));
     mockIsSchemaDriftFailure.mockReset();
     mockIsSchemaDriftFailure.mockReturnValue(false);
-    mockDispatchNewTask.mockReset();
+    mockAnnounceTaskCreated.mockReset();
+    mockWakeTask.mockReset();
     mockAppendPrActivity.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockWorkspacesFindFirst.mockResolvedValue(workspaceRow);
@@ -212,7 +229,7 @@ describe('POST /api/prs/[prNumber]/retry-ci', () => {
     const body = await res.json();
     expect(body).toEqual({ ok: true, dispatched: false, inFlight: true, taskId: 'inflight-task-1', diagnoseOnly: false });
     expect(mockResolveOrAdoptPrOwner).not.toHaveBeenCalled();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('returns 404 when the PR does not exist on GitHub', async () => {
@@ -251,7 +268,7 @@ describe('POST /api/prs/[prNumber]/retry-ci', () => {
     expect(res.status).toBe(409);
     expect((await res.json()).error).toContain('dependency bot');
     expect(mockResolveOrAdoptPrOwner).not.toHaveBeenCalled();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('returns 409 for a draft PR', async () => {
@@ -272,7 +289,8 @@ describe('POST /api/prs/[prNumber]/retry-ci', () => {
     expect(body).toEqual({ ok: true, dispatched: true, diagnoseOnly: false, taskId: 'new-task-1' });
     expect(mockResolveOrAdoptPrOwner).toHaveBeenCalledTimes(1);
     expect(mockResolveOrAdoptPrOwner.mock.calls[0][0].creationSource).toBe('dashboard');
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask.mock.calls).toEqual([['new-task-1', 'ci.retry']]);
     const inserted = mockTasksValues.mock.calls[0][0];
     expect(inserted.title).toContain('[CI Retry');
     expect(inserted.ciRetryPrNumber).toBe(42);
@@ -289,6 +307,7 @@ describe('POST /api/prs/[prNumber]/retry-ci', () => {
     expect(body).toEqual({ ok: true, dispatched: true, diagnoseOnly: true, taskId: 'new-task-1' });
     const inserted = mockTasksValues.mock.calls[0][0];
     expect(inserted.title).toContain('[CI Diagnose]');
+    expect(mockWakeTask.mock.calls).toEqual([['new-task-1', 'ci.retry']]);
     expect(inserted.outputRequirement).toBe('artifact_required');
     expect(inserted.title).not.toContain('[CI Retry');
   });

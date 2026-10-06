@@ -57,12 +57,18 @@ export interface ScopedInstallationToken {
 }
 
 export async function mintRepoScopedInstallationToken(
-  params: { installationId: number; repoId: number; installedPermissions?: Record<string, string> | null },
+  params: {
+    installationId: number;
+    repoId: number;
+    installedPermissions?: Record<string, string> | null;
+    /** What to ask for, narrowed to what is installed. Defaults to a task run's set. */
+    wanted?: Readonly<Record<string, PermissionLevel>>;
+  },
   deps: { appJwt?: () => string; fetch?: typeof fetch } = {},
 ): Promise<ScopedInstallationToken> {
   const appJwt = (deps.appJwt ?? generateAppJWT)();
   const doFetch = deps.fetch ?? fetch;
-  const permissions = scopedTokenPermissions(params.installedPermissions);
+  const permissions = scopedTokenPermissions(params.installedPermissions, params.wanted);
   const res = await doFetch(`https://api.github.com/app/installations/${params.installationId}/access_tokens`, {
     method: 'POST',
     headers: {

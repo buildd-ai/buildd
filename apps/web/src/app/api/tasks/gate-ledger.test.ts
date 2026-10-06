@@ -107,7 +107,23 @@ mock.module('@/lib/task-service', () => ({
     parentTaskId: null,
   }),
 }));
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: async () => {} }));
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: async () => {},
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 mock.module('@/lib/required-connectors', () => ({
   validateRequiredConnectors: async () => ({ ok: true, value: null }),
 }));
@@ -117,8 +133,14 @@ mock.module('@buildd/core/spec-discrepancy-intake', () => ({ findIntakeWarnings:
 mock.module('@/lib/mission-feed', () => ({
   resolveFeedActor: async () => ({ kind: 'mcp', id: 'acct-1', label: 'acct' }),
   postMissionFeedEvent: async () => {},
+  // The route reaches the module graph through the composition root, which imports this.
+  systemActor: (predicate: string) => ({ kind: 'system', id: null, label: predicate }),
 }));
 mock.module('@/lib/mission-loop', () => ({ reopenCompletedMission: async () => ({ reopened: false }) }));
+// This file asserts the gate ledger. What a filing sets off reaches modules
+// through emit() (asserted in route.test.ts), so the composition root and its
+// module graph stay out of this process.
+mock.module('@/lib/core-emit', () => ({ emit: async () => {} }));
 mock.module('@/lib/criteria-escalation', () => ({ resolveCriteriaEscalation: async () => ({ cleared: false }) }));
 mock.module('@/lib/pusher', () => ({
   triggerEvent: async () => {},

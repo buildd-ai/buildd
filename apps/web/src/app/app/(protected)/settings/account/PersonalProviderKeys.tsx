@@ -81,7 +81,7 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
             <span aria-hidden className="inline-block w-3 group-open:rotate-90 transition-transform">▸</span> Use my own key instead
           </summary>
           {hasOwn && (
-            <p className="text-xs text-text-secondary mt-2">Pays for your use only. Remove it to go back to the team key.</p>
+            <p className="text-xs text-text-secondary mt-2">Billed for your use only. Remove it to use the team key.</p>
           )}
           <div className="mt-2.5 space-y-2.5" data-testid="own-key-cards">{cards}</div>
         </details>

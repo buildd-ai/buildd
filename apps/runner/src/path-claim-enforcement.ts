@@ -25,6 +25,7 @@
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
+import { branchOfRemoteRef, remoteBranchFetchArgs } from './git-clone';
 import {
   resolveTaskPrBase,
   missionIntegrationBase,
@@ -376,13 +377,16 @@ export function resolvePrBaseRef(opts: {
  */
 export function refreshBaseRef(worktreePath: string, baseRef: string | null | undefined, timeoutMs = 15_000): Promise<boolean> {
   if (!baseRef || !baseRef.startsWith('origin/')) return Promise.resolve(false);
-  const branch = baseRef.slice('origin/'.length);
+  const branch = branchOfRemoteRef(baseRef);
+  if (!branch) return Promise.resolve(false);
   if (typeof childProcess.execFile !== 'function') return Promise.resolve(false);
   return new Promise(resolvePromise => {
     try {
       childProcess.execFile(
         'git',
-        ['fetch', '--no-tags', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+        // A depth when a shallow (cloud) clone does not have the branch yet:
+        // an undeepened fetch of a new ref there downloads its whole history.
+        remoteBranchFetchArgs(worktreePath, branch),
         { cwd: worktreePath, timeout: timeoutMs },
         (err) => resolvePromise(!err),
       );
@@ -443,6 +447,24 @@ export function isShipCommand(command: unknown): boolean {
   return /(^|[\s;&|(])git(\s+-C\s+\S+)?(\s+-c\s+\S+)*\s+push(\s|$)/.test(command)
     || /(^|[\s;&|(])gh\s+pr\s+create(\s|$)/.test(command);
 }
+
+/**
+ * The one coordination deadline for a path claim, and the edit's worst-case
+ * wait on it. Calibrated from production: round trips to the claim route run
+ * ~75-425ms (even a cheap 401), so the old 200ms abort fired on healthy
+ * requests — real grants were reported "unavailable" and, in enforce mode, a
+ * real 409 arriving late failed open. 1.5s is ~3.5x the observed worst case;
+ * past it the service is treated as genuinely unavailable and the edit fails
+ * open with its paths queued.
+ */
+export const PATH_CLAIM_TIMEOUT_MS = 1_500;
+
+/**
+ * Hook backstop, strictly above PATH_CLAIM_TIMEOUT_MS so it only fires for a
+ * client that ignores its abort signal — never ahead of a request that is
+ * still inside its own deadline.
+ */
+export const PATH_CLAIM_HOOK_DEADLINE_MS = PATH_CLAIM_TIMEOUT_MS + 250;
 
 /** Cap on queued paths; a coordination service down for a long session must not grow memory without bound. */
 export const MAX_PENDING_PATHS = 500;

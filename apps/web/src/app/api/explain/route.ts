@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
@@ -47,7 +47,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export async function GET(req: NextRequest) {
   try {
     const authHeader = req.headers.get('authorization');
-    const account = await authenticateApiKey(authHeader?.replace('Bearer ', '') ?? null, req);
+    // A per-task token explains only subjects in its own task's workspace:
+    // its team scope is narrowed to that one workspace, and a team-level
+    // mission (no workspace) is outside it.
+    const account = await authenticateTaskScopedCaller(authHeader?.replace('Bearer ', '') ?? null, req);
     const sessionUser = account ? null : await getCurrentUser();
     if (!account && !sessionUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -88,7 +91,7 @@ export async function GET(req: NextRequest) {
     let teamWsIds: string[];
     if (account) {
       teamIds = [account.teamId];
-      teamWsIds = await getTeamWorkspaceIds(account.teamId);
+      teamWsIds = (await getTeamWorkspaceIds(account.teamId)).filter(id => taskScopeAllowsWorkspace(account, id));
     } else {
       const sessionTeamIds = await resolveSessionTeamIds(sessionUser!.id, searchParams.get('teamId'));
       if (!sessionTeamIds) {
@@ -104,7 +107,8 @@ export async function GET(req: NextRequest) {
     // Team scope is necessary but not sufficient for a key: a restricted
     // workspace admits only linked accounts. Sessions were scoped by team
     // membership above, the rule GET /api/tasks/[id] applies to them.
-    const reaches = async (wsId: string) => !account || verifyAccountWorkspaceAccess(account.id, wsId);
+    const reaches = async (wsId: string) =>
+      !account || (taskScopeAllowsWorkspace(account, wsId) && verifyAccountWorkspaceAccess(account.id, wsId));
     const actor: EvidenceActor = account ? { accountId: account.id } : { userId: sessionUser!.id };
 
     // ── PR ──────────────────────────────────────────────────────────────────
@@ -115,7 +119,7 @@ export async function GET(req: NextRequest) {
       }
       // The same resolver `get_pr` uses. A second one would eventually disagree
       // about which workspaces a team can see.
-      const resolved = account
+      const resolved = account && !account.taskScope
         ? await resolveWorkerByPrNumber(account, prNumber, workspaceId)
         : await resolveWorkerByPrNumberInWorkspaces(teamWsIds, prNumber, workspaceId);
       if (typeof resolved.status === 'number') {
@@ -186,7 +190,8 @@ export async function GET(req: NextRequest) {
       const hasAccess = teamIds.includes(row.teamId) || (row.workspaceId && teamWsIds.includes(row.workspaceId));
       // A workspace-scoped mission inherits its workspace's restriction for keys;
       // a team-level mission (no workspace) is gated by team alone.
-      if (!hasAccess || (row.workspaceId && !(await reaches(row.workspaceId)))) {
+      if (!hasAccess || (row.workspaceId && !(await reaches(row.workspaceId)))
+        || (account && !taskScopeAllowsWorkspace(account, row.workspaceId))) {
         return NextResponse.json({ error: 'Mission not found or not in your team' }, { status: 404 });
       }
       const result = await explainMission(missionId);

@@ -187,7 +187,7 @@ export function ProviderKeyCard({
               <p className={shape.ok ? 'text-status-warning' : 'text-status-error'}>{shape.message}</p>
             )}
             <p className="text-text-muted">
-              {hint ?? <>Create one in the <a href={info.consoleUrl} target="_blank" rel="noreferrer" className="underline hover:text-text-primary">{info.label} console</a>.</>} buildd checks it with {info.label} before saving. Stored encrypted. Nobody can read it back.
+              {hint ?? <>Create one in the <a href={info.consoleUrl} target="_blank" rel="noreferrer" className="underline hover:text-text-primary">{info.label} console</a>.</>} Tested on save. Encrypted, write-only.
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <button className="btn btn-primary" onClick={save} disabled={busy !== null || !value.trim() || shape?.ok === false}>

@@ -57,3 +57,72 @@ export function stripClaimCredentials(worker: Record<string, unknown>): string[]
   }
   return removed;
 }
+
+/**
+ * Where a WORKSPACE's work runs: `gitConfig.executor` (jsonb, no column).
+ *
+ * - `cloud`: only cloud claims (`executor: 'cloud'` or a per-task token) take
+ *   its tasks. A host runner's poll skips them, so it cannot win the race
+ *   against a cloud container that is still cold-starting.
+ * - `host`: only host runners take its tasks; cloud claims skip them.
+ * - `any`: either.
+ *
+ * Unset (or an unknown stored value) is derived, never assumed: `cloud` when
+ * the workspace webhook is enabled and lists every cloud dispatch event (the
+ * set the cloud runner Worker registers), otherwise `any`. The claim route
+ * applies the same rule in SQL (apps/web/src/app/api/workers/claim/
+ * workspace-executor-gate.ts); keep the two in step.
+ */
+export const WORKSPACE_EXECUTORS = ['cloud', 'host', 'any'] as const;
+export type WorkspaceExecutor = typeof WORKSPACE_EXECUTORS[number];
+/** Where the effective value came from, for the settings page. */
+export type WorkspaceExecutorSource = 'explicit' | 'dispatch_webhook' | 'default';
+
+/**
+ * The dispatch events the cloud runner Worker registers on a workspace webhook
+ * (apps/cloud-runner/src/deploy-plan.ts DISPATCH_EVENTS; a test keeps them equal).
+ */
+export const CLOUD_DISPATCH_EVENTS = ['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled'] as const;
+
+export function isWorkspaceExecutor(value: unknown): value is WorkspaceExecutor {
+  return typeof value === 'string' && (WORKSPACE_EXECUTORS as readonly string[]).includes(value);
+}
+
+/** True when the webhook is enabled and lists every cloud dispatch event. */
+export function isCloudDispatchWebhook(
+  webhookConfig: { enabled?: unknown; events?: unknown } | null | undefined,
+): boolean {
+  if (!webhookConfig || webhookConfig.enabled !== true) return false;
+  const events = webhookConfig.events;
+  return Array.isArray(events) && CLOUD_DISPATCH_EVENTS.every((e) => events.includes(e));
+}
+
+export function resolveWorkspaceExecutor(
+  gitConfig: { executor?: unknown } | null | undefined,
+  webhookConfig: { enabled?: unknown; events?: unknown } | null | undefined,
+): { executor: WorkspaceExecutor; source: WorkspaceExecutorSource } {
+  const explicit = gitConfig?.executor;
+  if (isWorkspaceExecutor(explicit)) return { executor: explicit, source: 'explicit' };
+  if (isCloudDispatchWebhook(webhookConfig)) return { executor: 'cloud', source: 'dispatch_webhook' };
+  return { executor: 'any', source: 'default' };
+}
+
+/**
+ * An orchestration task: one that coordinates other tasks' work rather than
+ * doing its own. It uses admin-level buildd actions (manage_missions,
+ * approve_plan/reject_plan) and may tidy up sibling tasks' PRs, so per-run
+ * restrictions that bind an ordinary agent run do not apply to it. Signals,
+ * all on the task row:
+ *  - roleSlug 'organizer' (the default mission orchestrator role);
+ *  - mode 'planning' (planning tasks feed approve_plan/reject_plan);
+ *  - context.heartbeat (an organizer check-in; mission-run can move it off
+ *    the 'organizer' role).
+ * Shared by the runner (which keeps the runner key for these sessions) and
+ * the server (which exempts them from own-PR-only close/merge).
+ */
+export function isOrchestrationTask(task: { roleSlug?: string | null; mode?: string | null; context?: unknown } | null | undefined): boolean {
+  if (!task) return false;
+  if (task.roleSlug === 'organizer') return true;
+  if (task.mode === 'planning') return true;
+  return (task.context as { heartbeat?: unknown } | null | undefined)?.heartbeat === true;
+}

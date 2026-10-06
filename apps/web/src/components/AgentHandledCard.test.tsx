@@ -22,12 +22,34 @@ describe('AgentHandledCard', () => {
   it('shows the fix attempt and links to it, with no merge affordance', () => {
     const html = renderToStaticMarkup(
       <AgentHandledCard
-        item={item({ ciGate: { kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1' } })}
+        item={item({ ciGate: { kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1', taskTitle: null, fixKind: 'ci' } })}
       />,
     );
     expect(html).toContain('Fixing CI · attempt 2 of 3');
     expect(html).toContain('/app/tasks/fix-1');
     expect(html).toContain('Health analytics restructure');
+    expect(html).not.toContain('Merge');
+  });
+
+  it('names the actual reviewer-retry fix task, not a generic "view fix attempt"', () => {
+    const html = renderToStaticMarkup(
+      <AgentHandledCard
+        item={item({
+          chip: 'FIXING_REVIEW',
+          ciGate: {
+            kind: 'fixing',
+            label: 'Fix 1 of 3 queued',
+            taskId: 'fix-retry-1',
+            taskTitle: '[reviewer retry #1] Health tab restructure',
+            fixKind: 'review',
+          },
+        })}
+      />,
+    );
+    expect(html).toContain('Fix 1 of 3 queued');
+    expect(html).toContain('/app/tasks/fix-retry-1');
+    expect(html).toContain('[reviewer retry #1] Health tab restructure');
+    expect(html).not.toContain('View fix attempt');
     expect(html).not.toContain('Merge');
   });
 
@@ -62,5 +84,26 @@ describe('AgentHandledCard', () => {
     expect(title.slice(title.lastIndexOf('<div'))).not.toContain('truncate');
     const pr = html.slice(0, html.indexOf('PR #2054'));
     expect(pr.slice(pr.lastIndexOf('<a'))).toContain('min-h-11');
+  });
+});
+
+describe('AgentHandledCard — pending CI / review gates', () => {
+  it('names what is pending and offers no merge, Retry or Dismiss', () => {
+    const html = renderToStaticMarkup(
+      <AgentHandledCard item={item({ chip: 'REVIEW_RUNNING', pendingGates: { ci: 'passed', review: 'reviewing' } })} />,
+    );
+    expect(html).toContain('CI passed · reviewer checking the latest commit');
+    expect(html).not.toContain('Merge');
+    expect(html).not.toContain('Retry');
+    expect(html).not.toContain('Dismiss');
+    expect(html).not.toContain('still running');
+  });
+
+  it('a CI wait reads as CI, not as a generic agent label', () => {
+    const html = renderToStaticMarkup(
+      <AgentHandledCard item={item({ chip: 'CI_RUNNING', ciGate: { kind: 'running', label: 'CI running' }, pendingGates: { ci: 'running', review: null } })} />,
+    );
+    expect(html).toContain('CI running');
+    expect(html).not.toContain('Retry');
   });
 });

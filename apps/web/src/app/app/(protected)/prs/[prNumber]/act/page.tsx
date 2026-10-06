@@ -1,11 +1,11 @@
-import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveOpenWorkerForUser } from '@/lib/pr-resolve';
 import { verifyLandingActionToken, type LandingAction } from '@/lib/landing-action-token';
 import { LANDING_ACTION_LABELS, plainReason } from '@/lib/pr-landing-alert';
 import { loadLandingActionView } from '@/lib/landing-action-run';
-import { LandingActionConfirm } from '@/components/LandingActionConfirm';
+import { taskPageHref, describeTapResult } from '@/lib/landing-action-view';
+import { LandingActionConfirm, LandingTapResult } from '@/components/LandingActionConfirm';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,7 +47,10 @@ export default async function LandingActionPage({
       ? await loadLandingActionView({ token, workspaceId: worker.workspaceId, prNumber, taskId: worker.taskId })
       : ({ state: 'invalid' } as const);
 
-  const fallbackHref = worker?.taskId ? `/app/tasks/${worker.taskId}` : '/app/home';
+  // The link's task only for a link that verified for this PR in the resolved workspace.
+  const linkTaskId =
+    verdict?.ok && worker && verdict.payload.prNumber === prNumber && verdict.payload.workspaceId === worker.workspaceId ? verdict.payload.taskId : null;
+  const fallbackHref = taskPageHref(linkTaskId, worker?.taskId);
 
   return (
     <main className="mx-auto w-full max-w-xl p-4 sm:p-8" data-testid="landing-action-page">
@@ -55,7 +58,6 @@ export default async function LandingActionPage({
 
       {view.state === 'ready' && worker && token ? (
         <>
-          <h1 className="mt-1 font-mono text-xl font-bold text-text-primary">Won&apos;t land: {plainReason(view.reason)}</h1>
           {view.headMoved && (
             <p className="mt-3 border border-border-default bg-surface-2 p-3 text-sm text-text-secondary" data-testid="landing-action-head-moved">
               New commits arrived since this alert. Confirming re-runs landing against the current commit instead of acting on old advice.
@@ -74,16 +76,12 @@ export default async function LandingActionPage({
             }))}
             headMoved={view.headMoved}
             fallbackHref={fallbackHref}
+            heading={`Won't land: ${plainReason(view.reason)}`}
+            prUrl={worker.prUrl}
           />
         </>
       ) : view.state === 'already_done' ? (
-        <>
-          <h1 className="mt-1 font-mono text-xl font-bold text-text-primary">Already handled</h1>
-          <p className="mt-3 text-sm text-text-secondary" data-testid="landing-action-done">{view.result.summary}</p>
-          <Link href={fallbackHref} className="mt-4 inline-block border border-border-default px-4 py-3 font-mono text-sm text-text-primary">
-            Open the PR&apos;s task
-          </Link>
-        </>
+        <LandingTapResult view={describeTapResult(view.result)} taskHref={fallbackHref} prUrl={worker?.prUrl} />
       ) : (
         <>
           <h1 className="mt-1 font-mono text-xl font-bold text-text-primary">
@@ -92,9 +90,10 @@ export default async function LandingActionPage({
           <p className="mt-3 text-sm text-text-secondary" data-testid="landing-action-fallback">
             Alert links are single use and last a day. The PR&apos;s current state, with its own actions, is on its task page.
           </p>
-          <Link href={fallbackHref} className="mt-4 inline-block bg-accent px-4 py-3 font-mono text-sm font-bold text-white">
+          {/* A plain anchor: a full navigation always lands from an in-app browser. */}
+          <a href={fallbackHref} className="mt-4 inline-block bg-accent px-4 py-3 font-mono text-sm font-bold text-white">
             See current state
-          </Link>
+          </a>
         </>
       )}
     </main>

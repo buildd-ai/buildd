@@ -1,6 +1,26 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "type-scale-tokens"
+    type: "config_key"
+    key: "type-chip"
+    file: "apps/web/src/app/globals.css"
+  - id: "chip-primitive"
+    type: "symbol"
+    name: "Chip"
+    path: "apps/web/src/components/ui/Chip.tsx"
+  - id: "mobile-type-floor-test"
+    type: "test_file"
+    path: "apps/web/src/app/mobile-type-floor.test.ts"
+  - id: "design-drift-check-tests"
+    type: "test_file"
+    path: "scripts/design-check.test.ts"
+---
+
 # Design System
 
-**Status:** Accepted (tokens describe what ships; the §3 type scale and the §4 primitives are built)
+**Status:** Implemented (tokens describe what ships; the §3 type scale and the §4 primitives are built)
 **Related:** `apps/web/src/app/globals.css`, `apps/web/tailwind.config.ts`, `apps/web/src/app/mobile-type-floor.test.ts`, `apps/web/src/components/BottomSheet.tsx`, `apps/web/src/components/StatusBadge.tsx`, `apps/web/src/app/app/(protected)/missions/[id]/HeartbeatStatusBadge.tsx`, `apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx`, `docs/design/mobile-feed-spec.md` (mobile layout), `knowledge-base: buildd/design/chat-canvas.md` (the one soft surface), `knowledge-base: buildd/plans/ios-app-mvp.md` (iOS tokens), `.claude/skills/ui_designer/`
 
 **This is the one design reference.** Read this file before writing UI. The
@@ -412,7 +432,19 @@ notification text) follows the same rules as a PR lede:
    placeholder; render nothing or a muted value instead
    (`scripts/no-em-dash-copy.test.ts`, `docs/design/derived-metric-availability.md`).
 6. **State words come from one vocabulary.** A status reads the same on every
-   surface (`StatusBadge`'s labels today; `Chip` callers after §4).
+   surface (`StatusBadge`'s labels today; `Chip` callers after §4). A task an
+   agent can't continue without you reads **Needs input**, never "Waiting on
+   you"; a PR you can merge reads **Ready to merge**. Name what is needed, not
+   the person. The Home **Needs you** section heading is the one exception.
+7. **The UI doesn't explain itself.** Would GitHub, Linear or Claude Code say
+   it? A setting gets a label and at most one fact the label can't carry. No
+   page blurb restating the title ("Where run evidence is kept"), no "yet" on
+   an empty state ("No buckets.", not "No buckets of your own yet."), no
+   reassurance ("Nobody can read it back", "Re-enable any time"), no
+   justifying a setting, no paragraphs. A toast says what happened: "Codex
+   disabled. Jobs run on Claude." The rules are data in
+   `packages/core/copy-rules.ts`; **`bun run copy:check`** (CI, a ratchet like
+   the design drift check below; `--list` prints every hit) fails on new ones.
 
 ---
 

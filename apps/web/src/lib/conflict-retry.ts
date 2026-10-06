@@ -16,12 +16,13 @@
  *   - Controlled by workspace gitConfig.autoResolveMergeConflicts (default ON).
  */
 
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
-import { eq, and, or, sql, inArray, isNotNull } from 'drizzle-orm';
-import { isAdvisoryManifest, shouldSerializeByManifest } from '@buildd/core/path-overlap';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { eq, and, or, sql, inArray } from 'drizzle-orm';
+import { isAdvisoryManifest, isDownstreamOf, shouldSerializeByManifest } from '@buildd/core/path-overlap';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
 import { notifyTeamOf } from '@/lib/notify';
 import { githubApi } from '@/lib/github';
@@ -402,6 +403,34 @@ ${task.description ? `## Original Task Description\n\n${task.description}` : ''}
 
 // ── DB dispatch ───────────────────────────────────────────────────────────────
 
+/**
+ * Free the (workspace, PR, head) dedupe key held by a conflict retry that has
+ * already ended on this exact head. A retry that finished without pushing
+ * leaves the head unchanged, so its row keeps owning the key forever. Every
+ * later dispatch for that still-conflicting head then hits the unique index
+ * and files nothing, while each caller reads that as "already handled". Only
+ * a terminal row gives up its key, so a live retry still dedupes. The row
+ * keeps `conflictRetryPrNumber` and `subjectHeadSha`, so attempt counts and
+ * history are unchanged. Returns the released task id, or null.
+ */
+export async function releaseSpentConflictRetryKey(
+  workspaceId: string,
+  prNumber: number,
+  headSha: string,
+): Promise<string | null> {
+  const [row] = await db
+    .update(tasks)
+    .set({ conflictRetryHeadSha: null })
+    .where(and(
+      eq(tasks.workspaceId, workspaceId),
+      eq(tasks.conflictRetryPrNumber, prNumber),
+      eq(tasks.conflictRetryHeadSha, headSha),
+      inArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
+    ))
+    .returning({ id: tasks.id });
+  return row?.id ?? null;
+}
+
 export interface DispatchConflictRetryParams {
   /** ID of the worker whose PR has conflicts. */
   workerId: string;
@@ -494,7 +523,7 @@ export async function dispatchConflictRetry(
 ): Promise<DispatchConflictRetryResult> {
   const { workerId, taskId, prNumber, headSha, repoFullName, workspaceId, migrationCollision } = params;
 
-  // Fetch workspace (needed for autoResolveMergeConflicts flag + dispatchNewTask)
+  // Fetch workspace (needed for autoResolveMergeConflicts flag + announceTaskCreated)
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
     with: { githubInstallation: true },
@@ -746,18 +775,29 @@ export async function dispatchConflictRetry(
     retryTask.pathManifest.length > 0 &&
     !isAdvisoryManifest(retryTask.pathManifest)
   ) {
+    // Not filtered to tasks with a pathManifest (unlike the tasks-route query this
+    // otherwise mirrors): a candidate can be downstream of taskId through an
+    // intermediate task that declares no manifest at all, and isDownstreamOf needs
+    // every live dependsOn edge in the workspace to walk that chain.
     const inFlightTasks = await db.query.tasks.findMany({
       where: and(
         eq(tasks.workspaceId, workspaceId),
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-        isNotNull(tasks.pathManifest),
       ),
-      columns: { id: true, pathManifest: true, subjectPrNumber: true, conflictRetryPrNumber: true },
+      columns: { id: true, pathManifest: true, subjectPrNumber: true, conflictRetryPrNumber: true, dependsOn: true },
     });
+    const dependsOnById = new Map<string, readonly string[] | null | undefined>(
+      inFlightTasks.map((t) => [t.id, t.dependsOn as string[] | null]),
+    );
     for (const t of inFlightTasks) {
       // This attempt must run before its own PR can merge. Depending on that
       // PR's task (or another attempt on it) makes the repair unclaimable.
       if (t.id === taskId || t.subjectPrNumber === prNumber || t.conflictRetryPrNumber === prNumber) continue;
+      // t is already waiting (directly or transitively) on the task this repair
+      // exists to unblock — a new edge repair→t would make the repair wait on
+      // something that is itself waiting on the repair's own subject, a
+      // structural deadlock rather than real serialization.
+      if (isDownstreamOf(t.id, taskId, dependsOnById)) continue;
       if (shouldSerializeByManifest(retryTask.pathManifest, t.pathManifest as string[] | null)) {
         resolvedDependsOn.push(t.id);
       }
@@ -768,7 +808,7 @@ export async function dispatchConflictRetry(
   // of the task it re-attempts.
   const identity = await inheritAttemptIdentity(retryTask.parentTaskId);
 
-  const [newTask] = await db
+  const insertRetry = () => db
     .insert(tasks)
     .values({
       workspaceId: retryTask.workspaceId,
@@ -795,12 +835,21 @@ export async function dispatchConflictRetry(
     .onConflictDoNothing()
     .returning();
 
+  let [newTask] = await insertRetry();
+  // The key may be held by an earlier retry that ended on this same head
+  // without pushing. The conflict is still there, so file the next attempt.
+  // The iteration cap above still bounds how many attempts can run.
+  if (!newTask && await releaseSpentConflictRetryKey(workspaceId, prNumber, headSha)) {
+    [newTask] = await insertRetry();
+  }
+
   if (!newTask) {
-    // Hit the unique index — duplicate, already dispatched
+    // Hit the unique index — a concurrent caller filed the retry for this head
     return { dispatched: false };
   }
 
-  await dispatchNewTask(newTask, workspace);
+  await announceTaskCreated(newTask, workspace);
+  await wakeTask(newTask.id, 'conflict.retry');
   console.log(
     `[conflict-retry] dispatched task ${newTask.id} for PR #${prNumber}@${headSha.slice(0, 7)} (iteration ${retryTask.context.conflictIteration}/${retryTask.context.maxConflictIterations})`,
   );

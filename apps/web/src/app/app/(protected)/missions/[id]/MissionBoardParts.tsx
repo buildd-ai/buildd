@@ -10,7 +10,7 @@ import { useRouter } from 'next/navigation';
 import { missionTaskHref, type MissionOrigin } from '@/lib/mission-task-href';
 import { runnerInitial } from '@/lib/runner-display';
 import { BOARD_LANDED, type BoardCriterion, type BoardStatus, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
-import { stripKeyTarget, stripOrder, stripTick } from '@/lib/mission-task-strip';
+import { stripKeyTarget, stripTick, type StripMark, type StripSlot, type StripState } from '@/lib/mission-task-strip';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
 import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import { answerOutcomeLines } from '@/app/app/(protected)/tasks/[id]/respond/submit-answer';
@@ -140,26 +140,27 @@ const METER_CLASS: Record<BoardStatus, string> = {
 
 /**
  * The interactive band cells: landed work is solid, anything unfinished is
- * hatched (readable without colour), each in its state's tone.
+ * hatched or empty, each in its state's tone. Ready, blocked and queued differ
+ * in texture (none / dense / sparse), so they read in greyscale (ST-3).
  */
-const STRIP_CELL_CLASS: Record<BoardStatus, string> = {
-  merged: 'border-status-success bg-status-success',
-  done: 'border-status-success bg-status-success',
-  review: 'border-status-success fleet-hatch-ok',
-  running: 'border-accent fleet-hatch-accent',
-  waiting: 'border-accent fleet-hatch-accent',
-  ci_failed: 'border-status-error fleet-hatch-err',
-  fixing: 'border-status-error fleet-hatch-err',
-  failed: 'border-status-error fleet-hatch-err',
-  ready: 'border-[var(--fleet-border-mid)] fleet-hatch',
-  blocked: 'border-[var(--fleet-border-mid)] fleet-hatch',
+const STRIP_CELL_CLASS: Record<StripState, string> = {
+  landed: 'border-2 border-status-success bg-status-success',
+  review: 'border-2 border-status-success fleet-hatch-ok',
+  running: 'border-2 border-accent fleet-hatch-accent',
+  waiting: 'border-[2.5px] border-accent bg-card',
+  ci_failed: 'border-2 border-status-error fleet-hatch-err',
+  fixing: 'border-2 border-status-error fleet-hatch-err',
+  failed: 'border-2 border-status-error fleet-hatch-err',
+  ready: 'border-2 border-border-strong bg-card',
+  blocked: 'border-2 border-[var(--fleet-border-mid)] fleet-hatch',
+  queued: 'border-2 border-[var(--fleet-border-mid)] fleet-hatch-future',
 };
 
 export type StripTone = 'ok' | 'error' | 'open';
 
-export function stripTone(status: BoardStatus): StripTone {
-  if (BOARD_LANDED.has(status)) return 'ok';
-  if (status === 'ci_failed' || status === 'fixing' || status === 'failed') return 'error';
+export function stripTone(state: StripState): StripTone {
+  if (state === 'landed') return 'ok';
+  if (state === 'ci_failed' || state === 'fixing' || state === 'failed') return 'error';
   return 'open';
 }
 
@@ -169,14 +170,18 @@ const STRIP_OUTLINE: Record<StripTone, string> = {
   open: 'outline-accent',
 };
 
-const STATUS_WORDS: Record<BoardStatus, string> = {
-  merged: 'landed', done: 'landed', review: 'in review', running: 'running', waiting: 'needs you',
-  ci_failed: 'CI failed', fixing: 'fixing', failed: 'failed', ready: 'open', blocked: 'blocked',
+const STATUS_WORDS: Record<StripState, string> = {
+  landed: 'landed', review: 'in review', running: 'running', waiting: 'needs you',
+  ci_failed: 'CI failed', fixing: 'fixing', failed: 'failed', ready: 'ready', blocked: 'blocked', queued: 'queued behind',
 };
 
 /** Selecting a cell of the band (the mission page's Landed strip). */
 export interface LandedMeterSelection {
+  /** The cells, in strip order (`stripSlots`). */
+  slots: readonly StripSlot[];
   selectedId: string;
+  /** Per slot: how it relates to the selection (`slotMarks`). */
+  marks: ReadonlyArray<StripMark | null>;
   onSelect(taskId: string): void;
 }
 
@@ -231,16 +236,25 @@ export function LandedMeter({ model, variant, compact = false, selection }: { mo
 /** Past this many cells the ticks lose their numbers: an unfinished one keeps a mark. */
 const MAX_NUMBERED_TICKS = 12;
 
+/** A mark on the tick row, by tick mode (§5.2): shape differs, not only colour. */
+const TICK_MARK_NUMBERED: Record<StripMark, string> = {
+  direct: 'bg-accent px-0.5 text-card',
+  transitive: 'border-b-2 border-accent text-accent-text',
+};
+const TICK_MARK_BAR: Record<StripMark, string> = {
+  direct: 'h-1.5',
+  transitive: 'h-0.5',
+};
+
 function StripCells({ model, compact, selection }: { model: MissionBoardModel; compact: boolean; selection: LandedMeterSelection }) {
-  const order = useMemo(() => stripOrder(model), [model]);
-  const n = order.length;
-  const sel = Math.max(0, order.indexOf(selection.selectedId));
-  const { onSelect } = selection;
+  const { slots, marks, onSelect } = selection;
+  const n = slots.length;
+  const sel = Math.max(0, slots.findIndex(s => s.id === selection.selectedId));
   const onKeyDown = (e: React.KeyboardEvent) => {
     const to = stripKeyTarget(e.key, sel, n);
     if (to == null) return;
     e.preventDefault();
-    onSelect(order[to]);
+    onSelect(slots[to].id);
     // Roving focus follows the selection (only the selected cell is tabbable).
     (e.currentTarget.querySelectorAll('button')[to] as HTMLButtonElement | undefined)?.focus();
   };
@@ -254,32 +268,57 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
         onKeyDown={onKeyDown}
         className="flex gap-[var(--strip-gap)] pt-1.5"
       >
-        {order.map((id, i) => {
-          const t = model.tasks[id];
+        {slots.map((s, i) => {
+          if (s.kind === 'fold') {
+            return (
+              <StripCell
+                key={s.id}
+                id={s.id}
+                state={s.state}
+                selected={i === sel}
+                tall={!compact}
+                label={`${s.taskIds.length} ${s.state === 'landed' ? 'landed' : 'queued'} tasks`}
+                onSelect={onSelect}
+              />
+            );
+          }
+          const t = model.tasks[s.id];
+          const level = t.levels > 1 ? `, level ${t.level} of ${t.levels}` : '';
           return (
             <StripCell
-              key={id}
-              id={id}
-              status={t.status}
+              key={s.id}
+              id={s.id}
+              state={s.state}
               selected={i === sel}
               tall={!compact}
-              label={`Task ${i + 1} of ${n}, ${STATUS_WORDS[t.status]}: ${t.title}`}
+              label={`Cell ${i + 1} of ${n}${level}, ${STATUS_WORDS[s.state]}: ${t.title}`}
               onSelect={onSelect}
             />
           );
         })}
       </div>
       <div aria-hidden="true" className={`flex gap-[var(--strip-gap)] ${compact ? 'h-[26px]' : 'h-[26px] md:h-7'}`}>
-        {order.map((id, i) => {
-          const open = !BOARD_LANDED.has(model.tasks[id].status);
+        {slots.map((s, i) => {
+          const open = s.state !== 'landed';
+          const mark = i === sel ? null : marks[i] ?? null;
+          const tick = s.kind === 'fold' ? `+${s.taskIds.length}` : stripTick(i);
+          let body: ReactNode = null;
+          if (numbered || i === sel || s.kind === 'fold') {
+            body = mark ? <span className={TICK_MARK_NUMBERED[mark]}>{tick}</span> : tick;
+          } else if (mark) {
+            body = <i className={`block w-full min-w-px bg-accent ${TICK_MARK_BAR[mark]}`} />;
+          } else if (open) {
+            body = <i className="block h-1 w-1 bg-accent" />;
+          }
           return (
             <span
-              key={id}
+              key={s.id}
               data-testid="landed-strip-tick"
               data-open={open ? 'true' : undefined}
-              className={`flex min-w-0 flex-1 basis-0 items-center justify-center font-mono text-eyebrow tabular-nums ${open ? 'font-semibold text-accent-text' : 'text-[var(--fleet-faint)]'}`}
+              data-mark={mark ?? undefined}
+              className={`flex min-w-0 flex-1 basis-0 items-center justify-center font-mono text-eyebrow tabular-nums ${open || mark ? 'font-semibold text-accent-text' : 'text-[var(--fleet-faint)]'}`}
             >
-              {numbered || i === sel ? stripTick(i) : open ? <i className="block h-1 w-1 bg-accent" /> : null}
+              {body}
             </span>
           );
         })}
@@ -289,9 +328,9 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
 }
 
 /** Memoised: a selection change re-renders the two cells it touches, not the strip. */
-const StripCell = memo(function StripCell({ id, status, selected, tall, label, onSelect }: {
+const StripCell = memo(function StripCell({ id, state, selected, tall, label, onSelect }: {
   id: string;
-  status: BoardStatus;
+  state: StripState;
   selected: boolean;
   tall: boolean;
   label: string;
@@ -302,14 +341,14 @@ const StripCell = memo(function StripCell({ id, status, selected, tall, label, o
       type="button"
       data-testid="landed-strip-cell"
       data-task-ref={id}
-      data-status={status}
+      data-status={state}
       aria-label={label}
       aria-pressed={selected}
       aria-controls={STRIP_DRAWER_ID}
       tabIndex={selected ? 0 : -1}
       onClick={() => onSelect(id)}
-      className={`block h-11 min-w-0 flex-1 basis-0 cursor-pointer border-2 p-0 transition-transform duration-150 motion-reduce:transition-none ${tall ? 'md:h-14' : ''} ${STRIP_CELL_CLASS[status]} ${
-        selected ? `-translate-y-1 outline outline-2 outline-offset-2 ${STRIP_OUTLINE[stripTone(status)]}` : 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-text-primary'
+      className={`block h-11 min-w-0 flex-1 basis-0 cursor-pointer p-0 transition-transform duration-150 motion-reduce:transition-none ${tall ? 'md:h-14' : ''} ${STRIP_CELL_CLASS[state]} ${
+        selected ? `-translate-y-1 outline outline-2 outline-offset-2 ${STRIP_OUTLINE[stripTone(state)]}` : 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-text-primary'
       }`}
     />
   );

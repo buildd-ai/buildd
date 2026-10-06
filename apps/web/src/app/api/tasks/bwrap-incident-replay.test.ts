@@ -57,7 +57,7 @@ const mockResolveCreatorContext = mock(() =>
   })
 );
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockResolveWorkspace = mock(() => null as any);
 const mockAutoResolveAccountWorkspace = mock(() => Promise.resolve({ workspaceId: 'ws-1' } as any));
 const mockGetAccountWorkspacePermissions = mock(() => Promise.resolve([] as any[]));
@@ -81,7 +81,23 @@ mock.module('@/lib/team-access', () => ({
 mock.module('@/lib/task-service', () => ({
   resolveCreatorContext: mockResolveCreatorContext,
 }));
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 // Workspace reach is covered by lib/workspace-access.test.ts and route.test.ts.
 mock.module('@/lib/workspace-access', () => ({
   listReachableWorkspaceIds: async () => ['ws-1'],
@@ -203,7 +219,8 @@ describe('Incident replay: bwrap_namespace_denied — three workers, one fix PR'
     mockTasksUpdateWhere.mockReset();
     mockResolveCreatorContext.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
-    mockDispatchNewTask.mockReset();
+    mockAnnounceTaskCreated.mockReset();
+    mockWakeTask.mockReset();
     mockMissionsFindFirst.mockReset();
     mockResolveWorkspace.mockReset();
 

@@ -36,6 +36,12 @@ export interface StaleApprovalReReviewInput {
   taskId: string | null;
   workerId: string | null;
   policy: Pick<MergePolicy, 'agentReview'>;
+  /**
+   * Set when the stale thing is a blocking verdict rather than an approval
+   * (the landing function's revalidation): why it no longer holds. Labels the
+   * PR activity entry; the dispatch is otherwise identical.
+   */
+  staleReason?: string;
 }
 
 export type StaleApprovalReReviewResult =
@@ -63,7 +69,8 @@ export interface StaleApprovalReReviewDeps {
   loadContext: (p: { workspaceId: string; taskId: string; workerId: string }) => Promise<ReReviewContext | null>;
   listRoles: (workspaceId: string, teamId: string) => Promise<Array<{ slug: string; isRole: boolean | null }>>;
   createReviewerTask: (p: CreateReviewerTaskParams) => Promise<{ id: string; deduplicated?: true } | null>;
-  dispatchNewTask: (task: Record<string, unknown>, workspace: Record<string, unknown>) => Promise<void>;
+  announceTaskCreated: (task: Record<string, unknown>, workspace: Record<string, unknown>) => Promise<void>;
+  wakeTask: (taskId: string, cause: 'task.created') => Promise<void>;
   appendPrActivity: (p: Record<string, unknown>) => Promise<unknown>;
 }
 
@@ -130,7 +137,7 @@ async function run(input: StaleApprovalReReviewInput, deps: StaleApprovalReRevie
   if (created.deduplicated) return { outcome: 'already_reviewing', reviewTaskId: created.id };
 
   const { reviewerTitle } = await import('@/lib/task-title');
-  await deps.dispatchNewTask(
+  await deps.announceTaskCreated(
     {
       id: created.id,
       title: reviewerTitle(prNumber, ctx.task.title),
@@ -142,6 +149,7 @@ async function run(input: StaleApprovalReReviewInput, deps: StaleApprovalReRevie
     },
     ctx.workspace,
   );
+  await deps.wakeTask(created.id, 'task.created');
   await deps
     .appendPrActivity({
       installationId: input.installationId,
@@ -149,9 +157,11 @@ async function run(input: StaleApprovalReReviewInput, deps: StaleApprovalReRevie
       prNumber,
       entry: {
         kind: 'reviewing',
-        detail: plan.kind === 'delta'
-          ? `approval went stale · since \`${plan.priorVerdict.headSha.slice(0, 7)}\``
-          : 'approval went stale',
+        detail: input.staleReason
+          ? `verdict went stale · ${input.staleReason}`
+          : plan.kind === 'delta'
+            ? `approval went stale · since \`${plan.priorVerdict.headSha.slice(0, 7)}\``
+            : 'approval went stale',
       },
       workspaceId,
     })
@@ -162,12 +172,12 @@ async function run(input: StaleApprovalReReviewInput, deps: StaleApprovalReRevie
 
 /** DB-bound defaults, imported lazily so this module loads nothing heavy until it runs. */
 async function defaultDeps(): Promise<StaleApprovalReReviewDeps> {
-  const [{ resolveReReviewPlan }, { listWorkspaceRoles }, { createReviewerTask }, { dispatchNewTask }, { appendPrActivity }] =
+  const [{ resolveReReviewPlan }, { listWorkspaceRoles }, { createReviewerTask }, { announceTaskCreated, wakeTask }, { appendPrActivity }] =
     await Promise.all([
       import('@/lib/pr-re-review'),
       import('@/lib/pr-review-request'),
       import('@/lib/reviewer'),
-      import('@/lib/task-dispatch'),
+      import('@/lib/dispatch-authority'),
       import('@/lib/pr-activity-comment'),
     ]);
   return {
@@ -175,7 +185,8 @@ async function defaultDeps(): Promise<StaleApprovalReReviewDeps> {
     loadContext,
     listRoles: listWorkspaceRoles,
     createReviewerTask,
-    dispatchNewTask: (task, workspace) => dispatchNewTask(task as never, workspace as never),
+    announceTaskCreated: (task, workspace) => announceTaskCreated(task as never, workspace as never),
+    wakeTask,
     appendPrActivity: (p) => appendPrActivity(p as never),
   };
 }

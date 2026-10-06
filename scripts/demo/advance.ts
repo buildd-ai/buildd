@@ -305,6 +305,33 @@ const handlers: Record<string, (c: Ctx, e: TimelineEvent) => Promise<void>> = {
     c.pushes.push([`mission-${c.ids.get(m.key!)}`, 'mission:completion_decision', { overall: e.state.overall }]);
   },
 
+  // The task loop's exit condition evaluated after a worker said done
+  // (apps/web/src/lib/loop-dispatcher.ts): one LoopHistoryEntry per attempt.
+  // Unmet re-queues the task (loopState condition_unmet, status pending; the
+  // next claim is the retry); met settles it (loopState satisfied).
+  async loop_eval(c, e) {
+    const task = find(c.story.tasks, e.task);
+    const id = c.ids.get(e.task);
+    const [row] = await c.db.select({ context: s.tasks.context, loopIteration: s.tasks.loopIteration }).from(s.tasks).where(eq(s.tasks.id, id));
+    const ctx = (row?.context as Record<string, unknown> | null) ?? {};
+    const prior = Array.isArray(ctx.loopHistory) ? (ctx.loopHistory as unknown[]) : [];
+    const iteration = row?.loopIteration ?? 0;
+    const entry = {
+      iteration, workerId: c.ids.get(e.worker), evaluatedAt: c.at(e.t).toISOString(),
+      conditionType: task.loopConfig?.exitCondition?.type ?? 'command', satisfied: !!e.satisfied, summary: e.summary,
+      ...(e.evidence ? { evidence: e.evidence } : {}),
+    };
+    const loopHistory = [...prior, entry];
+    await c.db.update(s.tasks).set({
+      loopIteration: iteration + 1,
+      loopState: e.satisfied ? 'satisfied' : 'condition_unmet',
+      ...(e.satisfied ? {} : { status: 'pending', claimedBy: null, claimedAt: null }),
+      context: { ...ctx, loopHistory, ...(e.satisfied ? {} : { failureContext: { conditionType: entry.conditionType, summary: e.summary, iteration } }) },
+      updatedAt: c.at(e.t),
+    } as any).where(eq(s.tasks.id, id));
+    c.pushes.push([wsChannel(c), 'task:updated', { task: { id } }]);
+  },
+
   async mission_complete(c, e) {
     const m = find(c.story.missions, e.mission);
     await c.db.update(s.missions).set({ status: 'completed', completedAt: c.at(e.t), updatedAt: c.at(e.t) } as any).where(eq(s.missions.id, c.ids.get(m.key!)));

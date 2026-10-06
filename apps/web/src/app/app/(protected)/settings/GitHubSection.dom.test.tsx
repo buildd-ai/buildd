@@ -1,12 +1,14 @@
 /**
- * "To modify repo access, visit GitHub Settings" used to float below the
- * installations card as an orphaned line. It belongs to the card, in both
- * the empty state and the populated one.
+ * Settings → GitHub on a server with no GitHub App: "Connect GitHub" links
+ * land here (/api/github/install redirects with ?github=unavailable), so the
+ * page must say what to do next rather than offer the same dead link again.
+ *
+ * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register({ url: 'http://localhost/app/settings/connections/github-vercel', width: 1280, height: 800 });
+GlobalRegistrator.register({ url: 'http://localhost/app/settings/github?github=unavailable' });
 
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -14,45 +16,40 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: GitHubSection } = await import('./GitHubSection');
 
-let installations: unknown[] = [];
+let container: HTMLElement;
+let root: ReturnType<typeof createRoot>;
+const flush = async () => { await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+
+function stub(body: unknown) {
+  (globalThis as any).fetch = async () => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+}
+
 beforeEach(() => {
-  installations = [];
-  globalThis.fetch = mock(async () => new Response(JSON.stringify({ installations }), { status: 200 })) as unknown as typeof fetch;
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+});
+afterEach(() => {
+  act(() => root.unmount());
+  container.remove();
 });
 
-let host: HTMLElement;
-let root: ReturnType<typeof createRoot>;
-afterEach(() => { act(() => root.unmount()); host.remove(); });
-
-async function mount() {
-  host = document.createElement('div');
-  document.body.append(host);
-  root = createRoot(host);
-  await act(async () => { root.render(<GitHubSection />); });
-  await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-}
-
-function githubSettingsLink() {
-  return [...host.querySelectorAll('a')].find((a) => a.textContent?.trim() === 'GitHub Settings');
-}
-
 describe('GitHubSection', () => {
-  it('keeps the GitHub Settings link inside the empty-state card', async () => {
-    await mount();
-    const link = githubSettingsLink();
-    expect(link).not.toBeUndefined();
-    expect(link!.closest('.card')).not.toBeNull();
+  it('explains the next step when the server has no GitHub App', async () => {
+    stub({ configured: false, installations: [] });
+    act(() => root.render(<GitHubSection />));
+    await flush();
+    const notice = container.querySelector('[data-testid="github-unavailable"]');
+    expect(notice).not.toBeNull();
+    expect(notice!.textContent).toMatch(/paste/i);
+    expect(container.querySelector('a[href="/api/github/install"]')).toBeNull();
   });
 
-  it('keeps the GitHub Settings link inside the installations card', async () => {
-    installations = [{
-      id: 'i1', installationId: 1, accountLogin: 'acme', accountAvatarUrl: null,
-      accountType: 'Organization', repositorySelection: 'all', repoCount: 3, suspendedAt: null,
-    }];
-    await mount();
-    const link = githubSettingsLink();
-    expect(link).not.toBeUndefined();
-    expect(link!.closest('.card')).not.toBeNull();
-    expect(host.textContent).toContain('acme');
+  it('offers to connect an org when the App is configured', async () => {
+    stub({ configured: true, installations: [] });
+    act(() => root.render(<GitHubSection />));
+    await flush();
+    expect(container.querySelector('[data-testid="github-unavailable"]')).toBeNull();
+    expect(container.querySelector('a[href="/api/github/install"]')).not.toBeNull();
   });
 });

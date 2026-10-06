@@ -66,6 +66,7 @@ mock.module('drizzle-orm', () => ({
   desc: (field: any) => ({ field, type: 'desc' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
   like: (field: any, value: any) => ({ field, value, type: 'like' }),
   gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
@@ -91,6 +92,28 @@ mock.module('@buildd/core/db/schema', () => ({
     updatedAt: 'updatedAt',
   },
   workers: { id: 'id', workspaceId: 'workspaceId' },
+  // lib/task-token-auth's account lookup.
+  accounts: { id: 'id' },
+  secrets: {
+    teamId: 'teamId',
+    accountId: 'accountId',
+    workspaceId: 'workspaceId',
+    userId: 'userId',
+    purpose: 'purpose',
+    encryptedValue: 'encryptedValue',
+  },
+  notificationPreferences: {
+    teamId: 'teamId',
+    taskClaimed: 'taskClaimed',
+    taskCompleted: 'taskCompleted',
+    taskFailed: 'taskFailed',
+    credentialExpired: 'credentialExpired',
+    connectorBlocked: 'connectorBlocked',
+    artifactReady: 'artifactReady',
+  },
+  workspaces: { id: 'id', teamId: 'teamId' },
+  missions: { id: 'id', teamId: 'teamId' },
+  tasks: { id: 'id', workspaceId: 'workspaceId' },
 }));
 
 const { GET, POST } = await import('./route');
@@ -212,5 +235,37 @@ describe('GET /api/workspaces/[id]/artifacts — missionId query param', () => {
 
     expect(res.status).toBe(200);
     expect(mockArtifactsFindMany).toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/workspaces/[id]/artifacts — per-task token', () => {
+  const SCOPED = { id: 'account-1', level: 'worker', scopes: null, taskScope: { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockArtifactsFindMany.mockReset();
+    mockArtifactsFindMany.mockResolvedValue([]);
+  });
+
+  it('lists its own workspace', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    const res = await GET(getReq(), params('ws-1'));
+    expect(res.status).toBe(200);
+    expect(mockArtifactsFindMany).toHaveBeenCalled();
+  });
+
+  it('reads another workspace its account can reach as not found', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    const res = await GET(getReq(), params('ws-2'));
+    expect(res.status).toBe(404);
+    expect(mockArtifactsFindMany).not.toHaveBeenCalled();
+  });
+
+  it('an account key still lists any workspace it can reach', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'worker' });
+    const res = await GET(getReq(), params('ws-2'));
+    expect(res.status).toBe(200);
   });
 });

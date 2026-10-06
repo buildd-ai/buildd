@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveMergeOutcome, shouldRefreshOnVisible, MIN_VISIBILITY_REFRESH_MS } from './merge-outcome';
+import { resolveMergeOutcome } from './merge-outcome';
 
 describe('resolveMergeOutcome', () => {
   it('200 → merged', () => {
@@ -119,24 +119,28 @@ describe('resolveMergeOutcome — review gate', () => {
       message: 'PR has merge conflicts',
     });
   });
-});
 
-describe('shouldRefreshOnVisible', () => {
-  it('refreshes when the tab has been away longer than the floor', () => {
-    expect(shouldRefreshOnVisible(0, MIN_VISIBILITY_REFRESH_MS)).toBe(true);
-    expect(shouldRefreshOnVisible(1_000, 1_000 + MIN_VISIBILITY_REFRESH_MS + 1)).toBe(true);
+  // A merge refused for conflicts with no automatic fix filed: the same merge
+  // cannot succeed until the branch changes, so the card must not offer Retry.
+  it('a conflict refusal with no fix filed → conflict_blocked, never a retryable error', () => {
+    expect(resolveMergeOutcome(false, 422, {
+      error: 'GitHub rejected the merge: PR has merge conflicts.',
+      mergeConflict: true,
+    })).toEqual({ kind: 'conflict_blocked', message: 'GitHub rejected the merge: PR has merge conflicts.' });
   });
 
-  it('does not refresh on a quick tab flick', () => {
-    expect(shouldRefreshOnVisible(10_000, 10_500)).toBe(false);
+  it('a conflict with a live retry reads as conflict_dispatched with that task', () => {
+    expect(resolveMergeOutcome(false, 409, {
+      error: 'already in progress',
+      conflictRetryDispatched: true,
+      conflictRetryTaskId: 'live-1',
+    })).toEqual({ kind: 'conflict_dispatched', taskId: 'live-1' });
   });
 
-  it('is inclusive at the floor', () => {
-    expect(shouldRefreshOnVisible(10_000, 10_000 + MIN_VISIBILITY_REFRESH_MS)).toBe(true);
-  });
-
-  it('honours an explicit interval', () => {
-    expect(shouldRefreshOnVisible(0, 500, 1_000)).toBe(false);
-    expect(shouldRefreshOnVisible(0, 1_500, 1_000)).toBe(true);
+  it('a transient failure stays a retryable error', () => {
+    expect(resolveMergeOutcome(false, 422, { error: 'GitHub rejected the merge: Internal Server Error' })).toEqual({
+      kind: 'error',
+      message: 'GitHub rejected the merge: Internal Server Error',
+    });
   });
 });

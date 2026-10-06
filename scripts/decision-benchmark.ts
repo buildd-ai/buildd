@@ -42,104 +42,16 @@
  *   --json                print the summary as JSON
  */
 import { readFileSync } from 'node:fs';
-import { decisionCall, describeDecisionError, type DecisionQuestions } from '../packages/core/decision-client';
 import {
   parseLabeledJsonl,
   splitHeldOut,
   summarizeBenchmark,
   formatBenchmarkSummary,
+  pickGateThreshold,
+  formatGateTable,
   type LabeledExample,
-  type ScoredExample,
 } from '../packages/core/decision-benchmark';
-import { TASK_CATEGORY_QUESTIONS, buildTaskCategoryState } from '../apps/web/src/lib/task-category-decision';
-import { classifyTask } from '../apps/web/src/lib/task-category';
-import { HEARTBEAT_TRIAGE_QUESTIONS, buildHeartbeatTriageState } from '../apps/web/src/lib/heartbeat-triage';
-import { buildRoleQuestion, buildTaskRoleState, type RoleCandidate } from '../apps/web/src/lib/task-role-decision';
-import { pickGateThreshold, formatGateTable } from '../packages/core/decision-benchmark';
-
-interface QuestionSet {
-  questions: DecisionQuestions;
-  /** Per-row questions (a dynamic label set). Returns the questions and how to read the answer back. */
-  questionsFor?(fields: Record<string, unknown>): { questions: DecisionQuestions; toLabel(choice: string): string } | null;
-  /** The field the gold is read from when --label-field is not given. */
-  labelField?: string;
-  /** Print the apply-gate table (a wrong answer is worse than none). */
-  gate?: boolean;
-  /** Which choice question's answer is compared with the gold label. */
-  answerKey: string;
-  toState(fields: Record<string, unknown>): Record<string, unknown> | string;
-  /** The incumbent logic, for a side-by-side accuracy line. */
-  baseline?(fields: Record<string, unknown>): string | null;
-  /**
-   * A label whose wrong picks are the expensive ones: its precision is printed
-   * at each confidence threshold, which is what its gate is read from.
-   */
-  gatedLabel?: string;
-}
-
-const str = (v: unknown) => (typeof v === 'string' ? v : '');
-
-/** Routing text for slug candidates (`--roles`). Loaded once in main(). */
-let ROLE_TEXT: Map<string, RoleCandidate> = new Map();
-
-function roleCandidates(fields: Record<string, unknown>): RoleCandidate[] {
-  const raw = Array.isArray(fields.candidates) ? fields.candidates : [];
-  const out: RoleCandidate[] = [];
-  for (const c of raw) {
-    if (typeof c === 'string') {
-      const known = ROLE_TEXT.get(c);
-      if (!known) throw new Error(`candidate "${c}" has no routing text; pass --roles <file> or inline the candidate`);
-      out.push(known);
-    } else if (c && typeof c === 'object' && typeof (c as RoleCandidate).slug === 'string') {
-      const r = c as RoleCandidate;
-      out.push({ slug: r.slug, name: r.name ?? r.slug, whenToUse: r.whenToUse, ...(r.notFor ? { notFor: r.notFor } : {}), connectorRefs: [] });
-    }
-  }
-  return out;
-}
-
-const SETS: Record<string, QuestionSet> = {
-  task_category: {
-    questions: TASK_CATEGORY_QUESTIONS,
-    answerKey: 'category',
-    toState: f => buildTaskCategoryState(str(f.title), str(f.description)),
-    baseline: f => classifyTask(str(f.title), str(f.description)),
-  },
-  // {"id":"…","label":"wait"|"act","description":"<the cycle's heartbeat description>"}
-  // Gold is what the organizer did on that cycle (see docs/design/heartbeat-triage.md).
-  heartbeat_triage: {
-    questions: HEARTBEAT_TRIAGE_QUESTIONS,
-    answerKey: 'next',
-    toState: f => buildHeartbeatTriageState(str(f.description)),
-    // Today every cycle that reaches this point dispatches the organizer.
-    baseline: () => 'act',
-    gatedLabel: 'wait',
-  },
-  task_role: {
-    questions: {},
-    labelField: 'role',
-    answerKey: 'role',
-    gate: true,
-    questionsFor: f => {
-      const q = buildRoleQuestion(roleCandidates(f));
-      if (!q) return null;
-      return { questions: { role: q.question }, toLabel: choice => q.slugFor.get(choice) ?? choice };
-    },
-    toState: f => buildTaskRoleState({
-      title: str(f.title),
-      label: typeof f.taskLabel === 'string' ? f.taskLabel : null,
-      kind: typeof f.kind === 'string' ? f.kind : null,
-      description: str(f.description),
-      pathManifest: Array.isArray(f.paths) ? f.paths as string[] : null,
-      pathManifestIsConcrete: Array.isArray(f.paths) && f.paths.length > 0,
-      creationSource: typeof f.source === 'string' ? f.source : null,
-      inMission: f.inMission === true,
-      outputRequirement: typeof f.output === 'string' ? f.output : null,
-    }),
-    // Today every role-less task stays role-less.
-    baseline: () => 'none',
-  },
-};
+import { SETS, runBenchmarkSet, setRoleText } from './decision-benchmark-sets';
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -155,10 +67,7 @@ async function main() {
   if (!apiKey) throw new Error('OPENROUTER_API_KEY is required');
 
   const rolesFile = arg('roles');
-  if (rolesFile) {
-    const roles = JSON.parse(readFileSync(rolesFile, 'utf8')) as Array<{ slug: string; name?: string; whenToUse: string; notFor?: string }>;
-    ROLE_TEXT = new Map(roles.map(r => [r.slug, { slug: r.slug, name: r.name ?? r.slug, whenToUse: r.whenToUse, ...(r.notFor ? { notFor: r.notFor } : {}), connectorRefs: [] }]));
-  }
+  if (rolesFile) setRoleText(JSON.parse(readFileSync(rolesFile, 'utf8')));
 
   const file = arg('file') ?? `.decision-data/${setName.replace(/_/g, '-')}.jsonl`;
   const { examples, skipped } = parseLabeledJsonl(readFileSync(file, 'utf8'), { labelField: arg('label-field') ?? set.labelField });
@@ -173,44 +82,11 @@ async function main() {
 
   console.error(`${file}: ${examples.length} examples (${skipped} skipped), train ${train.length}, held-out ${heldOut.length}; running ${split} (${chosen.length})`);
 
-  const concurrency = Math.max(1, Number(arg('concurrency') ?? 4));
-  const scored: ScoredExample[] = new Array(chosen.length);
-  let next = 0;
-  let costUsd = 0;
-  let latencyTotal = 0;
-
-  async function worker() {
-    while (next < chosen.length) {
-      const i = next++;
-      const ex = chosen[i];
-      const baseline = set.baseline ? set.baseline(ex.fields) : undefined;
-      const dynamic = set.questionsFor ? set.questionsFor(ex.fields) : null;
-      if (set.questionsFor && !dynamic) {
-        // Fewer than two candidates: the live path makes no call and leaves the role null.
-        scored[i] = { id: ex.id, gold: ex.label, predicted: null, confidence: null, baseline, error: 'too_few_candidates' };
-        continue;
-      }
-      const res = await decisionCall({
-        capability: 'task_category_shadow',
-        teamId: 'offline',
-        apiKey,
-        model: arg('model'),
-        state: set.toState(ex.fields),
-        questions: dynamic ? dynamic.questions : set.questions,
-        timeoutMs: 10_000,
-      });
-      if (res.ok) {
-        const a = res.answers[set.answerKey] as { choice?: string; confidence?: number };
-        const predicted = a.choice == null ? null : dynamic ? dynamic.toLabel(a.choice) : a.choice;
-        scored[i] = { id: ex.id, gold: ex.label, predicted, confidence: a.confidence ?? null, baseline };
-        costUsd += res.usage.costUsd ?? 0;
-        latencyTotal += res.latencyMs;
-      } else {
-        scored[i] = { id: ex.id, gold: ex.label, predicted: null, confidence: null, baseline, error: describeDecisionError(res.error) };
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: concurrency }, worker));
+  const { scored, costUsd, latencyTotalMs: latencyTotal } = await runBenchmarkSet(set, chosen, {
+    apiKey,
+    model: arg('model'),
+    concurrency: Number(arg('concurrency') ?? 4),
+  });
 
   const summary = summarizeBenchmark(scored);
   if (process.argv.includes('--json')) {
