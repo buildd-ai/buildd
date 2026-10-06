@@ -27,6 +27,18 @@ assertions:
     symbol: "resurfaceHeldQuestions"
     entry: "apps/web/src/app/api/cron/notify-away/route.ts"
     as: "read"
+  # Weekly review loop: the reviewer schedule's tasks read the ledger of the
+  # reviewed workspace only through an explicit schedule delegation, and a
+  # failed read is surfaced as a status, never as zero rows.
+  - id: "review-loop-delegated-read"
+    type: "symbol_reachable"
+    symbol: "taskScopeAllowsDelegated"
+    entry: "apps/web/src/app/api/decisions/route.ts"
+    as: "read"
+  - id: "review-loop-strict-ledger-read"
+    type: "symbol"
+    name: "readDecisionLedgerPage"
+    path: "packages/core/decision-ledger.ts"
 ---
 
 # human-question-gate

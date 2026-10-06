@@ -1,5 +1,5 @@
 {
-  "id": "cc34522c-408a-4ff9-afc3-5c4a48e4f80c",
+  "id": "6bd632a8-5d84-4a9f-9544-d6d25f730b72",
   "prevId": "e7a7ea63-3873-4550-96fe-41e152f631b4",
   "version": "7",
   "dialect": "postgresql",
@@ -14510,6 +14510,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "delegation": {
+          "name": "delegation",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_by_user_id": {
           "name": "created_by_user_id",
           "type": "uuid",
@@ -16374,37 +16380,6 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
-        },
-        "plan": {
-          "name": "plan",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'free'"
-        },
-        "billing_status": {
-          "name": "billing_status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "stripe_customer_id": {
-          "name": "stripe_customer_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "stripe_subscription_id": {
-          "name": "stripe_subscription_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "paid_seats": {
-          "name": "paid_seats",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -16413,21 +16388,6 @@
           "columns": [
             {
               "expression": "slug",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "teams_stripe_customer_id_idx": {
-          "name": "teams_stripe_customer_id_idx",
-          "columns": [
-            {
-              "expression": "stripe_customer_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
