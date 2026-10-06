@@ -6772,6 +6772,28 @@ describe('PATCH /api/workers/[id]', () => {
         expect(mockBackendPausesInsert).toHaveBeenCalled();
         expect(taskSets.some((s: any) => s?.context?.budgetExhausted)).toBe(true);
       });
+
+      // Regression: a Claude task that budget failover ran on Codex keeps
+      // backend:'claude' on its row; the Codex run is recorded only in the
+      // claim stamp. Its Codex wall was paused as a CLAUDE wall, so the claim
+      // route never saw Codex as walled and kept flipping more Claude tasks
+      // onto it — each one dying on the same "usage limit" until the reset.
+      it('pauses the backend the claim actually ran, not the stored one', async () => {
+        setupSessionCap();
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-1', workspaceId: 'ws-1', missionId: null, status: 'in_progress', backend: 'claude',
+          outputRequirement: 'none', workspace: { teamId: 'team-1' },
+          context: { backendRouting: { backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted' } },
+        });
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: 'You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro) or try again at 10:58 AM.', budgetExhausted: true },
+        }), { params: mockParams });
+        expect(lastBackendPauseValues?.backend).toBe('codex');
+        // A Codex wall says nothing about the Claude seat.
+        expect(accountsUpdateSets.some((s: any) => s?.budgetExhaustedAt)).toBe(false);
+      });
     });
 
     // OAuth pacing can only learn if every exhaustion is recorded with the work
@@ -9672,6 +9694,39 @@ describe('PATCH /api/workers/[id]', () => {
         expect(json.error).toContain('"approve"');
         expect(json.hint).toBe('structuredOutput.verdict');
         expect(taskSetCalls).toHaveLength(0);
+      });
+
+      // A runner-hosted reviewer that calls the MCP complete_task tool itself is
+      // still mid-session and reads the response. Failing the worker on its
+      // first malformed call discarded the review it then corrected one call later.
+      it('runner worker calling complete_task itself: a malformed verdict gets a 400, with no state change', async () => {
+        setupReviewerTaskCompletion('approve');
+        const taskSetCalls = captureTaskSets();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', viaCompleteTask: true, structuredOutput: { verdict: 'approve', confidence: 0.93 } },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(400);
+        const json = await res.json();
+        expect(json.error).toContain('summary must be a string');
+        expect(json.hint).toBe('structuredOutput.verdict');
+        expect(taskSetCalls).toHaveLength(0);
+      });
+
+      it('runner-reported completion (no viaCompleteTask) keeps the requeue contract, not a 400', async () => {
+        setupReviewerTaskCompletion('approve');
+        captureTaskSets();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', structuredOutput: { verdict: 'approve', confidence: 0.93 } },
+        }), { params: mockParams });
+
+        expect(res.status).not.toBe(400);
       });
     });
 
