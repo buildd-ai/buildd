@@ -9,7 +9,6 @@ const base = {
   landing: null as unknown,
   handoff: null as unknown,
   prNumber: 7,
-  currentHeadSha: HEAD,
 };
 
 describe('resolveLandingOwnership', () => {
@@ -17,16 +16,23 @@ describe('resolveLandingOwnership', () => {
     expect(resolveLandingOwnership(base)).toMatchObject({ owner: 'platform', state: 'landing' });
   });
   it('A: a refresh marker keeps it platform-owned on the new head', () => {
-    expect(resolveLandingOwnership({ ...base, landing: marker, currentHeadSha: 'b'.repeat(40) }))
+    expect(resolveLandingOwnership({ ...base, landing: marker }))
       .toMatchObject({ owner: 'platform', state: 'refreshing' });
   });
-  it('B: a handoff bound to the current head is the human\'s, with its reason', () => {
+  it('B: a handoff is the human\'s, with its reason', () => {
     const handoff = { prNumber: 7, headSha: HEAD, cause: 'branch_protection', reason: 'Branch protection needs a reviewer' };
     expect(resolveLandingOwnership({ ...base, handoff })).toEqual({ owner: 'human', reason: 'Branch protection needs a reviewer' });
   });
-  it('a handoff for an older head is invalidated by a base refresh', () => {
+  it('a handoff for an older head is invalidated when the live head differs', () => {
     const handoff = { prNumber: 7, headSha: 'c'.repeat(40), cause: 'size_cap', reason: 'x' };
-    expect(resolveLandingOwnership({ ...base, handoff }).owner).toBe('platform');
+    expect(resolveLandingOwnership({ ...base, handoff, prHeadSha: HEAD }).owner).toBe('platform');
+  });
+  it('a refresh marker written after the handoff invalidates it', () => {
+    const handoff = { prNumber: 7, headSha: HEAD, cause: 'size_cap', reason: 'x', at: '2026-01-01T00:00:00Z' };
+    const newer = { ...marker, updatedAt: '2026-01-01T00:01:00Z' };
+    expect(resolveLandingOwnership({ ...base, handoff, landing: newer }).owner).toBe('platform');
+    const older = { ...marker, updatedAt: '2025-12-31T23:59:00Z' };
+    expect(resolveLandingOwnership({ ...base, handoff, landing: older }).owner).toBe('human');
   });
   it('C/E: human tier, approve-only and auto-threshold are not reinterpreted', () => {
     expect(resolveLandingOwnership({ ...base, policy: { tier: 'human' } }).owner).toBe('unmanaged');

@@ -26,6 +26,8 @@ export interface LandingHandoff {
   headSha: string;
   cause: string;
   reason: string;
+  /** When landPr recorded it (ISO). A refresh marker written after this supersedes it. */
+  at?: string | null;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -38,6 +40,7 @@ export function parseLandingHandoff(raw: unknown, prNumber: number): LandingHand
     headSha: raw.headSha,
     cause: typeof raw.cause === 'string' ? raw.cause : 'unknown',
     reason: typeof raw.reason === 'string' && raw.reason ? raw.reason : 'Landing needs a person',
+    at: typeof raw.at === 'string' ? raw.at : null,
   };
 }
 
@@ -59,7 +62,12 @@ export interface LandingOwnershipInput {
   landing: unknown;
   handoff: unknown;
   prNumber: number;
-  currentHeadSha: string | null;
+  /**
+   * The PR's live head, only when the caller truly has it (NOT `workers.lastCommitSha`,
+   * which is the worker's own last commit and does not move on a platform base refresh).
+   * Staleness otherwise comes from the marker: a refresh writes it after the handoff.
+   */
+  prHeadSha?: string | null;
 }
 
 /**
@@ -71,10 +79,14 @@ export interface LandingOwnershipInput {
 export function resolveLandingOwnership(input: LandingOwnershipInput): LandingOwnership {
   if (input.landingMode !== 'enforce' || !policyLandsAutomatically(input.policy)) return { owner: 'unmanaged' };
   const handoff = parseLandingHandoff(input.handoff, input.prNumber);
-  if (handoff && input.currentHeadSha && handoff.headSha === input.currentHeadSha) {
-    return { owner: 'human', reason: handoff.reason };
-  }
   const marker: LandingMarker | null = parseLandingMarker({ landing: input.landing }, input.prNumber);
+  if (handoff) {
+    const headMoved = !!input.prHeadSha && handoff.headSha !== input.prHeadSha;
+    const handoffMs = handoff.at ? Date.parse(handoff.at) : NaN;
+    const markerMs = marker?.updatedAt ? Date.parse(marker.updatedAt) : NaN;
+    const refreshedSince = !!marker && (Number.isNaN(handoffMs) || (!Number.isNaN(markerMs) && markerMs >= handoffMs));
+    if (!headMoved && !refreshedSince) return { owner: 'human', reason: handoff.reason };
+  }
   return marker
     ? { owner: 'platform', state: 'refreshing', reason: 'Updating the branch from its base · lands automatically' }
     : { owner: 'platform', state: 'landing', reason: 'Lands automatically once checks and review pass' };

@@ -971,8 +971,6 @@ export default async function HomePage({
                 console.warn('[home] landing state unavailable');
               }
             }
-            const platformLandingByTaskId = new Map<string, string>();
-            const landingHandoffByTaskId = new Map<string, string>();
             const gateNow = new Date();
             const stallFactsLoader = createReviewerStallFactsLoader(gateNow);
             // The mission-aware tier each gate was resolved with, so the card
@@ -1038,6 +1036,19 @@ export default async function HomePage({
                 queuedThresholdMinutes: policy.stallNotifyMinutes,
               });
               if (reviewInFlight) reviewInFlightByTaskId.set(w.taskId, reviewInFlight);
+              // Who owns the landing: one derivation, consumed by the gate. An
+              // actual human review request is a different ask and is left alone.
+              const landing = !humanReview && w.prNumber != null
+                ? resolveLandingOwnership({
+                    policy,
+                    landingMode: resolveLandingMode(ws?.gitConfig),
+                    landing: landingStateByTaskId.get(w.taskId)?.landing ?? null,
+                    handoff: landingStateByTaskId.get(w.taskId)?.handoff ?? null,
+                    prNumber: w.prNumber,
+                  })
+                : undefined;
+              // A handed-over PR is no longer the platform's, whatever the approval snapshot says.
+              if (landing?.owner === 'human') approvedAutoMergeTaskIds.delete(w.taskId);
               reviewerGateMap.set(w.taskId, resolveReviewerGate({
                 policyTier: policy.tier,
                 escalationReason: escalatedMap.get(w.taskId) ?? null,
@@ -1065,25 +1076,9 @@ export default async function HomePage({
                   baseRef: w.prBaseRef,
                   mission,
                 }),
+                landing,
+                reviewApproved: reviewApprovedTaskIds.has(w.taskId),
               }));
-              // Platform-owned landing: under agent-review approve-and-merge with
-              // landing enforced, a person is only involved after landPr hands
-              // the PR over. A reviewer's own hand-back (escalation) still wins.
-              const settledGate = reviewerGateMap.get(w.taskId);
-              if (!humanReview && escalatedMap.get(w.taskId) == null && w.prNumber != null
-                && settledGate && (settledGate.actor !== 'human' || approvedMap.get(w.taskId) != null)) {
-                const landingState = landingStateByTaskId.get(w.taskId);
-                const ownership = resolveLandingOwnership({
-                  policy,
-                  landingMode: resolveLandingMode(ws?.gitConfig),
-                  landing: landingState?.landing ?? null,
-                  handoff: landingState?.handoff ?? null,
-                  prNumber: w.prNumber,
-                  currentHeadSha: w.lastCommitSha ?? null,
-                });
-                if (ownership.owner === 'platform') platformLandingByTaskId.set(w.taskId, ownership.reason);
-                else if (ownership.owner === 'human') landingHandoffByTaskId.set(w.taskId, ownership.reason);
-              }
             }
             // ─────────────────────────────────────────────────────────────────────
 
@@ -1325,7 +1320,7 @@ export default async function HomePage({
                   return !!ws && resolvePolicy(ws).tier === 'human';
                 }
                 // Human-owned PRs, plus auto-merge PRs as in-flight cards.
-                return humanReviewByTaskId.has(w.taskId) || landingHandoffByTaskId.has(w.taskId) || gateReachesActionQueue(reviewerGateMap.get(w.taskId));
+                return humanReviewByTaskId.has(w.taskId) || gateReachesActionQueue(reviewerGateMap.get(w.taskId));
               })
               .map(w => {
                 const ws = wsInboxMap.get(w.workspaceId);
@@ -1381,7 +1376,7 @@ export default async function HomePage({
                   reviewApproved: !!w.taskId && reviewApprovedTaskIds.has(w.taskId),
                   humanReview: w.taskId ? humanReviewByTaskId.get(w.taskId) ?? null : null,
                   policyTier: policy.tier,
-                  autoMerge: !(w.taskId && landingHandoffByTaskId.has(w.taskId)) && (gate?.platformState === 'auto_merge' || (!!w.taskId && (approvedAutoMergeTaskIds.has(w.taskId) || platformLandingByTaskId.has(w.taskId)))),
+                  autoMerge: gate?.platformState === 'auto_merge' || (!!w.taskId && approvedAutoMergeTaskIds.has(w.taskId)),
                   missionId: (w.task as any)?.missionId ?? null,
                   missionTitle: (w.task as any)?.mission?.title ?? null,
                   ciGate,
@@ -1393,7 +1388,7 @@ export default async function HomePage({
                   leaseState,
                   escalationReason: deadZoneInfo
                     ? `Agents failed ${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts. Resolve the conflict yourself.`
-                    : ((w.taskId ? platformLandingByTaskId.get(w.taskId) : undefined) ?? (w.taskId ? landingHandoffByTaskId.get(w.taskId) : undefined) ?? gate?.reason ?? null),
+                    : (gate?.reason ?? null),
                   // Dead-zone (conflict retries exhausted) has its own dedicated
                   // CTA set below and is never sourced from a reviewer note —
                   // keep it out of the fix-dispatch branch even if a stale

@@ -15,7 +15,8 @@ import {
   type EscalationRawItem,
   type WaitingOnYouRawItem,
 } from './action-queue';
-import { resolveReviewInFlight } from './reviewer-gate';
+import { resolveReviewInFlight, resolveReviewerGate } from './reviewer-gate';
+import { resolveLandingOwnership } from './pr-landing-handoff';
 import { resolveCiGate } from './ci-gate';
 import { resolveMergeOutcome } from './merge-outcome';
 import { splitWaitingOnYou } from '../app/app/(protected)/home/home-view';
@@ -118,17 +119,79 @@ describe('merge readiness — pending gates never produce a MERGE card', () => {
     expect(resolveMergeOutcome(true, 200, null)).toEqual({ kind: 'merged' });
   });
 
-  it('agent-review platform landing: approved, green, stale approval or refresh in flight never reads MERGE or REVIEW', () => {
-    for (const reviewApproved of [true, false]) {
-      const [card] = queue([esc({ policyTier: 'agent-review', autoMerge: true, reviewApproved })]);
+  // Real wiring: landing ownership -> resolveReviewerGate -> the fields Home
+  // feeds the queue (autoMerge / escalationReason) -> chip.
+  describe('landing ownership through the canonical gate', () => {
+    const policy = { tier: 'agent-review' as const, agentReview: { gateCondition: 'approve-and-merge' as const } };
+    const marker = { prNumber: 3600, pendingHeadSha: 'b'.repeat(40), refreshCount: 1, lastOutcome: 'updating_branch', updatedAt: '2026-10-05T12:00:10Z' };
+    const gateInput = (landing: unknown, handoff: unknown, extra: Partial<Parameters<typeof resolveReviewerGate>[0]> = {}) => ({
+      policyTier: 'agent-review', escalationReason: null, approvalSummary: null, reviewerTask: null, prOpenedAt: NOW, now: NOW,
+      reviewApproved: true,
+      landing: resolveLandingOwnership({ policy, landingMode: 'enforce', landing, handoff, prNumber: 3600 }),
+      ...extra,
+    });
+    const cardFor = (gate: ReturnType<typeof resolveReviewerGate>, extra: Partial<EscalationRawItem> = {}) => queue([esc({
+      policyTier: 'agent-review', reviewApproved: true,
+      autoMerge: gate.platformState === 'auto_merge', escalationReason: gate.reason, ...extra,
+    })])[0];
+
+    it('A: approved + green before any refresh is platform LANDING, not MERGE', () => {
+      const gate = resolveReviewerGate(gateInput(null, null));
+      expect(gate).toMatchObject({ actor: 'platform', platformState: 'auto_merge' });
+      expect(cardFor(gate).chip).toBe('AUTO_MERGE');
+    });
+
+    it('A: platform refresh in flight stays out of Needs You', () => {
+      const gate = resolveReviewerGate(gateInput(marker, null));
+      const card = cardFor(gate);
       expect(card.chip).toBe('AUTO_MERGE');
       expect(isActionableChip(card.chip)).toBe(false);
-    }
-  });
+    });
 
-  it('agent-review landing handed to a person (autoMerge false) => MERGE once approved', () => {
-    const [card] = queue([esc({ policyTier: 'agent-review', autoMerge: false, reviewApproved: true })]);
-    expect(card.chip).toBe('MERGE');
+    it('B: landing handed to a person => MERGE with the handoff reason', () => {
+      const handoff = { prNumber: 3600, headSha: HEAD, cause: 'branch_protection', reason: 'Branch protection needs a reviewer', at: '2026-10-05T12:00:00Z' };
+      const gate = resolveReviewerGate(gateInput(null, handoff));
+      expect(gate).toEqual({ actor: 'human', reason: 'Branch protection needs a reviewer' });
+      const card = cardFor(gate);
+      expect(card.chip).toBe('MERGE');
+      expect(card.escalationReason).toBe('Branch protection needs a reviewer');
+    });
+
+    it('stale handoff after a base refresh is invalidated: back to platform, no MERGE', () => {
+      const handoff = { prNumber: 3600, headSha: HEAD, cause: 'branch_protection', reason: 'x', at: '2026-10-05T12:00:00Z' };
+      const gate = resolveReviewerGate(gateInput(marker, handoff));
+      expect(gate.actor).toBe('platform');
+      expect(cardFor(gate).chip).toBe('AUTO_MERGE');
+    });
+
+    it('a handoff for a head that has moved is stale too', () => {
+      const handoff = { prNumber: 3600, headSha: HEAD, cause: 'size_cap', reason: 'x', at: '2026-10-05T12:00:00Z' };
+      const landing = resolveLandingOwnership({ policy, landingMode: 'enforce', landing: null, handoff, prNumber: 3600, prHeadSha: 'c'.repeat(40) });
+      expect(landing.owner).toBe('platform');
+    });
+
+    it('re-review of a platform-produced head is the agent rail, not a human card', () => {
+      const gate = resolveReviewerGate(gateInput(marker, null, {
+        reviewApproved: false,
+        reviewerTask: { status: 'in_progress', hasLiveWorker: true, createdAt: NOW },
+      }));
+      expect(gate).toMatchObject({ actor: 'agent', agentState: 'reviewing' });
+    });
+
+    it('D: a human review request while CI runs stays REVIEW (landing is not consulted)', () => {
+      const [card] = queue([esc({
+        policyTier: 'agent-review', autoMerge: false, reviewApproved: false,
+        prLifecycleStatus: 'ci_running', ciGate: ciGateFor('ci_running'),
+        humanReview: { label: 'Review on GitHub', reason: 'Touches protected paths' },
+      })]);
+      expect(card.chip).toBe('REVIEW');
+    });
+
+    it('C: a human merge policy is never reinterpreted as platform landing', () => {
+      const landing = resolveLandingOwnership({ policy: { tier: 'human' }, landingMode: 'enforce', landing: null, handoff: null, prNumber: 3600 });
+      expect(resolveReviewerGate({ ...gateInput(null, null), policyTier: 'human', landing })).toMatchObject({ actor: 'human' });
+      expect(queue([esc()])[0].chip).toBe('MERGE');
+    });
   });
 
   it('CI green + approved review + auto-merge policy => AUTO_MERGE, no human MERGE card', () => {
