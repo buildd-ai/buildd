@@ -66,14 +66,10 @@
     },
     "apps/web/src/app/api/github/webhook/route.ts": {
       "apps/web/src/lib/auto-merge.ts": "reviews-merge",
-      "apps/web/src/lib/ci-failure-retry.ts": "reviews-merge",
       "apps/web/src/lib/knowledge-ingest.ts": "knowledge",
       "apps/web/src/lib/merge-policy.ts": "reviews-merge",
-      "apps/web/src/lib/migration-collision-retry.ts": "reviews-merge",
-      "apps/web/src/lib/migration-inspector.ts": "workspace-migration",
       "apps/web/src/lib/mission-base-guard.ts": "missions",
       "apps/web/src/lib/notify.ts": "notifications",
-      "apps/web/src/lib/pr-activity-comment.ts": "reviews-merge",
       "apps/web/src/lib/pr-landing.ts": "reviews-merge",
       "apps/web/src/lib/pr-review-request.ts": "reviews-merge",
       "apps/web/src/lib/pr-review-status.ts": "reviews-merge",
@@ -83,7 +79,6 @@
       "apps/web/src/lib/prompt-evals/store.ts": "experiments",
       "apps/web/src/lib/pushover.ts": "notifications",
       "apps/web/src/lib/review-verdict-gate.ts": "reviews-merge",
-      "apps/web/src/lib/reviewer.ts": "reviews-merge",
       "apps/web/src/lib/spec-recheck.ts": "spec-conformance",
       "packages/core/mission-integration.ts": "missions"
     },
