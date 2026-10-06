@@ -45,7 +45,7 @@ import {
 } from '@buildd/core/dispatch-model-guard';
 import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment } from '@buildd/core/model-routing-experiment-source';
 import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type AgentPoolDraw } from '@buildd/core/tier-pool-source';
-import { BACKEND_ROUTING_KEY, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
+import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
 import { findBlockingPr, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -1236,12 +1236,16 @@ export async function POST(req: NextRequest) {
   const codexFlippedWorkspaces = new Set<string>();
   const activeTaskIds = activeWorkers.map(w => w.taskId).filter(Boolean) as string[];
   if (activeTaskIds.length > 0) {
-    const activeCodexTasks = await db.query.tasks.findMany({
-      where: and(inArray(tasks.id, activeTaskIds), eq(tasks.backend, 'codex')),
-      columns: { workspaceId: true },
+    // Not filtered on the stored column: a budget-failover flip leaves the row
+    // on 'claude' and records the Codex run only in the claim stamp, so a
+    // `backend = 'codex'` WHERE missed every failover-started Codex worker and
+    // the next claim request flipped another task onto the same window.
+    const activeTasks = await db.query.tasks.findMany({
+      where: inArray(tasks.id, activeTaskIds),
+      columns: { workspaceId: true, backend: true, context: true },
     });
-    for (const t of activeCodexTasks) {
-      if (t.workspaceId) codexBusyWorkspaces.add(t.workspaceId);
+    for (const t of activeTasks) {
+      if (t.workspaceId && claimedBackendOf(t.backend, t.context) === 'codex') codexBusyWorkspaces.add(t.workspaceId);
     }
   }
   // Flip a task to Codex in-memory, respecting runner-side Codex auth

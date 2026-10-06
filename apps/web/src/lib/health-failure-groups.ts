@@ -19,6 +19,7 @@
  * Pure: no db, no React. The query that feeds it lives in health-data.ts.
  */
 import { normalizeErrorSignature } from './error-signature';
+import { DISPATCH_MODEL_REJECTED_PATTERN } from '@buildd/core/dispatch-model-guard';
 
 export interface FailedWorkerInput {
   workerId: string;
@@ -215,6 +216,9 @@ export function buildFailureGroups({
   for (const t of traces) {
     const key = groupOfWorker.get(t.workerId);
     if (!key) continue; // a trace on a worker that didn't fail is not evidence for any group
+    // Nor is a claim-time model substitution: nearly every claim records one
+    // and the run continues on the fallback model.
+    if (t.pattern === DISPATCH_MODEL_REJECTED_PATTERN) continue;
     const acc = accs.get(key)!;
     const set = acc.patterns.get(t.pattern) ?? new Set<string>();
     set.add(t.workerId);
