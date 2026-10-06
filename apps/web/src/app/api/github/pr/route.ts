@@ -167,7 +167,7 @@ async function requestIntegrationBranchReview(params: {
         installationId: params.installationId,
         repoFullName: params.repoFullName,
         prNumber: params.prNumber,
-        entry: { kind: 'reviewing' },
+        entry: { kind: 'review_queued' },
         workspaceId: params.workspace.id,
       }).catch(() => {});
     }

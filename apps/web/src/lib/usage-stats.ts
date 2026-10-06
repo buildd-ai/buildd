@@ -324,7 +324,7 @@ export type GroupDimension = 'role' | 'workspace' | 'creationSource' | 'none' | 
  * for everything a background runner claimed. A few rows are placeholders that
  * no runner executed: server-inserted bookkeeping workers (`'system'` in
  * lib/mission-pr.ts, `'external'` in lib/pr-review-request.ts) and the
- * OpenClaw skill's claims (`'openclaw'`); those go to `other` so they don't
+ * retired OpenClaw skill's claims (`'openclaw'`, kept for old rows); those go to `other` so they don't
  * inflate `runner`. Exact match only: a runner whose id merely contains "mcp"
  * is still a runner.
  */

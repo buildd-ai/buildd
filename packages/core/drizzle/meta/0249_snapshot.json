@@ -1,6 +1,6 @@
 {
-  "id": "8c06bd87-5e53-41a3-b42d-bba4af3949ea",
-  "prevId": "ddb3a056-529c-40a0-b0e3-073630f615fa",
+  "id": "eecee1e0-5f63-494b-80cb-2f6c14c3b8e6",
+  "prevId": "f1631344-901b-4688-abc7-44f0585511ce",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -13245,6 +13245,58 @@
           "tableTo": "tasks",
           "columnsFrom": [
             "auto_follow_up_task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.stripe_events": {
+      "name": "stripe_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "processed_at": {
+          "name": "processed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "stripe_events_team_id_teams_id_fk": {
+          "name": "stripe_events_team_id_teams_id_fk",
+          "tableFrom": "stripe_events",
+          "tableTo": "teams",
+          "columnsFrom": [
+            "team_id"
           ],
           "columnsTo": [
             "id"

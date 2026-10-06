@@ -10,7 +10,8 @@ deciding whether to step in, so every rule below comes down to two things:
 ```
 **buildd** · <glyph> **<Headline>** · <status tail> · [Open in Buildd](…)
 
-- `0m` Reviewing
+- `0m` Review queued
+- `+1m` Reviewing
 - `+9m` Changes requested · fix 1 of 3 queued · [Open in Buildd](…)
   <details><summary>Reviewer feedback</summary> … </details>
 - `+14m` Fixing · fix 1 of 3
@@ -27,7 +28,8 @@ deciding whether to step in, so every rule below comes down to two things:
 
 | Phase | Kind | Header | Motion |
 |---|---|---|---|
-| reviewing | `reviewing` | Reviewing / Re-reviewing · after fix N of M | spinner |
+| reviewer filed, not claimed | `review_queued` | ○ Review queued / Re-review queued · after fix N of M · waiting for a worker | none |
+| worker claimed the reviewer | `reviewing` | Reviewing / Re-reviewing · after fix N of M | spinner |
 | changes requested, fix not claimed | `review_changes_requested` | ○ Fix N of M queued · waiting for a worker | none |
 | CI red, fix not claimed | `ci_fixing` | ○ CI fix N of M queued · waiting for a worker | none |
 | migration-number collision, fix not claimed | `migration_collision_fixing` | ○ Migration slot conflict · fix N of M queued · waiting for a worker | none |
@@ -48,6 +50,10 @@ Rules:
   `fix_started` is written only by the claim route
   (`pr-activity-fix-claimed.ts`), after the atomic claim. A queued fix reads as
   *queued*.
+- **Nothing says "reviewing" until a worker has claimed the reviewer.**
+  Filing a reviewer task writes `review_queued`; `reviewing` is written only by
+  the claim route (`announceReviewClaimed` in `pr-activity-fix-claimed.ts`).
+  A reviewer that no worker will take reads as queued for as long as it waits.
 - **Nothing says "fixing" after the fix task has ended.** The worker's terminal
   update writes `fix_ended` (`announceFixEnded`, same module), and the next red
   CI result appends `ci_fixing` or `ci_exhausted` after it.
@@ -67,7 +73,7 @@ Rules:
 Use these words and no synonyms. They match the dashboard (`CondensedTimeline`,
 `PrStatusLine`): lowercase after the first word, `·` as the only separator.
 
-reviewing · re-reviewing · changes requested · queued · fixing · finished ·
+review queued · re-review queued · reviewing · re-reviewing · changes requested · queued · fixing · finished ·
 ended · pushed ·
 waiting for a worker · waiting on checks · approved · ready to merge ·
 needs a human · merged · closed without merging

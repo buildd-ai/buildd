@@ -100,7 +100,6 @@ Licensing is per directory. Check the `license` field in each `package.json`.
 | Path | License |
 |---|---|
 | `apps/runner`, `packages/shared`, `packages/ai-kit`, `packages/dispatch-contract` | [Apache-2.0](apps/runner/LICENSE) |
-| `packages/openclaw-skill` | MIT |
 | Everything else, including the server (`apps/web`) and `packages/core` | [FSL-1.1-ALv2](LICENSE) |
 
 The Functional Source License lets you read, modify, self-host and use the server for anything except a competing product or service. Each release becomes Apache-2.0 two years after it ships.
