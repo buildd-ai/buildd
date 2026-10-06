@@ -32,7 +32,8 @@
 import { derivePrReviewStatus } from './pr-review-status';
 import { evaluateReviewVerdictGate } from './review-verdict-gate';
 import { isGreenAutoMergePending } from './auto-merge-grace';
-import type { LandingOwnership } from './pr-landing-handoff';
+import type { LandingOwnership } from './pr-landing-ownership';
+export { resolveLandingOwnership, landingModeOf } from './pr-landing-ownership';
 
 /**
  * Who owns the next move on this PR.

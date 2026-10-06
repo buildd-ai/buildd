@@ -59,9 +59,7 @@ import {
 import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
-import { resolveLandingOwnership } from '@/lib/pr-landing-handoff';
-import { resolveLandingMode } from '@/lib/pr-landing';
-import { resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
+import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { ActionQueueCard } from './ActionQueueCard';
@@ -1041,7 +1039,7 @@ export default async function HomePage({
               const landing = !humanReview && w.prNumber != null
                 ? resolveLandingOwnership({
                     policy,
-                    landingMode: resolveLandingMode(ws?.gitConfig),
+                    landingMode: landingModeOf(ws?.gitConfig),
                     landing: landingStateByTaskId.get(w.taskId)?.landing ?? null,
                     handoff: landingStateByTaskId.get(w.taskId)?.handoff ?? null,
                     prNumber: w.prNumber,

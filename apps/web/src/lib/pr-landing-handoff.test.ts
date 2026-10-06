@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveLandingOwnership, policyLandsAutomatically } from './pr-landing-handoff';
+import { resolveLandingOwnership, policyLandsAutomatically } from './pr-landing-ownership';
 
 const HEAD = 'a'.repeat(40);
 const marker = { prNumber: 7, pendingHeadSha: 'b'.repeat(40), refreshCount: 1, lastOutcome: 'updating_branch' };
