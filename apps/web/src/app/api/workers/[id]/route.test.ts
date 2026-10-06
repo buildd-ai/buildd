@@ -9671,6 +9671,39 @@ describe('PATCH /api/workers/[id]', () => {
         expect(json.hint).toBe('structuredOutput.verdict');
         expect(taskSetCalls).toHaveLength(0);
       });
+
+      // A runner-hosted reviewer that calls the MCP complete_task tool itself is
+      // still mid-session and reads the response. Failing the worker on its
+      // first malformed call discarded the review it then corrected one call later.
+      it('runner worker calling complete_task itself: a malformed verdict gets a 400, with no state change', async () => {
+        setupReviewerTaskCompletion('approve');
+        const taskSetCalls = captureTaskSets();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', viaCompleteTask: true, structuredOutput: { verdict: 'approve', confidence: 0.93 } },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(400);
+        const json = await res.json();
+        expect(json.error).toContain('summary must be a string');
+        expect(json.hint).toBe('structuredOutput.verdict');
+        expect(taskSetCalls).toHaveLength(0);
+      });
+
+      it('runner-reported completion (no viaCompleteTask) keeps the requeue contract, not a 400', async () => {
+        setupReviewerTaskCompletion('approve');
+        captureTaskSets();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', structuredOutput: { verdict: 'approve', confidence: 0.93 } },
+        }), { params: mockParams });
+
+        expect(res.status).not.toBe(400);
+      });
     });
 
     // An approve at any confidence used to post a GitHub APPROVE and run the

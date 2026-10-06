@@ -1612,12 +1612,15 @@ export async function PATCH(
     const isReviewerTask = terminalTaskRow[0]?.category === 'review'
       && Boolean((terminalTaskRow[0]?.context as Record<string, unknown> | undefined)?.reviewerFor);
 
-    // An interactive (claim_task, runner = 'mcp') reviewer calls complete_task
-    // itself and can still read the response, so refuse a malformed verdict here
-    // with the allowed values instead of accepting the call and failing the
-    // worker afterwards. A runner-reported completion has no agent turn left to
-    // read a refusal, so it keeps the requeue-once contract guard further down.
-    if (isReviewerTask && worker.runner === 'mcp') {
+    // A reviewer calling the MCP complete_task tool itself (any interactive
+    // claim_task worker, or a runner-hosted agent mid-session — the tool marks
+    // that PATCH viaCompleteTask) can still read the response, so refuse a
+    // malformed verdict here with the allowed values instead of accepting the
+    // call and failing the worker afterwards: a runner reviewer that left out
+    // `summary` once lost a review it corrected on its very next call. A
+    // runner-reported end-of-session completion has no agent turn left to read
+    // a refusal, so it keeps the requeue-once contract guard further down.
+    if (isReviewerTask && (worker.runner === 'mcp' || body.viaCompleteTask === true)) {
       const submitted = body.structuredOutput as { verdict?: unknown } | null | undefined;
       if (submitted && typeof submitted === 'object' && submitted.verdict) {
         const parsed = parseReviewerOutput(submitted);
