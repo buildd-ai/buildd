@@ -295,7 +295,9 @@ UPDATE team_invitations SET
 
 UPDATE teams t SET
   name = 'Team ' || s.n,
-  slug = 'team-' || s.n
+  slug = 'team-' || s.n,
+  stripe_customer_id = NULL,
+  stripe_subscription_id = NULL
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM teams) s WHERE t.id = s.id;
 
 UPDATE accounts a SET
