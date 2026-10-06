@@ -88,10 +88,17 @@ tick delivers the wake when due, as `task.retry` to a webhook that lists that
 event: the backstop. Only a `crashed` outcome is reported;
 the runner's own exits (1 failed, 3 refused, 4 parked, 64 usage) are not.
 
-**Restarts.** If the Durable Object is evicted mid-run (deploy, limits), the
-exec'd process cannot be re-attached. On the next start the agent finds the
-run marked live, destroys the container, and records `crashed` (and reports
-it as above).
+**Restarts.** The container outlives the Durable Object, so an agent restart
+(a deploy, an eviction, an isolate reset) does not end the run. Cloudflare
+cannot re-open the exec stream of the process the old agent started, so the
+runner leaves its pid and exit code in its home directory and the new agent
+execs `buildd-once --attach-orphan`, which waits on that runner and exits with
+its code. The run then finishes as if nothing happened (egress is re-installed
+and a fresh task token minted first). If the runner is not there (exit 6), the
+agent falls back to parking and resuming it (resumable runs), then to marking
+the run `crashed` and reporting it as above. Every restart is recorded on the
+run report as `agentRestarts` (`recovery`, `containerRunning`, `runningForMs`,
+and `versionChanged`: true is a Worker deploy, false is some other cause).
 
 ## Configuration
 

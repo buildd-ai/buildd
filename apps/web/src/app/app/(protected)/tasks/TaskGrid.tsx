@@ -529,6 +529,35 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
     return sortByRecency(nonWaitingTasks);
   }, [nonWaitingTasks, effectiveGroupBy]);
 
+  // A band drill-down that selected nothing is a filtered-empty result, not an
+  // empty workspace: say so, and make leaving the filter the primary action.
+  if (rootTasks.length === 0 && !missionFilter && bandFilterLabel) {
+    return (
+      <div data-testid="task-band-empty" className="h-full flex flex-col p-8 pt-20 md:pt-8">
+        <h1 className="text-[28px] font-bold text-text-primary" style={{ fontFamily: 'var(--font-display, inherit)' }}>Activity</h1>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="max-w-md text-center">
+            <div className="w-16 h-16 mx-auto bg-surface-3 rounded-full flex items-center justify-center mb-4">
+              <svg className="w-8 h-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 4h18l-7 8v6l-4 2v-8L3 4z" />
+              </svg>
+            </div>
+            <p className="text-meta text-text-secondary mb-2">{bandFilterLabel}</p>
+            <h2 className="text-xl font-semibold text-text-primary mb-2">No tasks in this band</h2>
+            <p className="text-[13px] text-text-secondary mb-4">No tasks were in this band for the selected window.</p>
+            <Link
+              href="/app/tasks"
+              data-testid="task-band-empty-clear"
+              className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
+            >
+              Clear band filter
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (rootTasks.length === 0 && !missionFilter) {
     return (
       <div className="h-full flex items-center justify-center p-8 pt-20 md:pt-8">
@@ -538,7 +567,6 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
             </svg>
           </div>
-          <BandFilterLabel label={bandFilterLabel} />
           <h2 className="text-xl font-semibold text-text-primary mb-4">No activity</h2>
           <div className="flex flex-wrap items-center justify-center gap-2">
             <NewWorkLink
