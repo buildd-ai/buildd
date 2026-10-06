@@ -9,6 +9,24 @@ surfaces: [packages/shared/src/entitlements.ts, apps/web/src/lib/entitlements/ma
 related: [claim-ordering]
 keywords: [plan limit, concurrency, runner-hours, managed runner, hosted, upgrade, entitlement_blocked, managed_concurrency, managed_runner_hours]
 verified_by: [apps/web/src/lib/entitlements/entitlements.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/tasks/[id]/start/route.test.ts, apps/web/src/components/entitlements/EntitlementBlockedNotice.dom.test.tsx]
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "evaluate-entitlement"
+    type: "symbol"
+    name: "evaluateManagedRunnerEntitlement"
+    path: "packages/shared/src/entitlements.ts"
+  - id: "claim-checks-entitlement"
+    type: "symbol_reachable"
+    symbol: "checkManagedRunnerEntitlement"
+    entry: "apps/web/src/app/api/workers/claim/route.ts"
+    as: "call"
+  - id: "managed-runner-plan-column"
+    type: "config_key"
+    key: "managedRunnerPlan"
+    file: "packages/core/db/schema.ts"
+  - id: "entitlement-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/entitlements/entitlements.test.ts"
 ---
 
 # Managed-Runner Entitlements
