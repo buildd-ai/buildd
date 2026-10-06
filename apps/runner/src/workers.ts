@@ -1,3 +1,5 @@
+import { canonicalToolName } from '@buildd/shared';
+import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
 import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
@@ -4979,9 +4981,11 @@ export class WorkerManager {
         // "made Bash calls, none of them searches".
         const toolCounts = worker.toolCounts ?? {};
         const bashCommandCounts = worker.bashCommandCounts;
+        const fileToolAreas = worker.fileToolAreas;
         const measured = {
           ...(Object.keys(toolCounts).length > 0 ? { toolCounts } : {}),
           ...(bashCommandCounts && bashCommandCounts.total > 0 ? { bashCommandCounts } : {}),
+          ...(fileToolAreas && Object.keys(fileToolAreas).length > 0 ? { fileToolAreas } : {}),
         };
         if (Object.keys(measured).length > 0) {
           if (worker.resultMeta) {
@@ -5883,8 +5887,22 @@ export class WorkerManager {
 
           // Usage observability: count every tool call by exact name. This is
           // the complete histogram the usage rollups read.
+          // Counted under one canonical name per tool (bash -> Bash, Codex's
+          // mcp__codex_apps__buildd.recall -> mcp__buildd__recall), so a tool
+          // never splits into two rows and its breakdowns attach to the one row.
+          const countedName = canonicalToolName(toolName);
           if (!worker.toolCounts) worker.toolCounts = {};
-          recordToolCall(worker.toolCounts, toolName);
+          recordToolCall(worker.toolCounts, countedName);
+
+          // Which repo area a file tool touched (file-area.ts): the area only,
+          // never the path, so usage can say where reading and editing go.
+          if (isFileAreaTool(countedName)) {
+            const area = fileAreaOf(filePathInput(countedName, rawInput), worker.worktreePath);
+            if (area) {
+              if (!worker.fileToolAreas) worker.fileToolAreas = {};
+              recordFileArea(worker.fileToolAreas, countedName, area);
+            }
+          }
 
           // Bash sub-classification (bash-classify.ts). `Bash` is the single
           // most-called tool, and the histogram above records it as one opaque
@@ -5893,7 +5911,7 @@ export class WorkerManager {
           // the search share of a session unknowable. Buckets and
           // coarse pattern shapes only: the command string is classified and
           // discarded, never stored.
-          if (toolName === 'Bash') {
+          if (countedName === 'Bash') {
             if (!worker.bashCommandCounts) worker.bashCommandCounts = emptyBashCommandCounts();
             recordBashCommand(worker.bashCommandCounts, (input as { command?: unknown })?.command);
           }
@@ -5906,7 +5924,7 @@ export class WorkerManager {
           // alone, so it can't be resolved into a count at capture time — this
           // buffers a raw event (action + when) for a later join, same pattern
           // as pendingErrorTraces. No-ops for every other tool name.
-          const builddAction = extractBuilddAction(toolName, input);
+          const builddAction = extractBuilddAction(countedName, input);
           if (builddAction) {
             if (!worker.pendingActionEvents) worker.pendingActionEvents = [];
             worker.pendingActionEvents.push({ action: builddAction, ts: Date.now() });
