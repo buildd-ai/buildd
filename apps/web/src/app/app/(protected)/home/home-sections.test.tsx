@@ -161,6 +161,29 @@ describe('FleetStrip — a cloud dispatcher is one elastic group', () => {
   });
 });
 
+describe('FleetStrip — a one-run elastic group fits its single row', () => {
+  const url = 'headless://container/once/solo';
+  const f = buildFleetSnapshot(
+    [{
+      id: 'hb-solo', accountId: 'a', localUiUrl: url, maxConcurrentWorkers: 1, lastHeartbeatAt: new Date(NOW), activeWorkerCount: 1,
+      environment: { labels: { hostname: 'container', os: 'linux', arch: 'x64' }, fleet: { executor: 'cloud', ephemeral: true, concurrency: 1, group: 'agent-runtime-spike' } },
+    }],
+    [{ id: 'w-solo', accountId: 'a', runner: url, localUiUrl: url, status: 'running', startedAt: min(2), task: { id: 't-solo', title: 'sizing memory overhead' } }],
+    { now: NOW },
+  );
+  const html = renderToStaticMarkup(<FleetStrip fleet={f} roles={[]} now={NOW} timeZone="UTC" />);
+  const cell = html.slice(html.indexOf('data-elastic="true"'), html.indexOf('data-testid="fleet-slot"'));
+
+  it('like a one-row machine, desktop shows the name alone; the executor moves to its title, never "· 1 running" squeezed beside it', () => {
+    expect(cell).toContain('title="agent-runtime-spike · Cloudflare · elastic"');
+    expect(cell).not.toContain('· 1 running');
+    expect(cell).toMatch(/class="max-w-full truncate[^"]*md:hidden">Cloudflare · elastic</);
+  });
+  it('the single busy row already is the run, so the count hides on desktop (still there on mobile)', () => {
+    expect(cell).toMatch(/data-testid="fleet-elastic-running" class="[^"]*md:hidden[^"]*">1 running/);
+  });
+});
+
 describe('FleetStrip — Steer', () => {
   it('a running slot offers Steer when the chat canvas is available; a waiting-on-you slot does not (the question hero owns that)', () => {
     const html = renderToStaticMarkup(

@@ -255,7 +255,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
     landed && t.endedAt != null ? `landed ${formatAge(now - t.endedAt)} ago` : null,
     t.id.slice(0, 8),
   ].filter(Boolean).join(' · ');
-  const twoCol = compact ? '' : 'md:grid md:grid-cols-[minmax(0,1fr)_minmax(200px,auto)] md:gap-6';
+  const twoCol = compact ? '' : 'md:grid md:grid-cols-[minmax(0,1fr)_fit-content(60%)] md:gap-6';
 
   return (
     <div
