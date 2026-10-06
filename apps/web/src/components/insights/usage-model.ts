@@ -36,6 +36,6 @@ export function bandTaskListHref(series: FlowSeries, index: number, band: BandKe
 export function parseBandFilter(params: { band?: string; from?: string; to?: string; at?: string }) {
   const { band } = params;
   const from = Number(params.from), to = Number(params.to), at = Number(params.at);
-  if (!band || !(band in BAND_LABEL) || !params.from || !params.to || !params.at || ![from, to, at].every(Number.isFinite) || to <= from || ![7 * 86400000, 30 * 86400000].includes(to - from) || at < from || at >= to) return null;
+  if (!band || !Object.hasOwn(BAND_LABEL, band) || !params.from || !params.to || !params.at || ![from, to, at].every(Number.isFinite) || to <= from || ![7 * 86400000, 30 * 86400000].includes(to - from) || at < from || at >= to) return null;
   return { band: band as BandKey, from, to, at };
 }

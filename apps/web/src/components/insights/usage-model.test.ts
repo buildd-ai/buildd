@@ -28,6 +28,7 @@ it('summarizes the entire band but limits recent tasks, with consistent band/tim
   expect(summary.recent[0].key).toBe('39');
   const params = new URLSearchParams(bandTaskListHref(s, s.buckets.length - 1, 'released').split('?')[1]);
   expect(parseBandFilter(Object.fromEntries(params))).toEqual({ band: 'released', from: s.window.from, to: s.window.to, at: s.buckets.at(-1)!.start });
+  expect(parseBandFilter({ band: 'toString', from: '1', to: String(1 + 7 * 86400000), at: '1' })).toBeNull();
   expect(parseBandFilter({ band: 'invalid', from: '0', to: '1', at: '0' })).toBeNull();
 });
 

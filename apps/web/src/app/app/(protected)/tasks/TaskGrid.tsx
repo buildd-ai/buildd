@@ -366,7 +366,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
       const stored = JSON.parse(localStorage.getItem('buildd-activity-prefs') || '{}');
       localStorage.setItem('buildd-activity-prefs', JSON.stringify({ ...stored, filter: f }));
     } catch {}
-  }, [missionFilter]);
+  }, [missionFilter, bandFilterLabel]);
 
   const dismissInitiative = useCallback(() => {
     const params = new URLSearchParams(window.location.search);

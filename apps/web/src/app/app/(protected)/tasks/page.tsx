@@ -416,6 +416,7 @@ export default async function TasksPage({
 
   return (
     <TaskGrid
+      key={bandFilter ? `${bandFilter.band}:${bandFilter.from}:${bandFilter.at}` : 'tasks'}
       bandFilterLabel={bandFilter ? `${BAND_LABEL[bandFilter.band]} · ${new Date(bandFilter.band === 'released' || bandFilter.band === 'lost' ? bandFilter.from : bandFilter.at).toLocaleString()} – ${new Date(bandFilter.at + (bandFilter.to - bandFilter.from <= 7 * 86400000 ? 3600000 : 6 * 3600000)).toLocaleString()}` : undefined}
       tasks={gridTasks}
       missionFilter={missionId || null}
