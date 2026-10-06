@@ -78,6 +78,47 @@ describe('seams that have shipped stay cut', () => {
     expect(imported.filter(f => movedBehindEmit.includes(f))).toEqual([]);
   });
 
+  test('task and team creation no longer import what their creation sets off', () => {
+    const behindTaskCreated = [
+      'apps/web/src/lib/mission-feed.ts',
+      'apps/web/src/lib/mission-loop.ts',
+      'apps/web/src/lib/criteria-escalation.ts',
+      'apps/web/src/lib/task-category-decision.ts',
+    ];
+    const tasksRoute = Object.keys(current.backend['apps/web/src/app/api/tasks/route.ts'] ?? {});
+    expect(tasksRoute.filter(f => behindTaskCreated.includes(f))).toEqual([]);
+    for (const f of ['apps/web/src/auth.ts', 'apps/web/src/app/api/teams/route.ts']) {
+      expect(Object.keys(current.backend[f] ?? {}), f).not.toContain('apps/web/src/lib/default-roles.ts');
+    }
+  });
+
+  test('the worker PATCH reaches the loop, evidence and release verdicts only through completion-policy slots', () => {
+    const behindSlots = [
+      'apps/web/src/lib/loop-dispatcher.ts',
+      'apps/web/src/lib/visual-audit-evidence.ts',
+      'apps/web/src/lib/release-executor.ts',
+      'apps/web/src/lib/mission-release.ts',
+    ];
+    const imported = Object.keys(current.backend[PATCH] ?? {});
+    expect(imported.filter(f => behindSlots.includes(f))).toEqual([]);
+  });
+
+  test('the GitHub webhook reaches the releases module only through emit()', () => {
+    const imported = Object.entries(current.backend['apps/web/src/app/api/github/webhook/route.ts'] ?? {});
+    expect(imported.filter(([, mod]) => mod === 'releases').map(([f]) => f)).toEqual([]);
+  });
+
+  test('the GitHub webhook keeps only the mission base guard from the missions module', () => {
+    // The guard repairs a task PR's base when it leaves the mission integration
+    // branch: a review-gate enforcement, so it stays in core (design: module
+    // gates move into core intact). Every other mission reaction is a subscriber.
+    const imported = Object.entries(current.backend['apps/web/src/app/api/github/webhook/route.ts'] ?? {});
+    expect(imported.filter(([, mod]) => mod === 'missions').map(([f]) => f).sort()).toEqual([
+      'apps/web/src/lib/mission-base-guard.ts',
+      'packages/core/mission-integration.ts',
+    ]);
+  });
+
   test('no core file writes the subscriptions ledger directly; it is a notifications subscriber', () => {
     const writers = pairs(current, 'backend').filter(p => p.endsWith('-> apps/web/src/lib/subscriptions.ts'));
     expect(writers).toEqual([]);

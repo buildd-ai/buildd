@@ -1,5 +1,6 @@
 import type { CiGate } from './ci-gate';
 import { resolveStaleGate, type StaleGate } from './pr-freshness';
+import { explainProviderAuthFailure } from './provider-auth-failure';
 
 /**
  * ── The queue freshness rule ────────────────────────────────────────────────
@@ -21,6 +22,9 @@ import { resolveStaleGate, type StaleGate } from './pr-freshness';
  * no stale state for it to trust. RECONNECT and APPROVE are the same shape:
  * both come from a live re-check (`needsReconnect()` against the credential
  * row; "does an approved child task exist yet") each time the queue is built.
+ * FAILED is the same shape again: built from `tasks.status === 'failed'` read
+ * fresh on every build (buildFailedTaskItems), so a retried or completed task
+ * drops out by itself.
  * Any new chip must name which of these two patterns it uses — re-derive on
  * every build, or gate a persisted flag against a second, independently-live
  * signal — before it ships.
@@ -31,7 +35,7 @@ import { resolveStaleGate, type StaleGate } from './pr-freshness';
  */
 
 export type ActionChip =
-  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
+  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'FAILED' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
   | 'STALE'
   | 'RESOLVING' | 'FIXING_CI' | 'FIXING_REVIEW' | 'CI_RUNNING' | 'REVIEW_RUNNING' | 'AUTO_MERGE' | 'FIXING_SPEC';
 
@@ -199,7 +203,7 @@ export function partitionEscalations<T extends { prLifecycleStatus: string | nul
 }
 
 export interface WaitingOnYouRawItem {
-  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy';
+  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed';
   prUrl?: string;
   prNumber?: number;
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | 'unresolvable' | null;
@@ -215,6 +219,10 @@ export interface WaitingOnYouRawItem {
   /** kind === 'reconnect' — the connector whose credential needs re-authorising. */
   connectorId?: string;
   connectorName?: string;
+  /** kind === 'failed' — why it failed and the fix, in plain words (buildFailedTaskItems). */
+  failureMessage?: string;
+  fixHref?: string;
+  fixLabel?: string;
   /** kind === 'decide' — the fingerprint of the escalated criteria for dedup. */
   criteriaRearmFingerprint?: string;
   /** kind === 'merge' — opts this row into the freshness invariant. See EscalationRawItem. */
@@ -451,6 +459,10 @@ export interface ActionQueueItem {
   /** Set when chip === 'RECONNECT' — the connector needing re-auth. */
   connectorId?: string;
   connectorName?: string;
+  /** Set when chip === 'FAILED' — the plain cause and the setting that fixes it. */
+  failureMessage?: string;
+  fixHref?: string;
+  fixLabel?: string;
   /** Set when chip === 'DECIDE' — the escalation note this card links back to. */
   noteId?: string;
   noteTitle?: string;
@@ -527,8 +539,10 @@ export interface ActionQueueItem {
 // been dispatched for that spec path, so the row is no longer waiting on a
 // human. It stays visible for the same reason RESOLVING does — a doc fix that
 // dies must not take the finding with it — but never counts as actionable.
+// FAILED sits with RECONNECT: both are a credential the owner has to supply
+// before anything else can run.
 const CHIP_ORDER: ActionChip[] = [
-  'MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
+  'MERGE', 'BLOCKED', 'RECONNECT', 'FAILED', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
   'STALE',
   'RESOLVING', 'FIXING_CI', 'FIXING_REVIEW', 'CI_RUNNING', 'REVIEW_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
 ];
@@ -619,6 +633,46 @@ export function buildDecideItems(candidates: EscalatedMissionCandidate[]): Waiti
       question: c.openNote.body ?? undefined,
       criteriaFingerprint: c.criteriaRearmFingerprint ?? 'none',
       recommendation: c.recommendation ?? null,
+    });
+  }
+  return items;
+}
+
+/** A top-level task and its latest worker's error, as Home loads them. */
+export interface FailedTaskCandidate {
+  taskId: string;
+  title: string;
+  /** `tasks.status`, read on this build. */
+  status: string;
+  backend: 'claude' | 'codex' | null;
+  /** The latest worker's `error`. */
+  workerError: string | null;
+  missionId: string | null;
+  missionTitle: string | null;
+}
+
+/**
+ * FAILED cards: a task that failed for a reason the owner fixes in settings
+ * (today: the agent had no working model key). Membership is re-derived from
+ * the task's current status, never from a stored flag, so a retried task leaves
+ * the queue as soon as it is pending again. A failure with no owner-fixable
+ * cause stays on the task page; Home only asks for what the owner can act on.
+ */
+export function buildFailedTaskItems(candidates: FailedTaskCandidate[]): WaitingOnYouRawItem[] {
+  const items: WaitingOnYouRawItem[] = [];
+  for (const c of candidates) {
+    if (c.status !== 'failed') continue;
+    const cause = explainProviderAuthFailure(c.workerError, c.backend);
+    if (!cause) continue;
+    items.push({
+      kind: 'failed',
+      taskId: c.taskId,
+      taskTitle: c.title,
+      missionId: c.missionId,
+      missionTitle: c.missionTitle,
+      failureMessage: cause.message,
+      fixHref: cause.href,
+      fixLabel: cause.linkLabel,
     });
   }
   return items;
@@ -1233,6 +1287,21 @@ export function buildActionQueue(
           chip: 'RECONNECT',
           connectorId: item.connectorId,
           connectorName: item.connectorName,
+        });
+      }
+    } else if (item.kind === 'failed') {
+      const key = `task:${item.taskId}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'FAILED',
+          taskId: item.taskId,
+          taskTitle: item.taskTitle,
+          missionId: item.missionId,
+          missionTitle: item.missionTitle,
+          failureMessage: item.failureMessage,
+          fixHref: item.fixHref,
+          fixLabel: item.fixLabel,
         });
       }
     } else if (item.kind === 'approve') {

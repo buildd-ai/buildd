@@ -73,7 +73,7 @@ describe('install.sh sparse tree', () => {
     // The updater's health probe boots from the install dir and relies on the root bunfig.
     expect(sparse).toContain('bunfig.toml');
     expect(installSh).toContain('BUILDD_PRELOAD="$HOME/.buildd/scripts/stub-server-only.ts"');
-    expect(installSh).toContain('bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" "$@"');
+    expect(installSh).toContain('bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" "$@"');
   });
 
   test('the installed ref is selectable (CI installs the commit under test)', () => {
@@ -86,8 +86,8 @@ describe('install.sh sparse tree', () => {
       .split('\n')
       .filter((l) => /\bsudo\b/.test(l) && !l.trim().startsWith('#') && !l.includes('echo') && !l.includes('printf'));
     for (const line of sudoLines) {
-      // Allowed: probes (`sudo -n true`, `command -v sudo`), and the guarded $CBM_SUDO / CBM_SUDO="sudo".
-      expect(line).toMatch(/sudo -n true|command -v sudo|CBM_SUDO/);
+      // Allowed: probes (`sudo -n true`, `command -v sudo`).
+      expect(line).toMatch(/sudo -n true|command -v sudo/);
     }
   });
 });

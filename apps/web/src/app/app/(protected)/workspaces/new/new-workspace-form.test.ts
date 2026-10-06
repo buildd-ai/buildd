@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { NAME_REQUIRED_COPY, extractRepoInfo, plainCreateError, resolveWorkspaceName } from './new-workspace-form';
+import { NAME_REQUIRED_COPY, createRepoNextStep, extractRepoInfo, plainCreateError, resolveWorkspaceName } from './new-workspace-form';
 
 describe('resolveWorkspaceName', () => {
   it('uses the typed name, trimmed', () => {
@@ -52,5 +52,26 @@ describe('plainCreateError', () => {
   it('passes an already-plain sentence through', () => {
     expect(plainCreateError(409, 'That repository is linked through a different GitHub installation'))
       .toBe('That repository is linked through a different GitHub installation');
+  });
+});
+
+describe('createRepoNextStep: the Create new repo tab without GitHub says what to do instead', () => {
+  it('no GitHub App on this server: the next step is Connect existing', () => {
+    const step = createRepoNextStep({ githubConfigured: false, installationCount: 0 });
+    expect(step).not.toBeNull();
+    expect(step!.action).toBe('connect-existing');
+    expect(step!.label).toBe('Use Connect existing');
+    expect(step!.message).toContain('cannot create repositories');
+  });
+
+  it('GitHub set up but not installed on any account: the next step is installing it', () => {
+    const step = createRepoNextStep({ githubConfigured: true, installationCount: 0 });
+    expect(step!.action).toBe('install-github');
+    expect(step!.href).toBe('/api/github/install');
+    expect(step!.label).toBe('Connect GitHub');
+  });
+
+  it('GitHub ready: no blocker, the create button works', () => {
+    expect(createRepoNextStep({ githubConfigured: true, installationCount: 1 })).toBeNull();
   });
 });

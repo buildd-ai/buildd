@@ -5,7 +5,7 @@
  */
 
 import { db } from '@buildd/core/db';
-import { workers, releases, releaseTasks, workspaces } from '@buildd/core/db/schema';
+import { workers, releases, releaseTasks, workspaces, missions } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import {
   bucketMsFor,
@@ -56,6 +56,7 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
       prLastCheckedAt: true,
       supersededAt: true,
       abandonedAt: true,
+      prBaseRef: true,
     },
     with: {
       task: {
@@ -84,6 +85,7 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
     prLastCheckedAt: ms(w.prLastCheckedAt),
     prSupersededAt: ms(w.supersededAt),
     prAbandonedAt: ms(w.abandonedAt),
+    prBaseRef: w.prBaseRef ?? null,
   }));
 }
 
@@ -96,7 +98,7 @@ export async function fetchFlowReleases(workspaceIds: string[], since: Date): Pr
   const [recent, everReleased] = await Promise.all([
     db.query.releases.findMany({
       where: and(inArray(releases.workspaceId, workspaceIds), gte(releases.createdAt, since)),
-      columns: { id: true, workspaceId: true, version: true, state: true, healthyAt: true, deployedAt: true, createdAt: true },
+      columns: { id: true, workspaceId: true, version: true, state: true, healthyAt: true, deployedAt: true, dispatchedAt: true, createdAt: true },
     }),
     db.selectDistinct({ workspaceId: releases.workspaceId })
       .from(releases)
@@ -108,6 +110,7 @@ export async function fetchFlowReleases(workspaceIds: string[], since: Date): Pr
     version: r.version ?? null,
     state: r.state,
     at: (r.healthyAt ?? r.deployedAt ?? r.createdAt).getTime(),
+    cutAt: (r.dispatchedAt ?? r.createdAt).getTime(),
   }));
   const ids = releaseRows.map(r => r.id);
   const edges = ids.length
@@ -122,6 +125,26 @@ export async function fetchFlowReleases(workspaceIds: string[], since: Date): Pr
   };
 }
 
+/**
+ * When each mission's own PR (its `primaryPrNumber`) merged into trunk, for the
+ * missions whose tasks merged into a mission branch. Missions with no merged
+ * primary PR are absent: their work has not reached trunk.
+ */
+export async function fetchMissionTrunkMerges(missionIds: string[]): Promise<Record<string, number>> {
+  if (missionIds.length === 0) return {};
+  const rows = await db
+    .select({ missionId: missions.id, mergedAt: workers.mergedAt })
+    .from(missions)
+    .innerJoin(workers, and(eq(workers.workspaceId, missions.workspaceId), eq(workers.prNumber, missions.primaryPrNumber)))
+    .where(and(inArray(missions.id, missionIds), isNotNull(workers.mergedAt)));
+  const out: Record<string, number> = {};
+  for (const r of rows as { missionId: string; mergedAt: Date | null }[]) {
+    const t = ms(r.mergedAt);
+    if (t != null && (out[r.missionId] == null || t < out[r.missionId])) out[r.missionId] = t;
+  }
+  return out;
+}
+
 /** The flow series for a set of workspaces (one team's), for the given window. */
 export async function loadFlowSeries(workspaceIds: string[], window: FlowWindow, now = Date.now()): Promise<FlowSeries & { truncated: boolean }> {
   const from = now - windowMsFor(window);
@@ -130,12 +153,17 @@ export async function loadFlowSeries(workspaceIds: string[], window: FlowWindow,
     fetchFlowWorkerRows(workspaceIds, since),
     fetchFlowReleases(workspaceIds, since),
   ]);
+  const viaMission = new Set(
+    workerRows.filter(w => w.missionId && w.mergedAt != null && (w.prBaseRef ?? '').startsWith('mission/')).map(w => w.missionId!),
+  );
+  const missionTrunkMergedAt = await fetchMissionTrunkMerges([...viaMission]);
   const series = buildFlowSeries({
     window: { from, to: now },
     bucketMs: bucketMsFor(window),
     now,
     workers: workerRows,
     ...rel,
+    missionTrunkMergedAt,
   });
   return { ...series, truncated: workerRows.length >= FLOW_ROW_LIMIT };
 }

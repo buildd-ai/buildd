@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import RepoPicker from './RepoPicker';
 import { defaultTeamId, readActiveTeamCookie } from '@/lib/active-team-client';
-import { extractRepoInfo, plainCreateError, resolveWorkspaceName } from './new-workspace-form';
+import { createRepoNextStep, extractRepoInfo, plainCreateError, resolveWorkspaceName } from './new-workspace-form';
 
 interface Installation {
   id: string;
@@ -322,6 +322,12 @@ export default function NewWorkspacePage() {
   }
 
   const hasGitHub = githubConfigured && installations.length > 0;
+  // Create new repo without GitHub: the button would do nothing, so the one
+  // next step takes its place.
+  const createBlocker = mode === 'create'
+    ? createRepoNextStep({ githubConfigured, installationCount: installations.length })
+    : null;
+  const switchToConnect = () => { setMode('connect'); setError(''); };
 
   return (
     <main className="min-h-screen p-8">
@@ -529,12 +535,9 @@ export default function NewWorkspacePage() {
           {/* Create New Repo */}
           {mode === 'create' && (
             <>
-              {!githubConfigured ? (
+              {createBlocker ? (
                 <div className="p-3 border border-border-default" data-testid="new-workspace-github-unavailable">
-                  <p className="text-sm text-text-secondary">
-                    GitHub is not set up on this buildd server, so it cannot create repositories. Choose
-                    {' '}<strong>Connect existing</strong> and paste a repository, or leave it empty to start without one.
-                  </p>
+                  <p className="text-sm text-text-secondary">{createBlocker.message}</p>
                 </div>
               ) : (
                 <>
@@ -687,6 +690,26 @@ export default function NewWorkspacePage() {
           </div>
 
           <div className="flex gap-4">
+            {createBlocker ? (
+              createBlocker.href ? (
+                <a
+                  href={createBlocker.href}
+                  data-testid="new-workspace-next-step"
+                  className="flex-1 px-4 py-2 text-center bg-primary text-white hover:bg-primary-hover"
+                >
+                  {createBlocker.label}
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  onClick={switchToConnect}
+                  data-testid="new-workspace-next-step"
+                  className="flex-1 px-4 py-2 bg-primary text-white hover:bg-primary-hover"
+                >
+                  {createBlocker.label}
+                </button>
+              )
+            ) : (
             <button
               type="submit"
               disabled={
@@ -703,6 +726,7 @@ export default function NewWorkspacePage() {
                 ? `Create ${selectedRepos.length} Workspaces`
                 : 'Create Workspace'}
             </button>
+            )}
             <Link
               href="/app/workspaces"
               className="px-4 py-2 border border-border-default rounded-lg hover:bg-surface-3"

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
-import { FailureGroupsSection } from './_components/FailureGroups';
+import { FailureGroupsSection, TopFailureGroups } from './_components/FailureGroups';
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
@@ -17,7 +17,6 @@ import type {
   FailureAnalytics,
   FailureWindow,
   GateAnalytics,
-  CbmHealthSummary,
   OrphanedPrRow,
   SubagentDelegationPanel,
   ErrorPatternPanel,
@@ -35,6 +34,7 @@ import {
   groupFailuresBySignature,
   lifetimeRuns,
   monthlyAnchor,
+  observedAgo,
   RUNNER_LIFETIME_LABEL,
   sectionDenominator,
 } from '@/lib/health-metric-grammar';
@@ -42,6 +42,10 @@ import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
 import { ExperimentsSection } from './ExperimentsSection';
 import { DispatchSection } from './DispatchSection';
+import { AgentAccessSection } from '@/components/AgentAccessCard';
+import type { AgentAccessReport } from '@/lib/agent-capabilities/access-log';
+import { OverviewHeadline, OverviewStatusRows } from './_components/OverviewSummary';
+import { overviewHeadline, overviewStatusRows } from '@/lib/health-overview';
 import type { DispatchHealthReport } from '@buildd/core/dispatch-health-report';
 import type { HealthExperiments } from '@/lib/health-experiments-shared';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
@@ -193,19 +197,26 @@ function humanizeCron(expr: string): string {
 export type HealthView = 'all' | 'overview' | 'failures' | 'runners' | 'operator';
 
 type HealthBlock =
-  | 'problems' | 'orphanedPrs' | 'capacity' | 'budget' | 'credentials' | 'dispatch' | 'schedules'
-  | 'failureAnalytics' | 'gates' | 'taskOutcomes' | 'experiments' | 'consumption' | 'cbm'
+  | 'problems' | 'orphanedPrs' | 'capacity' | 'budget' | 'credentials' | 'agentAccess' | 'dispatch' | 'schedules'
+  | 'failureAnalytics' | 'gates' | 'taskOutcomes' | 'experiments' | 'consumption'
   | 'subagentDelegation' | 'errorPatterns' | 'failureGroups';
 
 const VIEW_BLOCKS: Record<Exclude<HealthView, 'all'>, ReadonlySet<HealthBlock>> = {
   overview: new Set(['problems']),
   // One failures view (lib/health-failure-groups.ts); the raw breakdown is on Operator.
   failures: new Set(['failureGroups']),
-  runners: new Set(['capacity', 'budget', 'credentials', 'schedules']),
+  runners: new Set(['capacity', 'budget', 'credentials', 'agentAccess', 'schedules']),
   operator: new Set([
-    'dispatch', 'gates', 'taskOutcomes', 'experiments', 'consumption', 'cbm',
+    'dispatch', 'gates', 'taskOutcomes', 'experiments', 'consumption',
     'subagentDelegation', 'errorPatterns', 'orphanedPrs', 'failureAnalytics',
   ]),
+};
+
+/** Runner sandbox posture in plain words; 'sandbox unknown' is deliberately absent (renders nothing). */
+const SANDBOX_PLAIN_LABEL: Record<string, string> = {
+  sandboxed: 'sandboxed',
+  unsandboxed: 'not sandboxed',
+  'mounts unrestricted': 'sandbox partly on',
 };
 
 const VIEW_TITLE: Record<HealthView, string> = {
@@ -234,7 +245,6 @@ interface Props {
   gateAnalytics: GateAnalytics | null;
   /** The one page window (`?window=`) every TREND section reads. */
   window: FailureWindow;
-  cbm: CbmHealthSummary | null;
   subagentDelegation: SubagentDelegationPanel | null;
   errorPatterns: ErrorPatternPanel | null;
   /** Team experiments visible to the viewer; null hides the section. */
@@ -242,6 +252,8 @@ interface Props {
   /** Dispatch transport health for the scoped workspaces; null hides the section. */
   dispatchHealth?: DispatchHealthReport | null;
   failureGroups?: (FailureGroupsView & { truncated: boolean }) | null;
+  /** Agent runs' grants and refusals; null hides the section. */
+  agentAccess?: AgentAccessReport | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -285,19 +297,19 @@ export function HealthClient({
   failureAnalytics,
   gateAnalytics,
   window: activeWindow,
-  cbm,
   subagentDelegation,
   errorPatterns,
   experiments = null,
   dispatchHealth = null,
   failureGroups: failureGroupsView = null,
+  agentAccess = null,
   now,
   page = 'all',
 }: Props) {
   const show = (block: HealthBlock) => page === 'all' || VIEW_BLOCKS[page].has(block);
   // The page window only means something where a TREND section renders.
-  const showsTrend = (['failureGroups', 'failureAnalytics', 'gates', 'taskOutcomes', 'experiments', 'consumption', 'cbm', 'subagentDelegation', 'errorPatterns'] as const).some(show);
-  const showsState = (['capacity', 'budget', 'credentials', 'dispatch', 'schedules'] as const).some(show);
+  const showsTrend = (['failureGroups', 'failureAnalytics', 'gates', 'taskOutcomes', 'experiments', 'consumption', 'subagentDelegation', 'errorPatterns'] as const).some(show);
+  const showsState = (['capacity', 'budget', 'credentials', 'agentAccess', 'dispatch', 'schedules'] as const).some(show);
   const router = useRouter();
   const [, startTransition] = useTransition();
   const [runnerHealth, setRunnerHealth] = useState<Map<string, RunnerHealthState>>(new Map());
@@ -474,13 +486,47 @@ export function HealthClient({
   }, [consumption]);
 
   const failedSchedules = schedules.filter(isScheduleErrorLive);
-  const hasProblems =
+  // On Overview the failures come from the merged failure groups (the same ones
+  // TopFailureGroups renders), so the status sentence and the list can't disagree.
+  const overviewFailureGroups = page === 'overview' ? (failureGroupsView?.groups.length ?? 0) : 0;
+  const nonFailureProblems =
     brokenCredentials.length > 0 ||
     strandedBackends.length > 0 ||
     offlineRunners.length > 0 ||
     degradedSandboxRunners.length > 0 ||
-    failedSchedules.length > 0 ||
-    recentFailures.length > 0;
+    failedSchedules.length > 0;
+  const hasProblems =
+    nonFailureProblems || (page === 'overview' ? overviewFailureGroups > 0 : recentFailures.length > 0);
+
+  // Overview: one status sentence first, short status rows after the attention list.
+  const overview = page === 'overview'
+    ? {
+        headline: overviewHeadline({
+          noRunners: runners.length === 0,
+          offlineRunners: offlineRunners.length,
+          unsandboxedRunners: degradedSandboxRunners.length,
+          brokenCredentials: brokenCredentials.length,
+          strandedBackends: strandedBackends.length,
+          failingSchedules: failedSchedules.length,
+          failureGroups: overviewFailureGroups,
+        }),
+        rows: overviewStatusRows({
+          runners: {
+            total: runners.length,
+            online: runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now)).length,
+            busySlots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0),
+            slots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0),
+          },
+          credentials: { total: credentialHealth.length, broken: brokenCredentials.length },
+          budget: {
+            monthly: budgetForecast?.monthly
+              ? { spentUsd: budgetForecast.monthly.spentUsd, budgetUsd: budgetForecast.monthly.budgetUsd, pctUsed: budgetForecast.monthly.pctUsed }
+              : null,
+            pausedProviders: (budgetForecast?.codex?.isExhausted ? 1 : 0) + (budgetForecast?.claudeTenant?.isExhausted ? 1 : 0),
+          },
+        }),
+      }
+    : null;
 
   // Partition schedules: heartbeat (mission internals) vs regular
   const heartbeatSchedules = schedules.filter(s => s.isHeartbeat);
@@ -502,12 +548,15 @@ export function HealthClient({
         </div>
       </div>
 
-      {/* 1. Problems now */}
-      {show('problems') && (
+      {overview && <OverviewHeadline tone={overview.headline.tone} text={overview.headline.text} />}
+
+      {/* 1. Problems now. On Overview the headline already says "All good", so an
+          empty Problems section would only repeat it. */}
+      {show('problems') && !(overview && !hasProblems) && (
       <section data-testid="health-section-problems" className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">
           <h2 className="section-label">Problems</h2>
-          {failureGroups.total > 0 && (
+          {page !== 'overview' && failureGroups.total > 0 && (
             <span data-testid="problems-denominator" className="text-[11px] text-text-muted">
               {sectionDenominator(
                 failureGroups.total,
@@ -522,7 +571,9 @@ export function HealthClient({
             <span className="text-sm text-status-success font-medium">All systems healthy</span>
           </div>
         ) : (
-          <div className="card divide-y divide-border-default">
+          <>
+          {(page !== 'overview' || nonFailureProblems) && (
+          <div className={`card divide-y divide-border-default ${page === 'overview' ? 'mb-4' : ''}`}>
             {/* Revoked / degraded credentials */}
             {brokenCredentials.map((cred) => {
               const purposeLabel =
@@ -665,7 +716,7 @@ export function HealthClient({
                 Fixed 24h regardless of `?window=` — documented exception (spec
                 §2.3): this is a triage feed, not a trend, and at 30d it would be
                 a 20-row-capped dump of month-old failures. */}
-            {failureGroups.groups.map((g) => {
+            {page !== 'overview' && failureGroups.groups.map((g) => {
               const sample = g.sample;
               return (
                 <div key={g.signature} className="px-4 py-3" data-testid="problem-failure-group">
@@ -702,7 +753,7 @@ export function HealthClient({
               );
             })}
 
-            {failureGroups.hiddenFailures > 0 && (
+            {page !== 'overview' && failureGroups.hiddenFailures > 0 && (
               <div className="px-4 py-2.5">
                 <span className="text-xs text-text-muted">
                   +{failureGroups.hiddenFailures} more failure
@@ -714,9 +765,14 @@ export function HealthClient({
               </div>
             )}
           </div>
+          )}
+          {page === 'overview' && <TopFailureGroups groups={failureGroupsView} now={now} />}
+          </>
         )}
       </section>
       )}
+
+      {overview && <OverviewStatusRows rows={overview.rows} />}
 
       {show('orphanedPrs') && <OrphanedPrsBlock rows={orphanedPrs} now={now} />}
 
@@ -730,11 +786,9 @@ export function HealthClient({
       {show('capacity') && (
       <div data-testid="health-section-runners" className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">
-          <h3 className="text-xs font-medium text-text-secondary">Capacity</h3>
+          <h3 className="text-xs font-medium text-text-secondary">Runners</h3>
           {runners.length > 0 && (
-            <span className="text-[11px] text-text-muted">
-              {sectionDenominator(runners.length, runners.length === 1 ? 'runner' : 'runners')}
-            </span>
+            <span className="text-[11px] text-text-muted">{countOf(runners.length, 'runner')}</span>
           )}
         </div>
         <div className="card">
@@ -748,14 +802,15 @@ export function HealthClient({
                 const online = isRunnerOnline(hb.lastHeartbeatAt, now);
                 const idle = online && hb.activeWorkerCount === 0;
                 const health = runnerHealth.get(hb.id);
-                const statusLabel = online ? (idle ? 'idle' : 'online') : 'stale';
+                const statusLabel = online ? (idle ? 'idle' : 'working') : 'offline';
                 const statusClass = online
                   ? idle ? 'text-text-muted' : 'text-status-success'
                   : 'text-text-muted';
                 // Green means ENFORCED (namespace + mount allowlist), never merely
                 // "bwrap is installed here" — see deriveSandboxPosture.
                 const posture = deriveSandboxPosture(hb);
-                const sandboxLabel = posture.label;
+                // Plain words; an unknown posture says nothing rather than "sandbox unknown".
+                const sandboxLabel = SANDBOX_PLAIN_LABEL[posture.label] ?? null;
                 const sandboxClass = posture.tier === 'success'
                   ? 'text-status-success'
                   : posture.tier === 'warning'
@@ -776,22 +831,24 @@ export function HealthClient({
                           <span className={`text-[11px] md:text-[10px] font-mono ${statusClass}`}>
                             {statusLabel}
                           </span>
-                          <span
-                            className={`text-[11px] md:text-[10px] font-mono ${sandboxClass}`}
-                            title={`${posture.detail}${hb.sandboxProbeAt ? ` · probed ${timeAgo(hb.sandboxProbeAt, now)}` : ' · never probed'}`}
-                          >
-                            {sandboxLabel}
-                          </span>
+                          {sandboxLabel && (
+                            <span
+                              className={`text-[11px] md:text-[10px] font-mono ${sandboxClass}`}
+                              title={`${posture.detail}${hb.sandboxProbeAt ? ` · probed ${timeAgo(hb.sandboxProbeAt, now)}` : ' · never probed'}`}
+                            >
+                              {sandboxLabel}
+                            </span>
+                          )}
                         </div>
                         <p className="text-xs text-text-muted">
-                          {hb.activeWorkerCount}/{hb.maxConcurrentWorkers} workers ·{' '}
-                          {freshness(hb.lastHeartbeatAt, now)}
+                          {hb.activeWorkerCount} of {hb.maxConcurrentWorkers} agents running ·{' '}
+                          {online ? `checked ${observedAgo(hb.lastHeartbeatAt, now) ?? 'just now'}` : `last seen ${observedAgo(hb.lastHeartbeatAt, now) ?? 'never'}`}
                         </p>
                       </div>
                       <button
                         onClick={() => checkRunnerHealth(hb.id)}
                         disabled={health?.loading}
-                        className="text-[11px] px-2.5 h-7 rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong disabled:opacity-50 transition-colors shrink-0"
+                        className="text-[11px] px-2.5 h-7 border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong disabled:opacity-50 transition-colors shrink-0"
                       >
                         {health?.loading ? '…' : health?.expanded ? 'Hide' : 'Check health'}
                       </button>
@@ -886,6 +943,8 @@ export function HealthClient({
         <CredentialStateSection credentials={credentialHealth} now={now} />
       )}
 
+      {show('agentAccess') && <AgentAccessSection report={agentAccess} />}
+
       {show('dispatch') && <DispatchSection report={dispatchHealth ?? null} now={now} />}
 
       {/* Schedules — collapsed by default. Lives under State because what it
@@ -905,7 +964,7 @@ export function HealthClient({
             </svg>
             Schedules
             <span className="font-normal text-text-muted ml-1">
-              ({activeRegular.length} active{pausedRegular.length > 0 ? `, ${pausedRegular.length} paused` : ''}{heartbeatSchedules.length > 0 ? `, ${heartbeatSchedules.length} check-in${heartbeatSchedules.length !== 1 ? 's' : ''}` : ''})
+              ({activeRegular.length} on{pausedRegular.length > 0 ? `, ${pausedRegular.length} paused` : ''}{heartbeatSchedules.length > 0 ? `, ${countOf(heartbeatSchedules.length, 'mission check-in')}` : ''})
             </span>
           </button>
 
@@ -1135,8 +1194,6 @@ export function HealthClient({
         {show('consumption') && consumption && consumption.totals.tasks > 0 && (
           <ConsumptionSection stats={consumption} workspaceId={wsFilter} now={now} />
         )}
-
-        {show('cbm') && cbm && <CodebaseGraphSection cbm={cbm} window={activeWindow} />}
 
         {show('subagentDelegation') && subagentDelegation && (
           <SubagentDelegationSection panel={subagentDelegation} window={activeWindow} />
@@ -1504,194 +1561,6 @@ function ConsumptionSection({
   );
 }
 
-/** Copy for each CBM state — the label carries the diagnosis, not just a colour. */
-const CBM_STATE: Record<
-  CbmHealthSummary['state'],
-  { label: string; tone: string; hint: string }
-> = {
-  healthy: {
-    label: 'In use',
-    tone: 'text-success',
-    hint: 'Most CBM-enabled tasks queried the graph.',
-  },
-  partial: {
-    label: 'Partly used',
-    tone: 'text-warning',
-    hint: 'A minority of CBM-enabled tasks queried the graph.',
-  },
-  unused: {
-    label: 'Never queried',
-    tone: 'text-error',
-    hint: 'The graph was mounted and warm on every task and no agent called it. '
-      + 'You pay for indexing and no agent uses it. The graph is available, so fix the steering.',
-  },
-  unavailable: {
-    label: 'Not mounted',
-    tone: 'text-error',
-    hint: 'No task had the graph mounted. Check the binary and the disable reasons below.',
-  },
-  no_data: {
-    label: 'No data',
-    tone: 'text-text-muted',
-    hint: 'No completed task in this window recorded CBM metrics.',
-  },
-};
-
-function pct(v: number | null): string {
-  return v === null ? '' : `${Math.round(v * 100)}%`;
-}
-
-/**
- * Codebase graph (CBM) health.
- *
- * Replaces reading CBM off the generic top-tools list, which could only ever show
- * which graph tools were called — and therefore looked identical whether the graph
- * was unused or absent. The question this answers first is adoption: mounted, warm,
- * and never queried is the failure mode that hid for weeks.
- */
-function CodebaseGraphSection({ cbm, window }: { cbm: CbmHealthSummary; window: FailureWindow }) {
-  const state = CBM_STATE[cbm.state];
-  const deltaSuppressed = cbm.deltasSuppressedBecause;
-
-  return (
-    <div data-testid="health-section-cbm" className="mb-6">
-      <div className="flex items-baseline justify-between gap-3 mb-3">
-        <h3 className="text-xs font-medium text-text-secondary">Codebase Graph</h3>
-        {/* Sessions, not tasks: these rows are workers, with no dedup by task,
-            so a retried task counts once per attempt. */}
-        <span className="text-[11px] text-text-muted">
-          {sectionDenominator(
-            cbm.activeCount,
-            cbm.activeCount === 1 ? 'CBM-enabled session' : 'CBM-enabled sessions',
-          )} ({window})
-        </span>
-      </div>
-      <div className="card p-4 space-y-4">
-
-        {/* The alarm, not the adoption percentage. "Mounted, warm, and never
-            queried" is the regression this panel exists to catch; the adoption
-            RATIO itself lives on the usage drill-down, so the same number is not
-            published twice under two different windows. */}
-        <div className="flex items-start justify-between gap-3">
-          <div className="space-y-1">
-            <span className={`text-sm font-medium ${state.tone}`} data-testid="cbm-state">
-              {state.label}
-            </span>
-            <p className="text-xs text-text-secondary max-w-prose">{state.hint}</p>
-          </div>
-          <span className="text-xs text-text-muted tabular-nums shrink-0" title="Graph tool calls in the window">
-            {cbm.totalGraphCalls} call{cbm.totalGraphCalls !== 1 ? 's' : ''}
-          </span>
-        </div>
-
-        {/* What agents did instead — the substitution the graph is meant to replace. */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 pt-3 border-t border-border-default">
-          <Stat
-            label="Graph calls / session"
-            value={cbm.avgGraphCallsOnActive === null ? '' : cbm.avgGraphCallsOnActive.toFixed(1)}
-            sub="on CBM sessions"
-          />
-          <Stat
-            label="File reads / session"
-            value={cbm.avgFileAccessOnActive === null ? '' : Math.round(cbm.avgFileAccessOnActive).toString()}
-            sub="Read + Grep + Glob"
-          />
-          <Stat
-            label="Warm starts"
-            value={pct(cbm.warmStartRate)}
-            sub={`${cbm.warmStarts} served by seed`}
-          />
-          <Stat
-            label="Index failures"
-            value={cbm.indexAttempted === 0 ? '' : pct(cbm.indexFailureRate)}
-            sub={`${cbm.indexFailed}/${cbm.indexAttempted} builds`}
-          />
-        </div>
-
-        {/* Why a task had no graph. Decisions and breakage read differently. */}
-        {(cbm.binaryAbsent > 0 || cbm.mountUnavailable > 0 || Object.keys(cbm.byDesignSkips).length > 0 || cbm.topIndexFailReason) && (
-          <div className="space-y-1 pt-3 border-t border-border-default">
-            {cbm.binaryAbsent > 0 && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs text-error">Binary absent from the runner image</span>
-                <span className="text-xs text-text-muted tabular-nums">{countOf(cbm.binaryAbsent, 'session')}</span>
-              </div>
-            )}
-            {cbm.mountUnavailable > 0 && (
-              <div className="flex items-center justify-between gap-2">
-                <span
-                  className="text-xs text-error"
-                  title="A mount CBM needs was missing, so CBM was dropped for the task rather than indexing into a tmpfs that is discarded at session end."
-                >
-                  Sandbox mount unavailable
-                </span>
-                <span className="text-xs text-text-muted tabular-nums">{countOf(cbm.mountUnavailable, 'session')}</span>
-              </div>
-            )}
-            {cbm.topIndexFailReason && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs text-warning truncate" title={cbm.topIndexFailReason.reason}>
-                  Top index failure: {cbm.topIndexFailReason.reason}
-                </span>
-                <span className="text-xs text-text-muted tabular-nums shrink-0">
-                  {cbm.topIndexFailReason.count}
-                </span>
-              </div>
-            )}
-            {Object.entries(cbm.byDesignSkips).map(([reason, count]) => (
-              <div key={reason} className="flex items-center justify-between gap-2">
-                <span
-                  className="text-xs text-text-secondary"
-                  title="A deliberate skip. The fallback rate excludes it."
-                >
-                  Skipped by design: {reason.replace(/_/g, ' ')}
-                </span>
-                <span className="text-xs text-text-muted tabular-nums">{count}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Payoff, or an honest refusal to claim one. */}
-        <div className="pt-3 border-t border-border-default">
-          {deltaSuppressed ? (
-            <p className="text-xs text-text-muted">
-              {deltaSuppressed === 'no_graph_tool_calls_observed'
-                ? 'Token and file-access deltas withheld: no graph call was observed, so any cohort difference has no mechanism behind it.'
-                : 'Token and file-access deltas withheld: cohorts are too small to compare yet.'}
-            </p>
-          ) : (
-            <div className="flex items-center gap-4">
-              <span className="text-xs text-text-secondary">
-                Input tokens{' '}
-                <span className="tabular-nums text-text-primary">{pct(cbm.inputTokenDeltaPct)}</span>
-              </span>
-              <span className="text-xs text-text-secondary">
-                File access{' '}
-                <span className="tabular-nums text-text-primary">{pct(cbm.fileAccessDeltaPct)}</span>
-              </span>
-              <span className="text-xs text-text-muted">vs comparable non-CBM tasks</span>
-            </div>
-          )}
-        </div>
-
-        {/* Per-tool counts last: useful once adoption is non-zero, meaningless before. */}
-        {cbm.topTools.length > 0 && (
-          <div className="space-y-1 pt-3 border-t border-border-default">
-            <span className="text-xs text-text-secondary">Tools used</span>
-            {cbm.topTools.map((t) => (
-              <div key={t.tool} className="flex items-center justify-between gap-2">
-                <span className="text-xs text-text-primary truncate">{t.tool}</span>
-                <span className="text-xs text-text-muted tabular-nums">{t.avgCalls.toFixed(1)} / session</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 /**
  * Delegated work: what share of a session's total agent-effort (wall clock +
  * background subagent time) was handed to background subagents. See
@@ -1912,11 +1781,10 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
   return (
     <div data-testid="health-section-budget-forecast" className="mb-6">
       <div className="flex items-baseline justify-between gap-3 mb-3">
-        <h3 className="text-xs font-medium text-text-secondary">Budget forecast</h3>
-        {/* Documented exception: pinned to the provider's own session window and
-            the calendar month. It cannot obey `?window=`, so it says what it
-            does obey instead of quietly ignoring the control. */}
-        <span className="text-[11px] text-text-muted text-right">provider session window · ignores the page window</span>
+        <h3 className="text-xs font-medium text-text-secondary">Budget</h3>
+        {/* Pinned to each provider's own usage period and the calendar month,
+            never to a page window; this page has no window control. */}
+        <span className="text-[11px] text-text-muted text-right">usage limits and monthly spend</span>
       </div>
       <div className="card divide-y divide-border-default">
 
@@ -1930,7 +1798,7 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
                   className="tabular-nums font-medium text-text-primary"
                   title="Usage vs. conservative floor (p25 of exhaustion history). Remaining capacity is usually higher."
                 >
-                  {s.pressurePct}% of floor
+                  {s.pressurePct}% of usual limit
                 </span>
                 <span className="text-text-muted">·</span>
                 <span>{formatReset(s.windowEndsAt, now)}</span>
@@ -1968,7 +1836,7 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
         {learningSessions.length > 0 && (
           <div className="px-4 py-2.5">
             <span className="text-xs text-text-muted" title="No exhaustion events recorded. Sessions only learn on hitting the session wall.">
-              {learningSessions.length} session{learningSessions.length !== 1 ? 's' : ''} · no exhaustion data
+              {countOf(learningSessions.length, 'Claude sign-in')} · no usage limit hit so far
             </span>
           </div>
         )}
@@ -2083,6 +1951,13 @@ const CREDENTIAL_PURPOSE_LABELS: Record<string, string> = {
   codex_credential: 'Codex credential',
 };
 
+const CREDENTIAL_STATUS_WORD: Record<CredentialHealthItem['healthStatus'], string> = {
+  healthy: 'working',
+  degraded: 'failing',
+  revoked: 'revoked',
+  unknown: 'not checked',
+};
+
 const CREDENTIAL_TONE: Record<CredentialHealthItem['healthStatus'], string> = {
   healthy: 'text-status-success',
   degraded: 'text-status-warning',
@@ -2113,10 +1988,7 @@ function CredentialStateSection({
       <div className="flex items-baseline justify-between gap-3 mb-3">
         <h3 className="text-xs font-medium text-text-secondary">Credentials</h3>
         <span className="text-[11px] text-text-muted">
-          {sectionDenominator(
-            credentials.length,
-            credentials.length === 1 ? 'backend credential' : 'backend credentials',
-          )}
+          {countOf(credentials.length, 'credential')}
         </span>
       </div>
       <div className="card divide-y divide-border-default">
@@ -2127,7 +1999,7 @@ function CredentialStateSection({
             </span>
             <div className="flex items-center gap-2 text-xs shrink-0">
               <span className={`font-medium ${CREDENTIAL_TONE[c.healthStatus] ?? 'text-text-muted'}`}>
-                {c.healthStatus}
+                {CREDENTIAL_STATUS_WORD[c.healthStatus] ?? c.healthStatus}
               </span>
               {c.consecutiveAuthFailures > 0 && (
                 <>

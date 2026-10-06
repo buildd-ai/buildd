@@ -16,7 +16,7 @@
  * Self-contained: it owns the in-flight action and its error, and calls
  * `onChanged` after a successful action so the host can refetch.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import AnswerRecorded from '@/components/AnswerRecorded';
@@ -37,6 +37,7 @@ import {
   getGateReasonSubtitle,
   getGateReasonTitle,
   otherBackendOf,
+  backendDisplayName,
   requestTaskRetry,
   taskActionSet,
 } from '@/lib/task-actions';
@@ -101,6 +102,24 @@ export default function TaskActionZone({
   const [target, setTarget] = useState('');
   const start = useTaskStart({ taskId, workspaceId, onStarted: onChanged });
 
+  // A failed task may offer the other backend, but only one that can run it:
+  // the same availability check the start gate uses. Unknown until it answers,
+  // and unknown never offers the switch.
+  const otherBackend = otherBackendOf(backend);
+  const [otherBackendAvailable, setOtherBackendAvailable] = useState(false);
+  useEffect(() => {
+    if (phase !== 'failed' || !otherBackend || !workspaceId) return;
+    let cancelled = false;
+    fetch(`/api/workspaces/${workspaceId}/backends`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { backends?: Array<{ id: string; available: boolean }> } | null) => {
+        if (cancelled) return;
+        setOtherBackendAvailable(!!d?.backends?.some((b) => b.id === otherBackend && b.available));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [phase, otherBackend, workspaceId]);
+
   const actions = taskActionSet({
     phase,
     isBlocked,
@@ -108,9 +127,9 @@ export default function TaskActionZone({
     hasQuestion: !!worker?.waitingFor,
     hasHistory: !!historyHref,
     missionExecutor,
+    otherBackendAvailable,
   });
   const has = (id: (typeof actions)[number]) => actions.includes(id);
-  const otherBackend = otherBackendOf(backend);
   // "Not logged in · Please run /login" and kin: say what to do instead.
   const authFailure = lastError ? explainProviderAuthFailure(lastError.raw ?? lastError.excerpt, backend) : null;
   const local = missionExecutor === 'local';
@@ -199,7 +218,7 @@ export default function TaskActionZone({
               disabled={retrying !== null}
               className={SECONDARY_BTN}
             >
-              {retrying === 'same' ? 'Retrying…' : `Retry${backend ? ` on ${backend}` : ''}`}
+              {retrying === 'same' ? 'Retrying…' : `Retry${backend ? ` on ${backendDisplayName(backend)}` : ''}`}
             </button>
             {has('switch_backend') && otherBackend && (
               <button
@@ -207,10 +226,10 @@ export default function TaskActionZone({
                 data-action="switch_backend"
                 onClick={() => retry('switch')}
                 disabled={retrying !== null}
-                className={`${QUIET_BTN} capitalize`}
-                title={`Retry this task on the ${otherBackend} backend instead`}
+                className={QUIET_BTN}
+                title={`Retry this task on ${backendDisplayName(otherBackend)} instead`}
               >
-                {retrying === 'switch' ? 'Switching…' : `Switch to ${otherBackend}`}
+                {retrying === 'switch' ? 'Switching…' : `Switch to ${backendDisplayName(otherBackend)}`}
               </button>
             )}
             {has('history') && historyHref && (
@@ -332,7 +351,7 @@ export default function TaskActionZone({
           <div className="flex flex-wrap items-center gap-2">
             {refusal.gateReason === 'capability_mismatch' && (refusal.availableBackends ?? []).map(b => (
               <button key={b} type="button" data-action="switch_and_start" onClick={() => start.switchBackendAndStart(b)} disabled={starting} className={SECONDARY_BTN}>
-                {start.pending === 'switch' ? 'Switching…' : `Switch to ${b === 'claude' ? 'Claude (default)' : b} and start`}
+                {start.pending === 'switch' ? 'Switching…' : `Switch to ${b === 'claude' ? 'Claude (default)' : backendDisplayName(b)} and start`}
               </button>
             ))}
             {refusal.gateReason === 'workspace_cap_reached' && refusal.canExempt && (

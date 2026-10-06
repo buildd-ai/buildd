@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SUBSCRIBERS } from './modules';
+import { SUBSCRIBERS, COMPLETION_POLICIES } from './modules';
+import { COMPLETION_SLOTS } from './lib/completion-policy';
 import { moduleOf } from '../../../scripts/module-boundaries';
 
 /**
@@ -34,13 +35,32 @@ describe('composition root', () => {
     expect(byEvent('task.failed')).toEqual(['notifications:ledger-task-failed', 'notifications:push-task-failed']);
   });
 
+  it('task.created: the category look is scheduled before the mission chain starts', () => {
+    expect(byEvent('task.created')).toEqual(['jev-decisions:task-category-look', 'missions:task-created-mission-feed']);
+  });
+
   it('the rest', () => {
+    expect(byEvent('team.created')).toEqual(['roles-skills:seed-default-roles']);
     expect(byEvent('task.retrying')).toEqual(['notifications:push-task-retrying']);
     expect(byEvent('task.terminal')).toEqual(['knowledge:task-evidence']);
     expect(byEvent('worker.finished')).toEqual(['knowledge:memory-use-labels']);
     expect(byEvent('task.needs_input')).toEqual(['notifications:ledger-task-needs-input']);
-    expect(byEvent('pr.merged')).toEqual(['notifications:ledger-pr-merged']);
+    expect(byEvent('pr.merged')).toEqual(['releases:release-record-prod-merge', 'notifications:ledger-pr-merged']);
+    expect(byEvent('task.pr_merge_delivered')).toEqual(['missions:loop-advance-on-merge', 'missions:open-mission-integration-pr']);
+    // The mission wakes and dependents unblock before the release trigger.
+    expect(byEvent('task.pr_merged')).toEqual([
+      'missions:mission-wake-on-merge', 'missions:unblock-dependent-missions', 'releases:release-path-b-trigger',
+    ]);
+    expect(byEvent('pr.closed')).toEqual(['missions:settle-surface-intents']);
+    expect(byEvent('pr.base_changed')).toEqual(['missions:retarget-surface-intents']);
+    expect(byEvent('pr.needs_human')).toEqual(['missions:notify-mission-pr-ready']);
+    expect(byEvent('workflow_run.completed')).toEqual(['releases:release-workflow-run-readback']);
     expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed']);
+  });
+
+  it('completion policies: exactly one per core-declared slot, in core\'s order', () => {
+    expect(COMPLETION_SLOTS).toEqual(['evidence', 'loop', 'release']);
+    expect(Object.keys(COMPLETION_POLICIES).sort()).toEqual([...COMPLETION_SLOTS].sort());
   });
 
   it('labels are unique, so a page names exactly one step', () => {

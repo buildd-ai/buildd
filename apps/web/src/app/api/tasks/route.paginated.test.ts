@@ -145,6 +145,9 @@ mock.module('@/lib/workspace-resolver', () => ({
   resolveWorkspace: mock(() => null),
   autoResolveAccountWorkspace: mock(() => Promise.resolve({ workspaceId: 'ws-1' })),
 }));
+// Creation side effects reach modules through emit(); this file reads lists,
+// so the composition root (and its module graph) stays out.
+mock.module('@/lib/core-emit', () => ({ emit: mock(() => Promise.resolve()) }));
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mock(() => Promise.resolve()),
   channels: { workspace: (id: string) => `workspace-${id}`, task: (id: string) => `task-${id}`, worker: (id: string) => `worker-${id}` },

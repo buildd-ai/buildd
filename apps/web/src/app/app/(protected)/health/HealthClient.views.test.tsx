@@ -142,7 +142,6 @@ const render = (over: Record<string, any> = {}) =>
       budgetForecast={null}
       failureAnalytics={null}
       window="7d"
-      cbm={null}
       subagentDelegation={null}
       errorPatterns={null}
       now={NOW}
@@ -224,10 +223,34 @@ describe('HealthClient — pages', () => {
     }
   });
 
-  it('the Problems overflow line links to the Failures page', () => {
+  it('Overview lists the merged failure groups and links to the Failures page', () => {
     const words = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel'];
-    const many = words.map((w, i) => failure({ workerId: `w${i}`, error: `${w} broke` }));
-    const html = render({ recentFailures: many, page: 'overview' });
+    const failures = words.map((w, i) => ({
+      workerId: `w${i}`, taskId: `t${i}`, taskTitle: `Task ${w}`, workspaceName: 'ws',
+      error: `${w} broke`, exitCause: 'code_failure', completedAt: ago(HOUR),
+    }));
+    const html = render({
+      page: 'overview',
+      recentFailures: [],
+      failureGroups: { ...buildFailureGroups({ failures, traces: [] }), truncated: false },
+    });
+    expect(html).toContain('data-testid="top-failure-groups"');
     expect(html).toContain('href="/app/health/failures"');
+    // The old 24h signature rows and their overflow line are gone from Overview.
+    expect(html).not.toContain('data-testid="problem-failure-group"');
+    expect(html).not.toContain('data-testid="problems-denominator"');
+  });
+
+  it("Overview's status sentence counts the same failure groups the list shows", () => {
+    const one = [{ workerId: 'w1', taskId: 't1', taskTitle: 'T', workspaceName: 'ws', error: 'boom', exitCause: 'code_failure', completedAt: ago(HOUR) }];
+    const html = render({
+      page: 'overview',
+      recentFailures: [],
+      runners: [],
+      credentialHealth: [],
+      failureGroups: { ...buildFailureGroups({ failures: one, traces: [] }), truncated: false },
+    });
+    // One failure group plus "no runners connected".
+    expect(html).toContain('2 things need you.');
   });
 });

@@ -7,13 +7,15 @@
  * invariant; two emitters of one fact build the same dedupe key. Prose is
  * omitted for sensitive workspaces.
  *
- * Team push (`notifyTeam`): a worker-reported outcome is pushed to the owning
- * team's channel. A merge-completed task is not; it never was.
+ * Team push (`notifyTeam`): a task's outcome (its final status, settled by
+ * the worker PATCH or by a held release's CI) is pushed to the owning team's
+ * channel. A merge-completed task is not; it never was. A failure a
+ * completion-policy slot decided carries the slot's reason line.
  *
  * Every send is fire-and-forget, exactly as the inline calls were, so the
  * emitting request gains no latency.
  */
-import { subscriber, type AnySubscriber } from '@/lib/core-events';
+import { subscriber, type AnySubscriber, type SlotFailure } from '@/lib/core-events';
 import { notifyTeam } from '@/lib/notify';
 import { isCredentialExpiredError } from '@/lib/notify-rules';
 import {
@@ -21,6 +23,16 @@ import {
 } from '@/lib/subscriptions';
 
 const taskUrl = (taskId: string) => `https://buildd.dev/app/tasks/${taskId}`;
+
+/**
+ * The slot's reason as one line ("Release failed: CI red on main"). A
+ * sensitive workspace gets the fixed label only: the slot's detail can name
+ * branches, PRs or the loop's command.
+ */
+function failureLine(failure: SlotFailure | null | undefined, sensitive: boolean): string | null {
+  if (!failure) return null;
+  return sensitive ? failure.label : `${failure.label}: ${failure.reason}`;
+}
 
 export const notificationSubscribers: readonly AnySubscriber[] = [
   // ── Subscriptions ledger ───────────────────────────────────────────────────
@@ -30,14 +42,19 @@ export const notificationSubscribers: readonly AnySubscriber[] = [
       await recordEvent(taskCompletedEvent({ taskId: e.taskId, workerId: e.workerId, workspaceId: e.workspaceId }));
       return;
     }
-    void recordEvent(taskCompletedEvent({
+    const write = recordEvent(taskCompletedEvent({
       taskId: e.taskId, workerId: e.workerId, title: e.sensitive ? null : e.title, workspaceId: e.workspaceId,
     }));
+    // The webhook has no after(): a held release's write is awaited.
+    if (e.via === 'release') await write; else void write;
   }),
-  subscriber('notifications', 'task.failed', 'ledger-task-failed', e => {
-    void recordEvent(taskFailedEvent({
+  subscriber('notifications', 'task.failed', 'ledger-task-failed', async e => {
+    const reason = failureLine(e.failure, e.sensitive);
+    const write = recordEvent(taskFailedEvent({
       taskId: e.taskId, workerId: e.workerId, title: e.sensitive ? null : e.title, workspaceId: e.workspaceId,
+      ...(reason ? { reason } : {}),
     }));
+    if (e.via === 'release') await write; else void write;
   }),
   // "Tell me when this task needs input". Keyed per question, so a re-sent
   // waitingFor writes one row.
@@ -64,7 +81,7 @@ export const notificationSubscribers: readonly AnySubscriber[] = [
     });
   }),
   subscriber('notifications', 'task.completed', 'push-task-completed', e => {
-    if (e.via !== 'worker') return;
+    if (e.via === 'merge') return;
     void notifyTeam(e.teamId, 'taskCompleted', {
       title: 'Task done',
       message: e.sensitive ? 'Task completed (content redacted)' : `${e.title}\n${e.workspaceName || 'unknown'}`,
@@ -74,9 +91,11 @@ export const notificationSubscribers: readonly AnySubscriber[] = [
     });
   }),
   subscriber('notifications', 'task.failed', 'push-task-failed', e => {
+    const reason = failureLine(e.failure, e.sensitive);
     void notifyTeam(e.teamId, 'taskFailed', {
       title: 'Task failed',
-      message: e.sensitive ? 'Task failed (content redacted)' : `${e.title}\n${e.workspaceName || 'unknown'}`,
+      message: (e.sensitive ? 'Task failed (content redacted)' : `${e.title}\n${e.workspaceName || 'unknown'}`)
+        + (reason ? `\n${reason}` : ''),
       url: taskUrl(e.taskId),
       urlTitle: 'View task',
       priority: 0,

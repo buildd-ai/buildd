@@ -69,17 +69,10 @@
       "apps/web/src/lib/ci-failure-retry.ts": "reviews-merge",
       "apps/web/src/lib/dead-pr-shutdown.ts": "reviews-merge",
       "apps/web/src/lib/knowledge-ingest.ts": "knowledge",
-      "apps/web/src/lib/loop-webhook.ts": "missions",
       "apps/web/src/lib/merge-policy.ts": "reviews-merge",
       "apps/web/src/lib/migration-collision-retry.ts": "reviews-merge",
       "apps/web/src/lib/migration-inspector.ts": "workspace-migration",
       "apps/web/src/lib/mission-base-guard.ts": "missions",
-      "apps/web/src/lib/mission-completion.ts": "missions",
-      "apps/web/src/lib/mission-dependency.ts": "missions",
-      "apps/web/src/lib/mission-notifications.ts": "missions",
-      "apps/web/src/lib/mission-pr.ts": "missions",
-      "apps/web/src/lib/mission-release.ts": "releases",
-      "apps/web/src/lib/mission-wake.ts": "missions",
       "apps/web/src/lib/notify.ts": "notifications",
       "apps/web/src/lib/pr-activity-comment.ts": "reviews-merge",
       "apps/web/src/lib/pr-landing.ts": "reviews-merge",
@@ -91,19 +84,12 @@
       "apps/web/src/lib/prompt-evals/run.ts": "experiments",
       "apps/web/src/lib/prompt-evals/store.ts": "experiments",
       "apps/web/src/lib/pushover.ts": "notifications",
-      "apps/web/src/lib/release-executor.ts": "releases",
-      "apps/web/src/lib/release-verification.ts": "releases",
-      "apps/web/src/lib/release/record.ts": "releases",
-      "apps/web/src/lib/release/workflow-run.ts": "releases",
       "apps/web/src/lib/review-feedback.ts": "reviews-merge",
       "apps/web/src/lib/review-verdict-gate.ts": "reviews-merge",
       "apps/web/src/lib/reviewer.ts": "reviews-merge",
       "apps/web/src/lib/spec-recheck.ts": "spec-conformance",
       "apps/web/src/lib/supersession.ts": "reviews-merge",
-      "apps/web/src/lib/surface-ordering.ts": "missions",
-      "packages/core/mission-integration.ts": "missions",
-      "packages/core/release-archetype.ts": "releases",
-      "packages/core/release-strategy.ts": "releases"
+      "packages/core/mission-integration.ts": "missions"
     },
     "apps/web/src/app/api/mcp-oauth/[workspace]/route.ts": {
       "apps/web/src/lib/linked-knowledge.ts": "knowledge",
@@ -155,17 +141,13 @@
     },
     "apps/web/src/app/api/tasks/route.ts": {
       "apps/web/src/lib/change-intent.ts": "missions",
-      "apps/web/src/lib/criteria-escalation.ts": "missions",
-      "apps/web/src/lib/mission-feed.ts": "missions",
       "apps/web/src/lib/mission-integration-branch.ts": "missions",
       "apps/web/src/lib/mission-link-scope.ts": "missions",
-      "apps/web/src/lib/mission-loop.ts": "missions",
       "apps/web/src/lib/mission-surface-audit.ts": "visual-qa",
       "apps/web/src/lib/required-connectors.ts": "connectors",
       "apps/web/src/lib/subject-anchor-observer.ts": "missions",
       "apps/web/src/lib/subject-intake-db.ts": "intake-integrations",
       "apps/web/src/lib/subject-intake.ts": "intake-integrations",
-      "apps/web/src/lib/task-category-decision.ts": "jev-decisions",
       "apps/web/src/lib/task-category.ts": "health-quality",
       "apps/web/src/lib/task-role-apply.ts": "roles-skills",
       "packages/core/friction-manifest.ts": "health-quality",
@@ -181,9 +163,6 @@
       "packages/core/decision-model.ts": "jev-decisions",
       "packages/core/inference-key-policy.ts": "jev-decisions",
       "packages/core/inference-policy.ts": "jev-decisions"
-    },
-    "apps/web/src/app/api/teams/route.ts": {
-      "apps/web/src/lib/default-roles.ts": "roles-skills"
     },
     "apps/web/src/app/api/version/route.ts": {
       "apps/web/src/lib/deploy-identity.ts": "releases"
@@ -201,13 +180,11 @@
       "apps/web/src/lib/criteria-reviewer-findings.ts": "missions",
       "apps/web/src/lib/dead-pr-shutdown.ts": "reviews-merge",
       "apps/web/src/lib/dependency-bot-pr.ts": "reviews-merge",
-      "apps/web/src/lib/loop-dispatcher.ts": "missions",
       "apps/web/src/lib/merge-policy.ts": "reviews-merge",
       "apps/web/src/lib/migration-inspector.ts": "workspace-migration",
       "apps/web/src/lib/mission-base-guard.ts": "missions",
       "apps/web/src/lib/mission-budget.ts": "missions",
       "apps/web/src/lib/mission-integration-branch.ts": "missions",
-      "apps/web/src/lib/mission-release.ts": "releases",
       "apps/web/src/lib/notify.ts": "notifications",
       "apps/web/src/lib/pr-activity-comment.ts": "reviews-merge",
       "apps/web/src/lib/pr-activity-fix-claimed.ts": "reviews-merge",
@@ -217,7 +194,6 @@
       "apps/web/src/lib/pr-review-status.ts": "reviews-merge",
       "apps/web/src/lib/pr-scope-reconcile-trigger.ts": "reviews-merge",
       "apps/web/src/lib/read-only-review.ts": "reviews-merge",
-      "apps/web/src/lib/release-executor.ts": "releases",
       "apps/web/src/lib/reviewer-evidence.ts": "knowledge",
       "apps/web/src/lib/reviewer-output.ts": "reviews-merge",
       "apps/web/src/lib/reviewer-prose-fallback.ts": "reviews-merge",
@@ -225,9 +201,7 @@
       "apps/web/src/lib/silent-completion.ts": "health-quality",
       "apps/web/src/lib/supersession.ts": "reviews-merge",
       "apps/web/src/lib/terminal-record-ledger.ts": "health-quality",
-      "apps/web/src/lib/visual-audit-evidence.ts": "visual-qa",
       "packages/core/bash-failure-trace.ts": "health-quality",
-      "packages/core/cbm-health.ts": "knowledge",
       "packages/core/orchestration-ledger-source.ts": "missions",
       "packages/core/routing-analytics.ts": "health-quality",
       "packages/core/runner-health.ts": "health-quality"
@@ -260,7 +234,6 @@
       "apps/web/src/app/api/workers/claim/mission-handoff-injection.ts": "missions"
     },
     "apps/web/src/app/api/workers/claim/route.ts": {
-      "apps/web/src/app/api/workers/claim/cbm-experiment.ts": "experiments",
       "apps/web/src/app/api/workers/claim/connector-block-notify.ts": "connectors",
       "apps/web/src/app/api/workers/claim/connector-prefilter.ts": "connectors",
       "apps/web/src/app/api/workers/claim/mcp-connector-injection.ts": "connectors",
@@ -309,7 +282,6 @@
       "apps/web/src/lib/mission-task-href.ts": "missions"
     },
     "apps/web/src/auth.ts": {
-      "apps/web/src/lib/default-roles.ts": "roles-skills",
       "apps/web/src/lib/personal-workspace-links-plan.ts": "notifications"
     },
     "apps/web/src/lib/agent-capabilities/github.ts": {
@@ -479,7 +451,6 @@
       "packages/core/mission-integration.ts": "missions"
     },
     "packages/core/db/schema.ts": {
-      "packages/core/cbm-injection.ts": "knowledge",
       "packages/core/decision-model.ts": "jev-decisions",
       "packages/core/inference-policy.ts": "jev-decisions",
       "packages/core/mission-helpers.ts": "missions",
@@ -537,7 +508,6 @@
       "packages/core/model-tier-defaults.ts": "model-tiers"
     },
     "packages/core/prompt-catalog.ts": {
-      "packages/core/cbm-injection-decision.ts": "jev-decisions",
       "packages/core/decision-kind-post-session-triage.ts": "jev-decisions",
       "packages/core/decision-kind-scout-probe-selection.ts": "jev-decisions",
       "packages/core/memory-decisions.ts": "jev-decisions",

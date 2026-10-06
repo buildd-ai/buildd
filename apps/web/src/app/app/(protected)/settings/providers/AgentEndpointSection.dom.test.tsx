@@ -55,11 +55,11 @@ let host: HTMLElement;
 let root: ReturnType<typeof createRoot>;
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 
-async function mount(canManage = true) {
+async function mount(canManage = true, workspaces = [{ id: 'ws-1', name: 'Widgets' }]) {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => { root.render(<AgentEndpointSection teamId="t" canManage={canManage} workspaces={[{ id: 'ws-1', name: 'Widgets' }]} />); });
+  await act(async () => { root.render(<AgentEndpointSection teamId="t" canManage={canManage} workspaces={workspaces} />); });
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 }
 const text = (id: string) => host.querySelector(`[data-testid="${id}"]`)?.textContent ?? '';
@@ -281,6 +281,94 @@ describe('AgentEndpointSection', () => {
     expect(button('Set up an endpoint')).toBeUndefined();
     expect(button('Verify')).toBeUndefined();
     expect(button('Remove')).toBeUndefined();
+  });
+});
+
+describe('Applies to: which workspaces the team endpoint covers', () => {
+  const WORKSPACES = [{ id: 'ws-1', name: 'Widgets' }, { id: 'ws-2', name: 'Gadgets' }, { id: 'ws-3', name: 'Sprockets' }];
+  const checkbox = (id: string) => host.querySelector<HTMLInputElement>(`[data-testid="agent-endpoint-applies-workspace"][data-workspace="${id}"]`)!;
+  const editor = () => host.querySelector('[data-testid="agent-endpoint-applies-editor"]');
+  const appliesRadio = (i: number) => host.querySelectorAll('input[name="agent-endpoint-applies"]')[i];
+  const editorButton = (label: string) => [...(editor()?.querySelectorAll('button') ?? [])].find((b) => b.textContent === label);
+
+  it('shows the current scope: all workspaces, or the count and names', async () => {
+    endpoints = [{ ...teamEndpoint, appliesTo: null }];
+    await mount(true, WORKSPACES);
+    expect(text('agent-endpoint-applies-to')).toBe('Applies to: All workspaces');
+    act(() => root.unmount()); host.remove();
+
+    endpoints = [{ ...teamEndpoint, appliesTo: [{ id: 'ws-1', name: 'Widgets' }, { id: 'ws-2', name: 'Gadgets' }] }];
+    await mount(true, WORKSPACES);
+    expect(text('agent-endpoint-applies-to')).toBe('Applies to: 2 workspaces: Widgets, Gadgets');
+    expect(text('agent-endpoint-heading')).toBe('Anthropic-compatible URL · 2 workspaces');
+    expect(text('agent-endpoint-default')).toMatch(/Anthropic \(default\)/);
+  });
+
+  it('editing the list sends only the list, never a key, and needs no key typed', async () => {
+    endpoints = [{ ...teamEndpoint, appliesTo: null }];
+    await mount(true, WORKSPACES);
+    await click(host.querySelector('[data-testid="agent-endpoint-applies-edit"]'));
+    expect(editor()).not.toBeNull();
+    // Uses the shared controls: radios and checkboxes, no native select.
+    expect(editor()!.querySelector('select')).toBeNull();
+    expect(editor()!.querySelector('input[type="password"]')).toBeNull();
+    await click(appliesRadio(1));
+    expect(editorButton('Save')!.hasAttribute('disabled')).toBe(true);
+    await click(checkbox('ws-1'));
+    await click(checkbox('ws-3'));
+    await click(editorButton('Save'));
+    expect(writes).toEqual([{ url: '/api/teams/t/agent-endpoint', method: 'PATCH', body: { appliesTo: ['ws-1', 'ws-3'], consolidate: false } }]);
+    expect(JSON.stringify(writes)).not.toContain(KEY);
+  });
+
+  it('back to all workspaces sends null', async () => {
+    endpoints = [{ ...teamEndpoint, appliesTo: [{ id: 'ws-2', name: 'Gadgets' }] }];
+    await mount(true, WORKSPACES);
+    await click(host.querySelector('[data-testid="agent-endpoint-applies-edit"]'));
+    expect(checkbox('ws-2').checked).toBe(true);
+    await click(appliesRadio(0));
+    await click(editorButton('Save'));
+    expect(writes[0]).toMatchObject({ method: 'PATCH', body: { appliesTo: null, consolidate: false } });
+  });
+
+  it('offers to remove a selected workspace\'s matching copy, and says a different one is kept', async () => {
+    endpoints = [
+      { ...teamEndpoint, appliesTo: null },
+      { ...teamEndpoint, id: 'c-1', scope: 'workspace', workspaceId: 'ws-1', workspaceName: 'Widgets', matchesTeam: true },
+      { ...teamEndpoint, id: 'c-2', scope: 'workspace', workspaceId: 'ws-2', workspaceName: 'Gadgets', matchesTeam: false },
+    ];
+    await mount(true, WORKSPACES);
+    await click(host.querySelector('[data-testid="agent-endpoint-applies-edit"]'));
+    await click(appliesRadio(1));
+    expect(host.querySelector('[data-testid="agent-endpoint-consolidate"]')).toBeNull();
+    await click(checkbox('ws-1'));
+    await click(checkbox('ws-2'));
+    expect(editor()!.textContent).toMatch(/own copy of this endpoint/);
+    expect(editor()!.textContent).toMatch(/Keeps its own endpoint/);
+    const consolidate = host.querySelector<HTMLInputElement>('[data-testid="agent-endpoint-consolidate"]')!;
+    expect(consolidate.checked).toBe(true);
+    expect(consolidate.parentElement!.textContent).toMatch(/matching copy/);
+    await click(editorButton('Save'));
+    expect(writes[0].body).toEqual({ appliesTo: ['ws-1', 'ws-2'], consolidate: true });
+  });
+
+  it('the owner can keep the copies', async () => {
+    endpoints = [
+      { ...teamEndpoint, appliesTo: null },
+      { ...teamEndpoint, id: 'c-1', scope: 'workspace', workspaceId: 'ws-1', workspaceName: 'Widgets', matchesTeam: true },
+    ];
+    await mount(true, WORKSPACES);
+    await click(host.querySelector('[data-testid="agent-endpoint-applies-edit"]'));
+    await click(host.querySelector('[data-testid="agent-endpoint-consolidate"]'));
+    await click(editorButton('Save'));
+    expect(writes[0].body).toEqual({ appliesTo: null, consolidate: false });
+  });
+
+  it('a member sees the scope but cannot edit it', async () => {
+    endpoints = [{ ...teamEndpoint, appliesTo: [{ id: 'ws-1', name: 'Widgets' }] }];
+    await mount(false, WORKSPACES);
+    expect(text('agent-endpoint-applies-to')).toBe('Applies to: 1 workspace: Widgets');
+    expect(host.querySelector('[data-testid="agent-endpoint-applies-edit"]')).toBeNull();
   });
 });
 

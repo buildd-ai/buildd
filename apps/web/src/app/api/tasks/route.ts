@@ -12,12 +12,12 @@ import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateTaskScopedCaller, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { emit } from '@/lib/core-emit';
 import { withDispatchHint } from '@buildd/core/dispatch-outbox';
 import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
-import { scheduleTaskCategorize } from '@/lib/task-category-decision';
 import { scheduleTaskRoleRouting } from '@/lib/task-role-apply';
 import { scheduleCreationManifestShadow } from '@/lib/task-manifest-prediction';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
@@ -1553,26 +1553,29 @@ export async function POST(req: NextRequest) {
       await wakeTask(task.id, 'task.created', { targetLocalUiUrl: assignToLocalUiUrl });
     }
 
-    // The decision model's look at the category (lib/task-category-decision.ts):
-    // after the response via after(), so it cannot delay or fail this request.
-    // It may fill or replace a keyword category; never a supplied one or review.
-    if (intake.outcome.action !== 'attached') {
-      try {
-        scheduleTaskCategorize({
-          taskId: task.id,
-          teamId: targetWorkspace.teamId,
-          workspaceId,
-          accountId: creatorContext.createdByAccountId ?? null,
-          title,
-          description: description ?? null,
-          stored: category,
-          callerSet: !categoryWasKeywordClassified,
-          dataClass: targetWorkspace.gitConfig?.dataClass ?? null,
-        }, after);
-      } catch (err) {
-        console.error('[task-create] category decision scheduling failed (non-fatal):', err);
-      }
-    }
+    // Who reacts to a committed filing is the modules' business (the
+    // composition root, apps/web/src/modules.ts): the decision model's category
+    // look, and for a mission task the feed post, reopen and escalation resolve.
+    // Every subscriber is fire-and-forget past its first await and isolated, so
+    // none can delay or fail creation.
+    await emit({
+      type: 'task.created',
+      taskId: task.id,
+      workspaceId,
+      teamId: targetWorkspace.teamId,
+      missionId: task.missionId ?? null,
+      title: task.title,
+      description: description ?? null,
+      attached: intake.outcome.action === 'attached',
+      category: { stored: category, callerSet: !categoryWasKeywordClassified },
+      dataClass: targetWorkspace.gitConfig?.dataClass ?? null,
+      creator: {
+        accountId: creatorContext.createdByAccountId ?? null,
+        user: user ?? null,
+        apiAccount: apiAccount ?? null,
+        workerId: createdByWorkerId ?? null,
+      },
+    });
 
     // Role routing (lib/task-role-decision.ts + lib/task-role-apply.ts,
     // role-routing.md §6(a)/(c)): which role the decision model would give this
@@ -1622,39 +1625,6 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         console.error('[task-create] manifest shadow scheduling failed (non-fatal):', err);
       }
-    }
-
-    // A task filed against a mission — by the dashboard, a plain API call, or an
-    // external MCP caller — is exactly the kind of silent work the mission feed
-    // used to miss. Attribute it, then reopen a completed mission if needed.
-    // Fire-and-forget — idempotent; no-op when the mission is not completed.
-    // Lazily imported (like the reopen check below) so route modules that never
-    // touch a mission-linked task don't pull in mission-feed's db/schema deps.
-    if (task.missionId) {
-      const missionId = task.missionId;
-      import('@/lib/mission-feed').then(async (feedMod) => {
-        const feedActor = await feedMod.resolveFeedActor({ user, apiAccount, actorWorkerId: createdByWorkerId ?? null });
-        await feedMod.postMissionFeedEvent({
-          missionId,
-          type: 'update',
-          title: `Task created: ${task.title}`,
-          body: `Task ${task.id}`,
-          actor: feedActor,
-          taskId: task.id,
-        });
-        const { reopenCompletedMission } = await import('@/lib/mission-loop');
-        await reopenCompletedMission(missionId, feedActor)
-          .catch(err => console.error('[task-create] mission reopen failed:', err));
-
-        // "File the work" is one of the escalation note's two advertised
-        // exits — a task filed against this mission IS the owner's answer.
-        // Routed through the single writer; a no-op when the mission was
-        // never escalated, which is the common case for most task creation.
-        // Independent catch so a reopen failure above never blocks this.
-        const { resolveCriteriaEscalation } = await import('@/lib/criteria-escalation');
-        await resolveCriteriaEscalation(missionId, 'work_filed', feedActor)
-          .catch(err => console.error('[task-create] criteria escalation resolve failed:', err));
-      }).catch(err => console.error('[task-create] mission-feed failed:', err));
     }
 
     // UI missions auto-append a per-mission surface-audit task: when this

@@ -76,7 +76,6 @@ import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
-import { attachCbmExperimentArm } from './cbm-experiment';
 import { attachQuestionGate } from './question-gate';
 import { attachRoleEnvSecrets, runRoleEnvPreFilter } from './role-env-injection';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
@@ -2839,13 +2838,6 @@ export async function POST(req: NextRequest) {
   await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
   await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
   if (!cloudExecutor) await attachRoleEnvSecrets(claimedWorkers, filteredTasks, account.id);
-  // CBM-access experiment: after role config (eligibility reads the role's CBM
-  // opt-out) and before the prompt-context blocks (the task-area hint drops its
-  // graph mention for a withheld task). No-op without a running experiment.
-  await attachCbmExperimentArm(claimedWorkers, {
-    cliVersion: body.environment?.claudeCliVersion,
-    features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
-  });
   // Question gate: marks workers whose questions go through
   // /api/workers/[id]/question-check. No-op for a runner that never sent the feature.
   attachQuestionGate(claimedWorkers, {

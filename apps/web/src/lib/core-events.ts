@@ -25,9 +25,27 @@
  * a ledger event is recorded with no emitter knowing the ledger exists.
  */
 
-/** The task's outcome as people are told it, reported by its worker. */
+/**
+ * Why core failed a task whose worker reported it completed: a
+ * completion-policy slot's verdict (lib/completion-policy.ts), or the held
+ * release resolving red. `label` is fixed copy, safe in a sensitive
+ * workspace; `reason` is the slot's own detail and is not.
+ */
+export interface SlotFailure {
+  slot: 'loop' | 'release';
+  label: 'Loop attempts exhausted' | 'Release failed' | 'Release CI failed' | 'Release merge failed';
+  reason: string;
+}
+
+/**
+ * The task's outcome as people are told it. The type is the task's FINAL
+ * status, as core decided it, never just the status the worker reported.
+ * `via: 'worker'`: settled by the worker PATCH. `via: 'release'`: a release
+ * held for CI, settled later by the release PR's CI (GitHub webhook); the
+ * PATCH emitted no outcome while it was held.
+ */
 export interface WorkerTaskOutcome {
-  via: 'worker';
+  via: 'worker' | 'release';
   taskId: string;
   workerId: string;
   workspaceId: string | null;
@@ -38,6 +56,8 @@ export interface WorkerTaskOutcome {
   workspaceName: string | null;
   /** The worker's error text, for failures. */
   error: string | null;
+  /** Set on `task.failed` when a slot, not the worker, failed the task. */
+  failure?: SlotFailure | null;
 }
 
 type WorkerOutcomeType = 'task.completed' | 'task.failed' | 'task.retrying';
@@ -80,8 +100,127 @@ export type CoreEvent =
       summary: string | null;
       workspace: { dataClass?: string | null; gitConfig?: { dataClass?: string } | null } | null;
     }
-  | { type: 'pr.merged'; repoFullName: string; prNumber: number; url: string | null | undefined }
+  /**
+   * POST /api/tasks committed a filing. `attached`: subject intake attached it
+   * to an existing canonical task, which `taskId` then names, and nothing new
+   * was inserted. Emitted after the commit; subscribers must not delay or
+   * fail the request (fire-and-forget past the first await).
+   */
+  | {
+      type: 'task.created';
+      taskId: string;
+      workspaceId: string;
+      teamId: string;
+      missionId: string | null;
+      /** The task row's title. */
+      title: string;
+      /** The description as filed. */
+      description: string | null;
+      attached: boolean;
+      /** The stored category, and whether the filer supplied it. */
+      category: { stored: string | null; callerSet: boolean };
+      dataClass: string | null;
+      creator: {
+        accountId: string | null;
+        user: { id: string; email?: string | null; name?: string | null } | null;
+        apiAccount: { id: string; name?: string | null } | null;
+        workerId: string | null;
+      };
+    }
+  /** A team row and its owner membership are written. */
+  | { type: 'team.created'; teamId: string }
+  /**
+   * A PR merged. `delivery` is present when the GitHub webhook delivered the
+   * merge (every delivery, redeliveries included); reconciliation emits the
+   * same fact without it.
+   */
+  | {
+      type: 'pr.merged';
+      repoFullName: string;
+      prNumber: number;
+      url: string | null | undefined;
+      delivery?: {
+        installationId: number | null;
+        baseRef: string | null;
+        baseSha: string | null;
+        headSha: string;
+        mergeCommitSha: string | null;
+        title: string | null;
+      };
+    }
+  /**
+   * A task's own PR merged: every webhook delivery, redeliveries included,
+   * after `workers.mergedAt` is stamped and before the task's status
+   * transition. Subscribers must be idempotent.
+   */
+  | {
+      type: 'task.pr_merge_delivered';
+      taskId: string;
+      workerId: string;
+      workspaceId: string;
+      missionId: string | null;
+      baseRef: string | null;
+    }
+  /**
+   * A task's PR merged, once per merge, after the task's status transition.
+   * `via: 'worker'`: the PR's own worker row, first delivery (`workers.mergedAt`
+   * was unset). `via: 'branch_match'`: no worker owns the PR; the task was
+   * found by its branch name and this merge completed it.
+   * `transition`: whether this merge flipped the task to completed, found it
+   * already completed, or lost the race to the worker's own completion.
+   * Effects of the merge itself, as opposed to the transition, hang off this.
+   */
+  | {
+      type: 'task.pr_merged';
+      via: 'worker' | 'branch_match';
+      transition: 'flipped' | 'already_completed' | 'not_flipped';
+      taskClass: string | null;
+      taskId: string;
+      workerId: string | null;
+      workspaceId: string;
+      missionId: string | null;
+      /** tasks.release: 'true' | 'false' | 'inherit'. */
+      release: string | null;
+      repoFullName: string;
+      baseRef: string | null;
+      installationId: number | null;
+    }
+  /** A worker-owned PR closed, merged or not. */
+  | { type: 'pr.closed'; workspaceId: string; prNumber: number; merged: boolean }
+  /** A worker-owned PR's base moved (`edited`), after any repair: `toBase` is where it settled. */
+  | { type: 'pr.base_changed'; workspaceId: string; prNumber: number; fromBase: string; toBase: string }
+  /**
+   * A mission's PR needs a person: held for human review, blocked from
+   * auto-merge, or moved off the mission's integration branch.
+   */
+  | {
+      type: 'pr.needs_human';
+      missionId: string;
+      title: string;
+      prUrl: string;
+      prNumber: number;
+      headSha: string;
+      reason: 'auto_merge_blocked' | 'awaiting_review' | 'base_retargeted';
+      message: string;
+    }
+  /** A GitHub Actions workflow run completed (any workflow, any repo linked to an installation). */
+  | { type: 'workflow_run.completed'; run: WorkflowRunFact; installationId: number | null }
   | { type: 'pr.ci_failed'; repoFullName: string; prNumber: number; headSha: string };
+
+/** The fields of a GitHub `workflow_run` payload the platform reads. */
+export interface WorkflowRunFact {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  html_url: string;
+  head_branch: string | null;
+  head_sha: string;
+  event?: string;
+  path?: string;
+  head_commit?: { id?: string; message?: string } | null;
+  repository: { full_name: string };
+}
 
 export type CoreEventType = CoreEvent['type'];
 export type EventOf<K extends CoreEventType> = Extract<CoreEvent, { type: K }>;

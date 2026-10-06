@@ -153,6 +153,15 @@ bun install
 # root. It is only attempted when that cannot prompt: as root, or with
 # passwordless sudo (announced first). Everyone else gets the browser without
 # system libs plus the one apt line to run themselves. BUILDD_NO_SUDO=1 opts out.
+# --- chromium deps hint: begin ---
+# The system libraries a Chromium installed without --with-deps may still need.
+# Linux only: macOS needs none, and has no apt.
+chromium_deps_hint() {
+  if [ "$1" = "Linux" ]; then
+    echo -e "${YELLOW}  Ubuntu/Debian: sudo apt-get install -y libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2${NC}"
+  fi
+}
+# --- chromium deps hint: end ---
 echo -e "${GREEN}Installing headless Chromium (pinned Playwright)...${NC}"
 CHROMIUM_WITH_DEPS=0
 if [ "$(uname -s)" = "Linux" ]; then
@@ -168,8 +177,12 @@ if [ "$CHROMIUM_WITH_DEPS" = "1" ] && bun run browser:install --with-deps 2>&1; 
 else
   [ "$CHROMIUM_WITH_DEPS" = "1" ] && echo -e "${YELLOW}--with-deps failed. Trying without...${NC}"
   if bun run browser:install 2>&1; then
-    echo -e "${GREEN}Headless Chromium installed (install system deps manually if launch fails)${NC}"
-    echo -e "${YELLOW}  Ubuntu/Debian: sudo apt-get install -y libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2${NC}"
+    if [ "$(uname -s)" = "Linux" ]; then
+      echo -e "${GREEN}Headless Chromium installed (install system deps manually if launch fails)${NC}"
+    else
+      echo -e "${GREEN}Headless Chromium installed${NC}"
+    fi
+    chromium_deps_hint "$(uname -s)"
   else
     echo -e "${YELLOW}Warning: Headless Chromium could not be installed.${NC}"
     echo -e "${YELLOW}  Browser capability will not be advertised. To fix:${NC}"
@@ -193,6 +206,10 @@ cat > "$BIN_DIR/buildd" << 'LAUNCHER'
 #   PROJECTS_ROOT   - Project directories to scan
 #   BUILDD_SERVER   - Server URL (default: https://buildd.dev)
 #   PORT            - Local server port (default: 8766)
+#
+# Every bun call passes --no-env-file: `buildd` runs from whatever folder you
+# are in, and Bun would otherwise auto-load that folder's .env — a project's
+# API key and server URL would point this runner at someone else's server.
 # =============================================================================
 
 # Ensure bun is on PATH (non-interactive shells like Docker CMD, nohup, systemd
@@ -221,6 +238,11 @@ fi
 
 # Subcommands
 case "${1:-}" in
+  help|-h|--help)
+    # Answered by the runner's own usage text (cli-args.ts) without starting it.
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" --help
+    ;;
+
   init)
     # Per-workspace MCP registration: writes .mcp.json in current repo
     if [ ! -d ".git" ]; then
@@ -242,8 +264,8 @@ case "${1:-}" in
     BUILDD_KEY=""
     BUILDD_SERVER="https://buildd.dev"
     if [ -f "$CONFIG_FILE" ]; then
-      BUILDD_KEY=$(bun -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.apiKey||'')" 2>/dev/null)
-      BUILDD_SERVER=$(bun -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.builddServer||'https://buildd.dev')" 2>/dev/null)
+      BUILDD_KEY=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.apiKey||'')" 2>/dev/null)
+      BUILDD_SERVER=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.builddServer||'https://buildd.dev')" 2>/dev/null)
     fi
     if [ -z "$BUILDD_KEY" ]; then
       echo "Error: not logged in. Run 'buildd login' first." >&2
@@ -281,7 +303,7 @@ MCPEOF
     if [ -f "$CLAUDE_SETTINGS" ]; then
       if ! grep -q '"enableAllProjectMcpServers"' "$CLAUDE_SETTINGS" 2>/dev/null; then
         # Use bun to merge the setting
-        bun -e "
+        bun --no-env-file -e "
           const fs = require('fs');
           const settings = JSON.parse(fs.readFileSync('$CLAUDE_SETTINGS', 'utf-8'));
           settings.enableAllProjectMcpServers = true;
@@ -309,8 +331,8 @@ MCPEOF
       BUILDD_KEY=""
       BUILDD_SERVER="https://buildd.dev"
       if [ -f "$CONFIG_FILE" ]; then
-        BUILDD_KEY=$(bun -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.apiKey||'')" 2>/dev/null)
-        BUILDD_SERVER=$(bun -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.builddServer||'https://buildd.dev')" 2>/dev/null)
+        BUILDD_KEY=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.apiKey||'')" 2>/dev/null)
+        BUILDD_SERVER=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.builddServer||'https://buildd.dev')" 2>/dev/null)
       fi
       if [ -z "$BUILDD_KEY" ]; then
         echo "Error: not logged in. Run 'buildd login' first." >&2
@@ -319,7 +341,7 @@ MCPEOF
 
       if [ -f "$CLAUDE_JSON" ]; then
         # Merge into existing config
-        bun -e "
+        bun --no-env-file -e "
           const fs = require('fs');
           const config = JSON.parse(fs.readFileSync('$CLAUDE_JSON', 'utf-8'));
           if (!config.mcpServers) config.mcpServers = {};
@@ -361,18 +383,18 @@ GLOBALEOF
 
   skill)
     shift
-    exec bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/skill.ts" "$@"
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/skill.ts" "$@"
     ;;
 
   login)
     shift
-    exec bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/login.ts" "$@"
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/login.ts" "$@"
     ;;
 
   logout)
     CONFIG_FILE="$HOME/.buildd/config.json"
     if [ -f "$CONFIG_FILE" ]; then
-      bun -e "
+      bun --no-env-file -e "
         const fs = require('fs');
         const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf-8'));
         delete config.apiKey;
@@ -388,7 +410,7 @@ GLOBALEOF
   status)
     CONFIG_FILE="$HOME/.buildd/config.json"
     if [ -f "$CONFIG_FILE" ]; then
-      bun -e "
+      bun --no-env-file -e "
         const fs = require('fs');
         const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf-8'));
         if (config.apiKey) {
@@ -410,13 +432,13 @@ GLOBALEOF
 
   service)
     shift
-    exec bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/service.ts" "$@"
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/service.ts" "$@"
     ;;
 esac
 
 # Run with restart loop (exit code 75 = update applied, restart)
 while true; do
-  bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" "$@"
+  bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" "$@"
   EXIT_CODE=$?
   if [ "$EXIT_CODE" -ne 75 ]; then exit $EXIT_CODE; fi
   echo "Restarting after update..."
@@ -437,166 +459,6 @@ if [ -n "$SHELL_RC" ] && ! grep -q '.local/bin' "$SHELL_RC" 2>/dev/null; then
   echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
   echo -e "${YELLOW}Added ~/.local/bin to PATH in $SHELL_RC${NC}"
 fi
-
-# Install codebase-memory-mcp binary.
-#
-# This mirrors the layer in docker/worker/Dockerfile, but that Dockerfile is built
-# in CI and never pushed — running install.sh is what actually provisions binaries
-# on Coder workspaces, so this is the real upgrade path for the fleet. Keep the
-# version and the linux checksums identical to the Dockerfile ARGs (enforced by
-# apps/runner/__tests__/unit/cbm-version-pin.test.ts, and checked against the
-# upstream release by scripts/verify-cbm-pin.sh in CI).
-#
-# A bump needs no remembered side conditions. The one property worth keeping —
-# the graph tools' own descriptions telling the agent to use them instead of
-# grep, which an upstream token-reduction pass deleted — is asserted against the
-# pinned build by scripts/verify-cbm-grep-steering.ts in worker-image.yml, so a
-# version that dropped it fails CI instead of degrading tool routing quietly.
-#
-# Every step is explicitly guarded rather than relying on `set -e`: this function
-# is called from an `if !` test, and POSIX/bash ignore errexit inside a condition,
-# including within a subshell that has its own `set -e`. Depending on errexit here
-# silently disabled the checksum gate and installed an unverified binary.
-CBM_VERSION="0.10.8"
-CBM_BINARY_PATH="/opt/buildd/bin/codebase-memory-mcp"
-
-# One checksum per published archive we may download, from the release checksums.txt.
-CBM_SHA256_LINUX_AMD64="e5cba4cad6ca8254a85f45041fc8a831908d7d5cb64f98fc3f8eb70a58671793"
-CBM_SHA256_LINUX_ARM64="e2804a20f5a6fc392af361525a232703e351b7d1aacb81b88eef806eec5959fa"
-CBM_SHA256_DARWIN_AMD64="2b193085410af3801634a522f4b17dcd6699695e015a068393c87817c1d260d4"
-CBM_SHA256_DARWIN_ARM64="9bd840dfb3ec7eaef4f310382057adaa5b0e904df883104d03ffcf39836afd07"
-
-cbm_verify_archive() { # <expected-sha> <file>
-  # macOS has shasum, not sha256sum.
-  if command -v sha256sum >/dev/null 2>&1; then
-    echo "$1  $2" | sha256sum -c
-  else
-    echo "$1  $2" | shasum -a 256 -c
-  fi
-}
-
-cbm_provision() {
-  # Compare the installed version against the pin. A bare presence check would
-  # make every future version bump a silent no-op on workspaces that already
-  # have CBM.
-  local installed=""
-  if [ -x "$CBM_BINARY_PATH" ]; then
-    installed=$("$CBM_BINARY_PATH" --version 2>/dev/null | head -1 | awk '{print $NF}')
-  fi
-
-  if [ "$installed" = "$CBM_VERSION" ]; then
-    echo -e "${GREEN}codebase-memory-mcp already at v${CBM_VERSION}${NC}"
-    return 0
-  fi
-  if [ -n "$installed" ]; then
-    echo -e "${GREEN}Upgrading codebase-memory-mcp v${installed} -> v${CBM_VERSION}...${NC}"
-  else
-    echo -e "${GREEN}Installing codebase-memory-mcp v${CBM_VERSION}...${NC}"
-  fi
-
-  local os arch
-  case "$(uname -s)" in
-    Linux)  os="linux" ;;
-    Darwin) os="darwin" ;;
-    *)      os="" ;;
-  esac
-  case "$(uname -m)" in
-    x86_64|amd64)  arch="amd64" ;;
-    aarch64|arm64) arch="arm64" ;;
-    *)             arch="" ;;
-  esac
-  if [ -z "$os" ] || [ -z "$arch" ]; then
-    echo -e "${YELLOW}Unsupported platform $(uname -s)/$(uname -m) — skipping CBM install.${NC}"
-    echo -e "${YELLOW}  Install manually: https://github.com/DeusData/codebase-memory-mcp/releases/tag/v${CBM_VERSION}${NC}"
-    return 0
-  fi
-
-  # /opt/buildd/bin is outside HOME. Use it directly when writable (root, or a
-  # prepared image); otherwise sudo only after saying so, and never a password
-  # prompt nobody can answer. Skipping is fine: workers run without the graph.
-  local cbm_dir
-  cbm_dir=$(dirname "$CBM_BINARY_PATH")
-  CBM_SUDO=""
-  if [ "$(id -u)" -ne 0 ] && ! { mkdir -p "$cbm_dir" 2>/dev/null && [ -w "$cbm_dir" ]; }; then
-    if [ "${BUILDD_NO_SUDO:-}" = "1" ] || ! command -v sudo >/dev/null 2>&1; then
-      echo -e "${YELLOW}Skipping codebase-memory-mcp: ${cbm_dir} is not writable and sudo is unavailable or disabled (BUILDD_NO_SUDO=1).${NC}"
-      return 0
-    fi
-    if sudo -n true 2>/dev/null; then
-      echo -e "${YELLOW}Using sudo (passwordless) to install codebase-memory-mcp into ${cbm_dir}. Set BUILDD_NO_SUDO=1 to skip.${NC}"
-    elif [ -t 1 ] && [ -r /dev/tty ]; then
-      echo -e "${YELLOW}codebase-memory-mcp (the code graph tool) installs into ${cbm_dir}, which needs sudo and may ask for your password.${NC}"
-      local cbm_answer=""
-      printf "%s" "Use sudo for it now? The runner works without it. [y/N] "
-      read -r cbm_answer < /dev/tty || cbm_answer=""
-      case "$cbm_answer" in
-        [yY]*) ;;
-        *) echo "Skipped codebase-memory-mcp. Re-run the installer to add it later."; return 0 ;;
-      esac
-    else
-      echo -e "${YELLOW}Skipping codebase-memory-mcp: ${cbm_dir} needs sudo, which would prompt for a password with no terminal to answer.${NC}"
-      return 0
-    fi
-    CBM_SUDO="sudo"
-  fi
-
-  local sha_var sha tmp
-  sha_var="CBM_SHA256_$(echo "${os}_${arch}" | tr '[:lower:]' '[:upper:]')"
-  eval "sha=\$$sha_var"
-  if [ -z "$sha" ]; then
-    echo -e "${YELLOW}No checksum pinned for ${os}/${arch} — refusing to install.${NC}"
-    return 1
-  fi
-
-  tmp=$(mktemp -d) || return 1
-
-  if ! curl -fsSL \
-      "https://github.com/DeusData/codebase-memory-mcp/releases/download/v${CBM_VERSION}/codebase-memory-mcp-${os}-${arch}.tar.gz" \
-      -o "$tmp/cbm.tar.gz"; then
-    rm -rf "$tmp"; return 1
-  fi
-  if ! cbm_verify_archive "$sha" "$tmp/cbm.tar.gz"; then
-    rm -rf "$tmp"; return 1
-  fi
-  # Extract only the binary — the archive also ships its own install.sh, which
-  # rewrites ~/.claude.json and must never run here.
-  if ! tar -xzf "$tmp/cbm.tar.gz" -C "$tmp" codebase-memory-mcp; then
-    rm -rf "$tmp"; return 1
-  fi
-
-  # Retire a default-env daemon from the old build before the swap. This only
-  # reaches a daemon started without CBM_RUNTIME_DIR: worker daemons live under
-  # /tmp/cbm-<workerId>/run and are invisible here by design. They are
-  # short-lived, and `install -m 0755` unlinks the destination rather than
-  # writing through it, so a running worker keeps its own inode.
-  if [ -n "$installed" ]; then
-    "$CBM_BINARY_PATH" daemon stop >/dev/null 2>&1 || true
-  fi
-
-  if ! $CBM_SUDO mkdir -p "$(dirname "$CBM_BINARY_PATH")"; then rm -rf "$tmp"; return 1; fi
-  if ! $CBM_SUDO install -m 0755 "$tmp/codebase-memory-mcp" "$CBM_BINARY_PATH"; then
-    rm -rf "$tmp"; return 1
-  fi
-  rm -rf "$tmp"
-
-  local now
-  now=$("$CBM_BINARY_PATH" --version 2>/dev/null | head -1 | awk '{print $NF}')
-  if [ "$now" != "$CBM_VERSION" ]; then
-    echo -e "${YELLOW}Warning: installed CBM reports '${now}', expected '${CBM_VERSION}'.${NC}"
-    return 1
-  fi
-  echo -e "${GREEN}codebase-memory-mcp installed: ${now}${NC}"
-  return 0
-}
-
-# A failed provision must not fail the installer: a Coder startup script gates on
-# install.sh's exit code, and the block is on the hot path now that it upgrades on
-# version mismatch instead of skipping whenever any binary is present.
-if ! cbm_provision; then
-  echo -e "${YELLOW}Warning: codebase-memory-mcp install/upgrade failed — continuing.${NC}"
-  echo -e "${YELLOW}  Workers will run without the code graph until this succeeds.${NC}"
-fi
-
 
 # --- next steps: begin ---
 # What to do after the installer. Kept in two functions between these markers so
