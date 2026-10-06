@@ -202,7 +202,7 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
             style={{ left: Math.max(4, Math.min(VIEW_W - 224, selectedX - 110)), top: summaryY > VIEW_H / 2 ? Math.max(22, summaryY - 108) : Math.min(VIEW_H - 100, summaryY + 12) }} aria-live="polite">
             <div className="text-text-muted">{fmtWhen(releaseIndex != null ? geo.releases[releaseIndex].at : pickedBucket.start, series.bucketMs)}</div>
             <div className="font-semibold text-text-primary">{releaseIndex != null ? `Release ${geo.releases[releaseIndex].version ?? ''} · ${geo.releases[releaseIndex].state}` : `${BAND_LABEL[picked.band]} · ${fmtCount(bandValue(pickedBucket, picked.band))}`}</div>
-            <button ref={detailTrigger} data-testid="flow-details-trigger" type="button" className="min-h-[44px] text-accent-text" onClick={() => { boxRef.current?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }); setExpanded(false); setDetailOpen(true); }}>View tasks ({pickedTasks.length})</button>
+            <button ref={detailTrigger} data-testid="flow-details-trigger" type="button" className="min-h-[44px] text-accent-text" onClick={() => { boxRef.current?.scrollIntoView?.({ block: 'start', behavior: 'instant' }); setExpanded(false); setDetailOpen(true); }}>View tasks ({pickedTasks.length})</button>
           </div>
         )}
       </div>
