@@ -2,9 +2,8 @@
  * Geometry for the Insights flow chart: pure, so it is tested without a DOM.
  *
  * In-flight stages form one continuous cool band; needs input and released
- * sit above it; lost work is its own strip under the chart. Running is one
- * band: the role split lives in the tooltip and the legend list, because
- * splitting a band into same-hue shades fails the colour checks.
+ * sit above it; lost work is its own strip under the chart. Individual
+ * in-flight stages and task roles remain available in selection/detail.
  */
 import type { FlowBucket, FlowSeries, FlowTask } from '@/lib/insights-flow';
 

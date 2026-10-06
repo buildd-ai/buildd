@@ -41,3 +41,18 @@ it('release annotations are selectable and show exactly one selected event hairl
   expect(q('flow-summary')!.textContent).toContain('Release');
   expect(document.querySelectorAll('[data-testid="flow-release-line"]')).toHaveLength(1);
 });
+
+it('a touch picks a point before opening details, and stages remain available for drill-down', () => {
+  render();
+  const svg = container.querySelector('svg')!;
+  svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 360, height: 220, right: 360, bottom: 220, x: 0, y: 0, toJSON() {} });
+  act(() => svg.dispatchEvent(new PointerEvent('pointerdown', { pointerType: 'touch', clientX: 180, clientY: 90, bubbles: true })));
+  expect(q('flow-summary')).not.toBeNull();
+  expect(q('flow-picked')).toBeNull();
+  act(() => q('flow-details-trigger')!.click());
+  const select = q('flow-picked')!.querySelector<HTMLSelectElement>('select')!;
+  expect(select.options).toHaveLength(6);
+  act(() => { select.value = 'lost'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(q('flow-summary')!.textContent).toContain('Failed or abandoned');
+  expect(q('flow-selection')).not.toBeNull();
+});
