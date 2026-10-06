@@ -63,6 +63,31 @@ describe('runChatRetroPass', () => {
     expect(lessons).toEqual([]);
   });
 
+  it('kill switch wins over account dogfood: no reconciliation runs', async () => {
+    let reconciled = 0;
+    const { deps } = fakeDeps({ env: { CHAT_RETRO_ENABLED: '0' }, reconcileAccountDogfood: async () => { reconciled++; return { activatedUsers: 1, syncedTeams: 1 }; } });
+    expect((await runChatRetroPass(deps)).disabled).toBe(true);
+    expect(reconciled).toBe(0);
+  });
+
+  it('reconciles account dogfood before listing teams, and counts it', async () => {
+    const order: string[] = [];
+    const { deps } = fakeDeps({
+      reconcileAccountDogfood: async () => { order.push('reconcile'); return { activatedUsers: 1, syncedTeams: 3 }; },
+      listOptedInTeams: async () => { order.push('teams'); return []; },
+    });
+    const r = await runChatRetroPass(deps);
+    expect(order).toEqual(['reconcile', 'teams']);
+    expect([r.dogfoodActivated, r.dogfoodSynced, r.errors]).toEqual([1, 3, 0]);
+  });
+
+  it('a failed reconciliation is counted and the pass goes on', async () => {
+    const { deps, calls } = fakeDeps({ reconcileAccountDogfood: async () => { throw new Error('db'); } });
+    const r = await runChatRetroPass(deps);
+    expect(r.errors).toBe(1);
+    expect(calls.teams).toBe(1);
+  });
+
   it('judges each opted-in window once and receipts the spend', async () => {
     const { deps, calls, lessons } = fakeDeps();
     const r = await runChatRetroPass(deps);

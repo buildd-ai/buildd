@@ -1,4 +1,13 @@
 import type { TaskEvidence, TaskMismatch } from '@buildd/shared';
+import Disclosure from '@/components/ui/Disclosure';
+import { explainProviderAuthFailure } from '@/lib/provider-auth-failure';
+
+/**
+ * Key lines that are curated (failing test names, tsc errors, lint hits) stay
+ * on the card. Unclassified or sign-in stderr is noise to a reader until they
+ * ask for it, so it sits behind "Show raw output".
+ */
+const RAW_CLASSES = new Set(['unknown', 'auth']);
 
 /**
  * Why the task ended as it did: the compact record written on `result.evidence`
@@ -9,14 +18,42 @@ import type { TaskEvidence, TaskMismatch } from '@buildd/shared';
 export default function TaskEvidenceCard({
   status,
   result,
+  workerError = null,
+  backend = null,
 }: {
   status: string;
   result: unknown;
+  /** The latest worker's error: a sign-in failure is recognised from it too. */
+  workerError?: string | null;
+  backend?: 'claude' | 'codex' | null;
 }) {
   const r = (result ?? null) as { evidence?: TaskEvidence; mismatch?: TaskMismatch[] } | null;
   const evidence = r?.evidence ?? null;
   const mismatch = Array.isArray(r?.mismatch) ? r.mismatch : [];
   if (!evidence && mismatch.length === 0) return null;
+  // The plain next step is the action zone's (TaskActionZone); here the
+  // card only names it and keeps the stderr folded.
+  const auth = evidence
+    ? explainProviderAuthFailure([...evidence.keyLines, workerError ?? ''].join('\n'), backend)
+    : null;
+  // A sign-in failure the action zone already explains, with nothing else
+  // recorded (no failing command, no failed check, no diff), adds only noise.
+  const curated = !!evidence && (
+    !!evidence.lastFailingCommand
+    || (evidence.ciChecks ?? []).some(c => c.state === 'failed')
+    || (evidence.diff?.files ?? 0) > 0
+  );
+  const showEvidence = !!evidence && !(auth && !curated);
+  if (!showEvidence && mismatch.length === 0) return null;
+  const collapseRaw = !!evidence && (auth !== null || RAW_CLASSES.has(evidence.errorClass));
+  const label = auth
+    ? 'agent sign-in'
+    : evidence && evidence.errorClass !== 'unknown' ? evidence.errorClass.replace('_', ' ') : null;
+  const keyLines = evidence && evidence.keyLines.length > 0 ? (
+    <pre className="font-mono text-meta text-text-primary whitespace-pre-wrap [overflow-wrap:anywhere] bg-surface-2 p-3 max-h-60 md:max-h-80 overflow-auto">
+      {evidence.keyLines.join('\n')}
+    </pre>
+  ) : null;
 
   return (
     <div className="mb-6" id="task-evidence" data-testid="task-evidence">
@@ -32,10 +69,10 @@ export default function TaskEvidenceCard({
           </ul>
         </div>
       )}
-      {evidence && (
+      {evidence && showEvidence && (
         <details className="card" open={status === 'failed'}>
-          <summary className="cursor-pointer p-4 font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-red-400 hover:text-red-300 select-none">
-            Evidence · {evidence.errorClass.replace('_', ' ')}
+          <summary className="cursor-pointer min-h-11 flex items-center px-4 py-3 font-mono text-eyebrow font-bold uppercase tracking-[2px] text-status-error select-none">
+            Evidence{label ? ` · ${label}` : ''}
           </summary>
           <div className="px-4 pb-4 space-y-3 border-t border-border-default pt-3">
             {evidence.lastFailingCommand && (
@@ -44,11 +81,11 @@ export default function TaskEvidenceCard({
                 {evidence.lastFailingCommand.exitCode != null ? ` [exit ${evidence.lastFailingCommand.exitCode}]` : ''}
               </div>
             )}
-            {evidence.keyLines.length > 0 && (
-              <pre className="font-mono text-xs text-text-primary whitespace-pre-wrap [overflow-wrap:anywhere] bg-surface-2 p-3 max-h-80 overflow-auto">
-                {evidence.keyLines.join('\n')}
-              </pre>
-            )}
+            {keyLines && (collapseRaw ? (
+              <Disclosure summary="Show raw output" count={evidence.keyLines.length}>
+                {keyLines}
+              </Disclosure>
+            ) : keyLines)}
             {evidence.ciChecks && evidence.ciChecks.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {evidence.ciChecks.map(c => {

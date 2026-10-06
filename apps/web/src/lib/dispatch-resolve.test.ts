@@ -16,15 +16,6 @@ mock.module('@/lib/pusher', () => ({
   events: { TASK_CREATED: 'task:created', TASK_ASSIGNED: 'task:assigned' },
 }));
 
-let githubConfigured = false;
-const mockGitHubDispatch = mock(async (..._args: unknown[]) => true);
-mock.module('@/lib/github', () => ({
-  dispatchToGitHubActions: mockGitHubDispatch,
-  isGitHubAppConfigured: () => githubConfigured,
-  repositoryDispatchBody: (t: { id: string }) => ({ event_type: 'buildd-task', client_payload: { task_id: t.id } }),
-  generateAppJWT: () => 'jwt',
-}));
-
 let heldGate: 'open' | 'held' | 'throws' = 'open';
 mock.module('@/app/api/workers/claim/held-gate', () => ({
   isTaskNotHeldOrLocal: async () => {
@@ -40,8 +31,6 @@ mock.module('@buildd/core/db', () => ({
     execute: async () => ({ rows: [] }),
     query: {
       tasks: { findFirst: async () => taskRow, findMany: async () => (taskRow ? [taskRow] : []) },
-      githubInstallations: { findFirst: async () => ({ installationId: 42 }) },
-      githubRepos: { findFirst: async () => ({ fullName: 'org/repo' }) },
     },
   },
 }));
@@ -72,16 +61,13 @@ interface Case {
   webhookStatus?: number;
   held?: typeof heldGate;
   pusher?: Sent;
-  github?: boolean;
 }
 
 function seed(c: Case) {
   fetchCalls = [];
   mockTriggerEventChecked.mockClear();
-  mockGitHubDispatch.mockClear();
   heldGate = c.held ?? 'open';
   pusherResult = c.pusher ?? 'sent';
-  githubConfigured = c.github ?? false;
   fetchStatus = c.webhookStatus ?? 200;
   taskRow = {
     id: TASK_ID, title: 'Ship it', description: 'Do it', workspaceId: WS, mode: 'execution', priority: 3,
@@ -106,7 +92,6 @@ let fetchStatus = 200;
 beforeEach(() => {
   fetchCalls = [];
   mockTriggerEventChecked.mockClear();
-  mockGitHubDispatch.mockClear();
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     fetchCalls.push({ url: String(url), init });
     return new Response('ok', { status: fetchStatus });
@@ -117,7 +102,8 @@ afterEach(() => { globalThis.fetch = originalFetch; });
 /** What happened, transport-neutral. */
 interface Outcome {
   webhookBodies: unknown[];
-  githubActions: boolean;
+  /** Requests to anything but the webhook (there were GitHub dispatches here once). */
+  otherRequests: number;
   wake: 'broadcast' | 'targeted' | null;
   /** delivered | closed_unsent (Pusher unconfigured) | skipped:<why> | retry */
   closed: string;
@@ -140,10 +126,9 @@ async function inAppOutcome(c: Case): Promise<Outcome> {
   } catch {
     closed = 'retry';
   }
-  await new Promise(res => setTimeout(res, 0)); // GitHub Actions is fire-and-forget
   return {
     webhookBodies: fetchCalls.filter(f => f.url === HOOK_URL && f.init.method === 'POST').map(f => JSON.parse(f.init.body as string)),
-    githubActions: mockGitHubDispatch.mock.calls.length > 0,
+    otherRequests: fetchCalls.filter(f => f.url !== HOOK_URL).length,
     wake: wakeKind(),
     closed,
   };
@@ -152,16 +137,15 @@ async function inAppOutcome(c: Case): Promise<Outcome> {
 const testDeps = (c: Case): ResolveDeps => ({
   ...RESOLVE_DEPS,
   loadRow: async () => custodyRow(c),
+  claimCustody: async () => false,
   grantOnce: async () => true,
-  githubSource: async () => ({ installationId: 42, repoId: 7, fullName: 'org/repo', installedPermissions: { contents: 'write' } }),
-  mintGitHubToken: async () => ({ token: 'ghs_scoped', expiresAt: new Date(Date.now() + 3_600_000) }),
 });
 
 /**
  * Dispatch's side, simulated: walk routeFor's steps the way the Worker's
  * alarm loop does. A resolve `deliver` POSTs the payload with the grant (a
- * non-2xx is a decline, as the in-app webhook adapter treats it); `also`
- * steps fire alongside; the runner wake goes through relay.
+ * non-2xx is a decline, as the in-app webhook adapter treats it); the
+ * runner wake goes through relay. No route has `also` steps any more.
  */
 async function dispatchOutcome(c: Case): Promise<Outcome> {
   seed(c);
@@ -170,11 +154,7 @@ async function dispatchOutcome(c: Case): Promise<Outcome> {
   const loaded = taskRow as Record<string, unknown> & { workspace: Record<string, unknown> };
   const { workspace, ...task } = loaded;
   const route = routeFor({ ...r, dedupeKey: 'now', mode: 'dispatch' }, task as never, workspace as never)!;
-  let githubActions = false;
-  for (const step of route.steps.filter(s => s.mode === 'also')) {
-    const res = await resolveDispatch({ id: ROW_ID, attempt: 1, target: step.target }, deps);
-    if ((res.body as { decision?: string }).decision === 'deliver') githubActions = true;
-  }
+  expect(route.steps.filter(s => s.mode === 'also')).toEqual([]);
   let closed = 'delivered_nowhere';
   for (const step of route.steps.filter(s => s.mode === 'first')) {
     if (step.resolve) {
@@ -198,7 +178,7 @@ async function dispatchOutcome(c: Case): Promise<Outcome> {
   }
   return {
     webhookBodies: fetchCalls.filter(f => f.url === HOOK_URL && f.init.method === 'POST').map(f => JSON.parse(f.init.body as string)),
-    githubActions,
+    otherRequests: fetchCalls.filter(f => f.url !== HOOK_URL).length,
     wake: wakeKind(),
     closed,
   };
@@ -225,7 +205,7 @@ const CASES: Case[] = [
   // AC-14: a webhook non-2xx falls back to the broadcast.
   { name: 'AC-14 webhook 500', workspace: { webhookConfig: WEBHOOK }, webhookStatus: 500 },
   // AC-15: a targeted local runner gets only the targeted wake.
-  { name: 'AC-15 targeted', metadata: { targetLocalUiUrl: 'http://runner.test' }, workspace: { webhookConfig: WEBHOOK, ...LINKED }, github: true },
+  { name: 'AC-15 targeted', metadata: { targetLocalUiUrl: 'http://runner.test' }, workspace: { webhookConfig: WEBHOOK, ...LINKED } },
   // AC-16: Pusher failed → retried; unconfigured → closed with nothing sent.
   { name: 'AC-16 pusher failed', pusher: 'failed' },
   { name: 'AC-16 pusher failed, targeted', pusher: 'failed', metadata: { targetLocalUiUrl: 'http://runner.test' } },
@@ -237,11 +217,9 @@ const CASES: Case[] = [
     { name: `AC-18 ${status}, webhook`, task: { status }, workspace: { webhookConfig: WEBHOOK } },
     { name: `AC-18 ${status}, no webhook`, task: { status } },
   ]),
-  // GitHub Actions: legacy causes on a linked workspace fire it beside the broadcast; a delivering webhook suppresses it.
-  ...LEGACY_CAUSES.map(cause => ({ name: `GHA linked, no webhook, ${cause}`, cause, workspace: LINKED, github: true })),
-  { name: 'GHA linked, non-legacy cause', cause: 'path_claim.released' as DispatchCause, workspace: LINKED, github: true },
-  { name: 'GHA linked, webhook takes it', workspace: { webhookConfig: WEBHOOK, ...LINKED }, github: true },
-  { name: 'GHA linked, App not configured', workspace: LINKED, github: false },
+  // A GitHub-linked repo changes nothing: no transport sends anything to GitHub.
+  ...LEGACY_CAUSES.map(cause => ({ name: `GitHub-linked, no webhook, ${cause}`, cause, workspace: LINKED })),
+  { name: 'GitHub-linked, webhook 500', workspace: { webhookConfig: WEBHOOK, ...LINKED }, webhookStatus: 500 },
 ];
 
 describe('parity: Dispatch transport outcome equals the in-app chain (AC-10…AC-18)', () => {
@@ -270,12 +248,6 @@ describe('known, intended differences', () => {
     expect((await relayDispatch({ id: ROW_ID, attempt: 1, target: T('runner-wake') }, testDeps(c))).body)
       .toEqual({ outcome: 'skipped', why: 'start_at_future' });
   });
-
-  it('an eligible webhook whose POST fails: in-app also fires GitHub Actions; Dispatch does not (resolve cannot see the POST)', async () => {
-    const c: Case = { name: 'x', workspace: { webhookConfig: WEBHOOK, ...LINKED }, github: true, webhookStatus: 500 };
-    expect((await inAppOutcome(c)).githubActions).toBe(true);
-    expect((await dispatchOutcome(c)).githubActions).toBe(false);
-  });
 });
 
 // ── Resolve and relay details ──────────────────────────────────────────────
@@ -293,25 +265,11 @@ describe('resolveDispatch', () => {
     expect(body.grant).toEqual({ url: HOOK_URL, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer hook-token' } });
   });
 
-  it('a GitHub Actions deliver is a repo-scoped token for the dispatches endpoint, narrowed to what repository_dispatch needs', async () => {
-    const c: Case = { name: 'gha', workspace: LINKED, github: true };
-    seed(c);
-    const mint = mock(async (_p: unknown) => ({ token: 'ghs_scoped', expiresAt: new Date(Date.now() + 3_600_000) }));
-    const res = await resolveDispatch({ id: ROW_ID, attempt: 1, target: T('github-actions') }, { ...testDeps(c), mintGitHubToken: mint as never });
-    const body = res.body as { decision: string; grant: { url: string; headers: Record<string, string> }; payload: unknown };
-    expect(body.decision).toBe('deliver');
-    expect(body.grant.url).toBe('https://api.github.com/repos/org/repo/dispatches');
-    expect(body.grant.headers.Authorization).toBe('Bearer ghs_scoped');
-    expect(mint.mock.calls[0][0]).toMatchObject({ installationId: 42, repoId: 7, wanted: { contents: 'write', metadata: 'read' } });
-    expect(body.payload).toEqual({ event_type: 'buildd-task', client_payload: { task_id: TASK_ID } });
-  });
-
-  it('a GitHub mint failure declines without leaking anything', async () => {
-    const c: Case = { name: 'gha', workspace: LINKED, github: true };
-    seed(c);
-    const res = await resolveDispatch({ id: ROW_ID, attempt: 1, target: T('github-actions') },
-      { ...testDeps(c), mintGitHubToken: async () => { throw new Error('HTTP 403'); } });
-    expect(res.body).toEqual({ decision: 'decline', why: 'grant_mint_failed' });
+  it('a github-actions target, from an intent queued before that type was removed, is an unknown target', async () => {
+    seed({ name: 'old', workspace: LINKED });
+    const res = await resolveDispatch({ id: ROW_ID, attempt: 1, target: T('github-actions') }, testDeps({ name: 'old', workspace: LINKED }));
+    expect(res).toEqual({ status: 400, body: { error: 'unknown target' } });
+    expect(fetchCalls).toHaveLength(0);
   });
 
   it('a second grant for the same (id, attempt, target) inside the window is refused; Redis down fails open', async () => {
@@ -333,6 +291,28 @@ describe('resolveDispatch', () => {
     expect((await resolveDispatch({ id: ROW_ID, attempt: 1, target: 'buildd:ws:99999999-9999-4999-8999-999999999999:webhook' }, d)).status).toBe(403);
     expect((await resolveDispatch({ id: ROW_ID, attempt: 1, target: T('webhook') }, { ...d, loadRow: async () => null })).status).toBe(404);
     expect((await resolveDispatch({ id: ROW_ID, attempt: -1, target: T('webhook') } as never, d)).status).toBe(400);
+  });
+
+  it('a callback that outran its publish ack takes custody and proceeds instead of losing the wake', async () => {
+    seed(base);
+    const d = testDeps(base);
+    const row = custodyRow(base);
+    let acked = false;
+    const claimed: string[] = [];
+    const deps: ResolveDeps = {
+      ...d,
+      loadRow: async () => (acked ? row : { ...row, status: 'pending', handedOffAt: null }),
+      claimCustody: async id => { claimed.push(id); acked = true; return true; },
+    };
+    expect((await resolveDispatch({ id: ROW_ID, attempt: 1, target: T('webhook') }, deps)).body).toMatchObject({ decision: 'deliver' });
+    expect(claimed).toEqual([ROW_ID]);
+    // The relayed runner wake takes the same path.
+    acked = false;
+    expect((await relayDispatch({ id: ROW_ID, attempt: 1, target: T('runner-wake') }, deps)).body).toMatchObject({ outcome: 'delivered' });
+    // When the claim is refused (taken back, never published, in-app took it) the answer stays not_in_custody.
+    const refused: ResolveDeps = { ...d, loadRow: async () => ({ ...row, status: 'pending', handedOffAt: null }), claimCustody: async () => false };
+    expect((await resolveDispatch({ id: ROW_ID, attempt: 1, target: T('webhook') }, refused)).body)
+      .toEqual({ decision: 'skip', why: 'not_in_custody:pending' });
   });
 
   it('a row out of custody, a non-work intent, or a gone task answers skip so Dispatch closes it', async () => {

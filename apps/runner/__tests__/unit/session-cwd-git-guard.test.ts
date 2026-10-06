@@ -14,7 +14,6 @@
  */
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { LocalUIConfig } from '../../src/types';
-import * as realBootstrap from '../../src/cbm-bootstrap';
 
 let sessionStarted = false;
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
@@ -125,11 +124,6 @@ mock.module('../../src/env-scan', () => ({
   scanMcpServersRich: () => [],
   checkBwrapSupport: () => true,
   checkBwrapMountIsolationSupport: () => true,
-}));
-
-mock.module('../../src/cbm-bootstrap.js', () => ({
-  ...realBootstrap,
-  runCbmBootstrap: async () => ({ ok: true, durationMs: 1 }),
 }));
 
 const { WorkerManager } = await import('../../src/workers');

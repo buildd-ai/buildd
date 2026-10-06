@@ -41,6 +41,12 @@ export interface PassDeps {
    * visible-answer failure files on its first occurrence (./proposals.ts,
    * rankClusters). Absent = an ordinary opted-in team.
    */
+  /**
+   * Account dogfood sync (./store.ts reconcileAccountDogfood): owners of the
+   * configured dogfood teams get it, and their teams' stored settings follow.
+   * Runs after the kill switch, before the team list. Optional for tests.
+   */
+  reconcileAccountDogfood?: () => Promise<{ activatedUsers: number; syncedTeams: number }>;
   listOptedInTeams: () => Promise<Array<{ teamId: string; settings: ChatRetroSettings; dogfood?: boolean }>>;
   listPendingConversations: (teamId: string, now: Date, limit: number) => Promise<Array<{ id: string; workspaceId: string | null; dataClass: string | null }>>;
   loadWindow: (teamId: string, conversationId: string) => Promise<RetroWindowInput>;
@@ -72,13 +78,15 @@ export interface PassCounts {
   deferred: number;
   noWorkspace: number;
   pruned: number;
+  dogfoodActivated: number;
+  dogfoodSynced: number;
   errors: number;
   jevCostUsd: number;
 }
 
 const zero = (): PassCounts => ({
   disabled: false, teams: 0, windows: 0, judged: 0, skipped: 0, failed: 0,
-  filed: 0, appended: 0, muted: 0, deferred: 0, noWorkspace: 0, pruned: 0, errors: 0, jevCostUsd: 0,
+  filed: 0, appended: 0, muted: 0, deferred: 0, noWorkspace: 0, pruned: 0, dogfoodActivated: 0, dogfoodSynced: 0, errors: 0, jevCostUsd: 0,
 });
 
 export async function runChatRetroPass(deps: PassDeps): Promise<PassCounts> {
@@ -88,6 +96,13 @@ export async function runChatRetroPass(deps: PassDeps): Promise<PassCounts> {
   const timeLeft = () => deps.deadlineAt - Date.now() > RETRO_DEADLINE_MARGIN_MS;
 
   try { counts.pruned = await deps.pruneExpiredLessons(now); } catch { counts.errors++; }
+  if (deps.reconcileAccountDogfood) {
+    try {
+      const r = await deps.reconcileAccountDogfood();
+      counts.dogfoodActivated = r?.activatedUsers ?? 0;
+      counts.dogfoodSynced = r?.syncedTeams ?? 0;
+    } catch { counts.errors++; }
+  }
 
   const teams = await deps.listOptedInTeams();
   counts.teams = teams.length;

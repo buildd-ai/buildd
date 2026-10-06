@@ -196,7 +196,7 @@ function prChipsAndAction(
     };
   }
   return {
-    chip: { label: 'Waiting on your merge', tone: 'warning' },
+    chip: { label: 'Ready to merge', tone: 'warning' },
     action: { label: 'Review & merge', href: pr.url, tone: 'primary' },
     meta,
   };

@@ -124,15 +124,24 @@ Notable fields:
   branch** (shape `mission/<slug>-<id8>`, generated lazily once the mission's workspace
   has a repo) and the mission-level PR that tracks it. Mission tasks do **not** share a
   branch: every task gets its own branch and its own PR, always. `workingBranch` is the
-  **base** those task PRs are cut from only for a mission that opted in
-  (`missions.integrationBranchEnabled`, default **false**). For an opted-in mission the
+  **base** those task PRs are cut from only for a mission with
+  `missions.integrationBranchEnabled` set. That flag is resolved once, when the mission is
+  created (`POST /api/missions`, which every creation path goes through: dashboard, MCP
+  `manage_missions`, chat, discrepancy promotion), from the request's `branchStrategy`
+  or else the workspace's `gitConfig.branchStrategy` via `resolveBranchStrategy`, which
+  resolves an unconfigured workspace to **`mission-branch`** — so a new mission is on the
+  integration branch by default, and `direct` is the opt-out. (The column's own DB default
+  of `false` is never what a new mission gets; it only describes rows created before the
+  workspace default existed.) An existing mission's flag is the runtime truth from then
+  on; changing the workspace default never retargets it. For a mission-branch mission the
   task PRs merge into the integration branch, and the mission's work reaches trunk
   through a single PR from that branch — the mission integration PR, which is the
   mission's one human gate. That PR is opened automatically: when a task PR merges,
   the `pull_request` webhook calls `maybeOpenMissionIntegrationPr`, which opens it
   (via `openMissionIntegrationPr`) once no deliverable task of the mission is left
-  unfinished or unmerged. A mission that has not opted in — the default — behaves as it always
-  has: each task PR targets the workspace's trunk branch and nothing retargets it.
+  unfinished or unmerged. A `direct` mission (`integrationBranchEnabled` false) behaves as
+  missions did before the integration branch existed: each task PR targets the workspace's
+  trunk branch and nothing retargets it.
   `primaryPrNumber`/`primaryPrUrl` are reserved for a **trunk-based** PR under the
   mission, i.e. the mission integration PR where one exists; a PR based on the mission
   branch never claims the slot. Both fields stay null for workspace-less missions.
@@ -176,7 +185,9 @@ pending → claimed/assigned → in_progress → review → completed/failed). K
 - **`mode`**: `execution | planning` (planning tasks produce a plan, not code).
 - **`outputRequirement`**: `pr_required | artifact_required | none | auto` — enforced
   on completion. `outputSchema` drives SDK structured output.
-- **`runnerPreference`** (`any | user | service | action`) +
+- **`runnerPreference`** (`any | user | service`, plus the legacy stored value
+  `action` from the removed GitHub Actions runner, which the dashboard no
+  longer offers) +
   **`roleSlug`** — claim-time routing constraints. `roleSlug` is nullable: when
   set, only runners that advertise this skill in `availableSkills` can claim the
   task; when null, any runner with workspace access can claim it. **Null is the
@@ -455,8 +466,18 @@ when `artifactId` + `artifactTitle` are present. This contract is tested in
 ## 4a. Merge policy — who is allowed to end a PR
 
 The single primitive governing every route to a merge. Resolved by `resolvePolicy`
-from, in precedence order: `task.requiresReview` → `mission.mergePolicy` →
-`workspace.gitConfig.mergePolicy` → legacy `gitConfig` auto-merge flags.
+from, in precedence order: `task.requiresReview` → a task PR based on its mission's
+integration branch (forced `auto-threshold`) → `mission.mergePolicy` →
+`mission.requiresReview` → `workspace.gitConfig.mergePolicy` → the default
+(`auto-threshold`).
+
+The legacy `gitConfig` flags `autoMergePR` / `autoMergeOnGreenCI` are **not** part of
+that chain: migration `0113` converted them to a `mergePolicy` and nothing reads them
+since. The dashboard no longer offers an "Auto-merge on green CI" checkbox (it wrote
+`autoMergeOnGreenCI` and changed nothing); "merge on green CI" is the `auto-threshold`
+tier, set on the workspace merge policy page. The config route ignores the flag if a
+client still sends it, and the PR-create response's `autoMergeEnabled` is derived from
+the resolved policy.
 
 | Tier | Who ends the PR |
 |------|-----------------|

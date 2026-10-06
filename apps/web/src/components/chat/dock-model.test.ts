@@ -76,7 +76,7 @@ describe('taskDockModel', () => {
     expect(m.insight).toEqual({ text: 'Round per line or on the total?', flag: true });
     expect(m.actions.map(a => a.label)).toEqual(['Answer it', 'Ask about it']);
     expect(m.actions[0]).toMatchObject({ kind: 'answer', primary: true });
-    expect(m.happened.at(-1)).toEqual({ ts: null, text: 'Waiting on you.', needs: true });
+    expect(m.happened.at(-1)).toEqual({ ts: null, text: 'Needs input.', needs: true });
   });
 
   it('a stopped task: STOPPED, its error as the insight, Try a fix and Show the error', () => {
@@ -86,7 +86,7 @@ describe('taskDockModel', () => {
     expect(m.actions.map(a => a.label)).toEqual(['Try a fix', 'Show the error']);
     expect(m.actions[0]).toMatchObject({ kind: 'send', primary: true });
     expect(m.actions[0].text).toContain('totals in the buyer currency');
-    expect(m.happened.at(-1)).toEqual({ ts: null, text: 'Stopped. Waiting on you.', needs: true });
+    expect(m.happened.at(-1)).toEqual({ ts: null, text: 'Stopped. Needs input.', needs: true });
   });
 
   it('tries: one segment per run, copper when it stopped, blue while live, green once landed', () => {
@@ -127,6 +127,6 @@ describe('atWorkRows', () => {
 
   it('a task waiting on you reads copper', () => {
     const board = { phases: [{ taskIds: ['a'] }], tasks: { a: task('a', 'waiting', 'checkout') } } as unknown as MissionBoardModel;
-    expect(atWorkRows(board)[0]).toMatchObject({ state: 'waiting on you', tone: 'needs' });
+    expect(atWorkRows(board)[0]).toMatchObject({ state: 'needs input', tone: 'needs' });
   });
 });

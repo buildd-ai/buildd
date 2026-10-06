@@ -8,7 +8,7 @@
  * with `SlotLanes`' own `assignSlots` (components/fleet/slot-lanes-layout.ts),
  * so the slot a row describes here is the slot the lanes chart draws.
  */
-import { executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
+import { RUNNER_LIVE_WINDOW_MS, executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
 import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
@@ -71,6 +71,14 @@ export interface BuildFleetOptions {
   /** Earliest the timeline reaches back. */
   maxWindowMs?: number;
 }
+
+/**
+ * How fresh a runner's last beat must be for the fleet to count it online.
+ * Presence, not "not dead": the 60s liveness ping keeps a running runner well
+ * inside this, and a restarted runner's abandoned row drops out within a few
+ * minutes instead of being counted (with its slots) for 1.5 poll intervals.
+ */
+export const FLEET_ONLINE_WINDOW_MS = RUNNER_LIVE_WINDOW_MS;
 
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 const ms = (d: DateLike) => (d == null ? NaN : new Date(d).getTime());
@@ -184,7 +192,7 @@ export function buildFleetSnapshot(
         label, rest, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
         status: w.status, progress: w.progress ?? null,
         startedAt: new Date(iv.start).toISOString(),
-        question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Waiting on you' : null,
+        question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Needs input' : null,
       };
     } else {
       slot.last = {
@@ -319,7 +327,7 @@ export function fleetSummary(fleet: FleetSnapshot): FleetSummary {
 }
 
 /**
- * The fleet's section label: "Fleet · 2 runners × 4 slots", or without the
+ * The runners section label: "Runners · 2 runners × 4 slots", or without the
  * "× N slots" when runners differ in size. Home's panel and Settings → Runners
  * both print it, so the two pages name the fleet the same way.
  */
@@ -331,21 +339,21 @@ export function fleetLabel(fleet: Pick<FleetSnapshot, 'runners'>): string {
   const sizes = new Set(hosts.map(r => r.maxSlots));
   const each = sizes.size === 1 && n > 0 ? ` × ${[...sizes][0]} slots` : '';
   const elastic = groups > 0 ? `${groups} elastic group${groups === 1 ? '' : 's'}` : '';
-  if (n === 0 && elastic) return `Fleet · ${elastic}`;
-  return `Fleet · ${n} runner${n === 1 ? '' : 's'}${each}${elastic ? ` + ${elastic}` : ''}`;
+  if (n === 0 && elastic) return `Runners · ${elastic}`;
+  return `Runners · ${n} runner${n === 1 ? '' : 's'}${each}${elastic ? ` + ${elastic}` : ''}`;
 }
 
 export type HeadlinePart = { text: string; tone?: 'accent' | 'success' };
 
-/** "5 agents working. 2 need you." / "Fleet idle. Multi-currency invoices shipped." */
+/** "5 agents working. 2 need you." / "No agents working. Multi-currency invoices shipped." */
 export function homeHeadline(input: { live: number; needsYou: number; shipped?: string | null }): HeadlinePart[] {
   const { live, needsYou, shipped } = input;
   const needs: HeadlinePart = { text: `${needsYou} need${needsYou === 1 ? 's' : ''} you.`, tone: 'accent' };
   if (live > 0) {
-    return [{ text: `${live} agent${live === 1 ? '' : 's'} working. ` }, needsYou > 0 ? needs : { text: 'Nothing needs you.' }];
+    return [{ text: `${live} agent${live === 1 ? '' : 's'} working. ` }, needsYou > 0 ? needs : { text: 'Nothing needs input.' }];
   }
-  if (shipped) return [{ text: `Fleet idle. ${shipped} ` }, { text: 'shipped', tone: 'success' }, { text: '.' }];
-  return needsYou > 0 ? [{ text: 'Fleet idle. ' }, needs] : [{ text: 'Fleet idle. Nothing needs you.' }];
+  if (shipped) return [{ text: `No agents working. ${shipped} ` }, { text: 'shipped', tone: 'success' }, { text: '.' }];
+  return needsYou > 0 ? [{ text: 'No agents working. ' }, needs] : [{ text: 'Nothing needs you right now.' }];
 }
 
 /** Midnight of `now`'s calendar day in `tz` (IANA), epoch ms. Invalid zone → UTC. */

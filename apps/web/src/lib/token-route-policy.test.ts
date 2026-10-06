@@ -11,7 +11,7 @@ describe('REST token scope policy', () => {
   });
   test('analytics readers can reach analytics only', () => {
     const token = { level: 'worker', scopes: ['analytics:read'] };
-    for (const path of ['/api/stats/actions', '/api/stats/usage', '/api/health/failures', '/api/cbm/metrics']) {
+    for (const path of ['/api/stats/actions', '/api/stats/usage', '/api/health/failures', '/api/health/dispatch']) {
       expect(canAccessTokenRoute(token, request(path))).toBe(true);
     }
     expect(canAccessTokenRoute(token, request('/api/tasks', 'POST'))).toBe(false);
@@ -28,6 +28,10 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute(token, request('/api/stats/coordination?workspace=ws-b'))).toBe(false);
     expect(canAccessTokenRoute(token, request('/api/stats/coordination?workspace=ws-a'))).toBe(true);
     expect(canAccessTokenRoute(token, request('/api/health/budget?workspaceId=ws-a'))).toBe(false);
+    // dispatch_health: team-wide is refused for a restricted token; its own workspace is not.
+    expect(canAccessTokenRoute(token, request('/api/health/dispatch'))).toBe(false);
+    expect(canAccessTokenRoute(token, request('/api/health/dispatch?workspaceId=ws-b'))).toBe(false);
+    expect(canAccessTokenRoute(token, request('/api/health/dispatch?workspaceId=ws-a'))).toBe(true);
     expect(canAccessTokenRoute(token, request('/api/stats/actions?workspaceId=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['tasks:read'], workspaceIds: ['ws-a'] }, request('/api/tasks?workspace=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/artifacts?workspaceId=ws-a'))).toBe(false);
@@ -55,6 +59,15 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute({}, request('/api/new-capability'))).toBe(true);
     expect(hasTokenRouteAdminAccess({ level: 'admin' }, request('/api/secrets'))).toBe(true);
     expect(hasTokenRouteAdminAccess({ level: 'worker' }, request('/api/secrets'))).toBe(false);
+  });
+  test("a per-task token never passes a route's admin gate, even at admin level", () => {
+    const taskScope = { taskId: 't', workspaceId: 'w', expiresAt: Date.now() + 60_000 };
+    for (const path of ['/api/secrets', '/api/missions/m', '/api/workers/w/instruct', '/api/workspaces/w/config']) {
+      expect(hasTokenRouteAdminAccess({ level: 'admin', scopes: null, taskScope }, request(path, 'POST'))).toBe(false);
+      expect(hasTokenRouteAdminAccess({ level: 'admin', scopes: null, taskScope }, request(path, 'POST'), 'admin')).toBe(false);
+    }
+    // The same account without a task scope is an admin key.
+    expect(hasTokenRouteAdminAccess({ level: 'admin', scopes: null }, request('/api/secrets', 'POST'))).toBe(true);
   });
   test('nested workspace capabilities take precedence over workspace administration', () => {
     expect(requiredTokenScope('/api/workspaces/demo/skills', 'POST')).toBe('skills:admin');
@@ -103,14 +116,14 @@ describe('REST token scope policy', () => {
     for (const scope of memberGrantable) expect(ADMIN_TIER_SCOPES.has(scope)).toBe(false);
     const memberToken = { level: 'worker', scopes: memberGrantable };
     for (const [path, method] of [
-      ['/api/cbm/metrics', 'GET'], ['/api/connectors', 'GET'], ['/api/connectors/c1', 'GET'],
+      ['/api/stats/usage', 'GET'], ['/api/connectors', 'GET'], ['/api/connectors/c1', 'GET'],
       ['/api/connectors/c1/status', 'GET'], ['/api/connectors/c1/shares', 'GET'],
       ['/api/workspaces/ws-a/connectors', 'GET'], ['/api/missions/m1', 'GET'], ['/api/tasks/bulk', 'POST'],
     ]) {
       expect(hasTokenRouteAdminAccess(memberToken, request(path, method))).toBe(false);
     }
-    // An analytics reader still reads CBM metrics, through the explicit grant at that route.
-    expect(hasTokenRouteAdminAccess({ level: 'worker', scopes: ['analytics:read'] }, request('/api/cbm/metrics'), 'analytics:read')).toBe(true);
+    // An analytics reader still reads usage stats, through the explicit grant at that route.
+    expect(hasTokenRouteAdminAccess({ level: 'worker', scopes: ['analytics:read'] }, request('/api/stats/usage'), 'analytics:read')).toBe(true);
   });
   test('the admin scope passes a no-capability gate on an ordinary-scope route', () => {
     const admin = { level: 'admin', scopes: TOKEN_PRESETS.admin.scopes };

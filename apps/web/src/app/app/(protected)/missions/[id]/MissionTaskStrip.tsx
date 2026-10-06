@@ -222,7 +222,7 @@ export function stripReason(t: BoardTask, executor: MissionExecutor | null): str
     case 'done':
     case 'blocked':
       return null;
-    case 'waiting': return t.waitingFor?.prompt ?? 'Waiting on you.';
+    case 'waiting': return t.waitingFor?.prompt ?? 'Needs input.';
     case 'running': return t.currentAction ?? `Running${t.runner ? ` on ${t.runner}` : ''}.`;
     case 'review': return 'PR open, awaiting merge.';
     case 'ci_failed': return 'CI failed on its PR.';

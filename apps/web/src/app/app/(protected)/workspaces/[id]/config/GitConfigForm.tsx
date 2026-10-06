@@ -33,10 +33,15 @@ interface GitConfig {
     thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
     effort?: 'low' | 'medium' | 'high' | 'max';
     defaultBackend?: 'claude' | 'codex';
-    autoMergePR?: boolean;
-    autoMergeOnGreenCI?: boolean;
+    mergePolicy?: { tier?: 'auto-threshold' | 'agent-review' | 'human' } | null;
     defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
     criteriaGrader?: 'auto' | 'api' | 'runner';
+}
+
+function describeMergeTier(tier: 'auto-threshold' | 'agent-review' | 'human' | undefined): string {
+    if (tier === 'human') return 'a person merges every PR';
+    if (tier === 'agent-review') return 'a reviewer agent decides each PR';
+    return 'auto-merge on green CI, once the safety checks pass';
 }
 
 interface Props {
@@ -63,7 +68,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
     const [requiresPR, setRequiresPR] = useState(initialConfig?.requiresPR || false);
     const [targetBranch, setTargetBranch] = useState(initialConfig?.targetBranch || '');
     const [autoCreatePR, setAutoCreatePR] = useState(initialConfig?.autoCreatePR || false);
-    const [autoMergeOnGreenCI, setAutoMergeOnGreenCI] = useState(initialConfig?.autoMergeOnGreenCI ?? initialConfig?.autoMergePR ?? true);
     const [agentInstructions, setAgentInstructions] = useState(initialConfig?.agentInstructions || '');
     const [useClaudeMd, setUseClaudeMd] = useState(initialConfig?.useClaudeMd ?? true);
     const [bypassPermissions, setBypassPermissions] = useState(initialConfig?.bypassPermissions || false);
@@ -113,7 +117,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                     requiresPR,
                     targetBranch: targetBranch || undefined,
                     autoCreatePR,
-                    autoMergeOnGreenCI,
                     agentInstructions: agentInstructions || undefined,
                     useClaudeMd,
                     bypassPermissions,
@@ -287,24 +290,15 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                         </div>
                     )}
 
-                    <div className="flex items-center gap-2">
-                        <input
-                            type="checkbox"
-                            id="autoMergeOnGreenCI"
-                            checked={autoMergeOnGreenCI}
-                            onChange={(e) => setAutoMergeOnGreenCI(e.target.checked)}
-                            className="rounded"
-                        />
-                        <label htmlFor="autoMergeOnGreenCI" className="text-sm font-medium">
-                            Auto-merge on green CI
-                            <span className="ml-1.5 text-xs font-normal text-text-muted bg-surface-3 px-1.5 py-0.5 rounded">default: on</span>
-                        </label>
-                    </div>
-                    <p className="text-xs text-text-muted -mt-2">
-                        buildd merges and releases a PR once all CI checks pass. Turn off to review every PR yourself.
-                    </p>
-                    <p className="text-xs text-text-secondary -mt-1 bg-surface-3/60 border border-border-default rounded px-2.5 py-1.5">
-                        Override per task or mission with the <code className="font-mono">requiresReview</code> flag.
+                    {/* Who merges is the merge policy's call, not a checkbox here: the old
+                        "Auto-merge on green CI" toggle wrote a flag no merge gate reads. */}
+                    <p data-testid="git-config-merge-policy" className="text-xs text-text-secondary bg-surface-3/60 border border-border-default px-2.5 py-1.5">
+                        <span className="font-medium">Merging:</span>{' '}
+                        {describeMergeTier(initialConfig?.mergePolicy?.tier)}
+                        {!initialConfig?.mergePolicy?.tier && ' (default)'}.{' '}
+                        Set by the workspace{' '}
+                        <Link href={`/app/settings/workspace/${workspaceId}`} className="underline">merge policy</Link>;
+                        a mission or a task that requires review can override it.
                     </p>
                 </div>
             </div>
@@ -593,7 +587,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                                 { value: 'any', label: 'Any runner (no preference)' },
                                 { value: 'user', label: 'User runners only (personal / local)' },
                                 { value: 'service', label: 'Service runners only (CI / automated)' },
-                                { value: 'action', label: 'Action runners only (workflow automation)' },
                             ]}
                         />
                         <p className="text-xs text-text-muted mt-1">

@@ -39,16 +39,14 @@ export const PR_MUTATION_BASH_DENY: readonly string[] = [
  * Blocked on ANY mounted MCP server by exact tool name, not by connector
  * name: a connector's name is admin-chosen and not knowable ahead of time
  * (no GitHub connector is mounted for this workspace today), so matching by
- * name would miss it. Naming a tool nothing mounts is inert — see
- * applyCbmToolBlocklist in cbm-enforcement.ts for the same idiom — so
+ * name would miss it. Naming a tool nothing mounts is inert, so
  * blocking these unconditionally for a denied role costs nothing today and
  * closes the gap the moment such a connector is added to that role.
  *
  * Not a guarantee: this is the tool surface as commonly documented for the
  * github/github-mcp-server project, not something verifiable against a live
  * connector from inside this codebase. A server exposing PR mutation under a
- * different tool name reaches the agent unblocked — the same limitation
- * CBM's own blocklist carries for tools added after it was classified.
+ * different tool name reaches the agent unblocked.
  */
 export const GITHUB_MCP_PR_WRITE_TOOLS: readonly string[] = [
   'create_pull_request',

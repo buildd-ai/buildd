@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces } from '@buildd/core/db/schema';
-import { eq, and, isNull, isNotNull, inArray } from 'drizzle-orm';
+import { eq, and, ne, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { githubApi, githubAppBotLogin, mergePullRequest } from '@/lib/github';
 import { rankPrComments } from '@/lib/pr-comments';
 // One implementation of the primary-PR claim and of "what counts as trunk",
@@ -16,10 +16,12 @@ import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
-import { authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
-import { ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict } from '@/lib/agent-capabilities/pr-ownership';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { agentRunMayActOnPr, authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
+import { ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict, type InteractiveHeadHolder } from '@/lib/agent-capabilities/pr-ownership';
+import { INTERACTIVE_RUNNER } from '@/lib/interactive-session';
 import { repoProtectedBranches } from '@/lib/agent-capabilities/github';
+import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 import { getTeamWorkspaceIds, verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 // GET only: the dashboard session (in-app chat reads PRs as the signed-in user).
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -190,10 +192,21 @@ function isStoredPrStale(pr: { mergedAt?: Date | string | null; prLifecycleStatu
  * (lib/agent-capabilities/pr-ownership.ts). One ledger row per refusal, so
  * "why was this refused" and "how often" both have an answer.
  */
+/** How the caller relates to the worker, for the capability audit row. */
+function auditVia(account: { id: string; taskScope?: unknown }, worker: { accountId?: string | null }) {
+  if (account.taskScope) return 'task_token' as const;
+  return worker.accountId === account.id ? 'worker_account' as const : null;
+}
+
 function refusePrOwnership(
-  worker: { id: string; workspaceId: string | null; taskId: string | null; branch: string | null; task?: { missionId?: string | null } | null },
+  worker: { id: string; workspaceId: string | null; taskId: string | null; branch: string | null; accountId?: string | null; task?: { missionId?: string | null } | null },
   verdict: Extract<PrOwnershipVerdict, { owned: false }> | { owned: false; reasonCode: 'pr_outside_linked_repo'; error: string },
+  capability: 'pr.create' | 'pr.adopt' = 'pr.create',
 ) {
+  void recordCapabilityDecision({
+    capability, decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id,
+    accountId: worker.accountId ?? null, principalVia: 'worker_account', reasonCode: verdict.reasonCode,
+  });
   fireGateEvent({
     gate: GATE_SLUGS.PR_OWNERSHIP,
     surface: 'POST /api/github/pr',
@@ -209,6 +222,20 @@ function refusePrOwnership(
     { error: verdict.error, code: verdict.reasonCode, ...(worker.branch ? { hint: `Open the PR with head='${worker.branch}'.` } : {}) },
     { status: 403 },
   );
+}
+
+/**
+ * Other workers (any task) already recorded on `head` in this workspace —
+ * the DB half of the `interactive_head` ownership basis (pr-ownership.ts).
+ * Only called for a verified interactive worker, since it is the only caller
+ * that basis ever applies to.
+ */
+async function fetchOtherHeadHolders(workspaceId: string, selfWorkerId: string, head: string): Promise<InteractiveHeadHolder[]> {
+  const rows = await db.query.workers.findMany({
+    where: and(eq(workers.branch, head), eq(workers.workspaceId, workspaceId), ne(workers.id, selfWorkerId)),
+    columns: { id: true, taskId: true, status: true, prUrl: true },
+  });
+  return rows.map(r => ({ workerId: r.id, taskId: r.taskId, status: r.status, hasPr: r.prUrl != null }));
 }
 
 // POST /api/github/pr - Create a pull request
@@ -254,6 +281,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
 
+    // workers.runner is client-supplied at claim time, but this value is only
+    // ever reached here as 'mcp' after interactive-session.ts's HMAC check
+    // passed at claim — an UNVERIFIED claim is stamped 'mcp-unverified'
+    // instead and never qualifies. Gates the interactive_head ownership
+    // basis below: only a session buildd itself proved was interactive may
+    // open a PR from a head that is not its own derived branch.
+    const isInteractiveWorker = worker.runner === INTERACTIVE_RUNNER;
+
     // Team membership OR being the account that runs the worker (see
     // canActOnWorkerPr), and a per-task token only for its own worker. Runs
     // before anything below reads GitHub, creates a ref or records a PR.
@@ -271,7 +306,9 @@ export async function POST(req: NextRequest) {
     const mission = worker.task?.missionId
       ? await db.query.missions.findFirst({
           where: eq(missions.id, worker.task.missionId),
-          columns: { workingBranch: true, integrationBranchEnabled: true },
+          // Superset of what the base guard needs: the merge-policy columns let
+          // the response's `autoMergeEnabled` come from resolvePolicy below.
+          columns: RESOLVE_POLICY_MISSION_COLUMNS,
         })
       : null;
     // The same guard object every other door uses (completion auto-detect,
@@ -355,7 +392,7 @@ export async function POST(req: NextRequest) {
               owned: false,
               reasonCode: 'pr_outside_linked_repo',
               error: `Refusing to record ${existingPrUrl}: it is not a pull request in this workspace's repository (${ownRepo.fullName}).`,
-            });
+            }, 'pr.adopt');
           }
           if (!realPr) {
             try {
@@ -374,8 +411,17 @@ export async function POST(req: NextRequest) {
           workerBranch: worker.branch,
           task: worker.task,
           protectedBranches: repoProtectedBranches(worker.workspace ?? {}, ownRepo?.defaultBranch),
+          interactiveWorker: isInteractiveWorker,
+          otherHeadHolders: isInteractiveWorker ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, observedHead) : undefined,
         }, collectRetryLineage);
-        if (!ownership.owned) return refusePrOwnership(worker, ownership);
+        if (!ownership.owned) return refusePrOwnership(worker, ownership, 'pr.adopt');
+        // Record what was actually adopted: later lookups (get_pr, merge_pr,
+        // CI attribution) key off workers.branch, and the generated name
+        // claim_task handed this worker was never the real one.
+        if (ownership.basis === 'interactive_head' && worker.branch !== observedHead) {
+          await db.update(workers).set({ branch: observedHead, updatedAt: new Date() }).where(eq(workers.id, workerId));
+          worker.branch = observedHead;
+        }
       }
       if (missionBaseGuard.enforced && worker.task?.missionId && integrationBase) {
         const ready = await ensureIntegrationBaseForTaskPr({
@@ -432,6 +478,11 @@ export async function POST(req: NextRequest) {
       // saw. Recording it would let a wrong value drop a human merge gate; leaving
       // it null keeps today's behaviour until the pull_request webhook reports the
       // real base ref. Unknown degrades to the gate, never away from it.
+      void recordCapabilityDecision({
+        capability: 'pr.adopt', decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id,
+        accountId: account.id, principalVia: auditVia(account, worker), resource: prNumber ? `pr:${prNumber}` : null,
+        sideEffect: prNumber ? { prNumber } : null,
+      });
       await db.update(workers).set({
         prUrl: existingPrUrl,
         prNumber,
@@ -591,16 +642,28 @@ export async function POST(req: NextRequest) {
     // An agent run opens or adopts a PR only from a head its task owns. The
     // PR number is not known yet; dedup below re-asks with it, in case the
     // task names the PR it found.
-    const ownershipInput = ownershipApplies(prAccess.actor, account)
+    const ownershipApplied = ownershipApplies(prAccess.actor, account);
+    const ownershipInput = ownershipApplied
       ? {
           workerBranch: worker.branch,
           task: worker.task,
           protectedBranches: repoProtectedBranches(workspace, repo.defaultBranch),
+          interactiveWorker: isInteractiveWorker,
+          otherHeadHolders: isInteractiveWorker ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, head) : undefined,
         }
       : null;
     const headOwnership = ownershipInput
       ? await verifyPrOwnership({ ...ownershipInput, head, prNumber: null }, collectRetryLineage)
       : null;
+
+    // Record what was actually pushed: later lookups (get_pr, merge_pr, CI
+    // attribution, and the DERIVE-DON'T-ACCEPT mission-base check just below)
+    // all key off workers.branch, and the generated name claim_task handed
+    // this worker was never the real one.
+    if (headOwnership && headOwnership.owned && headOwnership.basis === 'interactive_head' && worker.branch !== head) {
+      await db.update(workers).set({ branch: head, updatedAt: new Date() }).where(eq(workers.id, workerId));
+      worker.branch = head;
+    }
 
     const retryIteration = typeof taskContext?.iteration === 'number' ? taskContext.iteration : 0;
     const maxIterations = typeof taskContext?.maxIterations === 'number' ? taskContext.maxIterations : 3;
@@ -1029,6 +1092,11 @@ export async function POST(req: NextRequest) {
       ? await fetchSplitPrStats(repo.installation.installationId, repo.fullName, prData.number)
       : null;
 
+    void recordCapabilityDecision({
+      capability: 'pr.create', decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id,
+      accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prData.number}`,
+      sideEffect: { prNumber: prData.number, head },
+    });
     // Update worker with PR info and diff stats from GitHub's response
     await db
       .update(workers)
@@ -1144,8 +1212,16 @@ export async function POST(req: NextRequest) {
       console.error('[changeIntent] PR conflict detection failed (non-fatal):', err);
     }
 
-    // Auto-merge intent flag: Buildd will merge the PR via webhook when all CI checks pass
-    const autoMergeEnabled = !!(workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR);
+    // Auto-merge intent flag: true when the resolved merge policy lets buildd merge
+    // this PR unattended once CI is green (tier auto-threshold; the safety check
+    // still runs). Derived from resolvePolicy — the same chain the merge gate uses —
+    // never from the legacy autoMergeOnGreenCI / autoMergePR flags, which no gate reads.
+    const autoMergeEnabled = resolvePolicy(
+      workspace as never,
+      mission,
+      { requiresReview: worker.task?.requiresReview ?? false },
+      { baseRef: prData.base?.ref ?? null },
+    ).tier === 'auto-threshold';
 
     // Task PRs based on a mission integration branch have no heartbeat loop to
     // notice them sitting open — request a review now rather than leaving them
@@ -1198,7 +1274,8 @@ export async function PATCH(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey, req);
+  // A per-task token may close only the PR its own run opened.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -1216,7 +1293,7 @@ export async function PATCH(req: NextRequest) {
 
     const worker = await db.query.workers.findFirst({
       where: eq(workers.id, workerId),
-      with: { workspace: true },
+      with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, missionId: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
     });
 
     if (!worker) {
@@ -1225,6 +1302,16 @@ export async function PATCH(req: NextRequest) {
 
     if (!(await canActOnWorkerPr(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    }
+    // A per-task token, and an agent run on its runner's key, may close only a
+    // PR its task owns: its own worker's PR or one the task names.
+    if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !(await agentRunMayActOnPr(account, worker, prNumber))) {
+      void recordCapabilityDecision({ capability: 'pr.close', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
+      return NextResponse.json({ error: 'A task token may close only its own PR' }, { status: 403 });
+    }
+    if (!account.taskScope && !(await agentRunMayActOnPr(account, worker, prNumber))) {
+      void recordCapabilityDecision({ capability: 'pr.close', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
+      return NextResponse.json({ error: `An agent run may close only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
     }
 
     const workspace = worker.workspace;
@@ -1241,6 +1328,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
     }
 
+    void recordCapabilityDecision({ capability: 'pr.close', decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}` });
     const prData = await githubApi(
       repo.installation.installationId,
       `/repos/${repo.fullName}/pulls/${prNumber}`,
@@ -1373,7 +1461,9 @@ export async function PUT(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey, req);
+  // A per-task token may merge only the PR its own run opened; the merge
+  // policy below still decides whether it lands.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -1392,13 +1482,18 @@ export async function PUT(req: NextRequest) {
     if (workerId) {
       worker = await db.query.workers.findFirst({
         where: eq(workers.id, workerId),
-        with: { workspace: true },
+        with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, missionId: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
       });
       if (!worker) {
         return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
       }
       if (!(await canActOnWorkerPr(account, worker))) {
         return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+      }
+      // A per-task token is held to the same rule below, with its own message.
+      if (!account.taskScope && !(await agentRunMayActOnPr(account, worker, prNumber))) {
+        void recordCapabilityDecision({ capability: 'pr.merge', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
+        return NextResponse.json({ error: `An agent run may merge only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
       }
     } else {
       // workerId absent — resolve worker from prNumber across the account's workspaces.
@@ -1411,6 +1506,12 @@ export async function PUT(req: NextRequest) {
         );
       }
       worker = resolved;
+    }
+    // A per-task token, and an agent run on its runner's key, may merge only a
+    // PR its task owns: its own worker's PR or one the task names.
+    if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !(await agentRunMayActOnPr(account, worker, prNumber))) {
+      void recordCapabilityDecision({ capability: 'pr.merge', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
+      return NextResponse.json({ error: 'A task token may merge only its own PR' }, { status: 403 });
     }
 
     const workspace = worker.workspace;
@@ -1837,6 +1938,11 @@ export async function PUT(req: NextRequest) {
       }, { status: 409 });
     }
     const result = slotted.result;
+    void recordCapabilityDecision({
+      capability: 'pr.merge', decision: result.merged ? 'allowed' : 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId ?? null,
+      workerId: worker.id ?? null, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`,
+      reasonCode: result.merged ? null : 'merge_failed', sideEffect: result.merged ? { prNumber, merged: true } : null,
+    });
 
     if (result.merged) {
       await db
@@ -1970,7 +2076,8 @@ export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey, req);
+  // A per-task token reads PRs only in its own task's workspace.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   const sessionUser = account ? null : await getCurrentUser();
   if (!account && !sessionUser) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
@@ -2042,6 +2149,9 @@ export async function GET(req: NextRequest) {
       }
       worker = resolved;
       resolvedPrNumber = prNum;
+    }
+    if (account && !taskScopeAllowsWorkspace(account, worker.workspaceId)) {
+      return NextResponse.json({ error: 'PR not found' }, { status: 404 });
     }
 
     const workspace = worker.workspace;

@@ -107,7 +107,7 @@ describe('FleetStrip', () => {
     expect(html).toContain('data-testid="home-fleet"');
     expect(html.match(/data-testid="fleet-slot"/g)?.length).toBe(2);
     expect(html).toContain('data-status="waiting_input"');
-    expect(html).toContain('Waiting on you');
+    expect(html).toContain('Needs input');
   });
   it('draws the timeline through the shared SlotLanes chart', () => {
     expect(html).toContain('data-testid="fleet-lanes"');
@@ -115,6 +115,11 @@ describe('FleetStrip', () => {
   });
   it('links slots into the mission, never to a bare task page', () => {
     expect(html).not.toContain('href="/app/tasks/');
+  });
+  it('says runners, not fleet: no ops jargon on Home', () => {
+    const compact = renderToStaticMarkup(<FleetStrip fleet={fleet} roles={[]} now={NOW} timeZone="UTC" compact />);
+    for (const h of [html, compact]) expect(h).not.toMatch(/>\s*Fleet\b/i);
+    expect(compact).toContain('Runners');
   });
 });
 
@@ -152,7 +157,7 @@ describe('FleetStrip — a cloud dispatcher is one elastic group', () => {
     expect(html.match(/data-testid="fleet-idle-slots"/g)?.length).toBe(1);
   });
   it('the section label counts the group apart from the machines', () => {
-    expect(t).toContain('Fleet · 1 runner × 2 slots + 1 elastic group');
+    expect(t).toContain('Runners · 1 runner × 2 slots + 1 elastic group');
   });
 });
 
@@ -254,7 +259,7 @@ describe('NeedsYouStack', () => {
         {null}
       </NeedsYouStack>,
     );
-    expect(empty).toContain('Nothing waiting on you');
+    expect(empty).toContain('Nothing needs input');
     expect(empty).not.toContain('data-testid="needs-you-count"');
   });
   it('does not show the empty state when the action queue renders', () => {
@@ -264,7 +269,7 @@ describe('NeedsYouStack', () => {
         {false}
       </NeedsYouStack>,
     );
-    expect(withQueue).not.toContain('Nothing waiting on you');
+    expect(withQueue).not.toContain('Nothing needs input');
   });
   it('splits an option into its answer and its reason', () => {
     expect(splitOption('Per line — match Stripe')).toEqual({ main: 'Per line', sub: 'match Stripe' });
@@ -345,8 +350,8 @@ describe('NeedsYouStack — nothing needs you, but work is in flight', () => {
         <div data-testid="home-action-queue"><div data-testid="waiting-in-flight">In flight 1</div></div>
       </NeedsYouStack>,
     );
-    expect(html).toContain('Nothing waiting on you');
-    expect(html.indexOf('Nothing waiting on you')).toBeLessThan(html.indexOf('waiting-in-flight'));
+    expect(html).toContain('Nothing needs input');
+    expect(html.indexOf('Nothing needs input')).toBeLessThan(html.indexOf('waiting-in-flight'));
   });
 });
 

@@ -291,10 +291,7 @@ export default async function MissionsPage({
 
       {missionsList.length === 0 ? (
         <div className="card p-8 text-center">
-          <p className="text-sm text-text-secondary mb-1">No missions.</p>
-          <p className="text-xs text-text-muted">
-            A mission is a goal your agents work toward.
-          </p>
+          <p className="text-sm text-text-secondary">No missions.</p>
         </div>
       ) : (
         <MissionGrid missions={missionsList} releaseFooters={releaseFooters} slots={maxSeats > 0 ? { live: activeSeats, max: maxSeats } : null} />

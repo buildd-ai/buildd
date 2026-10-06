@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveMergeOutcome, shouldRefreshOnVisible, MIN_VISIBILITY_REFRESH_MS } from './merge-outcome';
+import { resolveMergeOutcome } from './merge-outcome';
 
 describe('resolveMergeOutcome', () => {
   it('200 → merged', () => {
@@ -118,25 +118,5 @@ describe('resolveMergeOutcome — review gate', () => {
       kind: 'error',
       message: 'PR has merge conflicts',
     });
-  });
-});
-
-describe('shouldRefreshOnVisible', () => {
-  it('refreshes when the tab has been away longer than the floor', () => {
-    expect(shouldRefreshOnVisible(0, MIN_VISIBILITY_REFRESH_MS)).toBe(true);
-    expect(shouldRefreshOnVisible(1_000, 1_000 + MIN_VISIBILITY_REFRESH_MS + 1)).toBe(true);
-  });
-
-  it('does not refresh on a quick tab flick', () => {
-    expect(shouldRefreshOnVisible(10_000, 10_500)).toBe(false);
-  });
-
-  it('is inclusive at the floor', () => {
-    expect(shouldRefreshOnVisible(10_000, 10_000 + MIN_VISIBILITY_REFRESH_MS)).toBe(true);
-  });
-
-  it('honours an explicit interval', () => {
-    expect(shouldRefreshOnVisible(0, 500, 1_000)).toBe(false);
-    expect(shouldRefreshOnVisible(0, 1_500, 1_000)).toBe(true);
   });
 });

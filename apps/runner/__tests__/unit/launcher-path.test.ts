@@ -28,7 +28,7 @@ describe('launcher script PATH', () => {
 
   test('adds $HOME/.bun/bin to PATH before any bun invocation', () => {
     const pathExportIndex = launcher.indexOf('export PATH="$HOME/.bun/bin');
-    const firstBunCallIndex = launcher.indexOf('bun run');
+    const firstBunCallIndex = launcher.indexOf('bun --no-env-file run --preload');
     expect(pathExportIndex).toBeGreaterThan(-1);
     expect(firstBunCallIndex).toBeGreaterThan(-1);
     expect(pathExportIndex).toBeLessThan(firstBunCallIndex);
@@ -46,7 +46,7 @@ describe('launcher script PATH', () => {
       if (line.includes('export PATH=') && line.includes('.bun/bin')) {
         pathSet = true;
       }
-      if (pathSet && line.includes('bun run') && line.includes('index.ts')) {
+      if (pathSet && line.includes('bun --no-env-file run --preload') && line.includes('index.ts')) {
         bunAfterPath = true;
         break;
       }
@@ -56,6 +56,33 @@ describe('launcher script PATH', () => {
 
   test('dispatches `service` subcommands to service.ts', () => {
     expect(launcher).toContain('service)');
-    expect(launcher).toContain("bun run \"$HOME/.buildd/apps/runner/src/service.ts\" \"$@\"");
+    expect(launcher).toContain('bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/service.ts" "$@"');
+  });
+});
+
+describe('launcher never reads a .env from the current folder', () => {
+  test('every bun invocation passes --no-env-file', () => {
+    const calls = launcher.match(/\bbun (?:run|-e)\b|\bbun --no-env-file (?:run|-e)\b/g) ?? [];
+    expect(calls.length).toBeGreaterThan(0);
+    for (const c of calls) expect(c).toContain('--no-env-file');
+  });
+
+  test('help, -h and --help are answered without starting the runner loop', () => {
+    const help = launcher.indexOf('help|-h|--help)');
+    const loop = launcher.indexOf('while true; do');
+    expect(help).toBeGreaterThan(-1);
+    expect(help).toBeLessThan(loop);
+    const branch = launcher.slice(help, launcher.indexOf(';;', help));
+    expect(branch).toContain('exec bun --no-env-file run');
+    expect(branch).toContain('--help');
+  });
+});
+
+describe('install.ps1 launcher never reads a .env from the current folder', () => {
+  test('every bun run passes --no-env-file', async () => {
+    const ps1 = await Bun.file(join(import.meta.dir, '../../install.ps1')).text();
+    const runs = ps1.match(/^\s*bun (?:--no-env-file )?run .*$/gm) ?? [];
+    expect(runs.length).toBeGreaterThan(0);
+    for (const r of runs) expect(r).toContain('--no-env-file');
   });
 });

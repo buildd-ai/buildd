@@ -1,6 +1,9 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import CopyBlock from '@/components/CopyBlock';
+import RunnerInstallSteps from '@/components/RunnerInstallSteps';
+import { RUNNER_SERVICE_INSTALL } from '@/lib/runner-install';
 
 interface LiveRunner {
   id: string;
@@ -15,18 +18,15 @@ interface LiveRunner {
 
 interface ConnectRunnerSectionProps {
   workspaceId: string;
-  workspaceName: string;
   runners: {
-    action: string[];
     service: string[];
     user: string[];
   };
 }
 
-type RunnerType = 'action' | 'service' | 'user';
+type RunnerType = 'service' | 'user';
 
 const runnerMeta: Record<RunnerType, { label: string; description: string; emptyText: string }> = {
-  action: { label: 'GitHub Actions', description: 'CI/CD runner for automated tasks', emptyText: 'No runners connected' },
   service: { label: 'Service Workers', description: 'Always-on VM or server', emptyText: 'No runners connected' },
   user: { label: 'User Workers', description: 'Your laptop via Claude Code', emptyText: 'No runners connected' },
 };
@@ -40,10 +40,8 @@ function timeAgo(dateStr: string): string {
   return `${hours}h ago`;
 }
 
-export function ConnectRunnerSection({ workspaceId, workspaceName, runners }: ConnectRunnerSectionProps) {
+export function ConnectRunnerSection({ workspaceId, runners }: ConnectRunnerSectionProps) {
   const [expanded, setExpanded] = useState<RunnerType | null>(null);
-  const [creatingTask, setCreatingTask] = useState(false);
-  const [taskCreated, setTaskCreated] = useState(false);
   const [liveRunners, setLiveRunners] = useState<LiveRunner[]>([]);
   const [loadingRunners, setLoadingRunners] = useState(true);
 
@@ -69,40 +67,6 @@ export function ConnectRunnerSection({ workspaceId, workspaceName, runners }: Co
       clearInterval(interval);
     };
   }, [workspaceId]);
-
-  async function createSetupTask() {
-    setCreatingTask(true);
-    try {
-      const res = await fetch('/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId,
-          title: `Set up GitHub Actions runner for ${workspaceName}`,
-          description: `Create a GitHub Actions workflow using the official anthropics/claude-code-action@v1 to process buildd tasks.
-
-Steps:
-1. Create .github/workflows/buildd.yml with the workflow from the connect-runner guide
-2. Add BUILDD_API_KEY and CLAUDE_CODE_OAUTH_TOKEN to repository secrets
-3. Test by manually triggering the workflow
-
-The workflow should:
-- Run on repository_dispatch (buildd-triggered) and workflow_dispatch (manual)
-- Claim tasks from buildd, run Claude Code on them, and report completion
-- Use anthropics/claude-code-action@v1 with OAuth token auth`,
-          runnerPreference: 'user',
-        }),
-      });
-
-      if (res.ok) {
-        setTaskCreated(true);
-      }
-    } catch (error) {
-      console.error('Failed to create task:', error);
-    } finally {
-      setCreatingTask(false);
-    }
-  }
 
   function toggle(type: RunnerType) {
     setExpanded(expanded === type ? null : type);
@@ -151,12 +115,11 @@ The workflow should:
       ) : (
         <div className="border border-dashed border-border-default p-4 mb-6">
           <p className="text-[13px] text-text-secondary">No runners connected.</p>
-          <p className="text-[12px] text-text-muted mt-0.5">Connect one below and it starts claiming this workspace&apos;s tasks.</p>
         </div>
       )}
 
       {/* Runner type setup cards — stacked for mobile, inline for wider screens */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
         {(Object.keys(runnerMeta) as RunnerType[]).map((type) => {
           const meta = runnerMeta[type];
           const names = runners[type];
@@ -188,124 +151,6 @@ The workflow should:
         })}
       </div>
 
-      {expanded === 'action' && (
-        <div className="border border-primary/30 p-4 bg-primary/5">
-          <h3 className="font-medium mb-3">Set up GitHub Actions Runner</h3>
-
-          <div className="space-y-4">
-            <div>
-              <div className="text-sm font-medium mb-2">Step 1: Create an Action account &amp; get OAuth token</div>
-              <p className="text-sm text-text-secondary mb-2">
-                Go to <a href="/app/accounts/new" className="text-primary hover:underline">Accounts &rarr; New Account</a> and select &quot;Action - GitHub Actions runner&quot; as the type.
-              </p>
-              <p className="text-sm text-text-secondary">
-The official <code className="bg-surface-4 px-1 rounded">claude-code-action</code> also needs a <code className="bg-surface-4 px-1 rounded">CLAUDE_CODE_OAUTH_TOKEN</code> from your Claude Pro/Max subscription.
-              </p>
-            </div>
-
-            <div>
-              <div className="text-sm font-medium mb-2">Step 2: Connect account to this workspace</div>
-              <p className="text-sm text-text-secondary mb-2">
-                Connect the new account to this workspace through the API:
-              </p>
-              <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto">
-{`curl -X POST https://buildd.dev/api/workspaces/${workspaceId}/accounts \\
-  -H "Content-Type: application/json" \\
-  -d '{"accountId": "YOUR_ACCOUNT_ID", "canClaim": true}'`}
-              </pre>
-            </div>
-
-            <div>
-              <div className="text-sm font-medium mb-2">Step 3: Add GitHub Actions workflow</div>
-              <p className="text-sm text-text-secondary mb-2">
-                Create <code className="bg-surface-4 px-1 rounded">.github/workflows/buildd.yml</code>:
-              </p>
-              <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto whitespace-pre">
-{`name: Buildd Agent
-
-on:
-  repository_dispatch:
-    types: [buildd-task]
-  workflow_dispatch:
-    inputs:
-      task:
-        description: 'Task description'
-        required: false
-
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-
-jobs:
-  process-task:
-    runs-on: ubuntu-latest
-    env:
-      BUILDD_API_KEY: \${{ secrets.BUILDD_API_KEY }}
-      BUILDD_SERVER: https://buildd.dev
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Claim task from buildd
-        id: claim
-        run: |
-          RESPONSE=$(curl -s -X POST "$BUILDD_SERVER/api/workers/claim" \\
-            -H "Authorization: Bearer $BUILDD_API_KEY" \\
-            -H "Content-Type: application/json" \\
-            -d '{"maxTasks": 1}')
-          WORKER_ID=$(echo $RESPONSE | jq -r '.workers[0].id // empty')
-          TASK_DESC=$(echo $RESPONSE | jq -r '.workers[0].task.description // empty')
-          TASK_TITLE=$(echo $RESPONSE | jq -r '.workers[0].task.title // empty')
-          echo "worker_id=$WORKER_ID" >> $GITHUB_OUTPUT
-          echo "task=$TASK_TITLE: $TASK_DESC" >> $GITHUB_OUTPUT
-
-      - name: Run Claude Code
-        if: steps.claim.outputs.worker_id != ''
-        uses: anthropics/claude-code-action@v1
-        with:
-          prompt: \${{ steps.claim.outputs.task }}
-          claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
-      - name: Report completion
-        if: steps.claim.outputs.worker_id != ''
-        run: |
-          curl -s -X PATCH "$BUILDD_SERVER/api/workers/\${{ steps.claim.outputs.worker_id }}" \\
-            -H "Authorization: Bearer $BUILDD_API_KEY" \\
-            -H "Content-Type: application/json" \\
-            -d '{"status": "completed"}'`}
-              </pre>
-            </div>
-
-            <div>
-              <div className="text-sm font-medium mb-2">Step 4: Add secrets</div>
-              <p className="text-sm text-text-secondary">
-                In your GitHub repo, go to Settings &rarr; Secrets &rarr; Actions and add:
-              </p>
-              <ul className="text-sm text-text-secondary list-disc list-inside mt-1">
-                <li><code className="bg-surface-4 px-1 rounded">BUILDD_API_KEY</code>: your Action account&apos;s API key, to claim and report tasks</li>
-                <li><code className="bg-surface-4 px-1 rounded">CLAUDE_CODE_OAUTH_TOKEN</code>: your Claude Pro/Max OAuth token, to run Claude Code</li>
-              </ul>
-            </div>
-
-            <div className="pt-2 border-t border-primary/30">
-              {taskCreated ? (
-                <div className="text-sm text-status-success">
-                  Setup task created. Check the tasks list.
-                </div>
-              ) : (
-                <button
-                  onClick={createSetupTask}
-                  disabled={creatingTask}
-                  className="px-4 py-2 bg-primary text-white hover:bg-primary-hover disabled:opacity-50 text-sm"
-                >
-                  {creatingTask ? 'Creating…' : 'Create a setup task for an agent'}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
       {expanded === 'service' && (
         <div className="border border-primary/30 p-4 bg-primary/5">
           <h3 className="font-medium mb-3">Set up Service Worker</h3>
@@ -321,37 +166,15 @@ jobs:
             <div>
               <div className="text-sm font-medium mb-2">Step 2: Install and run buildd</div>
               <p className="text-sm text-text-secondary mb-2">
-                On your server, install buildd and log in:
+                On your server, install buildd and start it:
               </p>
-              <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto">
-{`# Install buildd
-curl -fsSL https://raw.githubusercontent.com/buildd-ai/buildd/main/apps/runner/install.sh | bash
-
-# Log in (creates API key)
-buildd login --device
-
-# Start the worker (claims and runs tasks)
-buildd`}
-              </pre>
+              <RunnerInstallSteps />
             </div>
 
             <div>
-              <div className="text-sm font-medium mb-2">Or run it as a systemd service:</div>
-              <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto">
-{`# /etc/systemd/system/buildd.service
-[Unit]
-Description=Buildd Worker
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-ExecStart=/home/ubuntu/.local/bin/buildd
-Restart=always
-
-[Install]
-WantedBy=multi-user.target`}
-              </pre>
+              <div className="text-sm font-medium mb-2">Keep it running in the background:</div>
+              <CopyBlock text={RUNNER_SERVICE_INSTALL} />
+              <p className="text-xs text-text-muted mt-2">Registers buildd as a background service (launchd on macOS, systemd on Linux) so it survives closing the terminal and reboots.</p>
             </div>
           </div>
         </div>

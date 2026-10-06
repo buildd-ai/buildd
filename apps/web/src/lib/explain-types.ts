@@ -38,6 +38,8 @@ export interface ExplainRefs {
   paths?: string[];
   /** How `paths` was determined, when a link names a touch set. */
   touchSource?: TouchSource;
+  /** A `task_dispatch_outbox` row: the wake a pending task is waiting on. */
+  outboxId?: string;
 }
 
 /**
@@ -73,7 +75,8 @@ export type CausalLinkSource =
   | 'gate_events.detail.consecutiveDeferrals'
   | 'tasks.subjectPrNumber + workers.mergedAt'
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber'
-  | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan';
+  | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
+  | 'task_dispatch_outbox.status';
 
 export interface CausalLink {
   /** 1-based position. The chain reads cause → effect, in order. */
@@ -189,6 +192,12 @@ export interface ExplainAnswer {
    * absent when the task has none. Read the text with `read_evidence`.
    */
   evidenceObjects?: InlineEvidenceObject[];
+  /**
+   * For a task subject: what its runs were given and refused (repo access,
+   * buildd tokens, PR actions), oldest first, repeats folded. Absent when
+   * nothing was recorded. From agent_capability_decisions.
+   */
+  access?: import('./agent-capabilities/access-log').AccessItem[];
   /**
    * Why the task runs (or last ran) on a backend other than the one it was
    * filed with: a claim-time flip (budget failover, provider toggle) or a

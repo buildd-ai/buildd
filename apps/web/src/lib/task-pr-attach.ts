@@ -80,6 +80,14 @@ export type AttachPrOutcome =
  * Idempotent: attaching the PR this task already owns returns the existing
  * worker. Refused when another task owns the PR (the delivery belongs to it) or
  * when this task already records a different PR.
+ *
+ * One exception: a PR the webhook auto-adopted before the real task reported
+ * in races the real work — the placeholder (`runner: 'external'`, `taskClass:
+ * 'bookkeeping'`, `context.adoptedPr`) never did anything, it only noticed the
+ * PR first. That mapping is moved onto this task rather than refused, so the
+ * delivery ends up on the task that actually produced it instead of stranding
+ * both: the real task with no PR, and the PR under a bookkeeping row nothing
+ * points back to.
  */
 export async function attachPrToTask(params: {
   task: { id: string; workspaceId: string; result: unknown };
@@ -100,14 +108,26 @@ export async function attachPrToTask(params: {
 
   const owner = await db.query.workers.findFirst({
     where: and(eq(workers.workspaceId, task.workspaceId), eq(workers.prNumber, prNumber)),
-    columns: { id: true, taskId: true, prUrl: true },
+    columns: { id: true, taskId: true, prUrl: true, runner: true },
+    with: { task: { columns: { taskClass: true, context: true } } },
   });
+
+  let movedFromPlaceholder = false;
   if (owner && owner.taskId !== task.id) {
-    return {
-      ok: false,
-      status: 409,
-      error: `PR #${prNumber} already belongs to task ${owner.taskId ?? '(none)'} in this workspace`,
-    };
+    const ownerTaskContext = (owner.task?.context ?? null) as Record<string, unknown> | null;
+    const isAutoAdoptedPlaceholder = owner.runner === 'external'
+      && owner.task?.taskClass === 'bookkeeping'
+      && !!ownerTaskContext?.adoptedPr;
+    if (!isAutoAdoptedPlaceholder) {
+      return {
+        ok: false,
+        status: 409,
+        error: `PR #${prNumber} already belongs to task ${owner.taskId ?? '(none)'} in this workspace`,
+      };
+    }
+    // Defer the actual move until the PR read below confirms the number is
+    // real — a wrong number must leave no trace, same as every other path here.
+    movedFromPlaceholder = true;
   }
 
   // Read the PR before writing anything — a wrong number must leave no trace.
@@ -127,7 +147,9 @@ export async function attachPrToTask(params: {
   const prState = pr.merged === true || pr.merged_at ? 'merged' : pr.state === 'closed' ? 'closed' : 'open';
 
   let workerId = owner?.id ?? null;
-  if (!workerId) {
+  if (workerId && movedFromPlaceholder) {
+    await db.update(workers).set({ taskId: task.id, updatedAt: new Date() }).where(eq(workers.id, workerId));
+  } else if (!workerId) {
     const inserted = await insertPrOwnerWorker({
       workspaceId: task.workspaceId,
       taskId: task.id,
@@ -149,5 +171,5 @@ export async function attachPrToTask(params: {
   };
   await db.update(tasks).set({ result, updatedAt: new Date() }).where(eq(tasks.id, task.id));
 
-  return { ok: true, alreadyAttached: Boolean(owner), workerId, prNumber, prUrl: pr.html_url, prState, result };
+  return { ok: true, alreadyAttached: Boolean(owner) && !movedFromPlaceholder, workerId, prNumber, prUrl: pr.html_url, prState, result };
 }

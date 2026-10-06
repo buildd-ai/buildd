@@ -9,6 +9,7 @@ import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId } fro
 import { isSystemWorkspace } from '@buildd/shared';
 import { moveTargets } from '../settings/workspaces/rows';
 import WorkspaceList, { type WorkspaceWithRunners } from './WorkspaceList';
+import { getTeamsPermissionOverrides } from '@/lib/permissions';
 
 export default async function WorkspacesPage() {
   const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
@@ -76,7 +77,8 @@ export default async function WorkspacesPage() {
 
       const userTeams = await getUserTeamsWithDetails(user.id);
       // Admin on the workspace's team and one other: the bar the precheck sets.
-      const targetsFor = (teamId: string | null) => (teamId ? moveTargets(user.id, userTeams, teamId) : null);
+      const teamOverrides = await getTeamsPermissionOverrides(userTeams.map((t) => t.id));
+      const targetsFor = (teamId: string | null) => (teamId ? moveTargets(user.id, userTeams, teamId, teamOverrides) : null);
       moveTeams = rawWorkspaces.map((ws) => targetsFor(ws.teamId)).find((t) => t !== null) ?? [];
 
       allWorkspaces = rawWorkspaces.map((ws) => {
@@ -92,7 +94,6 @@ export default async function WorkspacesPage() {
           teamId: ws.team?.id || null,
           canMove: targetsFor(ws.team?.id ?? null) !== null,
           runners: {
-            action: connectedAccounts.some((aw) => aw.account?.type === 'action' && aw.canClaim) || !!activeTypes?.has('action'),
             service: connectedAccounts.some((aw) => aw.account?.type === 'service' && aw.canClaim) || !!activeTypes?.has('service'),
             user: connectedAccounts.some((aw) => aw.account?.type === 'user' && aw.canClaim) || !!activeTypes?.has('user'),
           },

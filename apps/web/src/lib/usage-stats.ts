@@ -106,7 +106,7 @@ export interface Distribution {
 /**
  * How a task's tool histogram was obtained.
  *   histogram — `resultMeta.toolCounts`: complete and exact.
- *   derived   — reconstructed from `mcpCalls` + the CBM Read/Grep/Glob counters,
+ *   derived   — reconstructed from `mcpCalls` + the legacy `cbm` Read/Grep/Glob counters,
  *               for workers that predate the histogram. Missing Bash/Edit/Write
  *               entirely and capped at the last 100 MCP calls, so a floor.
  *   none      — no tool signal at all.
@@ -411,7 +411,9 @@ export function toolCountsForWorker(row: UsageWorkerRow): {
     const name = `mcp__${call.server}__${call.tool}`;
     counts[name] = (counts[name] ?? 0) + 1;
   }
-  const cbm = row.resultMeta?.cbm;
+  // `resultMeta.cbm` is retired, but rows written before the histogram carry
+  // their Read/Grep/Glob counts only there.
+  const cbm = (row.resultMeta as { cbm?: { readCount?: number; grepCount?: number; globCount?: number } } | null | undefined)?.cbm;
   if (cbm) {
     if (cbm.readCount) counts.Read = (counts.Read ?? 0) + cbm.readCount;
     if (cbm.grepCount) counts.Grep = (counts.Grep ?? 0) + cbm.grepCount;

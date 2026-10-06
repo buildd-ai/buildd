@@ -48,6 +48,7 @@ function setup(opts: { hidden?: boolean; workerStatuses?: Record<string, string>
   const store = createMissionLiveStore();
   let refreshes = 0;
   let patches = 0;
+  let missed = 0;
   store.subscribe(() => { patches++; });
   let hidden = opts.hidden ?? false;
   const r = createMissionRefresher({
@@ -57,11 +58,13 @@ function setup(opts: { hidden?: boolean; workerStatuses?: Record<string, string>
     store,
     refresh: () => { refreshes++; },
     isHidden: () => hidden,
+    onMissed: () => { missed++; },
     clock,
   });
   return {
     clock, store, r,
     get refreshes() { return refreshes; },
+    get missed() { return missed; },
     get patches() { return patches; },
     setHidden(h: boolean) { hidden = h; },
   };
@@ -192,31 +195,30 @@ describe('AC-17: structural events render at most once per window', () => {
 });
 
 describe('hidden tab', () => {
-  it('renders nothing while hidden and catches up once on return', () => {
+  it('renders nothing while hidden and hands each skipped event to the shell instead', () => {
     const s = setup({ hidden: true });
     s.r.onEvent('task:created', { task: { missionId: M } });
     s.r.onEvent('worker:failed', { taskId: T1 });
     s.clock.advance(10_000);
     expect(s.refreshes).toBe(0);
-    s.setHidden(false);
-    s.r.onVisible();
-    s.clock.advance(MISSION_REFRESH_WINDOW_MS);
-    expect(s.refreshes).toBe(1);
-    s.r.onVisible();
-    s.clock.advance(MISSION_REFRESH_WINDOW_MS);
-    expect(s.refreshes).toBe(1);
+    expect(s.missed).toBe(2);
   });
 
-  it('a trailing render that comes due after the tab hid is deferred to return', () => {
+  it('a trailing render that comes due after the tab hid is handed to the shell', () => {
     const s = setup();
     s.r.onEvent('task:created', { task: { missionId: M } });
     s.setHidden(true);
     s.clock.advance(MISSION_REFRESH_WINDOW_MS);
     expect(s.refreshes).toBe(0);
-    s.setHidden(false);
-    s.r.onVisible();
-    s.clock.advance(MISSION_REFRESH_WINDOW_MS);
-    expect(s.refreshes).toBe(1);
+    expect(s.missed).toBe(1);
+  });
+
+  it('a shell catch-up cancels the pending trailing render it already covers', () => {
+    const s = setup();
+    s.r.onEvent('task:created', { task: { missionId: M } });
+    s.r.onCaughtUp();
+    s.clock.advance(MISSION_REFRESH_WINDOW_MS * 2);
+    expect(s.refreshes).toBe(0);
   });
 });
 

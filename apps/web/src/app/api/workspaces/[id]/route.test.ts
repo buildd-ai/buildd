@@ -40,7 +40,7 @@ mock.module('@/lib/github-installation-access', () => ({
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       workspaces: { findFirst: mockWorkspacesFindFirst },
       githubRepos: {
         findFirst: mockGithubReposFindFirst,
@@ -64,7 +64,7 @@ mock.module('drizzle-orm', () => ({
   ),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   workspaces: { id: 'id', teamId: 'teamId' },
   githubRepos: { fullName: 'fullName' },
   workers: { prNumber: 'prNumber', prUrl: 'prUrl' },

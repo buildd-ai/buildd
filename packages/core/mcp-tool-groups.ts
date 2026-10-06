@@ -50,6 +50,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   explain: 'workers',
   get_error_traces: 'workers',
   get_failure_analytics: 'workers',
+  dispatch_health: 'workers',
   get_budget_forecast: 'workers',
   get_usage_stats: 'workers',
   get_manifest_coverage: 'workers',
@@ -132,6 +133,7 @@ const MCP_GROUP_OVERRIDES: Partial<Record<BuilddAction, McpToolGroup>> = {
   explain: 'analytics',
   get_error_traces: 'analytics',
   get_failure_analytics: 'analytics',
+  dispatch_health: 'analytics',
   read_evidence: 'analytics',
   get_budget_forecast: 'analytics',
   get_usage_stats: 'analytics',
@@ -217,6 +219,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'errors, run logs', actions: ['get_error_traces', 'get_failure_analytics', 'read_evidence'] },
       { text: 'budget, usage', actions: ['get_budget_forecast', 'get_usage_stats'] },
       { text: 'runners', actions: ['list_runners'] },
+      { text: 'dispatch', actions: ['dispatch_health'] },
     ],
   },
   runners: {
@@ -282,6 +285,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   explain: 'what a task, mission, workspace or PR waits on, with evidence',
   get_error_traces: 'errors caught from agent tool output',
   get_failure_analytics: 'failure patterns; error= finds a known one',
+  dispatch_health: 'task delivery: verdict, outbox counts, latency',
   get_budget_forecast: 'session pressure, budget burn',
   get_usage_stats: 'token, cost and turn stats',
   get_manifest_coverage: 'coverage by scope and kind',
@@ -498,14 +502,14 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
       { text: 'Update: pending|completed|failed|cancelled (stops worker)', actions: ['update_task'] },
     ]),
     param('limit', num, [{ text: 'Default 5, max 50', actions: ['list_tasks'] }]),
-    param('include', { type: 'array', items: { type: 'string', enum: ['workers', 'artifacts', 'scheduling'] } }, [{ text: 'Default both', actions: ['get_task'] }]),
+    param('include', { type: 'array', items: { type: 'string', enum: ['workers', 'artifacts', 'scheduling', 'dispatch'] } }, [{ text: 'Default workers+artifacts', actions: ['get_task'] }]),
     param('fullDescription', bool, [{ text: 'Full text', actions: ['get_task'] }]),
     param('title', str, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
     param('priority', num, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
   ],
   analytics: [
     param('workspaceId', str, [
-      { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'get_failure_analytics', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] },
+      { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'get_failure_analytics', 'dispatch_health', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] },
       { text: 'list_runners: says if a browser runner is online', actions: ['list_runners'] },
     ]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['explain', 'get_error_traces'] }]),
@@ -532,8 +536,12 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   admin: [],
 };
 
-/** The `params` schema of a group tool listing `actions`. `help` takes {action}, which the description's help line already says. */
-export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly string[]): { type: 'object'; description: string; properties: Record<string, Record<string, unknown>> } {
+/**
+ * The `params` schema of a group tool listing `actions`. `help` takes {action}, which the description's help line already says.
+ * No schema-level description: the tool description's signatures already say what params takes, and
+ * repeating "per the signature above" on every group cost ~100 tokens of the 6k budget.
+ */
+export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly string[]): { type: 'object'; properties: Record<string, Record<string, unknown>> } {
   const listed = new Set(actions);
   const properties: Record<string, Record<string, unknown>> = {};
   for (const f of MCP_GROUP_PARAMS[group]) {
@@ -541,5 +549,5 @@ export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly stri
     if (texts.length === 0) continue;
     properties[f.name] = { ...f.schema, description: texts.join('. ') };
   }
-  return { type: 'object', description: 'Per the signature above.', properties };
+  return { type: 'object', properties };
 }

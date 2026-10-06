@@ -45,6 +45,13 @@ export const EXIT_FAILED = 1;
 export const EXIT_CLAIM_REFUSED = 3;
 /** The worker was parked (resumable runs): a resume continues it in a new container. Not a failure. */
 export const EXIT_PARKED = 4;
+/**
+ * The server named a temporary, self-resolving reason (account/workspace/
+ * mission capacity, pacing, path overlap, a provider wall): the task stays
+ * pending and WILL become claimable again without anyone touching it. Retry
+ * it later — do not fail the task over this.
+ */
+export const EXIT_CLAIM_DEFERRED = 5;
 /** Bad invocation or missing configuration (no --task, no API key). */
 export const EXIT_USAGE = 64;
 
@@ -59,6 +66,12 @@ export const WORKER_ID_LINE_PREFIX = 'BUILDD_WORKER_ID=';
 export const PARKED_LINE_PREFIX = 'BUILDD_PARKED=';
 /** Printed once a resumed run has re-attached to its parked worker. */
 export const RESUMED_LINE_PREFIX = 'BUILDD_RESUMED=';
+/**
+ * Printed just before EXIT_CLAIM_DEFERRED, e.g. `BUILDD_CLAIM_DEFERRED=workspace_cap`.
+ * A supervisor that only sees the exit code (apps/cloud-runner) reads this to
+ * log and report WHY the retry it schedules is happening.
+ */
+export const CLAIM_DEFERRED_LINE_PREFIX = 'BUILDD_CLAIM_DEFERRED=';
 
 /** Sent to a run the agent parked mid-session after its own restart (no question was pending). */
 export const ORPHAN_RESUME_MESSAGE =
@@ -72,7 +85,8 @@ export const ONCE_USAGE = 'Usage: buildd --once --task <task-id>\n' +
   '       buildd --once --park-orphan <worker-id> --task <task-id>\n' +
   '  Claims the given task (or continues a parked worker), runs it to completion, and exits.\n' +
   `  Exit codes: ${EXIT_COMPLETED} completed, ${EXIT_FAILED} failed (retryable), ` +
-  `${EXIT_CLAIM_REFUSED} claim refused (do not retry), ${EXIT_PARKED} parked, ${EXIT_USAGE} usage error.\n` +
+  `${EXIT_CLAIM_REFUSED} claim refused (do not retry), ${EXIT_CLAIM_DEFERRED} claim deferred (retry later), ` +
+  `${EXIT_PARKED} parked, ${EXIT_USAGE} usage error.\n` +
   '  BUILDD_ONCE_MAX_WAIT_MS caps how long a worker may wait for user input (default 6h).';
 
 // ── Args / config ─────────────────────────────────────────────────────────────
@@ -185,18 +199,68 @@ export function createOnceResolver(
 
 // ── Decisions ─────────────────────────────────────────────────────────────────
 
-/** Why claimAndStart threw: the server said no (refused) or something broke (failed). */
-export function classifyClaimFailure(err: unknown): 'refused' | 'failed' {
-  const e = err as { claimError?: string; status?: unknown; message?: string } | null;
-  if (e?.claimError === 'server_rejected') return 'refused';
+/**
+ * `diagnostics.reason` values (apps/web/src/app/api/workers/claim/route.ts)
+ * that mean every candidate in this poll was held back by load or pacing, not
+ * that THIS task is unclaimable — the task stays `pending` and becomes
+ * claimable again on its own. Only reached when the response carried no
+ * `taskExclusion` (an explicit-taskId claim almost always gets one; this is
+ * the fallback for the rare case it does not).
+ */
+const DEFERRED_CLAIM_REASONS = new Set<string>([
+  'no_slots', 'budget_exhausted', 'budget_exhausted_partial', 'context_paused',
+  'path_overlap_blocked', 'rate_limited', 'all_candidates_deferred',
+]);
+
+/**
+ * `diagnostics.taskExclusion.code` values that name a temporary, self-healing
+ * gate on THIS specific task: the dispatch loop's own per-task deferrals
+ * (mission/workspace/account capacity, pacing, a provider wall, path overlap)
+ * and the explicit-task-exclusion SQL probe's load/scheduling gates
+ * (explicit-task-exclusion.ts). The task is never cancelled for any of these —
+ * it is left `pending` and the condition lifts without anyone acting on it.
+ *
+ * Deliberately excludes structural exclusions that retrying will not fix
+ * (already claimed/held by a person/wrong capability/dead subject) — those
+ * stay `refused`, same as before this classification existed.
+ */
+const DEFERRED_TASK_EXCLUSION_CODES = new Set<string>([
+  // Dispatch-loop deferrals (route.ts deferTask) — capacity/pacing/provider.
+  'mission_budget', 'mission_concurrent', 'mission_paced', 'workspace_cap', 'account_cap',
+  'provider_unavailable', 'budget_paused', 'routing_paused', 'sibling_retry_open',
+  'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'ordered_behind',
+  'path_overlap', 'connector_mismatch', 'role_env_unsatisfied',
+  // SQL-probe codes (explicit-task-exclusion.ts) — scheduled, cooling down, or
+  // simply stale by the time the probe ran; none of these say "never".
+  'deferred', 'deps_blocked', 'runner_cooldown', 'state_changed',
+]);
+
+/**
+ * Why claimAndStart threw: the server said no, permanently (`refused`), the
+ * server said no for now (`deferred` — retry later, see EXIT_CLAIM_DEFERRED),
+ * or something broke (`failed`).
+ */
+export function classifyClaimFailure(err: unknown): 'refused' | 'failed' | 'deferred' {
+  const e = err as { claimError?: string; claimReason?: string; claimTaskExclusionCode?: string; status?: unknown; message?: string } | null;
+  if (e?.claimError === 'server_rejected') {
+    if (typeof e.claimTaskExclusionCode === 'string') {
+      return DEFERRED_TASK_EXCLUSION_CODES.has(e.claimTaskExclusionCode) ? 'deferred' : 'refused';
+    }
+    return typeof e.claimReason === 'string' && DEFERRED_CLAIM_REASONS.has(e.claimReason) ? 'deferred' : 'refused';
+  }
   if (e?.claimError) return 'failed'; // workspace_not_found and friends: ours to fix
   let status = typeof e?.status === 'number' ? e.status : undefined;
   if (status === undefined && typeof e?.message === 'string') {
     const m = e.message.match(/^API error: (\d+)/);
     if (m) status = parseInt(m[1], 10);
   }
-  // 4xx is the server deciding; 408 / 429 are "try again later".
-  if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429) return 'refused';
+  // 429 here is the account-wide cap (route.ts: activeWorkers.length >=
+  // maxConcurrentWorkers), hit before any task-specific gate even runs — the
+  // same capacity wall as `no_slots`/`workspace_cap`, just thrown instead of
+  // answered with an empty 200. 408 stays "try again" without the deferred
+  // bookkeeping: a request timeout says nothing about capacity.
+  if (status === 429) return 'deferred';
+  if (status !== undefined && status >= 400 && status < 500 && status !== 408) return 'refused';
   return 'failed';
 }
 
@@ -280,7 +344,7 @@ async function waitForOutcome(workerId: string, d: RunOnceDeps, opts: { parkArme
     const status = d.workerManager.getWorker(workerId)?.status;
     if (status === undefined) return 'failed';
     // `done`/`error` is set before the session's teardown finishes (worktree,
-    // credential and CBM cleanup); wait for that too.
+    // credential cleanup); wait for that too.
     if ((status === 'done' || status === 'error') && !d.workerManager.hasLiveSession(workerId)) {
       return status === 'done' ? 'completed' : 'failed';
     }
@@ -356,6 +420,13 @@ export async function runOnce(opts: { taskId: string }, d: RunOnceDeps): Promise
     } catch (err) {
       const kind = classifyClaimFailure(err);
       d.log(`[once] claim ${kind}: ${err instanceof Error ? err.message : String(err)}`);
+      if (kind === 'deferred') {
+        const reason = (err as { claimTaskExclusionCode?: string; claimReason?: string } | null)?.claimTaskExclusionCode
+          ?? (err as { claimReason?: string } | null)?.claimReason
+          ?? 'unknown';
+        d.log(`${CLAIM_DEFERRED_LINE_PREFIX}${reason}`);
+        return (code = EXIT_CLAIM_DEFERRED);
+      }
       return (code = kind === 'refused' ? EXIT_CLAIM_REFUSED : EXIT_FAILED);
     }
     if (!worker) {

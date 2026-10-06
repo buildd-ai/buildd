@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
 import { useConfirm } from '@/components/useConfirm';
+import { roleHas } from '@/lib/permission-registry';
+import { QA_FIXTURE_MEMBER_ID } from '../../settings/team/qa-state';
 
 interface TeamMember {
   userId: string;
@@ -134,6 +136,8 @@ export default function TeamDetailClient({
   }
 
   async function handleRoleChange(userId: string, newRole: string) {
+    // The ?state=multi-member row isn't a real member: never write for it.
+    if (userId === QA_FIXTURE_MEMBER_ID) return;
     try {
       const res = await fetch(`/api/teams/${team.id}/members/${userId}`, {
         method: 'PATCH',
@@ -156,6 +160,7 @@ export default function TeamDetailClient({
     if (!(await confirm({ title: 'Remove member?', message: `Remove ${memberName || 'this member'} from the team?`, confirmLabel: 'Remove', variant: 'danger' }))) {
       return;
     }
+    if (userId === QA_FIXTURE_MEMBER_ID) return;
 
     try {
       const res = await fetch(`/api/teams/${team.id}/members/${userId}`, {
@@ -250,7 +255,7 @@ export default function TeamDetailClient({
             >
               Edit
             </button>
-            {currentUserRole === 'owner' && !isPersonal && (
+            {roleHas(currentUserRole, 'delete_team', null /* locked */) && !isPersonal && (
               <button
                 onClick={handleDelete}
                 disabled={deleting}
@@ -294,7 +299,7 @@ export default function TeamDetailClient({
                 </div>
               </div>
               <div className="flex items-center gap-3 flex-shrink-0 ml-auto">
-                {canManage && currentUserRole === 'owner' && member.userId !== currentUserId ? (
+                {canManage && roleHas(currentUserRole, 'assign_team_owner', null /* locked */) && member.userId !== currentUserId ? (
                   <Select
                     value={member.role}
                     onChange={(v) => handleRoleChange(member.userId, v)}

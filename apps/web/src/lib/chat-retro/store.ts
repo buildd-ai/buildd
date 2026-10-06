@@ -5,9 +5,9 @@
 import { db } from '@buildd/core/db';
 import {
   chatRetros, conversationApprovals, conversationMessages, conversations,
-  tasks, teams, userFeedback, workspaces,
+  tasks, teamMembers, teams, userFeedback, users, workspaces,
 } from '@buildd/core/db/schema';
-import { and, asc, desc, eq, gt, gte, inArray, isNotNull, lt, lte, notInArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, notInArray, sql, type SQL } from 'drizzle-orm';
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus } from '@buildd/shared';
 import type { LessonRow } from './lesson';
 import { assertContentFree } from './lesson';
@@ -17,7 +17,8 @@ import { FIRST_OCCURRENCE_KINDS } from './visible-answer';
 import type { RetroMessage, RetroWindowInput } from './skeleton';
 import { RETRO_IDLE_MIN, RETRO_MAX_WINDOW_MESSAGES } from './skeleton';
 import type { ChatRetroSettings } from './settings';
-import { readChatRetroSettings } from './settings';
+import { CHAT_RETRO_DOGFOOD, effectiveChatRetroSettings, readChatRetroSettings } from './settings';
+import { isUuid } from '@/lib/uuid';
 import { wakeTask } from '@/lib/dispatch-authority';
 
 /** Lessons are kept this long, then pruned by the same cron. */
@@ -35,9 +36,28 @@ export const utcDayStart = (now: Date): Date => new Date(Date.UTC(now.getUTCFull
 
 // ── WHERE builders (rendered in tests) ────────────────────────────────────────
 
-/** Teams that opted in to lessons. Default (NULL / no key / false) is excluded. */
+/** The team has an owner who turned on account dogfood (./settings.ts). */
+export function dogfoodOwnerExists(): SQL {
+  return sql`exists (select 1 from ${teamMembers} inner join ${users} on ${users.id} = ${teamMembers.userId} where ${teamMembers.teamId} = ${teams.id} and ${teamMembers.role} = 'owner' and ${users.chatRetroDogfoodAt} is not null)`;
+}
+
+/**
+ * Teams that opted in to lessons, or whose owner keeps retros on by account
+ * dogfood. Default (NULL / no key / false, no dogfood owner) is excluded.
+ */
 export function optedInTeamsWhere(): SQL {
-  return sql`(${teams.chatRetro} ->> 'lessons') = 'true'`;
+  return sql`((${teams.chatRetro} ->> 'lessons') = 'true' or ${dogfoodOwnerExists()})`;
+}
+
+/** Teams with a dogfood owner whose stored settings are not already both on. */
+export function dogfoodUnsyncedWhere(userId?: string): SQL {
+  return and(
+    dogfoodOwnerExists(),
+    sql`not (coalesce(${teams.chatRetro} ->> 'lessons', '') = 'true' and coalesce(${teams.chatRetro} ->> 'proposals', '') = 'true')`,
+    userId
+      ? sql`${teams.id} in (select ${teamMembers.teamId} from ${teamMembers} where ${teamMembers.userId} = ${userId} and ${teamMembers.role} = 'owner')`
+      : undefined,
+  )!;
 }
 
 export function teamLessonsWhere(teamId: string): SQL {
@@ -104,14 +124,36 @@ export function dogfoodTeamIds(env: Record<string, string | undefined> = process
 }
 
 export async function listOptedInTeams(): Promise<Array<{ teamId: string; settings: ChatRetroSettings; dogfood: boolean }>> {
-  const rows = await db.select({ id: teams.id, chatRetro: teams.chatRetro }).from(teams).where(optedInTeamsWhere());
+  const rows = await db
+    .select({ id: teams.id, chatRetro: teams.chatRetro, dogfoodOwner: sql<boolean>`${dogfoodOwnerExists()}` })
+    .from(teams)
+    .where(optedInTeamsWhere());
   const dogfood = dogfoodTeamIds();
-  return rows.map(r => ({ teamId: r.id, settings: readChatRetroSettings(r.chatRetro), dogfood: dogfood.has(r.id) }));
+  return rows.map(r => ({
+    teamId: r.id,
+    settings: effectiveChatRetroSettings(readChatRetroSettings(r.chatRetro), r.dogfoodOwner === true),
+    dogfood: dogfood.has(r.id) || r.dogfoodOwner === true,
+  }));
 }
 
+/** The team's effective settings, and whether an owner's account dogfood is what holds them on. */
+export async function readTeamRetroState(teamId: string): Promise<{ settings: ChatRetroSettings; dogfood: boolean }> {
+  const [row] = await db
+    .select({ chatRetro: teams.chatRetro, dogfoodOwner: sql<boolean>`${dogfoodOwnerExists()}` })
+    .from(teams)
+    .where(eq(teams.id, teamId));
+  const dogfood = row?.dogfoodOwner === true;
+  return { settings: effectiveChatRetroSettings(readChatRetroSettings(row?.chatRetro), dogfood), dogfood };
+}
+
+/** Effective settings: what the pass and the turn signal act on. */
 export async function readTeamSettings(teamId: string): Promise<ChatRetroSettings> {
-  const row = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { chatRetro: true } });
-  return readChatRetroSettings(row?.chatRetro);
+  return (await readTeamRetroState(teamId)).settings;
+}
+
+export async function hasAccountDogfood(userId: string): Promise<boolean> {
+  const [row] = await db.select({ at: users.chatRetroDogfoodAt }).from(users).where(eq(users.id, userId));
+  return !!row?.at;
 }
 
 export interface PendingConversation { id: string; workspaceId: string | null; dataClass: string | null }
@@ -247,6 +289,66 @@ export async function writeTeamSettings(teamId: string, next: ChatRetroSettings)
   await db.update(teams)
     .set({ chatRetro: next.lessons ? next : null, updatedAt: new Date() })
     .where(eq(teams.id, teamId));
+}
+
+/**
+ * Store lessons + proposals on every team with a dogfood owner (only `userId`'s
+ * owned teams when given). The effective policy already reads them as on; this
+ * keeps the stored value honest if the owner later leaves. Returns team ids.
+ */
+async function syncDogfoodTeams(userId?: string): Promise<string[]> {
+  const rows = await db.update(teams)
+    .set({ chatRetro: { ...CHAT_RETRO_DOGFOOD }, updatedAt: new Date() })
+    .where(dogfoodUnsyncedWhere(userId))
+    .returning({ id: teams.id });
+  return rows.map(r => r.id);
+}
+
+/**
+ * Turn on account dogfood for one person, and backfill every team they own.
+ * Idempotent: the first activation time is kept.
+ */
+export async function activateAccountDogfood(userId: string, now = new Date()): Promise<{ syncedTeamIds: string[] }> {
+  await db.update(users)
+    .set({ chatRetroDogfoodAt: now })
+    .where(and(eq(users.id, userId), isNull(users.chatRetroDogfoodAt)));
+  return { syncedTeamIds: await syncDogfoodTeams(userId) };
+}
+
+/** Owners of the configured dogfood teams who have not got account dogfood yet. */
+export function dogfoodTeamOwnersWhere(teamIds: string[]): SQL {
+  return and(
+    isNull(users.chatRetroDogfoodAt),
+    sql`${users.id} in (select ${teamMembers.userId} from ${teamMembers} where ${inArray(teamMembers.teamId, teamIds)} and ${teamMembers.role} = 'owner')`,
+  )!;
+}
+
+/**
+ * Server-side reconciliation, once per daily pass: the owners of the teams in
+ * CHAT_RETRO_DOGFOOD_TEAM_IDS get account dogfood, then every team with a
+ * dogfood owner (including teams created since) gets its stored settings synced.
+ */
+export async function reconcileAccountDogfood(env: Record<string, string | undefined> = process.env): Promise<{ activatedUsers: number; syncedTeams: number }> {
+  const teamIds = [...dogfoodTeamIds(env)].filter(isUuid);
+  const activated = teamIds.length === 0 ? [] : await db.update(users)
+    .set({ chatRetroDogfoodAt: new Date() })
+    .where(dogfoodTeamOwnersWhere(teamIds))
+    .returning({ id: users.id });
+  const synced = await syncDogfoodTeams();
+  return { activatedUsers: activated.length, syncedTeams: synced.length };
+}
+
+/**
+ * A team just created by `userId`: store their account dogfood on it, if they
+ * have it. Not needed for the policy (a new team reads as on through its owner
+ * at once, and the daily pass syncs the stored value); for a caller that wants
+ * the stored value right away. Core routes must not import this module
+ * (scripts/module-boundaries.test.ts), so team creation does not call it.
+ */
+export async function inheritAccountDogfood(teamId: string, userId: string): Promise<boolean> {
+  if (!(await hasAccountDogfood(userId))) return false;
+  await writeTeamSettings(teamId, { ...CHAT_RETRO_DOGFOOD });
+  return true;
 }
 
 export async function pruneExpiredLessons(now: Date): Promise<number> {

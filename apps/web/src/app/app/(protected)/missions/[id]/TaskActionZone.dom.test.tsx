@@ -29,6 +29,7 @@ let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
 const realFetch = globalThis.fetch;
 let calls: { url: string; body: unknown }[] = [];
+let codexConfigured = false;
 
 function stubFetch(startReply: { status: number; body: Record<string, unknown> }, fleet: unknown[] = []) {
   calls = [];
@@ -37,6 +38,9 @@ function stubFetch(startReply: { status: number; body: Record<string, unknown> }
     calls.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     if (u === '/api/workers/active') {
       return { ok: true, status: 200, json: async () => ({ activeLocalUis: fleet }) } as Response;
+    }
+    if (u.endsWith('/backends')) {
+      return { ok: true, status: 200, json: async () => ({ backends: [{ id: 'claude', available: true }, { id: 'codex', available: codexConfigured }] }) } as Response;
     }
     const first = calls.filter(c => c.url.endsWith('/start')).length === 1;
     const reply = first ? startReply : { status: 200, body: {} };
@@ -131,5 +135,126 @@ describe('TaskActionZone — inline Force start', () => {
     await flush();
     expect(container.textContent).toContain('No runners online');
     expect(container.textContent).toContain('browser-capable runner');
+  });
+});
+
+describe('TaskActionZone — raise workspace cap stepper', () => {
+  const gatedCapBody = { gateReason: 'workspace_cap_reached', canForce: true, canExempt: true, blockClass: 'policy', cap: 3, active: 3, error: 'Workspace is full' };
+
+  it('keeps −/value/+ in their own group, separate from the label and Save & start, so they never split across lines', async () => {
+    stubFetch({ status: 422, body: gatedCapBody });
+    await mount();
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    const lower = button('−')!;
+    const raise = button('+')!;
+    expect(lower.parentElement).toBe(raise.parentElement);
+    const group = lower.parentElement!;
+    expect(group.contains(container.querySelector('.tabular-nums'))).toBe(true);
+    expect(group.contains(button('Save & start')!)).toBe(false);
+  });
+
+  it('steps the target between cap+1 and 20, then raising saves the workspace cap and restarts the task', async () => {
+    // A dedicated stub: the shared stubFetch's "first /start call" heuristic
+    // can't also distinguish the PATCH /api/workspaces/[id] raiseCapAndStart
+    // makes, since that call doesn't end in "/start" either.
+    calls = [];
+    let startCallCount = 0;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      calls.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (u === '/api/tasks/t1/start') {
+        startCallCount += 1;
+        if (startCallCount === 1) return { ok: false, status: 422, json: async () => gatedCapBody } as Response;
+        return { ok: true, status: 200, json: async () => ({}) } as Response;
+      }
+      if (u === '/api/workspaces/ws1') {
+        return { ok: true, status: 200, json: async () => ({ maxConcurrentTasks: 5 }) } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+
+    await mount();
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    const value = () => container.querySelector('.tabular-nums')!.textContent;
+    expect(value()).toBe('4'); // cap (3) + 1
+
+    await act(async () => { button('−')!.click(); }); // floor is cap+1: no-op
+    await flush();
+    expect(value()).toBe('4');
+
+    await act(async () => { button('+')!.click(); });
+    await flush();
+    expect(value()).toBe('5');
+
+    await act(async () => { button('Save & start')!.click(); });
+    await flush();
+    const patch = calls.find(c => c.url === '/api/workspaces/ws1');
+    expect(patch?.body).toEqual({ maxConcurrentTasks: 5 });
+    expect(startCallCount).toBe(2);
+  });
+});
+
+describe('TaskActionZone — a provider sign-in failure', () => {
+  it('says what to do in plain words, links the credential setting, and folds the raw text', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', lastError: { excerpt: 'Not logged in · Please run /login' } });
+    await flush();
+    const zone = container.textContent ?? '';
+    expect(zone).toContain('no working model key');
+    expect(zone).not.toContain('Please run /login');
+    const link = container.querySelector('a[href="/app/settings/runners#agent-key"]');
+    expect(link?.textContent).toBe('Add an agent key');
+    const raw = button('Show raw output');
+    expect(raw).toBeDefined();
+    await act(async () => { raw!.click(); });
+    expect(container.textContent).toContain('Not logged in · Please run /login');
+    // Retry stays one click away.
+    expect(button('Retry on Claude')).toBeDefined();
+  });
+
+  it('classifies from the full error when the excerpt is only its first line', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', lastError: { excerpt: '[mcp-sdk] warning…', raw: '[mcp-sdk] warning\nNot logged in · Please run /login' } });
+    await flush();
+    expect(container.textContent).toContain('no working model key');
+  });
+
+  it('any other failure still shows its excerpt as before', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', lastError: { excerpt: 'Tests failed: 3 of 12' } });
+    await flush();
+    expect(container.textContent).toContain('Tests failed: 3 of 12');
+    expect(button('Show raw output')).toBeUndefined();
+  });
+});
+
+describe('TaskActionZone — a failed task offers only a backend that can run it', () => {
+  afterEach(() => { codexConfigured = false; });
+
+  it('names the backend as a product: Retry on Claude', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', lastError: { excerpt: 'boom' } });
+    await flush();
+    expect(button('Retry on Claude')).toBeDefined();
+    expect(button('Retry on claude')).toBeUndefined();
+  });
+
+  it('no Switch to Codex when Codex is not configured', async () => {
+    codexConfigured = false;
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', lastError: { excerpt: 'boom' } });
+    await flush();
+    expect(button('Switch to')).toBeUndefined();
+    expect(container.querySelector('[data-action="switch_backend"]')).toBeNull();
+  });
+
+  it('offers Switch to Codex once Codex is configured', async () => {
+    codexConfigured = true;
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', lastError: { excerpt: 'boom' } });
+    await flush();
+    expect(button('Switch to Codex')).toBeDefined();
   });
 });

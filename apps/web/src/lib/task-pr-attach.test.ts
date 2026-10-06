@@ -128,4 +128,47 @@ describe('attachPrToTask', () => {
     const out = await attachPrToTask({ task: TASK, repo: REPO, prNumber: 17 });
     expect(out).toMatchObject({ ok: true, prState: 'open' });
   });
+
+  it('moves an auto-adopted placeholder mapping onto the task that actually did the work', async () => {
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-placeholder',
+      taskId: 'task-bookkeeping',
+      prUrl: 'x',
+      runner: 'external',
+      task: { taskClass: 'bookkeeping', context: { adoptedPr: { prNumber: 17 } } },
+    });
+    const out = await attachPrToTask({ task: TASK, repo: REPO, prNumber: 17 });
+
+    expect(out).toMatchObject({ ok: true, alreadyAttached: false, workerId: 'w-placeholder' });
+    expect(mockInsertPrOwnerWorker).not.toHaveBeenCalled();
+    const moveCall = mockSet.mock.calls.find((c: any[]) => c[0]?.taskId === 'task-1');
+    expect(moveCall).toBeTruthy();
+  });
+
+  it('leaves the placeholder mapping untouched when the PR cannot be read', async () => {
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-placeholder',
+      taskId: 'task-bookkeeping',
+      prUrl: 'x',
+      runner: 'external',
+      task: { taskClass: 'bookkeeping', context: { adoptedPr: { prNumber: 17 } } },
+    });
+    mockGithubApi.mockRejectedValue(new Error('GitHub API error: 404 Not Found'));
+    const out = await attachPrToTask({ task: TASK, repo: REPO, prNumber: 17 });
+    expect(out).toMatchObject({ ok: false, status: 404 });
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('still refuses a non-placeholder worker owned by another task even with a task row attached', async () => {
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-other',
+      taskId: 'task-other',
+      prUrl: 'x',
+      runner: 'claude-code',
+      task: { taskClass: 'work', context: {} },
+    });
+    const out = await attachPrToTask({ task: TASK, repo: REPO, prNumber: 17 });
+    expect(out).toMatchObject({ ok: false, status: 409 });
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
 });

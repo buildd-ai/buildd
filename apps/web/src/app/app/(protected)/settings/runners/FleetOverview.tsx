@@ -8,6 +8,7 @@
  * `loadFleetSnapshot` in lib/home-fleet.ts from the same heartbeats Home reads.
  */
 import Link from 'next/link';
+import RunnerInstallSteps from '@/components/RunnerInstallSteps';
 import type { ReactNode } from 'react';
 import type { FleetRunner, FleetSnapshot } from '@buildd/shared';
 import { SlotMeter } from '@/components/fleet/SlotMeter';
@@ -15,7 +16,7 @@ import { fleetLabel, type HeadlinePart } from '@/lib/fleet-view';
 import SettingsSection from '../SettingsSection';
 import { StatusChip } from '../_components/ConnectionRow';
 
-/** "3 of 8 slots busy." / "Fleet idle. 8 slots free." plus "1 offline." */
+/** "3 of 8 slots busy." / "No agents working. 8 slots free." plus "1 offline." */
 export function fleetOverviewHeadline(fleet: FleetSnapshot, teamName?: string | null): HeadlinePart[] {
   const offline = fleet.runners.filter(r => !r.online).length;
   const tail: HeadlinePart[] = offline > 0 ? [{ text: ` ${offline} offline.` }] : [];
@@ -25,7 +26,7 @@ export function fleetOverviewHeadline(fleet: FleetSnapshot, teamName?: string | 
   if (fleet.live > 0) {
     return [{ text: `${fleet.live} of ${fleet.capacity}`, tone: 'accent' }, { text: ' slots busy.' }, ...tail];
   }
-  return [{ text: `Fleet idle. ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} free.` }, ...tail];
+  return [{ text: `No agents working. ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} free.` }, ...tail];
 }
 
 function RunnerRow({ runner }: { runner: FleetRunner }) {
@@ -45,7 +46,7 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
         </div>
         <div className="mt-1 truncate font-mono text-[11px] text-text-muted">
           {runner.machine ?? 'Host runner'}
-          {waiting > 0 && <span className="text-status-warning"> · {waiting} waiting on you</span>}
+          {waiting > 0 && <span className="text-status-warning"> · {waiting} need input</span>}
         </div>
       </div>
       {runner.elastic ? (
@@ -77,10 +78,11 @@ export default function FleetOverview({ fleet, cloud, teamName }: { fleet: Fleet
         <p data-testid="runners-fleet-headline" className="font-mono text-[18px] font-semibold leading-tight tracking-[-0.3px] text-text-primary md:text-[20px]">
           {headline.map((p, i) => <span key={i} className={p.tone === 'accent' ? 'text-accent-text' : undefined}>{p.text}</span>)}
         </p>
-        {/* Home's empty-fleet box, same words. */}
+        {/* The one install instruction (lib/runner-install.ts). */}
         {fleet.runners.length === 0 && (
-          <div data-testid="fleet-runner-empty" className="border border-dashed border-border-strong px-4 py-4 font-mono text-[12.5px] text-text-secondary md:px-5">
-            Start one with <code className="text-text-primary">buildd</code> on any machine, signed in with a runner token below.
+          <div data-testid="fleet-runner-empty" className="border border-dashed border-border-strong px-4 py-4 text-text-secondary md:px-5">
+            <p className="text-body mb-3">Start a runner on any machine:</p>
+            <RunnerInstallSteps />
           </div>
         )}
         {(fleet.runners.length > 0 || cloud) && (
