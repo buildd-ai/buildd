@@ -11,20 +11,17 @@ import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
 import { displayWorkspaceName } from '@buildd/shared';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
 import TaskGrid from './TaskGrid';
-import { can } from '@/lib/permissions';
-import { loadFlowSeries } from '@/lib/insights-flow-query';
-import { parseBandFilter } from '@/components/insights/usage-model';
-import { BAND_LABEL, tasksInBand } from '@/components/insights/flow-chart-model';
+import { parseTaskListSelection } from '@/lib/task-list-filters';
 import { backendLabel } from '@buildd/core/backend-policy';
 
 export default async function TasksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ mission?: string; workspace?: string; initiative?: string; band?: string; from?: string; to?: string; at?: string }>;
+  searchParams: Promise<{ mission?: string; workspace?: string; initiative?: string; ids?: string | string[]; selection?: string }>;
 }) {
   const params = await searchParams;
   const { mission: missionId, workspace: wsFilter, initiative: initiativeId } = params;
-  const bandFilter = parseBandFilter(params);
+
   const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
   const user = await getCurrentUser();
 
@@ -71,6 +68,7 @@ export default async function TasksPage({
     missionBudgetExhausted: boolean;
   }> = [];
 
+  const taskListFilter = parseTaskListSelection(params);
   let teamWorkspaces: { id: string; name: string }[] = [];
   let initiativeTitle: string | null = null;
   let initiativeMissionIds: string[] = [];
@@ -107,13 +105,7 @@ export default async function TasksPage({
         const wsNameMap = new Map(teamWorkspaces.map(w => [w.id, w.name]));
 
         if (wsIds.length > 0) {
-          if (bandFilter && !(await can({ kind: 'user', userId: user.id }, 'view_team_usage', activeTeamId))) redirect('/app/health/insights');
-          const bandSeries = bandFilter
-            ? await loadFlowSeries(wsIds, bandFilter.to - bandFilter.from <= 7 * 86400000 ? '7d' : '30d', bandFilter.to)
-            : null;
-          const bandIds = bandSeries && bandFilter
-            ? tasksInBand(bandSeries, Math.floor((bandFilter.at - bandSeries.window.from) / bandSeries.bucketMs), bandFilter.band).map(t => t.key).filter(key => !key.startsWith('worker:'))
-            : null;
+          const bandIds = taskListFilter?.ids ?? null;
           // Band membership is historical, so it must not use current task status.
           // Fetch recent tasks (last 30 days, limit 200)
           const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -121,7 +113,7 @@ export default async function TasksPage({
             where: and(
               inArray(tasks.workspaceId, wsIds),
               bandIds ? inArray(tasks.id, bandIds) : gte(tasks.updatedAt, thirtyDaysAgo),
-              isNull(tasks.parentTaskId),
+              bandIds ? undefined : isNull(tasks.parentTaskId),
             ),
             columns: {
               id: true,
@@ -189,7 +181,7 @@ export default async function TasksPage({
                 limit: 500,
               })
             : [];
-          const allTasks = [...recentTasks, ...childTasks];
+          const allTasks = [...new Map([...recentTasks, ...childTasks].map(t => [t.id, t])).values()];
 
           // Fetch mission titles for tasks that have missionId
           const missionIds = [...new Set(allTasks.map(t => t.missionId).filter(Boolean))] as string[];
@@ -416,8 +408,8 @@ export default async function TasksPage({
 
   return (
     <TaskGrid
-      key={bandFilter ? `${bandFilter.band}:${bandFilter.from}:${bandFilter.at}` : 'tasks'}
-      bandFilterLabel={bandFilter ? `${BAND_LABEL[bandFilter.band]} · ${new Date(bandFilter.band === 'released' || bandFilter.band === 'lost' ? bandFilter.from : bandFilter.at).toLocaleString()} – ${new Date(bandFilter.at + (bandFilter.to - bandFilter.from <= 7 * 86400000 ? 3600000 : 6 * 3600000)).toLocaleString()}` : undefined}
+      key={taskListFilter?.label ?? 'tasks'}
+      bandFilterLabel={taskListFilter?.label}
       tasks={gridTasks}
       missionFilter={missionId || null}
       missionTitle={missionTitle}

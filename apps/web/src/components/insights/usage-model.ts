@@ -1,7 +1,7 @@
 import type { FlowSeries } from '@/lib/insights-flow';
 import { BAND_LABEL, tasksInBand, type BandKey } from './flow-chart-model';
 
-export interface UsageRow { role: string; tier: string | null; tokens: number; costUsd: number; hours: number }
+export type UsageRow = NonNullable<FlowSeries['usage']>[number];
 export function usageByRole(rows: UsageRow[]) {
   const groups = new Map<string, { role: string; tokens: number; costUsd: number; hours: number; tiers: (UsageRow & { tier: string })[] }>();
   for (const row of rows) {
@@ -31,7 +31,7 @@ export function summarizeBand(series: FlowSeries, index: number, band: BandKey) 
   };
 }
 export function bandTaskListHref(series: FlowSeries, index: number, band: BandKey) {
-  return '/app/tasks?' + new URLSearchParams({ band, from: String(series.window.from), to: String(series.window.to), at: String(series.buckets[index].start) });
+  return '/app/health/insights/tasks?' + new URLSearchParams({ band, from: String(series.window.from), to: String(series.window.to), at: String(series.buckets[index].start) });
 }
 export function parseBandFilter(params: { band?: string; from?: string; to?: string; at?: string }) {
   const { band } = params;

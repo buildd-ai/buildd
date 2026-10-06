@@ -34,6 +34,7 @@
  * Client-safe: no imports with runtime side effects.
  */
 
+import type { InsightsUsageRow } from '../../../../packages/shared/src/insights';
 import { LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 
 export type FlowWindow = '7d' | '30d';
@@ -168,7 +169,7 @@ export interface FlowSeries {
   releases: { at: number; version: string | null; state: string }[];
   tasks: FlowTask[];
   roles: string[];
-  usage?: import('@/components/insights/usage-model').UsageRow[];
+  usage?: InsightsUsageRow[];
   workspaceNames?: Record<string, string>;
   headline: FlowHeadline;
 }
