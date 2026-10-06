@@ -39,6 +39,9 @@ import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
 import { handleProseEvalOutcome, isProseEvalTask } from '@/lib/mission-criteria-prose';
 import { handleCriteriaWorkerEvalOutcome, isCriteriaWorkerEvalTask } from '@/lib/mission-criteria-worker-eval';
+import { undraftStackedDependents } from '@/lib/early-release-stacking';
+import { scheduleEarlyReleaseDispatch } from '@/lib/early-release-dispatch-trigger';
+import { workspaces } from '@buildd/core/db/schema';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 
 async function taskContext(taskId: string): Promise<unknown> {
@@ -93,6 +96,23 @@ export const missionSubscribers: readonly AnySubscriber[] = [
     } catch {
       await refresh();
     }
+  }),
+  subscriber('missions', 'pr.ready_for_review', 'dispatch-early-release', async e => {
+    const workspace = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, e.workspaceId),
+      columns: { teamId: true, gitConfig: true },
+    });
+    if (!workspace) return;
+    scheduleEarlyReleaseDispatch({
+      workspaceId: e.workspaceId, teamId: workspace.teamId, gitConfig: workspace.gitConfig,
+      upstreamTaskId: e.taskId, upstreamPrNumber: e.prNumber, upstreamBranch: e.branch,
+      repoFullName: e.repoFullName, installationId: e.installationId,
+      upstreamAdditions: e.additions, upstreamDeletions: e.deletions,
+    });
+  }),
+  subscriber('missions', 'task.pr_merge_delivered', 'undraft-stacked-dependents', e => {
+    undraftStackedDependents(e.taskId).catch(err =>
+      console.error(`[webhook] undraftStackedDependents failed for task ${e.taskId}:`, err));
   }),
   // mergedAt is stamped; the helper reads it and completes the task if its
   // pr_merged loop condition now holds. Fire-and-forget.

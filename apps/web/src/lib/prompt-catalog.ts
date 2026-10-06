@@ -10,6 +10,7 @@ import './chat/instructions';
 import './chat/routing';
 import './chat-retro/lesson';
 import './default-roles';
+import '@/modules';
 import './endpoint-model-suggest';
 import './goal-criteria-quality-decision';
 import './goal-criteria-rubric';

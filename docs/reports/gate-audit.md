@@ -335,6 +335,13 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 |---|---|---|---|---|
 | 70 | `pr-landing.ts:landPr` | `pr_landing` | deferred / rejected / warned / accepted | the landing decision; `deferred` = a wait with an owner (branch update in flight, checks pending, fix queued), `rejected` = a human is needed, `warned` = shadow, `accepted` = merged |
 
+### Early release of dependents (`docs/design/early-release.md`)
+
+| Site | Gate | Outcome | Meaning |
+|------|------|---------|---------|
+| early-release decision (rule or decision model) | `early_release` | accepted / deferred | One row per `dependency_releases` decision: `accepted` = `start_now` / `start_stacked`, `deferred` = `wait`; `detail.source` = rule / model / fallback, `detail.reasonCode`. |
+| early-release reconciler (`lib/early-release-reconciler.ts`) | `early_release` | accepted / warned / rejected | Re-checks a non-revoked release against the upstream's current state on every `pr-reconcile` tick: `accepted` = checked and cleared (no overlap, or already resolved), `warned` = the dependent's branch was refreshed from a (possibly redirected) base, `rejected` = escalated to a `missionNotes` question rather than auto-cancelling the dependent. `detail.releaseId`/`upstreamTaskId`/`upstreamPrNumber` identify the row; never revokes it. |
+
 ### Coordination telemetry additions
 
 | Site | Gate | Outcome | Meaning |

@@ -629,6 +629,8 @@ async function handlePullRequestEvent(event: {
     base?: { ref: string; sha?: string };
     html_url: string;
     mergeable?: boolean | null;
+    additions?: number;
+    deletions?: number;
   };
   installation?: { id: number };
   repository: { full_name: string };
@@ -656,7 +658,7 @@ async function handlePullRequestEvent(event: {
       const retargetCandidate = await db.query.workers.findFirst({
         where: workerOwnsPr(repository.full_name, pr.number),
         columns: { id: true, workspaceId: true, taskId: true, prBaseRef: true },
-        with: { task: { columns: { id: true, title: true, taskClass: true, missionId: true, context: true } } },
+        with: { task: { columns: { id: true, title: true, taskClass: true, missionId: true, context: true, dependsOn: true } } },
       });
 
       const rebased = await db
@@ -859,6 +861,20 @@ async function handlePullRequestEvent(event: {
           worker: { id: openWorker.id, workspaceId: openWorker.workspaceId, taskId: openWorker.taskId ?? null, branch: openWorker.branch },
         });
       }
+    }
+
+    if (!pr.draft && event.installation && (action === 'opened' || action === 'ready_for_review') && openWorker?.taskId) {
+      await emit({
+        type: 'pr.ready_for_review',
+        workspaceId: openWorker.workspaceId,
+        taskId: openWorker.taskId,
+        installationId: event.installation.id,
+        repoFullName: repository.full_name,
+        prNumber: pr.number,
+        branch: pr.head.ref,
+        additions: pr.additions ?? null,
+        deletions: pr.deletions ?? null,
+      });
     }
 
     // On PR open (not synchronize/reopen): the PR-opened policy slot (reviews)

@@ -61,6 +61,7 @@ import { ATTEMPT_FOOTER_PATTERN, checkFreshRetryPr, freshRetryPrRefusal, retryAt
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
+import { findStackedReleaseForBase } from '@/modules';
 
 
 /**
@@ -1037,6 +1038,13 @@ export async function POST(req: NextRequest) {
 
     // Create the PR via GitHub API
     const effectiveBase = prBase.base ?? 'main';
+    // Early release's stacking mechanics (docs/design/early-release.md): a
+    // `start_stacked` dependent's PR targets its upstream's own branch, not a
+    // merge candidate yet, so it opens as a draft regardless of what the
+    // caller asked for — the upstream might still change before it merges.
+    // The webhook un-drafts it once the upstream actually lands
+    // (`undraftStackedDependents`, called from the merge handler).
+    const earlyReleaseStacked = await findStackedReleaseForBase(worker.taskId, effectiveBase);
     let prData: any;
     try {
       prData = await githubApi(
@@ -1050,7 +1058,7 @@ export async function POST(req: NextRequest) {
             body: effectivePrBody,
             head,
             base: effectiveBase,
-            draft: draft || false,
+            draft: draft || earlyReleaseStacked || false,
           }),
         }
       );

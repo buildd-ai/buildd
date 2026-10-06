@@ -510,6 +510,18 @@ export interface WorkspaceGitConfig {
   // Paths are derived by init scan (re-scan to refresh); never hand-typed. Reviewer sees class intent, not raw globs.
   policyConfig?: import('@buildd/shared').WorkspacePolicyConfig;
 
+  // Early release of dependent tasks before their upstream's PR merges
+  // (knowledge-base: buildd/design/early-release.md). Absent / 'off' = no
+  // early release — today's merge-gated behaviour. 'rule_only' runs just the
+  // Layer 1 deterministic override (early-release-rules.ts) on the upstream
+  // PR's diff and never calls the decision model. 'rule_and_jev' runs the
+  // full `buildd.early_release` kind (early-release-decision.ts), asking Jev
+  // when no rule fires. Read only through resolveEarlyReleaseMode() in
+  // apps/web/src/lib/early-release-mode.ts; PATCH /api/workspaces/[id] rejects
+  // any other value, and GET /api/workspaces/[id]/settings reports the resolved
+  // mode. Clear with `earlyRelease: null`.
+  earlyRelease?: { mode?: 'off' | 'rule_only' | 'rule_and_jev' } | null;
+
   // Auto-resolve merge conflicts by dispatching a same-branch needs-work retry.
   // Absent / true = ON (default). Set to false to disable auto-dispatch and let
   // the human trigger resolution manually from the escalation card.
@@ -1561,6 +1573,35 @@ export const taskSubjectClaims = pgTable('task_subject_claims', {
   activeClaimIdx: uniqueIndex('task_subject_claims_active_unique')
     .on(t.workspaceId, t.keyType, t.keyHash)
     .where(sql`${t.state} = 'active'`),
+}));
+
+// Early-release ledger — docs/design/early-release.md "Data model". One row per
+// decision to release (or hold) a dependent task before its upstream's PR has
+// merged. Append-only: a reconciler revoking a release stamps revokedAt /
+// revokedReason on the existing row rather than deleting it, so the decision
+// history stays auditable. Every row written here also fires the
+// `early_release` gate event.
+export const dependencyReleases = pgTable('dependency_releases', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  dependentTaskId: uuid('dependent_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  upstreamTaskId: uuid('upstream_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // The upstream PR the decision was made against.
+  upstreamPrNumber: integer('upstream_pr_number').notNull(),
+  // start_now: dependent may claim off trunk. start_stacked: claim off the
+  // upstream's branch (baseBranch). wait: keep the dependsOn gate closed.
+  decision: text('decision').notNull().$type<'start_now' | 'wait' | 'start_stacked'>(),
+  // Who decided: a deterministic rule, the decision model, or the fallback when
+  // the model was unavailable or unsure.
+  source: text('source').notNull().$type<'rule' | 'model' | 'fallback'>(),
+  // Stable machine-readable reason, e.g. which rule matched.
+  reasonCode: text('reason_code').notNull(),
+  // Branch the dependent was released onto; set for start_stacked.
+  baseBranch: text('base_branch'),
+  decidedAt: timestamp('decided_at', { withTimezone: true }).defaultNow().notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  revokedReason: text('revoked_reason'),
+}, (t) => ({
+  dependentUpstreamIdx: index('dependency_releases_dependent_upstream_idx').on(t.dependentTaskId, t.upstreamTaskId),
 }));
 
 // The discrepancy ledger — docs/design/spec-conformance.md §7. A row is the

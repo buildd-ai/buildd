@@ -121,6 +121,7 @@
     "./orchestration-overlap-source": "./orchestration-overlap-source.ts",
     "./task-size-bucket-decision": "./task-size-bucket-decision.ts",
     "./task-size-bucket-source": "./task-size-bucket-source.ts",
+    "./task-size-estimate": "./task-size-estimate.ts",
     "./decision-ledger": "./decision-ledger.ts",
     "./decision-kinds": "./decision-kinds.ts",
     "./decision-policy": "./decision-policy.ts",

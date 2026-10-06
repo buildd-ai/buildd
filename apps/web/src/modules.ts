@@ -69,3 +69,14 @@ export const MISSION_BRANCH_REFRESH_SWEEP = async () => {
   const { sweepMissionBranchRefresh } = await import('@/lib/mission-branch-refresh');
   return sweepMissionBranchRefresh();
 };
+
+/** Reconcile dependent releases after their upstream changes or merges. */
+export const EARLY_RELEASE_SWEEP = async () => {
+  const { reconcileEarlyReleases } = await import('@/lib/early-release-reconciler');
+  return reconcileEarlyReleases();
+};
+
+// Core slots for the early-release module's PR-base and settings decisions.
+export { findStackedReleaseForBase } from '@/lib/early-release-stacking';
+export { resolveEarlyReleaseMode, validateEarlyReleaseConfig } from '@/lib/early-release-mode';
+import '@/lib/early-release-decision';

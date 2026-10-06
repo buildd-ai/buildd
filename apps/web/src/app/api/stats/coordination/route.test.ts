@@ -13,8 +13,10 @@ mock.module('@buildd/core/db', () => ({ db: { query: { workspaces: { findMany: w
 mock.module('@/lib/coordination-stats-query', () => ({ fetchCoordinationStats: metrics }));
 const decisionStats = mock(async () => ({ decisions: { total: 7 } }));
 mock.module('@/lib/orchestration-decision-stats-query', () => ({ fetchOrchestrationDecisionStats: decisionStats }));
+const earlyRelease = mock(async () => ({ rework: { released: 0 } }));
+mock.module('@/lib/early-release-metrics', () => ({ fetchEarlyReleaseStats: earlyRelease }));
 const { GET } = await import('./route');
-beforeEach(() => { user.mockResolvedValue(null); account.mockResolvedValue(null); metrics.mockClear(); decisionStats.mockClear(); });
+beforeEach(() => { user.mockResolvedValue(null); account.mockResolvedValue(null); metrics.mockClear(); decisionStats.mockClear(); earlyRelease.mockClear(); });
 const req = (query = '') => new NextRequest(`http://localhost/api/stats/coordination${query}`);
 it('requires authentication', async () => { expect((await GET(req())).status).toBe(401); });
 it('rejects inaccessible workspaces before reading metrics', async () => {
@@ -115,4 +117,15 @@ it('an account key still reads every workspace on its team', async () => {
  workspaces.mockResolvedValueOnce([{ id: 'ws' }, { id: 'ws-2' }]);
  expect((await GET(scopedReq())).status).toBe(200);
  expect(metrics).toHaveBeenCalledWith({ workspaceIds: ['ws', 'ws-2'], missionId: undefined, window: '7d' });
+});
+it('adds the early-release measure to the full report and serves it alone on request', async () => {
+ user.mockResolvedValue({ id: 'user' });
+ const full = await (await GET(req('?workspace=ws'))).json();
+ expect(full.earlyRelease).toEqual({ rework: { released: 0 } });
+ expect(full.manifestCoverage).toEqual({ total: 0 });
+ expect(earlyRelease).toHaveBeenCalledWith({ workspaceIds: ['ws'], missionId: undefined, window: '7d' });
+ metrics.mockClear();
+ const alone = await (await GET(req('?metric=earlyRelease'))).json();
+ expect(alone).toEqual({ rework: { released: 0 } });
+ expect(metrics).not.toHaveBeenCalled();
 });

@@ -88,6 +88,8 @@ type WorkerOutcomeType = 'task.completed' | 'task.failed' | 'task.retrying';
 type WorkerOutcomeEvent = { [T in WorkerOutcomeType]: { type: T } & WorkerTaskOutcome }[WorkerOutcomeType];
 
 export type CoreEvent =
+  | { type: 'pr.ready_for_review'; workspaceId: string; taskId: string; installationId: number; repoFullName: string; prNumber: number; branch: string; additions: number | null; deletions: number | null }
+
   /**
    * The task's terminal status is on its row: not an auto-retry, not a loop
    * requeue, not a release still held for CI. The worker PATCH emits it when
