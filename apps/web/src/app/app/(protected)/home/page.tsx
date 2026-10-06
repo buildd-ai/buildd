@@ -59,6 +59,8 @@ import {
 import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
+import { resolveLandingOwnership } from '@/lib/pr-landing-handoff';
+import { resolveLandingMode } from '@/lib/pr-landing';
 import { resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
@@ -954,6 +956,23 @@ export default async function HomePage({
                 }
               }));
             }
+            // Landing's own record per PR (marker + handoff), read as one thing:
+            // the platform-owned reading must come from the same data landPr writes.
+            const landingStateByTaskId = new Map<string, { landing: unknown; handoff: unknown }>();
+            const landingTaskIds = openPrWorkers.map(w => w.taskId).filter((id): id is string => !!id);
+            if (landingTaskIds.length > 0) {
+              try {
+                const rows = await db
+                  .select({ id: tasks.id, landing: sql<unknown>`${tasks.context}->'landing'`, handoff: sql<unknown>`${tasks.context}->'landingHandoff'` })
+                  .from(tasks)
+                  .where(inArray(tasks.id, landingTaskIds));
+                for (const r of rows) landingStateByTaskId.set(r.id, { landing: r.landing, handoff: r.handoff });
+              } catch {
+                console.warn('[home] landing state unavailable');
+              }
+            }
+            const platformLandingByTaskId = new Map<string, string>();
+            const landingHandoffByTaskId = new Map<string, string>();
             const gateNow = new Date();
             const stallFactsLoader = createReviewerStallFactsLoader(gateNow);
             // The mission-aware tier each gate was resolved with, so the card
@@ -1047,6 +1066,24 @@ export default async function HomePage({
                   mission,
                 }),
               }));
+              // Platform-owned landing: under agent-review approve-and-merge with
+              // landing enforced, a person is only involved after landPr hands
+              // the PR over. A reviewer's own hand-back (escalation) still wins.
+              const settledGate = reviewerGateMap.get(w.taskId);
+              if (!humanReview && escalatedMap.get(w.taskId) == null && w.prNumber != null
+                && settledGate && (settledGate.actor !== 'human' || approvedMap.get(w.taskId) != null)) {
+                const landingState = landingStateByTaskId.get(w.taskId);
+                const ownership = resolveLandingOwnership({
+                  policy,
+                  landingMode: resolveLandingMode(ws?.gitConfig),
+                  landing: landingState?.landing ?? null,
+                  handoff: landingState?.handoff ?? null,
+                  prNumber: w.prNumber,
+                  currentHeadSha: w.lastCommitSha ?? null,
+                });
+                if (ownership.owner === 'platform') platformLandingByTaskId.set(w.taskId, ownership.reason);
+                else if (ownership.owner === 'human') landingHandoffByTaskId.set(w.taskId, ownership.reason);
+              }
             }
             // ─────────────────────────────────────────────────────────────────────
 
@@ -1288,7 +1325,7 @@ export default async function HomePage({
                   return !!ws && resolvePolicy(ws).tier === 'human';
                 }
                 // Human-owned PRs, plus auto-merge PRs as in-flight cards.
-                return humanReviewByTaskId.has(w.taskId) || gateReachesActionQueue(reviewerGateMap.get(w.taskId));
+                return humanReviewByTaskId.has(w.taskId) || landingHandoffByTaskId.has(w.taskId) || gateReachesActionQueue(reviewerGateMap.get(w.taskId));
               })
               .map(w => {
                 const ws = wsInboxMap.get(w.workspaceId);
@@ -1344,7 +1381,7 @@ export default async function HomePage({
                   reviewApproved: !!w.taskId && reviewApprovedTaskIds.has(w.taskId),
                   humanReview: w.taskId ? humanReviewByTaskId.get(w.taskId) ?? null : null,
                   policyTier: policy.tier,
-                  autoMerge: gate?.platformState === 'auto_merge' || (!!w.taskId && approvedAutoMergeTaskIds.has(w.taskId)),
+                  autoMerge: !(w.taskId && landingHandoffByTaskId.has(w.taskId)) && (gate?.platformState === 'auto_merge' || (!!w.taskId && (approvedAutoMergeTaskIds.has(w.taskId) || platformLandingByTaskId.has(w.taskId)))),
                   missionId: (w.task as any)?.missionId ?? null,
                   missionTitle: (w.task as any)?.mission?.title ?? null,
                   ciGate,
@@ -1356,7 +1393,7 @@ export default async function HomePage({
                   leaseState,
                   escalationReason: deadZoneInfo
                     ? `Agents failed ${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts. Resolve the conflict yourself.`
-                    : (gate?.reason ?? null),
+                    : ((w.taskId ? platformLandingByTaskId.get(w.taskId) : undefined) ?? (w.taskId ? landingHandoffByTaskId.get(w.taskId) : undefined) ?? gate?.reason ?? null),
                   // Dead-zone (conflict retries exhausted) has its own dedicated
                   // CTA set below and is never sourced from a reviewer note —
                   // keep it out of the fix-dispatch branch even if a stale

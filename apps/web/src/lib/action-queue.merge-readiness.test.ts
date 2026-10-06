@@ -118,6 +118,19 @@ describe('merge readiness — pending gates never produce a MERGE card', () => {
     expect(resolveMergeOutcome(true, 200, null)).toEqual({ kind: 'merged' });
   });
 
+  it('agent-review platform landing: approved, green, stale approval or refresh in flight never reads MERGE or REVIEW', () => {
+    for (const reviewApproved of [true, false]) {
+      const [card] = queue([esc({ policyTier: 'agent-review', autoMerge: true, reviewApproved })]);
+      expect(card.chip).toBe('AUTO_MERGE');
+      expect(isActionableChip(card.chip)).toBe(false);
+    }
+  });
+
+  it('agent-review landing handed to a person (autoMerge false) => MERGE once approved', () => {
+    const [card] = queue([esc({ policyTier: 'agent-review', autoMerge: false, reviewApproved: true })]);
+    expect(card.chip).toBe('MERGE');
+  });
+
   it('CI green + approved review + auto-merge policy => AUTO_MERGE, no human MERGE card', () => {
     const [card] = queue([esc({ policyTier: 'auto-threshold', autoMerge: true })]);
     expect(card.chip).toBe('AUTO_MERGE');
