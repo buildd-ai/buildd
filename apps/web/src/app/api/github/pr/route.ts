@@ -271,6 +271,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'title and head branch required' }, { status: 400 });
     }
 
+    // Computed early (not just at fresh-PR composition time, below) so the
+    // dedup-adoption path can also compose a fresh body from caller-supplied
+    // content, instead of only ever carrying forward whatever is already
+    // stored on GitHub.
+    const suppliedLede = normalizeLede(lede);
+    const effectiveLede = suppliedLede || deriveLedeFromTitle(String(title));
+    const ledeIsDerived = !suppliedLede || ledeDerived === true;
+
     // Get the worker with its workspace and task
     const worker = await db.query.workers.findFirst({
       where: eq(workers.id, workerId),
@@ -791,22 +799,37 @@ export async function POST(req: NextRequest) {
         await supersedeAncestorEscalations(db, worker.task?.parentTaskId, existing.number);
 
         // Stamp retry attempt on the existing PR body so the attempt count is
-        // visible on the PR itself (not just the reviewer task).
-        if (retryIteration > 0) {
+        // visible on the PR itself (not just the reviewer task), and — when
+        // the caller supplied fresh content this call — replace the stale
+        // body with it instead of only ever appending a footer line underneath
+        // it. A retry's whole point is often new verification evidence
+        // (screenshots, notes); silently carrying forward the previous
+        // attempt's body would bury that evidence under one footer line,
+        // with no way to get it onto the PR short of a direct GitHub edit
+        // this role does not have.
+        const suppliedFreshBody = typeof prBody === 'string' && prBody.trim().length > 0;
+        if (retryIteration > 0 || suppliedFreshBody) {
           try {
             const currentBody: string = prDetail.body ?? existing.body ?? '';
-            // This PR was adopted, i.e. updated in place — say so, not that a
-            // resume failed.
-            const attemptLine = retryAttemptFooter({ attempt: retryIteration + 1, maxIterations, decision: 'updated' });
-            // Replace an existing attempt line or append a new one.
-            const updatedBody = ATTEMPT_FOOTER_PATTERN.test(currentBody)
-              ? currentBody.replace(ATTEMPT_FOOTER_PATTERN, attemptLine)
-              : `${currentBody}\n\n---\n${attemptLine}`;
-            await githubApi(
-              repo.installation.installationId,
-              `/repos/${repo.fullName}/pulls/${existing.number}`,
-              { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: updatedBody }) },
-            );
+            let updatedBody = suppliedFreshBody
+              ? composeBodyWithLede(effectiveLede, prBody, { derived: ledeIsDerived })
+              : currentBody;
+            if (retryIteration > 0) {
+              // This PR was adopted, i.e. updated in place — say so, not that a
+              // resume failed.
+              const attemptLine = retryAttemptFooter({ attempt: retryIteration + 1, maxIterations, decision: 'updated' });
+              // Replace an existing attempt line or append a new one.
+              updatedBody = ATTEMPT_FOOTER_PATTERN.test(updatedBody)
+                ? updatedBody.replace(ATTEMPT_FOOTER_PATTERN, attemptLine)
+                : `${updatedBody}\n\n---\n${attemptLine}`;
+            }
+            if (updatedBody !== currentBody) {
+              await githubApi(
+                repo.installation.installationId,
+                `/repos/${repo.fullName}/pulls/${existing.number}`,
+                { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: updatedBody }) },
+              );
+            }
           } catch {
             // Non-fatal — attempt stamp is best-effort
           }
@@ -892,9 +915,7 @@ export async function POST(req: NextRequest) {
     // fallback the adoption path uses — never a refusal. Nothing in this feature
     // may fail a PR over its prose, and a PR that reaches this line has already
     // been built, committed and pushed.
-    const suppliedLede = normalizeLede(lede);
-    const effectiveLede = suppliedLede || deriveLedeFromTitle(String(title));
-    const ledeIsDerived = !suppliedLede || ledeDerived === true;
+    // (suppliedLede/effectiveLede/ledeIsDerived computed earlier — see above.)
     if (!suppliedLede) {
       console.warn(
         `[create_pr] no lede supplied for worker ${workerId} — deriving one from the PR title`,
