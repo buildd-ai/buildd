@@ -32,6 +32,8 @@
 import { derivePrReviewStatus } from './pr-review-status';
 import { evaluateReviewVerdictGate } from './review-verdict-gate';
 import { isGreenAutoMergePending } from './auto-merge-grace';
+import type { LandingOwnership } from './pr-landing-ownership';
+export { resolveLandingOwnership, landingModeOf } from './pr-landing-ownership';
 
 /**
  * Who owns the next move on this PR.
@@ -108,6 +110,16 @@ export interface ReviewerGateInput {
    * ago is still mid-merge, not held.
    */
   prLifecycleUpdatedAt?: Date | null;
+  /**
+   * Who owns the landing, from `resolveLandingOwnership` (the marker + handoff
+   * landPr writes). The ONE place "the platform is landing this" is decided:
+   * `platform` keeps an approved PR out of Needs You (it renders as in-flight
+   * auto-merge) however green it looks in a snapshot, and `human` is landPr
+   * having handed the PR over, with its reason. Absent/`unmanaged` changes nothing.
+   */
+  landing?: LandingOwnership;
+  /** The current head's review is approved. Platform-owned landing only applies once it is. */
+  reviewApproved?: boolean;
 }
 
 // The grace window and its predicate live in a pure module: the mission pulse
@@ -195,6 +207,10 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
   if (input.escalationReason != null) {
     return { actor: 'human', reason: input.escalationReason };
   }
+  // landPr itself handed the PR over: the next move is a person's, with its reason.
+  if (input.landing?.owner === 'human') {
+    return { actor: 'human', reason: input.landing.reason };
+  }
   if (input.approvalSummary != null) {
     return { actor: 'human', reason: 'Reviewer approved · awaiting your merge' };
   }
@@ -219,6 +235,12 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
       actor: 'platform',
       reason: 'Merges into the mission integration branch. The mission PR is the review gate.',
     };
+  }
+
+  // Platform-owned landing: review is satisfied and the platform lands it
+  // (refreshing from base, re-checking, merging). In flight, never a MERGE card.
+  if (input.landing?.owner === 'platform' && input.reviewApproved && !input.reviewerTask?.hasLiveWorker) {
+    return { actor: 'platform', platformState: 'auto_merge', reason: input.landing.reason };
   }
 
   const rt = input.reviewerTask;

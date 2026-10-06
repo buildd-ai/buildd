@@ -1,3 +1,4 @@
+import { isOpenAsk } from '@/lib/open-ask';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { readGithubApproval } from '@/lib/github-approval';
@@ -58,7 +59,7 @@ import {
 import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
-import { resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
+import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { ActionQueueCard } from './ActionQueueCard';
@@ -953,6 +954,21 @@ export default async function HomePage({
                 }
               }));
             }
+            // Landing's own record per PR (marker + handoff), read as one thing:
+            // the platform-owned reading must come from the same data landPr writes.
+            const landingStateByTaskId = new Map<string, { landing: unknown; handoff: unknown }>();
+            const landingTaskIds = openPrWorkers.map(w => w.taskId).filter((id): id is string => !!id);
+            if (landingTaskIds.length > 0) {
+              try {
+                const rows = await db
+                  .select({ id: tasks.id, landing: sql<unknown>`${tasks.context}->'landing'`, handoff: sql<unknown>`${tasks.context}->'landingHandoff'` })
+                  .from(tasks)
+                  .where(inArray(tasks.id, landingTaskIds));
+                for (const r of rows) landingStateByTaskId.set(r.id, { landing: r.landing, handoff: r.handoff });
+              } catch {
+                console.warn('[home] landing state unavailable');
+              }
+            }
             const gateNow = new Date();
             const stallFactsLoader = createReviewerStallFactsLoader(gateNow);
             // The mission-aware tier each gate was resolved with, so the card
@@ -1018,6 +1034,19 @@ export default async function HomePage({
                 queuedThresholdMinutes: policy.stallNotifyMinutes,
               });
               if (reviewInFlight) reviewInFlightByTaskId.set(w.taskId, reviewInFlight);
+              // Who owns the landing: one derivation, consumed by the gate. An
+              // actual human review request is a different ask and is left alone.
+              const landing = !humanReview && w.prNumber != null
+                ? resolveLandingOwnership({
+                    policy,
+                    landingMode: landingModeOf(ws?.gitConfig),
+                    landing: landingStateByTaskId.get(w.taskId)?.landing ?? null,
+                    handoff: landingStateByTaskId.get(w.taskId)?.handoff ?? null,
+                    prNumber: w.prNumber,
+                  })
+                : undefined;
+              // A handed-over PR is no longer the platform's, whatever the approval snapshot says.
+              if (landing?.owner === 'human') approvedAutoMergeTaskIds.delete(w.taskId);
               reviewerGateMap.set(w.taskId, resolveReviewerGate({
                 policyTier: policy.tier,
                 escalationReason: escalatedMap.get(w.taskId) ?? null,
@@ -1045,6 +1074,8 @@ export default async function HomePage({
                   baseRef: w.prBaseRef,
                   mission,
                 }),
+                landing,
+                reviewApproved: reviewApprovedTaskIds.has(w.taskId),
               }));
             }
             // ─────────────────────────────────────────────────────────────────────
@@ -1628,7 +1659,7 @@ export default async function HomePage({
             columns: { id: true, taskId: true, waitingFor: true },
             with: {
               task: {
-                columns: { id: true, title: true, missionId: true },
+                columns: { id: true, title: true, status: true, missionId: true },
                 with: { mission: { columns: { id: true, title: true } } },
               },
             },
@@ -1636,7 +1667,7 @@ export default async function HomePage({
           });
           for (const w of waitingInputWorkers) {
             const wf = w.waitingFor as { type: string; prompt: string } | null;
-            if (!wf?.prompt) continue;
+            if (!wf?.prompt || !isOpenAsk(w.task?.status, 'waiting_input')) continue;
             waitingOnYou.push({
               kind: 'answer',
               workerId: w.id,

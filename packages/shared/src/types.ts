@@ -2092,6 +2092,21 @@ export const VISUAL_AUDITOR_ROLE_SLUG = 'visual-auditor';
 // keeps the legacy rule (an empty `availableSkills` list claims anything).
 export const EXPLICIT_ROLE_SLUGS: readonly string[] = [VISUAL_AUDITOR_ROLE_SLUG];
 
+// Role slugs a person never picks for a task they write. buildd files these
+// tasks itself: a visual review is a mission command (POST
+// /api/missions/[id]/surface-audit), and a hand-written visual-auditor task
+// would miss its dependencies, routes and evidence contract.
+export const SYSTEM_ROLE_SLUGS: readonly string[] = [VISUAL_AUDITOR_ROLE_SLUG];
+
+export function isSystemRoleSlug(slug: string | null | undefined): boolean {
+  return !!slug && SYSTEM_ROLE_SLUGS.includes(slug);
+}
+
+/** The roles a generic task picker offers a person: everything but the system roles. */
+export function humanPickableRoles<T extends { slug: string }>(roles: readonly T[]): T[] {
+  return roles.filter(r => !isSystemRoleSlug(r.slug));
+}
+
 // ============================================================================
 // VISUAL REVIEW (docs/design/visual-qa-human-review.md)
 // ============================================================================

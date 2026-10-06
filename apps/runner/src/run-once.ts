@@ -25,6 +25,8 @@
  * lets the 10s sync drain the queued answer into a resumed session.
  * `--park-orphan <id>` is exec'd by the agent into a container it lost track
  * of after its own restart: it stops that runner and parks its worker.
+ * `--attach-orphan <id>` is the gentler alternative: it waits on that runner
+ * (run-attach.ts) and exits with its code, so the run continues undisturbed.
  *
  * The decision logic below takes its collaborators as arguments; the real
  * wiring is `runOnceFromCli` at the bottom.
@@ -83,6 +85,7 @@ const DEFAULT_POLL_MS = 1_000;
 export const ONCE_USAGE = 'Usage: buildd --once --task <task-id>\n' +
   '       buildd --once --resume-worker <worker-id> [--task <task-id>]\n' +
   '       buildd --once --park-orphan <worker-id> --task <task-id>\n' +
+  '       buildd --once --attach-orphan <worker-id> --task <task-id>\n' +
   '  Claims the given task (or continues a parked worker), runs it to completion, and exits.\n' +
   `  Exit codes: ${EXIT_COMPLETED} completed, ${EXIT_FAILED} failed (retryable), ` +
   `${EXIT_CLAIM_REFUSED} claim refused (do not retry), ${EXIT_CLAIM_DEFERRED} claim deferred (retry later), ` +
@@ -93,7 +96,7 @@ export const ONCE_USAGE = 'Usage: buildd --once --task <task-id>\n' +
 
 export type OnceArgs =
   | { once: false }
-  | { once: true; taskId: string; resumeWorkerId?: string; parkOrphanWorkerId?: string }
+  | { once: true; taskId: string; resumeWorkerId?: string; parkOrphanWorkerId?: string; attachOrphanWorkerId?: string }
   | { once: true; error: string };
 
 const ONCE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -115,12 +118,16 @@ export function parseOnceArgs(argv: string[]): OnceArgs {
   const taskId = flagValue(argv, '--task');
   const resume = flagValue(argv, '--resume-worker');
   const orphan = flagValue(argv, '--park-orphan');
-  if (resume !== undefined && orphan !== undefined) return { once: true, error: '--resume-worker and --park-orphan do not go together' };
-  for (const [flag, v] of [['--resume-worker', resume], ['--park-orphan', orphan]] as const) {
+  const attach = flagValue(argv, '--attach-orphan');
+  if ([resume, orphan, attach].filter(v => v !== undefined).length > 1) {
+    return { once: true, error: '--resume-worker, --park-orphan and --attach-orphan do not go together' };
+  }
+  for (const [flag, v] of [['--resume-worker', resume], ['--park-orphan', orphan], ['--attach-orphan', attach]] as const) {
     if (v === null || (typeof v === 'string' && !ONCE_ID_RE.test(v))) return { once: true, error: `${flag} needs a worker id` };
   }
   if (resume) return { once: true, taskId: taskId || '', resumeWorkerId: resume };
-  if (!taskId) return { once: true, error: orphan ? '--park-orphan needs --task <task-id>' : '--once requires --task <task-id>' };
+  if (!taskId) return { once: true, error: orphan ? '--park-orphan needs --task <task-id>' : attach ? '--attach-orphan needs --task <task-id>' : '--once requires --task <task-id>' };
+  if (attach) return { once: true, taskId, attachOrphanWorkerId: attach };
   if (orphan) return { once: true, taskId, parkOrphanWorkerId: orphan };
   return { once: true, taskId };
 }
@@ -559,12 +566,19 @@ export async function runOnceFromCli(opts: {
   resumeWorkerId?: string;
   /** `--park-orphan`: stop this container's runner and park its worker. */
   parkOrphanWorkerId?: string;
+  /** `--attach-orphan`: wait on this container's still-running runner (run-attach.ts). */
+  attachOrphanWorkerId?: string;
   config: LocalUIConfig;
   resolver: WorkspaceResolver;
   builddHome: string;
   host: string;
   env: Record<string, string | undefined>;
 }): Promise<number> {
+  if (opts.attachOrphanWorkerId) {
+    const { runAttachOrphan, attachDepsFromFs } = await import('./run-attach');
+    const log = (m: string) => console.log(m);
+    return runAttachOrphan({ workerId: opts.attachOrphanWorkerId }, await attachDepsFromFs(opts.builddHome, opts.taskId, log));
+  }
   if (!opts.config.apiKey) {
     console.error('--once needs an API key (BUILDD_API_KEY or config.json apiKey).');
     return EXIT_USAGE;

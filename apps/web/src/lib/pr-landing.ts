@@ -202,6 +202,8 @@ export interface LandPrDeps {
   now?: () => number;
   /** Raises the one-per-key page for an outcome that needs a person (enforce only). Defaults to the DB-bound alert. */
   alert?: (input: LandingAlertInput) => Promise<void>;
+  /** Persists or clears the record Home reads to tell a person owns the PR. Enforce only. */
+  recordHandoff?: (taskId: string, handoff: { prNumber: number; headSha: string; cause: string; reason: string } | null) => Promise<void>;
   /** When the newest review of this PR concluded (epoch ms), or null. Half of the landing clock. Defaults to the DB-bound read. */
   readApprovedAt?: (workspaceId: string, prNumber: number) => Promise<number | null>;
   /**
@@ -426,6 +428,7 @@ export async function landPr(input: LandPrInput, deps: LandPrDeps = {}): Promise
   try {
     const outcome = await decideAndLand(input, deps, trace);
     await raiseAlert(input, outcome, trace, deps);
+    await recordHandoff(input, outcome, trace, deps);
     return outcome;
   } catch (err) {
     const reason = `the landing function failed: ${errMessage(err)}`;
@@ -496,6 +499,30 @@ async function raiseAlert(input: LandPrInput, outcome: LandingOutcome, trace: La
     });
   } catch (err) {
     console.warn(`[pr-landing] alert failed for PR #${input.prNumber}:`, errMessage(err));
+  }
+}
+
+/**
+ * Enforce only, never throws. A person owns the PR only when landing says so
+ * for a cause that is not "could not tell" and not a spent refresh cycle (both
+ * come back as the platform's to retry). Any other outcome clears the record.
+ */
+async function recordHandoff(input: LandPrInput, outcome: LandingOutcome, trace: LandingTrace, deps: LandPrDeps): Promise<void> {
+  if (input.mode !== 'enforce' || !input.owner.taskId) return;
+  try {
+    const mod = await import('@/lib/pr-landing-handoff');
+    const write = deps.recordHandoff ?? ((taskId, h) => (h ? mod.writeLandingHandoff(taskId, h) : mod.clearLandingHandoff(taskId)));
+    const headSha = trace.headSha ?? input.eventHeadSha;
+    const transient = outcome.kind === 'needs_human'
+      && (outcome.cause === 'landing_error' || outcome.cause === 'github_unreadable'
+        || outcome.cause === 'refresh_exhausted' || outcome.cause === 'refresh_unsafe');
+    if (outcome.kind === 'needs_human' && !transient && headSha) {
+      await write(input.owner.taskId, { prNumber: input.prNumber, headSha, cause: outcome.cause, reason: outcome.reason });
+    } else if (outcome.kind !== 'needs_human') {
+      await write(input.owner.taskId, null);
+    }
+  } catch (err) {
+    console.warn(`[pr-landing] handoff record failed for PR #${input.prNumber}:`, errMessage(err));
   }
 }
 

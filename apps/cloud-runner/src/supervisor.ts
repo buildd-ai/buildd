@@ -28,6 +28,8 @@ import {
   assertRunnerConfig,
   buildContainerEnv,
   EXIT_PARKED,
+  EXIT_NOT_ATTACHABLE,
+  attachOrphanCommand,
   crashReportAction,
   decideDispatch,
   deferredRetryBackoffMs,
@@ -38,6 +40,7 @@ import {
   parseClaimDeferredLine,
   parseWorkerIdLine,
   runnerCommand,
+  type AgentRestart,
   type ContainerEnvSource,
   type CrashReport,
   type DispatchRequest,
@@ -103,6 +106,8 @@ export interface SupervisorConfig extends ContainerEnvSource, OtelEnv {
   runnerSize?: RunnerSize;
   /** For the run report: the Durable Object ID the container is bound to. */
   containerInstanceId?: string;
+  /** This Worker version's id (version metadata), to tell a deploy from any other agent restart. */
+  agentVersion?: string;
   /** RESUMABLE_RUNS on (and the binding present): park an orphaned running container on restart. */
   resumableRuns?: boolean;
 }
@@ -228,6 +233,7 @@ export class TaskSupervisor {
       attempt: decision.attempt,
       status: 'starting',
       startedAt: this.d.now(),
+      ...(this.d.config.agentVersion ? { agentVersion: this.d.config.agentVersion } : {}),
       outputTail: [],
       timings: request.scheduledFor !== undefined ? { scheduledFor: request.scheduledFor } : {},
       ...(history.length ? { reportHistory: history } : {}),
@@ -308,31 +314,99 @@ export class TaskSupervisor {
 
   /**
    * Called when the agent starts. A run marked live in storage with nothing in
-   * memory was lost to an eviction or restart; its process cannot be
-   * re-attached, so tear the container down and treat the run as crashed.
+   * memory means this agent instance replaced one that was running it (a
+   * deploy, an eviction, an isolate reset). The container outlives the agent,
+   * so when it is still up the runner in it is too:
+   *  1. re-adopt it: exec `--attach-orphan`, which waits on that runner and
+   *     exits with its code, and finish the run as if nothing happened;
+   *  2. if it cannot be attached, park it and resume it (resumable runs);
+   *  3. otherwise tear the container down and treat the run as crashed.
+   * The restart is recorded on the run report either way.
    */
   async recoverOrphan(): Promise<void> {
     const state = this.d.getState();
     if (!isOrphanedRun(state, this.hasLiveRun)) return;
-    // Resumable runs: a container still running under a restarted agent is
-    // parked (the runner is stopped, its worker bundled and marked parked),
-    // then resumed in a fresh container. Anything short of a clean park falls
-    // back to the crash path. Not awaited: this runs from onStart, under the
-    // runtime's blockConcurrencyWhile, and the park's upload goes through the
-    // snapshot route, which calls back into this agent for its scope. The
-    // state stays `running` meanwhile, so a dispatch is ignored as a duplicate.
-    if (this.d.config.resumableRuns && state.workerId && this.d.container.running) {
+    const containerRunning = this.d.container.running;
+    const restart: Omit<AgentRestart, 'recovery'> = {
+      at: this.d.now(),
+      containerRunning,
+      runningForMs: state.startedAt !== undefined ? Math.max(0, this.d.now() - state.startedAt) : null,
+      versionChanged: state.agentVersion && this.d.config.agentVersion ? state.agentVersion !== this.d.config.agentVersion : null,
+    };
+    if (state.workerId && containerRunning) {
+      // Not awaited: this runs from onStart, under the runtime's
+      // blockConcurrencyWhile, and the egress handler calls back into this
+      // agent. The state stays `running` and `live` is set meanwhile, so a
+      // dispatch is ignored as a duplicate.
       const workerId = state.workerId;
-      this.d.waitUntil(this.parkOrphanThenResume(workerId, state).catch((err) =>
-        this.d.log(`[cloud-runner] task ${this.d.taskId}: orphan recovery error: ${describe(err)}`)));
+      const run = this.d.keepAliveWhile(() => this.reattachOrphan(workerId, state, restart))
+        .catch(err => this.d.log(`[cloud-runner] task ${this.d.taskId}: orphan recovery error: ${describe(err)}`))
+        .finally(() => { if (this.live === run) this.live = null; });
+      this.live = run;
+      this.d.waitUntil(run);
       return;
     }
-    await this.crashOrphan(state);
+    await this.crashOrphan(state, { ...restart, recovery: 'crashed' });
   }
 
-  private async parkOrphanThenResume(workerId: string, state: RunState): Promise<void> {
+  /** Re-adopt the runner still going in the container; fall back to park-and-resume, then to a crash. */
+  private async reattachOrphan(workerId: string, state: RunState, restart: Omit<AgentRestart, 'recovery'>): Promise<void> {
+    this.tail = [];
+    this.egress = emptyEgressCounters();
+    this.egressDetail = emptyEgressDetail();
+    const c = this.d.container;
+    let code: number | null = null;
+    let error: string | undefined;
+    let interruption: RunInterruption | undefined;
+    let attached = false;
+    try {
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: agent restarted under attempt ${state.attempt}; container still running, re-attaching to worker ${workerId}`);
+      // Fresh token and fresh egress, as for a park: the exec'd process
+      // inherits nothing, and the interception belonged to the old agent.
+      const attempt = state.attempt ?? 1;
+      const env = {
+        ...buildContainerEnv(this.d.config, await this.d.mintTaskToken()),
+        ...otelContainerEnv(this.d.config, { taskId: this.d.taskId, attempt }),
+      };
+      await this.d.installEgress();
+      const proc = await c.exec(attachOrphanCommand(this.d.taskId, workerId), { stdout: 'pipe', stderr: 'pipe', env });
+      attached = true;
+      const pumps = Promise.all([this.pump(proc.stdout), this.pump(proc.stderr)]);
+      const exited = proc.exitCode.then(
+        (exitCode): Settled => ({ kind: 'exit', code: exitCode }),
+        (err): Settled => ({ kind: 'exec_error', error: err }),
+      );
+      const died = c.monitor().then(
+        (): Settled => ({ kind: 'container_exited' }),
+        (err): Settled => ({ kind: 'container_error', error: err }),
+      );
+      const settled = await Promise.race([exited, died]);
+      await Promise.race([pumps, this.d.sleep(OUTPUT_DRAIN_MS)]);
+      if (settled.kind === 'exit') code = settled.code;
+      else if (settled.kind === 'exec_error') error = `runner process failed: ${describe(settled.error)}`;
+      else if (settled.kind === 'container_error') error = `container failed: ${describe(settled.error)}`;
+      else error = 'container stopped while the runner was running';
+      if (settled.kind === 'container_exited' || settled.kind === 'container_error') interruption = 'container_stopped';
+    } catch (err) {
+      error = describe(err);
+    }
+    // The runner was not there to adopt (or the attach itself failed before
+    // it could wait): park-and-resume if allowed, else the crash path.
+    if (code === EXIT_NOT_ATTACHABLE || (!attached && c.running)) {
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: could not re-attach to worker ${workerId}${error ? ` (${error})` : ''}`);
+      if (this.d.config.resumableRuns && c.running) return this.parkOrphanThenResume(workerId, state, restart);
+      return this.crashOrphan(state, { ...restart, recovery: 'crashed' });
+    }
+    this.patch({ agentRestarts: [...(state.agentRestarts ?? []), { ...restart, recovery: 'reattached' }] });
+    const outcome: RunOutcome = outcomeForExitCode(code);
+    this.d.log(`[cloud-runner] task ${this.d.taskId}: attempt ${state.attempt} exited code=${code ?? 'none'} outcome=${outcome} after re-attach${error ? ` (${error})` : ''}`);
+    await this.finish({ code, outcome, error, interruption });
+  }
+
+  private async parkOrphanThenResume(workerId: string, state: RunState, restart: Omit<AgentRestart, 'recovery'>): Promise<void> {
     const parked = await this.d.keepAliveWhile(() => this.parkOrphan(workerId));
-    if (!parked || !(await this.markParked(workerId))) return this.crashOrphan(state);
+    if (!parked || !(await this.markParked(workerId))) return this.crashOrphan(state, { ...restart, recovery: 'crashed' });
+    this.patch({ agentRestarts: [...(state.agentRestarts ?? []), { ...restart, recovery: 'parked' }] });
     await this.finish({ code: EXIT_PARKED, outcome: 'parked', interruption: 'agent_restart' });
     this.dispatch({ resumeWorkerId: workerId });
   }
@@ -359,7 +433,8 @@ export class TaskSupervisor {
     return false;
   }
 
-  private async crashOrphan(state: RunState): Promise<void> {
+  private async crashOrphan(state: RunState, restart: AgentRestart): Promise<void> {
+    this.patch({ agentRestarts: [...(state.agentRestarts ?? []), restart] });
     this.d.log(`[cloud-runner] task ${this.d.taskId}: attempt ${state.attempt} was ${state.status} when the agent restarted; marking it crashed`);
     const error = 'The agent restarted during the run and could not re-attach to the runner process.';
     await this.finish({ code: null, outcome: 'crashed', error, interruption: 'agent_restart' });
@@ -491,7 +566,14 @@ export class TaskSupervisor {
     if (this.d.getState().timings?.exitedAt === undefined) this.patchTimings({ exitedAt: this.d.now() });
     await this.stopContainer(r.outcome === 'crashed' ? 'run crashed' : r.outcome === 'parked' ? 'run parked' : 'run finished');
     const crashReport = await this.reportCrashIfNeeded(r);
-    const deferredRetry = r.outcome === 'deferred' || r.outcome === 'start_deferred' ? this.scheduleDeferredRetry(r.outcome) : null;
+    // An attempt that died before claiming (no worker) because the agent
+    // restarted (a deploy or migration) has no worker for buildd's infra-retry
+    // budget to requeue, and stale detection has nothing to find: requeue it
+    // here like a deferral. With a worker, the crash report above already did.
+    const restartedBeforeClaim = r.outcome === 'crashed' && r.interruption === 'agent_restart' && !this.d.getState().workerId;
+    const deferredRetry = r.outcome === 'deferred' || r.outcome === 'start_deferred'
+      ? this.scheduleDeferredRetry(r.outcome)
+      : restartedBeforeClaim ? this.scheduleDeferredRetry('agent_restart') : null;
     const state = this.d.getState();
     const report = assembleRunReport({
       taskId: this.d.taskId,
@@ -503,6 +585,7 @@ export class TaskSupervisor {
       runnerSizeDecision: state.runnerSize,
       // A park the runner chose itself is a question waiting for an answer.
       interruption: r.interruption ?? (r.outcome === 'parked' ? 'question' : null),
+      agentRestarts: state.agentRestarts,
       dispatchReceivedAt: state.startedAt,
       timings: state.timings,
       egress: this.egress,
@@ -545,10 +628,12 @@ export class TaskSupervisor {
    * at MAX_DEFERRED_RETRIES; past the cap, give up and leave the task to
    * buildd's own sweep or a freed-capacity wake instead of retrying forever.
    */
-  private scheduleDeferredRetry(outcome: 'deferred' | 'start_deferred'): { retryNumber: number; backoffMs: number | null; reason: string | null } {
+  private scheduleDeferredRetry(outcome: 'deferred' | 'start_deferred' | 'agent_restart'): { retryNumber: number; backoffMs: number | null; reason: string | null } {
     const retryNumber = (this.d.getState().deferredRetryCount ?? 0) + 1;
-    const backoffMs = deferredRetryBackoffMs(retryNumber);
-    const reason = outcome === 'start_deferred' ? 'container_capacity' : this.d.getState().claimDeferredReason ?? null;
+    const reason = outcome === 'start_deferred' ? 'container_capacity'
+      : outcome === 'agent_restart' ? 'agent_restart'
+      : this.d.getState().claimDeferredReason ?? null;
+    const backoffMs = deferredRetryBackoffMs(retryNumber, reason);
     if (backoffMs === null) {
       this.d.log(`[cloud-runner] task ${this.d.taskId}: ${outcome} (${reason ?? 'unknown'}) — retries exhausted after ${retryNumber - 1}; leaving it to buildd's own sweep`);
       return { retryNumber, backoffMs: null, reason };

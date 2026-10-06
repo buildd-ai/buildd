@@ -16,6 +16,8 @@ export const EXIT_FAILED = 1;
 export const EXIT_CLAIM_REFUSED = 3;
 /** The runner parked its waiting worker (Phase 2, resumable runs); not a crash. */
 export const EXIT_PARKED = 4;
+/** `--attach-orphan` found no runner to wait on (apps/runner run-attach.ts EXIT_NOT_ATTACHABLE). */
+export const EXIT_NOT_ATTACHABLE = 6;
 /** The server named a temporary, self-resolving refusal reason; retry later (see run-once.ts). */
 export const EXIT_CLAIM_DEFERRED = 5;
 export const EXIT_USAGE = 64;
@@ -103,6 +105,24 @@ export interface RunState {
    * answer at dispatch), kept across this agent's own retries and resumes.
    */
   runnerSize?: RunnerSizeDecision;
+  /** The Worker version this attempt started under (version metadata), to tell a deploy from any other restart. */
+  agentVersion?: string;
+  /** Times this agent restarted under this attempt (newest last), for the run report. */
+  agentRestarts?: AgentRestart[];
+}
+
+/** One agent restart found by `recoverOrphan` (the container outlives the agent). */
+export interface AgentRestart {
+  /** When this agent instance noticed (agent clock). */
+  at: number;
+  /** What it did about the run it found. */
+  recovery: 'reattached' | 'parked' | 'crashed';
+  /** Whether the container was still up when the agent came back. */
+  containerRunning: boolean;
+  /** How long the attempt had been going. */
+  runningForMs: number | null;
+  /** The Worker version differs from the one the attempt started under (a deploy); null when either is unknown. */
+  versionChanged: boolean | null;
 }
 
 export const INITIAL_STATE: RunState = { taskId: null, attempt: 0, status: 'idle' };
@@ -193,9 +213,18 @@ export function isContainerStartCapacityError(message: string | null | undefined
 export const DEFERRED_RETRY_BACKOFF_S = [30, 60, 120, 300, 600, 900] as const;
 export const MAX_DEFERRED_RETRIES = DEFERRED_RETRY_BACKOFF_S.length;
 
-export function deferredRetryBackoffMs(retryNumber: number): number | null {
-  if (!Number.isInteger(retryNumber) || retryNumber < 1 || retryNumber > DEFERRED_RETRY_BACKOFF_S.length) return null;
-  return DEFERRED_RETRY_BACKOFF_S[retryNumber - 1]! * 1000;
+/**
+ * A `runner_capability` refusal means the container's Claude Code is older
+ * than the task's model needs — most likely a gradual container rollout still
+ * serving the previous image. That clears on the order of minutes to an hour,
+ * not seconds, so it backs off on a longer, still bounded, schedule.
+ */
+export const RUNNER_CAPABILITY_RETRY_BACKOFF_S = [60, 180, 300, 600, 900, 1800] as const;
+
+export function deferredRetryBackoffMs(retryNumber: number, reason?: string | null): number | null {
+  const schedule = reason === 'runner_capability' ? RUNNER_CAPABILITY_RETRY_BACKOFF_S : DEFERRED_RETRY_BACKOFF_S;
+  if (!Number.isInteger(retryNumber) || retryNumber < 1 || retryNumber > schedule.length) return null;
+  return schedule[retryNumber - 1]! * 1000;
 }
 
 /**
@@ -471,6 +500,14 @@ export function runnerCommand(taskId: string, resumeWorkerId?: string): string[]
  * runner it can no longer supervise and parks its worker (exit 4), so a
  * resume can continue it instead of the run being lost.
  */
+/**
+ * Exec'd in a container still running after the agent restarted: waits on the
+ * runner that is still going and exits with its code (apps/runner run-attach.ts).
+ */
+export function attachOrphanCommand(taskId: string, workerId: string): string[] {
+  return ['buildd-once', '--attach-orphan', workerId, '--task', taskId];
+}
+
 export function orphanParkCommand(taskId: string, workerId: string): string[] {
   return ['buildd-once', '--park-orphan', workerId, '--task', taskId];
 }

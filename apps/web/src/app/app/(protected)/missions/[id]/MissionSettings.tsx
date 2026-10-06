@@ -7,6 +7,7 @@ import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/li
 import type { MissionDisplayState } from '@/lib/mission-helpers';
 import Spinner from '@/components/Spinner';
 import { Select } from '@/components/ui/Select';
+import { humanPickableRoles } from '@buildd/shared';
 
 /**
  * Every way a manual orchestrator run can end. `runMission` has five distinct
@@ -38,9 +39,13 @@ export function quickAddTaskBody(input: {
   return roleSlug ? { title, workspaceId, missionId, roleSlug } : { title, workspaceId, missionId };
 }
 
-/** The quick-add picker's options: "Any role" first, then the workspace's roles. */
+/**
+ * The quick-add picker's options: "Any role" first, then the workspace's
+ * roles, without the system ones (the visual auditor is the header's "Visual
+ * review", never a hand-written task).
+ */
 export function quickAddRoleOptions(roles: { slug: string; name: string }[]): { value: string; label: string }[] {
-  return [{ value: '', label: 'Any role' }, ...roles.map(r => ({ value: r.slug, label: r.name }))];
+  return [{ value: '', label: 'Any role' }, ...humanPickableRoles(roles).map(r => ({ value: r.slug, label: r.name }))];
 }
 
 interface MissionSettingsProps {
@@ -623,7 +628,7 @@ export default function MissionSettings({
                 placeholder="Add a task to this mission…"
                 className="min-w-0 flex-1 px-3 py-2 rounded-lg bg-surface-3 border border-card-border text-base md:text-[13px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 transition-colors"
               />
-              {roles.length > 0 && (
+              {humanPickableRoles(roles).length > 0 && (
                 <Select
                   aria-label="Role"
                   testId="quick-task-role"

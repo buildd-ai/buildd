@@ -14,7 +14,7 @@
  */
 
 import { CHANGED_SINCE_SHOWN } from '@builddai/ai-kit/chat/contract';
-import { isLiveWorkerStatus } from '@buildd/shared';
+import { isLiveWorkerStatus, isSystemRoleSlug } from '@buildd/shared';
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 import {
@@ -25,7 +25,7 @@ import {
 import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
 import { memoryDeciderFor } from '@/lib/memory-decisions';
 import type { BuilddObjectRef, ChatApprovalPreview, ChatToolResult } from '@buildd/shared';
-import { asBool, previewMatches, type PreviewOutcome } from './previews';
+import { asBool, previewMatches, visualReviewNotATask, type PreviewOutcome } from './previews';
 import { isUuid, type Resolution } from './targets';
 import { renderStandingRulesForTask, withStandingRules, type StandingRule } from '@buildd/core/chat-directives';
 import { routesFor, type ApiCall, type RouteEntry } from './in-process-api';
@@ -465,6 +465,9 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
         if (action === 'create_task') {
           const refused = CREATE_TASK_REFUSED_FIELDS.filter(f => input[f] !== undefined);
           if (refused.length) return errorResult(`create_task from chat can't set ${refused.join(', ')}`);
+          if (isSystemRoleSlug(typeof input.roleSlug === 'string' ? input.roleSlug : null)) {
+            return errorResult(visualReviewNotATask(typeof input.missionId === 'string' && isUuid(input.missionId) ? { id: input.missionId } : null));
+          }
         }
 
         let callInput = input;

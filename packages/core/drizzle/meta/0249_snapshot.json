@@ -1,5 +1,5 @@
 {
-  "id": "84b2c0f7-e8d0-45b4-b024-888bf401fa3b",
+  "id": "a53361de-db5a-475b-9e9f-bc3c9429f4a0",
   "prevId": "f1631344-901b-4688-abc7-44f0585511ce",
   "version": "7",
   "dialect": "postgresql",
@@ -241,13 +241,6 @@
         },
         "host_runner": {
           "name": "host_runner",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "managed_runner": {
-          "name": "managed_runner",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
@@ -16318,12 +16311,6 @@
           "notNull": true,
           "default": "'{}'::jsonb"
         },
-        "managed_runner_plan": {
-          "name": "managed_runner_plan",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -17367,6 +17354,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "chat_retro_dogfood_at": {
+          "name": "chat_retro_dogfood_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",

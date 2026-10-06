@@ -97,6 +97,7 @@ export class WorkerAgent extends Agent<Env, RunState> {
         WARM_REPOS: warmReposEnabled(env) ? '1' : undefined,
         RESUMABLE_RUNS: resumableRunsEnabled(env) ? '1' : undefined,
         resumableRuns: resumableRunsEnabled(env),
+        agentVersion: env.CF_VERSION_METADATA?.id,
         inactivityTimeoutMs: resolveInactivityTimeoutMs(env),
         startTimeoutMs: resolveStartTimeoutMs(env),
         // The class actually used: this agent's, whatever was asked for.

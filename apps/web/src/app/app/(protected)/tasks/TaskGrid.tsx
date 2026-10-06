@@ -269,6 +269,26 @@ export function selectMobileRunningTasks(tasks: GridTask[]): GridTask[] {
     .slice(0, 5);
 }
 
+/** Rows a band drill-down renders before asking — a band can hold hundreds. */
+export const BAND_ROW_PAGE = 50;
+
+/**
+ * Keep the first `limit` rows across `groups` in order: a group cut mid-way
+ * keeps its head, groups past the cap are dropped.
+ */
+export function capGroupedRows<G extends { [P in K]: readonly unknown[] }, K extends string = 'items'>(groups: G[], limit: number, key: K = 'items' as K): G[] {
+  if (!Number.isFinite(limit)) return groups;
+  const out: G[] = [];
+  let left = limit;
+  for (const g of groups) {
+    if (left <= 0) break;
+    const rows = g[key];
+    out.push(rows.length <= left ? g : { ...g, [key]: rows.slice(0, left) });
+    left -= rows.length;
+  }
+  return out;
+}
+
 interface StatusGroup {
   label: string;
   tasks: GridTask[];
@@ -328,6 +348,10 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
   const groupBy: GroupBy = missionFilter ? 'none' : groupLens;
   const [search, setSearch] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
+  // Band drill-downs page their rows; any other list renders everything.
+  const [bandRowLimit, setBandRowLimit] = useState(BAND_ROW_PAGE);
+  useEffect(() => setBandRowLimit(BAND_ROW_PAGE), [filter, contentFilter, search, groupLens]);
+  const rowCap = bandFilterLabel ? bandRowLimit : Infinity;
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Focus search input when mobile search opens
@@ -529,6 +553,43 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
     return sortByRecency(nonWaitingTasks);
   }, [nonWaitingTasks, effectiveGroupBy]);
 
+  // Spend the row cap top-down: pinned Needs Input first, then the list.
+  const shownNeedsInput = Number.isFinite(rowCap) ? needsInputTasks.slice(0, rowCap) : needsInputTasks;
+  const listCap = rowCap - shownNeedsInput.length;
+  const shownTimeBands = capGroupedRows(timeBandGroups, listCap);
+  const shownMissionGroups = capGroupedRows(missionGroups, listCap, 'tasks');
+  const shownFlat = Number.isFinite(listCap) ? flatSorted.slice(0, Math.max(0, listCap)) : flatSorted;
+  const hiddenRows = Math.max(0, filtered.length - rowCap);
+
+  // A band drill-down that selected nothing is a filtered-empty result, not an
+  // empty workspace: say so, and make leaving the filter the primary action.
+  if (rootTasks.length === 0 && !missionFilter && bandFilterLabel) {
+    return (
+      <div data-testid="task-band-empty" className="h-full flex flex-col p-8 pt-20 md:pt-8">
+        <h1 className="text-[28px] font-bold text-text-primary" style={{ fontFamily: 'var(--font-display, inherit)' }}>Activity</h1>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="max-w-md text-center">
+            <div className="w-16 h-16 mx-auto bg-surface-3 rounded-full flex items-center justify-center mb-4">
+              <svg className="w-8 h-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 4h18l-7 8v6l-4 2v-8L3 4z" />
+              </svg>
+            </div>
+            <p className="text-meta text-text-secondary mb-2">{bandFilterLabel}</p>
+            <h2 className="text-xl font-semibold text-text-primary mb-2">No tasks in this band</h2>
+            <p className="text-[13px] text-text-secondary mb-4">No tasks were in this band for the selected window.</p>
+            <Link
+              href="/app/tasks"
+              data-testid="task-band-empty-clear"
+              className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
+            >
+              Clear band filter
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (rootTasks.length === 0 && !missionFilter) {
     return (
       <div className="h-full flex items-center justify-center p-8 pt-20 md:pt-8">
@@ -538,7 +599,6 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
             </svg>
           </div>
-          <BandFilterLabel label={bandFilterLabel} />
           <h2 className="text-xl font-semibold text-text-primary mb-4">No activity</h2>
           <div className="flex flex-wrap items-center justify-center gap-2">
             <NewWorkLink
@@ -574,7 +634,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
     <SwipeProvider>
     <div className="h-full overflow-y-auto">
       <div className="max-w-[1000px] mx-auto pt-14 pb-4 md:py-4">
-        <BandFilterLabel label={bandFilterLabel} />
+        <BandFilterLabel label={bandFilterLabel} total={allCount} />
         {/* Breadcrumbs */}
         {missionFilter && (
           <div className="flex items-center gap-2 px-4 mb-3 text-[12px] text-text-muted">
@@ -837,13 +897,13 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
                 <span className="text-[12px] text-text-desc">{needsInputTasks.length}</span>
               </div>
               <div className="px-2">
-                {needsInputTasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
+                {shownNeedsInput.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
               </div>
             </div>
           )}
 
           {/* Grouped by Time (default) — one section per calendar day */}
-          {effectiveGroupBy === 'time' && timeBandGroups.map((band) => (
+          {effectiveGroupBy === 'time' && shownTimeBands.map((band) => (
             <div key={band.label}>
               <GroupSection
                 belowMobileHeader
@@ -855,7 +915,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
           ))}
 
           {/* Grouped by Mission — GroupSection sticky headers, always expanded */}
-          {effectiveGroupBy === 'mission' && missionGroups.map((group) => {
+          {effectiveGroupBy === 'mission' && shownMissionGroups.map((group) => {
             const groupId = group.id || '__no_mission__';
             const isNoMission = group.id === null;
             const groupTaskIds = new Set(group.tasks.map(t => t.id));
@@ -895,7 +955,21 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
           ))}
 
           {/* Flat list (no grouping) */}
-          {effectiveGroupBy === 'none' && flatSorted.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
+          {effectiveGroupBy === 'none' && shownFlat.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
+
+          {hiddenRows > 0 && (
+            <div data-testid="task-band-more" className="flex flex-wrap items-center justify-center gap-3 px-4 py-4 border-t border-border-default text-meta text-text-secondary">
+              <span>{`Showing ${filtered.length - hiddenRows} of ${filtered.length}`}</span>
+              <button
+                type="button"
+                data-testid="task-band-show-more"
+                onClick={() => setBandRowLimit(n => n + BAND_ROW_PAGE)}
+                className="min-h-[44px] px-4 rounded-md border border-border-default text-text-primary hover:bg-surface-2"
+              >
+                {`Show ${Math.min(BAND_ROW_PAGE, hiddenRows)} more`}
+              </button>
+            </div>
+          )}
 
           {/* Empty filtered state */}
           {filtered.length === 0 && visibleTasks.length > 0 && (
@@ -910,7 +984,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
   );
 }
 
-function BandFilterLabel({ label }: { label?: string }) {
+function BandFilterLabel({ label, total }: { label?: string; total: number }) {
   if (!label) return null;
-  return <div data-testid="task-band-filter" className="px-4 mb-3 flex flex-wrap items-center gap-3 text-meta text-text-secondary"><span>{label}</span><Link className="min-h-[44px] inline-flex items-center text-accent-text" href="/app/tasks">Clear band filter</Link></div>;
+  return <div data-testid="task-band-filter" className="px-4 mb-3 flex flex-wrap items-center gap-3 text-meta text-text-secondary"><span>{label}</span><span data-testid="task-band-total" className="text-text-primary">{`${total} ${total === 1 ? 'task' : 'tasks'}`}</span><Link className="min-h-[44px] inline-flex items-center text-accent-text" href="/app/tasks">Clear band filter</Link></div>;
 }

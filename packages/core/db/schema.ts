@@ -209,6 +209,11 @@ export const users = pgTable('users', {
   // the shortcuts always work, the chips only show for people who ask for them
   // (Settings -> Profile).
   showKeyboardHints: boolean('show_keyboard_hints').default(false).notNull(),
+  // Chat retro account dogfood (experiment, apps/web/src/lib/chat-retro/).
+  // Set = every team this person owns, now and later, runs retros with
+  // lessons + proposals on, and a per-team "off" is refused. NULL = off: the
+  // teams keep the opt-in. Removal: see chat-retro/REMOVAL.md.
+  chatRetroDogfoodAt: timestamp('chat_retro_dogfood_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
