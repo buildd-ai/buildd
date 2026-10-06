@@ -43,6 +43,7 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
       or(isNull(workers.completedAt), gte(workers.completedAt, since), gte(workers.mergedAt, since)),
     ),
     columns: {
+      inputTokens: true, outputTokens: true, costUsd: true,
       id: true,
       taskId: true,
       workspaceId: true,
@@ -60,13 +61,14 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
     },
     with: {
       task: {
-        columns: { id: true, title: true, status: true, roleSlug: true, parentTaskId: true, missionId: true },
+        columns: { id: true, title: true, status: true, roleSlug: true, tier: true, parentTaskId: true, missionId: true },
       },
     },
     orderBy: [desc(workers.startedAt), desc(workers.id)],
     limit: FLOW_ROW_LIMIT,
   });
   return (rows as any[]).map(w => ({
+    inputTokens: w.inputTokens, outputTokens: w.outputTokens, costUsd: Number(w.costUsd), tier: w.task?.tier ?? null,
     workerId: w.id,
     taskId: w.taskId ?? null,
     parentTaskId: w.task?.parentTaskId ?? null,
@@ -165,5 +167,6 @@ export async function loadFlowSeries(workspaceIds: string[], window: FlowWindow,
     ...rel,
     missionTrunkMergedAt,
   });
-  return { ...series, truncated: workerRows.length >= FLOW_ROW_LIMIT };
+  const names = workspaceIds.length ? await db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(inArray(workspaces.id, workspaceIds)) : [];
+  return { ...series, workspaceNames: Object.fromEntries(names.map(w => [w.id, w.name])), truncated: workerRows.length >= FLOW_ROW_LIMIT };
 }

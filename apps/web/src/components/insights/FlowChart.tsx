@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import Sheet from '@/components/ui/Sheet';
 import { Select } from '@/components/ui/Select';
+import { summarizeBand, bandTaskListHref } from './usage-model';
 import type { FlowSeries } from '@/lib/insights-flow';
 import {
-  BAND_HINT,
   BAND_LABEL,
   STACK,
   bandValue,
@@ -114,6 +114,7 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
   const markIndex = picked?.i ?? hover;
   const mb = markIndex != null ? series.buckets[markIndex] : null;
   const pickedTasks = picked ? tasksInBand(series, picked.i, picked.band) : [];
+  const summary = picked ? summarizeBand(series, picked.i, picked.band) : null;
   const pickedBucket = picked ? series.buckets[picked.i] : null;
   const selectedX = pickedBucket ? (releaseIndex != null ? geo.releases[releaseIndex]?.x : geo.xOf((pickedBucket.start + pickedBucket.end) / 2)) ?? 0 : 0;
   const selectedY = picked && pickedBucket ? picked.band === 'lost'
@@ -213,12 +214,6 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
           <li key={k} className="flex items-center gap-1.5"><span aria-hidden className="w-3 h-2 shrink-0" style={{ background: fill(k) }} />{label}</li>
         ))}
       </ul>
-      <details className="mt-2 text-meta text-text-muted">
-        <summary className="cursor-pointer min-h-[44px] flex items-center">About this chart</summary>
-        <ul>{BANDS.map(k => <li key={k}>{BAND_LABEL[k]}: {BAND_HINT[k]}</li>)}</ul>
-        <p>Ticks above the plot mark releases. Failed work uses a separate scale below zero.</p>
-      </details>
-
       {/* The tapped band at the tapped time: the tasks behind the area. */}
       {picked && pickedBucket && (
         <Sheet open={detailOpen} onClose={() => setDetailOpen(false)} title={releaseIndex != null ? `Release ${geo.releases[releaseIndex]?.version ?? ''}` : BAND_LABEL[picked.band]}
@@ -231,22 +226,20 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
               options={BANDS.map(k => ({ value: k, label: BAND_LABEL[k] }))}
               onChange={band => { setReleaseIndex(null); setPicked({ i: picked.i, band }); }} />
           </div>
-          {expanded && <p className="mt-2 text-meta text-text-muted">{BAND_HINT[picked.band]}</p>}
-          {pickedTasks.length === 0 ? (
-            <p className="mt-3 text-body text-text-muted">No tasks in this stage then.</p>
-          ) : (
-            <ul className="mt-3 divide-y divide-border-default">
-              {pickedTasks.slice(0, 25).map(t => (
-                <li key={t.key} className="py-2">
-                  <a href={taskHref(t.key)} className="block min-h-[44px] md:min-h-0 text-body text-text-primary hover:text-accent-text">
-                    {t.title}
-                    <span className="block text-meta text-text-muted">{t.role}</span>
-                  </a>
-                </li>
+          {summary && <>
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3" data-testid="flow-breakdown">
+              {([['Role', summary.roles], ['Workspace', summary.workspaces], ['Outcome', summary.outcomes]] as const).map(([label, rows]) => (
+                <div key={label}><h3 className="text-meta font-semibold">{label}</h3>
+                  <ul className="mt-1 text-meta text-text-secondary">{rows.map(r => <li key={r.label} className="flex justify-between gap-3"><span className="min-w-0 break-words">{r.label}</span><span>{r.count}</span></li>)}</ul>
+                </div>
               ))}
-              {pickedTasks.length > 25 && <li className="py-2 text-meta text-text-muted">and {pickedTasks.length - 25} more</li>}
+            </div>
+            <h3 className="mt-4 text-meta font-semibold">Recent tasks</h3>
+            <ul className="divide-y divide-border-default">
+              {summary.recent.map(t => <li key={t.key} className="py-2"><a href={taskHref(t.key)} className="block min-h-[44px] text-body text-text-primary hover:text-accent-text">{t.title}<span className="block text-meta text-text-muted">{t.role}</span></a></li>)}
             </ul>
-          )}
+            <a data-testid="flow-task-list" className="block min-h-[44px] mt-2 text-body text-accent-text" href={bandTaskListHref(series, picked.i, picked.band)}>View all tasks ({summary.total})</a>
+          </>}
         </Sheet>
       )}
 
@@ -270,7 +263,7 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
               ))}
             </tbody>
           </table>
-          <p className="mt-1 text-meta text-text-muted">Work stages are the day's average; released and failed are running totals at the end of the day.</p>
+
         </div>
       </details>
     </div>

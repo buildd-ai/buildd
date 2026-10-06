@@ -4,21 +4,27 @@ import { desc, eq, inArray, and, gte, isNull } from 'drizzle-orm';
 import { deriveTaskType, type TaskType } from '@buildd/core/mission-helpers';
 import { deriveDisplayStatus, LIVE_WORKER_STATUSES, deriveChainPosition, isSubjectDead } from '@/lib/task-presentation';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
-import { redirect } from 'next/navigation';
+import { redirect, unstable_rethrow } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
 import { displayWorkspaceName } from '@buildd/shared';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
 import TaskGrid from './TaskGrid';
+import { can } from '@/lib/permissions';
+import { loadFlowSeries } from '@/lib/insights-flow-query';
+import { parseBandFilter } from '@/components/insights/usage-model';
+import { tasksInBand } from '@/components/insights/flow-chart-model';
 import { backendLabel } from '@buildd/core/backend-policy';
 
 export default async function TasksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ mission?: string; workspace?: string; initiative?: string }>;
+  searchParams: Promise<{ mission?: string; workspace?: string; initiative?: string; band?: string; from?: string; to?: string; at?: string }>;
 }) {
-  const { mission: missionId, workspace: wsFilter, initiative: initiativeId } = await searchParams;
+  const params = await searchParams;
+  const { mission: missionId, workspace: wsFilter, initiative: initiativeId } = params;
+  const bandFilter = parseBandFilter(params);
   const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
   const user = await getCurrentUser();
 
@@ -101,12 +107,20 @@ export default async function TasksPage({
         const wsNameMap = new Map(teamWorkspaces.map(w => [w.id, w.name]));
 
         if (wsIds.length > 0) {
+          if (bandFilter && !(await can({ kind: 'user', userId: user.id }, 'view_team_usage', activeTeamId))) redirect('/app/health/insights');
+          const bandSeries = bandFilter
+            ? await loadFlowSeries(wsIds, bandFilter.to - bandFilter.from <= 7 * 86400000 ? '7d' : '30d', bandFilter.to)
+            : null;
+          const bandIds = bandSeries && bandFilter
+            ? tasksInBand(bandSeries, Math.floor((bandFilter.at - bandSeries.window.from) / bandSeries.bucketMs), bandFilter.band).map(t => t.key)
+            : null;
+          // Band membership is historical, so it must not use current task status.
           // Fetch recent tasks (last 30 days, limit 200)
           const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
           const recentTasks = await db.query.tasks.findMany({
             where: and(
               inArray(tasks.workspaceId, wsIds),
-              gte(tasks.updatedAt, thirtyDaysAgo),
+              bandIds ? inArray(tasks.id, bandIds) : gte(tasks.updatedAt, thirtyDaysAgo),
               isNull(tasks.parentTaskId),
             ),
             columns: {
@@ -139,7 +153,7 @@ export default async function TasksPage({
               subjectAnchor: true,
             },
             orderBy: [desc(tasks.updatedAt)],
-            limit: 200,
+            limit: bandIds ? 5000 : 200,
           });
 
           // Fetch child tasks (retry/reviewer) for the root tasks we loaded
@@ -383,6 +397,7 @@ export default async function TasksPage({
         }
       }
     } catch (error) {
+      unstable_rethrow(error);
       console.error('Tasks grid query error:', error);
     }
   }

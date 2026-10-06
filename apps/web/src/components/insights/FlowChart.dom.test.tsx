@@ -73,3 +73,20 @@ it('a touch picks a point before opening details, and stages remain available fo
   expect(q('flow-summary')!.textContent).toContain('Failed or abandoned');
   expect(q('flow-selection')).not.toBeNull();
 });
+
+it('shows bounded band composition and a filtered task-list link without explanatory prose', () => {
+  render();
+  const svg = container.querySelector('svg')!;
+  act(() => svg.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+  act(() => q('flow-details-trigger')!.click());
+  expect(q('flow-breakdown')!.textContent).toContain('Workspace');
+  expect(q('flow-breakdown')!.textContent).toContain('Outcome');
+  expect(q('flow-picked')!.querySelectorAll('a[href^="/app/tasks/"]').length).toBeLessThanOrEqual(5);
+  const href = q('flow-task-list')!.getAttribute('href')!;
+  expect(href).toContain('band=');
+  expect(href).toContain('at=');
+  expect(container.textContent).not.toContain('About this chart');
+  expect(container.textContent).not.toContain('Ticks above the plot');
+  act(() => q('flow-expand')!.click());
+  expect(container.textContent).not.toContain('average tasks with an agent');
+});
