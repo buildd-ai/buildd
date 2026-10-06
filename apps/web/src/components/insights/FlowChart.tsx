@@ -156,7 +156,7 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
               </text>
             </g>
           ))}
-          {geo.lostTicks.map(t => (
+          {geo.lostTicks.filter(t => t.value > 0).map(t => (
             <g key={`lost-${t.value}`}>
               <line x1={geo.plot.left} x2={geo.plot.right} y1={t.y} y2={t.y} stroke="var(--border)" strokeWidth={1} />
               <text x={geo.plot.left - 6} y={t.y + 3} textAnchor="end" className="fill-text-muted" fontSize={AXIS_FONT} style={{ fontVariantNumeric: 'tabular-nums' }}>
