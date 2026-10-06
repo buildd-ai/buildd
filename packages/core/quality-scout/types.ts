@@ -110,8 +110,12 @@ export interface ScoutStageMetric {
   costUsd: number | null;
 }
 
-/** What the action policy did with one finding in one run. */
-export const SCOUT_ACTION_OUTCOMES = ['filed', 'updated', 'proposed', 'aggregated', 'retained', 'suppressed', 'noop', 'failed'] as const;
+/**
+ * What the action policy did with one finding in one run. `cancelled` /
+ * `annotated`: a pass resolved the finding, so its still-pending follow-up was
+ * cancelled, or its already-claimed one was marked resolved and deprioritised.
+ */
+export const SCOUT_ACTION_OUTCOMES = ['filed', 'updated', 'proposed', 'aggregated', 'retained', 'suppressed', 'cancelled', 'annotated', 'noop', 'failed'] as const;
 export type ScoutActionOutcome = (typeof SCOUT_ACTION_OUTCOMES)[number];
 
 /**

@@ -35,6 +35,7 @@ import {
   scoutRunStaleness,
   startScoutRun,
   type ScoutFindingStore,
+  type ScoutResolvedFinding,
 } from '@buildd/core/quality-scout/ledger';
 import { selectScoutProbes, type ScoutProbeDecider } from '@buildd/core/quality-scout/selector';
 import {
@@ -54,6 +55,7 @@ import type { ScoutCapabilityProfile } from '@buildd/core/scout-capabilities';
 import {
   actOnScoutFinding,
   DEFAULT_SCOUT_ACTION_POLICY,
+  retireScoutFollowUp,
   type ScoutActionPolicy,
   type ScoutActionStore,
 } from './quality-scout-actions';
@@ -95,7 +97,8 @@ export interface ScoutRunLedger {
   saveRun(run: ScoutRun, totals?: ScoutRunTotals, metrics?: ScoutRunMetrics): Promise<void>;
   saveProbes(run: ScoutRun, probes: readonly ScoutProbeRecord[]): Promise<void>;
   findings: ScoutFindingStore;
-  resolveForPass(run: ScoutRun, probe: ScoutProbeRecord): Promise<number>;
+  /** Resolve the open findings of a check that passed; returns the ones it resolved. */
+  resolveForPass(run: ScoutRun, probe: ScoutProbeRecord): Promise<ScoutResolvedFinding[]>;
 }
 
 export interface ScoutRunDeps {
@@ -290,10 +293,17 @@ export async function runQualityScout(req: ScoutRunRequest, deps: ScoutRunDeps):
         const verdict = p.result?.verdict;
         if (p.selection.status !== 'selected' || !p.result) continue;
         if (verdict === 'pass') {
+          let resolved: ScoutResolvedFinding[];
           try {
-            findings.resolved += await deps.ledger.resolveForPass(run, p);
+            resolved = await deps.ledger.resolveForPass(run, p);
           } catch (err) {
             warn(`resolve failed: ${message(err)}`);
+            continue;
+          }
+          findings.resolved += resolved.length;
+          // A resolved finding's follow-up is no longer owed.
+          for (const f of resolved) {
+            if (f.actionTaskId) actions[await retireScoutFollowUp(f, run, deps.actions)]++;
           }
           continue;
         }

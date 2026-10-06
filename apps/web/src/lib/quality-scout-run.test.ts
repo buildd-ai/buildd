@@ -94,9 +94,15 @@ function memoryWorld() {
       probes.set(run.id, [...ps]);
     },
     findings: findingStore,
-    async resolveForPass(_run, p) {
+    async resolveForPass(run, p) {
       resolved.push(p.candidateId);
-      return 0;
+      const out: Array<{ signature: string; actionTaskId: string | null }> = [];
+      for (const [sig, f] of findings) {
+        if (f.checkId !== p.result?.checkId || f.state !== 'open') continue;
+        findings.set(sig, { ...f, state: 'resolved', resolvedRunId: run.id, resolvedSha: run.candidate.sha });
+        out.push({ signature: sig, actionTaskId: f.actionTaskId });
+      }
+      return out;
     },
   };
   const RANK: Record<ScoutActionState, number> = { none: 0, retained: 1, aggregated: 2, proposed: 3, filed: 4 };
@@ -125,6 +131,13 @@ function memoryWorld() {
     },
     refreshTask: async () => true,
     announce: async () => {},
+    async retireFollowUp(id) {
+      const t = tasks.get(id);
+      if (!t || ['completed', 'failed', 'cancelled'].includes(t.status)) return null;
+      if (t.status !== 'pending') return 'annotated';
+      t.status = 'cancelled';
+      return 'cancelled';
+    },
   };
   return { runs, probes, findings, tasks, resolved, ledger, actions };
 }
@@ -226,6 +239,45 @@ describe('runQualityScout — inconclusive and unsupported never file', () => {
     if (out.status !== 'completed') throw new Error(out.status);
     expect(w.tasks.size).toBe(0);
     expect(w.resolved.length).toBe(out.metrics.verdicts.pass);
+  });
+});
+
+describe('runQualityScout — a resolved finding retires its follow-up', () => {
+  const passing: ScoutProbePorts = { command: commandPort({ exitCode: 0, stdoutTail: 'Usage: tool' }).port };
+
+  it('fail → file → pass: the still-pending follow-up is cancelled, not left owed', async () => {
+    const w = memoryWorld();
+    await runQualityScout(request(), deps(w));
+    const filed = [...w.findings.values()].map((f) => f.actionTaskId!);
+    expect(filed.length).toBeGreaterThan(0);
+    expect(filed.every((id) => w.tasks.get(id)?.status === 'pending')).toBe(true);
+
+    const out = await runQualityScout(request({ candidate: { ref: 'main', sha: HEAD2 } }), deps(w, { ports: passing, headSha: async () => HEAD2 }));
+    if (out.status !== 'completed') throw new Error(out.status);
+    expect([...w.findings.values()].every((f) => f.state === 'resolved')).toBe(true);
+    expect(filed.every((id) => w.tasks.get(id)?.status === 'cancelled')).toBe(true);
+    expect(out.metrics.findings.resolved).toBe(filed.length);
+    expect(out.metrics.actions.cancelled).toBe(filed.length);
+  });
+
+  it('a claimed follow-up is annotated for its worker, not cancelled out from under it', async () => {
+    const w = memoryWorld();
+    await runQualityScout(request(), deps(w));
+    for (const t of w.tasks.values()) t.status = 'in_progress';
+    const out = await runQualityScout(request({ candidate: { ref: 'main', sha: HEAD2 } }), deps(w, { ports: passing, headSha: async () => HEAD2 }));
+    if (out.status !== 'completed') throw new Error(out.status);
+    expect([...w.tasks.values()].every((t) => t.status === 'in_progress')).toBe(true);
+    expect(out.metrics.actions.annotated).toBe(w.tasks.size);
+    expect(out.metrics.actions.cancelled).toBe(0);
+  });
+
+  it('a retire error is counted as failed and the run still completes', async () => {
+    const w = memoryWorld();
+    await runQualityScout(request(), deps(w));
+    w.actions.retireFollowUp = async () => { throw new Error('db down'); };
+    const out = await runQualityScout(request({ candidate: { ref: 'main', sha: HEAD2 } }), deps(w, { ports: passing, headSha: async () => HEAD2 }));
+    if (out.status !== 'completed') throw new Error(out.status);
+    expect(out.metrics.actions.failed).toBe(w.tasks.size);
   });
 });
 
