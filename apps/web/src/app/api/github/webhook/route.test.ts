@@ -5229,9 +5229,16 @@ describe('pull_request → workers.prBaseRef sync', () => {
       changes: undefined,
     })));
 
-    const baseRefWrites = updateCalls.filter(c => 'prBaseRef' in (c.setValues ?? {}));
+    const baseRefWrites = updateCalls.filter(c => 'prBaseRef' in (c.setValues ?? {}) && !('prUrl' in (c.setValues ?? {})));
     expect(baseRefWrites.length).toBe(1);
     expect(baseRefWrites[0].setValues.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+  });
+
+  it('registers an externally opened PR on the matching worker before processing it', async () => {
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload({ action: 'opened', changes: undefined })));
+    const adopted = updateCalls.find(c => c.setValues?.prUrl);
+    expect(adopted?.setValues).toMatchObject({ prNumber: 9, prLifecycleStatus: 'pr_open', prBaseRef: 'mission/example-slug-0a1b2c3d' });
+    expect(adopted?.condition).toBeDefined();
   });
 
   // Change intents recorded at create_pr carry the base the PR had then. A

@@ -40,7 +40,11 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
     const key = i.prNumber != null && i.workspaceId ? `pr:${i.workspaceId}:${i.prNumber}` : i.subjectKey;
     const old = prs.get(key);
     // A live fix/check suppresses an older actionable representation of the same PR.
-    if (!old || !isActionable(i.chip) || (isActionable(old.chip) && priority(i) > priority(old))) prs.set(key, i);
+    if (i.humanReview || old?.humanReview) {
+      if (!old?.humanReview) prs.set(key, i);
+    } else if (!old || !isActionable(i.chip) || (isActionable(old.chip) && priority(i) > priority(old))) {
+      prs.set(key, i);
+    }
   }
   for (const [key, i] of prs) {
     if (!isActionable(i.chip)) continue;
@@ -53,7 +57,7 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
     const sentence = merge ? (displayItem.docFixTaskId ? 'The code moved ahead of this spec. This PR brings the doc back in line.' : 'The checks are clear. Nothing else is blocking it.')
       : ci ? 'Tests are failing. No fix is running.'
       : i.chip === 'STALE' ? 'Check the latest tests and review before deciding.'
-      : i.chip === 'REVIEW' ? 'Review the changes before deciding what happens next.'
+      : i.chip === 'REVIEW' ? i.humanReview ? [i.humanReview.reason, i.machineStatus].filter(Boolean).join(' · ') : 'Review the changes before deciding what happens next.'
       : i.chip === 'RECONNECT' ? 'Reconnect so agents can continue.'
       : i.chip === 'DISCREPANCY' ? 'The code and its spec disagree. Choose what should change.'
       : i.chip === 'BLOCKED' ? 'This change needs a decision before it can move on.'

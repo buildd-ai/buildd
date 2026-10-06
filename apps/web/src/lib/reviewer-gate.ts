@@ -375,3 +375,49 @@ export function resolveReviewInFlight(input: ReviewInFlightInput): 'queued' | 'r
   if (minutesSince(rt.createdAt, input.now) > threshold) return null;
   return status.state === 'queued' ? 'queued' : 'reviewing';
 }
+
+/** A review is an independent human action, never permission to merge. */
+export interface HumanPrReview {
+  label: 'Review on GitHub' | 'Approve on GitHub';
+  reason: string;
+}
+export interface GithubApprovalFacts {
+  reviewDecision: string | null;
+  /** Latest effective human approval of the live head, excluding bots. */
+  humanApproved: boolean;
+}
+export function resolveHumanPrReview(input: {
+  reviewerTask: StoredVerdictFallbackInput['reviewerTask'];
+  currentHeadSha: string | null;
+  escalationReason: string | null;
+  policyTier: string;
+  github: GithubApprovalFacts | null;
+}): HumanPrReview | null {
+  const status = derivePrReviewStatus({
+    reviewTask: input.reviewerTask ? { id: '', ...input.reviewerTask } : null,
+    worker: null,
+  });
+  // GitHub's aggregate decision includes required reviewers and code owners.
+  // A human approval alone must not clear a remaining required approval.
+  if (input.github?.reviewDecision === 'REVIEW_REQUIRED' || input.github?.reviewDecision === 'CHANGES_REQUESTED') {
+    return { label: 'Approve on GitHub', reason: status.state === 'escalated'
+      ? `Review required · ${status.escalationReason ?? status.summary ?? input.escalationReason ?? 'reviewer requested a human'}`
+      : 'GitHub approval required' };
+  }
+  if (input.github?.humanApproved) return null;
+  const gate = evaluateReviewVerdictGate(status, input.currentHeadSha);
+  if (input.policyTier === 'human') return { label: 'Review on GitHub', reason: 'Human approval required' };
+  if (status.state === 'escalated' && gate.kind !== 'in_flight') {
+    return { label: 'Review on GitHub', reason: `Review required · ${status.escalationReason ?? status.summary ?? input.escalationReason ?? 'reviewer requested a human'}` };
+  }
+  if (input.escalationReason && status.state !== 'approved' && gate.kind !== 'in_flight') {
+    return { label: 'Review on GitHub', reason: `Review required · ${input.escalationReason}` };
+  }
+  return null;
+}
+
+/** Same current-head approval predicate used by the merge verdict gate. */
+export function isCurrentReviewApproved(input: Pick<StoredVerdictFallbackInput, 'reviewerTask' | 'currentHeadSha'>): boolean {
+  const status = derivePrReviewStatus({ reviewTask: input.reviewerTask ? { id: '', ...input.reviewerTask } : null, worker: null });
+  return status.state === 'approved' && !evaluateReviewVerdictGate(status, input.currentHeadSha).blocks;
+}

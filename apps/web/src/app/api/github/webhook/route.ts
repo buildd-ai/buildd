@@ -1,3 +1,4 @@
+import { registerLocalPr } from '@/lib/register-local-pr';
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -635,6 +636,10 @@ async function handlePullRequestEvent(event: {
   changes?: { base?: { ref?: { from?: string } } };
 }) {
   const { action, pull_request: pr, repository } = event;
+  if (action === 'opened' || action === 'reopened' || action === 'synchronize' || action === 'ready_for_review') {
+    await registerLocalPr({ branch: pr.head.ref, repo: repository.full_name, number: pr.number,
+      url: pr.html_url, headSha: pr.head.sha, baseRef: pr.base?.ref ?? null, draft: pr.draft ?? false });
+  }
 
   // ── Keep workers.prBaseRef in step with GitHub's base ref ────────────────
   // Runs for EVERY pull_request action, before any action-specific branching,
