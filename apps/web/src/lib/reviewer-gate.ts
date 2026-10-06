@@ -167,7 +167,12 @@ function stallReason(input: ReviewerGateInput): string {
   else if (facts.budgetPauses.length) parts.push(...facts.budgetPauses);
   else if (!providerFloor) parts.push('no recorded budget pause');
   if (floor) parts.push(`${providerFloor ? 'provider retry' : 'scheduled start'} floor until ${floor.toISOString()}`);
-  const reason = rt?.context?.lastClaimAttemptReason;
+  // The specific gate (e.g. workspace_cap) beats the coarse diagnostic, which
+  // for a WHERE-clause exclusion is only ever `no_pending_tasks`.
+  const exclusionCode = (rt?.context?.lastClaimAttemptExclusion as { code?: unknown } | undefined)?.code;
+  const reason = typeof exclusionCode === 'string' && exclusionCode.length > 0
+    ? exclusionCode
+    : rt?.context?.lastClaimAttemptReason;
   const stampedAt = rt?.context?.lastClaimAttemptAt;
   // A stamp is historical evidence, not a new pre-filter evaluation. Preserve
   // the exact reason and its observation time instead of asserting it still holds.

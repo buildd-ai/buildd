@@ -66,15 +66,14 @@
   --cat-design: #f59b4e;
   --cat-research: #c77bb5;
 
-  /* Insights flow chart bands (components/insights). Chart-local steps, validated
-     as one adjacent set with the dataviz palette validator: the status tokens
-     alone put orange beside yellow, which fails colour-vision separation. */
-  --flow-running: #dd7020;
-  --flow-waiting: #c8467f;
-  --flow-review: #3987e5;
-  --flow-merged: #c98500;
-  --flow-released: #199e70;
-  --flow-lost: #d97a71;
+  /* Insights uses four semantic groups: success, cool in-flight work,
+     needs input, and failure. Detailed in-flight stages share one hue. */
+  --flow-running: var(--status-info);
+  --flow-waiting: var(--status-warning);
+  --flow-review: var(--status-info);
+  --flow-merged: var(--status-info);
+  --flow-released: var(--status-success);
+  --flow-lost: var(--status-error);
 
   --chrome-bg: rgba(26, 24, 22, 0.92);
   --chrome-sidebar: #15130f;
@@ -136,12 +135,12 @@
   --cat-design: #d96e12;
   --cat-research: #b24c9c;
 
-  --flow-running: #d96e12;
-  --flow-waiting: #c4467a;
-  --flow-review: #2a78d6;
-  --flow-merged: #b88200;
-  --flow-released: #14905f;
-  --flow-lost: #9e3b34;
+  --flow-running: var(--status-info);
+  --flow-waiting: var(--status-warning);
+  --flow-review: var(--status-info);
+  --flow-merged: var(--status-info);
+  --flow-released: var(--status-success);
+  --flow-lost: var(--status-error);
 
   --chrome-bg: rgba(247, 244, 240, 0.92);
   --chrome-sidebar: #f7f4f0;
