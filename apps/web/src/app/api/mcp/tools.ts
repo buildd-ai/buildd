@@ -288,7 +288,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
     tools.push({
       name: "send_worker_message",
       description: surface === 'groups'
-        ? 'Message an active sibling task in your workspace; sender comes from worker context. Delivered on its next update_progress. Use path_blocked_on_you, question or answer. Terminal recipient returns delivered=false. Limits: body 2 KB, 5/min/recipient, hopCount <5.'
+        ? 'Message an active sibling task in your workspace; sender is the current worker. Delivered on its next update_progress. Terminal recipient: delivered=false. Limits: body 2 KB, 5/min/recipient, hopCount <5.'
         : `Send a structured message to another active task worker in the same workspace.
 
 Use when you discover a path conflict (path_blocked_on_you), need to ask a clarifying question about a sibling's changes (question), or are answering another worker's question (answer).
@@ -316,7 +316,9 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           type: {
             type: "string" as const,
             enum: ["path_blocked_on_you", "path_released", "question", "answer"],
-            description: "Message type. path_blocked_on_you: {paths, blockedTaskId} — blocked worker → holder. path_released: {paths, releasedAt, reason} — system → waiter. question: {text} — any → any. answer: {replyToMsgId, text} — any → any.",
+            description: surface === 'groups'
+              ? 'Message type; body defines its payload.'
+              : "Message type. path_blocked_on_you: {paths, blockedTaskId} — blocked worker → holder. path_released: {paths, releasedAt, reason} — system → waiter. question: {text} — any → any. answer: {replyToMsgId, text} — any → any.",
           },
           body: {
             type: "object" as const,
