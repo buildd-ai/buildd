@@ -79,6 +79,13 @@ evaluate by hand.
 - A role whose model comes from **inference** (`context.roleInferred` present)
   contributes nothing to the model — not a pin, not a floor. Only a stated role
   moves the model (`knowledge-base: buildd/design/role-routing.md` §4.1).
+- A task created with no role gets its kind's default role when the workspace
+  has that role as a routable candidate (engineering → builder, research →
+  researcher, writing → writer, analysis → analyst, coordination → organizer;
+  `apps/web/src/lib/task-role-default.ts`). It is stamped
+  `context.roleInferred` with `source: 'kind'`, so it follows the rule above,
+  and the decision model may replace it while the task is unclaimed. A stated
+  role is never replaced.
 - A role's `model` is a **floor, never a cap**: the clamp only fires when the
   computed tier is *below* it (`model-router.ts:152-157`). A role pinned to
   `opus`/`premium` therefore defeats every downshift the budget and spike gates
