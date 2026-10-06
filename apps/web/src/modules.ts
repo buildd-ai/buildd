@@ -18,6 +18,7 @@ import { loopPolicy } from '@/lib/loop-dispatcher-policy';
 import { releasePolicy } from '@/lib/release-completion-policy';
 import { knowledgeSubscribers } from '@/lib/knowledge-subscribers';
 import { missionSubscribers } from '@/lib/mission-subscribers';
+import { reviewSubscribers } from '@/lib/review-subscribers';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
 import { notificationSubscribers } from '@/lib/notification-subscribers';
@@ -28,6 +29,8 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...decisionSubscribers,
   ...knowledgeSubscribers,
   ...missionSubscribers,
+  // pr.closed: the surface settle is scheduled before the review reactions.
+  ...reviewSubscribers,
   // pr.merged: the release record is kicked off before the ledger write.
   ...releaseSubscribers,
   // Before notifications: on a completion the chat post was kicked off first.

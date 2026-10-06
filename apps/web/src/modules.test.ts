@@ -51,7 +51,17 @@ describe('composition root', () => {
     expect(byEvent('task.pr_merged')).toEqual([
       'missions:mission-wake-on-merge', 'missions:unblock-dependent-missions', 'releases:release-path-b-trigger',
     ]);
-    expect(byEvent('pr.closed')).toEqual(['missions:settle-surface-intents']);
+    // The verdict is measured before the reviewer is superseded.
+    expect(byEvent('pr.closed')).toEqual([
+      'missions:settle-surface-intents',
+      'reviews:merge-review-telemetry',
+      'reviews:supersession-detect-on-close',
+      'reviews:supersession-reconcile-on-close',
+      'reviews:dead-pr-shutdown',
+    ]);
+    expect(byEvent('pr.close_delivered')).toEqual(['reviews:pr-activity-on-close', 'reviews:review-callback-on-close']);
+    expect(byEvent('pr.review_submitted')).toEqual(['reviews:capture-review-feedback', 'reviews:github-verdict-mission-note']);
+    expect(byEvent('pr.review_comment_created')).toEqual(['reviews:capture-review-comment']);
     expect(byEvent('pr.base_changed')).toEqual(['missions:retarget-surface-intents']);
     expect(byEvent('pr.needs_human')).toEqual(['missions:notify-mission-pr-ready']);
     expect(byEvent('workflow_run.completed')).toEqual(['releases:release-workflow-run-readback']);

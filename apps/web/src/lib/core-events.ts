@@ -185,8 +185,45 @@ export type CoreEvent =
       baseRef: string | null;
       installationId: number | null;
     }
-  /** A worker-owned PR closed, merged or not. */
-  | { type: 'pr.closed'; workspaceId: string; prNumber: number; merged: boolean }
+  /**
+   * A pull_request.closed delivery arrived, merged or not, for any PR on a
+   * linked repo: every delivery, redeliveries included. `workspaceId` is the
+   * owning worker's, when a worker owns the PR. Subscribers must be idempotent.
+   */
+  | {
+      type: 'pr.close_delivered';
+      repoFullName: string;
+      prNumber: number;
+      merged: boolean;
+      baseRef: string | null;
+      installationId: number | null;
+      workspaceId: string | null;
+    }
+  /**
+   * A worker-owned PR closed, merged or not: every delivery. `mergeIsNew`: this
+   * delivery is the first to report the merge (`workers.mergedAt` was unset);
+   * false on a redelivery and on a close without merge.
+   */
+  | {
+      type: 'pr.closed';
+      workspaceId: string;
+      prNumber: number;
+      merged: boolean;
+      mergeIsNew: boolean;
+      workerId: string;
+      taskId: string | null;
+      headSha: string;
+      repoFullName: string;
+      installationId: number | null;
+    }
+  /**
+   * A GitHub review was submitted (any state: approved, changes_requested,
+   * commented) on a PR. `owner` is the worker that owns the PR, when one does.
+   * Every delivery; subscribers must be idempotent or say why not.
+   */
+  | { type: 'pr.review_submitted'; repoFullName: string; prNumber: number; review: GitHubReviewFact; owner: PrOwnerFact | null }
+  /** An inline review comment was created on a PR (`pull_request_review_comment`). */
+  | { type: 'pr.review_comment_created'; repoFullName: string; prNumber: number; comment: GitHubReviewCommentFact; owner: PrOwnerFact | null }
   /** A worker-owned PR's base moved (`edited`), after any repair: `toBase` is where it settled. */
   | { type: 'pr.base_changed'; workspaceId: string; prNumber: number; fromBase: string; toBase: string }
   /**
@@ -206,6 +243,31 @@ export type CoreEvent =
   /** A GitHub Actions workflow run completed (any workflow, any repo linked to an installation). */
   | { type: 'workflow_run.completed'; run: WorkflowRunFact; installationId: number | null }
   | { type: 'pr.ci_failed'; repoFullName: string; prNumber: number; headSha: string };
+
+/** The worker that owns a PR, as the webhook resolved it. */
+export interface PrOwnerFact {
+  workerId: string;
+  taskId: string | null;
+  workspaceId: string | null;
+  missionId: string | null;
+}
+
+/** A GitHub `review` payload object, as delivered. */
+export interface GitHubReviewFact {
+  id?: number | string | null;
+  state?: string | null;
+  body?: string | null;
+  user?: { login?: string | null } | null;
+  [key: string]: unknown;
+}
+
+/** A GitHub review `comment` payload object, as delivered. */
+export interface GitHubReviewCommentFact {
+  id?: number | string | null;
+  body?: string | null;
+  path?: string | null;
+  [key: string]: unknown;
+}
 
 /** The fields of a GitHub `workflow_run` payload the platform reads. */
 export interface WorkflowRunFact {

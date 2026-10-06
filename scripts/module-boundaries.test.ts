@@ -119,6 +119,19 @@ describe('seams that have shipped stay cut', () => {
     ]);
   });
 
+  test('the GitHub webhook reaches the review reactions to a PR closing and to a GitHub review only through emit()', () => {
+    // Verdict flows: review capture and the GitHub verdict note, the merge-vs-
+    // verdict telemetry, supersession detection and reconcile, dead-PR
+    // shutdown, and the on-close activity comment and review callback.
+    const imported = Object.keys(current.backend['apps/web/src/app/api/github/webhook/route.ts'] ?? {});
+    expect(imported.filter(f => [
+      'apps/web/src/lib/review-feedback.ts',
+      'apps/web/src/lib/supersession.ts',
+      'apps/web/src/lib/pr-supersession-detect.ts',
+      'apps/web/src/lib/dead-pr-shutdown.ts',
+    ].includes(f))).toEqual([]);
+  });
+
   test('no core file writes the subscriptions ledger directly; it is a notifications subscriber', () => {
     const writers = pairs(current, 'backend').filter(p => p.endsWith('-> apps/web/src/lib/subscriptions.ts'));
     expect(writers).toEqual([]);

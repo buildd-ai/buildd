@@ -2,19 +2,12 @@ import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
-import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, reviewFeedback } from '@buildd/core/db/schema';
+import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes } from '@buildd/core/db/schema';
 import { and, eq, sql, inArray, isNull, not, or, ne, desc } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { retryCiFailureForPr } from '@/lib/ci-failure-retry';
-import {
-  reviewRowFromEvent,
-  commentRowFromEvent,
-  withOwner,
-  type ReviewFeedbackRow,
-  type PrOwner,
-} from '@/lib/review-feedback';
 import { notifyOperator } from '@/lib/pushover';
 import { notifyTeamOf } from '@/lib/notify';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
@@ -31,13 +24,12 @@ import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { tryDispatchMigrationCollisionRetry } from '@/lib/migration-collision-retry';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
-import { reconcileSubjectEvent } from '@/lib/supersession';
-import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
 import { emit } from '@/lib/core-emit';
 import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
+import type { PrOwnerFact } from '@/lib/core-events';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -45,15 +37,14 @@ import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import { conformanceManifest } from '@/lib/path-declaration';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { deliverPrReviewCallback, readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
+import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable, pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
-import { guardReviewVerdict, classifyMergeAgainstReview } from '@/lib/review-verdict-gate';
+import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
-import { detectPrSupersession } from '@/lib/pr-supersession-detect';
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
@@ -1026,34 +1017,17 @@ async function handlePullRequestEvent(event: {
     });
   }
 
-  // Resolve the sticky activity comment: the PR closing is the last word, so a
-  // header left on a working state ("Review passed — merging once checks are
-  // green") must stop spinning even though no buildd step ran after it.
-  // onlyIfPresent: a PR buildd never announced on stays comment-free.
-  if (event.installation) {
-    await appendPrActivity({
-      installationId: event.installation.id,
-      repoFullName: repository.full_name,
-      prNumber: pr.number,
-      entry: pr.merged
-        ? { kind: 'merged', detail: pr.base?.ref ? `into \`${pr.base.ref}\`` : null }
-        : { kind: 'closed_unmerged' },
-      onlyIfPresent: true,
-      workspaceId: worker?.workspaceId ?? null,
-    });
-  }
-
-  // An on-demand review can be waiting on the PR itself rather than on the
-  // verdict (`callbackOn: 'merge'`), and a PR closed mid-review will never
-  // reach a verdict at all — either way the close is the moment to tell the
-  // requester. Single-fire and best-effort inside the helper.
-  if (worker?.workspaceId) {
-    await deliverPrReviewCallback({
-      workspaceId: worker.workspaceId,
-      prNumber: pr.number,
-      repoFullName: repository.full_name,
-    });
-  }
+  // Every close delivery: the reviews module resolves the sticky activity
+  // comment and tells an on-demand review waiting on this PR that it closed.
+  await emit({
+    type: 'pr.close_delivered',
+    repoFullName: repository.full_name,
+    prNumber: pr.number,
+    merged: !!pr.merged,
+    baseRef: pr.base?.ref ?? null,
+    installationId: event.installation?.id ?? null,
+    workspaceId: worker?.workspaceId ?? null,
+  });
 
   if (worker) {
     if (pr.merged) {
@@ -1087,33 +1061,12 @@ async function handlePullRequestEvent(event: {
           await recheck();
         }
       }
-      await reconcileReviewWithMerge({
-        workspaceId: worker.workspaceId,
-        taskId: worker.taskId,
-        workerId: worker.id,
-        prNumber: pr.number,
-        mergedHeadSha: pr.head.sha,
-        mergeIsNew,
-      });
     } else {
       // PR closed without merge (abandoned/superseded)
       await db
         .update(workers)
         .set({ prLifecycleStatus: 'closed', updatedAt: new Date() })
         .where(eq(workers.id, worker.id));
-      // Where did the work go? Claims and sibling tasks only nominate; an edge
-      // is recorded only if the content verifies (lib/pr-supersession-detect.ts).
-      // GitHub-heavy, so after(); the hourly pr-reconcile sweep is the backstop.
-      const closedWorkerId = worker.id;
-      const detect = () => detectPrSupersession({ workerId: closedWorkerId, via: 'webhook' }).then(
-        r => console.log(`[webhook] supersession detection for PR #${pr.number}: ${r.outcome}`),
-        e => console.error(`[webhook] supersession detection failed for PR #${pr.number}:`, e),
-      );
-      try {
-        after(detect);
-      } catch {
-        await detect();
-      }
     }
     await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
@@ -1140,39 +1093,24 @@ async function handlePullRequestEvent(event: {
       }
     }
 
-    // Close any open changeIntent rows for this PR — surfaces are now free —
-    // drop its merge reservations, and re-drive the PR that was waiting behind
-    // it on each serialized surface (conflict-aware-orchestration.md §3): the
-    // missions module's business, network work in after().
-    await emit({ type: 'pr.closed', workspaceId: worker.workspaceId, prNumber: pr.number, merged: !!pr.merged });
-
-    // Supersession: the PR merged or closed, so the reconciler cancels what
-    // that made obsolete — a live reviewer and open fixes on a merge, unstarted
-    // fixes on a close, and anchored tasks whose subject is now dead. Never
-    // throws; a cleanup failure must not fail the webhook response.
-    await reconcileSubjectEvent({
-      kind: pr.merged ? 'merged' : 'closed',
+    // Close any open changeIntent rows for this PR, drop its merge
+    // reservations and re-drive the PR waiting behind it (missions). Then the
+    // reviews module measures a merge against its verdict (first delivery
+    // only, before the reviewer is superseded), looks for where an unmerged
+    // PR's work went, cancels what the close made obsolete, and shuts down
+    // superseded buildd PRs.
+    await emit({
+      type: 'pr.closed',
       workspaceId: worker.workspaceId,
       prNumber: pr.number,
-      originalTaskId: worker.taskId,
-      door: `webhook pull_request.closed${pr.merged ? ' (merged)' : ''}`,
-      pr: event.installation ? { installationId: event.installation.id, repoFullName: repository.full_name } : null,
+      merged: !!pr.merged,
+      mergeIsNew: !!pr.merged && mergeIsNew,
+      workerId: worker.id,
+      taskId: worker.taskId ?? null,
+      headSha: pr.head.sha,
+      repoFullName: repository.full_name,
+      installationId: event.installation?.id ?? null,
     });
-
-    // Dead-PR shutdown: close buildd-authored loser PRs superseded by this one.
-    // Only fires when the workspace has autoCloseBuilddSupersededPrs=true.
-    // Best-effort — shutdown failure must never fail the webhook response.
-    if (event.installation) {
-      shutdownDeadBuilddPrs(
-        worker.workspaceId,
-        pr.number,
-        pr.merged,
-        event.installation.id,
-        repository.full_name,
-      ).catch(e =>
-        console.error(`[webhook] dead-pr-shutdown failed for PR #${pr.number}:`, e),
-      );
-    }
   }
 
   if (pr.merged && worker?.task) {
@@ -1419,67 +1357,6 @@ async function handleCheckSuiteFailure(
 }
 
 /**
- * BT-5 / BT-10: Check merge policy for an opened PR and dispatch a reviewer task
- * if the workspace is configured for agent-review.
- *
- * Returns true if we handled the PR (reviewer task created or pre-flight escalated)
- * and the caller should skip the normal no-CI auto-merge path.
- */
-/**
- * A PR merged — on github.com, with `gh pr merge`, or through a buildd door —
- * measured against its agent review.
- *
- * Telemetry (first delivery only): a merge while a request-changes or escalate
- * verdict was outstanding is `merged_over_verdict`; a merge no verdict covered
- * is `merged_unreviewed`. Runs BEFORE the supersession reconcile further down
- * the close handler, because superseding the reviewer changes the state being
- * measured.
- *
- * Best-effort throughout: nothing here may fail the merge bookkeeping.
- */
-async function reconcileReviewWithMerge(params: {
-  workspaceId: string;
-  taskId: string | null;
-  workerId: string;
-  prNumber: number;
-  mergedHeadSha: string;
-  mergeIsNew: boolean;
-}): Promise<void> {
-  if (params.mergeIsNew) {
-    try {
-      const status = await readPrReviewStatus({ workspaceId: params.workspaceId, prNumber: params.prNumber });
-      const merge = classifyMergeAgainstReview(status, params.mergedHeadSha);
-      if (merge) {
-        fireGateEvent({
-          gate: GATE_SLUGS.REVIEW_VERDICT,
-          surface: 'webhook pull_request.closed (merged)',
-          outcome: merge.event === 'merged_over_verdict' ? 'bypassed' : 'warned',
-          reason: merge.event === 'merged_over_verdict'
-            ? 'PR merged while a reviewer verdict against it was outstanding'
-            : 'PR merged with no reviewer verdict covering the merged commit',
-          workspaceId: params.workspaceId,
-          taskId: params.taskId,
-          workerId: params.workerId,
-          callerOrigin: 'system',
-          detail: {
-            event: merge.event,
-            prNumber: params.prNumber,
-            mergedHeadSha: params.mergedHeadSha,
-            reviewState: merge.state,
-            reviewKind: merge.kind,
-            reviewTaskId: merge.reviewTaskId,
-            reviewHeadSha: merge.reviewHeadSha,
-          },
-        });
-      }
-    } catch (err) {
-      console.error(`[webhook] merge review telemetry failed for PR #${params.prNumber}:`, err);
-    }
-  }
-
-}
-
-/**
  * The role a webhook-dispatched review runs as, checked against the roles the
  * workspace actually has — the same `pickReviewerRole` rule the create_pr,
  * manual-review and re-review routes apply. The policy's role slug is only a
@@ -1505,6 +1382,13 @@ async function resolveReviewerRoleForDispatch(
   return picked.role;
 }
 
+/**
+ * BT-5 / BT-10: Check merge policy for an opened PR and dispatch a reviewer task
+ * if the workspace is configured for agent-review.
+ *
+ * Returns true if we handled the PR (reviewer task created or pre-flight escalated)
+ * and the caller should skip the normal no-CI auto-merge path.
+ */
 async function maybeDispatchReviewer(
   installationId: number,
   repoFullName: string,
@@ -2338,61 +2222,6 @@ async function maybePostWorkTrackerIssueUpdate(
 }
 
 
-/**
- * A human (or an outside bot) reviewed a PR in GitHub's own UI.
- *
- * Until this existed, that produced no state in buildd at all: the event was not
- * in the switch, so approval was only ever observable through the reviewer
- * task's own completion PATCH. A maintainer clicking Approve left the mission
- * feed showing nothing, and "who cleared this?" had no answer.
- *
- * Deliberately record-only. It writes the reviewer note types the schema already
- * carries and changes NO merge behaviour: it does not satisfy the `agent-review`
- * gate, does not trigger auto-merge, and does not complete a task. Whether a
- * human approval in GitHub should clear buildd's review gate is a policy
- * question (see docs/design/mission-delivery-arc.md — the merge-policy tier
- * placement crux), and answering it by side effect here would be a silent
- * change to when things merge. So the default is a no-op on merging.
- */
-/**
- * Persist one piece of review feedback for later retrieval.
- *
- * Deliberately separate from the `mission_notes` write below, which is a
- * timeline entry and stays exactly as it was. This row exists so the next agent
- * about to edit a file can be shown what a reviewer already said about it — see
- * the `reviewFeedback` table comment.
- *
- * Two properties this has to hold:
- *
- *  - **Idempotent on GitHub's id.** The webhook both drops and redelivers
- *    events, so `onConflictDoNothing` against the unique `github_id` is the
- *    dedupe, not an insert-time check.
- *  - **Never throws into the webhook.** A failure here must not cost us the
- *    retry and merge handling that runs alongside it.
- *
- * Row construction lives in `@/lib/review-feedback` so it is testable without
- * stubbing the database.
- */
-async function captureReviewFeedback(
-  row: ReviewFeedbackRow | null,
-  owner: PrOwner,
-  pr: { repoFullName: string; prNumber: number },
-): Promise<void> {
-  if (!row) return;
-  if (!owner?.workspaceId) return;
-
-  try {
-    await db.insert(reviewFeedback).values({
-      ...withOwner(row, owner),
-      workspaceId: owner.workspaceId,
-      repoFullName: pr.repoFullName,
-      prNumber: pr.prNumber,
-    }).onConflictDoNothing();
-  } catch (err) {
-    console.warn('[webhook] review feedback capture failed (non-fatal):', err);
-  }
-}
-
 /** Resolve the worker that owns a PR, plus the workspace the row needs. */
 async function resolvePrOwner(repoFullName: string, prNumber: number) {
   return db.query.workers.findFirst({
@@ -2402,99 +2231,42 @@ async function resolvePrOwner(repoFullName: string, prNumber: number) {
   });
 }
 
+/** The owner fact a review event carries. */
+function ownerFact(w: Awaited<ReturnType<typeof resolvePrOwner>>): PrOwnerFact | null {
+  if (!w) return null;
+  return { workerId: w.id, taskId: w.taskId ?? null, workspaceId: w.workspaceId ?? null, missionId: w.task?.missionId ?? null };
+}
+
 /**
- * Inline review comments — `pull_request_review_comment`.
- *
- * These are the highest-value feedback the system sees and were previously
- * discarded entirely: unlike a top-level review they carry `path`, `line`, and
- * `diff_hunk` from GitHub, which is exactly what makes an objection retrievable
- * by the file it concerns.
+ * Inline review comments — `pull_request_review_comment`. Only `created`:
+ * an edit or delete mutates a comment already captured. The reviews module
+ * captures it for retrieval by the file it concerns.
  */
 async function handlePullRequestReviewCommentEvent(event: any): Promise<void> {
-  const action = event?.action as string | undefined;
   const comment = event?.comment;
   const pr = event?.pull_request;
   const repository = event?.repository;
-
-  // 'edited' and 'deleted' mutate a comment already captured. Re-capturing an
-  // edit would need a different conflict policy than dedupe, so it is out of
-  // scope rather than silently half-handled.
-  if (action !== 'created') return;
+  if (event?.action !== 'created') return;
   if (!comment || !pr?.number || !repository?.full_name) return;
 
   const owner = await resolvePrOwner(repository.full_name, pr.number);
   if (!owner?.workspaceId) return;
-
-  await captureReviewFeedback(
-    commentRowFromEvent(comment),
-    owner,
-    { repoFullName: repository.full_name, prNumber: pr.number },
-  );
-
-  console.log(
-    `[webhook] review comment captured: PR #${pr.number} ${comment.path ?? '(no path)'}`,
-  );
+  await emit({ type: 'pr.review_comment_created', repoFullName: repository.full_name, prNumber: pr.number, comment, owner: ownerFact(owner) });
 }
 
+/**
+ * `pull_request_review`, `submitted` only: the action that carries a verdict.
+ * The reviews module captures the text and records a person's verdict on a
+ * mission PR. Neither merges, completes a task, nor clears buildd's review
+ * gate: whether a GitHub approval should is a policy question.
+ */
 async function handlePullRequestReviewEvent(event: any): Promise<void> {
-  const action = event?.action as string | undefined;
   const review = event?.review;
   const pr = event?.pull_request;
   const repository = event?.repository;
-
-  // 'submitted' is the only action that carries a verdict; 'edited' and
-  // 'dismissed' change a review that was already recorded.
-  if (action !== 'submitted') return;
+  if (event?.action !== 'submitted') return;
   if (!review || !pr?.number || !repository?.full_name) return;
 
-  // GitHub sends 'approved' | 'changes_requested' | 'commented'. A bare comment
-  // is not a verdict — recording it would turn every drive-by remark into a
-  // decision row.
-  const state = String(review.state ?? '').toLowerCase();
-  const noteType =
-    state === 'approved' ? 'reviewer_approved' as const
-    : state === 'changes_requested' ? 'reviewer_request_changes' as const
-    : null;
-
-  const worker = await resolvePrOwner(repository.full_name, pr.number);
-
-  // Capture runs BEFORE both gates below, and that ordering is the point.
-  //
-  // The verdict gate is right for the timeline — a drive-by `commented` review
-  // is not a decision — but a reviewer explaining a problem without formally
-  // requesting changes is exactly the engineering content we want retrievable.
-  // The mission gate is right for the timeline too, and was silently discarding
-  // review text for the majority of PR-owning workers (measured at well over
-  // half). Retrieval has no reason to care about either distinction.
-  await captureReviewFeedback(
-    reviewRowFromEvent(review),
-    worker,
-    { repoFullName: repository.full_name, prNumber: pr.number },
-  );
-
-  if (!noteType) return;
-
-  const reviewer = typeof review.user?.login === 'string' ? review.user.login : 'a reviewer';
-  const verdict = noteType === 'reviewer_approved' ? 'approved' : 'requested changes';
-  const body = String(review.body ?? '').trim();
-
-  const missionId = worker?.task?.missionId;
-  if (!missionId) return;
-
-  await db.insert(missionNotes).values({
-    missionId,
-    taskId: worker?.taskId ?? null,
-    workerId: worker?.id ?? null,
-    // 'user' — a person acting on the PR in GitHub, not a worker inside a task.
-    authorType: 'user',
-    type: noteType,
-    title: `PR #${pr.number} ${verdict} on GitHub`,
-    body: body.length > 0 ? body : null,
-    actorLabel: `${reviewer} (GitHub review)`,
-  });
-
-  console.log(
-    `[webhook] pull_request_review: ${reviewer} ${verdict} PR #${pr.number} ` +
-    `(mission ${missionId}) — recorded, merge behaviour unchanged`,
-  );
+  const owner = await resolvePrOwner(repository.full_name, pr.number);
+  await emit({ type: 'pr.review_submitted', repoFullName: repository.full_name, prNumber: pr.number, review, owner: ownerFact(owner) });
 }
