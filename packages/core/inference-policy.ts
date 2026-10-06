@@ -45,7 +45,6 @@ export type InferenceCapability =
   | 'mission_strand_choice'
   | 'mission_goal_quality'
   | 'scout_probe_selection'
-  | 'cbm_search_injection'
   | 'endpoint_model_match'
   | 'question_gate'
   | 'post_session_triage'
@@ -195,16 +194,6 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Scout probe selection',
     description: 'When the quality scout checks finished work, a decision model suggests which of its candidate probes are worth running. Logged only; required probes always run.',
     costHint: '~$0.00003 per candidate probe',
-  },
-  // CBM search injection (docs/design/cbm-search-injection.md). Live: the
-  // decision only picks between two factual lists the runner already
-  // computed, or neither; any failure shows the direct callers.
-  cbm_search_injection: {
-    id: 'cbm_search_injection',
-    kind: 'built_in',
-    label: 'Code graph search notes',
-    description: 'When an agent\'s code search missed callers the code graph knows, a decision model picks which list to show it, or none. Facts only; never your code or text.',
-    costHint: '~$0.00002 per note',
   },
   // Agent endpoint model mapping (apps/web/src/lib/endpoint-model-suggest.ts).
   // Suggestion only, asked while an admin edits the endpoint; never saved

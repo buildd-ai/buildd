@@ -7,12 +7,11 @@
  * A failed mint falls back to the key, and the session still starts. The token
  * never reaches persisted worker state, worker PATCH bodies or logs.
  *
- * Harness after cbm-experiment-withheld.test.ts (SDK `query` stubbed, options
- * captured); the backend factory is wrapped to capture the Codex env.
+ * Harness: SDK `query` stubbed, options
+ * captured; the backend factory is wrapped to capture the Codex env.
  */
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { LocalUIConfig } from '../../src/types';
-import * as realBootstrap from '../../src/cbm-bootstrap';
 import * as realBackends from '../../src/backends/index.js';
 import * as realSessionLogger from '../../src/session-logger';
 import * as realEvidenceWriter from '../../src/evidence-writer';
@@ -49,8 +48,8 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 const mockUpdateWorker = mock(async (..._a: any[]) => ({}));
 const mockClaimTask = mock(async () => ({ workers: [] as any[] }));
 /** What mintTaskToken does next; set per test. */
-let mintImpl: (taskId: string, ttlMs: number) => Promise<unknown> = async () => ({});
-const mintCalls: Array<{ taskId: string; ttlMs: number }> = [];
+let mintImpl: (taskId: string, ttlMs: number, level?: string) => Promise<unknown> = async () => ({});
+const mintCalls: Array<{ taskId: string; ttlMs: number; level?: string }> = [];
 const clientConfigs: any[] = [];
 
 mock.module('../../src/buildd', () => ({
@@ -58,9 +57,9 @@ mock.module('../../src/buildd', () => ({
     constructor(config: any) { clientConfigs.push(config); }
     updateWorker = mockUpdateWorker;
     claimTask = mockClaimTask;
-    mintTaskToken = async (taskId: string, ttlMs: number) => {
-      mintCalls.push({ taskId, ttlMs });
-      return mintImpl(taskId, ttlMs);
+    mintTaskToken = async (taskId: string, ttlMs: number, _signal?: AbortSignal, level?: string) => {
+      mintCalls.push({ taskId, ttlMs, ...(level ? { level } : {}) });
+      return mintImpl(taskId, ttlMs, level);
     };
     getWorkspaceConfig = mock(async () => ({ configStatus: 'unconfigured' }));
     getCompactObservations = mock(async () => ({ markdown: '', count: 0 }));
@@ -150,11 +149,6 @@ mock.module('../../src/env-scan', () => ({
   checkBwrapMountIsolationSupport: () => true,
 }));
 
-mock.module('../../src/cbm-bootstrap.js', () => ({
-  ...realBootstrap,
-  runCbmBootstrap: async () => ({ ok: true, durationMs: 1 }),
-}));
-
 /** Captured runStreamed opts per backend. The Codex backend is faked (no CLI). */
 const backendRuns: Array<{ backend: string; env: Record<string, string> | undefined }> = [];
 const realCreateBackend = realBackends.createBackend;
@@ -193,7 +187,9 @@ function makeConfig(): LocalUIConfig {
 }
 
 function okMint(token: string) {
-  return async (taskId: string) => ({ token, taskId, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+  // Echoes the level asked for, as the server does.
+  return async (taskId: string, _ttlMs?: number, level?: string) =>
+    ({ token, taskId, expiresAt: new Date(Date.now() + 3600_000).toISOString(), level: level ?? 'worker' });
 }
 
 function makeTask(workerId: string, backend?: 'codex', taskExtra: Record<string, unknown> = {}) {
@@ -367,24 +363,41 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     expectTokenNowhere(TOKEN_B);
   });
 
-  // Orchestration sessions use admin-level MCP actions a worker-level task
-  // token does not carry, so they keep the runner key.
+  // Orchestration sessions ask for an admin-level token (confined server-side
+  // to their own mission); refused, they keep the runner key.
   const orchestration: Array<[string, Record<string, unknown>]> = [
     ['organizer role', { roleSlug: 'organizer' }],
     ['planning mode', { mode: 'planning' }],
     ['heartbeat check-in', { context: { heartbeat: true } }],
   ];
   for (const [name, extra] of orchestration) {
-    test(`${name} → no mint, the runner key, one info line`, async () => {
+    test(`${name} → an admin-level task token`, async () => {
       await runTask(manager, `w-tt-orch-${name.replace(/\W+/g, '')}`, undefined, extra);
       expect(lastQueryOpts).not.toBeNull();
-      expect(mintCalls).toHaveLength(0);
+      expect(mintCalls.length).toBeGreaterThan(0);
+      expect(mintCalls.every(c => c.level === 'admin')).toBe(true);
+      expect(builddAuthHeader()).toBe(`Bearer ${TOKEN_A}`);
+      expect(sessionLogs.some(l => l.includes('source=task-token level=admin'))).toBe(true);
+      expectTokenNowhere(TOKEN_A);
+    });
+
+    test(`${name}, admin mint refused → the runner key, one info line, no warning`, async () => {
+      mintImpl = async () => { throw Object.assign(new Error('x'), { status: 403 }); };
+      await runTask(manager, `w-tt-orch-refused-${name.replace(/\W+/g, '')}`, undefined, extra);
+      expect(lastQueryOpts).not.toBeNull();
       expect(builddAuthHeader()).toBe(`Bearer ${RUNNER_KEY}`);
       expect(logged.filter(l => l.includes('[agent-task-token]') && l.includes('reason=orchestration-role')).length).toBeGreaterThan(0);
       expect(logged.filter(l => l.includes('could not mint'))).toHaveLength(0);
       expect(sessionLogs.some(l => l.includes('source=runner-key reason=orchestration-role'))).toBe(true);
     });
   }
+
+  test('organizer against a server that ignores level → the runner key, not a worker token', async () => {
+    mintImpl = async (taskId: string) => ({ token: TOKEN_A, taskId, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    await runTask(manager, 'w-tt-orch-old-server', undefined, { roleSlug: 'organizer' });
+    expect(builddAuthHeader()).toBe(`Bearer ${RUNNER_KEY}`);
+    expect(sessionLogs.some(l => l.includes('source=runner-key reason=orchestration-role'))).toBe(true);
+  });
 
   // The consolidator's whole job is consolidate_knowledge, an admin action: on
   // a task token every call came back forbidden and the weekly pass failed.
@@ -397,9 +410,15 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     expect(sessionLogs.some(l => l.includes('source=runner-key reason=admin-role'))).toBe(true);
   });
 
-  test('organizer on Codex → BUILDD_MCP_BEARER_TOKEN is the runner key', async () => {
+  test('organizer on Codex → BUILDD_MCP_BEARER_TOKEN is its admin task token', async () => {
     await runTask(manager, 'w-tt-orch-codex', 'codex', { roleSlug: 'organizer' });
-    expect(mintCalls).toHaveLength(0);
+    expect(mintCalls.every(c => c.level === 'admin')).toBe(true);
+    expect(backendRuns.find(r => r.backend === 'codex')!.env?.BUILDD_MCP_BEARER_TOKEN).toBe(TOKEN_A);
+  });
+
+  test('organizer on Codex, admin mint refused → BUILDD_MCP_BEARER_TOKEN is the runner key', async () => {
+    mintImpl = async () => { throw Object.assign(new Error('x'), { status: 403 }); };
+    await runTask(manager, 'w-tt-orch-codex-refused', 'codex', { roleSlug: 'organizer' });
     expect(backendRuns.find(r => r.backend === 'codex')!.env?.BUILDD_MCP_BEARER_TOKEN).toBe(RUNNER_KEY);
   });
 

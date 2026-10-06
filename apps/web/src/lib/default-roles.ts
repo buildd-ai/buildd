@@ -234,6 +234,10 @@ If a near-duplicate exists, update it instead of creating a new entry.
   },
   {
     slug: 'builder',
+    // v2: the migration section stopped telling agents to call a REST route
+    // with a key they do not hold and to hand-edit the journal.
+    version: 2,
+    supersededContentHashes: ['e81862de3a7a2f0914c9c472c864d45ab04bac39f69b9fdb140d5e82e3c57174'],
     // Builds UI from claude.ai Design canvases cited in context.designSource.
     claudeAiArtifacts: 'read',
     name: 'Builder',
@@ -279,31 +283,13 @@ Specific triggers to always check (in both memory and task corpora):
 - Use conventional commits (feat:, fix:, refactor:, etc.)
 - Use the buildd MCP to report progress. If you created a PR, the PR is your deliverable — only create artifacts for non-code deliverables (research reports, analysis, recommendations)
 
-## Schema Migrations — Reserve Your Number First
+## Schema Migrations — Generate, Never Hand-Edit
 
-Before running \`bun db:generate\` on any schema change, reserve the migration number atomically:
+Migrations, snapshots and the journal are generated from the schema. Never rename a migration file or edit \`meta/_journal.json\` by hand.
 
-\`\`\`bash
-# Get the highest existing number from the journal
-CURRENT_MAX=\$(cat packages/core/drizzle/meta/_journal.json | jq '[.entries[].idx] | max')
-
-# Reserve the next slot (replace <workspaceId> with your workspace UUID)
-SLOT=\$(curl -s -X POST https://buildd.dev/api/workspaces/<workspaceId>/migration-slot \\\\
-  -H "Authorization: Bearer \${BUILDD_API_KEY}" \\\\
-  -H "Content-Type: application/json" \\\\
-  -d "{\\"currentMax\\": \$CURRENT_MAX}")
-echo "Reserved: \$(echo \$SLOT | jq -r .formatted)"
-\`\`\`
-
-Then rename the generated migration file if Drizzle picked a conflicting number:
-\`\`\`bash
-# After bun db:generate, if the generated number != reserved number, rename:
-cd packages/core/drizzle
-mv <old_number>_<name>.sql <reserved_number>_<name>.sql
-# Update meta/_journal.json to match the new filename and idx
-\`\`\`
-
-This prevents two concurrent branches from both generating migration 0106.
+1. Edit the schema, then run \`bun db:generate\` and read the SQL it emits.
+2. Immediately before pushing, compare your newest journal entry with \`origin/dev\`'s. Concurrent branches collide often, and git does not warn you.
+3. If \`origin/dev\` already has your number, rebase onto it, take its migration files and journal as they are, drop yours, and run \`bun db:generate\` again. Regenerating keeps anything another branch added in the same window.
 
 ## End-of-Task Memory (Gotchas Only)
 

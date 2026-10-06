@@ -16,9 +16,9 @@
  *  2. **Decide / hold / ask.** Once a question clears the brief check (or the
  *     pushback cap is spent), and no hard rail applies (`detectHardRail`
  *     below), Jev decides: pick one of the listed options itself (the agent
- *     continues immediately, nobody is parked or notified), hold it (parked,
- *     same as `ask`, but tagged so a quieter notification path can be built on
- *     top later — see `HOLD_RESURFACE_MS`), or ask a person (parked and
+ *     continues immediately, nobody is parked or notified), hold it (parked
+ *     like `ask`, but nobody is notified until `HOLD_RESURFACE_MS` passes with
+ *     it still unanswered), or ask a person (parked and
  *     notified, unchanged from before this file existed).
  *
  * This used to be an opt-in, removable experiment (`question_gate`). It no
@@ -152,7 +152,7 @@ export type QuestionDisposition = 'decide' | 'hold' | 'ask';
  *  - `auth_secrets`: pathManifest touches `auth_and_secrets` risk-class paths
  *    (default: `apps/web/src/app/api/secrets/`, `packages/core/secrets/`).
  *  - `ci_deploy`: pathManifest touches `ci_deploy_config` risk-class paths
- *    (default: `.github/workflows/`, `docker/worker/Dockerfile`, `vercel.json`).
+ *    (default: `.github/workflows/`, `vercel.json`).
  *  - `protected_path`: pathManifest touches a path the WORKSPACE itself
  *    declared sensitive (merge policy deny/escalate paths) beyond the three
  *    universal classes above.
@@ -167,7 +167,7 @@ export type HardRailKind = 'migration' | 'auth_secrets' | 'ci_deploy' | 'protect
 
 const DEFAULT_SCHEMA_PATHS = ['packages/core/db/schema.ts', 'packages/core/drizzle/'];
 const DEFAULT_AUTH_SECRETS_PATHS = ['apps/web/src/app/api/secrets/', 'packages/core/secrets/'];
-const DEFAULT_CI_DEPLOY_PATHS = ['.github/workflows/', 'docker/worker/Dockerfile', 'vercel.json'];
+const DEFAULT_CI_DEPLOY_PATHS = ['.github/workflows/', 'vercel.json'];
 
 const SPENDING_TEXT_PATTERN = /\$\s?\d|\bbudget\b|\bsubscription\b|\bupgrad(?:e|ed|es|ing)\s+(?:the\s+|your\s+|this\s+)?plan\b|\bspend(?:ing)?\b|\bpurchase\b|\bcredit card\b|\bpricing tier\b/i;
 
@@ -203,13 +203,11 @@ export function detectHardRail(input: HardRailInput): HardRailKind | null {
 }
 
 /**
- * How long a `hold` can go without a person seeing it, before the next sweep
- * surfaces it anyway. Documented scope for this PR: the disposition, reason
- * and this deadline are computed and carried on the parked `waitingFor`, but
- * nothing yet reads `resurfaceAt` to suppress or delay the immediate
- * notification — that needs a change to the worker PATCH route's notify path
- * and a resurface sweep, both out of this file's scope. Today a `hold`
- * therefore parks exactly like `ask`, just labelled for a follow-up to pick up.
+ * How long a `hold` can go without a person seeing it. A held question parks
+ * without a notification; the worker PATCH route clamps its `resurfaceAt` to
+ * at most this far from the first park, and the resurface pass
+ * (apps/web/src/lib/question-hold.ts, on /api/cron/notify-away's ticks)
+ * notifies a person once it passes, if the question is still unanswered.
  */
 export const HOLD_RESURFACE_MS = 15 * 60_000;
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { DEFAULT_MODEL_POLICY } from './defaults';
 import {
-  findCredentialLike, parseOutcomeReport, parsePolicyDecision, parsePolicyRequest, toBuilddSurface,
+  findCredentialLike, parseOutcomeReport, parseRoute, parsePolicyDecision, parsePolicyRequest, toBuilddSurface,
   toPolicySurface, validateModelPolicy,
 } from './protocol';
 
@@ -161,5 +161,14 @@ describe('credential boundary', () => {
     expect(findCredentialLike({ a: [{ b: { client_secret: 1 } }] })).toBe('$.a[0].b.client_secret');
     expect(findCredentialLike({ model: 'claude-sonnet-5', refresh_token: undefined })).toBe('$.refresh_token');
     expect(findCredentialLike(good)).toBeNull();
+  });
+});
+
+describe('policy providers', () => {
+  it('a route may name openai-codex (a coding runtime), and an unknown provider is refused', () => {
+    expect(parseRoute({ provider: 'openai-codex', model: 'gpt-codex' }, 'r').ok).toBe(true);
+    const bad = parseRoute({ provider: 'acme', model: 'm' }, 'r');
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.error).toContain('openai-codex');
   });
 });

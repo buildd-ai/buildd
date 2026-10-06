@@ -16,7 +16,7 @@
  * Self-contained: it owns the in-flight action and its error, and calls
  * `onChanged` after a successful action so the host can refetch.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import AnswerRecorded from '@/components/AnswerRecorded';
@@ -24,6 +24,8 @@ import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-an
 import Spinner from '@/components/Spinner';
 import ClaimTaskHint from '@/components/tasks/ClaimTaskHint';
 import RunnerPicker from '@/components/tasks/RunnerPicker';
+import Disclosure from '@/components/ui/Disclosure';
+import { explainProviderAuthFailure } from '@/lib/provider-auth-failure';
 import { useTaskStart } from '@/components/tasks/useTaskStart';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import { formatInZone } from '@/lib/zoned-time';
@@ -35,6 +37,7 @@ import {
   getGateReasonSubtitle,
   getGateReasonTitle,
   otherBackendOf,
+  backendDisplayName,
   requestTaskRetry,
   taskActionSet,
 } from '@/lib/task-actions';
@@ -59,7 +62,8 @@ export interface TaskActionZoneProps {
   isBlocked: boolean;
   blockedByCount: number;
   backend: 'claude' | 'codex' | null;
-  lastError: { excerpt: string } | null;
+  /** `excerpt` is the line shown; `raw`, when given, is the full text it is classified from. */
+  lastError: { excerpt: string; raw?: string | null } | null;
   worker: { id: string; waitingFor: { prompt: string; options?: string[]; context?: string } | null } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
@@ -98,6 +102,24 @@ export default function TaskActionZone({
   const [target, setTarget] = useState('');
   const start = useTaskStart({ taskId, workspaceId, onStarted: onChanged });
 
+  // A failed task may offer the other backend, but only one that can run it:
+  // the same availability check the start gate uses. Unknown until it answers,
+  // and unknown never offers the switch.
+  const otherBackend = otherBackendOf(backend);
+  const [otherBackendAvailable, setOtherBackendAvailable] = useState(false);
+  useEffect(() => {
+    if (phase !== 'failed' || !otherBackend || !workspaceId) return;
+    let cancelled = false;
+    fetch(`/api/workspaces/${workspaceId}/backends`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { backends?: Array<{ id: string; available: boolean }> } | null) => {
+        if (cancelled) return;
+        setOtherBackendAvailable(!!d?.backends?.some((b) => b.id === otherBackend && b.available));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [phase, otherBackend, workspaceId]);
+
   const actions = taskActionSet({
     phase,
     isBlocked,
@@ -105,9 +127,11 @@ export default function TaskActionZone({
     hasQuestion: !!worker?.waitingFor,
     hasHistory: !!historyHref,
     missionExecutor,
+    otherBackendAvailable,
   });
   const has = (id: (typeof actions)[number]) => actions.includes(id);
-  const otherBackend = otherBackendOf(backend);
+  // "Not logged in · Please run /login" and kin: say what to do instead.
+  const authFailure = lastError ? explainProviderAuthFailure(lastError.raw ?? lastError.excerpt, backend) : null;
   const local = missionExecutor === 'local';
 
   // Owned here, not by the input: the refetch below drops the question, and
@@ -169,7 +193,17 @@ export default function TaskActionZone({
       {/* Failed → why + retry */}
       {has('retry') && (
         <div className="space-y-3 border-2 border-status-error p-4">
-          {lastError ? (
+          {authFailure && lastError ? (
+            <div className="space-y-2" data-testid="task-auth-failure">
+              <p className="text-body text-text-primary">{authFailure.message}</p>
+              <Link href={authFailure.href} data-action="fix_credential" className="inline-flex min-h-11 md:min-h-9 items-center font-mono text-body font-medium text-accent-text hover:underline">
+                {authFailure.linkLabel}
+              </Link>
+              <Disclosure summary="Show raw output">
+                <pre className="max-h-60 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] bg-surface-2 p-3 font-mono text-meta text-text-secondary">{lastError.raw?.trim() || lastError.excerpt}</pre>
+              </Disclosure>
+            </div>
+          ) : lastError ? (
             <p className="break-words font-mono text-[12px] leading-relaxed text-status-error">{lastError.excerpt}</p>
           ) : (
             <p className="font-mono text-[12px] text-text-secondary">This task failed.</p>
@@ -184,7 +218,7 @@ export default function TaskActionZone({
               disabled={retrying !== null}
               className={SECONDARY_BTN}
             >
-              {retrying === 'same' ? 'Retrying…' : `Retry${backend ? ` on ${backend}` : ''}`}
+              {retrying === 'same' ? 'Retrying…' : `Retry${backend ? ` on ${backendDisplayName(backend)}` : ''}`}
             </button>
             {has('switch_backend') && otherBackend && (
               <button
@@ -192,10 +226,10 @@ export default function TaskActionZone({
                 data-action="switch_backend"
                 onClick={() => retry('switch')}
                 disabled={retrying !== null}
-                className={`${QUIET_BTN} capitalize`}
-                title={`Retry this task on the ${otherBackend} backend instead`}
+                className={QUIET_BTN}
+                title={`Retry this task on ${backendDisplayName(otherBackend)} instead`}
               >
-                {retrying === 'switch' ? 'Switching…' : `Switch to ${otherBackend}`}
+                {retrying === 'switch' ? 'Switching…' : `Switch to ${backendDisplayName(otherBackend)}`}
               </button>
             )}
             {has('history') && historyHref && (
@@ -306,9 +340,11 @@ export default function TaskActionZone({
           {refusal.gateReason === 'workspace_cap_reached' && (
             <div className="flex flex-wrap items-center gap-2 font-mono text-meta">
               <span className="text-text-secondary">Raise the workspace limit to</span>
-              <button type="button" aria-label="Lower" onClick={() => setCapTarget(t => Math.max(cap + 1, (t ?? cap + 1) - 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">−</button>
-              <span className="w-8 text-center tabular-nums text-text-primary">{capTarget ?? cap + 1}</span>
-              <button type="button" aria-label="Raise" onClick={() => setCapTarget(t => Math.min(20, (t ?? cap + 1) + 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">+</button>
+              <div className="inline-flex shrink-0 items-center gap-2">
+                <button type="button" aria-label="Lower" onClick={() => setCapTarget(t => Math.max(cap + 1, (t ?? cap + 1) - 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">−</button>
+                <span className="w-8 text-center tabular-nums text-text-primary">{capTarget ?? cap + 1}</span>
+                <button type="button" aria-label="Raise" onClick={() => setCapTarget(t => Math.min(20, (t ?? cap + 1) + 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">+</button>
+              </div>
               <button type="button" data-action="raise_cap" onClick={() => start.raiseCapAndStart(capTarget ?? cap + 1)} disabled={starting} className={SECONDARY_BTN}>
                 {start.pending === 'cap' ? 'Updating…' : 'Save & start'}
               </button>
@@ -317,7 +353,7 @@ export default function TaskActionZone({
           <div className="flex flex-wrap items-center gap-2">
             {refusal.gateReason === 'capability_mismatch' && (refusal.availableBackends ?? []).map(b => (
               <button key={b} type="button" data-action="switch_and_start" onClick={() => start.switchBackendAndStart(b)} disabled={starting} className={SECONDARY_BTN}>
-                {start.pending === 'switch' ? 'Switching…' : `Switch to ${b === 'claude' ? 'Claude (default)' : b} and start`}
+                {start.pending === 'switch' ? 'Switching…' : `Switch to ${b === 'claude' ? 'Claude (default)' : backendDisplayName(b)} and start`}
               </button>
             ))}
             {refusal.gateReason === 'workspace_cap_reached' && refusal.canExempt && (

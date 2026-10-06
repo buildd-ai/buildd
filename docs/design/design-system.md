@@ -1,6 +1,26 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "type-scale-tokens"
+    type: "config_key"
+    key: "type-chip"
+    file: "apps/web/src/app/globals.css"
+  - id: "chip-primitive"
+    type: "symbol"
+    name: "Chip"
+    path: "apps/web/src/components/ui/Chip.tsx"
+  - id: "mobile-type-floor-test"
+    type: "test_file"
+    path: "apps/web/src/app/mobile-type-floor.test.ts"
+  - id: "design-drift-check-tests"
+    type: "test_file"
+    path: "scripts/design-check.test.ts"
+---
+
 # Design System
 
-**Status:** Accepted (tokens describe what ships; the §3 type scale and the §4 primitives are built)
+**Status:** Implemented (tokens describe what ships; the §3 type scale and the §4 primitives are built)
 **Related:** `apps/web/src/app/globals.css`, `apps/web/tailwind.config.ts`, `apps/web/src/app/mobile-type-floor.test.ts`, `apps/web/src/components/BottomSheet.tsx`, `apps/web/src/components/StatusBadge.tsx`, `apps/web/src/app/app/(protected)/missions/[id]/HeartbeatStatusBadge.tsx`, `apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx`, `docs/design/mobile-feed-spec.md` (mobile layout), `knowledge-base: buildd/design/chat-canvas.md` (the one soft surface), `knowledge-base: buildd/plans/ios-app-mvp.md` (iOS tokens), `.claude/skills/ui_designer/`
 
 **This is the one design reference.** Read this file before writing UI. The

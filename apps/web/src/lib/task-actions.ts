@@ -64,6 +64,19 @@ export interface TaskActionState {
   hasHistory: boolean;
   /** The task's mission executor; `local` means runners never claim it. */
   missionExecutor?: MissionExecutor | null;
+  /**
+   * Whether the other backend has a credential for this workspace. `false`
+   * drops the switch (offering Codex to a team that never set it up only
+   * produces a second failure); omitted means unknown and keeps it.
+   */
+  otherBackendAvailable?: boolean;
+}
+
+/** A backend as a product name: "Claude", "Codex". */
+export function backendDisplayName(backend: Backend | string): string {
+  if (backend === 'codex') return 'Codex';
+  if (backend === 'claude') return 'Claude';
+  return backend.charAt(0).toUpperCase() + backend.slice(1);
 }
 
 export function otherBackendOf(backend: Backend | null): Backend | null {
@@ -76,7 +89,7 @@ export function taskActionSet(s: TaskActionState): TaskActionId[] {
   if (waiting && s.hasQuestion) out.push('answer');
   if (s.phase === 'failed' && !waiting) {
     out.push('retry');
-    if (otherBackendOf(s.backend)) out.push('switch_backend');
+    if (otherBackendOf(s.backend) && s.otherBackendAvailable !== false) out.push('switch_backend');
     if (s.hasHistory) out.push('history');
   }
   if (s.isBlocked) out.push('blocked');

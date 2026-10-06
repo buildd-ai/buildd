@@ -5,7 +5,6 @@ import { TOKEN_SCOPE_DEFINITIONS } from '@buildd/core/token-scopes';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import DeleteAccountButton from '../accounts/DeleteAccountButton';
-import CopyBlock from '@/components/CopyBlock';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import ApiKeyModal from '@/components/ApiKeyModal';
 import SettingsSection from './SettingsSection';
@@ -245,9 +244,6 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
         </div>
       )}
 
-      {/* MCP setup — collapsed */}
-      <McpSetupSection apiKey={accounts.find(a => a.apiKeyPrefix)?.apiKeyPrefix ?? null} workspaces={workspaces} />
-
       {/* Regenerate confirmation dialog */}
       <ConfirmDialog
         open={!!regenerateTarget}
@@ -269,53 +265,9 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
           open={!!newKey}
           accountName={newKey.accountName}
           apiKey={newKey.apiKey}
-          repos={workspaces.filter(w => w.repo).map(w => w.repo!)}
           onClose={() => setNewKey(null)}
         />
       )}
     </SettingsSection>
-  );
-}
-
-// ── MCP Setup Section (collapsed by default) ────────────────────────────
-
-function McpSetupSection({ apiKey, workspaces = [] }: { apiKey: string | null; workspaces?: Workspace[] }) {
-  const key = apiKey ? `${apiKey}...` : 'YOUR_RUNNER_TOKEN';
-  const reposWithWorkspaces = workspaces.filter(w => w.repo);
-
-  function mcpCommand(repo?: string) {
-    const base = 'https://buildd.dev/api/mcp';
-    const url = repo ? `${base}?repo=${repo}` : base;
-    return `claude mcp add --transport http buildd "${url}" --header "Authorization: Bearer ${key}"`;
-  }
-
-  return (
-    <details className="mt-4">
-      <summary className="text-xs text-text-muted cursor-pointer hover:text-text-secondary">
-        Connect to buildd (MCP setup)
-      </summary>
-      <div className="mt-3 space-y-3">
-        {reposWithWorkspaces.length > 0 ? (
-          reposWithWorkspaces.map(w => (
-            <div key={w.id} className="card p-4 space-y-3">
-              <div className="text-xs text-text-muted">{w.repo}</div>
-              <CopyBlock text={mcpCommand(w.repo!)} />
-            </div>
-          ))
-        ) : (
-          <div className="card p-4 space-y-3">
-            <div className="text-xs text-text-muted">Claude Code</div>
-            <CopyBlock text={mcpCommand()} />
-          </div>
-        )}
-
-        <details className="card p-4">
-          <summary className="text-xs font-medium text-text-muted cursor-pointer">REST API</summary>
-          <div className="mt-3">
-            <CopyBlock text={`curl -X POST https://buildd.dev/api/workers/claim \\\n  -H "Authorization: Bearer ${key}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"maxTasks": 1}'`} />
-          </div>
-        </details>
-      </div>
-    </details>
   );
 }

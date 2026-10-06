@@ -1354,8 +1354,7 @@ export interface ClaimTasksInput {
   claimAcrossAccessible?: boolean;
   /**
    * Protocol features this runner build implements, so the server does not send
-   * a payload field an older runner would silently ignore. See
-   * CBM_WITHHOLD_RUNNER_FEATURE in @buildd/core/cbm-access-experiment.
+   * a payload field an older runner would silently ignore.
    */
   runnerFeatures?: string[];
   /**
@@ -1613,12 +1612,6 @@ export interface ClaimTasksResponse {
     task: Task;
     skillBundles?: SkillBundle[];
     childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
-    /**
-     * Set when the task is enrolled in a running `cbm_access` experiment.
-     * `withheld: true` means the runner must run it WITHOUT codebase-memory:
-     * no mount, no steering, every CBM tool denied.
-     */
-    cbmExperiment?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; withheld: boolean };
     /**
      * Set when the team runs a `question_gate` experiment and the runner sent
      * the `question_gate` feature. The runner then routes AskUserQuestion
@@ -3100,7 +3093,7 @@ export interface GateReasonFamily {
 
 export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'concluded';
 export type ExperimentVisibility = 'admins' | 'team';
-export type ExperimentKind = 'model_routing' | 'cbm_access' | 'heartbeat_triage' | 'question_gate';
+export type ExperimentKind = 'model_routing' | 'heartbeat_triage' | 'question_gate';
 
 /** An `experiments` row as the API returns it. Dates are ISO strings. */
 export interface Experiment {
@@ -3221,6 +3214,10 @@ export interface LaneBar {
   /** Role colour from the role's own data; null = neutral. */
   color: string | null;
   roleSlug?: string | null;
+  /** The role's display name ("Builder"), for the hover card. */
+  roleName?: string | null;
+  /** The PR this run opened, if any. */
+  prNumber?: number | null;
   state: 'running' | 'waiting' | 'done' | 'failed';
   href?: string | null;
 }

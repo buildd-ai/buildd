@@ -1,3 +1,5 @@
+import { canonicalToolName } from '@buildd/shared';
+import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
 import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
@@ -11,7 +13,7 @@ import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
+import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath, linkMachineCodexAuth } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir, staleResumeCredentialError } from './claude-auth.js';
 import { resolveRoleEnvMapping, unmetRoleEnv, RoleEnvGapLog, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleBundle, type RoleConfig, type RoleInstructions } from './roles.js';
 import { cleanupSessionPromptFiles, projectMemoryExcludes } from './session-prompt-files.js';
@@ -51,9 +53,6 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
-import { CbmInjector, createCbmInjectionHook, isCbmInjectionEnabled, recordUnsupportedTrigger } from './cbm-injection';
-import { CbmGraphClient } from './cbm-graph-client';
-import { emptyCbmInjectionMetrics } from '@buildd/core/cbm-injection';
 import { toolActionMilestone, appendMilestone } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
@@ -80,7 +79,8 @@ import { resolveAgentBuilddAuth, isOrchestrationTask, usesAdminBuilddActions } f
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
-import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
+import { applyHostSeatPolicy, decideCodexSeat, describeHostSeat, hostModelCredentialValues, hostSeatMode, localCodexAuthPath } from './host-seat';
+import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
 import {
@@ -121,7 +121,6 @@ import {
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
-import { runCbmBootstrap, stopBackgroundCbmIndex } from './cbm-bootstrap.js';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
@@ -129,9 +128,7 @@ import {
   createBwrapSpawn,
   isMountAllowlistEnabled,
   shouldWrapWorkerInBwrap,
-  CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
-import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist, applyCbmWithholding, withoutCbmConnectors } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 import { asksAQuestion } from './ask-user-question.js';
 import { holdTagged, questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
@@ -147,7 +144,8 @@ import {
   SESSION_END_PUSH_TEXT,
   type SessionEndLabel,
 } from './session-end-classification.js';
-import { buildCodexMcpServers, resolveMcpJsonHttpServers } from './mcp-json.js';
+import { withoutRunnerKeyValues } from './runner-key-guard.js';
+import { buildCodexMcpServers, describeSkippedMcpServer, resolveMcpJsonHttpServers, urlOrigin, type BuilddCredentialExpansion } from './mcp-json.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -558,7 +556,7 @@ export function buildMcpServerEntries(
 // Re-export for backward compat + direct use in this module.
 export { exchangeAssertionConnector } from './assertion-exchange.js';
 import { exchangeAssertionConnector } from './assertion-exchange.js';
-import { resolveEffectiveThinking } from '@buildd/core/model-aliases';
+import { resolveEffectiveThinking } from '@buildd/core/model-thinking';
 
 function hasClaudeCredentials(): boolean {
   // Check for OAuth credentials from `claude login` (.credentials.json)
@@ -587,7 +585,7 @@ function hasClaudeCredentials(): boolean {
   }
 
   // Check env vars
-  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) {
+  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN) {
     return true;
   }
 
@@ -608,7 +606,7 @@ export function teamKeyOf(task: Pick<BuilddTask, 'workspaceId' | 'workspace'> | 
  * survive when the agent completed the task itself through the buildd MCP:
  * the server terminalises the row on `complete_task`, so the runner's own
  * completion PATCH arrives late and is refused with 409 {abort:true} —
- * taking resultMeta (CBM metrics, tool histogram, model attribution), the
+ * taking resultMeta (tool histogram, model attribution), the
  * token counts, the reported cost and the git stats down with it.
  *
  * Deliberately absent: `status`, `error`, `summary`, `milestones`,
@@ -774,14 +772,6 @@ export class WorkerManager {
   // Call it for free text; use `.body()` for anything already parsed, so field
   // names (not string escaping) decide what the generic patterns may rewrite.
   private secretRedactors = new Map<string, SecretRedactor>();
-  /**
-   * CBM search injection, per live session (cbm-injection.ts). Kept off
-   * LocalWorker: the injector holds the session's searched symbols in memory,
-   * and LocalWorker is serialised to the UI. Only its counts reach the worker
-   * (`cbmInjection`) and resultMeta.
-   */
-  private cbmInjectors = new Map<string, CbmInjector>();
-  private cbmGraphClients = new Map<string, CbmGraphClient>();
   // Per-worker BYO evidence writers (command_output / test_report). Built next
   // to the redactor in startSession and dropped with it. Best-effort only.
   private evidenceWriters = new Map<string, EvidenceWriter>();
@@ -803,7 +793,6 @@ export class WorkerManager {
       claimPendingTasks: () => this.claimPendingTasks(),
       claimAndStart: (task) => this.claimAndStart(task),
       getProbedWorkers: () => this.probedWorkers,
-      resolveRepoPath: (workspace) => this.resolver.resolve(workspace),
     });
     this.hookFactory = new HookFactory({
       config: { inputAsRetry: config.inputAsRetry },
@@ -1198,7 +1187,7 @@ export class WorkerManager {
    * the caller. Uses reapSession, not teardownSession: `reapedAt` makes the
    * session's catch treat the abort as cleanup (no `failed` PATCH), and its
    * finally — which is conditioned on the map entry — removes the per-worker
-   * credential/config/CBM dirs and then deletes the entry.
+   * credential/config dirs and then deletes the entry.
    */
   private reapLiveSession(workerId: string): void {
     const session = this.sessions.get(workerId);
@@ -1215,7 +1204,7 @@ export class WorkerManager {
         this.workers.delete(id);
         // Stop the `claude` subprocess, but reap rather than tear down: the
         // session's finally only cleans up (token-bearing config dir, broker
-        // registration, CBM dirs) while its map entry exists, and deletes the
+        // registration) while its map entry exists, and deletes the
         // entry itself. A session that ignores the abort keeps its entry.
         this.reapLiveSession(id);
         this.workerAuthContexts.delete(id);
@@ -1875,8 +1864,9 @@ export class WorkerManager {
         diagnosticReason: diagnostics?.reason,
         taskId: task.id,
         ...claimDiagnosticDetail(diagnostics),
+        ...(diagnostics?.taskExclusion?.code ? { taskExclusion: diagnostics.taskExclusion.code } : {}),
       });
-      console.log(`No tasks claimed (reason: ${reason})`);
+      console.log(`No tasks claimed (reason: ${reason}${diagnostics?.taskExclusion?.code ? `, excluded by ${diagnostics.taskExclusion.code}` : ''})`);
       throw Object.assign(
         new Error(`Server rejected claim for task "${task.title}" — ${reason === 'no_pending_tasks' ? 'task is no longer available (may already be claimed or completed)' : `reason: ${reason}`}`),
         {
@@ -1888,6 +1878,7 @@ export class WorkerManager {
           // (run-once.ts) uses to tell a temporary capacity defer from a
           // permanent refusal.
           claimTaskExclusionCode: diagnostics?.taskExclusion?.code,
+          claimTaskExclusionDetail: diagnostics?.taskExclusion?.detail,
         },
       );
     }
@@ -1917,7 +1908,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean }; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role bundle; `overlay` = merge its .mcp.json into the session cwd once the worktree exists. */
@@ -2080,20 +2071,9 @@ export class WorkerManager {
       worker.questionGate = claimedWorker.questionGate;
       console.log(`[Worker ${claimedWorker.id}] Question gate on: experiment ${claimedWorker.questionGate.experimentId} arm ${claimedWorker.questionGate.arm}`);
     }
-    if (claimedWorker.cbmExperiment?.withheld) {
-      worker.cbmExperimentWithheld = true;
-      console.log(`[Worker ${claimedWorker.id}] CBM withheld by experiment ${claimedWorker.cbmExperiment.experimentId} (policy v${claimedWorker.cbmExperiment.policyVersion})`);
-    }
-    // A codebase-memory CONNECTOR is one of the routes the withheld arm closes.
-    // Dropped here, before it is stored, rather than unmounted later: a stored
-    // connector is also a required server for the MCP pre-flight, which would
-    // then fail the task for missing the very server the experiment withheld.
-    const claimConnectors = worker.cbmExperimentWithheld
-      ? withoutCbmConnectors(claimedWorker.mcpConnectors)
-      : claimedWorker.mcpConnectors;
-    if (claimConnectors && claimConnectors.length > 0) {
-      (worker as any).mcpConnectors = claimConnectors;
-      console.log(`[Worker ${claimedWorker.id}] Received ${claimConnectors.length} MCP connector(s): ${claimConnectors.map(c => c.name).join(', ')}`);
+    if (claimedWorker.mcpConnectors && claimedWorker.mcpConnectors.length > 0) {
+      (worker as any).mcpConnectors = claimedWorker.mcpConnectors;
+      console.log(`[Worker ${claimedWorker.id}] Received ${claimedWorker.mcpConnectors.length} MCP connector(s): ${claimedWorker.mcpConnectors.map(c => c.name).join(', ')}`);
     }
     if (claimedWorker.codexCredential) {
       worker.codexCredential = claimedWorker.codexCredential;
@@ -2122,9 +2102,6 @@ export class WorkerManager {
     if (claimedWorker.skillBundles && claimedWorker.skillBundles.length > 0) {
       worker.skillBundles = claimedWorker.skillBundles;
       console.log(`[Worker ${claimedWorker.id}] Received ${claimedWorker.skillBundles.length} skill bundle(s): ${claimedWorker.skillBundles.map(b => b.slug).join(', ')}`);
-    }
-    if ((claimedWorker as any).cbmDisabled) {
-      (worker as any).cbmDisabled = true;
     }
     if (claimedWorker.claudeTokenScopes?.length) {
       worker.claudeTokenScopes = claimedWorker.claudeTokenScopes;
@@ -2232,9 +2209,8 @@ export class WorkerManager {
         sessionCwd = setupResult.path;
         worktreeCreated = true;
         // The base this worktree was actually cut from. Carried on the worker
-        // because the CBM seed decision happens later, in startSession, and the
-        // codebase-memory seed is keyed on (repoPath, baseRef) — re-deriving it
-        // there could disagree with the ref the worktree really uses.
+        // so later steps (git stats, the prompt, parking) read the ref the
+        // worktree really uses instead of re-deriving it.
         worker.worktreeBaseRef = setupResult.base;
         // The PR's base, which the path-claim sweep measures against. Read
         // after setup: a fallback to a fresh base has already cleared the
@@ -2331,7 +2307,7 @@ export class WorkerManager {
         // Worktree setup failed. This used to fall back to the base checkout,
         // which is the clone every other worker on this repo shares: no
         // filesystem isolation, commits landing on whatever the clone has
-        // checked out, and no CBM (worktreePath unset). Fail the worker instead
+        // checked out. Fail the worker instead
         // — the claim is retryable, a silently shared clone is not recoverable.
         worktreeSetupFailed = true;
         console.warn(`[Worker ${worker.id}] Worktree setup failed for ${claimedWorker.branch} — failing the worker rather than running in the shared clone at ${workspacePath}`);
@@ -2688,7 +2664,7 @@ export class WorkerManager {
    * NORMAL outcome when the agent completed (or failed) the task itself through
    * the buildd MCP: the server terminalises the row, pushes worker:completed,
    * and the runner's PATCH arrives afterwards. Everything on it that is
-   * measurement rather than state — resultMeta with the CBM metrics and tool
+   * measurement rather than state — resultMeta with the tool
    * histogram, tokens, cost, model, git stats, subagent spans — used to be lost
    * with the refused status write, and that cohort is the long-session one, so
    * every usage rollup was biased toward short sessions.
@@ -2927,8 +2903,9 @@ export class WorkerManager {
    * Park with the classified reason recorded and visible on the task page —
    * reusing the same `waitingFor`/`waiting_input` surface a live
    * `AskUserQuestion` already renders, so no new UI is needed. `disposition`
-   * 'hold' tags it the same way the Jev gate tags a live held question
-   * (parks exactly like 'ask' today; see question-gate.ts HOLD_RESURFACE_MS).
+   * 'hold' tags it the same way the Jev gate tags a live held question (the
+   * server parks it without a notification until its deadline; see
+   * apps/web/src/lib/question-hold.ts).
    */
   private async parkSessionEnd(
     worker: LocalWorker,
@@ -3064,9 +3041,20 @@ export class WorkerManager {
     const fileBased = worker.roleBundle
       ? resolveRoleEnvMapping(worker.roleBundle.envMapping, process.env as Record<string, string>)
       : { resolved: {}, missing: [] };
+    // Role env lands in the agent's env (and the install env). The file-based
+    // mapping reads the runner's own process.env, so a label naming the
+    // runner's key variable would hand the agent that key; drop any value equal
+    // to the runner key, whatever the label or source.
+    const { env: resolved, dropped } = withoutRunnerKeyValues(
+      { ...fileBased.resolved, ...(worker.roleEnvSecrets ?? {}) },
+      this.config.apiKey,
+    );
+    if (dropped.length > 0) {
+      console.warn(`[roles] role env ${dropped.join(', ')} not given to the agent: the value is this runner's own key`);
+    }
     return {
-      resolved: { ...fileBased.resolved, ...(worker.roleEnvSecrets ?? {}) },
-      missing: [...fileBased.missing, ...(worker.roleEnvMissing ?? [])],
+      resolved,
+      missing: [...fileBased.missing, ...(worker.roleEnvMissing ?? []), ...dropped],
     };
   }
 
@@ -3103,20 +3091,20 @@ export class WorkerManager {
     const agentBuilddAuth = await resolveAgentBuilddAuth({
       runnerKey: this.config.apiKey,
       taskId: task.id,
-      // Organizer / planning / heartbeat sessions need admin-level actions a
-      // worker-level task token does not carry.
+      // Organizer / planning / heartbeat sessions ask for an admin-level
+      // token confined to their own mission; refused, they keep the key.
       orchestration: isOrchestrationTask(task),
       // Roles whose deliverable is itself an admin action (consolidator).
       adminRole: usesAdminBuilddActions(task),
       info: line => console.log(`[Worker ${worker.id}] ${line}`),
       mint: typeof (this.buildd as any).mintTaskToken === 'function'
-        ? (taskId, ttlMs, signal) => (this.buildd as any).mintTaskToken(taskId, ttlMs, signal)
+        ? (taskId, ttlMs, signal, level) => (this.buildd as any).mintTaskToken(taskId, ttlMs, signal, level)
         : undefined,
       warn: line => console.warn(`[Worker ${worker.id}] ${line}`),
     });
     const agentBuilddToken = agentBuilddAuth.token;
     if (agentBuilddAuth.source === 'task-token') {
-      sessionLog(worker.id, 'info', 'agent_buildd_auth', 'source=task-token', task.id);
+      sessionLog(worker.id, 'info', 'agent_buildd_auth', agentBuilddAuth.level === 'admin' ? 'source=task-token level=admin' : 'source=task-token', task.id);
     } else if (agentBuilddAuth.reason === 'orchestration-role' || agentBuilddAuth.reason === 'admin-role') {
       sessionLog(worker.id, 'info', 'agent_buildd_auth', `source=runner-key reason=${agentBuilddAuth.reason}`, task.id);
     } else if (agentBuilddAuth.reason === 'mint-failed') {
@@ -3127,11 +3115,16 @@ export class WorkerManager {
     // claim-delivered secret channel (mcpSecrets, roleEnvSecrets, agent-backend
     // credentials — see buildWorkerSecretValues). Applies to milestones,
     // currentAction, error traces, evidence bodies and the history archive.
-    const secretValues = buildWorkerSecretValues(
-      this.config.apiKey,
-      worker,
-      agentBuilddAuth.source === 'task-token' ? agentBuilddToken : undefined,
-    );
+    const secretValues = [
+      ...buildWorkerSecretValues(
+        this.config.apiKey,
+        worker,
+        agentBuilddAuth.source === 'task-token' ? agentBuilddToken : undefined,
+      ),
+      // The machine's own model credentials the agent env may carry (a host
+      // seat token, operator API keys): exact-value redacted like a claim secret.
+      ...hostModelCredentialValues(),
+    ];
     const redactWorkerSecrets = createSecretRedactor(secretValues);
     this.secretRedactors.set(worker.id, redactWorkerSecrets);
     // BYO evidence: requestEvidenceUploadUrl is optional-called so this no-ops
@@ -3193,12 +3186,6 @@ export class WorkerManager {
     // to an AGENTS.md in the repo cwd so the finally block can restore/remove it
     // and avoid dirtying the repo.
     let codexAgentsMd: AgentsMdWriteResult | undefined;
-    // Per-worker CBM cache dir (/tmp/cbm-<id>) — created when codebase-memory MCP is
-    // wired for this task; deleted in finally (ephemeral per §4.2 of the CBM design doc).
-    let cbmCacheDir: string | undefined;
-    let cbmRuntimeDir: string | undefined;
-    // Shared cache is host-wide and seeded — it must survive this worker's cleanup.
-    let cbmSharedCache = false;
     // Per-session throwaway BUILDD_HOME for the agent env; removed in finally.
     let agentRunnerHome: string | undefined;
     // Keeps this session's task-scoped GitHub token fresh; stopped in finally.
@@ -3423,41 +3410,6 @@ export class WorkerManager {
       // Determine backend early — needed to gate Anthropic credential injection below.
       const isCodexTask = (task.backend || 'claude') === 'codex';
 
-      // Codebase Memory (CBM) activation — see cbm-enforcement.ts for full spec.
-      //
-      // Resolved HERE, before the Codex credential block below, because a Codex
-      // worker receives CBM through `$CODEX_HOME/config.toml`, which that block
-      // writes. The decision is a pure function (fs reads only, no side effects);
-      // the expensive parts it gates — cache mkdir, the bootstrap index, the seed
-      // refresh — still happen further down, before either backend starts.
-      //
-      // The repo's default base, so the seed lookup can tell "this task is on
-      // trunk" (which keeps using the existing unkeyed seed record, unchanged)
-      // from "this task is on a mission integration branch" (which needs its own).
-      const cbmDefaultBaseRef = `origin/${gitConfig?.defaultBranch || 'main'}`;
-      const cbmActivation = buildCbmActivation({
-        workerId: worker.id,
-        worktreePath: worker.worktreePath,
-        // The base clone, not the worktree: a shared seed is indexed at this path,
-        // and CBM keys a project by the path it was indexed at.
-        repoPath,
-        // ...and the base that path's seed must describe. A mission task based on
-        // the integration branch must not be served the trunk graph: its siblings
-        // have been merging into that base, so the trunk graph is wrong about
-        // exactly the code this task is most likely to touch.
-        baseRef: worker.worktreeBaseRef,
-        defaultBaseRef: cbmDefaultBaseRef,
-        isCodexTask,
-        cbmRoleDisabled: !!(worker as any).cbmDisabled,
-        cbmExperimentWithheld: !!worker.cbmExperimentWithheld,
-      });
-      const cbmEnforced = cbmActivation.enforced;
-      // Whether the CBM server actually landed in the Codex config.toml. Tracked
-      // separately from `cbmEnforced` because the Codex path does not use
-      // `queryOptions.mcpServers`, so the mounted/not-mounted question that
-      // resolveCbmOutcome asks cannot be answered by inspecting that map.
-      let codexCbmMounted = false;
-
       // Model auth: provider config, server-managed Anthropic credentials and
       // the tenant OAuth token (Dispatch multi-tenant mode). See
       // agent-model-env.ts — server/tenant Anthropic credentials are only given
@@ -3476,7 +3428,16 @@ export class WorkerManager {
           this.addMilestone(worker, { type: 'status', label: 'Tenant token decryption failed', ts: Date.now() });
         }
       }
+      // The machine's own Claude login (host-seat.ts): used when the claim
+      // delivers no stored seat, or over one under BUILDD_HOST_SEAT=prefer.
+      // With a stored seat under the default, the env is the pre-passthrough one.
+      const seatDecision = applyHostSeatPolicy(cleanEnv, {
+        serverSeatDelivered: !!(worker.serverOauthToken || worker.claudeAccessToken || worker.claudeCredentialId),
+        isCodexTask,
+      });
+      const hostSeat = seatDecision.hostSeat;
       const modelEnv = applyModelEnv(cleanEnv, {
+        hostSeat,
         llmProvider: this.config.llmProvider,
         serverApiKey: worker.serverApiKey,
         serverOauthToken: worker.serverOauthToken,
@@ -3485,7 +3446,7 @@ export class WorkerManager {
         trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
         modelEndpoint: worker.modelEndpoint,
         teamEndpointWithheld: worker.modelEndpointIgnored,
-        budgetModel: TIER_DEFAULTS.budget.model,
+        budgetModel: bundledTierEntry('budget').model,
       });
       // Preflight: a Codex task whose team agent model endpoint has no
       // OpenAI-compatible route (anthropic-compatible kind) can't run at all —
@@ -3510,6 +3471,18 @@ export class WorkerManager {
       if (modelEnv.injected.includes('serverOauthToken')) {
         console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
       }
+      if (modelEnv.hostSeatUsed && hostSeat) {
+        const skipped = worker.serverOauthToken || worker.claudeAccessToken || worker.claudeCredentialId
+          ? '; the server-delivered seat is not used'
+          : '';
+        console.log(`[Worker ${worker.id}] Claude seat: ${describeHostSeat(hostSeat)}${skipped}`);
+        sessionLog(worker.id, 'info', 'claude_seat_source', `source=machine-${hostSeat}${skipped ? ' server_seat=skipped' : ''}`, task.id);
+      } else if (modelEnv.injected.includes('serverOauthToken') || shouldUseClaudeCredential(modelEnv, worker)) {
+        if (seatDecision.deferredTo === 'server' && seatDecision.detected) {
+          console.log(`[Worker ${worker.id}] Claude seat: the seat stored in buildd; ${describeHostSeat(seatDecision.detected)} is present but not used (set BUILDD_HOST_SEAT=prefer once it is known to work)`);
+        }
+        sessionLog(worker.id, 'info', 'claude_seat_source', `source=server-managed${seatDecision.deferredTo ? ` machine_seat=${seatDecision.detected}` : ''}`, task.id);
+      }
       if (modelEnv.injected.includes('tenantOauthToken') && tenantCtx) {
         console.log(`[Worker ${worker.id}] Injected tenant OAuth token for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);
         this.addMilestone(worker, { type: 'status', label: `Tenant: ${tenantCtx.displayName || tenantCtx.tenantId}`, ts: Date.now() });
@@ -3519,14 +3492,20 @@ export class WorkerManager {
       }
 
       // Build a separate expansion env for resolving ${VAR} references in .mcp.json
-      // HTTP server headers. This env is NEVER passed to the agent subprocess — it
-      // exists only so the header-resolution code below can bake credentials into
-      // the MCP server entries before mounting them. The agent only sees the already-
-      // resolved Authorization headers inside queryOptions.mcpServers, not the raw keys.
+      // HTTP server headers. This env is never the agent's env, but what it
+      // resolves is agent-visible: resolved headers go to the Claude CLI on its
+      // argv, and Codex bearer tokens go into the agent env. So the runner key is
+      // NOT in it. `${BUILDD_API_KEY}` resolves through `builddMcpCredential`
+      // instead: to the agent's own buildd credential (the per-task token when
+      // minted), and only for a server on this runner's buildd origin. A server
+      // anywhere else asking for it is refused with a warning (mcp-json.ts).
       const headerExpansionEnv: Record<string, string> = {
         ...cleanEnv,
-        ...(this.config.apiKey ? { BUILDD_API_KEY: this.config.apiKey } : {}),
         ...(worker.mcpSecrets ?? {}),
+      };
+      const builddMcpCredential: BuilddCredentialExpansion = {
+        origin: urlOrigin(this.config.builddServer) ?? '',
+        token: agentBuilddToken ?? '',
       };
       if (worker.mcpSecrets && Object.keys(worker.mcpSecrets).length > 0) {
         console.log(`[Worker ${worker.id}] MCP credential secrets available for header resolution (NOT in agent env): ${Object.keys(worker.mcpSecrets).join(', ')}`);
@@ -3553,8 +3532,28 @@ export class WorkerManager {
           ? stableCodexHomeIsolatedPath(task.workspaceId, worker.id, this.config.workspaceIsolationRoot)
           : undefined;
 
+        // Whose Codex login (host-seat.ts decideCodexSeat): the machine's own
+        // `codex login` ($CODEX_HOME, else ~/.codex) when the claim delivers no
+        // Codex credential, or over a delivered ChatGPT login under
+        // BUILDD_HOST_SEAT=prefer. A delivered API key is still used.
+        const machineCodexAuth = localCodexAuthPath();
+        const codexSeat = decideCodexSeat({
+          mode: hostSeatMode(),
+          serverCredentialType: worker.codexCredential?.credentialType ?? null,
+          localAuthPath: machineCodexAuth,
+          explicitCodexHome: !!process.env.CODEX_HOME,
+        });
+        (worker as any).codexSeatSource = codexSeat;
+
         let _ch: string;
-        if (worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
+        if (codexSeat === 'machine' && machineCodexAuth) {
+          // The stable per-worker home keeps its own config.toml and sessions/;
+          // auth.json links to the machine's login so CLI refreshes land there.
+          _ch = ensureStableCodexHome(worker.id, codexIsolatedPath).codexHome;
+          linkMachineCodexAuth(_ch, machineCodexAuth);
+          console.log(`[Worker ${worker.id}] Codex login: this machine's own (codex login on the runner host)${worker.codexCredential ? '; the server-delivered Codex login is not used' : ''}`);
+          sessionLog(worker.id, 'info', 'codex_seat_source', `source=machine${worker.codexCredential ? ' server_seat=skipped' : ''}`, task.id);
+        } else if (worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
           // A: API key credential — inject as env var. Stable home still needed for
           // config.toml (MCP servers, reasoning effort) but auth.json is not used.
           const { codexHome: home } = ensureStableCodexHome(worker.id, codexIsolatedPath);
@@ -3572,20 +3571,8 @@ export class WorkerManager {
         } else {
           _ch = ensureStableCodexHome(worker.id, codexIsolatedPath).codexHome;
         }
-        // No server-injected credential: fall back to the operator's local Codex
-        // auth (CODEX_HOME/auth.json on the runner host) if present, seeding it into
-        // the stable home so resolveAuth/codex can authenticate. This matches the
-        // claim route, which already advertises CODEX_HOME as a local-auth capability
-        // — without this, a runner with only local OAuth creds passes the claim gate
-        // but dies at the spawn guard below.
-        if (!worker.codexCredential) {
-          const localHome = process.env.CODEX_HOME;
-          if (localHome && localHome !== _ch) {
-            const localAuth = join(localHome, 'auth.json');
-            if (existsSync(localAuth) && !existsSync(join(_ch, 'auth.json'))) {
-              copyFileSync(localAuth, join(_ch, 'auth.json'));
-            }
-          }
+        if (codexSeat === 'server' && machineCodexAuth && worker.codexCredential?.credentialType === 'oauth') {
+          console.log(`[Worker ${worker.id}] Codex login: the one stored in buildd; this machine's own is present but not used (set BUILDD_HOST_SEAT=prefer once it is known to work)`);
         }
         cleanEnv.CODEX_HOME = _ch;
         const session = this.sessions.get(worker.id);
@@ -3631,6 +3618,7 @@ export class WorkerManager {
           mcpJson: codexMcpJson,
           connectors: (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined,
           env: headerExpansionEnv,
+          builddCredential: builddMcpCredential,
         });
         Object.assign(cleanEnv, codexMcp.bearerEnv);
         for (const w of codexMcp.warnings) console.warn(`[Worker ${worker.id}] Codex: ${w}`);
@@ -3639,16 +3627,6 @@ export class WorkerManager {
           console.log(`[Worker ${worker.id}] Injecting ${codexAdditionalServers.length} additional MCP server(s) into Codex config: ${codexAdditionalServers.map(s => s.name).join(', ')}`);
         }
 
-        // Codebase graph. Codex reads no `mcpServers` option, so the only way the
-        // graph reaches a Codex worker is as an stdio table in this file — which is
-        // why Codex tasks used to be skipped outright rather than for any reason
-        // intrinsic to Codex. Skipped when a connector or the project's .mcp.json
-        // already registered the name, mirroring the Claude no-double-mount rule.
-        const codexCbmServers = cbmEnforced && !codexAdditionalServers.some(s => s.name === CBM_SERVER_NAME)
-          ? [buildCbmCodexStdioServer(cwd, cbmActivation.cbmCacheDir!, cbmActivation.cbmRuntimeDir)]
-          : [];
-        codexCbmMounted = codexCbmServers.length > 0;
-
         writeCodexMcpConfig(_ch, {
           builddServer: this.config.builddServer,
           workspaceId: task.workspaceId,
@@ -3656,11 +3634,7 @@ export class WorkerManager {
           bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
           ...(codexEffort ? { effort: codexEffort } : {}),
           ...(codexAdditionalServers.length > 0 ? { additionalMcpServers: codexAdditionalServers } : {}),
-          ...(codexCbmServers.length > 0 ? { stdioMcpServers: codexCbmServers } : {}),
         });
-        if (codexCbmMounted) {
-          console.log(`[Worker ${worker.id}] CBM MCP injected into Codex config.toml (worktree: ${cwd})`);
-        }
         // NOTE: deliberately NOT assigning the local `codexHome` var here — that
         // var drives the finally-block teardown, which must not delete a stable
         // home (would destroy resumable sessions).
@@ -3752,7 +3726,7 @@ export class WorkerManager {
       // is known-expired. The claim route (criterion D) already attempts a refresh
       // and clears the credential on unrecoverable failure — this is a second guard
       // for the window between claim and spawn (clock skew, race, long queue wait).
-      if (isCodexTask && worker.codexCredential) {
+      if (isCodexTask && worker.codexCredential && (worker as any).codexSeatSource !== 'machine') {
         const expiryError = checkCodexCredentialExpiry(worker.codexCredential);
         if (expiryError) {
           throw new Error(
@@ -3779,6 +3753,8 @@ export class WorkerManager {
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
       cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+      // Keep task-tracking tools available on newer Claude models.
+      cleanEnv.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1';
 
       // Resolve role env vars (secret labels → actual values). Not gated on
       // `roleConfig` alone: `roleEnvSecrets`/`roleEnvMissing` are delivered
@@ -3962,6 +3938,16 @@ export class WorkerManager {
       // directly) that two incidents demonstrated agents will attempt on their own.
       systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Channel Policy\nIf a required MCP tool channel is unavailable during this task, STOP IMMEDIATELY and report the failure. Never substitute direct API access using credentials found in config files, environment variables, disk, or response headers. Tool channel unavailability is a deployment issue that must surface as a task failure — not be silently worked around.';
 
+      // Tool parameter policy: prevent background tasks from hanging the session.
+      // The `run_in_background` parameter in Bash tool calls is designed for
+      // interactive CLI usage where the agent can be re-invoked after the task
+      // completes. In a non-interactive cloud runner, that re-invocation mechanism
+      // does not exist — the session ends while the background task is still
+      // running, and the agent's interim "waiting for notification" message
+      // becomes the task summary instead of actual results. Agents should not use
+      // run_in_background; they should poll synchronously or wait for results.
+      systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Parameter Policy\nDo NOT use `run_in_background: true` in Bash tool calls. This parameter expects to re-invoke you after the task completes, but that mechanism does not exist in this execution environment. Instead: poll the task status synchronously in a loop, or wait for the tool result directly. If a long-running task would exceed your tool timeout, that is a blocker you should report to the user rather than work around with background execution.';
+
       // Convert skills to subagent definitions when useSkillAgents is enabled
       // Resolve worktree isolation: task-level override > workspace-level setting
       const taskWorktreeIsolation = (task.context as any)?.useWorktreeIsolation;
@@ -4074,163 +4060,6 @@ export class WorkerManager {
       // breaks the SDK's own resolver. See ./sdk-binary-path.ts.
       const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
 
-      let cbmBinaryPath: string | undefined;
-      // Set when a required CBM bind could not be mounted; see the bwrap argv
-      // build below. CBM is then off for this task even though the gates passed.
-      let cbmMountBlocked = false;
-      if (cbmEnforced) {
-        cbmBinaryPath = cbmActivation.cbmBinaryPath;
-        cbmCacheDir = cbmActivation.cbmCacheDir;
-        cbmRuntimeDir = cbmActivation.cbmRuntimeDir;
-        cbmSharedCache = !!cbmActivation.sharedCache;
-        worker.cbmSharedCache = cbmSharedCache;
-        mkdirSync(cbmCacheDir!, { recursive: true });
-        // Daemon coordination dir — CBM will not start without it.
-        ensureCbmRuntimeDir(cbmCacheDir!, cbmRuntimeDir);
-        console.log(
-          `[Worker ${worker.id}] CBM enforced — cache dir: ${cbmCacheDir}`
-          + (cbmSharedCache ? ` (shared, pre-seeded project ${cbmActivation.cbmProject})` : ''),
-        );
-
-        // A refused seed prints. Both refs, by name: the alternative was serving
-        // the trunk graph AND skipping this task's own index, which produces a
-        // confidently wrong answer with no trace of the decision that caused it.
-        if (cbmActivation.seedBaseMismatch) {
-          const { wanted, found } = cbmActivation.seedBaseMismatch;
-          worker.cbmSeedBaseMismatch = cbmActivation.seedBaseMismatch;
-          console.log(
-            `[Worker ${worker.id}] CBM: refused the shared seed — it describes base '${found}',`
-            + ` this task is based on '${wanted}'. Indexing this worktree instead;`
-            + ` a seed for '${wanted}' is being built for the next task on that base.`,
-          );
-          this.addMilestone(worker, {
-            type: 'status',
-            label: `graph_seed_base_mismatch wanted=${wanted} found=${found}`,
-            ts: Date.now(),
-          });
-        }
-
-        // A seeded shared cache is already warm for this repo, so the per-task index
-        // is pure waste: measured ~20s cold and ~11s for a warm re-index of the same
-        // path, against 0s for querying a seed. Skipped rather than shortened.
-        if (cbmActivation.skipBootstrapIndex) {
-          console.log(`[Worker ${worker.id}] CBM: skipping index — shared cache already holds ${cbmActivation.cbmProject}`);
-          this.addMilestone(worker, { type: 'status', label: 'graph_index_skipped reason=shared_cache_warm', ts: Date.now() });
-          // NOT 'ok': that would make warm starts indistinguishable from a task
-          // that paid for an index, hiding whether the shared cache is working.
-          worker.cbmBootstrapResult = 'skipped_warm';
-        } else {
-
-        // Pre-index the worktree so the graph is warm on turn one.
-        //
-        // The wait is BOUNDED, the build is not: when the startup budget expires
-        // the index keeps going in the background and the session starts without
-        // it, with the graph appearing in the agent's live MCP session when the
-        // build publishes. Neither slowness nor failure may fail the task — CBM
-        // stays mounted either way and the agent can index on demand.
-        worker.currentAction = 'Indexing codebase (CBM)...';
-        this.emit({ type: 'worker_update', worker });
-        console.log(`[Worker ${worker.id}] CBM: running index_repository on ${cwd}`);
-        const cbmBootstrapResult = await runCbmBootstrap({
-          worktreePath: cwd,
-          workerId: worker.id,
-          serverConfig: { command: cbmActivation.cbmBinaryPath!, args: [], env: {} },
-          // Records what a handed-off build actually did. Mutating the worker
-          // after startup is safe and is the point: buildCbmMetrics reads these
-          // fields at task completion, so a build that lands mid-session is
-          // reported as having landed instead of as a permanent unknown.
-          onLateCompletion: late => {
-            const durS = (late.durationMs / 1000).toFixed(1);
-            if (late.ok) {
-              worker.cbmBackgroundIndexLanded = true;
-              console.log(`[Worker ${worker.id}] CBM: backgrounded index landed after ${durS}s`);
-              this.addMilestone(worker, { type: 'status', label: `graph_index_landed_late durationMs=${late.durationMs}`, ts: Date.now() });
-            } else {
-              console.warn(`[Worker ${worker.id}] CBM: backgrounded index failed after ${durS}s (${late.reason})`);
-              this.addMilestone(worker, { type: 'status', label: `graph_index_failed_late reason=${(late.reason ?? 'unknown').slice(0, 80)}`, ts: Date.now() });
-            }
-          },
-        });
-        if (cbmBootstrapResult.ok) {
-          const durS = (cbmBootstrapResult.durationMs / 1000).toFixed(1);
-          console.log(`[Worker ${worker.id}] CBM: index ready in ${durS}s`);
-          this.addMilestone(worker, { type: 'status', label: `graph_index_success durationMs=${cbmBootstrapResult.durationMs}`, ts: Date.now() });
-          worker.cbmBootstrapResult = 'ok';
-        } else if (cbmBootstrapResult.backgrounded) {
-          // Not a failure: the build is alive and the cache dir is intact. Held
-          // apart from 'ok' as well, because the agent's first turns run without
-          // a graph and lumping the two together would hide that.
-          console.log(`[Worker ${worker.id}] CBM: ${cbmBootstrapResult.reason} — starting the session now`);
-          this.addMilestone(worker, { type: 'status', label: 'graph_index_backgrounded reason=wait_budget_expired', ts: Date.now() });
-          worker.cbmBootstrapResult = 'backgrounded';
-          worker.cbmBackgroundIndexLanded = false;
-        } else {
-          const reason = cbmBootstrapResult.reason;
-          console.warn(`[Worker ${worker.id}] CBM: bootstrap failed (${reason}) — CBM mounted without warm cache`);
-          this.addMilestone(worker, { type: 'status', label: `graph_index_failed reason=${reason.slice(0, 80)}`, ts: Date.now() });
-          worker.cbmBootstrapResult = 'failed';
-          worker.cbmBootstrapFailReason = reason;
-        }
-        }
-
-        // Re-assert before the bwrap argv is built below: an absent path is
-        // dropped from the mount list, which would hide the problem inside the
-        // sandbox rather than fail loudly.
-        ensureCbmRuntimeDir(cbmCacheDir!, cbmRuntimeDir);
-
-        // Keep the shared seed current, off the critical path. This worker already
-        // has its graph (shared or per-worker); the refresh is for the next one, and
-        // it exits immediately when HEAD has not moved.
-        // Keyed on the base too, so a mission task's claim builds a seed for the
-        // MISSION base rather than re-stamping trunk. The seeder exits immediately
-        // when that ref has not moved, so this stays cheap on every claim.
-        // seedBaseRefFor collapses anything that is not a mission integration
-        // branch to the unkeyed slot, so a non-mission claim refreshes exactly
-        // the seed it refreshes today. Only a mission-integration base gets
-        // --base-ref and its own slot: "not the repo default" was a far larger
-        // set, and it sent CI-retry tasks, stacked plan phases and resumed tasks
-        // to slots nothing had ever written.
-        const seedBaseRef = seedBaseRefFor({
-          baseRef: worker.worktreeBaseRef,
-          defaultBaseRef: cbmDefaultBaseRef,
-        });
-        const seedOutcome = spawnCbmSeedRefresh(repoPath, {
-          ...(seedBaseRef ? { baseRef: seedBaseRef } : {}),
-        });
-        worker.cbmSeedRefresh = seedOutcome;
-        // Logged, not discarded: this return value was thrown away, and with the
-        // child on stdio:'ignore' that left no way to tell a seeded fleet from an
-        // unseeded one.
-        if (seedOutcome !== 'spawned' && seedOutcome !== 'recently_attempted') {
-          console.warn(`[Worker ${worker.id}] CBM seed refresh skipped: ${seedOutcome}`);
-        }
-      }
-
-      // CBM observability: provisional activation outcome + per-task counters.
-      // Provisional because the mcpServers map does not exist yet — the final
-      // classification (which can be legacy_mcp_json) is resolved after MCP
-      // assembly, below.
-      if (cbmEnforced) {
-        worker.cbmOutcome = 'enforced';
-      } else {
-        worker.cbmOutcome = 'disabled';
-        // Taken from the activation, not re-derived. Re-deriving it here is what
-        // made every skip on a Codex task read `codex_task`, including the ones
-        // that were really a missing worktree, an opted-out role, or a missing
-        // binary — and `codex_task` is filed as a by-design skip, so that
-        // breakage left the eligible-fallback rate entirely.
-        worker.cbmDisableReason = cbmActivation.disableReason;
-      }
-      // A closing turn continues the SAME logical session (it exists purely
-      // to let the agent call complete_task) — resetting these here would
-      // silently drop everything the original invocation already counted,
-      // since the closing turn itself does little to no CBM activity of its
-      // own to replace it with.
-      if (!isClosingTurn) {
-        worker.cbmToolCounts = {};
-        worker.cbmFileAccessCounts = { read: 0, grep: 0, glob: 0 };
-      }
-
       // Phase-1 rollout: opted-in runners wrap the agent process in an outer
       // bwrap namespace containing only this task's required paths. The SDK
       // currently has no sandbox.extraMounts option, so its supported custom
@@ -4245,7 +4074,7 @@ export class WorkerManager {
         mountAllowlistEnabled: isMountAllowlistEnabled(),
         bwrapSupported: isMountIsolationBwrapSupported(),
       })) {
-        const bwrapConfig = {
+        workerBwrapArgv = buildWorkerBwrapArgv({
           worktreePath: cwd,
           repoPath,
           homePath: cleanEnv.HOME,
@@ -4255,53 +4084,8 @@ export class WorkerManager {
           isCodexTask,
           executablePath: pathToClaudeCodeExecutable,
           extraMounts: process.env.BUILDD_MOUNT_ALLOWLIST_EXTRA,
-        };
-        try {
-          workerBwrapArgv = buildWorkerBwrapArgv({ ...bwrapConfig, cbmBinaryPath, cbmCacheDir, cbmRuntimeDir });
-        } catch (err) {
-          // A mount CBM cannot work without is gone (the bootstrap discards the
-          // cache dir on failure, and a stray rm or a full disk can too). Mounting
-          // CBM anyway would leave the agent indexing into the sandbox's
-          // `--tmpfs /tmp`, which is thrown away at session end — minutes of work
-          // for nothing, with no signal. Drop CBM for this task and say so.
-          const reason = err instanceof Error ? err.message : String(err);
-          console.error(`[Worker ${worker.id}] CBM sandbox mount unavailable — running without CBM: ${reason}`);
-          this.addMilestone(worker, { type: 'status', label: `cbm_mount_unavailable: ${reason.slice(0, 120)}`, ts: Date.now() });
-          // cbmCacheDir stays set so the `finally` cleanup still removes it.
-          cbmMountBlocked = true;
-          worker.cbmOutcome = 'disabled';
-          worker.cbmDisableReason = 'mount_unavailable';
-          workerBwrapArgv = buildWorkerBwrapArgv(bwrapConfig);
-        }
-      }
-
-      // Steer the agent toward the graph when CBM is actually mounted. Without
-      // this, CBM was mounted but unmentioned: the tools appear in the tool list
-      // with no policy preferring them over a Read/Grep sweep, so structural
-      // questions kept being answered the expensive way.
-      //
-      // Exactly one append, and it lives HERE — after the bwrap argv is built —
-      // because that is the only point where `cbmMountBlocked` is final. An
-      // earlier copy of this append ran before the mount could fail, so a
-      // mount-blocked worker was steered toward a graph that was never mounted,
-      // which is the very case `!cbmMountBlocked` exists to exclude.
-      //
-      // The options are not optional: with none, the block claims "this worktree
-      // is already indexed", which is false on a shared base index and drops the
-      // warning that `get_code_snippet` serves the base checkout rather than this
-      // branch. An agent that believes it reads a stale snippet of a file it just
-      // edited, and then stops trusting the graph at all.
-      //
-      // `!isCodexTask`: Codex never reads `systemPrompt`. It is fed the same
-      // guidance body through AGENTS.md instead — see codexCbmGuidance below.
-      if (cbmEnforced && !cbmMountBlocked && !isCodexTask) {
-        systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + buildCbmSystemPromptBlock({
-          project: cbmActivation.cbmProject,
-          sharedBaseIndex: cbmActivation.sharedCache,
-          bootstrapState: cbmBootstrapGuidanceState(worker.cbmBootstrapResult),
         });
       }
-
 
       // Build query options
       const outputFormat = resolveOutputFormat(task);
@@ -4463,7 +4247,7 @@ export class WorkerManager {
 
       // Inject HTTP MCP servers from .mcp.json in cwd into queryOptions.mcpServers,
       // resolving ${VAR} references (url and headers) using headerExpansionEnv
-      // (which includes BUILDD_API_KEY + mcpSecrets). Claude Code SDK does not
+      // (mcpSecrets; ${BUILDD_API_KEY} via builddMcpCredential). Claude Code SDK does not
       // expand ${VAR} in HTTP server headers when reading .mcp.json — servers with
       // unresolved refs would connect without auth and receive 401 (which the
       // agent sees as "OAuth required"), so they are skipped and warned instead.
@@ -4478,103 +4262,20 @@ export class WorkerManager {
             const { servers, skipped } = resolveMcpJsonHttpServers(cwdMcpData, headerExpansionEnv, {
               requireHttpType: true,
               isTaken: name => Boolean(queryOptions.mcpServers[name]),
+              builddCredential: builddMcpCredential,
             });
             for (const srv of servers) {
               queryOptions.mcpServers[srv.name] = { type: 'http', url: srv.url, headers: srv.headers };
               console.log(`[Worker ${worker.id}] Injected .mcp.json server "${srv.name}" into queryOptions (${Object.keys(srv.headers).length} header(s))`);
             }
             for (const sk of skipped) {
-              console.warn(`[Worker ${worker.id}] MCP server "${sk.name}" not mounted: unresolved \${${sk.unresolved.join('}, ${')}} — mcpSecrets not delivered by claim route?`);
+              console.warn(`[Worker ${worker.id}] ${describeSkippedMcpServer(sk)}`);
             }
           } catch {
             console.warn(`[Worker ${worker.id}] Failed to read .mcp.json for MCP injection`);
           }
         }
       }
-
-      // Enforce CBM as default MCP for repo-backed tasks.
-      // Skip if already mounted by a connector or manual .mcp.json config — no double-mount.
-      // Codex ignores queryOptions entirely and was mounted via config.toml above;
-      // writing an entry it never reads would also make `mounted` below answer a
-      // question about the wrong object.
-      if (cbmEnforced && !cbmMountBlocked && !isCodexTask && !queryOptions.mcpServers[CBM_SERVER_NAME]) {
-        queryOptions.mcpServers[CBM_SERVER_NAME] = buildCbmMcpEntry(cwd, cbmCacheDir!, cbmRuntimeDir);
-        console.log(`[Worker ${worker.id}] CBM MCP injected (worktree: ${cwd})`);
-      }
-
-      // cbm_access experiment, withheld arm: the activation already refused, so
-      // the runner neither mounted CBM nor appended its steering block. Remove
-      // every other route to the tools too — see applyCbmWithholding.
-      if (worker.cbmExperimentWithheld && !isCodexTask) {
-        (queryOptions as any).disallowedTools = applyCbmWithholding({
-          mcpServers: queryOptions.mcpServers as Record<string, unknown> | undefined,
-          disallowedTools: (queryOptions as any).disallowedTools,
-        });
-      }
-
-      // CBM observability, final classification. The provisional outcome above was
-      // set before the mcpServers map existed, so it could only say enforced or
-      // disabled. Now that connectors and the project's .mcp.json have been merged
-      // we can see the third case: CBM mounted without harness enforcement, which
-      // is `legacy_mcp_json` — recording it as `disabled` put a CBM-equipped
-      // session in the metrics control group.
-      worker.cbmOutcome = resolveCbmOutcome({
-        enforced: cbmEnforced,
-        // Per backend: Codex's mount lives in config.toml, Claude's in this map.
-        mounted: isCodexTask ? codexCbmMounted : !!queryOptions.mcpServers[CBM_SERVER_NAME],
-      });
-      if (worker.cbmOutcome !== 'disabled') worker.cbmDisableReason = undefined;
-
-      // CBM search injection (docs/design/cbm-search-injection.md). Claude
-      // workers with CBM enforced get a PostToolUse hook that answers their
-      // identifier searches from the graph; the runner's own graph client starts
-      // here in the background so it never sits on the agent's critical path.
-      // Codex has no post-tool seam, so its searches are only counted. A closing
-      // turn keeps the counts it already has and gets no hook.
-      let cbmInjector: CbmInjector | undefined;
-      if (!isClosingTurn) {
-        worker.cbmInjection = undefined;
-        if (isCodexTask) {
-          if (worker.cbmOutcome !== 'disabled') worker.cbmInjection = emptyCbmInjectionMetrics(false, 'unsupported_backend');
-        } else if (cbmEnforced && !cbmMountBlocked && worker.cbmOutcome === 'enforced' && cbmCacheDir) {
-          if (!isCbmInjectionEnabled()) {
-            worker.cbmInjection = emptyCbmInjectionMetrics(false, 'kill_switch');
-          } else try {
-            const injectRuntimeDir = ensureCbmRuntimeDir(cbmCacheDir, join('/tmp', `cbm-inj-${worker.id.slice(0, 8)}`));
-            const client = new CbmGraphClient({
-              binaryPath: cbmBinaryPath ?? cbmActivation.cbmBinaryPath!,
-              env: buildCbmMcpEntry(cwd, cbmCacheDir, injectRuntimeDir).env,
-              worktreePath: cwd,
-              ...(cbmSharedCache && cbmActivation.cbmProject ? { project: cbmActivation.cbmProject } : {}),
-              log: msg => console.warn(`[Worker ${worker.id}] ${msg}`),
-            });
-            client.start();
-            this.cbmGraphClients.set(worker.id, client);
-            cbmInjector = new CbmInjector({
-              graph: client,
-              decide: (facts, timeoutMs) => this.buildd.decideCbmInjection(worker.id, facts, timeoutMs),
-              worktreePath: cwd,
-              task: { kind: task.kind ?? null, category: (task as { category?: string | null }).category ?? null, pathManifest: task.pathManifest ?? null },
-            });
-            this.cbmInjectors.set(worker.id, cbmInjector);
-            worker.cbmInjection = cbmInjector.snapshot();
-          } catch (err) {
-            // Injection is an accelerator; it must never cost the task.
-            cbmInjector = undefined;
-            this.cbmInjectors.delete(worker.id);
-            this.cbmGraphClients.get(worker.id)?.stop();
-            this.cbmGraphClients.delete(worker.id);
-            console.warn(`[Worker ${worker.id}] CBM injection unavailable: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        }
-      }
-
-      // Block CBM tools that write to the repo or delete indexes. Applied
-      // unconditionally: a codebase-memory server can also arrive via the SDK's own
-      // project .mcp.json load (settingSources includes 'project'), where it never
-      // appears in queryOptions.mcpServers — gating on that left the destructive
-      // tools exposed on exactly that path. Disallowing an unmounted tool is inert.
-      (queryOptions as any).disallowedTools = applyCbmToolBlocklist((queryOptions as any).disallowedTools);
 
       // Defence in depth, not the gate (see pr-mutation-enforcement.ts): deny the
       // shell `gh pr` mutation subcommands and known connector PR-write tool names
@@ -4688,11 +4389,6 @@ export class WorkerManager {
         ],
         PostToolUse: [
           { hooks: [this.hookFactory.createTeamTrackingHook(worker)] },
-          // CBM search injection. Runs after the tool, resolves within 1.5s by
-          // its own budget; the timeout here is only a backstop.
-          ...(cbmInjector
-            ? [{ matcher: 'Bash|Grep', timeout: 5, hooks: [createCbmInjectionHook(cbmInjector)] }]
-            : []),
         ],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
         Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
@@ -4745,23 +4441,10 @@ export class WorkerManager {
             }
           }
 
-          // Codex's only standing-instruction channel. Same guard as the Claude
-          // system-prompt append: included iff the graph is really mounted, so the
-          // document never describes a server that is not there.
-          const codexCbmGuidance = codexCbmMounted
-            ? buildCbmGuidanceBody({
-                dialect: 'codex',
-                project: cbmActivation.cbmProject,
-                sharedBaseIndex: cbmActivation.sharedCache,
-                bootstrapState: cbmBootstrapGuidanceState(worker.cbmBootstrapResult),
-              })
-            : undefined;
-
           const instructionBody = buildCodexInstructionDoc({
             rolePersona,
             skillBundles: (skillBundles || []).map(b => ({ slug: b.slug, name: b.name, content: b.content })),
             projectInstructions,
-            ...(codexCbmGuidance ? { cbmGuidance: codexCbmGuidance } : {}),
           });
 
           codexAgentsMd = await writeCodexAgentsMd(cwd, instructionBody);
@@ -5258,7 +4941,9 @@ export class WorkerManager {
         // (seed-if-missing means it was never rewritten from the stale snapshot) and
         // POST the current tokens back so the credential store stays fresh.
         // Best-effort — never throws, never logs token values.
-        if (isCodexTask && worker.codexCredential?.credentialType === 'oauth') {
+        // Never when the machine's own login ran the session: that would upload
+        // the runner host's login into buildd.
+        if (isCodexTask && worker.codexCredential?.credentialType === 'oauth' && (worker as any).codexSeatSource !== 'machine') {
           try {
             const currentAuth = readCodexAuthJson(worker.id);
             if (currentAuth?.access_token && currentAuth?.refresh_token) {
@@ -5292,7 +4977,7 @@ export class WorkerManager {
         // Aggregate token counts: per-model breakdown → result totals → per-turn
         // tally. The fallbacks matter on OAuth, where byModel is never populated
         // and tokens are the only real consumption signal (cost is always 0).
-        // Read for usage aggregation only. The cbm/toolCounts blocks below can
+        // Read for usage aggregation only. The toolCounts block below can
         // CREATE worker.resultMeta, so this snapshot must never be what the
         // PATCH sends — see the re-read after them.
         const sdkResultMeta = worker.resultMeta || undefined;
@@ -5300,30 +4985,7 @@ export class WorkerManager {
         const inputTokens = totals?.inputTokens;
         const outputTokens = totals?.outputTokens;
 
-        // CBM observability: attach per-task metrics to resultMeta before completion.
-        const liveInjector = this.cbmInjectors.get(worker.id);
-        if (liveInjector) worker.cbmInjection = liveInjector.snapshot();
-        if (worker.cbmOutcome !== undefined) {
-          const cbmMetrics = buildCbmMetrics(worker)!;
-          // Merge into resultMeta so all metrics travel together to the server.
-          if (worker.resultMeta) {
-            worker.resultMeta.cbm = cbmMetrics;
-          } else {
-            // Provision-failure path: resultMeta wasn't set by the SDK result handler.
-            // Create a minimal shell so cbm travels with the completion payload.
-            worker.resultMeta = {
-              stopReason: null,
-              durationMs: 0,
-              durationApiMs: 0,
-              numTurns: 0,
-              modelUsage: {},
-              cbm: cbmMetrics,
-            };
-          }
-        }
-
-        // Tool histogram: attach the full per-tool-name counts. Unlike cbm this
-        // ships regardless of CBM activation; skipped entirely when no tool ran
+        // Tool histogram: attach the full per-tool-name counts; skipped entirely when no tool ran
         // so a provision-failed worker doesn't get a resultMeta shell it never earned.
         // The Bash sub-classification rides the same object: a bucket histogram
         // is only useful next to the tool histogram it decomposes. Omitted when
@@ -5331,9 +4993,11 @@ export class WorkerManager {
         // "made Bash calls, none of them searches".
         const toolCounts = worker.toolCounts ?? {};
         const bashCommandCounts = worker.bashCommandCounts;
+        const fileToolAreas = worker.fileToolAreas;
         const measured = {
           ...(Object.keys(toolCounts).length > 0 ? { toolCounts } : {}),
           ...(bashCommandCounts && bashCommandCounts.total > 0 ? { bashCommandCounts } : {}),
+          ...(fileToolAreas && Object.keys(fileToolAreas).length > 0 ? { fileToolAreas } : {}),
         };
         if (Object.keys(measured).length > 0) {
           if (worker.resultMeta) {
@@ -5394,7 +5058,7 @@ export class WorkerManager {
         // message, e.g. the provision-failure path), and the completion PATCH
         // used to spread a const captured before them — so on exactly the
         // path whose comment promises the metrics "travel with the
-        // completion payload", the cbm/toolCounts objects were built and
+        // completion payload", the toolCounts objects were built and
         // then silently dropped.
         const resultMeta = worker.resultMeta || undefined;
 
@@ -5465,8 +5129,8 @@ export class WorkerManager {
         // terminal — the normal outcome when the agent called the buildd MCP
         // `complete_task` itself: the server completed the worker, pushed
         // worker:completed, and this PATCH arrives afterwards. Everything above
-        // that is measurement rather than state (resultMeta with the CBM
-        // metrics and tool histogram, tokens, cost, model, git stats, subagent
+        // that is measurement rather than state (resultMeta with the tool
+        // histogram, tokens, cost, model, git stats, subagent
         // spans) would be lost with it, and that cohort is the long-session
         // one — which quietly biased every usage rollup toward short sessions.
         // Re-send it as a metrics-only PATCH: the server accepts those on a
@@ -5748,45 +5412,6 @@ export class WorkerManager {
         // Clean up per-worker Claude config dir (access_token isolation).
         if (claudeConfigDir) {
           cleanupClaudeConfigDir(worker.id, claudeConfigDir);
-        }
-
-        // End an index build that was handed off at startup and is still running.
-        // MUST come before the cache dir is removed below: otherwise the indexer
-        // keeps writing into a deleted directory and holds a core that the next
-        // task's build wants. A no-op unless the wait budget expired.
-        if (stopBackgroundCbmIndex(worker.id)) {
-          console.log(`[Worker ${worker.id}] CBM: stopped the backgrounded index at teardown`);
-        }
-
-        // CBM search injection: keep its counts on the worker (a closing turn
-        // or a late completion still reports them), then end the runner's own
-        // graph server and its runtime dir. Before the cache dir goes, for the
-        // same reason as the indexer above.
-        const endedInjector = this.cbmInjectors.get(worker.id);
-        if (endedInjector) {
-          worker.cbmInjection = endedInjector.snapshot();
-          this.cbmInjectors.delete(worker.id);
-        }
-        const injectClient = this.cbmGraphClients.get(worker.id);
-        if (injectClient) {
-          injectClient.stop();
-          this.cbmGraphClients.delete(worker.id);
-          try { rmSync(join('/tmp', `cbm-inj-${worker.id.slice(0, 8)}`), { recursive: true, force: true }); } catch { /* best-effort */ }
-        }
-
-        // Clean up the per-worker CBM cache dir (ephemeral per design doc §4.2).
-        // NEVER the shared seeded cache: it is host-wide, costs a full index to
-        // rebuild, and every other worker on this host is reading it right now. In
-        // shared mode the only per-worker state is the runtime dir, which lives
-        // outside the cache.
-        const cbmDirToRemove = cbmSharedCache ? cbmRuntimeDir : cbmCacheDir;
-        if (cbmDirToRemove) {
-          try {
-            rmSync(cbmDirToRemove, { recursive: true, force: true });
-            console.log(`[Worker ${worker.id}] Cleaned up CBM ${cbmSharedCache ? 'runtime' : 'cache'} dir: ${cbmDirToRemove}`);
-          } catch (err) {
-            console.warn(`[Worker ${worker.id}] Failed to clean up CBM dir ${cbmDirToRemove}:`, err instanceof Error ? err.message : err);
-          }
         }
 
         // Restore/remove the Codex AGENTS.md we wrote (Phase 2A) so we never
@@ -6272,21 +5897,33 @@ export class WorkerManager {
             });
           }
 
-          // Usage observability: count every tool call by exact name. The CBM
-          // counters below are a narrow slice (CBM tools + Read/Grep/Glob); this
-          // is the complete histogram the usage rollups read.
+          // Usage observability: count every tool call by exact name. This is
+          // the complete histogram the usage rollups read.
+          // Counted under one canonical name per tool (bash -> Bash, Codex's
+          // mcp__codex_apps__buildd.recall -> mcp__buildd__recall), so a tool
+          // never splits into two rows and its breakdowns attach to the one row.
+          const countedName = canonicalToolName(toolName);
           if (!worker.toolCounts) worker.toolCounts = {};
-          recordToolCall(worker.toolCounts, toolName);
+          recordToolCall(worker.toolCounts, countedName);
+
+          // Which repo area a file tool touched (file-area.ts): the area only,
+          // never the path, so usage can say where reading and editing go.
+          if (isFileAreaTool(countedName)) {
+            const area = fileAreaOf(filePathInput(countedName, rawInput), worker.worktreePath);
+            if (area) {
+              if (!worker.fileToolAreas) worker.fileToolAreas = {};
+              recordFileArea(worker.fileToolAreas, countedName, area);
+            }
+          }
 
           // Bash sub-classification (bash-classify.ts). `Bash` is the single
           // most-called tool, and the histogram above records it as one opaque
           // bar — so a shell content search counted as "Bash" while the same
           // work done through the Grep TOOL counted as file access. That made
-          // the search share of a session unknowable and the file-access
-          // counters below an undercount of their own denominator. Buckets and
+          // the search share of a session unknowable. Buckets and
           // coarse pattern shapes only: the command string is classified and
           // discarded, never stored.
-          if (toolName === 'Bash') {
+          if (countedName === 'Bash') {
             if (!worker.bashCommandCounts) worker.bashCommandCounts = emptyBashCommandCounts();
             recordBashCommand(worker.bashCommandCounts, (input as { command?: unknown })?.command);
           }
@@ -6299,31 +5936,10 @@ export class WorkerManager {
           // alone, so it can't be resolved into a count at capture time — this
           // buffers a raw event (action + when) for a later join, same pattern
           // as pendingErrorTraces. No-ops for every other tool name.
-          const builddAction = extractBuilddAction(toolName, input);
+          const builddAction = extractBuilddAction(countedName, input);
           if (builddAction) {
             if (!worker.pendingActionEvents) worker.pendingActionEvents = [];
             worker.pendingActionEvents.push({ action: builddAction, ts: Date.now() });
-          }
-
-          // CBM search injection: uptake windows and the already-edited set, or
-          // (Codex) the count of searches it could not answer. Never touches the
-          // CBM counters below — the runner's lookups are not agent calls.
-          const cbmInjector = this.cbmInjectors.get(worker.id);
-          if (cbmInjector) cbmInjector.observeToolCall(toolName, input);
-          else if (worker.cbmInjection?.disabledReason === 'unsupported_backend') {
-            recordUnsupportedTrigger(worker.cbmInjection, toolName, input);
-          }
-
-          // CBM observability: count per-tool CBM calls and file-access tool calls.
-          if (toolName.startsWith('mcp__codebase-memory__')) {
-            const cbmTool = toolName.slice('mcp__codebase-memory__'.length);
-            if (!worker.cbmToolCounts) worker.cbmToolCounts = {};
-            worker.cbmToolCounts[cbmTool] = (worker.cbmToolCounts[cbmTool] ?? 0) + 1;
-          } else {
-            if (!worker.cbmFileAccessCounts) worker.cbmFileAccessCounts = { read: 0, grep: 0, glob: 0 };
-            if (toolName === 'Read') worker.cbmFileAccessCounts.read++;
-            else if (toolName === 'Grep') worker.cbmFileAccessCounts.grep++;
-            else if (toolName === 'Glob') worker.cbmFileAccessCounts.glob++;
           }
 
           // Check for repetitive tool calls (infinite loop detection)

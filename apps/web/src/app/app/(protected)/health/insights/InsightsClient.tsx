@@ -1,0 +1,95 @@
+'use client';
+
+import { useTransition } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import type { FlowSeries, FlowWindow } from '@/lib/insights-flow';
+import { FLOW_WINDOWS } from '@/lib/insights-flow';
+import { FlowChart } from '@/components/insights/FlowChart';
+import { formatHours, roleHours } from '@/components/insights/flow-chart-model';
+import { InsightsStats } from '@/components/insights/InsightsStats';
+
+interface Props {
+  series: FlowSeries & { truncated: boolean };
+  window: FlowWindow;
+}
+
+export function InsightsClient({ series, window }: Props) {
+  const { headline } = series;
+  const roles = roleHours(series);
+  const maxRole = Math.max(1e-9, ...roles.map(r => r.hours));
+  const empty = series.tasks.length === 0;
+
+  return (
+    <div className="max-w-3xl mx-auto px-4 pt-14 pb-24 md:pt-6" data-testid="insights-page">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="hidden md:block text-heading font-bold">Insights</h1>
+          <p className="mt-1 text-lede text-text-secondary">How your agents&apos; work moved to production.</p>
+        </div>
+        <WindowPicker window={window} />
+      </div>
+
+      <div className="mt-5">
+        <InsightsStats headline={headline} />
+      </div>
+
+      <section className="mt-5 card p-4">
+        <h2 className="text-title font-semibold">Tasks by stage over time</h2>
+        <div className="mt-3">
+          {empty ? (
+            <p className="py-8 text-center text-body text-text-muted" data-testid="insights-empty">No agent work in this window.</p>
+          ) : (
+            <FlowChart series={series} taskHref={key => `/app/tasks/${key}`} />
+          )}
+        </div>
+        {series.truncated && (
+          <p className="mt-2 text-meta text-status-warning">Newest work only: totals are a floor.</p>
+        )}
+      </section>
+
+      {roles.length > 0 && (
+        <section className="mt-5 card p-4" data-testid="insights-roles">
+          <h2 className="text-title font-semibold">Agent time by role</h2>
+          <ul className="mt-3 space-y-2">
+            {roles.map(r => (
+              <li key={r.role} className="grid grid-cols-[7rem_1fr_3.5rem] items-center gap-3 text-meta">
+                <span className="text-text-secondary truncate">{r.role}</span>
+                <span className="h-2 bg-surface-3" aria-hidden>
+                  <span className="block h-2" style={{ width: `${(r.hours / maxRole) * 100}%`, background: 'var(--flow-running)' }} />
+                </span>
+                <span className="text-right text-text-primary" style={{ fontVariantNumeric: 'tabular-nums' }}>{formatHours(r.hours)}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function WindowPicker({ window: current }: { window: FlowWindow }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [pending, startTransition] = useTransition();
+  return (
+    <div role="group" aria-label="Window" data-testid="insights-window-picker" className={`flex shrink-0 border-2 border-border-strong bg-surface-2 ${pending ? 'opacity-60' : ''}`}>
+      {FLOW_WINDOWS.map(value => (
+        <button
+          key={value}
+          type="button"
+          aria-pressed={current === value}
+          onClick={() => {
+            if (value === current) return;
+            const params = new URLSearchParams(searchParams.toString());
+            params.set('window', value);
+            startTransition(() => router.replace(`${pathname}?${params.toString()}`, { scroll: false }));
+          }}
+          className={`px-3 min-h-[44px] md:min-h-[28px] text-chip uppercase tracking-widest ${current === value ? 'bg-surface-3 text-text-primary' : 'text-text-muted hover:text-text-secondary'}`}
+        >
+          {value}
+        </button>
+      ))}
+    </div>
+  );
+}

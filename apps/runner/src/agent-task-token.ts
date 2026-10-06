@@ -36,9 +36,12 @@ export function agentTaskTokenEnabled(env: Record<string, string | undefined> = 
 }
 
 /**
- * Orchestration tasks keep the runner key for the agent's buildd MCP: they use
- * admin-level actions and a task token is worker level, so on an admin-key
- * runner a token would break them. The rule lives in @buildd/shared.
+ * Orchestration tasks (organizer, planning, heartbeat) use admin-level buildd
+ * actions, so they ask for an admin-level per-task token (`level: 'admin'`),
+ * which the server grants only to an admin runner key and confines to the
+ * task's own mission. When it is refused (a worker-level runner key, a
+ * coordination workspace, an older server) the session keeps the runner key,
+ * as orchestration always did. The rule lives in @buildd/shared.
  */
 export { isOrchestrationTask } from '@buildd/shared';
 
@@ -61,9 +64,14 @@ export interface ParsedTaskToken {
   expiresAt: number;
 }
 
-/** Strict parse of the mint response. Throws a message that never contains the token. */
-export function parseAgentTaskTokenResponse(body: unknown, taskId: string, now = Date.now()): ParsedTaskToken {
-  const b = (body ?? {}) as { token?: unknown; taskId?: unknown; expiresAt?: unknown };
+/**
+ * Strict parse of the mint response. Throws a message that never contains the token.
+ * For an admin request the response must say `level: 'admin'`: a server that
+ * predates levels ignores the field and mints a worker token, which would
+ * break an orchestration session, so that counts as a refusal.
+ */
+export function parseAgentTaskTokenResponse(body: unknown, taskId: string, now = Date.now(), level: AgentTaskTokenLevel = 'worker'): ParsedTaskToken {
+  const b = (body ?? {}) as { token?: unknown; taskId?: unknown; expiresAt?: unknown; level?: unknown };
   if (typeof b.token !== 'string' || !b.token.startsWith(TASK_TOKEN_PREFIX) || b.token.length <= TASK_TOKEN_PREFIX.length) {
     throw new Error('response has no per-task token');
   }
@@ -71,23 +79,28 @@ export function parseAgentTaskTokenResponse(body: unknown, taskId: string, now =
   const expiresAt = typeof b.expiresAt === 'string' ? Date.parse(b.expiresAt) : NaN;
   if (!Number.isFinite(expiresAt)) throw new Error('response has no valid expiresAt');
   if (expiresAt <= now) throw new Error('response token is already expired');
+  if (level === 'admin' && b.level !== 'admin') throw new Error('server did not grant an admin token');
   return { token: b.token, expiresAt };
 }
+
+export type AgentTaskTokenLevel = 'worker' | 'admin';
 
 /**
  * The mint call. Resolves to the parsed JSON body on 2xx; rejects otherwise.
  * A rejection may carry a numeric `status` (BuilddClient's ServerRefusalError does).
+ * `level` is passed only for an admin request.
  */
-export type MintTaskTokenFn = (taskId: string, ttlMs: number, signal: AbortSignal) => Promise<unknown>;
+export type MintTaskTokenFn = (taskId: string, ttlMs: number, signal: AbortSignal, level?: 'admin') => Promise<unknown>;
 
 export type AgentBuilddAuth =
-  | { source: 'task-token'; token: string; expiresAt: number }
+  | { source: 'task-token'; token: string; expiresAt: number; level: AgentTaskTokenLevel }
   | { source: 'runner-key'; token: string; reason: 'disabled' | 'runner-key-is-task-token' | 'orchestration-role' | 'admin-role' | 'mint-failed'; detail?: string };
 
 /** Short, secret-free reason for a mint failure. */
-export function describeMintFailure(err: unknown): string {
+export function describeMintFailure(err: unknown, level: AgentTaskTokenLevel = 'worker'): string {
   const status = typeof (err as { status?: unknown })?.status === 'number' ? (err as { status: number }).status : undefined;
   if (status === 401) return 'HTTP 401 (key not accepted for minting)';
+  if (status === 403 && level === 'admin') return 'HTTP 403 (key is not an admin key, or the task is not an orchestration task in a workspace with a repo)';
   if (status === 403) return 'HTTP 403 (key lacks the runner scopes, or is a trigger key)';
   if (status === 404) return 'HTTP 404 (server has no task-token route, or the key cannot claim in this workspace)';
   if (status === 503) return 'HTTP 503 (server has no task-token signing secret)';
@@ -109,7 +122,7 @@ export async function resolveAgentBuilddAuth(opts: {
   runnerKey: string;
   taskId: string;
   mint: MintTaskTokenFn | undefined;
-  /** isOrchestrationTask(task): keep the runner key, no mint, one info line. */
+  /** isOrchestrationTask(task): mint an admin-level token; if refused, the runner key with one info line. */
   orchestration?: boolean;
   /** usesAdminBuilddActions(task): keep the runner key, no mint, one info line. */
   adminRole?: boolean;
@@ -133,25 +146,32 @@ export async function resolveAgentBuilddAuth(opts: {
     return { source: 'runner-key', token: runnerKey, reason: 'runner-key-is-task-token' };
   }
 
-  if (opts.orchestration) {
-    info(`[agent-task-token] task ${(taskId ?? '').slice(0, 8)}: orchestration task (organizer role, planning mode or heartbeat); the agent's buildd MCP calls use the runner key (source=runner-key reason=orchestration-role).`);
-    return { source: 'runner-key', token: runnerKey, reason: 'orchestration-role' };
-  }
+  // Checked before orchestration: an admin task token does not carry these
+  // roles' actions (consolidate_knowledge is team-wide), so they keep the key.
   if (opts.adminRole) {
     info(`[agent-task-token] task ${(taskId ?? '').slice(0, 8)}: role needs admin-level buildd actions a task token does not carry; the agent's buildd MCP calls use the runner key (source=runner-key reason=admin-role).`);
     return { source: 'runner-key', token: runnerKey, reason: 'admin-role' };
   }
 
+  const level: AgentTaskTokenLevel = opts.orchestration ? 'admin' : 'worker';
   let detail: string;
   try {
     if (!opts.mint) throw new Error('client cannot mint task tokens');
     if (!taskId) throw new Error('no task id');
     const signal = AbortSignal.timeout(opts.timeoutMs ?? AGENT_TASK_TOKEN_MINT_TIMEOUT_MS);
-    const body = await opts.mint(taskId, AGENT_TASK_TOKEN_TTL_MS, signal);
-    const parsed = parseAgentTaskTokenResponse(body, taskId, now());
-    return { source: 'task-token', token: parsed.token, expiresAt: parsed.expiresAt };
+    const body = level === 'admin'
+      ? await opts.mint(taskId, AGENT_TASK_TOKEN_TTL_MS, signal, 'admin')
+      : await opts.mint(taskId, AGENT_TASK_TOKEN_TTL_MS, signal);
+    const parsed = parseAgentTaskTokenResponse(body, taskId, now(), level);
+    return { source: 'task-token', token: parsed.token, expiresAt: parsed.expiresAt, level };
   } catch (err) {
-    detail = describeMintFailure(err);
+    detail = describeMintFailure(err, level);
+  }
+  if (opts.orchestration) {
+    // Expected on a worker-level runner key, in a coordination workspace and
+    // against an older server: the session runs as orchestration always did.
+    info(`[agent-task-token] task ${(taskId ?? '').slice(0, 8)}: orchestration task (organizer role, planning mode or heartbeat); no admin per-task token (${detail}); the agent's buildd MCP calls use the runner key (source=runner-key reason=orchestration-role).`);
+    return { source: 'runner-key', token: runnerKey, reason: 'orchestration-role', detail };
   }
   warn(`[agent-task-token] task ${taskId.slice(0, 8)}: could not mint a per-task token (${detail}); the agent's buildd MCP calls use the runner key for this session.`);
   return { source: 'runner-key', token: runnerKey, reason: 'mint-failed', detail };

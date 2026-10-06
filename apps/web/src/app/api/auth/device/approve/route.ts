@@ -2,19 +2,29 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { db } from '@buildd/core/db';
 import { deviceCodes, accounts } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, gt } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
 import { clampKeyLevel, parseKeyLevel } from '@/lib/key-level-policy';
 import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { linkAccountToPersonalWorkspaces } from '@/lib/personal-workspace-links';
+import { trackEvent } from '@/lib/axiom';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
 }
 
+function requestIp(req: NextRequest): string | null {
+  const fwd = req.headers.get('x-forwarded-for');
+  if (fwd) return fwd.split(',')[0].trim() || null;
+  return req.headers.get('x-real-ip');
+}
+
 // POST /api/auth/device/approve
-// Requires session auth. User submits the human-readable code to authorize the device.
+// Requires session auth. Invariant: a device code is approved only by an
+// explicit confirm. The body must carry `confirm: true`, which only the
+// "Approve device" action on /app/device sends; there is no GET handler.
 export async function POST(req: NextRequest) {
   const session = await auth();
 
@@ -24,10 +34,15 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { code } = body;
+    const { code, confirm } = body;
 
     if (!code || typeof code !== 'string') {
       return NextResponse.json({ error: 'code is required' }, { status: 400 });
+    }
+    if (confirm !== true) {
+      return NextResponse.json({
+        error: 'Approving a device needs an explicit confirm. Open the device page and press Approve device.',
+      }, { status: 400 });
     }
 
     // Normalize: uppercase, trim whitespace
@@ -44,6 +59,7 @@ export async function POST(req: NextRequest) {
         and(
           eq(deviceCodes.userCode, normalizedCode),
           eq(deviceCodes.status, 'pending'),
+          gt(deviceCodes.expiresAt, new Date()),
         )
       )
       .returning();
@@ -81,7 +97,7 @@ export async function POST(req: NextRequest) {
 
     const plaintextKey = generateApiKey();
 
-    await db.insert(accounts).values({
+    const [created] = await db.insert(accounts).values({
       name: accountName,
       type: 'user',
       level,
@@ -89,12 +105,29 @@ export async function POST(req: NextRequest) {
       apiKey: hashApiKey(plaintextKey),
       apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
       teamId,
-    });
+    }).returning({ id: accounts.id });
+
+    // A personal team's workspace starts restricted; without a link this
+    // login's runner could never claim the user's own tasks.
+    if (created?.id) await linkAccountToPersonalWorkspaces({ accountId: created.id, userId: session.user.id });
 
     // Store plaintext in device code record for CLI to retrieve
     await db.update(deviceCodes)
       .set({ apiKey: plaintextKey })
       .where(eq(deviceCodes.id, updated.id));
+
+    const audit = {
+      deviceCodeId: updated.id,
+      userId: session.user.id,
+      teamId,
+      accountId: created?.id ?? null,
+      clientName: accountName,
+      level,
+      ip: requestIp(req),
+      userAgent: req.headers.get('user-agent'),
+    };
+    console.info('[device-approve]', JSON.stringify(audit));
+    trackEvent('api.auth.device.approve', audit);
 
     return NextResponse.json({ success: true });
   } catch (error) {

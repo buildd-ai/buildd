@@ -6,6 +6,7 @@ import { eq } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { appBaseUrl } from '@/lib/app-url';
 import { GitConfigForm } from './GitConfigForm';
 import { WorkspaceHealthCard } from './WorkspaceHealthCard';
 import { ReadinessCard } from './ReadinessCard';
@@ -17,6 +18,7 @@ import WorkTrackerSection from './WorkTrackerSection';
 import KnowledgeHealthSection from './KnowledgeHealthSection';
 import SubjectPolicySection from './SubjectPolicySection';
 import ExecutorSection from './ExecutorSection';
+import ConcurrencySection from './ConcurrencySection';
 import { isWorkspaceExecutor, resolveWorkspaceExecutor } from '@buildd/shared';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 import DeleteWorkspaceButton from '../DeleteWorkspaceButton';
@@ -52,6 +54,7 @@ export default async function WorkspaceConfigPage({
             releaseConfig: true,
             workTrackerConfig: true,
             webhookConfig: true,
+            maxConcurrentTasks: true,
         },
     });
 
@@ -109,6 +112,7 @@ export default async function WorkspaceConfigPage({
                 <ConnectClaudeSection
                     workspaceId={workspace.id}
                     workspaceName={workspace.name}
+                    serverOrigin={appBaseUrl()}
                 />
 
                 <ReleaseSection
@@ -130,6 +134,11 @@ export default async function WorkspaceConfigPage({
                     explicit={isWorkspaceExecutor(storedExecutor) ? storedExecutor : null}
                     effective={executor.executor}
                     source={executor.source}
+                />
+
+                <ConcurrencySection
+                    workspaceId={workspace.id}
+                    initialMaxConcurrentTasks={workspace.maxConcurrentTasks}
                 />
 
                 <WorkTrackerSection

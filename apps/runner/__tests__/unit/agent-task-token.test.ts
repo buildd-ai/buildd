@@ -174,6 +174,17 @@ describe('BuilddClient.mintTaskToken', () => {
     expect(headers.get('authorization')).toBe(`Bearer ${KEY}`);
   });
 
+  test("POSTs level only for an admin request", async () => {
+    const bodies: unknown[] = [];
+    globalThis.fetch = (async (_url: any, init: any) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify(okBody({ level: 'admin' })), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+    const client = new BuilddClient({ builddServer: 'http://srv.test', apiKey: KEY } as any);
+    await client.mintTaskToken(TASK, 1000, undefined, 'admin');
+    expect(bodies).toEqual([{ taskId: TASK, ttlMs: 1000, level: 'admin' }]);
+  });
+
   test('a refusal rejects with its status (drives the fallback reason)', async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({ error: 'no secret' }), { status: 503 })) as unknown as typeof fetch;
     const client = new BuilddClient({ builddServer: 'http://srv.test', apiKey: KEY } as any);
@@ -237,20 +248,70 @@ describe('resolveAgentBuilddAuth for an admin-action role', () => {
 });
 
 describe('resolveAgentBuilddAuth for an orchestration task', () => {
-  test('runner key, no mint, one info line with the reason, no warning', async () => {
-    let called = 0;
-    const infos: string[] = [];
+  test('mints an admin-level token for the task, no warning', async () => {
+    const calls: Array<[string, number, string | undefined]> = [];
     const warns: string[] = [];
     const auth = await resolveAgentBuilddAuth({
-      runnerKey: KEY, taskId: TASK, env: {}, orchestration: true,
-      info: l => infos.push(l), warn: l => warns.push(l),
-      mint: async () => { called++; return okBody(); },
+      runnerKey: KEY, taskId: TASK, env: {}, orchestration: true, warn: l => warns.push(l), info: () => {},
+      mint: async (taskId, ttlMs, _signal, level) => { calls.push([taskId, ttlMs, level]); return okBody({ level: 'admin' }); },
     });
-    expect(auth).toMatchObject({ source: 'runner-key', token: KEY, reason: 'orchestration-role' });
-    expect(called).toBe(0);
+    expect(auth).toMatchObject({ source: 'task-token', token: TOKEN, level: 'admin' });
+    expect(calls).toEqual([[TASK, AGENT_TASK_TOKEN_TTL_MS, 'admin']]);
     expect(warns).toEqual([]);
-    expect(infos).toHaveLength(1);
-    expect(infos[0]).toContain('source=runner-key reason=orchestration-role');
-    expect(infos[0]).not.toContain(KEY);
+  });
+
+  const refusals: Array<[string, () => Promise<unknown>, string]> = [
+    ['a worker-level runner key (403)', async () => { throw refusal(403); }, 'not an admin key'],
+    ['an older server that ignores level and mints a worker token', async () => okBody(), 'did not grant an admin token'],
+    ['an older server that says worker', async () => okBody({ level: 'worker' }), 'did not grant an admin token'],
+    ['a network error', async () => { throw new TypeError('fetch failed'); }, 'network error'],
+    ['no signing secret (503)', async () => { throw refusal(503); }, 'HTTP 503'],
+  ];
+  for (const [name, mint, reason] of refusals) {
+    test(`${name} → runner key, one info line with the reason, no warning`, async () => {
+      const infos: string[] = [];
+      const warns: string[] = [];
+      const auth = await resolveAgentBuilddAuth({
+        runnerKey: KEY, taskId: TASK, env: {}, orchestration: true,
+        info: l => infos.push(l), warn: l => warns.push(l), mint,
+      });
+      expect(auth).toMatchObject({ source: 'runner-key', token: KEY, reason: 'orchestration-role' });
+      expect(warns).toEqual([]);
+      expect(infos).toHaveLength(1);
+      expect(infos[0]).toContain('source=runner-key reason=orchestration-role');
+      expect(infos[0]).toContain(reason);
+      expect(infos[0]).not.toContain(KEY);
+      expect(infos[0]).not.toContain(TOKEN);
+    });
+  }
+
+  test('a worker task never asks for admin, and keeps a worker token it is given', async () => {
+    const levels: Array<string | undefined> = [];
+    const auth = await resolveAgentBuilddAuth({
+      runnerKey: KEY, taskId: TASK, env: {}, warn: () => {},
+      mint: async (_t, _ttl, _s, level) => { levels.push(level); return okBody(); },
+    });
+    expect(levels).toEqual([undefined]);
+    expect(auth).toMatchObject({ source: 'task-token', level: 'worker' });
+  });
+
+  test('the escape hatch and a task-token runner key still win, with no mint', async () => {
+    let called = 0;
+    const mint = async () => { called++; return okBody({ level: 'admin' }); };
+    expect(await resolveAgentBuilddAuth({ runnerKey: KEY, taskId: TASK, env: { BUILDD_AGENT_TASK_TOKEN: '0' }, orchestration: true, mint }))
+      .toMatchObject({ source: 'runner-key', reason: 'disabled' });
+    expect(await resolveAgentBuilddAuth({ runnerKey: TOKEN, taskId: TASK, env: {}, orchestration: true, mint }))
+      .toMatchObject({ source: 'runner-key', reason: 'runner-key-is-task-token' });
+    expect(called).toBe(0);
+  });
+
+  test('an admin-action role that is also orchestration keeps the runner key without minting', async () => {
+    let called = 0;
+    const auth = await resolveAgentBuilddAuth({
+      runnerKey: KEY, taskId: TASK, env: {}, orchestration: true, adminRole: true, info: () => {},
+      mint: async () => { called++; return okBody({ level: 'admin' }); },
+    });
+    expect(auth).toMatchObject({ source: 'runner-key', reason: 'admin-role' });
+    expect(called).toBe(0);
   });
 });

@@ -8,7 +8,7 @@ export function requiredTokenScope(pathname: string, method: string): TokenScope
   if (/^\/api\/tasks\/[^/]+\/(approve-plan|reject-plan)$/.test(path)) return 'tasks:admin';
   if (/^\/api\/workers\/[^/]+\/instruct$/.test(path)) return 'workers:admin';
   if (/^\/api\/workspaces\/[^/]+\/memory(?:\/|$)/.test(path) && method === 'DELETE') return 'knowledge:admin';
-  if (/^\/api\/(stats|health|cbm)(\/|$)/.test(path)) return read ? 'analytics:read' : 'admin';
+  if (/^\/api\/(stats|health)(\/|$)/.test(path)) return read ? 'analytics:read' : 'admin';
   if (/^\/api\/releases(\/|$)/.test(path)) return 'releases';
   if (/^\/api\/secrets(\/|$)/.test(path) || /^\/api\/cloudflare\/credential/.test(path)) return 'secrets';
   if (/^\/api\/runner\/credential-(lease|refresh)$/.test(path)) return 'secrets';
@@ -58,7 +58,7 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
     if (queryWorkspaces?.some(id => !token.workspaceIds!.includes(id))) return false;
     // Only accept filters the endpoint actually applies. A decorative query
     // parameter must never turn a team-wide response into scoped authorization.
-    if (/^\/api\/(stats|health|cbm|decisions)(\/|$)/.test(url.pathname)) {
+    if (/^\/api\/(stats|health|decisions)(\/|$)/.test(url.pathname)) {
       const filters: Record<string, string[]> = {
         '/api/stats/actions': ['workspace'], '/api/stats/usage': ['workspace'],
         '/api/stats/coordination': ['workspaceId', 'workspace'], '/api/health/failures': ['workspaceId'], '/api/health/dispatch': ['workspaceId'],
@@ -103,13 +103,19 @@ export function adminCapabilityForRoute(pathname: string, method: string): Token
  * exact check. A scoped token must reach the route and hold an explicit admin
  * capability: `capability` when given, else the route's admin-tier scope. The
  * stored level of a scoped token is never consulted.
+ *
+ * Never true for a per-task token (`taskScope` set), whatever its level: an
+ * orchestration task's admin-level token is confined to its own task's
+ * mission, which no route's generic admin gate checks. A route that lets one
+ * through checks `isOrchestrationTaskToken` and that confinement itself.
  */
 export function hasTokenRouteAdminAccess(
-  token: (ScopedToken & { level: string }) | null | undefined,
+  token: (ScopedToken & { level: string; taskScope?: unknown }) | null | undefined,
   request: RouteRequest,
   capability?: TokenScope,
 ): boolean {
   if (!token) return false;
+  if (token.taskScope) return false;
   if (token.scopes == null) return token.level === 'admin';
   if (!canAccessTokenRoute(token, request)) return false;
   const required = capability ?? adminCapabilityForRoute(new URL(request.url).pathname, request.method);

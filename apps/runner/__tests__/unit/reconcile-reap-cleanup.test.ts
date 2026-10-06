@@ -3,7 +3,7 @@
  *
  * startSession's finally only runs its per-worker cleanup — the per-worker
  * CLAUDE_CONFIG_DIR holding the materialized access token, the Codex auth dir,
- * the broker registration, the CBM dirs — while the session's map entry is
+ * the broker registration — while the session's map entry is
  * still present, and deletes the entry itself. Aborting a session AND deleting
  * its entry (teardownSession) therefore leaked every one of those, and sent the
  * abort down the catch path's failure arm. reapSession is the right tool.
@@ -13,7 +13,6 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { LocalUIConfig } from '../../src/types';
 import * as realGitOps from '../../src/git-operations';
-import * as realBootstrap from '../../src/cbm-bootstrap';
 
 // An SDK stream that stays open until its abort controller fires — a session
 // that is still running when reconcile/purge reaches it.
@@ -136,11 +135,6 @@ mock.module('../../src/env-scan', () => ({
 mock.module('../../src/history-store', () => ({
   archiveSession: () => {},
   initHistoryStore: () => {},
-}));
-
-mock.module('../../src/cbm-bootstrap.js', () => ({
-  ...realBootstrap,
-  runCbmBootstrap: async () => ({ ok: true, durationMs: 1 }),
 }));
 
 const { WorkerManager } = await import('../../src/workers');

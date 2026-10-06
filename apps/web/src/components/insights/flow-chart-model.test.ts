@@ -13,7 +13,7 @@ import {
   tasksInBand,
 } from './flow-chart-model';
 import { dailyRows, fmtCount } from './FlowChart';
-import { emptyFlowSeries, resolveInsightsQaState, sampleFlowSeries } from '@/app/app/(protected)/insights/sample-series';
+import { emptyFlowSeries, resolveInsightsQaState, sampleFlowSeries } from '@/app/app/(protected)/health/insights/sample-series';
 
 const H = 3_600_000;
 const T0 = Date.UTC(2026, 0, 10, 0, 0, 0);
