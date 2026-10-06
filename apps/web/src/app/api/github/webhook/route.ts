@@ -20,6 +20,7 @@ import { notifyTeamOf } from '@/lib/notify';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { checkDependsOnResolved, resolveCompletedTask } from '@/lib/task-dependencies';
+import { detachInteractiveWorkersOfEndedTasks } from '@/lib/interactive-detach';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, enqueuePushIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
@@ -1248,6 +1249,11 @@ async function handlePullRequestEvent(event: {
       }
     }
 
+    // A local (claim_task) session that opened this PR is usually still open.
+    // The task is done, so its worker stops holding a seat now. Idempotent,
+    // and a no-op unless the task row is terminal.
+    await detachInteractiveWorkersOfEndedTasks({ taskId: worker.task.id, graceMs: 0 });
+
     // ── Effects of the merge itself ──────────────────────────────────────────
     //
     // Gated on `mergeIsNew`, not on the task's status. GitHub redelivers, and
@@ -1319,6 +1325,7 @@ async function handlePullRequestEvent(event: {
       await resolveCompletedTask(matchingTask.id, matchingTask.workspaceId).catch(e =>
         console.error(`[webhook] resolveCompletedTask failed for branch-matched task ${matchingTask.id}:`, e),
       );
+      await detachInteractiveWorkersOfEndedTasks({ taskId: matchingTask.id, graceMs: 0 });
     }
   }
 }

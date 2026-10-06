@@ -2272,6 +2272,11 @@ export async function handleBuilddAction(
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
         if (errMsg.includes('409')) {
+          // A local session whose task already completed (its PR merged) has its
+          // slot released by the server; the task's outcome is already recorded.
+          if (errMsg.includes('Worker already completed')) {
+            return text('Task already completed; this session\'s slot was released. Nothing more to record.');
+          }
           return errorResult('**WARNING: Worker was already terminated.** The task may have been reassigned. Your work may have been superseded by another worker.');
         }
         // Handle output requirement validation errors (400) — return hint so agent can fix
