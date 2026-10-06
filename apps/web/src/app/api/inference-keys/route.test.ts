@@ -13,6 +13,8 @@ const mockSet = mock(async (_input: any) => ({
 }) as any);
 const mockDelete = mock(async (_input: any) => true);
 
+const mockResolveChatModel = mock(async (_opts: any) => ({ ok: false, reason: 'no_key' }) as any);
+mock.module('@/lib/chat/models', () => ({ resolveChatModel: mockResolveChatModel }));
 mock.module('@/lib/auth-helpers', () => ({ requireSessionUser: mockRequireSessionUser }));
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
@@ -45,6 +47,8 @@ beforeEach(() => {
   mockSet.mockClear();
   mockDelete.mockClear();
   mockList.mockClear();
+  mockResolveChatModel.mockReset();
+  mockResolveChatModel.mockResolvedValue({ ok: false, reason: 'no_key' });
 });
 
 describe('auth', () => {
@@ -79,6 +83,30 @@ describe('GET', () => {
   it('members get canManageTeamKeys false', async () => {
     await GET(req('GET', '/api/inference-keys'));
     expect(mockList).toHaveBeenCalledWith('t-1', 'u-1', false);
+  });
+});
+
+describe('GET chatUses: the provider and scope chat actually resolves to', () => {
+  it('reports the resolved provider and whose key, for the caller', async () => {
+    mockResolveChatModel.mockResolvedValue({ ok: true, provider: 'anthropic', keyScope: 'team', modelId: 'm', tier: 'standard' });
+    const json = await (await GET(req('GET', '/api/inference-keys?teamId=t-1'))).json();
+    expect(json.chatUses).toEqual({ provider: 'anthropic', scope: 'team' });
+    expect(mockResolveChatModel.mock.calls[0][0]).toMatchObject({ teamId: 't-1', userId: 'u-1', workspaceId: null });
+  });
+
+  it('carries a personal key and a gateway route through', async () => {
+    mockResolveChatModel.mockResolvedValue({ ok: true, provider: 'openai', keyScope: 'user', modelId: 'm', tier: 'standard' });
+    expect((await (await GET(req('GET', '/api/inference-keys'))).json()).chatUses).toEqual({ provider: 'openai', scope: 'user' });
+    mockResolveChatModel.mockResolvedValue({ ok: true, provider: 'anthropic', keyScope: 'team', via: 'litellm', modelId: 'm', tier: 'standard' });
+    expect((await (await GET(req('GET', '/api/inference-keys'))).json()).chatUses).toEqual({ provider: 'anthropic', scope: 'team', via: 'litellm' });
+  });
+
+  it('is null when nothing resolves or the lookup throws, and the list still returns', async () => {
+    expect((await (await GET(req('GET', '/api/inference-keys'))).json()).chatUses).toBeNull();
+    mockResolveChatModel.mockRejectedValue(new Error('boom'));
+    const res = await GET(req('GET', '/api/inference-keys'));
+    expect(res.status).toBe(200);
+    expect((await res.json()).chatUses).toBeNull();
   });
 });
 
@@ -132,6 +160,27 @@ describe('DELETE', () => {
   it('a member cannot delete the team key', async () => {
     const res = await DELETE(req('DELETE', '/api/inference-keys?provider=openai&scope=team'));
     expect(res.status).toBe(403);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+});
+
+describe('provider-symmetric authorization', () => {
+  for (const provider of ['anthropic', 'openai', 'openrouter']) {
+    it(`${provider}: members own their keys, admins manage team keys`, async () => {
+      const body = { teamId: 't-1', provider, value: 'example-api-key-for-tests', scope: 'user' };
+      expect((await PUT(req('PUT', '/api/inference-keys', body))).status).toBe(200);
+      expect(mockSet.mock.calls.at(-1)![0]).toMatchObject({ provider, userId: 'u-1', scope: 'user' });
+      expect((await PUT(req('PUT', '/api/inference-keys', { ...body, scope: 'team' }))).status).toBe(403);
+      expect((await DELETE(req('DELETE', `/api/inference-keys?provider=${provider}&scope=team`))).status).toBe(403);
+      mockGetUserAdminTeamIds.mockResolvedValue(['t-1']);
+      expect((await PUT(req('PUT', '/api/inference-keys', { ...body, scope: 'team' }))).status).toBe(200);
+      expect((await DELETE(req('DELETE', `/api/inference-keys?provider=${provider}&scope=team`))).status).toBe(200);
+    });
+  }
+  it('excludes team gateways from the standalone personal key API', async () => {
+    expect((await PUT(req('PUT', '/api/inference-keys', { provider: 'litellm', scope: 'user', value: 'example-key' }))).status).toBe(400);
+    expect(mockSet).not.toHaveBeenCalled();
+    expect((await DELETE(req('DELETE', '/api/inference-keys?provider=litellm&scope=user'))).status).toBe(400);
     expect(mockDelete).not.toHaveBeenCalled();
   });
 });

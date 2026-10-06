@@ -1,8 +1,10 @@
+import { isPersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { getUserAdminTeamIds, getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deleteProviderKey, listProviderKeys, setProviderKey } from '@/lib/provider-keys';
-import { isChatProvider, type SetProviderKeyRequest } from '@buildd/shared';
+import { resolveChatModel } from '@/lib/chat/models';
+import type { ChatUses, SetProviderKeyRequest } from '@buildd/shared';
 
 /**
  * Provider keys for chat, inference and decision calls.
@@ -38,6 +40,24 @@ async function resolveCaller(
   return { caller: { userId, teamId, isAdmin } };
 }
 
+/**
+ * What this person's chat turn resolves to, by the same resolver a turn uses
+ * (the default tier, `FALLBACK_TIER`, and no workspace, like chat
+ * availability), so Settings reports the real provider and
+ * whose key pays instead of guessing from the key list. Null when nothing
+ * resolves or the lookup fails.
+ */
+async function resolveChatUses(teamId: string, userId: string): Promise<ChatUses | null> {
+  try {
+    const m = await resolveChatModel({ tier: 'standard', teamId, workspaceId: null, userId });
+    if (!m.ok) return null;
+    return { provider: m.provider, scope: m.keyScope, ...(m.via ? { via: m.via } : {}) };
+  } catch (error) {
+    console.warn('[inference-keys] chat route lookup failed:', error);
+    return null;
+  }
+}
+
 function parseScope(value: unknown): 'user' | 'team' | null {
   return value === 'user' || value === 'team' ? value : null;
 }
@@ -49,7 +69,8 @@ export async function GET(req: NextRequest) {
   if ('response' in r) return r.response;
   const { userId, teamId, isAdmin } = r.caller;
   try {
-    return NextResponse.json(await listProviderKeys(teamId, userId, isAdmin));
+    const [list, chatUses] = await Promise.all([listProviderKeys(teamId, userId, isAdmin), resolveChatUses(teamId, userId)]);
+    return NextResponse.json({ ...list, chatUses });
   } catch (error) {
     console.error('[inference-keys] list failed:', error);
     return NextResponse.json({ error: 'Failed to list provider keys' }, { status: 500 });
@@ -64,8 +85,8 @@ export async function PUT(req: NextRequest) {
   if ('response' in r) return r.response;
   const { userId, teamId, isAdmin } = r.caller;
 
-  if (!isChatProvider(body.provider)) {
-    return NextResponse.json({ error: 'provider must be anthropic, openai or openrouter' }, { status: 400 });
+  if (!isPersonalKeyProvider(body.provider)) {
+    return NextResponse.json({ error: 'Unsupported standalone key provider' }, { status: 400 });
   }
   const scope = parseScope(body.scope);
   if (!scope) return NextResponse.json({ error: "scope must be 'user' or 'team'" }, { status: 400 });
@@ -91,8 +112,8 @@ export async function DELETE(req: NextRequest) {
   const { userId, teamId, isAdmin } = r.caller;
 
   const provider = params.get('provider');
-  if (!isChatProvider(provider)) {
-    return NextResponse.json({ error: 'provider must be anthropic, openai or openrouter' }, { status: 400 });
+  if (!isPersonalKeyProvider(provider)) {
+    return NextResponse.json({ error: 'Unsupported standalone key provider' }, { status: 400 });
   }
   const scope = parseScope(params.get('scope'));
   if (!scope) return NextResponse.json({ error: "scope must be 'user' or 'team'" }, { status: 400 });
