@@ -258,3 +258,54 @@ describe('TaskActionZone — a failed task offers only a backend that can run it
     expect(button('Switch to Codex')).toBeDefined();
   });
 });
+
+describe('TaskActionZone — overrides carry through a chain of refusals', () => {
+  // The start route checks the local-mission gate, then the workspace cap. Each
+  // override clears one gate, so a start that needs both must send both.
+  function stubTwoGates() {
+    calls = [];
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      calls.push({ url: u, body });
+      if (u === '/api/workers/active') return { ok: true, status: 200, json: async () => ({ activeLocalUis: [] }) } as Response;
+      if (!u.endsWith('/start')) return { ok: true, status: 200, json: async () => ({}) } as Response;
+      const reply = !body?.capExempt
+        ? { gateReason: 'workspace_cap_reached', canForce: true, blockClass: 'policy', canExempt: true, cap: 10, error: 'Workspace is full' }
+        : !body?.forceOverride
+          ? { gateReason: 'mission_local', canForce: true, blockClass: 'policy' }
+          : null;
+      return reply
+        ? { ok: false, status: 422, json: async () => reply } as Response
+        : { ok: true, status: 200, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+  }
+
+  it('Start anyway, then Force start, sends both and the start lands', async () => {
+    stubTwoGates();
+    await mount({ missionExecutor: 'local' });
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    await act(async () => { button('Start anyway')!.click(); });
+    await flush();
+    expect(container.textContent).toContain('Running in a local session');
+    await act(async () => { button('Force start')!.click(); });
+    await flush();
+    expect(startCalls().at(-1)!.body).toEqual({ forceOverride: true, capExempt: true });
+    expect(container.querySelector('[data-testid="task-start-refusal"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-start-status"]')).not.toBeNull();
+  });
+
+  it('dismissing a refusal drops the overrides it collected', async () => {
+    stubTwoGates();
+    await mount({ missionExecutor: 'local' });
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    await act(async () => { button('Start anyway')!.click(); });
+    await flush();
+    await act(async () => { button('Cancel')!.click(); });
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    expect(startCalls().at(-1)!.body).toEqual({});
+  });
+});
