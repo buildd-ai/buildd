@@ -6,7 +6,7 @@
  * key. So each route file that calls it must also apply a scope check
  * (`taskScopeAllowsTask` / `taskScopeAllowsWorker` / `taskScopeAllowsWorkspace` /
  * `taskScopeAllowsWorkerPr` / `taskScopeAllowsMission` / `taskScopeAllowsInitiative` /
- * `taskScopeAllowsMissionTask` / `taskScopeAllowsDelegated` (a schedule's
+ * `taskScopeAllowsMissionTask` / `taskScopeAllowsMissionTaskRead` / `taskScopeAllowsDelegated` (a schedule's
  * explicit delegation, packages/core/token-delegation.ts),
  * a direct read of `.taskScope`, or `authorizeWorkerPrCapability`, which
  * applies `taskScopeAllowsWorker` itself and is tested for it in
@@ -20,7 +20,7 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 
 const REPO = join(import.meta.dir, '../../../..');
-const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative|MissionTask|Delegated)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
+const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative|MissionTask|MissionTaskRead|Delegated)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
 
 const OPTED_IN = [
   'apps/web/src/app/api/artifacts/[artifactId]/route.ts',

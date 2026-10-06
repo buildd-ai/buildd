@@ -283,7 +283,7 @@ describe('GET /api/tasks/[id]', () => {
     expect(data.parentTaskId).toBe(parentTaskId);
   });
 
-  it("lets an orchestration task's admin token read the tasks on its own mission, and nothing else", async () => {
+  it("lets an orchestration task's admin token read the tasks on its own mission, and nothing else (workers read them too)", async () => {
     const OWN = '22222222-2222-4222-8222-222222222222';
     const sibling = (over: Record<string, unknown>) => ({
       id: TASK_ID, title: 'Sibling', status: 'pending', workspaceId: 'ws-1', missionId: 'm-1',
@@ -306,11 +306,16 @@ describe('GET /api/tasks/[id]', () => {
     row = sibling({ missionId: null });
     expect((await get()).status).toBe(404);
 
-    // A worker-level token is confined to its own task and child tasks.
-    // The route must fetch the task to check if it's a child task (parentTaskId match).
-    row = sibling({});
-    mockTasksFindFirst.mockClear();
+    // A worker-level token may READ siblings on its own mission (the tasks
+    // list_tasks shows it), but nothing outside that mission or workspace.
     mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', level: 'worker', taskScope });
+    row = sibling({});
+    expect((await get()).status).toBe(200);
+    row = sibling({ missionId: 'm-2' });
+    expect((await get()).status).toBe(404);
+    row = sibling({ workspaceId: 'ws-2' });
+    expect((await get()).status).toBe(404);
+    row = sibling({ missionId: null });
     expect((await get()).status).toBe(404);
     mockTasksFindFirst.mockReset();
   });
