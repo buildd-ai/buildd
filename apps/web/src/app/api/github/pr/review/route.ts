@@ -431,7 +431,7 @@ export async function POST(req: NextRequest) {
       installationId: repo.installationId,
       repoFullName: repo.fullName,
       prNumber,
-      entry: { kind: 'reviewing' },
+      entry: { kind: 'review_queued' },
       workspaceId: workspace.id,
     });
   }
