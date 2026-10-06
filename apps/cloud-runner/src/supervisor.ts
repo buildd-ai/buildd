@@ -491,7 +491,14 @@ export class TaskSupervisor {
     if (this.d.getState().timings?.exitedAt === undefined) this.patchTimings({ exitedAt: this.d.now() });
     await this.stopContainer(r.outcome === 'crashed' ? 'run crashed' : r.outcome === 'parked' ? 'run parked' : 'run finished');
     const crashReport = await this.reportCrashIfNeeded(r);
-    const deferredRetry = r.outcome === 'deferred' || r.outcome === 'start_deferred' ? this.scheduleDeferredRetry(r.outcome) : null;
+    // An attempt that died before claiming (no worker) because the agent
+    // restarted (a deploy or migration) has no worker for buildd's infra-retry
+    // budget to requeue, and stale detection has nothing to find: requeue it
+    // here like a deferral. With a worker, the crash report above already did.
+    const restartedBeforeClaim = r.outcome === 'crashed' && r.interruption === 'agent_restart' && !this.d.getState().workerId;
+    const deferredRetry = r.outcome === 'deferred' || r.outcome === 'start_deferred'
+      ? this.scheduleDeferredRetry(r.outcome)
+      : restartedBeforeClaim ? this.scheduleDeferredRetry('agent_restart') : null;
     const state = this.d.getState();
     const report = assembleRunReport({
       taskId: this.d.taskId,
@@ -545,10 +552,12 @@ export class TaskSupervisor {
    * at MAX_DEFERRED_RETRIES; past the cap, give up and leave the task to
    * buildd's own sweep or a freed-capacity wake instead of retrying forever.
    */
-  private scheduleDeferredRetry(outcome: 'deferred' | 'start_deferred'): { retryNumber: number; backoffMs: number | null; reason: string | null } {
+  private scheduleDeferredRetry(outcome: 'deferred' | 'start_deferred' | 'agent_restart'): { retryNumber: number; backoffMs: number | null; reason: string | null } {
     const retryNumber = (this.d.getState().deferredRetryCount ?? 0) + 1;
-    const backoffMs = deferredRetryBackoffMs(retryNumber);
-    const reason = outcome === 'start_deferred' ? 'container_capacity' : this.d.getState().claimDeferredReason ?? null;
+    const reason = outcome === 'start_deferred' ? 'container_capacity'
+      : outcome === 'agent_restart' ? 'agent_restart'
+      : this.d.getState().claimDeferredReason ?? null;
+    const backoffMs = deferredRetryBackoffMs(retryNumber, reason);
     if (backoffMs === null) {
       this.d.log(`[cloud-runner] task ${this.d.taskId}: ${outcome} (${reason ?? 'unknown'}) — retries exhausted after ${retryNumber - 1}; leaving it to buildd's own sweep`);
       return { retryNumber, backoffMs: null, reason };

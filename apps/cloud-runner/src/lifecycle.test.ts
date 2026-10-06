@@ -20,6 +20,7 @@ import {
   appendTail,
   buildContainerEnv,
   deferredRetryBackoffMs,
+  RUNNER_CAPABILITY_RETRY_BACKOFF_S,
   MAX_DEFERRED_RETRIES,
   isContainerStartCapacityError,
   warmMaxBundleBytes,
@@ -107,6 +108,16 @@ describe('isContainerStartCapacityError', () => {
     expect(isContainerStartCapacityError('network error')).toBe(false);
     expect(isContainerStartCapacityError(null)).toBe(false);
     expect(isContainerStartCapacityError(undefined)).toBe(false);
+  });
+});
+
+describe('deferredRetryBackoffMs for runner_capability', () => {
+  test('uses the longer rollout schedule, bounded, and other reasons keep the default', () => {
+    expect(deferredRetryBackoffMs(1, 'runner_capability')).toBe(60_000);
+    const n = RUNNER_CAPABILITY_RETRY_BACKOFF_S.length;
+    expect(deferredRetryBackoffMs(n, 'runner_capability')).toBeGreaterThan(deferredRetryBackoffMs(1, 'runner_capability')!);
+    expect(deferredRetryBackoffMs(n + 1, 'runner_capability')).toBeNull();
+    expect(deferredRetryBackoffMs(1, 'workspace_cap')).toBe(30_000);
   });
 });
 

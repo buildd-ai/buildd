@@ -480,6 +480,43 @@ describe('deferred claims and container-capacity starts self-schedule a retry', 
 });
 
 describe('orphan recovery', () => {
+  test('an orphan with no worker yet (died before claiming) is requeued by a backoff retry, not left terminal', async () => {
+    const NOW = 3_000_000;
+    const h = harness({ now: () => NOW, initial: { taskId: TASK_ID, attempt: 1, status: 'starting', startedAt: 1 } });
+    await h.sup.recoverOrphan();
+    await h.settle();
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'crashed', crashReport: 'no_worker_id', deferredRetryCount: 1 });
+    expect(h.state.report).toMatchObject({ interruption: 'agent_restart', deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'agent_restart' } });
+    expect([...h.sched.scheduled.values()]).toEqual([{ at: NOW + 30_000, payload: { notBefore: NOW + 30_000, deferredRetry: true } }]);
+  });
+
+  test('an orphan WITH a worker is requeued by buildd as infra (crashReconciled), so the agent schedules nothing', async () => {
+    const h = harness({ initial: { taskId: TASK_ID, attempt: 2, status: 'running', workerId: 'w-orphan', startedAt: 1 } });
+    await h.sup.recoverOrphan();
+    expect(JSON.parse(h.fetches[0]!.init.body as string)).toMatchObject({ crashReconciled: true });
+    expect(h.sched.scheduled.size).toBe(0);
+  });
+
+  test('a restart-orphan retry stops at the cap', async () => {
+    const h = harness({ initial: { taskId: TASK_ID, attempt: 7, status: 'starting', startedAt: 1, deferredRetryCount: MAX_DEFERRED_RETRIES } });
+    await h.sup.recoverOrphan();
+    await h.settle();
+    expect(h.sched.scheduled.size).toBe(0);
+    expect(h.state.report).toMatchObject({ deferredRetry: { backoffMs: null, reason: 'agent_restart' } });
+  });
+
+  test('a runner_capability deferral backs off on the longer image-rollout schedule', async () => {
+    const NOW = 4_000_000;
+    const h = harness({ now: () => NOW });
+    h.fc.setStdout(['BUILDD_CLAIM_DEFERRED=runner_capability']);
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(5);
+    await h.settle();
+    expect(h.state.report).toMatchObject({ deferredRetry: { retryNumber: 1, backoffMs: 60_000, reason: 'runner_capability' } });
+    expect([...h.sched.scheduled.values()]).toEqual([{ at: NOW + 60_000, payload: { notBefore: NOW + 60_000, deferredRetry: true } }]);
+  });
+
   test('a run marked live in storage with nothing in memory is marked crashed and reported', async () => {
     const h = harness({ initial: { taskId: TASK_ID, attempt: 3, status: 'running', workerId: 'w-orphan', startedAt: 1 } });
     await h.sup.recoverOrphan();

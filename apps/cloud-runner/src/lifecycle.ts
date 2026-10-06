@@ -193,9 +193,18 @@ export function isContainerStartCapacityError(message: string | null | undefined
 export const DEFERRED_RETRY_BACKOFF_S = [30, 60, 120, 300, 600, 900] as const;
 export const MAX_DEFERRED_RETRIES = DEFERRED_RETRY_BACKOFF_S.length;
 
-export function deferredRetryBackoffMs(retryNumber: number): number | null {
-  if (!Number.isInteger(retryNumber) || retryNumber < 1 || retryNumber > DEFERRED_RETRY_BACKOFF_S.length) return null;
-  return DEFERRED_RETRY_BACKOFF_S[retryNumber - 1]! * 1000;
+/**
+ * A `runner_capability` refusal means the container's Claude Code is older
+ * than the task's model needs — most likely a gradual container rollout still
+ * serving the previous image. That clears on the order of minutes to an hour,
+ * not seconds, so it backs off on a longer, still bounded, schedule.
+ */
+export const RUNNER_CAPABILITY_RETRY_BACKOFF_S = [60, 180, 300, 600, 900, 1800] as const;
+
+export function deferredRetryBackoffMs(retryNumber: number, reason?: string | null): number | null {
+  const schedule = reason === 'runner_capability' ? RUNNER_CAPABILITY_RETRY_BACKOFF_S : DEFERRED_RETRY_BACKOFF_S;
+  if (!Number.isInteger(retryNumber) || retryNumber < 1 || retryNumber > schedule.length) return null;
+  return schedule[retryNumber - 1]! * 1000;
 }
 
 /**
