@@ -5,6 +5,7 @@ import {
   backendLabel,
   BACKEND_PINNED_KEY,
   BACKEND_ROUTING_KEY,
+  claimedBackendOf,
   describeBackendRouting,
   failoverCandidates,
   isBackendPinned,
@@ -249,5 +250,27 @@ describe('describeBackendRouting', () => {
     expect(describeBackendRouting({})).toBeNull();
     expect(describeBackendRouting({ [BACKEND_ROUTING_KEY]: 'codex' })).toBeNull();
     expect(describeBackendRouting({ [BACKEND_ROUTING_KEY]: { backend: 'gpt', from: 'claude', reason: 'x' } })).toBeNull();
+  });
+});
+
+// The single-flight gate asks "is a Codex run live in this workspace?" of each
+// active task. A claim-time flip leaves the row's stored backend alone, so the
+// stored column alone answers "no" for a Codex run that failover started.
+describe('claimedBackendOf', () => {
+  it('reads the claim stamp over the stored backend', () => {
+    const ctx = { [BACKEND_ROUTING_KEY]: { backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted' } };
+    expect(claimedBackendOf('claude', ctx)).toBe('codex');
+    expect(claimedBackendOf(null, ctx)).toBe('codex');
+  });
+
+  it('falls back to the stored backend when no claim moved the task', () => {
+    expect(claimedBackendOf('codex', null)).toBe('codex');
+    expect(claimedBackendOf('claude', {})).toBe('claude');
+    expect(claimedBackendOf(null, {})).toBe('claude');
+  });
+
+  it('ignores a malformed stamp', () => {
+    expect(claimedBackendOf('claude', { [BACKEND_ROUTING_KEY]: 'codex' })).toBe('claude');
+    expect(claimedBackendOf('claude', { [BACKEND_ROUTING_KEY]: { backend: 'gpt' } })).toBe('claude');
   });
 });
