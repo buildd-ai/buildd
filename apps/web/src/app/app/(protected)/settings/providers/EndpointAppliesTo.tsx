@@ -27,6 +27,71 @@ async function errorText(res: Response): Promise<string> {
   return typeof body.error === 'string' ? body.error : `Request failed (HTTP ${res.status})`;
 }
 
+/**
+ * The "Applies to" choice itself: all workspaces, or a checklist. Shared by the
+ * quick editor below and the full endpoint editor, so both read the same.
+ */
+export function AppliesToFields({ workspaces, mode, chosen, copies, disabled, onMode, onToggle }: {
+  workspaces: AppliesToWorkspace[];
+  mode: 'all' | 'some';
+  chosen: ReadonlySet<string>;
+  copies: WorkspaceCopy[];
+  disabled: boolean;
+  onMode: (mode: 'all' | 'some') => void;
+  onToggle: (id: string, on: boolean) => void;
+}) {
+  const targets = mode === 'all' ? workspaces.map((w) => w.id) : workspaces.filter((w) => chosen.has(w.id)).map((w) => w.id);
+  const copyOf = new Map(copies.map((c) => [c.workspaceId, c]));
+
+  const note = (id: string) => {
+    const c = copyOf.get(id);
+    if (!c || !targets.includes(id)) return null;
+    return c.matchesTeam ? 'Has its own copy of this endpoint' : 'Keeps its own endpoint: different key, URL or aliases';
+  };
+
+  const modeRadio = (value: 'all' | 'some', label: string) => (
+    <label className="flex items-center gap-2 cursor-pointer min-h-11 md:min-h-0 text-body text-text-primary">
+      <input type="radio" name="agent-endpoint-applies" className="control-radio appearance-none" checked={mode === value}
+        disabled={disabled} onChange={() => onMode(value)} />
+      {label}
+    </label>
+  );
+
+  return (
+    <>
+      <fieldset className="space-y-2">
+        <legend className="field-label">Applies to</legend>
+        {modeRadio('all', 'All workspaces')}
+        {modeRadio('some', 'Selected workspaces')}
+      </fieldset>
+      {mode === 'some' && (
+        <ul className="space-y-1 pl-6" aria-label="Workspaces">
+          {workspaces.map((w) => (
+            <li key={w.id}>
+              <label className="flex items-start gap-2 cursor-pointer min-h-11 md:min-h-0 py-1">
+                <input type="checkbox" className="control-check appearance-none mt-0.5" checked={chosen.has(w.id)} disabled={disabled}
+                  data-testid="agent-endpoint-applies-workspace" data-workspace={w.id}
+                  onChange={(e) => onToggle(w.id, e.target.checked)} />
+                <span>
+                  <span className="block text-body text-text-primary">{w.name}</span>
+                  {note(w.id) && <span className="block text-meta text-text-muted">{note(w.id)}</span>}
+                </span>
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+      {mode === 'all' && copies.length > 0 && (
+        <ul className="space-y-1 pl-6" data-testid="agent-endpoint-applies-copies">
+          {workspaces.filter((w) => copyOf.has(w.id)).map((w) => (
+            <li key={w.id} className="text-meta text-text-muted">{w.name}: {note(w.id)}</li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
 export function EndpointAppliesToEditor({ teamId, workspaces, appliesTo, copies, onClose, onChanged }: {
   teamId: string;
   workspaces: AppliesToWorkspace[];
@@ -73,51 +138,10 @@ export function EndpointAppliesToEditor({ teamId, workspaces, appliesTo, copies,
     }
   }
 
-  const note = (id: string) => {
-    const c = copyOf.get(id);
-    if (!c || !targets.includes(id)) return null;
-    return c.matchesTeam ? 'Has its own copy of this endpoint' : 'Keeps its own endpoint: different key, URL or aliases';
-  };
-
-  const modeRadio = (value: 'all' | 'some', label: string) => (
-    <label className="flex items-center gap-2 cursor-pointer text-body text-text-primary">
-      <input type="radio" name="agent-endpoint-applies" className="control-radio appearance-none" checked={mode === value}
-        disabled={busy} onChange={() => setMode(value)} />
-      {label}
-    </label>
-  );
-
   return (
     <div className="space-y-3 border-t border-border-default pt-3" data-testid="agent-endpoint-applies-editor">
-      <fieldset className="space-y-2">
-        <legend className="field-label">Applies to</legend>
-        {modeRadio('all', 'All workspaces')}
-        {modeRadio('some', 'Selected workspaces')}
-      </fieldset>
-      {mode === 'some' && (
-        <ul className="space-y-1 pl-6" aria-label="Workspaces">
-          {workspaces.map((w) => (
-            <li key={w.id}>
-              <label className="flex items-start gap-2 cursor-pointer min-h-11 md:min-h-0 py-1">
-                <input type="checkbox" className="control-check appearance-none mt-0.5" checked={chosen.has(w.id)} disabled={busy}
-                  data-testid="agent-endpoint-applies-workspace" data-workspace={w.id}
-                  onChange={(e) => toggle(w.id, e.target.checked)} />
-                <span>
-                  <span className="block text-body text-text-primary">{w.name}</span>
-                  {note(w.id) && <span className="block text-meta text-text-muted">{note(w.id)}</span>}
-                </span>
-              </label>
-            </li>
-          ))}
-        </ul>
-      )}
-      {mode === 'all' && copies.length > 0 && (
-        <ul className="space-y-1 pl-6" data-testid="agent-endpoint-applies-copies">
-          {workspaces.filter((w) => copyOf.has(w.id)).map((w) => (
-            <li key={w.id} className="text-meta text-text-muted">{w.name}: {note(w.id)}</li>
-          ))}
-        </ul>
-      )}
+      <AppliesToFields workspaces={workspaces} mode={mode} chosen={chosen} copies={copies} disabled={busy}
+        onMode={setMode} onToggle={toggle} />
       {matching.length > 0 && (
         <label className="flex items-start gap-2 cursor-pointer text-body text-text-secondary">
           <input type="checkbox" className="control-check appearance-none mt-0.5" checked={consolidate} disabled={busy}
