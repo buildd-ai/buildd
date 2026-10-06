@@ -421,13 +421,12 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, copie
   // kind or another URL needs the key typed.
   const sameUrl = choice === 'openrouter' || baseUrl.trim().replace(/\/+$/, '') === (current?.baseUrl ?? '');
   const keepsKey = needsKey && current?.kind === choice && !!current.last4 && sameUrl;
+  const appliesOk = isOverride || appliesMode === 'all' || (appliesTo?.length ?? 0) > 0;
   const canSave = !busy && (choice === 'anthropic'
     ? !!current
-    : !isOverride && appliesMode === 'some' && !appliesTo?.length
-      ? false
-    : choice === 'gateway'
+    : appliesOk && (choice === 'gateway'
       ? hasGateway
-      : (!!apiKey.trim() || keepsKey) && (choice === 'openrouter' || !!baseUrl.trim()));
+      : (!!apiKey.trim() || keepsKey) && (choice === 'openrouter' || !!baseUrl.trim())));
 
   async function save() {
     setBusy(true);
