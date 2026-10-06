@@ -210,7 +210,7 @@ export async function POST(
       repoFullName,
       prNumber,
       entry: {
-        kind: 'reviewing',
+        kind: 'review_queued',
         detail: plan.kind === 'delta'
           ? `manual · since \`${plan.priorVerdict.headSha.slice(0, 7)}\``
           : 'manual',

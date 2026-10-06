@@ -9,6 +9,7 @@
  * rotating silently would break the other workspaces.
  */
 import { parseModelProxyAuthHeader, parseModelProxyUrl } from './outbound';
+import { RUNNER_CLASSES } from './runner-class';
 
 /** Non-secret webhook view, as GET /api/workspaces returns it (token masked). */
 export interface ObservedWebhook {
@@ -127,7 +128,35 @@ export function renderWranglerConfig(base: string, names: DeployNames): string {
   const named = swap(base, /^(\s*"name":\s*)"[^"]*"/m, names.worker, '"name"');
   // The fleet groups this deployment's runs under its Worker name.
   const grouped = swap(named, /("RUNNER_GROUP":\s*)"[^"]*"/m, names.worker, '"RUNNER_GROUP"');
-  return swap(grouped, /("bucket_name":\s*)"[^"]*"/m, names.bucket, '"bucket_name"');
+  const out = swap(grouped, /("bucket_name":\s*)"[^"]*"/m, names.bucket, '"bucket_name"');
+  // A deploy without one of the container classes would strand every task
+  // buildd routes to it.
+  const present = new Set(containerClasses(out).map(c => c.className));
+  for (const cls of Object.values(RUNNER_CLASSES)) {
+    if (!present.has(cls.binding)) throw new Error(`wrangler.jsonc: no container class ${cls.binding}`);
+  }
+  return out;
+}
+
+/** One container class as wrangler.jsonc declares it. */
+export interface ContainerClassSummary {
+  className: string;
+  instanceType: string;
+  maxInstances: number;
+}
+
+/**
+ * The container classes in a wrangler.jsonc text (whole-line `//` comments
+ * allowed, as in the checked-in file), for the plan output and the render
+ * check. Throws on text that is not that.
+ */
+export function containerClasses(configText: string): ContainerClassSummary[] {
+  const cfg = JSON.parse(configText.replace(/^\s*\/\/.*$/gm, '')) as { containers?: Array<{ class_name?: unknown; instance_type?: unknown; max_instances?: unknown }> };
+  return (cfg.containers ?? []).map(c => ({
+    className: String(c.class_name),
+    instanceType: String(c.instance_type),
+    maxInstances: typeof c.max_instances === 'number' ? c.max_instances : 0,
+  }));
 }
 
 export type DeployStep =
@@ -303,14 +332,17 @@ function planModelProxy(
 }
 
 /** One line per step, secrets redacted, for --dry-run and the run log. */
-export function describePlan(plan: DeployPlan, names: DeployNames = deployNames()): string[] {
+export function describePlan(plan: DeployPlan, names: DeployNames = deployNames(), classes: ContainerClassSummary[] = []): string[] {
+  const classList = classes.length ? `; containers: ${classes.map(c => `${c.className} ${c.instanceType} max ${c.maxInstances}`).join(', ')}` : '';
   if (!plan.ok) return [`error: ${plan.error}`];
   const lines = plan.steps.map((s) => {
     switch (s.kind) {
       case 'ensure_snapshot_bucket':
         return `wrangler r2 bucket create ${names.bucket} (if missing) + lifecycle ${SNAPSHOT_BUCKET.lifecycle.map(r => `${r.prefix} ${r.expireDays}d`).join(', ')}`;
       case 'wrangler_deploy':
-        return names.custom ? `wrangler deploy --name ${names.worker} (apps/cloud-runner, generated config)` : 'wrangler deploy (apps/cloud-runner)';
+        return names.custom
+          ? `wrangler deploy --name ${names.worker} (apps/cloud-runner, generated config${classList})`
+          : `wrangler deploy (apps/cloud-runner${classList})`;
       case 'put_secret':
         return `wrangler secret put ${s.name} = ${PLAIN_SECRET_NAMES.has(s.name) ? s.value : redact(s.value)} (${s.reason})`;
       case 'set_webhook':

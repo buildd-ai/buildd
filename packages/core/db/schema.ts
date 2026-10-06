@@ -148,6 +148,17 @@ export const teams = pgTable('teams', {
   stripeCustomerIdx: uniqueIndex('teams_stripe_customer_id_idx').on(t.stripeCustomerId),
 }));
 
+// Stripe webhook events already applied, keyed by Stripe's event id — the
+// webhook's idempotency ledger (apps/web/src/app/api/webhooks/stripe/route.ts).
+// A row is claimed before the event is applied and deleted again if applying
+// fails, so a Stripe retry of a failed event runs, a replay of a done one doesn't.
+export const stripeEvents = pgTable('stripe_events', {
+  id: text('id').primaryKey(),
+  type: text('type').notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
+  processedAt: timestamp('processed_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 // Team membership
 export const teamMembers = pgTable('team_members', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
@@ -377,6 +388,13 @@ export interface WorkspaceGitConfig {
   // in-worker boot), 'vercel-preview', or 'auto'. Read only through
   // resolveVisualQaConfig(). See docs/design/visual-qa-auditor.md → "Page source".
   visualQa?: import('../visual-qa-page-source').VisualQaConfig;
+
+  // Cloud-runner container class. Absent = derived from recent run reports
+  // (apps/web/src/lib/runner-size.ts); an explicit value always wins.
+  runnerSize?: 'standard' | 'large';
+  // Written by buildd, never by the settings form: the first derivation that
+  // moved this workspace to `large`, kept so one light run does not move it back.
+  runnerSizeDerived?: { size: 'large'; reason: 'memory_pressure' | 'low_disk' | 'container_restart' | 'large_checkout'; at: string };
 
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached

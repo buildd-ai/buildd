@@ -1681,6 +1681,13 @@
       "when": 1791288179657,
       "tag": "0247_striped_arclight",
       "breakpoints": true
+    },
+    {
+      "idx": 248,
+      "version": "7",
+      "when": 1791289248947,
+      "tag": "0248_powerful_maddog",
+      "breakpoints": true
     }
   ]
 }

@@ -4048,7 +4048,7 @@ describe('POST /api/github/webhook', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
-    it('announces on the PR that a reviewer agent picked it up', async () => {
+    it('announces on the PR that a review is queued — not Reviewing until claimed', async () => {
       withAgentReviewWorkspaceAndWorker();
       mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: false });
 
@@ -4060,7 +4060,8 @@ describe('POST /api/github/webhook', () => {
       expect(commentCall).toBeDefined();
       const body = JSON.parse(commentCall[2].body).body as string;
       expect(body).toContain('<!-- buildd-activity -->');
-      expect(body).toContain('**Reviewing**');
+      expect(body).toContain('**Review queued**');
+      expect(body).not.toContain('**Reviewing**');
       // Role slugs are internal vocabulary; the PR reader doesn't need them.
       expect(body).not.toContain('reviewer role');
     });
@@ -5205,7 +5206,7 @@ describe('pull_request → workers.prBaseRef sync', () => {
         number: 9,
         merged: false,
         draft: false,
-        head: { ref: 'buildd/abc12345-fix', sha: 'sha-9' },
+        head: { ref: 'buildd/abc12345-fix', sha: 'sha-9', repo: { full_name: 'test-org/test-repo' } },
         base: { ref: 'mission/example-slug-0a1b2c3d' },
         html_url: 'https://github.com/test-org/test-repo/pull/9',
       },
@@ -5229,9 +5230,27 @@ describe('pull_request → workers.prBaseRef sync', () => {
       changes: undefined,
     })));
 
-    const baseRefWrites = updateCalls.filter(c => 'prBaseRef' in (c.setValues ?? {}));
+    const baseRefWrites = updateCalls.filter(c => 'prBaseRef' in (c.setValues ?? {}) && !('prUrl' in (c.setValues ?? {})));
     expect(baseRefWrites.length).toBe(1);
     expect(baseRefWrites[0].setValues.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+  });
+
+  it('registers an externally opened PR on the matching worker before processing it', async () => {
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload({ action: 'opened', changes: undefined })));
+    const adopted = updateCalls.find(c => c.setValues?.prUrl);
+    expect(adopted?.setValues).toMatchObject({ prNumber: 9, prLifecycleStatus: 'pr_open', prBaseRef: 'mission/example-slug-0a1b2c3d' });
+    expect(adopted?.condition).toBeDefined();
+  });
+
+  it.each(['test-org/fork', null])('does not adopt a PR from a fork or deleted head repo (%s)', async headRepo => {
+    const payload = makeRetargetPayload({ action: 'opened', changes: undefined });
+    await POST(createWebhookRequest('pull_request', {
+      ...payload,
+      pull_request: { ...payload.pull_request, head: {
+        ...payload.pull_request.head, repo: headRepo ? { full_name: headRepo } : null,
+      } },
+    }));
+    expect(updateCalls.find(c => c.setValues?.prUrl)).toBeUndefined();
   });
 
   // Change intents recorded at create_pr carry the base the PR had then. A
@@ -6883,7 +6902,7 @@ describe('webhook → reviewer flows (characterization)', () => {
     });
     expect(call('announceTaskCreated')[0]).toMatchObject({ id: 'reviewer-95', workspaceId: 'ws1', missionId: 'm-95', roleSlug: 'reviewer' });
     expect(call('wakeTask')).toEqual(['reviewer-95', 'task.created']);
-    expect((call('appendPrActivity')[0] as any)).toMatchObject({ prNumber: 95, entry: { kind: 'reviewing' }, workspaceId: 'ws1' });
+    expect((call('appendPrActivity')[0] as any)).toMatchObject({ prNumber: 95, entry: { kind: 'review_queued' }, workspaceId: 'ws1' });
   });
 
   it('a redelivered open: the reviewer dedupes, nothing is announced, and the PR is still held from auto-merge', async () => {
@@ -6941,7 +6960,7 @@ describe('webhook → reviewer flows (characterization)', () => {
       headSha: NEW, baseRef: 'dev',
       priorVerdict: { headSha: OLD, verdict: 'request-changes', confidence: 0.9, summary: 'needs work', feedback: 'fix it' },
     });
-    expect((call('appendPrActivity', 1)[0] as any).entry).toEqual({ kind: 'reviewing' });
+    expect((call('appendPrActivity', 1)[0] as any).entry).toEqual({ kind: 'review_queued' });
   });
 
   it('a redelivered push (head equals the reviewed head): the comment only', async () => {

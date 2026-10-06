@@ -287,6 +287,22 @@ export interface ClaimBackendRouting {
   at?: string;
 }
 
+/**
+ * The backend the task's latest claim actually ran: the claim stamp when one
+ * is present (an in-memory flip the stored column never sees), else the stored
+ * backend. Use this, not `tasks.backend`, to ask what a LIVE worker is running.
+ */
+export function claimedBackendOf(storedBackend: string | null | undefined, context: unknown): AgentBackend {
+  const stamp = context && typeof context === 'object'
+    ? (context as Record<string, unknown>)[BACKEND_ROUTING_KEY]
+    : undefined;
+  if (stamp && typeof stamp === 'object') {
+    const backend = (stamp as Partial<ClaimBackendRouting>).backend;
+    if (isDispatchableBackend(backend)) return backend;
+  }
+  return isDispatchableBackend(storedBackend) ? storedBackend : 'claude';
+}
+
 export interface BackendRoutingDescription {
   backend: AgentBackend;
   from: AgentBackend;

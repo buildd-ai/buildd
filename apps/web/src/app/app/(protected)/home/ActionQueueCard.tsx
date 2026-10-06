@@ -35,6 +35,15 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
         </SwipeableRow>
       );
     }
+    if (item.chip === 'REVIEW' && item.humanReview && item.prUrl) {
+      return <article data-testid="human-pr-review-card" className="card p-4">
+        <p className="text-meta text-status-warning">Review required</p>
+        <h3 className="mt-2 text-title font-semibold">{item.taskTitle}</h3>
+        <p className="mt-1 text-body text-text-secondary">{item.humanReview.reason}</p>
+        {item.machineStatus && <p className="mt-1 text-meta text-text-muted">{item.machineStatus}</p>}
+        <Link className="btn mt-3 min-h-11" href={`${item.prUrl}/files`}>{item.humanReview.label}</Link>
+      </article>;
+    }
     if (item.chip === 'REVIEW') {
       return (
         <SwipeableRow

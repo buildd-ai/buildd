@@ -340,7 +340,7 @@ describe('assembleRunReport', () => {
     const r = assembleRunReport(FULL);
     expect(r).toMatchObject({
       kind: 'cloud-run-report',
-      version: 6,
+      version: 8,
       taskId: 'task-1',
       attempt: 2,
       workerId: 'worker-9',
@@ -424,9 +424,45 @@ describe('assembleRunReport', () => {
 
   test('only allowlisted top-level keys', () => {
     expect(Object.keys(assembleRunReport({ ...FULL, extra: 'x' } as RunReportInput)).sort()).toEqual([
-      'attempt', 'containerInstanceId', 'crashReport', 'deferredRetry', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'kind',
-      'outcome', 'repo', 'resume', 'runLabel', 'runnerPhases', 'schedule', 'taskId', 'timestamps', 'version', 'workerId',
+      'agentRestarts', 'attempt', 'containerInstanceId', 'crashReport', 'deferredRetry', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'interruption', 'kind',
+      'outcome', 'repo', 'resources', 'resume', 'runLabel', 'runnerPhases', 'runnerSize', 'schedule', 'taskId', 'timestamps', 'version', 'workerId',
     ]);
+  });
+
+  test('agentRestarts: sanitized, capped, empty by default', () => {
+    expect(assembleRunReport(FULL).agentRestarts).toEqual([]);
+    const ok = { at: 5_000, recovery: 'reattached', containerRunning: true, runningForMs: 900, versionChanged: false } as const;
+    const r = assembleRunReport({
+      ...FULL,
+      agentRestarts: [ok, { ...ok, recovery: 'oom' as never }, { ...ok, at: -1 }, { ...ok, versionChanged: 'yes' as never, containerRunning: 'x' as never }],
+    });
+    expect(r.agentRestarts).toEqual([ok, { at: 5_000, recovery: 'reattached', containerRunning: false, runningForMs: 900, versionChanged: null }]);
+  });
+
+  test('resources: memory peak and limit, disk minimum and total, from the runner metric lines', () => {
+    const r = assembleRunReport({ ...FULL, timings: { ...FULL.timings, runnerMetrics: { mem_peak_bytes: 4_000_000_000, mem_limit_bytes: 4_294_967_296, disk_free_min_bytes: 2_500_000_000, disk_total_bytes: 8_000_000_000 } } });
+    expect(r.resources).toEqual({ memoryPeakBytes: 4_000_000_000, memoryLimitBytes: 4_294_967_296, diskFreeMinBytes: 2_500_000_000, diskTotalBytes: 8_000_000_000 });
+    expect(assembleRunReport(FULL).resources).toEqual({ memoryPeakBytes: null, memoryLimitBytes: null, diskFreeMinBytes: null, diskTotalBytes: null });
+  });
+
+  test('interruption: from the closed list only', () => {
+    expect(assembleRunReport(FULL).interruption).toBeNull();
+    for (const i of ['container_stopped', 'agent_restart', 'question'] as const) {
+      expect(assembleRunReport({ ...FULL, interruption: i }).interruption).toBe(i);
+    }
+    expect(assembleRunReport({ ...FULL, interruption: 'oom' as never }).interruption).toBeNull();
+  });
+
+  test('runnerSize: the class actually used, the decision that chose it, and weighted runner-seconds', () => {
+    // FULL: container running at 4 s, exited at 60 s -> 56 runner-seconds.
+    const large = assembleRunReport({ ...FULL, runnerSize: 'large', runnerSizeDecision: { size: 'large', source: 'derived', reason: 'low_disk' } });
+    expect(large.runnerSize).toEqual({ size: 'large', source: 'derived', reason: 'low_disk', weight: 2, runnerSeconds: 56, weightedRunnerSeconds: 112 });
+    const standard = assembleRunReport({ ...FULL, runnerSize: 'standard' });
+    expect(standard.runnerSize).toEqual({ size: 'standard', source: null, reason: null, weight: 1, runnerSeconds: 56, weightedRunnerSeconds: 56 });
+    // No class given: standard (the only class before there were two).
+    expect(assembleRunReport(FULL).runnerSize.size).toBe('standard');
+    // The container never ran: no runner-seconds.
+    expect(assembleRunReport({ taskId: 'task-1', attempt: 1, runnerSize: 'large' }).runnerSize).toMatchObject({ runnerSeconds: null, weightedRunnerSeconds: null });
   });
 
   test('warm restore: source, timings and bytes for restore, fetch and upload', () => {

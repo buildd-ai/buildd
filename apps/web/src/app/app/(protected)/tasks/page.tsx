@@ -4,21 +4,24 @@ import { desc, eq, inArray, and, gte, isNull } from 'drizzle-orm';
 import { deriveTaskType, type TaskType } from '@buildd/core/mission-helpers';
 import { deriveDisplayStatus, LIVE_WORKER_STATUSES, deriveChainPosition, isSubjectDead } from '@/lib/task-presentation';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
-import { redirect } from 'next/navigation';
+import { redirect, unstable_rethrow } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
 import { displayWorkspaceName } from '@buildd/shared';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
 import TaskGrid from './TaskGrid';
+import { parseTaskListSelection } from '@/lib/task-list-filters';
 import { backendLabel } from '@buildd/core/backend-policy';
 
 export default async function TasksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ mission?: string; workspace?: string; initiative?: string }>;
+  searchParams: Promise<{ mission?: string; workspace?: string; initiative?: string; ids?: string | string[]; selection?: string }>;
 }) {
-  const { mission: missionId, workspace: wsFilter, initiative: initiativeId } = await searchParams;
+  const params = await searchParams;
+  const { mission: missionId, workspace: wsFilter, initiative: initiativeId } = params;
+
   const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
   const user = await getCurrentUser();
 
@@ -65,6 +68,7 @@ export default async function TasksPage({
     missionBudgetExhausted: boolean;
   }> = [];
 
+  const taskListFilter = parseTaskListSelection(params);
   let teamWorkspaces: { id: string; name: string }[] = [];
   let initiativeTitle: string | null = null;
   let initiativeMissionIds: string[] = [];
@@ -101,13 +105,15 @@ export default async function TasksPage({
         const wsNameMap = new Map(teamWorkspaces.map(w => [w.id, w.name]));
 
         if (wsIds.length > 0) {
+          const bandIds = taskListFilter?.ids ?? null;
+          // Band membership is historical, so it must not use current task status.
           // Fetch recent tasks (last 30 days, limit 200)
           const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
           const recentTasks = await db.query.tasks.findMany({
             where: and(
               inArray(tasks.workspaceId, wsIds),
-              gte(tasks.updatedAt, thirtyDaysAgo),
-              isNull(tasks.parentTaskId),
+              bandIds ? inArray(tasks.id, bandIds) : gte(tasks.updatedAt, thirtyDaysAgo),
+              bandIds ? undefined : isNull(tasks.parentTaskId),
             ),
             columns: {
               id: true,
@@ -139,7 +145,7 @@ export default async function TasksPage({
               subjectAnchor: true,
             },
             orderBy: [desc(tasks.updatedAt)],
-            limit: 200,
+            limit: bandIds ? 5000 : 200,
           });
 
           // Fetch child tasks (retry/reviewer) for the root tasks we loaded
@@ -175,7 +181,7 @@ export default async function TasksPage({
                 limit: 500,
               })
             : [];
-          const allTasks = [...recentTasks, ...childTasks];
+          const allTasks = [...new Map([...recentTasks, ...childTasks].map(t => [t.id, t])).values()];
 
           // Fetch mission titles for tasks that have missionId
           const missionIds = [...new Set(allTasks.map(t => t.missionId).filter(Boolean))] as string[];
@@ -383,6 +389,7 @@ export default async function TasksPage({
         }
       }
     } catch (error) {
+      unstable_rethrow(error);
       console.error('Tasks grid query error:', error);
     }
   }
@@ -401,6 +408,8 @@ export default async function TasksPage({
 
   return (
     <TaskGrid
+      key={taskListFilter?.label ?? 'tasks'}
+      bandFilterLabel={taskListFilter?.label}
       tasks={gridTasks}
       missionFilter={missionId || null}
       missionTitle={missionTitle}

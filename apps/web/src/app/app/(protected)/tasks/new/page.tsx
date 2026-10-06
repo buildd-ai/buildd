@@ -9,7 +9,8 @@ import { TIMEZONE_OPTIONS } from '@/lib/timezone-options';
 import { SkillPills } from '@/components/skills/SkillPills';
 import { WorkflowSelector, type WorkflowType } from '@/components/skills/WorkflowSelector';
 import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
-import { isSystemWorkspace } from '@buildd/shared';
+import { isSystemWorkspace, isSystemRoleSlug } from '@buildd/shared';
+import { systemRoleIntent, VISUAL_REVIEW_IS_MISSION_SCOPED } from '@/lib/system-role-intent';
 import type { TaskCategoryValue, TaskModeValue, RunnerPreferenceValue } from '@buildd/shared';
 import { DependencySelector } from '@/components/tasks/DependencySelector';
 
@@ -241,7 +242,9 @@ export default function NewTaskPage() {
     fetch(`/api/workspaces/${selectedWorkspaceId}/skills?enabled=true`)
       .then(res => res.json())
       .then(data => {
-        const loadedSkills = (data.skills || []).map((s: any) => ({ id: s.id, slug: s.slug, name: s.name, description: s.description, recentRuns: s.recentRuns || 0, isRole: s.isRole ?? false, connectorRefs: s.connectorRefs ?? [] }));
+        // System roles (the visual auditor) are never a pick for a task a
+        // person writes: a visual review is the mission's own command.
+        const loadedSkills = (data.skills || []).filter((s: any) => !isSystemRoleSlug(s.slug)).map((s: any) => ({ id: s.id, slug: s.slug, name: s.name, description: s.description, recentRuns: s.recentRuns || 0, isRole: s.isRole ?? false, connectorRefs: s.connectorRefs ?? [] }));
         setAvailableSkills(loadedSkills);
         const skillSlugParam = searchParams.get('skillSlug');
         if (skillSlugParam && loadedSkills.some((s: { slug: string }) => s.slug === skillSlugParam)) {
@@ -440,6 +443,17 @@ export default function NewTaskPage() {
     }
   }
 
+  // A link that asks the composer for a system-role task (a visual review) is
+  // turned into the mission's own command instead of a hand-written task.
+  const roleIntent = systemRoleIntent({
+    roleSlug: searchParams.get('roleSlug'),
+    skillSlug: searchParams.get('skillSlug'),
+    missionId: searchParams.get('missionId'),
+  });
+  useEffect(() => {
+    if (roleIntent?.kind === 'mission') router.replace(roleIntent.href);
+  }, [roleIntent?.kind === 'mission' ? roleIntent.href : null]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleSkillToggle = (slug: string) => {
     setSelectedSkillSlugs(prev =>
       prev.includes(slug) ? prev.filter(s => s !== slug) : [...prev, slug]
@@ -451,6 +465,27 @@ export default function NewTaskPage() {
       setSelectedSkillSlugs(prev => [...prev, slug]);
     }
   };
+
+  if (roleIntent) {
+    return (
+      <div className="p-4 pb-8 md:p-8 md:pb-8 overflow-auto h-full">
+        <div className="max-w-xl mx-auto md:mx-0" data-testid="system-role-intent" data-intent={roleIntent.kind}>
+          <h1 className="text-2xl font-bold mb-3">Visual review</h1>
+          {roleIntent.kind === 'mission' ? (
+            <p className="text-sm text-text-secondary">
+              A visual review runs from its mission.{' '}
+              <Link href={roleIntent.href} className="text-primary hover:underline">Open the mission&apos;s visual review</Link>
+            </p>
+          ) : (
+            <p className="text-sm text-text-secondary">
+              {VISUAL_REVIEW_IS_MISSION_SCOPED}{' '}
+              <Link href="/app/missions" className="text-primary hover:underline">Go to missions</Link>
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-4 pb-8 md:p-8 md:pb-8 overflow-auto h-full">

@@ -27,7 +27,7 @@ function streamOf(lines: string[]): ReadableStream<Uint8Array> {
 }
 
 /** One process per exec; each run's exit is resolved by the test. */
-function fakeContainer() {
+function fakeContainer(opts: { unattachable?: boolean } = {}) {
   const calls: string[] = [];
   const starts: Array<{ env: Record<string, string>; enableInternet: boolean }> = [];
   const execs: string[][] = [];
@@ -37,10 +37,13 @@ function fakeContainer() {
   let stdout: string[] = [];
   let inactivityMs: number | null = null;
   let running = false;
+  const unattachable = opts.unattachable === true;
   const container: ContainerPort = {
     get running() { return running; },
     start(opts) { calls.push('start'); starts.push(opts); running = true; died = deferred<void>(); },
     async exec(cmd, opts) {
+      // A container whose runner is gone: `--attach-orphan` finds nothing to wait on.
+      if (unattachable && cmd[1] === '--attach-orphan') return { stdout: streamOf([]), stderr: streamOf([]), exitCode: Promise.resolve(6) };
       calls.push('exec');
       execs.push(cmd);
       execEnvs.push(opts?.env);
@@ -79,10 +82,10 @@ function fakeScheduler() {
   return { port, scheduled, cancelled };
 }
 
-function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response>; now?: () => number } = {}) {
+function harness(opts: { unattachable?: boolean; config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response>; now?: () => number } = {}) {
   let state: RunState = opts.initial ?? INITIAL_STATE;
   const sched = fakeScheduler();
-  const fc = fakeContainer();
+  const fc = fakeContainer({ unattachable: opts.unattachable });
   const fetches: Array<{ url: string; init: RequestInit }> = [];
   const logs: string[] = [];
   let keepAliveHeld = 0;
@@ -480,6 +483,43 @@ describe('deferred claims and container-capacity starts self-schedule a retry', 
 });
 
 describe('orphan recovery', () => {
+  test('an orphan with no worker yet (died before claiming) is requeued by a backoff retry, not left terminal', async () => {
+    const NOW = 3_000_000;
+    const h = harness({ now: () => NOW, initial: { taskId: TASK_ID, attempt: 1, status: 'starting', startedAt: 1 } });
+    await h.sup.recoverOrphan();
+    await h.settle();
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'crashed', crashReport: 'no_worker_id', deferredRetryCount: 1 });
+    expect(h.state.report).toMatchObject({ interruption: 'agent_restart', deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'agent_restart' } });
+    expect([...h.sched.scheduled.values()]).toEqual([{ at: NOW + 30_000, payload: { notBefore: NOW + 30_000, deferredRetry: true } }]);
+  });
+
+  test('an orphan WITH a worker is requeued by buildd as infra (crashReconciled), so the agent schedules nothing', async () => {
+    const h = harness({ initial: { taskId: TASK_ID, attempt: 2, status: 'running', workerId: 'w-orphan', startedAt: 1 } });
+    await h.sup.recoverOrphan();
+    expect(JSON.parse(h.fetches[0]!.init.body as string)).toMatchObject({ crashReconciled: true });
+    expect(h.sched.scheduled.size).toBe(0);
+  });
+
+  test('a restart-orphan retry stops at the cap', async () => {
+    const h = harness({ initial: { taskId: TASK_ID, attempt: 7, status: 'starting', startedAt: 1, deferredRetryCount: MAX_DEFERRED_RETRIES } });
+    await h.sup.recoverOrphan();
+    await h.settle();
+    expect(h.sched.scheduled.size).toBe(0);
+    expect(h.state.report).toMatchObject({ deferredRetry: { backoffMs: null, reason: 'agent_restart' } });
+  });
+
+  test('a runner_capability deferral backs off on the longer image-rollout schedule', async () => {
+    const NOW = 4_000_000;
+    const h = harness({ now: () => NOW });
+    h.fc.setStdout(['BUILDD_CLAIM_DEFERRED=runner_capability']);
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(5);
+    await h.settle();
+    expect(h.state.report).toMatchObject({ deferredRetry: { retryNumber: 1, backoffMs: 60_000, reason: 'runner_capability' } });
+    expect([...h.sched.scheduled.values()]).toEqual([{ at: NOW + 60_000, payload: { notBefore: NOW + 60_000, deferredRetry: true } }]);
+  });
+
   test('a run marked live in storage with nothing in memory is marked crashed and reported', async () => {
     const h = harness({ initial: { taskId: TASK_ID, attempt: 3, status: 'running', workerId: 'w-orphan', startedAt: 1 } });
     await h.sup.recoverOrphan();
@@ -803,7 +843,7 @@ describe('resumable runs: park and resume', () => {
   });
 
   test('orphan with resumable runs on and the container still running: park it, then resume it', async () => {
-    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    const h = harness({ unattachable: true, config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
     h.fc.markRunning();
     const recovering = h.sup.recoverOrphan();
     await h.until(() => h.fc.execs.length === 1);
@@ -820,7 +860,7 @@ describe('resumable runs: park and resume', () => {
   });
 
   test('the orphan park gets a per-task token too, never the runner key', async () => {
-    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    const h = harness({ unattachable: true, config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
     h.fc.markRunning();
     const recovering = h.sup.recoverOrphan();
     await h.until(() => h.fc.execs.length === 1);
@@ -836,7 +876,7 @@ describe('resumable runs: park and resume', () => {
     // onStart runs under blockConcurrencyWhile; the park's upload reaches the
     // snapshot route, which asks this agent for its scope. Awaiting the park
     // inside onStart deadlocks until the runtime resets the object.
-    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    const h = harness({ unattachable: true, config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
     h.fc.markRunning();
     let returned = false;
     const recovering = h.sup.recoverOrphan().then(() => { returned = true; });
@@ -850,7 +890,7 @@ describe('resumable runs: park and resume', () => {
   });
 
   test('after a clean orphan park the agent marks the worker parked on buildd itself', async () => {
-    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    const h = harness({ unattachable: true, config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
     h.fc.markRunning();
     await h.sup.recoverOrphan();
     await h.until(() => h.fc.execs.length === 1);
@@ -864,6 +904,7 @@ describe('resumable runs: park and resume', () => {
 
   test('an orphan park buildd refuses to mark is crashed, not resumed', async () => {
     const h = harness({
+      unattachable: true,
       config: { resumableRuns: true },
       initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 },
       fetchImpl: async (url) => new Response('{}', { status: url.endsWith('/park') ? 409 : 200 }),
@@ -879,17 +920,17 @@ describe('resumable runs: park and resume', () => {
   });
 
   test('orphan park re-installs egress first: the restarted agent owns the snapshot route now', async () => {
-    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    const h = harness({ unattachable: true, config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
     h.fc.markRunning();
     const recovering = h.sup.recoverOrphan();
     await h.until(() => h.fc.execs.length === 1);
-    expect(h.fc.calls.slice(0, 3)).toEqual(['mintTaskToken', 'installEgress', 'exec']);
+    expect(h.fc.calls.slice(0, 5)).toEqual(['mintTaskToken', 'installEgress', 'mintTaskToken', 'installEgress', 'exec']);
     h.fc.exits[0]!.resolve(1);
     await recovering;
   });
 
   test('orphan park whose egress cannot be installed is crashed as before (no exec)', async () => {
-    const h = harness({ egressFails: true, config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    const h = harness({ unattachable: true, egressFails: true, config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
     h.fc.markRunning();
     await h.sup.recoverOrphan();
     await h.settle();
@@ -898,7 +939,7 @@ describe('resumable runs: park and resume', () => {
   });
 
   test('orphan park that fails falls back to today: crashed and reported, no resume', async () => {
-    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    const h = harness({ unattachable: true, config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
     h.fc.markRunning();
     const recovering = h.sup.recoverOrphan();
     await h.until(() => h.fc.execs.length === 1);
@@ -910,14 +951,167 @@ describe('resumable runs: park and resume', () => {
     expect(h.fc.starts).toHaveLength(0);
   });
 
-  test('orphan without resumable runs, or with the container gone, is crashed as before (no exec)', async () => {
+  test('orphan with the container gone is crashed as before (no exec)', async () => {
     for (const resumableRuns of [false, true]) {
       const h = harness({ config: { resumableRuns }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
-      if (!resumableRuns) h.fc.markRunning();
       await h.sup.recoverOrphan();
       expect(h.state.outcome).toBe('crashed');
       expect(h.fc.execs).toHaveLength(0);
     }
+  });
+});
+
+describe('orphan re-attach (the container outlived the agent)', () => {
+  const failPatches = (h: { fetches: Array<{ url: string; init: RequestInit }> }) =>
+    h.fetches.filter(f => f.init.method === 'PATCH' && String(f.init.body).includes('failed'));
+  const running = (extra: Partial<RunState> = {}): RunState => ({ taskId: TASK_ID, attempt: 2, status: 'running', workerId: 'w-live', startedAt: 1_000, ...extra });
+
+  test('a live container is re-adopted: wait on the runner, no park, no crash, no destroy', async () => {
+    const h = harness({ initial: running() });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    expect(h.fc.execs[0]).toEqual(['buildd-once', '--attach-orphan', 'w-live', '--task', TASK_ID]);
+    expect(h.sup.hasLiveRun).toBe(true);
+    expect(h.fc.calls).not.toContain('destroy');
+    expect(h.fc.calls).not.toContain('start');
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'done', attempt: 2 });
+    expect(failPatches(h)).toHaveLength(0);
+  });
+
+  test('works without resumable runs too', async () => {
+    const h = harness({ config: { resumableRuns: false }, initial: running() });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    expect(h.fc.execs[0]![1]).toBe('--attach-orphan');
+    h.fc.exits[0]!.resolve(1);
+    await h.settle();
+    expect(h.state.outcome).toBe('failed');
+  });
+
+  test('re-installs egress and mints a task token first: the runner key never enters the container', async () => {
+    const h = harness({ initial: running() });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    expect(h.fc.calls.indexOf('installEgress')).toBeGreaterThanOrEqual(0);
+    expect(h.fc.calls.indexOf('installEgress')).toBeLessThan(h.fc.calls.indexOf('exec'));
+    expect(h.fc.execEnvs[0]!.BUILDD_API_KEY).toBe('bldt_test_task_token');
+    expect(Object.values(h.fc.execEnvs[0]!).join('\n')).not.toContain('bld_test_key');
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+  });
+
+  test('does not hold up the agent start, and a dispatch meanwhile is a duplicate', async () => {
+    const h = harness({ initial: running() });
+    h.fc.markRunning();
+    let returned = false;
+    await h.sup.recoverOrphan().then(() => { returned = true; });
+    expect(returned).toBe(true);
+    expect(h.sup.dispatch()).toMatchObject({ accepted: false, reason: 'already_live' });
+    await h.until(() => h.fc.execs.length === 1);
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+  });
+
+  test("the runner's own park (exit 4) is a parked outcome, and its record says re-attached", async () => {
+    const h = harness({ initial: running() });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    h.fc.exits[0]!.resolve(4);
+    await h.settle();
+    expect(h.state.outcome).toBe('parked');
+  });
+
+  test('a runner that cannot be attached (exit 6) falls back to the park, then the resume', async () => {
+    const h = harness({ config: { resumableRuns: true }, initial: running() });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    h.fc.exits[0]!.resolve(6);
+    await h.until(() => h.fc.execs.length === 2);
+    expect(h.fc.execs[1]).toEqual(['buildd-once', '--park-orphan', 'w-live', '--task', TASK_ID]);
+    h.fc.exits[1]!.resolve(4);
+    await h.until(() => h.fc.execs.length === 3);
+    expect(h.fc.execs[2]).toEqual(['buildd-once', '--resume-worker', 'w-live', '--task', TASK_ID]);
+    h.fc.exits[2]!.resolve(0);
+    await h.settle();
+  });
+
+  test('a runner that cannot be attached, without resumable runs, is crashed as before', async () => {
+    const h = harness({ initial: running() });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    h.fc.exits[0]!.resolve(6);
+    await h.settle();
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'crashed', crashReport: 'sent' });
+    expect(h.state.report!.agentRestarts[0]).toMatchObject({ recovery: 'crashed', containerRunning: true });
+  });
+
+  test('the container dying while re-attached is a container_stopped crash', async () => {
+    const h = harness({ initial: running() });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    h.fc.kill();
+    await h.settle();
+    expect(h.state.report).toMatchObject({ outcome: 'crashed', interruption: 'container_stopped' });
+  });
+
+  test('a worker not yet known (died before the claim) is not attachable: crashed as before', async () => {
+    const h = harness({ initial: running({ workerId: undefined }) });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.settle();
+    expect(h.fc.execs).toHaveLength(0);
+    expect(h.state.outcome).toBe('crashed');
+  });
+
+  test('the run report records the restart: re-adopted, how long the run had gone, and whether the Worker version changed', async () => {
+    let now = 10_000;
+    const h = harness({ now: () => now, config: { agentVersion: 'v-new' }, initial: running({ startedAt: 4_000, agentVersion: 'v-old' }) });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    now = 20_000;
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    expect(h.state.report!.agentRestarts).toEqual([
+      { at: 10_000, recovery: 'reattached', containerRunning: true, runningForMs: 6_000, versionChanged: true },
+    ]);
+  });
+
+  test('same Worker version means no deploy: versionChanged false; unknown version: null', async () => {
+    for (const [now, was, expected] of [['v1', 'v1', false], [undefined, 'v1', null], ['v1', undefined, null]] as const) {
+      const h = harness({ config: { agentVersion: now }, initial: running({ agentVersion: was }) });
+      h.fc.markRunning();
+      await h.sup.recoverOrphan();
+      await h.until(() => h.fc.execs.length === 1);
+      h.fc.exits[0]!.resolve(0);
+      await h.settle();
+      expect(h.state.report!.agentRestarts[0]!.versionChanged).toBe(expected);
+    }
+  });
+
+  test('a crashed orphan (container gone) records the restart too', async () => {
+    const h = harness({ initial: running() });
+    await h.sup.recoverOrphan();
+    expect(h.state.report!.agentRestarts[0]).toMatchObject({ recovery: 'crashed', containerRunning: false });
+  });
+
+  test('a fresh attempt starts with no restarts', async () => {
+    const h = harness();
+    h.fc.setStdout(['BUILDD_WORKER_ID=w-x']);
+    h.sup.dispatch();
+    await h.until(() => h.fc.exits.length === 1);
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    expect(h.state.report!.agentRestarts).toEqual([]);
   });
 });
 
@@ -1031,5 +1225,109 @@ describe('scheduled dispatch (task.scheduled)', () => {
     const h = harness();
     expect(h.sup.fireScheduledDispatch({ notBefore: 1 }, 'sched-9')).toMatchObject({ fired: false, reason: 'superseded' });
     expect(h.fc.starts).toHaveLength(0);
+  });
+});
+
+describe('container class: the report says which class ran and why, and how the run ended', () => {
+  const LARGE = { size: 'large', source: 'derived', reason: 'memory_pressure' } as const;
+
+  test("a large agent's report: its class, buildd's decision, its instance type, weighted runner-seconds", async () => {
+    let t = 1_000;
+    const h = harness({ config: { runnerSize: 'large', instanceType: 'standard-3' }, now: () => t });
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-l']);
+    h.sup.dispatch({ runnerSize: LARGE });
+    await h.until(() => h.state.workerId === 'worker-l');
+    t = 61_000;
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    expect(h.state.runnerSize).toEqual(LARGE);
+    expect(h.state.report).toMatchObject({
+      instanceType: 'standard-3',
+      interruption: null,
+      runnerSize: { size: 'large', source: 'derived', reason: 'memory_pressure', weight: 2, runnerSeconds: 60, weightedRunnerSeconds: 120 },
+    });
+  });
+
+  test('the decision carries over to the agent\'s own retries, which never re-ask', async () => {
+    const NOW = 2_000_000;
+    const h = harness({ config: { runnerSize: 'large' }, now: () => NOW });
+    h.fc.setStdout(['BUILDD_CLAIM_DEFERRED=workspace_cap']);
+    h.sup.dispatch({ runnerSize: LARGE });
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(5);
+    await h.settle();
+    const [id, entry] = [...h.sched.scheduled.entries()][0]!;
+    h.fc.setStdout([]);
+    h.sup.fireScheduledDispatch(entry.payload, id);
+    expect(h.state.runnerSize).toEqual(LARGE);
+  });
+
+  test('task.scheduled stores the decision with the wake and hands it to the run it starts', async () => {
+    const NOW = 2_000_000;
+    const h = harness({ config: { runnerSize: 'large' }, now: () => NOW });
+    await h.sup.scheduleDispatch(NOW + 60_000, { runnerSize: LARGE });
+    const [id, entry] = [...h.sched.scheduled.entries()][0]!;
+    expect(entry.payload.runnerSize).toEqual(LARGE);
+    h.sup.fireScheduledDispatch(entry.payload, id);
+    expect(h.state.runnerSize).toEqual(LARGE);
+  });
+
+  test('the capacity retry applies per class: a large start refused for capacity defers and retries in the large agent', async () => {
+    const NOW = 2_000_000;
+    const h = harness({ config: { runnerSize: 'large', instanceType: 'standard-3' }, now: () => NOW });
+    (h.fc.container as { start: ContainerPort['start'] }).start = () => {
+      throw new Error('There is no container instance that can be provided to this Durable Object, try again later.');
+    };
+    h.sup.dispatch({ runnerSize: LARGE });
+    await h.settle();
+    expect(h.state).toMatchObject({ outcome: 'start_deferred', deferredRetryCount: 1 });
+    expect(h.state.report).toMatchObject({ instanceType: 'standard-3', runnerSize: { size: 'large', runnerSeconds: null }, deferredRetry: { reason: 'container_capacity' } });
+    expect(h.sched.scheduled.size).toBe(1);
+  });
+
+  test('interruption: the container dying under the run is container_stopped', async () => {
+    const h = harness();
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-7']);
+    h.sup.dispatch();
+    await h.until(() => h.state.workerId === 'worker-7');
+    h.fc.kill();
+    await h.settle();
+    expect(h.state.report!.interruption).toBe('container_stopped');
+  });
+
+  test('interruption: a runner that exits on its own (even badly) is none', async () => {
+    const h = harness();
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(137);
+    await h.settle();
+    expect(h.state.report!.interruption).toBeNull();
+  });
+
+  test('interruption: a park waiting for an answer is question', async () => {
+    const h = harness({ config: { resumableRuns: true } });
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-p1', 'BUILDD_PARKED=worker-p1']);
+    h.sup.dispatch();
+    await h.until(() => h.state.workerId === 'worker-p1');
+    h.fc.exits[0]!.resolve(4);
+    await h.settle();
+    expect(h.state.report!.interruption).toBe('question');
+  });
+
+  test('interruption: an orphan found after the agent restarted (a deploy) is agent_restart', async () => {
+    const h = harness({ initial: { taskId: TASK_ID, attempt: 3, status: 'running', workerId: 'w-orphan', startedAt: 1, runnerSize: LARGE } });
+    await h.sup.recoverOrphan();
+    await h.settle();
+    expect(h.state.report).toMatchObject({ outcome: 'crashed', interruption: 'agent_restart' });
+  });
+
+  test('resource metric lines land in the report', async () => {
+    const h = harness();
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-r', 'BUILDD_METRIC=mem_peak_bytes 3900000000', 'BUILDD_METRIC=mem_limit_bytes 4294967296', 'BUILDD_METRIC=disk_free_min_bytes 2000000000']);
+    h.sup.dispatch();
+    await h.until(() => h.state.workerId === 'worker-r');
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    expect(h.state.report!.resources).toEqual({ memoryPeakBytes: 3_900_000_000, memoryLimitBytes: 4_294_967_296, diskFreeMinBytes: 2_000_000_000, diskTotalBytes: null });
   });
 });

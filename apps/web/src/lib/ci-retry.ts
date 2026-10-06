@@ -82,9 +82,17 @@ export interface PrFixAttemptRow {
   creationSource: string | null;
   outputRequirement?: string | null;
   ciRetryPrNumber: number | null;
+  conflictRetryPrNumber?: number | null;
   context: unknown;
   createdAt: Date | string;
 }
+
+/**
+ * How long a conflict-fix attempt may sit `pending` before it stops counting as
+ * in flight. Its job (resolve a merge conflict) is usually done by a dev-merge
+ * push while it waits; an unclaimed one must not block CI retries forever.
+ */
+export const STALE_PENDING_CONFLICT_FIX_MS = 30 * 60 * 1000;
 
 /**
  * What the fix attempts already filed for one PR say about the next CI failure.
@@ -105,7 +113,12 @@ export function summarizePrFixAttempts(
   prNumber: number,
 ): { inFlight: PrFixAttemptRow | null; ciRetriesUsed: number } {
   const time = (r: PrFixAttemptRow) => new Date(r.createdAt).getTime();
-  const inFlight = rows.find((r) => isOpenTaskStatus(r.status)) ?? null;
+  const now = Date.now();
+  const staleUnclaimedConflictFix = (r: PrFixAttemptRow) =>
+    r.status === 'pending' &&
+    r.conflictRetryPrNumber === prNumber &&
+    now - time(r) > STALE_PENDING_CONFLICT_FIX_MS;
+  const inFlight = rows.find((r) => isOpenTaskStatus(r.status) && !staleUnclaimedConflictFix(r)) ?? null;
 
   const ciRows = rows.filter((r) => r.ciRetryPrNumber === prNumber);
   const lastManual = ciRows

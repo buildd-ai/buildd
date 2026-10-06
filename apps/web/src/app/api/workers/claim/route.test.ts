@@ -258,8 +258,10 @@ mock.module('@/lib/pusher', () => ({
   triggerEvent: mock(() => Promise.resolve()),
 }));
 const mockAnnounceFixClaimed = mock(() => Promise.resolve());
+const mockAnnounceReviewClaimed = mock(() => Promise.resolve());
 mock.module('@/lib/pr-activity-fix-claimed', () => ({
   announceFixClaimed: mockAnnounceFixClaimed,
+  announceReviewClaimed: mockAnnounceReviewClaimed,
 }));
 mock.module('@/lib/notify', () => ({
   notify: mock(() => {}),
@@ -1066,6 +1068,37 @@ describe('POST /api/workers/claim', () => {
       expect(data.workers[0].taskId).toBe('task-1');
     });
 
+    // Filing a reviewer only says "Review queued" on the PR; the claim is what
+    // makes "Reviewing" true. One claim, one announcement.
+    it('announces a claimed reviewer task to the PR comment exactly once', async () => {
+      const loginAccount = { id: 'acct-login', type: 'user', teamId: 'team-personal' };
+      mockAuthenticateApiKey.mockResolvedValue({
+        ...loginAccount, authType: 'api', level: 'worker', maxConcurrentWorkers: 3, workspaceIds: null,
+      });
+      mockGetAccountWorkspacePermissions.mockResolvedValue(linksFor(loginAccount));
+      mockWorkspacesFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValueOnce([{ id: 'ws-mine' }]);
+      mockTasksFindMany.mockResolvedValueOnce([{
+        ...pendingTask(),
+        title: 'Review PR #42: First task',
+        context: { reviewerFor: 'task-0', prNumber: 42 },
+      }]);
+      setupClaimWrites();
+      mockAnnounceReviewClaimed.mockClear();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+      expect(res.status).toBe(200);
+      expect((await res.json()).workers).toHaveLength(1);
+      expect(mockAnnounceReviewClaimed).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceReviewClaimed).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'task-1',
+        context: expect.objectContaining({ reviewerFor: 'task-0', prNumber: 42 }),
+      }));
+    });
+
     it("another team's token still cannot claim there", async () => {
       const outsider = { id: 'acct-outsider', type: 'user', teamId: 'team-other' };
       mockAuthenticateApiKey.mockResolvedValue({
@@ -1386,7 +1419,7 @@ describe('POST /api/workers/claim', () => {
       // First findMany = claimable tasks; second = active-Codex-workspace derivation.
       mockTasksFindMany
         .mockResolvedValueOnce([pendingClaudeTask()])
-        .mockResolvedValueOnce([{ workspaceId: 'ws-1' }]);
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'codex', context: null }]);
       mockHasCodexCredential.mockResolvedValue(true);
       setupClaim();
 
@@ -1417,7 +1450,7 @@ describe('POST /api/workers/claim', () => {
       // second = active-Codex-workspace derivation.
       mockTasksFindMany
         .mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }])
-        .mockResolvedValueOnce([{ workspaceId: 'ws-1' }]);
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'codex', context: null }]);
       mockHasCodexCredential.mockResolvedValue(true);
       setupClaim();
 
@@ -1432,6 +1465,63 @@ describe('POST /api/workers/claim', () => {
       // Deferred, not claimed — the atomic claim UPDATE never runs for this task.
       expect(data.workers.length).toBe(0);
       expect(data.diagnostics?.deferrals?.codex_single_flight).toBe(1);
+    });
+
+    // Regression: budget failover flips a Claude task to Codex in memory only —
+    // the row keeps backend:'claude' and the flip lives in the claim stamp. The
+    // busy-workspace derivation read the stored column, so a failover-started
+    // Codex run was invisible to the NEXT claim request, which flipped another
+    // Claude task onto the same Codex window. The runner's backstop then killed
+    // each one as "Deferred: another Codex worker ... is already active".
+    it('treats a failover-started Codex run as occupying the workspace Codex slot', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'oauth' as const,
+        maxConcurrentSessions: 10, activeSessions: 0,
+      });
+      mockWorkersFindMany.mockResolvedValue([
+        { id: 'w-active', taskId: 'task-active', status: 'running', workspaceId: 'ws-1' },
+      ]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }])
+        .mockResolvedValueOnce([{
+          workspaceId: 'ws-1',
+          backend: 'claude',
+          context: { backendRouting: { backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted' } },
+        }]);
+      mockHasCodexCredential.mockResolvedValue(true);
+      setupClaim();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner', capabilities: ['backend:codex', 'CODEX_HOME'] },
+      }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(0);
+      expect(data.diagnostics?.deferrals?.codex_single_flight).toBe(1);
+    });
+
+    it('does not count an active Claude run as occupying the Codex slot', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'oauth' as const,
+        maxConcurrentSessions: 10, activeSessions: 0,
+      });
+      mockWorkersFindMany.mockResolvedValue([
+        { id: 'w-active', taskId: 'task-active', status: 'running', workspaceId: 'ws-1' },
+      ]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }])
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'claude', context: {} }]);
+      mockHasCodexCredential.mockResolvedValue(true);
+      setupClaim();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner', capabilities: ['backend:codex', 'CODEX_HOME'] },
+      }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.diagnostics?.deferrals?.codex_single_flight ?? 0).toBe(0);
     });
   });
 

@@ -39,6 +39,7 @@ import {
 import type { EgressProps } from './egress';
 import { otlpInterceptHosts } from './otel';
 import { SNAPSHOT_HOST, type SnapshotScope } from './snapshots';
+import { instanceTypeFor, normalizeRunnerSizeDecision, type RunnerSize } from './runner-class';
 import {
   TaskSupervisor,
   type ContainerPort,
@@ -61,6 +62,14 @@ export class WorkerAgent extends Agent<Env, RunState> {
   static options = { sendIdentityOnConnect: false };
 
   private supervisorInstance: TaskSupervisor | null = null;
+
+  /**
+   * The container class this agent's container is (wrangler.jsonc binds one
+   * container class per agent class). WorkerAgentLarge overrides it.
+   */
+  protected get runnerSize(): RunnerSize {
+    return 'standard';
+  }
 
   private get supervisor(): TaskSupervisor {
     if (this.supervisorInstance) return this.supervisorInstance;
@@ -88,9 +97,12 @@ export class WorkerAgent extends Agent<Env, RunState> {
         WARM_REPOS: warmReposEnabled(env) ? '1' : undefined,
         RESUMABLE_RUNS: resumableRunsEnabled(env) ? '1' : undefined,
         resumableRuns: resumableRunsEnabled(env),
+        agentVersion: env.CF_VERSION_METADATA?.id,
         inactivityTimeoutMs: resolveInactivityTimeoutMs(env),
         startTimeoutMs: resolveStartTimeoutMs(env),
-        instanceType: env.CONTAINER_INSTANCE_TYPE,
+        // The class actually used: this agent's, whatever was asked for.
+        instanceType: instanceTypeFor(this.runnerSize, env),
+        runnerSize: this.runnerSize,
         // No instance ID on ctx.container; the container is bound to this
         // Durable Object and Cloudflare identifies the instance by its ID
         // (run-report.ts, RunReport.containerInstanceId).
@@ -122,12 +134,13 @@ export class WorkerAgent extends Agent<Env, RunState> {
 
   /** RPC from the dispatcher Worker. Idempotent while a run is live. */
   async dispatch(request: DispatchRequest = {}): Promise<DispatchResult> {
-    return this.supervisor.dispatch(request);
+    const runnerSize = normalizeRunnerSizeDecision(request.runnerSize) ?? undefined;
+    return this.supervisor.dispatch({ ...request, runnerSize });
   }
 
   /** RPC from the dispatcher Worker for `task.scheduled`: start a run at `notBefore` (epoch ms). */
-  async scheduleDispatch(notBefore: number): Promise<ScheduleDispatchResult> {
-    return this.supervisor.scheduleDispatch(notBefore);
+  async scheduleDispatch(notBefore: number, runnerSize?: unknown): Promise<ScheduleDispatchResult> {
+    return this.supervisor.scheduleDispatch(notBefore, { runnerSize: normalizeRunnerSizeDecision(runnerSize) ?? undefined });
   }
 
   /**
@@ -296,7 +309,7 @@ export class WorkerAgent extends Agent<Env, RunState> {
     const container = this.ctx.container;
     if (!container) throw new Error('WorkerAgent has no container binding');
     const exports = (this.ctx as unknown as { exports: EgressExports }).exports;
-    const handler = exports.EgressHandler({ props: { taskId: this.name } });
+    const handler = exports.EgressHandler({ props: { taskId: this.name, runnerSize: this.runnerSize } });
     for (const host of INTERCEPTED_HOSTS) {
       await container.interceptOutboundHttps(host, handler);
       await container.interceptOutboundHttp(host, handler);
@@ -310,5 +323,16 @@ export class WorkerAgent extends Agent<Env, RunState> {
     if (warmReposEnabled(this.env) || resumableRunsEnabled(this.env)) {
       await container.interceptOutboundHttps(SNAPSHOT_HOST, handler);
     }
+  }
+}
+
+/**
+ * The same agent on the large container class (standard-3; wrangler.jsonc
+ * `WorkerAgentLarge`). Only the class differs: buildd picks it per task at
+ * dispatch (runner-class.ts), and everything a run does is the same.
+ */
+export class WorkerAgentLarge extends WorkerAgent {
+  protected override get runnerSize(): RunnerSize {
+    return 'large';
   }
 }

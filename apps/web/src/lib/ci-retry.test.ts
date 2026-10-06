@@ -325,6 +325,14 @@ describe('summarizePrFixAttempts', () => {
     expect(summarizePrFixAttempts([row({ status: 'completed' }), row({ status: 'failed' })], 42).inFlight).toBeNull();
   });
 
+  it('ignores a long-pending conflict-fix attempt but not a fresh one', () => {
+    const stale = row({ id: 'c', status: 'pending', ciRetryPrNumber: null, conflictRetryPrNumber: 42 });
+    expect(summarizePrFixAttempts([stale], 42).inFlight).toBeNull();
+    const fresh = { ...stale, createdAt: new Date().toISOString() };
+    expect(summarizePrFixAttempts([fresh], 42).inFlight?.id).toBe('c');
+    expect(summarizePrFixAttempts([{ ...stale, status: 'in_progress' }], 42).inFlight?.id).toBe('c');
+  });
+
   it('counts only agent-authored automatic CI retries', () => {
     const { ciRetriesUsed } = summarizePrFixAttempts([
       row({ id: '1' }),

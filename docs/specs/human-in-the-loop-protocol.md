@@ -2,7 +2,7 @@
 title: Human-in-the-Loop Protocol
 status: active
 owner: max
-last_verified: 2026-10-02
+last_verified: 2026-10-06
 summary: Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 domain: tasks
 surfaces: [apps/web/src/lib/question-hold.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts, apps/web/src/app/api/workers/[id]/question-check/route.ts, apps/runner/src/question-gate.ts, packages/core/question-brief.ts, packages/core/question-gate.ts]
@@ -125,14 +125,12 @@ path unchanged.
   remains queryable via `getFailureSignatureFamily`'s `errorPrefix:
   "needs_input:"` rollup, which intentionally scans every failed/error row
   regardless of this exclusion.
-- **`deriveTaskPhase` checks a pending question before a failed task status.**
-  (`apps/web/src/lib/task-presentation.ts`). The waiting_input timeout — and
-  any other path that still reports `needs_input` as a failure — flips
-  `tasks.status` to `'failed'` as part of building its retry; if the phase
-  derivation checked `taskStatus === 'failed'` first, the `waiting_input`
-  phase (and the respond affordance rendered from it) could never appear once
-  that happened. A genuine `completed` task status still wins over a stale
-  `waitingFor`.
+- **An open ask requires a waiting worker and a nonterminal task.**
+  `isOpenAsk` gates task-page question heroes, Home asks, chat cards and
+  notification answer links. Retained `waitingFor` or an open question note
+  alone cannot revive an ended worker. Completed, failed and cancelled tasks
+  show past questions collapsed, with the recorded reply or "Not answered".
+  `deriveTaskPhase` preserves a terminal outcome over any retained question.
 - **The mission auto-retry gate excludes `needs_input`.** The PATCH route's
   per-task auto-retry (`shouldAutoRetry`, gated on `status === 'failed'`) must
   never blind-requeue a task whose failure is a parked question — that
@@ -224,11 +222,12 @@ path unchanged.
   with a `needs_input:`-prefixed error WHEN the PATCH route evaluates its
   auto-retry gate THEN `shouldAutoRetry` is `false` — the task is not
   blind-requeued ahead of a human answering.
-- AC-HITL-35: GIVEN `taskStatus: 'failed'` and a live `workerWaitingFor` (or
-  `workerStatus: 'waiting_input'`) WHEN `deriveTaskPhase` runs THEN the result
-  is `'waiting_input'`, not `'failed'`; GIVEN `taskStatus: 'completed'` WHEN
-  the same stale `workerWaitingFor` is present THEN the result is still
-  `'completed'`.
+- AC-HITL-35: GIVEN a nonterminal task and `workerStatus: 'waiting_input'`
+  WHEN its question is rendered THEN the ask is open; GIVEN a completed,
+  failed or cancelled task, or an ended worker, with a retained question
+  WHEN task, Home, chat or needs-input surfaces render THEN no answer control
+  or open-ask count is offered. Past questions are collapsed with the recorded
+  reply or "Not answered". A retained prompt alone never overrides task phase.
 - AC-HITL-36: GIVEN a `waitingFor.type === 'question'` payload whose `prompt`
   is empty, whitespace-only, or the literal runner fallback `'Awaiting input'`
   WHEN the PATCH route persists it THEN the stored `waitingFor` carries
@@ -292,8 +291,9 @@ path unchanged.
   `buildSignatureFamily` still scans it)
 - `apps/web/src/lib/stale-workers.ts` (`cleanupStuckWaitingInput` writes
   `exitCause: 'needs_input'`)
-- `apps/web/src/lib/task-presentation.ts` (`deriveTaskPhase` — pending
-  question checked before `taskStatus === 'failed'`)
+- `apps/web/src/lib/task-presentation.ts` (`deriveTaskPhase` — terminal
+  outcome wins over a retained question)
+- `apps/web/src/lib/open-ask.ts` (`isOpenAsk`, `isOpenQuestionNote`)
 - `apps/web/src/app/api/tasks/waiting-input/route.ts`
 - `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.tsx:331`
   (`worker-needs-input-banner`), fixtures at

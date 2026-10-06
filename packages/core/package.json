@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.281.0",
+  "version": "0.283.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -35,6 +35,8 @@
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
     "./entitlements": "./entitlements.ts",
+    "./billing-limits": "./billing-limits.ts",
+    "./billing": "./billing.ts",
     "./branch-names": "./branch-names.ts",
     "./budget-alerts": "./budget-alerts.ts",
     "./oauth-budget": "./oauth-budget.ts",

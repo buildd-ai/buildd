@@ -6,12 +6,12 @@ import { CHAT_PROVIDER_INFO, chatKeySummary, type ProviderKeysView } from '@/lib
 import { listProviderKeys, removeProviderKey, setProviderKey, testProviderKey } from '@/lib/provider-keys-api';
 import { ProviderKeyCard } from '@/components/settings/ProviderKeyCard';
 import { chatKeyLine, ownKeyProviders } from './chat-key-line';
-import ConnectOpenRouterButton from '@/components/settings/ConnectOpenRouterButton';
 
 /**
  * Account → chat key. One line that links to Model providers: what chat uses
  * for you. Team setup lives there; this only shows the outcome of the team's
- * key policy, plus your own key when the policy allows or requires one.
+ * key policy, plus your own key when the policy allows or requires one, for
+ * each provider the team has enabled that takes personal keys.
  */
 export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: string | null; isAdmin: boolean }) {
   const [view, setView] = useState<ProviderKeysView | null>(null);
@@ -32,13 +32,14 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
   if (!teamId) return null;
 
   const summary = view ? chatKeySummary(view) : null;
-  const line = summary && view ? chatKeyLine(summary, { isAdmin }) : null;
+  const offered = view ? ownKeyProviders(view.providers) : [];
+  const line = summary ? chatKeyLine(summary, { isAdmin, offered }) : null;
   const ownAllowed = view ? view.keyPolicy !== 'team' : false;
   const required = view?.keyPolicy === 'own';
-  const hasOwn = summary?.kind === 'own';
-  const offered = view ? ownKeyProviders(view.providers) : [];
+  const hasOwn = !!view?.providers.some((p) => p.mine);
 
-  const cards = (ids: readonly string[]) => CHAT_PROVIDER_INFO.filter((i) => ids.includes(i.id)).map((info) => {
+  // The same card and API calls as Team → Model providers, at your scope.
+  const cards = CHAT_PROVIDER_INFO.filter((i) => offered.includes(i.id)).map((info) => {
     const card = view?.providers.find((p) => p.provider === info.id);
     return (
       <ProviderKeyCard
@@ -69,24 +70,12 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
         <span aria-hidden className="shrink-0 text-text-muted">→</span>
       </Link>
 
-      {/* Everyone brings their own key and you have none: one button, the
-          paste field behind a quiet disclosure. */}
-      {view && required && !hasOwn && (
-        <div className="mt-3 space-y-3">
-          <ConnectOpenRouterButton scope="user" teamId={teamId} returnTo="/app/settings/account" />
-          <details className="group">
-            <summary className="cursor-pointer text-xs text-text-secondary hover:text-text-primary list-none">
-              <span aria-hidden className="inline-block w-3 group-open:rotate-90 transition-transform">▸</span> Paste a key instead
-            </summary>
-            <div className="mt-2.5 space-y-2.5">{cards(offered)}</div>
-          </details>
-        </div>
-      )}
-      {view && required && hasOwn && (
-        <div className="mt-3 space-y-2.5">{cards(offered.filter((p) => view.providers.find((c) => c.provider === p)?.mine))}</div>
+      {/* Everyone brings their own key: the providers on offer, in the open. */}
+      {view && required && cards.length > 0 && (
+        <div className="mt-3 space-y-2.5" data-testid="own-key-cards">{cards}</div>
       )}
 
-      {view && ownAllowed && !required && (
+      {view && ownAllowed && !required && cards.length > 0 && (
         <details className="mt-3 group" open={hasOwn}>
           <summary className="cursor-pointer text-xs text-text-secondary hover:text-text-primary list-none">
             <span aria-hidden className="inline-block w-3 group-open:rotate-90 transition-transform">▸</span> Use my own key instead
@@ -94,7 +83,7 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
           {hasOwn && (
             <p className="text-xs text-text-secondary mt-2">Billed for your use only. Remove it to use the team key.</p>
           )}
-          <div className="mt-2.5 space-y-2.5">{cards(offered)}</div>
+          <div className="mt-2.5 space-y-2.5" data-testid="own-key-cards">{cards}</div>
         </details>
       )}
     </section>

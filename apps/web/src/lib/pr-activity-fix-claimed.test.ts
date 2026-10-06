@@ -14,7 +14,7 @@ mock.module('./pr-activity-comment', () => ({
   taskActivityUrl: (id: string) => `https://buildd.dev/app/tasks/${id}`,
 }));
 
-const { fixAttemptOf, announceFixClaimed, announceFixEnded } = await import('./pr-activity-fix-claimed');
+const { fixAttemptOf, announceFixClaimed, announceFixEnded, reviewerClaimOf, announceReviewClaimed } = await import('./pr-activity-fix-claimed');
 
 beforeEach(() => {
   workspaceRow = { id: 'ws-1', githubRepo: { fullName: 'o/r', installation: { installationId: 42 } } };
@@ -102,5 +102,43 @@ describe('announceFixEnded', () => {
   it('never throws — a worker update must not fail on a status comment', async () => {
     mockWorkspacesFindFirst.mockImplementationOnce(async () => { throw new Error('db down'); });
     await expect(announceFixEnded({ id: 't', workspaceId: 'ws-1', ciRetryPrNumber: 7 }, 'completed')).resolves.toBeUndefined();
+  });
+});
+
+describe('announceReviewClaimed', () => {
+  const reviewer = {
+    id: 'rev-1', workspaceId: 'ws-1', title: 'Review PR #3678: x',
+    context: { reviewerFor: 'task-0', prNumber: 3678, headSha: 'abc' },
+  };
+
+  it('recognises a reviewer task by reviewerFor + prNumber', () => {
+    expect(reviewerClaimOf(reviewer)).toEqual({ prNumber: 3678 });
+    expect(reviewerClaimOf({ id: 't', workspaceId: 'ws-1', context: { prNumber: 3678 } })).toBeNull();
+    expect(reviewerClaimOf({ id: 't', workspaceId: 'ws-1', context: { reviewerFor: 'task-0' } })).toBeNull();
+  });
+
+  it('appends exactly one reviewing entry, only on a comment that already exists', async () => {
+    await announceReviewClaimed(reviewer);
+    expect(mockAppend).toHaveBeenCalledTimes(1);
+    const arg = (mockAppend.mock.calls[0] as unknown as [Record<string, any>])[0];
+    expect(arg).toMatchObject({
+      installationId: 42,
+      repoFullName: 'o/r',
+      prNumber: 3678,
+      onlyIfPresent: true,
+      entry: { kind: 'reviewing', taskUrl: 'https://buildd.dev/app/tasks/rev-1' },
+    });
+  });
+
+  it('a fix attempt is not a review claim, and vice versa', async () => {
+    await announceReviewClaimed({ id: 't', workspaceId: 'ws-1', reviewerRetryPrNumber: 7 });
+    expect(mockAppend).not.toHaveBeenCalled();
+    await announceFixClaimed(reviewer);
+    expect(mockAppend).not.toHaveBeenCalled();
+  });
+
+  it('never throws — a claim must not fail on a status comment', async () => {
+    mockWorkspacesFindFirst.mockImplementationOnce(async () => { throw new Error('db down'); });
+    await expect(announceReviewClaimed(reviewer)).resolves.toBeUndefined();
   });
 });

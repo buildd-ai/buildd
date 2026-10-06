@@ -4,6 +4,7 @@ import { teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { roleHas, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
+import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
 
 export async function GET(
   req: NextRequest,
@@ -121,6 +122,10 @@ export async function POST(
     if (existingMembership) {
       return NextResponse.json({ error: 'User is already a team member' }, { status: 409 });
     }
+
+    // Past the paid seats: refuse and point at Billing, never charge silently.
+    const seat = await checkSeatForNewMember(teamId, { countPending: true });
+    if (!seat.ok) return seatsExhaustedResponse(seat, 'manager');
 
     await db
       .insert(teamMembers)

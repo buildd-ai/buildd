@@ -30,3 +30,11 @@ describe('phone Home inbox', () => {
     expect(html).not.toContain('past the');
   });
 });
+
+it('human review links to GitHub with machine status and no merge button', () => {
+  const html = render(deriveHomeAttention({ queue: [{ subjectKey: 'review', chip: 'REVIEW', prNumber: 7, workspaceId: 'example', taskTitle: 'A change', prUrl: 'https://github.com/example/project/pull/7', humanReview: { label: 'Approve on GitHub', reason: 'Review required · protected migration paths' }, machineStatus: 'CI running' }], questions: [], held: [], missions: [] }));
+  expect(html).toContain('Approve on GitHub');
+  expect(html).toContain('CI running');
+  expect(html).toContain('/pull/7/files');
+  expect(html).not.toMatch(/>Merge<|>Merge anyway</);
+});
