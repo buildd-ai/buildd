@@ -5,6 +5,11 @@ const mockAuthenticateApiKey = mock(() => Promise.resolve(null as any));
 const mockResolveWorkerByPrNumber = mock((..._args: any[]) => Promise.resolve({ error: 'PR not found', status: 404 } as any));
 const mockRecordPrSupersession = mock((..._args: any[]) => Promise.resolve({ ok: false, error: 'not called', status: 500 } as any));
 const mockWorkersFindFirst = mock(() => Promise.resolve(null as any));
+const mockTaskNamesPr = mock((task: any, prNumber: number) => {
+  if (!task) return false;
+  const text = `${task.title ?? ''}\n${task.description ?? ''}`;
+  return new RegExp(`(?:#|/pull/)${prNumber}(?!\\d)`).test(text);
+});
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/pr-resolve', () => ({ resolveWorkerByPrNumber: mockResolveWorkerByPrNumber }));
@@ -14,6 +19,7 @@ mock.module('@buildd/core/db', () => ({
 }));
 mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'id' } }));
 mock.module('drizzle-orm', () => ({ eq: (a: any, b: any) => ({ type: 'eq', a, b }) }));
+mock.module('@/lib/agent-capabilities/pr-ownership', () => ({ taskNamesPr: mockTaskNamesPr }));
 
 import { POST } from './route';
 
@@ -42,6 +48,12 @@ function reset() {
   } as any));
   mockWorkersFindFirst.mockReset();
   mockWorkersFindFirst.mockImplementation(() => Promise.resolve({ id: 'w-1', workspace: { teamId: 'team-1' } } as any));
+  mockTaskNamesPr.mockReset();
+  mockTaskNamesPr.mockImplementation((task: any, prNumber: number) => {
+    if (!task) return false;
+    const text = `${task.title ?? ''}\n${task.description ?? ''}`;
+    return new RegExp(`(?:#|/pull/)${prNumber}(?!\\d)`).test(text);
+  });
 }
 
 describe('POST /api/github/pr/supersede', () => {
@@ -216,5 +228,62 @@ describe('per-task token', () => {
     mockAuthenticateApiKey.mockImplementation(() => Promise.resolve({ id: 'acc-1', teamId: 'team-1', name: 'Agent Bob' } as any));
     await POST(makeRequest({ prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
     expect(mockRecordPrSupersession.mock.calls[0][0]).not.toHaveProperty('targetRepoWithinWorkspace');
+  });
+
+  it('allows superseding a PR the task names in its title (even if owned by a sibling task)', async () => {
+    // A "Fix goal criterion" task naming #3744 in its title can supersede #3744
+    // even if it belongs to a different task
+    const taskWithNamedPr = { title: 'Fix goal criterion: all task PRs merged (#3744)', description: '' };
+    mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(
+      worker({ id: 'w-2', taskId: 't-2', prNumber: 3744, task: taskWithNamedPr }) as any
+    ));
+    mockWorkersFindFirst.mockImplementation(() => Promise.resolve(
+      worker({ id: 'w-2', taskId: 't-2', prNumber: 3744, task: taskWithNamedPr }) as any
+    ));
+    mockTaskNamesPr.mockImplementation((task, prNumber) => {
+      if (!task) return false;
+      const text = `${task.title ?? ''}\n${task.description ?? ''}`;
+      return new RegExp(`(?:#|/pull/)${prNumber}(?!\\d)`).test(text);
+    });
+
+    const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'task t-1 names this PR' }));
+    expect(res.status).toBe(200);
+    expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({
+      workerId: 'w-2',
+      supersedingPrNumber: 3748,
+    }));
+  });
+
+  it('allows superseding via prNumber when the task names it in description', async () => {
+    const taskWithNamedPr = { title: 'Task', description: 'This PR #3744 needs supersession' };
+    mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(
+      worker({ id: 'w-2', taskId: 't-2', prNumber: 3744, task: taskWithNamedPr }) as any
+    ));
+    mockWorkersFindFirst.mockImplementation(() => Promise.resolve(
+      worker({ id: 'w-2', taskId: 't-2', prNumber: 3744, task: taskWithNamedPr }) as any
+    ));
+    mockTaskNamesPr.mockImplementation((task, prNumber) => {
+      if (!task) return false;
+      const text = `${task.title ?? ''}\n${task.description ?? ''}`;
+      return new RegExp(`(?:#|/pull/)${prNumber}(?!\\d)`).test(text);
+    });
+
+    const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'task named it' }));
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses superseding a PR the task does not own or name', async () => {
+    const taskWithoutNamedPr = { title: 'Some task', description: 'No PR reference here' };
+    mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(
+      worker({ id: 'w-2', taskId: 't-2', prNumber: 3744, task: taskWithoutNamedPr }) as any
+    ));
+    mockWorkersFindFirst.mockImplementation(() => Promise.resolve(
+      worker({ id: 'w-2', taskId: 't-2', prNumber: 3744, task: taskWithoutNamedPr }) as any
+    ));
+    mockTaskNamesPr.mockImplementation(() => false);
+
+    const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'should fail' }));
+    expect(res.status).toBe(403);
+    expect(mockRecordPrSupersession).not.toHaveBeenCalled();
   });
 });

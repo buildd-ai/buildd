@@ -18,6 +18,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr } from '@/lib/tas
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { recordPrSupersession } from '@/lib/pr-supersession';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
+import { taskNamesPr } from '@/lib/agent-capabilities/pr-ownership';
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -78,11 +79,21 @@ export async function POST(req: NextRequest) {
     if (!(await canActOnWorkerPr(account, resolved))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
+    // Load task data for taskNamesPr check below
+    if (!resolved.task) {
+      const worker = await db.query.workers.findFirst({
+        where: eq(workers.id, resolved.id),
+        with: { task: true },
+      });
+      if (worker?.task) {
+        resolved.task = worker.task;
+      }
+    }
   } else if (workerId) {
     // workerId supplied directly — still must belong to the caller's team.
     resolved = await db.query.workers.findFirst({
       where: eq(workers.id, workerId),
-      with: { workspace: true },
+      with: { workspace: true, task: true },
     });
     if (!resolved) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     if (!(await canActOnWorkerPr(account, resolved))) {
@@ -93,8 +104,14 @@ export async function POST(req: NextRequest) {
   }
   const resolvedWorkerId = resolved.id as string;
 
+  // A task token may supersede its own task's PR, or a PR its task names
+  // (similar to agentRunMayActOnPr). This allows "Fix goal criterion" tasks
+  // to record supersession for sibling tasks' orphaned PRs that shipped
+  // elsewhere on the same mission.
   if (account.taskScope && (resolved.prNumber == null || !taskScopeAllowsWorkerPr(account, resolved, resolved.prNumber))) {
-    return NextResponse.json({ error: 'A task token may supersede only its own PR' }, { status: 403 });
+    if (prNumber == null || !taskNamesPr(resolved.task, prNumber)) {
+      return NextResponse.json({ error: 'A task token may supersede only its own PR or a PR the task names' }, { status: 403 });
+    }
   }
 
   const result = await recordPrSupersession({
