@@ -5,7 +5,8 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { FlowSeries, FlowWindow } from '@/lib/insights-flow';
 import { FLOW_WINDOWS } from '@/lib/insights-flow';
 import { FlowChart } from '@/components/insights/FlowChart';
-import { formatDuration, formatHours, formatShare, roleHours } from '@/components/insights/flow-chart-model';
+import { formatHours, roleHours } from '@/components/insights/flow-chart-model';
+import { InsightsStats } from '@/components/insights/InsightsStats';
 
 interface Props {
   series: FlowSeries & { truncated: boolean };
@@ -17,7 +18,6 @@ export function InsightsClient({ series, window }: Props) {
   const roles = roleHours(series);
   const maxRole = Math.max(1e-9, ...roles.map(r => r.hours));
   const empty = series.tasks.length === 0;
-  const settled = headline.shippedHours + headline.lostHours;
 
   return (
     <div className="max-w-3xl mx-auto px-4 pt-14 pb-24 md:pt-6" data-testid="insights-page">
@@ -29,27 +29,12 @@ export function InsightsClient({ series, window }: Props) {
         <WindowPicker window={window} />
       </div>
 
-      {/* Headline: the one number, then the two that explain it. */}
-      <section className="mt-5 card p-4" data-testid="insights-headline">
-        <div className="text-eyebrow font-bold uppercase tracking-[2px] text-text-muted">Agent time that shipped</div>
-        <div className="mt-1 flex flex-wrap items-baseline gap-x-6 gap-y-2">
-          <span className="text-display font-bold text-text-primary">{formatShare(headline.shippedShare)}</span>
-          <span className="text-body text-text-secondary">
-            {headline.shippedTasks} {headline.shippedTasks === 1 ? 'task' : 'tasks'} shipped
-            {headline.releases > 0 && <> in {headline.releases} {headline.releases === 1 ? 'release' : 'releases'}</>}
-            {headline.medianStartToProdMs != null && <> · median {formatDuration(headline.medianStartToProdMs)} from first agent start to production</>}
-          </span>
-        </div>
-        <p className="mt-2 text-meta text-text-muted">
-          {settled > 0
-            ? `${formatHours(headline.shippedHours)} of agent time reached production; ${formatHours(headline.lostHours)} went into work that failed or was abandoned. Still in flight: ${formatHours(headline.inFlightHours)}. Research, review and planning without a PR (${formatHours(headline.otherHours)}) are left out.`
-            : 'Nothing finished in this window yet, so there is no share to show.'}
-        </p>
-      </section>
+      <div className="mt-5">
+        <InsightsStats headline={headline} />
+      </div>
 
       <section className="mt-5 card p-4">
         <h2 className="text-title font-semibold">Tasks by stage over time</h2>
-        <p className="mt-0.5 text-meta text-text-muted">Tap a band to see the tasks in it. Releases are the marks along the top.</p>
         <div className="mt-3">
           {empty ? (
             <p className="py-8 text-center text-body text-text-muted" data-testid="insights-empty">No agent work in this window.</p>
@@ -58,7 +43,7 @@ export function InsightsClient({ series, window }: Props) {
           )}
         </div>
         {series.truncated && (
-          <p className="mt-2 text-meta text-status-warning">Busy window: only the newest work is counted, so totals are a floor.</p>
+          <p className="mt-2 text-meta text-status-warning">Newest work only: totals are a floor.</p>
         )}
       </section>
 
@@ -78,10 +63,6 @@ export function InsightsClient({ series, window }: Props) {
           </ul>
         </section>
       )}
-
-      <p className="mt-5 text-meta text-text-muted">
-        &ldquo;Needs input&rdquo; counts open questions now. Earlier waits show as running.
-      </p>
     </div>
   );
 }
