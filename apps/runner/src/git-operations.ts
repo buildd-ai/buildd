@@ -1318,7 +1318,13 @@ export async function collectGitStats(
 ): Promise<GitStats> {
   if (!cwd) return {};
 
-  const opts = { cwd, timeout: 5000, encoding: 'utf-8' as const };
+  // cwd is the worker's own live worktree; this can run while the agent is
+  // still staging/committing there. `diff`/`status` below would otherwise
+  // opportunistically rewrite the on-disk index to cache fresh stat info,
+  // taking index.lock and racing the agent's own git calls for it.
+  // GIT_OPTIONAL_LOCKS=0 skips that write-back without changing any output
+  // read here.
+  const opts = { cwd, timeout: 5000, encoding: 'utf-8' as const, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } };
   const stats: Record<string, number | string | boolean | undefined> = {};
 
   // Resolve the ref this worktree's own commits are measured against.
