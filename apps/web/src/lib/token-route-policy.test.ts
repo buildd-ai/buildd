@@ -37,6 +37,16 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/artifacts?workspaceId=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/workspaces/ws-b/config', 'PATCH'))).toBe(false);
   });
+  test('workspace-restricted tokens can list workspaces but not create one', () => {
+    // The listing filters to the token's own workspaces, so resolving a
+    // workspace by name works; creating one would escape the restriction.
+    const reader = { scopes: ['tasks:read'], workspaceIds: ['ws-a'] };
+    expect(canAccessTokenRoute(reader, request('/api/workspaces'))).toBe(true);
+    expect(canAccessTokenRoute(reader, request('/api/workspaces', 'HEAD'))).toBe(true);
+    const workspaceAdmin = { scopes: ['workspaces:admin'], workspaceIds: ['ws-a'] };
+    expect(canAccessTokenRoute(workspaceAdmin, request('/api/workspaces', 'POST'))).toBe(false);
+    expect(canAccessTokenRoute({ scopes: ['workspaces:admin'] }, request('/api/workspaces', 'POST'))).toBe(true);
+  });
   test('evidence reads take analytics:read, matching the read_evidence action', () => {
     const token = { scopes: ['analytics:read'] };
     expect(requiredTokenScope('/api/tasks/t-1/evidence', 'GET')).toBe('analytics:read');
