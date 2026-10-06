@@ -1,3 +1,4 @@
+import { isOpenAsk } from './open-ask';
 /**
  * The mission pulse: one segment per deliverable row, in a position that never
  * moves (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, "The shared object").
@@ -259,11 +260,12 @@ export function deriveFeedTaskState(row: DeliverableRow, ctx: MissionFeedContext
     state: 'needs_you', needsYou: reason, askedAt: Number.isFinite(at) ? at : fallbackAsk,
   });
 
-  if (task.worker?.status === 'waiting_input' || openAttempt?.worker?.status === 'waiting_input') {
+  const q = ctx.openQuestions?.get(task.id);
+  if (q != null && isOpenAsk(task.status, task.worker?.status)) return needs('question', ms(q));
+
+  if (isOpenAsk(task.status, task.worker?.status) || (openAttempt && isOpenAsk(openAttempt.status, openAttempt.worker?.status))) {
     return needs('input', ms(task.worker?.updatedAt ?? openAttempt?.worker?.updatedAt ?? null));
   }
-  const q = ctx.openQuestions?.get(task.id);
-  if (q != null) return needs('question', ms(q));
   const d = ctx.openDecisions?.get(task.id);
   if (d != null) return needs('decision', ms(d));
 

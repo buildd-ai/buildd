@@ -7,7 +7,7 @@ import { eq, desc, inArray, asc, ne, and, isNotNull, sql } from 'drizzle-orm';
 import { deriveTaskEyebrow, taskEyebrowText } from '@/lib/task-eyebrow';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied, findBlockingPrWorker } from '@/lib/task-presentation';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
-import { isAnswerableWaitingFor } from '@/lib/answer-resume';
+import { isOpenAsk, isOpenQuestionNote } from '@/lib/open-ask';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -255,7 +255,6 @@ export default async function TaskDetailPage({
         })
       : Promise.resolve(null),
   ]);
-  const openQuestionCount = openQuestionRows.length;
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
   const taskBackend = (task.backend as 'claude' | 'codex' | null) ?? null;
   // A failed run whose agent could not sign in to its model provider: the action
@@ -593,24 +592,13 @@ export default async function TaskDetailPage({
     }
   }
 
-  // Get the active worker (if any)
-  // Prefer a truly active worker; otherwise fall back to any worker that
-  // still has an unanswered question. The runner's inputAsRetry mode aborts
-  // the session when AskUserQuestion fires, leaving the worker in
-  // status=error with waitingFor populated — without this fallback the
-  // task page renders no worker and the user has nothing to click.
-  //
-  // Both steps go through isAnswerableWaitingFor — the rule /respond enforces —
-  // so a card is only ever rendered when answering it can work. A permission
-  // prompt left on an ended worker (its hook was denied when the session
-  // stopped) is dropped rather than offered as a live "Allow once".
-  const activeWorkerRow =
-    taskWorkers.find(w => isLiveWorkerStatus(w.status)) ||
-    taskWorkers.find(w => isAnswerableWaitingFor(w.status, w.waitingFor as { type?: string } | null));
-  const activeWorker = activeWorkerRow?.waitingFor
-    && !isAnswerableWaitingFor(activeWorkerRow.status, activeWorkerRow.waitingFor as { type?: string } | null)
-    ? { ...activeWorkerRow, waitingFor: null }
-    : activeWorkerRow;
+  // Never revive an ended worker merely because it retained a question.
+  const activeWorkerRow = !isTerminalTaskStatus(task.status)
+    ? taskWorkers.find(w => isLiveWorkerStatus(w.status)) : undefined;
+  const activeWorker = activeWorkerRow?.waitingFor && !isOpenAsk(task.status, activeWorkerRow.status)
+    ? { ...activeWorkerRow, waitingFor: null } : activeWorkerRow;
+
+  const openQuestionCount = openQuestionRows.filter(n => isOpenQuestionNote(n, task.status, activeWorker)).length;
 
   // Derive canonical display status from task + active worker state.
   // If the worker is running, the chip shows "Running" not "Assigned".
@@ -1234,6 +1222,7 @@ export default async function TaskDetailPage({
             task's included (S6: no mission gate). An open question is the
             decision, so it sits with the action, above anything to read. */}
         <TaskQuestionFeed
+          taskStatus={task.status}
           taskId={task.id}
           missionId={task.missionId ?? null}
           activeWorkerId={activeWorker?.id ?? null}
@@ -1576,6 +1565,7 @@ export default async function TaskDetailPage({
         {activeWorker && (
           <div className="mb-8 order-first" data-testid="task-active-worker">
             <RealTimeWorkerView
+              taskStatus={task.status}
               taskId={task.id}
               initialWorker={{
                 id: activeWorker.id,
