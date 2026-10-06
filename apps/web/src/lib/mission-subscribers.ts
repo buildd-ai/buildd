@@ -18,7 +18,8 @@
  *   or follow the PR to its new base (network work in after()).
  * - `pr.needs_human`: the mission's "PR ready" notification.
  *
- * `worker.reported` (lib/core-events.ts). Order is load-bearing
+ * `worker.reported` (lib/core-events.ts), and the `via: 'release'` outcome of
+ * a release that report left held for CI. Order is load-bearing
  * and fixed by this list: the three criteria verdict handlers hand a finished
  * criteria task's evidence back BEFORE the completion attempt, so a criterion
  * turning green completes the mission in the same request; the subject sweep
@@ -187,10 +188,21 @@ export const missionSubscribers: readonly AnySubscriber[] = [
   // when it cannot get one, and is a cheap no-op while deliverables are still
   // open, so it is safe on every report. `proposed: false`: nothing asserted
   // completion here, so a still-working mission does not post a note.
+  // It hears the task's FINAL status: a completion a slot failed reached
+  // `failed`. A release held for CI is not an outcome: its row still reads
+  // completed while the release may yet fail, so the attempt waits for the
+  // release PR's CI (the two subscribers below).
   subscriber('missions', 'worker.reported', 'mission-completion-attempt', async e => {
-    if (e.missionId) {
-      await completeMissionIfVerified(e.missionId, { path: 'criteria_eval', predicate: `task ${e.taskId} reached ${e.status}` });
-    }
+    if (!e.missionId || e.releaseHeld) return;
+    await completeMissionIfVerified(e.missionId, { path: 'criteria_eval', predicate: `task ${e.taskId} reached ${e.finalStatus ?? e.status}` });
+  }),
+  subscriber('missions', 'task.completed', 'mission-completion-on-release-completed', async e => {
+    if (e.via !== 'release' || !e.missionId) return;
+    await completeMissionIfVerified(e.missionId, { path: 'criteria_eval', predicate: `task ${e.taskId} reached completed` });
+  }),
+  subscriber('missions', 'task.failed', 'mission-completion-on-release-failed', async e => {
+    if (e.via !== 'release' || !e.missionId) return;
+    await completeMissionIfVerified(e.missionId, { path: 'criteria_eval', predicate: `task ${e.taskId} reached failed` });
   }),
   // A task anchored to a subject PR: re-sweep every task anchored to that PR
   // now that this attempt has reported.

@@ -416,7 +416,9 @@ mock.module('@/lib/subscriptions', () => ({
   taskNeedsInputEvent: (a: any) => ({ type: 'task.needs_input', ...a }),
 }));
 
-const mockRecordTaskOutcome = mock(() => Promise.resolve(true));
+const mockRecordTaskOutcome = mock((_input: any) => Promise.resolve(true));
+const mockRecordRunnerOutcome = mock(async (_outcome: string) => {});
+mock.module('@buildd/core/runner-health', () => ({ recordRunnerOutcome: mockRecordRunnerOutcome }));
 // The message queue writes are single SQL statements now, so a mocked db has
 // no resulting array to inspect. Mock the queue module instead and assert the
 // calls — which is also what the route's contract actually is.
@@ -16113,5 +16115,64 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
     expect(ledger()).toEqual([{ type: 'task.completed', taskId: 'task-1', workerId: WORKER_ID, title: 'Fix the cursor', workspaceId: 'ws-1' }]);
     expect(pushes().map(p => p[1])).toEqual(['taskCompleted']);
     expect(names()).toContain('postTaskCompletedEvent');
+  });
+
+  // ── Analytics, missions and evidence follow the FINAL status too ───────────
+  // The outcome-analytics row, the runner failure detector, the mission
+  // completion attempt and the evidence record were still fed the status the
+  // worker REPORTED. A slot-failed task must record as failed; a held release
+  // records nothing until the release PR's CI settles it (github/webhook).
+  const outcomes = () => mockRecordTaskOutcome.mock.calls.map(c => (c[0] as any).outcome);
+  const runnerOutcomes = () => mockRecordRunnerOutcome.mock.calls.map(c => c[0]);
+  const missionVerdicts = () => fanout.filter(c => c[0] === 'completeMissionIfVerified').map(c => c.slice(1));
+  const evidenceWrites = () => fanout.filter(c => c[0] === 'persistTaskEvidence').map(c => c.slice(1));
+  const clearAnalytics = () => { mockRecordTaskOutcome.mockClear(); mockRecordRunnerOutcome.mockClear(); };
+
+  it('release CI red: the outcome records failed, the mission hears failed, one evidence write', async () => {
+    setup();
+    clearAnalytics();
+    releaseReturns({ status: 'failed', message: 'CI red', error: 'CI red on main', releasePrUrl: 'https://example.test/pr/9' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(outcomes()).toEqual(['failed']);
+    expect(runnerOutcomes()).toEqual(['failed']);
+    expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached failed' }]]);
+    expect(evidenceWrites()).toEqual([['task-1', WORKER_ID, { isSensitive: false }]]);
+  });
+
+  it('loop exhausted: the outcome records failed, the mission hears failed, one evidence write', async () => {
+    setup({ loopConfig: { ...LOOP, maxLoops: 1 } });
+    clearAnalytics();
+    await patch({ status: 'completed', summary: 'Not yet.', summarySource: 'agent', verificationEvidence: evidence(1) });
+    expect(outcomes()).toEqual(['failed']);
+    expect(runnerOutcomes()).toEqual(['failed']);
+    expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached failed' }]]);
+    expect(evidenceWrites()).toEqual([['task-1', WORKER_ID, { isSensitive: false }]]);
+  });
+
+  it('release held for CI: no outcome row, no mission completion attempt, no evidence write; the row to record is kept on the task', async () => {
+    setup();
+    clearAnalytics();
+    releaseReturns({ status: 'pending_ci', message: 'Waiting on CI', releasePrNumber: 9, releasePrUrl: 'https://example.test/pr/9' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent', turns: 7 });
+    expect(outcomes()).toEqual([]);
+    expect(runnerOutcomes()).toEqual([]);
+    expect(missionVerdicts()).toEqual([]);
+    expect(evidenceWrites()).toEqual([]);
+    // What the PATCH would have recorded, minus the outcome the CI decides.
+    expect(releaseSets()[0].context.heldReleaseOutcome).toMatchObject({
+      accountId: 'account-1', totalTurns: 7, wasRetried: false, workerId: WORKER_ID,
+    });
+    expect(releaseSets()[0].context.heldReleaseOutcome.outcome).toBeUndefined();
+  });
+
+  it('release passed: the outcome records completed and the mission hears completed', async () => {
+    setup();
+    clearAnalytics();
+    releaseReturns({ status: 'completed', message: 'Released to main' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(outcomes()).toEqual(['completed']);
+    expect(runnerOutcomes()).toEqual(['completed']);
+    expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached completed' }]]);
+    expect(evidenceWrites()).toHaveLength(1);
   });
 });
