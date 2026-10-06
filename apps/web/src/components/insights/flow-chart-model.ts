@@ -1,8 +1,8 @@
 /**
  * Geometry for the Insights flow chart: pure, so it is tested without a DOM.
  *
- * Bands stack bottom-up in the order work moves (running, waiting on you,
- * review, merged, released); lost work is its own strip under the chart. Running is one
+ * In-flight stages form one continuous cool band; needs input and released
+ * sit above it; lost work is its own strip under the chart. Running is one
  * band: the role split lives in the tooltip and the legend list, because
  * splitting a band into same-hue shades fails the colour checks.
  */
@@ -11,7 +11,7 @@ import type { FlowBucket, FlowSeries, FlowTask } from '@/lib/insights-flow';
 export type BandKey = 'running' | 'waiting' | 'review' | 'merged' | 'released' | 'lost';
 
 /** Stack order, bottom to top above the axis. */
-export const STACK: readonly Exclude<BandKey, 'lost'>[] = ['running', 'waiting', 'review', 'merged', 'released'];
+export const STACK: readonly Exclude<BandKey, 'lost'>[] = ['running', 'review', 'merged', 'waiting', 'released'];
 
 export const BAND_LABEL: Record<BandKey, string> = {
   running: 'Agents running',
@@ -63,7 +63,7 @@ export interface ChartGeometry {
   /** Strip ticks, 0 at its top and maxDown at its bottom; empty when too short to label. */
   lostTicks: { value: number; y: number }[];
   xTicks: { at: number; x: number; label: string }[];
-  releases: { at: number; x: number; version: string | null; shipped: boolean }[];
+  releases: { at: number; x: number; version: string | null; shipped: boolean; state: string }[];
   xOf: (t: number) => number;
   bucketIndexAt: (x: number) => number;
 }
@@ -72,8 +72,8 @@ export const MIN_DOWN_SHARE = 0.15;
 export const MAX_DOWN_SHARE = 0.35;
 /** Closer than this, two tick labels collide. */
 const TICK_GAP = 14;
-/** Space between the main chart and the lost-work strip: room for the strip's name. */
-export const STRIP_GAP = 18;
+/** Space between the main chart and the lost-work strip: a small visual separation. */
+export const STRIP_GAP = 8;
 
 /** Round up to a clean axis maximum on a fine ladder (1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10 per decade), so a stack never fills only half the height. */
 export function niceCeil(v: number): number {
@@ -160,6 +160,7 @@ export function buildGeometry(series: FlowSeries, width: number, height: number)
       at: r.at,
       x: xOf(r.at),
       version: r.version,
+      state: r.state,
       shipped: r.state === 'healthy' || r.state === 'degraded',
     })),
     xOf,
