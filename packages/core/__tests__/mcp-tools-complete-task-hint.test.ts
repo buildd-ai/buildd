@@ -120,6 +120,14 @@ describe('MCP complete_task — self-reported usage', () => {
   });
 });
 
+describe('MCP complete_task — marks the PATCH as the agent\'s own call', () => {
+  it('sends viaCompleteTask so the server can refuse (not fail) a fixable verdict', async () => {
+    const api = mock(async () => ({ status: 'completed', turns: 1 }));
+    await handleBuilddAction(api as unknown as ApiFn, 'complete_task', { summary: 'done' }, context);
+    expect(patchBody(api).viaCompleteTask).toBe(true);
+  });
+});
+
 describe('MCP complete_task — server overrode the completion', () => {
   it('reports a worker the server wrote back as failed instead of "completed successfully"', async () => {
     const api = mock(async (_path: string, init?: { method?: string }) =>
