@@ -424,6 +424,8 @@ export interface ExecuteOptions {
   commit?: string;
   /** Monotonic clock injection for tests; defaults to wall clock. */
   now?: () => number;
+  /** Delay injection for tests (lock-contention backoff); defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 // Async so a slow readiness probe (tsc, lint) never blocks the runner's single
@@ -522,6 +524,16 @@ function isLockHeldByLiveProcess(lockPath: string): boolean {
 const STALE_LOCK_MIN_AGE_MS = 15_000;
 
 /**
+ * Backoff between attempts when a provision step hits a lock that is live, not
+ * stale. Every worktree of a clone shares one `.git/config`, so parallel worker
+ * starts race on it — and a clone that has accumulated thousands of `[branch]`
+ * sections makes each rewrite slow enough that the race is routinely lost.
+ * Total wait (~7s) stays well under STALE_LOCK_MIN_AGE_MS, so a lock that
+ * outlives every retry is reported, not silently waited on forever.
+ */
+const LOCK_CONTENTION_BACKOFF_MS = [250, 750, 1_500, 2_000, 2_500];
+
+/**
  * Remove `lockPath` if it looks abandoned — old enough that no in-flight git
  * write plausibly still owns it, AND no live process has it open right now —
  * and log the removal. Returns false (and touches nothing) on any ambiguity,
@@ -554,6 +566,7 @@ export async function executeSteps(steps: Step[], opts: ExecuteOptions): Promise
   const env = opts.env ?? process.env;
   const run = opts.runCommand ?? defaultRunCommand;
   const now = opts.now ?? (() => Date.now());
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const skip = new Set(opts.skipPhases ?? []);
   const results: StepResult[] = [];
   let aborted = false;
@@ -588,12 +601,21 @@ export async function executeSteps(steps: Step[], opts: ExecuteOptions): Promise
       // writing into the shared (non-worktree-local) `.git/config`. A stale
       // lock from an earlier killed process fails every subsequent provision
       // in the checkout with the same signature until something clears it, so
-      // recognize it, clear it once, and retry — any other command failure,
-      // or a lock a live process still holds, falls straight through below.
+      // recognize it, clear it once, and retry. A lock that is NOT stale is a
+      // concurrent writer (another worker provisioning off the same clone):
+      // back off and retry without touching it. Any other command failure, or
+      // a lock still held after every retry, falls straight through below.
       if (out.code !== 0 && step.phase === 'provision') {
+        const runStep = () => run(step.command!, { cwd: opts.root, timeoutMs: step.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS, env });
         const lockPath = staleLockPathFromError(out.stderr);
         if (lockPath && clearStaleGitLock(lockPath)) {
-          out = await run(step.command!, { cwd: opts.root, timeoutMs: step.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS, env });
+          out = await runStep();
+        } else if (lockPath) {
+          for (const waitMs of LOCK_CONTENTION_BACKOFF_MS) {
+            await sleep(waitMs);
+            out = await runStep();
+            if (out.code === 0 || staleLockPathFromError(out.stderr) !== lockPath) break;
+          }
         }
       }
       if (out.code === 0) {
