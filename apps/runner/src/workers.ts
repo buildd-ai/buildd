@@ -1864,8 +1864,9 @@ export class WorkerManager {
         diagnosticReason: diagnostics?.reason,
         taskId: task.id,
         ...claimDiagnosticDetail(diagnostics),
+        ...(diagnostics?.taskExclusion?.code ? { taskExclusion: diagnostics.taskExclusion.code } : {}),
       });
-      console.log(`No tasks claimed (reason: ${reason})`);
+      console.log(`No tasks claimed (reason: ${reason}${diagnostics?.taskExclusion?.code ? `, excluded by ${diagnostics.taskExclusion.code}` : ''})`);
       throw Object.assign(
         new Error(`Server rejected claim for task "${task.title}" — ${reason === 'no_pending_tasks' ? 'task is no longer available (may already be claimed or completed)' : `reason: ${reason}`}`),
         {
@@ -1877,6 +1878,7 @@ export class WorkerManager {
           // (run-once.ts) uses to tell a temporary capacity defer from a
           // permanent refusal.
           claimTaskExclusionCode: diagnostics?.taskExclusion?.code,
+          claimTaskExclusionDetail: diagnostics?.taskExclusion?.detail,
         },
       );
     }
