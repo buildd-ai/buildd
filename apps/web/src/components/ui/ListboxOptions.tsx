@@ -28,6 +28,8 @@ interface Props {
   /** Phone sheet rows: 44px+ targets and 16px text. */
   roomy: boolean;
   dense?: boolean;
+  /** Wrap long labels onto more lines instead of truncating them. */
+  wrap?: boolean;
   multi?: boolean;
   label?: string;
   emptyText?: string;
@@ -68,7 +70,7 @@ function Box({ on }: { on: boolean }) {
  * at the highlighted row with aria-activedescendant.
  */
 export function ListboxOptions({
-  id, options, activeIndex, isSelected, onPick, onHover, roomy, dense = false, multi = false, label,
+  id, options, activeIndex, isSelected, onPick, onHover, roomy, dense = false, wrap = false, multi = false, label,
   emptyText = 'No matches', focusable = false, onKeyDown,
 }: Props) {
   useEffect(() => {
@@ -123,7 +125,7 @@ export function ListboxOptions({
         {multi && <Box on={selected} />}
         {o.icon && <span className="shrink-0 flex items-center">{o.icon}</span>}
         <span className="min-w-0 flex-1">
-          <span className="block truncate">{o.label}</span>
+          <span className={`block ${wrap ? 'break-all' : 'truncate'}`}>{o.label}</span>
           {o.description && (
             <span className={`block truncate text-text-muted ${roomy ? 'text-[13px]' : 'text-[11px]'}`}>{o.description}</span>
           )}

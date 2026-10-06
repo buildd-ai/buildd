@@ -36,6 +36,10 @@ interface SelectProps<V extends string = string> {
   /** Minimum popover width in px (a narrow trigger with long options). */
   menuMinWidth?: number;
   align?: 'start' | 'end';
+  /** Replaces the fuzzy search order (ids that share long prefixes). */
+  filter?: (options: readonly SelectOption<V>[], query: string) => SelectOption<V>[];
+  /** Wrap long labels instead of truncating them (model ids), in the list and the trigger. */
+  wrapLabels?: boolean;
 }
 
 const TYPEAHEAD_RESET_MS = 600;
@@ -77,7 +81,7 @@ export function Select<V extends string = string>({
   value, onChange, options, placeholder = 'Select…', disabled = false, searchable, className = '',
   size = 'md', id, name, 'aria-label': ariaLabel, 'aria-labelledby': ariaLabelledBy,
   'aria-describedby': ariaDescribedBy, testId, sheetTitle, triggerClassName, renderValue,
-  menuMinWidth, align,
+  menuMinWidth, align, filter, wrapLabels = false,
 }: SelectProps<V>) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -90,8 +94,12 @@ export function Select<V extends string = string>({
 
   const withSearch = searchable ?? options.length > 10;
   const visible = useMemo(
-    () => (withSearch && query ? fuzzyFilter(options, query, (o) => `${o.label} ${o.description ?? ''} ${o.keywords ?? ''} ${o.group ?? ''}`) : options),
-    [options, query, withSearch],
+    () => (!withSearch || !query
+      ? options
+      : filter
+        ? filter(options, query)
+        : fuzzyFilter(options, query, (o) => `${o.label} ${o.description ?? ''} ${o.keywords ?? ''} ${o.group ?? ''}`)),
+    [options, query, withSearch, filter],
   );
   const selected = options.find((o) => o.value === value);
 
@@ -195,7 +203,7 @@ export function Select<V extends string = string>({
         className={triggerClassName ?? triggerClasses(size, open, disabled)}
       >
         {renderValue ? renderValue(selected) : (
-          <span className={`min-w-0 flex-1 truncate ${selected ? '' : 'text-text-muted'}`}>{selected?.label ?? placeholder}</span>
+          <span className={`min-w-0 flex-1 ${wrapLabels ? 'break-all py-1' : 'truncate'} ${selected ? '' : 'text-text-muted'}`}>{selected?.label ?? placeholder}</span>
         )}
         <Chevron open={open} />
       </button>
@@ -238,6 +246,7 @@ export function Select<V extends string = string>({
           onHover={setActive}
           roomy={isMobile}
           dense={size === 'sm'}
+          wrap={wrapLabels}
           label={ariaLabel ?? title}
           focusable={isMobile}
           onKeyDown={isMobile ? (e) => onKey(e) : undefined}
