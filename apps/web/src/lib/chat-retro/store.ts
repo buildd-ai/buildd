@@ -338,7 +338,13 @@ export async function reconcileAccountDogfood(env: Record<string, string | undef
   return { activatedUsers: activated.length, syncedTeams: synced.length };
 }
 
-/** A team just created by `userId`: inherit their account dogfood, if they have it. */
+/**
+ * A team just created by `userId`: store their account dogfood on it, if they
+ * have it. Not needed for the policy (a new team reads as on through its owner
+ * at once, and the daily pass syncs the stored value); for a caller that wants
+ * the stored value right away. Core routes must not import this module
+ * (scripts/module-boundaries.test.ts), so team creation does not call it.
+ */
 export async function inheritAccountDogfood(teamId: string, userId: string): Promise<boolean> {
   if (!(await hasAccountDogfood(userId))) return false;
   await writeTeamSettings(teamId, { ...CHAT_RETRO_DOGFOOD });

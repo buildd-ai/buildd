@@ -4,14 +4,16 @@
  */
 import { describe, expect, it, mock } from 'bun:test';
 
-const captured: { op: string; where: unknown }[] = [];
+const captured: { op: string; table?: string; where: unknown }[] = [];
+const setValues: { table?: string; values: any }[] = [];
 // Rows a bare awaited select resolves to; [] unless a test sets it.
 let selectRows: unknown[] = [];
-const chain = (op: string): any => {
+const tableName = (t: any): string | undefined => t?.[Symbol.for('drizzle:Name')];
+const chain = (op: string, table?: string): any => {
   const c: any = {
     from: () => c, leftJoin: () => c, orderBy: () => c, limit: () => Promise.resolve([]), groupBy: () => Promise.resolve([]),
-    set: () => c, values: () => Promise.resolve(),
-    where: (w: unknown) => { captured.push({ op, where: w }); return c; },
+    set: (v: unknown) => { setValues.push({ table, values: v }); return c; }, values: () => Promise.resolve(),
+    where: (w: unknown) => { captured.push({ op, table, where: w }); return c; },
     returning: () => Promise.resolve([{ id: 'a' }, { id: 'b' }]),
     then: (r: any) => Promise.resolve(op === 'select' ? selectRows : []).then(r),
   };
@@ -21,7 +23,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     select: () => chain('select'),
     delete: () => chain('delete'),
-    update: () => chain('update'),
+    update: (t: unknown) => chain('update', tableName(t)),
     insert: () => chain('insert'),
     query: { teams: { findFirst: async () => null }, tasks: { findFirst: async () => null } },
   },
@@ -46,6 +48,10 @@ mock.module('@/lib/dispatch-authority', () => ({
 }));
 
 const { PgDialect } = await import('drizzle-orm/pg-core');
+const {
+  activateAccountDogfood, dogfoodOwnerExists, dogfoodTeamOwnersWhere, dogfoodUnsyncedWhere, inheritAccountDogfood,
+  readTeamRetroState, reconcileAccountDogfood,
+} = await import('./store');
 const { clusterWhere, dogfoodTeamIds, listOptedInTeams, highConfidenceEvidence, deleteTeamLessons, insertProposalTask, priorFilingWhere, filedTodayWhere, listRecentLessons, optedInTeamsWhere, pendingConversationsWhere, teamLessonsWhere, writeTeamSettings } = await import('./store');
 const dialect = new PgDialect();
 const render = (w: unknown) => dialect.sqlToQuery(w as any);
@@ -57,6 +63,91 @@ describe('opt-in: only teams whose stored lessons flag is literally true', () =>
   it('renders a predicate on chat_retro ->> lessons = true', () => {
     const q = render(optedInTeamsWhere());
     expect(q.sql).toContain(`"teams"."chat_retro" ->> 'lessons') = 'true'`);
+  });
+});
+
+describe('account dogfood: an owner keeps every team they own on', () => {
+  const OTHER = '22222222-2222-4222-8222-222222222222';
+  const USER = '33333333-3333-4333-8333-333333333333';
+  const reset = () => { captured.length = 0; setValues.length = 0; selectRows = []; };
+
+  it('a team counts as dogfood only through an owner (not an admin or member) with the flag set', () => {
+    const q = render(dogfoodOwnerExists()).sql;
+    expect(q).toContain(`"team_members"."team_id" = "teams"."id"`);
+    expect(q).toContain(`"team_members"."role" = 'owner'`);
+    expect(q).toContain(`"users"."chat_retro_dogfood_at" is not null`);
+  });
+
+  it('the daily pass picks up opted-in teams or teams with a dogfood owner, nothing else', () => {
+    const q = render(optedInTeamsWhere()).sql;
+    expect(q).toContain(`("teams"."chat_retro" ->> 'lessons') = 'true' or exists (`);
+  });
+
+  it('a dogfood team reads as lessons + proposals whatever is stored; an unrelated team keeps its stored default (off)', async () => {
+    reset();
+    selectRows = [
+      { id: TEAM, chatRetro: null, dogfoodOwner: true },
+      { id: OTHER, chatRetro: { lessons: true }, dogfoodOwner: false },
+    ];
+    try {
+      const teams = await listOptedInTeams();
+      expect(teams).toEqual([
+        { teamId: TEAM, settings: { lessons: true, proposals: true }, dogfood: true },
+        { teamId: OTHER, settings: { lessons: true, proposals: false }, dogfood: false },
+      ]);
+      selectRows = [{ chatRetro: null, dogfoodOwner: false }];
+      expect(await readTeamRetroState(OTHER)).toEqual({ settings: { lessons: false, proposals: false }, dogfood: false });
+      selectRows = [{ chatRetro: { lessons: false }, dogfoodOwner: true }];
+      expect(await readTeamRetroState(TEAM)).toEqual({ settings: { lessons: true, proposals: true }, dogfood: true });
+    } finally { reset(); }
+  });
+
+  it('activation sets the flag once (first time kept) and backfills only the teams that person owns', async () => {
+    reset();
+    const out = await activateAccountDogfood(USER, NOW);
+    expect(out.syncedTeamIds).toEqual(['a', 'b']);
+    const [u, t] = captured;
+    expect(u.table).toBe('users');
+    expect(render(u.where).sql).toContain(`"users"."chat_retro_dogfood_at" is null`);
+    expect(render(u.where).params).toEqual([USER]);
+    expect(setValues[0]).toEqual({ table: 'users', values: { chatRetroDogfoodAt: NOW } });
+    expect(t.table).toBe('teams');
+    const tq = render(t.where);
+    expect(tq.sql).toContain(`"teams"."id" in (select "team_members"."team_id" from "team_members" where "team_members"."user_id" = $1 and "team_members"."role" = 'owner')`);
+    expect(tq.params).toEqual([USER]);
+    expect(setValues[1].values.chatRetro).toEqual({ lessons: true, proposals: true });
+    reset();
+  });
+
+  it('the sync only rewrites teams not already fully on', () => {
+    expect(render(dogfoodUnsyncedWhere()).sql).toContain(`not (coalesce("teams"."chat_retro" ->> 'lessons', '') = 'true' and coalesce("teams"."chat_retro" ->> 'proposals', '') = 'true')`);
+  });
+
+  it('reconciliation activates the owners of CHAT_RETRO_DOGFOOD_TEAM_IDS (malformed ids dropped), then syncs every dogfood team', async () => {
+    reset();
+    const r = await reconcileAccountDogfood({ CHAT_RETRO_DOGFOOD_TEAM_IDS: `${TEAM},not-a-uuid` });
+    expect(r).toEqual({ activatedUsers: 2, syncedTeams: 2 });
+    expect(captured.map(c => c.table)).toEqual(['users', 'teams']);
+    expect(render(captured[0].where).params).toEqual([TEAM]);
+    expect(render(dogfoodTeamOwnersWhere([TEAM])).sql).toContain(`"team_members"."role" = 'owner'`);
+
+    reset();
+    expect((await reconcileAccountDogfood({})).activatedUsers).toBe(0);
+    expect(captured.map(c => c.table)).toEqual(['teams']);
+    reset();
+  });
+
+  it('a new team inherits its creator\'s account dogfood; a creator without it leaves the team at the default', async () => {
+    reset();
+    selectRows = [{ at: NOW }];
+    expect(await inheritAccountDogfood(OTHER, USER)).toBe(true);
+    expect(setValues).toEqual([{ table: 'teams', values: expect.objectContaining({ chatRetro: { lessons: true, proposals: true } }) }]);
+
+    reset();
+    selectRows = [];
+    expect(await inheritAccountDogfood(OTHER, USER)).toBe(false);
+    expect(setValues).toEqual([]);
+    reset();
   });
 });
 

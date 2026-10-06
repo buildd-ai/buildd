@@ -78,6 +78,11 @@ export const PERMISSIONS = {
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: 'admin',
   },
+  activate_chat_retro_dogfood: {
+    description: 'Keep chat retros on for every team you own (account dogfood).',
+    defaultRoles: OWNER_ONLY,
+    minKeyLevel: null,
+  },
   view_team_usage: {
     description: "See every member's spend and the operator view of Home.",
     defaultRoles: OWNER_ADMIN,
@@ -180,7 +185,7 @@ export type Permission = keyof typeof PERMISSIONS;
 /** How the settings matrix groups permissions, in registry order. Every permission is in exactly one. */
 export const PERMISSION_GROUPS: ReadonlyArray<{ title: string; permissions: readonly Permission[] }> = [
   { title: 'Team membership', permissions: ['manage_team_members', 'assign_team_owner'] },
-  { title: 'Team settings', permissions: ['manage_team_settings', 'delete_team', 'manage_team_permissions', 'seed_team_timezone', 'manage_chat_retro', 'view_team_usage'] },
+  { title: 'Team settings', permissions: ['manage_team_settings', 'delete_team', 'manage_team_permissions', 'seed_team_timezone', 'manage_chat_retro', 'activate_chat_retro_dogfood', 'view_team_usage'] },
   { title: 'API keys and runners', permissions: ['manage_team_keys'] },
   { title: 'Model access and spend', permissions: ['manage_team_model_keys', 'manage_inference_providers', 'manage_model_tiers', 'manage_ai_budget', 'use_chat_admin_tools'] },
   { title: 'Workspaces', permissions: ['manage_workspace_settings', 'delete_workspace', 'migrate_workspace', 'manage_github_installation', 'review_memory'] },
@@ -212,6 +217,7 @@ export const LOCKED_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>([
   'delete_team',
   'manage_team_permissions',
   'seed_team_timezone',
+  'activate_chat_retro_dogfood',
 ]);
 
 function isPermission(value: unknown): value is Permission {

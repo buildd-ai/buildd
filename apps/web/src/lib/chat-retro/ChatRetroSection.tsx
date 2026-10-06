@@ -3,6 +3,8 @@
 /**
  * Settings → AI features → Chat session retros (experiment; see ./REMOVAL.md).
  * Two switches and a read-only list of recent lessons, for team admins.
+ * While an owner's account dogfood holds the team on, both switches show on and
+ * locked, with the reason; an owner without it can turn it on here once.
  * Imports only the pure ./settings module: nothing here touches the DB.
  */
 import { useCallback, useEffect, useState } from 'react';
@@ -36,6 +38,8 @@ function lessonLine(l: LessonListItem): string {
 export default function ChatRetroSection({ teamId, isAdmin }: { teamId: string; isAdmin: boolean }) {
   const [settings, setSettings] = useState<ChatRetroSettings>({ ...CHAT_RETRO_DEFAULT });
   const [globallyEnabled, setGloballyEnabled] = useState(true);
+  const [dogfood, setDogfood] = useState(false);
+  const [canActivateDogfood, setCanActivateDogfood] = useState(false);
   const [lessons, setLessons] = useState<LessonListItem[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [msg, setMsg] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
@@ -49,6 +53,8 @@ export default function ChatRetroSection({ teamId, isAdmin }: { teamId: string; 
         const d = await res.json();
         setSettings({ lessons: d.settings?.lessons === true, proposals: d.settings?.proposals === true });
         setGloballyEnabled(d.globallyEnabled !== false);
+        setDogfood(d.dogfood === true);
+        setCanActivateDogfood(d.canActivateDogfood === true);
         setLessons(Array.isArray(d.lessons) ? d.lessons : []);
       }
     } catch { /* the section shows its defaults */ }
@@ -67,6 +73,12 @@ export default function ChatRetroSection({ teamId, isAdmin }: { teamId: string; 
         body: JSON.stringify(body),
       });
       const d = await res.json().catch(() => ({}));
+      if (res.status === 409 && d.dogfood) {
+        setDogfood(true);
+        setSettings(d.settings ?? before);
+        setMsg({ tone: 'err', text: d.error });
+        return;
+      }
       if (!res.ok) throw new Error(d.error ?? 'Could not save');
       setSettings(d.settings);
       if (d.deletedLessons > 0 || !d.settings.lessons) setLessons([]);
@@ -77,12 +89,36 @@ export default function ChatRetroSection({ teamId, isAdmin }: { teamId: string; 
     }
   }
 
-  const disabled = !isAdmin || !loaded;
+  async function activateDogfood() {
+    if (!(await confirm({
+      title: 'Keep chat retros on for every team you own?',
+      message: 'Lessons and suggestions turn on for every team you own now and every team you create later, and cannot be switched off per team.',
+      confirmLabel: 'Keep them on',
+    }))) return;
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/teams/${teamId}/chat-retro`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountDogfood: true }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error ?? 'Could not turn it on');
+      setSettings(d.settings);
+      setDogfood(d.dogfood === true);
+      setCanActivateDogfood(false);
+      setMsg({ tone: 'ok', text: 'On for every team you own' });
+    } catch (e) {
+      setMsg({ tone: 'err', text: e instanceof Error ? e.message : 'Could not turn it on' });
+    }
+  }
+
+  const disabled = !isAdmin || !loaded || dogfood;
 
   return (
     <div id="chat-retro" className="mt-10 max-w-4xl scroll-mt-20" data-testid="chat-retro-settings">
       <h2 className="mb-2 flex items-baseline gap-2 font-mono text-[15px] font-bold text-text-primary">
-        Chat session retros <span className="text-[12px] font-normal text-text-muted">experiment, off unless you turn it on</span>
+        Chat session retros <span className="text-[12px] font-normal text-text-muted">{dogfood ? 'experiment, enabled by account dogfood' : 'experiment, off unless you turn it on'}</span>
       </h2>
       <div className="card divide-y divide-border-default">
         <div className="px-4 py-3 space-y-1.5 text-xs text-text-secondary">
@@ -92,6 +128,11 @@ export default function ChatRetroSection({ teamId, isAdmin }: { teamId: string; 
           <p><span className="text-text-primary">Who sees it:</span> your team&apos;s owners and admins.</p>
           <p><span className="text-text-primary">What it produces:</span> with suggestions on, at most 2 suggested improvements a day, filed as tasks in your workspace. Nothing is changed automatically.</p>
           <p><span className="text-text-primary">Turning it off:</span> switch off recording lessons at any time. That also stops suggestions and deletes every lesson recorded so far.</p>
+          {dogfood && (
+            <p className="text-text-primary" data-testid="chat-retro-dogfood">
+              Enabled by account dogfood: an owner of this team keeps lessons and suggestions on for every team they own, so they cannot be turned off here.
+            </p>
+          )}
           {!globallyEnabled && <p className="text-status-warning">Paused for everyone on this deployment right now, whatever you choose here.</p>}
         </div>
         <div className="flex items-start justify-between gap-3 px-4 py-3">
@@ -132,6 +173,15 @@ export default function ChatRetroSection({ teamId, isAdmin }: { teamId: string; 
             }}
           />
         </div>
+        {isAdmin && loaded && !dogfood && canActivateDogfood && (
+          <div className="flex items-start justify-between gap-3 px-4 py-3">
+            <span className="min-w-0">
+              <span className="block text-sm text-text-primary">Keep on for every team I own</span>
+              <span className="block text-xs text-text-muted">Lessons and suggestions on for all your teams, including ones you create later.</span>
+            </span>
+            <button type="button" className="btn btn-quiet shrink-0" onClick={() => void activateDogfood()}>Turn on</button>
+          </div>
+        )}
         {isAdmin && settings.lessons && (
           <div className="px-4 py-3" data-testid="chat-retro-lessons">
             <span className="block text-sm text-text-primary mb-1.5">Recent lessons</span>

@@ -124,8 +124,8 @@ cached per request.
   takes them as a required argument, so a call site cannot silently use the
   defaults. `null` is for locked permissions or a context with no team.
 - `owner` always holds every permission, so a team cannot lock itself out.
-- `assign_team_owner`, `delete_team`, `manage_team_permissions` and
-  `seed_team_timezone` are locked: overrides for them are ignored on read and
+- `assign_team_owner`, `delete_team`, `manage_team_permissions`,
+  `seed_team_timezone` and `activate_chat_retro_dogfood` are locked: overrides for them are ignored on read and
   refused on write, so an admin can never widen their own power.
 - Only `manage_team_permissions` (owner) writes, by signing in:
   `PUT /api/teams/[id]/permissions` replaces the whole set; an entry equal to
@@ -171,7 +171,8 @@ this spec's `last_verified` date.
 | `apps/web/src/app/app/(protected)/settings/TimezoneSection.tsx:62` | UI: edit team timezone | owner, admin | — | `manage_team_settings` |
 | `apps/web/src/app/app/(protected)/settings/_lib/settings-context.ts:53` | UI: settings admin sections | owner, admin, personal team | — | `manage_team_settings` |
 | `apps/web/src/lib/team-timezone.ts:99` | own timezone change seeds owned teams | owner | — | `seed_team_timezone` |
-| `apps/web/src/app/api/teams/[id]/chat-retro/route.ts:40` | read/write chat retro settings | owner, admin | admin (`:30`) | `manage_chat_retro` |
+| `apps/web/src/app/api/teams/[id]/chat-retro/route.ts:52` | read/write chat retro settings | owner, admin | admin (`:42`) | `manage_chat_retro` |
+| `apps/web/src/app/api/teams/[id]/chat-retro/route.ts:110` | turn on chat retro account dogfood (every team the caller owns) | owner | — | `activate_chat_retro_dogfood` |
 | `apps/web/src/app/app/(protected)/home/home-view.ts:114` | UI: operator Home | owner, admin | — | `view_team_usage` |
 | `apps/web/src/app/app/(protected)/settings/budgets/page.tsx:61` | UI: per-person spend | via settings-context | — | `view_team_usage` |
 

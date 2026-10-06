@@ -34,11 +34,11 @@ describe('GET /api/cron/chat-retro', () => {
     expect(touched).toEqual([]);
   });
 
-  it('unset: runs for opted-in teams (none here, so one lookup)', async () => {
+  it('unset: syncs account dogfood, then runs for opted-in teams (none here, so one lookup)', async () => {
     process.env.CRON_SECRET = 's';
     delete process.env.CHAT_RETRO_ENABLED;
     const res = await GET(req('Bearer s'));
     expect(res.status).toBe(200);
-    expect(touched).toEqual(['pruneExpiredLessons', 'listOptedInTeams']);
+    expect(touched).toEqual(['pruneExpiredLessons', 'reconcileAccountDogfood', 'listOptedInTeams']);
   });
 });

@@ -38,6 +38,7 @@ const EXPECTED: Record<Permission, Row> = {
   manage_team_permissions: { roles: O, keys: NONE },
   seed_team_timezone: { roles: O, keys: NONE },
   manage_chat_retro: { roles: OA, keys: ADMIN_KEY },
+  activate_chat_retro_dogfood: { roles: O, keys: NONE },
   view_team_usage: { roles: OA, keys: NONE },
   manage_team_keys: { roles: OA, keys: NONE },
   manage_team_model_keys: { roles: OA, keys: ADMIN_KEY },
