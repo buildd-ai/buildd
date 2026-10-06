@@ -192,7 +192,7 @@ export async function taskScopeAllowsMissionTask(
   if (!account.taskScope) return true;
   if (task.id === account.taskScope.taskId) return true;
   // Worker-level tokens can also read their own child tasks
-  if (task.parentTaskId === account.taskScope.taskId) return true;
+  if (task.parentTaskId === account.taskScope.taskId && task.workspaceId === account.taskScope.workspaceId) return true;
   if (!isOrchestrationTaskToken(account)) return false;
   if (task.workspaceId !== account.taskScope.workspaceId || !task.missionId) return false;
   return taskScopeAllowsMission(account, task.missionId);

@@ -295,6 +295,11 @@ describe('taskScopeAllowsMissionTask', () => {
     expect(await taskScopeAllowsMissionTask(worker, wrongParent)).toBe(false);
   });
 
+  it('refuses a worker token child tasks in a different workspace, even if parent matches', async () => {
+    const crossWorkspaceChild = { id: 'task-child', workspaceId: 'ws-2', missionId: null, parentTaskId: 'task-1' };
+    expect(await taskScopeAllowsMissionTask(worker, crossWorkspaceChild)).toBe(false);
+  });
+
   it('refuses an admin token another mission, another workspace, and a task on no mission', async () => {
     expect(await taskScopeAllowsMissionTask(admin, { ...sibling, missionId: 'm-2' })).toBe(false);
     expect(await taskScopeAllowsMissionTask(admin, { ...sibling, workspaceId: 'ws-2' })).toBe(false);
