@@ -13,6 +13,15 @@
  * side.
  */
 import type { CrashReport, RunOutcome } from './lifecycle';
+import {
+  RUNNER_CLASSES,
+  normalizeRunnerSizeDecision,
+  runnerSeconds,
+  type RunnerSize,
+  type RunnerSizeDecision,
+  type RunnerSizeReason,
+  type RunnerSizeSource,
+} from './runner-class';
 
 /**
  * 2: adds `repo` (warm restore vs clone) and the restore/fetch/upload durations.
@@ -20,8 +29,9 @@ import type { CrashReport, RunOutcome } from './lifecycle';
  * 4: adds `schedule` (a `task.scheduled` start: when it was due, when it started).
  * 5: adds `deferredRetry` (a `deferred`/`start_deferred` outcome's self-scheduled backoff retry).
  * 6: adds `repo.cacheSkipped`, `repo.bytes.cacheRaw` and `durationsMs.restoreCache` (compressed cache tarball).
+ * 7: adds `resources` (memory peak, disk minimum), `interruption` and `runnerSize` (container class, weighted runner-seconds).
  */
-export const RUN_REPORT_VERSION = 6;
+export const RUN_REPORT_VERSION = 7;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -69,6 +79,7 @@ export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
 export const RUN_METRICS = [
   'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
   'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes',
+  'mem_peak_bytes', 'mem_limit_bytes', 'disk_free_min_bytes', 'disk_total_bytes',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 export type RunnerMetrics = Partial<Record<RunMetric, number>>;
@@ -718,7 +729,40 @@ export interface RunReport {
    * (MAX_DEFERRED_RETRIES) was hit and nothing was scheduled.
    */
   deferredRetry: { retryNumber: number; backoffMs: number | null; reason: string | null } | null;
+  /**
+   * What the run used of its container, from the runner's sampler
+   * (apps/runner/src/resource-sampler.ts): the working-set peak and the
+   * memory it was measured against, and the lowest free disk seen with the
+   * disk's size. Null when the runner printed none (an older image).
+   */
+  resources: { memoryPeakBytes: number | null; memoryLimitBytes: number | null; diskFreeMinBytes: number | null; diskTotalBytes: number | null };
+  /**
+   * Why the run did not end on its own exit, when it did not:
+   * `container_stopped` the container died under it (OOM, a platform stop);
+   * `agent_restart` the agent restarted (a deploy) and found it orphaned;
+   * `question` it parked waiting for an answer. buildd's size rule
+   * (apps/web/src/lib/runner-size.ts) counts only the first.
+   */
+  interruption: RunInterruption | null;
+  /**
+   * The container class this attempt ran in and the decision that chose it
+   * (buildd's runner size route; `source` null when none reached the agent).
+   * `runnerSeconds`: container running to exit, rounded up;
+   * `weightedRunnerSeconds` times the class weight (standard 1, large 2), for
+   * hosted fair use. Nothing bills from it yet.
+   */
+  runnerSize: {
+    size: RunnerSize;
+    source: RunnerSizeSource | null;
+    reason: RunnerSizeReason | null;
+    weight: number;
+    runnerSeconds: number | null;
+    weightedRunnerSeconds: number | null;
+  };
 }
+
+export const RUN_INTERRUPTIONS = ['container_stopped', 'agent_restart', 'question'] as const;
+export type RunInterruption = typeof RUN_INTERRUPTIONS[number];
 
 export interface RunReportInput {
   taskId: string | null | undefined;
@@ -738,6 +782,12 @@ export interface RunReportInput {
   parkedAt?: number;
   /** See RunReport.deferredRetry. */
   deferredRetry?: { retryNumber: number; backoffMs: number | null; reason: string | null } | null;
+  /** See RunReport.interruption. */
+  interruption?: RunInterruption | null;
+  /** The class this agent is (the container class actually used). Absent: standard. */
+  runnerSize?: RunnerSize;
+  /** buildd's decision that routed the dispatch here, if one reached the agent. */
+  runnerSizeDecision?: RunnerSizeDecision | null;
 }
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -860,6 +910,28 @@ export function assembleRunReport(input: RunReportInput): RunReport {
           reason: typeof input.deferredRetry.reason === 'string' && DEFERRED_REASON_RE.test(input.deferredRetry.reason) ? input.deferredRetry.reason : null,
         }
       : null,
+    resources: {
+      memoryPeakBytes: metric('mem_peak_bytes'),
+      memoryLimitBytes: metric('mem_limit_bytes'),
+      diskFreeMinBytes: metric('disk_free_min_bytes'),
+      diskTotalBytes: metric('disk_total_bytes'),
+    },
+    interruption: RUN_INTERRUPTIONS.includes(input.interruption as RunInterruption) ? input.interruption as RunInterruption : null,
+    runnerSize: runnerSizeSection(input, timestamps),
+  };
+}
+
+function runnerSizeSection(input: RunReportInput, t: { containerRunningAt: number | null; exitedAt: number | null }): RunReport['runnerSize'] {
+  const size: RunnerSize = input.runnerSize === 'large' ? 'large' : 'standard';
+  const decision = normalizeRunnerSizeDecision(input.runnerSizeDecision);
+  const secs = runnerSeconds(size, t.containerRunningAt, t.exitedAt);
+  return {
+    size,
+    source: decision?.source ?? null,
+    reason: decision?.reason ?? null,
+    weight: RUNNER_CLASSES[size].weight,
+    runnerSeconds: secs?.seconds ?? null,
+    weightedRunnerSeconds: secs?.weighted ?? null,
   };
 }
 

@@ -1,6 +1,6 @@
 {
-  "id": "ddb3a056-529c-40a0-b0e3-073630f615fa",
-  "prevId": "6bd632a8-5d84-4a9f-9544-d6d25f730b72",
+  "id": "8c06bd87-5e53-41a3-b42d-bba4af3949ea",
+  "prevId": "ddb3a056-529c-40a0-b0e3-073630f615fa",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -15114,6 +15114,12 @@
         },
         "category_decision": {
           "name": "category_decision",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "verdict_decision": {
+          "name": "verdict_decision",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

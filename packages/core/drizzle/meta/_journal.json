@@ -1671,8 +1671,15 @@
     {
       "idx": 246,
       "version": "7",
-      "when": 1791285669319,
-      "tag": "0246_yummy_warbound",
+      "when": 1791285404474,
+      "tag": "0246_perfect_beast",
+      "breakpoints": true
+    },
+    {
+      "idx": 247,
+      "version": "7",
+      "when": 1791289724064,
+      "tag": "0247_odd_pandemic",
       "breakpoints": true
     }
   ]
