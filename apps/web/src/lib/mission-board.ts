@@ -577,8 +577,29 @@ function criterionRow(
 
 const TICKER_MAX = 6;
 
-export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
-  const { now } = input;
+/**
+ * The mission's countable cells: every deliverable row but the cancelled
+ * ones, each with its state, its on-strip edges and its level and component
+ * from the shared adjacency. This is the one projection every task strip
+ * reads — the Board (and its Landed strip) and the list/Home card
+ * (`buildMissionListCard`) — so task identity, order and lane cannot fork
+ * between surfaces.
+ */
+export interface BoardCells {
+  tasks: Record<string, BoardTask>;
+  phases: BoardPhase[];
+  /** Folded deliverable rows, cancelled ones excluded, in pulse order. */
+  cellRows: DeliverableRow<BoardTaskInput>[];
+  /** Raw task id (an attempt, a re-creation) → the cell that carries it. */
+  rowIdFor: Map<string, string>;
+  /** Cancelled rows: no cell. */
+  skipped: Set<string>;
+  labelOf: Map<string, { scope: string | null; label: string }>;
+}
+
+export function buildBoardCells(
+  input: Pick<MissionBoardInput, 'tasks' | 'roles' | 'runnerHeartbeats' | 'externalDeps'>,
+): BoardCells {
   const roles = new Map((input.roles ?? []).map(r => [r.slug, r]));
   const displayOf = (w: BoardWorkerInput) => resolveRunnerDisplay(w, input.runnerHeartbeats);
   const allById = new Map(input.tasks.map(t => [t.id, t]));
@@ -686,6 +707,15 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
       total: ids.length,
     };
   });
+
+  return { tasks, phases, cellRows, rowIdFor, skipped, labelOf };
+}
+
+export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
+  const { now } = input;
+  const roles = new Map((input.roles ?? []).map(r => [r.slug, r]));
+  const displayOf = (w: BoardWorkerInput) => resolveRunnerDisplay(w, input.runnerHeartbeats);
+  const { tasks, phases, cellRows: rows, rowIdFor, skipped, labelOf } = buildBoardCells(input);
 
   const all = Object.values(tasks);
   const landedN = all.filter(t => BOARD_LANDED.has(t.status)).length;

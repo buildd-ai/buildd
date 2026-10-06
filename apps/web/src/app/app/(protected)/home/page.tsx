@@ -606,7 +606,7 @@ export default async function HomePage({
               if (last && lastTick) (lastTick as any).result = { summary: last };
             }
             const view = buildHomeCardView(row, { from: 'home', now: nowMs, summary, taskIndex: homeMissionTaskMap });
-            const model = buildMissionListCard(row, view, summary, { now: nowMs });
+            const model = buildMissionListCard(row, view, summary, { now: nowMs, taskIndex: homeMissionTaskMap });
             return [{ view, model, completedAt: m.completedAt, row }];
           });
           // Stranded local missions: the decision shadow looks after the

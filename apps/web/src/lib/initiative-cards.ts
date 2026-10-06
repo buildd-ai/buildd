@@ -86,7 +86,7 @@ export async function loadInitiativeCards(opts: {
     const row = m as MissionCardRow;
     const summary = summarizeMissionForCard(row, { now });
     const view = buildMissionCardView(row, { from: 'missions', now, summary, taskIndex });
-    const list = buildMissionListCard(m as ListMissionRow, view, summary, { now });
+    const list = buildMissionListCard(m as ListMissionRow, view, summary, { now, taskIndex });
     const input: InitiativeMissionInput = {
       id: m.id,
       title: m.title,
