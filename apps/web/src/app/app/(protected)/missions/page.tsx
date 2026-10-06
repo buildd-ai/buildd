@@ -216,7 +216,7 @@ export default async function MissionsPage({
 
     return {
       view,
-      list: buildMissionListCard(obj as ListMissionRow, view, summary, { now, roleColors, progressByWorker }),
+      list: buildMissionListCard(obj as ListMissionRow, view, summary, { now, roleColors, progressByWorker, taskIndex: allMissionTaskMap }),
       workspaceId: obj.workspaceId || null,
       workspaceName: (obj.workspace as any)?.name || null,
       isHeld: obj.isHeld ?? false,
