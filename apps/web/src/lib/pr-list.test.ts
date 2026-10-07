@@ -195,6 +195,13 @@ describe('waitingReason', () => {
     expect(waitingReason({ ...approved, approved: false, escalated: true, status: 'ci_green' })).toBe('reviewer escalated');
   });
 
+  it('a deny_path landing handoff says merge is yours even while the lifecycle is stale', () => {
+    const handoff = { cause: 'deny_path', reason: 'touches protected path' };
+    expect(waitingReason({ ...approved, status: 'ci_running', handoff })).toBe('approved, protected path — merge is yours');
+    expect(waitingReason({ ...approved, approved: false, status: null, handoff })).toBe('protected path — merge is yours');
+    expect(waitingReason({ ...approved, status: 'conflict', handoff })).toBe('approved but conflicting, not mergeable');
+  });
+
   it('spent conflict fixes win over every other reading', () => {
     expect(waitingReason({ ...approved, conflictFixesSpent: true, status: 'conflict' })).toBe('conflict fixes used up');
   });
