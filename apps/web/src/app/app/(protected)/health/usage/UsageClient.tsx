@@ -18,6 +18,8 @@ import {
   type UsageDrilldownView,
 } from '@/lib/usage-drilldown';
 import type { Distribution, PerTaskMetric } from '@/lib/usage-stats';
+import type { HostedRunnerMeterView } from '@/lib/hosted-runner-usage';
+import { HostedRunnerUsageSection, type HostedRunnerWorkspaceRow } from '@/components/hosted-runner/HostedRunnerUsageSection';
 import {
   BASH_BUCKET_HINTS,
   formatShare,
@@ -25,9 +27,16 @@ import {
   type CountRow,
 } from '@/lib/usage-breakdowns';
 
+export interface HostedRunnerProps {
+  meter: HostedRunnerMeterView;
+  rows: HostedRunnerWorkspaceRow[];
+}
+
 interface Props {
   view: UsageDrilldownView;
   wsFilter: string | null;
+  /** The active team's month on the hosted runner; null hides the section. */
+  hostedRunner?: HostedRunnerProps | null;
 }
 
 /**
@@ -36,7 +45,7 @@ interface Props {
  * TASK-KEYED throughout, which is what the header denominator claims and what
  * every section below honours.
  */
-export function UsageClient({ view, wsFilter }: Props) {
+export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
   const { window, tasks, perTask, totals, scan } = view;
   const caveat = scanCaveat(scan, observedAgo(scan.completeSince, Date.now()) ?? 'the window start');
 
@@ -88,6 +97,9 @@ export function UsageClient({ view, wsFilter }: Props) {
           </p>
         )}
       </div>
+
+      {/* Hosted runner time: month-scoped, not the window above. */}
+      {hostedRunner && <HostedRunnerUsageSection meter={hostedRunner.meter} rows={hostedRunner.rows} />}
 
       {tasks === 0 ? (
         <div data-testid="usage-empty" className="card px-4 py-3">

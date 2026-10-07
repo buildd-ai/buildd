@@ -76,7 +76,8 @@ export type CausalLinkSource =
   | 'tasks.subjectPrNumber + workers.mergedAt'
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber'
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
-  | 'task_dispatch_outbox.status';
+  | 'task_dispatch_outbox.status'
+  | 'tasks.context.entitlementBlock';
 
 export interface CausalLink {
   /** 1-based position. The chain reads cause → effect, in order. */
