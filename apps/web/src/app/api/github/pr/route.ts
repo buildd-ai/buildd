@@ -340,6 +340,8 @@ export async function POST(req: NextRequest) {
     // the `create_pr` action) leads the record buildd stores instead, and the
     // adoption itself never fails for want of a lede.
     if (existingPrUrl) {
+      const suppliedFreshBodyInAdoption = typeof prBody === 'string' && prBody.trim().length > 0;
+
       // Only short-circuit when the caller is re-asserting the SAME PR already
       // recorded on this worker — a true idempotent retry. A caller passing a
       // DIFFERENT prUrl is explicitly overriding the stored value (e.g. the
@@ -349,15 +351,18 @@ export async function POST(req: NextRequest) {
       // pointing at a PR the caller never asked for. Fall through so the new
       // URL goes through the same legality checks and gets recorded below.
       if (worker.prUrl && worker.prNumber && worker.prUrl === existingPrUrl) {
-        await db
-          .update(workers)
-          .set({ updatedAt: new Date() })
-          .where(eq(workers.id, workerId));
-        return NextResponse.json({
-          ok: true,
-          pr: { number: worker.prNumber, url: worker.prUrl, state: 'open', title },
-          deduplicated: true,
-        });
+        // If fresh body is supplied, don't short-circuit — fall through to update it
+        if (!suppliedFreshBodyInAdoption) {
+          await db
+            .update(workers)
+            .set({ updatedAt: new Date() })
+            .where(eq(workers.id, workerId));
+          return NextResponse.json({
+            ok: true,
+            pr: { number: worker.prNumber, url: worker.prUrl, state: 'open', title },
+            deduplicated: true,
+          });
+        }
       }
 
       // ── Mission-integration legality gate on adoption ──────────────────────
@@ -541,6 +546,25 @@ export async function POST(req: NextRequest) {
           });
         }
       }
+
+      // Update PR body if fresh content was supplied (dedup adoption with body update).
+      // This mirrors the logic in the head-branch adoption path.
+      if (suppliedFreshBodyInAdoption && prNumber && adoptRepo?.installation) {
+        try {
+          const currentBody: string = realPr?.body ?? '';
+          const updatedBody = composeBodyWithLede(effectiveLede, prBody, { derived: ledeIsDerived });
+          if (updatedBody !== currentBody) {
+            await githubApi(
+              adoptRepo.installation.installationId,
+              `/repos/${adoptRepo.fullName}/pulls/${prNumber}`,
+              { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: updatedBody }) },
+            );
+          }
+        } catch {
+          // Non-fatal — body update is best-effort
+        }
+      }
+
       return NextResponse.json({
         ok: true,
         pr: { number: prNumber, url: existingPrUrl, state: 'open', title },
@@ -626,11 +650,13 @@ export async function POST(req: NextRequest) {
     // request to open a PR for the new head. Falling through re-runs the
     // head-based GitHub lookup below, which finds nothing for a genuinely new
     // head and proceeds to open a fresh PR.
+    const suppliedFreshBody = typeof prBody === 'string' && prBody.trim().length > 0;
     if (
       worker.prUrl &&
       worker.prNumber &&
       (!worker.branch || worker.branch === head) &&
-      !isStoredPrStale(worker)
+      !isStoredPrStale(worker) &&
+      !suppliedFreshBody
     ) {
       await db
         .update(workers)
