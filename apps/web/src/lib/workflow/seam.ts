@@ -17,7 +17,7 @@
 import { and, desc, eq, or, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
-import type { Command, LivePr } from './commands';
+import type { Command, CurrentView, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
 import { ingestFact, type GithubFactReader } from './facts';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
@@ -218,6 +218,63 @@ export async function kernelDeliveryOfPr(p: { workspaceId: string; prNumber: num
   if (!deliveryId) return null;
   const d = (await loadView({ deliveryId }, deps.exec)).delivery;
   return { deliveryId, state: d?.state ?? null, stateReason: d?.stateReason ?? null, version: d?.version ?? 0 };
+}
+
+// ── T23: a person applies an escalation's recommendation ────────────────────
+
+export interface HumanApplyOutcome {
+  result: CommandResult;
+  /** The delivery as it stands after the inline drain (a stale answer's "current view", §7.2). */
+  current: CurrentView & { stateReason: string | null };
+  /** The review_fix ledger row this dispatch allocated (trigger=human), and its fix task. */
+  attempt: { id: string; attemptNo: number; maxAttempts: number; taskId: string | null } | null;
+}
+
+/**
+ * "Apply" / "Apply with corrections" on a kernel-owned PR's escalation (§6.3 T23): one
+ * HumanResolve(apply_recommendation) at the version the person saw, recording them and the
+ * bypass, then the kernel's own dispatch_fix: a review_fix ledger row with trigger=human,
+ * §10.5 revalidation against a live read, and a fix task carrying their instructions.
+ * `expectedVersion` absent = the version this call read before recording the live head, so
+ * a push that lands mid-click still makes the click stale. Null = not the kernel's PR.
+ */
+export async function applyRecommendationThroughKernel(p: {
+  workspaceId: string; prNumber: number; actor: string; expectedVersion?: number | null; instructions?: string | null;
+}, deps: SeamDeps = {}): Promise<HumanApplyOutcome | null> {
+  const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
+  if (!repo) return null;
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, repo.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return null;
+  const seen = (await loadView({ deliveryId }, deps.exec)).delivery;
+  const expectedVersion = p.expectedVersion ?? seen?.version ?? 0;
+  const currentOf = async (): Promise<CurrentView & { stateReason: string | null }> => {
+    const d = (await loadView({ deliveryId }, deps.exec)).delivery;
+    return { state: d?.state ?? null, stateReason: d?.stateReason ?? null, version: d?.version ?? 0, head: d?.currentHeadSha ?? null, round: d?.currentRound ?? 0 };
+  };
+  const reader = readerFor(deps, repo.installationId);
+  const live = await reader.readPr(repo.repoFullName, p.prNumber);
+  if (!live) {
+    const current = await currentOf();
+    return { result: { result: 'rejected', reason: 'live_read_failed', current: { state: current.state, version: current.version, head: current.head, round: current.round } }, current, attempt: null };
+  }
+  await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:apply_recommendation`, repoFullName: repo.repoFullName, prNumber: p.prNumber },
+    { exec: deps.exec, github: { ...reader, readPr: async () => live } });
+  const result = await applyCommand(
+    { type: 'HumanResolve', actor: p.actor, choice: 'apply_recommendation', expectedVersion, instructions: p.instructions ?? undefined },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  if (result.result === 'applied') await drainDelivery(deliveryId, deps);
+  const view = await loadView({ deliveryId }, deps.exec);
+  const human = result.result === 'applied'
+    ? view.attempts
+      .filter((a) => a.family === 'review_fix' && a.trigger === 'human' && (a.status === 'queued' || a.status === 'running'))
+      .sort((a, b) => b.attemptNo - a.attemptNo)[0]
+    : undefined;
+  return {
+    result,
+    current: await currentOf(),
+    attempt: human ? { id: human.id, attemptNo: human.attemptNo, maxAttempts: human.maxAttempts, taskId: human.taskId } : null,
+  };
 }
 
 // ── T4: an attempt ended ────────────────────────────────────────────────────

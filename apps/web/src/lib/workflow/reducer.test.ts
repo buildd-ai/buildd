@@ -627,6 +627,50 @@ describe('T8 FixDispatched / T9 FixClaimed (S7, S25, §10.5)', () => {
   });
 });
 
+describe('T23 HumanResolve(apply_recommendation) → T8 with trigger=human (§5.7 rule 5)', () => {
+  const esc = R({ id: 'r2', round: 2, headSha: 'H1', status: 'decided', verdict: 'escalate', effectiveVerdict: 'escalate' });
+  const escalated = (attempts: AttemptSnapshot[] = [], d: Partial<DeliverySnapshot> = {}) =>
+    V(D({ state: 'ESCALATED', stateReason: 'review_escalated', currentRound: 2, ...d }), [esc], attempts);
+  const resolve = (v: KernelView, o: Partial<Extract<Command, { type: 'HumanResolve' }>> = {}) =>
+    run(v, { type: 'HumanResolve', actor: 'human:owner@example.com', choice: 'apply_recommendation', expectedVersion: 5, ...o });
+
+  test('records the person and the bypass, and owes a human dispatch_fix carrying their instructions', () => {
+    const dec = applied(resolve(escalated(), { instructions: 'Generate the missing migration.' }));
+    expect(dec.toState).toBe('CHANGES_REQUESTED');
+    expect(dec.idempotencyKey).toBe('resolve:d1:5');
+    expect(dec.bypass).toMatchObject({ choice: 'apply_recommendation', actor: 'human:owner@example.com', escalation: 'review_escalated' });
+    expect(dec.effects[0]).toMatchObject({
+      kind: 'dispatch_fix',
+      payload: { roundId: 'r2', trigger: 'human', actor: 'human:owner@example.com', humanInstructions: 'Generate the missing migration.' },
+    });
+  });
+  test('nothing to fix against: no review round at the current head is refused, not left stranded in CHANGES_REQUESTED', () => {
+    expectResult(resolve(escalated([], { currentHeadSha: 'H2' })), 'rejected', 'no_review_at_head');
+    expectResult(resolve(V(D({ state: 'ESCALATED', stateReason: 'push_undeliverable', currentRound: 0 }))), 'rejected', 'no_review_at_head');
+  });
+
+  const cr = (attempts: AttemptSnapshot[] = []) => V(D({ state: 'CHANGES_REQUESTED', currentRound: 2 }), [esc], attempts);
+  const dispatch = (v: KernelView, o: Partial<Extract<Command, { type: 'FixDispatched' }>> = {}) =>
+    run(v, { type: 'FixDispatched', actor: 'kernel', roundId: 'r2', taskId: 'ft9', maxAttempts: 3, trigger: 'human', revalidation: { live: live('H1'), newerApprove: false }, ...o });
+
+  test('a human fix of an escalated round allocates a trigger=human review_fix row; an automatic one of the same round is refused', () => {
+    const dec = applied(dispatch(cr()));
+    expect(dec.attempts).toEqual([expect.objectContaining({ op: 'insert', family: 'review_fix', attemptNo: 1, trigger: 'human', triggerReason: 'r2', taskId: 'ft9', maxAttempts: 3 })]);
+    expectResult(dispatch(cr(), { trigger: undefined }), 'rejected', 'newer_verdict_supersedes_fix');
+  });
+  test('past the cap a person extends the budget by exactly one, visibly', () => {
+    const spent = [1, 2, 3].map((n) => A({ id: `a${n}`, attemptNo: n, status: 'ended', outcome: 'failed', triggerReason: 'r1' }));
+    const dec = applied(dispatch(cr(spent)));
+    expect(dec.attempts[0]).toMatchObject({ attemptNo: 4, trigger: 'human', maxAttempts: 4 });
+    expect(dec.bypass).toMatchObject({ family: 'review_fix', budgetFrom: 3, budgetTo: 4 });
+  });
+  test('§10.5 revalidation still holds for a human fix', () => {
+    expectResult(dispatch(cr(), { revalidation: { live: live('H2'), newerApprove: false } }), 'rejected', 'fix_not_needed');
+    expectResult(dispatch(cr(), { revalidation: { live: live('H1', { state: 'closed' }), newerApprove: false } }), 'rejected', 'fix_not_needed');
+    expectResult(dispatch(cr([A({ triggerReason: 'r2' })])), 'duplicate', 'fix_in_flight');
+  });
+});
+
 describe('T10 CiFailedObserved (S23, S28)', () => {
   const ci = (v: KernelView, o: Partial<Extract<Command, { type: 'CiFailedObserved' }>> = {}) =>
     run(v, { type: 'CiFailedObserved', actor: 'webhook', headSha: 'H1', signature: 'sig', maxAttempts: 3, ...o });

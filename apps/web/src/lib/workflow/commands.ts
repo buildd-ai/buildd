@@ -100,6 +100,12 @@ export type Command =
       roundId: string;
       taskId: string;
       maxAttempts: number;
+      /**
+       * `human`: T23 apply/request changes on an escalation. The round need not carry a
+       * request-changes verdict (an escalated one is the point), and past the cap the person
+       * extends the budget by exactly one, recorded as a bypass. Absent = automatic.
+       */
+      trigger?: 'automatic' | 'human';
       revalidation: { live: LivePr; newerApprove: boolean };
     })
   | (Base & {
@@ -219,6 +225,8 @@ export type Command =
       type: 'HumanResolve';
       choice: 'approve' | 'request_changes' | 'apply_recommendation' | 'dismiss';
       reason?: string;
+      /** apply_recommendation / request_changes: what the person wants fixed, carried into the fix task. */
+      instructions?: string;
     })
   | (Base & { type: 'DeliveryFailed'; reason: string })
   | (Base & {

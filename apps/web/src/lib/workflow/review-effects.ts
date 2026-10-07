@@ -250,6 +250,25 @@ WHERE id = ${round.id}::uuid AND reviewer_task_id IS NULL`);
 
 // ── dispatch_fix: T8 then the fix task ──────────────────────────────────────
 
+const STOP_AND_REPORT =
+  'If this turns out to be a misdiagnosis rather than a real defect, stop and report why instead of patching around it.';
+
+/**
+ * T23: the fix task a person dispatched from an escalation. Their instructions are the
+ * authoritative ask; the reviewer's own words are context below them.
+ */
+export function humanFixDescription(original: string | null, instructions: string | null, reviewer: string | null): string {
+  const sections: string[] = [];
+  if (instructions) sections.push('## Instructions from the person who applied this (authoritative)', instructions, '');
+  if (reviewer) {
+    sections.push(instructions
+      ? "## Reviewer's escalation (context; the instructions above take precedence wherever they conflict)"
+      : "## Apply the reviewer's recommendation", reviewer, '');
+  }
+  sections.push(STOP_AND_REPORT, '', '## Original task', original ?? '');
+  return sections.join('\n');
+}
+
 const dispatchFix: EffectHandler = async (e) => {
   let view = await viewFor(e);
   const d = view.delivery;
@@ -261,6 +280,11 @@ const dispatchFix: EffectHandler = async (e) => {
   const repo = await workspaceRepo(d.workspaceId);
   if (!repo) throw new Error('no GitHub installation for the workspace');
 
+  // T23: a person's apply/request-changes on an escalation (§5.7 rule 5, trigger=human).
+  const human = e.payload.trigger === 'human';
+  const humanInstructions = typeof e.payload.humanInstructions === 'string' && e.payload.humanInstructions.trim()
+    ? e.payload.humanInstructions.trim() : null;
+  const humanActor = typeof e.payload.actor === 'string' ? e.payload.actor : null;
   const openFix = () => view.attempts.find((a) => a.family === 'review_fix' && a.triggerReason === round.id && (a.status === 'queued' || a.status === 'running'));
   let attempt = openFix();
   if (!attempt) {
@@ -269,6 +293,7 @@ const dispatchFix: EffectHandler = async (e) => {
     const newerApprove = view.rounds.some((r) => r.round > round.round && r.status === 'decided' && r.effectiveVerdict === 'approve');
     const res = await applyCommand({
       type: 'FixDispatched', actor: 'kernel', roundId: round.id, taskId: randomUUID(), maxAttempts: d.maxRounds,
+      ...(human ? { trigger: 'human' as const } : {}),
       revalidation: { live, newerApprove },
     }, { ref: { deliveryId: d.id }, exec: dbExec });
     if (res.result === 'rejected' || res.result === 'stale') return { outcome: `skipped:${res.reason}` };
@@ -290,7 +315,8 @@ const dispatchFix: EffectHandler = async (e) => {
   });
   if (!owner) return { outcome: 'skipped:no_owner' };
   const out = await roundOutput(round);
-  const feedback = out.feedback ?? out.summary ?? 'Reviewer requested changes';
+  const reviewerFeedback = out.feedback ?? (human ? out.escalationReason : null) ?? out.summary ?? null;
+  const feedback = humanInstructions ?? reviewerFeedback ?? 'Reviewer requested changes';
   if (isDependencyBotPrContext(owner.context)) {
     await appendPrActivity({ installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, entry: { kind: 'review_escalated', detail: 'dependency-bot PR · no fix pushed', note: feedback }, workspaceId: d.workspaceId });
     return { outcome: 'skipped:dependency_bot' };
@@ -307,7 +333,7 @@ const dispatchFix: EffectHandler = async (e) => {
     id: taskId,
     workspaceId: d.workspaceId,
     title: formatAttemptTitle('builder', owner.title, { reason: 'after review', iteration: attempt.attemptNo }),
-    description: owner.description,
+    description: human ? humanFixDescription(owner.description, humanInstructions, reviewerFeedback) : owner.description,
     missionId: owner.missionId,
     parentTaskId: owner.id,
     taskClass: 'attempt',
@@ -323,7 +349,8 @@ const dispatchFix: EffectHandler = async (e) => {
       baseBranch: prw?.prBaseRef ?? d.baseRef ?? branch,
       resumeBranch: branch,
       ...(lastCommitSha ? { lastCommitSha } : {}),
-      failureContext: { summary: feedback, errorType: 'reviewer_request_changes', ...(lastCommitSha ? { commitSha: lastCommitSha } : {}) },
+      failureContext: { summary: feedback, errorType: human ? 'reviewer_escalation_applied' : 'reviewer_request_changes', ...(lastCommitSha ? { commitSha: lastCommitSha } : {}) },
+      ...(human ? { trigger: 'human', appliedBy: humanActor, humanInstructions, recommendation: reviewerFeedback } : {}),
       prNumber: d.prNumber,
       prUrl,
       workerBranch: branch,
@@ -336,7 +363,7 @@ const dispatchFix: EffectHandler = async (e) => {
     release: 'false',
     priority: 8,
     status: 'pending',
-    creationSource: 'webhook',
+    creationSource: human ? 'dashboard' : 'webhook',
   } as never).onConflictDoNothing().returning();
   if (!fixTask) return { outcome: 'ok:task_exists' };
 
