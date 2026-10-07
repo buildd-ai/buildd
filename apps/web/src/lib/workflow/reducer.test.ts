@@ -348,6 +348,16 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(applied(end(V(D({ prNumber: null, repoFullName: null })), { outcome: 'unproven', live: null })).toState).toBe('AWAITING_PUSH');
     expect(applied(end(V(D({ prNumber: null, repoFullName: null })), { outcome: 'unproven', commitCount: 0, live: null, taskRetryBudgetLeft: true })).toState).toBe('WORKING');
   });
+  test('S30: WORKING unproven with nothing local and the task retry queued is a requeue even with the PR open (no round at the old head)', () => {
+    const dec = applied(end(V(D()), { outcome: 'unproven', commitCount: 0, localHeadSha: null, taskRetryBudgetLeft: true }));
+    expect(dec.toState).toBe('WORKING');
+    expect(dec.evidence).toMatchObject({ requeue: true });
+    expect(effectKinds(dec)).not.toContain('dispatch_review');
+    // Retry spent: nothing local to lose, so the open PR's head hands on exactly as row 1.
+    expect(applied(end(V(D()), { outcome: 'unproven', commitCount: 0, localHeadSha: null })).toState).toBe('AWAITING_REVIEW');
+    // Commits exist: AWAITING_PUSH whatever the retry budget says.
+    expect(applied(end(V(D()), { outcome: 'unproven', commitCount: 2, localHeadSha: 'L9', taskRetryBudgetLeft: true })).toState).toBe('AWAITING_PUSH');
+  });
   test('an exit for a non-bound attempt is stale', () => {
     expectResult(end(V(D()), { taskId: 'other' }), 'stale', 'attempt_not_bound');
     expectResult(end(V(D({ state: 'APPROVED' })), {}), 'stale', 'attempt_not_bound');
@@ -577,6 +587,18 @@ describe('T10 CiFailedObserved (S23, S28)', () => {
     const ins = dec.attempts[0] as { id: string; family: string; attemptNo: number };
     expect(ins).toMatchObject({ family: 'ci', attemptNo: 1, trigger: 'automatic' });
     expect(dec.patch).toMatchObject({ ci: 'red', ciHeadSha: 'H1', stateReason: 'ci', boundAttemptId: ins.id });
+  });
+  test('S31: a preflight-class failure is tagged preflightMiss on the transition, and changes nothing else', () => {
+    const tagged = applied(ci(V(D({ state: 'AWAITING_REVIEW' })), { preflightMiss: 'No Production Data' }));
+    const plain = applied(ci(V(D({ state: 'AWAITING_REVIEW' }))));
+    expect(tagged.evidence).toMatchObject({ preflightMiss: 'No Production Data' });
+    expect(plain.evidence).not.toHaveProperty('preflightMiss');
+    expect(tagged.toState).toBe(plain.toState);
+    expect(effectKinds(tagged)).toEqual(effectKinds(plain));
+    // Every T10 outcome carries it: deferral while a review fix is owed, and the exhausted escalation.
+    expect(applied(ci(V(D({ state: 'CHANGES_REQUESTED' })), { preflightMiss: 'x' })).evidence).toMatchObject({ preflightMiss: 'x' });
+    const three = [1, 2, 3].map((n) => A({ id: `c${n}`, family: 'ci', attemptNo: n, status: 'ended' }));
+    expect(applied(ci(V(D({ state: 'AWAITING_REVIEW' }), [], three), { preflightMiss: 'x' })).evidence).toMatchObject({ preflightMiss: 'x' });
   });
   test('an old-SHA failure is recorded only; CHANGES_REQUESTED keeps state', () => {
     expectResult(ci(V(D({ state: 'AWAITING_REVIEW' })), { headSha: 'H0' }), 'stale', 'head_not_current');

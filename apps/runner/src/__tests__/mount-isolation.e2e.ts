@@ -59,6 +59,12 @@ function probeBwrap(): boolean {
         '--proc', '/proc',
         '--dev', '/dev',
         '--ro-bind', '/usr', '/usr',
+        // Merged-usr hosts (GitHub's Ubuntu images included) name the ELF loader
+        // by its /lib or /lib64 path. Without these the exec fails ENOENT and
+        // this probe reported "skipped" on every CI run, namespaces or not.
+        '--ro-bind-try', '/bin', '/bin',
+        '--ro-bind-try', '/lib', '/lib',
+        '--ro-bind-try', '/lib64', '/lib64',
         '--', '/usr/bin/env', 'echo', 'ok',
       ],
       { timeout: 5000, encoding: 'utf8' },
@@ -362,11 +368,16 @@ describe('positive: allowed operations succeed', () => {
     // A real runner pushes over the network. The local bare remote is explicitly
     // mounted rw so this deterministic E2E exercises the same Git object/ref writes.
     const argv = makeBwrapArgv({ extraMounts: `${remoteDir}:rw` });
+    // The worker argv has no --chdir (the SDK spawns the agent with cwd set);
+    // runInBwrap spawns from the test's own cwd, which is not mounted, so bwrap
+    // falls back to / and `bun install` finds no package.json.
     const command = [
+      `cd ${worktreeDir}`,
       'bun install',
       'bun run build',
       'bun test',
-      'git add package.json bun.lock src.ts probe.test.ts dist/out.ts',
+      // No bun.lock: with zero dependencies bun deletes the empty lockfile.
+      'git add package.json src.ts probe.test.ts dist/out.ts',
       'git -c user.name="Buildd Probe" -c user.email=probe@buildd.dev commit -m "test: sandbox happy path"',
       'git push origin HEAD:refs/heads/sandbox-happy-path',
     ].join(' && ');

@@ -486,6 +486,15 @@ describe('finalizeExpiredQualityScoutRuns', () => {
     expect(s.saved.get('r1')!.metrics!.verdicts.pass).toBe(0);
   });
 
+  it('hands the caller\'s team and workspaces to the expired-run query', async () => {
+    const s = sweepDeps([], new Set());
+    const seen: unknown[] = [];
+    s.deps.listExpired = async (_now, _limit, scope) => { seen.push(scope); return []; };
+    await finalizeExpiredQualityScoutRuns({ deps: s.deps, teamId: 'team-a', workspaceIds: ['ws-1'] });
+    await finalizeExpiredQualityScoutRuns({ deps: s.deps });
+    expect(seen).toEqual([{ teamId: 'team-a', workspaceIds: ['ws-1'] }, {}]);
+  });
+
   it('a run someone else already took is counted as raced and not finalized twice', async () => {
     const s = sweepDeps([parkedRun('r1')], new Set());
     const out = await finalizeExpiredQualityScoutRuns({ deps: s.deps });

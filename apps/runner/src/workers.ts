@@ -1,6 +1,6 @@
 import { canonicalToolName } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
-import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
@@ -28,6 +28,9 @@ import {
 // file goes through removeWorktreeIfUnowned so no site can force-remove a
 // directory a live worker is sitting in. See git-operations.ts.
 import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
+// Namespace, not named: many tests mock.module('./git-operations') with a fixed
+// export list, and a named import missing from it fails the whole file.
+import * as gitOperations from './git-operations';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
@@ -47,6 +50,7 @@ import {
   DEFAULT_AUTH_CONTEXT,
 } from './claim-breaker';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
+import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, credentialBroker } from './broker';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker, loadTerminalWorkersCached, __resetDiskWorkersCache } from './worker-store';
@@ -122,6 +126,8 @@ import {
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
+import { handOffUnproven, isHandOffRefusal } from './hand-off-outcome';
+import { preflightHookEntries } from './preflight-guard';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
@@ -753,6 +759,8 @@ export class WorkerManager {
   private workerSync: WorkerSync;
   // Full knowledge-ingest jobs (KM v2 A2) — claimed only when this runner is idle.
   private knowledgeIngestPoller: KnowledgeIngestPoller;
+  // Quality Scout command probes (runner-host design §6) — idle ticks only, never a worker slot.
+  private scoutHostPoller: ScoutHostPoller;
   // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
   private recentCycleTimes: number[] = [];  // Duration in ms of last N completed workers
   private adaptiveStaleTimeout: number = 300_000;  // Start at 5 min, adapt from cycle data
@@ -910,6 +918,19 @@ export class WorkerManager {
       scanRepos: () => this.resolver.scanGitRepos(),
     });
 
+    // Quality Scout runner host. Hosts command probes only when it can wrap
+    // them in bwrap (or BUILDD_SCOUT_UNSANDBOXED=1); BUILDD_SCOUT_HOST=0 opts out.
+    this.scoutHostPoller = createScoutHostPoller({
+      builddServer: config.builddServer,
+      apiKey: config.apiKey,
+      scanRepos: () => this.resolver.scanGitRepos(),
+      bwrapSupported: isMountIsolationBwrapSupported,
+      // Busy = any worker that holds a slot, including one waiting for input.
+      isBusy: () => Array.from(this.workers.values()).some(
+        w => w.status === 'working' || w.status === 'stale' || w.status === 'waiting',
+      ),
+    });
+
     // Send heartbeat to register availability (immediate + periodic)
     // Heartbeat is now a lightweight ping (no workspace queries server-side)
     if (!config.serverless) {
@@ -938,6 +959,8 @@ export class WorkerManager {
         // the poller serializes itself and never throws).
         if (active === 0 && !this.config.singleTask) {
           this.knowledgeIngestPoller.poll().catch(() => {});
+          // Same gate for Scout runs: one at a time, no worker slot, re-checks busy before checkout.
+          this.scoutHostPoller.poll().catch(() => {});
         }
       }, RUNNER_HEARTBEAT_INTERVAL_MS);
 
@@ -1058,7 +1081,10 @@ export class WorkerManager {
   /** Environment as sent on the heartbeat: the scan, post-update canary status and (`--once`) the fleet identity. */
   private heartbeatEnvironment(): WorkerEnvironment | undefined {
     const canary = getUpdateCanary();
-    const env = !this.environment || !canary ? this.environment : { ...this.environment, updateCanary: canary.report() };
+    let env = !this.environment || !canary ? this.environment : { ...this.environment, updateCanary: canary.report() };
+    // A single-task runner never polls for Scout runs, so it never advertises one.
+    const scoutHost = env && !this.config.singleTask ? this.scoutHostPoller?.advert() : undefined;
+    if (env && scoutHost) env = { ...env, scoutHost };
     return withFleetIdentity(env, this.config.fleetIdentity);
   }
 
@@ -2152,6 +2178,8 @@ export class WorkerManager {
     let worktreeCreated = false;
     /** True when a worktree was required and `setupWorktree` returned null. */
     let worktreeSetupFailed = false;
+    /** git's reason, when setupWorktree recorded one. */
+    let worktreeSetupError: string | undefined;
     /** Set when a structural install fault must kill the session pre-budget. */
     let installBlock: string | undefined;
     /** Set when the resolved session cwd cannot host the task at all. */
@@ -2311,6 +2339,7 @@ export class WorkerManager {
         // checked out. Fail the worker instead
         // — the claim is retryable, a silently shared clone is not recoverable.
         worktreeSetupFailed = true;
+        worktreeSetupError = gitOperations.takeSetupWorktreeError?.(worker.id);
         console.warn(`[Worker ${worker.id}] Worktree setup failed for ${claimedWorker.branch} — failing the worker rather than running in the shared clone at ${workspacePath}`);
         this.addMilestone(worker, { type: 'status', label: 'Worktree setup failed — not running in the shared clone', ts: Date.now() });
       }
@@ -2331,7 +2360,8 @@ export class WorkerManager {
     if (hasRepo && !worktreeCreated && !existsSync(join(sessionCwd, '.git'))) {
       startBlock = `Session cwd is not a git checkout: ${sessionCwd} (workspace ${fullTask.workspace?.repo})`;
     } else if (worktreeSetupFailed) {
-      startBlock = `Worktree setup failed for branch ${claimedWorker.branch} in ${workspacePath}; refusing to run in the shared clone`;
+      startBlock = `Worktree setup failed for branch ${claimedWorker.branch} in ${workspacePath}; refusing to run in the shared clone` +
+        (worktreeSetupError ? `: ${worktreeSetupError}` : '');
     }
 
     // Role overlay — AFTER worktree setup, against the session cwd.
@@ -2755,9 +2785,18 @@ export class WorkerManager {
     worker.completedAt = Date.now();
 
     const failSpans = buildSubagentSpans(worker.subagentTasks);
+    // S30 (workflow-state-kernel.md §6.6): the output gate refused a session
+    // that ran — its work is not on GitHub, which is not the work failing.
+    const handOff = isHandOffRefusal(refusal)
+      ? handOffUnproven(
+        await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+        worker.commits.length,
+      )
+      : null;
     await this.buildd.updateWorker(worker.id, {
       status: 'failed',
       error: refusal.message,
+      ...(handOff ?? {}),
       serverRefused: true,
       refusal: {
         status: refusal.status,
@@ -4390,6 +4429,14 @@ export class WorkerManager {
                 hooks: [this.hookFactory.createLoopVerificationHook(worker, () => this.runLoopVerification(worker, task, cwd))],
               }]
             : []),
+          // Workspace preflight (workflow-state-kernel.md §6.10, S31): the cheap
+          // checks CI would fail on run before a push or create_pr; a failure
+          // denies that call with the output as the agent's next instruction.
+          // Off unless gitConfig.preflight.commands lists any. Codex has no seam.
+          ...preflightHookEntries({
+            gitConfig, isCodexTask, cwd,
+            milestone: (label) => this.addMilestone(worker, { type: 'status', label, ts: Date.now() }),
+          }) as unknown as Array<{ timeout: number; hooks: HookCallback[] }>,
         ],
         PostToolUse: [
           { hooks: [this.hookFactory.createTeamTrackingHook(worker)] },
@@ -4863,6 +4910,11 @@ export class WorkerManager {
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: errMsg,
+          // S30: an unmet output requirement after work is a hand-off failure, not a failed attempt.
+          ...handOffUnproven(
+            await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+            worker.commits.length,
+          ),
           milestones: worker.milestones,
           resultMeta: {
             closingTurnOutcome: isClosingTurn

@@ -3,7 +3,7 @@ import { reconcileSubjectEvent } from '@/lib/supersession';
 import { NextRequest, NextResponse } from 'next/server';
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
-import { workers, githubRepos, missions, tasks, workspaces } from '@buildd/core/db/schema';
+import { workers, githubRepos, missions, tasks, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { eq, and, ne, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { githubApi, githubAppBotLogin, mergePullRequest } from '@/lib/github';
 import { rankPrComments } from '@/lib/pr-comments';
@@ -15,6 +15,7 @@ import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@/lib/mission-integration-branch';
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
+import { describeProseFindings, scanPrProse } from '@buildd/core/no-prod-data-prose';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { agentRunMayActOnPr, authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
@@ -343,6 +344,25 @@ export async function POST(req: NextRequest) {
     const isMissionPrOwner = missionBaseGuard.isMissionPrOwner;
     const taskContext = worker.task?.context as Record<string, unknown> | null;
     const isStackedPhase = missionBaseGuard.isStackedPhase;
+
+    // §6.10 tier 1 (S31): a workspace that opts in has the body and title it is
+    // about to open scanned with CI's own prose rule, and a body CI would fail
+    // is refused here with the reason instead of after a red check. Only a PR
+    // buildd opens: an adopted one already exists, and CI will scan it anyway.
+    if (!existingPrUrl) {
+      const preflight = (worker.workspace?.gitConfig as WorkspaceGitConfig | null)?.preflight;
+      if (preflight?.prProseScan) {
+        const composed = composeBodyWithLede(effectiveLede, prBody, { derived: ledeIsDerived });
+        const scan = scanPrProse({ title: String(title), body: composed });
+        if (scan.findings.length > 0) {
+          return NextResponse.json({
+            error: `PR not opened: ${describeProseFindings(scan.findings)}`,
+            code: 'preflight_failed',
+            preflight: { check: 'no_prod_data_prose', findings: scan.findings },
+          }, { status: 400 });
+        }
+      }
+    }
 
     // If an existing PR URL is provided, register it directly without going through GitHub API.
     // This allows agents to satisfy pr_required even when the workspace has no GitHub App installation

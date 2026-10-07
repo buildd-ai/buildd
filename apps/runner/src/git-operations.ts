@@ -508,6 +508,20 @@ function isShallowClone(repoPath: string): boolean {
   }
 }
 
+/** Why setupWorktree last returned null, per worker: git's own text, for the start failure. */
+const setupWorktreeErrors = new Map<string, string>();
+
+/**
+ * Why setupWorktree last returned null for `workerId` (trimmed), once. The
+ * caller fails the worker with it, so the task says what git refused instead
+ * of only that it did.
+ */
+export function takeSetupWorktreeError(workerId: string): string | undefined {
+  const why = setupWorktreeErrors.get(workerId);
+  setupWorktreeErrors.delete(workerId);
+  return why;
+}
+
 function safeWorktreeDirName(branch: string): string {
   return branch.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
@@ -1170,6 +1184,7 @@ export async function setupWorktree(
     };
   } catch (err) {
     console.error(`[Worker ${workerId}] Failed to set up worktree:`, err instanceof Error ? err.message : err);
+    setupWorktreeErrors.set(workerId, (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim().slice(0, 400));
     // Clean up partial worktree
     try {
       if (existsSync(worktreePath)) {

@@ -158,8 +158,9 @@ let seedClone: string;
 let store: FakeStore;
 let lines: string[];
 
-function session(opts: { cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number; zstd?: boolean; log?: (m: string) => void } = {}) {
+function session(opts: { cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number; zstd?: boolean; log?: (m: string) => void; reusedContainer?: boolean } = {}) {
   return new WarmRepoSession({
+    ...(opts.reusedContainer !== undefined ? { reusedContainer: opts.reusedContainer } : {}),
     ...(opts.zstd !== undefined ? { zstd: opts.zstd } : {}),
     ...(opts.maxBundleBytes !== undefined ? { maxBundleBytes: opts.maxBundleBytes } : {}),
     ...(opts.partBytes !== undefined ? { partBytes: opts.partBytes } : {}),
@@ -308,6 +309,39 @@ describe('restore before clone', () => {
     expect(git(path, 'rev-parse', 'origin/main')).toBe(git(seedClone, 'rev-parse', 'HEAD'));
     expect(git(path, 'rev-parse', '--abbrev-ref', 'main@{upstream}')).toBe('origin/main');
     expect(git(path, 'status', '--porcelain')).toBe('');
+    expect(readFileSync(join(cacheDir, 'is-number@7.0.0', 'index.js'), 'utf-8')).toBe('module.exports = 1;\n');
+  });
+
+  test('a reused container keeps the dependency cache it has: the repo is restored, the cache is not downloaded again', async () => {
+    const first = session();
+    cloneThrough(first, 'ws-seed');
+    await first.refresh('completed');
+    lines = [];
+    store.calls.length = 0;
+    // What the reset kept: the previous task's cache, with a package the snapshot lacks.
+    const cacheDir = join(dir, 'kept-cache');
+    mkdirSync(join(cacheDir, 'kept@1.0.0'), { recursive: true });
+    writeFileSync(join(cacheDir, 'kept@1.0.0', 'index.js'), 'kept\n');
+    const logs: string[] = [];
+    const s = session({ cacheDir, reusedContainer: true, log: (m) => logs.push(m) });
+    cloneThrough(s);
+
+    expect(sourceLine()).toBe('BUILDD_REPO_SOURCE=warm');
+    expect(phaseNames()).toEqual(['restore_warm_start', 'restore_warm_end', 'fetch_start', 'fetch_end']);
+    expect(store.calls.some(c => c.startsWith('PIPE ') && c.endsWith('/cache'))).toBe(false);
+    expect(readFileSync(join(cacheDir, 'kept@1.0.0', 'index.js'), 'utf-8')).toBe('kept\n');
+    expect(existsSync(join(cacheDir, 'is-number@7.0.0'))).toBe(false);
+    expect(logs.some(m => m.includes('reused container'))).toBe(true);
+  });
+
+  test('a reused container with no cache on disk restores the cache as usual', async () => {
+    const first = session();
+    cloneThrough(first, 'ws-seed');
+    await first.refresh('completed');
+    lines = [];
+    const cacheDir = join(dir, 'empty-cache');
+    cloneThrough(session({ cacheDir, reusedContainer: true }));
+    expect(phaseNames()).toContain('restore_cache_start');
     expect(readFileSync(join(cacheDir, 'is-number@7.0.0', 'index.js'), 'utf-8')).toBe('module.exports = 1;\n');
   });
 
