@@ -436,6 +436,9 @@ mock.module('@buildd/core/worker-messages', () => ({
   WORKER_MESSAGE_CAP: 3,
 }));
 
+const mockQueueSystemInstruction = mock(async (_workerId: string, _text: string) => true);
+mock.module('@/lib/system-instruction-queue', () => ({ queueSystemInstruction: mockQueueSystemInstruction }));
+
 mock.module('@buildd/core/routing-analytics', () => ({
   recordTaskOutcome: mockRecordTaskOutcome,
 }));
@@ -14647,6 +14650,7 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     // that indexes into it (or asserts a type is absent) reads a previous
     // test's message instead of this one's.
     mockEnqueueWorkerMessage.mockClear();
+    mockQueueSystemInstruction.mockClear();
     // mockClear, not mockReset: the default implementation (echo the paths
     // back) has to survive, or the `not.toHaveBeenCalled` case starts passing
     // for the wrong reason.
@@ -14704,6 +14708,46 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     expect(siblingTaskId).toBe('task-2');
     expect(msg.type).toBe('path_blocked_on_you');
     expect(msg.body.overlappingPaths).toContain('apps/web/src/lib/foo.ts');
+  });
+
+  async function patchWithOverlappingSibling(runner: string) {
+    setupBaseWorkerMock();
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['apps/web/src/lib/foo.ts'],
+      runner,
+      task: { pathManifest: ['apps/web/src/lib/foo.ts'] },
+    }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {} })
+      .mockResolvedValueOnce({ context: {} });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    expect((await PATCH(req, { params: mockParams })).status).toBe(200);
+  }
+
+  // A runner-managed session never reads pendingWorkerMessages, so the overlap
+  // notice must also go on the instruct queue the runner injects.
+  it('runner-managed sibling: the overlap notice is also queued as an instruction to its worker', async () => {
+    await patchWithOverlappingSibling('runner-host-1');
+    expect(mockQueueSystemInstruction).toHaveBeenCalledTimes(1);
+    const [workerId, text] = mockQueueSystemInstruction.mock.calls[0] as [string, string];
+    expect(workerId).toBe('worker-2');
+    expect(text).toContain('path_blocked_on_you');
+    expect(text).toContain('apps/web/src/lib/foo.ts');
+  });
+
+  it('interactive sibling: no instruction — its session reads workerMessages', async () => {
+    await patchWithOverlappingSibling('mcp');
+    expect(mockEnqueueWorkerMessage).toHaveBeenCalled();
+    expect(mockQueueSystemInstruction).not.toHaveBeenCalled();
   });
 
   it('dedup: second call with same (path, sibling) does NOT add another message', async () => {
