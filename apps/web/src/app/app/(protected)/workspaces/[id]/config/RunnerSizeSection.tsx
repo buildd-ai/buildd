@@ -13,6 +13,8 @@ interface Props {
   effective: RunnerSize;
   source: RunnerSizeSource;
   reason: RunnerSizeReason | null;
+  /** "This month: 9.1 h on the runner, counted as 18.2 h"; null when it has not run there this month. */
+  monthLine?: string | null;
 }
 
 const LABELS: Record<RunnerSize, string> = { standard: 'Standard', large: 'Large' };
@@ -36,7 +38,7 @@ export function describeRunnerSizeSource(source: RunnerSizeSource, reason: Runne
  * The cloud container size this workspace's tasks get (gitConfig.runnerSize).
  * Saved through PATCH /api/workspaces/[id].
  */
-export default function RunnerSizeSection({ workspaceId, explicit, effective, source, reason }: Props) {
+export default function RunnerSizeSection({ workspaceId, explicit, effective, source, reason, monthLine = null }: Props) {
   const [value, setValue] = useState<Choice>(explicit ?? 'auto');
   const [shown, setShown] = useState({ effective, source, reason });
   const [saving, setSaving] = useState(false);
@@ -72,6 +74,7 @@ export default function RunnerSizeSection({ workspaceId, explicit, effective, so
           Now: <span data-testid="workspace-runner-size-effective" className="font-medium">{LABELS[shown.effective]}</span>
           <span className="text-text-muted"> · {describeRunnerSizeSource(shown.source, shown.reason)}</span>
         </p>
+        {monthLine && <p data-testid="workspace-runner-month" className="text-meta text-text-secondary tabular-nums">{monthLine}</p>}
         <div>
           <span id="workspace-runner-size-label" className="block text-sm font-medium mb-1">Size</span>
           <Select<Choice>

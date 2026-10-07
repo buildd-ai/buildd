@@ -449,6 +449,21 @@ mock.module('@/lib/entitlements/managed-runner', () => ({
   },
   stampEntitlementBlock: mockStampEntitlementBlock,
 }));
+// Hosted runner allowance: the real check over injectable allowance and usage.
+const realHosted = { ...(await import('@/lib/hosted-runner-usage-store')) };
+const hostedTest = { allowance: null as number | null, countedHours: 0, usageReads: 0 };
+mock.module('@/lib/hosted-runner-usage-store', () => ({
+  ...realHosted,
+  checkHostedRunnerAllowance: (teamId: string, opts: any) => realHosted.checkHostedRunnerAllowance(teamId, opts, {
+    loadAllowanceHours: async () => hostedTest.allowance,
+    loadTeamRows: async () => {
+      hostedTest.usageReads++;
+      const startedAt = new Date(Date.now() - 1000);
+      const seconds = Math.round(hostedTest.countedHours * 3600);
+      return [{ workspaceId: 'ws-1', taskId: 'old', size: 'standard', runnerSeconds: seconds, weightedRunnerSeconds: seconds, startedAt, endedAt: startedAt }];
+    },
+  }),
+}));
 import { POST } from './route';
 import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-workspace-links-plan';
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
@@ -7453,6 +7468,76 @@ describe('claim gate overrides', () => {
       expect(data.diagnostics?.deferrals?.managed_runner_hours).toBe(1);
       expect(mockStampEntitlementBlock.mock.calls[0][1]).toMatchObject({ kind: 'usage', unit: 'runner_hours', limit: 50 });
       expect(statusesWritten()).not.toContain('failed');
+    });
+
+    describe('hosted runner allowance (cloud claims)', () => {
+      beforeEach(() => {
+        hostedTest.allowance = null;
+        hostedTest.countedHours = 0;
+        hostedTest.usageReads = 0;
+      });
+
+      it('allowance used: a cloud claim leaves the task queued with the reason stamped, never failed', async () => {
+        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+        setupClaimBase();
+        mockWorkersFindMany.mockResolvedValue([]);
+        mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+        hostedTest.allowance = 50;
+        hostedTest.countedHours = 50;
+
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', executor: 'cloud' } }));
+        const data = await res.json();
+
+        expect(res.status).toBe(200);
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics?.deferrals?.hosted_runner_hours).toBe(1);
+        expect(mockStampEntitlementBlock.mock.calls[0][1]).toMatchObject({ kind: 'hosted_runner', used: 50, limit: 50 });
+        expect(statusesWritten()).not.toContain('failed');
+      });
+
+      it('under the allowance a cloud claim starts the task', async () => {
+        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+        setupClaimBase();
+        mockWorkersFindMany.mockResolvedValue([]);
+        mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+        hostedTest.allowance = 50;
+        hostedTest.countedHours = 49;
+
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', executor: 'cloud' } }));
+        const data = await res.json();
+
+        expect(data.workers).toHaveLength(1);
+        expect(mockStampEntitlementBlock).not.toHaveBeenCalled();
+      });
+
+      it('no allowance (the default): a cloud claim never reads usage', async () => {
+        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+        setupClaimBase();
+        mockWorkersFindMany.mockResolvedValue([]);
+        mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+        hostedTest.countedHours = 9999;
+
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', executor: 'cloud' } }));
+        const data = await res.json();
+
+        expect(data.workers).toHaveLength(1);
+        expect(hostedTest.usageReads).toBe(0);
+      });
+
+      it('a host runner may still take the task when the hosted allowance is used', async () => {
+        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+        setupClaimBase();
+        mockWorkersFindMany.mockResolvedValue([]);
+        mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+        hostedTest.allowance = 50;
+        hostedTest.countedHours = 80;
+
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+        const data = await res.json();
+
+        expect(data.workers).toHaveLength(1);
+        expect(hostedTest.usageReads).toBe(0);
+      });
     });
 
     it('a self-hosted runner key ignores the hosted entitlement entirely, even on a plan at its limit', async () => {

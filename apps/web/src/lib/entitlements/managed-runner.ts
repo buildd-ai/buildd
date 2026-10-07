@@ -23,6 +23,12 @@ import {
 } from '@buildd/shared';
 import { resolveManagedRunnerEntitlement, type TeamManagedRunnerPlan } from './plans';
 import { wakeTasks } from '@/lib/dispatch-authority';
+import { checkHostedRunnerAllowance, dbHostedRunnerDeps, type HostedRunnerDeps } from '@/lib/hosted-runner-usage-store';
+
+/** Hold kinds a managed plan lifts; `hosted_runner` lifts with the hosted allowance. */
+export const MANAGED_HOLD_KINDS = ['concurrency', 'usage'] as const;
+export const HOSTED_HOLD_KINDS = ['hosted_runner'] as const;
+type HoldKind = EntitlementBlock['kind'];
 
 export interface ManagedRunnerDeps {
   loadTeamPlan(teamId: string): Promise<TeamManagedRunnerPlan | null>;
@@ -115,8 +121,11 @@ export async function stampEntitlementBlock(taskId: string, block: EntitlementBl
  * highest priority first. A wake is "reconsider now": the claim re-runs every
  * gate, this one included, so waking one too many costs a deferred claim.
  */
-export async function wakeEntitlementBlockedTasks(teamId: string, limit = 1): Promise<number> {
+export async function wakeEntitlementBlockedTasks(teamId: string, limit = 1, kinds?: readonly HoldKind[]): Promise<number> {
   try {
+    const kindFilter = kinds && kinds.length > 0
+      ? sql`(${tasks.context}->${ENTITLEMENT_BLOCK_CONTEXT_KEY}->>'kind') IN (${sql.join(kinds.map(k => sql`${k}`), sql`, `)})`
+      : sql`true`;
     const rows = await db.select({ id: tasks.id })
       .from(tasks)
       .innerJoin(workspaces, eq(workspaces.id, tasks.workspaceId))
@@ -124,6 +133,7 @@ export async function wakeEntitlementBlockedTasks(teamId: string, limit = 1): Pr
         eq(workspaces.teamId, teamId),
         eq(tasks.status, 'pending'),
         sql`${tasks.context} ? ${ENTITLEMENT_BLOCK_CONTEXT_KEY}`,
+        kindFilter,
       ))
       .orderBy(sql`${tasks.priority} DESC`, tasks.createdAt)
       .limit(limit);
@@ -142,7 +152,7 @@ export async function wakeEntitlementBlockedTasks(teamId: string, limit = 1): Pr
 export async function onManagedWorkerTerminal(workspaceId: string): Promise<void> {
   try {
     const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { teamId: true } });
-    if (ws?.teamId) await wakeEntitlementBlockedTasks(ws.teamId, 1);
+    if (ws?.teamId) await wakeEntitlementBlockedTasks(ws.teamId, 1, MANAGED_HOLD_KINDS);
   } catch (err) {
     console.error(`[entitlements] terminal wake failed for workspace ${workspaceId}:`, err);
   }
@@ -154,7 +164,10 @@ export async function onManagedWorkerTerminal(workspaceId: string): Promise<void
  * floor; hosted billing may also call `wakeEntitlementBlockedTasks` the moment
  * it changes a plan.
  */
-export async function sweepEntitlementBlockedTasks(deps: ManagedRunnerDeps = dbManagedRunnerDeps): Promise<{ teams: number; woken: number }> {
+export async function sweepEntitlementBlockedTasks(
+  deps: ManagedRunnerDeps = dbManagedRunnerDeps,
+  hostedDeps: HostedRunnerDeps = dbHostedRunnerDeps,
+): Promise<{ teams: number; woken: number }> {
   const rows = await db.selectDistinct({ teamId: workspaces.teamId })
     .from(tasks)
     .innerJoin(workspaces, eq(workspaces.id, tasks.workspaceId))
@@ -162,12 +175,16 @@ export async function sweepEntitlementBlockedTasks(deps: ManagedRunnerDeps = dbM
   let woken = 0;
   for (const { teamId } of rows) {
     if (!teamId) continue;
+    // Hosted runner holds lift with the hosted allowance (month reset, or more hours).
+    if (!(await checkHostedRunnerAllowance(teamId, {}, hostedDeps))) {
+      woken += await wakeEntitlementBlockedTasks(teamId, 50, HOSTED_HOLD_KINDS);
+    }
     const ent = await teamManagedRunnerEntitlement(teamId, deps);
-    if (isUnlimited(ent)) { woken += await wakeEntitlementBlockedTasks(teamId, 50); continue; }
+    if (isUnlimited(ent)) { woken += await wakeEntitlementBlockedTasks(teamId, 50, MANAGED_HOLD_KINDS); continue; }
     const block = await checkManagedRunnerEntitlement(teamId, {}, deps);
     if (block) continue;
     const free = ent.concurrency === null ? 50 : Math.max(1, ent.concurrency - await deps.countActiveManagedRuns(teamId));
-    woken += await wakeEntitlementBlockedTasks(teamId, free);
+    woken += await wakeEntitlementBlockedTasks(teamId, free, MANAGED_HOLD_KINDS);
   }
   return { teams: rows.length, woken };
 }
