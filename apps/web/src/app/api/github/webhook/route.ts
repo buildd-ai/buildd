@@ -14,6 +14,7 @@ import { isMissionPrTask, looksLikeMissionIntegrationBranch, resolveTaskPrBase }
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { checkDependsOnResolved, resolveCompletedTask } from '@/lib/task-dependencies';
 import { detachInteractiveWorkersOfEndedTasks } from '@/lib/interactive-detach';
+import { otherOpenPrsOfTask } from '@/lib/task-open-prs';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, enqueuePushIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
@@ -1146,7 +1147,16 @@ async function handlePullRequestEvent(event: {
     // forever, and only when the human clicked Merge on GitHub rather than in
     // buildd, because the dashboard merge route raises the signal itself.
     let transition: 'flipped' | 'already_completed' | 'not_flipped' = 'already_completed';
-    if (worker.task.status !== 'completed') {
+    // A stacked series: the task owns more PRs than this one. Its first merge
+    // must not complete the task (that would end the worker holding the rest and
+    // release dependents early); the last one does.
+    const openSiblingPrs = worker.task.status !== 'completed'
+      ? await otherOpenPrsOfTask(worker.task.id, { prUrl: prUrlFor(repository.full_name, pr.number) })
+      : [];
+    if (openSiblingPrs.length > 0) {
+      transition = 'not_flipped';
+      console.log(`Task ${worker.task.id} stays open after PR #${pr.number} merged: ${openSiblingPrs.length} other PR(s) still open`);
+    } else if (worker.task.status !== 'completed') {
       // Guarded on the row, not only on the copy read above: the worker's own
       // completion (PATCH /api/workers/[id]) can land between that read and
       // this write, and it resolves the task itself. Only the writer that
@@ -1230,6 +1240,9 @@ async function handlePullRequestEvent(event: {
     });
 
     if (matchingTask && matchingTask.status !== 'completed') {
+      // Same rule as the worker-match path: a task with other open PRs is not done.
+      const openSiblingPrs = await otherOpenPrsOfTask(matchingTask.id, { prUrl: prUrlFor(repository.full_name, pr.number) });
+      if (openSiblingPrs.length > 0) return;
       // Row-guarded for the same reason as the worker-match path above.
       const [flipped] = await db
         .update(tasks)
