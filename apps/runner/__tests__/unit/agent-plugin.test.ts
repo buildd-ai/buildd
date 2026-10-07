@@ -688,6 +688,122 @@ describe('installer', () => {
     expect(out).not.toContain('bld_x');
   });
 
+  /**
+   * Two teams on one machine: the login key reaches team A's workspaces only;
+   * the person's presence token reaches A and B (the scope route, with ids).
+   */
+  const PT = 'bldp_eyJ0IjoieCIsInUiOiJ5In0.sig';
+  const loginTwoTeams = (keyRepos: string[], personRepos: Array<[repo: string, team: string]>) => {
+    mkdirSync(join(home, '.buildd'), { recursive: true });
+    writeFileSync(join(home, '.buildd', 'config.json'), JSON.stringify({ apiKey: 'bld_test', presenceToken: PT, builddServer: 'https://b.test' }));
+    const id = (r: string) => `ws-${r.replace('/', '-')}`;
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string, init: any) => {
+      urls.push(url);
+      const auth = init?.headers?.Authorization;
+      if (url.endsWith('/api/workers/local-sessions/workspaces')) {
+        if (auth !== `Bearer ${PT}`) return new Response('{}', { status: 401 });
+        return Response.json({ workspaces: personRepos.map(([r, teamId]) => ({ id: id(r), repo: r, teamId })) });
+      }
+      if (auth !== 'Bearer bld_test') return new Response('{}', { status: 401 });
+      return Response.json({ workspaces: keyRepos.map(r => ({ id: id(r), repo: `https://github.com/${r}` })) });
+    }) as any;
+    return { fetchImpl, urls, env: { BUILDD_HOME: join(home, '.buildd') } as Record<string, string | undefined> };
+  };
+  const oauthTo = (r: string) => ({ type: 'http', url: `https://b.test/api/mcp-oauth/ws-${r.replace('/', '-')}` });
+  const keyEntry = { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_test' } };
+
+  it("--global covers every team the person is in: another team's workspace folders sign in with OAuth, never with the login key", async () => {
+    const a = join(home, 'code', 'widget');
+    const b = join(home, 'code', 'api');
+    checkout(a, 'acme/widget');
+    checkout(b, 'beta/api');
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [a]: {}, [b]: {} } }));
+    const l = loginTwoTeams(['acme/widget'], [['acme/widget', 'team-a'], ['beta/api', 'team-b']]);
+    const r = await runCli(['--global', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(r.code).toBe(0);
+    const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+    expect(cfg.projects[a].mcpServers.buildd).toEqual(keyEntry);
+    expect(cfg.projects[b].mcpServers.buildd).toEqual(oauthTo('beta/api'));
+    expect(JSON.stringify(cfg.projects[b])).not.toContain('bld_');
+    const out = r.lines.join('\n');
+    expect(out).toContain('registered for your workspace folders only (2)');
+    expect(out).toMatch(/~\/code\/api\s+beta\/api\s+OAuth: your login key's team can't reach it/);
+    expect(out).toMatch(/~\/code\/widget\s+acme\/widget\n/);
+    expect(out).not.toContain('Run buildd login again');
+    expect(out).toContain('your workspace repos (2): acme/widget, beta/api');
+    expect(l.urls.sort()).toEqual(['https://b.test/api/workers/local-sessions/workspaces', 'https://b.test/api/workspaces']);
+  });
+
+  it("repairs a key entry whose team can't reach the folder's workspace, also where it shadows the folder's own .mcp.json", async () => {
+    const b = join(home, 'code', 'api');
+    const c = join(home, 'code', 'web');
+    const d = join(home, 'code', 'docs');
+    checkout(b, 'beta/api');
+    checkout(c, 'beta/web');
+    checkout(d, 'beta/docs');
+    const own = JSON.stringify({ mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' } } } });
+    writeFileSync(join(c, '.mcp.json'), own);
+    writeFileSync(join(d, '.mcp.json'), own);
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: {
+      [b]: { mcpServers: { buildd: keyEntry } },
+      [c]: { allowedTools: ['Bash'], mcpServers: { buildd: keyEntry, mine: { command: 'y' } } },
+      [d]: {},
+    } }));
+    const l = loginTwoTeams(['acme/widget'], [['acme/widget', 'team-a'], ['beta/api', 'team-b'], ['beta/web', 'team-b'], ['beta/docs', 'team-b']]);
+    const r = await runCli(['--global', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(r.code).toBe(0);
+    const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+    expect(cfg.projects[b].mcpServers.buildd).toEqual(oauthTo('beta/api'));
+    // The shadowing local entry is replaced; the folder's other servers and settings stay.
+    expect(cfg.projects[c]).toEqual({ allowedTools: ['Bash'], mcpServers: { buildd: oauthTo('beta/web'), mine: { command: 'y' } } });
+    // A folder that relies on its own .mcp.json, with nothing shadowing it, is left alone.
+    expect(cfg.projects[d]).toEqual({});
+    const out = r.lines.join('\n');
+    expect(out).toContain("Switched 2 folders from a key whose team can't reach their workspace to OAuth: ~/code/api, ~/code/web");
+    expect(out).toMatch(/~\/code\/docs\s+beta\/docs\s+\(its own \.mcp\.json\)/);
+  });
+
+  it("--here in another team's workspace folder signs in with OAuth instead of using the login key", async () => {
+    const b = join(home, 'code', 'api');
+    checkout(b, 'beta/api');
+    const l = loginTwoTeams(['acme/widget'], [['acme/widget', 'team-a'], ['beta/api', 'team-b']]);
+    const r = await runCli(['--here'], { home, cwd: b, ...l });
+    expect(r.code).toBe(0);
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[b].mcpServers.buildd).toEqual(oauthTo('beta/api'));
+    expect(r.lines.join('\n')).toContain("signing in with OAuth: your login key's team can't reach this workspace");
+  });
+
+  it("--status --global flags a key entry whose team can't reach the folder's workspace, from the cached lists, without the network", async () => {
+    const a = join(home, 'code', 'widget');
+    const b = join(home, 'code', 'api');
+    checkout(a, 'acme/widget');
+    checkout(b, 'beta/api');
+    mkdirSync(join(home, '.buildd'), { recursive: true });
+    writeFileSync(join(home, '.buildd', 'config.json'), JSON.stringify({ apiKey: 'bld_test', presenceToken: PT }));
+    const env = { BUILDD_HOME: join(home, '.buildd') };
+    writeWorkspaceCache(env, 'bld_test', ['acme/widget']);
+    writeWorkspaceCache(env, PT, ['acme/widget', 'beta/api']);
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [a]: { mcpServers: { buildd: keyEntry } }, [b]: { mcpServers: { buildd: keyEntry } } } }));
+    const offline = (async () => { throw new Error('status must not call the network'); }) as any;
+    const r = await runCli(['--status', '--global', '--client=claude'], { home, cwd: home, fetchImpl: offline, env });
+    const out = r.lines.join('\n');
+    expect(out).toMatch(/~\/code\/api\s+key  its team can't reach beta\/api: run buildd install --global to switch it to OAuth/);
+    expect(out).toMatch(/~\/code\/widget\s+key\n/);
+    expect(out).not.toContain('bld_test');
+  });
+
+  it("without a presence token only the login key's team is covered, and install says how to include the rest", async () => {
+    const a = join(home, 'code', 'widget');
+    checkout(a, 'acme/widget');
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [a]: {} } }));
+    const l = login(['acme/widget']);
+    const r = await runCli(['--global', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(r.code).toBe(0);
+    expect(r.lines.join('\n')).toContain("Only your login key's team is included. Run buildd login again to include every team you're in.");
+    expect(l.urls).toEqual(['https://b.test/api/workspaces']);
+  });
+
   it('changes nothing when not logged in or when the workspace list cannot be loaded', async () => {
     writeFileSync(join(home, '.claude.json'), '{"mcpServers":{}}');
     const notIn = await runCli(['--global'], { home, cwd: home, env: { BUILDD_HOME: join(home, '.buildd') } });
