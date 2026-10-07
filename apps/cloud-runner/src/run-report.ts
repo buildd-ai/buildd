@@ -630,7 +630,16 @@ export interface RunTimings {
 
 // ── Assembly ──────────────────────────────────────────────────────────────────
 
+export interface BrowserRunUsage {
+  sessionMs: number;
+  sessions: number;
+  requests: number;
+  bytes: number;
+  relayErrors: number;
+}
+
 export interface RunReport {
+  browser?: BrowserRunUsage & { provider: 'cloudflare'; sessionSeconds: number };
   kind: typeof RUN_REPORT_KIND;
   version: typeof RUN_REPORT_VERSION;
   taskId: string | null;
@@ -785,6 +794,7 @@ export const RUN_INTERRUPTIONS = ['container_stopped', 'agent_restart', 'questio
 export type RunInterruption = typeof RUN_INTERRUPTIONS[number];
 
 export interface RunReportInput {
+  browser?: BrowserRunUsage;
   taskId: string | null | undefined;
   attempt: number;
   workerId?: string | null;
@@ -903,6 +913,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       toFirstModelRequest: span(timestamps.claimedAt, timestamps.firstModelRequestAt),
       total: span(timestamps.dispatchReceivedAt, timestamps.exitedAt),
     },
+    ...(input.browser ? { browser: { provider: 'cloudflare' as const, sessionMs: count(input.browser.sessionMs), sessionSeconds: count(input.browser.sessionMs) / 1000, sessions: count(input.browser.sessions), requests: count(input.browser.requests), bytes: count(input.browser.bytes), relayErrors: count(input.browser.relayErrors) } } : {}),
     runnerPhases: phases,
     repo: {
       source,

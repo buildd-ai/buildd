@@ -83,6 +83,7 @@ export interface VisualEvidenceVerdict {
   unlinkedIssues: string[];
   /** Artifact ids with unknown verdict values (not in QA_VERDICTS). */
   invalidVerdicts: Array<{ id: string; verdict: unknown }>;
+  providerFailures?: string[];
 }
 
 /** Rows read per check; comfortably above one run's 40-shot bound plus re-shoots. */
@@ -176,10 +177,22 @@ export function evaluateVisualAuditEvidence(input: {
   const unlinkedIssues: string[] = [];
   const invalidVerdicts: Array<{ id: string; verdict: unknown }> = [];
   const counting: QaMeta[] = [];
+  const providerFailures: string[] = [];
 
   for (const s of shots) {
     // Check for invalid verdict first, before parseQaMeta drops it
     if (isRecord(s.metadata) && isRecord(s.metadata.qa)) {
+      const raw = s.metadata.qa;
+      const browser = raw.browser;
+      const failedProvider = Boolean(raw.providerError)
+        || (isRecord(raw.probe) && raw.probe.ok === false)
+        || (browser !== undefined && (!isRecord(browser)
+          || !['local', 'cloudflare'].includes(String(browser.provider))
+          || !isRecord(browser.probe) || browser.probe.ok !== true));
+      if (failedProvider) {
+        providerFailures.push(s.id);
+        continue;
+      }
       const verdict = s.metadata.qa.verdict;
       if (typeof verdict !== 'undefined' && !QA_VERDICTS.includes(verdict as QaVerdict)) {
         invalidVerdicts.push({ id: s.id, verdict });
@@ -222,13 +235,14 @@ export function evaluateVisualAuditEvidence(input: {
   }
 
   return {
-    ok: missing.length === 0 && unlinkedIssues.length === 0 && invalidVerdicts.length === 0,
+    ok: missing.length === 0 && unlinkedIssues.length === 0 && invalidVerdicts.length === 0 && providerFailures.length === 0,
     requiredRoutes,
     missing,
     emptyFindings,
     notUploaded,
     unlinkedIssues,
     invalidVerdicts,
+    ...(providerFailures.length > 0 ? { providerFailures } : {}),
   };
 }
 
@@ -241,6 +255,7 @@ function list(items: string[]): string {
 /** The 400 body's `error`: what is missing and how to fix it. */
 export function formatVisualEvidenceRejection(v: VisualEvidenceVerdict): string {
   const parts = ['Visual audit evidence incomplete.'];
+  if (v.providerFailures?.length) parts.push(`Unusable browser provider evidence: ${list(v.providerFailures)}. Restore a working browser session and capture again.`);
   if (v.missing.length > 0) {
     parts.push(
       `Missing screenshots (route @ viewport): ${list(v.missing)}. Upload each with upload_artifact ` +

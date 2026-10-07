@@ -15,6 +15,8 @@
  */
 import { Agent, getAgentByName } from 'agents';
 import type { Env } from './env';
+import { BrowserBridge, BROWSER_BRIDGE_HOST, handleScopedBrowserRequest } from './browser-bridge';
+import { bindingBrowserPort } from './browser-binding';
 import {
   INITIAL_STATE,
   resolveInactivityTimeoutMs,
@@ -82,6 +84,8 @@ export class WorkerAgent extends Agent<Env, RunState> {
   private supervisorInstance: TaskSupervisor | null = null;
   /** A task agent routing its task to a lease: a duplicate arriving meanwhile is a duplicate. */
   private routing = false;
+  private browserBridge: BrowserBridge | null = null;
+  private browserSessionToken: string | undefined;
 
   /**
    * Set when this agent is a lease (named by container-lease.ts leaseName) of
@@ -124,6 +128,8 @@ export class WorkerAgent extends Agent<Env, RunState> {
       setState: (s) => this.setState(s),
       container: container as unknown as ContainerPort,
       config: {
+        BROWSER_BRIDGE: env.BROWSER_BRIDGE === '1' && env.BROWSER ? '1' : undefined,
+        get browserSessionToken() { return agent.browserSessionToken; },
         BUILDD_SERVER: env.BUILDD_SERVER,
         BUILDD_API_KEY: env.BUILDD_API_KEY,
         MODEL: env.MODEL,
@@ -154,6 +160,12 @@ export class WorkerAgent extends Agent<Env, RunState> {
       keepAliveWhile: (fn) => this.keepAliveWhile(fn),
       waitUntil: (p) => this.ctx.waitUntil(p),
       installEgress: () => this.installEgressHandlers(),
+      closeBrowser: async () => {
+        const bridge = this.browserBridge;
+        this.browserBridge = null;
+        this.browserSessionToken = undefined;
+        return bridge ? await bridge.close() : undefined;
+      },
       mintTaskToken: () => this.mintTaskToken(),
       // One-shot alarms only (Agents SDK schedule, backed by the Durable
       // Object alarm), for task.scheduled. The callback is runScheduledDispatch.
@@ -302,6 +314,21 @@ export class WorkerAgent extends Agent<Env, RunState> {
     }
   }
 
+  override async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).hostname === BROWSER_BRIDGE_HOST) {
+      return this.browserRequest(request.headers.get('x-buildd-browser-task') ?? '', request);
+    }
+    return super.fetch(request);
+  }
+
+  /** Egress identity is supplied by interception, never a task id from the client. */
+  async browserRequest(taskId: string, request: Request): Promise<Response> {
+    if (taskId !== this.taskId || !this.browserBridge || !this.supervisor.hasLiveRun) {
+      return Response.json({ code: 'session_revoked' }, { status: 401 });
+    }
+    return handleScopedBrowserRequest(taskId, this.taskId, this.browserBridge, request);
+  }
+
   /**
    * RPC from EgressHandler: one request seen, or one response body's size.
    * Counts only; no URL or header ever crosses this call (run-report.ts
@@ -392,7 +419,13 @@ export class WorkerAgent extends Agent<Env, RunState> {
       const detail = (await res.text().catch(() => '')).slice(0, 200);
       throw new Error(`POST ${new URL(url).pathname} returned ${res.status}${detail ? `: ${detail}` : ''}`);
     }
-    return parseTaskTokenResponse(await res.json(), this.taskId);
+    const body = await res.json() as { roleSlug?: string };
+    const token = parseTaskTokenResponse(body, this.taskId);
+    this.browserSessionToken = undefined;
+    if (body.roleSlug === 'visual-auditor' && this.env.BROWSER_BRIDGE === '1' && this.env.BROWSER) {
+      this.browserSessionToken = crypto.randomUUID() + crypto.randomUUID();
+    }
+    return token;
   }
 
   /**
@@ -437,6 +470,15 @@ export class WorkerAgent extends Agent<Env, RunState> {
    * open egress. Called before each start, so each run gets a fresh token.
    */
   private async installEgressHandlers(): Promise<void> {
+    if (this.browserBridge) await this.browserBridge.close();
+    this.browserBridge = null;
+    if (this.env.BROWSER_BRIDGE === '1' && this.env.BROWSER && this.browserSessionToken) {
+      this.browserBridge = new BrowserBridge({
+        token: this.browserSessionToken,
+        browser: bindingBrowserPort(this.env.BROWSER),
+        fetchService: (port, request) => this.ctx.container!.getTcpPort(port).fetch(request),
+      });
+    }
     this.githubTokens.reset();
     this.modelEndpoints.reset();
     const container = this.ctx.container;
@@ -448,6 +490,8 @@ export class WorkerAgent extends Agent<Env, RunState> {
       await container.interceptOutboundHttps(host, handler);
       await container.interceptOutboundHttp(host, handler);
     }
+    // The browser pseudo-host is served only by this run's agent.
+    if (this.browserBridge) await container.interceptOutboundHttps(BROWSER_BRIDGE_HOST, handler);
     // The OTLP collector's host, when one is configured (otel.ts); nothing otherwise.
     const otlp = otlpInterceptHosts(this.env);
     for (const host of otlp.https) await container.interceptOutboundHttps(host, handler);

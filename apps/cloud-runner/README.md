@@ -786,3 +786,22 @@ The smoke's egress step checks the container env, a synthetic OTLP POST
 (credential added by fingerprint, container auth stripped, plain http refused)
 and runs a real `claude -p` in the container, whose exports are logged by the
 echoing handler.
+
+## Remote browser for visual audits
+
+Wrangler includes the `BROWSER` Browser Rendering binding. Opt in with
+`BROWSER_BRIDGE=1` on the Worker. The task-token response authorizes browser access
+only for the server-stored visual-auditor role; builder runs acquire no browser.
+The container gets an ephemeral bridge capability, never a Cloudflare account
+credential. The agent sees only a loopback CDP endpoint and service API.
+
+The remote browser reaches registered container-local HTTP services through CDP
+request fulfilment and `getTcpPort().fetch`, without public ingress. Bind the app
+to `0.0.0.0`; use `scripts/qa/serve-local.sh` with a synthetic database, then the
+usual `scripts/qa/capture.ts` commands. Synthetic database provisioning is a caller
+responsibility. Browser session milliseconds and request/byte totals appear in
+the cloud run report. Every outcome closes and revokes the session, including
+parking and keeping a warm container.
+
+The bridge remains opt-in pending live verification. Follow the test deployment
+recipe and negative checks in [the provider contract](../../docs/specs/visual-qa-browser-providers.md).

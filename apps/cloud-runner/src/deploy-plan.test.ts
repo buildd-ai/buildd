@@ -339,3 +339,9 @@ describe('planDeploy: model proxy (--model-proxy-url)', () => {
     expect(p.ok && kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER']);
   });
 });
+
+it('retains the Browser Rendering binding when rendering a custom deployment', () => {
+  const base = require('fs').readFileSync(require('path').join(import.meta.dir, '..', 'wrangler.jsonc'), 'utf8');
+  const config = JSON.parse(renderWranglerConfig(base, deployNames('browser-test')).replace(/^\s*\/\/.*$/gm, ''));
+  expect(config.browser).toEqual({ binding: 'BROWSER' });
+});

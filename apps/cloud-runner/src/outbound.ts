@@ -280,11 +280,12 @@ export interface GithubGrant {
 
 // ── Classification ────────────────────────────────────────────────────────────
 
-export type EgressKind = 'anthropic' | 'github' | 'snapshot' | 'passthrough';
+export type EgressKind = 'anthropic' | 'github' | 'snapshot' | 'browser' | 'passthrough';
 
 export function classifyEgressHost(hostname: string): EgressKind {
   const host = hostname.toLowerCase().replace(/\.$/, '');
   if (host === ANTHROPIC_HOST) return 'anthropic';
+  if (host === 'buildd-browser.invalid') return 'browser';
   if (host === SNAPSHOT_HOST_NAME) return 'snapshot';
   if ((GITHUB_HOSTS as readonly string[]).includes(host)) return 'github';
   return 'passthrough';
@@ -741,6 +742,7 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
   if (kind === 'passthrough') return { action: 'passthrough' };
   // Served in the Worker by the snapshot store; forwarding it would send the
   // container's snapshot bytes to whatever that name resolves to.
+  if (kind === 'browser') return { action: 'reject', status: 404, message: 'the browser host is not forwarded', reason: 'other' };
   if (kind === 'snapshot') return { action: 'reject', status: 404, message: 'the snapshot host is not forwarded', reason: 'other' };
 
   // Credentialed hosts are HTTPS only: a plaintext request is refused rather

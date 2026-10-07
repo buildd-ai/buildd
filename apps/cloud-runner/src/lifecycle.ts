@@ -330,6 +330,9 @@ export function resolveStartTimeoutMs(env: { CONTAINER_START_TIMEOUT_MS?: string
 }
 
 export interface ContainerEnvSource {
+  BROWSER_BRIDGE?: string;
+  /** Ephemeral capability created by the owning agent for this attempt. */
+  browserSessionToken?: string;
   BUILDD_SERVER?: string;
   BUILDD_API_KEY?: string;
   MODEL?: string;
@@ -451,6 +454,10 @@ export function buildContainerEnv(env: ContainerEnvSource, taskToken: string): R
     BUILDD_EXECUTOR: CLOUD_EXECUTOR,
     [RUNNER_GROUP_CONTAINER_ENV]: env.RUNNER_GROUP || DEFAULT_RUNNER_GROUP,
   };
+  if (env.BROWSER_BRIDGE === '1' && env.browserSessionToken) {
+    out.BUILDD_BROWSER_BRIDGE_URL = 'https://buildd-browser.invalid';
+    out.BUILDD_BROWSER_SESSION_TOKEN = env.browserSessionToken;
+  }
   const optional = ['MODEL', 'PUSHER_KEY', 'PUSHER_CLUSTER', 'BUILDD_ONCE_MAX_WAIT_MS'] as const;
   for (const key of optional) {
     const v = env[key];

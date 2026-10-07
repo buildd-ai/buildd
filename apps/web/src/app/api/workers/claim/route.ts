@@ -350,6 +350,8 @@ export async function POST(req: NextRequest) {
             reason: payload.diagnostics.reason,
             ...(deferrals ? { deferrals } : {}),
             ...(exclusion ? { exclusion } : {}),
+            browserProvider: body.environment?.browserProvider,
+            runnerGroup: body.environment?.fleet?.group,
             now: new Date(),
           });
         })
