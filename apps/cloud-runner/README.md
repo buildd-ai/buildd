@@ -117,6 +117,9 @@ and `versionChanged`: true is a Worker deploy, false is some other cause).
 | `WARM_MAX_BUNDLE_BYTES` | var | no | Largest warm bundle or (compressed) cache tarball, in bytes, for workspaces that set no cap of their own. Default 1 GiB. A workspace's `gitConfig.warmSnapshot.maxBytes` (bounded at 8 GiB by buildd, delivered with the GitHub grant) overrides it for that workspace. Passed to the container (which skips the upload past it) and enforced by the snapshot route |
 | `ALLOW_DEBUG_KILL` | var / secret | no | `1` enables `POST /tasks/:taskId/kill` (dispatch token required): destroys that task's container as an OOM kill or platform stop would, for recovery testing. Default off (the route is 404) |
 | `RESUMABLE_RUNS` | var | no | `1` turns on resumable runs (below). Default off. Needs the `SNAPSHOTS` R2 binding and a webhook that lists `task.resume` |
+| `CONTAINER_REUSE` | var | no | `1` turns on container reuse (below). Default off |
+| `CONTAINER_REUSE_WINDOW_MS` | var | no | How long a lease keeps a container warm after a run. Default 5 min, clamped to 30 s to 30 min |
+| `CONTAINER_REUSE_SLOTS` | var | no | Leases per workspace and size. Default 2, never above the class's `max_instances` |
 | `SNAPSHOTS` | R2 binding | for warm repos / resumable runs | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
 
 The container gets a placeholder `ANTHROPIC_API_KEY` and no GitHub token; the
@@ -548,6 +551,40 @@ anything further is left to the sweep), and the agent wakes itself:
   ignored; if the alarm was lost, it starts the run.
 - **Report.** A run started by a wake carries `schedule.scheduledFor`,
   `schedule.startedAt` and `schedule.lateMs` in its run report.
+
+### Container reuse
+
+Off unless `CONTAINER_REUSE=1`. A task that follows another in the same
+workspace and size class (a reviewer right after its builder) runs in the
+container the first one left warm, instead of a fresh container, snapshot
+restore and dependency cache. One task at a time per container, always.
+
+- **Leases.** Containers that may be reused belong to lease agents named
+  `lease:<size>:<workspaceId>:<slot>` (`container-lease.ts`), in the class of
+  the size. The workspace comes from buildd's runner-size answer, never the
+  webhook body. A task's own agent routes a fresh dispatch to a warm lease
+  first, then any idle one, and records it (`leasedTo`); GET, kill and resume
+  reach the lease through it. Every slot busy: the task runs in its own agent
+  as before. `task.scheduled` wakes run in the task's own agent.
+- **Warm window.** After a run that ended `done` or `failed` the lease keeps
+  the container for `CONTAINER_REUSE_WINDOW_MS`, then destroys it. Never after
+  a park (the lease holds the parked run for its resume), a crash or anything
+  else.
+- **Reset.** Before the next task, `buildd-once --reset-container`
+  (`apps/runner/src/container-reset.ts`) runs with no task token and before
+  the new task's egress is installed. It kills every process but the
+  container's own, deletes all of HOME, `/tmp`, `/var/tmp` and `/dev/shm`
+  (agent settings, git config and hooks, shell rc files and history, worktrees,
+  worker records), and keeps only git pack files and the dependency cache
+  (registry config and env files scrubbed). The next task's clone re-indexes
+  the packs (`git index-pack --strict`), fetches its refs from origin and runs
+  `git fsck --connectivity-only`, else restores or clones as usual. Then a new
+  task token is minted and egress re-installed for the new task. A reset that
+  does not verify clean destroys the container and the task starts in a fresh
+  one: it never runs dirty.
+- **Report.** `reusedContainer: { fromTaskId, idleMs, savedRestoreMs }`, or
+  `fallback: 'reset_failed'`. `savedRestoreMs` is the previous run's container
+  start, warm restore, cache restore and clone time.
 
 ### Resumable runs
 

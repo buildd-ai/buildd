@@ -314,3 +314,41 @@ describe('drawChatPoolArm', () => {
     expect(fake.inserted[0]).toMatchObject({ taskId: null, messageId: 'm1', conversationId: 'c1', unitType: 'conversation', unitId: 'c1', armId: CH });
   });
 });
+
+describe('drawChatPoolArm — dial pools', () => {
+  const now = new Date('2026-09-26T12:00:00Z');
+  const chatArgs = (over: Partial<Parameters<typeof src.drawChatPoolArm>[0]> = {}) => ({
+    teamId: TEAM, workspaceId: null, tier: 'standard', conversationId: 'c1', drawKey: 'c1#0',
+    previous: null, workspaceOverride: false, now, ...over,
+  });
+
+  beforeEach(() => {
+    catalog = [{ openRouterId: 'claude-opus-5', permaslug: 'claude-opus-5' }];
+    fake.arms = arms().map(a => ({ ...a, route: 'openrouter' }));
+  });
+
+  it('learning (shadow) serves the primary and records the would-be pick on the turn', async () => {
+    fake.pools = [pool({ surface: 'chat', mode: 'dial', dial: 5, dialState: { state: 'learning', since: '' } })];
+    const d = (await src.drawChatPoolArm(chatArgs()))!;
+    expect(d.arm.id).toBe(INC);
+    expect(d.served).toBe(true);
+    expect(d.eligibility).toMatchObject({ dial: 5, dialState: 'learning', shadowArmId: CH, shadowModel: 'claude-opus-5' });
+    await src.recordChatPoolAssignment(d, { messageId: 'm1' });
+    expect(fake.inserted[0].eligibility).toMatchObject({ source: 'drawn', shadowArmId: CH });
+  });
+
+  it('after a revert, a chain on the alternate goes back to the primary', async () => {
+    fake.pools = [pool({ surface: 'chat', mode: 'dial', dial: 3, dialState: { state: 'reverted', since: '', revertReason: 'x' } })];
+    fake.priors = [{ armId: CH, propensity: 0.5 }];
+    const d = (await src.drawChatPoolArm(chatArgs({ previous: { id: 'm0', tier: 'standard', createdAt: new Date(now.getTime() - 60_000) } })))!;
+    expect(d.arm.id).toBe(INC);
+    expect(d.source).toBe('drawn');
+  });
+
+  it('shifted serves the alternate at the dial share', async () => {
+    fake.pools = [pool({ surface: 'chat', mode: 'dial', dial: 5, dialState: { state: 'shifted', since: '', alternateArmId: CH } })];
+    const d = (await src.drawChatPoolArm(chatArgs()))!;
+    expect(d.arm.id).toBe(CH);
+    expect(d.eligibility).toMatchObject({ dialState: 'shifted' });
+  });
+});

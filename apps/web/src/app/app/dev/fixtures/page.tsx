@@ -27,10 +27,12 @@ import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
 import EntitlementBlockedFixture from './EntitlementBlockedFixture';
 import RunnerSizeFixture from './RunnerSizeFixture';
+import InteractiveSessionsFixture from './InteractiveSessionsFixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
     OPERATOR_ACCESS_FIXTURE_STATE,
     RUNNER_SIZE_FIXTURE_STATE,
+    INTERACTIVE_SESSIONS_FIXTURE_STATE,
     MODEL_PROVIDERS_FIXTURE_STATE,
     TOOL_BREAKDOWN_FIXTURE_STATE,
     FIXTURE_VIEWS,
@@ -138,6 +140,10 @@ export default function DevFixturesPage() {
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
     }
+    if (state === INTERACTIVE_SESSIONS_FIXTURE_STATE) {
+        return <InteractiveSessionsFixture />;
+    }
+
     if (state === RUNNER_SIZE_FIXTURE_STATE) {
         return <RunnerSizeFixture />;
     }

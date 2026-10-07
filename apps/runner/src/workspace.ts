@@ -5,7 +5,8 @@ import { homedir, tmpdir } from 'os';
 import { isolatedWorkspacePath } from './isolation-paths.js';
 import { timedPhase } from './phase-lines';
 import type { CloneHooks } from './warm-repo';
-import { cloneRepo, normalizeCloneUrl } from './git-clone';
+import { cloneRepo, fetchOriginWithRetry, normalizeCloneUrl } from './git-clone';
+import { keptDirForClone, seedCloneFromKept } from './container-reset';
 
 export { isolatedWorkspacePath };
 
@@ -37,6 +38,18 @@ export function ensureIsolatedClone(
   // Reject invalid URL formats to prevent command injection.
   if (!CLONE_URL_RE.test(cloneUrl)) {
     throw new Error(`[isolation] invalid repo URL format: "${cloneUrl}"`);
+  }
+
+  // A reused cloud container (container-reset.ts): grow the clone from the
+  // packs the reset kept, re-verified, with refs from origin. Else as usual.
+  const kept = keptDirForClone(process.env as Record<string, string | undefined>, clonePath);
+  if (kept && seedCloneFromKept(clonePath, cloneUrl, kept, {
+    defaultBranch: workspace.defaultBranch,
+    fetchOrigin: (p) => fetchOriginWithRetry(p),
+    log: (m) => console.log(m),
+  })) {
+    hooks?.afterClone(clonePath);
+    return clonePath;
   }
 
   let restored = false;
