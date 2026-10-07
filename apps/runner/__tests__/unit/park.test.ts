@@ -145,6 +145,41 @@ describe('findTranscriptFiles', () => {
 });
 
 describe('park → restore round trip', () => {
+  for (const dirty of [false, true]) {
+    test(`an in-clone cloud session restores in place (${dirty ? 'committed and uncommitted work' : 'clean branch'})`, () => {
+      git(clonePath, 'worktree', 'remove', '--force', worktree);
+      git(clonePath, 'checkout', '-q', 'buildd/task');
+      worktree = clonePath;
+      rmSync(paths.claudeConfigDirs[0]!, { recursive: true, force: true });
+      writeRunnerState(paths, worktree);
+      if (dirty) {
+        writeFileSync(join(worktree, 'feature.ts'), 'committed\n');
+        git(worktree, 'add', 'feature.ts');
+        commit(worktree, 'task change');
+        writeFileSync(join(worktree, 'README.md'), 'uncommitted\n');
+        writeFileSync(join(worktree, 'untracked.txt'), 'untracked\n');
+      }
+      const head = git(worktree, 'rev-parse', 'HEAD');
+      const before = status(worktree);
+      const built = park();
+      expect(built.manifest.clonePath).toBe(worktree);
+      const saved = join(dir, 'park.tar');
+      writeFileSync(saved, readFileSync(built.tarPath));
+      rmSync(join(dir, 'run1'), { recursive: true, force: true });
+      execFileSync('git', ['clone', '-q', origin, clonePath], { stdio: 'pipe' });
+      const opened = readParkBundle(saved, join(dir, 'stage'));
+      restoreParkFiles(opened, paths);
+      applyParkRepo(opened, clonePath);
+      expect(git(clonePath, 'branch', '--show-current')).toBe('buildd/task');
+      expect(git(clonePath, 'rev-parse', 'HEAD')).toBe(head);
+      expect(status(clonePath)).toEqual(before);
+      expect(existsSync(join(clonePath, '.buildd-worktrees'))).toBe(false);
+      expect(findTranscriptFiles(paths.claudeConfigDirs, SESSION)).toHaveLength(2);
+      const record = JSON.parse(readFileSync(join(paths.builddHome, 'workers', `${WORKER}.json`), 'utf-8'));
+      expect(record.worktreePath).toBe(clonePath);
+    });
+  }
+
   test('uncommitted changes, untracked files, commits and the transcript all come back at the same paths', () => {
     writeFileSync(join(worktree, 'feature.ts'), 'export const x = 1;\n');
     git(worktree, 'add', 'feature.ts');
