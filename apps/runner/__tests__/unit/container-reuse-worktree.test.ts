@@ -4,7 +4,7 @@
  * the container is reset (container-reset.ts), and the next task's clone is
  * grown from the kept packs and handed to setupWorktree.
  *
- * The next task must get a worktree (a reused clone is as good as a fresh one
+ * The next task must run in the clone (a reused clone is as good as a fresh one
  * for setupWorktree), must not pay the warm restore (the kept packs are its
  * repo), and must see nothing the previous task planted: no ~/PLANTED_* file,
  * no global git identity, no global or repo hooks.
@@ -169,13 +169,15 @@ afterEach(() => {
 });
 
 describe('reset → next task: setupWorktree in the reused clone', () => {
-  test('builder then reviewer then builder: each reused clone gets its worktree, from the kept packs, with nothing planted', async () => {
-    // ── Task 1 (fresh container): cloud clone, builder worktree, push, plant ──
+  test('builder then reviewer then builder: each reused clone runs in place, from the kept packs, with nothing planted', async () => {
+    // ── Task 1 (fresh container): cloud clone, builder checkout, push, plant ──
     const first = acquire();
     expect(first.h.restores).toBe(1);
     expect(git(first.path, 'rev-parse', '--is-shallow-repository')).toBe('true');
     const builder = await setupWorktree(first.path, 'buildd/aaaa1111-feature', 'dev', 'w-builder-11111111', {});
     expect(builder).not.toBeNull();
+    expect(builder!.path).toBe(first.path);
+    expect(fs.existsSync(join(first.path, '.buildd-worktrees'))).toBe(false);
     commitAndPush(builder!.path, 'feature.txt', 'buildd/aaaa1111-feature');
     plant(builder!.path);
 
@@ -203,6 +205,8 @@ describe('reset → next task: setupWorktree in the reused clone', () => {
       resumeBranch: 'buildd/aaaa1111-feature', baseBranch: 'buildd/aaaa1111-feature',
     });
     expect(reviewer).not.toBeNull();
+    expect(reviewer!.path).toBe(second.path);
+    expect(fs.existsSync(join(second.path, '.buildd-worktrees'))).toBe(false);
     expect(git(reviewer!.path, 'rev-parse', 'HEAD')).toBe(git(origin, 'rev-parse', 'buildd/aaaa1111-feature'));
     assertNothingPlanted(reviewer!.path);
     plant(reviewer!.path);
@@ -215,6 +219,8 @@ describe('reset → next task: setupWorktree in the reused clone', () => {
     expect(lines).toContain('BUILDD_REPO_SOURCE=reuse');
     const next = await setupWorktree(third.path, 'buildd/cccc3333-next', 'dev', 'w-next-33333333', { baseBranch: 'mission/x' });
     expect(next).not.toBeNull();
+    expect(next!.path).toBe(third.path);
+    expect(fs.existsSync(join(third.path, '.buildd-worktrees'))).toBe(false);
     expect(next!.base).toBe('origin/mission/x');
     assertNothingPlanted(next!.path);
   });
@@ -256,7 +262,8 @@ describe('reset → next task: setupWorktree in the reused clone', () => {
 describe('a worktree that cannot be set up says why', () => {
   test('git\'s reason is kept for the start failure, once', async () => {
     const first = acquire();
-    // Something sits where the worktrees go.
+    process.env.BUILDD_EXECUTOR = 'host';
+    // Something sits where the host worktrees go.
     fs.writeFileSync(join(first.path, '.buildd-worktrees'), 'not a directory');
     const r = await setupWorktree(first.path, 'buildd/dddd4444-x', 'dev', 'w-fail-44444444', {});
     expect(r).toBeNull();

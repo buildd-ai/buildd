@@ -63,6 +63,7 @@ import {
   isEgressEvent,
   parseMetricLine,
   parsePhaseLine,
+  parseWorktreeModeLine,
   parseRepoSourceLine,
   parseWarmUploadLine,
   parseCacheSkippedLine,
@@ -896,6 +897,8 @@ export class TaskSupervisor {
         this.patch({ claimDeferredReason });
         return;
       }
+      const worktreeMode = parseWorktreeModeLine(line);
+      if (worktreeMode) { this.patchTimings({ worktreeMode }); return; }
       const phase = parsePhaseLine(line);
       if (phase) {
         const runnerPhases = recordPhase(state.timings?.runnerPhases, phase.phase, phase.at);
