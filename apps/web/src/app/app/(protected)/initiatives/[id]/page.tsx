@@ -152,8 +152,7 @@ export default async function InitiativeDetailPage({ params }: { params: Promise
         </div>
         {card.missions.length === 0 ? (
           <div className="card p-6 text-center">
-            <p className="text-sm text-text-secondary mb-1">No missions under this initiative yet.</p>
-            <p className="text-xs text-text-muted">Create a mission or add an existing one.</p>
+            <p className="text-sm text-text-secondary">No missions.</p>
           </div>
         ) : (
           <div className="card px-4 pb-1 md:px-5">

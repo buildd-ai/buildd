@@ -12,7 +12,7 @@
  *
  * It must also leave the session map entry in place until the session's own
  * finally block runs: that block is conditioned on the entry and is where the
- * per-worker credential/config/CBM dirs are removed.
+ * per-worker credential/config dirs are removed.
  *
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/post-completion-reap-path.test.ts
  */

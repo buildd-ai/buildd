@@ -18,13 +18,6 @@ mock.module('@/lib/pusher', () => ({
   events: { TASK_CREATED: 'task:created', TASK_ASSIGNED: 'task:assigned' },
 }));
 
-let githubConfigured = false;
-const mockGitHubDispatch = mock(async (..._args: unknown[]) => true);
-mock.module('@/lib/github', () => ({
-  dispatchToGitHubActions: mockGitHubDispatch,
-  isGitHubAppConfigured: () => githubConfigured,
-}));
-
 let taskNotParked = true;
 const mockIsTaskNotHeldOrLocal = mock(async (_taskId: string) => taskNotParked);
 mock.module('@/app/api/workers/claim/held-gate', () => ({
@@ -61,8 +54,6 @@ mock.module('@buildd/core/db', () => ({
     execute: mockExecute,
     query: {
       tasks: { findFirst: mock(async (args: { where: unknown }) => { const id = idIn(args.where); return id ? taskRows.get(id) : undefined; }) },
-      githubInstallations: { findFirst: async () => ({ installationId: 42 }) },
-      githubRepos: { findFirst: async () => ({ fullName: 'org/repo' }) },
     },
   },
 }));
@@ -86,7 +77,11 @@ mock.module('@buildd/core/dispatch-outbox', () => ({
 let publishResult: { status: string } = { status: 'unconfigured' };
 const callOrder: string[] = [];
 const mockPublish = mock(async (_opts: unknown) => { callOrder.push('publish'); return publishResult; });
-mock.module('@/lib/dispatch-transport', () => ({ publishPendingDispatches: mockPublish }));
+let transportConfigured = false;
+mock.module('@/lib/dispatch-transport', () => ({
+  publishPendingDispatches: mockPublish,
+  dispatchTransportConfig: () => (transportConfigured ? { url: 'https://dispatch.test', key: { keyId: 'k1', secret: 's' } } : null),
+}));
 
 /** `after` that throws outside a request scope, like Next's; queues inside one. */
 let afterQueue: Array<() => unknown> | null = null;
@@ -179,7 +174,6 @@ beforeEach(() => {
   fetchCalls = [];
   fetchStatus = 200;
   taskNotParked = true;
-  githubConfigured = false;
   pusherResult = 'sent';
   afterQueue = null;
   claimQueue = [];
@@ -188,7 +182,7 @@ beforeEach(() => {
   callOrder.length = 0;
   mockPublish.mockClear();
   taskRows.clear();
-  for (const m of [mockTriggerEvent, mockTriggerEventChecked, mockGitHubDispatch, mockIsTaskNotHeldOrLocal, mockMarkDue,
+  for (const m of [mockTriggerEvent, mockTriggerEventChecked, mockIsTaskNotHeldOrLocal, mockMarkDue,
     mockExecute, mockClaimDue, mockMarkDelivered, mockMarkFailed, mockEnqueueSql]) m.mockClear();
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     fetchCalls.push({ url, init });
@@ -214,9 +208,8 @@ describe('routeForCause', () => {
     for (const c of DISPATCH_CAUSES) expect(routeForCause(c)).toBeDefined();
   });
 
-  it('a legacy webhook default and GitHub Actions cover exactly the pre-outbox new/unblocked paths', () => {
+  it('a legacy webhook default covers exactly the pre-outbox new/unblocked paths', () => {
     expect(DISPATCH_CAUSES.filter(c => routeForCause(c).legacyDefault).sort()).toEqual([...LEGACY_CAUSES].sort());
-    expect(DISPATCH_CAUSES.filter(c => routeForCause(c).githubActions).sort()).toEqual([...LEGACY_CAUSES].sort());
   });
 
   it('only the old dispatchUnblockedTask causes keep the unfiltered-runnerPreference quirk', () => {
@@ -453,62 +446,29 @@ describe('deliverTaskDispatch: held, local and deferred work stays off the webho
   });
 });
 
-describe('deliverTaskDispatch: GitHub Actions', () => {
-  const GH = { githubInstallationId: 'inst-1', githubRepoId: 'repo-1' };
-  beforeEach(() => { githubConfigured = true; });
+describe('deliverTaskDispatch: no GitHub Actions destination', () => {
+  it('the runner chain is claimability, targeted runner, webhook, broadcast', () => {
+    expect(TASK_WAKE_ADAPTERS.map(a => a.name)).toEqual(['runner-claimability', 'targeted-local-runner', 'workspace-webhook', 'runner-broadcast']);
+  });
 
   for (const cause of LEGACY_CAUSES) {
-    it(`${cause} starts a run alongside the broadcast when no webhook took it`, async () => {
-      seed({ ...GH });
-      await deliverTaskDispatch(row(cause));
+    it(`${cause} on a GitHub-linked workspace without a webhook is only the broadcast`, async () => {
+      seed({ githubInstallationId: 'inst-1', githubRepoId: 'repo-1' });
+      expect(await deliverTaskDispatch(row(cause))).toBe('pusher');
       await flush();
-      expect(mockGitHubDispatch).toHaveBeenCalledTimes(1);
+      expect(fetchCalls).toHaveLength(0);
       expect(assignedCalls()).toHaveLength(1);
     });
   }
-
-  for (const cause of NON_LEGACY_CAUSES) {
-    it(`${cause} never starts a run`, async () => {
-      fetchStatus = 500;
-      seed({ ...GH, webhookConfig: WEBHOOK });
-      await deliverTaskDispatch(row(cause));
-      await flush();
-      expect(mockGitHubDispatch).not.toHaveBeenCalled();
-      expect(assignedCalls()).toHaveLength(1);
-    });
-  }
-
-  it('a webhook that took the task suppresses it', async () => {
-    seed({ ...GH, webhookConfig: WEBHOOK });
-    await deliverTaskDispatch(row('task.created'));
-    await flush();
-    expect(mockGitHubDispatch).not.toHaveBeenCalled();
-  });
-});
-
-describe('deliverTaskDispatch: GitHub Actions fires once per intent', () => {
-  it('a retried delivery does not start another workflow run', async () => {
-    githubConfigured = true;
-    seed({ githubInstallationId: 'gi', githubRepoId: 'gr' });
-    await deliverTaskDispatch(row('task.created', { attemptCount: 1 }));
-    await flush();
-    const first = mockGitHubDispatch.mock.calls.length;
-    expect(first).toBe(1);
-    await deliverTaskDispatch(row('task.created', { attemptCount: 2 }));
-    await flush();
-    expect(mockGitHubDispatch.mock.calls.length).toBe(first);
-  });
 });
 
 describe('deliverTaskDispatch: targeted local runner', () => {
-  it('sends only a targeted TASK_ASSIGNED: no webhook, no GitHub Actions, no broadcast', async () => {
-    githubConfigured = true;
-    seed({ webhookConfig: WEBHOOK, githubInstallationId: 'i', githubRepoId: 'r' });
+  it('sends only a targeted TASK_ASSIGNED: no webhook, no broadcast', async () => {
+    seed({ webhookConfig: WEBHOOK });
     const r = row('task.created', { metadata: { targetLocalUiUrl: 'http://runner.local:8766' } });
     expect(await deliverTaskDispatch(r)).toBe('pusher:targeted');
     await flush();
     expect(fetchCalls).toHaveLength(0);
-    expect(mockGitHubDispatch).not.toHaveBeenCalled();
     expect(assignedCalls()).toHaveLength(1);
     expect(assignedCalls()[0][2]).toMatchObject({ targetLocalUiUrl: 'http://runner.local:8766', task: { id: 'task-w1' } });
   });
@@ -586,7 +546,6 @@ describe('deliverTaskDispatch: the dispatcher routes through adapters and owns n
     expect(await deliverTaskDispatch(row('dependency.satisfied'), [dest.adapter])).toBe('interactive-session');
     expect(fetchCalls).toHaveLength(0);
     expect(mockTriggerEventChecked).not.toHaveBeenCalled();
-    expect(mockGitHubDispatch).not.toHaveBeenCalled();
   });
 
   it('the context carries a stable id, the specific cause and the full trail', async () => {
@@ -695,9 +654,19 @@ describe('offerScheduledNotice: task.scheduled advance notice (opt-in)', () => {
 describe('drainDispatchOutbox', () => {
   it('claims up to DRAIN_BATCH by default, or the given limit', async () => {
     await drainDispatchOutbox();
-    expect(mockClaimDue).toHaveBeenLastCalledWith(DRAIN_BATCH);
+    expect(mockClaimDue).toHaveBeenLastCalledWith(DRAIN_BATCH, { graceMs: 0 });
     await drainDispatchOutbox({ limit: 3 });
-    expect(mockClaimDue).toHaveBeenLastCalledWith(3);
+    expect(mockClaimDue).toHaveBeenLastCalledWith(3, { graceMs: 0 });
+  });
+
+  it('waits out the publish grace only when a Worker is configured to ack rows', async () => {
+    transportConfigured = true;
+    try {
+      await drainDispatchOutbox();
+      expect(mockClaimDue).toHaveBeenLastCalledWith(DRAIN_BATCH, {});
+    } finally {
+      transportConfigured = false;
+    }
   });
 
   it('counts delivered, skipped and failed, and marks each row accordingly', async () => {

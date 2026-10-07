@@ -74,9 +74,32 @@ scripts/status-literal-ratchet.test.ts
 # Greps every tracked source for task:assigned senders and imports of the
 # deleted pre-outbox dispatch module.
 scripts/dispatch-authority-guard.test.ts
+# Enumerates every tracked source file in apps/web/src, packages/core, and
+# packages/shared to ensure team role permission decisions are centralized in
+# the permissions module and not hardcoded scattered across routes.
+scripts/team-permission-guard.test.ts
 # Scans packages/dispatch-contract and apps/dispatch for imports of Buildd core,
 # its schema or a database driver: the Dispatch side must stay producer-agnostic.
 packages/dispatch-contract/src/no-producer-imports.test.ts
 # One Playwright version across every package.json, bun.lock and Renovate, and
 # no bare `bunx|npx playwright install` in runner/CI/script files.
 scripts/playwright-pin.test.ts
+# Enumerates every tracked source file for writes of a worker's prUrl/prNumber:
+# each is a door an agent run could record a deliverable through, so a new one
+# is a reviewed change. The file that adds one is never this test's neighbour.
+apps/web/src/lib/agent-capabilities/pr-write-sites.test.ts
+# Enumerates every tracked source file that resolves or registers a prompt id:
+# a new prompt-bearing module must join the prompt catalog the deploy seed and
+# the fallback alert read, and the file that adds one is never this test's neighbour.
+apps/web/src/lib/prompt-catalog.test.ts
+# Reads every worker MCP action's handler and the task-token OPTED_IN list:
+# an action whose route is not opted in (and has no stated reason) fails here,
+# and the change that causes it lands in mcp-tools.ts or a route, never beside this test.
+apps/web/src/lib/task-token-mcp-coverage.test.ts
+# Scans tracked source for call sites that pick a tier's model outside the
+# model policy (TIER_DEFAULTS indexing, registry reads, direct kit resolver calls).
+packages/core/__tests__/model-policy-authority.test.ts
+# Import-boundary ratchet: counts runtime imports from core files into module
+# files (classifier in scripts/module-boundaries.ts) against a committed,
+# shrink-only baseline. The file that adds an import is never this test's neighbour.
+scripts/module-boundaries.test.ts

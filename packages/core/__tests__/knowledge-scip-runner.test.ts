@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
 import { tmpdir } from 'os';
-import { runScipGraph } from '../knowledge-store/scip-runner';
+import { runScipGraph, scipProjectArgs } from '../knowledge-store/scip-runner';
 import { SCIP_ROLE_DEFINITION } from '../knowledge-store/scip-parser';
 
 // Minimal SCIP protobuf encoder — one document, one definition occurrence.
@@ -102,5 +102,72 @@ describe('runScipGraph', () => {
     expect(invoked).toBe(0); // indexer NOT run — cache hit
     expect(res.cached).toBe(true);
     expect(res.graph).not.toBeNull();
+  });
+});
+
+describe('runScipGraph with an async indexer', () => {
+  // The real indexer takes minutes on a monorepo. It must run off the event
+  // loop, so runScipGraph has to await an invoke that returns a promise
+  // rather than read the output file before it exists.
+  it('waits for a promise-returning invoke before reading the index', async () => {
+    const dir = scratch();
+    const result = await runScipGraph({
+      repoPath: dir,
+      workspaceId: 'ws-1',
+      cacheDir: dir,
+      invoke: async ({ outputPath }) => {
+        await new Promise((r) => setTimeout(r, 10));
+        writeFileSync(outputPath, sampleIndexBuffer());
+      },
+    });
+    expect(result.skippedReason).toBeUndefined();
+    expect(result.graph).not.toBeNull();
+  });
+});
+
+describe('scipProjectArgs', () => {
+  const touch = (root: string, rel: string, body = '{}') => {
+    mkdirSync(join(root, dirname(rel)), { recursive: true });
+    writeFileSync(join(root, rel), body);
+  };
+
+  it('passes no projects when the repo root has its own tsconfig.json', () => {
+    const dir = scratch();
+    touch(dir, 'tsconfig.json');
+    touch(dir, 'package.json', JSON.stringify({ workspaces: ['apps/*'] }));
+    touch(dir, 'apps/web/tsconfig.json');
+    expect(scipProjectArgs(dir)).toEqual([]);
+  });
+
+  // A bun/npm workspace monorepo has no root tsconfig, and scip-typescript run
+  // bare in its root indexes nothing ("missing tsconfig.json") on every job.
+  it('lists each workspace package that has a tsconfig.json when the root has none', () => {
+    const dir = scratch();
+    touch(dir, 'package.json', JSON.stringify({ workspaces: ['apps/*', 'packages/*'] }));
+    touch(dir, 'apps/web/tsconfig.json');
+    touch(dir, 'apps/runner/package.json'); // no tsconfig — skipped
+    touch(dir, 'packages/shared/tsconfig.json');
+    touch(dir, 'packages/core/package.json');
+    expect(scipProjectArgs(dir)).toEqual(['apps/web', 'packages/shared']);
+  });
+
+  it('accepts the object form of workspaces and a literal (non-glob) entry', () => {
+    const dir = scratch();
+    touch(dir, 'package.json', JSON.stringify({ workspaces: { packages: ['tools/cli', 'libs/*'] } }));
+    touch(dir, 'tools/cli/tsconfig.json');
+    touch(dir, 'libs/a/tsconfig.json');
+    expect(scipProjectArgs(dir)).toEqual(['libs/a', 'tools/cli']);
+  });
+
+  it('passes no projects for a repo with neither a root tsconfig nor workspaces', () => {
+    const dir = scratch();
+    touch(dir, 'package.json', JSON.stringify({ name: 'x' }));
+    expect(scipProjectArgs(dir)).toEqual([]);
+  });
+
+  it('passes no projects (never throws) when package.json is unreadable', () => {
+    const dir = scratch();
+    touch(dir, 'package.json', '{not json');
+    expect(scipProjectArgs(dir)).toEqual([]);
   });
 });

@@ -36,7 +36,7 @@ import {
 } from '@buildd/shared';
 import { reconcileApprovals, recordApprovalRequests, dbDecide, storeApprovalResult, isToolPart, type DecideFn } from './approvals';
 import { renderChatContextBlock } from './context-block';
-import { CHAT_INSTRUCTIONS } from './instructions';
+import { chatInstructions } from './instructions';
 import { routeTurn, askTopicQuestion, isAcknowledgement, logRoutingRecord, FALLBACK_TIER, type RoutableWorkspace, type RoutingRecord, type TurnRoute } from './routing';
 import { resolveDecisionAccess, type DecisionAccess } from '@buildd/core/decision-client';
 import { titleToCheck } from './retitle-policy';
@@ -46,14 +46,16 @@ import { buildChatTools, CORE_GROUPS, effectiveClass, FALLBACK_GROUPS, groupOf, 
 import { chatReadRoutes } from './in-process-api';
 import { loadDocked, renderDocked } from './docked';
 import { buildPreview } from './previews';
-import { APPROVAL_ROW_CAP, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON } from '@builddai/ai-kit/chat/contract';
+import { APPROVAL_ROW_CAP, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON, answerText } from '@builddai/ai-kit/chat/contract';
 import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
 import { canSkipCard, contentInContext, toolOutputInHistory } from './permissions';
+import { roleHas, getTeamPermissionOverrides, type PermissionOverrides } from '@/lib/permissions';
 import { directivePart, proposeDirectiveCard, withDirectiveCard, type ChatDirectiveHooks } from './directives';
 import { renderStandingRules } from '@buildd/core/chat-directives';
 import { backfillSteps, createStepTracker, knownCalls, mergeStepParts, withThinkingSteps } from './thinking-steps';
 import type { LimitVerdict } from './limits';
+import { withTurnRef } from './turn-signal';
 import {
   DEFAULT_TURN_TIMING, TURN_STOPPED_NOTE, USAGE_SETTLE_MS, settleWithin, withDeadlineWatchdog, withStoppedNote, wrapUpStep,
   type TurnTiming,
@@ -80,6 +82,8 @@ export interface TurnUser {
 }
 
 export interface TurnDeps {
+  /** The team's permission overrides; defaults to the per-request cached read. */
+  permissionOverrides?: (teamId: string) => Promise<PermissionOverrides>;
   now?: () => Date;
   /**
    * Tool groups this person set to "Allow" (permissions-store.ts). A write in
@@ -373,8 +377,10 @@ export async function runChatTurn(args: {
       parts: [{ type: 'text', text: text! }],
       // The routing decision call's spend, so the daily budget counts it, and
       // its content-free record (a failed call spent nothing: zero, cost null),
-      // and the routed workspace, so the next turn can carry it over.
-      usage: userTurnUsageRouted(route, routedWs?.id),
+      // and the routed workspace, so the next turn can carry it over. `turn.ref`
+      // is the client's id for this message: its turn signal lands here
+      // (./turn-signal.ts), never any text.
+      usage: withTurnRef(userTurnUsageRouted(route, routedWs?.id), message.id) as ChatUsage | null,
     });
     void pingConversation(conv.id, 'message', saved.id);
     uiMessages = [...history, { id: saved.id, role: 'user', parts: [{ type: 'text', text: text! }] }];
@@ -382,7 +388,7 @@ export async function runChatTurn(args: {
     uiMessages = history.map(m => (m.id === continuing!.id ? { ...m, parts: continuing!.parts } as UIMessage : m));
   }
 
-  const canAdmin = user.teamRole === 'owner' || user.teamRole === 'admin';
+  const canAdmin = roleHas(user.teamRole, 'use_chat_admin_tools', await (deps.permissionOverrides ?? getTeamPermissionOverrides)(conv.teamId));
   const docked = await dockedPromise;
   const previewEnv = {
     read,
@@ -469,13 +475,13 @@ export async function runChatTurn(args: {
     },
   ]));
   const dockedBlock = docked ? `\n\n${renderDocked(docked)}` : '';
-  const instructions = `${CHAT_INSTRUCTIONS}\n\n${renderChatContextBlock({
+  const instructions = `${chatInstructions()}\n\n${renderChatContextBlock({
     now,
     timeZone: user.timeZone,
     conversationId: conv.id,
     workspace: scopeWs,
     ...(!scopeWs && args.workspaces ? { workspaces: args.workspaces } : {}),
-    user: { name: user.name, teamRole: user.teamRole, isOperator: user.teamRole !== 'member' },
+    user: { name: user.name, teamRole: user.teamRole, isOperator: roleHas(user.teamRole, 'view_team_usage', await (deps.permissionOverrides ?? getTeamPermissionOverrides)(conv.teamId)) },
     tier: resolved.tier,
     budgetWarning: verdict.budgetWarning,
     entry,
@@ -631,12 +637,13 @@ function lastRoutedWorkspaceId(stored: MessageRow[]): string | null {
   return stored.filter(m => m.role === 'user').at(-1)?.usage?.routedWorkspaceId ?? null;
 }
 
-/** The latest assistant reply's text, as context for the chat-tier question. */
+/**
+ * The latest assistant reply's answer, as context for the chat-tier question:
+ * its final prose (`answerText`), not what it wrote before its tools ran.
+ */
 function lastAssistantText(stored: MessageRow[]): string | null {
   const last = stored.filter(m => m.role === 'assistant').at(-1);
-  if (!last) return null;
-  const t = last.parts.filter(p => p.type === 'text').map(p => String((p as { text?: unknown }).text ?? '')).join('\n').trim();
-  return t || null;
+  return (last && answerText(last.parts)) || null;
 }
 
 /**

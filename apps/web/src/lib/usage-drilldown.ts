@@ -7,15 +7,11 @@
  *
  * THE PAGE IS TASK-KEYED. Every number below is stated over tasks, folded from
  * worker rows by `aggregateByTask` (usage-stats.ts), so a task retried three
- * times is one task with the sum of its attempts. The ONE exception is the index
- * adoption line, which is structurally worker-keyed and says so at the stat —
- * see `indexAdoptionLine`. Relabelling it "tasks" to match the header would be a
- * lie about what it counts; leaving it unlabelled would be worse.
+ * times is one task with the sum of its attempts.
  */
-import type { CbmHealthSummary } from './cbm-insight';
 import type { Distribution, MetricBlock, PerTaskBlock, ScanBounds, UsageStats } from './usage-stats';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
-import type { BashBucketsBlock, CbmToolsBlock, SearchShapesBlock } from './usage-breakdowns';
+import type { BashBucketsBlock, SearchShapesBlock } from './usage-breakdowns';
 
 // ── Window ───────────────────────────────────────────────────────────────────
 
@@ -85,9 +81,6 @@ export function healthHref(opts: { window?: string | null; workspaceId?: string 
 /** Built-in tools an agent navigates code with. */
 const CODE_NAV_BUILTINS: ReadonlySet<string> = new Set(['Read', 'Grep', 'Glob']);
 
-/** The codebase-graph MCP server, whose every tool is code navigation. */
-const CODE_NAV_MCP_PREFIX = 'mcp__codebase-memory__';
-
 /**
  * Code NAVIGATION, not "code search" — and deliberately without `Bash`.
  *
@@ -97,7 +90,7 @@ const CODE_NAV_MCP_PREFIX = 'mcp__codebase-memory__';
  * buckets (`bashBuckets`) live on the shell panel, on that panel's population.
  */
 export function isCodeNavigationTool(name: string): boolean {
-  return CODE_NAV_BUILTINS.has(name) || name.startsWith(CODE_NAV_MCP_PREFIX);
+  return CODE_NAV_BUILTINS.has(name);
 }
 
 export const SHELL_TOOL = 'Bash';
@@ -138,7 +131,7 @@ export interface PreviousPeriod {
 }
 
 /**
- * Read / Grep / Glob / codebase-graph counts, with a delta against the previous
+ * Read / Grep / Glob counts, with a delta against the previous
  * period of equal length.
  *
  * Deltas are shown here and NOT on the shell panel because this panel's coverage
@@ -252,94 +245,6 @@ export function buildShellPanel(current: UsageStats): ShellPanel {
     callsPerTask: histogramTasks > 0 ? calls / histogramTasks : 0,
     histogramTasks,
     allTasks: current.totals.tasks,
-  };
-}
-
-// ── Index adoption ───────────────────────────────────────────────────────────
-
-/**
- * Everything the denominator quietly leaves out. Reachable at the stat, per
- * `docs/design/derived-metric-availability.md` — the ratio is defensible, but
- * only if what it excludes is one hover away.
- */
-export const INDEX_ADOPTION_TOOLTIP =
-  'Failed workers are excluded entirely, from both sides: a session that queried the graph and then failed is invisible here. '
-  + 'Workers that predate the CBM metric carry no record at all and fall out of BOTH sides of the ratio rather than counting as zero. '
-  + 'Sessions where the graph was unavailable, by design (Codex tasks, worktree-less runs, role opt-outs) or through breakage '
-  + '(binary absent, sandbox mount unavailable), sit outside the denominator, which is "sessions where it was available", not "sessions".';
-
-/**
- * The half of the tooltip a reader must not have to hover to find: the two
- * exclusions that change how the ratio should be read.
- */
-export const INDEX_ADOPTION_CAVEAT =
-  'Failed workers are excluded from both sides, and workers predating the CBM metric fall out of the ratio entirely rather than counting as zero.';
-
-/**
- * Why this one line counts something other than the rest of the page.
- *
- * The metric counts CBM-enabled completed worker SESSIONS with no dedup by task.
- * Folding it to tasks would change what it measures — which is a different piece
- * of work, not a relabelling — so it keeps its own population and declares it.
- */
-export const SESSION_KEYED_NOTE =
-  'Session-keyed: the only line on this page that is. Everything else here is folded to tasks; this counts worker sessions, so a task retried three times counts three times.';
-
-export interface IndexAdoptionLine {
-  available: boolean;
-  /** Sessions that made at least one graph call. */
-  n: number;
-  /** CBM-enabled completed sessions — the denominator. */
-  sessions: number;
-  /** 0–1, or null when there is nothing to divide. */
-  rate: number | null;
-  /** Long form. Deliberately never uses the word "task". */
-  label: string;
-  /** Short form for tight layouts. Also never uses the word "task". */
-  shortLabel: string;
-  /** Present only when `available` is false — the em-dash always has a reason. */
-  unavailableReason: string | null;
-}
-
-/**
- * `Graph queried in {n} of {N} sessions where it was available`.
- *
- * Computed from `resultMeta.cbm` via `aggregateCbm`/`summarizeCbm`, NOT from the
- * tool histogram — so the histogram's coverage caveat is the wrong caveat for it
- * and is deliberately not attached. The formula is unchanged from `cbm-insight`;
- * only the label is corrected, because the rows are workers and the UI has been
- * calling them tasks.
- */
-export function indexAdoptionLine(
-  cbm: CbmHealthSummary | null,
-  window: DrilldownWindow,
-): IndexAdoptionLine {
-  const sessions = cbm?.activeCount ?? 0;
-  if (!cbm || sessions === 0) {
-    return {
-      available: false,
-      n: 0,
-      sessions: 0,
-      rate: null,
-      label: `No sessions had the graph available (${window}, completed sessions only)`,
-      shortLabel: 'Index adoption unavailable',
-      unavailableReason:
-        `No completed session in this window had the graph available, so there is nothing to take a ratio of. `
-        + `Sessions are excluded when CBM was disabled by design or unavailable through breakage, and failed workers are never counted.`,
-    };
-  }
-
-  const n = sessions - cbm.zeroCallTasks;
-  const rate = cbm.adoptionRate;
-  const pctText = rate === null ? null : `${Math.round(rate * 100)}%`;
-  return {
-    available: true,
-    n,
-    sessions,
-    rate,
-    label: `Graph queried in ${n} of ${sessions} sessions where it was available (${window}, completed sessions only)`,
-    shortLabel: ['Index adoption', pctText, `${n}/${sessions} CBM-enabled sessions`].filter(Boolean).join(' · '),
-    unavailableReason: null,
   };
 }
 
@@ -472,12 +377,6 @@ export interface UsageDrilldownView {
   bashBuckets: BashBucketsBlock;
   /** Pattern shapes inside the `code_search` bucket. */
   searchShapes: SearchShapesBlock;
-  adoption: IndexAdoptionLine;
-  /**
-   * Every graph tool over the adoption line's population (session-keyed).
-   * Null when no completed session in the window recorded CBM metrics.
-   */
-  cbmTools: CbmToolsBlock | null;
   /** Null when the caller could not read the event stream at all. */
   actions: ActionBreakdownPanel | null;
 }
@@ -487,10 +386,9 @@ export function buildUsageDrilldownView(input: {
   current: UsageStats;
   previous: PreviousPeriod | null;
   scan: ScanBounds;
-  cbm: CbmHealthSummary | null;
   actions?: ActionBreakdownPanel | null;
 }): UsageDrilldownView {
-  const { resolution, current, previous, scan, cbm } = input;
+  const { resolution, current, previous, scan } = input;
   return {
     window: resolution.window,
     requestedWindow: resolution.requested,
@@ -504,8 +402,6 @@ export function buildUsageDrilldownView(input: {
     shell: buildShellPanel(current),
     bashBuckets: current.bashBuckets,
     searchShapes: current.searchShapes,
-    adoption: indexAdoptionLine(cbm, resolution.window),
-    cbmTools: cbm && cbm.activeCount > 0 ? cbm.tools : null,
     actions: input.actions ?? null,
   };
 }

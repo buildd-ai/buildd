@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "bun --filter @buildd/web dev",
     "build": "bun run --filter @buildd/web build",
-    "type-check": "cd apps/web && bunx tsc --noEmit && cd ../../packages/core && bunx tsc --noEmit --project tsconfig.test-d.json && cd ../../apps/responder && bunx tsc --noEmit && cd ../../packages/ai-kit && bunx tsc --noEmit && cd ../../apps/dispatch && bunx tsc --noEmit",
+    "type-check": "cd apps/web && bunx tsc --noEmit && cd ../../packages/core && bunx tsc --noEmit --project tsconfig.test-d.json && cd ../../apps/responder && bunx tsc --noEmit && cd ../../packages/ai-kit && bunx tsc --noEmit && cd ../../apps/dispatch && bunx tsc --noEmit && cd ../model-policy && bunx tsc --noEmit",
     "test": "bun run scripts/run-unit-tests.ts",
     "test:affected": "bash scripts/affected-tests.sh",
     "test:all": "bun run scripts/run-unit-tests.ts",
@@ -51,6 +51,7 @@
     "screenshot": "bun run scripts/qa/capture.ts",
     "screenshot:app": "bash scripts/qa/shoot.sh",
     "design:check": "bun run scripts/design-check.ts",
+    "copy:check": "bun run scripts/copy-check.ts",
     "specs:check": "bun run scripts/check-specs.ts",
     "specs:lint": "bun run scripts/check-specs.ts --check",
     "public-docs:check": "bun run scripts/check-public-docs.ts",
@@ -63,8 +64,7 @@
     "cron:check": "bun run scripts/sync-crons.ts --check",
     "migrations:lint": "bun test packages/core/__tests__/migration-journal-ordering.test.ts && bun test packages/core/__tests__/prod-build-runs-migrations.test.ts",
     "env:verify": "bun apps/runner/src/index.ts env verify",
-    "prepare": "git config core.hooksPath .githooks || true",
-    "cbm:seed": "bun run apps/runner/scripts/cbm-seed.ts"
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "dependencies": {
     "next": "^16.0.0",
@@ -77,7 +77,7 @@
   "devDependencies": {
     "@neondatabase/serverless": "^1.0.0",
     "@types/bun": "latest",
-    "playwright": "1.61.1",
+    "playwright": "1.63.0",
     "typescript": "^6.0.0",
     "ws": "^8.19.0"
   },

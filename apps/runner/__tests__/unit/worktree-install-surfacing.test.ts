@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, mock, test, beforeEach } from 'bun:test';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { readFileSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { runProvisionGate, clearProvisionGateCache } from '../../src/env-verify';
@@ -57,7 +57,7 @@ const { WorkerManager } = await import('../../src/workers');
 
 type Update = { id: string; payload: any };
 
-function harness(claimExtras: Record<string, unknown> = {}) {
+function harness(claimExtras: Record<string, unknown> = {}, role?: { bundle: unknown; overlay: boolean }) {
   const updates: Update[] = [];
   const milestones: any[] = [];
   const manager = Object.create(WorkerManager.prototype) as any;
@@ -77,6 +77,7 @@ function harness(claimExtras: Record<string, unknown> = {}) {
       workspace: { name: 'Example', repo: 'https://github.com/example/repo', gitConfig: { defaultBranch: 'dev' } },
     },
     '/tmp/example-repo',
+    role,
   );
   return { manager, start, updates, milestones };
 }
@@ -180,12 +181,16 @@ describe('the install gets the role env the agent gets', () => {
   const SECRET = 'role-secret-value-not-for-logs';
   const LABEL = 'EXAMPLE_REGISTRY_TOKEN_LABEL';
   let saved: { home?: string; label?: string };
+  // The packaged role bundle's env mapping, held in memory from the claim
+  // (there is no env-mapping.json on disk to read any more).
+  const ROLE = {
+    bundle: { slug: 'builder', type: 'builder', claudeMd: '', mcpConfig: {}, envMapping: { NODE_AUTH_TOKEN: LABEL }, skills: [] },
+    overlay: false,
+  };
 
   beforeEach(() => {
     saved = { home: process.env.BUILDD_HOME, label: process.env[LABEL] };
     const home = mkdtempSync(join(tmpdir(), 'buildd-install-env-'));
-    mkdirSync(join(home, 'roles', 'builder'), { recursive: true });
-    writeFileSync(join(home, 'roles', 'builder', 'env-mapping.json'), JSON.stringify({ NODE_AUTH_TOKEN: LABEL }));
     process.env.BUILDD_HOME = home;
     process.env[LABEL] = SECRET;
   });
@@ -201,7 +206,7 @@ describe('the install gets the role env the agent gets', () => {
     const grab = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
     console.log = grab; console.warn = grab; console.error = grab;
     try {
-      const { start, updates, milestones } = harness({ roleConfig: { slug: 'builder', type: 'builder' } });
+      const { start, updates, milestones } = harness({ roleConfig: { slug: 'builder', type: 'builder' } }, ROLE);
       await start();
       await settle();
 
@@ -264,7 +269,7 @@ describe('the install gets the role env the agent gets', () => {
       const { start } = harness({
         roleConfig: { slug: 'builder', type: 'builder' },
         roleEnvSecrets: { OTHER_TOKEN: CLAIM_SECRET },
-      });
+      }, ROLE);
       await start();
       await settle();
 

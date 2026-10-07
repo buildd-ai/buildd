@@ -9,9 +9,11 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { execSync } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, symlinkSync, statSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { CLOUD_BRANCH_FETCH_DEPTH, cloneRepo } from '../../src/git-clone';
+import { DEEP_ORIGIN_COMMITS, git as deepGit, makeDeepOrigin } from '../fixtures/deep-origin';
 import {
   normalizeWorktreePath,
   extractEditPaths,
@@ -272,6 +274,25 @@ describe('sweepWorktreeChanges (real git)', () => {
     expect(sweep.paths).toEqual([]);
   });
 
+  // This sweep runs on every sync tick against the worker's own live
+  // worktree, concurrently with whatever the agent itself is doing there.
+  // Plain `git status`/`git diff` opportunistically rewrite the on-disk
+  // index to cache fresh stat info — taking index.lock and racing an agent
+  // `git add`/`git commit` in the same worktree for it. Force exactly the
+  // stat mismatch that triggers that rewrite, then prove the sweep's git
+  // calls disable it (GIT_OPTIONAL_LOCKS=0) by asserting the index file
+  // itself is untouched.
+  test('never rewrites the on-disk index, so it cannot take index.lock from a concurrent agent commit', () => {
+    const indexPath = join(work, '.git', 'index');
+    const before = statSync(indexPath).mtimeMs;
+    const future = Date.now() / 1000 + 10;
+    utimesSync(join(work, 'src/keep.ts'), future, future);
+
+    sweepWorktreeChanges(work, 'origin/mission/m-1');
+
+    expect(statSync(indexPath).mtimeMs).toBe(before);
+  });
+
   test('refreshBaseRef fetches the base so a moved mission branch is measured correctly', async () => {
     // Another task lands on the mission branch after this worktree was cut.
     const other = join(tmp, 'other');
@@ -286,6 +307,22 @@ describe('sweepWorktreeChanges (real git)', () => {
     expect(sweep.paths).not.toContain('src/landed-later.ts');
     expect(await refreshBaseRef(work, 'not-a-remote-ref')).toBe(false);
     expect(await refreshBaseRef(work, 'origin/no-such-branch')).toBe(false);
+  });
+
+  test('refreshBaseRef in a depth-1 single-branch (cloud) clone brings a base it lacks at a bounded depth, not its whole history', async () => {
+    const deepDir = mkdtempSync(join(tmpdir(), 'pce-deep-'));
+    try {
+      const { url } = makeDeepOrigin(deepDir);
+      const cloud = join(deepDir, 'cloud');
+      cloneRepo(url, cloud, { env: { BUILDD_EXECUTOR: 'cloud' }, branch: 'dev', log: () => {} });
+      expect(await refreshBaseRef(cloud, 'origin/main')).toBe(true);
+      expect(deepGit(cloud, 'rev-parse', '--is-shallow-repository')).toBe('true');
+      const fetched = Number(deepGit(cloud, 'rev-list', '--count', 'origin/main'));
+      expect(fetched).toBeLessThanOrEqual(CLOUD_BRANCH_FETCH_DEPTH);
+      expect(fetched).toBeLessThan(DEEP_ORIGIN_COMMITS);
+    } finally {
+      rmSync(deepDir, { recursive: true, force: true });
+    }
   });
 });
 

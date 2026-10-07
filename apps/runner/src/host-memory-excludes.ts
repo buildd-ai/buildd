@@ -2,8 +2,9 @@
  * `claudeMdExcludes` patterns that keep the runner host's personal memory out
  * of worker sessions.
  *
- * Worker sessions need the `user` setting source: buildd skills are synced into
- * `~/.claude/skills` (see skills.ts) and discovered through it. But that source
+ * Worker sessions keep the `user` setting source so the operator's own
+ * `~/.claude/skills` stay available (buildd's skills are written per session
+ * into the session cwd instead — see session-prompt-files.ts). But that source
  * also loads the host operator's `~/.claude/CLAUDE.md` and `~/.claude/rules/`,
  * which carry instructions meant for the operator's own sessions — workers
  * followed them. Excluding the memory files keeps skills and settings intact.

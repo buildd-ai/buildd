@@ -106,5 +106,20 @@ export function describeExplicitDeferral(
         detail: `${role ? `Its role '${role}'` : 'Its workspace'} declares env ${missing.length > 0 ? missing.join(', ') : 'vars'} that no secret supplies. Add a role_env_secret under the mapped label (or remove the declaration), and it is claimable on the next poll.`,
       };
     }
+    case 'managed_concurrency': {
+      const active = num(detail.active);
+      const limit = num(detail.limit);
+      return {
+        code: reason,
+        detail: `The team's plan allows ${limit ?? 'a fixed number of'} managed runs at once${active !== null ? ` and ${active} are active` : ''}. It stays queued and starts automatically when one finishes.`,
+      };
+    }
+    case 'managed_runner_hours': {
+      const at = str(detail.resetsAt);
+      return {
+        code: reason,
+        detail: `The team's monthly managed runner-hours are used up. It stays queued and starts automatically when the allowance refills${at ? ` (${at})` : ''} or grows.`,
+      };
+    }
   }
 }

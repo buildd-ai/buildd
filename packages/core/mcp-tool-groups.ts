@@ -50,6 +50,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   explain: 'workers',
   get_error_traces: 'workers',
   get_failure_analytics: 'workers',
+  dispatch_health: 'workers',
   get_budget_forecast: 'workers',
   get_usage_stats: 'workers',
   get_manifest_coverage: 'workers',
@@ -64,6 +65,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   get_pr_review: 'prs',
   merge_pr: 'prs',
   close_pr: 'prs',
+  update_pr: 'prs',
   request_pr_review: 'prs',
   list_releases: 'prs',
   get_release: 'prs',
@@ -132,6 +134,7 @@ const MCP_GROUP_OVERRIDES: Partial<Record<BuilddAction, McpToolGroup>> = {
   explain: 'analytics',
   get_error_traces: 'analytics',
   get_failure_analytics: 'analytics',
+  dispatch_health: 'analytics',
   read_evidence: 'analytics',
   get_budget_forecast: 'analytics',
   get_usage_stats: 'analytics',
@@ -205,7 +208,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   prs: {
     parts: [
-      { text: 'pull requests', actions: ['list_prs', 'get_pr', 'merge_pr', 'close_pr'] },
+      { text: 'pull requests', actions: ['list_prs', 'get_pr', 'merge_pr', 'close_pr', 'update_pr'] },
       { text: 'reviews', actions: ['get_pr_review', 'request_pr_review'] },
       { text: 'releases', actions: ['list_releases', 'get_release', 'release_status'] },
     ],
@@ -217,6 +220,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'errors, run logs', actions: ['get_error_traces', 'get_failure_analytics', 'read_evidence'] },
       { text: 'budget, usage', actions: ['get_budget_forecast', 'get_usage_stats'] },
       { text: 'runners', actions: ['list_runners'] },
+      { text: 'dispatch', actions: ['dispatch_health'] },
     ],
   },
   runners: {
@@ -282,6 +286,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   explain: 'what a task, mission, workspace or PR waits on, with evidence',
   get_error_traces: 'errors caught from agent tool output',
   get_failure_analytics: 'failure patterns; error= finds a known one',
+  dispatch_health: 'task delivery: verdict, outbox counts, latency',
   get_budget_forecast: 'session pressure, budget burn',
   get_usage_stats: 'token, cost and turn stats',
   get_manifest_coverage: 'coverage by scope and kind',
@@ -295,6 +300,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_pr_review: 'where a PR review stands',
   merge_pr: 'merge a PR',
   close_pr: 'close a PR',
+  update_pr: 'replace a PR\'s body',
   request_pr_review: 'hand a PR to a reviewer agent',
   list_releases: 'releases, newest first',
   get_release: 'one release with its tasks',
@@ -343,9 +349,9 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  * `…` means more exist, see help.
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
-  create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, label?, category?, startAt?, startIn?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
-  register_skill: '{name, content, slug?, workspaceId?, description?, isRole?, model?, allowedTools?, connectorRefs?, defaultBackend?, whenToUse?, notFor?, …}',
-  update_skill: '{slug, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, connectorRefs?, defaultBackend?, whenToUse?, notFor?, …}',
+  create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
+  register_skill: '{name, content, slug?, workspaceId?, description?, isRole?, model?, allowedTools?, connectorRefs?, defaultBackend?, …}',
+  update_skill: '{slug, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, connectorRefs?, defaultBackend?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
   manage_evidence_backends: '{action, backendId?, …}',
   read_evidence: '{taskId?|prNumber?, grep?, …}',
@@ -498,14 +504,14 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
       { text: 'Update: pending|completed|failed|cancelled (stops worker)', actions: ['update_task'] },
     ]),
     param('limit', num, [{ text: 'Default 5, max 50', actions: ['list_tasks'] }]),
-    param('include', { type: 'array', items: { type: 'string', enum: ['workers', 'artifacts', 'scheduling'] } }, [{ text: 'Default both', actions: ['get_task'] }]),
+    param('include', { type: 'array', items: { type: 'string', enum: ['workers', 'artifacts', 'scheduling', 'dispatch'] } }, [{ text: 'Default workers+artifacts', actions: ['get_task'] }]),
     param('fullDescription', bool, [{ text: 'Full text', actions: ['get_task'] }]),
     param('title', str, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
     param('priority', num, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
   ],
   analytics: [
     param('workspaceId', str, [
-      { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'get_failure_analytics', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] },
+      { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'get_failure_analytics', 'dispatch_health', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] },
       { text: 'list_runners: says if a browser runner is online', actions: ['list_runners'] },
     ]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['explain', 'get_error_traces'] }]),
@@ -513,13 +519,14 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('window', { type: 'string', enum: ['24h', '7d', '30d'] }, [{ text: 'Window (default 7d)', actions: ['get_usage_stats', 'get_failure_analytics', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] }]),
     param('family', { type: 'string', enum: ['gate'] }, [{ text: 'Gate ledger, including changeIntent warnings', actions: ['get_failure_analytics'] }]),
     param('errorPrefix', str, [{ text: 'Literal reason/signature prefix', actions: ['get_failure_analytics'] }]),
+    param('capability', str, [{ text: 'Ledger rows, e.g. question_gate', actions: ['get_decision_stats'] }]),
   ],
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors'] }]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
   ],
   prs: [
-    param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'get_pr_review', 'request_pr_review'] }]),
+    param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'update_pr', 'get_pr_review', 'request_pr_review'] }]),
   ],
   artifacts: [
     param('artifactId', str, [{ text: 'Artifact UUID', actions: ['get_artifact', 'update_artifact'] }]),
@@ -527,13 +534,18 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   ],
   schedules: [
     param('scheduleId', str, [{ text: 'Schedule UUID', actions: ['update_schedule', 'delete_schedule'] }]),
+    param('delegation', { type: 'object' }, [{ text: 'Cross-workspace grant', actions: ['update_schedule'] }]),
   ],
   work: [],
   admin: [],
 };
 
-/** The `params` schema of a group tool listing `actions`. `help` takes {action}, which the description's help line already says. */
-export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly string[]): { type: 'object'; description: string; properties: Record<string, Record<string, unknown>> } {
+/**
+ * The `params` schema of a group tool listing `actions`. `help` takes {action}, which the description's help line already says.
+ * No schema-level description: the tool description's signatures already say what params takes, and
+ * repeating "per the signature above" on every group cost ~100 tokens of the 6k budget.
+ */
+export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly string[]): { type: 'object'; properties: Record<string, Record<string, unknown>> } {
   const listed = new Set(actions);
   const properties: Record<string, Record<string, unknown>> = {};
   for (const f of MCP_GROUP_PARAMS[group]) {
@@ -541,5 +553,5 @@ export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly stri
     if (texts.length === 0) continue;
     properties[f.name] = { ...f.schema, description: texts.join('. ') };
   }
-  return { type: 'object', description: 'Per the signature above.', properties };
+  return { type: 'object', properties };
 }

@@ -242,3 +242,122 @@ export function pickFailoverBackend(opts: {
 
   return { backend: null, blocked };
 }
+
+// ── Pinned backends ──────────────────────────────────────────────────────────
+
+/**
+ * `tasks.context` marker: the task's creator (or an operator, via update_task)
+ * asked for this backend explicitly. `tasks.backend` is NOT NULL with a
+ * 'claude' default, so the column alone cannot tell "asked for Claude" apart
+ * from "nobody said". Failover (claim-time or worker-report, either direction)
+ * never moves a pinned task; it waits for its own provider instead. The team
+ * provider mask still applies: a disabled provider runs nothing.
+ */
+export const BACKEND_PINNED_KEY = 'backendPinned' as const;
+
+export function isBackendPinned(context: unknown): boolean {
+  return !!context && typeof context === 'object'
+    && (context as Record<string, unknown>)[BACKEND_PINNED_KEY] === true;
+}
+
+// ── Why a task runs on the backend it runs on ────────────────────────────────
+
+/**
+ * `tasks.context` key the claim route stamps when THIS claim ran the task on a
+ * backend other than the one stored on it (the flip is in-memory: the row
+ * keeps its own backend). Rewritten on every claim, and absent when the claim
+ * ran the stored backend, so it always describes the latest attempt.
+ */
+export const BACKEND_ROUTING_KEY = 'backendRouting' as const;
+
+export type ClaimRoutingReason =
+  /** Claude's OAuth seat (account session, tenant budget or a recorded Claude pause) is walled. */
+  | 'claude_seat_exhausted'
+  /** Claude is disabled by the team's provider mask. */
+  | 'claude_disabled'
+  /** Codex is disabled by the team's provider mask. */
+  | 'codex_disabled'
+  /** Codex has an active rate-limit/budget pause. */
+  | 'codex_rate_limited';
+
+export interface ClaimBackendRouting {
+  backend: AgentBackend;
+  from: AgentBackend;
+  reason: ClaimRoutingReason;
+  at?: string;
+}
+
+/**
+ * The backend the task's latest claim actually ran: the claim stamp when one
+ * is present (an in-memory flip the stored column never sees), else the stored
+ * backend. Use this, not `tasks.backend`, to ask what a LIVE worker is running.
+ */
+export function claimedBackendOf(storedBackend: string | null | undefined, context: unknown): AgentBackend {
+  const stamp = context && typeof context === 'object'
+    ? (context as Record<string, unknown>)[BACKEND_ROUTING_KEY]
+    : undefined;
+  if (stamp && typeof stamp === 'object') {
+    const backend = (stamp as Partial<ClaimBackendRouting>).backend;
+    if (isDispatchableBackend(backend)) return backend;
+  }
+  return isDispatchableBackend(storedBackend) ? storedBackend : 'claude';
+}
+
+export interface BackendRoutingDescription {
+  backend: AgentBackend;
+  from: AgentBackend;
+  reason: string;
+  /** `claim` = this attempt's in-memory flip; `worker_report` = a persisted move after a failed run. */
+  source: 'claim' | 'worker_report';
+  summary: string;
+}
+
+const CLAIM_ROUTING_SUMMARY: Record<ClaimRoutingReason, (to: string) => string> = {
+  claude_seat_exhausted: (to) => `routed to ${to} by budget failover (Claude seat exhausted)`,
+  claude_disabled: (to) => `routed to ${to} because Claude is disabled for the team`,
+  codex_disabled: (to) => `routed to ${to} because Codex is disabled for the team`,
+  codex_rate_limited: (to) => `routed to ${to} by budget failover (Codex rate-limited)`,
+};
+
+/**
+ * One sentence for "why is this task on this backend?", for explain, get_task
+ * and the task summary. Reads the claim stamp first (it is the newer fact),
+ * then the worker-report failover stamp (`failedOverFrom` / `failoverReason`).
+ * Null when nothing moved the task.
+ */
+export function describeBackendRouting(
+  context: unknown,
+  storedBackend?: string | null,
+): BackendRoutingDescription | null {
+  if (!context || typeof context !== 'object') return null;
+  const ctx = context as Record<string, unknown>;
+  const stamp = ctx[BACKEND_ROUTING_KEY] as Partial<ClaimBackendRouting> | undefined;
+  if (
+    stamp && typeof stamp === 'object'
+    && isDispatchableBackend(stamp.backend) && isDispatchableBackend(stamp.from)
+    && typeof stamp.reason === 'string' && Object.hasOwn(CLAIM_ROUTING_SUMMARY, stamp.reason)
+  ) {
+    const reason = stamp.reason as ClaimRoutingReason;
+    return {
+      backend: stamp.backend,
+      from: stamp.from,
+      reason,
+      source: 'claim',
+      summary: CLAIM_ROUTING_SUMMARY[reason](backendLabel(stamp.backend)),
+    };
+  }
+  const from = ctx.failedOverFrom;
+  if (isDispatchableBackend(from)) {
+    const backend: AgentBackend = isDispatchableBackend(storedBackend)
+      ? storedBackend
+      : (from === 'claude' ? 'codex' : 'claude');
+    const reason = typeof ctx.failoverReason === 'string' ? ctx.failoverReason : 'unknown';
+    const why = reason === 'auth_failure'
+      ? `${backendLabel(from)} rejected its credential`
+      : reason === 'budget_exhausted'
+        ? `${backendLabel(from)} hit a budget wall`
+        : `${backendLabel(from)} failed (${reason})`;
+    return { backend, from, reason, source: 'worker_report', summary: `moved to ${backendLabel(backend)} by failover after ${why}` };
+  }
+  return null;
+}

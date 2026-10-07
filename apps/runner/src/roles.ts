@@ -1,7 +1,6 @@
-import { mkdir, writeFile, readFile, rm, copyFile, readdir } from 'fs/promises';
-import { existsSync } from 'fs';
+import { writeFile, readFile } from 'fs/promises';
 import { join } from 'path';
-import { homedir } from 'os';
+import { claimPromptDir, isForeignDir, sessionRoleDir } from './session-prompt-files.js';
 
 // Role config bundle as returned by the claim route
 export interface RoleConfig {
@@ -34,8 +33,9 @@ export interface RoleInstructions {
   content: string;
 }
 
-// The JSON config bundle stored in R2
-interface RoleConfigBundle {
+// The JSON config bundle stored in R2. Held in memory on the worker for the
+// life of the task; written to disk only for the duration of a session.
+export interface RoleBundle {
   slug: string;
   type: 'builder' | 'service';
   claudeMd: string;
@@ -46,81 +46,63 @@ interface RoleConfigBundle {
 }
 
 /**
- * Returns the local directory for a role: ~/.buildd/roles/<slug>/
- *
- * `BUILDD_HOME` overrides the root, matching every other runner module that
- * resolves a path under `~/.buildd` (doctor, history-store, worker-store, …).
- * Without it an isolated runner home — the updater's probe, or a test process —
- * still wrote role bundles into the operator's real one.
+ * Download a role's config bundle from its presigned URL. Fetched per claim —
+ * there is no disk cache to reuse across tasks.
  */
-export function getRoleDir(slug: string): string {
-  const root = process.env.BUILDD_HOME || join(homedir(), '.buildd');
-  return join(root, 'roles', slug);
-}
-
-/**
- * Sync a role's config bundle from the server to local disk.
- * Idempotent — skips if hash matches what's already on disk.
- */
-export async function syncRoleToLocal(roleConfig: RoleConfig): Promise<{ cwd: string }> {
-  const roleDir = getRoleDir(roleConfig.slug);
-  const hashFile = join(roleDir, '.buildd-hash');
-
-  // Skip if already up to date
-  try {
-    const currentHash = await readFile(hashFile, 'utf-8');
-    if (currentHash.trim() === roleConfig.configHash) {
-      return { cwd: roleDir };
-    }
-  } catch {
-    // Hash file doesn't exist — proceed with sync
-  }
-
-  // Download config bundle from R2
+export async function fetchRoleBundle(roleConfig: RoleConfig): Promise<RoleBundle> {
   const res = await fetch(roleConfig.configUrl);
   if (!res.ok) {
     throw new Error(`Failed to download role config for ${roleConfig.slug}: ${res.status} ${res.statusText}`);
   }
-  const bundle: RoleConfigBundle = await res.json();
+  const bundle = await res.json() as RoleBundle;
+  return {
+    ...bundle,
+    slug: bundle.slug || roleConfig.slug,
+    envMapping: bundle.envMapping ?? {},
+    skills: Array.isArray(bundle.skills) ? bundle.skills : [],
+  };
+}
 
-  // Ensure role directory
-  await mkdir(roleDir, { recursive: true });
-
-  // Write CLAUDE.md
-  await writeFile(join(roleDir, 'CLAUDE.md'), bundle.claudeMd);
-
-  // Write .mcp.json only if it contains valid server configs (not empty)
-  if (bundle.mcpConfig && typeof bundle.mcpConfig === 'object' && Object.keys(bundle.mcpConfig).length > 0) {
-    // Auto-add type: "http" to any server that has a url field (defensive)
-    const servers = (bundle.mcpConfig as { mcpServers?: Record<string, Record<string, unknown>> }).mcpServers;
-    if (servers) {
-      for (const config of Object.values(servers)) {
-        if (config && typeof config === 'object' && 'url' in config && !config.type) {
-          config.type = 'http';
-        }
+/** `.mcp.json` content for a bundle, or null when it declares no servers. */
+function bundleMcpConfig(bundle: RoleBundle): Record<string, unknown> | null {
+  if (!bundle.mcpConfig || typeof bundle.mcpConfig !== 'object' || Object.keys(bundle.mcpConfig).length === 0) return null;
+  // Auto-add type: "http" to any server that has a url field (defensive)
+  const servers = (bundle.mcpConfig as { mcpServers?: Record<string, Record<string, unknown>> }).mcpServers;
+  if (servers) {
+    for (const config of Object.values(servers)) {
+      if (config && typeof config === 'object' && 'url' in config && !config.type) {
+        config.type = 'http';
       }
     }
-    await writeFile(join(roleDir, '.mcp.json'), JSON.stringify(bundle.mcpConfig, null, 2));
   }
+  return bundle.mcpConfig;
+}
 
-  // Write env-mapping.json
-  await writeFile(join(roleDir, 'env-mapping.json'), JSON.stringify(bundle.envMapping, null, 2));
+/**
+ * Write a role bundle into this worker's session role dir
+ * (`<BUILDD_HOME>/session-prompts/<workerId>/role`) — used as the session cwd
+ * when the workspace has no repo. Removed with the rest of the session's
+ * prompt files when the session ends.
+ */
+export async function materializeRoleBundle(bundle: RoleBundle, workerId: string): Promise<string> {
+  const roleDir = sessionRoleDir(workerId);
+  claimPromptDir(workerId, roleDir, { gitignore: false });
+  await writeFile(join(roleDir, 'CLAUDE.md'), bundle.claudeMd ?? '');
+  const mcp = bundleMcpConfig(bundle);
+  if (mcp) await writeFile(join(roleDir, '.mcp.json'), JSON.stringify(mcp, null, 2));
+  await writeRoleSkills(bundle, roleDir, workerId);
+  return roleDir;
+}
 
-  // Clean old skills before writing new ones
-  const skillsBase = join(roleDir, '.claude', 'skills');
-  await rm(skillsBase, { recursive: true, force: true });
-
-  // Write skills
+async function writeRoleSkills(bundle: RoleBundle, cwd: string, workerId: string): Promise<void> {
   for (const skill of bundle.skills) {
-    const skillDir = join(roleDir, '.claude', 'skills', skill.slug);
-    await mkdir(skillDir, { recursive: true });
+    if (!skill?.slug || /[\\/]|^\.\.?$/.test(skill.slug)) continue;
+    const skillDir = join(cwd, '.claude', 'skills', skill.slug);
+    // The repo's own skill of the same name wins; never overwrite tracked content.
+    if (isForeignDir(workerId, skillDir)) continue;
+    claimPromptDir(workerId, skillDir);
     await writeFile(join(skillDir, 'SKILL.md'), skill.content);
   }
-
-  // Store hash
-  await writeFile(hashFile, roleConfig.configHash);
-
-  return { cwd: roleDir };
 }
 
 export interface ResolveRoleEnvResult {
@@ -153,10 +135,17 @@ export async function resolveRoleEnv(
   } catch {
     return { resolved: {}, missing: [] };
   }
+  return resolveRoleEnvMapping(mapping, processEnv);
+}
 
+/** `resolveRoleEnv` over an in-memory mapping (the bundle's `envMapping`). */
+export function resolveRoleEnvMapping(
+  mapping: Record<string, string> | null | undefined,
+  processEnv: Record<string, string>,
+): ResolveRoleEnvResult {
   const resolved: Record<string, string> = {};
   const missing: string[] = [];
-  for (const [key, secretLabel] of Object.entries(mapping)) {
+  for (const [key, secretLabel] of Object.entries(mapping ?? {})) {
     if (secretLabel in processEnv) {
       resolved[key] = processEnv[secretLabel];
     } else {
@@ -227,18 +216,24 @@ export function buildRoleSystemPromptSection(
   return `\n\n## Role: ${name}\n${content}`;
 }
 
-/** Where a role-assigned session should run, and what to overlay into it. */
+/** Where a role-assigned session should run, and what it carries. */
 export interface RoleCwdResolution {
   /** The directory to hand the session (before worktree isolation is applied). */
   cwd: string;
   /**
-   * Local role directory whose skills/.mcp.json must be overlaid into the
-   * session cwd — set only when the session runs in a repo, where the role's
-   * own directory is not the cwd. The overlay must happen AFTER worktree setup,
-   * against the worktree: `git worktree add` only checks out tracked content,
-   * so anything written into the base clone first never arrives.
+   * The role's bundle, held in memory for the task. Present only when the
+   * claim carried a packaged role. Its files are written per session —
+   * `materializeRoleBundle` for a repo-less cwd, `overlayRoleFiles` into a repo
+   * cwd — and removed when the session ends.
    */
-  overlayFrom?: string;
+  roleBundle?: RoleBundle;
+  /**
+   * True when the session runs in a repo and the bundle must be overlaid into
+   * it. The overlay must happen AFTER worktree setup, against the worktree:
+   * `git worktree add` only checks out tracked content, so anything written into
+   * the base clone first never arrives.
+   */
+  overlay?: boolean;
 }
 
 /**
@@ -248,82 +243,68 @@ export interface RoleCwdResolution {
  * workspace has a repo runs in that repo, always. `type` is derived from the
  * role row's `repoUrl`, which the dashboard role editor never sets — so every
  * role saved from the UI packages as `'service'`, and keying cwd off it sent
- * repo tasks to `~/.buildd/roles/<slug>`, a directory that is not a git
- * checkout and has none of the task's code in it.
+ * repo tasks to a directory that is not a git checkout and has none of the
+ * task's code in it.
  *
- * Roles with no packaged bundle are handled the same way: the locally-synced
- * role dir (from an earlier packaged sync, if any) is still overlaid or used as
- * cwd on exactly the same condition.
+ * The bundle is fetched per claim. Nothing from an earlier task is reused from
+ * disk: a role that was never packaged (every seeded default role) has no
+ * files, only the persona the claim delivers inline.
  */
 export async function resolveRoleCwd(
   roleConfig: RoleConfig | undefined | null,
   task: { roleSlug?: string | null; workspace?: { repo?: string | null } | null } | null | undefined,
   workspacePath: string,
+  workerId: string,
 ): Promise<RoleCwdResolution> {
-  const hasRepo = !!task?.workspace?.repo;
-
-  let roleDir: string | undefined;
-  if (roleConfig) {
-    roleDir = (await syncRoleToLocal(roleConfig)).cwd;
-  } else if (task?.roleSlug) {
-    // No bundle on the claim (role never packaged to R2 — every seeded default
-    // role, and anything created via register_skill). A previously-synced local
-    // copy is still worth using.
-    const local = getRoleDir(task.roleSlug);
-    if (existsSync(local)) roleDir = local;
-  }
-
-  if (!roleDir) return { cwd: workspacePath };
-  return hasRepo
-    ? { cwd: workspacePath, overlayFrom: roleDir }
-    : { cwd: roleDir };
+  if (!roleConfig) return { cwd: workspacePath };
+  const roleBundle = await fetchRoleBundle(roleConfig);
+  if (task?.workspace?.repo) return { cwd: workspacePath, roleBundle, overlay: true };
+  // The role dir is the cwd. Created empty here so the path exists; its files
+  // are written at session start (writeSessionRoleFiles) and removed at end.
+  const roleDir = sessionRoleDir(workerId);
+  claimPromptDir(workerId, roleDir, { gitignore: false });
+  return { cwd: roleDir, roleBundle };
 }
 
 /**
- * Overlay role files (skills, .mcp.json) into a repo directory.
+ * Overlay a role bundle's `.mcp.json` into a repo directory, once per claim.
  * Used whenever cwd is the repo rather than the role dir.
  *
- * CLAUDE.md is NOT overlaid: the repo's own CLAUDE.md is the project's and
- * must not be clobbered. The role persona reaches the agent through the system
- * prompt instead — see `buildRoleSystemPromptSection`.
+ * Role SKILLS are not written here: they are prompt text, written per session
+ * by `writeSessionRoleFiles` and removed when the session ends. CLAUDE.md is
+ * never overlaid: the repo's own CLAUDE.md is the project's. The role persona
+ * reaches the agent through the system prompt — see
+ * `buildRoleSystemPromptSection`.
  *
  * `repoDir` must be the session cwd (the worktree when worktree isolation is
- * on), not the base clone — see `RoleCwdResolution.overlayFrom`.
+ * on), not the base clone.
  */
-export async function overlayRoleFiles(roleDir: string, repoDir: string): Promise<void> {
-  // Copy .mcp.json if it exists and has content
-  const mcpSrc = join(roleDir, '.mcp.json');
-  if (existsSync(mcpSrc)) {
-    const content = await readFile(mcpSrc, 'utf-8');
-    const parsed = JSON.parse(content);
-    // Only overlay if there's actual MCP config
-    if (parsed && Object.keys(parsed).length > 0) {
-      // Merge with existing .mcp.json if present
-      const mcpDest = join(repoDir, '.mcp.json');
-      let existing: Record<string, unknown> = {};
-      try {
-        existing = JSON.parse(await readFile(mcpDest, 'utf-8'));
-      } catch { /* no existing file */ }
-      const merged = {
-        ...existing,
-        mcpServers: { ...(existing.mcpServers as Record<string, unknown> || {}), ...(parsed.mcpServers || {}) },
-      };
-      await writeFile(mcpDest, JSON.stringify(merged, null, 2));
-    }
+export async function overlayRoleFiles(bundle: RoleBundle, repoDir: string): Promise<void> {
+  const mcp = bundleMcpConfig(bundle);
+  if (mcp) {
+    // Merge with existing .mcp.json if present
+    const mcpDest = join(repoDir, '.mcp.json');
+    let existing: Record<string, unknown> = {};
+    try {
+      existing = JSON.parse(await readFile(mcpDest, 'utf-8'));
+    } catch { /* no existing file */ }
+    const merged = {
+      ...existing,
+      mcpServers: { ...(existing.mcpServers as Record<string, unknown> || {}), ...((mcp as any).mcpServers || {}) },
+    };
+    await writeFile(mcpDest, JSON.stringify(merged, null, 2));
   }
+}
 
-  // Copy skills into repo's .claude/skills/
-  const skillsDir = join(roleDir, '.claude', 'skills');
-  if (existsSync(skillsDir)) {
-    const slugs = await readdir(skillsDir);
-    for (const slug of slugs) {
-      const srcSkillDir = join(skillsDir, slug);
-      const destSkillDir = join(repoDir, '.claude', 'skills', slug);
-      await mkdir(destSkillDir, { recursive: true });
-      const files = await readdir(srcSkillDir);
-      for (const file of files) {
-        await copyFile(join(srcSkillDir, file), join(destSkillDir, file));
-      }
-    }
+/**
+ * Write a role bundle's files for one session: the session role dir when the
+ * session runs in it, else an overlay into the session cwd. Called at the start
+ * of every session (a resumed session re-writes what the previous one removed).
+ */
+export async function writeSessionRoleFiles(bundle: RoleBundle, sessionCwd: string, workerId: string): Promise<void> {
+  if (sessionCwd === sessionRoleDir(workerId)) {
+    await materializeRoleBundle(bundle, workerId);
+  } else {
+    await writeRoleSkills(bundle, sessionCwd, workerId);
   }
 }

@@ -95,6 +95,20 @@ describe('toPublicWorker', () => {
     expect('mcpConnectors' in out).toBe(false);
   });
 
+  // Prompt text — the role persona, skill bodies and the packaged role bundle —
+  // is never echoed to a client view.
+  it('emits no role or skill text', () => {
+    const PROMPT = 'sentinel-private-prompt-text';
+    const out = toPublicWorker({
+      ...workerWithCredentials(),
+      roleInstructions: { slug: 'builder', name: 'Builder', content: PROMPT },
+      skillBundles: [{ slug: 'demo', name: 'Demo', content: PROMPT }],
+      roleBundle: { slug: 'builder', type: 'builder', claudeMd: PROMPT, mcpConfig: {}, envMapping: {}, skills: [{ slug: 'demo', name: 'Demo', content: PROMPT }] },
+    } as LocalWorker) as Record<string, unknown>;
+    expect(JSON.stringify(out)).not.toContain(PROMPT);
+    for (const k of ['roleInstructions', 'skillBundles', 'roleBundle']) expect(k in out).toBe(false);
+  });
+
   it('keeps the fields the dashboard renders', () => {
     const out = toPublicWorker(workerWithCredentials());
     expect(out.id).toBe('w-1');

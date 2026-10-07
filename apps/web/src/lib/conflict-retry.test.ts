@@ -15,6 +15,21 @@ const mockInsertValues = mock((vals: any) => {
   return { onConflictDoNothing: mockInsertOnConflict };
 });
 const mockInsert = mock(() => ({ values: mockInsertValues }));
+// releaseSpentConflictRetryKey: db.update(tasks).set(..).where(..).returning(..)
+let capturedUpdateSet: any = null;
+let capturedUpdateWhere: any = null;
+const mockUpdateReturning = mock(() => Promise.resolve([]) as any);
+const mockUpdate = mock(() => ({
+  set: (vals: any) => {
+    capturedUpdateSet = vals;
+    return {
+      where: (w: any) => {
+        capturedUpdateWhere = w;
+        return { returning: mockUpdateReturning };
+      },
+    };
+  },
+}));
 
 const mockAnnounceTaskCreated = mock((..._a: unknown[]) => Promise.resolve());
 const mockWakeTask = mock((..._a: unknown[]) => Promise.resolve());
@@ -35,6 +50,7 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findFirst: (...args: any[]) => mockWorkspaceFindFirst(...args) },
     },
     insert: (...args: any[]) => mockInsert(...args),
+    update: (...args: any[]) => mockUpdate(...args),
   },
 }));
 
@@ -61,7 +77,7 @@ mock.module('@/lib/dispatch-authority', () => ({
   enqueueTaskDispatch: mock(async () => {}),
   drainDispatchOutbox: mock(async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 })),
   deliverTaskDispatch: mock(async () => 'pusher'),
-  routeForCause: mock(() => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false })),
+  routeForCause: mock(() => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false })),
   webhookWants: mock(() => false),
   primaryCause: mock((_c: unknown, fallback: unknown) => fallback),
   reseedDispatchTimer: mock(async () => {}),
@@ -449,6 +465,54 @@ describe('dispatchConflictRetry', () => {
     mockAnnounceTaskCreated.mockResolvedValue(undefined);
     mockLiveConflictRetryProbe.mockReset();
     mockLiveConflictRetryProbe.mockResolvedValue(null);
+    mockUpdate.mockClear();
+    mockUpdateReturning.mockReset();
+    mockUpdateReturning.mockResolvedValue([]);
+    capturedUpdateSet = null;
+    capturedUpdateWhere = null;
+  });
+
+  // A retry that ended without pushing leaves the PR head unchanged, so it
+  // keeps the (PR, head) dedupe key. Every later dispatch for the still-dirty
+  // head hit the unique index and filed nothing, yet callers read that as
+  // "already handled". The PR sat dirty with nobody working on it.
+  describe('a spent retry on the same head', () => {
+    it('releases the spent key and files the next attempt', async () => {
+      mockInsertReturning
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'next-attempt' }]);
+      mockUpdateReturning.mockResolvedValueOnce([{ id: 'spent-attempt' }]);
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: true, taskId: 'next-attempt' });
+      expect(mockInsertReturning).toHaveBeenCalledTimes(2);
+      expect(capturedUpdateSet).toEqual({ conflictRetryHeadSha: null });
+      // Only a terminal row on this exact head gives up its key.
+      const where = JSON.stringify(capturedUpdateWhere);
+      expect(where).toContain('ws-1');
+      expect(where).toContain('99');
+      expect(where).toContain('sha-abc123');
+      expect(where).toContain('completed');
+      expect(where).not.toContain('in_progress');
+      expect(mockWakeTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('files nothing when the key is held by a live retry (a concurrent caller won)', async () => {
+      mockInsertReturning.mockResolvedValue([]);
+      mockUpdateReturning.mockResolvedValueOnce([]);
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: false });
+      expect(mockInsertReturning).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).not.toHaveBeenCalled();
+    });
+
+    it('does not touch the key when the first insert succeeds', async () => {
+      await dispatchConflictRetry(BASE_PARAMS);
+      expect(mockUpdate).not.toHaveBeenCalled();
+    });
   });
 
   // N10: a conflict retry that pushes a merge commit moves the PR head, and a

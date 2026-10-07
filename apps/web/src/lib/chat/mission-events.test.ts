@@ -104,7 +104,7 @@ describe('visual review events', () => {
       expect(visualReviewEventText(moment, m, { fixes: 1, routes: ['/app/tasks/:id'] })).toMatch(/\d/);
     }
     expect(visualReviewEventText('no_browser_runner', buildVisualReviewFixtureModel('no_browser_runner'))).toBe('Visual audit waiting: no browser runner online (0 screens captured).');
-    expect(visualReviewEventText('round_cap', m)).toMatch(/^Issues remain after \d rounds?: your call\./);
+    expect(visualReviewEventText('round_cap', m)).toMatch(/^Issues remain after \d rounds?: decision needed\./);
     expect(visualReviewEventText('fixes_filed', m, { fixes: 2, routes: ['/a', '/b'] })).toMatch(/^Filed 2 fixes from your decisions \(\/a, \/b\)\./);
     expect(visualReviewEventText('all_clear', reviewed())).toMatch(/^All clear after round 2: \d+ ok, 0 issues, 0 unsure\.$/);
   });

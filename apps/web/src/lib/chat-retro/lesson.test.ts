@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import { chatRetros } from '@buildd/core/db/schema';
-import { assertContentFree, buildQuestions, judgedLesson, retroSignature, skippedLesson, type WindowRef } from './lesson';
+import { assertContentFree, buildQuestions, failedLesson, judgedLesson, retroSignature, skippedLesson, withVisibleAnswer, type WindowRef } from './lesson';
 import type { Candidate } from './skeleton';
 import { EVIDENCE_KEYS, LESSON_TEXT_COLUMNS, SIGNATURE_PATTERN, TURN_LABELS } from './vocab';
 
@@ -102,5 +102,71 @@ describe('judgedLesson: the model labels, code counts', () => {
     expect(row.primaryCause).toBe('over_fetch');
     expect(row.fixClass).toBeNull();
     expect(row.signature).toBeNull();
+  });
+});
+
+describe('visible-answer families', () => {
+  const vis = (id: number, kind: Candidate['kind'], conf = 1): Candidate => ({ id, kind, turn: id, messageId: M(100 + id), tokens: 50, toolName: null, conf });
+
+  it('signatures are stable strings: the friction dedupe key never drifts', () => {
+    // Pinned on purpose. Changing one re-files every open proposal as new.
+    expect(retroSignature('no_answer', 'turn_pipeline', null)).toBe('chat-retro:no_answer-turn_pipeline-none-e2ac0e');
+    expect(retroSignature('render_gap', 'ui', null)).toBe('chat-retro:render_gap-ui-none-845fd4');
+    expect(retroSignature('blank_retry', 'turn_pipeline', null)).toBe('chat-retro:blank_retry-turn_pipeline-none-a73a2f');
+    expect(retroSignature('render_gap', 'ui', null)).toMatch(SIGNATURE_PATTERN);
+    expect(retroSignature('no_answer', 'turn_pipeline', null)).toMatch(SIGNATURE_PATTERN);
+    expect(retroSignature('blank_retry', 'turn_pipeline', null)).toMatch(SIGNATURE_PATTERN);
+    expect(new Set([
+      retroSignature('no_answer', 'turn_pipeline', null),
+      retroSignature('render_gap', 'ui', null),
+      retroSignature('blank_retry', 'turn_pipeline', null),
+    ]).size).toBe(3);
+  });
+
+  it('code labels them: never asked, and no fix-class question when they are all there is', () => {
+    const q = buildQuestions([vis(0, 'no_output'), vis(1, 'render_gap'), vis(2, 'blank_retry')]);
+    expect(Object.keys(q).sort()).toEqual(['intent', 'satisfied']);
+  });
+
+  it('a sure visible failure is the primary cause whatever the model said, with code\'s fix class', () => {
+    const cands: Candidate[] = [
+      { id: 0, kind: 'large_result', turn: 1, messageId: M(30), tokens: 90_000, toolName: 'list_tasks' },
+      vis(1, 'render_gap'),
+    ];
+    const row = judgedLesson({ ref, totals, candidates: cands, answers: { turn_0: ans('over_fetch'), fix_class: ans('tool_or_param') }, model: 'jev', stateTokens: 1, latencyMs: 1, jevCostUsd: 0 });
+    expect(row.primaryCause).toBe('render_gap');
+    expect(row.fixClass).toBe('ui');
+    expect(row.toolName).toBeNull();
+    expect(row.signature).toBe(retroSignature('render_gap', 'ui', null));
+    expect(row.evidence.find(e => e.kind === 'render_gap')).toMatchObject({ label: 'render_gap', conf: 1 });
+    expect(() => assertContentFree(row)).not.toThrow();
+  });
+
+  it('render gap outranks no answer, which outranks a retry', () => {
+    const row = judgedLesson({ ref, totals, candidates: [vis(0, 'blank_retry'), vis(1, 'no_output'), vis(2, 'render_gap')], answers: {}, model: 'jev', stateTokens: 1, latencyMs: 1, jevCostUsd: 0 });
+    expect(row.primaryCause).toBe('render_gap');
+    const row2 = judgedLesson({ ref, totals, candidates: [vis(0, 'blank_retry'), vis(1, 'no_output')], answers: {}, model: 'jev', stateTokens: 1, latencyMs: 1, jevCostUsd: 0 });
+    expect(row2.primaryCause).toBe('no_answer');
+  });
+
+  it('a guessed retry does not outrank the model\'s bigger cause', () => {
+    const cands: Candidate[] = [
+      { id: 0, kind: 'large_result', turn: 1, messageId: M(30), tokens: 90_000, toolName: 'list_tasks' },
+      vis(1, 'blank_retry', 0.6),
+    ];
+    const row = judgedLesson({ ref, totals, candidates: cands, answers: { turn_0: ans('over_fetch'), fix_class: ans('tool_or_param') }, model: 'jev', stateTokens: 1, latencyMs: 1, jevCostUsd: 0 });
+    expect(row.primaryCause).toBe('over_fetch');
+  });
+
+  it('a window the model did not judge still carries code\'s finding and signature', () => {
+    const row = withVisibleAnswer(failedLesson(ref, totals, 'timeout', 10, 5000), [vis(0, 'no_output')]);
+    expect(row.status).toBe('failed');
+    expect(row.primaryCause).toBe('no_answer');
+    expect(row.signature).toBe(retroSignature('no_answer', 'turn_pipeline', null));
+    expect(row.wastedTurns).toBe(1);
+    expect(() => assertContentFree(row)).not.toThrow();
+    // Nothing visible: the row is untouched.
+    const plain = skippedLesson(ref, totals, 'team_cap');
+    expect(withVisibleAnswer(plain, [])).toBe(plain);
   });
 });

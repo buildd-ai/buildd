@@ -1,1 +1,0 @@
-ALTER TABLE "quality_scout_runs" ADD COLUMN "metrics" jsonb;

@@ -69,6 +69,12 @@ export const GATE_SLUGS = {
   PR_HEAD_MISMATCH: 'pr_head_mismatch',
   /** create_pr — base disagrees with the mission integration branch. */
   PR_BASE_MISMATCH: 'pr_base_mismatch',
+  /**
+   * create_pr / worker PATCH — an agent run recording a PR its task does not
+   * own (head not its branch, lineage, dependency or a PR it names; a
+   * protected head; or a PR outside the workspace's linked repo).
+   */
+  PR_OWNERSHIP: 'pr_ownership',
   /** merge_pr — workspace merge policy, and the admin `force` bypass. */
   MERGE_POLICY: 'merge_policy',
   /** merge_pr — mission-PR branch-lifecycle wait. */

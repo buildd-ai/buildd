@@ -24,7 +24,7 @@ mock.module('drizzle-orm', () => ({
   sql: (strings: any, ...values: any[]) => ({ type: 'sql', strings, values }),
 }));
 
-import { parseLandingMarker, readLandingMarker, writeLandingMarker, clearLandingMarker } from './pr-landing-marker';
+import { parseLandingMarker, readLandingMarker, writeLandingMarker, clearLandingMarker, claimReviewRevalidation } from './pr-landing-marker';
 
 const stored = {
   prNumber: 42,
@@ -110,5 +110,17 @@ describe('marker storage', () => {
   it('clear issues an update', async () => {
     await clearLandingMarker('t1');
     expect(captured).toHaveLength(1);
+  });
+});
+
+describe('claimReviewRevalidation', () => {
+  it('claims once per review task: true when the UPDATE matched, false when it was already claimed', async () => {
+    updateReturns = [[{ id: 'task-1' }], []];
+    expect(await claimReviewRevalidation('task-1', 'review-3')).toBe(true);
+    expect(await claimReviewRevalidation('task-1', 'review-3')).toBe(false);
+    // The guard is in the WHERE, so two concurrent landings cannot both claim it.
+    const where = JSON.stringify(captured[0].cond);
+    expect(where).toContain('revalidatedReviews');
+    expect(where).toContain('review-3');
   });
 });

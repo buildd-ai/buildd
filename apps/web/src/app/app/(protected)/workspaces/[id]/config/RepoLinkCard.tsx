@@ -43,6 +43,7 @@ export function RepoLinkCard({ workspaceId, onLinked }: { workspaceId: string; o
     const [loadingRepos, setLoadingRepos] = useState(false);
     const [configured, setConfigured] = useState(true);
     const [newName, setNewName] = useState('');
+    const [pastedUrl, setPastedUrl] = useState('');
     const [isPrivate, setIsPrivate] = useState(true);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -111,6 +112,7 @@ export function RepoLinkCard({ workspaceId, onLinked }: { workspaceId: string; o
     }
 
     const linkExisting = () => selected && submit(`/api/workspaces/${workspaceId}`, 'PATCH', { repoUrl: selected.fullName });
+    const linkPasted = () => submit(`/api/workspaces/${workspaceId}`, 'PATCH', { repoUrl: pastedUrl.trim() });
     const createNew = () => {
         const login = installations.find((i) => i.id === installationId)?.accountLogin;
         return submit(`/api/workspaces/${workspaceId}/create-repo`, 'POST', {
@@ -124,14 +126,40 @@ export function RepoLinkCard({ workspaceId, onLinked }: { workspaceId: string; o
         <section className="card p-4 mb-8" data-testid="repo-link-card">
             <h2 className="section-label mb-1">Link a repository</h2>
             <p className="text-xs text-text-muted mb-3">
-                This workspace has no repository yet, so workers have nothing to work in.
+                No repository linked. Agents can still do work that needs no code; link one so they can open pull requests.
             </p>
 
             {!configured || installations.length === 0 ? (
-                <p className="text-sm text-text-secondary" data-testid="repo-link-no-installation">
-                    Give the GitHub App access to your account first, then reload. Or set a repo with
-                    {' '}<code>manage_workspaces action=update</code>.
-                </p>
+                <div data-testid="repo-link-no-installation">
+                    <label className="block text-xs text-text-muted">
+                        Repository
+                        <input
+                            className={`${INPUT} mt-1`}
+                            data-testid="repo-link-url"
+                            value={pastedUrl}
+                            onChange={(e) => setPastedUrl(e.target.value)}
+                            placeholder="owner/repo or https://github.com/owner/repo"
+                        />
+                    </label>
+                    <button
+                        type="button"
+                        data-testid="repo-link-url-submit"
+                        className="btn btn-primary min-h-11 mt-3"
+                        disabled={!pastedUrl.trim() || busy}
+                        onClick={linkPasted}
+                    >
+                        {busy ? 'Linking…' : 'Link repository'}
+                    </button>
+                    {configured && (
+                        <p className="text-xs text-text-muted mt-3">
+                            Or{' '}
+                            <a href="/api/github/install" data-testid="repo-link-connect-github" className="text-accent-text hover:underline">
+                                connect GitHub
+                            </a>
+                            {' '}to pick from your repositories.
+                        </p>
+                    )}
+                </div>
             ) : (
                 <>
                     <div className="flex gap-2 mb-3" role="tablist">

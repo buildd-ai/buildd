@@ -18,23 +18,25 @@
  * when workerId is given, it is that worker). Repo identity comes from the
  * workspace's github_repos link, never from the free-text workspaces.repo.
  *
+ * `protectedBranches` and `pushableBranches` feed the egress push guard
+ * (apps/cloud-runner/src/outbound.ts): the first is a deny-list, the second
+ * the allow-list of branches this run may move (taskPushableBranches).
+ *
  * The response also carries the task's workspaceId, which the dispatcher uses
- * to key its per-workspace snapshot store (Phase 2, warm repos).
+ * to key its per-workspace snapshot store (Phase 2, warm repos), and, when the
+ * workspace sets one, its warm snapshot cap (lib/warm-snapshot-cap.ts).
+ *
+ * The checks are the agent-run principal's (lib/agent-capabilities): this route
+ * parses the request and shapes the response.
  *
  * Design: docs/design/cloudflare-sandbox-runner.md, Components 4 and open question 1.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { createHash, timingSafeEqual } from 'crypto';
-import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
-import { and, eq, inArray } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
-import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
-import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import { isOpenWithinTeams } from '@/lib/open-workspaces';
-import { mintRepoScopedInstallationToken } from '@/lib/github-scoped-token';
-import { protectedBaseBranches } from '@/lib/auto-merge-bound';
+import { resolveDispatchPrincipal, taskPushableBranches } from '@/lib/agent-capabilities/dispatch-principal';
+import { authorizeGithubRepoGrant, mintGithubRepoGrant, repoProtectedBranches } from '@/lib/agent-capabilities/github';
+import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
+import { resolveWarmSnapshotMaxBytes } from '@/lib/warm-snapshot-cap';
 
 /** Mirrors DISPATCH_TOKEN_HEADER in apps/cloud-runner/src/outbound.ts. */
 const DISPATCH_TOKEN_HEADER = 'x-buildd-dispatch-token';
@@ -44,13 +46,6 @@ const NO_STORE = { 'Cache-Control': 'no-store' };
 
 function fail(status: number, error: string) {
   return NextResponse.json({ error }, { status, headers: NO_STORE });
-}
-
-/** Constant-time over fixed-length digests, so neither length nor prefix leaks. */
-function safeEqual(a: string, b: string): boolean {
-  const ha = createHash('sha256').update(a).digest();
-  const hb = createHash('sha256').update(b).digest();
-  return timingSafeEqual(ha, hb);
 }
 
 export async function POST(req: NextRequest) {
@@ -74,88 +69,51 @@ export async function POST(req: NextRequest) {
     return fail(400, 'workerId must be an id');
   }
 
-  const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
-    columns: { id: true, workspaceId: true },
-    with: {
-      workspace: {
-        columns: { id: true, teamId: true, accessMode: true, webhookConfig: true, githubRepoId: true, gitConfig: true, releaseConfig: true },
-        with: {
-          githubRepo: {
-            columns: { id: true, repoId: true, owner: true, name: true, fullName: true, defaultBranch: true },
-            with: {
-              installation: { columns: { installationId: true, suspendedAt: true, permissions: true } },
-            },
-          },
-        },
-      },
-    },
-  });
-  const ws = task?.workspace;
-  // Every "not yours" answer is the same 404, so the route does not confirm
-  // which task ids exist in other teams.
-  if (!task || !ws || task.workspaceId !== ws.id) return fail(404, 'Task not found');
-
-  // Same claim authority the claim route applies: an open workspace of the
-  // account's own team, or an explicit canClaim link.
-  // A workspace-restricted token acts only inside its own list.
-  if (!tokenWorkspaceAllowed(account.workspaceIds, ws.id)) return fail(404, 'Task not found');
-  const ownOpen = !!account.teamId && isOpenWithinTeams(ws, [account.teamId]);
-  if (!ownOpen) {
-    const perms = await getAccountWorkspacePermissions(account.id);
-    if (!perms.some(p => p.workspaceId === ws.id && p.canClaim)) return fail(404, 'Task not found');
+  const resolved = await resolveDispatchPrincipal(account, { taskId, workerId, dispatchToken });
+  if (!resolved.ok) {
+    void recordCapabilityDecision({ capability: 'github.repo_grant', decision: 'refused', accountId: account.id, principalVia: 'dispatch', resource: `task:${taskId}`, reasonCode: resolved.reasonCode });
+    return fail(resolved.status, resolved.error);
   }
+  const ws = resolved.workspace;
+  const p = resolved.principal;
+  const audit = { capability: 'github.repo_grant' as const, workspaceId: p.workspaceId, taskId: p.taskId, workerId: p.workerId, accountId: p.accountId, principalVia: p.via };
 
-  const hook = ws.webhookConfig;
-  if (!hook || !hook.enabled || typeof hook.token !== 'string' || hook.token.length === 0 || !safeEqual(hook.token, dispatchToken)) {
-    return fail(403, 'Dispatch token does not match this workspace');
+  const decision = authorizeGithubRepoGrant(resolved.principal, ws);
+  if (!decision.allowed) {
+    void recordCapabilityDecision({ ...audit, decision: 'refused', reasonCode: decision.reasonCode });
+    return fail(decision.status, decision.error);
   }
-
-  const liveWorkers = await db.query.workers.findMany({
-    where: and(eq(workers.taskId, taskId), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
-    columns: { id: true, accountId: true, workspaceId: true, status: true, taskId: true },
-  });
-  // Re-checked here rather than trusted to the query, so the rule is visible
-  // and tested: live, on this task and workspace, claimed by THIS account.
-  const live = new Set<string>(LIVE_WORKER_STATUSES);
-  const mine = liveWorkers.filter(w =>
-    w.taskId === taskId &&
-    w.workspaceId === ws.id &&
-    w.accountId === account.id &&
-    live.has(w.status) &&
-    (workerId === undefined || w.id === workerId));
-  if (mine.length === 0) return fail(409, 'Task has no live worker claimed by this account');
-
-  const repo = ws.githubRepo;
-  if (!ws.githubRepoId || !repo || repo.id !== ws.githubRepoId || !repo.installation) {
-    return fail(409, 'Workspace has no linked GitHub repository');
-  }
-  if (repo.installation.suspendedAt) return fail(409, 'GitHub App installation is suspended');
 
   try {
-    const minted = await mintRepoScopedInstallationToken({
-      installationId: repo.installation.installationId,
-      repoId: repo.repoId,
-      installedPermissions: repo.installation.permissions,
-    });
+    const minted = await mintGithubRepoGrant(decision);
     // Branches the cloud egress merge guard (apps/cloud-runner/src/outbound.ts
-    // pushedProtectedBranch) must refuse a direct `git push` to: the same set
-    // protectedBaseBranches() gives the auto-merge bound, plus the repo's own
-    // GitHub default branch (protectedBaseBranches omits it on purpose — see
-    // its docstring — but a raw push bypasses buildd's merge policy entirely,
-    // so this check is stricter than that one).
-    const protectedBranches = [...new Set([...protectedBaseBranches({ gitConfig: ws.gitConfig, releaseConfig: ws.releaseConfig }), repo.defaultBranch].filter((b): b is string => typeof b === 'string' && b.length > 0))];
+    // pushedProtectedBranch) must refuse a direct `git push` to.
+    const protectedBranches = repoProtectedBranches(ws, ws.githubRepo?.defaultBranch);
+    // The only branches the egress push allow-list lets this run move: its
+    // worker's own branch (and the task's shared working branch, if pinned).
+    const pushableBranches = taskPushableBranches({
+      workerBranch: resolved.principal.workerBranch,
+      context: resolved.task.context,
+      protectedBranches,
+    });
+    void recordCapabilityDecision({ ...audit, decision: 'allowed', resource: `github_repo:${decision.resource.id}`, expiresAt: minted.expiresAt, sideEffect: { pushableBranches: pushableBranches.length } });
+    // The workspace's warm snapshot cap (gitConfig.warmSnapshot.maxBytes,
+    // bounded here). Absent: the dispatcher's own default applies.
+    const warmSnapshotMaxBytes = resolveWarmSnapshotMaxBytes(ws.gitConfig);
     return NextResponse.json({
       token: minted.token,
       expiresAt: minted.expiresAt.toISOString(),
-      repository: { owner: repo.owner, name: repo.name, fullName: repo.fullName },
+      repository: { owner: decision.repo.owner, name: decision.repo.name, fullName: decision.repo.fullName },
       // Keys the cloud runner's per-workspace snapshot store (warm repos). It
       // comes from here, authenticated by the dispatch token, so neither the
       // container nor the webhook body chooses it.
       workspaceId: ws.id,
       protectedBranches,
+      pushableBranches,
+      ...(warmSnapshotMaxBytes !== null ? { warmSnapshotMaxBytes } : {}),
     }, { headers: NO_STORE });
   } catch (err) {
+    void recordCapabilityDecision({ ...audit, decision: 'refused', resource: `github_repo:${decision.resource.id}`, reasonCode: 'mint_failed' });
     console.error(`[github-token] mint failed for task ${taskId}:`, err instanceof Error ? err.message : String(err));
     return fail(502, 'Could not mint a GitHub token');
   }

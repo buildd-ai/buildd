@@ -1,6 +1,6 @@
 import type { EgressEnv } from './outbound';
 import type { OtelEgressEnv } from './otel';
-import type { WorkerAgent } from './worker-agent';
+import type { WorkerAgent, WorkerAgentLarge } from './worker-agent';
 
 /**
  * Worker bindings, vars and secrets. See README.md for which is which.
@@ -10,7 +10,10 @@ import type { WorkerAgent } from './worker-agent';
  * are in EgressEnv (outbound.ts), the telemetry ones in OtelEgressEnv (otel.ts).
  */
 export interface Env extends EgressEnv, OtelEgressEnv {
+  /** Standard-size task agents (container class standard-1). */
   WorkerAgent: DurableObjectNamespace<WorkerAgent>;
+  /** Large-size task agents (container class standard-3; runner-class.ts). */
+  WorkerAgentLarge: DurableObjectNamespace<WorkerAgentLarge>;
   /**
    * Must equal the workspace's webhookConfig.token. Also proves to buildd
    * that a GitHub token request comes from the dispatcher, not the container
@@ -36,8 +39,10 @@ export interface Env extends EgressEnv, OtelEgressEnv {
   RUNNER_GROUP?: string;
   CONTAINER_INACTIVITY_TIMEOUT_MS?: string;
   CONTAINER_START_TIMEOUT_MS?: string;
-  /** Mirrors `containers[].instance_type` in wrangler.jsonc, for the run report (not readable at runtime otherwise). */
+  /** Mirrors the standard class's `instance_type` in wrangler.jsonc, for the run report (not readable at runtime otherwise). */
   CONTAINER_INSTANCE_TYPE?: string;
+  /** Mirrors the large class's `instance_type` (WorkerAgentLarge). */
+  CONTAINER_INSTANCE_TYPE_LARGE?: string;
   /** Local smoke only: `1` makes the egress handler echo instead of forwarding. */
   EGRESS_DEBUG_ECHO?: string;
   /**
@@ -46,6 +51,12 @@ export interface Env extends EgressEnv, OtelEgressEnv {
    * the SNAPSHOTS binding too (lifecycle.ts warmReposEnabled).
    */
   WARM_REPOS?: string;
+  /**
+   * Largest warm snapshot part (bundle or cache tarball) in bytes; default
+   * 1 GiB (lifecycle.ts warmMaxBundleBytes). Passed to the container, which
+   * skips the upload past it, and enforced by the snapshot route.
+   */
+  WARM_MAX_BUNDLE_BYTES?: string;
   /** `1` enables the debug POST /tasks/:id/kill (http.ts). Off by default; recovery testing only. */
   ALLOW_DEBUG_KILL?: string;
   /**
@@ -54,6 +65,8 @@ export interface Env extends EgressEnv, OtelEgressEnv {
    * Default off. Needs the SNAPSHOTS binding too (resumableRunsEnabled).
    */
   RESUMABLE_RUNS?: string;
+  /** This Worker version's id, to tell a deploy from any other agent restart in the run report (wrangler.jsonc `version_metadata`). */
+  CF_VERSION_METADATA?: { id: string };
   /** R2 bucket for snapshots (wrangler.jsonc `r2_buckets`). Only the Worker writes it. */
   SNAPSHOTS?: R2Bucket;
 }

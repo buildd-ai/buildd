@@ -3,7 +3,6 @@ import {
   buildWorkerBwrapArgv,
   isMountAllowlistEnabled,
   parseExtraMounts,
-  CBM_BINARY_PATH,
   shouldWrapWorkerInBwrap,
 } from '../../src/bwrap-mount-allowlist';
 
@@ -92,35 +91,6 @@ describe('buildWorkerBwrapArgv', () => {
     })).toMatchSnapshot();
   });
 
-  test('adds CBM binary ro-bind and cache dir rw-bind when provided', () => {
-    expect(buildWorkerBwrapArgv({
-      worktreePath: '/repo/.buildd-worktrees/task',
-      repoPath: '/repo',
-      homePath: '/home/runner',
-      bunInstallPath: '/home/runner/.bun',
-      claudeConfigDir: '/tmp/claude-cfg-worker',
-      isCodexTask: false,
-      cbmBinaryPath: CBM_BINARY_PATH,
-      cbmCacheDir: '/tmp/cbm-worker-123',
-      pathExists: () => true,
-      warn,
-    })).toMatchSnapshot();
-  });
-
-  test('omits CBM mounts when cbmBinaryPath and cbmCacheDir are absent', () => {
-    const argv = buildWorkerBwrapArgv({
-      worktreePath: '/repo/.buildd-worktrees/task',
-      repoPath: '/repo',
-      homePath: '/home/runner',
-      bunInstallPath: '/home/runner/.bun',
-      claudeConfigDir: '/tmp/claude-cfg-worker',
-      isCodexTask: false,
-      pathExists: () => true,
-      warn,
-    });
-    expect(argv.join(' ')).not.toContain('codebase-memory-mcp');
-    expect(argv.join(' ')).not.toContain('cbm-');
-  });
 });
 
 describe('mount allowlist rollout gates', () => {
@@ -146,36 +116,6 @@ describe('mount allowlist rollout gates', () => {
     process.env.BUILDD_SANDBOX_MOUNT_ALLOWLIST = '1';
     process.env.BUILDD_DISABLE_SANDBOX = '1';
     expect(isMountAllowlistEnabled()).toBe(false);
-  });
-});
-
-describe('CBM shared-cache mounts', () => {
-  test('binds a runtime dir that lives outside the cache dir', () => {
-    // Shared mode: cache is host-wide, runtime dir is per-worker at /tmp/cbm-rt-<id>.
-    // Without its own mount the daemon cannot bind its socket and CBM refuses to start.
-    const argv = buildWorkerBwrapArgv({
-      worktreePath: '/repo/.buildd-worktrees/b',
-      repoPath: '/repo',
-      isCodexTask: false,
-      cbmCacheDir: '/home/coder/.buildd-cbm-cache',
-      cbmRuntimeDir: '/tmp/cbm-rt-w1',
-      pathExists: () => true,
-    });
-    const pairs = argv.join(' ');
-    expect(pairs).toContain('--bind /home/coder/.buildd-cbm-cache /home/coder/.buildd-cbm-cache');
-    expect(pairs).toContain('--bind /tmp/cbm-rt-w1 /tmp/cbm-rt-w1');
-  });
-
-  test('omits the runtime mount when it is nested in the cache dir', () => {
-    const argv = buildWorkerBwrapArgv({
-      worktreePath: '/repo/.buildd-worktrees/b',
-      repoPath: '/repo',
-      isCodexTask: false,
-      cbmCacheDir: '/tmp/cbm-w1',
-      pathExists: () => true,
-    });
-    expect(argv.filter(a => a === '/tmp/cbm-w1').length).toBeGreaterThan(0);
-    expect(argv.join(' ')).not.toContain('cbm-rt-');
   });
 });
 
@@ -221,18 +161,6 @@ describe('operator allowlist cannot override a built-in bind', () => {
     expect(bindFlagsFor(argv, '/tmp/claude-cfg-worker')).toEqual(['--bind']);
   });
 
-  test('an operator entry cannot override a CBM bind (order-independent, not incidental)', () => {
-    const argv = buildWorkerBwrapArgv({
-      ...base,
-      cbmBinaryPath: CBM_BINARY_PATH,
-      cbmCacheDir: '/tmp/cbm-worker-123',
-      extraMounts: `/tmp/cbm-worker-123:ro,${CBM_BINARY_PATH}:rw`,
-      warn: () => {},
-    });
-    expect(bindFlagsFor(argv, '/tmp/cbm-worker-123')).toEqual(['--bind']);
-    expect(bindFlagsFor(argv, CBM_BINARY_PATH)).toEqual(['--ro-bind']);
-  });
-
   test('non-colliding operator entries still apply', () => {
     const warnings: string[] = [];
     const argv = buildWorkerBwrapArgv({
@@ -247,10 +175,10 @@ describe('operator allowlist cannot override a built-in bind', () => {
 });
 
 // ---------------------------------------------------------------------------
-// C14 — a dropped mount that CBM depends on must be an error, not a warning
+// C14 — an absent mount is dropped with a warning
 // ---------------------------------------------------------------------------
 
-describe('CBM mounts are required, not best-effort', () => {
+describe('missing mounts', () => {
   const base = {
     worktreePath: '/repo/.buildd-worktrees/task',
     repoPath: '/repo',
@@ -260,27 +188,7 @@ describe('CBM mounts are required, not best-effort', () => {
     isCodexTask: false,
   };
 
-  test('throws when the CBM cache dir vanished before the argv was built', () => {
-    expect(() => buildWorkerBwrapArgv({
-      ...base,
-      cbmBinaryPath: CBM_BINARY_PATH,
-      cbmCacheDir: '/tmp/cbm-worker-123',
-      pathExists: path => path !== '/tmp/cbm-worker-123',
-      warn: () => {},
-    })).toThrow(/\/tmp\/cbm-worker-123/);
-  });
-
-  test('throws when the CBM binary bind is missing', () => {
-    expect(() => buildWorkerBwrapArgv({
-      ...base,
-      cbmBinaryPath: CBM_BINARY_PATH,
-      cbmCacheDir: '/tmp/cbm-worker-123',
-      pathExists: path => path !== CBM_BINARY_PATH,
-      warn: () => {},
-    })).toThrow(/codebase-memory-mcp/);
-  });
-
-  test('optional mounts are still dropped with a warning', () => {
+  test('are dropped with a warning', () => {
     const warnings: string[] = [];
     const argv = buildWorkerBwrapArgv({
       ...base,

@@ -1,7 +1,7 @@
 /**
  * One Waiting-on-You action card (MERGE · REVIEW · QUESTION · DECIDE ·
- * DISCREPANCY · RECONNECT · APPROVE · RESOLVING · FIXING_CI · FIXING_REVIEW ·
- * CI_RUNNING · AUTO_MERGE · BLOCKED · STALE),
+ * DISCREPANCY · RECONNECT · FAILED · APPROVE · RESOLVING · FIXING_CI · FIXING_REVIEW ·
+ * CI_RUNNING · REVIEW_RUNNING · AUTO_MERGE · BLOCKED · STALE),
  * moved verbatim out of home/page.tsx so the page composes sections instead
  * of spelling every card. Selection and ordering stay in lib/action-queue.ts.
  */
@@ -13,10 +13,12 @@ import { WaitingOnYouReviewCard } from '@/components/WaitingOnYouReviewCard';
 import { WaitingOnYouDecideCard } from '@/components/WaitingOnYouDecideCard';
 import { WaitingOnYouDiscrepancyCard } from '@/components/WaitingOnYouDiscrepancyCard';
 import { AgentHandledCard } from '@/components/AgentHandledCard';
+import { MergeBlockerCard } from '@/components/MergeBlockerCard';
 import { FixCiButton } from '@/components/FixCiButton';
 import { AgentRecommendation } from '@/components/AgentRecommendation';
 import { actionCardTaskLink, resolveActionCardContext } from '@/lib/action-card-context';
 import type { ActionQueueItem } from '@/lib/action-queue';
+import { describeMergeBlocker } from '@/lib/merge-blocker';
 
 export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
     const arc = resolveActionCardContext(item);
@@ -32,6 +34,15 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
           <WaitingOnYouMergeCard item={item} />
         </SwipeableRow>
       );
+    }
+    if (item.chip === 'REVIEW' && item.humanReview && item.prUrl) {
+      return <article data-testid="human-pr-review-card" className="card p-4">
+        <p className="text-meta text-status-warning">Review required</p>
+        <h3 className="mt-2 text-title font-semibold">{item.taskTitle}</h3>
+        <p className="mt-1 text-body text-text-secondary">{item.humanReview.reason}</p>
+        {item.machineStatus && <p className="mt-1 text-meta text-text-muted">{item.machineStatus}</p>}
+        <Link className="btn mt-3 min-h-11" href={`${item.prUrl}/files`}>{item.humanReview.label}</Link>
+      </article>;
     }
     if (item.chip === 'REVIEW') {
       return (
@@ -98,6 +109,34 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
         </Link>
       );
     }
+    if (item.chip === 'FAILED') {
+      // Two targets, so not one big link: the task, and the setting that fixes it.
+      return (
+        <div
+          key={item.subjectKey}
+          data-testid="needs-you-failed"
+          className="border-l-2 border-status-error bg-status-error/5 px-4 py-3"
+        >
+          <div className="flex items-center gap-2 mb-0.5">
+            <span className="text-[11px] font-mono font-medium tracking-wide uppercase text-status-error">
+              Failed
+            </span>
+            {arc && arc.kind !== 'workspace' && (
+              <span className="text-[11px] text-text-muted">{arc.label}</span>
+            )}
+          </div>
+          <Link href={actionCardTaskLink(item, { page: true })} className="block text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] hover:underline">
+            {item.taskTitle}
+          </Link>
+          {item.failureMessage && <p className="text-[12px] text-text-secondary mt-0.5">{item.failureMessage}</p>}
+          {item.fixHref && (
+            <Link href={item.fixHref} data-action="fix_credential" className="inline-flex items-center min-h-11 md:min-h-0 mt-1 font-mono text-[12px] font-medium text-accent-text hover:underline">
+              {item.fixLabel ?? 'Fix it'}
+            </Link>
+          )}
+        </div>
+      );
+    }
     if (item.chip === 'APPROVE') {
       return (
         <Link
@@ -117,6 +156,27 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
             {item.taskTitle}
           </div>
         </Link>
+      );
+    }
+    // A merge conflict (resolving, or blocked on a person): state, one reason,
+    // one next step; the rest behind Details. Red-CI BLOCKED keeps its card below.
+    const mergeBlocker = describeMergeBlocker(item);
+    if (mergeBlocker) {
+      return (
+        <MergeBlockerCard
+          key={item.subjectKey}
+          item={item}
+          view={mergeBlocker}
+          links={{
+            task: item.taskId ? actionCardTaskLink(item) : null,
+            action: mergeBlocker.action.kind === 'view_task'
+              ? actionCardTaskLink(item, { taskId: mergeBlocker.action.taskId, page: true })
+              : null,
+            lastAttempt: item.deadZoneLastRetryTaskId
+              ? actionCardTaskLink(item, { taskId: item.deadZoneLastRetryTaskId, page: true })
+              : null,
+          }}
+        />
       );
     }
     if (item.chip === 'RESOLVING') {
@@ -162,7 +222,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
         </div>
       );
     }
-    if (item.chip === 'FIXING_CI' || item.chip === 'FIXING_REVIEW' || item.chip === 'CI_RUNNING' || item.chip === 'AUTO_MERGE') {
+    if (item.chip === 'FIXING_CI' || item.chip === 'FIXING_REVIEW' || item.chip === 'CI_RUNNING' || item.chip === 'REVIEW_RUNNING' || item.chip === 'AUTO_MERGE') {
       return <AgentHandledCard key={item.subjectKey} item={item} />;
     }
     if (item.chip === 'BLOCKED') {

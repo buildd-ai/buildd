@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { buildChatTools, CORE_GROUPS, FALLBACK_GROUPS, needsApproval, toolNamesForGroups } from '../../../src/lib/chat/tools';
 import { ALL_CHAT_TOOL_SPECS, isExposed, opSpec, TOOL_GROUPS, type ToolGroup } from '../../../src/lib/chat/registry';
 import type { BuilddAction } from '@buildd/core/mcp-tools';
-import { CHAT_INSTRUCTIONS } from '../../../src/lib/chat/instructions';
+import { chatInstructions } from '../../../src/lib/chat/instructions';
 import { renderChatContextBlock } from '../../../src/lib/chat/context-block';
 import { listMcpTools, mcpServerInstructions, routeGroupToolCall, type McpToolSurface } from '../../../src/app/api/mcp/tools';
 import { mcpGroupOfToolName } from '@buildd/core/mcp-tool-groups';
@@ -73,7 +73,7 @@ export function chatSystemPrompt(args: {
   timeZone?: string;
   tier?: string;
 }): string {
-  return `${CHAT_INSTRUCTIONS}\n\n${renderChatContextBlock({
+  return `${chatInstructions()}\n\n${renderChatContextBlock({
     now: args.now ?? new Date(),
     timeZone: args.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
     conversationId: crypto.randomUUID(),
@@ -103,8 +103,10 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   get_manifest_coverage: 'read',
   get_path_claim_stats: 'read',
   get_decision_stats: 'read',
+  dispatch_health: 'read',
   merge_pr: 'write',
   close_pr: 'write',
+  update_pr: 'write',
   request_pr_review: 'write',
   update_artifact: 'write',
   manage_model_tiers: 'write',

@@ -305,7 +305,7 @@ describe('empty canvas', () => {
   it('needs you: names it, row 1 is copper, the composer rule turns copper', async () => {
     await render({ pulse: { needsYou: [{ title: 'Pick a currency' }], live: 1 } });
     expect(q('[data-testid="canvas-empty"]')?.dataset.mood).toBe('needs');
-    expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('One thing needs you.');
+    expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('One to review.');
     expect(q('[data-testid="canvas-picked-status"]')?.textContent).toBe('1 blocked');
     // The overline leads with the needs square; the header reads before the rows.
     expect(q('[data-testid="canvas-empty"] .kit-empty-overline .kit-mood-dot')?.getAttribute('data-mood')).toBe('needs');
@@ -432,7 +432,7 @@ describe('mission sheet (the summoned canvas over a mission)', () => {
     expect(q('[data-testid="mission-context-status"]')?.textContent).toBe('Needs you');
     expect(q('[data-testid="mission-context-landed-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
     expect(q('[data-testid="mission-context-goal-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
-    expect(q('[data-testid="mission-context-insight"]')?.textContent).toContain('waiting on you');
+    expect(q('[data-testid="mission-context-insight"]')?.textContent).toMatch(/needs? input/);
     expect(q('[data-testid="mission-context-flag"]')).not.toBeNull();
   });
 
@@ -809,7 +809,7 @@ describe('desktop right panel (>= 1024px, docs/design/chat-v3-desktop.md "Dock")
     expect(q('[data-testid="dock-task-insight"]')?.textContent).toContain('Round per line');
     const steps = qa('[data-testid="dock-happened-row"]').map(r => r.textContent);
     expect(steps[0]).toContain('Started the change');
-    expect(steps.at(-1)).toContain('Waiting on you.');
+    expect(steps.at(-1)).toContain('Needs input.');
     expect(qa('[data-testid="dock-action"]').map(b => b.textContent)).toEqual(['Answer it', 'Ask about it']);
   });
 

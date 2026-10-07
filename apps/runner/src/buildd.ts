@@ -1,11 +1,10 @@
 import type { BuilddTask, LocalUIConfig } from './types';
-import { CBM_WITHHOLD_RUNNER_FEATURE } from '@buildd/core/cbm-access-experiment';
 import { AGENT_ENDPOINT_RUNNER_FEATURE } from '@buildd/core/agent-endpoint';
 import { AGENT_GITHUB_TOKEN_RUNNER_FEATURE } from '@buildd/core/agent-github-credentials';
-import type { CbmInjectionDecisionReply, CbmInjectionFacts } from '@buildd/core/cbm-injection';
 import { QUESTION_GATE_RUNNER_FEATURE, type QuestionGateReply } from '@buildd/core/question-gate';
 import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
+import type { PromptBundlesPayload } from './session-prompt-bundles';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
@@ -174,8 +173,6 @@ export class BuilddClient {
   async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
     const body: Record<string, unknown> = {
       maxTasks, workspaceId, taskId, runner: runner || 'runner',
-      // This build honours cbmExperiment.withheld (workers.ts); without the flag
-      // the server does not enrol this runner's tasks in the CBM experiment.
       // AGENT_ENDPOINT_RUNNER_FEATURE: this build applies modelEndpoint
       // (workers.ts); without it the server keeps sending Anthropic credentials.
       // QUESTION_GATE_RUNNER_FEATURE: this build routes AskUserQuestion
@@ -183,7 +180,7 @@ export class BuilddClient {
       // AGENT_GITHUB_TOKEN_RUNNER_FEATURE: this build applies
       // githubCredentials (agent-github-credentials.ts); without it the
       // server never asks this runner to scope the agent's GitHub access.
-      runnerFeatures: [CBM_WITHHOLD_RUNNER_FEATURE, AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE],
+      runnerFeatures: [AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE],
       // A per-machine model provider beats the team's agent model endpoint
       // (docs/design/agent-model-endpoint.md §2.1). Reported as a boolean so
       // the server can skip sending an endpoint key this machine won't use.
@@ -436,6 +433,27 @@ export class BuilddClient {
     }
   }
 
+  /**
+   * GET /api/workers/{id}/prompt-bundles: the claim's role and skill payload,
+   * resolved again for a session resumed by a process that no longer holds it
+   * (session-prompt-bundles.ts). Null on any refusal or transport failure —
+   * the caller fails open.
+   */
+  async getWorkerPromptBundles(workerId: string): Promise<PromptBundlesPayload | null> {
+    try {
+      const res = await this.transport.request(`/api/workers/${encodeURIComponent(workerId)}/prompt-bundles`, { method: 'GET' });
+      if (!res.ok) {
+        console.warn(`[Worker ${workerId}] GET /prompt-bundles answered ${res.status}`);
+        return null;
+      }
+      const body = await res.json().catch(() => null);
+      return body && typeof body === 'object' ? body as PromptBundlesPayload : null;
+    } catch (err) {
+      console.warn(`[Worker ${workerId}] GET /prompt-bundles failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
   private async parkCall<T>(workerId: string, route: string, method: string, pick: (body: any) => T | null): Promise<T | null> {
     try {
       const res = await this.transport.request(`/api/workers/${encodeURIComponent(workerId)}/${route}`, { method });
@@ -491,32 +509,6 @@ export class BuilddClient {
   }
 
   /**
-   * CBM search injection: which list to show, decided server-side (the team's
-   * decision key never reaches a runner). Facts only, no text. Bounded by
-   * `timeoutMs` and never throws: any failure is a `{ ok: false }` reply, on
-   * which the injector shows callers anyway.
-   */
-  async decideCbmInjection(workerId: string, facts: CbmInjectionFacts, timeoutMs: number): Promise<CbmInjectionDecisionReply> {
-    const started = Date.now();
-    try {
-      const body = await this.fetch(`/api/workers/${workerId}/cbm-injection`, {
-        method: 'POST',
-        body: JSON.stringify({ facts }),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (body && typeof body === 'object' && typeof (body as { ok?: unknown }).ok === 'boolean') {
-        return body as CbmInjectionDecisionReply;
-      }
-      return { ok: false, error: 'bad_reply', latencyMs: Date.now() - started, version: null };
-    } catch (err: any) {
-      const error = isServerRefusal(err)
-        ? `http_${(err as ServerRefusalError).status}`
-        : err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'transport';
-      return { ok: false, error, latencyMs: Date.now() - started, version: null };
-    }
-  }
-
-  /**
    * The task-scoped GitHub token for a worker whose claim said
    * `githubCredentials.mode = 'scoped'` (agent-github-credentials.ts). Throws
    * on failure; the error carries `permanent: true` when asking again cannot
@@ -566,7 +558,8 @@ export class BuilddClient {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
       });
-      if (reply && typeof reply === 'object' && ((reply as { verdict?: unknown }).verdict === 'send' || (reply as { verdict?: unknown }).verdict === 'pushback')) {
+      const verdict = reply && typeof reply === 'object' ? (reply as { verdict?: unknown }).verdict : undefined;
+      if (verdict === 'send' || verdict === 'pushback' || verdict === 'decide') {
         return reply as QuestionGateReply;
       }
       return { verdict: 'send', outcome: 'error', error: 'bad_reply', version: null, latencyMs: Date.now() - started };
@@ -682,6 +675,21 @@ export class BuilddClient {
    * (403 sensitive / 409 already uploaded / 503 storage off / 413 too big) is a
    * normal outcome, not an error — we return null and the caller skips quietly.
    */
+  /**
+   * Mint a per-task token (`bldt_…`) for the agent session of `taskId`, using
+   * this client's runner key. Returns the raw JSON body; parse it with
+   * parseAgentTaskTokenResponse (agent-task-token.ts). A non-2xx rejects with
+   * a ServerRefusalError carrying `status`. Never queued to the outbox.
+   */
+  /** `level: 'admin'` asks for an orchestration session's token; omitted, the server mints a worker token. */
+  async mintTaskToken(taskId: string, ttlMs: number, signal?: AbortSignal, level?: 'admin'): Promise<unknown> {
+    return this.fetch('/api/runner/task-token', {
+      method: 'POST',
+      body: JSON.stringify(level === 'admin' ? { taskId, ttlMs, level } : { taskId, ttlMs }),
+      ...(signal ? { signal } : {}),
+    });
+  }
+
   async requestSessionUploadUrl(
     workerId: string,
     kind: 'transcript' | 'session-log',

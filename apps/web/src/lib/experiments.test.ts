@@ -52,18 +52,11 @@ describe('parseCreateExperiment', () => {
     expect(r.ok && (r.value.config as any)).toMatchObject({ arms: { control: 'shadow', treatment: 'skip_on_confident_wait' }, waitMinConfidence: 0.9 });
   });
 
-  it('cbm_access: accepted, gets its own default config, and has NO implicit share', () => {
-    const noShare = parseCreateExperiment({ key: 'cbm-value', title: 'CBM value', kind: 'cbm_access' });
-    expect(noShare.ok).toBe(false);
-    if (!noShare.ok) expect(noShare.error).toContain('treatmentFraction is required');
-
+  // The codebase-memory graph was removed, and with it the cbm_access kind.
+  it('cbm_access is refused as an unknown kind', () => {
     const r = parseCreateExperiment({ key: 'cbm-value', title: 'CBM value', kind: 'cbm_access', treatmentFraction: 0.2 });
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe('cbm_access');
-    expect(r.value.treatmentFraction).toBe(0.2);
-    expect((r.value.config as any).arms.treatment).toBe('cbm_withheld');
-    expect((r.value.config as any).eligibility.kinds).toEqual(['engineering', 'research', 'analysis']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('kind must be one of');
   });
 
   it('fills defaults: draft-only fields, admins visibility, half fraction, explicit config', () => {

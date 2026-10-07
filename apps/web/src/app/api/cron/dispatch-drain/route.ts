@@ -18,8 +18,12 @@
 //     (so a lost publish costs an hour, not the wake), backfills startAt
 //     wakes for tasks deferred before the outbox existed, wakes pending tasks
 //     whose dependencies resolved with no wake recorded, re-publishes rows the
-//     Dispatch transport never acked, and reports outbox health: overdue,
-//     stuck, failed, unacked and orphaned intents. Repair, not the path.
+//     Dispatch transport never acked, reconciles handed-off rows with no
+//     terminal receipt against the Worker (lib/dispatch-reconcile.ts), and
+//     reports outbox health: overdue, stuck, failed, unacked and orphaned
+//     intents. Repair, not the path. Any repair it does is a bug signal, so
+//     it pages the operator (lib/dispatch-alerts.ts), deduped; a terminal
+//     delivery failure pages from the receipts route when it happens.
 //
 // This replaces lib/deferred-dispatch-sweep.ts, the hourly "nudge tasks whose
 // startAt has passed" pass on pr-reconcile: the tasks trigger now writes a
@@ -45,7 +49,10 @@ import {
   settleDispatchTimer,
 } from '@/lib/dispatch-repair';
 import { publishPendingDispatches } from '@/lib/dispatch-transport';
+import { reconcileOrphans, type ReconcileCounts } from '@/lib/dispatch-reconcile';
 import type { DispatchOutboxHealth } from '@buildd/core/dispatch-outbox';
+import { alertFloorRepair, floorRepairConditions } from '@/lib/dispatch-alerts';
+import { sweepEntitlementBlockedTasks } from '@/lib/entitlements/managed-runner';
 
 export const maxDuration = 60;
 
@@ -123,10 +130,19 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
   // ones, which the reseed below publishes.
   const startAtBackfilled = await isolate(backfillStartAtWakes());
   const dependencyWakes = await isolate(repairDependencyWakes());
+  // Work a commercial entitlement held whose limit has since lifted (the
+  // monthly allowance refilled, billing raised the plan). Not a repair: the
+  // wait was by design, so it is not an alert condition.
+  const entitlementWakes = await isolate(sweepEntitlementBlockedTasks());
   // Dispatch transport: re-publish rows Dispatch never acked (a no-op unless
   // configured and some workspace opted in) before the drain, so the drain
   // only takes what is still unacked past the publish grace.
   const published = await isolate(publishPendingDispatches({ limit: FLOOR_PUBLISH_LIMIT }));
+  // Then handed-off rows with no terminal receipt: re-publish what the Worker
+  // lost, project receipts it closed, and take back what it cannot deliver
+  // (unreachable, or past the ceiling). Before the drain, so a row taken back
+  // is delivered in-app in this same tick.
+  const reconciled = await isolate(reconcileOrphans());
   const { totals } = await drainDue();
   const timer = await isolate((async () => {
     await reseedDispatchTimer();
@@ -145,14 +161,26 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
     }
   }
 
+  // The floor should find nothing: anything it repaired is a missed
+  // transition. Called with no conditions too, so a clear is reported.
+  const conditions = floorRepairConditions({
+    reconcile: reconciled as Isolated<ReconcileCounts>,
+    health: health as Isolated<DispatchOutboxHealth>,
+  });
+  const alert = await isolate(alertFloorRepair(conditions));
+
   const backfilledCount = failed(startAtBackfilled) ? 0 : (startAtBackfilled as number);
   const dependencyCount = failed(dependencyWakes) ? 0 : (dependencyWakes as number);
-  const repairErrors = [startAtBackfilled, dependencyWakes, published, timer, health].filter(failed).length;
+  const rc = failed(reconciled) ? null : (reconciled as ReconcileCounts);
+  const reconcileChanged = rc ? rc.republished + rc.projected + rc.fellBack : 0;
+  const repairErrors = [startAtBackfilled, dependencyWakes, published, reconciled, timer, health, entitlementWakes].filter(failed).length
+    + (rc?.workerErrors ?? 0);
   const result = {
     gate: gate.reason,
     drain: totals,
     timer: failed(timer) ? timer : 'reseeded',
-    repair: { startAtBackfilled, dependencyWakes, published, health },
+    repair: { startAtBackfilled, dependencyWakes, published, reconciled, health, alert },
+    entitlementWakes,
   };
   console.log(
     `[dispatch-drain] floor claimed=${totals.claimed} delivered=${totals.delivered} skipped=${totals.skipped}` +
@@ -161,7 +189,7 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
   );
   report({
     processed: totals.claimed,
-    changed: totals.delivered + backfilledCount + dependencyCount,
+    changed: totals.delivered + backfilledCount + dependencyCount + reconcileChanged,
     errors: totals.failed + repairErrors,
     result,
   });

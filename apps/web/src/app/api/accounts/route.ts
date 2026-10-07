@@ -10,6 +10,8 @@ import { getUserTeamIds, getUserDefaultTeamId, getUserTeamRole } from '@/lib/tea
 import { parseKeyLevel, isKeyLevelAllowed, keyLevelNotAllowedMessage, canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { resolveClaudeCredential, extractJwtSub } from '@/lib/claude-credential';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
+import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { linkAccountToPersonalWorkspaces } from '@/lib/personal-workspace-links';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -105,11 +107,11 @@ export async function POST(req: NextRequest) {
     if (!role) {
       return NextResponse.json({ error: 'You are not a member of this team' }, { status: 403 });
     }
-    if (!isKeyLevelAllowed(role, requestedLevel)) {
-      return NextResponse.json({ error: keyLevelNotAllowedMessage(role, requestedLevel) }, { status: 403 });
+    if (!isKeyLevelAllowed(role, requestedLevel, await getTeamPermissionOverrides(teamId))) {
+      return NextResponse.json({ error: keyLevelNotAllowedMessage(role, requestedLevel, await getTeamPermissionOverrides(teamId)) }, { status: 403 });
     }
 
-    if (role === 'member' && scopes?.some((scope: string) => requiresTeamAdminToGrant(scope))) return NextResponse.json({error: 'Your team role cannot grant administrative scopes'}, {status:403});
+    if (!roleHas(role, 'manage_team_keys', await getTeamPermissionOverrides(teamId)) && scopes?.some((scope: string) => requiresTeamAdminToGrant(scope))) return NextResponse.json({error: 'Your team role cannot grant administrative scopes'}, {status:403});
     let selectedWorkspaces: string[] = [];
     // Explicit links: a scoped token's list, or a legacy key's single workspaceId.
     const requestedLinks: string[] | null = workspaceIds ?? (scopes === undefined && typeof workspaceId === 'string' && workspaceId ? [workspaceId] : null);
@@ -121,7 +123,7 @@ export async function POST(req: NextRequest) {
         if (requestedLinks.some(id => !byId.has(id))) return NextResponse.json({ error: 'Workspace is outside this team' }, { status: 403 });
         // Restricted access mode admits an API token only through an explicit
         // link, which is a team owner/admin decision.
-        if (!canAdministerTeamKeys(role) && requestedLinks.some(id => !isOpenWithinTeams(byId.get(id), [keyTeamId]))) {
+        if (!canAdministerTeamKeys(role, await getTeamPermissionOverrides(teamId)) && requestedLinks.some(id => !isOpenWithinTeams(byId.get(id), [keyTeamId]))) {
           return NextResponse.json({ error: 'Only a team owner or admin can grant a token access to a restricted workspace' }, { status: 403 });
         }
         selectedWorkspaces = requestedLinks;
@@ -175,6 +177,14 @@ export async function POST(req: NextRequest) {
         canClaim: true,
         canCreate: true,
       });
+    }
+
+    // A token that names no workspaces of its own, minted by the owner of a
+    // personal team, reaches that team's restricted workspaces (the "My
+    // Workspace" sign-in creates). Shared teams are untouched: see
+    // lib/personal-workspace-links-plan.
+    if (requestedLinks == null && account) {
+      await linkAccountToPersonalWorkspaces({ accountId: account.id, userId: user.id });
     }
 
     // Return plaintext key once - it won't be retrievable after this

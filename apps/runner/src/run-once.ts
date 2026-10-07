@@ -25,6 +25,8 @@
  * lets the 10s sync drain the queued answer into a resumed session.
  * `--park-orphan <id>` is exec'd by the agent into a container it lost track
  * of after its own restart: it stops that runner and parks its worker.
+ * `--attach-orphan <id>` is the gentler alternative: it waits on that runner
+ * (run-attach.ts) and exits with its code, so the run continues undisturbed.
  *
  * The decision logic below takes its collaborators as arguments; the real
  * wiring is `runOnceFromCli` at the bottom.
@@ -45,6 +47,13 @@ export const EXIT_FAILED = 1;
 export const EXIT_CLAIM_REFUSED = 3;
 /** The worker was parked (resumable runs): a resume continues it in a new container. Not a failure. */
 export const EXIT_PARKED = 4;
+/**
+ * The server named a temporary, self-resolving reason (account/workspace/
+ * mission capacity, pacing, path overlap, a provider wall): the task stays
+ * pending and WILL become claimable again without anyone touching it. Retry
+ * it later — do not fail the task over this.
+ */
+export const EXIT_CLAIM_DEFERRED = 5;
 /** Bad invocation or missing configuration (no --task, no API key). */
 export const EXIT_USAGE = 64;
 
@@ -59,6 +68,12 @@ export const WORKER_ID_LINE_PREFIX = 'BUILDD_WORKER_ID=';
 export const PARKED_LINE_PREFIX = 'BUILDD_PARKED=';
 /** Printed once a resumed run has re-attached to its parked worker. */
 export const RESUMED_LINE_PREFIX = 'BUILDD_RESUMED=';
+/**
+ * Printed just before EXIT_CLAIM_DEFERRED, e.g. `BUILDD_CLAIM_DEFERRED=workspace_cap`.
+ * A supervisor that only sees the exit code (apps/cloud-runner) reads this to
+ * log and report WHY the retry it schedules is happening.
+ */
+export const CLAIM_DEFERRED_LINE_PREFIX = 'BUILDD_CLAIM_DEFERRED=';
 
 /** Sent to a run the agent parked mid-session after its own restart (no question was pending). */
 export const ORPHAN_RESUME_MESSAGE =
@@ -70,16 +85,18 @@ const DEFAULT_POLL_MS = 1_000;
 export const ONCE_USAGE = 'Usage: buildd --once --task <task-id>\n' +
   '       buildd --once --resume-worker <worker-id> [--task <task-id>]\n' +
   '       buildd --once --park-orphan <worker-id> --task <task-id>\n' +
+  '       buildd --once --attach-orphan <worker-id> --task <task-id>\n' +
   '  Claims the given task (or continues a parked worker), runs it to completion, and exits.\n' +
   `  Exit codes: ${EXIT_COMPLETED} completed, ${EXIT_FAILED} failed (retryable), ` +
-  `${EXIT_CLAIM_REFUSED} claim refused (do not retry), ${EXIT_PARKED} parked, ${EXIT_USAGE} usage error.\n` +
+  `${EXIT_CLAIM_REFUSED} claim refused (do not retry), ${EXIT_CLAIM_DEFERRED} claim deferred (retry later), ` +
+  `${EXIT_PARKED} parked, ${EXIT_USAGE} usage error.\n` +
   '  BUILDD_ONCE_MAX_WAIT_MS caps how long a worker may wait for user input (default 6h).';
 
 // ── Args / config ─────────────────────────────────────────────────────────────
 
 export type OnceArgs =
   | { once: false }
-  | { once: true; taskId: string; resumeWorkerId?: string; parkOrphanWorkerId?: string }
+  | { once: true; taskId: string; resumeWorkerId?: string; parkOrphanWorkerId?: string; attachOrphanWorkerId?: string }
   | { once: true; error: string };
 
 const ONCE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -101,12 +118,16 @@ export function parseOnceArgs(argv: string[]): OnceArgs {
   const taskId = flagValue(argv, '--task');
   const resume = flagValue(argv, '--resume-worker');
   const orphan = flagValue(argv, '--park-orphan');
-  if (resume !== undefined && orphan !== undefined) return { once: true, error: '--resume-worker and --park-orphan do not go together' };
-  for (const [flag, v] of [['--resume-worker', resume], ['--park-orphan', orphan]] as const) {
+  const attach = flagValue(argv, '--attach-orphan');
+  if ([resume, orphan, attach].filter(v => v !== undefined).length > 1) {
+    return { once: true, error: '--resume-worker, --park-orphan and --attach-orphan do not go together' };
+  }
+  for (const [flag, v] of [['--resume-worker', resume], ['--park-orphan', orphan], ['--attach-orphan', attach]] as const) {
     if (v === null || (typeof v === 'string' && !ONCE_ID_RE.test(v))) return { once: true, error: `${flag} needs a worker id` };
   }
   if (resume) return { once: true, taskId: taskId || '', resumeWorkerId: resume };
-  if (!taskId) return { once: true, error: orphan ? '--park-orphan needs --task <task-id>' : '--once requires --task <task-id>' };
+  if (!taskId) return { once: true, error: orphan ? '--park-orphan needs --task <task-id>' : attach ? '--attach-orphan needs --task <task-id>' : '--once requires --task <task-id>' };
+  if (attach) return { once: true, taskId, attachOrphanWorkerId: attach };
   if (orphan) return { once: true, taskId, parkOrphanWorkerId: orphan };
   return { once: true, taskId };
 }
@@ -147,7 +168,7 @@ export function buildOnceConfig(
 export function createOnceResolver(
   base: WorkspaceResolver,
   isolationRoot: string,
-  clone: (workspace: { id: string; repo: string }, isolationRoot: string) => string,
+  clone: (workspace: { id: string; repo: string; defaultBranch?: string | null }, isolationRoot: string) => string,
   /**
    * preferIsolated: try the isolated clone first (it is where the warm-repo
    * restore lives, warm-repo.ts) and use the base resolver only if it fails.
@@ -161,10 +182,10 @@ export function createOnceResolver(
   // request into the same rate limit. (The other order is covered by the
   // clone itself: git-clone.ts refuses a repo it was just throttled on.)
   let throttled = false;
-  const isolated = (workspace: { id: string; repo?: string | null }): string | null => {
+  const isolated = (workspace: { id: string; repo?: string | null; defaultBranch?: string | null }): string | null => {
     if (!workspace.id || !workspace.repo) return null;
     try {
-      return clone({ id: workspace.id, repo: workspace.repo }, isolationRoot);
+      return clone({ id: workspace.id, repo: workspace.repo, defaultBranch: workspace.defaultBranch }, isolationRoot);
     } catch (err) {
       throttled = (err as { throttled?: unknown } | null)?.throttled === true;
       console.error(`[once] could not clone ${workspace.repo}: ${err instanceof Error ? err.message : err}`);
@@ -185,18 +206,70 @@ export function createOnceResolver(
 
 // ── Decisions ─────────────────────────────────────────────────────────────────
 
-/** Why claimAndStart threw: the server said no (refused) or something broke (failed). */
-export function classifyClaimFailure(err: unknown): 'refused' | 'failed' {
-  const e = err as { claimError?: string; status?: unknown; message?: string } | null;
-  if (e?.claimError === 'server_rejected') return 'refused';
+/**
+ * `diagnostics.reason` values (apps/web/src/app/api/workers/claim/route.ts)
+ * that mean every candidate in this poll was held back by load or pacing, not
+ * that THIS task is unclaimable — the task stays `pending` and becomes
+ * claimable again on its own. Only reached when the response carried no
+ * `taskExclusion` (an explicit-taskId claim almost always gets one; this is
+ * the fallback for the rare case it does not).
+ */
+const DEFERRED_CLAIM_REASONS = new Set<string>([
+  'no_slots', 'budget_exhausted', 'budget_exhausted_partial', 'context_paused',
+  'path_overlap_blocked', 'rate_limited', 'all_candidates_deferred',
+]);
+
+/**
+ * `diagnostics.taskExclusion.code` values that name a temporary, self-healing
+ * gate on THIS specific task: the dispatch loop's own per-task deferrals
+ * (mission/workspace/account capacity, pacing, a provider wall, path overlap)
+ * and the explicit-task-exclusion SQL probe's load/scheduling gates
+ * (explicit-task-exclusion.ts). The task is never cancelled for any of these —
+ * it is left `pending` and the condition lifts without anyone acting on it.
+ *
+ * Deliberately excludes structural exclusions that retrying will not fix
+ * (already claimed/held by a person/wrong capability/dead subject) — those
+ * stay `refused`, same as before this classification existed.
+ */
+const DEFERRED_TASK_EXCLUSION_CODES = new Set<string>([
+  // Dispatch-loop deferrals (route.ts deferTask) — capacity/pacing/provider.
+  'mission_budget', 'mission_concurrent', 'mission_paced', 'workspace_cap', 'account_cap',
+  'provider_unavailable', 'budget_paused', 'routing_paused', 'sibling_retry_open',
+  'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'ordered_behind',
+  'path_overlap', 'connector_mismatch', 'role_env_unsatisfied',
+  // Commercial entitlement on a managed runner: queued until capacity frees.
+  'managed_concurrency', 'managed_runner_hours',
+  // SQL-probe codes (explicit-task-exclusion.ts) — scheduled, cooling down, or
+  // simply stale by the time the probe ran; none of these say "never".
+  'deferred', 'deps_blocked', 'runner_cooldown', 'state_changed',
+]);
+
+/**
+ * Why claimAndStart threw: the server said no, permanently (`refused`), the
+ * server said no for now (`deferred` — retry later, see EXIT_CLAIM_DEFERRED),
+ * or something broke (`failed`).
+ */
+export function classifyClaimFailure(err: unknown): 'refused' | 'failed' | 'deferred' {
+  const e = err as { claimError?: string; claimReason?: string; claimTaskExclusionCode?: string; status?: unknown; message?: string } | null;
+  if (e?.claimError === 'server_rejected') {
+    if (typeof e.claimTaskExclusionCode === 'string') {
+      return DEFERRED_TASK_EXCLUSION_CODES.has(e.claimTaskExclusionCode) ? 'deferred' : 'refused';
+    }
+    return typeof e.claimReason === 'string' && DEFERRED_CLAIM_REASONS.has(e.claimReason) ? 'deferred' : 'refused';
+  }
   if (e?.claimError) return 'failed'; // workspace_not_found and friends: ours to fix
   let status = typeof e?.status === 'number' ? e.status : undefined;
   if (status === undefined && typeof e?.message === 'string') {
     const m = e.message.match(/^API error: (\d+)/);
     if (m) status = parseInt(m[1], 10);
   }
-  // 4xx is the server deciding; 408 / 429 are "try again later".
-  if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429) return 'refused';
+  // 429 here is the account-wide cap (route.ts: activeWorkers.length >=
+  // maxConcurrentWorkers), hit before any task-specific gate even runs — the
+  // same capacity wall as `no_slots`/`workspace_cap`, just thrown instead of
+  // answered with an empty 200. 408 stays "try again" without the deferred
+  // bookkeeping: a request timeout says nothing about capacity.
+  if (status === 429) return 'deferred';
+  if (status !== undefined && status >= 400 && status < 500 && status !== 408) return 'refused';
   return 'failed';
 }
 
@@ -280,7 +353,7 @@ async function waitForOutcome(workerId: string, d: RunOnceDeps, opts: { parkArme
     const status = d.workerManager.getWorker(workerId)?.status;
     if (status === undefined) return 'failed';
     // `done`/`error` is set before the session's teardown finishes (worktree,
-    // credential and CBM cleanup); wait for that too.
+    // credential cleanup); wait for that too.
     if ((status === 'done' || status === 'error') && !d.workerManager.hasLiveSession(workerId)) {
       return status === 'done' ? 'completed' : 'failed';
     }
@@ -356,6 +429,13 @@ export async function runOnce(opts: { taskId: string }, d: RunOnceDeps): Promise
     } catch (err) {
       const kind = classifyClaimFailure(err);
       d.log(`[once] claim ${kind}: ${err instanceof Error ? err.message : String(err)}`);
+      if (kind === 'deferred') {
+        const reason = (err as { claimTaskExclusionCode?: string; claimReason?: string } | null)?.claimTaskExclusionCode
+          ?? (err as { claimReason?: string } | null)?.claimReason
+          ?? 'unknown';
+        d.log(`${CLAIM_DEFERRED_LINE_PREFIX}${reason}`);
+        return (code = EXIT_CLAIM_DEFERRED);
+      }
       return (code = kind === 'refused' ? EXIT_CLAIM_REFUSED : EXIT_FAILED);
     }
     if (!worker) {
@@ -486,12 +566,19 @@ export async function runOnceFromCli(opts: {
   resumeWorkerId?: string;
   /** `--park-orphan`: stop this container's runner and park its worker. */
   parkOrphanWorkerId?: string;
+  /** `--attach-orphan`: wait on this container's still-running runner (run-attach.ts). */
+  attachOrphanWorkerId?: string;
   config: LocalUIConfig;
   resolver: WorkspaceResolver;
   builddHome: string;
   host: string;
   env: Record<string, string | undefined>;
 }): Promise<number> {
+  if (opts.attachOrphanWorkerId) {
+    const { runAttachOrphan, attachDepsFromFs } = await import('./run-attach');
+    const log = (m: string) => console.log(m);
+    return runAttachOrphan({ workerId: opts.attachOrphanWorkerId }, await attachDepsFromFs(opts.builddHome, opts.taskId, log));
+  }
   if (!opts.config.apiKey) {
     console.error('--once needs an API key (BUILDD_API_KEY or config.json apiKey).');
     return EXIT_USAGE;
@@ -501,10 +588,15 @@ export async function runOnceFromCli(opts: {
   const { rmSync } = await import('fs');
   const { BuilddClient } = await import('./buildd');
   const { ensureIsolatedClone } = await import('./workspace');
-  const { createWarmRepoSession, warmRepoEnabled, curlTransport } = await import('./warm-repo');
+  const { createWarmRepoSession, warmRepoEnabled, curlTransport, defaultPnpmStoreDirEnv } = await import('./warm-repo');
   const park = await import('./park');
   const { emitMetric, emitPhase } = await import('./phase-lines');
   const { loadWorker } = await import('./worker-store');
+
+  // pnpm (postinstall/husky hooks, or the agent running it directly) lands
+  // its store inside the warm-repo dependency cache, so it rides along in
+  // the same cache tarball whether or not warm repos are on for this run.
+  opts.env.npm_config_store_dir = defaultPnpmStoreDirEnv(opts.env);
 
   const config = buildOnceConfig(opts.config, { taskId: opts.taskId || opts.resumeWorkerId || 'resume', host: opts.host, env: opts.env });
   const client = new BuilddClient(config);
@@ -520,7 +612,7 @@ export async function runOnceFromCli(opts: {
   };
   /** Build, upload and mark. False (never a throw) when any step fails; the caller holds the container. */
   const parkNow = (
-    worker: { id: string; taskId: string; workspaceId: string; worktreePath?: string; sessionId?: string },
+    worker: { id: string; taskId: string; workspaceId: string; worktreePath?: string; sessionId?: string; baseRefs?: Array<string | null | undefined> },
     kind: 'waiting' | 'orphan',
   ): Promise<boolean> => park.parkWorkerNow(worker, kind, { paths: parkPaths, uploader: snapshots, client, emitPhase, emitMetric, log });
 
@@ -532,11 +624,20 @@ export async function runOnceFromCli(opts: {
       parkFromDisk: async (id) => {
         const rec = loadWorker(id);
         if (!rec) return false;
-        return parkNow({ id, taskId: rec.taskId || opts.taskId, workspaceId: rec.workspaceId, worktreePath: rec.worktreePath, sessionId: rec.sessionId }, 'orphan');
+        return parkNow({ id, taskId: rec.taskId || opts.taskId, workspaceId: rec.workspaceId, worktreePath: rec.worktreePath, sessionId: rec.sessionId, baseRefs: [rec.worktreeBaseRef, rec.prBaseRef] }, 'orphan');
       },
       log,
     });
   }
+
+  // What the run uses of its container (cloud only: the lines are off
+  // elsewhere): memory peak and free-disk low, for the run report, from which
+  // buildd picks the workspace's container size.
+  const { phaseLinesEnabled } = await import('./phase-lines');
+  const sampler = phaseLinesEnabled(opts.env)
+    ? await (await import('./resource-sampler')).startContainerResourceSampler(opts.builddHome, (name, value) => emitMetric(name, value))
+    : null;
+  const stopSampler = () => sampler?.stop();
 
   const { WorkerManager } = await import('./workers');
   const { Outbox, createReplayHandler } = await import('./outbox');
@@ -589,7 +690,7 @@ export async function runOnceFromCli(opts: {
         await wm.flushToServer();
         await flushOutboxWithRetry(outbox);
         wm.persistWorker(workerId);
-        return parkNow({ id: w.id, taskId: w.taskId, workspaceId: w.workspaceId, worktreePath: w.worktreePath, sessionId: w.sessionId }, 'waiting');
+        return parkNow({ id: w.id, taskId: w.taskId, workspaceId: w.workspaceId, worktreePath: w.worktreePath, sessionId: w.sessionId, baseRefs: [w.worktreeBaseRef, w.prBaseRef] }, 'waiting');
       },
     } : {}),
     maxWaitMs: resolveOnceMaxWaitMs(opts.env),
@@ -599,7 +700,7 @@ export async function runOnceFromCli(opts: {
     log,
   };
 
-  if (!opts.resumeWorkerId) return runOnce({ taskId: opts.taskId }, deps);
+  if (!opts.resumeWorkerId) return runOnce({ taskId: opts.taskId }, deps).finally(stopSampler);
 
   // ── --resume-worker ──
   const resumeWorkerId = opts.resumeWorkerId;
@@ -619,10 +720,17 @@ export async function runOnceFromCli(opts: {
         const m = opened.manifest;
         if (m.workerId !== workerId) return { ok: false, reason: 'the park bundle belongs to another worker' };
         kind = m.kind;
-        const task = (await client.getTask(m.taskId)) as (OnceTask & { workspace?: { id: string; name: string; repo?: string | null }; context?: Record<string, unknown> | null }) | null;
+        const task = (await client.getTask(m.taskId)) as (OnceTask & { workspace?: { id: string; name: string; repo?: string | null; gitConfig?: { defaultBranch?: string } | null }; context?: Record<string, unknown> | null }) | null;
         const workspace = task?.workspace ?? { id: m.workspaceId, name: '', repo: null };
-        const clonePath = onceResolver.resolve({ ...workspace, id: workspace.id || m.workspaceId }, task?.context ?? null);
+        const clonePath = onceResolver.resolve({
+          id: workspace.id || m.workspaceId,
+          name: workspace.name,
+          repo: workspace.repo,
+          defaultBranch: task?.workspace?.gitConfig?.defaultBranch || m.defaultBranch,
+        }, task?.context ?? null);
         if (!clonePath) return { ok: false, reason: 'the workspace repo could not be restored or cloned', kind };
+        // A narrow (cloud) clone has the default branch only: the bases the
+        // parked worktree was measured against come back on demand.
         park.applyParkRepo(opened, clonePath);
         park.restoreParkFiles(opened, parkPaths);
         pinned = { id: m.workspaceId, path: clonePath };
@@ -657,7 +765,7 @@ export async function runOnceFromCli(opts: {
     },
     discardBundle: async () => { snapshots.remove?.('/park'); },
   };
-  return runResume({ workerId: resumeWorkerId }, { ...deps, resume });
+  return runResume({ workerId: resumeWorkerId }, { ...deps, resume }).finally(stopSampler);
 }
 
 export interface ProcInfo { pid: number; ppid: number; uid: number; startTime: number }

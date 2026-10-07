@@ -3,19 +3,26 @@
  *
  * Shape. A host runner clones in full, as it always has. A cloud container
  * (BUILDD_EXECUTOR=cloud, one task per container, nothing kept afterwards
- * except the warm snapshot) clones shallow: `--depth CLOUD_CLONE_DEPTH
- * --no-single-branch`. Why that and not less:
- *  - every branch tip, not just the default one: setupWorktree resolves
- *    mission and resume branches as `origin/<branch>`, and a single-branch
- *    clone also narrows `remote.origin.fetch`, so a later plain `git fetch`
- *    would never bring them in. Widening the refspec afterwards is worse: a
- *    shallow repo then fetches each other branch's history down to its root.
+ * except the warm snapshot) clones the least it can: `--depth 1
+ * --single-branch --branch <workspace default branch>` (plain
+ * `--single-branch`, the remote HEAD, when the default branch is not known).
+ * On a big repo with thousands of branches and tags, every-branch-at-depth
+ * downloads gigabytes and takes minutes; one branch at depth 1 takes seconds.
  *  - a depth, not a partial clone (`--filter`): the warm snapshot and park
  *    bundles are `git bundle`s, which cannot be made from a repo with missing
  *    blobs without fetching them, and lazy blob fetches turn ordinary
  *    `git log -p` / `diff` into a stream of GitHub requests.
- *  - a depth of some commits, not 1: the agent reads recent history, and a
- *    branch cut a few commits back still finds its merge base locally.
+ *  - single-branch also narrows `remote.origin.fetch` to that branch, so a
+ *    later plain `git fetch origin` brings only it, incrementally. Widening the
+ *    refspec would be worse: a shallow repo then fetches every other branch's
+ *    history down to its root.
+ *  - every other branch the runner needs (a mission integration branch, a
+ *    resume branch, the task's own pushed branch, a PR base) is fetched on
+ *    demand, by name, at CLOUD_BRANCH_FETCH_DEPTH: ensureRemoteBranch below.
+ *    Its callers: setupWorktree (base and resume candidates, the
+ *    stale-local-branch check), the PR base after setup (workers.ts), the
+ *    path-claim base refresh (path-claim-enforcement.ts refreshBaseRef), PR
+ *    stats (collectGitStats) and a resumed park (park.ts applyParkRepo).
  * A worktree cut from `origin/<branch>`, a push of a new branch, PR stats
  * (merge-base against the ref the worktree was cut from) and later fetches all
  * work on it unchanged. The warm snapshot carries the shallow boundary
@@ -37,7 +44,13 @@
 import { spawnSync } from 'child_process';
 import { rmSync } from 'fs';
 
-export const CLOUD_CLONE_DEPTH = 50;
+export const CLOUD_CLONE_DEPTH = 1;
+/**
+ * How much of a branch an on-demand fetch brings into a shallow clone: enough
+ * recent history for the agent to read, and for a branch cut a few commits
+ * back to find its merge base.
+ */
+export const CLOUD_BRANCH_FETCH_DEPTH = 50;
 /** Most a clone waits, in total, for GitHub to stop throttling it. */
 export const CLONE_RETRY_BUDGET_MS = 60_000;
 const BACKOFF_BASE_MS = 2_000;
@@ -58,9 +71,27 @@ export function normalizeCloneUrl(repo: string): string {
   return /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repo) ? `https://github.com/${repo}.git` : repo;
 }
 
-export function cloneArgs(cloneUrl: string, clonePath: string, env: Env): string[] {
+/**
+ * A branch name safe to hand git as an argument: a refname shape, never
+ * something git would read as an option.
+ */
+export function isSafeBranchName(branch: string | null | undefined): branch is string {
+  return typeof branch === 'string'
+    && /^(?![-/.])(?!.*(\.\.|\/\/|@\{|\.lock$|\/$|\.$))[A-Za-z0-9._/-]{1,200}$/.test(branch);
+}
+
+export function cloneArgs(cloneUrl: string, clonePath: string, env: Env, branch?: string | null): string[] {
   if (!isCloudExecutor(env)) return ['clone', cloneUrl, clonePath];
-  return ['clone', '--depth', String(CLOUD_CLONE_DEPTH), '--no-single-branch', cloneUrl, clonePath];
+  return [
+    'clone', '--depth', String(CLOUD_CLONE_DEPTH), '--single-branch',
+    ...(isSafeBranchName(branch) ? ['--branch', branch] : []),
+    cloneUrl, clonePath,
+  ];
+}
+
+/** git's answer to `clone --branch X` when the remote has no X. */
+function remoteBranchNotFound(stderr: string): boolean {
+  return /remote branch .* not found in upstream/i.test(stderr);
 }
 
 /** GitHub throttling, from git's stderr: an HTTP 429, or rate-limit wording (a secondary limit arrives as a 403). */
@@ -233,6 +264,8 @@ export function fetchOriginWithRetry(clonePath: string, opts: Omit<CloneOptions,
 
 export interface CloneOptions {
   env?: Env;
+  /** The workspace default branch (gitConfig.defaultBranch). Cloud only: the one branch cloned. */
+  branch?: string | null;
   run?: GitRun;
   sleep?(ms: number): void;
   /** Retry-After (seconds) for the repo after a 429, or null. */
@@ -259,18 +292,34 @@ export function cloneRepo(cloneUrl: string, clonePath: string, opts: CloneOption
     throw new GitCloneError(`GitHub is rate limiting clones of this repo; not retrying until ${new Date(recent.until).toISOString()}`, true);
   }
 
-  const args = cloneArgs(cloneUrl, clonePath, env);
-  const timeout = isCloudExecutor(env) ? CLOUD_CLONE_TIMEOUT_MS : HOST_CLONE_TIMEOUT_MS;
+  const cloud = isCloudExecutor(env);
+  let branch = cloud && isSafeBranchName(opts.branch) ? opts.branch : null;
+  let args = cloneArgs(cloneUrl, clonePath, env, branch);
+  const timeout = cloud ? CLOUD_CLONE_TIMEOUT_MS : HOST_CLONE_TIMEOUT_MS;
   let waited = 0;
   let lastRetryAfter: number | null = null;
   for (let attempt = 0; ; attempt++) {
     const r = run(args, timeout);
-    if (r.status === 0) return;
+    if (r.status === 0) {
+      // `--single-branch --branch X` leaves refs/remotes/origin/HEAD unset;
+      // the park and warm paths read the default branch from it. Local only.
+      if (branch) run(['-C', clonePath, 'remote', 'set-head', 'origin', branch], 30_000);
+      return;
+    }
     const reason = failureText(r);
     const throttled = isGithubThrottle(r.stderr);
     // git removes a failed clone's directory itself; make sure, so the retry
     // (or the next resolver) does not find a half-written one.
     rmSync(clonePath, { recursive: true, force: true });
+    if (branch && remoteBranchNotFound(r.stderr)) {
+      // The workspace's configured default branch is not on the remote (a
+      // rename, a typo): take the remote HEAD rather than fail the clone.
+      log(`[clone] the remote has no branch "${branch}"; cloning its default branch instead`);
+      branch = null;
+      args = cloneArgs(cloneUrl, clonePath, env, null);
+      attempt--;
+      continue;
+    }
     // Killed by the timeout: another try would take as long again.
     const delay = r.signal ? null : cloneRetryDelayMs({
       attempt,
@@ -292,4 +341,129 @@ export function cloneRepo(cloneUrl: string, clonePath: string, opts: CloneOption
     sleep(delay);
     waited += delay;
   }
+}
+
+// ── Branches on demand ────────────────────────────────────────────────────────
+
+/** Like GitRun, in a given repo, with stdout. */
+export type GitCwdRun = (args: string[], timeoutMs: number) => { status: number | null; stdout: string; stderr: string; signal: NodeJS.Signals | null };
+
+export function gitIn(repoPath: string): GitCwdRun {
+  return (args, timeoutMs) => {
+    const r = spawnSync('git', args, { cwd: repoPath, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: timeoutMs });
+    return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? (r.error ? r.error.message : ''), signal: r.signal };
+  };
+}
+
+const LOCAL_GIT_TIMEOUT_MS = 10_000;
+
+/**
+ * Whether `git fetch origin` in this clone leaves branches out: a shallow
+ * clone, or one whose fetch refspec does not cover `refs/heads/*` (a
+ * single-branch clone). A full host clone is neither, so nothing on demand
+ * ever runs there. An unreadable answer reads as a full clone.
+ */
+export function cloneShape(run: GitCwdRun): { shallow: boolean; narrow: boolean } {
+  const shallow = run(['rev-parse', '--is-shallow-repository'], LOCAL_GIT_TIMEOUT_MS);
+  const isShallow = shallow.status === 0 && String(shallow.stdout ?? '').trim() === 'true';
+  const refspec = run(['config', '--get-all', 'remote.origin.fetch'], LOCAL_GIT_TIMEOUT_MS);
+  const wildcard = /\brefs\/heads\/\*/.test(String(refspec.stdout ?? ''));
+  return { shallow: isShallow, narrow: isShallow || (refspec.status === 0 && !wildcard) };
+}
+
+function remoteRefPresent(run: GitCwdRun, branch: string): boolean {
+  return run(['rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}^{commit}`], LOCAL_GIT_TIMEOUT_MS).status === 0;
+}
+
+function branchRefspec(branch: string): string {
+  return `+refs/heads/${branch}:refs/remotes/origin/${branch}`;
+}
+
+/**
+ * The fetch that brings one branch into `origin/<branch>`. A depth only for a
+ * branch a shallow clone does not have yet: an undeepened fetch of a new ref
+ * there walks its history to the root, and a depth on a ref it already has
+ * could cut off the commit a worktree was cut from (an existing ref is updated
+ * incrementally instead).
+ */
+export function remoteBranchFetchArgs(repoPath: string, branch: string, run: GitCwdRun = gitIn(repoPath)): string[] {
+  const depth = !remoteRefPresent(run, branch) && cloneShape(run).shallow ? ['--depth', String(CLOUD_BRANCH_FETCH_DEPTH)] : [];
+  return ['fetch', '--no-tags', '--quiet', ...depth, 'origin', branchRefspec(branch)];
+}
+
+export type RemoteBranchResult =
+  /** origin/<branch> was already here. */
+  | 'present'
+  /** Fetched just now. */
+  | 'fetched'
+  /** The remote has no such branch (or the name is not one git may be given). */
+  | 'missing'
+  /** A full clone: its `git fetch origin` already brought every branch, so absent means absent. */
+  | 'not_needed'
+  /** The fetch failed (after retries); the reason was logged. */
+  | 'failed';
+
+export interface EnsureRemoteBranchOptions {
+  run?: GitCwdRun;
+  sleep?(ms: number): void;
+  retryAfter?(remoteUrl: string): number | null;
+  log?(message: string): void;
+  timeoutMs?: number;
+}
+
+/**
+ * Make `origin/<branch>` present in a narrow (cloud) clone: fetch that one
+ * branch by name, at CLOUD_BRANCH_FETCH_DEPTH when the clone is shallow,
+ * retried on the clone's policy within FETCH_RETRY_BUDGET_MS. Never throws.
+ * A full clone is left alone (`not_needed`), so a host runner behaves exactly
+ * as before.
+ */
+export function ensureRemoteBranch(repoPath: string, branch: string, opts: EnsureRemoteBranchOptions = {}): RemoteBranchResult {
+  if (!isSafeBranchName(branch)) return 'missing';
+  const run = opts.run ?? gitIn(repoPath);
+  const log = opts.log ?? ((m: string) => console.warn(m));
+  try {
+    if (remoteRefPresent(run, branch)) return 'present';
+    const shape = cloneShape(run);
+    if (!shape.narrow) return 'not_needed';
+    const sleep = opts.sleep ?? sleepSync;
+    const retryAfter = opts.retryAfter ?? probeRetryAfter;
+    const args = ['fetch', '-q', '--no-tags', ...(shape.shallow ? ['--depth', String(CLOUD_BRANCH_FETCH_DEPTH)] : []), 'origin', branchRefspec(branch)];
+    let waited = 0;
+    for (let attempt = 0; ; attempt++) {
+      const r = run(args, opts.timeoutMs ?? CLOUD_CLONE_TIMEOUT_MS);
+      if (r.status === 0) {
+        log(`[fetch] origin/${branch} fetched on demand${shape.shallow ? ` (depth ${CLOUD_BRANCH_FETCH_DEPTH})` : ''}`);
+        return 'fetched';
+      }
+      const stderr = String(r.stderr ?? '');
+      if (/couldn't find remote ref/i.test(stderr)) return 'missing';
+      const reason = failureText({ status: r.status, stderr, signal: r.signal });
+      let retryAfterS: number | null = null;
+      if (/\b429\b/.test(stderr)) {
+        const url = String(run(['remote', 'get-url', 'origin'], LOCAL_GIT_TIMEOUT_MS).stdout ?? '').trim();
+        retryAfterS = url ? retryAfter(url) : null;
+      }
+      const delay = r.signal || !transientCloneFailure(stderr)
+        ? null
+        : gitRetryDelayMs({ attempt, stderr, retryAfterS, waitedMs: waited, budgetMs: FETCH_RETRY_BUDGET_MS, beyondBudget: 'stop' });
+      if (delay === null) {
+        log(`[fetch] could not fetch origin/${branch}: ${reason}`);
+        return 'failed';
+      }
+      log(`[fetch] origin/${branch} ${isGithubThrottle(stderr) ? 'rate limited by GitHub' : 'failed'} (${reason}); retrying in ${Math.round(delay / 1000)}s`);
+      sleep(delay);
+      waited += delay;
+    }
+  } catch (err) {
+    log(`[fetch] could not fetch origin/${branch}: ${err instanceof Error ? err.message : String(err)}`);
+    return 'failed';
+  }
+}
+
+/** `origin/<branch>` (or `refs/remotes/origin/<branch>`) → `<branch>`; anything else → null. */
+export function branchOfRemoteRef(ref: string | null | undefined): string | null {
+  if (!ref) return null;
+  const m = /^(?:refs\/remotes\/)?origin\/(.+)$/.exec(ref);
+  return m && m[1] !== 'HEAD' && isSafeBranchName(m[1]) ? m[1] : null;
 }

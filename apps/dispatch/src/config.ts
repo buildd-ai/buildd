@@ -19,8 +19,8 @@ export interface DispatchConfigEnv {
 /** Producing systems this deployment has a callback base URL and secret for. */
 export const KNOWN_SYSTEMS = ['buildd'] as const;
 
-/** Shadow default (P1): webhook-like adapters never POST unless explicitly enabled. */
-export const DEFAULT_DRY_RUN_TYPES: readonly TargetType[] = ['http', 'github-repository-dispatch'];
+/** Shadow default (P1): webhooks never POST unless explicitly enabled. */
+export const DEFAULT_DRY_RUN_TYPES: readonly TargetType[] = ['http'];
 
 export function validServer(v: string | undefined): string | null {
   if (!v) return null;

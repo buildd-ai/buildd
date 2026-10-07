@@ -11,12 +11,13 @@ const masked = { id: 's-1', scope: 'team', workspaceId: null, kind: 'anthropic-c
 const mockList = mock(async () => [masked] as any[]);
 const mockSet = mock(async (_input: any) => ({ ok: true, endpoint: masked }) as any);
 const mockDelete = mock(async (_t: string, _w: string | null) => true);
+const mockScope = mock(async (_input: any) => ({ ok: true, endpoint: masked, copies: [] }) as any);
 
 mock.module('@/lib/auth-helpers', () => ({ requireSessionUser: mockRequireSessionUser }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: mockGetUserTeamIds, getUserAdminTeamIds: mockGetUserAdminTeamIds }));
-mock.module('@/lib/agent-endpoint-settings', () => ({ listTeamAgentEndpoints: mockList, setTeamAgentEndpoint: mockSet, deleteTeamAgentEndpoint: mockDelete }));
+mock.module('@/lib/agent-endpoint-settings', () => ({ listTeamAgentEndpoints: mockList, setTeamAgentEndpoint: mockSet, deleteTeamAgentEndpoint: mockDelete, setAgentEndpointAppliesTo: mockScope }));
 
-const { GET, PUT, DELETE } = await import('./route');
+const { GET, PUT, PATCH, DELETE } = await import('./route');
 const ctx = (id = TEAM) => ({ params: Promise.resolve({ id }) });
 const req = (method: string, body?: unknown, qs = '') => new NextRequest(`http://localhost:3000/api/teams/${TEAM}/agent-endpoint${qs}`, {
   method, headers: { 'content-type': 'application/json' }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -28,6 +29,7 @@ beforeEach(() => {
   mockGetUserAdminTeamIds.mockResolvedValue([]);
   mockSet.mockClear();
   mockDelete.mockClear();
+  mockScope.mockClear();
 });
 
 describe('/api/teams/[id]/agent-endpoint', () => {
@@ -83,5 +85,24 @@ describe('/api/teams/[id]/agent-endpoint', () => {
     await DELETE(req('DELETE', undefined, `?workspaceId=${WS}`), ctx());
     expect(mockDelete).toHaveBeenLastCalledWith(TEAM, WS);
     expect((await DELETE(req('DELETE', undefined, '?workspaceId=nope'), ctx())).status).toBe(400);
+  });
+
+  it('PATCH edits which workspaces it applies to: admin only, no key in the body', async () => {
+    expect((await PATCH(req('PATCH', { appliesTo: [WS] }), ctx())).status).toBe(403);
+    expect(mockScope).not.toHaveBeenCalled();
+    mockGetUserAdminTeamIds.mockResolvedValue([TEAM]);
+    const res = await PATCH(req('PATCH', { appliesTo: [WS], consolidate: true }), ctx());
+    expect(res.status).toBe(200);
+    expect(mockScope).toHaveBeenCalledWith({ teamId: TEAM, appliesTo: [WS], consolidate: true });
+    expect(await res.json()).toEqual({ endpoint: masked, copies: [] });
+  });
+
+  it('PATCH passes a validation refusal through, and 400s a body that is not an object', async () => {
+    mockGetUserAdminTeamIds.mockResolvedValue([TEAM]);
+    mockScope.mockResolvedValueOnce({ ok: false, status: 400, error: 'appliesTo names a workspace that is not in this team.' });
+    const res = await PATCH(req('PATCH', { appliesTo: ['nope'] }), ctx());
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/not in this team/);
+    expect((await PATCH(req('PATCH', [WS]), ctx())).status).toBe(400);
   });
 });

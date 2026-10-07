@@ -6,6 +6,7 @@ import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import WorkspacesTable from './WorkspacesTable';
 import { buildWorkspaceRows } from './rows';
+import { getTeamsPermissionOverrides } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,6 +31,7 @@ export default async function WorkspacesSettingsPage() {
   const { rows, moveTeams } = buildWorkspaceRows({
     userId: user.id,
     teams,
+    overrides: await getTeamsPermissionOverrides(teams.map((t) => t.id)),
     workspaces: workspaces.map((ws) => ({ ...ws, gitConfig: gitConfig.get(ws.id) ?? null })),
   });
 
@@ -42,7 +44,7 @@ export default async function WorkspacesSettingsPage() {
         </div>
         {rows.length === 0 ? (
           <div className="card p-6 text-center">
-            <p className="text-sm text-text-secondary mb-3">No workspaces yet.</p>
+            <p className="text-sm text-text-secondary mb-3">No workspaces.</p>
             <Link href="/app/workspaces/new" className="btn btn-primary">Create a workspace</Link>
           </div>
         ) : (

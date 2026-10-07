@@ -171,7 +171,7 @@ function Strip({ model }: { model: MissionBoardModel }) {
             <LandedMeter model={model} variant="strip" />
           </>
         ) : (
-          <span data-testid="landed-empty" className="font-mono text-[12px] text-text-muted">No tasks yet</span>
+          <span data-testid="landed-empty" className="font-mono text-[12px] text-text-muted">No tasks</span>
         )}
       </div>
       <a href={`#${MISSION_CRITERIA_ANCHOR}`} data-testid="goal-band" className={`${cell} min-w-0 flex-wrap md:border-r hover:bg-card-hover`}>
@@ -227,7 +227,7 @@ function Detail({ bar, model, now }: { bar: MissionLaneBar; model: MissionBoardM
               />
             ))}
           </div>
-          <div className="mt-1.5 truncate font-mono text-[12px] md:text-[11.5px] text-text-secondary">{last ? last.label : 'no milestones yet'}</div>
+          <div className="mt-1.5 truncate font-mono text-[12px] md:text-[11.5px] text-text-secondary">{last ? last.label : 'no milestones'}</div>
         </div>
       </div>
     </section>
@@ -325,7 +325,7 @@ function Side({ model, now, link, completionText, review: visualReview }: { mode
   return (
     <aside className="mt-[22px] flex min-w-0 flex-col gap-[18px]">
       {sec('Needs you', needsN, needsN > 0, 'needs-you-band', ny.length === 0
-        ? <div className="py-2 font-mono text-[12px] md:text-[11.5px] text-[var(--fleet-faint)]">{needsN > 0 ? 'Screens awaiting review.' : 'Nothing waiting on you.'}</div>
+        ? <div className="py-2 font-mono text-[12px] md:text-[11.5px] text-[var(--fleet-faint)]">{needsN > 0 ? 'Screens awaiting review.' : 'Nothing needs input.'}</div>
         : ny.map(t => (
           <div key={t.id} className="flex flex-col gap-2.5 border-2 border-accent bg-card p-3 shadow-[3px_3px_0_0_var(--border-strong)]">
             <div className="flex items-center gap-[7px] font-mono text-[12px] text-text-muted">
@@ -333,7 +333,7 @@ function Side({ model, now, link, completionText, review: visualReview }: { mode
               <ScopeChip scope={t.scope} />
               <span>{`${formatAge(t.waitStartedAt != null ? now - t.waitStartedAt : 0)} ago`}</span>
             </div>
-            <p className="font-mono text-[13px] font-semibold leading-[1.45] text-text-primary [overflow-wrap:anywhere]">{t.waitingFor?.prompt ?? 'Waiting on you.'}</p>
+            <p className="font-mono text-[13px] font-semibold leading-[1.45] text-text-primary [overflow-wrap:anywhere]">{t.waitingFor?.prompt ?? 'Needs input.'}</p>
             <AnswerButtons workerId={t.workerId} options={t.waitingFor?.options ?? []} compact />
           </div>
         )))}
@@ -390,7 +390,7 @@ function Legend({ kinds }: { kinds: { short: boolean; side: boolean; stopped: bo
     <footer data-testid="mission-lanes-legend" className="mt-6 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border-default py-2.5 font-mono text-[11px] text-text-muted">
       <span><i className={`${sw} border-accent bg-accent-soft`} />working</span>
       <span><i className={`${sw} border-border-strong bg-surface-3`} />done</span>
-      <span><i className={`${sw} fleet-hatch-accent h-1.5 border border-accent`} />waiting on you</span>
+      <span><i className={`${sw} fleet-hatch-accent h-1.5 border border-accent`} />needs input</span>
       <span className="text-status-success">✓ merged</span>
       <span className="text-accent-text">◌ in CI</span>
       <span className="text-status-error">✕ CI failed</span>

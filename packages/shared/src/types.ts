@@ -206,6 +206,26 @@ export type TeamRoleValue = typeof TeamRole[keyof typeof TeamRole];
 
 export type TeamPlan = 'free' | 'pro' | 'team';
 
+// Billing routes (apps/web/src/app/api/teams/[id]/billing/*). Plan changes land
+// only through the Stripe webhook; these routes hand the owner a Stripe URL.
+export type PaidTeamPlan = Exclude<TeamPlan, 'free'>;
+
+/** POST /api/teams/[id]/billing/checkout. `seats` is Team only; never below 5 or current members + invites. */
+export interface BillingCheckoutRequest {
+  plan: PaidTeamPlan;
+  seats?: number;
+}
+
+/** POST /api/teams/[id]/billing/seats — the Team plan's new total seat count. */
+export interface BillingSeatsRequest {
+  seats: number;
+}
+
+/** checkout and portal answer with the Stripe page to send the owner to. */
+export interface BillingRedirectResponse {
+  url: string;
+}
+
 export interface Team {
   id: string;
   name: string;
@@ -877,11 +897,8 @@ export interface QuestionWhere {
   file?: string;
 }
 
-/** Claim-time marker for the question-gate experiment (see ClaimTasksResponse). */
+/** Claim-time capability marker for the question gate (see ClaimTasksResponse). */
 export interface QuestionGateMarker {
-  experimentId: string;
-  policyVersion: number;
-  arm: 'control' | 'treatment';
   /** Pushbacks per worker before a question is sent as-is. */
   maxPushbacks: number;
 }
@@ -1357,8 +1374,7 @@ export interface ClaimTasksInput {
   claimAcrossAccessible?: boolean;
   /**
    * Protocol features this runner build implements, so the server does not send
-   * a payload field an older runner would silently ignore. See
-   * CBM_WITHHOLD_RUNNER_FEATURE in @buildd/core/cbm-access-experiment.
+   * a payload field an older runner would silently ignore.
    */
   runnerFeatures?: string[];
   /**
@@ -1451,6 +1467,8 @@ export type ClaimTaskExclusionCode =
   | 'role_mismatch'
   | 'runner_cooldown'
   | 'workspace_cap'
+  /** The workspace's work runs on the other executor (gitConfig.executor: cloud vs host). */
+  | 'workspace_executor'
   | 'path_overlap'
   /** Codex task and this caller can run neither Codex nor its credential. */
   | 'capability_mismatch'
@@ -1539,6 +1557,15 @@ export interface ClaimDiagnostics {
      * degraded or fail at provisioning. See claim/role-env-injection.ts.
      */
     role_env_unsatisfied?: number;
+    /**
+     * Commercial entitlement, managed-runner claims only (accounts.managedRunner):
+     * the team is at its plan's parallel managed-run limit. Not an error; the
+     * task stays pending and starts when a managed run ends.
+     * See packages/shared/src/entitlements.ts.
+     */
+    managed_concurrency?: number;
+    /** Same, for the plan's monthly managed runner-hours allowance. */
+    managed_runner_hours?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).
@@ -1594,6 +1621,18 @@ export interface PendingCredentialRefresh {
   expiresAt: string | null; // ISO 8601 — runner decides whether to refresh
 }
 
+/**
+ * GET /api/workers/[id]/prompt-bundles — the claim response's role and skill
+ * payload, resolved again for a session resumed by a runner that no longer
+ * holds it (restart, park → reattach). Each field is absent when the task has
+ * nothing of that kind.
+ */
+export interface WorkerPromptBundlesResponse {
+  skillBundles?: SkillBundle[];
+  roleConfig?: RoleConfig;
+  roleInstructions?: RoleInstructions;
+}
+
 export interface ClaimTasksResponse {
   workers: Array<{
     id: string;
@@ -1602,12 +1641,6 @@ export interface ClaimTasksResponse {
     task: Task;
     skillBundles?: SkillBundle[];
     childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
-    /**
-     * Set when the task is enrolled in a running `cbm_access` experiment.
-     * `withheld: true` means the runner must run it WITHOUT codebase-memory:
-     * no mount, no steering, every CBM tool denied.
-     */
-    cbmExperiment?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; withheld: boolean };
     /**
      * Set when the team runs a `question_gate` experiment and the runner sent
      * the `question_gate` feature. The runner then routes AskUserQuestion
@@ -2059,6 +2092,21 @@ export const VISUAL_AUDITOR_ROLE_SLUG = 'visual-auditor';
 // keeps the legacy rule (an empty `availableSkills` list claims anything).
 export const EXPLICIT_ROLE_SLUGS: readonly string[] = [VISUAL_AUDITOR_ROLE_SLUG];
 
+// Role slugs a person never picks for a task they write. buildd files these
+// tasks itself: a visual review is a mission command (POST
+// /api/missions/[id]/surface-audit), and a hand-written visual-auditor task
+// would miss its dependencies, routes and evidence contract.
+export const SYSTEM_ROLE_SLUGS: readonly string[] = [VISUAL_AUDITOR_ROLE_SLUG];
+
+export function isSystemRoleSlug(slug: string | null | undefined): boolean {
+  return !!slug && SYSTEM_ROLE_SLUGS.includes(slug);
+}
+
+/** The roles a generic task picker offers a person: everything but the system roles. */
+export function humanPickableRoles<T extends { slug: string }>(roles: readonly T[]): T[] {
+  return roles.filter(r => !isSystemRoleSlug(r.slug));
+}
+
 // ============================================================================
 // VISUAL REVIEW (docs/design/visual-qa-human-review.md)
 // ============================================================================
@@ -2157,6 +2205,23 @@ export interface VisualReviewCaptureGap {
   expectedRef: string;
   auditTaskId: string | null;
   round: number;
+}
+
+/**
+ * A cell stuck "awaiting a new screenshot" after its fix merged, whose place
+ * (route, viewport and state) a different cell — another variant key —
+ * captured after the merge: a later round often re-shoots only the routes it
+ * fixed with no title collision, so the recapture lands in a sibling cell
+ * instead of this one's history. Hidden from `cells`/`queue`/the summary
+ * counts; kept here for audit (docs/design/visual-qa-human-review.md).
+ */
+export interface VisualReviewResolvedElsewhere {
+  key: string;
+  route: string;
+  viewport: VisualQaViewport;
+  variant: string | null;
+  /** The cell key whose current shot, captured after the merge, resolves this one. */
+  resolvedBy: string;
 }
 
 /** One audit screenshot, as every surface renders it. */
@@ -2383,6 +2448,8 @@ export interface VisualReviewModel {
   superseded?: VisualReviewSupersededShot[];
   /** Wrong-ref shots the auditor still has to recapture. Never in `cells` or `queue`. */
   captureGaps?: VisualReviewCaptureGap[];
+  /** Cells resolved by a later round's capture of the same place under a different variant. Never in `cells` or `queue`. */
+  resolvedElsewhere?: VisualReviewResolvedElsewhere[];
   generatedAt: string;
 }
 
@@ -3070,7 +3137,7 @@ export interface GateReasonFamily {
 
 export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'concluded';
 export type ExperimentVisibility = 'admins' | 'team';
-export type ExperimentKind = 'model_routing' | 'cbm_access' | 'heartbeat_triage' | 'question_gate';
+export type ExperimentKind = 'model_routing' | 'heartbeat_triage' | 'question_gate';
 
 /** An `experiments` row as the API returns it. Dates are ISO strings. */
 export interface Experiment {
@@ -3191,6 +3258,10 @@ export interface LaneBar {
   /** Role colour from the role's own data; null = neutral. */
   color: string | null;
   roleSlug?: string | null;
+  /** The role's display name ("Builder"), for the hover card. */
+  roleName?: string | null;
+  /** The PR this run opened, if any. */
+  prNumber?: number | null;
   state: 'running' | 'waiting' | 'done' | 'failed';
   href?: string | null;
 }
@@ -3577,4 +3648,54 @@ export interface WorkspaceReadinessReport {
   skill: 'workspace-onboarding';
   /** The git tree response was truncated. */
   truncated: boolean;
+}
+
+/** One benchmark set's scores in a prompt eval run. Never carries prompt text. */
+export interface PromptEvalResultSummary {
+  benchmarkSet: string;
+  promptId: string;
+  promptSource: 'private' | 'public default';
+  /** Row version; null for a public default. */
+  promptRowVersion: number | null;
+  /** First 12 hex of the sha256 of the text scored. */
+  promptHash: string;
+  promptVersion: string;
+  /**
+   * The model that scored it, or for `no_eval_set` the model that serves it in
+   * production (nothing was called). Null for a dry run.
+   */
+  model: string | null;
+  /** `no_eval_set`: no benchmark set or no labelled cases; every score is null. `no_cases` is the older name. */
+  status: 'scored' | 'dry_run' | 'no_eval_set' | 'no_cases';
+  cases: number;
+  accuracy: number | null;
+  baselineAccuracy: number | null;
+  coverageAt90: number | null;
+  accuracyAt90: number | null;
+  errors: number;
+  notRun: number;
+  costUsd: number | null;
+}
+
+/** One run in `GET /api/admin/prompt-evals`. */
+export interface PromptEvalRunSummary {
+  id: string;
+  teamId: string | null;
+  /** `cron`: a run from the retired weekly schedule. */
+  trigger: 'push' | 'cron' | 'manual';
+  status: 'running' | 'passed' | 'failed' | 'refused' | 'skipped';
+  promptsRef: string | null;
+  evalModel: string | null;
+  /** The model the team's live decisions use. */
+  prodModel: string | null;
+  modelMismatch: boolean;
+  /** Set only when a per-run override scored on another model than production: the scores do not predict production behaviour. */
+  modelMismatchNote?: string;
+  dryRun: boolean;
+  loadedPrompts: number | null;
+  costUsd: number | null;
+  problems: string[] | null;
+  startedAt: string;
+  finishedAt: string | null;
+  results: PromptEvalResultSummary[];
 }

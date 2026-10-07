@@ -6,6 +6,7 @@
  * lives in TaskSheet; the phase action lives in TaskActionZone so the full task
  * page can share it.
  */
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import Link from 'next/link';
@@ -17,9 +18,12 @@ import TaskSummary from '@/components/task/TaskSummary';
 import AiFeedback from '@/components/AiFeedback';
 import { deriveDisplayStatus } from '@/lib/task-presentation';
 import { taskActionPhase } from '@/lib/task-actions';
+import type { TaskFailureKind } from '@/lib/task-failure-kind';
 import { taskPageHref } from '@/lib/mission-task-href';
 import { CHANNEL_PREFIX, getPusherClient, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
+import { subscribeCatchUp } from '@/lib/app-freshness';
 import TaskActionZone from './TaskActionZone';
+import type { EntitlementBlock } from '@buildd/shared';
 
 export interface TaskPanelData {
   id: string;
@@ -32,8 +36,11 @@ export interface TaskPanelData {
   missionId: string | null;
   /** The mission's executor (`local`: runners never claim it); absent from older responses. */
   missionExecutor?: 'runner' | 'local' | null;
+  /** Queued on a plan limit (managed runners); absent from older responses. */
+  entitlementBlock?: EntitlementBlock | null;
   backend: 'claude' | 'codex' | null;
-  failover: { from: string; reason: string | null } | null;
+  /** `summary` is describeBackendRouting's sentence (@buildd/core/backend-policy). */
+  failover: { from: string; reason: string | null; summary?: string } | null;
   worker: {
     id: string;
     status: string;
@@ -63,6 +70,8 @@ export interface TaskPanelData {
   } | null;
   lastError: { excerpt: string; pattern: string | null; ts: string } | null;
   blockedByCount: number;
+  /** `classifyTaskFailure`: null unless the task failed. */
+  failureKind?: TaskFailureKind | null;
   /** What the task produced (W4 "Records"); absent from older responses. */
   records?: Array<{ id: string; type: string; title: string | null; href: string }>;
   /** Provenance from `deriveTaskOrigin` (U6); null when nothing is stored. */
@@ -211,18 +220,16 @@ export function useTaskSummary(taskId: string, { workspaceId }: { workspaceId?: 
     };
   }, [workspaceId, taskId, fetchTask]);
 
-  // Fallback poll, paused while hidden or while realtime is live; catch up on return.
+  // Fallback poll, paused while hidden or while realtime is live. Catching up
+  // on return / reconnect / pull is the shell's call (lib/app-freshness.ts).
   useEffect(() => {
     const interval = setInterval(() => {
       if (shouldPollSummary({ hidden: document.hidden, realtime: realtimeRef.current })) fetchTask();
     }, SUMMARY_POLL_MS);
-    const onVisible = () => {
-      if (!document.hidden) fetchTask();
-    };
-    document.addEventListener('visibilitychange', onVisible);
+    const unsubscribeCatchUp = subscribeCatchUp(() => { fetchTask(); });
     return () => {
       clearInterval(interval);
-      document.removeEventListener('visibilitychange', onVisible);
+      unsubscribeCatchUp();
     };
   }, [fetchTask]);
 
@@ -284,12 +291,18 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         </div>
       </div>
 
-      {/* Failover note — a Claude task that got flipped to Codex mid-life */}
+      {/* Failover note — the task runs (or last ran) on another backend than it was filed with */}
       {data.failover && (
         <p className="font-mono text-[11px] text-text-muted">
-          Switched to <span className="capitalize text-text-secondary">{data.backend}</span> after{' '}
-          <span className="capitalize">{data.failover.from}</span>
-          {data.failover.reason === 'budget_exhausted' ? ' hit its budget' : ' failed'}.
+          {data.failover.summary ? (
+            <>{data.failover.summary.charAt(0).toUpperCase()}{data.failover.summary.slice(1)}.</>
+          ) : (
+            <>
+              Switched to <span className="capitalize text-text-secondary">{data.backend}</span> after{' '}
+              <span className="capitalize">{data.failover.from}</span>
+              {data.failover.reason === 'budget_exhausted' ? ' hit its budget' : ' failed'}.
+            </>
+          )}
         </p>
       )}
 
@@ -302,10 +315,13 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         blockedByCount={data.blockedByCount}
         backend={data.backend}
         lastError={data.lastError}
+        failureKind={data.failureKind ?? null}
+        auditTaskId={data.failureKind === 'verification' && isSurfaceAuditTask(data.title) ? data.id : null}
         worker={w ? { id: w.id, waitingFor: w.waitingFor } : null}
         historyHref={taskPageHref({ taskId: data.id, missionId: data.missionId })}
         roleSlug={data.roleSlug}
         missionExecutor={data.missionExecutor ?? null}
+        entitlementBlock={data.entitlementBlock ?? null}
         onChanged={onChanged}
       />
 

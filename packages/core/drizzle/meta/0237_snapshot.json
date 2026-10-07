@@ -1,6 +1,6 @@
 {
-  "id": "a8fcd4f7-d0cd-4397-9339-ccd0034f83f7",
-  "prevId": "0d0e83af-db84-4191-8177-6818a74fc2c8",
+  "id": "f9bc64b7-1d36-472d-9d0f-a22c0080f1e1",
+  "prevId": "0b774039-eba9-435a-82be-315362b2c475",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -11050,433 +11050,43 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.quality_scout_findings": {
-      "name": "quality_scout_findings",
+    "public.prompts": {
+      "name": "prompts",
       "schema": "",
       "columns": {
         "id": {
           "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "signature": {
-          "name": "signature",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "recurrence_key": {
-          "name": "recurrence_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "check_id": {
-          "name": "check_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "family": {
-          "name": "family",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "invariant": {
-          "name": "invariant",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "severity": {
-          "name": "severity",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "confidence": {
-          "name": "confidence",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "observed": {
-          "name": "observed",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "evidence_refs": {
-          "name": "evidence_refs",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "reproducibility": {
-          "name": "reproducibility",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'unknown'"
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'open'"
-        },
-        "action_state": {
-          "name": "action_state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'none'"
-        },
-        "action_task_id": {
-          "name": "action_task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "occurrence_count": {
-          "name": "occurrence_count",
+        "version": {
+          "name": "version",
           "type": "integer",
           "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "regression_count": {
-          "name": "regression_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "first_seen_run_id": {
-          "name": "first_seen_run_id",
-          "type": "uuid",
-          "primaryKey": false,
           "notNull": true
         },
-        "first_seen_sha": {
-          "name": "first_seen_sha",
+        "content_hash": {
+          "name": "content_hash",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "last_seen_run_id": {
-          "name": "last_seen_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "last_seen_sha": {
-          "name": "last_seen_sha",
+        "body": {
+          "name": "body",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "first_seen_at": {
-          "name": "first_seen_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "last_seen_at": {
-          "name": "last_seen_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "resolved_run_id": {
-          "name": "resolved_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "resolved_sha": {
-          "name": "resolved_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "resolved_at": {
-          "name": "resolved_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "quality_scout_findings_workspace_signature_idx": {
-          "name": "quality_scout_findings_workspace_signature_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "signature",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "quality_scout_findings_workspace_check_idx": {
-          "name": "quality_scout_findings_workspace_check_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "check_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "state",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "quality_scout_findings_workspace_state_idx": {
-          "name": "quality_scout_findings_workspace_state_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "state",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "last_seen_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "quality_scout_findings_workspace_id_workspaces_id_fk": {
-          "name": "quality_scout_findings_workspace_id_workspaces_id_fk",
-          "tableFrom": "quality_scout_findings",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "quality_scout_findings_action_task_id_tasks_id_fk": {
-          "name": "quality_scout_findings_action_task_id_tasks_id_fk",
-          "tableFrom": "quality_scout_findings",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "action_task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.quality_scout_probes": {
-      "name": "quality_scout_probes",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "candidate_id": {
-          "name": "candidate_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "family": {
-          "name": "family",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "probe_kind": {
-          "name": "probe_kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "invariant": {
-          "name": "invariant",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_signals": {
-          "name": "source_signals",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "preconditions": {
-          "name": "preconditions",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "executor": {
-          "name": "executor",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "estimated_cost": {
-          "name": "estimated_cost",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "risk": {
-          "name": "risk",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "mutates": {
-          "name": "mutates",
+        "active": {
+          "name": "active",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
           "default": false
         },
-        "evidence_requirements": {
-          "name": "evidence_requirements",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "unsupported_reason": {
-          "name": "unsupported_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "selection": {
-          "name": "selection",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "verdict": {
-          "name": "verdict",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "signature": {
-          "name": "signature",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "result": {
-          "name": "result",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
@@ -11484,303 +11094,33 @@
         }
       },
       "indexes": {
-        "quality_scout_probes_run_candidate_idx": {
-          "name": "quality_scout_probes_run_candidate_idx",
+        "prompts_one_active_per_id": {
+          "name": "prompts_one_active_per_id",
           "columns": [
             {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "candidate_id",
+              "expression": "id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
+          "where": "\"prompts\".\"active\"",
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "quality_scout_probes_workspace_signature_idx": {
-          "name": "quality_scout_probes_workspace_signature_idx",
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "prompts_id_version_pk": {
+          "name": "prompts_id_version_pk",
           "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "signature",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
+            "id",
+            "version"
+          ]
         }
       },
-      "foreignKeys": {
-        "quality_scout_probes_run_id_quality_scout_runs_id_fk": {
-          "name": "quality_scout_probes_run_id_quality_scout_runs_id_fk",
-          "tableFrom": "quality_scout_probes",
-          "tableTo": "quality_scout_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "quality_scout_probes_workspace_id_workspaces_id_fk": {
-          "name": "quality_scout_probes_workspace_id_workspaces_id_fk",
-          "tableFrom": "quality_scout_probes",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.quality_scout_runs": {
-      "name": "quality_scout_runs",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "mission_id": {
-          "name": "mission_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "trigger": {
-          "name": "trigger",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "mode": {
-          "name": "mode",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'running'"
-        },
-        "candidate_ref": {
-          "name": "candidate_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "candidate_sha": {
-          "name": "candidate_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prior_run_id": {
-          "name": "prior_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "prior_sha": {
-          "name": "prior_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "budget": {
-          "name": "budget",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "policy_version": {
-          "name": "policy_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "candidates_generated": {
-          "name": "candidates_generated",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "probes_selected": {
-          "name": "probes_selected",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "probes_skipped": {
-          "name": "probes_skipped",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "verdicts": {
-          "name": "verdicts",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cost_usd": {
-          "name": "cost_usd",
-          "type": "numeric(10, 4)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "metrics": {
-          "name": "metrics",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "quality_scout_runs_workspace_created_idx": {
-          "name": "quality_scout_runs_workspace_created_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "quality_scout_runs_workspace_ref_idx": {
-          "name": "quality_scout_runs_workspace_ref_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "candidate_ref",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "quality_scout_runs_workspace_id_workspaces_id_fk": {
-          "name": "quality_scout_runs_workspace_id_workspaces_id_fk",
-          "tableFrom": "quality_scout_runs",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "quality_scout_runs_mission_id_missions_id_fk": {
-          "name": "quality_scout_runs_mission_id_missions_id_fk",
-          "tableFrom": "quality_scout_runs",
-          "tableTo": "missions",
-          "columnsFrom": [
-            "mission_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
@@ -19420,7 +18760,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'in_app'"
+          "default": "'dispatch'"
         },
         "max_concurrent_tasks": {
           "name": "max_concurrent_tasks",

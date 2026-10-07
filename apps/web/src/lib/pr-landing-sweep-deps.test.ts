@@ -125,9 +125,18 @@ describe('resolveTarget', () => {
     expect(await createLandingSweepDeps().resolveTarget(REF)).toEqual({ ok: false, skip: 'human_tier' });
   });
 
-  it.each(['not_requested', 'in_flight', 'changes_requested', 'escalated', 'review_failed'])('skips a PR whose review is %s', async (state) => {
+  it.each(['not_requested', 'in_flight', 'review_failed'])('skips a PR whose review is %s', async (state) => {
     reviewState = state;
     expect(await createLandingSweepDeps().resolveTarget(REF)).toEqual({ ok: false, skip: 'not_approved' });
+  });
+
+  // A blocking verdict may be stale (an earlier head, a sibling PR that has
+  // since merged) and landPr is where it is revalidated, so the backstop must
+  // reach it even when the webhook that would have re-reviewed it was missed.
+  it.each(['changes_requested', 'escalated'])('hands a PR whose review is %s to landPr for revalidation', async (state) => {
+    reviewState = state;
+    const res: any = await createLandingSweepDeps().resolveTarget(REF);
+    expect(res.ok).toBe(true);
   });
 
   it('skips a PR it cannot place in a repo', async () => {

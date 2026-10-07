@@ -205,7 +205,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
           )}
           {!modelsLoading && modelsFetched && models.length === 0 && (
             <p className="text-[11px] text-text-muted">
-              No models yet. Set this workspace&apos;s model tiers in Settings.
+              No models. Set model tiers in Settings.
             </p>
           )}
           {models.length > 0 && (

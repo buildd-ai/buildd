@@ -10,10 +10,8 @@
  *
  *  - **Candidates** are revision-scoped files from completed-task-to-actual-diff
  *    neighbours (completed strictly before the new task was created — no future
- *    leakage), plus a bounded codebase-memory adapter. Diff evidence ranks above
- *    CBM. At most 254 deduplicated files, so `DONE` fits the 255-label Choice.
- *    Server-side CBM cannot answer at a pinned revision (Step E), so the CBM
- *    adapter reads `unavailable`. The tree-pinned source (jev-scheduling §1d)
+ *    leakage). At most 254 deduplicated files, so `DONE` fits the 255-label
+ *    Choice. The tree-pinned source (jev-scheduling §1d)
  *    reads the repository tree at the base commit instead: corpus-ranked files
  *    and neighbour-diff siblings join the diff paths, everything is verified
  *    to exist at that commit, and coverage is `tree_pinned`. Unknown scope
@@ -48,6 +46,7 @@ import {
   type RunOptions,
 } from '@builddai/ai-kit/decide';
 import type { OrchestrationDecisionOutcome } from './orchestration-decision';
+import { activePrompt, notePromptRejected, registerPrompt, resolvedPromptVersion } from './prompts';
 import { hasConcretePathManifest, pathsOverlap, REPO_WIDE_SENTINEL } from './path-overlap';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -104,19 +103,6 @@ export interface NeighbourEvidence {
   paths: readonly string[];
 }
 
-export type CbmStatus = 'ok' | 'unavailable' | 'unindexed' | 'stale';
-
-/** What the bounded CBM adapter answered, at a pinned revision. */
-export type CbmCandidateResult =
-  | {
-      status: 'ok';
-      revision: string;
-      paths: readonly string[];
-      /** The adapter asserts it enumerated every plausibly relevant file. */
-      complete: boolean;
-    }
-  | { status: Exclude<CbmStatus, 'ok'>; reason: string };
-
 /**
  * What the tree-pinned source answered (§1d): every file in the repository
  * tree at the task's base commit, plus the workspace code corpus's ranking of
@@ -136,7 +122,7 @@ export type TreeCandidateResult =
 
 export type TreeStatus = 'ok' | 'unavailable' | 'not_consulted';
 
-export type CandidateSource = 'diff' | 'cbm' | 'diff+cbm' | 'corpus' | 'diff+corpus' | 'sibling';
+export type CandidateSource = 'diff' | 'corpus' | 'diff+corpus' | 'sibling';
 
 /** Siblings of a neighbour-diff file offered per directory (path order). Bounds a wide directory. */
 export const MANIFEST_SIBLINGS_PER_DIR = 16;
@@ -144,14 +130,14 @@ export const MANIFEST_SIBLINGS_PER_DIR = 16;
 export interface CandidateCoverage {
   /**
    * The honest description of what was searched: tree_pinned when the base
-   * commit's tree was read (every candidate verified to exist there),
-   * neighbour_diff_and_cbm when CBM answered, else neighbour_diff_only.
+   * commit's tree was read (every candidate verified to exist there), else
+   * neighbour_diff_only.
    */
-  source: 'neighbour_diff_only' | 'neighbour_diff_and_cbm' | 'tree_pinned';
+  source: 'neighbour_diff_only' | 'tree_pinned';
   /** Absent on rows written before the tree-pinned source. */
   tree?: TreeStatus;
   treeReason?: string | null;
-  /** Diff/corpus/CBM paths dropped because the tree at the commit lacks them. */
+  /** Diff/corpus paths dropped because the tree at the commit lacks them. */
   droppedAbsent?: number;
   /** Paths the task text names that the tree lacks: files the task would create. */
   namedMissing?: string[];
@@ -160,8 +146,6 @@ export interface CandidateCoverage {
   neighboursWithoutDiff: number;
   excludedFuture: number;
   excludedUndated: number;
-  cbm: CbmStatus;
-  cbmReason: string | null;
   revision: string | null;
   revisionPinned: boolean;
 }
@@ -176,8 +160,8 @@ export interface ManifestCandidateSet {
   coverage: CandidateCoverage;
   /**
    * Omissions are unknown. Tree-pinned: true on truncation or when the task
-   * text names a path the tree lacks (a new file). Otherwise: true unless a
-   * complete pinned CBM answer and no truncation.
+   * text names a path the tree lacks (a new file). Otherwise always true:
+   * neighbour diffs alone never enumerate every relevant file.
    */
   unknownScope: boolean;
 }
@@ -204,12 +188,12 @@ export function namedPathsMissingFromTree(named: readonly string[], tree: Readon
  * Assemble the candidate set. Pure and order-insensitive.
  *
  * Ranking: diff paths by summed neighbour score (then neighbour count, then
- * path), then CBM-only paths in adapter order. A neighbour completed at or
+ * path). A neighbour completed at or
  * after `cutoff`, or undated, is excluded — at replay time the corpus already
  * holds work that finished after the task was filed.
  *
  * With an `ok` tree (§1d) the order is diff paths, then corpus-ranked files,
- * then CBM paths, then siblings of neighbour-diff files (at most
+ * then siblings of neighbour-diff files (at most
  * MANIFEST_SIBLINGS_PER_DIR per directory), and anything the tree at the
  * commit lacks is dropped. `namedPaths` (what the task text names) decides
  * whether the task would create a file the tree cannot offer.
@@ -217,7 +201,6 @@ export function namedPathsMissingFromTree(named: readonly string[], tree: Readon
 export function buildManifestCandidates(input: {
   cutoff: Date;
   neighbours: readonly NeighbourEvidence[];
-  cbm: CbmCandidateResult;
   tree?: TreeCandidateResult;
   namedPaths?: readonly string[];
   cap?: number;
@@ -252,16 +235,12 @@ export function buildManifestCandidates(input: {
     .sort(([pa, a], [pb, b]) => b.score - a.score || b.count - a.count || (pa < pb ? -1 : pa > pb ? 1 : 0))
     .map(([p]) => p);
 
-  const cbmOk = input.cbm.status === 'ok';
-  const cbmPaths = cbmOk ? [...new Set((input.cbm as { paths: readonly string[] }).paths.filter(isConcreteCandidatePath))] : [];
   const neighbourCoverage = {
     neighbours: seenTask.size,
     neighboursUsed,
     neighboursWithoutDiff,
     excludedFuture,
     excludedUndated,
-    cbm: input.cbm.status,
-    cbmReason: cbmOk ? null : (input.cbm as { reason: string }).reason,
   };
   const finish = (all: Array<{ path: string; source: CandidateSource }>) => {
     const kept = all.slice(0, cap);
@@ -274,7 +253,7 @@ export function buildManifestCandidates(input: {
     const inTree = new Set(tree.paths.filter(isConcreteCandidatePath));
     const ranked = [...new Set(tree.ranked.filter(isConcreteCandidatePath))];
     const rankedSet = new Set(ranked);
-    const absent = new Set([...diffRanked, ...ranked, ...cbmPaths].filter(p => !inTree.has(p)));
+    const absent = new Set([...diffRanked, ...ranked].filter(p => !inTree.has(p)));
     const taken = new Set<string>();
     const all: Array<{ path: string; source: CandidateSource }> = [];
     const push = (path: string, source: CandidateSource) => {
@@ -284,7 +263,6 @@ export function buildManifestCandidates(input: {
     };
     for (const p of diffRanked) push(p, rankedSet.has(p) ? 'diff+corpus' : 'diff');
     for (const p of ranked) push(p, 'corpus');
-    for (const p of cbmPaths) push(p, 'cbm');
     // Siblings: files in the directory of a neighbour-diff file (including one since deleted), in diff rank order.
     const byDir = new Map<string, string[]>();
     for (const p of [...inTree].sort()) {
@@ -327,13 +305,7 @@ export function buildManifestCandidates(input: {
     };
   }
 
-  const cbmSet = new Set(cbmPaths);
-  const diffSet = new Set(diffRanked);
-  const { kept, truncated, omitted } = finish([
-    ...diffRanked.map(p => ({ path: p, source: (cbmSet.has(p) ? 'diff+cbm' : 'diff') as CandidateSource })),
-    ...cbmPaths.filter(p => !diffSet.has(p)).map(p => ({ path: p, source: 'cbm' as CandidateSource })),
-  ]);
-  const cbmComplete = cbmOk && (input.cbm as { complete: boolean }).complete === true;
+  const { kept, truncated, omitted } = finish(diffRanked.map(p => ({ path: p, source: 'diff' as CandidateSource })));
 
   return {
     candidates: kept.map(k => k.path),
@@ -341,13 +313,13 @@ export function buildManifestCandidates(input: {
     truncated,
     omitted,
     coverage: {
-      source: cbmOk ? 'neighbour_diff_and_cbm' : 'neighbour_diff_only',
+      source: 'neighbour_diff_only',
       ...(tree ? { tree: 'unavailable' as const, treeReason: (tree as { reason: string }).reason } : {}),
       ...neighbourCoverage,
-      revision: cbmOk ? (input.cbm as { revision: string }).revision : null,
-      revisionPinned: cbmOk,
+      revision: null,
+      revisionPinned: false,
     },
-    unknownScope: truncated || !cbmComplete,
+    unknownScope: true,
   };
 }
 
@@ -361,6 +333,60 @@ const PICK_INSTRUCTIONS =
 
 const DONE_CRITERION =
   'No remaining file in this list is likely to be edited by the task. Not for: uncertainty between two listed files.';
+
+/**
+ * The pick text in effect. A pick's questions are built per call (one label per
+ * offered file), so the prompts-table override for `MANIFEST_DECISION_ID` is
+ * the text parts only: a JSON object `{ "instructions": string, "done": string }`.
+ * A body that does not fit is rejected and the public text runs (`prompts.ts`).
+ */
+export function resolveManifestPromptText(): { instructions: string; done: string; promptVersion: string } {
+  const row = activePrompt(MANIFEST_DECISION_ID);
+  if (row) {
+    const parsed = parseManifestPromptBody(row.body);
+    if (parsed.ok) {
+      return {
+        instructions: parsed.instructions,
+        done: parsed.done,
+        promptVersion: resolvedPromptVersion(MANIFEST_PROMPT_VERSION, { source: 'active', version: row.version }),
+      };
+    }
+    notePromptRejected(row, parsed.reason);
+  }
+  return { instructions: PICK_INSTRUCTIONS, done: DONE_CRITERION, promptVersion: MANIFEST_PROMPT_VERSION };
+}
+
+/** Parse a manifest-pick override body (`{ instructions, done }`). Shared by the read path and the seed check. */
+export function parseManifestPromptBody(
+  body: string,
+): { ok: true; instructions: string; done: string } | { ok: false; reason: string } {
+  let parsed: { instructions?: unknown; done?: unknown } | null;
+  try {
+    parsed = JSON.parse(body) as { instructions?: unknown; done?: unknown } | null;
+  } catch {
+    return { ok: false, reason: 'body is not JSON' };
+  }
+  const ok = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '';
+  if (parsed && typeof parsed === 'object' && ok(parsed.instructions) && ok(parsed.done)) {
+    return { ok: true, instructions: parsed.instructions, done: parsed.done };
+  }
+  return { ok: false, reason: 'body needs non-empty "instructions" and "done" strings' };
+}
+
+registerPrompt({
+  id: MANIFEST_DECISION_ID,
+  format: 'json',
+  publicDefault: `${JSON.stringify({ instructions: PICK_INSTRUCTIONS, done: DONE_CRITERION }, null, 2)}\n`,
+  validate: body => {
+    const parsed = parseManifestPromptBody(body);
+    return parsed.ok ? null : parsed.reason;
+  },
+});
+
+/** The prompt version to stamp on manifest rows: names the text in effect. */
+export function manifestPromptVersion(): string {
+  return resolveManifestPromptText().promptVersion;
+}
 
 export type PickQuestions = { pick: ReturnType<typeof choice<string>> };
 
@@ -377,6 +403,7 @@ export function buildPickDecision(
   if (offered.length > MANIFEST_MAX_CANDIDATES) {
     throw new Error(`manifest pick offers ${offered.length} files (max ${MANIFEST_MAX_CANDIDATES} plus ${DONE_LABEL})`);
   }
+  const text = resolveManifestPromptText();
   const labelMap: Record<string, string> = {};
   const criteria: Record<string, string> = {};
   offered.forEach((p, i) => {
@@ -384,13 +411,13 @@ export function buildPickDecision(
     labelMap[l] = p;
     criteria[l] = `Edit the file ${p}`;
   });
-  criteria[DONE_LABEL] = DONE_CRITERION;
+  criteria[DONE_LABEL] = text.done;
   const mode = opts.mode ?? MANIFEST_PICK_MODE;
   const minConfidence = opts.minConfidence ?? MANIFEST_PICK_MIN_CONFIDENCE;
   const decision = defineDecision({
     id: MANIFEST_DECISION_ID,
-    promptVersion: MANIFEST_PROMPT_VERSION,
-    questions: { pick: choice(PICK_INSTRUCTIONS, criteria) },
+    promptVersion: text.promptVersion,
+    questions: { pick: choice(text.instructions, criteria) },
     mode,
     ...(minConfidence !== null ? { minConfidence } : {}),
   }) as unknown as Decision<PickQuestions>;
@@ -635,7 +662,7 @@ export interface SetScore {
   omittedPathRate: number | null;
   /** Share of actual files that were candidates at all. A good pick score cannot hide this. */
   candidateRecall: number | null;
-  /** Actual files no candidate offered (new files, CBM omissions, cut-off neighbours). */
+  /** Actual files no candidate offered (new files, cut-off neighbours). */
   candidateMisses: string[];
 }
 
@@ -771,7 +798,7 @@ export async function evaluateManifestPicks(input: {
     summary: summarizeDecisionEval(predictions, { thresholds: input.thresholds, applyAt }),
     fingerprints,
     decisionId: MANIFEST_DECISION_ID,
-    promptVersion: MANIFEST_PROMPT_VERSION,
+    promptVersion: manifestPromptVersion(),
   };
 }
 

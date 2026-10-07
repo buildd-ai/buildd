@@ -27,10 +27,8 @@ import {
 } from '@/lib/heartbeat-circuit-breaker';
 import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-completion';
 import { applyCriteriaRearm } from '@/lib/criteria-rearm';
-import { runStaleWorkerCleanup } from './maintenance/stale-workers';
 import { runOverdueHeartbeatAlerts } from './maintenance/overdue-heartbeats';
 import { runMissionArchive } from './maintenance/archive-missions';
-import { sweepAbandonedPathClaims } from './maintenance/path-claims';
 import { sweepTaskCategories } from '@/lib/task-category-sweep';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { resolveEffectiveRoleSlugs } from '@/lib/effective-roles';
@@ -1046,8 +1044,6 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       }
     }
 
-    const heartbeatOrphans = await runStaleWorkerCleanup(now);
-
     let healthWatcher: Awaited<ReturnType<typeof runHealthWatcher>> | { error: string } = { checked: 0, fired: 0, errors: 0, skipped: 0 };
     try {
       healthWatcher = await runHealthWatcher();
@@ -1060,8 +1056,6 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     const overdueHeartbeatAlerts = await runOverdueHeartbeatAlerts(now);
 
     const archivedMissions = await runMissionArchive(now);
-
-    const abandonedClaimsReleased = await sweepAbandonedPathClaims();
 
     // Category looks for tasks created off the POST /api/tasks path (missions,
     // schedules, webhooks, retries). Bounded and last, so it can't crowd out the
@@ -1098,7 +1092,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       processed,
       changed: created,
       errors: errors + healthWatcherErrors,
-      result: { created, skipped, deferred, errors, triggerChecks, heartbeatOrphans, archivedMissions, abandonedClaimsReleased, taskCategories, healthWatcher, overdueHeartbeatAlerts, qualityScout },
+      result: { created, skipped, deferred, errors, triggerChecks, archivedMissions, taskCategories, healthWatcher, overdueHeartbeatAlerts, qualityScout },
     });
 
     return NextResponse.json({
@@ -1108,7 +1102,6 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       deferred,
       errors,
       triggerChecks,
-      heartbeatOrphans,
       deterministicHeartbeatSkips,
       llmHeartbeatInvocations,
       backstopDispatches,
@@ -1117,7 +1110,6 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       healthWatcher,
       archivedMissions,
       overdueHeartbeatAlerts,
-      abandonedClaimsReleased,
       taskCategories,
       qualityScout,
     });

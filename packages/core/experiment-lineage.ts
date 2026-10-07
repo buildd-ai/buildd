@@ -1,8 +1,8 @@
 /**
  * Retry lineage shared by every registry experiment.
  *
- * Extracted from `./model-routing-experiment.ts` when the CBM-access
- * experiment became its second caller, so "which task does an attempt inherit
+ * Extracted from `./model-routing-experiment.ts` when a second experiment
+ * kind needed it, so "which task does an attempt inherit
  * its arm from" has one definition. It is a leaf module on purpose: the pure
  * halves of experiments import it, and `model-routing-experiment.ts` itself
  * pulls in the tier registry (and so the db client).

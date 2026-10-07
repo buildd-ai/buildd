@@ -145,7 +145,7 @@ export default function MissionRecordsSheet({
             initialOpenArtifactId={initial.open && !initial.showAll ? initialArtifactId : null}
           />
         ) : (
-          <p className="mb-4 font-mono text-[12px] text-text-muted">No review-worthy records yet.</p>
+          <p className="mb-4 font-mono text-[12px] text-text-muted">No records to review.</p>
         )}
         {showAll ? (
           <MissionArtifacts

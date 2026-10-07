@@ -42,6 +42,12 @@ export interface QuestionBriefFields {
   context?: string;
   recommended?: { label: string; reason?: string };
   where?: BriefWhere;
+  /** Set only to `'hold'` — Jev held this question rather than asking outright. See question-gate.ts `HOLD_RESURFACE_MS`. */
+  disposition?: 'hold';
+  /** Why it was held, in the words a person reads on the parked question. */
+  holdReason?: string;
+  /** ISO timestamp: when a held question is surfaced to a person if still unanswered. See question-gate.ts `HOLD_RESURFACE_MS`. */
+  resurfaceAt?: string;
 }
 
 export interface DerivedQuestion extends QuestionBriefFields {
@@ -180,6 +186,13 @@ export function sanitizeQuestionBrief(raw: unknown): QuestionBriefFields & { opt
   }
   const where = sanitizeWhere(r.where);
   if (where) out.where = where;
+  if (r.disposition === 'hold') {
+    out.disposition = 'hold';
+    const holdReason = clean(r.holdReason, BRIEF_LINE_MAX);
+    if (holdReason) out.holdReason = holdReason;
+    const resurfaceAt = typeof r.resurfaceAt === 'string' && !Number.isNaN(Date.parse(r.resurfaceAt)) ? r.resurfaceAt : undefined;
+    if (resurfaceAt) out.resurfaceAt = resurfaceAt;
+  }
   if (Array.isArray(r.options)) {
     out.options = r.options.map(o => {
       if (!o || typeof o !== 'object' || Array.isArray(o)) return o;
@@ -205,6 +218,23 @@ export function withSanitizedBrief<T extends Record<string, unknown>>(waitingFor
 export interface BriefedQuestion extends QuestionBriefFields {
   prompt: string;
   options?: Array<string | { label: string; description?: string; consequence?: string; recommended?: boolean }>;
+}
+
+/** Every bit of visible text in a question, for a hard-rail text check (question-gate.ts `detectHardRail`). */
+export function briefedQuestionText(q: BriefedQuestion): string {
+  const parts: string[] = [q.prompt];
+  if (q.context) parts.push(q.context);
+  for (const o of q.options ?? []) {
+    if (typeof o === 'string') { parts.push(o); continue; }
+    parts.push(o.label);
+    if (o.consequence) parts.push(o.consequence);
+    if (o.description) parts.push(o.description);
+  }
+  if (q.recommended) {
+    parts.push(q.recommended.label);
+    if (q.recommended.reason) parts.push(q.recommended.reason);
+  }
+  return parts.join(' ');
 }
 
 function optionLabel(o: string | { label: string }): string {
@@ -238,6 +268,21 @@ export function missingBriefParts(q: BriefedQuestion): string[] {
   return missing;
 }
 
+/**
+ * The text the agent gets back instead of a parked question, when Jev decided
+ * the question itself (question-gate.ts `QuestionGateReply.verdict === 'decide'`).
+ * Shaped like a person's answer, not a system message, because the agent
+ * should treat it exactly as it would treat a human reply to the same
+ * AskUserQuestion call.
+ */
+export function questionDecideAnswerText(q: BriefedQuestion, optionIndex: number): string {
+  const opts = q.options ?? [];
+  const chosen = opts[optionIndex];
+  const label = chosen ? optionLabel(chosen) : 'the recommended option';
+  const detail = chosen && typeof chosen !== 'string' ? (chosen.consequence ?? chosen.description) : undefined;
+  return `${label}.${detail ? ` ${detail}` : ''} (Decided automatically and recorded on the task — can be corrected from the task page if it turns out wrong.)`;
+}
+
 /** The text the agent gets back instead of a parked question. */
 export function questionPushbackText(q: BriefedQuestion): string {
   const missing = missingBriefParts(q);
@@ -260,9 +305,9 @@ export function questionNotificationText(
   q: BriefedQuestion | null | undefined,
   opts: { sensitive?: boolean } = {},
 ): { title: string; message: string } {
-  const title = 'Agent needs your input';
+  const title = 'Agent needs input';
   if (opts.sensitive) return { title, message: 'Agent waiting for input' };
-  const prompt = clean(q?.prompt, 160) ?? 'A task needs your response';
+  const prompt = clean(q?.prompt, 160) ?? 'A task needs a response';
   const lines = [prompt];
   const context = q?.context
     ? firstSentence(q.context, 140)

@@ -21,6 +21,9 @@ const mockResolveCompletedTask = mock(() => Promise.resolve());
 const mockWakeTask = mock(async (_id: string, _cause: string) => {});
 const mockTasksFindMany = mock(() => Promise.resolve([] as any[]));
 
+const mockDispatchHistory = mock(async (_taskId: string) => [] as any[]);
+mock.module('@buildd/core/dispatch-outbox', () => ({ dispatchHistoryForTask: mockDispatchHistory }));
+
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mockResolveCompletedTask,
 }));
@@ -53,6 +56,26 @@ mock.module('@/lib/api-auth', () => ({
   },
   hashApiKey: (key: string) => `hashed_${key}`,
   extractApiKeyPrefix: (key: string) => key.substring(0, 12),
+}));
+
+// Mock task-token functions to allow testing without real tokens
+mock.module('@/lib/task-token', () => ({
+  isTaskToken: (key: string | null) => key?.startsWith('bldt_') || false,
+  verifyTaskToken: (token: string) => {
+    // For test purposes, parse a mock token format bldt_<taskId>_<workspaceId>
+    if (!token.startsWith('bldt_')) return null;
+    return {
+      taskId: 'task-1',  // Default mock value
+      workspaceId: 'ws-1',  // Will be overridden by test setup
+      accountId: 'account-123',
+      keyBinding: 'hash-1',
+      level: 'worker',
+      expiresAt: Date.now() + 60_000,
+    };
+  },
+  taskTokenKeyBinding: (apiKey: string) => 'hash-1',
+  canMintAdminTaskToken: () => false,
+  missingTaskTokenScopes: () => [],
 }));
 
 // Mock team-access
@@ -214,6 +237,7 @@ describe('GET /api/tasks/[id]', () => {
       status: 'pending',
       workspaceId: 'ws-1',
       workspace: { id: 'ws-1', teamId: 'team-1' },
+      parentTaskId: null,
     };
     mockGetCurrentUser.mockResolvedValue(null);
     mockTasksFindFirst.mockResolvedValue(mockTask);
@@ -223,13 +247,70 @@ describe('GET /api/tasks/[id]', () => {
     });
     const refused = await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
     expect(refused.status).toBe(404);
-    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+    // Now that we support child tasks, the route must fetch the task to check if it's a child task
 
     mockAccountsFindFirst.mockResolvedValue({
       id: 'account-123', level: 'worker', taskScope: { taskId: TASK_ID, expiresAt: Date.now() + 60_000 },
     });
     const served = await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
     expect(served.status).toBe(200);
+  });
+
+  it('allows a per-task token to read its own child tasks', async () => {
+    const parentTaskId = '22222222-2222-2222-2222-222222222222';
+    const childTaskId = '33333333-3333-3333-3333-333333333333';
+    const mockChildTask = {
+      id: childTaskId,
+      title: 'Child Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+      parentTaskId,
+      missionId: null,
+      mission: null,
+    };
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockTasksFindFirst.mockResolvedValue(mockChildTask);
+
+    mockAccountsFindFirst.mockResolvedValue({
+      id: 'account-123', level: 'worker', taskScope: { taskId: parentTaskId, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 },
+    });
+    // Use regular API key format (bld_xxx), not task token format, so authenticateApiKey handles it
+    const response = await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), childTaskId);
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.id).toBe(childTaskId);
+    expect(data.parentTaskId).toBe(parentTaskId);
+  });
+
+  it("lets a task token read any task in its own workspace, and nothing outside it", async () => {
+    const OWN = '22222222-2222-4222-8222-222222222222';
+    const sibling = (over: Record<string, unknown>) => ({
+      id: TASK_ID, title: 'Sibling', status: 'pending', workspaceId: 'ws-1', missionId: 'm-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' }, ...over,
+    });
+    let row: any = sibling({});
+    // The route's read of the task, and the scope helper's read of the token's own task.
+    mockTasksFindFirst.mockImplementation(async (args: any) =>
+      args?.with?.mission?.columns?.initiativeId ? { missionId: 'm-1', workspaceId: 'ws-1', mission: { initiativeId: null } } : row);
+    mockGetCurrentUser.mockResolvedValue(null);
+    const get = () => callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
+    const taskScope = { taskId: OWN, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 };
+
+    // Any task token may READ any task in its own workspace (the tasks
+    // list_tasks shows it), on its mission or not, and nothing outside it.
+    for (const level of ['admin', 'worker']) {
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', level, taskScope });
+      row = sibling({});
+      expect((await get()).status).toBe(200);
+      row = sibling({ missionId: 'm-2' });
+      expect((await get()).status).toBe(200);
+      row = sibling({ missionId: null });
+      expect((await get()).status).toBe(200);
+      row = sibling({ workspaceId: 'ws-2' });
+      expect((await get()).status).toBe(404);
+    }
+    mockTasksFindFirst.mockReset();
   });
 
   it('never returns the workspace dispatch token, to a per-task token or an account key', async () => {
@@ -412,6 +493,28 @@ describe('GET /api/tasks/[id]', () => {
     // through when present by accident.
     const callArgs = mockWorkersFindMany.mock.calls[0]?.[0] as any;
     expect(callArgs?.columns?.rejectedCompletionPayload).toBe(true);
+  });
+
+  it('include=dispatch returns the task\'s outbox trail; not read otherwise', async () => {
+    const mockTask = { id: TASK_ID, title: 'Test Task', workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1' } };
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockDispatchHistory.mockClear();
+    const entry = { id: 'o-1', cause: 'task.created', status: 'handed_off', transport: 'dispatch', handedOffAt: '2026-10-04T12:00:00.000Z', deliveredVia: null, attemptCount: 1, lastError: null };
+    mockDispatchHistory.mockResolvedValueOnce([entry]);
+
+    const res = await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' }, search: '?include=dispatch' }), TASK_ID);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.dispatch).toEqual([entry]);
+    expect(mockDispatchHistory).toHaveBeenCalledWith(TASK_ID);
+    expect(data.workers).toBeUndefined();
+
+    mockDispatchHistory.mockClear();
+    const plain = await (await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID)).json();
+    expect(plain.dispatch).toBeUndefined();
+    expect(mockDispatchHistory).not.toHaveBeenCalled();
   });
 
   it('omits workers/artifacts when include is not requested', async () => {
@@ -774,6 +877,26 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(res.status).toBe(200);
       expect(sets[0]?.startAt).toBeUndefined();
       expect(sets[0]?.context).toBeUndefined();
+    });
+
+    // An operator's switch is an explicit choice: budget failover must not undo it.
+    it('pins the backend an operator switches to, and unpins on clear', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockTasksFindFirst.mockResolvedValue({ ...pausedCodexTask(), context: { note: 'kept' } });
+      let sets = captureUpdate();
+      let res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { backend: 'claude' } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(sets[0]?.context?.backendPinned).toBe(true);
+      expect(sets[0]?.context?.note).toBe('kept');
+
+      mockTasksFindFirst.mockResolvedValue({ ...pausedCodexTask(), context: { backendPinned: true, note: 'kept' } });
+      sets = captureUpdate();
+      res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { backend: null } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(sets[0]?.backend).toBeNull();
+      expect('backendPinned' in (sets[0]?.context ?? {})).toBe(false);
+      expect(sets[0]?.context?.note).toBe('kept');
     });
 
     it('does not touch start_at for a task that is not budget-paused', async () => {
@@ -1941,5 +2064,66 @@ describe('DELETE /api/tasks/[id]', () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.success).toBe(true);
+  });
+});
+
+// A per-task token may edit only its own task's descriptive fields; how the
+// task runs or ends goes through complete_task and its gates.
+describe('PATCH /api/tasks/[id] — per-task token', () => {
+  const own = {
+    id: TASK_ID, title: 'T', status: 'in_progress', mode: 'execution', missionId: null,
+    dependsOn: [], workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1', name: 'ws' },
+  };
+  const scoped = (taskId = TASK_ID) => ({
+    id: 'acct-1', teamId: 'team-1', level: 'worker',
+    taskScope: { taskId, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 },
+  });
+  const patch = (body: Record<string, unknown>) =>
+    callHandler(PATCH, createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body }), TASK_ID);
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockReset();
+    mockAccountsFindFirst.mockResolvedValue(scoped());
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue(own);
+    mockWorkersFindFirst.mockReset();
+    mockWorkersFindFirst.mockResolvedValue(null);
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockTasksUpdate.mockReset();
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [own]) })) })) });
+  });
+
+  it('edits its own task’s description', async () => {
+    const res = await patch({ description: 'clarified scope' });
+    expect(res.status).toBe(200);
+    expect(mockTasksUpdate).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['status', { status: 'completed' }],
+    ['missionId', { missionId: '22222222-2222-2222-2222-222222222222' }],
+    ['held', { held: false }],
+    ['tier', { tier: 'premium' }],
+  ])('refuses %s, naming it, and writes nothing', async (field, body) => {
+    const res = await patch(body);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain(field);
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
+  });
+
+  it('cannot edit another task', async () => {
+    mockAccountsFindFirst.mockResolvedValue(scoped('33333333-3333-3333-3333-333333333333'));
+    const res = await patch({ description: 'x' });
+    expect(res.status).toBe(404);
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
+  });
+
+  it('leaves an account key’s fields unrestricted', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker' });
+    const res = await patch({ priority: 3, held: false });
+    expect(res.status).not.toBe(403);
   });
 });

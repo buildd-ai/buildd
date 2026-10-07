@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { stableCodexHomeIsolatedPath as _stableCodexHomeIsolatedPath } from './isolation-paths.js';
 
@@ -75,6 +75,40 @@ export function ensureStableCodexHome(workerId: string, explicitPath?: string): 
 }
 
 /**
+ * Point a per-worker CODEX_HOME's auth.json at the machine's own Codex login
+ * (`codex login` on the runner host) with a symlink, so the Codex CLI reads
+ * the real login and its token refreshes land back in the user's file instead
+ * of in a copy that goes stale. Replaces whatever auth.json was there.
+ */
+export function linkMachineCodexAuth(codexHome: string, machineAuthPath: string): void {
+  fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+  const authPath = join(codexHome, 'auth.json');
+  const target = resolve(machineAuthPath);
+  // The machine login already IS this file (CODEX_HOME points here): nothing to link.
+  if (target === resolve(authPath)) return;
+  try {
+    const st = fs.lstatSync(authPath);
+    if (st.isSymbolicLink() && resolve(dirname(authPath), fs.readlinkSync(authPath)) === target) return;
+    fs.rmSync(authPath, { force: true });
+  } catch { /* absent */ }
+  fs.symlinkSync(target, authPath);
+}
+
+/** True when `<codexHome>/auth.json` is a link to a machine login (linkMachineCodexAuth). */
+export function codexAuthIsMachineLink(codexHome: string): boolean {
+  try { return fs.lstatSync(join(codexHome, 'auth.json')).isSymbolicLink(); } catch { return false; }
+}
+
+/**
+ * Remove an auth.json symlink before a server credential is written into this
+ * home, so the write lands in the per-worker file and never through the link
+ * into the machine's own login.
+ */
+function detachMachineCodexAuth(codexHome: string): void {
+  if (codexAuthIsMachineLink(codexHome)) fs.rmSync(join(codexHome, 'auth.json'), { force: true });
+}
+
+/**
  * (Re)write auth.json into an existing CODEX_HOME. Idempotent.
  *
  * OAuth credentials MUST use codex-cli's NESTED shape
@@ -107,6 +141,7 @@ export function writeCodexAuthJson(codexHome: string, credential: CodexCredentia
         },
         last_refresh: new Date().toISOString(),
       };
+  detachMachineCodexAuth(codexHome);
   const authPath = join(codexHome, 'auth.json');
   fs.writeFileSync(authPath, JSON.stringify(authJson));
   fs.chmodSync(authPath, 0o600);
@@ -118,6 +153,7 @@ export function writeCodexAuthJson(codexHome: string, credential: CodexCredentia
  */
 export function writeCodexApiKeyToHome(codexHome: string, apiKey: string): void {
   fs.mkdirSync(codexHome, { recursive: true });
+  detachMachineCodexAuth(codexHome);
   const authPath = join(codexHome, 'auth.json');
   fs.writeFileSync(authPath, JSON.stringify({ api_key: apiKey }));
   fs.chmodSync(authPath, 0o600);
@@ -133,6 +169,9 @@ export function seedCodexAuthIfMissing(workerId: string, credential: CodexCreden
   const codexHome = explicitPath ?? stableCodexHomePath(workerId);
   fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(codexHome, 0o700); } catch {}
+  // A link left by a machine-login run is not a CLI-refreshed copy of this
+  // credential: drop it so the server credential is seeded.
+  detachMachineCodexAuth(codexHome);
   const authPath = join(codexHome, 'auth.json');
   if (!fs.existsSync(authPath)) {
     writeCodexAuthJson(codexHome, credential);
@@ -252,26 +291,6 @@ export interface CodexMcpConfig {
     url: string;
     bearerTokenEnvVar: string;
   }>;
-  /**
-   * Local stdio MCP servers to inject — the shape `codebase-memory` needs.
-   *
-   * Until this existed the writer could only model HTTP servers, so every stdio
-   * server was skipped with a warning and the codebase graph never reached a Codex
-   * worker. The codex CLI has always accepted stdio servers here; it was buildd's
-   * writer that could not express one.
-   *
-   * `env` values are written into config.toml verbatim, so this is for
-   * NON-SECRET configuration only (paths, flags). Anything secret belongs in the
-   * worker env under an env-var NAME, the way `bearerTokenEnvVar` does.
-   */
-  stdioMcpServers?: Array<{
-    name: string;
-    command: string;
-    args?: string[];
-    env?: Record<string, string>;
-    /** Tool names to withhold — Codex's equivalent of Claude's `disallowedTools`. */
-    disabledTools?: string[];
-  }>;
 }
 
 /**
@@ -322,32 +341,6 @@ export function writeCodexMcpConfig(codexHome: string, config: CodexMcpConfig): 
       `bearer_token_env_var = ${tomlString(server.bearerTokenEnvVar)}`,
       'enabled = true',
       'default_tools_approval_mode = "approve"',
-      '',
-    ]),
-    // Local stdio MCP servers (codebase-memory). Same approval rule as the HTTP
-    // servers above and for the same reason: headless `codex exec` cancels every
-    // unapproved MCP call. The nested `[mcp_servers.<name>.env]` table MUST come
-    // after this server's own scalar keys — a bare `key = value` written after a
-    // nested table header would be scoped INTO that table and `--strict-config`
-    // would reject it (the same TOML trap `model_reasoning_effort` hit above).
-    ...(config.stdioMcpServers || []).flatMap(server => [
-      `[mcp_servers.${tomlBareKey(server.name)}]`,
-      `command = ${tomlString(server.command)}`,
-      ...(server.args && server.args.length > 0
-        ? [`args = [${server.args.map(tomlString).join(', ')}]`]
-        : []),
-      'enabled = true',
-      'default_tools_approval_mode = "approve"',
-      ...(server.disabledTools && server.disabledTools.length > 0
-        ? [`disabled_tools = [${server.disabledTools.map(tomlString).join(', ')}]`]
-        : []),
-      ...(server.env && Object.keys(server.env).length > 0
-        ? [
-            '',
-            `[mcp_servers.${tomlBareKey(server.name)}.env]`,
-            ...Object.entries(server.env).map(([k, v]) => `${tomlBareKey(k)} = ${tomlString(v)}`),
-          ]
-        : []),
       '',
     ]),
     // Codex's `workspace-write` sandbox DISABLES outbound network by default, which

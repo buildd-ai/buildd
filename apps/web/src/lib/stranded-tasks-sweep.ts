@@ -64,6 +64,18 @@ export interface StrandedSweepResult {
   cleared: number;
 }
 
+function runnerCapabilityDetail(detail: Record<string, unknown>): { sentence: string; fields: Record<string, string | null> } {
+  const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
+  const model = str(detail.model);
+  const requiredVersion = str(detail.requiredVersion);
+  const runnerVersion = str(detail.runnerVersion);
+  const sentence =
+    `Its model${model ? ` ${model}` : ''} needs Claude Code ${requiredVersion ?? 'a newer version'} or newer; ` +
+    `the runner ${runnerVersion ? `reported ${runnerVersion}` : 'reported no version'}. ` +
+    `Update the runner image, or pin a model the runner supports.`;
+  return { sentence, fields: { model, requiredVersion, runnerVersion } };
+}
+
 /**
  * Whether a fetched row is actually stranded, evaluated in JS against the
  * shared elapsed-time definition rather than as a SQL literal — see the
@@ -162,9 +174,14 @@ export async function sweepStrandedTasks(): Promise<StrandedSweepResult> {
     const reason = c.reason ?? (c.startAt ? 'startAt_elapsed' : 'unknown');
 
     const title = strandedNoteTitle(c.id);
+    // A runner_capability strand is actionable only with the two versions in
+    // hand: the owner either updates the runner image or pins another model.
+    const capability = reason === 'runner_capability' && detail ? runnerCapabilityDetail(detail) : null;
     const body =
       `Task "${c.title}" (${c.id.slice(0, 8)}) has been pending and unclaimable for ${formatDuration(durationMs)} ` +
-      `— last deferral reason: ${reason}. Nothing re-arms this automatically; it needs a look.`;
+      `— last deferral reason: ${reason}.` +
+      (capability ? ` ${capability.sentence}` : '') +
+      ` Nothing re-arms this automatically; it needs a look.`;
 
     const existingNote = await db.query.missionNotes.findFirst({
       where: and(eq(missionNotes.taskId, c.id), eq(missionNotes.title, title), eq(missionNotes.status, 'open')),
@@ -198,7 +215,7 @@ export async function sweepStrandedTasks(): Promise<StrandedSweepResult> {
       missionId: c.missionId,
       taskId: c.id,
       callerOrigin: 'system',
-      detail: { durationMs },
+      detail: { durationMs, ...(capability?.fields ?? {}) },
     });
   }
 

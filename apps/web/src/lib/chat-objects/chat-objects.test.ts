@@ -43,10 +43,25 @@ describe('prStateOf', () => {
 describe('shapeQuestion', () => {
   const waitingFor = { prompt: 'Round per line, or only the total?', options: ['Per line', 'Total only'], type: 'question' };
 
+  it.each(['completed', 'failed', 'cancelled'])('terminal %s task closes a retained ask in chat and respond links', taskStatus => {
+    const s = shapeQuestion({ taskStatus, taskTitle: 'Finished task',
+      workers: [{ id: 'w1', status: 'waiting_input', waitingFor }],
+      notes: [{ id: 'q', workerId: 'w1', type: 'question', status: 'open', title: 'Round per line?' }],
+    });
+    expect(s.open).toBe(false);
+    expect(s.awaitingAgent).toBe(false);
+  });
+
+  it('an ended worker cannot reopen a question even on a nonterminal task', () => {
+    expect(shapeQuestion({ taskStatus: 'in_progress', taskTitle: 'Task',
+      workers: [{ id: 'w1', status: 'completed', waitingFor }], notes: [],
+    }).open).toBe(false);
+  });
+
   it('open: the newest worker holding a waitingFor, unified with its open note', () => {
-    const s = shapeQuestion({
+    const s = shapeQuestion({ taskStatus: 'in_progress',
       taskTitle: 'feat(checkout): Stripe in currency',
-      workers: [{ id: 'w2', waitingFor, updatedAt: '2026-01-01T12:00:00Z' }, { id: 'w1', waitingFor: null }],
+      workers: [{ id: 'w2', status: 'waiting_input', waitingFor, updatedAt: '2026-01-01T12:00:00Z' }, { id: 'w1', waitingFor: null }],
       notes: [
         { id: 'n0', workerId: 'w0', type: 'question', status: 'answered', title: 'Old ask', createdAt: '2026-01-01T10:00:00Z' },
         { id: 'n1', workerId: 'w2', type: 'question', status: 'open', title: 'Round per line or total?', body: 'Which is the source of truth?', defaultChoice: 'Per line', createdAt: '2026-01-01T11:59:00Z' },
@@ -63,14 +78,14 @@ describe('shapeQuestion', () => {
   });
 
   it('open without a note: the prompt is the headline, asked when the worker last updated', () => {
-    const s = shapeQuestion({ taskTitle: 't', workers: [{ id: 'w1', waitingFor, updatedAt: '2026-01-01T12:00:00Z' }], notes: [] });
+    const s = shapeQuestion({ taskStatus: 'in_progress', taskTitle: 't', workers: [{ id: 'w1', status: 'waiting_input', waitingFor, updatedAt: '2026-01-01T12:00:00Z' }], notes: [] });
     expect(s.open).toBe(true);
     expect(s.question.headline).toBe(waitingFor.prompt);
     expect(s.askedAt).toBe(Date.parse('2026-01-01T12:00:00Z'));
   });
 
   it('closed: the newest question note, with its reply as the answer', () => {
-    const s = shapeQuestion({
+    const s = shapeQuestion({ taskStatus: 'in_progress',
       taskTitle: 't',
       workers: [{ id: 'w1', waitingFor: null }],
       notes: [{ id: 'n1', type: 'question', status: 'answered', title: 'Round per line or total?', createdAt: '2026-01-01T11:00:00Z' }],
@@ -84,18 +99,18 @@ describe('shapeQuestion', () => {
   });
 
   it('closed while the answered worker is still waiting_input: the agent has not picked it up yet', () => {
-    const s = shapeQuestion({
+    const s = shapeQuestion({ taskStatus: 'in_progress',
       taskTitle: 't',
       workers: [{ id: 'w1', waitingFor: null, status: 'waiting_input' }],
       notes: [{ id: 'n1', type: 'question', status: 'answered', title: 'Round per line or total?' }],
     });
     expect(s.open).toBe(false);
     expect(s.awaitingAgent).toBe(true);
-    expect(shapeQuestion({ taskTitle: 't', workers: [{ id: 'w1', waitingFor: null, status: 'running' }], notes: [] }).awaitingAgent).toBe(false);
+    expect(shapeQuestion({ taskStatus: 'in_progress', taskTitle: 't', workers: [{ id: 'w1', waitingFor: null, status: 'running' }], notes: [] }).awaitingAgent).toBe(false);
   });
 
   it('closed with no note: falls back to the task title', () => {
-    const s = shapeQuestion({ taskTitle: 'feat(api): currency on API', workers: [], notes: [] });
+    const s = shapeQuestion({ taskStatus: 'in_progress', taskTitle: 'feat(api): currency on API', workers: [], notes: [] });
     expect(s.open).toBe(false);
     expect(s.workerId).toBeNull();
     expect(s.question.headline).toBe('feat(api): currency on API');

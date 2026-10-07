@@ -61,6 +61,10 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
   const handlerRef = useRef<((data: unknown) => void) | null>(null);
   const onStartedRef = useRef(onStarted);
   onStartedRef.current = onStarted;
+  // Overrides already granted in this chain of refusals. Each one clears one
+  // gate, so "Start anyway" then "Force start" must send both, or each start
+  // trips the gate the other cleared and the two refusals alternate forever.
+  const grantedRef = useRef<Pick<StartRequest, 'forceOverride' | 'capExempt'>>({});
 
   const stopTracking = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -118,13 +122,19 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
     void poll();
   }, [stopTracking, workspaceId, taskId, loadFleet]);
 
-  const start = useCallback(async (req: StartRequest = {}) => {
-    setPending(req.forceOverride ? 'force' : req.capExempt ? 'exempt' : 'start');
+  const start = useCallback(async (asked: StartRequest = {}) => {
+    setPending(asked.forceOverride ? 'force' : asked.capExempt ? 'exempt' : 'start');
     setError(null);
     setStatus('starting');
+    const req: StartRequest = {
+      ...asked,
+      forceOverride: asked.forceOverride || grantedRef.current.forceOverride,
+      capExempt: asked.capExempt || grantedRef.current.capExempt,
+    };
     try {
       const out = await requestTaskStart(taskId, req);
       if (out.ok) {
+        grantedRef.current = {};
         setRefusal(null);
         setFleet(null);
         setStatus('waiting');
@@ -133,6 +143,7 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
         return;
       }
       if (out.refusal) {
+        grantedRef.current = { forceOverride: req.forceOverride, capExempt: req.capExempt };
         setRefusal(out.refusal);
         setStatus('gated');
         if (canOfferForce(out.refusal)) loadFleet();
@@ -175,6 +186,7 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
 
   const dismiss = useCallback(() => {
     stopTracking();
+    grantedRef.current = {};
     setStatus('idle');
     setRefusal(null);
     setError(null);

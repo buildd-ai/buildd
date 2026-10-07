@@ -17,7 +17,7 @@ export function HeaderStatusPill({ status, merged }: { status: string; merged: b
       return <span className={`${base} text-accent-text border-accent bg-accent-soft`}>{dot('animate-status-pulse')}Fixing CI</span>;
     case 'waiting_on_you':
     case 'waiting_input':
-      return <span className={`${base} text-[var(--on-accent)] border-accent bg-accent`}>{dot()}Waiting on you</span>;
+      return <span className={`${base} text-[var(--on-accent)] border-accent bg-accent`}>{dot()}Needs input</span>;
     case 'completed':
       return <span className={`${base} text-status-success border-status-success bg-status-success/10`}>{dot()}Completed</span>;
     case 'failed':

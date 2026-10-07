@@ -17,7 +17,7 @@ import { Eyebrow, OpenButton, StateChip, type Tone } from './parts';
 /** The tile's words for where a task is: the worker's state wins over the task row's. */
 export function taskState(view: TaskObjectView): { label: string; tone: Tone; live: boolean } {
   const w = view.worker;
-  if (w?.waiting) return { label: 'waiting on you', tone: 'attention', live: false };
+  if (w?.waiting) return { label: 'needs input', tone: 'attention', live: false };
   if (w?.mergedAt) return { label: `#${w.prNumber} merged`, tone: 'ok', live: false };
   if (w?.prLifecycleStatus === 'ci_failed') return { label: `#${w.prNumber} CI failed`, tone: 'bad', live: false };
   if (w && ['running', 'starting', 'idle'].includes(w.status)) return { label: 'running', tone: 'live', live: true };
@@ -33,6 +33,7 @@ export function taskState(view: TaskObjectView): { label: string; tone: Tone; li
 
 const EDGE: Record<Tone, string> = {
   live: 'before:bg-accent',
+  neutral: 'before:bg-text-primary',
   attention: 'before:bg-status-warning',
   ok: 'before:bg-status-success',
   bad: 'before:bg-status-error',
