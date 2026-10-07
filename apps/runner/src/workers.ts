@@ -1,6 +1,6 @@
 import { canonicalToolName } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
-import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
@@ -127,6 +127,7 @@ import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_R
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { handOffUnproven, isHandOffRefusal } from './hand-off-outcome';
+import { preflightHookEntries } from './preflight-guard';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
@@ -4428,6 +4429,14 @@ export class WorkerManager {
                 hooks: [this.hookFactory.createLoopVerificationHook(worker, () => this.runLoopVerification(worker, task, cwd))],
               }]
             : []),
+          // Workspace preflight (workflow-state-kernel.md §6.10, S31): the cheap
+          // checks CI would fail on run before a push or create_pr; a failure
+          // denies that call with the output as the agent's next instruction.
+          // Off unless gitConfig.preflight.commands lists any. Codex has no seam.
+          ...preflightHookEntries({
+            gitConfig, isCodexTask, cwd,
+            milestone: (label) => this.addMilestone(worker, { type: 'status', label, ts: Date.now() }),
+          }) as unknown as Array<{ timeout: number; hooks: HookCallback[] }>,
         ],
         PostToolUse: [
           { hooks: [this.hookFactory.createTeamTrackingHook(worker)] },

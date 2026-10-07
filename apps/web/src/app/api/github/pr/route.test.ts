@@ -434,6 +434,55 @@ describe('POST /api/github/pr', () => {
     expect(data.pr.number).toBe(42);
   });
 
+  // S31 (workflow-state-kernel.md §6.10 tier 1): create_pr runs CI's prose scan
+  // before the PR exists, on workspaces that opt in, and refuses with the reason.
+  describe('preflight: the No Production Data prose scan (S31)', () => {
+    const fakeUuid = ['aaaaaaaa', 'bbbb', 'cccc', 'dddd', 'eeeeeeeeeeee'].join('-');
+    const optedIn = { ...WORKSPACE_OK, gitConfig: { preflight: { prProseScan: true } } };
+    const post = (body: Record<string, unknown>, workspace: Record<string, unknown> = optedIn) => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValueOnce({ id: 'w-1', accountId: 'account-1', taskId: null, name: 'test-worker', workspace });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce([]);
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+      return POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', head: 'feature-branch', ...body } }));
+    };
+
+    it('refuses a body CI would reject, naming the line and category, never the value; nothing reaches GitHub', async () => {
+      const res = await post({ title: 'fix: thing', lede: 'Fixes the thing.', body: `## Notes\nCloses task ${fakeUuid}.` });
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.code).toBe('preflight_failed');
+      // Scanned as CI will see it: the composed body, lede block first, so the line is the composed one.
+      expect(data.preflight.check).toBe('no_prod_data_prose');
+      expect(data.preflight.findings).toEqual([{ where: 'PR body', line: 6, category: 'UUID' }]);
+      expect(data.error).toContain('PR body line 6: possible UUID');
+      expect(JSON.stringify(data)).not.toContain(fakeUuid);
+      expect(mockGithubApi).not.toHaveBeenCalled();
+    });
+
+    it('scans the title and the lede too', async () => {
+      const res = await post({ title: `fix: ${fakeUuid}`, lede: 'This fixed it for 9 teams.' });
+      expect(res.status).toBe(400);
+      expect((await res.json()).preflight.findings.map((f: { where: string }) => f.where)).toEqual(['PR title', 'PR body']);
+    });
+
+    it('a clean body opens the PR', async () => {
+      const res = await post({ title: 'fix: thing', lede: 'Fixes the thing.', body: 'Task `8237cfa9`.' });
+      expect(res.status).toBe(200);
+    });
+
+    it('off by default: a workspace that did not opt in is not scanned', async () => {
+      const res = await post({ title: 'fix: thing', lede: 'Fixes the thing.', body: `Closes ${fakeUuid}.` }, WORKSPACE_OK);
+      expect(res.status).toBe(200);
+    });
+
+    it('honours the same allow marker CI does', async () => {
+      const res = await post({ title: 'docs', lede: 'Documents the rule.', body: `no-prod-data: allow documenting the rule\n${fakeUuid}` });
+      expect(res.status).toBe(200);
+    });
+  });
+
   // Test (b): token with no access to the workspace (different team) → 403
   it('rejects cross-team workspace access', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
