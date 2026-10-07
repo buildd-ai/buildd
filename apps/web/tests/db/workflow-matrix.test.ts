@@ -2095,6 +2095,76 @@ describe('AWAITING_PUSH — an owner delivery leaves on a push (§6.4, §9)', ()
   });
 });
 
+describe('§11 — the reconciliation floor re-imports what a lost webhook never delivered (ddcbe113)', () => {
+  const floor = (o: Delivery) => seam.reconcileKernelDeliveries(deps, { only: [o.deliveryId], minQuietMs: 0 });
+
+  test('a missed synchronize: APPROVED at H1 while GitHub is at H2 → the floor imports the head and a delta round at H2 starts', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H1' });
+    gh.head = 'H2'; // pushed; the synchronize webhook never arrived
+    gh.ancestors.H2 = ['H1'];
+    const before = reviewersCreated.length;
+
+    const s = await floor(o);
+    expect(s).toMatchObject({ checked: 1, imported: 1, errors: 0 });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2 });
+    expect((await rounds(o.deliveryId)).at(-1)).toMatchObject({ round: 2, head_sha: 'H2', kind: 'delta' });
+    expect(reviewersCreated.slice(before).map((r) => [r.round, r.head])).toEqual([[2, 'H2']]);
+    const t = (await transitions(o.deliveryId)).at(-1)!;
+    expect(t.command).toBe('HeadObserved');
+    expect(t.evidence.actor).toBe('sweep:kernel-floor');
+
+    // A second pass with nothing new does nothing.
+    expect(await floor(o)).toMatchObject({ checked: 1, imported: 0, enqueued: 0 });
+    expect(reviewersCreated.length).toBe(before + 1);
+  });
+
+  test('a missed closed(merged): the floor reads merged and the delivery is MERGED', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    gh.state = 'closed'; gh.merged = true; gh.updatedAt = 'u-merged';
+    expect(await floor(o)).toMatchObject({ imported: 1 });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'MERGED' });
+  });
+
+  test('a draft PR\'s push is imported too: the floor reads the live head whatever the draft flag', async () => {
+    const o = await openAndHandOn();
+    gh.head = 'H2';
+    await floor(o);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2 });
+  });
+
+  test('CHANGES_REQUESTED with its dispatch_fix lost: the floor re-enqueues it under its own dedupe key and the fix is filed', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'request-changes', 'H1', crashedDeps);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'CHANGES_REQUESTED' });
+    const [lost] = await effects(o.deliveryId, 'dispatch_fix');
+    await q(sql`DELETE FROM workflow_effects WHERE id = ${lost.id}::uuid`);
+    expect(await tasksOf(o.deliveryId, 'fix')).toEqual([]);
+
+    expect(await floor(o)).toMatchObject({ imported: 0, enqueued: 1 });
+    const again = await effects(o.deliveryId, 'dispatch_fix');
+    expect(again.map((e) => [e.dedupe_key, e.status])).toEqual([[lost.dedupe_key, 'done']]);
+    expect((await tasksOf(o.deliveryId, 'fix')).length).toBe(1);
+    // Owed and present: nothing more to enqueue.
+    expect(await floor(o)).toMatchObject({ enqueued: 0 });
+  });
+
+  test('a delivery the kill switch released to legacy is not touched', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    await q(sql`UPDATE workspaces SET git_config = jsonb_set(COALESCE(git_config, '{}'::jsonb), '{workflowKernel}', 'false'::jsonb) WHERE id = ${workspaceId}::uuid`);
+    try {
+      gh.head = 'H2';
+      expect(await floor(o)).toMatchObject({ checked: 0 });
+      expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H1' });
+    } finally {
+      await q(sql`UPDATE workspaces SET git_config = git_config - 'workflowKernel' WHERE id = ${workspaceId}::uuid`);
+    }
+  });
+});
+
 describe('S30 — runner hand-off failures', () => {
   test('S30 (part 1): an owner attempt reporting completed whose commits are not on GitHub → AWAITING_PUSH, no review round; never a completed delivery', async () => {
     const o = await open();

@@ -63,7 +63,9 @@ mock.module('@/lib/ci-red-sweep-deps', () => ({ sweepCiRedPrs: mockCiRedSweep })
 // The workflow kernel's outbox floor drain (lib/workflow/seam.ts).
 const mockDrainDueEffects = mock(async () => ({ claimed: 0, done: 0, skipped: 0, failed: 0, dead: [] }));
 const mockTrunk = mock(async () => ({ checked: 1, resolved: 1, recovered: 2, stillRed: 0, errors: 0 }));
-mock.module('@/lib/workflow/seam', () => ({ drainDueEffects: mockDrainDueEffects, reconcileTrunkIncidents: mockTrunk }));
+// …and the kernel's reconciliation floor (§11): re-imports heads / PR state, re-enqueues owed effects.
+const mockKernelFloor = mock(async () => ({ checked: 3, imported: 1, enqueued: 1, errors: 0 }));
+mock.module('@/lib/workflow/seam', () => ({ drainDueEffects: mockDrainDueEffects, reconcileTrunkIncidents: mockTrunk, reconcileKernelDeliveries: mockKernelFloor }));
 
 let dueCount: number | null = 0;
 mock.module('@/lib/redis', () => ({
@@ -177,6 +179,9 @@ describe('GET /api/cron/pr-reconcile', () => {
     // …and re-reads every open trunk incident's base head (§6.10, T26).
     expect(mockTrunk).toHaveBeenCalled();
     expect(body.trunk).toMatchObject({ resolved: 1, recovered: 2 });
+    // …and runs the kernel's reconciliation floor, so a lost synchronize/closed webhook is repaired (ddcbe113).
+    expect(mockKernelFloor).toHaveBeenCalled();
+    expect(body.kernelFloor).toMatchObject({ checked: 3, imported: 1, enqueued: 1 });
   });
 
   it('returns 500 when reconcileStalePrWorkers throws', async () => {
