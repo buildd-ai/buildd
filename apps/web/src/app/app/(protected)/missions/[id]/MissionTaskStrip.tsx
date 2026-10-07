@@ -37,9 +37,9 @@ import { formatAge, type BoardTask, type MissionBoardModel } from '@/lib/mission
 import { taskPageHref } from '@/lib/mission-task-href';
 import { taskActionPhase, type MissionExecutor } from '@/lib/task-actions';
 import {
-  activeIndices, DENSE_STRIP_CELLS, defaultStripSelection, errorIndices, heldCount, heldIndices, nextOpenIndex,
+  activeIndices, DENSE_STRIP_CELLS, defaultStripSelection, heldIndices, nextOpenIndex,
   slotIndexOf, slotMarks, stepIndex, stripBlockerCount, stripCaretLeft, stripMarks, stripOrdinal, stripSelectionReason,
-  stripSlots, stripTick, stripTone, type StripSlot, type StripState, type StripTone,
+  stripCountsLabel, stripSlotCounts, stripSlots, stripTick, stripTone, type StripSlot, type StripState, type StripTone,
 } from '@/lib/mission-task-strip';
 import { useMissionStrip } from '@/components/missions/mission-strip-context';
 import {
@@ -105,9 +105,8 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
   const active = activeIndices(slots);
   // Failed is its own bucket (TONE-1): "N open" never silently counts a
   // failed cell as open, the same confusion the strip's own fill once had.
-  const failed = errorIndices(slots);
-  const openOnly = active.length - failed.length;
-  const held = heldCount(slots);
+  const counts = stripSlotCounts(slots);
+  const held = counts.held;
   const target = active.length > 0 ? nextOpenIndex(active, sel) : (heldIndices(slots)[0] ?? null);
   const tone = stripTone(slot.state);
   const caret = stripCaretLeft(sel, n);
@@ -115,11 +114,7 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
     ? (held > 0 ? `Nothing open · ${held} held` : 'All tasks landed')
     : target === sel ? `Only open task · ${stripTick(sel)}` : `Next open · ${stripTick(target!)}`;
   const gap = n > DENSE_STRIP_CELLS ? '[--strip-gap:1px]' : `[--strip-gap:4px] ${compact ? '' : 'md:[--strip-gap:6px]'}`;
-  const openJumpLabel = [
-    openOnly > 0 ? `${openOnly} open` : null,
-    failed.length > 0 ? `${failed.length} failed` : null,
-    held > 0 ? `${held} held` : null,
-  ].filter(Boolean).join(' · ');
+  const openJumpLabel = stripCountsLabel(counts);
 
   return (
     <div data-testid="landed-strip-band" data-cells={n} className={`flex flex-col gap-1.5 ${gap}`}>
@@ -130,7 +125,7 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
             type="button"
             data-testid="landed-strip-open-jump"
             onClick={() => target != null && select(slots[target].id)}
-            className={`-mr-3 inline-flex h-11 items-center px-3 font-mono text-body font-semibold hover:underline ${failed.length > 0 && openOnly === 0 ? TONE_TEXT.error : 'text-accent-text'}`}
+            className={`-mr-3 inline-flex h-11 items-center px-3 font-mono text-body font-semibold hover:underline ${counts.failed > 0 && counts.open + counts.active === 0 ? TONE_TEXT.error : 'text-accent-text'}`}
           >
             {`${openJumpLabel} ›`}
           </button>

@@ -73,6 +73,30 @@ export function stripBucket(state: StripState): StripBucket {
   return tone === 'ok' ? 'landed' : tone === 'error' ? 'failed' : tone;
 }
 
+/** Per-bucket totals of a set of cell states: the one tally every surface counts with. */
+export type StripCounts = Record<StripBucket, number>;
+export function stripCounts(states: Iterable<StripState>, weight: (i: number) => number = () => 1): StripCounts {
+  const c: StripCounts = { landed: 0, failed: 0, open: 0, held: 0, active: 0 };
+  let i = 0;
+  for (const s of states) c[stripBucket(s)] += weight(i++);
+  return c;
+}
+
+/** The header's words for the buckets: "open" is everything workable that has not failed. */
+export function stripCountsLabel(c: StripCounts): string {
+  const open = c.open + c.active;
+  return [open > 0 ? `${open} open` : null, c.failed > 0 ? `${c.failed} failed` : null, c.held > 0 ? `${c.held} held` : null]
+    .filter(Boolean).join(' · ');
+}
+
+/** Counts over strip slots; a fold stands for its `taskIds`. */
+export function stripSlotCounts(slots: readonly StripSlot[]): StripCounts {
+  return stripCounts(slots.map(s => s.state), i => {
+    const s = slots[i];
+    return s.kind === 'fold' ? s.taskIds.length : 1;
+  });
+}
+
 /** Active slots whose state is the failed/error bucket, in strip order. */
 export function errorIndices(slots: readonly StripSlot[]): number[] {
   return slots.flatMap((s, i) => (s.kind === 'task' && isErrorState(s.state) ? [i] : []));
