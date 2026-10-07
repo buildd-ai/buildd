@@ -108,7 +108,7 @@ describe('startScoutRun', () => {
     const r = run({ prior: { runId: 'run-0', sha: SHA2 }, budget: { maxProbes: 99 } });
     expect(r.candidate).toEqual({ ref: 'main', sha: SHA });
     expect(r.prior).toEqual({ runId: 'run-0', sha: SHA2 });
-    expect(r.budget).toEqual({ maxProbes: 10, maxCostUsd: null });
+    expect(r.budget).toEqual({ maxProbes: 10, maxCostUsd: null, maxCaptureProbes: 1 });
     expect(r.status).toBe('running');
     expect(r.startedAt).toBe(T0.toISOString());
     expect(r.policyVersion).toBe('scout-v1');
@@ -604,5 +604,17 @@ describe('parked runs', () => {
     expect(row.hostState).toBeNull();
     expect(row.hostDeadline).toBeNull();
     expect(scoutRunFromRow(row).parking).toBeNull();
+  });
+});
+
+describe('clampScoutCaptureProbes', () => {
+  it('defaults to one surface probe per run, allows 0, and caps the top', async () => {
+    const { clampScoutCaptureProbes } = await import('../quality-scout/ledger');
+    expect(clampScoutCaptureProbes(undefined)).toBe(1);
+    expect(clampScoutCaptureProbes('2')).toBe(1);
+    expect(clampScoutCaptureProbes(0)).toBe(0);
+    expect(clampScoutCaptureProbes(-4)).toBe(0);
+    expect(clampScoutCaptureProbes(2.7)).toBe(2);
+    expect(clampScoutCaptureProbes(99)).toBe(3);
   });
 });

@@ -6,6 +6,7 @@ import {
   checkManualScoutRateLimit,
   finalizeExpiredQualityScoutRuns,
   type ExpiredScoutDeps,
+  scoutAdvertForRouting,
   scoutRunnerNeeds,
   isPeriodicScoutDue,
   isQualityScoutDisabled,
@@ -416,6 +417,24 @@ describe('scoutRunnerNeeds', () => {
   it('a malformed advert, or one that says false, counts for nothing', () => {
     const envs = [null, {}, { scoutHost: 'yes' }, { scoutHost: { repos: 'acme/tool', command: true } }, { scoutHost: { repos: ['acme/tool'], command: 'true', capture: false } }];
     expect(scoutRunnerNeeds(envs, 'acme/tool').size).toBe(0);
+  });
+});
+
+describe('scoutAdvertForRouting', () => {
+  const env = { scoutHost: { repos: ['acme/tool'], command: true, capture: true } };
+  it('a key that is not a trusted host runner never counts as a capture host (the claim would not hand it the probe)', () => {
+    expect([...scoutRunnerNeeds([scoutAdvertForRouting(env, false)], 'acme/tool')]).toEqual(['command']);
+  });
+  it('a trusted host runner\'s advert counts as sent', () => {
+    expect([...scoutRunnerNeeds([scoutAdvertForRouting(env, true)], 'acme/tool')].sort()).toEqual(['capture', 'command']);
+    expect(scoutAdvertForRouting(null, false)).toBeNull();
+  });
+});
+
+describe('resolveScoutTriggerConfig — capture budget', () => {
+  it('passes budget.maxCaptureProbes through for the run to clamp', () => {
+    expect(resolveScoutTriggerConfig({ budget: { maxCaptureProbes: 2 } }, {}).budget).toEqual({ maxCaptureProbes: 2 });
+    expect(resolveScoutTriggerConfig({ budget: { maxCaptureProbes: 'x' } }, {}).budget).toEqual({});
   });
 });
 

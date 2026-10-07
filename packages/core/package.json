@@ -166,6 +166,7 @@
     "./quality-scout/executors": "./quality-scout/executors.ts",
     "./quality-scout/local-host": "./quality-scout/local-host.ts",
     "./quality-scout/runner-host": "./quality-scout/runner-host.ts",
+    "./quality-scout/visual-capture": "./quality-scout/visual-capture.ts",
     "./onboarding-scaffold": "./onboarding-scaffold.ts",
     "./onboarding-spec": "./onboarding-spec.ts",
     "./spec-conformance": "./spec-conformance.ts",

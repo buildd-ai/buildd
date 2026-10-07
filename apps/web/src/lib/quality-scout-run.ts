@@ -67,6 +67,7 @@ import {
 import { selectScoutProbes, type ScoutProbeDecider } from '@buildd/core/quality-scout/selector';
 import {
   DEFAULT_SCOUT_HOST_DEADLINE_MS,
+  DEFAULT_SCOUT_MAX_CAPTURE_PROBES,
   DEFAULT_SCOUT_RUNNER_MAX_DURATION_MS,
   MAX_SCOUT_HOST_DEADLINE_MS,
   SCOUT_ACTION_OUTCOMES,
@@ -112,7 +113,7 @@ export interface ScoutRunRequest {
   trigger: ScoutRunTrigger;
   mode: ScoutMode;
   candidate: { ref: string; sha: string };
-  budget?: { maxProbes?: number; maxCostUsd?: number | null };
+  budget?: { maxProbes?: number; maxCostUsd?: number | null; maxCaptureProbes?: number };
   maxDurationMs?: number;
   /** Manual runs only: distinguishes a deliberate re-run of the same SHA from a double tap. */
   dedupeKey?: string;
@@ -407,6 +408,10 @@ export async function planScoutRun(
       selectScoutProbes(set, deps.decide, {
         budget: run.budget.maxProbes,
         ...(hostable ? { hostable } : {}),
+        capture: {
+          max: run.budget.maxCaptureProbes ?? DEFAULT_SCOUT_MAX_CAPTURE_PROBES,
+          needsCapture: (c) => scoutHostNeed(c.executor, profile) === 'capture',
+        },
         ...(maxCostUsd !== null && deps.takeDecisionCost
           ? {
               cost: {

@@ -4,6 +4,8 @@
  * never a trigger token, never a per-task token (authenticateApiKey does not
  * resolve one). The key must belong to a team; it reaches the workspaces it
  * may claim in, and the store further confines every query to its team.
+ * Only a key flagged as a trusted host runner (`accounts.hostRunner`) is
+ * handed a run that comes with a credential (a capture probe's GitHub token).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -23,5 +25,14 @@ export async function resolveScoutHostCaller(req: NextRequest): Promise<{ ok: tr
   if (account.level === 'trigger') return { ok: false, response: fail(403, 'Trigger tokens cannot host Scout runs') };
   if (!account.teamId) return { ok: false, response: fail(403, 'This key belongs to no team') };
   const accessibleWorkspaceIds = await getIngestAccessibleWorkspaceIds(account);
-  return { ok: true, caller: { accountId: account.id, teamId: account.teamId, accessibleWorkspaceIds } };
+  return {
+    ok: true,
+    caller: {
+      accountId: account.id,
+      teamId: account.teamId,
+      accessibleWorkspaceIds,
+      // Gates the capture credential a claim can carry (lib/credential-custody.ts's flag).
+      hostRunner: (account as { hostRunner?: unknown }).hostRunner === true,
+    },
+  };
 }
