@@ -70,6 +70,7 @@ const repoFor = async () => ({ installationId: 1, repoFullName: REPO, gitConfig:
 // ── Side-effect leaves, recorded ────────────────────────────────────────────
 
 let posted: Array<{ commitId: string; event: string }>;
+let postedBodies: string[] = [];
 let activity: string[];
 let notified: string[];
 let exhaustions: number;
@@ -124,7 +125,7 @@ mock.module('../../src/lib/github', () => ({
     mergeCalls.push({ prNumber, method, sha });
     return mergeAnswer();
   },
-  postPrReview: async (p: { headSha: string; event: string }) => { posted.push({ commitId: p.headSha, event: p.event }); return { posted: true }; },
+  postPrReview: async (p: { headSha: string; event: string; body?: string }) => { posted.push({ commitId: p.headSha, event: p.event }); postedBodies.push(p.body ?? ''); return { posted: true }; },
 }));
 const realActivity = await import('../../src/lib/pr-activity-comment');
 mock.module('../../src/lib/pr-activity-comment', () => ({
@@ -229,7 +230,7 @@ beforeAll(async () => {
 });
 beforeEach(() => {
   gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0', ancestors: {} };
-  posted = []; activity = []; notified = []; exhaustions = 0; reviewersCreated = []; override = {}; activityEntries = []; ciEscalations = []; ghApi = null; ghWrite = null; ghWrites.length = 0;
+  posted = []; postedBodies = []; activity = []; notified = []; exhaustions = 0; reviewersCreated = []; override = {}; activityEntries = []; ciEscalations = []; ghApi = null; ghWrite = null; ghWrites.length = 0;
   comments = new Map();
   updateBranchCalls = []; updateBranchError = null; mergeCalls = [];
   // GitHub merges a PR whose head is the pinned one, as the real PUT /merge does.
@@ -2101,22 +2102,32 @@ describe('S32–S34 — release composition', () => {
    * Fake GitHub for the composed PR `agg` (dev → main): its compare lists one
    * squash commit per constituent, the version bump, and any `extra` commits.
    */
-  function composedGithub(aggPr: number, cs: Delivery[], o: { extra?: Array<{ sha: string; files: string[]; message?: string }>; truncated?: boolean; headRef?: string } = {}) {
+  function composedGithub(aggPr: number, cs: Delivery[], o: {
+    extra?: Array<{ sha: string; files: string[]; message?: string }>; truncated?: boolean; headRef?: string;
+    /** Constituent index whose squash into dev resolved a conflict: what landed differs from the reviewed head. */
+    conflictEdit?: number;
+  } = {}) {
+    const patch = (f: string, body = `+reviewed change to ${f}`) => ({ filename: f, status: 'modified', patch: `@@ -1 +1 @@\n-before\n${body}` });
     const commits = [
-      ...cs.map((c, i) => ({ sha: `SQ${i}`, files: [`src/c${i}.ts`], message: `feat: constituent (#${c.prNumber})`, pr: c.prNumber })),
-      { sha: 'BUMP', files: ['apps/web/package.json', 'CHANGELOG.md'], message: 'chore: bump version to v9.9.9', pr: null as number | null },
-      ...(o.extra ?? []).map((x) => ({ ...x, message: x.message ?? 'edit on the release branch', pr: null as number | null })),
+      ...cs.map((c, i) => ({ sha: `SQ${i}`, files: [`src/c${i}.ts`], message: `feat: constituent (#${c.prNumber})`, pr: c.prNumber, conflict: o.conflictEdit === i })),
+      { sha: 'BUMP', files: ['apps/web/package.json', 'CHANGELOG.md'], message: 'chore: bump version to v9.9.9', pr: null as number | null, conflict: false },
+      ...(o.extra ?? []).map((x) => ({ ...x, message: x.message ?? 'edit on the release branch', pr: null as number | null, conflict: false })),
     ];
+    const parentOf = (i: number) => (i ? commits[i - 1].sha : 'BASE0');
     ghApi = (path) => {
-      if (path === `/repos/${REPO}/pulls/${aggPr}`) return { head: { ref: o.headRef ?? 'dev' }, base: { ref: 'main' } };
+      if (path === `/repos/${REPO}/pulls/${aggPr}`) return { head: { ref: o.headRef ?? 'dev', sha: gh.head }, base: { ref: 'main' } };
       if (path.startsWith(`/repos/${REPO}/compare/main...`)) return {
         merge_base_commit: { sha: 'BASE0' }, base_commit: { sha: 'BASE0' }, total_commits: o.truncated ? 999 : commits.length,
-        commits: commits.map((c, i) => ({ sha: c.sha, parents: [{ sha: i ? commits[i - 1].sha : 'BASE0' }], commit: { message: c.message } })),
+        commits: commits.map((c, i) => ({ sha: c.sha, parents: [{ sha: parentOf(i) }], commit: { message: c.message } })),
         files: commits.flatMap((c) => c.files).map((filename) => ({ filename })),
       };
+      // A constituent's reviewed head (H1), diffed against its squash commit's parent: the change as reviewed.
+      const rv = /^\/repos\/[^/]+\/[^/]+\/compare\/([^.]+)\.\.\.H1$/.exec(path);
+      const ri = rv ? commits.findIndex((c, i) => c.pr != null && parentOf(i) === rv[1]) : -1;
+      if (ri >= 0) return { files: commits[ri].files.map((f) => patch(f)) };
       const m = /^\/repos\/[^/]+\/[^/]+\/commits\/([^/]+)(\/pulls)?$/.exec(path);
       const c = m && commits.find((x) => x.sha === m[1]);
-      if (c && !m![2]) return { files: c.files.map((filename) => ({ filename })) };
+      if (c && !m![2]) return { files: c.files.map((f) => patch(f, c.conflict ? `+conflict resolved by hand in ${f}` : undefined)) };
       if (c) return c.pr == null ? [] : [{ number: c.pr, merged_at: '2026-10-06T00:00:00Z', base: { ref: 'dev' }, head: { sha: 'H1' } }];
       return undefined;
     };
@@ -2184,6 +2195,47 @@ describe('S32–S34 — release composition', () => {
 
     expect(await verdict(agg, 'escalate')).toMatchObject({ handled: true, toState: 'ESCALATED' });
     expect(await delivery(agg.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'review_escalated', compositionHeads: [] });
+  });
+
+  test('S33: a delta-round approve stays a composition approval covering the delta only, never a whole-release verdict', async () => {
+    const cs = await reviewedConstituents();
+    const agg = await composedPr(cs, { extra: [{ sha: 'HAND', files: ['packages/core/drizzle/9999_hand.sql'] }] });
+    await drain(agg.deliveryId);
+    const [, r2] = await rounds(agg.deliveryId);
+    posted = []; postedBodies = [];
+
+    expect(await verdict(agg, 'approve')).toMatchObject({ handled: true, toState: 'APPROVED' });
+    await drain(agg.deliveryId);
+    const d = await delivery(agg.deliveryId);
+    expect(d).toMatchObject({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1'], approvedHeads: [] });
+    expect(d.approvalBasis).not.toBe('verdict');
+    expect(headCoverage(d, 'H1')).toBe('composition');
+    const [t] = (await transitions(agg.deliveryId)).filter((x) => x.command === 'ReviewVerdictRecorded');
+    expect(t.evidence).toMatchObject({ compositionDelta: { roundId: r2.id, paths: ['packages/core/drizzle/9999_hand.sql'] } });
+
+    // The GitHub review and the headline both say the review covered only the delta.
+    expect(posted).toEqual([{ commitId: 'H1', event: 'APPROVE' }]);
+    expect(postedBodies[0]).toStartWith('Release-only changes approved');
+    expect(postedBodies[0]).toContain('packages/core/drizzle/9999_hand.sql');
+    const view = (await getDeliveryViewsForTasks([agg.ownerTaskId])).get(agg.ownerTaskId)!;
+    expect(view.headline).not.toBe('Approved');
+    expect(view.headline).toBe('Release-only changes approved');
+  });
+
+  test('S33 regression: a conflict resolved while squashing into dev is a novel delta, never "none"', async () => {
+    const cs = await reviewedConstituents();
+    // GitHub associates SQ0 with constituent 0's PR (approved at H1), but the squash differs from H1's diff.
+    const agg = await composedPr(cs, { conflictEdit: 0 });
+    await drain(agg.deliveryId);
+
+    const d = await delivery(agg.deliveryId);
+    expect(d).toMatchObject({ state: 'AWAITING_REVIEW', compositionHeads: [], approvedHeads: [], approvalBasis: null });
+    const [t] = (await transitions(agg.deliveryId)).filter((x) => x.command === 'CompositionAttested');
+    expect(t.evidence.novelDelta).toEqual({ result: 'present', paths: ['src/c0.ts'] });
+    // Only the constituent whose landed patch equals its reviewed one is cited, at its composed commit.
+    expect(t.evidence.constituents).toEqual([expect.objectContaining({ prNumber: cs[1].prNumber, reviewedHeadSha: 'H1', mergedHeadSha: 'H1', landedSha: 'SQ1' })]);
+    const [, r2] = await rounds(agg.deliveryId);
+    expect([r2.kind, r2.status]).toEqual(['delta', 'queued']);
   });
 
   test('S34: composition proof fails closed; ordinary PRs stay exact-head bound; verification idempotent under redelivery', async () => {

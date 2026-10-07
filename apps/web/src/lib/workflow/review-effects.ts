@@ -107,7 +107,15 @@ async function tryCompositionAttestation(p: {
   const { d, round } = p;
   if (!d.repoFullName || d.prNumber == null || round.headSha !== d.currentHeadSha) return null;
   try {
-    const pull = (await githubApi(p.repo.installationId, `/repos/${d.repoFullName}/pulls/${d.prNumber}`)) as { head?: { ref?: string }; base?: { ref?: string } } | null;
+    const pull = (await githubApi(p.repo.installationId, `/repos/${d.repoFullName}/pulls/${d.prNumber}`)) as { head?: { ref?: string; sha?: string }; base?: { ref?: string } } | null;
+    // The live head first: an attestation computed against a head the PR has
+    // already moved past proves nothing about what would merge. A mismatch (or
+    // an unreadable head) attests nothing; the head webhook / floor re-rounds it.
+    const liveHead = pull?.head?.sha ?? null;
+    if (liveHead !== round.headSha) {
+      console.log(`[workflow] composition of ${d.repoFullName}#${d.prNumber} skipped: live head ${liveHead?.slice(0, 12) ?? 'unreadable'} is not the round's ${round.headSha.slice(0, 12)}; full review`);
+      return null;
+    }
     const headRef = pull?.head?.ref ?? null;
     const baseRef = pull?.base?.ref ?? d.baseRef;
     if (!headRef || !baseRef) return null;
@@ -346,6 +354,29 @@ const dispatchFix: EffectHandler = async (e) => {
 
 // ── post_review: the GitHub review, at the round's own commit ───────────────
 
+/**
+ * The GitHub review body. A composition delta round (§5.9, S33) reviewed only
+ * the release-only paths, so its approval says so: it is not a reviewer
+ * verdict on the whole release.
+ */
+export function postReviewBody(
+  event: 'APPROVE' | 'REQUEST_CHANGES',
+  out: { confidence?: number | null; summary?: string | null; feedback?: string | null },
+  scope: unknown,
+): string {
+  if (event !== 'APPROVE') return `Changes requested by buildd reviewer: ${out.feedback ?? out.summary ?? ''}`;
+  const sc = scope as { compositionDelta?: unknown; paths?: unknown } | null | undefined;
+  if (sc?.compositionDelta === true) {
+    const paths = Array.isArray(sc.paths) ? sc.paths.map(String) : [];
+    const list = paths.length ? `\n\n${paths.map((p) => `- \`${p}\``).join('\n')}` : '';
+    const text = `Release-only changes approved by buildd reviewer (confidence ${(out.confidence ?? 0).toFixed(2)}). `
+      + `This review covers only the ${paths.length} new ${paths.length === 1 ? 'path' : 'paths'} the release adds; `
+      + `every other change was reviewed at its own head and is not re-reviewed here.${list}\n\n${out.summary ?? ''}`;
+    return text.trimEnd();
+  }
+  return `Approved by buildd reviewer (confidence ${(out.confidence ?? 0).toFixed(2)}): ${out.summary ?? ''}`;
+}
+
 const postReview: EffectHandler = async (e) => {
   const view = await viewFor(e);
   const d = view.delivery;
@@ -360,9 +391,7 @@ const postReview: EffectHandler = async (e) => {
     // §8.4: commit_id is the round's head, never whatever the PR shows now.
     headSha: String(e.payload.commitId ?? round.headSha),
     event,
-    body: event === 'APPROVE'
-      ? `Approved by buildd reviewer (confidence ${(out.confidence ?? 0).toFixed(2)}): ${out.summary ?? ''}`
-      : `Changes requested by buildd reviewer: ${out.feedback ?? out.summary ?? ''}`,
+    body: postReviewBody(event, out, e.payload.scope),
   }).catch((err) => ({ posted: false as const, reason: err instanceof Error ? err.message : 'unknown error' }));
   if (!res.posted && res.reason !== 'a matching review already exists for this commit') {
     const owner = await db.query.tasks.findFirst({ where: eq(tasks.id, d.ownerTaskId), columns: { missionId: true } });

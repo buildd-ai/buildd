@@ -74,7 +74,8 @@ const mockPostPrReview = mock(async (_p: any) => postResult);
 /** Composed-PR reads for the §5.9 check; default: GitHub unreadable (the check falls through). */
 let ghApi: (path: string) => unknown = (path) => { throw new Error(`no fake GitHub for ${path}`); };
 let workspaceReleaseConfig: unknown = null;
-mock.module('@/lib/github', () => ({ postPrReview: mockPostPrReview, githubApi: async (_i: number, path: string) => ghApi(path) }));
+const ghCalls: string[] = [];
+mock.module('@/lib/github', () => ({ postPrReview: mockPostPrReview, githubApi: async (_i: number, path: string) => { ghCalls.push(path); return ghApi(path); } }));
 mock.module('@/lib/notify', () => ({ notifyTeamOf: mock(async () => undefined) }));
 const mockAppend = mock(async (_p: any) => ({ action: 'created' }));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppend, taskActivityUrl: (id: string) => `u/${id}` }));
@@ -108,7 +109,7 @@ beforeEach(() => {
   applied.length = 0; ingested.length = 0; executed.length = 0; inserted.length = 0; notes.length = 0;
   existingTask = null; livePr = { state: 'open', merged: false, headSha: 'H1', headRepoFullName: 'acme/w', baseRef: 'dev' };
   roles = [{ slug: 'reviewer' }]; created = { id: 'reviewer-2' }; postResult = { posted: true };
-  ghApi = (path) => { throw new Error(`no fake GitHub for ${path}`); }; workspaceReleaseConfig = null;
+  ghApi = (path) => { throw new Error(`no fake GitHub for ${path}`); }; workspaceReleaseConfig = null; ghCalls.length = 0;
   ownerRow = { id: 'owner-1', title: 'Fix the thing', description: 'd', missionId: 'm1', pathManifest: ['a.ts'], backend: 'claude', context: {} };
   for (const m of [mockPostPrReview, mockAppend, mockWake, mockCreateReviewer, mockSupersedeFix, mockEscalateExhaustion]) m.mockClear();
 });
@@ -193,18 +194,21 @@ describe('dispatch_review', () => {
   });
 
   describe('composed PRs (§5.9)', () => {
-    const composed = (o: { headRef?: string; extraCommit?: boolean } = {}) => {
+    const composed = (o: { headRef?: string; extraCommit?: boolean; liveHead?: string } = {}) => {
       workspaceReleaseConfig = { enabled: true, releaseBranch: 'dev', prodBranch: 'main' };
       const commits = [{ sha: 'SQ1', files: ['a.ts'], pr: 11 }, ...(o.extraCommit ? [{ sha: 'X1', files: ['b.ts'], pr: null }] : [])];
+      const patch = (f: string) => ({ filename: f, status: 'modified', patch: `@@ -1 +1 @@\n-old\n+new ${f}` });
       ghApi = (path) => {
-        if (path === '/repos/acme/w/pulls/7') return { head: { ref: o.headRef ?? 'dev' }, base: { ref: 'main' } };
+        if (path === '/repos/acme/w/pulls/7') return { head: { ref: o.headRef ?? 'dev', sha: o.liveHead ?? 'H1' }, base: { ref: 'main' } };
+        // The constituent's reviewed head, diffed against the landed commit's parent.
+        if (path === '/repos/acme/w/compare/B0...P11') return { files: [patch('a.ts')] };
         if (path.startsWith('/repos/acme/w/compare/main...H1')) return {
           merge_base_commit: { sha: 'B0' }, total_commits: commits.length,
           commits: commits.map((c) => ({ sha: c.sha, parents: [{ sha: 'B0' }], commit: { message: 'x' } })),
           files: commits.flatMap((c) => c.files).map((filename) => ({ filename })),
         };
         const c = commits.find((x) => path === `/repos/acme/w/commits/${x.sha}`);
-        if (c) return { files: c.files.map((filename) => ({ filename })) };
+        if (c) return { files: c.files.map(patch) };
         const pc = commits.find((x) => path === `/repos/acme/w/commits/${x.sha}/pulls`);
         if (pc) return pc.pr ? [{ number: pc.pr, merged_at: 't', base: { ref: 'dev' }, head: { sha: 'P11' } }] : [];
         throw new Error(`unexpected ${path}`);
@@ -227,6 +231,16 @@ describe('dispatch_review', () => {
       } finally { db.execute = realExec; }
       expect(mockCreateReviewer).not.toHaveBeenCalled();
       expect(ingested[0]).toMatchObject({ kind: 'composition_attested', attestation: { prNumber: 7, aggregateHeadSha: 'H1', novelDelta: { result: 'none' } } });
+      expect((ingested[0] as any).attestation.constituents[0]).toMatchObject({ mergedHeadSha: 'P11', landedSha: 'SQ1' });
+    });
+
+    test('the live head is read first: a PR that has moved past the round is not attested', async () => {
+      composed({ liveHead: 'H2' });
+      view = { delivery: D({ state: 'AWAITING_REVIEW' }) as any, rounds: [{ ...round1, status: 'queued', verdict: null, effectiveVerdict: null, reviewerTaskId: null }], attempts: [] };
+      expect(await __handlers.dispatchReview(E('dispatch_review', { roundId: 'r1' }))).toEqual({ outcome: 'ok' });
+      expect(ingested).toHaveLength(0);
+      // The compare was never computed against the stale head.
+      expect(ghCalls.some((p) => p.includes('/compare/'))).toBe(false);
     });
 
     test('an unverifiable composition (the constituent has no kernel review) with nothing else falls through to the full review', async () => {
@@ -267,6 +281,14 @@ describe('post_review (§8.4)', () => {
     view = { ...view, delivery: D({ currentHeadSha: 'H9' }) as any };
     await __handlers.postReview(E('post_review', { roundId: 'r1', commitId: 'H1', event: 'REQUEST_CHANGES' }));
     expect(mockPostPrReview.mock.calls[0][0]).toMatchObject({ headSha: 'H1', event: 'REQUEST_CHANGES', prNumber: 7 });
+  });
+  test('a composition delta approve says it covers only the release-only paths (S33)', async () => {
+    await __handlers.postReview(E('post_review', { roundId: 'r1', commitId: 'H1', event: 'APPROVE', scope: { compositionDelta: true, paths: ['packages/core/x.ts'] } }));
+    const body = (mockPostPrReview.mock.calls[0][0] as { body: string }).body;
+    expect(body).toStartWith('Release-only changes approved');
+    expect(body).toContain('covers only the 1 new path');
+    expect(body).toContain('`packages/core/x.ts`');
+    expect(body).not.toStartWith('Approved by buildd reviewer');
   });
   test('a failed post is recorded on the mission, not retried into a duplicate review', async () => {
     postResult = { posted: false, reason: 'bad token' };

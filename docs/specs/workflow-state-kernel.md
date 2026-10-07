@@ -387,19 +387,34 @@ either. The fact `composition_attested` (key `compose:{repo}#{pr}:{aggregate_hea
 carries a `CompositionAttestation`: the base SHA, the aggregate head, a mechanical
 `method` (`tree_equal` or `patch_set_equal`), one entry per constituent (its delivery,
 the round whose verdict it cites, that round's `reviewed_head_sha`, the
-`equivalent_head_shas` its delivery recorded, and the `landed_sha` in the composed
-history) and an explicit `novel_delta` of `none`, `present` (with paths) or
-`unverifiable`.
+`equivalent_head_shas` its delivery recorded, the `merged_head_sha` GitHub merged, the
+`landed_sha` of the composed commit in the aggregate's own history, and two patch-ids)
+and an explicit `novel_delta` of `none`, `present` (with paths) or `unverifiable`.
+
+The proof is computed, not asserted. GitHub's commit→PR association only says which
+reviewed change a composed commit claims to be. The collector reads the composed
+commit's own diff (`landed_patch_id`) and, separately, the reviewed head's diff against
+that commit's parent (`reviewed_patch_id`). A patch-id keeps every added and removed
+line and drops hunk positions and context, like `git patch-id`. A file with no patch is
+identified by its resulting blob. Equal ids make the commit a constituent. Different ids
+(a conflict resolved while squashing into the base, a hand edit in the squash) make the
+differing paths a novel delta. An unreadable diff makes the result `unverifiable`. The
+live PR head is read before the compare, and a head that has moved attests nothing.
 
 The reducer (`CompositionAttested`, from `AWAITING_REVIEW`, head must be current) checks
-each constituent against the ledger: the round is decided `approve` at exactly
-`reviewed_head_sha`, and `landed_sha` is that head or a recorded equivalent. With
-`none` the delivery becomes `APPROVED` with `approval_basis = composition` and the head
-in `composition_heads`; `approved_heads` is untouched and no round is decided at the
-aggregate head. With `present` a `delta` round scoped to the novel paths is queued.
-`unverifiable` or any failed check claims nothing (`rejected`). Ordinary verdicts stay
-exact-head (§8): `headCoverage` reports `verdict`, `human`, `composition` or `none`,
-and `PrMerged` records which one covered the merged head.
+each constituent against the ledger. The cited round belongs to that constituent's own
+delivery, PR and repo. It is decided `approve` at exactly `reviewed_head_sha`.
+`merged_head_sha` is that head or a recorded equivalent. The two patch-ids are present
+and equal. With `none` the delivery becomes `APPROVED` with `approval_basis =
+composition` and the head in `composition_heads`; `approved_heads` is untouched and no
+round is decided at the aggregate head. With `present` a `delta` round scoped to the
+novel paths is queued. An approve of that delta round (S33) keeps `approval_basis =
+composition`, adds the head to `composition_heads` only, and records the delta round id
+in the transition evidence. Its GitHub review and the headline ("Release-only changes
+approved") say it covers the novel paths only. `unverifiable` or any failed check claims
+nothing (`rejected`). Ordinary verdicts stay exact-head (§8): `headCoverage` reports
+`verdict`, `human`, `composition` or `none`, and `PrMerged` records which one covered
+the merged head.
 
 ---
 
@@ -1127,12 +1142,14 @@ PR-less task is absent from every map below and keeps today's projection:
 - **Release composition (§5.9)** (`lib/workflow/review-composition.ts`): before
   `dispatch_review` dispatches a full round on a composition PR (a mission integration
   branch into trunk, or a release PR per `isReleaseBranchPr`), it builds a
-  `patch_set_equal` attestation from the compare and per-commit reads. Zero novel
+  `patch_set_equal` attestation from the compare and per-commit reads, proving each
+  constituent by patch-id against its reviewed head's own diff. Zero novel
   delta → `CompositionAttested` → `APPROVED` with `approval_basis = composition` and no
   reviewer. A novel delta → a delta round scoped to those paths, with the
   attestation in the reviewer's prompt. Unverifiable → the normal full review. CI
   still gates the aggregate through the unchanged landing rails. The headline reads
-  "Release composition verified".
+  "Release composition verified", or "Release-only changes approved" once a delta
+  round approved the novel paths.
 - **S37 conflict recovery** (`dispatchConflictRetry`, `classifyConflictFix`,
   `recoverStalledConflictFix` in `lib/conflict-retry.ts`): a live conflict fix is
   the canonical remediation. A pending one unclaimed for 30 minutes is re-dispatched,
