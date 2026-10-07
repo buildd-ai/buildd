@@ -2,11 +2,11 @@
  * Effect handlers for the fix-loop seam (docs/specs/workflow-state-kernel.md
  * §10.2), owned by the reviews module: they create reviewer and fix tasks,
  * post GitHub reviews and raise review escalations. Core reaches them only
- * through the composition root (`WORKFLOW_EFFECT_HANDLERS` in
+ * through the composition root (`workflowEffectHandlers()` in
  * apps/web/src/modules.ts), never by import. Each one is idempotent: the outbox delivers at least once, so every
  * handler re-reads the delivery and acts only on what is still owed.
  *
- * Effects owned by later slices (supersession, trunk repair) are acknowledged
+ * Effects owned by later slices (trunk repair) are acknowledged
  * `skipped:legacy_owns`: the legacy code still runs them, and a transition
  * that names them must not make the outbox retry forever.
  */
@@ -493,12 +493,10 @@ const pushRecovery: EffectHandler = async (e) => {
   return { outcome: 'ok:exhausted' };
 };
 
-// Supersession and abandonment (T18/T20/T21) are Slice D's: their mission wake and
-// release attribution, the supersession scan and its projection still run on the
-// legacy path. The landing and post-merge effects are pr-landing-effects.ts's.
-const LEGACY_OWNED: EffectKind[] = [
-  'wake_mission', 'release_attribution', 'scan_supersession', 'project_supersession', 'gate_event',
-];
+// The landing and post-merge effects are pr-landing-effects.ts's; the supersession
+// scan, its projection and the mission wake (T18/T20/T21) are supersession-effects.ts's.
+// Nothing emits these two yet.
+const LEGACY_OWNED: EffectKind[] = ['release_attribution', 'gate_event'];
 
 export const reviewEffectHandlers: EffectHandlers = {
   dispatch_review: dispatchReview,

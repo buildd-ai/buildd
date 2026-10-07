@@ -2,7 +2,7 @@
  * Effect handlers for the CI family of the workflow kernel
  * (docs/specs/workflow-state-kernel.md §5.7, §10.2, §10.5), owned by the
  * reviews module like review-effects.ts and reached only through the
- * composition root (`WORKFLOW_EFFECT_HANDLERS` in apps/web/src/modules.ts).
+ * composition root (`workflowEffectHandlers()` in apps/web/src/modules.ts).
  *
  * The ledger row was allocated by the transition that queued `dispatch_ci_fix`
  * (allocation is consumption, §5.7 rule 1). The handler only revalidates

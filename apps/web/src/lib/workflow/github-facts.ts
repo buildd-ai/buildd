@@ -80,6 +80,15 @@ export function githubReader(installationId: number, api: typeof githubApi = git
         return null;
       }
     },
+    async branchExists(repoFullName, ref) {
+      try {
+        const b = await api(installationId, `/repos/${repoFullName}/branches/${ref.split('/').map(encodeURIComponent).join('/')}`) as { name?: string } | null;
+        return b ? true : null;
+      } catch (err) {
+        // Only GitHub's own "not found" says the branch is gone; anything else is unknown.
+        return /\b404\b/.test(err instanceof Error ? err.message : String(err)) ? false : null;
+      }
+    },
     async contains(repoFullName, ancestorSha, headSha) {
       try {
         const cmp = await api(installationId, `/repos/${repoFullName}/compare/${ancestorSha}...${headSha}`) as { status?: string } | null;

@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/workflow/landing.ts]
 related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts]
+verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts]
 supersedes: []
 ---
 
@@ -47,8 +47,12 @@ render. **Slice C moves landing and merge**: every merge door keeps its rails an
 for a kernel-owned PR, hands the merge to the kernel (T15 `LandingRequested` → the
 `merge_call` effect → T16 `MergeCallResult` → `verify_merge` → T17); the post-merge
 work is outbox effects, and a person on a stale version gets HTTP 409 with the
-current view. §13.1–§13.3, §13.6 and §13.7 list what landed and the deviations; §14
-the cutover and the kill switch.
+current view. **Slice D moves a closed PR's resolution and mission completion's
+input**: supersession is T20 and abandonment T21 for a kernel-owned PR (the worker
+columns are their projection), a PR closed because its base branch was deleted is
+`CLOSED_UNMERGED(base_deleted)`, the supersession scan is an effect of the close,
+and `prShipState` answers from the delivery. §13.1–§13.3 and §13.6–§13.8 list what
+landed and the deviations; §14 the cutover and the kill switch.
 
 **Capability statement.** For every deliverable that is meant to reach GitHub as a
 pull request, exactly one row (the *delivery*) records where the work stands. That row
@@ -829,7 +833,7 @@ page render, the reaper writing `completed`).
 | `sweepLandingPrs` (`pr-landing-sweep*.ts`), `sweepCiRedPrs`, queue-stall | effect re-enqueuers for `APPROVED`/`REPAIRING`; landing still runs through `LandingRequested` |
 | `cleanupStaleWorkers`, `tasks/cleanup`, `interactive-detach` | emit `AttemptEnded(lost)`; keep their task-row requeue logic |
 | `mission-invariants` | invariant alerts reading deliveries; its `files:true` task creation moves behind effects |
-| `sweepClosedUnsupersededPrs` (`pr-supersession-detect.ts`) | `scan_supersession` effect; auto-record goes through T20 |
+| `sweepClosedUnsupersededPrs` (`pr-supersession-detect.ts`) | `scan_supersession` effect; auto-record goes through T20 (Slice D: the close owes the effect; the hourly sweep stays as the backstop and its write is T20 too, §13.8) |
 | `completeMissionIfVerified` callers | unchanged readers (§17.3) |
 
 Render-time reads: pages that call `refreshStaleWorkersForWorkspaces` or
@@ -853,7 +857,7 @@ or a projection (written only by `projectDelivery`), or retired. Never two.**
 | `workers.prLifecycleStatus` | mixed: facts (`ci_*`, `conflict`, `merged`, `closed`, `unresolvable`) used as state | **fact cache** for CI/mergeable/merged/closed plus `unresolvable` (a reconcile-bookkeeping flag). No gate or UI reads it to decide workflow; they read `workflow_deliveries`. Written only through `recordPrFact` (shipped in Slice B part 1, §13.6), which enforces terminal-wins in the `WHERE`. Retire the redundant `pr_open` meaning. |
 | `workers.mergedAt` | merge fact with two clocks | GitHub `merged_at` (webhook payload, live read, `stamp_pr_rows` from T17); the first instant recorded is never moved. A merge door stamps nothing for a kernel-owned PR (Slice C, §13.7); it still stamps its own instant for a legacy PR (opened before cutover or released by the kill switch) |
 | `workers.conflictDetectedAt`, `prLastCheckedAt`, `prLastVerifiedAt`, `prCheckFailureCount`, `prUnresolvableReason` | reconcile bookkeeping | unchanged; owned by the importers |
-| `workers.supersededBy*`, `abandoned*` | the supersession edge | **projection** of T20/T21, written by `projectDelivery`; `canCompleteMission` and `prShipState` keep reading them until Slice D |
+| `workers.supersededBy*`, `abandoned*` | the supersession edge | **projection** of T20/T21, written by the `project_supersession` effect for a kernel-owned PR (Slice D); `prShipState` answers from the delivery when there is one and from these columns for a legacy PR |
 | reviewer tasks' `result.structuredOutput`, `effectiveVerdict` | raw model output and server override | raw output stays a fact; the decision lives on `workflow_review_rounds.effective_verdict` |
 | `tasks.context.iteration/maxIterations`, `reviewerRetry*`, `ciRetry*`, `conflictRetry*` | budgets and dedupe | budgets move to `fix_attempts`, `current_round`, `repair_attempts`; dedupe keys move to `workflow_effects.dedupe_key` |
 | `tasks.context.landing`, `landingHandoff`, `baseRefresh` | landing and refresh bookkeeping | `landing` marker content that decides "what next" moves to delivery attributes/effects; `baseRefresh` stays as refresh-effect state |
@@ -958,7 +962,7 @@ Later slices add the files named in §14.
 
 Shipped live (part 1, the review family): schema linkage (§5.6, `authority`);
 `seam.ts` (route API), `authority.ts` (kill switch and release), `github-facts.ts`
-(live reads), `review-effects.ts` (effects, owned by the reviews module and wired through the composition root `WORKFLOW_EFFECT_HANDLERS`); `openKernelDelivery` at the two legacy
+(live reads), `review-effects.ts` (effects, owned by the reviews module and wired through the composition root `workflowEffectHandlers()`); `openKernelDelivery` at the two legacy
 first-review points (the PR `opened` policy after pre-flight and role resolution, and
 create_pr's integration-branch review); T4 at the terminal worker PATCH; the
 `delivery_not_advanced` gate; T6 in `handleReviewerOutcomeIfNeeded`; T9 at claim;
@@ -981,7 +985,7 @@ Shipped live in part 2 (the CI family):
   counts the same rows, so N of M is 1-based and identical in the title, the task
   context and the activity entry.
 - **`dispatch_ci_fix`** (`ci-retry-effects.ts`, reviews module, composed into
-  `WORKFLOW_EFFECT_HANDLERS`) revalidates at dispatch (PR open, head still the bound
+  `workflowEffectHandlers()`) revalidates at dispatch (PR open, head still the bound
   head, CI not green now), then files the legacy-shaped CI fix or drift-diagnose task
   with `delivery_role = ci_fix`; its task id is the attempt id, so a re-run files
   nothing twice. CI exhaustion escalates through `escalateCiRedHead`.
@@ -1203,7 +1207,7 @@ Shipped live: the fact-ingestion funnel and terminal-wins for the PR fact cache.
   `conflict`; `conflict_detected_at` is no longer reset on re-entry; the `check_suite`
   terminal guard is in the statement, not a read-then-write.
 - **`stamp_pr_rows`** (`lib/workflow/pr-fact-effects.ts`, composed into
-  `WORKFLOW_EFFECT_HANDLERS`) is live: T17/T18 project the merge (with the
+  `workflowEffectHandlers()`) is live: T17/T18 project the merge (with the
   delivery's GitHub `merged_at`) or the close onto every row of the PR through the
   funnel. It is no longer acknowledged `legacy_owns`.
 - **Importers feed the kernel** (§11): when `pr-reconcile` or `pr-state-refresh`
@@ -1316,8 +1320,9 @@ Deviations, each deliberate:
 4. **The mission wake and release attribution are not separate T17 effects.** They
    are subscribers of the `task.pr_merged` event `emit_pr_merged` emits, and they read
    the task transition (`flipped` / `already_completed`) that same effect produced; two
-   effects racing it would see a different one. `wake_mission` /
-   `release_attribution` remain effects of T20/T21 (Slice D, `legacy_owns`).
+   effects racing it would see a different one. `wake_mission` is an effect of
+   T20/T21 (handled since Slice D, §13.8); `release_attribution` is declared and
+   emitted by no transition.
 5. **`landPr`'s own freshness step is unchanged.** A PR found behind *before* the
    merge call is still refreshed by `landPr`'s marker-keyed treadmill (a rail); only a
    merge call GitHub refuses as behind is T16's `refresh_branch`.
@@ -1330,6 +1335,84 @@ Deviations, each deliberate:
 8. **`version` is accepted, not yet shown.** The routes take it and the kernel
    enforces it; the dashboard card, `get_pr` and the MCP `merge_pr` tool do not send
    or display it yet (Slice E reads the delivery view).
+
+### 13.8 What Slice D shipped, and its deviations
+
+Shipped live (kill switch only), for kernel-owned deliveries; a legacy PR keeps the
+direct column writes exactly as they were:
+
+- **T20 is the only write of a supersession edge.** `recordPrSupersession`
+  (`lib/pr-supersession.ts`) keeps its validation and its live read of the target
+  (exists, merged, a different PR, a repo the work could have moved to) and, for a
+  kernel-owned PR, hands the decision to `recordSupersession` (`seam.ts`): T20 from
+  `CLOSED_UNMERGED` only, never overwriting an edge. Its callers are all four doors:
+  `POST /api/github/pr/supersede` (MCP `record_pr_supersession`), the mission card's
+  Confirm, the automatic detector and the hourly sweep. The answer maps to the
+  route's status: `not_closed_unmerged`, `edge_exists` and `target_not_merged` are
+  409, `same_pr` and `reason_required` 400. The direct `workers` update runs only for
+  a legacy PR.
+- **T21 is the only write of an abandonment** for a kernel-owned PR
+  (`recordPrAbandonment` → `abandonDelivery`), with the person as `human:<who>`.
+- **A lost close is caught up first.** Both resolutions read GitHub and record
+  `PrClosedUnmerged` before deciding when the delivery has not heard of the close
+  (R2), so an edge is never refused for a webhook the platform missed, and the
+  kernel, not a stale `prLifecycleStatus`, says whether the PR is closed.
+- **`project_supersession` and `wake_mission` are live** (`lib/workflow/supersession-effects.ts`):
+  the projection writes `supersededBy*` or `abandoned*` on every row of the PR from
+  the delivery (never over an edge already on a row); the wake re-plans the owner
+  task's mission, which may now be completable (`MissionWakeReason` `pr_resolved`).
+- **`base_deleted` is read, not guessed.** `pr_closed` asks GitHub whether the PR's
+  base branch still exists (`branchExists`); a 404 is `CLOSED_UNMERGED(base_deleted)`,
+  anything else stays `unknown` (S18).
+- **`scan_supersession` runs the detector** for a kernel-owned PR. The
+  `pull_request.closed` subscriber skips a kernel-owned PR, so the scan is owed
+  durably by T18 rather than run in the request; an edge it proves goes back in as
+  T20 with actor `system:auto-supersession`.
+- **Mission completion reads the delivery.** `prShipState` takes the delivery's
+  state when the kernel owns the PR (`MERGED`, `SUPERSEDED`, `ABANDONED`,
+  `CLOSED_UNMERGED` → closed with no edge, every other state → open; `FAILED` and no
+  delivery → the columns). `canCompleteMission` and the `all_prs_merged` criterion
+  overlay it on the row they judge (`withDeliveryShip`, loaded by
+  `deliveryShipsForPrs`, `lib/workflow/delivery-ship.ts`), so neither waits on a
+  projection and the gate's own rules are unchanged: the `mission-task-lifecycle`
+  acceptance tests pass unmodified (S16).
+- **§17.1 (b) holds at the supersede route.** A task token may supersede the PR its
+  own run opened **or** a PR its own task names (`taskScopeTaskNamesPr`, shared with
+  `POST /api/github/pr/review`), never one the owner's task names; its T20 actor is
+  `agent:<its task>` (S21).
+- **Found and fixed: Slice C's handlers were never composed.** `modules.ts`
+  imported `withLandingEffects` and did not apply it, so in production `merge_call`,
+  `verify_merge`, `refresh_branch`, `dispatch_conflict_fix`, `emit_pr_merged` and
+  `finalize_mission_pr` had no handler and would have retried until dead (the matrix
+  composes its own handler set, so it never saw this). The root now composes
+  landing and supersession, and `modules.test.ts` fails when a recorded effect kind
+  has no production handler.
+
+Deviations, each deliberate:
+
+1. **The composition is built on first use** (`workflowEffectHandlers()`, which
+   replaces the `WORKFLOW_EFFECT_HANDLERS` constant). The handler modules reach
+   back into `modules.ts` through `core-emit`, so composing them at load works or
+   throws depending on which module a process imports first.
+2. **One projection effect for both resolutions.** T21 emits `project_supersession`
+   too; the handler reads which edge to write from the delivery's terminal state
+   (§12 treats `supersededBy*` and `abandoned*` as one edge).
+3. **The hourly sweep still runs the detector** for every closed, unresolved row,
+   kernel-owned or not, instead of only re-enqueueing `scan_supersession`. Its write
+   is T20 either way, so it is a second door, not a second authority.
+4. **An admin API key may abandon** through the mission card route, recorded as
+   `human:<key name>`. Agents hold worker-level and task tokens, which that route
+   refuses; an admin key is a person's own credential.
+5. **Lineage-derived supersession stays a read-time proof.** A closed PR followed
+   by a merged PR from its own attempt lineage reads as shipped in the gate
+   (`deriveLineageSupersession`) without a T20, as before; the delivery stays
+   `CLOSED_UNMERGED` until someone or the scan records the edge.
+6. **The reaper needed no change in this slice.** Slice A part 2 already stopped
+   `resolveStaleTask` and `tasks/cleanup` promoting a kernel attempt to `completed`
+   from local commits; they send `AttemptEnded(lost)` instead, and S9 stays green.
+7. **The owner-attempt completion gates G1–G3 (§17.4) are not closed here.** They
+   change what plain builders see and are left to their own slice; the kernel still
+   only records the mismatch.
 
 ---
 
@@ -1505,6 +1588,18 @@ version is refused with the current view and applies nothing (S20)
 `apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts`,
 `apps/web/src/app/api/github/pr/route.test.ts` and the webhook route test.
 
+Slice D adds S12, S16, S18 and S21 on the live path, through the real writers
+(`recordPrSupersession`, `recordPrAbandonment`) and the real detector with GitHub
+faked: T20 by the caller after a lost close is caught up, refused on an open PR and
+on an overwrite, projected onto every row; the completion gate reading `MERGED`
+before its stamp, `CLOSED_UNMERGED`, `ABANDONED` and a legacy PR's columns; a deleted
+integration branch closing the PR as `base_deleted` and the scan recording T20; the
+caller's own task deciding §17.1 (`apps/web/tests/db/workflow-matrix.test.ts`). The
+route-level authorization matrix is in `apps/web/src/app/api/github/pr/supersede/route.test.ts`
+and `apps/web/src/app/api/github/pr/review/route.test.ts`, the gate's reading of the
+delivery in `apps/web/src/lib/mission-completion.test.ts` and
+`packages/core/__tests__/pr-shipped.test.ts`. The matrix's remaining todos are Slice B's.
+
 Integration (needs a live server): extend `apps/web/tests/integration/` with one
 end-to-end case for S1 against the dev preview (open PR, request changes, fix attempt
 that does not push, assert state via `explain`). Run with `bun run test:integration`.
@@ -1557,9 +1652,9 @@ that does not push, assert state via `explain`). Run with `bun run test:integrat
 
 - `canCompleteMission` (`lib/mission-completion.ts`) and `deriveMissionHealth` keep
   their rules and tests. The awaiting-merge gate reads `prShipState` over latest-worker
-  columns; Slice D feeds it from the delivery (`MERGED`→merged, `SUPERSEDED`,
-  `ABANDONED`, `CLOSED_UNMERGED`/others → unshipped) by projecting the same columns, so
-  the function is unchanged.
+  columns; since Slice D it is fed the delivery (`MERGED`→merged, `SUPERSEDED`,
+  `ABANDONED`, `CLOSED_UNMERGED`/others → unshipped) overlaid on the same row
+  (`withDeliveryShip`), so the gate's rules are unchanged (§13.8).
 - The deliberate strictness (closed unmerged does not count as shipped) is
   preserved: `CLOSED_UNMERGED` blocks; only `SUPERSEDED` (verified) or `ABANDONED`
   (human) unblock.
@@ -1577,9 +1672,10 @@ that does not push, assert state via `explain`). Run with `bun run test:integrat
 The output-requirement gate (`pr_required`, `artifact_required`, `auto`, `none`) has
 documented holes (G1–G9 in §18.1). Slice A closes only the fix/repair-attempt hole
 (`delivery_not_advanced`). Closing G1–G3 for owner attempts (a `prUrl` or a branch PR
-accepted without a head compare) is part of Slice D, because it changes what plain
-builders see; until then those gates are unchanged and the kernel only *records* the
-mismatch as a fact (`local_head_reported` vs live head) for the activity timeline.
+accepted without a head compare) was planned for Slice D and is not in it (§13.8
+deviation 7), because it changes what plain builders see; until it ships those gates
+are unchanged and the kernel only *records* the mismatch as a fact
+(`local_head_reported` vs live head) for the activity timeline.
 
 ### 17.5 UI projections
 
@@ -1784,8 +1880,8 @@ is a site to tick off in the Phase 2 PR that moves it.
 - [x] `lib/pr-landing.ts` `landPr` merge call (Slice C: T15/T16; its rails, marker, handoff and sweep are unchanged)
 - [ ] `lib/pr-landing-marker.ts`, `pr-landing-handoff.ts`, `pr-landing-sweep*.ts` decision data → delivery
 - [x] `app/api/prs/[prNumber]/merge/route.ts:566,257`; `app/api/github/pr/route.ts:1956,1722,1978,2016` (Slice C, kernel-owned PRs)
-- [ ] `lib/stale-workers.ts:251` auto-complete; `app/api/tasks/cleanup/route.ts:266` assigned-task complete
-- [ ] `lib/pr-supersession.ts:236,285`, `lib/pr-supersession-detect.ts:384`, `app/api/github/pr/supersede/route.ts`
+- [x] `lib/stale-workers.ts:251` auto-complete; `app/api/tasks/cleanup/route.ts:266` assigned-task complete (Slice A part 2: a kernel attempt is never promoted from local commits; `AttemptEnded(lost)`)
+- [x] `lib/pr-supersession.ts:236,285`, `lib/pr-supersession-detect.ts:384`, `app/api/github/pr/supersede/route.ts` (Slice D: T20/T21 for a kernel-owned PR; the route authorises on the caller's task)
 - [ ] `lib/dead-pr-shutdown.ts:396`; `lib/loop-webhook.ts:72`
 - [x] `lib/pr-state-reconcile.ts:127` (delete); `lib/dead-zone-sweep.ts:302` `conflict` overload (Slice B part 1)
 - [x] webhook `handlePullRequestEvent` open-state write `:822/833` and closed `:1048`; `check_suite` writes `:383,412,472` (Slice B part 1: through `recordPrFact`)
@@ -1797,7 +1893,7 @@ is a site to tick off in the Phase 2 PR that moves it.
 - [ ] `lib/reviewer-output.ts` / `WID:3255-3440` prose-verdict fallback (§6.6, T27)
 
 **Projection-only (P)**
-- [ ] `workers.supersededBy*`, `abandoned*`
+- [x] `workers.supersededBy*`, `abandoned*` (Slice D: `project_supersession`)
 - [x] `lib/pr-merge-stamp.ts:31` `stampPrMergedOnAllRows` (Slice B part 1: a funnel caller); `tasks.status='completed'` on merge (Slice C: `emit_pr_merged` → `lib/pr-merged-work.ts` for a kernel-owned PR)
 - [ ] mission notes for reviewer verdicts; `workers.mergedAt`/`prLifecycleStatus` after a transition (done, Slice B part 1: `stamp_pr_rows`)
 - [ ] `tasks.result.shipped`, evidence stores (`task-shipped-store.ts`, `task-evidence-store.ts`)
@@ -1870,7 +1966,7 @@ is a site to tick off in the Phase 2 PR that moves it.
 - Existing, to be migrated or wrapped: `apps/web/src/app/api/workers/[id]/route.ts`, `apps/web/src/app/api/github/webhook/route.ts`, `apps/web/src/app/api/github/pr/route.ts`, `apps/web/src/app/api/github/pr/review/route.ts`, `apps/web/src/app/api/github/pr/supersede/route.ts`, `apps/web/src/lib/pr-landing.ts`, `apps/web/src/lib/auto-merge.ts`, `apps/web/src/lib/pr-review-status.ts`, `apps/web/src/lib/review-verdict-gate.ts`, `apps/web/src/lib/reviewer.ts`, `apps/web/src/lib/pr-activity-comment.ts`, `apps/web/src/lib/pr-presentation.ts`, `apps/web/src/lib/mission-completion.ts`, `packages/core/pr-shipped.ts`, `packages/core/db/schema.ts`.
 - Pattern sources: `packages/core/dispatch-outbox.ts`, `apps/web/src/lib/dispatch-authority.ts`, `packages/core/gate-events.ts`.
 - Wired in Slice A part 1: `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/prs/[prNumber]/re-review/route.ts`, `apps/web/src/app/api/cron/pr-reconcile/route.ts`, `apps/web/src/lib/reviewer-subscribers.ts`.
-- New (Phase 2): `apps/web/src/lib/workflow/*` (the route seam is `seam.ts`; landing is `landing.ts` and `pr-landing-effects.ts`), `apps/web/src/lib/pr-merged-work.ts`, `packages/core/__tests__/workflow-write-sites.test.ts`, `apps/web/tests/db/workflow-seam.test.ts`.
+- New (Phase 2): `apps/web/src/lib/workflow/*` (the route seam is `seam.ts`; landing is `landing.ts` and `pr-landing-effects.ts`; a closed PR's resolution is `supersession-effects.ts`; mission completion's input is `delivery-ship.ts`), `apps/web/src/lib/pr-merged-work.ts`, `packages/core/__tests__/workflow-write-sites.test.ts`, `apps/web/tests/db/workflow-seam.test.ts`.
 
 ## 23. Out of scope
 

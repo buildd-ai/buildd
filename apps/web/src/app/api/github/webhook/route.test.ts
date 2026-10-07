@@ -613,7 +613,8 @@ mock.module('@/lib/workflow/seam', () => ({
   observePrState: mockObservePrState,
   observeCiFailure: mock(async () => ({ handled: false })),
 }));
-mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr }));
+const mockKernelDeliveryForPr = mock(async (..._a: any[]): Promise<string | null> => null);
+mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr }));
 
 // The mission loop-on-merge and integration-PR helpers, recorded in call order
 // for the missions characterization at the end of this file. Real modules are
@@ -7033,6 +7034,20 @@ describe('webhook → reviews (characterization)', () => {
     expect(call('reconcileSubjectEvent')).toEqual([expect.objectContaining({ kind: 'closed', door: 'webhook pull_request.closed' })]);
     expect(call('shutdownDeadBuilddPrs')).toEqual(['ws1', 93, false, 5000, 'test-org/test-repo']);
     expect(verdictTelemetry()).toHaveLength(0);
+  });
+
+  // Slice D: a kernel-owned PR's close (T18) owes a scan_supersession effect; the subscriber
+  // does not run a second, request-bound scan beside it.
+  it('closed unmerged, kernel-owned PR: no inline detection; the kernel\'s scan_supersession owns it', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker());
+    mockKernelDeliveryForPr.mockImplementation(async () => 'delivery-93');
+    try {
+      await POST(createWebhookRequest('pull_request', prEvent({ merged: false })));
+      expect(mockKernelDeliveryForPr).toHaveBeenCalledWith('ws1', 'test-org/test-repo', 93);
+      expect(order()).toEqual(['appendPrActivity', 'deliverPrReviewCallback', 'reconcileSubjectEvent', 'shutdownDeadBuilddPrs']);
+    } finally {
+      mockKernelDeliveryForPr.mockImplementation(async () => null);
+    }
   });
 
   it('no installation: no comment and no shutdown; the reconcile runs without PR coordinates', async () => {

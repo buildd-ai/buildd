@@ -16,7 +16,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { Command, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type DeliveryRef, type Exec } from './kernel';
-import type { CompositionAttestation, ConstituentEvidence } from './types';
+import type { CloseCause, CompositionAttestation, ConstituentEvidence } from './types';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -36,6 +36,12 @@ export interface GithubFactReader {
    * null = unreadable; never read as "nothing failed".
    */
   failingChecks?(repoFullName: string, headSha: string): Promise<string[] | null>;
+  /**
+   * Does branch `ref` exist in `repoFullName` now? A PR GitHub closed because
+   * its base branch was deleted is `CLOSED_UNMERGED(base_deleted)` (§4).
+   * null = unreadable; never read as "deleted".
+   */
+  branchExists?(repoFullName: string, ref: string): Promise<boolean | null>;
 }
 
 export type FactInput =
@@ -217,12 +223,18 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
     }
     case 'pr_closed': {
       const ref: DeliveryRef = { workspaceId: fact.workspaceId, repoFullName: fact.repoFullName, prNumber: fact.prNumber };
+      const closedUnmerged = !live!.merged && live!.state !== 'open';
+      // The cause is read, never guessed: only a base branch the live read cannot find is `base_deleted`.
+      const baseExists = closedUnmerged && live!.baseRef && github?.branchExists
+        ? await github.branchExists(fact.repoFullName, live!.baseRef)
+        : null;
+      const closeCause: CloseCause = baseExists === false ? 'base_deleted' : 'unknown';
       const command: Command = live!.merged
         ? { type: 'PrMerged', actor, live: live! }
         : live!.state === 'open'
           ? { type: 'PrReopened', actor, live: live! }
-          : { type: 'PrClosedUnmerged', actor, live: live!, closeCause: 'unknown' };
-      return { command, ref, payload: { live }, repoFullName: fact.repoFullName, prNumber: fact.prNumber };
+          : { type: 'PrClosedUnmerged', actor, live: live!, closeCause };
+      return { command, ref, payload: { live, ...(closedUnmerged ? { baseExists } : {}) }, repoFullName: fact.repoFullName, prNumber: fact.prNumber };
     }
     case 'composition_attested': {
       const att = fact.attestation;

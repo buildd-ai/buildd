@@ -60,7 +60,7 @@ const readerFor = (deps: SeamDeps, installationId: number): GithubFactReader => 
 async function effectHandlers(): Promise<EffectHandlers> {
   // The kernel's own projection onto the PR fact cache (stamp_pr_rows) is core,
   // not a module's: it is added here rather than at the composition root.
-  return withPrFactEffects((await import('@/modules')).WORKFLOW_EFFECT_HANDLERS);
+  return withPrFactEffects((await import('@/modules')).workflowEffectHandlers());
 }
 
 export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Promise<DrainSummary | null> {
@@ -444,6 +444,61 @@ export async function observePrState(p: {
     { exec: deps.exec, github: readerFor(deps, p.installationId) });
   await drainDelivery(deliveryId, deps);
   return true;
+}
+
+// ── T20 / T21: how a closed PR is resolved (Slice D) ────────────────────────
+
+export type { CommandResult };
+
+export type ResolutionOutcome = { handled: false } | { handled: true; deliveryId: string; result: CommandResult };
+
+const RESOLVED_OR_CLOSED = new Set(['CLOSED_UNMERGED', 'SUPERSEDED', 'ABANDONED', 'MERGED']);
+
+/**
+ * A resolution needs the delivery to know the PR closed. If the close webhook
+ * was lost, read GitHub now and record it (R2) before deciding, so an edge is
+ * never refused for a fact the platform merely missed.
+ */
+async function catchUpClose(deliveryId: string, p: { workspaceId: string; repoFullName: string; prNumber: number; installationId: number; source: string }, deps: SeamDeps): Promise<void> {
+  const d = (await loadView({ deliveryId }, deps.exec)).delivery;
+  if (!d || RESOLVED_OR_CLOSED.has(d.state)) return;
+  await ingestFact({ kind: 'pr_closed', workspaceId: p.workspaceId, source: p.source, repoFullName: p.repoFullName, prNumber: p.prNumber },
+    { exec: deps.exec, github: readerFor(deps, p.installationId) });
+}
+
+/**
+ * T20 for a kernel-owned PR: `record_pr_supersession`, the supersede route,
+ * the mission card's Confirm and the automatic detector. The route authorised
+ * the actor (§17.1) and read the target merged; the kernel decides whether
+ * the PR may take the edge (closed unmerged, no edge yet). The worker columns
+ * are written by the `project_supersession` effect, never by the caller.
+ * `handled: false` = legacy PR, the caller's own write runs.
+ */
+export async function recordSupersession(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number; actor: string; reason: string;
+  target: { repoFullName: string; prNumber: number; url: string | null };
+}, deps: SeamDeps = {}): Promise<ResolutionOutcome> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return { handled: false };
+  await catchUpClose(deliveryId, { ...p, source: 'supersede:catch_up' }, deps);
+  const result = await applyCommand({
+    type: 'SupersessionRecorded', actor: p.actor, reason: p.reason, authorised: true,
+    target: { repoFullName: p.target.repoFullName, prNumber: p.target.prNumber, merged: true, url: p.target.url },
+  }, { ref: { deliveryId }, exec: deps.exec });
+  await drainDelivery(deliveryId, deps);
+  return { handled: true, deliveryId, result };
+}
+
+/** T21 for a kernel-owned PR: a person declares the closed PR's work dropped. */
+export async function abandonDelivery(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number; actor: string; reason: string;
+}, deps: SeamDeps = {}): Promise<ResolutionOutcome> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return { handled: false };
+  await catchUpClose(deliveryId, { ...p, source: 'abandon:catch_up' }, deps);
+  const result = await applyCommand({ type: 'Abandon', actor: p.actor, reason: p.reason }, { ref: { deliveryId }, exec: deps.exec });
+  await drainDelivery(deliveryId, deps);
+  return { handled: true, deliveryId, result };
 }
 
 // ── T5: a person or agent asks for a review ─────────────────────────────────

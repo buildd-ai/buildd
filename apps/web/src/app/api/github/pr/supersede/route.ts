@@ -7,14 +7,17 @@
  *
  * Auth: API key / OAuth bearer (same as the sibling PATCH/PUT/GET handlers on
  * `/api/github/pr`), never a session — this is an agent-callable write.
- * A per-task token may supersede only the PR its own run opened, and only
- * with a PR in its own workspace's repo (not another repo of the mission).
+ * A per-task token may supersede the PR its own run opened or a PR its own
+ * task names (never because the PR owner's task names it), and only with a PR
+ * in its own workspace's repo (not another repo of the mission). For a PR the
+ * workflow kernel owns, the write is T20 (docs/specs/workflow-state-kernel.md
+ * §17.1, Slice D).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeTaskNamesPr } from '@/lib/task-token-auth';
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { recordPrSupersession } from '@/lib/pr-supersession';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
@@ -93,8 +96,16 @@ export async function POST(req: NextRequest) {
   }
   const resolvedWorkerId = resolved.id as string;
 
-  if (account.taskScope && (resolved.prNumber == null || !taskScopeAllowsWorkerPr(account, resolved, resolved.prNumber))) {
-    return NextResponse.json({ error: 'A task token may supersede only its own PR' }, { status: 403 });
+  // A task token: the PR its own run opened, or a PR its own task names (§17.1 (a), (b)).
+  if (account.taskScope) {
+    const pr = resolved.prNumber as number | null;
+    const allowed = pr != null && (
+      taskScopeAllowsWorkerPr(account, resolved, pr)
+      || await taskScopeTaskNamesPr(account, { workspaceId: resolved.workspaceId ?? resolved.workspace?.id, prNumber: pr })
+    );
+    if (!allowed) {
+      return NextResponse.json({ error: 'A task token may supersede only its own PR or a PR its own task names' }, { status: 403 });
+    }
   }
 
   const result = await recordPrSupersession({
@@ -102,7 +113,8 @@ export async function POST(req: NextRequest) {
     supersedingPrNumber,
     supersedingRepo: supersedingRepo ?? null,
     reason,
-    recordedBy: account.name,
+    // The workflow kernel records this as T20's actor: the caller's own task for a task token.
+    recordedBy: account.taskScope ? `agent:${account.taskScope.taskId}` : account.name,
     ...(account.taskScope ? { targetRepoWithinWorkspace: true } : {}),
   });
 

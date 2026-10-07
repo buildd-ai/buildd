@@ -776,8 +776,13 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!isHumanActor(cmd.actor)) return c.rejected('human_required');
       if (!cmd.reason.trim()) return c.rejected('reason_required');
       return c.apply(`abandon:${c.prKey}`, 'ABANDONED', {
-        patch: { stateReason: cmd.reason },
-        effects: [{ kind: 'wake_mission', dedupeKey: `wake_mission:${dd.id}:abandoned`, payload: {} }],
+        patch: { stateReason: cmd.reason, recordedBy: cmd.actor },
+        // One projection effect for both resolutions (§12: `supersededBy*` and `abandoned*` are
+        // the one edge); the handler reads which from the delivery's terminal state.
+        effects: [
+          { kind: 'project_supersession', dedupeKey: `project_supersession:${dd.id}`, payload: {} },
+          { kind: 'wake_mission', dedupeKey: `wake_mission:${dd.id}:abandoned`, payload: {} },
+        ],
         evidence: { reason: cmd.reason },
       });
     }
