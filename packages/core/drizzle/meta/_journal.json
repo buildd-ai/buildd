@@ -51,6 +51,13 @@
       "when": 1791341220676,
       "tag": "0256_shocking_exodus",
       "breakpoints": true
+    },
+    {
+      "idx": 257,
+      "version": "7",
+      "when": 1791342476112,
+      "tag": "0257_mean_alex_wilder",
+      "breakpoints": true
     }
   ]
 }

@@ -8,6 +8,7 @@ import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
+import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
@@ -1157,6 +1158,7 @@ export async function POST(req: NextRequest) {
     ordered_behind: 0,
     managed_concurrency: 0,
     managed_runner_hours: 0,
+    hosted_runner_hours: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
@@ -1228,6 +1230,8 @@ export async function POST(req: NextRequest) {
   // Managed runs this batch started, per team: not yet visible to the
   // entitlement's live-worker count.
   const managedClaimedByTeam = new Map<string, number>();
+  // Hosted runner allowance per team, read once per request (cloud claims only).
+  const hostedAllowanceByTeam = new Map<string, Awaited<ReturnType<typeof checkHostedRunnerAllowance>>>();
   for (const w of activeWorkers) {
     if (!['running', 'starting', 'idle'].includes(w.status)) continue;
     activeByWorkspace.set(w.workspaceId, (activeByWorkspace.get(w.workspaceId) || 0) + 1);
@@ -1935,6 +1939,29 @@ export async function POST(req: NextRequest) {
           claimedInBatch: managedClaimedByTeam.get(entitlementTeamId) ?? 0,
           now,
         });
+        if (block) {
+          deferTask(task, entitlementDeferralKey(block), { ...block });
+          await stampEntitlementBlock(task.id, block, now);
+          continue;
+        }
+      }
+    }
+
+    // Hosted runner allowance (teams.hostedRunnerHours, counted hours this
+    // month): cloud claims only, and only when the team has one. A host
+    // runner may still take the task. Same queued-not-failed treatment as the
+    // managed entitlement above; the hourly sweep wakes it once the month
+    // resets or the allowance grows. Running tasks are never touched.
+    if (cloudExecutor) {
+      const hostedTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (hostedTeamId) {
+        if (!hostedAllowanceByTeam.has(hostedTeamId)) {
+          hostedAllowanceByTeam.set(hostedTeamId, await checkHostedRunnerAllowance(hostedTeamId, { now }).catch((err) => {
+            console.error(`[claim] hosted runner allowance check failed for team ${hostedTeamId}:`, err);
+            return null;
+          }));
+        }
+        const block = hostedAllowanceByTeam.get(hostedTeamId) ?? null;
         if (block) {
           deferTask(task, entitlementDeferralKey(block), { ...block });
           await stampEntitlementBlock(task.id, block, now);
