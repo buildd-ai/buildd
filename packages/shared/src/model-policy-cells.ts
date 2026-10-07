@@ -81,6 +81,14 @@ export interface ModelPolicyCellRun {
   mergedRate: number | null;
   reviewOkRate: number | null;
   costPerRunUsd: number | null;
+  /**
+   * Chat cells only, once chat learning reports them: share of conversations
+   * rated satisfied, thumbs counts, and share re-asked. Absent until then.
+   */
+  satisfiedRate?: number | null;
+  thumbsUp?: number;
+  thumbsDown?: number;
+  reaskedRate?: number | null;
   recentRuns: ModelPolicyRecentRun[];
 }
 
@@ -104,6 +112,20 @@ export interface ModelPolicyCell {
   overrideCount: number;
   /** Set while `reverted` (and kept in history after). */
   revertReason?: string;
+  /** Set while `reverted`: the alternate that slipped. */
+  revertedFrom?: string;
+  /**
+   * Chat cells: what the cell learns from. `chat-retro` = the team's chat
+   * retro verdicts plus thumbs; `none` = chat retros are off, so the cell can
+   * run a fixed split but the dial cannot move traffic ("no quality signal").
+   */
+  qualitySignal?: 'chat-retro' | 'none';
+  /**
+   * Why the cell cannot move traffic right now, in plain words: no quality
+   * signal, a retro judge from the same family as one of the cell's models,
+   * or a judge that disagrees with people too often.
+   */
+  heldReason?: string;
   /** The pool backing this cell, when one exists. */
   poolId?: string | null;
   whatRan: ModelPolicyCellRun[];
@@ -115,6 +137,8 @@ export interface ModelPolicyCellsResponse {
   /** Days of runs `whatRan` covers. */
   windowDays: number;
   cells: ModelPolicyCell[];
+  /** Distinct workspaces with their own registry row for any tier. */
+  overrideWorkspaces: number;
 }
 
 export function isModelPolicyDial(v: unknown): v is ModelPolicyDial {

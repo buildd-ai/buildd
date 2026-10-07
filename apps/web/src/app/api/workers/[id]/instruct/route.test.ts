@@ -531,6 +531,38 @@ describe('POST /api/workers/[id]/instruct', () => {
       expect(capturedSet.pendingInstructions).toBeNull();
     });
 
+    // An interactive (claim_task, runner = 'mcp') worker has no runner listening
+    // on Pusher at all: its session only ever reads the queue, through
+    // update_progress, which then acknowledges. A Pusher-only urgent message to
+    // one that has not called update_progress yet reached nobody and was lost.
+    it('queues an urgent message for an interactive worker even before it has checked in', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: WORKER_ID }]) })) };
+        }),
+      });
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: WORKER_ID,
+        status: 'running',
+        runner: 'mcp',
+        workspace: { teamId: 'team-1', dataClass: 'standard' },
+        instructionHistory: [],
+        pendingInstructions: null,
+        supportsInstructionAck: false,
+      });
+
+      const req = createMockRequestWithAuth({ message: 'Stop and pivot', priority: 'urgent' }, 'bld_admin');
+      const res = await POST(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.pendingInstructions).toBe('Stop and pivot');
+      expect(capturedSet.instructionHistory[0].deliveryState).toBe('pending');
+    });
+
     it('appends to the queue instead of overwriting an undelivered instruction', async () => {
       let capturedSet: any = null;
       mockWorkersUpdate.mockReturnValue({

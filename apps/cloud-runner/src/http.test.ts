@@ -231,6 +231,17 @@ describe('container class routing', () => {
     expect(r.asked).toEqual([[TASK_ID, undefined]]);
   });
 
+  test("container reuse keys on the workspace buildd's answer names, never the body's", async () => {
+    const agents = stubAgents();
+    const decision = { size: 'standard', source: 'default', reason: null, workspaceId: 'ws-from-buildd' } as RunnerSizeDecision;
+    await handleRequest(post(payload), ENV, agents.get, undefined, sizes(decision));
+    expect(agents.byName.get(TASK_ID)!.requests).toEqual([{ runnerSize: decision, workspaceId: 'ws-from-buildd' }]);
+    // buildd named none (an older buildd): the body's workspaceId is not used.
+    const other = stubAgents();
+    await handleRequest(post(payload), ENV, other.get, undefined, sizes({ size: 'standard', source: 'default', reason: null }));
+    expect((other.byName.get(TASK_ID)!.requests[0] as { workspaceId?: string }).workspaceId).toBeUndefined();
+  });
+
   test('the webhook body cannot choose the class', async () => {
     const agents = stubAgents();
     await handleRequest(post({ ...payload, runnerSize: 'large', size: 'large' }), ENV, agents.get, undefined, sizes({ size: 'standard', source: 'default', reason: null }));

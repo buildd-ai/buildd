@@ -18,7 +18,7 @@ assertions:
     file: apps/web/src/app/api/cron/jwks-rotation/route.ts
   - id: connectors-assertion-audience-migration
     type: migration
-    number: 79
+    number: "0000"
     contains: assertion_audience
 ---
 

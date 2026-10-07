@@ -3,11 +3,17 @@
  * a duplicate webhook for the same task reaches the same instance. It owns one
  * container and supervises one `buildd-once --task <id>` process at a time.
  *
+ * With container reuse on (container-lease.ts), the same class also serves
+ * lease agents, named `lease:<size>:<workspaceId>:<slot>`, which run one task
+ * after another in a container they keep warm in between. A task agent then
+ * routes its task to a lease and remembers which (`leasedTo`); GET, kill and
+ * resume reach the lease through it. A lease agent's task is its current run's.
+ *
  * The run logic lives in supervisor.ts and the decisions in lifecycle.ts; this
  * class only wires them to `this.ctx.container`, agent state and keepAlive.
  * Design: docs/design/cloudflare-sandbox-runner.md, Components 3 and 4.
  */
-import { Agent } from 'agents';
+import { Agent, getAgentByName } from 'agents';
 import type { Env } from './env';
 import {
   INITIAL_STATE,
@@ -37,9 +43,34 @@ import {
   type ServerModelEndpointState,
 } from './outbound';
 import type { EgressProps } from './egress';
+import {
+  EMPTY_SEAT_GATE,
+  OWNER_SEAT_GATE_NAME,
+  OwnerSeatRun,
+  acquireSeat,
+  markSeatWall,
+  ownerSeatCap,
+  ownerSeatEnabled,
+  releaseSeat,
+  type SeatAcquire,
+  type SeatGateState,
+  type SeatRouteDecision,
+} from './owner-seat';
 import { otlpInterceptHosts } from './otel';
 import { SNAPSHOT_HOST, type SnapshotScope } from './snapshots';
 import { instanceTypeFor, normalizeRunnerSizeDecision, type RunnerSize } from './runner-class';
+import {
+  containerReuseEnabled,
+  parseLeaseName,
+  resolveReuseSlots,
+  resolveReuseWindowMs,
+  routeToLease,
+  taskStateOnLease,
+  type LeaseHandle,
+  type LeaseKey,
+  type LeasedDispatchRequest,
+  type LeasedDispatchResult,
+} from './container-lease';
 import {
   TaskSupervisor,
   type ContainerPort,
@@ -62,6 +93,28 @@ export class WorkerAgent extends Agent<Env, RunState> {
   static options = { sendIdentityOnConnect: false };
 
   private supervisorInstance: TaskSupervisor | null = null;
+  /** A task agent routing its task to a lease: a duplicate arriving meanwhile is a duplicate. */
+  private routing = false;
+
+  /**
+   * Set when this agent is a lease (named by container-lease.ts leaseName) of
+   * its own class. A lease name of the other class is refused outright.
+   */
+  private get lease(): LeaseKey | null {
+    const key = parseLeaseName(this.name);
+    if (key && key.size !== this.runnerSize) throw new Error(`lease ${this.name} reached the ${this.runnerSize} class`);
+    return key;
+  }
+
+  /** The task this agent runs: its name, or on a lease, its current run's task. */
+  protected get taskId(): string {
+    return this.lease ? (this.state.taskId ?? '') : this.name;
+  }
+
+  private async leaseAgent(name: string): Promise<LeaseHandle & { getRunState(): Promise<RunState>; killContainer(): Promise<{ killed: boolean }> }> {
+    const ns = this.runnerSize === 'large' ? this.env.WorkerAgentLarge : this.env.WorkerAgent;
+    return (await getAgentByName(ns as never, name)) as never;
+  }
 
   /**
    * The container class this agent's container is (wrangler.jsonc binds one
@@ -76,8 +129,10 @@ export class WorkerAgent extends Agent<Env, RunState> {
     const container = this.ctx.container;
     if (!container) throw new Error('WorkerAgent has no container binding (check wrangler.jsonc `containers`)');
     const env = this.env;
+    const agent = this;
+    const lease = this.lease;
     this.supervisorInstance = new TaskSupervisor({
-      taskId: this.name,
+      get taskId() { return agent.taskId; },
       getState: () => this.state,
       setState: (s) => this.setState(s),
       container: container as unknown as ContainerPort,
@@ -107,10 +162,13 @@ export class WorkerAgent extends Agent<Env, RunState> {
         // Durable Object and Cloudflare identifies the instance by its ID
         // (run-report.ts, RunReport.containerInstanceId).
         containerInstanceId: this.ctx.id.toString(),
+        ...(lease ? { lease, reuseWindowMs: resolveReuseWindowMs(env) } : {}),
       },
       keepAliveWhile: (fn) => this.keepAliveWhile(fn),
       waitUntil: (p) => this.ctx.waitUntil(p),
       installEgress: () => this.installEgressHandlers(),
+      // Only with the seat secret on the Worker (owner-seat.ts); otherwise runs start as before.
+      ...(ownerSeatEnabled(env) ? { ownerSeat: this.ownerSeatRun } : {}),
       mintTaskToken: () => this.mintTaskToken(),
       // One-shot alarms only (Agents SDK schedule, backed by the Durable
       // Object alarm), for task.scheduled. The callback is runScheduledDispatch.
@@ -118,6 +176,7 @@ export class WorkerAgent extends Agent<Env, RunState> {
         scheduleAt: async (at, payload) => (await this.schedule(new Date(at), 'runScheduledDispatch', payload)).id,
         cancel: async (id) => { await this.cancelSchedule(id); },
       },
+      ...(lease ? { scheduleWarmExpiry: async (at: number) => { await this.schedule(new Date(at), 'expireWarmContainer', {}); } } : {}),
       fetch: (input, init) => fetch(input, init),
       now: () => Date.now(),
       sleep: (ms) => new Promise(resolve => setTimeout(resolve, ms)),
@@ -132,10 +191,73 @@ export class WorkerAgent extends Agent<Env, RunState> {
     await this.supervisor.recoverOrphan();
   }
 
-  /** RPC from the dispatcher Worker. Idempotent while a run is live. */
+  /**
+   * RPC from the dispatcher Worker. Idempotent while a run is live. With
+   * container reuse on, a fresh dispatch is routed to a lease of the task's
+   * workspace (container-lease.ts) and falls back to this agent when none
+   * takes it; a task already on a lease (a duplicate, a resume) goes back to it.
+   */
   async dispatch(request: DispatchRequest = {}): Promise<DispatchResult> {
+    if (this.lease) throw new Error('a lease agent takes dispatchLeased only');
     const runnerSize = normalizeRunnerSizeDecision(request.runnerSize) ?? undefined;
-    return this.supervisor.dispatch({ ...request, runnerSize });
+    const req: DispatchRequest = { ...request, runnerSize };
+    const strip = (r: LeasedDispatchResult): DispatchResult => r.accepted
+      ? { accepted: true, attempt: r.attempt }
+      : { accepted: false, reason: r.reason === 'not_parked' ? 'not_parked' : 'already_live', attempt: r.attempt, status: r.status };
+
+    const leasedTo = this.state.leasedTo;
+    const leasedKey = leasedTo ? parseLeaseName(leasedTo) : null;
+    if (leasedTo && leasedKey && !this.supervisor.hasLiveRun) {
+      try {
+        const r = await (await this.leaseAgent(leasedTo)).dispatchLeased({ ...req, taskId: this.name, workspaceId: leasedKey.workspaceId });
+        // The lease still has this task (a duplicate, or its resume): its answer stands.
+        if (r.accepted || r.reason === 'already_live' || req.resumeWorkerId) return strip(r);
+      } catch (err) {
+        console.log(`[cloud-runner] task ${this.name}: lease ${leasedTo} unreachable: ${err instanceof Error ? err.message : String(err)}`);
+        if (req.resumeWorkerId) return { accepted: false, reason: 'not_parked', attempt: this.state.attempt, status: this.state.status };
+      }
+    }
+
+    const live = this.state.status === 'starting' || this.state.status === 'running';
+    if (req.resumeWorkerId || !req.workspaceId || !containerReuseEnabled(this.env) || live || this.supervisor.hasLiveRun) {
+      return this.supervisor.dispatch(req);
+    }
+    if (this.routing) return { accepted: false, reason: 'already_live', attempt: this.state.attempt, status: this.state.status };
+    this.routing = true;
+    try {
+      const routed = await routeToLease(
+        { getLease: (name) => this.leaseAgent(name), log: (m) => console.log(m) },
+        { taskId: this.name, workspaceId: req.workspaceId, size: this.runnerSize, slots: resolveReuseSlots(this.env, this.runnerSize), request: req },
+      );
+      if (routed) {
+        this.setState({ ...this.state, leasedTo: routed.lease });
+        console.log(`[cloud-runner] task ${this.name}: running in ${routed.lease}${routed.result.reused ? ' (warm container)' : ''}`);
+        return { accepted: true, attempt: routed.result.attempt };
+      }
+    } finally {
+      this.routing = false;
+    }
+    // Every slot busy: run here, as without reuse. The fresh state drops `leasedTo`.
+    return this.supervisor.dispatch(req);
+  }
+
+  /** RPC from a task agent: run its task in this lease (container-lease.ts). */
+  async dispatchLeased(request: LeasedDispatchRequest): Promise<LeasedDispatchResult> {
+    if (!this.lease || !this.ctx.container) {
+      return { accepted: false, reason: 'busy', attempt: this.state.attempt, status: this.state.status };
+    }
+    const runnerSize = normalizeRunnerSizeDecision(request.runnerSize) ?? undefined;
+    return this.supervisor.dispatchLeased({ ...request, runnerSize });
+  }
+
+  /** Agents SDK schedule callback on a lease: the warm window ended. */
+  async expireWarmContainer(): Promise<void> {
+    if (!this.lease || !this.ctx.container) return;
+    try {
+      await this.supervisor.expireWarmContainer();
+    } catch (err) {
+      console.log(`[cloud-runner] ${this.name}: warm expiry failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** RPC from the dispatcher Worker for `task.scheduled`: start a run at `notBefore` (epoch ms). */
@@ -164,6 +286,13 @@ export class WorkerAgent extends Agent<Env, RunState> {
    * sees exactly what an OOM kill or a platform stop produces.
    */
   async killContainer(): Promise<{ killed: boolean }> {
+    const leasedTo = !this.lease ? this.state.leasedTo : undefined;
+    if (leasedTo) {
+      const lease = await this.leaseAgent(leasedTo);
+      // Only while the lease still runs this task: never another task's container.
+      if ((await lease.getRunState()).taskId === this.name) return lease.killContainer();
+      return { killed: false };
+    }
     const container = this.ctx.container;
     if (!container?.running) return { killed: false };
     console.log(`[cloud-runner] task ${this.name}: debug kill requested; destroying the container`);
@@ -171,9 +300,21 @@ export class WorkerAgent extends Agent<Env, RunState> {
     return { killed: true };
   }
 
-  /** RPC from the dispatcher Worker, for `GET /tasks/:taskId`. */
+  /**
+   * RPC from the dispatcher Worker, for `GET /tasks/:taskId`. A task on a
+   * lease answers with the lease's state while the lease still has it, else
+   * with its last report there.
+   */
   async getRunState(): Promise<RunState> {
-    return this.supervisor.status();
+    const leasedTo = !this.lease ? this.state.leasedTo : undefined;
+    if (!leasedTo) return this.supervisor.status();
+    try {
+      const st = await (await this.leaseAgent(leasedTo)).getRunState();
+      return taskStateOnLease(this.name, leasedTo, st, this.state);
+    } catch (err) {
+      console.log(`[cloud-runner] task ${this.name}: lease ${leasedTo} unreachable: ${err instanceof Error ? err.message : String(err)}`);
+      return { ...this.supervisor.status(), leasedTo };
+    }
   }
 
   /**
@@ -206,7 +347,12 @@ export class WorkerAgent extends Agent<Env, RunState> {
    */
   async getGithubGrant(): Promise<GithubGrantLookup> {
     const live = this.state.status === 'starting' || this.state.status === 'running';
-    return lookupGithubGrant(live, () => this.githubTokens.get());
+    const lease = this.lease;
+    return lookupGithubGrant(live, async () => {
+      const grant = await this.githubTokens.get();
+      // A lease serves one workspace: a grant for any other is never handed out.
+      return lease && grant?.workspaceId && grant.workspaceId !== lease.workspaceId ? null : grant;
+    });
   }
 
   /**
@@ -220,6 +366,8 @@ export class WorkerAgent extends Agent<Env, RunState> {
     if (this.state.status !== 'starting' && this.state.status !== 'running') return null;
     const grant = await this.githubTokens.get();
     if (!grant?.workspaceId) return null;
+    const lease = this.lease;
+    if (lease && grant.workspaceId !== lease.workspaceId) return null;
     // The worker is the one this agent is running (its claim line, or the
     // task.resume it was dispatched with), so a park bundle is only ever
     // this run's own.
@@ -238,7 +386,7 @@ export class WorkerAgent extends Agent<Env, RunState> {
    * runs inside claimAndStart), so the task already has this account's worker.
    */
   private async fetchGithubGrant(): Promise<GithubGrant> {
-    const { url, init } = githubTokenRequest(this.env, this.name, this.state.workerId);
+    const { url, init } = githubTokenRequest(this.env, this.taskId, this.state.workerId);
     const res = await fetch(url, { ...init, signal: AbortSignal.timeout(GITHUB_TOKEN_TIMEOUT_MS) });
     if (!res.ok) {
       // The refusal's body is buildd's fixed error text, never a token.
@@ -253,13 +401,13 @@ export class WorkerAgent extends Agent<Env, RunState> {
    * The container is started with this token and never sees the runner key.
    */
   private async mintTaskToken(): Promise<string> {
-    const { url, init } = taskTokenRequest(this.env, this.name);
+    const { url, init } = taskTokenRequest(this.env, this.taskId);
     const res = await fetch(url, { ...init, signal: AbortSignal.timeout(TASK_TOKEN_TIMEOUT_MS) });
     if (!res.ok) {
       const detail = (await res.text().catch(() => '')).slice(0, 200);
       throw new Error(`POST ${new URL(url).pathname} returned ${res.status}${detail ? `: ${detail}` : ''}`);
     }
-    return parseTaskTokenResponse(await res.json(), this.name);
+    return parseTaskTokenResponse(await res.json(), this.taskId);
   }
 
   /**
@@ -278,13 +426,76 @@ export class WorkerAgent extends Agent<Env, RunState> {
     return this.modelEndpoints.get();
   }
 
+  // ── Owner seat (owner-seat.ts) ──
+  // The token itself never reaches the agent's state, RPC surface or logs: it
+  // is read from env by the egress handler alone. Here: slots and a label.
+
+  private ownerSeatRunInstance: OwnerSeatRun | null = null;
+
+  private get ownerSeatRun(): OwnerSeatRun {
+    if (this.ownerSeatRunInstance) return this.ownerSeatRunInstance;
+    const agent = this;
+    const gate = async () => (await getAgentByName(this.env.WorkerAgent, OWNER_SEAT_GATE_NAME)) as unknown as {
+      seatGateAcquire(taskId: string, cap: number): Promise<SeatAcquire>;
+      seatGateRelease(taskId: string): Promise<void>;
+      seatGateWall(untilMs: number): Promise<void>;
+    };
+    this.ownerSeatRunInstance = new OwnerSeatRun({
+      get taskId() { return agent.taskId; },
+      gate: {
+        acquire: async (taskId) => (await gate()).seatGateAcquire(taskId, ownerSeatCap(this.env)),
+        release: async (taskId) => (await gate()).seatGateRelease(taskId),
+        wall: async (untilMs) => (await gate()).seatGateWall(untilMs),
+      },
+      now: () => Date.now(),
+      log: (m) => console.log(m),
+    });
+    return this.ownerSeatRunInstance;
+  }
+
+  /** RPC from EgressHandler before a model request goes out (seat route or not). Only while a run is live. */
+  async noteModelRoute(seat: boolean): Promise<SeatRouteDecision> {
+    if (!ownerSeatEnabled(this.env) || (this.state.status !== 'starting' && this.state.status !== 'running')) return { proceed: true };
+    return this.ownerSeatRun.noteRoute(seat);
+  }
+
+  /** RPC from EgressHandler when the seat route answered 429. Header values only. */
+  async noteOwnerSeatWall(headers: { retryAfter: string | null; reset: string | null }): Promise<void> {
+    if (!ownerSeatEnabled(this.env)) return;
+    await this.ownerSeatRun.noteWall(headers);
+  }
+
+  // The gate: this Worker's one shared counter, kept by the WorkerAgent named
+  // OWNER_SEAT_GATE_NAME (never a task, never a lease). Durable Object input
+  // gates make each of these a single atomic step.
+  private async readSeatGate(): Promise<SeatGateState> {
+    return (await this.ctx.storage.get<SeatGateState>('ownerSeatGate')) ?? EMPTY_SEAT_GATE;
+  }
+
+  async seatGateAcquire(taskId: string, cap: number): Promise<SeatAcquire> {
+    if (this.name !== OWNER_SEAT_GATE_NAME) throw new Error('not the owner seat gate');
+    const r = acquireSeat(await this.readSeatGate(), taskId, Date.now(), cap);
+    await this.ctx.storage.put('ownerSeatGate', r.state);
+    return r.result;
+  }
+
+  async seatGateRelease(taskId: string): Promise<void> {
+    if (this.name !== OWNER_SEAT_GATE_NAME) throw new Error('not the owner seat gate');
+    await this.ctx.storage.put('ownerSeatGate', releaseSeat(await this.readSeatGate(), taskId, Date.now()));
+  }
+
+  async seatGateWall(untilMs: number): Promise<void> {
+    if (this.name !== OWNER_SEAT_GATE_NAME) throw new Error('not the owner seat gate');
+    await this.ctx.storage.put('ownerSeatGate', markSeatWall(await this.readSeatGate(), untilMs, Date.now()));
+  }
+
   /** RPC from EgressHandler after the endpoint answered 401 (endpointRejectedKey). */
   async reportModelEndpointAuthFailure(): Promise<void> {
     this.modelEndpoints.invalidate();
   }
 
   private async fetchModelEndpoint(): Promise<ServerModelEndpoint> {
-    const { url, init } = modelEndpointRequest(this.env, this.name, this.state.workerId);
+    const { url, init } = modelEndpointRequest(this.env, this.taskId, this.state.workerId);
     const res = await fetch(url, { ...init, signal: AbortSignal.timeout(MODEL_ENDPOINT_TIMEOUT_MS) });
     if (res.status === 404) throw new NoModelEndpointError();
     if (!res.ok) {
@@ -309,7 +520,8 @@ export class WorkerAgent extends Agent<Env, RunState> {
     const container = this.ctx.container;
     if (!container) throw new Error('WorkerAgent has no container binding');
     const exports = (this.ctx as unknown as { exports: EgressExports }).exports;
-    const handler = exports.EgressHandler({ props: { taskId: this.name, runnerSize: this.runnerSize } });
+    // The handler calls back into THIS agent (agentName) about THIS run's task.
+    const handler = exports.EgressHandler({ props: { taskId: this.taskId, agentName: this.name, runnerSize: this.runnerSize } });
     for (const host of INTERCEPTED_HOSTS) {
       await container.interceptOutboundHttps(host, handler);
       await container.interceptOutboundHttp(host, handler);

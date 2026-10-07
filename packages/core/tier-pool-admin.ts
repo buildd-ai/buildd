@@ -66,6 +66,8 @@ export interface ChangeRow {
   actorUserId: string | null;
   actorSystem: string | null;
   createdAt: Date;
+  /** Dial changes carry `{ reason, ... }` here (tier-dial-source.ts `writeDialState`). */
+  evidence?: Record<string, unknown> | null;
 }
 
 const poolColumns = {

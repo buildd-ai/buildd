@@ -19,6 +19,7 @@ import {
   rewriteModelInBody,
   isClaudeModelId,
   latin1Decode,
+  modelApiPathAllowed,
   needsGithubBodyPeek,
   needsServerModelEndpoint,
   resolveModelRoute,
@@ -27,6 +28,7 @@ import {
   type ServerModelEndpointState,
 } from './outbound';
 import { rewriteOtlp } from './otel';
+import { ownerSeatEnabled, type SeatRouteDecision } from './owner-seat';
 import { measureResponse, egressClassForKind, inspectGithubThrottle, throttleLogLine, type EgressClass, type EgressEvent, type GithubAuthLabel } from './run-report';
 import { resumableRunsEnabled, warmMaxBundleBytes, warmReposEnabled } from './lifecycle';
 import { SnapshotStore, handleSnapshotRequest, type BucketPort, type SnapshotScope } from './snapshots';
@@ -35,6 +37,12 @@ import type { RunnerSize } from './runner-class';
 export interface EgressProps {
   /** The task whose container this handler serves. Set by the WorkerAgent, never by the container. */
   taskId: string;
+  /**
+   * The agent (Durable Object name) that installed this handler and holds the
+   * run: a lease agent when the container is reused (container-lease.ts).
+   * Absent: the task agent, named by taskId. Set by the agent too.
+   */
+  agentName?: string;
   /** Which agent class serves it (WorkerAgentLarge for `large`). Set by the agent too. */
   runnerSize?: RunnerSize;
 }
@@ -45,6 +53,8 @@ interface AgentSource {
   recordEgress(event: EgressEvent): Promise<void>;
   getModelEndpoint(): Promise<ServerModelEndpointState>;
   reportModelEndpointAuthFailure(): Promise<void>;
+  noteModelRoute(seat: boolean): Promise<SeatRouteDecision>;
+  noteOwnerSeatWall(headers: { retryAfter: string | null; reset: string | null }): Promise<void>;
 }
 
 export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
@@ -75,10 +85,25 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     const bodyPeek = kind === 'github' && needsGithubBodyPeek(host, request.method, reqUrl.pathname)
       ? await peekRequestBodyPrefix(request, host.toLowerCase() === 'api.github.com' ? GITHUB_JSON_PEEK_MAX_BYTES : GITHUB_BODY_PEEK_MAX_BYTES)
       : undefined;
+    const model = resolveModelRoute(this.env, server);
+    // The owner seat's slot and its usage wall (owner-seat.ts). Asked only
+    // for a model request that would actually be forwarded, and only when the
+    // Worker has the seat at all. No slot: the container is told to retry.
+    const seatRoute = model.kind === 'owner_seat';
+    if (kind === 'anthropic' && ownerSeatEnabled(this.env) && model.kind !== 'unconfigured' && modelApiPathAllowed(request.method, request.url)) {
+      const slot = await this.noteModelRoute(seatRoute);
+      if (!slot.proceed) {
+        this.record({ type: 'request', cls, at, rejected: true, reason: 'other' });
+        return new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: `the owner's Claude seat is busy (${slot.reason}); retry later` } }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': String(Math.max(1, Math.ceil(slot.retryAfterMs / 1000))) },
+        });
+      }
+    }
     const decision = rewriteOutbound(
       { url: request.url, method: request.method, headers: request.headers, ...(bodyPeek !== undefined ? { bodyPeek } : {}) },
       {
-        model: resolveModelRoute(this.env, server),
+        model,
         github: lookup?.grant ?? null,
         ...(lookup && !lookup.grant ? { githubUnavailable: lookup.unavailable } : {}),
       },
@@ -123,6 +148,11 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
         // The endpoint rejected its key: have the agent drop it and refetch
         // after a short backoff (a rotated key then takes effect mid-run).
         void this.agent().then(a => a?.reportModelEndpointAuthFailure()).catch(() => {});
+      }
+      if (seatRoute && r.status === 429) {
+        // A usage limit on the owner's seat: header values only, never the body.
+        const headers = { retryAfter: r.headers.get('retry-after'), reset: r.headers.get('anthropic-ratelimit-unified-reset') };
+        this.ctx.waitUntil(this.agent().then(a => a?.noteOwnerSeatWall(headers)).catch(() => {}));
       }
       return r;
     });
@@ -195,9 +225,24 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
   private async agent(): Promise<AgentSource | null> {
     const taskId = this.ctx.props?.taskId;
     if (!taskId) return null;
+    const name = this.ctx.props?.agentName || taskId;
     return this.ctx.props?.runnerSize === 'large'
-      ? (await getAgentByName(this.env.WorkerAgentLarge, taskId)) as unknown as AgentSource
-      : (await getAgentByName(this.env.WorkerAgent, taskId)) as unknown as AgentSource;
+      ? (await getAgentByName(this.env.WorkerAgentLarge, name)) as unknown as AgentSource
+      : (await getAgentByName(this.env.WorkerAgent, name)) as unknown as AgentSource;
+  }
+
+  /** Tell the task's agent which route this model request takes; it decides whether the owner seat has a slot for it. */
+  private async noteModelRoute(seat: boolean): Promise<SeatRouteDecision> {
+    const taskId = this.ctx.props?.taskId;
+    if (!taskId) return { proceed: true };
+    try {
+      const agent = await this.agent();
+      return agent ? await agent.noteModelRoute(seat) : { proceed: true };
+    } catch (err) {
+      console.log(`[cloud-runner] task ${taskId}: owner seat check failed: ${err instanceof Error ? err.message : String(err)}`);
+      // Fail closed for the seat (a slot we cannot confirm is a slot we do not have); metered traffic is unaffected.
+      return seat ? { proceed: false, reason: 'owner_seat_cap', retryAfterMs: 30_000 } : { proceed: true };
+    }
   }
 
   /** The task's agent model endpoint, from its WorkerAgent's in-memory cache. */

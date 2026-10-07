@@ -18,7 +18,9 @@ const TASK_LIMIT = 50;
 //   worker opened it, including their retry chains.
 // GET /api/evidence?workspaceId=&evidenceId=
 //   One object's pointer, so a caller holding only an evidence id can find
-//   the task to read it through (GET /api/tasks/:id/evidence).
+//   the task to read it through (GET /api/tasks/:id/evidence), or, for a
+//   runner-hosted Scout run's command log, the run
+//   (GET /api/quality-scout/runs/:id/evidence).
 //
 // Listing only; text is read through the task route, which checks lineage.
 // A scoped token needs analytics:read and, if restricted, workspaceId among its
@@ -61,7 +63,8 @@ export async function GET(req: NextRequest) {
     }
     auditEvidenceRead({ surface: 'GET /api/evidence', op: 'list', workspaceId, taskId: row.taskId, evidenceIds: [row.id], actor });
     const body: EvidenceLookupResponse = {
-      workspaceId, prNumber: row.prNumber ?? null, taskIds: [row.taskId], objects: [toEvidenceObjectSummary(row)],
+      // A Scout run's object has no task: `objects[0].scoutRunId` names the run to read it through.
+      workspaceId, prNumber: row.prNumber ?? null, taskIds: row.taskId ? [row.taskId] : [], objects: [toEvidenceObjectSummary(row)],
     };
     return NextResponse.json(body);
   }
@@ -94,7 +97,7 @@ export async function GET(req: NextRequest) {
   const ids = new Set(taskIds);
   const objects = rows
     .filter(r => r.workspaceId === workspaceId
-      && (r.prNumber === prNumber || ids.has(r.taskId) || ids.has(r.rootTaskId))
+      && (r.prNumber === prNumber || (!!r.taskId && ids.has(r.taskId)) || (!!r.rootTaskId && ids.has(r.rootTaskId)))
       && (!kind || r.kind === kind))
     .map(toEvidenceObjectSummary);
 

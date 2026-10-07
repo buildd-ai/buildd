@@ -179,6 +179,8 @@ describe('decideDialCell', () => {
     expect(d.alternateArmId).toBeNull();
     expect(d.event?.kind).toBe('revert');
     expect(d.record.revertReason).toMatch(/merged/);
+    // The settings page names the model that slipped; the reason does not.
+    expect(d.record.revertedFrom).toBe('cheap-model');
   });
 
   it('stays shifted while the alternate keeps up', () => {

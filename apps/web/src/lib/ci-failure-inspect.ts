@@ -63,13 +63,15 @@ export async function fetchPrRetryGate(
   installationId: number,
   repoFullName: string,
   prNumber: number,
-): Promise<{ draft: boolean; closed: boolean; merged: boolean }> {
+): Promise<{ draft: boolean; closed: boolean; merged: boolean; headRef?: string | null; baseRef?: string | null }> {
   try {
     const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
     return {
       draft: pr?.draft === true,
       closed: typeof pr?.state === 'string' && pr.state !== 'open',
       merged: pr?.merged === true,
+      headRef: pr?.head?.ref ? String(pr.head.ref) : null,
+      baseRef: pr?.base?.ref ? String(pr.base.ref) : null,
     };
   } catch (error) {
     console.warn(`Failed to read PR #${prNumber} on ${repoFullName} for the CI-retry gate:`, error);

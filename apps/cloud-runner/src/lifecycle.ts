@@ -6,6 +6,8 @@
  * Design: docs/design/cloudflare-sandbox-runner.md, Components 3.
  */
 
+import { SEAT_CAP_REASON, SEAT_RETRY_BACKOFF_S, SEAT_WALL_REASON } from './owner-seat';
+
 // ── Exit codes ────────────────────────────────────────────────────────────────
 // Mirrors apps/runner/src/run-once.ts. Not imported from there: that module
 // lazily imports the whole runner, which must not end up in the Worker bundle.
@@ -34,6 +36,12 @@ export const CLAIM_DEFERRED_LINE_PREFIX = 'BUILDD_CLAIM_DEFERRED=';
 import type { RunTimings, StoredRunReport } from './run-report';
 import { SNAPSHOT_HOST } from './snapshots';
 import type { RunnerSizeDecision } from './runner-class';
+import type { ReusedContainer, WarmContainer } from './container-lease';
+
+/** Exec'd in a warm container before the next task's run (apps/runner/src/container-reset.ts). */
+export const RESET_COMMAND = ['buildd-once', '--reset-container'] as const;
+/** The reset's last line on success, next to exit 0. */
+export const RESET_OK_LINE = 'BUILDD_RESET=ok';
 
 export type RunStatus = 'idle' | 'starting' | 'running' | 'exited';
 
@@ -109,6 +117,13 @@ export interface RunState {
   agentVersion?: string;
   /** Times this agent restarted under this attempt (newest last), for the run report. */
   agentRestarts?: AgentRestart[];
+  // ── Container reuse (container-lease.ts) ──
+  /** Task agent: the lease agent that runs (or ran) this task's latest attempt. */
+  leasedTo?: string;
+  /** Lease agent: the container its last run left for the next task. Cleared when taken or expired. */
+  warm?: WarmContainer;
+  /** Lease agent: this attempt starts in a container another run left warm. */
+  reusedContainer?: ReusedContainer;
 }
 
 /** One agent restart found by `recoverOrphan` (the container outlives the agent). */
@@ -151,6 +166,11 @@ export interface DispatchRequest {
    * this request reached.
    */
   runnerSize?: RunnerSizeDecision;
+  /**
+   * The task's workspace, from buildd's runner-size answer (authenticated),
+   * never from the webhook body. Keys container reuse (container-lease.ts).
+   */
+  workspaceId?: string;
 }
 
 /**
@@ -222,7 +242,9 @@ export const MAX_DEFERRED_RETRIES = DEFERRED_RETRY_BACKOFF_S.length;
 export const RUNNER_CAPABILITY_RETRY_BACKOFF_S = [60, 180, 300, 600, 900, 1800] as const;
 
 export function deferredRetryBackoffMs(retryNumber: number, reason?: string | null): number | null {
-  const schedule = reason === 'runner_capability' ? RUNNER_CAPABILITY_RETRY_BACKOFF_S : DEFERRED_RETRY_BACKOFF_S;
+  const schedule = reason === 'runner_capability' ? RUNNER_CAPABILITY_RETRY_BACKOFF_S
+    : reason === SEAT_CAP_REASON || reason === SEAT_WALL_REASON ? SEAT_RETRY_BACKOFF_S
+    : DEFERRED_RETRY_BACKOFF_S;
   if (!Number.isInteger(retryNumber) || retryNumber < 1 || retryNumber > schedule.length) return null;
   return schedule[retryNumber - 1]! * 1000;
 }

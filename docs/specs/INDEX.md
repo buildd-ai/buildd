@@ -4,16 +4,20 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (55)
+## Active (58)
 
-### auth (5)
+### auth (7)
 
+- [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-05
+  An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
 - [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-07-18
   The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
 - [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-10-05
   The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
 - [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-09-30
   A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
+- [Deployment Actions](./deployment-actions.md) · @max — verified 2026-10-05
+  A deploy MUST run server-side with a credential named by reference, authorized against the task role's workspace grant or an admin key, audited before use, never returning the credential.
 - [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-10-05
   buildd's OAuth provider surface MUST issue only workspace-scoped PKCE-protected tokens to registered clients, and its JWKS MUST publish the public half of every key that can verify a buildd assertion.
 - [Team Permissions](./team-permissions.md) · @max — verified 2026-10-04
@@ -68,14 +72,14 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [DB Migration Operation-Class Gate](./db-migration-gates.md) · @builder — verified 2026-08-25
   Every generated Drizzle migration in a PR MUST be classified EXPAND or CONTRACT, and that verdict MUST gate auto-merge unconditionally, independent of any workspace path configuration.
-- [DB Migration Execution](./migration-execution.md) · @max — verified 2026-09-12
+- [DB Migration Execution](./migration-execution.md) · @max — verified 2026-10-06
   Every committed migration MUST execute exactly once and only while its journal `when` exceeds the applied high-water mark; a missing tracking row below that mark MUST be backfilled, never replayed.
 - [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-09-15
   For a mission with an integration base, canCompleteMission and the on_mission_complete release trigger MUST gate on the mission PR's merge into trunk through one shared accessor.
 - [Release Flow](./release-flow.md) · @max — verified 2026-07-18
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
-### runners (7)
+### runners (8)
 
 - [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-09-29
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
@@ -85,11 +89,13 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The cloud egress handler MUST refuse a direct GitHub PR merge, a push to a protected branch, and (under an allow-list) any ref move outside the task's own branch, before attaching its token.
 - [Codex Backend Behavioral Spec](./codex-backend-spec.md) · @max — verified 2026-09-11
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
+- [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-07
+  A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-10-04
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 - [Runner Liveness](./runner-liveness.md) · @max — verified 2026-09-29
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
-- [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-08-30
+- [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-07
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
 ### surfaces (12)

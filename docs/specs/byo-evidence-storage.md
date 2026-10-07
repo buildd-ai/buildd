@@ -6,7 +6,7 @@ last_verified: 2026-10-06
 summary: Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
 domain: knowledge
 surfaces: [apps/web/src/lib/evidence-backend.ts, apps/runner/src/evidence-writer.ts, apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts, apps/web/src/lib/evidence-read.ts]
-verified_by: [apps/web/src/lib/evidence-backend.test.ts, apps/web/src/app/api/evidence-backends/route.test.ts, apps/web/src/app/api/workers/[id]/evidence-upload-url/route.test.ts, apps/runner/__tests__/unit/evidence-writer.test.ts, apps/web/src/lib/evidence-confirm.test.ts, apps/web/src/lib/ci-job-log-evidence.test.ts, apps/web/src/app/api/tasks/[id]/evidence/route.test.ts, apps/web/src/app/api/evidence/route.test.ts, apps/web/src/lib/evidence-indexer.test.ts]
+verified_by: [apps/web/src/lib/evidence-backend.test.ts, apps/web/src/app/api/evidence-backends/route.test.ts, apps/web/src/app/api/workers/[id]/evidence-upload-url/route.test.ts, apps/runner/__tests__/unit/evidence-writer.test.ts, apps/web/src/lib/evidence-confirm.test.ts, apps/web/src/lib/ci-job-log-evidence.test.ts, apps/web/src/app/api/tasks/[id]/evidence/route.test.ts, apps/web/src/app/api/evidence/route.test.ts, apps/web/src/lib/evidence-indexer.test.ts, apps/web/src/app/api/quality-scout/runs/[id]/evidence/route.test.ts, apps/web/tests/db/quality-scout-run-evidence.test.ts]
 related: [knowledge-store-retrieval, knowledge-ingest-pipeline, artifacts-and-sharing, credential-isolation]
 keywords: [evidence, s3, r2, byo, transcript, ci-log, query_knowledge, read_evidence, evidence_backends, evidence_objects, evidence_storage_credential]
 assertions:
@@ -261,7 +261,17 @@ Table `evidence_objects`:
 `id`, `workspace_id`, `task_id`, `root_task_id`, `worker_id`, `pr_number`,
 `kind`, `backend_id`, `object_key`, `bytes`, `sha256`, `created_at`,
 `expires_at`, `upload_state` (`pending` | `stored` | `failed` | `unreadable`),
-`index_state` (`skipped` | `queued` | `indexed` | `failed`).
+`index_state` (`skipped` | `queued` | `indexed` | `failed`), `scout_run_id`.
+
+A row has exactly one owner (CHECK `evidence_objects_one_owner`): a task run
+(`task_id`, `root_task_id` and `worker_id` set, `scout_run_id` null) or a
+runner-hosted Quality Scout run (`scout_run_id` set, the task triple null). A
+Scout run's command log is uploaded by the runner holding the run's lease
+(`POST /api/quality-scout/runs/:id/evidence`, presigned PUT on the workspace's
+resolved backend, `max_bytes_per_task` applied per run, then
+`…/evidence/:evidenceId/confirm`), cited in the probe result as
+`evidence:<id>` (the server keeps only refs to that run's own objects), and
+never indexed.
 
 `result.evidence.links[]` (task 0c635dfe) references `evidence_objects.id`,
 never raw URLs. NOT IMPLEMENTED: the compact record shipped, but its `links`
@@ -325,7 +335,11 @@ readers through the inline list on `get_task`, `get_pr` and `explain` instead.
   cursor. The route MUST verify the object's `task_id` or `root_task_id` matches
   `:id`.
 - `GET /api/evidence?workspaceId=&prNumber=&kind=` resolves a PR number to its
-  tasks' objects.
+  tasks' objects; `?workspaceId=&evidenceId=` resolves one object to its task or
+  Scout run.
+- `GET /api/quality-scout/runs/:id/evidence` lists and reads a Scout run's
+  objects, for a caller with access to the run's workspace; the object's
+  `scout_run_id` and `workspace_id` MUST match the run.
 - **Read audit** is one structured `[evidence-read] {json}` log line per list or
   read (surface, workspace, task or PR, evidence ids, actor, query, bytes,
   truncated). There is no queryable audit store.

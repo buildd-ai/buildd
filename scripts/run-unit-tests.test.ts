@@ -23,6 +23,15 @@ import {
   runWithConcurrency,
   snapshotStore,
   storeDiffIsFatal,
+  DURATION_HINT_MIN_MS,
+  DURATIONS_PATH,
+  UPDATE_DURATIONS_FLAG,
+  formatDurationHintsFile,
+  formatDurations,
+  mergeDurationHints,
+  orderByDuration,
+  parseRunnerArgs,
+  readDurationHints,
 } from './run-unit-tests';
 
 describe('isUnitTestFile', () => {
@@ -145,7 +154,9 @@ describe('runTestFile', () => {
       file: 'example.test.ts',
       exitCode: 1,
       output: 'assertion details\nstack trace\n',
+      durationMs: expect.any(Number),
     });
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
 
   it('uses the current Bun executable and converts launch errors into file failures', async () => {
@@ -637,5 +648,115 @@ describe('getTestTimeoutMs', () => {
     expect(getTestTimeoutMs('abc')).toBe(getTestTimeoutMs(undefined));
     expect(getTestTimeoutMs('0')).toBe(getTestTimeoutMs(undefined));
     expect(getTestTimeoutMs('-5')).toBe(getTestTimeoutMs(undefined));
+  });
+});
+
+describe('orderByDuration', () => {
+  it('runs the slowest hinted files first, then unhinted files alphabetically', () => {
+    const files = ['a.test.ts', 'b.test.ts', 'slow.test.ts', 'slower.test.ts', 'z.test.ts'];
+    const hints = { 'slow.test.ts': 30_000, 'slower.test.ts': 60_000, 'z.test.ts': 12_000 };
+    expect(orderByDuration(files, hints)).toEqual([
+      'slower.test.ts',
+      'slow.test.ts',
+      'z.test.ts',
+      'a.test.ts',
+      'b.test.ts',
+    ]);
+  });
+
+  it('with no hints at all, is plain alphabetical (the order before hints existed)', () => {
+    expect(orderByDuration(['c.test.ts', 'a.test.ts', 'b.test.ts'], {})).toEqual(['a.test.ts', 'b.test.ts', 'c.test.ts']);
+  });
+
+  it('breaks equal hints alphabetically, so the order is deterministic', () => {
+    expect(orderByDuration(['y.test.ts', 'x.test.ts'], { 'x.test.ts': 5_000, 'y.test.ts': 5_000 })).toEqual(['x.test.ts', 'y.test.ts']);
+  });
+
+  it('only reorders: hints for files not selected add nothing, and no selected file is dropped', () => {
+    const files = ['b.test.ts', 'a.test.ts'];
+    const ordered = orderByDuration(files, { 'gone.test.ts': 99_000, 'b.test.ts': 3_000 });
+    expect(ordered).toEqual(['b.test.ts', 'a.test.ts']);
+    expect([...ordered].sort()).toEqual([...files].sort());
+  });
+
+  it('ignores a nonsense hint rather than scheduling by it', () => {
+    const hints = { 'a.test.ts': -5, 'b.test.ts': Number.NaN } as Record<string, number>;
+    expect(orderByDuration(['b.test.ts', 'a.test.ts'], hints)).toEqual(['a.test.ts', 'b.test.ts']);
+  });
+
+  it('the committed hints put the slowest known file first and unhinted files last', () => {
+    const hints = readDurationHints();
+    expect(Object.keys(hints).length).toBeGreaterThan(0);
+    const ordered = orderByDuration([...Object.keys(hints), 'aaa-unhinted.test.ts'], hints);
+    expect(ordered.at(-1)).toBe('aaa-unhinted.test.ts');
+    expect(hints[ordered[0]!]).toBe(Math.max(...Object.values(hints)));
+  });
+});
+
+describe('duration hints file', () => {
+  it('parseRunnerArgs strips the update flag so it is never mistaken for a directory', () => {
+    expect(parseRunnerArgs(['apps/web/src', UPDATE_DURATIONS_FLAG])).toEqual({ named: ['apps/web/src'], updateDurations: true, shard: null });
+    expect(parseRunnerArgs(['ALL'])).toEqual({ named: ['ALL'], updateDurations: false, shard: null });
+  });
+
+  it('every committed hint names an existing unit test file and is over the threshold', () => {
+    const hints = readDurationHints(DURATIONS_PATH);
+    for (const [file, ms] of Object.entries(hints)) {
+      expect(isUnitTestFile(file)).toBe(true);
+      expect(existsSync(file)).toBe(true);
+      expect(ms).toBeGreaterThanOrEqual(DURATION_HINT_MIN_MS);
+    }
+  });
+
+  it('a missing or malformed hint file falls back to no hints', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'durations-'));
+    try {
+      expect(readDurationHints(join(dir, 'absent.json'))).toEqual({});
+      writeFileSync(join(dir, 'bad.json'), '{not json');
+      expect(readDurationHints(join(dir, 'bad.json'))).toEqual({});
+      writeFileSync(join(dir, 'array.json'), '{"files": [1, 2]}');
+      expect(readDurationHints(join(dir, 'array.json'))).toEqual({});
+      writeFileSync(join(dir, 'mixed.json'), '{"files": {"a.test.ts": 3000, "b.test.ts": "slow"}}');
+      expect(readDurationHints(join(dir, 'mixed.json'))).toEqual({ 'a.test.ts': 3000 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('round-trips through the file format', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'durations-'));
+    try {
+      const path = join(dir, 'd.json');
+      writeFileSync(path, formatDurationHintsFile({ 'a.test.ts': 3_000, 'b.test.ts': 45_000 }));
+      expect(readDurationHints(path)).toEqual({ 'a.test.ts': 3_000, 'b.test.ts': 45_000 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('merge: measured files replace their hint, unmeasured keep it, deleted and now-fast files drop out', () => {
+    const previous = { 'kept.test.ts': 9_000, 'remeasured.test.ts': 9_000, 'deleted.test.ts': 9_000, 'got-fast.test.ts': 9_000 };
+    const merged = mergeDurationHints(
+      previous,
+      [
+        { file: 'remeasured.test.ts', durationMs: 31_449 },
+        { file: 'got-fast.test.ts', durationMs: DURATION_HINT_MIN_MS - 1 },
+        { file: 'new-slow.test.ts', durationMs: 4_260 },
+        { file: 'new-fast.test.ts', durationMs: 120 },
+      ],
+      ['kept.test.ts', 'remeasured.test.ts', 'got-fast.test.ts', 'new-slow.test.ts', 'new-fast.test.ts'],
+    );
+    expect(merged).toEqual({ 'kept.test.ts': 9_000, 'new-slow.test.ts': 4_300, 'remeasured.test.ts': 31_400 });
+    // Keys sorted, so a refresh diffs cleanly.
+    expect(Object.keys(merged)).toEqual(['kept.test.ts', 'new-slow.test.ts', 'remeasured.test.ts']);
+  });
+
+  it('formatDurations lists slowest first and honours the limit', () => {
+    const lines = formatDurations([
+      { file: 'a.test.ts', durationMs: 1_000 },
+      { file: 'b.test.ts', durationMs: 57_250 },
+      { file: 'c.test.ts', durationMs: 4_000 },
+    ], 2);
+    expect(lines).toEqual(['   57.3s  b.test.ts', '    4.0s  c.test.ts']);
   });
 });

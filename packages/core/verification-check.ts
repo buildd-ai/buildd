@@ -150,6 +150,12 @@ export interface VerificationResult {
   reason: string | null;
   evidenceShortfall: EvidenceShortfall[];
   signature: string;
+  /**
+   * The executor's extra dedupe parts `signature` was built from (after the
+   * check id). Present only when there were any. A remote host reports these,
+   * not a signature: the receiving server re-derives the signature itself.
+   */
+  signatureParts?: string[];
   recurrenceKey: string;
   provenance: VerificationProvenance & { executor: string; ranAt: string };
 }
@@ -260,6 +266,7 @@ export function runVerificationCheck<I>(check: VerificationCheck<I>, ctx: Verifi
     reason: null,
     evidenceShortfall: [],
     signature: verificationSignature([check.id, ...parts]),
+    ...(parts.length > 0 ? { signatureParts: [...parts] } : {}),
     recurrenceKey: typeof obs.recurrenceKey === 'string' && obs.recurrenceKey ? clip(obs.recurrenceKey, 120) : check.id,
   };
 }

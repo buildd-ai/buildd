@@ -11,6 +11,8 @@ export type EvidenceReadSurface =
   | 'GET /api/evidence'
   /** The dashboard's per-click download link; session only, never chat or MCP. */
   | 'GET /api/evidence/download'
+  /** A runner-hosted Quality Scout run's command logs. */
+  | 'GET /api/quality-scout/runs/:id/evidence'
   | 'get_task'
   | 'get_pr'
   | 'explain';
@@ -22,6 +24,7 @@ export interface EvidenceReadAudit {
   op: 'list' | 'read' | 'download';
   workspaceId: string;
   taskId?: string | null;
+  scoutRunId?: string | null;
   prNumber?: number | null;
   evidenceIds: string[];
   actor: EvidenceActor;

@@ -160,20 +160,47 @@ export function prSignals(pr: ShapedPr, a: PrAttentionIndex, now: Date = new Dat
   return out;
 }
 
+/**
+ * Why a PR in the inbox is waiting on a person, in words that match the PR as
+ * it is now. The verdict says whether a reviewer cleared it; only the PR's
+ * current state (the collapsed lifecycle, which the reconcile sweep re-reads
+ * from GitHub) says whether it can merge. An approval on a conflicting or red
+ * PR is never "merge is yours".
+ */
+export function waitingReason(i: {
+  conflictFixesSpent: boolean;
+  escalated: boolean;
+  approved: boolean;
+  status: string | null;
+}): string {
+  if (i.conflictFixesSpent) return 'conflict fixes used up';
+  const blocked = i.status === 'conflict' ? 'conflicting'
+    : i.status === 'ci_failed' ? 'CI red'
+    : i.status === 'ci_green' ? null
+    : 'CI not green yet';
+  if (i.escalated) return blocked ? `reviewer escalated, ${blocked}` : 'reviewer escalated';
+  if (i.approved) return blocked ? `approved but ${blocked}, not mergeable` : 'approved, merge is yours';
+  return blocked ? `human merge, ${blocked}` : 'human merge';
+}
+
 /** The attention index for these PRs: the inbox decision, plus live fix and review tasks. */
 async function loadAttentionIndex(prs: ShapedPr[], workspaceIds: string[]): Promise<PrAttentionIndex> {
   const idx: PrAttentionIndex = { inbox: new Map(), reviewing: new Set(), conflictFix: new Set(), ciFix: new Set(), ciFixAttempts: new Map() };
   if (prs.length === 0) return idx;
   const attention = await loadPrAttention(workspaceIds, { workerIds: prs.flatMap(p => p.workerIds) });
+  // Every worker of a PR speaks with the PR's collapsed state, not its own row.
+  const statusByWorker = new Map(prs.flatMap(p => p.workerIds.map(id => [id, p.status] as const)));
   for (const w of attention.openPrWorkers) {
     if (w.taskId && attention.agentReviewingTaskIds.has(w.taskId)) idx.reviewing.add(w.id);
     const key = `${w.workspaceId}:${w.prNumber}`;
     if (attention.conflictRetryMap.has(key)) idx.conflictFix.add(key);
     if (!attention.isInInbox(w) || attention.conflictRetryMap.has(key)) continue;
-    idx.inbox.set(w.id, attention.deadZoneExhaustedMap.has(w.id) ? 'conflict fixes used up'
-      : w.taskId && attention.escalationMap.has(w.taskId) ? 'reviewer escalated'
-      : w.taskId && attention.approvalMap.has(w.taskId) ? 'approved, merge is yours'
-      : 'human merge');
+    idx.inbox.set(w.id, waitingReason({
+      conflictFixesSpent: attention.deadZoneExhaustedMap.has(w.id),
+      escalated: !!w.taskId && attention.escalationMap.has(w.taskId),
+      approved: !!w.taskId && attention.approvalMap.has(w.taskId),
+      status: statusByWorker.get(w.id) ?? null,
+    }));
   }
   const prNumbers = [...new Set(prs.map(p => p.prNumber).filter((n): n is number => n != null))];
   if (prNumbers.length > 0) {

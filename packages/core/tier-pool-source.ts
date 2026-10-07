@@ -433,6 +433,8 @@ export interface ChatPoolDraw {
   served: boolean;
   defaultModel: string | null;
   assignedModel: string | null;
+  /** Dial pools: the dial, the cell's state and, while learning, the shadow pick. */
+  eligibility?: Record<string, unknown>;
 }
 
 export interface ChatPoolArgs {
@@ -478,7 +480,13 @@ export async function drawChatPoolArm(args: ChatPoolArgs): Promise<ChatPoolDraw 
     });
     if (!elig.eligible) return null;
 
-    const live = activeIds(pool);
+    const allocation = servingAllocation(pool);
+    const isDialPool = pool.mode === 'dial';
+    // As for agent runs: a dial pool's chain only continues on an arm that is
+    // serving now, so a revert takes every conversation back to the primary.
+    const live = isDialPool
+      ? new Set([...activeIds(pool)].filter(id => (allocation[id] ?? 0) > 0))
+      : activeIds(pool);
     let prevArmId: string | null = null;
     let prevPropensity = 1;
     if (args.previous) {
@@ -502,10 +510,28 @@ export async function drawChatPoolArm(args: ChatPoolArgs): Promise<ChatPoolDraw 
     } else {
       const d = drawPoolArm({
         experimentId: pool.experimentId, policyVersion: pool.policyVersion, drawKey: args.drawKey,
-        allocation: servingAllocation(pool), armOrder: pool.arms.filter(a => live.has(a.id)).map(a => a.id),
+        allocation, armOrder: pool.arms.filter(a => live.has(a.id)).map(a => a.id),
       });
       if (!d) return null;
       armId = d.armId; propensity = d.propensity; source = 'drawn';
+    }
+    let eligibility: Record<string, unknown> | undefined;
+    if (isDialPool) {
+      const incumbentArm = pool.arms.find(a => a.role === 'incumbent' && a.status === 'active');
+      if (!incumbentArm) return null;
+      const shadow = shadowArm(pool);
+      const pick = decideDialArm({
+        record: pool.dialState, incumbentId: incumbentArm.id,
+        drawnArmId: pool.dial === 1 ? null : armId, shadowArmId: shadow?.id ?? null,
+      });
+      if (pick.armId !== armId) {
+        armId = pick.armId; propensity = allocation[pick.armId] ?? 1; source = 'drawn';
+      }
+      eligibility = {
+        dial: pool.dial,
+        dialState: pool.dialState?.state ?? 'learning',
+        ...(pick.shadowArmId ? { shadowArmId: pick.shadowArmId, shadowModel: shadow?.model ?? null } : {}),
+      };
     }
     const arm = pool.arms.find(a => a.id === armId);
     if (!arm) return null;
@@ -520,6 +546,7 @@ export async function drawChatPoolArm(args: ChatPoolArgs): Promise<ChatPoolDraw 
       poolId: pool.id, experimentId: pool.experimentId, policyVersion: pool.policyVersion,
       allocationVersion: pool.allocationVersion, arm, propensity, conversationId: args.conversationId,
       source, served: arm.role === 'incumbent', defaultModel: null, assignedModel: null,
+      ...(eligibility ? { eligibility } : {}),
     };
   } catch (err) {
     console.warn(`[tier-pool] chat draw failed for conversation ${args.conversationId}; serving the incumbent:`, err);
@@ -545,7 +572,7 @@ export async function recordChatPoolAssignment(draw: ChatPoolDraw, args: { messa
       defaultModel: draw.defaultModel,
       assignedModel: draw.assignedModel,
       served: draw.served,
-      eligibility: { source: draw.source },
+      eligibility: { source: draw.source, ...draw.eligibility },
     }).onConflictDoNothing();
   } catch (err) {
     console.warn(`[tier-pool] failed to record assignment for message ${args.messageId}:`, err);

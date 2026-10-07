@@ -7,6 +7,13 @@
 #   buildd-once --task <task-id>
 set -eu
 
+# Between two tasks in one reused cloud container (apps/runner/src/
+# container-reset.ts). Before anything below writes to /tmp or HOME.
+if [ "${1:-}" = --reset-container ]; then
+  cd "${BUILDD_REPO_ROOT:-/opt/buildd}"
+  exec bun run apps/runner/src/container-reset-cli.ts
+fi
+
 # Cloudflare egress interception re-signs HTTPS for the credentialed hosts
 # (api.anthropic.com, github.com, ...) with a per-container CA that appears at
 # this path once the container starts. Trust it alongside the system roots:
