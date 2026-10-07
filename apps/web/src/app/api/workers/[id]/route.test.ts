@@ -693,8 +693,11 @@ const mockWorkflowAttemptEnded = mock(async (_p: any) => ({ handled: false }));
 const mockFixCompletionGate = mock(async (_p: any): Promise<any> => null);
 const mockRecordLocalHead = mock(async (_taskId: string, _sha: string) => undefined);
 const mockRecordReviewVerdict = mock(async (_p: any): Promise<any> => ({ handled: false }));
+const realHandOff = await import('@/lib/workflow/hand-off');
 mock.module('@/lib/workflow/seam', () => ({
   attemptEnded: mockWorkflowAttemptEnded,
+  attemptEndFromPatch: realHandOff.attemptEndFromPatch,
+  taskRetryCoversAttemptEnd: realHandOff.taskRetryCoversAttemptEnd,
   fixCompletionGate: mockFixCompletionGate,
   recordReviewVerdict: mockRecordReviewVerdict,
   isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',

@@ -15,6 +15,7 @@
  */
 import { execFileSync } from 'child_process';
 import { BUILDD_MCP_TOOL_NAME } from './action-events';
+import { denyPreToolUse } from './hook-factory';
 import { isShipCommand } from './path-claim-enforcement';
 import { runnerDenial } from './runner-denial';
 import { runVerificationCommand } from './runner-verification';
@@ -89,16 +90,10 @@ export function createPreflightGuard(deps: {
       if (r.outcome === 'ok') continue;
       if (r.outcome === 'failed' && r.exitCode !== NOT_FOUND_EXIT) {
         deps.milestone?.(`Preflight failed: ${command} (exit ${r.exitCode ?? '?'})`);
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            permissionDecision: 'deny',
-            permissionDecisionReason: runnerDenial(
-              `this workspace's preflight check \`${command}\` failed (exit ${r.exitCode ?? '?'}) — CI runs the same rule and would fail. Output:\n${tail(r.output)}`,
-              'fix what it reports, commit, and push or open the PR again',
-            ),
-          },
-        };
+        return denyPreToolUse(runnerDenial(
+          `this workspace's preflight check \`${command}\` failed (exit ${r.exitCode ?? '?'}) — CI runs the same rule and would fail. Output:\n${tail(r.output)}`,
+          'fix what it reports, commit, and push or open the PR again',
+        ));
       }
       // Advisory: a check that could not run never blocks a ship.
       deps.milestone?.(`Preflight ${command} could not run (${r.outcome === 'failed' ? 'not found' : r.outcome}) — shipping anyway; CI still checks`);

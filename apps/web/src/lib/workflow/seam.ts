@@ -25,6 +25,9 @@ import { headCoverage, ledgerBudget } from './reducer';
 import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
 import { preflightMissOf } from './preflight-miss';
+
+// The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
+export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
 import type { Verdict } from './types';
 
 export type DeliveryRole = 'owner' | 'fix' | 'ci_fix' | 'conflict_fix' | 'review';
