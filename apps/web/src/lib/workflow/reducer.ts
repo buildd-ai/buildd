@@ -512,8 +512,10 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
     case 'FixDispatched': {
       const dd = d!;
       if (dd.state !== 'CHANGES_REQUESTED') return c.stale('state_moved');
+      const human = cmd.trigger === 'human';
       const round = c.roundById(cmd.roundId);
-      if (!round || round.round !== dd.currentRound || round.headSha !== dd.currentHeadSha || round.effectiveVerdict !== 'request_changes') {
+      // A person's T23 fix answers the escalated round itself, whatever its verdict.
+      if (!round || round.round !== dd.currentRound || round.headSha !== dd.currentHeadSha || (!human && round.effectiveVerdict !== 'request_changes')) {
         return c.rejected('newer_verdict_supersedes_fix');
       }
       // §10.5 dispatch-time revalidation: nothing is allocated for a target that no longer needs work.
@@ -523,12 +525,16 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const inflight = c.view.attempts.find((a) => a.family === 'review_fix' && a.triggerReason === round.id && OPEN_ATTEMPT.has(a.status));
       if (inflight) return c.duplicate('fix_in_flight');
       const n = c.nextNo('review_fix', 'agent');
-      if (n > cmd.maxAttempts) return c.rejected('budget_exhausted');
+      if (n > cmd.maxAttempts && !human) return c.rejected('budget_exhausted');
+      // §5.7 rule 5: a person past the cap extends it by exactly this one dispatch, visibly.
+      const extended = human && n > cmd.maxAttempts;
+      const max = extended ? n : cmd.maxAttempts;
       const id = c.newId();
       return c.apply(`fix:${dd.id}:${round.id}:${n}`, 'CHANGES_REQUESTED', {
         guardHead: true, guardRound: true,
-        attempts: [{ op: 'insert', id, family: 'review_fix', attemptNo: n, mode: 'agent', boundHeadSha: round.headSha, triggerReason: round.id, taskId: cmd.taskId, trigger: 'automatic', status: 'queued', maxAttempts: cmd.maxAttempts }],
-        evidence: { roundId: round.id, attemptId: id, attemptNo: n, live: cmd.revalidation.live },
+        attempts: [{ op: 'insert', id, family: 'review_fix', attemptNo: n, mode: 'agent', boundHeadSha: round.headSha, triggerReason: round.id, taskId: cmd.taskId, trigger: human ? 'human' : 'automatic', status: 'queued', maxAttempts: max }],
+        evidence: { roundId: round.id, attemptId: id, attemptNo: n, live: cmd.revalidation.live, ...(human ? { trigger: 'human' } : {}) },
+        bypass: extended ? { family: 'review_fix', budgetFrom: cmd.maxAttempts, budgetTo: max, trigger: 'human' } : null,
       });
     }
 
@@ -878,12 +884,17 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         const r = c.startRound(dd.currentHeadSha, { kind: 'full' });
         return c.apply(key, 'AWAITING_REVIEW', { patch: { ...r.patch, stateReason: null }, rounds: r.rounds, effects: r.effects, bypass });
       }
+      // apply_recommendation / request_changes: a new review_fix attempt against the round the
+      // person is looking at. With no review of the current head there is nothing to fix against,
+      // and CHANGES_REQUESTED with no dispatchable fix would strand the delivery.
       const round = c.currentRound();
+      if (!dd.currentHeadSha || !round || round.headSha !== dd.currentHeadSha) return c.rejected('no_review_at_head');
+      const instructions = cmd.instructions?.trim() || null;
       return c.apply(key, 'CHANGES_REQUESTED', {
         patch: { stateReason: null, boundAttemptId: null },
         effects: [{
-          kind: 'dispatch_fix', dedupeKey: `dispatch_fix:${dd.id}:${round?.id ?? 'none'}:human:${dd.version}`,
-          payload: { roundId: round?.id ?? null, round: dd.currentRound, headSha: dd.currentHeadSha, trigger: 'human', choice: cmd.choice },
+          kind: 'dispatch_fix', dedupeKey: `dispatch_fix:${dd.id}:${round.id}:human:${dd.version}`,
+          payload: { roundId: round.id, round: dd.currentRound, headSha: dd.currentHeadSha, trigger: 'human', choice: cmd.choice, actor: cmd.actor, humanInstructions: instructions },
         }],
         bypass,
       });
