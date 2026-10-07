@@ -654,6 +654,8 @@ export function chipForDelivery(v: DeliveryView, legacyChip: ActionChip): Action
   // composition), so a legacy REVIEW reading (no reviewer-task approve on
   // record) becomes the merge it actually is; every other legacy gate stands.
   if (v.owner === 'landing') return legacyChip === 'REVIEW' ? 'MERGE' : legacyChip;
+  // An approved PR a person merges (human tier, approve-only, open handoff) is the merge it actually is.
+  if (v.owner === 'human' && v.state === 'APPROVED' && legacyChip === 'REVIEW') return 'MERGE';
   if (v.owner === 'human') return legacyChip === 'MERGE' || legacyChip === 'BLOCKED' || legacyChip === 'REVIEW' ? legacyChip : 'REVIEW';
   if (v.cta?.action === 'repair_remediation' || v.cta?.action === 'create_conflict_fix' || v.headline === 'Resolving conflicts') return 'RESOLVING';
   switch (v.state) {

@@ -115,7 +115,7 @@ export interface DeliveryReading {
   action: { label: string; taskId: string } | null;
 }
 
-export type DeliveryReadingInput = Pick<DeliveryDisplay, 'stage' | 'state' | 'headline'> & { cta?: DeliveryCta | null };
+export type DeliveryReadingInput = Pick<DeliveryDisplay, 'stage' | 'state' | 'headline' | 'owner'> & { cta?: DeliveryCta | null };
 
 const reading = (label: string, tone: DeliveryTone, action: DeliveryReading['action'] = null): DeliveryReading =>
   ({ label, tone, needsYou: tone === 'needs', failed: tone === 'failed', action });
@@ -128,8 +128,9 @@ const reading = (label: string, tone: DeliveryTone, action: DeliveryReading['act
  * Null for `working`: the owner's own attempt is the reading, so the task's
  * execution state (running, queued) is shown.
  *
- * An approved PR needs you: it is the Merge card Home shows, and it reads
- * "Ready to merge", never "in review". A repair reads the kernel's headline
+ * An approved PR needs you only when the owner is a person (the policy leaves
+ * the merge to them): it is the Merge card Home shows and reads "Ready to
+ * merge", never "in review". When the landing path merges it, it reads live. A repair reads the kernel's headline
  * ("Conflict fix stalled", "Fixing CI"). Only a FAILED delivery is failed; a
  * stalled conflict fix or a CI fix in flight is recoverable work the platform
  * owns (S35, S36, S37).
@@ -144,7 +145,9 @@ export function deliveryReading(d: DeliveryReadingInput): DeliveryReading | null
       if (d.cta?.action === 'repair_remediation') return reading(d.headline, 'stalled', { label: d.cta.label, taskId: d.cta.taskId });
       return reading(d.headline, d.cta?.action === 'create_conflict_fix' ? 'stalled' : 'live');
     case 'blocked': return reading('Blocked on base', 'stalled');
-    case 'approved': return reading('Ready to merge', 'needs');
+    // Only a person's merge reads as needs-you; under approve-and-merge or
+    // auto-threshold the landing path merges it, so it is live (S35).
+    case 'approved': return d.owner === 'human' ? reading('Ready to merge', 'needs') : reading('Approved · merging', 'live');
     case 'landing': return reading('Merging', 'live');
     case 'needs_you': return reading('Needs you', 'needs');
     case 'merged': return reading('Merged', 'landed');

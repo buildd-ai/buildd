@@ -1671,7 +1671,7 @@ source per row: a surface never combines the delivery with the worker columns.
 - **Mission strip, board and feed.** `deriveFeedTaskState` and
   `deriveBoardStatus` read `task.delivery` (`feedStateForDelivery`,
   `boardStatusForDelivery`, both over `deliveryReading`). A person's move
-  (ESCALATED, or an approved PR awaiting its merge) is yours. Every other live
+  (ESCALATED, or an approved PR whose merge policy leaves the merge to a person) is yours. Every other live
   state is moving, so a fix in flight is never "needs you" and never FAILED.
   On the Board every non-human live state reads `running` and the tile says
   the reading's label (deviation 5). The strip drawer gives the kernel's headline and evidence
@@ -1733,8 +1733,12 @@ Deviations, each deliberate:
    needs-you and failed answer per delivery. The task chip and histogram, the
    board tile, strip drawer and band, the feed, the chat tile and the dock take
    it as is. Each maps the tone through one total palette table and never maps
-   a state. An approved PR reads "Ready to merge" and needs you, as Home's Merge
-   card does. A stalled remediation reads "Conflict fix stalled" and offers
+   a state. An approved PR reads "Ready to merge" and needs you only when a
+   person merges it (tier `human`, `agent-review` approve-only, or a landing
+   handoff open at the current head; the loader computes this once as
+   `approvedNeedsPerson` and `ownerOfNextMove` turns it into owner `human`).
+   Under approve-and-merge or auto-threshold the landing path merges it and it
+   reads live, "Approved · merging", as Home does. A stalled remediation reads "Conflict fix stalled" and offers
    Home's "Run fix" in the strip drawer and the dock. Only a FAILED delivery is
    failed. The Board still keeps `waiting` (and its Ask/Reply) for an agent's
    question. A delivery that needs you reads `review` and is counted in Needs

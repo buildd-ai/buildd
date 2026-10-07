@@ -10,6 +10,8 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
+import { resolvePolicy } from '@/lib/merge-policy';
+import { landingModeOf, resolveLandingOwnership } from '@/lib/pr-landing-ownership';
 import { toAttemptSnapshot, toDeliverySnapshot, toRoundSnapshot, type Exec } from './kernel';
 import { ownerDeliveryDisplays, replacedFailedTaskIds, type DeliveryDisplay } from './delivery-display';
 import { deriveDeliveryView, type AttemptTaskRef, type DeliveryView, type RemediationRef, type TransitionRef } from './projections';
@@ -40,7 +42,13 @@ SELECT to_jsonb(d.*) AS delivery,
      LEFT JOIN LATERAL (SELECT ww.status, ww.updated_at FROM workers ww WHERE ww.task_id = t.id ORDER BY ww.created_at DESC LIMIT 1) w ON true
      WHERE t.workspace_id = d.workspace_id AND d.pr_number IS NOT NULL AND t.conflict_retry_pr_number = d.pr_number
        AND t.status IN ('pending', 'assigned', 'in_progress')
-     ORDER BY t.created_at DESC LIMIT 1) AS remediation
+     ORDER BY t.created_at DESC LIMIT 1) AS remediation,
+  (SELECT jsonb_build_object('git_config', w.git_config) FROM workspaces w WHERE w.id = d.workspace_id) AS workspace,
+  (SELECT jsonb_build_object('requires_review', ot.requires_review, 'landing', ot.context->'landing', 'landing_handoff', ot.context->'landingHandoff',
+            'mission', (SELECT jsonb_build_object('merge_policy', m.merge_policy, 'requires_review', m.requires_review,
+                          'working_branch', m.working_branch, 'integration_branch_enabled', m.integration_branch_enabled)
+                        FROM missions m WHERE m.id = ot.mission_id))
+     FROM tasks ot WHERE ot.id = d.owner_task_id) AS owner_task
 FROM dl d`;
 }
 
@@ -60,6 +68,42 @@ export function remediationFrom(r: J | null | undefined, now: number): Remediati
   return { taskId: String(r.id), family: 'conflict', taskStatus: String(r.status), stalled: v.stalled, stallReason: v.reason };
 }
 
+/**
+ * Pure: does an APPROVED delivery wait on a person rather than the landing
+ * path? The rule Home uses: the effective tier is `human`, or `agent-review`
+ * with gateCondition `approve-only`, or a landing handoff is open at the
+ * current head. `auto-threshold` and approve-and-merge land without a person.
+ */
+export function approvedNeedsPerson(row: J): boolean {
+  const d = row.delivery as J | null;
+  if (!d) return false;
+  const ws = (row.workspace as J | null) ?? {};
+  const ot = (row.owner_task as J | null) ?? {};
+  const m = ot.mission as J | null | undefined;
+  const policy = resolvePolicy(
+    { gitConfig: (ws.git_config as never) ?? null },
+    m ? {
+      mergePolicy: (m.merge_policy as never) ?? null,
+      requiresReview: m.requires_review === true,
+      workingBranch: m.working_branch == null ? null : String(m.working_branch),
+      integrationBranchEnabled: m.integration_branch_enabled === true,
+    } : null,
+    { requiresReview: ot.requires_review === true },
+    { baseRef: d.base_ref == null ? null : String(d.base_ref) },
+  );
+  if (policy.tier === 'human') return true;
+  if (policy.tier === 'agent-review' && policy.agentReview?.gateCondition === 'approve-only') return true;
+  if (d.pr_number == null) return false;
+  return resolveLandingOwnership({
+    policy,
+    landingMode: landingModeOf(ws.git_config as never),
+    landing: ot.landing ?? null,
+    handoff: ot.landing_handoff ?? null,
+    prNumber: Number(d.pr_number),
+    prHeadSha: d.current_head_sha == null ? null : String(d.current_head_sha),
+  }).owner === 'human';
+}
+
 export function rowToDeliveryView(row: J, now = Date.now()): DeliveryView | null {
   if (!row.delivery) return null;
   const rounds = ((row.rounds as J[]) ?? []).map(toRoundSnapshot);
@@ -77,6 +121,7 @@ export function rowToDeliveryView(row: J, now = Date.now()): DeliveryView | null
     lastTransition,
     attemptTasks,
     remediation: remediationFrom(row.remediation as J | null, now),
+    approvedNeedsPerson: (row.delivery as J).state === 'APPROVED' ? approvedNeedsPerson(row) : false,
   });
 }
 

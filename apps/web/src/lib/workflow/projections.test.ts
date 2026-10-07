@@ -252,3 +252,12 @@ describe('Slice F: the view carries the PR ending get_pr and list_prs report', (
     expect(s.supersededBy).toEqual({ prNumber: 12, url: 'https://github.com/acme/widgets/pull/12', reason: 'reopened' });
   });
 });
+
+describe('ownerOfNextMove: APPROVED follows the merge policy', () => {
+  test('landing unless the policy leaves the merge to a person', () => {
+    expect(ownerOfNextMove('APPROVED')).toBe('landing');
+    expect(ownerOfNextMove('APPROVED', { approvedNeedsPerson: false })).toBe('landing');
+    expect(ownerOfNextMove('APPROVED', { approvedNeedsPerson: true })).toBe('human');
+    expect(ownerOfNextMove('LANDING', { approvedNeedsPerson: true })).toBe('landing');
+  });
+});
