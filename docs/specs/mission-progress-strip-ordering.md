@@ -128,18 +128,9 @@ but does not exist (see `timeline-mobile-rail.md` §10.3); nothing here needs it
 1. **component order** — components ordered by the earliest `createdAt` of any
    member (ties: smallest task id).
 2. **level** — ascending.
-3. **readiness class** — ascending, from this table:
-
-   | class | display states |
-   |---|---|
-   | 0 | `landed` |
-   | 1 | `review` |
-   | 2 | `running`, `fixing`, `waiting` |
-   | 3 | `ci_failed`, `failed` |
-   | 4 | `ready` |
-   | 5 | `blocked` |
-   | 6 | `queued` |
-
+3. ~~readiness class~~ — removed: no key reads runtime state, so a status
+   change never moves a cell and ‹ / › / arrow keys step to the adjacent
+   rendered cell.
 4. **phase index** — the stored `missionPhaseIndex`, nulls last.
 5. **`createdAt`** — ascending.
 6. **task id** — ascending (total order; two renders of one model are identical).

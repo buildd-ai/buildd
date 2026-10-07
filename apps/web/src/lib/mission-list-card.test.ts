@@ -57,7 +57,7 @@ describe('buildMissionListCard — running mission', () => {
     const cells = card.phases.flatMap(p => p.cells);
     expect(cells.find(c => c.taskId === 'fx')?.state).toBe('in_ci');
     expect(cells.find(c => c.taskId === 'api')).toMatchObject({ state: 'running', fill: 0.65 });
-    expect(card.counts).toMatchObject({ done: 2, total: 5, inCi: 1, running: 1, queued: 1 });
+    expect(card.counts).toMatchObject({ done: 2, total: 5, inCi: 1, running: 1, open: 1 });
   });
 
   it('reads the single status word, live dots in the role colour, criteria pips', () => {
