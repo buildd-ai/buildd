@@ -47,7 +47,7 @@ export const TRANSITION_OWNED_KINDS: ReadonlySet<PrActivityKind> = new Set<PrAct
   'review_queued', 'reviewing', 'review_approved', 'review_changes_requested', 'review_escalated',
   'review_failed', 'fix_started', 'fix_ended', 'changes_pushed', 'merged', 'closed_unmerged',
   'work_superseded', 'review_superseded_by_merge', 'fix_superseded_by_approval',
-  'push_pending', 'push_undeliverable', 'composition_verified',
+  'push_pending', 'push_undeliverable', 'composition_verified', 'composition_delta_approved',
 ]);
 
 /** Transitions that queue a review round (they all end in AWAITING_REVIEW via `startRound`). */
@@ -97,7 +97,12 @@ export function transitionsToActivityEntries(
         const verdict = str(ev.effectiveVerdict) ?? str(ev.verdict);
         const round = rounds.find((r) => r.id === ev.roundId);
         const url = reviewUrl(round);
-        if (t.toState === 'APPROVED') push({ kind: 'review_approved', ...(url ? { taskUrl: url } : {}) });
+        const delta = ev.compositionDelta as { paths?: unknown } | undefined;
+        if (t.toState === 'APPROVED' && delta) {
+          // §5.9 / S33: the delta round covers only the novel paths, never the whole release.
+          const paths = Array.isArray(delta.paths) ? delta.paths.map(String) : [];
+          push({ kind: 'composition_delta_approved', note: paths.length ? paths.join('\n') : null, ...(url ? { taskUrl: url } : {}) });
+        } else if (t.toState === 'APPROVED') push({ kind: 'review_approved', ...(url ? { taskUrl: url } : {}) });
         else if (t.toState === 'CHANGES_REQUESTED') {
           const next = attempts.filter((a) => a.family === 'review_fix' && a.triggerReason === round?.id).sort((a, b) => b.attemptNo - a.attemptNo)[0];
           push({ kind: 'review_changes_requested', iteration: next?.attemptNo ?? (attempts.filter((a) => a.family === 'review_fix').length + 1), maxIterations: next?.maxAttempts ?? null, ...(url ? { taskUrl: url } : {}) });
