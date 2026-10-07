@@ -535,6 +535,28 @@ describe('evaluateAutoMergeSafety migration operation-class gate (unconditional)
     });
     expect(mockInspectPullRequestMigrations).not.toHaveBeenCalled();
   });
+
+  it('ignores a deny-path hit that exists only in a stale PR files snapshot', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      // stale snapshot still lists the workflow file
+      .mockResolvedValueOnce([
+        { filename: '.github/workflows/build.yml', additions: 2, deletions: 0 },
+        { filename: 'apps/web/src/app/page.tsx', additions: 5, deletions: 2 },
+      ])
+      // live PR read, then live compare without the workflow file
+      .mockResolvedValueOnce({ base: { ref: 'dev' } })
+      .mockResolvedValueOnce({ files: [{ filename: 'apps/web/src/app/page.tsx' }] })
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    mockInspectPullRequestMigrations.mockReset();
+    const policy: MergePolicy = {
+      tier: 'auto-threshold',
+      threshold: { denyPaths: ['.github/workflows/'] },
+    };
+    const res = await evaluateAutoMergeSafety(...params, policy);
+    expect(res.reason ?? '').not.toMatch(/protected path/);
+  });
 });
 
 describe('evaluateAutoMergeSafety tier 2 escalateToPaths', () => {
