@@ -80,7 +80,7 @@ const APPLIED: Array<[string, KernelView, Command, string]> = [
   ['T21 Abandon', V(D({ state: 'CLOSED_UNMERGED' })), { type: 'Abandon', actor: 'human:u', reason: 'dropped' }, 'ABANDONED'],
   ['EffectDead', V(D({ state: 'LANDING', approvedHeads: ['H1'] })), { type: 'EffectDead', actor: 'kernel', effectId: 'e1', effectKind: 'merge_call', dedupeKey: 'merge_call:d1:H1:v5' }, 'ESCALATED'],
   ['T22 PushRecoveryExhausted', V(D({ state: 'AWAITING_PUSH' })), { type: 'PushRecoveryExhausted', actor: 'kernel', localHeadSha: 'L2' }, 'ESCALATED'],
-  ['T23 HumanResolve', V(D({ state: 'ESCALATED', stateReason: 'review_escalated' })), { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5 }, 'APPROVED'],
+  ['T23 HumanResolve', V(D({ state: 'ESCALATED', stateReason: 'review_escalated' })), { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5, commitId: 'H1', hasMergePermission: true }, 'APPROVED'],
   ['T24 DeliveryFailed', V(D({ prNumber: null, repoFullName: null })), { type: 'DeliveryFailed', actor: 'runner', reason: 'cancelled' }, 'FAILED'],
   ['T25 TrunkRedObserved', V(D({ state: 'AWAITING_REVIEW' })), { type: 'TrunkRedObserved', actor: 'kernel', incidentId: 'i1', signature: 'sig', headSha: 'H1', thresholdMet: true }, 'BLOCKED_ON_TRUNK'],
   ['T26 TrunkRecovered', V(D({ state: 'BLOCKED_ON_TRUNK', trunkIncidentId: 'i1', resumeState: 'APPROVED', approvedHeads: ['H1'] })), { type: 'TrunkRecovered', actor: 'kernel', incidentId: 'i1', baseStillRed: false, headPredatesFix: true }, 'APPROVED'],
@@ -272,6 +272,15 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     const unknown = V(D({ state: 'AWAITING_PUSH', currentHeadSha: 'H1', pushPendingLocalHead: null }));
     expect(applied(h(unknown, 'H2')).toState).toBe('AWAITING_PUSH');
     expect(applied(h(unknown, 'H2', { proof: { liveContainsLocal: false, contentDiffChanged: true } })).toState).toBe('AWAITING_REVIEW');
+  });
+  test('ESCALATED(push_undeliverable): a head with §9 proof wins (T22); without proof it is only recorded', () => {
+    const v = V(D({ state: 'ESCALATED', stateReason: 'push_undeliverable', currentRound: 0, currentHeadSha: 'H1', boundAttemptId: null, pushPendingLocalHead: 'L5' }));
+    const ok = applied(h(v, 'L5'));
+    expect(ok.toState).toBe('AWAITING_REVIEW');
+    expect(ok.patch).toMatchObject({ currentHeadSha: 'L5', currentRound: 1, stateReason: null });
+    const other = applied(h(v, 'H7'));
+    expect(other.toState).toBe('ESCALATED');
+    expect(other.patch).toMatchObject({ currentHeadSha: 'H7' });
   });
   test('REPAIRING: proof → new round, or APPROVED by carry-forward (T11/T13); no proof records only', () => {
     const v = V(D({ state: 'REPAIRING', stateReason: 'behind', approvedHeads: ['H1'], approvalBasis: 'verdict', boundAttemptId: 'm1' }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', status: 'running', triggerReason: 'behind' })]);
@@ -993,7 +1002,7 @@ describe('T22–T24', () => {
   });
   test('HumanResolve: human + version required; each choice', () => {
     const e = V(D({ state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 3 }), [R({ id: 'r3', round: 3, status: 'decided' })]);
-    const hr = (o: Partial<Extract<Command, { type: 'HumanResolve' }>>) => run(e, { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5, ...o });
+    const hr = (o: Partial<Extract<Command, { type: 'HumanResolve' }>>) => run(e, { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5, commitId: 'H1', hasMergePermission: true, ...o });
     expectResult(hr({ actor: 'agent:x' }), 'rejected', 'human_required');
     expectResult(hr({ expectedVersion: undefined }), 'rejected', 'expected_version_required');
     expectResult(hr({ expectedVersion: 4 }), 'stale', 'version_moved');
@@ -1005,6 +1014,20 @@ describe('T22–T24', () => {
     expectResult(run(V(D({ state: 'ESCALATED', currentHeadSha: null })), { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5 }), 'rejected', 'no_head');
     expectResult(run(V(D({ state: 'ESCALATED', currentHeadSha: null })), { type: 'HumanResolve', actor: 'human:u', choice: 'dismiss', reason: 'x', expectedVersion: 5 }), 'rejected', 'no_head');
     expectResult(run(V(D({ state: 'APPROVED' })), { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5 }), 'stale', 'state_moved');
+  });
+  // T23 approve carries T14's evidence: the person holds merge permission and approved the live head.
+  test('HumanResolve(approve) requires merge permission and the live head, like T14', () => {
+    const e = V(D({ state: 'ESCALATED', stateReason: 'review_escalated', currentHeadSha: 'H2' }));
+    const hr = (o: Partial<Extract<Command, { type: 'HumanResolve' }>>) => run(e, { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5, commitId: 'H2', hasMergePermission: true, ...o });
+    expectResult(hr({ hasMergePermission: false }), 'rejected', 'no_merge_permission');
+    expectResult(hr({ hasMergePermission: undefined }), 'rejected', 'no_merge_permission');
+    expectResult(hr({ commitId: undefined }), 'rejected', 'commit_id_required');
+    expectResult(hr({ commitId: 'H1' }), 'stale', 'review_on_older_commit');
+    const ok = applied(hr({}));
+    expect(ok.toState).toBe('APPROVED');
+    expect(ok.guard.headSha).toBe('H2');
+    expect(ok.patch).toMatchObject({ approvedHeads: ['H2'], approvalBasis: 'human' });
+    expect(ok.evidence).toMatchObject({ commitId: 'H2' });
   });
   test('DeliveryFailed: no PR only', () => {
     expectResult(run(V(D()), { type: 'DeliveryFailed', actor: 'runner', reason: 'x' }), 'rejected', 'pr_bound');

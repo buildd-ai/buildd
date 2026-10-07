@@ -100,6 +100,23 @@ export async function kernelLandingView(workspaceId: string, repoFullName: strin
 }
 
 /**
+ * Kernel-owned PRs with something to land: deliveries in `APPROVED` (T15's only
+ * unattended source state) in workspaces whose landing mode is `enforce` and whose
+ * kill switch is on. The landing sweep's floor for kernel PRs, which may have no
+ * legacy reviewer row at all (composition or human approval).
+ */
+export async function listApprovedKernelPrs(limit: number, exec: Exec = dbExec): Promise<Array<{ workspaceId: string; prNumber: number }>> {
+  const rows = ((await exec(sql`-- workflow:approved_for_landing
+SELECT d.workspace_id, d.pr_number FROM workflow_deliveries d JOIN workspaces w ON w.id = d.workspace_id
+WHERE d.authority = 'kernel' AND d.state = 'APPROVED' AND d.pr_number IS NOT NULL
+  AND w.git_config->'landing'->>'mode' = 'enforce'
+  AND COALESCE(w.git_config->>'workflowKernel', '') NOT IN ('false', 'off')
+ORDER BY d.updated_at
+LIMIT ${limit}`)).rows ?? []) as Array<{ workspace_id: string; pr_number: number }>;
+  return rows.map((r) => ({ workspaceId: r.workspace_id, prNumber: Number(r.pr_number) }));
+}
+
+/**
  * §7.2 for a version-carrying human action, checked before any rail runs (a
  * stale screen must not trigger a refresh or a fix dispatch either). Null =
  * nothing to refuse: no kernel delivery, no version supplied, or it matches.

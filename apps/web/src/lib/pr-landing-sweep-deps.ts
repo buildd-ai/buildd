@@ -15,6 +15,7 @@ import { githubApi } from '@/lib/github';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { readLandingMarker } from '@/lib/pr-landing-marker';
 import { readPrReviewStatus } from '@/lib/pr-review-request';
+import { kernelLandingView, listApprovedKernelPrs } from '@/lib/workflow/seam';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
@@ -50,7 +51,8 @@ export const SWEEP_REVIEW_STATES = new Set<string>(['approved', 'escalated', 'ch
 
 /**
  * Open worker PRs in an `enforce` workspace whose newest review is one of
- * `SWEEP_REVIEW_VERDICTS`.
+ * `SWEEP_REVIEW_VERDICTS`, or whose kernel delivery is `APPROVED` (a kernel
+ * PR may have no reviewer row at all: composition or human approval).
  *
  * Deliberately NOT narrowed to lifecycle `ci_green`: a lost green event leaves
  * a PR at `ci_running`, which is the very case this backstop exists for, and
@@ -83,7 +85,12 @@ async function listFloor(limit: number): Promise<PrRef[]> {
       ),
     )
     .limit(limit);
-  return rows.flatMap((r) => (r.prNumber === null ? [] : [{ workspaceId: r.workspaceId, prNumber: r.prNumber }]));
+  const legacy = rows.flatMap((r) => (r.prNumber === null ? [] : [{ workspaceId: r.workspaceId, prNumber: r.prNumber }]));
+  // Kernel PRs by their delivery (APPROVED, T15), read through the kernel. resolveTarget
+  // settles which authority owns each candidate, for the exact repo.
+  const kernel = await listApprovedKernelPrs(limit);
+  const seen = new Set(legacy.map((r) => `${r.workspaceId}#${r.prNumber}`));
+  return [...legacy, ...kernel.filter((r) => !seen.has(`${r.workspaceId}#${r.prNumber}`))];
 }
 
 /** One run's bindings. Workspace rows are memoised for the run; nothing outlives it. */
@@ -145,12 +152,19 @@ export function createLandingSweepDeps(): LandingSweepDeps {
         resolvePolicy(workspace, mission, task ?? null, { baseRef: baseRef ?? worker.prBaseRef });
       if (policyFor(worker.prBaseRef).tier === 'human') return { ok: false, skip: 'human_tier' };
 
-      const review = await readPrReviewStatus({ workspaceId: ref.workspaceId, prNumber: ref.prNumber });
-      if (!SWEEP_REVIEW_STATES.has(review.state)) return { ok: false, skip: 'not_approved' };
-
       const identity = pickWorkspaceRepoIdentity(workspace);
       const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: identity.fullName });
       if (!repo) return { ok: false, skip: 'no_repo' };
+
+      // A kernel-owned PR has something to land only when its delivery is APPROVED (T15);
+      // the legacy reviewer row neither qualifies nor disqualifies it (task 57e1d5b8).
+      const kernel = await kernelLandingView(ref.workspaceId, repo, ref.prNumber);
+      if (kernel) {
+        if (kernel.current.state !== 'APPROVED') return { ok: false, skip: 'not_approved' };
+      } else {
+        const review = await readPrReviewStatus({ workspaceId: ref.workspaceId, prNumber: ref.prNumber });
+        if (!SWEEP_REVIEW_STATES.has(review.state)) return { ok: false, skip: 'not_approved' };
+      }
       const installationId =
         (repo === identity.fullName ? identity.installationId : null)
         ?? (await installationFor(repo))

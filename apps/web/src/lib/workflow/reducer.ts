@@ -921,7 +921,16 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const bypass = { choice: cmd.choice, reason: cmd.reason ?? null, actor: cmd.actor, escalation: dd.stateReason };
       if (cmd.choice === 'approve') {
         if (!dd.currentHeadSha) return c.rejected('no_head');
-        return c.apply(key, 'APPROVED', { patch: { approvedHeads: [dd.currentHeadSha], approvalBasis: 'human', stateReason: null }, bypass });
+        // The same evidence T14 requires: an approval of the live head by someone who may merge.
+        if (!cmd.commitId) return c.rejected('commit_id_required');
+        if (cmd.commitId !== dd.currentHeadSha) return c.stale('review_on_older_commit');
+        if (cmd.hasMergePermission !== true) return c.rejected('no_merge_permission');
+        return c.apply(key, 'APPROVED', {
+          guardHead: true,
+          patch: { approvedHeads: [cmd.commitId], approvalBasis: 'human', stateReason: null },
+          evidence: { commitId: cmd.commitId },
+          bypass,
+        });
       }
       if (cmd.choice === 'dismiss') {
         if (!cmd.reason?.trim()) return c.rejected('reason_required');
@@ -1094,6 +1103,10 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
   switch (d.state) {
     case 'WORKING':
       return record();
+    case 'ESCALATED':
+      if (d.stateReason !== 'push_undeliverable') return d.stateReason?.startsWith('review_') ? toReview() : record();
+      // T22: a head with §9 proof observed after the escalation wins over it.
+    // falls through
     case 'AWAITING_PUSH': {
       const a = c.attempt(d.boundAttemptId);
       // An owner attempt has no ledger row: its L is the one it reported when it
@@ -1107,6 +1120,7 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
         contentDiffChanged: cmd.proof?.contentDiffChanged,
       });
       if (!proof.holds) {
+        if (d.state === 'ESCALATED') return record();
         // Record the head, stay, and re-arm recovery from this head: the push that
         // arrived is not the work, so the next try re-reads and re-asks (§6.4).
         const next: EffectSpec = { ...c.pushRecovery(local, 1), dedupeKey: `push_recovery:${d.id}:${local ?? 'none'}:head:${h}` };
@@ -1196,8 +1210,6 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
         return c.apply(key, 'APPROVED', { patch: { currentHeadSha: h }, evidence: { ...evidence, policy: 'no_review', landingAborted: true } });
       }
       return carry() ?? toReview();
-    case 'ESCALATED':
-      return d.stateReason?.startsWith('review_') ? toReview() : record();
     default:
       // BLOCKED_ON_TRUNK, CLOSED_UNMERGED: record the head; T26 / T19 re-evaluate.
       return record();

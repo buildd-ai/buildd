@@ -400,6 +400,57 @@ describe('landPr — kernel-owned PR (T15/T16)', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
+  // Task 57e1d5b8 (incident #2574): on a kernel PR the legacy reviewer-row gate does not
+  // decide. A composition- or human-approved delivery has no reviewer row at all.
+  describe('the review gate is the delivery, not the legacy reviewer row', () => {
+    const view = (state: string, head = 'head1') => async () => ({ deliveryId: 'd1', current: { state, version: 3, head, round: 1 } });
+
+    it('an APPROVED delivery lands through T15 even when the legacy row blocks or is missing', async () => {
+      verdict = 'changes_requested';
+      reviewStatus = null;
+      const { calls, d } = kernelDeps({ merged: true, outcome: 'merged', mergeCommitSha: 'M1' });
+      const out = await land({ policy: agentReview }, { ...d, kernelLandingView: view('APPROVED') });
+      expect(out).toEqual({ kind: 'merged', sha: 'M1' });
+      expect(mockGuardReviewVerdict).not.toHaveBeenCalled();
+      expect(mockReadPrReviewStatus).not.toHaveBeenCalled();
+      expect(calls).toHaveLength(1);
+      expect(mockDispatchFix).not.toHaveBeenCalled();
+    });
+
+    it.each(['AWAITING_REVIEW', 'CHANGES_REQUESTED', 'ESCALATED', 'FIXING', 'LANDING'])('a delivery in %s waits for the kernel: no merge call, no re-review, no refresh', async (state) => {
+      verdict = 'approved';
+      const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
+      const out = await land({ policy: agentReview }, { ...d, kernelLandingView: view(state) });
+      expect(out).toMatchObject({ kind: 'waiting_ci', headSha: 'head1' });
+      expect(calls).toHaveLength(0);
+      expect(mockGuardReviewVerdict).not.toHaveBeenCalled();
+      expect(mockDispatchFix).not.toHaveBeenCalled();
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('a head the kernel has not observed yet waits', async () => {
+      const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
+      const out = await land({}, { ...d, kernelLandingView: view('APPROVED', 'older') });
+      expect(out).toMatchObject({ kind: 'waiting_ci' });
+      expect(calls).toHaveLength(0);
+    });
+
+    it("a person's verdict override from a review state still reaches T15, which records it", async () => {
+      const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
+      const out = await land({ door: 'dashboard', actor: { kind: 'human', userId: 'u-1', override: { verdict: true } } }, { ...d, kernelLandingView: view('ESCALATED') });
+      expect(out).toMatchObject({ kind: 'merged' });
+      expect(calls[0]).toMatchObject({ override: { reason: expect.any(String) } });
+      expect(mockGuardReviewVerdict).not.toHaveBeenCalled();
+    });
+
+    it('a PR with no kernel delivery still runs the legacy review gate', async () => {
+      verdict = 'changes_requested';
+      const out = await land({}, { ...deps(), kernelLandingView: async () => null, landThroughKernel: async () => null });
+      expect(mockGuardReviewVerdict).toHaveBeenCalledTimes(1);
+      expect(out.kind).not.toBe('merged');
+    });
+  });
+
   it('a PR the kernel does not own merges directly, as before', async () => {
     const out = await land({}, { ...deps(), landThroughKernel: async () => null });
     expect(out).toEqual({ kind: 'merged', sha: 'head1' });

@@ -220,6 +220,12 @@ export interface LandPrDeps {
   claimReviewRevalidation?: (taskId: string, reviewTaskId: string) => Promise<boolean>;
   /** The kernel's landing (T15/T16) for a kernel-owned PR; null = not the kernel's PR. Defaults to the seam's. */
   landThroughKernel?: (input: LandingInput) => Promise<KernelLanding | null>;
+  /**
+   * The kernel delivery that owns this PR and its current view; null = legacy-owned.
+   * On a kernel PR the delivery, not the legacy reviewer row, is the review gate.
+   * Defaults to the seam's `kernelLandingView`.
+   */
+  kernelLandingView?: typeof import('@/lib/workflow/seam').kernelLandingView;
 }
 
 // ── Constants and pure pieces ──────────────────────────────────────────────────
@@ -783,8 +789,26 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     }
   }
 
-  // ── 4. Review verdict — always with the carry-forward hint ──────────────────
-  const gate = await guardReviewVerdict({
+  // ── 4. Review verdict ───────────────────────────────────────────────────────
+  // A kernel-owned PR's review gate is its delivery (T15 lands only from APPROVED at
+  // the exact head, or a person's override from a review state). The legacy reviewer
+  // row must not block, stall or re-review it: a composition- or human-approved
+  // delivery has no reviewer row at all (incident #2574). A read error falls back to
+  // the legacy gate, which can only hold a landing, never authorise one past T15.
+  const readKernelView = deps.kernelLandingView ?? (await import('@/lib/workflow/seam')).kernelLandingView;
+  const kernelView = await readKernelView(workspaceId, repoFullName, prNumber).catch(() => null);
+  if (kernelView) {
+    const { state, head } = kernelView.current;
+    const extra = { deliveryState: state, deliveryVersion: kernelView.current.version };
+    if (head !== liveHead) return waiting(`the kernel has not observed head ${liveHead.slice(0, 7)} yet`, extra);
+    const overridable = override.verdict && (state === 'AWAITING_REVIEW' || state === 'CHANGES_REQUESTED' || state === 'ESCALATED');
+    if (state !== 'APPROVED' && !overridable) {
+      return waiting(`the delivery is ${state ?? 'unknown'}; the kernel lands it only once APPROVED (T15)`, extra);
+    }
+  }
+
+  // Legacy: the newest reviewer row, always with the carry-forward hint.
+  const gate = kernelView ? { blocks: false as const } : await guardReviewVerdict({
     workspaceId,
     prNumber,
     headSha: liveHead,
@@ -819,7 +843,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   }
 
   // ── 5. Agent-review tier: a stored approve above the confidence bar ─────────
-  if (policy.tier === 'agent-review' && actor.kind !== 'human') {
+  if (!kernelView && policy.tier === 'agent-review' && actor.kind !== 'human') {
     const status = await reviewStatus();
     if (!status) return waiting('could not read the stored review verdict');
     if (!isApprovalSelfMergeable(status, policy.agentReview?.maxConfidenceThreshold)) {

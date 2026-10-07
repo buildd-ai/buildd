@@ -365,6 +365,40 @@ describe('§14 cutover and the kill switch', () => {
     expect((await loadView({ deliveryId })).delivery).toMatchObject({ state: 'AWAITING_REVIEW', currentRound: 1 });
   });
 
+  test('switch off → on: a PR opened after the switch is back on is kernel-owned (task 57e1d5b8)', async () => {
+    const offTask = await seedTask(workspaceId, { status: 'in_progress' });
+    const offPr = prSeq++;
+    await setKernel(false);
+    try {
+      expect(await openKernelDelivery({ workspaceId, ownerTaskId: offTask, repoFullName: REPO, prNumber: offPr, installationId: 1, source: 'webhook:opened' }, deps))
+        .toMatchObject({ owned: false, reason: 'kernel_off' });
+    } finally {
+      await setKernel(true);
+    }
+    try {
+      // The PR the switch refused while off stays legacy: no delivery was opened for it.
+      expect(await kernelDeliveryForPr(workspaceId, REPO, offPr)).toBeNull();
+      // A new PR opened after the switch is back on is the kernel's, end to end.
+      const ownerTaskId = await seedTask(workspaceId, { status: 'in_progress' });
+      const prNumber = prSeq++;
+      const opened = await openKernelDelivery({ workspaceId, ownerTaskId, repoFullName: REPO, prNumber, installationId: 1, source: 'webhook:opened' }, deps);
+      expect(opened.owned).toBe(true);
+      expect(opened.deliveryId).toBeTruthy();
+      expect(await kernelDeliveryForPr(workspaceId, REPO, prNumber)).not.toBeNull();
+      const [row] = await q<{ authority: string; released_at: string | null }>(sql`SELECT authority, released_at FROM workflow_deliveries WHERE id = ${opened.deliveryId!}::uuid`);
+      expect(row).toMatchObject({ authority: 'kernel', released_at: null });
+      const workerId = await seedWorker(ownerTaskId, { status: 'completed', lastCommitSha: 'H1', prNumber });
+      const ended = await attemptEnded({
+        task: { id: ownerTaskId, workspaceId, deliveryId: opened.deliveryId!, deliveryRole: 'owner', context: null },
+        workerId, status: 'completed', localHeadSha: 'H1', commitCount: 1, source: 'runner',
+      }, deps);
+      expect(ended.handled).toBe(true);
+      expect((await loadView({ deliveryId: opened.deliveryId! })).delivery).toMatchObject({ state: 'AWAITING_REVIEW', currentRound: 1 });
+    } finally {
+      await setKernel(null);
+    }
+  });
+
   test('closed and reopened PRs: T17 is terminal, a later push is ignored', async () => {
     const { deliveryId, prNumber } = await openAndHandOn();
     gh.state = 'closed'; gh.merged = true;
