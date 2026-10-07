@@ -44,8 +44,12 @@ export type EscalationReason =
   | 'unsafe_to_merge';
 export type CloseCause = 'manual' | 'base_deleted' | 'superseded_by_policy' | 'unknown';
 
-/** What a standing approval rests on. `composition` is never a verdict at the head. */
-export type ApprovalBasis = 'verdict' | 'human' | 'composition';
+/**
+ * What a standing approval rests on. `composition` and `policy` are never a
+ * verdict at the head: `policy` means the workspace's merge policy requires no
+ * review (auto-threshold), so only T15's landing rails gate the merge.
+ */
+export type ApprovalBasis = 'verdict' | 'human' | 'composition' | 'policy';
 
 export type Verdict = 'approve' | 'request_changes' | 'escalate';
 export type RoundStatus = 'queued' | 'reviewing' | 'decided' | 'failed' | 'superseded';

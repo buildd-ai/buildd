@@ -77,9 +77,11 @@ export function deliveryProof(i: {
 }
 
 /** What covers `head` for landing. Ordinary verdicts are exact-head (plus recorded equivalents). */
-export function headCoverage(d: Pick<DeliverySnapshot, 'approvedHeads' | 'approvalBasis' | 'compositionHeads'>, head: string | null):
-  'verdict' | 'human' | 'composition' | 'none' {
+export function headCoverage(d: Pick<DeliverySnapshot, 'approvedHeads' | 'approvalBasis' | 'compositionHeads'> & { currentHeadSha?: string | null }, head: string | null):
+  'verdict' | 'human' | 'composition' | 'policy' | 'none' {
   if (!head) return 'none';
+  // Policy approval (no review required) covers whatever head is current; it is never a verdict.
+  if (d.approvalBasis === 'policy') return head === d.currentHeadSha ? 'policy' : 'none';
   if (d.approvedHeads.includes(head)) return d.approvalBasis === 'human' ? 'human' : 'verdict';
   if (d.compositionHeads.includes(head)) return 'composition';
   return 'none';
@@ -874,6 +876,10 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
         return c.apply(key, 'AWAITING_PUSH', { patch: { currentHeadSha: h }, evidence: { ...evidence, proof } });
       }
       const attempts: AttemptOp[] = a ? [{ op: 'update', attemptId: a.id, whenStatus: ['queued', 'running', 'ended'], set: { outcome: 'delivered', pushedHeadSha: h } }] : [];
+      if (d.state === 'REPAIRING' && d.approvalBasis === 'policy') {
+        // A repaired head under a no-review policy goes straight back to APPROVED by policy.
+        return c.apply(key, 'APPROVED', { patch: { currentHeadSha: h, stateReason: 'policy_no_review', boundAttemptId: null }, attempts, evidence: { ...evidence, proof, policy: 'no_review' } });
+      }
       if (d.state === 'REPAIRING' && headCoverage(d, d.currentHeadSha) !== 'none') {
         const cf = carry();
         if (cf && cf.result === 'apply') return { ...cf, attempts };
@@ -898,8 +904,14 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
       });
     }
     case 'APPROVED':
+      if (d.approvalBasis === 'policy') {
+        return c.apply(key, 'APPROVED', { patch: { currentHeadSha: h }, evidence: { ...evidence, policy: 'no_review' } });
+      }
       return carry() ?? toReview();
     case 'LANDING':
+      if (d.approvalBasis === 'policy') {
+        return c.apply(key, 'APPROVED', { patch: { currentHeadSha: h }, evidence: { ...evidence, policy: 'no_review', landingAborted: true } });
+      }
       return carry() ?? toReview();
     case 'ESCALATED':
       return d.stateReason?.startsWith('review_') ? toReview() : record();
@@ -924,29 +936,36 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
     const prOpen = d.prNumber != null && livePrOpen(live);
     const contains = prOpen && (!L || live!.headSha === L || cmd.proof?.liveContainsLocal === true);
     const success = cmd.outcome === 'success';
-    if ((success || cmd.outcome === 'unproven') && contains) {
-      const h = live!.headSha;
-      if (cmd.reviewRequired === false) return c.apply(key, 'WORKING', { patch: { currentHeadSha: h }, evidence });
+    // §6.5 row 1 (§15 step 2): the owner attempt ended and its head is on
+    // GitHub, so the worker no longer owns the next move — hand it on.
+    const handOn = (h: string): Decision => {
+      if (cmd.reviewRequired === false) {
+        // The policy needs no review: approved BY POLICY. No round, no verdict,
+        // approved_heads untouched (§8 exact-head binding); T15's rails still gate landing.
+        return c.apply(key, 'APPROVED', { patch: { currentHeadSha: h, approvalBasis: 'policy', stateReason: 'policy_no_review' }, evidence: { ...evidence, policy: 'no_review' } });
+      }
       if (c.openRoundAt(h)) return c.apply(key, 'AWAITING_REVIEW', { patch: { currentHeadSha: h }, evidence });
-      if (c.decidedAt(h)) return c.apply(key, 'WORKING', { patch: { currentHeadSha: h }, evidence: { ...evidence, note: 'head_already_reviewed' } });
+      const decided = c.decidedAt(h);
+      if (decided) return reenterVerdict(c, key, decided, h, evidence);
       const r = c.startRound(h);
       return c.apply(key, 'AWAITING_REVIEW', { patch: { ...r.patch, currentHeadSha: h }, rounds: r.rounds, effects: r.effects, evidence });
-    }
+    };
+    if ((success || cmd.outcome === 'unproven') && contains) return handOn(live!.headSha);
     if (success || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
       // A local commit is never delivery (§9).
       return c.apply(key, 'AWAITING_PUSH', { effects: [c.pushRecovery(L)], evidence });
     }
+    // The only WORKING outcome of an ended owner attempt: a requeue the task still has budget for.
     if (cmd.taskRetryBudgetLeft) return c.apply(key, 'WORKING', { evidence: { ...evidence, requeue: true } });
     if (d.prNumber == null) return c.apply(key, 'FAILED', { patch: { stateReason: `attempt_${cmd.outcome}` }, evidence });
     if (cmd.commitCount > 0 && !contains) {
       return c.apply(key, 'ESCALATED', { patch: { stateReason: 'push_undeliverable' }, effects: [c.pushRecovery(L)], evidence });
     }
-    const h = live?.headSha ?? d.currentHeadSha;
-    if (h && livePrOpen(live) && !c.openRoundAt(h) && !c.decidedAt(h)) {
-      const r = c.startRound(h);
-      return c.apply(key, 'AWAITING_REVIEW', { patch: { ...r.patch, currentHeadSha: h }, rounds: r.rounds, effects: r.effects, evidence });
-    }
-    return c.apply(key, 'WORKING', { evidence });
+    if (livePrOpen(live)) return handOn(live!.headSha);
+    // Budget spent, PR bound, but no open PR head to hand on (closed, merged, or
+    // unreadable): a person owns it. A later PrMerged/PrClosedUnmerged fact still
+    // applies from ESCALATED.
+    return c.apply(key, 'ESCALATED', { patch: { stateReason: 'push_undeliverable' }, evidence: { ...evidence, note: 'no_open_pr_head' } });
   }
 
   // FIXING / REPAIRING: the bound repair attempt.
@@ -970,6 +989,12 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
       return c.apply(key, 'AWAITING_PUSH', { attempts: [end('unproven')], effects: [c.pushRecovery(L)], evidence: { ...evidence, proof } });
     }
     const h = live!.headSha;
+    if (d.state === 'REPAIRING' && d.approvalBasis === 'policy') {
+      return c.apply(key, 'APPROVED', {
+        patch: { currentHeadSha: h, boundAttemptId: null, stateReason: 'policy_no_review' },
+        attempts: [end('delivered', h)], evidence: { ...evidence, proof, policy: 'no_review' },
+      });
+    }
     if (d.state === 'REPAIRING' && cmd.carryForward && headCoverage(d, a.boundHeadSha) !== 'none') {
       const p: DeliveryPatch = d.approvalBasis === 'composition'
         ? { compositionHeads: [...d.compositionHeads, h] }
@@ -1024,6 +1049,32 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
     effects: [{ kind, dedupeKey: `${kind}:${d.id}:${a.boundHeadSha}:${a.mode}:${n}`, payload: { attemptId: id, attemptNo: n, headSha: a.boundHeadSha } }],
     evidence,
   });
+}
+
+/** Re-enter the state a decided round's verdict maps to at head `h`, exactly as T6 would. */
+function reenterVerdict(c: Ctx, key: string, round: RoundSnapshot, h: string, evidence: Record<string, unknown>): Decision {
+  const d = c.d!;
+  const ev = { ...evidence, note: 'head_already_reviewed', roundId: round.id, verdict: round.effectiveVerdict };
+  const base: DeliveryPatch = { currentHeadSha: h, currentRound: Math.max(d.currentRound, round.round) };
+  if (round.effectiveVerdict === 'approve') {
+    const heads = d.approvedHeads.includes(h) ? d.approvedHeads : [...d.approvedHeads, h];
+    return c.apply(key, 'APPROVED', { patch: { ...base, approvedHeads: heads, approvalBasis: 'verdict', stateReason: null }, evidence: ev });
+  }
+  if (round.effectiveVerdict === 'request_changes') {
+    if (round.round >= d.maxRounds) {
+      return c.apply(key, 'ESCALATED', {
+        patch: { ...base, stateReason: 'review_exhausted' }, evidence: ev,
+        effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:${h}`, payload: { family: 'review_fix', rounds: round.round } }],
+      });
+    }
+    const fixOpen = c.view.attempts.some((a) => a.family === 'review_fix' && a.triggerReason === round.id && OPEN_ATTEMPT.has(a.status));
+    const n = c.nextNo('review_fix', 'agent');
+    return c.apply(key, 'CHANGES_REQUESTED', {
+      patch: { ...base, stateReason: null }, evidence: ev,
+      effects: fixOpen ? [] : [{ kind: 'dispatch_fix', dedupeKey: `dispatch_fix:${d.id}:${round.id}:${n}`, payload: { roundId: round.id, round: round.round, headSha: h, attemptNo: n } }],
+    });
+  }
+  return c.apply(key, 'ESCALATED', { patch: { ...base, stateReason: 'review_escalated' }, evidence: ev });
 }
 
 // ── T12 / T16 shared: mechanical first, agent on refusal (§6.7) ─────────────

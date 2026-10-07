@@ -4629,7 +4629,8 @@ export const workflowDeliveries = pgTable('workflow_deliveries', {
   // Heads covered by a standing review approval: the head a verdict (or a
   // human) approved plus carry-forward equivalents. Exact-head binding.
   approvedHeads: text('approved_heads').array().default(sql`'{}'::text[]`).notNull(),
-  // 'verdict' | 'human' | 'composition' — what the standing approval rests on.
+  // 'verdict' | 'human' | 'composition' | 'policy' — what the standing approval
+  // rests on. 'policy' (no review required) is never a verdict at the head.
   approvalBasis: text('approval_basis'),
   // Heads covered ONLY by a verified composition attestation (a release or
   // integration PR assembled from already-reviewed constituents). Kept apart

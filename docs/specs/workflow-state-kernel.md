@@ -238,7 +238,7 @@ at the base commit of this branch the last index is 0248).
 | `resume_state`, `trunk_incident_id` | set only while `BLOCKED_ON_TRUNK` |
 | (no counters) | attempt budgets are rows of `workflow_attempts` (§5.7), one ledger per family; the delivery row holds no `iteration` number, so no two code paths can disagree about it |
 | `approved_heads` text[] | heads covered by the standing approval: the approved head plus content-equivalent heads (today `context.equivalentHeadShas`) |
-| `approval_basis` | `verdict`, `human` or `composition`: what the standing approval rests on |
+| `approval_basis` | `verdict`, `human`, `composition` or `policy` (no review required; never a verdict): what the standing approval rests on |
 | `composition_heads` text[] | heads covered **only** by a verified composition attestation (§5.9); kept apart from `approved_heads` so no reader takes it for a verdict at that head |
 | `bound_attempt_id` | the attempt whose end the delivery waits on in `FIXING`/`REPAIRING` (the `a` of `(H, r, a)`) |
 | `ci` text, `ci_head_sha`, `mergeable`, `mergeable_head_sha` | latest fact for the *current* head only |
@@ -388,7 +388,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | # | Command / event | Allowed from | Required evidence / preconditions | Result state | Durable effects (same statement) | Idempotency key | Stale-event behaviour |
 |---|---|---|---|---|---|---|---|
 | T1 | `DeliveryOpened` (claim of a PR-deliverable task) | none | task exists, output requirement needs a PR | `WORKING` | none | `open:{task}` | duplicate returns existing delivery |
-| T2 | `PrBound` (create_pr, adopt, webhook `opened`) | `WORKING`, `AWAITING_PUSH`, none (adoption) | live read: PR open, same repo as workspace, `head.repo == repo` (fork guard), base ref recorded | unchanged, except adoption creates `AWAITING_REVIEW` | project PR columns; `dispatch_review` if policy requires it and `H` has no round | `bind:{repo}#{pr}` | a second bind with a different PR number for the same delivery is `rejected(pr_already_bound)`; it does NOT reset merge or lifecycle columns (fixes adopt-override finding 8) |
+| T2 | `PrBound` (create_pr, adopt, webhook `opened`) | `WORKING`, `AWAITING_PUSH`, none (adoption) | live read: PR open, same repo as workspace, `head.repo == repo` (fork guard), base ref recorded | unchanged, except adoption creates `AWAITING_REVIEW` | project PR columns; `dispatch_review` if policy requires it and `H` has no round | `bind:{repo}#{pr}` | a second bind with a different PR number for the same delivery is `rejected(pr_already_bound)`; it does NOT reset merge or lifecycle columns (fixes adopt-override finding 8). A bound PR leaves `WORKING` when the owner attempt ends (§6.5 row 1): to `AWAITING_REVIEW`, or to `APPROVED` with `approval_basis = policy` when the policy requires no review |
 | T3 | `HeadObserved(H')` fact | any non-terminal | live read confirms `H'` is the PR's current head | per §6.4 | per §6.4 | `head:{repo}#{pr}:{H'}` | webhook payload head ≠ live head → apply the live head; a late event whose live head equals stored head is `duplicate` |
 | T4 | `AttemptEnded(a, outcome, L)` (worker PATCH terminal, reaper) | `WORKING`, `FIXING`, `REPAIRING` | attempt `a` is the delivery's bound attempt (else `stale`); `L`, `commitCount` recorded as fact | see §6.5 | project `tasks`/`workers` rows; `announce_fix_ended` only for outcomes below | `end:{a}` | an exit for a non-bound attempt is recorded and returns `stale` |
 | T5 | `ReviewRequested(head, forced?)` (webhook `opened`, push, `request_pr_review`, re-review route, stale-approval) | `WORKING`(PR bound), `AWAITING_REVIEW`, `CHANGES_REQUESTED`, `APPROVED`, `ESCALATED` | `head == current_head_sha` (live read); no round with status `queued`/`reviewing` for `(head)`; `forced` needs a human or `force` actor and is recorded in `bypass` | `AWAITING_REVIEW`, round `r+1` queued bound to `head` | `dispatch_review(round)`; announce `review_queued` | `round:{delivery}:{head}:{r+1}` | a request naming a head ≠ current is `rejected(round_head_not_current)`; a request for a head that already has a decided round is `rejected(head_already_reviewed)` unless `forced` |
@@ -434,10 +434,13 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 
 | State, outcome | Result |
 |---|---|
-| `WORKING`, success, PR bound and live head contains `L` (or `L` is empty and the output requirement is satisfied by the PR) | stay; review per T5 if not queued |
+| `WORKING`, success, PR bound and live head `H` contains `L` (or `L` is empty and the output requirement is satisfied by the PR) | `AWAITING_REVIEW`, round queued at `H` per T5 unless one is already open at `H` (§15 step 2). The owner attempt has ended, so `WORKING` (worker owns the next move, §4) would leave the delivery with no owner |
+| as above, round already **decided** at `H` | the state that round's verdict maps to, exactly as T6: approve → `APPROVED`; request changes → `CHANGES_REQUESTED` with `dispatch_fix` unless a fix for that round is open (`ESCALATED(review_exhausted)` at the round budget); escalate → `ESCALATED(review_escalated)` |
+| as above, the workspace policy requires no review (auto-threshold) | `APPROVED` with `approval_basis = policy`, `state_reason = policy_no_review`: no round, no verdict, `approved_heads` untouched, so it never reads as a reviewer verdict (§8). Policy covers only the current head; a later push stays `APPROVED` by policy. Landing is still gated by T15's rails |
 | `WORKING`, success, PR required and `commitCount>0` but live head does not contain `L`, or no PR | `AWAITING_PUSH` with effect `push_recovery` |
 | `WORKING`, `failed`/`lost`, retry budget left | stay `WORKING` (task retried, attempt count +1) |
-| `WORKING`, `failed`/`lost`, budget spent, PR bound | `ESCALATED(push_undeliverable)` if `L` unproven, else per PR state |
+| `WORKING`, `failed`/`lost`, budget spent, PR bound | `ESCALATED(push_undeliverable)` if `L` unproven; else, with the PR open, hand on exactly as row 1 (review round, decided verdict, or policy approval) |
+| `WORKING`, `failed`/`lost`, budget spent, PR bound, no open PR head (closed, merged or unreadable) | `ESCALATED(push_undeliverable)`; a later `PrMerged`/`PrClosedUnmerged` still applies from `ESCALATED`. An ended owner attempt with no retry queued never leaves the delivery in `WORKING` |
 | `WORKING`, `failed`/`lost`, budget spent, no PR | `FAILED` |
 | `FIXING`/`REPAIRING`, success, proof holds | T3 path to `AWAITING_REVIEW` (new round) |
 | `FIXING`/`REPAIRING`, success, no proof | `AWAITING_PUSH`; the attempt row stays `completed` as an execution fact; effect `push_recovery` |

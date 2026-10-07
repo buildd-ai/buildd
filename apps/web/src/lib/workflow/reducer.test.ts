@@ -261,10 +261,62 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(dec.rounds).toEqual([expect.objectContaining({ op: 'insert', round: 1, headSha: 'H1', kind: 'full' })]);
     expect(dec.idempotencyKey).toBe('end:w9');
   });
-  test('WORKING success: an open round already at the head is reused; policy without review stays WORKING', () => {
-    expect(applied(end(V(D(), [R()]), {})).rounds).toEqual([]);
-    expect(applied(end(V(D()), { reviewRequired: false })).toState).toBe('WORKING');
-    expect(applied(end(V(D(), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]), {})).toState).toBe('WORKING');
+  test('WORKING success: an open round already at the head is reused', () => {
+    const dec = applied(end(V(D(), [R()]), {}));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.rounds).toEqual([]);
+  });
+  test('policy needs no review → APPROVED by policy: no round, no verdict, approved_heads untouched', () => {
+    const dec = applied(end(V(D()), { reviewRequired: false }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch).toMatchObject({ approvalBasis: 'policy', stateReason: 'policy_no_review', currentHeadSha: 'H1' });
+    expect(dec.patch.approvedHeads).toBeUndefined();
+    expect(dec.rounds).toEqual([]);
+    expect(dec.effects.some((e) => e.kind === 'post_review' || e.kind === 'dispatch_review')).toBe(false);
+    // Policy covers the current head for landing, and is never reported as a verdict.
+    const after = D({ state: 'APPROVED', approvalBasis: 'policy', currentHeadSha: 'H1' });
+    expect(headCoverage(after, 'H1')).toBe('policy');
+    expect(headCoverage(after, 'H0')).toBe('none');
+    // Landing is still gated by the rails.
+    expectResult(run(V(after), { type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live('H1'), rails: { passed: false, redCi: true } }), 'rejected', 'rail_not_overridable');
+    expect(applied(run(V(after), { type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live('H1'), rails: { passed: true } })).evidence.coverage).toBe('policy');
+  });
+  test('a push under a policy approval stays APPROVED by policy at the new head', () => {
+    const dec = applied(run(V(D({ state: 'APPROVED', approvalBasis: 'policy', stateReason: 'policy_no_review' })), { type: 'HeadObserved', actor: 'webhook', live: live('H2') }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch).toMatchObject({ currentHeadSha: 'H2' });
+    expect(dec.patch.approvedHeads).toBeUndefined();
+    expect(dec.rounds).toEqual([]);
+  });
+  test('policy approval survives landing aborts and repairs without ever creating a round', () => {
+    const pol = { approvalBasis: 'policy' as const, stateReason: 'policy_no_review' };
+    const land = applied(run(V(D({ state: 'LANDING', ...pol })), { type: 'HeadObserved', actor: 'webhook', live: live('H2') }));
+    expect(land.toState).toBe('APPROVED');
+    expect(land.rounds).toEqual([]);
+    const rep = V(D({ state: 'REPAIRING', ...pol, stateReason: 'behind', boundAttemptId: 'm1' }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', status: 'running' })]);
+    const viaHead = applied(run(rep, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), proof: { liveContainsLocal: false, contentDiffChanged: true } }));
+    expect(viaHead.toState).toBe('APPROVED');
+    expect(viaHead.patch.approvedHeads).toBeUndefined();
+    const viaEnd = applied(run(rep, { type: 'AttemptEnded', actor: 'runner', workerId: 'w', attemptId: 'm1', outcome: 'success', localHeadSha: 'H2', commitCount: 1, live: live('H2') }));
+    expect(viaEnd.toState).toBe('APPROVED');
+    expect(viaEnd.rounds).toEqual([]);
+    expect(viaEnd.patch.approvedHeads).toBeUndefined();
+  });
+  test('head already decided → the state its verdict maps to, as T6 does', () => {
+    const appr = applied(end(V(D({ currentRound: 1 }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]), {}));
+    expect(appr.toState).toBe('APPROVED');
+    expect(appr.patch).toMatchObject({ approvedHeads: ['H1'], approvalBasis: 'verdict' });
+    const rc = applied(end(V(D({ currentRound: 1 }), [decidedRC]), {}));
+    expect(rc.toState).toBe('CHANGES_REQUESTED');
+    expect(rc.effects.find((e) => e.kind === 'dispatch_fix')).toMatchObject({ payload: { roundId: 'r1', attemptNo: 1 } });
+    const rcOpenFix = applied(end(V(D({ currentRound: 1 }), [decidedRC], [A()]), {}));
+    expect(rcOpenFix.toState).toBe('CHANGES_REQUESTED');
+    expect(rcOpenFix.effects.some((e) => e.kind === 'dispatch_fix')).toBe(false);
+    const rcExhausted = applied(end(V(D({ currentRound: 3 }), [R({ round: 3, status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' })]), {}));
+    expect(rcExhausted.patch.stateReason).toBe('review_exhausted');
+    const esc = applied(end(V(D({ currentRound: 1 }), [R({ status: 'decided', verdict: 'escalate', effectiveVerdict: 'escalate' })]), {}));
+    expect(esc.toState).toBe('ESCALATED');
+    expect(esc.patch.stateReason).toBe('review_escalated');
   });
   test('WORKING success with commits not on GitHub, or no PR → AWAITING_PUSH + push_recovery', () => {
     const dec = applied(end(V(D()), { localHeadSha: 'L9' }));
@@ -277,7 +329,12 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(applied(end(V(D({ prNumber: null, repoFullName: null })), { outcome: 'lost', live: null })).toState).toBe('FAILED');
     expect(applied(end(V(D()), { outcome: 'failed', localHeadSha: 'L9' })).patch.stateReason).toBe('push_undeliverable');
     expect(applied(end(V(D()), { outcome: 'failed', commitCount: 0, localHeadSha: null })).toState).toBe('AWAITING_REVIEW');
-    expect(applied(end(V(D(), [R()]), { outcome: 'failed', commitCount: 0, localHeadSha: null, live: live('H1', { state: 'closed' }) })).toState).toBe('WORKING');
+    // Budget spent, PR bound, nothing reviewable: a person owns it, never a silent WORKING.
+    const closed = applied(end(V(D(), [R()]), { outcome: 'failed', commitCount: 0, localHeadSha: null, live: live('H1', { state: 'closed' }) }));
+    expect(closed.toState).toBe('ESCALATED');
+    expect(closed.patch.stateReason).toBe('push_undeliverable');
+    expect(applied(end(V(D(), [R()]), { outcome: 'failed', commitCount: 0, localHeadSha: null })).toState).toBe('AWAITING_REVIEW');
+    expect(applied(end(V(D(), [decidedRC]), { outcome: 'lost', commitCount: 0, localHeadSha: null })).toState).toBe('CHANGES_REQUESTED');
   });
   test('WORKING unproven: commits → AWAITING_PUSH; nothing → requeue', () => {
     expect(applied(end(V(D({ prNumber: null, repoFullName: null })), { outcome: 'unproven', live: null })).toState).toBe('AWAITING_PUSH');
@@ -333,6 +390,35 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(effectKinds(agentConflict)).toContain('dispatch_conflict_fix');
     expect(applied(end(repairing({ attemptNo: 3 }), { attemptId: 'c1', outcome: 'failed' })).patch.stateReason).toBe('ci_exhausted');
     expect(applied(end(repairing({ attemptNo: 3, family: 'conflict' }), { attemptId: 'c1', outcome: 'failed' })).patch.stateReason).toBe('conflict_exhausted');
+  });
+});
+
+describe('invariant: an ended owner attempt with no retry queued never leaves the delivery in WORKING (§4 one owner)', () => {
+  const outcomes = ['success', 'failed', 'lost', 'unproven'] as const;
+  const lives: Array<[string, LivePr | null]> = [['open-H1', live('H1')], ['open-H2', live('H2')], ['closed', live('H1', { state: 'closed' })], ['merged', live('H1', { state: 'closed', merged: true })], ['none', null]];
+  const roundSets: Array<[string, RoundSnapshot[]]> = [
+    ['no round', []],
+    ['open round', [R()]],
+    ['decided approve', [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]],
+    ['decided request_changes', [decidedRC]],
+    ['decided escalate', [R({ status: 'decided', verdict: 'escalate', effectiveVerdict: 'escalate' })]],
+  ];
+  const cases: Array<[string, KernelView, Command]> = [];
+  for (const outcome of outcomes) for (const [ln, l] of lives) for (const [rn, rounds] of roundSets)
+    for (const prBound of [true, false]) for (const commitCount of [0, 1]) for (const localHeadSha of [null, 'H1', 'L9'])
+      for (const reviewRequired of [true, false]) {
+        const d = prBound ? D({ currentRound: rounds.length ? 1 : 0 }) : D({ prNumber: null, repoFullName: null, currentHeadSha: null });
+        cases.push([`${outcome} live=${ln} ${rn} pr=${prBound} commits=${commitCount} L=${localHeadSha} review=${reviewRequired}`, V(d, prBound ? rounds : []),
+          { type: 'AttemptEnded', actor: 'runner', workerId: 'w', taskId: 't1', outcome, localHeadSha, commitCount, live: prBound ? l : null, reviewRequired, taskRetryBudgetLeft: false }]);
+      }
+  test(`covers ${cases.length} combinations`, () => {
+    const stuck = cases.filter(([, v, c]) => { const dec = run(v, c); return dec.result === 'apply' && dec.toState === 'WORKING'; }).map(([n]) => n);
+    expect(stuck).toEqual([]);
+  });
+  test('the only WORKING outcome is a requeue the task still has budget for', () => {
+    const dec = applied(run(V(D()), { type: 'AttemptEnded', actor: 'runner', workerId: 'w', taskId: 't1', outcome: 'failed', localHeadSha: null, commitCount: 0, live: live('H1'), taskRetryBudgetLeft: true }));
+    expect(dec.toState).toBe('WORKING');
+    expect(dec.evidence.requeue).toBe(true);
   });
 });
 
