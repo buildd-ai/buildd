@@ -131,7 +131,7 @@ mock.module('../../src/lib/ci-failure-retry', () => ({
 const seam = await import('../../src/lib/workflow/seam');
 const { reviewEffectHandlers: reviewOnly } = await import('../../src/lib/workflow/review-effects');
 const { withCiRetryEffects } = await import('../../src/lib/workflow/ci-retry-effects');
-const { withTrunkEffects } = await import('../../src/lib/workflow/trunk-effects');
+const { withTrunkEffects } = await import('../../src/lib/workflow/ci-red-trunk-effects');
 /** The composition root's set (apps/web/src/modules.ts): review loop, the CI family and the trunk breaker. */
 const reviewEffectHandlers = withTrunkEffects(withCiRetryEffects(reviewOnly));
 const { runEffects } = await import('../../src/lib/workflow/effects');

@@ -8,7 +8,7 @@
  * the same signature inside a window, the failure is the trunk's, not the
  * PR's: the delivery joins one `trunk_incidents` row and goes
  * BLOCKED_ON_TRUNK (T25) instead of filing a per-PR CI attempt. One trunk-fix
- * task exists per incident (`dispatch_trunk_fix`, trunk-effects.ts). The
+ * task exists per incident (`dispatch_trunk_fix`, ci-red-trunk-effects.ts). The
  * recovery sweep re-reads each open incident's base head; once the base no
  * longer fails the incident's checks the incident resolves and every blocked
  * delivery re-enters its resume state (T26), with a mechanical branch refresh

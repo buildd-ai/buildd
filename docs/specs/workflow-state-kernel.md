@@ -1166,7 +1166,7 @@ T25/T26, S24, AC-15):
   delivery already `REPAIRING(ci)` joins too (its queued attempt is `skipped`, it
   spends nothing). A newly opened incident also takes every kernel delivery on the
   same base repairing a failure it explains. `dispatch_trunk_fix`
-  (`lib/workflow/trunk-effects.ts`) files exactly one trunk-fix task per incident:
+  (`lib/workflow/ci-red-trunk-effects.ts`) files exactly one trunk-fix task per incident:
   the task id is the incident id, it is linked after it exists (the FK, §13.1
   deviation 9), and a base that is already green at dispatch files nothing. The
   `cancel_open_attempts(blocked_on_trunk)` effect cancels the per-PR CI fix tasks
