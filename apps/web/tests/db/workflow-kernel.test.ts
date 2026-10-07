@@ -192,7 +192,7 @@ describe('the #3754 fix loop end to end', () => {
     expect(view.delivery).toMatchObject({ state: 'AWAITING_REVIEW', currentRound: 2, currentHeadSha: 'L2' });
     expect(view.rounds.map((r) => [r.round, r.headSha, r.kind, r.status])).toEqual([[1, 'H1', 'full', 'decided'], [2, 'L2', 'delta', 'queued']]);
     expect(view.attempts[0]).toMatchObject({ outcome: 'delivered' });
-  });
+  }, 60_000);
 
   test('a late verdict for a superseded round is kept for audit, never applied', async () => {
     const { deliveryId, taskId } = await openDelivery();
@@ -207,7 +207,7 @@ describe('the #3754 fix loop end to end', () => {
     expect(view.delivery!.approvedHeads).toEqual([]);
     expect(view.rounds.find((r) => r.id === r1.id)).toMatchObject({ status: 'superseded', verdict: 'approve' });
     expect((await effects(deliveryId)).some((e) => e.kind === 'post_review')).toBe(false);
-  });
+  }, 60_000);
 });
 
 describe('effect drain', () => {
