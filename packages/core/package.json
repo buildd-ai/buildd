@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.287.1",
+  "version": "0.288.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -61,6 +61,7 @@
     "./describe-error": "./describe-error.ts",
     "./runner-health": "./runner-health.ts",
     "./question-brief": "./question-brief.ts",
+    "./human-attention": "./human-attention.ts",
     "./question-gate": "./question-gate.ts",
     "./question-gate-decision": "./question-gate-decision.ts",
     "./question-gate-source": "./question-gate-source.ts",

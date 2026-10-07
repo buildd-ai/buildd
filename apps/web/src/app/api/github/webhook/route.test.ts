@@ -78,6 +78,16 @@ mock.module('@/lib/chat/mission-events', () => ({ postTaskCompletedEvent: mockPo
 // in packages/core/__tests__/pr-reverts.test.ts and lib/pr-reverts.test.ts.
 const mockRecordPrReverts = mock((_a: any) => Promise.resolve(0));
 mock.module('@/lib/pr-reverts', () => ({ recordPrReverts: mockRecordPrReverts }));
+// Base-advance notices: what is matched and sent is covered in
+// lib/base-advance-notice.test.ts; here only what the webhook hands over.
+const mockRunBaseAdvanceNotice = mock((_input: any, _resolver: any) => Promise.resolve({ notified: [], debounced: [] }));
+const mockChangedFilesForPr = mock((_i: number, _r: string, _n: number) => Promise.resolve(['apps/web/src/lib/foo.ts']));
+const mockChangedFilesForCompare = mock((_i: number, _r: string, _b: string, _a: string) => Promise.resolve(['from/compare.ts']));
+mock.module('@/lib/base-advance-notice-store', () => ({
+  runBaseAdvanceNotice: mockRunBaseAdvanceNotice,
+  changedFilesForPr: mockChangedFilesForPr,
+  changedFilesForCompare: mockChangedFilesForCompare,
+}));
 // Supersession detection: what it decides is covered in lib/pr-supersession-detect.test.ts.
 const mockDetectPrSupersession = mock((_a: any) => Promise.resolve({ outcome: 'none', candidatesChecked: 0 } as any));
 mock.module('@/lib/pr-supersession-detect', () => ({ detectPrSupersession: mockDetectPrSupersession }));
@@ -6202,6 +6212,98 @@ describe('revert ledger: merged PRs and default-branch commits are recorded', ()
       { repoFullName: 'test-org/test-repo', revertedBy: 'c1', text: 'Revert "fix: x"\n\nThis reverts commit abcdef1.' },
       { repoFullName: 'test-org/test-repo', revertedBy: 'c2', text: 'chore: bump' },
     ]);
+  });
+
+  describe('base-advance notice trigger', () => {
+    // The trigger runs off the response path (after(), or inline when there is
+    // no request scope); let it settle.
+    const settle = () => new Promise(r => setTimeout(r, 5));
+    beforeEach(() => {
+      mockRunBaseAdvanceNotice.mockClear();
+      mockChangedFilesForPr.mockClear();
+      mockChangedFilesForCompare.mockClear();
+    });
+
+    it('a merged PR hands its base, files and author branch over', async () => {
+      await POST(createWebhookRequest('pull_request', {
+        action: 'closed',
+        pull_request: {
+          number: 501, merged: true, title: 'feat: foo', body: null, merge_commit_sha: 'm501',
+          head: { ref: 'buildd/aaaa1111-foo', sha: 'h501' }, base: { ref: 'dev' },
+          html_url: 'https://github.com/test-org/test-repo/pull/501',
+        },
+        installation: { id: 7 },
+        repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+      }));
+      await settle();
+      expect(mockChangedFilesForPr).toHaveBeenCalledWith(7, 'test-org/test-repo', 501);
+      expect(mockRunBaseAdvanceNotice).toHaveBeenCalledTimes(1);
+      const [input, resolver] = mockRunBaseAdvanceNotice.mock.calls[0];
+      expect(input).toMatchObject({
+        repoFullName: 'test-org/test-repo', baseRef: 'dev', source: 'pull_request',
+        files: ['apps/web/src/lib/foo.ts'],
+        change: { prNumber: 501, title: 'feat: foo', sha: 'm501', authorBranch: 'buildd/aaaa1111-foo' },
+      });
+      expect(typeof resolver.taskPrBase).toBe('function');
+    });
+
+    it('a PR closed without merging triggers nothing', async () => {
+      await POST(createWebhookRequest('pull_request', {
+        action: 'closed',
+        pull_request: {
+          number: 502, merged: false, title: 'x', body: null,
+          head: { ref: 'buildd/bbbb2222-x', sha: 'h502' }, base: { ref: 'dev' },
+          html_url: 'https://github.com/test-org/test-repo/pull/502',
+        },
+        installation: { id: 7 },
+        repository: { full_name: 'test-org/test-repo' },
+      }));
+      await settle();
+      expect(mockRunBaseAdvanceNotice).not.toHaveBeenCalled();
+    });
+
+    it('a push to a mission integration branch carries the payload files and the PR it names', async () => {
+      await POST(createWebhookRequest('push', {
+        ref: 'refs/heads/mission/foo-12345678', before: 'b0', after: 'a1', size: 1,
+        repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+        installation: { id: 7 },
+        commits: [{ id: 'c1', message: 'feat: foo (#77)', added: ['a.ts'], modified: ['b.ts'], removed: [] }],
+      }));
+      await settle();
+      expect(mockChangedFilesForCompare).not.toHaveBeenCalled();
+      expect(mockRunBaseAdvanceNotice).toHaveBeenCalledTimes(1);
+      expect(mockRunBaseAdvanceNotice.mock.calls[0][0]).toMatchObject({
+        baseRef: 'mission/foo-12345678', source: 'push', files: ['a.ts', 'b.ts'],
+        change: { sha: 'a1', prNumber: 77, authorPrNumbers: [77] },
+      });
+    });
+
+    it('a truncated push payload falls back to a compare', async () => {
+      await POST(createWebhookRequest('push', {
+        ref: 'refs/heads/dev', before: 'b0', after: 'a1', size: 40,
+        repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+        installation: { id: 7 },
+        commits: [{ id: 'c1', message: 'chore: x', modified: ['b.ts'] }],
+      }));
+      await settle();
+      expect(mockChangedFilesForCompare).toHaveBeenCalledWith(7, 'test-org/test-repo', 'b0', 'a1');
+      expect(mockRunBaseAdvanceNotice.mock.calls[0][0].files).toEqual(['from/compare.ts']);
+    });
+
+    it('a push to a worker head branch, or a branch deletion, triggers nothing', async () => {
+      await POST(createWebhookRequest('push', {
+        ref: 'refs/heads/buildd/aaaa1111-foo', after: 'a1',
+        repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+        commits: [{ id: 'c1', message: 'wip', modified: ['b.ts'] }],
+      }));
+      await POST(createWebhookRequest('push', {
+        ref: 'refs/heads/dev', deleted: true, after: '0000000',
+        repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+        commits: [],
+      }));
+      await settle();
+      expect(mockRunBaseAdvanceNotice).not.toHaveBeenCalled();
+    });
   });
 
   describe('push → docs ingest', () => {

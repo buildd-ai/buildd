@@ -20,6 +20,8 @@ import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { workerProgressSql } from './worker-progress';
 import { noRowOfPrMerged } from './pr-merge-stamp';
+import { homeQuestionView } from './home-attention';
+import type { UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
 export interface HomeFleetStats {
   mergedToday: number;
@@ -38,8 +40,7 @@ export interface HomeFleetQuestion {
   label: string;
   runnerName: string | null;
   askedAt: string | null;
-  prompt: string;
-  options: string[];
+  question: UnifiedQuestion;
 }
 
 export interface HomeFleetData {
@@ -155,6 +156,8 @@ export async function loadHomeFleet(input: {
         id: workers.id, accountId: workers.accountId, runner: workers.runner, localUiUrl: workers.localUiUrl,
         status: workers.status, startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt,
         mergedAt: workers.mergedAt, prNumber: workers.prNumber, waitingFor: workers.waitingFor,
+        // Only beside a question: the context fallback for a card whose brief was lost.
+        error: sql<string | null>`case when ${workers.waitingFor} is not null then ${workers.error} end`,
         linesAdded: workers.linesAdded, linesRemoved: workers.linesRemoved,
         progress: workerProgressSql,
         taskStatus: tasks.status, taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
@@ -237,18 +240,18 @@ export async function loadHomeFleet(input: {
   const merged = workerRows.filter(r => r.mergedAt && new Date(r.mergedAt).getTime() >= dayStart && r.prNumber);
   const mergedPrNumbers = [...new Set(merged.map(r => r.prNumber!))].sort((a, b) => b - a);
   const questions: HomeFleetQuestion[] = workerRows
-    .filter(r => isOpenAsk(r.taskStatus, r.status) && (r.waitingFor as any)?.prompt)
+    .filter(r => isOpenAsk(r.taskStatus, r.status))
     .sort((a, b) => new Date(a.updatedAt ?? 0).getTime() - new Date(b.updatedAt ?? 0).getTime())
-    .map(r => {
-      const wf = r.waitingFor as { prompt: string; options?: string[] };
-      return {
+    .flatMap(r => {
+      const question = homeQuestionView({ waitingFor: r.waitingFor, error: r.error, taskTitle: r.taskTitle });
+      if (!question) return [];
+      return [{
         workerId: r.id, taskId: r.taskId, missionId: r.missionId,
         label: taskShortLabel({ title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode }).label,
         runnerName: runnerNameById.get(r.id) ?? null,
         askedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
-        prompt: wf.prompt,
-        options: Array.isArray(wf.options) ? wf.options.filter((o): o is string => typeof o === 'string') : [],
-      };
+        question,
+      }];
     });
 
   return {
