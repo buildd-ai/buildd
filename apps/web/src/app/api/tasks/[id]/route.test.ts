@@ -1076,6 +1076,24 @@ describe('PATCH /api/tasks/[id]', () => {
     expect(data.error).toBe('Task not found');
   });
 
+  it('explains with 403 when a task token edits a sibling task in its workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1' } });
+    const scope = (workspaceId: string) => ({
+      id: 'account-123', level: 'worker', taskScope: { taskId: 'some-other-task', workspaceId, expiresAt: Date.now() + 60_000 },
+    });
+    const req = () => createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_xxx' }, body: { status: 'cancelled' } });
+
+    mockAccountsFindFirst.mockResolvedValue(scope('ws-1'));
+    const sibling = await callHandler(PATCH, req(), TASK_ID);
+    expect(sibling.status).toBe(403);
+    expect((await sibling.json()).error).toMatch(/only edit its own task/);
+
+    mockAccountsFindFirst.mockResolvedValue(scope('ws-other'));
+    const foreign = await callHandler(PATCH, req(), TASK_ID);
+    expect(foreign.status).toBe(404);
+  });
+
   it('returns 404 when session user does not own workspace', async () => {
     const mockTask = {
       id: TASK_ID,
@@ -2117,7 +2135,7 @@ describe('PATCH /api/tasks/[id] — per-task token', () => {
   it('cannot edit another task', async () => {
     mockAccountsFindFirst.mockResolvedValue(scoped('33333333-3333-3333-3333-333333333333'));
     const res = await patch({ description: 'x' });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(403);
     expect(mockTasksUpdate).not.toHaveBeenCalled();
   });
 

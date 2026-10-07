@@ -39,7 +39,8 @@ import {
  *     `resetMs`, `prepMs`, `baselinePrepMs` and `savedMs` (negative when reuse cost time); adds the `restore_reuse_*`
  *     phases, `durationsMs.restoreReuse` and `repo.source` `reuse` (the clone grown from the packs a reset kept).
  */
-export const RUN_REPORT_VERSION = 11;
+/** 12: adds session materialisation time and clone/worktree mode. */
+export const RUN_REPORT_VERSION = 12;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -60,6 +61,9 @@ export function runLabel(taskId: string, attempt: number): string {
 // Mirrors apps/runner/src/phase-lines.ts (not imported: that would pull the
 // runner into the Worker bundle). run-report.test.ts asserts they stay equal.
 
+export const WORKTREE_MODE_LINE_PREFIX = 'BUILDD_WORKTREE_MODE=';
+export type WorktreeMode = 'clone' | 'worktree';
+
 export const PHASE_LINE_PREFIX = 'BUILDD_PHASE=';
 export const RUN_PHASES = [
   'clone_start', 'clone_end', 'install_start', 'install_end',
@@ -68,11 +72,18 @@ export const RUN_PHASES = [
   'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
   'restore_cache_start', 'restore_cache_end',
   'restore_reuse_start', 'restore_reuse_end',
+  'worktree_start', 'worktree_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 export type RunnerPhases = Partial<Record<RunPhase, number>>;
 
 const PHASE_LINE_RE = /^BUILDD_PHASE=([a-z_]+) (\d{1,16})$/;
+
+/** Session materialisation mode from a `BUILDD_WORKTREE_MODE=` line, or null. */
+export function parseWorktreeModeLine(line: string): WorktreeMode | null {
+  const value = line.trim().slice(WORKTREE_MODE_LINE_PREFIX.length);
+  return line.trim().startsWith(WORKTREE_MODE_LINE_PREFIX) && (value === 'clone' || value === 'worktree') ? value : null;
+}
 
 /** `{ phase, at }` from a `BUILDD_PHASE=<phase> <epoch ms>` line, or null. */
 export function parsePhaseLine(line: string): { phase: RunPhase; at: number } | null {
@@ -622,6 +633,7 @@ export interface RunTimings {
   exitedAt?: number;
   /** From `BUILDD_PHASE=` lines: the container's clock. */
   runnerPhases?: RunnerPhases;
+  worktreeMode?: WorktreeMode;
   /** From `BUILDD_METRIC=` lines. */
   runnerMetrics?: RunnerMetrics;
   /** From the `BUILDD_REPO_SOURCE=` line. */
@@ -636,7 +648,16 @@ export interface RunTimings {
 
 // ── Assembly ──────────────────────────────────────────────────────────────────
 
+export interface BrowserRunUsage {
+  sessionMs: number;
+  sessions: number;
+  requests: number;
+  bytes: number;
+  relayErrors: number;
+}
+
 export interface RunReport {
+  browser?: BrowserRunUsage & { provider: 'cloudflare'; sessionSeconds: number };
   kind: typeof RUN_REPORT_KIND;
   version: typeof RUN_REPORT_VERSION;
   taskId: string | null;
@@ -680,10 +701,13 @@ export interface RunReport {
     restoreCache: number | null;
     /** A reused container: growing the clone from the packs the reset kept, fetch included (instead of `clone` / `restoreWarm`). */
     restoreReuse: number | null;
+    /** Materialising the session checkout, whether in-clone or a worktree. */
+    worktree: number | null;
     toFirstModelRequest: number | null;
     total: number | null;
   };
   runnerPhases: RunnerPhases;
+  worktreeMode: WorktreeMode | null;
   /**
    * How the repo got onto the disk. `source` null: the runner printed no
    * source line (warm repos off, or no clone in this run). `reuse`: grown
@@ -804,6 +828,7 @@ export const RUN_INTERRUPTIONS = ['container_stopped', 'agent_restart', 'questio
 export type RunInterruption = typeof RUN_INTERRUPTIONS[number];
 
 export interface RunReportInput {
+  browser?: BrowserRunUsage;
   taskId: string | null | undefined;
   attempt: number;
   workerId?: string | null;
@@ -919,6 +944,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
     restorePark: span(phase('restore_park_start'), phase('restore_park_end')),
     restoreCache: span(phase('restore_cache_start'), phase('restore_cache_end')),
     restoreReuse: span(phase('restore_reuse_start'), phase('restore_reuse_end')),
+    worktree: span(phase('worktree_start'), phase('worktree_end')),
     toFirstModelRequest: span(timestamps.claimedAt, timestamps.firstModelRequestAt),
     total: span(timestamps.dispatchReceivedAt, timestamps.exitedAt),
   };
@@ -933,7 +959,9 @@ export function assembleRunReport(input: RunReportInput): RunReport {
     instanceType: typeof input.instanceType === 'string' && INSTANCE_TYPE_RE.test(input.instanceType) ? input.instanceType : null,
     timestamps,
     durationsMs,
+    ...(input.browser ? { browser: { provider: 'cloudflare' as const, sessionMs: count(input.browser.sessionMs), sessionSeconds: count(input.browser.sessionMs) / 1000, sessions: count(input.browser.sessions), requests: count(input.browser.requests), bytes: count(input.browser.bytes), relayErrors: count(input.browser.relayErrors) } } : {}),
     runnerPhases: phases,
+    worktreeMode: t.worktreeMode === 'clone' || t.worktreeMode === 'worktree' ? t.worktreeMode : null,
     repo: {
       source,
       fallbackReason,

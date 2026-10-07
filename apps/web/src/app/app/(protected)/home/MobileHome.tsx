@@ -98,7 +98,7 @@ export function MobileHome({ items: serverItems, ask, live, capacity, mergedToda
   useHideNeedsInputBannerOnPhone(true);
   const open = items.filter(i => !done[i.key]);
   const copy = homeAttentionCopy(open);
-  useEffect(() => { publishHomeAttentionCount(copy.count); return () => publishHomeAttentionCount(null); }, [copy.count]);
+  useEffect(() => { publishHomeAttentionCount(copy.count); }, [copy.count]);
   const m = shipped[0];
   return <div data-testid="phone-home" className="md:hidden text-text-primary">
     <p className="mb-5 text-body text-text-muted">{live}/{capacity} working · {mergedToday} merged today · {inCi} in tests</p>

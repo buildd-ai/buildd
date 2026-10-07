@@ -253,7 +253,7 @@ export async function GET(req: NextRequest) {
     if (askedWorkspaceId) {
       const ws = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, askedWorkspaceId),
-        columns: { id: true, teamId: true, accessMode: true },
+        columns: { id: true, teamId: true, accessMode: true, gitConfig: true, webhookConfig: true },
       });
       const { loadBrowserRunnerHeartbeats } = await import('@/lib/runner-heartbeats');
       const hbs = ws ? await loadBrowserRunnerHeartbeats(ws, now) : null;

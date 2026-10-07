@@ -296,6 +296,28 @@ describe('seedCloneFromKept', () => {
     expect(existsSync(kept!)).toBe(false);
   });
 
+  test('reset after an in-clone task seeds only the remote default with no task state', () => {
+    const w = makeWorld();
+    // Disable the planted executable settings before simulating task commits.
+    git(w.clone, 'config', '--unset', 'core.fsmonitor');
+    rmSync(join(w.clone, '.git', 'hooks', 'post-checkout'));
+    rmSync(join(w.clone, '.git', 'objects', 'info', 'alternates'));
+    git(w.clone, 'checkout', '-q', '-B', 'buildd/task-example', 'origin/main');
+    writeFileSync(join(w.clone, 'task-only.txt'), 'task work\n');
+    git(w.clone, 'add', 'task-only.txt');
+    git(w.clone, '-c', 'user.name=t', '-c', 'user.email=t@e', 'commit', '-q', '-m', 'task work');
+    expect(resetContainer(w.paths, deps(w)).ok).toBe(true);
+    const kept = keptDirForClone({ BUILDD_EXECUTOR: 'cloud', HOME: w.paths.home }, w.clone)!;
+    expect(seedCloneFromKept(w.clone, `file://${w.origin}`, kept, { defaultBranch: 'main', fetchOrigin, log: () => {} })).toBe(true);
+    expect(git(w.clone, 'branch', '--show-current')).toBe('main');
+    expect(git(w.clone, 'branch', '--format=%(refname:short)')).toBe('main');
+    expect(git(w.clone, 'rev-parse', 'HEAD')).toBe(git(w.origin, 'rev-parse', 'HEAD'));
+    expect(git(w.clone, 'status', '--porcelain')).toBe('');
+    expect(existsSync(join(w.clone, 'task-only.txt'))).toBe(false);
+    expect(existsSync(join(w.clone, 'uncommitted.txt'))).toBe(false);
+    expect(existsSync(join(w.clone, '.buildd-worktrees'))).toBe(false);
+  });
+
   test('a tampered pack is refused: nothing is left and the caller clones instead', () => {
     const w = makeWorld();
     expect(resetContainer(w.paths, deps(w)).ok).toBe(true);

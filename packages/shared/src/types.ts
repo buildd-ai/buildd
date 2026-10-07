@@ -704,7 +704,11 @@ export interface TaskEvidence {
   capturedAt: string;
 }
 
-export type TaskMismatchKind = 'pushed_without_diff' | 'success_with_red_check' | 'last_command_failed';
+/**
+ * `fix_check_still_red`: a CI-fix attempt reported success while the check it
+ * was sent to fix was still red (or not yet green) on the PR head.
+ */
+export type TaskMismatchKind = 'pushed_without_diff' | 'success_with_red_check' | 'last_command_failed' | 'fix_check_still_red';
 
 /** One claim the task made that its own record contradicts. */
 export interface TaskMismatch {
@@ -1162,6 +1166,17 @@ export interface McpServerInfo {
 }
 
 export interface WorkerEnvironment {
+  /** Latest real launch/CDP round trip; configuration alone is not capability. */
+  browserProvider?: {
+    provider: 'local' | 'cloudflare';
+    ok: boolean;
+    checkedAt: string;
+    code?: string;
+    detail?: string;
+    handle?: string;
+    browserVersion?: string;
+    latencyMs?: number;
+  };
   tools: WorkerTool[];
   envKeys: string[];
   mcp: string[] | McpServerInfo[];

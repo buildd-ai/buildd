@@ -13,7 +13,9 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/closing-turn.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 import { createPr, builddAction, toolCall } from '../fixtures/task-shape-stream';
 import { RUNNER_DENIAL_MARKER } from '../../src/runner-denial';
@@ -119,13 +121,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -248,6 +250,12 @@ describe('closing turn', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
   beforeEach(resetAll);
+  afterAll(() => {
+
+    cleanupTestWorkspace();
+
+  });
+
   afterEach(() => { manager?.destroy(); });
 
   test('natural end without complete_task resumes the same session id for a closing turn', async () => {

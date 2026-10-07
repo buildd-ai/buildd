@@ -15,6 +15,9 @@
  * Off everywhere else, so a long-lived runner's log is unchanged.
  */
 
+export const WORKTREE_MODE_LINE_PREFIX = 'BUILDD_WORKTREE_MODE=';
+export type WorktreeMode = 'clone' | 'worktree';
+
 export const PHASE_LINE_PREFIX = 'BUILDD_PHASE=';
 
 export const RUN_PHASES = [
@@ -25,6 +28,7 @@ export const RUN_PHASES = [
   'restore_cache_start', 'restore_cache_end',
   // A reused container: the clone grown from the packs the reset kept (container-reset.ts).
   'restore_reuse_start', 'restore_reuse_end',
+  'worktree_start', 'worktree_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 
@@ -135,11 +139,20 @@ export function emitWarmRefresh(reason: WarmRefreshReason, opts: EmitOpts = {}):
 }
 
 /** Run `fn` between `<step>_start` and `<step>_end`; the end is printed even if it throws. */
-export function timedPhase<T>(step: 'clone' | 'install' | 'restore_warm' | 'fetch' | 'warm_upload' | 'park' | 'restore_park' | 'restore_cache', fn: () => T, opts?: EmitOpts): T {
+export function timedPhase<T>(step: 'worktree' | 'clone' | 'install' | 'restore_warm' | 'fetch' | 'warm_upload' | 'park' | 'restore_park' | 'restore_cache', fn: () => T, opts?: EmitOpts): T {
   emitPhase(`${step}_start`, opts);
   try {
     return fn();
   } finally {
     emitPhase(`${step}_end`, opts);
   }
+}
+
+export function formatWorktreeModeLine(mode: WorktreeMode): string {
+  return `${WORKTREE_MODE_LINE_PREFIX}${mode}`;
+}
+
+export function emitWorktreeMode(mode: WorktreeMode, opts: EmitOpts = {}): void {
+  if (!phaseLinesEnabled(opts?.env ?? process.env)) return;
+  (opts?.log ?? console.log)(formatWorktreeModeLine(mode));
 }

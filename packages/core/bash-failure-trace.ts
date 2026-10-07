@@ -19,7 +19,13 @@ export const BASH_RECOVERED_PATTERN = 'bash_verify_recovered';
 export const BASH_TRACE_TAIL_LINES = 60;
 /** Hard cap on one excerpt, header included. The server clamps to the same number. */
 export const BASH_TRACE_EXCERPT_MAX = 6000;
-const COMMAND_MAX = 200;
+/**
+ * The command is kept whole (redacted by the caller) so an error opened on the
+ * task page shows exactly what ran. Multi-line commands are joined with ` ⏎ `
+ * so the header stays one line. Bounded so the output tail keeps its room.
+ */
+const COMMAND_MAX = 1500;
+const LINE_JOIN = ' ⏎ ';
 const LINE_MAX = 200;
 
 export type VerifyFamily = 'test' | 'typecheck' | 'lint';
@@ -48,10 +54,8 @@ export function stripExitCodeLine(resultText: string): string {
 }
 
 function oneLine(command: string): string {
-  const first = command.split('\n').find(l => l.trim() !== '') ?? '';
-  const multi = command.trim().includes('\n');
-  const clipped = first.trim().length > COMMAND_MAX ? `${first.trim().slice(0, COMMAND_MAX)}…` : first.trim();
-  return multi ? `${clipped} …` : clipped;
+  const joined = command.split('\n').map(l => l.trim()).filter(l => l !== '').join(LINE_JOIN);
+  return joined.length > COMMAND_MAX ? `${joined.slice(0, COMMAND_MAX)}…` : joined;
 }
 
 export function formatBashTraceExcerpt(input: {

@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { useHomeAttentionCount } from '@/lib/home-attention-store';
 import { usePathname } from 'next/navigation';
 import { useNeedsInput } from './NeedsInputProvider';
-import { useEscalation } from './EscalationProvider';
 import { isNavActive } from '@/lib/nav-active';
 import { navItemsFor, type NavContext } from '@/lib/nav-config';
 
@@ -20,8 +19,7 @@ export default function MissionsBottomNav({ nav = OPERATOR_NAV }: { nav?: NavCon
   const homeCount = useHomeAttentionCount();
   const phoneHome = pathname === '/app/home';
   const { count: needsInputCount } = useNeedsInput();
-  const { count: escalationCount } = useEscalation();
-  const homeBadge = phoneHome ? homeCount ?? 0 : escalationCount;
+  const homeBadge = homeCount ?? 0;
 
   return (
     <nav className={`fixed bottom-0 left-0 right-0 z-20 bg-[var(--chrome-bg)] border-t border-border-strong pb-[env(safe-area-inset-bottom)] font-mono md:hidden ${phoneHome ? '' : 'uppercase backdrop-blur-[12px]'}`}>

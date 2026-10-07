@@ -237,3 +237,47 @@ describe('detectMismatches', () => {
     expect(evidence).not.toBeNull();
   });
 });
+
+describe('evidence for a red-check mismatch', () => {
+  const RED = [{ name: 'check', state: 'failed' as const, url: 'https://ci/1' }];
+  const base = (over: Partial<EvidenceInput> = {}): EvidenceInput => ({
+    status: 'completed', summary: 'Done, all green', error: null, diff: NO_DIFF,
+    traces: [], ciDigest: null, ciChecks: RED, links: {}, ...over,
+  });
+
+  it('an exploratory grep exiting 2 is never the evidence: not the last failing command, not a test failure', () => {
+    const { evidence, mismatch } = buildTaskEvidence(base({
+      traces: [bashTrace('grep -rn "expect(" apps/web 2>/dev/null', 2, 'grep: apps/web/x: No such file or directory', 1)],
+    }));
+    expect(mismatch.map(m => m.kind)).toEqual(['success_with_red_check']);
+    expect(evidence!.lastFailingCommand).toBeUndefined();
+    expect(evidence!.errorClass).not.toBe('test_failure');
+    expect(evidence!.keyLines.join('\n')).not.toContain('grep');
+    expect(evidence!.ciChecks).toEqual(RED);
+  });
+
+  it('a real failing test still is', () => {
+    const { evidence } = buildTaskEvidence(base({ traces: [bashTrace('bun test a.test.ts', 1, '(fail) a > b', 1)] }));
+    expect(evidence!.lastFailingCommand?.command).toContain('bun test');
+    expect(evidence!.errorClass).toBe('test_failure');
+  });
+});
+
+describe('a CI-fix attempt verifies the check it was sent for', () => {
+  const mk = (state: 'passed' | 'failed' | 'pending') => detectMismatches({
+    status: 'completed', summary: 'Fixed. Tier-2 is passing.', diff: { files: 1, added: 2, removed: 1 }, traces: [],
+    ciChecks: [{ name: 'check', state, url: null }, { name: 'Tier-2', state: 'passed', url: null }],
+    fixCheck: 'check',
+  });
+
+  it('reporting success while its named check is red is flagged, naming the check', () => {
+    const m = mk('failed').find(x => x.kind === 'fix_check_still_red');
+    expect(m?.detail).toContain('check, the check this attempt was sent to fix, is still failing');
+  });
+  it('a pending named check is not green either', () => {
+    expect(mk('pending').some(x => x.kind === 'fix_check_still_red')).toBe(true);
+  });
+  it('green on the named check passes', () => {
+    expect(mk('passed').some(x => x.kind === 'fix_check_still_red')).toBe(false);
+  });
+});

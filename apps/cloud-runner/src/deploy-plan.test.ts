@@ -355,6 +355,12 @@ describe('planDeploy: model proxy (--model-proxy-url)', () => {
   });
 });
 
+it('retains the Browser Rendering binding when rendering a custom deployment', () => {
+  const base = require('fs').readFileSync(require('path').join(import.meta.dir, '..', 'wrangler.jsonc'), 'utf8');
+  const config = JSON.parse(renderWranglerConfig(base, deployNames('browser-test')).replace(/^\s*\/\/.*$/gm, ''));
+  expect(config.browser).toEqual({ binding: 'BROWSER' });
+});
+
 describe('owner seat (--owner-seat)', () => {
   const TOKEN = 'sk-ant-oat01-owner-seat-secret';
   const deployed = { workerSecretNames: ['BUILDD_SERVER', 'BUILDD_API_KEY', 'DISPATCH_TOKEN'], workspace: { id: 'ws-1', name: 'demo', webhookConfig: { url: DISPATCH, enabled: true, hasToken: true, events: [...DISPATCH_EVENTS] } } };

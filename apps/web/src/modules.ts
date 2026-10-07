@@ -29,6 +29,7 @@ import { notificationSubscribers } from '@/lib/notification-subscribers';
 import { roleSubscribers } from '@/lib/default-roles-subscribers';
 import { connectorCatalogSubscribers } from '@/lib/connector-catalog-subscribers';
 import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers';
+import { verdictSubscribers } from '@/lib/verdict-decision-subscribers';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -48,6 +49,9 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...connectorCatalogSubscribers,
   // A held release's outcome-analytics row, recorded when its CI resolves it.
   ...routingAnalyticsSubscribers,
+  // Last: the verdict recompute reads the evidence record the knowledge
+  // module wrote and the CI/PR state the reviews module settled.
+  ...verdictSubscribers,
 ];
 
 /**

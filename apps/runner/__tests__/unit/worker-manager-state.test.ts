@@ -8,7 +8,9 @@
  * Run: bun test apps/runner/__tests__/unit/worker-manager-state.test.ts
  */
 
-import { describe, test, expect, beforeEach, mock, afterEach, setDefaultTimeout } from 'bun:test';
+import { describe, test, expect, beforeEach, mock, afterEach, setDefaultTimeout, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 
 // CI runners are slower — give tests more room than the 5s default
 setDefaultTimeout(15_000);
@@ -113,13 +115,13 @@ mock.module('../../src/buildd', () => ({
 // Mock workspace resolver
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -230,7 +232,19 @@ describe('WorkerManager — state transitions', () => {
     manager?.destroy();
   });
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     mockMessages = [];
     mockMessagesQueue = [];
     mockQueryPrompts = [];
