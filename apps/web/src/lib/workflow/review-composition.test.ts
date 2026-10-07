@@ -5,7 +5,7 @@
  * reviewed on its own; anything the check cannot see fails closed.
  */
 import { describe, expect, test } from 'bun:test';
-import { buildCompositionAttestation, collectComposition, isCompositionPr, isReleaseArtifactCommit, type CompositionInput, type ConstituentDelivery } from './review-composition';
+import { buildCompositionAttestation, collectComposition, isCompositionPr, isReleaseArtifactCommit, patchIdOf, type CompositionInput, type ConstituentDelivery, type FileDiff } from './review-composition';
 import { headCoverage, reduce } from './reducer';
 import type { DeliverySnapshot, KernelView, RoundSnapshot } from './types';
 
@@ -14,11 +14,13 @@ const approved = (id: string, head: string, extra: string[] = []): ConstituentDe
   deliveryId: `d-${id}`, approvedHeads: [head, ...extra],
   rounds: [{ id: `r-${id}`, headSha: head, status: 'decided', effectiveVerdict: 'approve' }],
 });
+/** One file's diff as GitHub returns it (commit or compare `files[]`). */
+const fd = (filename: string, patch = `@@ -1 +1 @@\n-old ${filename}\n+new ${filename}`): FileDiff => ({ filename, status: 'modified', patch });
 const base = (o: Partial<CompositionInput> = {}): CompositionInput => ({
   repoFullName: REPO, prNumber: 50, baseSha: 'B0', aggregateHeadSha: 'AGG',
   commits: [
-    { sha: 'S1', parents: ['B0'], message: 'feat: one (#11)', files: ['a.ts'] },
-    { sha: 'S2', parents: ['S1'], message: 'fix: two (#12)', files: ['b.ts'] },
+    { sha: 'S1', parents: ['B0'], message: 'feat: one (#11)', files: ['a.ts'], diff: [fd('a.ts')] },
+    { sha: 'S2', parents: ['S1'], message: 'fix: two (#12)', files: ['b.ts'], diff: [fd('b.ts')] },
     { sha: 'V1', parents: ['S2'], message: 'chore: bump version to v1.2.3', files: ['apps/web/package.json', 'CHANGELOG.md'] },
   ],
   aggregateFiles: ['a.ts', 'b.ts', 'apps/web/package.json', 'CHANGELOG.md'],
@@ -26,6 +28,8 @@ const base = (o: Partial<CompositionInput> = {}): CompositionInput => ({
     S1: { prNumber: 11, mergedHeadSha: 'P11', delivery: approved('11', 'P11') },
     S2: { prNumber: 12, mergedHeadSha: 'P12b', delivery: approved('12', 'P12a', ['P12b']) },
   },
+  // What each constituent's reviewed head changed, read independently of the landed commit.
+  reviewedDiffs: { S1: [fd('a.ts')], S2: [fd('b.ts')] },
   now: '2026-10-07T00:00:00Z',
   ...o,
 });
@@ -59,10 +63,66 @@ describe('buildCompositionAttestation', () => {
     const b = buildCompositionAttestation(base());
     expect(b.attestation.novelDelta).toEqual({ result: 'none' });
     expect(b.attestation.method).toBe('patch_set_equal');
-    expect(b.attestation.constituents.map((c) => [c.prNumber, c.reviewedHeadSha, c.landedSha, c.equivalentHeadShas])).toEqual([
-      [11, 'P11', 'P11', []],
-      [12, 'P12a', 'P12b', ['P12b']],
+    expect(b.attestation.constituents.map((c) => [c.prNumber, c.reviewedHeadSha, c.mergedHeadSha, c.landedSha, c.equivalentHeadShas])).toEqual([
+      [11, 'P11', 'P11', 'S1', []],
+      [12, 'P12a', 'P12b', 'S2', ['P12b']],
     ]);
+    // The proof is computed: two patch-ids from two independent reads, equal and non-empty.
+    for (const c of b.attestation.constituents) {
+      expect(c.landedPatchId).toMatch(/^[0-9a-f]{64}$/);
+      expect(c.landedPatchId).toBe(c.reviewedPatchId);
+    }
+  });
+
+  test('regression: a squash commit whose patch differs from the reviewed head (conflict resolved while merging) is novel, not a constituent', () => {
+    // C = S1 is associated with PR #11 (approved at P11), but what landed is not what was reviewed.
+    const b = buildCompositionAttestation(base({
+      commits: [{ ...base().commits![0], diff: [fd('a.ts', '@@ -1 +1 @@\n-old a.ts\n+resolved by hand')] }, ...base().commits!.slice(1)],
+    }));
+    expect(b.attestation.novelDelta).toEqual({ result: 'present', paths: ['a.ts'] });
+    expect(b.novelCommits).toEqual([{ sha: 'S1', reason: 'pr_11_landed_patch_differs', paths: ['a.ts'] }]);
+    expect(b.attestation.constituents.map((c) => c.prNumber)).toEqual([12]);
+  });
+
+  test('only the files whose landed patch differs are owed a review', () => {
+    const b = buildCompositionAttestation(base({
+      commits: [{ ...base().commits![0], files: ['a.ts', 'a2.ts'], diff: [fd('a.ts'), fd('a2.ts', '@@ -3 +3 @@\n-x\n+y-resolved')] }, ...base().commits!.slice(1)],
+      aggregateFiles: [...base().aggregateFiles!, 'a2.ts'],
+      reviewedDiffs: { S1: [fd('a.ts'), fd('a2.ts', '@@ -3 +3 @@\n-x\n+y')], S2: [fd('b.ts')] },
+    }));
+    expect(b.attestation.novelDelta).toEqual({ result: 'present', paths: ['a2.ts'] });
+  });
+
+  test('a file the landed commit has and the reviewed head does not (or the reverse) is novel', () => {
+    const extra = buildCompositionAttestation(base({
+      commits: [{ ...base().commits![0], files: ['a.ts', 'sneak.ts'], diff: [fd('a.ts'), fd('sneak.ts')] }, ...base().commits!.slice(1)],
+      aggregateFiles: [...base().aggregateFiles!, 'sneak.ts'],
+    }));
+    expect(extra.attestation.novelDelta).toEqual({ result: 'present', paths: ['sneak.ts'] });
+    // The reviewed head also changed a file that never landed: what landed is not what was reviewed.
+    const missing = buildCompositionAttestation(base({ reviewedDiffs: { S1: [fd('a.ts'), fd('dropped.ts')], S2: [fd('b.ts')] } }));
+    expect(missing.attestation.novelDelta).toEqual({ result: 'present', paths: ['a.ts'] });
+  });
+
+  test('a patch read that is unavailable fails closed, never none', () => {
+    const noLanded = base();
+    noLanded.commits![0] = { ...noLanded.commits![0], diff: null };
+    expect(buildCompositionAttestation(noLanded).attestation.novelDelta).toEqual({ result: 'unverifiable', reason: 'landed_patch_unreadable:S1' });
+    expect(buildCompositionAttestation(base({ reviewedDiffs: { S2: [fd('b.ts')] } })).attestation.novelDelta)
+      .toEqual({ result: 'unverifiable', reason: 'reviewed_patch_unreadable:S1' });
+  });
+
+  test('patch-id ignores hunk positions and context, not content', () => {
+    const a = patchIdOf([{ filename: 'x.ts', status: 'modified', patch: '@@ -10,3 +10,3 @@ fn\n ctx one\n-old\n+new\n ctx two' }]);
+    const moved = patchIdOf([{ filename: 'x.ts', status: 'modified', patch: '@@ -42,3 +42,3 @@ other\n different ctx\n-old\n+new\n more ctx' }]);
+    const changed = patchIdOf([{ filename: 'x.ts', status: 'modified', patch: '@@ -10,3 +10,3 @@ fn\n ctx one\n-old\n+newer\n ctx two' }]);
+    expect(a.id).toBe(moved.id);
+    expect(a.id).not.toBe(changed.id);
+    // A file GitHub gives no patch for (binary, too large) compares by its resulting blob.
+    const blob = (sha?: string) => patchIdOf([{ filename: 'i.png', status: 'modified', blobSha: sha }]);
+    expect(blob('b1').id).toBe(blob('b1').id);
+    expect(blob('b1').id).not.toBe(blob('b2').id);
+    expect(blob(undefined).unreadable).toEqual(['i.png']);
   });
 
   test('→ reducer: APPROVED on composition; approved_heads untouched; open round superseded', () => {
@@ -121,6 +181,15 @@ describe('buildCompositionAttestation', () => {
     expect(run(buildCompositionAttestation(base({ commits: null }))).result).toBe('rejected');
   });
 
+  test('the reducer refuses a constituent whose patch-ids differ, or whose round belongs to another PR', () => {
+    const forged = buildCompositionAttestation(base());
+    forged.attestation.constituents[0] = { ...forged.attestation.constituents[0], reviewedPatchId: 'f'.repeat(64) };
+    expect((run(forged) as { missing: string[] }).missing).toEqual(['constituent_patch_unproven:r-11']);
+    const foreign = buildCompositionAttestation(base());
+    foreign.constituentsEvidence[0] = { ...foreign.constituentsEvidence[0], prNumber: 99, deliveryId: 'd-99' };
+    expect((run(foreign) as { missing: string[] }).missing).toEqual(['constituent_round_foreign:r-11']);
+  });
+
   test('a stale constituent round (head mismatch) is rejected by the reducer', () => {
     const b = buildCompositionAttestation(base());
     b.constituentsEvidence[0] = { ...b.constituentsEvidence[0], roundHeadSha: 'OTHER' };
@@ -137,24 +206,49 @@ describe('buildCompositionAttestation', () => {
 });
 
 describe('collectComposition (GitHub + ledger read)', () => {
-  test('maps compare commits to merged constituent PRs and their kernel rounds', async () => {
-    const api = async (_i: number, path: string): Promise<unknown> => {
-      if (path.startsWith(`/repos/${REPO}/compare/dev...AGG`)) return {
-        merge_base_commit: { sha: 'B0' }, base_commit: { sha: 'B9' }, total_commits: 2,
-        commits: [{ sha: 'S1', parents: [{ sha: 'B0' }], commit: { message: 'feat: one' } }, { sha: 'V1', parents: [{ sha: 'S1' }], commit: { message: 'chore: bump version to v1.0.1' } }],
-        files: [{ filename: 'a.ts' }, { filename: 'package.json' }],
-      };
-      if (path === `/repos/${REPO}/commits/S1`) return { files: [{ filename: 'a.ts' }] };
-      if (path === `/repos/${REPO}/commits/V1`) return { files: [{ filename: 'package.json' }] };
-      if (path === `/repos/${REPO}/commits/S1/pulls`) return [{ number: 11, merged_at: '2026-10-06T00:00:00Z', base: { ref: 'mission/x' }, head: { sha: 'P11' } }];
-      if (path === `/repos/${REPO}/commits/V1/pulls`) return [];
-      throw new Error(`unexpected ${path}`);
+  /** A compare of S1 (squash of PR #11, reviewed at P11) and the version bump; `landedPatch` is what the squash really changed. */
+  const composedApi = (landedPatch: string, reads: string[] = []) => async (_i: number, path: string): Promise<unknown> => {
+    reads.push(path);
+    if (path.startsWith(`/repos/${REPO}/compare/dev...AGG`)) return {
+      merge_base_commit: { sha: 'B0' }, base_commit: { sha: 'B9' }, total_commits: 2,
+      commits: [{ sha: 'S1', parents: [{ sha: 'B0' }], commit: { message: 'feat: one' } }, { sha: 'V1', parents: [{ sha: 'S1' }], commit: { message: 'chore: bump version to v1.0.1' } }],
+      files: [{ filename: 'a.ts' }, { filename: 'package.json' }],
     };
-    const exec = async () => ({ rows: [{ id: 'd-11', pr_number: 11, approved_heads: ['P11'], rounds: [{ id: 'r-11', head_sha: 'P11', status: 'decided', effective_verdict: 'approve' }] }] });
-    const b = await collectComposition({ api, exec, installationId: 1, workspaceId: 'w1', repoFullName: REPO, prNumber: 50, baseRef: 'dev', headRef: 'mission/x', aggregateHeadSha: 'AGG' });
+    if (path === `/repos/${REPO}/commits/S1`) return { files: [{ filename: 'a.ts', status: 'modified', patch: landedPatch, sha: 'blobA' }] };
+    if (path === `/repos/${REPO}/commits/V1`) return { files: [{ filename: 'package.json', status: 'modified', patch: '@@ -1 +1 @@\n-1.0.0\n+1.0.1' }] };
+    if (path === `/repos/${REPO}/commits/S1/pulls`) return [{ number: 11, merged_at: '2026-10-06T00:00:00Z', base: { ref: 'mission/x' }, head: { sha: 'P11' } }];
+    if (path === `/repos/${REPO}/commits/V1/pulls`) return [];
+    // The reviewed head's own diff, against the landed commit's parent.
+    if (path === `/repos/${REPO}/compare/B0...P11`) return { files: [{ filename: 'a.ts', status: 'modified', patch: '@@ -1 +1 @@\n-x\n+reviewed', sha: 'blobA' }] };
+    throw new Error(`unexpected ${path}`);
+  };
+  const ledger = async () => ({ rows: [{ id: 'd-11', pr_number: 11, approved_heads: ['P11'], rounds: [{ id: 'r-11', head_sha: 'P11', status: 'decided', effective_verdict: 'approve' }] }] });
+  const collect = (api: ReturnType<typeof composedApi>) => collectComposition({ api, exec: ledger, installationId: 1, workspaceId: 'w1', repoFullName: REPO, prNumber: 50, baseRef: 'dev', headRef: 'mission/x', aggregateHeadSha: 'AGG' });
+
+  test('maps compare commits to merged constituent PRs and their kernel rounds, and proves each landed patch', async () => {
+    const reads: string[] = [];
+    const b = await collect(composedApi('@@ -7 +7 @@\n-x\n+reviewed', reads));
+    expect(reads).toContain(`/repos/${REPO}/compare/B0...P11`);
     expect(b.attestation.novelDelta).toEqual({ result: 'none' });
     expect(b.attestation.baseSha).toBe('B0');
-    expect(b.attestation.constituents).toEqual([{ deliveryId: 'd-11', roundId: 'r-11', prNumber: 11, reviewedHeadSha: 'P11', equivalentHeadShas: [], landedSha: 'P11' }]);
+    const [c] = b.attestation.constituents;
+    expect(c).toMatchObject({ deliveryId: 'd-11', roundId: 'r-11', prNumber: 11, reviewedHeadSha: 'P11', equivalentHeadShas: [], mergedHeadSha: 'P11', landedSha: 'S1' });
+    expect(c.landedPatchId).toBe(c.reviewedPatchId);
+    expect(b.constituentsEvidence[0]).toMatchObject({ deliveryId: 'd-11', prNumber: 11, repoFullName: REPO });
+  });
+
+  test('regression: the squash that GitHub associates with an approved PR but whose patch differs is a novel delta', async () => {
+    const b = await collect(composedApi('@@ -1 +1 @@\n-x\n+conflict resolved differently'));
+    // Its only constituent is not credited, so nothing is reviewed already: full review, never 'none'.
+    expect(b.attestation.novelDelta).toEqual({ result: 'unverifiable', reason: 'no_reviewed_constituents' });
+    expect(b.novelCommits).toEqual([{ sha: 'S1', reason: 'pr_11_landed_patch_differs', paths: ['a.ts'] }]);
+    expect(b.attestation.constituents).toEqual([]);
+  });
+
+  test('an unreadable reviewed diff fails closed', async () => {
+    const inner = composedApi('@@ -1 +1 @@\n-x\n+reviewed');
+    const api = async (i: number, path: string) => (path.endsWith('/compare/B0...P11') ? null : inner(i, path));
+    expect((await collect(api)).attestation.novelDelta.result).toBe('unverifiable');
   });
 
   test('a compare at the commit cap is truncated → unverifiable', async () => {

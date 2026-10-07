@@ -83,6 +83,7 @@ export type PrActivityKind =
   | 'push_pending'
   | 'push_undeliverable'
   | 'composition_verified'
+  | 'composition_delta_approved'
   | 'blocked_on_trunk'
   | 'trunk_recovered';
 
@@ -306,6 +307,9 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       return { tone: 'human', label: 'Fix never reached GitHub · needs a human', noteLabel: 'Details' };
     case 'composition_verified':
       return { tone: 'done', label: 'Release composition verified', status: 'every change was reviewed at its own head' };
+    case 'composition_delta_approved':
+      // A delta round reviewed only the release-only paths; the rest rests on each change's own review.
+      return { tone: 'done', label: 'Release-only changes approved', status: 'this review covered only the new paths', noteLabel: 'Paths' };
     case 'blocked_on_trunk':
       // The base branch fails the same checks: one trunk fix runs, this PR's CI retries wait.
       return { tone: 'waiting', label: 'Blocked on a red base branch', status: 'CI retries paused until the base is green' };
@@ -471,7 +475,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set<PrActivityKind>([
   'ci_exhausted', 'fix_started', 'fix_ended', 'fix_superseded_by_approval', 'changes_pushed',
   'review_superseded_by_merge', 'work_superseded',
   'human_applied_recommendation', 'human_override_merge', 'merged', 'closed_unmerged',
-  'push_pending', 'push_undeliverable', 'composition_verified', 'blocked_on_trunk', 'trunk_recovered',
+  'push_pending', 'push_undeliverable', 'composition_verified', 'composition_delta_approved', 'blocked_on_trunk', 'trunk_recovered',
 ]);
 
 /** A webhook redelivery of the newest entry — same kind and the same facts. */

@@ -148,9 +148,17 @@ export const isHumanActor = (a: Actor): boolean => a.startsWith('human:');
 /**
  * One already-reviewed change a composed PR (a release PR, a mission
  * integration PR) is built from. The verdict it cites stays bound to the head
- * it was made on (`reviewedHeadSha`); `landedSha` is where that change sits in
- * the composed history, and must be the reviewed head itself or a head that
- * delivery recorded as content-equivalent (`equivalentHeadShas`).
+ * it was made on (`reviewedHeadSha`). `mergedHeadSha` is the PR head GitHub
+ * merged, and must be the reviewed head itself or a head that delivery
+ * recorded as content-equivalent (`equivalentHeadShas`). `landedSha` is the
+ * composed commit in the aggregate's own history that carries the change (the
+ * squash commit), never the PR head.
+ *
+ * The proof is two patch-ids computed from two independent reads: the landed
+ * commit's own diff against its parent (`landedPatchId`), and the reviewed
+ * head's diff against that same parent's merge base (`reviewedPatchId`). They
+ * must be equal; a squash that differs from what was reviewed (a conflict
+ * resolved while merging) is a novel delta, never a constituent.
  */
 export interface CompositionConstituent {
   deliveryId: string;
@@ -158,7 +166,10 @@ export interface CompositionConstituent {
   prNumber: number;
   reviewedHeadSha: string;
   equivalentHeadShas: string[];
+  mergedHeadSha: string;
   landedSha: string;
+  landedPatchId: string;
+  reviewedPatchId: string;
 }
 
 /**
@@ -195,6 +206,10 @@ export interface CompositionAttestation {
 /** What the caller resolved for each constituent (the reducer stays pure). */
 export interface ConstituentEvidence {
   roundId: string;
+  /** The delivery, PR and repo the round actually belongs to (a round cited for another PR proves nothing). */
+  deliveryId: string | null;
+  prNumber: number | null;
+  repoFullName: string | null;
   roundHeadSha: string | null;
   roundStatus: RoundStatus | null;
   effectiveVerdict: Verdict | null;

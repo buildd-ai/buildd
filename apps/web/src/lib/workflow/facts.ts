@@ -16,7 +16,8 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { Command, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type DeliveryRef, type Exec } from './kernel';
-import type { CloseCause, CompositionAttestation, ConstituentEvidence } from './types';
+import { headObservationKey } from './reducer';
+import type { CloseCause, CompositionAttestation, ConstituentEvidence, DeliverySnapshot } from './types';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -89,6 +90,20 @@ ON CONFLICT (workspace_id, fact_key) DO NOTHING
 RETURNING id`;
 }
 
+/**
+ * The head fact whose application installed the delivery's current head: the
+ * newest applied HeadObserved. A redelivery of that move reads it after it
+ * landed, so it is answered with this fact rather than recorded again (§5.3).
+ */
+export function lastAppliedHeadFactSql(workspaceId: string, deliveryId: string): SQL {
+  return sql`-- workflow:last_head_fact
+SELECT f.id, f.fact_key, f.applied_transition_id FROM workflow_facts f
+JOIN workflow_transitions t ON t.id = f.applied_transition_id
+WHERE f.workspace_id = ${workspaceId}::uuid AND t.delivery_id = ${deliveryId}::uuid AND t.command = 'HeadObserved'
+ORDER BY t.to_version DESC
+LIMIT 1`;
+}
+
 export function findFactSql(workspaceId: string, factKey: string): SQL {
   return sql`-- workflow:find_fact
 SELECT id, applied_transition_id FROM workflow_facts
@@ -103,19 +118,25 @@ LIMIT 1`;
  */
 export function constituentEvidenceSql(workspaceId: string, roundIds: string[]): SQL {
   return sql`-- workflow:constituent_evidence
-SELECT r.id AS round_id, r.head_sha, r.status, r.effective_verdict, d.approved_heads
+SELECT r.id AS round_id, r.head_sha, r.status, r.effective_verdict, d.approved_heads,
+  d.id AS delivery_id, d.pr_number, d.repo_full_name
 FROM workflow_review_rounds r
 JOIN workflow_deliveries d ON d.id = r.delivery_id
 WHERE d.workspace_id = ${workspaceId}::uuid
   AND r.id IN (SELECT (jsonb_array_elements_text(${JSON.stringify(roundIds)}::jsonb))::uuid)`;
 }
 
-/** The natural key of a fact (§2 table). PR keys use the LIVE head. */
-export function factKeyFor(f: FactInput, live?: LivePr | null): string {
+/**
+ * The natural key of a fact (§2 table). PR keys use the LIVE head. A head
+ * observation is keyed on the move it records (§6.3 T3): the head the delivery
+ * `held` and its version when the fact was read, so A→B→A is three facts.
+ */
+export function factKeyFor(f: FactInput, live?: LivePr | null, held?: { headSha: string | null; version: number } | null): string {
   switch (f.kind) {
     case 'delivery_opened': return `open:${f.ownerTaskId}`;
     case 'pr_bound': return `bind:${f.repoFullName}#${f.prNumber}`;
-    case 'head_observed': return `head:${f.repoFullName}#${f.prNumber}:${live?.headSha ?? 'unknown'}`;
+    case 'head_observed':
+      return headObservationKey(`${f.repoFullName}#${f.prNumber}`, held?.headSha ?? null, live?.headSha ?? 'unknown', held?.version ?? 0);
     case 'pr_closed':
       // The live read decides what this is: merged, closed unmerged, or reopened since.
       return live?.merged ? `merged:${f.repoFullName}#${f.prNumber}`
@@ -146,8 +167,20 @@ export async function ingestFact(fact: FactInput, deps: IngestDeps = {}): Promis
     if (!live) return { factId: null, factKey: null, firstSeen: false, result: 'rejected', reason: 'live_read_failed', current: null };
   }
 
-  const factKey = factKeyFor(fact, live);
-  const { command, ref, payload, repoFullName, prNumber } = await commandFor(fact, live, exec, deps.github);
+  const { command, ref, payload, repoFullName, prNumber, held } = await commandFor(fact, live, exec, deps.github);
+  const factKey = factKeyFor(fact, live, held);
+
+  if (fact.kind === 'head_observed' && held?.deliveryId && live && held.headSha === live.headSha) {
+    // Read after the move it reports landed: the same fact as that move, not a new one.
+    const last = ((await exec(lastAppliedHeadFactSql(fact.workspaceId, held.deliveryId))).rows ?? [])[0] as
+      { id: string; fact_key: string; applied_transition_id: string } | undefined;
+    if (last && last.fact_key.includes(`->${live.headSha}@v`)) {
+      return {
+        factId: last.id, factKey: last.fact_key, firstSeen: false, result: 'duplicate', transitionId: last.applied_transition_id, reason: 'fact_seen',
+        current: { state: held.state, version: held.version, head: held.headSha, round: held.round },
+      };
+    }
+  }
 
   const inserted = ((await exec(insertFactSql({ workspaceId: fact.workspaceId, kind: fact.kind, factKey, source: fact.source, repoFullName, prNumber, payload }))).rows ?? [])[0] as { id: string } | undefined;
   let factId: string;
@@ -176,6 +209,8 @@ export async function ingestFact(fact: FactInput, deps: IngestDeps = {}): Promis
 
 async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, github?: GithubFactReader): Promise<{
   command: Command; ref: DeliveryRef; payload: Record<string, unknown>; repoFullName: string | null; prNumber: number | null;
+  /** What the delivery held when the fact was read (head facts only). */
+  held?: { deliveryId: string; headSha: string | null; version: number; state: DeliverySnapshot['state']; round: number } | null;
 }> {
   const actor = fact.source;
   switch (fact.kind) {
@@ -226,6 +261,7 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
         ref,
         payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null, carryForward, attribution: attribution ?? null },
         repoFullName: fact.repoFullName, prNumber: fact.prNumber,
+        held: d ? { deliveryId: d.id, headSha: d.currentHeadSha, version: d.version, state: d.state, round: d.currentRound } : null,
       };
     }
     case 'pr_closed': {
@@ -248,6 +284,9 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
       const rows = ((await exec(constituentEvidenceSql(fact.workspaceId, att.constituents.map((c) => c.roundId)))).rows ?? []) as Array<Record<string, unknown>>;
       const constituents: ConstituentEvidence[] = rows.map((r) => ({
         roundId: String(r.round_id),
+        deliveryId: r.delivery_id == null ? null : String(r.delivery_id),
+        prNumber: r.pr_number == null ? null : Number(r.pr_number),
+        repoFullName: r.repo_full_name == null ? null : String(r.repo_full_name),
         roundHeadSha: r.head_sha == null ? null : String(r.head_sha),
         roundStatus: (r.status ?? null) as ConstituentEvidence['roundStatus'],
         effectiveVerdict: (r.effective_verdict ?? null) as ConstituentEvidence['effectiveVerdict'],

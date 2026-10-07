@@ -387,19 +387,34 @@ either. The fact `composition_attested` (key `compose:{repo}#{pr}:{aggregate_hea
 carries a `CompositionAttestation`: the base SHA, the aggregate head, a mechanical
 `method` (`tree_equal` or `patch_set_equal`), one entry per constituent (its delivery,
 the round whose verdict it cites, that round's `reviewed_head_sha`, the
-`equivalent_head_shas` its delivery recorded, and the `landed_sha` in the composed
-history) and an explicit `novel_delta` of `none`, `present` (with paths) or
-`unverifiable`.
+`equivalent_head_shas` its delivery recorded, the `merged_head_sha` GitHub merged, the
+`landed_sha` of the composed commit in the aggregate's own history, and two patch-ids)
+and an explicit `novel_delta` of `none`, `present` (with paths) or `unverifiable`.
+
+The proof is computed, not asserted. GitHub's commit→PR association only says which
+reviewed change a composed commit claims to be. The collector reads the composed
+commit's own diff (`landed_patch_id`) and, separately, the reviewed head's diff against
+that commit's parent (`reviewed_patch_id`). A patch-id keeps every added and removed
+line and drops hunk positions and context, like `git patch-id`. A file with no patch is
+identified by its resulting blob. Equal ids make the commit a constituent. Different ids
+(a conflict resolved while squashing into the base, a hand edit in the squash) make the
+differing paths a novel delta. An unreadable diff makes the result `unverifiable`. The
+live PR head is read before the compare, and a head that has moved attests nothing.
 
 The reducer (`CompositionAttested`, from `AWAITING_REVIEW`, head must be current) checks
-each constituent against the ledger: the round is decided `approve` at exactly
-`reviewed_head_sha`, and `landed_sha` is that head or a recorded equivalent. With
-`none` the delivery becomes `APPROVED` with `approval_basis = composition` and the head
-in `composition_heads`; `approved_heads` is untouched and no round is decided at the
-aggregate head. With `present` a `delta` round scoped to the novel paths is queued.
-`unverifiable` or any failed check claims nothing (`rejected`). Ordinary verdicts stay
-exact-head (§8): `headCoverage` reports `verdict`, `human`, `composition` or `none`,
-and `PrMerged` records which one covered the merged head.
+each constituent against the ledger. The cited round belongs to that constituent's own
+delivery, PR and repo. It is decided `approve` at exactly `reviewed_head_sha`.
+`merged_head_sha` is that head or a recorded equivalent. The two patch-ids are present
+and equal. With `none` the delivery becomes `APPROVED` with `approval_basis =
+composition` and the head in `composition_heads`; `approved_heads` is untouched and no
+round is decided at the aggregate head. With `present` a `delta` round scoped to the
+novel paths is queued. An approve of that delta round (S33) keeps `approval_basis =
+composition`, adds the head to `composition_heads` only, and records the delta round id
+in the transition evidence. Its GitHub review and the headline ("Release-only changes
+approved") say it covers the novel paths only. `unverifiable` or any failed check claims
+nothing (`rejected`). Ordinary verdicts stay exact-head (§8): `headCoverage` reports
+`verdict`, `human`, `composition` or `none`, and `PrMerged` records which one covered
+the merged head.
 
 ---
 
@@ -430,7 +445,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 |---|---|---|---|---|---|---|---|
 | T1 | `DeliveryOpened` (claim of a PR-deliverable task) | none | task exists, output requirement needs a PR | `WORKING` | none | `open:{task}` | duplicate returns existing delivery |
 | T2 | `PrBound` (create_pr, adopt, webhook `opened`) | `WORKING`, `AWAITING_PUSH`, none (adoption) | live read: PR open, same repo as workspace, `head.repo == repo` (fork guard), base ref recorded | unchanged, except adoption creates `AWAITING_REVIEW` | project PR columns; `dispatch_review` if policy requires it and `H` has no round | `bind:{repo}#{pr}` | a second bind with a different PR number for the same delivery is `rejected(pr_already_bound)`; it does NOT reset merge or lifecycle columns (fixes adopt-override finding 8). A bound PR leaves `WORKING` when the owner attempt ends (§6.5 row 1): to `AWAITING_REVIEW`, or to `APPROVED` with `approval_basis = policy` when the policy requires no review |
-| T3 | `HeadObserved(H')` fact | any non-terminal | live read confirms `H'` is the PR's current head | per §6.4 | per §6.4 | `head:{repo}#{pr}:{H'}` | webhook payload head ≠ live head → apply the live head; a late event whose live head equals stored head is `duplicate` |
+| T3 | `HeadObserved(H')` fact | any non-terminal | live read confirms `H'` is the PR's current head | per §6.4 | per §6.4 | `head:{repo}#{pr}:{H}->{H'}@v{version}` (the move, read at the delivery's version: a head that returns to an earlier SHA, A→B→A, is a new observation) | webhook payload head ≠ live head → apply the live head; a late event whose live head equals stored head is `duplicate` (a redelivery after the move landed answers with that move's fact, §5.3) |
 | T4 | `AttemptEnded(a, outcome, L)` (worker PATCH terminal, reaper) | `WORKING`, `FIXING`, `REPAIRING` | attempt `a` is the delivery's bound attempt (else `stale`); `L`, `commitCount` recorded as fact | see §6.5 | project `tasks`/`workers` rows; `announce_fix_ended` only for outcomes below | `end:{a}` | an exit for a non-bound attempt is recorded and returns `stale` |
 | T5 | `ReviewRequested(head, forced?)` (webhook `opened`, push, `request_pr_review`, re-review route, stale-approval) | `WORKING`(PR bound), `AWAITING_REVIEW`, `CHANGES_REQUESTED`, `APPROVED`, `ESCALATED` | `head == current_head_sha` (live read); no round with status `queued`/`reviewing` for `(head)`; `forced` needs a human or `force` actor and is recorded in `bypass` | `AWAITING_REVIEW`, round `r+1` queued bound to `head` | `dispatch_review(round)`; announce `review_queued` | `round:{delivery}:{head}:{r+1}` | a request naming a head ≠ current is `rejected(round_head_not_current)`; a request for a head that already has a decided round is `rejected(head_already_reviewed)` unless `forced` |
 | T6 | `ReviewVerdictRecorded(round, verdict, headBound)` (reviewer completes) | `AWAITING_REVIEW` | `round.status ∈ {queued,reviewing}`; `headBound == round.head_sha`; server escalation rules (file list, confidence) applied to produce `effective_verdict` | `approve`→`APPROVED` (or `ESCALATED(review_escalated)` if the rules override); `request_changes`→`CHANGES_REQUESTED`; `escalate`→`ESCALATED(review_escalated)`; if `round.head_sha != current_head_sha` the verdict is stored and the round marked `superseded` with **no state change** | `post_review(commit_id=round.head_sha)`; `dispatch_fix(round)` when under budget else transition T7 instead; `supersede_open_fix_on_approve`; `announce_*`; mission note | `verdict:{round}` | stale head or round: `stale` (verdict kept for audit). Replaying the PATCH is `duplicate` (closes the "no already-handled marker" gap) |
@@ -1127,12 +1142,14 @@ PR-less task is absent from every map below and keeps today's projection:
 - **Release composition (§5.9)** (`lib/workflow/review-composition.ts`): before
   `dispatch_review` dispatches a full round on a composition PR (a mission integration
   branch into trunk, or a release PR per `isReleaseBranchPr`), it builds a
-  `patch_set_equal` attestation from the compare and per-commit reads. Zero novel
+  `patch_set_equal` attestation from the compare and per-commit reads, proving each
+  constituent by patch-id against its reviewed head's own diff. Zero novel
   delta → `CompositionAttested` → `APPROVED` with `approval_basis = composition` and no
   reviewer. A novel delta → a delta round scoped to those paths, with the
   attestation in the reviewer's prompt. Unverifiable → the normal full review. CI
   still gates the aggregate through the unchanged landing rails. The headline reads
-  "Release composition verified".
+  "Release composition verified", or "Release-only changes approved" once a delta
+  round approved the novel paths.
 - **S37 conflict recovery** (`dispatchConflictRetry`, `classifyConflictFix`,
   `recoverStalledConflictFix` in `lib/conflict-retry.ts`): a live conflict fix is
   the canonical remediation. A pending one unclaimed for 30 minutes is re-dispatched,
