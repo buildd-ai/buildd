@@ -1926,6 +1926,18 @@ export async function PUT(req: NextRequest) {
           // The bot rebases its own branch; an update-branch commit from us
           // would stop it doing so for good.
           recordMergeGate('rejected', dependencyBotPushRefusal(prNumber), { tier: policy.tier }, GATE_SLUGS.DEPENDENCY_BOT_PR);
+        } else if (isBehindBaseRefusal(safety.reason) && kernelOwned) {
+          // A kernel-owned PR's refresh is the kernel's (`refresh_branch`, via
+          // T12 `behind` or T16 when its own merge call is refused as behind):
+          // a push from this door would be a second authority, read as a
+          // foreign push (spec §14). Nothing is pushed here.
+          recordMergeGate('deferred', `${safety.reason} — the workflow kernel owns this PR's branch refresh`, { tier: policy.tier, kernelOwned: true });
+          return NextResponse.json({
+            error: `${safety.reason} — the workflow kernel owns this PR's branch refresh; merge_pr does not push to it`,
+            tier: policy.tier,
+            kernelOwned: true,
+            hint: 'The kernel refreshes the branch when it lands this PR. Read it again later (get_pr) instead of retrying now.',
+          }, { status: 409 });
         } else if (isBehindBaseRefusal(safety.reason)) {
           // Same door as every other refresh (lib/base-refresh.ts): the per-PR
           // lease, failure classification and, opted in, the semantic check
