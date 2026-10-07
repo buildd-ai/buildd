@@ -105,7 +105,14 @@ import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
-import { runCheckpointSweep, deferOnPathCollision, CHECKPOINT_FETCH_DEADLINE_MS, CHECKPOINT_SYNC_DEADLINE_MS } from './path-collision-defer';
+import { deferOnPathCollision } from './path-collision-defer';
+import {
+  runShipCheckpoint,
+  CHECKPOINT_FETCH_DEADLINE_MS,
+  CHECKPOINT_SYNC_DEADLINE_MS,
+  SHIP_CHECKPOINT_ATTEMPTS,
+  SHIP_CHECKPOINT_BACKOFF_MS,
+} from './ship-checkpoint';
 import { HUMAN_UI_DENIAL, RUNNER_DENIAL_MARKER } from './runner-denial';
 import { scanToolResult, scanBashResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, prRequiredUnmet } from './pr-detection';
@@ -4390,15 +4397,20 @@ export class WorkerManager {
           ...(!isCodexTask
             ? [{ hooks: [this.hookFactory.createPathClaimHook(worker)] }]
             : []),
-          // Enforce mode only: sweep the worktree before a push, create_pr or
-          // completion. Checkpoint enforcement (a Bash write is found here
-          // after it happened), not a pre-edit guarantee. Codex has no seam
-          // for this either; its writes are swept on the sync tick.
-          ...(!isCodexTask && worker.pathClaimMode === 'enforce'
+          // Ship checkpoint (both modes): before a push, create_pr or
+          // completion, recompute the task's owned file set and reconcile it
+          // with the server; enforce mode refuses the ship on a blocked path
+          // or on coverage the server could not confirm (ship-checkpoint.ts).
+          // Checkpoint enforcement (a Bash write is found here after it
+          // happened), not a pre-edit guarantee. Codex has no seam for this;
+          // its writes reach the server through the sync tick's deltas.
+          // Timeout covers the base fetch plus every retried round trip.
+          ...(!isCodexTask
             ? [{
-                timeout: Math.ceil((CHECKPOINT_FETCH_DEADLINE_MS + CHECKPOINT_SYNC_DEADLINE_MS) / 1000) + 15,
+                timeout: Math.ceil((CHECKPOINT_FETCH_DEADLINE_MS + SHIP_CHECKPOINT_ATTEMPTS * CHECKPOINT_SYNC_DEADLINE_MS
+                  + SHIP_CHECKPOINT_BACKOFF_MS.reduce((a, b) => a + b, 0)) / 1000) + 15,
                 hooks: [this.hookFactory.createPathCheckpointGuardHook(worker, (w, source) =>
-                  runCheckpointSweep(w, source, {
+                  runShipCheckpoint(w, source, {
                     buildd: this.buildd,
                     addMilestone: (wk, m) => this.addMilestone(wk, m),
                     refreshBase: true,
