@@ -78,7 +78,7 @@ import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
 import { redriveDeferredRefreshes, type RefreshRedriveResult } from '@/lib/refresh-redrive';
 import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
 import { sweepCiRedPrs } from '@/lib/ci-red-sweep-deps';
-import { drainDueEffects } from '@/lib/workflow/seam';
+import { drainDueEffects, reconcileTrunkIncidents } from '@/lib/workflow/seam';
 import type { CiRedSweepResult } from '@/lib/ci-red-sweep';
 import { CI_RED_DUE_QUEUE } from '@/lib/ci-red-queue';
 import { gateOnDueQueue } from '@/lib/cron-due-queue';
@@ -109,7 +109,7 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox, trunk] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -166,6 +166,12 @@ export async function GET(req: NextRequest) {
       // §10.3): effects a request's inline drain did not finish (a crash, a
       // backed-off retry, a delayed push_recovery try). Isolated.
       drainDueEffects().catch((err): { error: string } => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // The trunk circuit breaker's recovery (§6.10, T26): re-read each open
+      // incident's base head; a green base resolves it and every delivery
+      // blocked on it resumes. Isolated.
+      reconcileTrunkIncidents().catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
     ]);
@@ -257,7 +263,7 @@ export async function GET(req: NextRequest) {
       errors:
         reconcile.errors + missionPrErrors + strandedErrors + specRecheckErrors + lineageErrors
         + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors,
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox },
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox, trunk },
     });
 
     return NextResponse.json({
@@ -274,6 +280,7 @@ export async function GET(req: NextRequest) {
       ciRed,
       closedPrs,
       kernelOutbox,
+      trunk,
     });
   });
 }

@@ -17,6 +17,7 @@
  */
 import { renderPrActivityComment, taskActivityUrl, type PrActivityEntry, type PrActivityKind, type ActivityHeader } from '@/lib/pr-activity-comment';
 import { deriveDeliveryView } from './projections';
+import { signatureChecks } from './trunk-signature';
 import type { AttemptSnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
 
 export interface ActivityTransition {
@@ -50,7 +51,7 @@ export const TRANSITION_OWNED_KINDS: ReadonlySet<PrActivityKind> = new Set<PrAct
 ]);
 
 /** Transitions that queue a review round (they all end in AWAITING_REVIEW via `startRound`). */
-const ROUND_STARTERS = new Set(['ReviewRequested', 'HeadObserved', 'AttemptEnded', 'PrReopened', 'CompositionAttested', 'HumanResolve', 'PrBound']);
+const ROUND_STARTERS = new Set(['ReviewRequested', 'HeadObserved', 'AttemptEnded', 'PrReopened', 'CompositionAttested', 'HumanResolve', 'PrBound', 'TrunkRecovered']);
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 const shortSha = (v: unknown): string | null => (typeof v === 'string' && v ? v.slice(0, 7) : null);
@@ -135,6 +136,14 @@ export function transitionsToActivityEntries(
         break;
       case 'CompositionAttested':
         if (t.toState === 'APPROVED') push({ kind: 'composition_verified' });
+        break;
+      case 'TrunkRedObserved': {
+        const checks = signatureChecks(str(ev.signature) ?? '');
+        push({ kind: 'blocked_on_trunk', detail: checks.length ? checks.join(', ') : null });
+        break;
+      }
+      case 'TrunkRecovered':
+        push({ kind: 'trunk_recovered' });
         break;
       case 'PrMerged':
         push({ kind: 'merged' });

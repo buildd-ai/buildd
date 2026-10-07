@@ -30,6 +30,13 @@ export interface GithubFactReader {
    * null = unknown (still running, no suites, unreadable): never read as green.
    */
   ciGreen?(repoFullName: string, headSha: string): Promise<boolean | null>;
+  /**
+   * The check runs on `sha` (§6.10 signatures): the names of the failing ones,
+   * and whether every run has completed. null = unreadable.
+   */
+  checkRuns?(repoFullName: string, sha: string): Promise<{ complete: boolean; failing: string[] } | null>;
+  /** The head commit of branch `ref` now; null = unreadable. */
+  branchHead?(repoFullName: string, ref: string): Promise<string | null>;
 }
 
 export type FactInput =

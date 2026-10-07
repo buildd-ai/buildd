@@ -44,6 +44,17 @@ export function ciGreenFromSuites(suites: Array<{ status?: string; conclusion?: 
   return suites.every((x) => PASSING.has(String(x.conclusion ?? '')));
 }
 
+const FAILING = new Set(['failure', 'timed_out', 'startup_failure']);
+
+/** §6.10: which check runs fail on a commit, and whether all of them finished. null = no runs. */
+export function checkRunsSummary(runs: Array<{ name?: string; status?: string; conclusion?: string | null }> | null | undefined): { complete: boolean; failing: string[] } | null {
+  if (!runs || runs.length === 0) return null;
+  return {
+    complete: runs.every((r) => r.status === 'completed'),
+    failing: runs.filter((r) => r.status === 'completed' && FAILING.has(String(r.conclusion ?? ''))).map((r) => String(r.name ?? 'unnamed')),
+  };
+}
+
 export function githubReader(installationId: number, api: typeof githubApi = githubApi): GithubFactReader {
   return {
     async readPr(repoFullName, prNumber) {
@@ -58,6 +69,22 @@ export function githubReader(installationId: number, api: typeof githubApi = git
       try {
         const data = await api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-suites`) as { check_suites?: Array<{ status?: string; conclusion?: string | null }> } | null;
         return ciGreenFromSuites(data?.check_suites);
+      } catch {
+        return null;
+      }
+    },
+    async checkRuns(repoFullName, sha) {
+      try {
+        const data = await api(installationId, `/repos/${repoFullName}/commits/${sha}/check-runs?per_page=100`) as { check_runs?: Array<{ name?: string; status?: string; conclusion?: string | null }> } | null;
+        return checkRunsSummary(data?.check_runs);
+      } catch {
+        return null;
+      }
+    },
+    async branchHead(repoFullName, ref) {
+      try {
+        const data = await api(installationId, `/repos/${repoFullName}/branches/${ref}`) as { commit?: { sha?: string } } | null;
+        return data?.commit?.sha ?? null;
       } catch {
         return null;
       }

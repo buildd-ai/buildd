@@ -511,8 +511,11 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const allowed: DeliveryState[] = ['AWAITING_REVIEW', 'APPROVED', 'LANDING', 'CHANGES_REQUESTED'];
       // A person's "Fix CI" may restart a family that escalated, while the (possibly raised) cap allows.
       const reopen = human && dd.state === 'ESCALATED' && dd.stateReason === 'ci_exhausted';
-      if (!allowed.includes(dd.state) && !reopen) return c.stale('state_not_allowed');
-      if (cmd.openTrunkIncidentId) {
+      // §6.10: a delivery already repairing this CI joins the incident too; its
+      // queued per-PR attempt is skipped (spends nothing) and T25 decides.
+      const repairingCi = dd.state === 'REPAIRING' && dd.stateReason === 'ci';
+      if (!allowed.includes(dd.state) && !reopen && !(repairingCi && cmd.openTrunkIncidentId)) return c.stale('state_not_allowed');
+      if (cmd.openTrunkIncidentId && dd.state !== 'CHANGES_REQUESTED') {
         return reduce(view, { type: 'TrunkRedObserved', actor: cmd.actor, incidentId: cmd.openTrunkIncidentId, signature: cmd.signature, headSha: cmd.headSha, thresholdMet: true }, opts);
       }
       const key = `ci:${dd.id}:${cmd.headSha}`;

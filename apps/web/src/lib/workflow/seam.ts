@@ -25,6 +25,12 @@ import { headCoverage, ledgerBudget } from './reducer';
 import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
 import type { Verdict } from './types';
+import {
+  UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
+  resolveIncidentSql, trunkExplains, trunkRecovered, unresolvedIncidentsSql, type TrunkClassification,
+} from './trunk';
+
+const seamExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
 export type DeliveryRole = 'owner' | 'fix' | 'ci_fix' | 'conflict_fix' | 'review';
 
@@ -514,12 +520,110 @@ export async function observeCiFailure(p: {
   if (!live) return { handled: true, result: { result: 'rejected', reason: 'live_read_failed', current: { state: null, version: 0, head: null, round: 0 } }, attemptTaskId: null };
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.source}:ci`, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
+
+  // §6.10: classify the failure by its signature, and route a trunk-caused one
+  // to its incident (T25) instead of a per-PR attempt. Only for a head the
+  // delivery is acting on, in a state a CI failure moves.
+  const view = await loadView({ deliveryId }, deps.exec);
+  const d = view.delivery;
+  let signature = p.signature;
+  let incident: TrunkClassification['incident'] = null;
+  const ciState = !!d && (TRUNK_SOURCE_STATES.has(d.state) || (d.state === 'REPAIRING' && d.stateReason === 'ci'));
+  if (d && ciState && d.currentHeadSha === p.headSha && live.headSha === p.headSha) {
+    const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
+    const cls = await classifyCiFailure({
+      workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: d.baseRef ?? live.baseRef, headSha: p.headSha,
+      deliveryId, gitConfig: repo?.gitConfig ?? null, reader, exec: deps.exec,
+    });
+    if (cls.signature !== UNKNOWN_CI_SIGNATURE) signature = cls.signature;
+    incident = cls.incident;
+  }
   const result = await applyCommand(
-    { type: 'CiFailedObserved', actor: p.source, headSha: p.headSha, signature: p.signature, maxAttempts: p.maxAttempts },
+    { type: 'CiFailedObserved', actor: p.source, headSha: p.headSha, signature, maxAttempts: p.maxAttempts, openTrunkIncidentId: incident?.id ?? null },
     { ref: { deliveryId }, exec: deps.exec },
   );
   await drainDelivery(deliveryId, deps);
+  if (incident?.opened && d) await joinRepairingDeliveries({ incident, workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: d.baseRef ?? live.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
   return { handled: true, result, attemptTaskId: await attemptTaskOf(deliveryId, result, deps.exec) };
+}
+
+const TRUNK_SOURCE_STATES: ReadonlySet<string> = new Set(['AWAITING_REVIEW', 'APPROVED', 'LANDING']);
+
+/**
+ * A newly opened incident also takes the deliveries already repairing the same
+ * failure on this base: their queued per-PR CI attempts are skipped (§6.10).
+ */
+async function joinRepairingDeliveries(p: {
+  incident: NonNullable<TrunkClassification['incident']>; workspaceId: string; repoFullName: string; baseRef: string; excludeDeliveryId: string;
+}, deps: SeamDeps): Promise<void> {
+  const exec = deps.exec ?? seamExec;
+  const rows = ((await exec(repairingCiOnBaseSql({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: p.baseRef, excludeDeliveryId: p.excludeDeliveryId }))).rows ?? []) as Array<{ id: string; current_head_sha: string | null; trigger_reason: string | null }>;
+  for (const r of rows) {
+    if (!r.current_head_sha || !r.trigger_reason || !trunkExplains(r.trigger_reason, p.incident.signature)) continue;
+    await exec(openOrJoinIncidentSql({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: p.baseRef, signature: p.incident.signature, deliveryId: String(r.id) }));
+    await applyCommand(
+      { type: 'TrunkRedObserved', actor: 'kernel:trunk_breaker', incidentId: p.incident.id, signature: p.incident.signature, headSha: r.current_head_sha, thresholdMet: true },
+      { ref: { deliveryId: String(r.id) }, exec: deps.exec },
+    );
+    await drainDelivery(String(r.id), deps);
+  }
+}
+
+// ── T26: the base branch recovered (recovery sweep, §6.10) ──────────────────
+
+export interface TrunkSweepSummary { checked: number; resolved: number; recovered: number; stillRed: number; errors: number }
+
+/**
+ * Re-read the base head of every unresolved trunk incident. Once the base no
+ * longer fails the incident's checks (and every run on it completed), the
+ * incident resolves and each delivery blocked on it re-enters its resume state
+ * (T26), with a mechanical refresh when its head predates the fix. A
+ * delivery left blocked on an already-resolved incident (an interrupted pass)
+ * is recovered too. Runs on the pr-reconcile floor tick.
+ */
+export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): Promise<TrunkSweepSummary> {
+  const exec = deps.exec ?? seamExec;
+  const s: TrunkSweepSummary = { checked: 0, resolved: 0, recovered: 0, stillRed: 0, errors: 0 };
+  const incidents = ((await exec(unresolvedIncidentsSql(limit))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string }>;
+  for (const inc of incidents) {
+    s.checked++;
+    try {
+      const repo = await (deps.repoFor ?? workspaceRepo)(String(inc.workspace_id));
+      if (!repo) continue;
+      const reader = readerFor(deps, repo.installationId);
+      const head = reader.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
+      const runs = head && reader.checkRuns ? await reader.checkRuns(inc.repo_full_name, head) : null;
+      // Unknown or still running is never read as recovered.
+      if (!runs || !runs.complete || !trunkRecovered(inc.signature, runs.failing)) { s.stillRed++; continue; }
+      const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
+      if (won) s.resolved++;
+    } catch (err) {
+      s.errors++;
+      console.error(`[workflow] trunk incident ${inc.id} recheck failed:`, err);
+    }
+  }
+  const blocked = ((await exec(blockedOnResolvedSql(limit * 8))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string | null; current_head_sha: string | null; trunk_incident_id: string; base_ref: string }>;
+  for (const b of blocked) {
+    try {
+      const repo = await (deps.repoFor ?? workspaceRepo)(String(b.workspace_id));
+      let predates = false;
+      if (repo && b.repo_full_name && b.current_head_sha) {
+        const reader = readerFor(deps, repo.installationId);
+        const baseHead = reader.branchHead ? await reader.branchHead(b.repo_full_name, b.base_ref) : null;
+        predates = !!baseHead && !!reader.contains && !(await reader.contains(b.repo_full_name, baseHead, b.current_head_sha));
+      }
+      const r = await applyCommand(
+        { type: 'TrunkRecovered', actor: 'sweep:trunk', incidentId: String(b.trunk_incident_id), baseStillRed: false, headPredatesFix: predates },
+        { ref: { deliveryId: String(b.id) }, exec: deps.exec },
+      );
+      if (r.result === 'applied') s.recovered++;
+      await drainDelivery(String(b.id), deps);
+    } catch (err) {
+      s.errors++;
+      console.error(`[workflow] trunk recovery of delivery ${b.id} failed:`, err);
+    }
+  }
+  return s;
 }
 
 /**

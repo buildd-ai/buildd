@@ -82,7 +82,9 @@ export type PrActivityKind =
   // Kernel-rendered kinds (docs/specs/workflow-state-kernel.md §12.1).
   | 'push_pending'
   | 'push_undeliverable'
-  | 'composition_verified';
+  | 'composition_verified'
+  | 'blocked_on_trunk'
+  | 'trunk_recovered';
 
 export interface PrActivityEntry {
   kind: PrActivityKind;
@@ -304,6 +306,11 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       return { tone: 'human', label: 'Fix never reached GitHub · needs a human', noteLabel: 'Details' };
     case 'composition_verified':
       return { tone: 'done', label: 'Release composition verified', status: 'every change was reviewed at its own head' };
+    case 'blocked_on_trunk':
+      // The base branch fails the same checks: one trunk fix runs, this PR's CI retries wait.
+      return { tone: 'waiting', label: 'Blocked on a red base branch', status: 'CI retries paused until the base is green' };
+    case 'trunk_recovered':
+      return { tone: 'done', label: 'Base branch green again', status: 'resuming' };
   }
 }
 
@@ -464,7 +471,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set<PrActivityKind>([
   'ci_exhausted', 'fix_started', 'fix_ended', 'fix_superseded_by_approval', 'changes_pushed',
   'review_superseded_by_merge', 'work_superseded',
   'human_applied_recommendation', 'human_override_merge', 'merged', 'closed_unmerged',
-  'push_pending', 'push_undeliverable', 'composition_verified',
+  'push_pending', 'push_undeliverable', 'composition_verified', 'blocked_on_trunk', 'trunk_recovered',
 ]);
 
 /** A webhook redelivery of the newest entry — same kind and the same facts. */

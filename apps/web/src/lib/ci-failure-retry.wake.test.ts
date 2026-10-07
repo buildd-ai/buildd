@@ -157,6 +157,11 @@ describe('retryCiFailureForPr on a kernel-owned PR (§5.7, T10)', () => {
     expect(kernelCiOutcome({ result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'ESCALATED' } } })).toMatchObject({ reason: 'kernel_owned' });
     expect(kernelCiOutcome({ result: { result: 'stale', reason: 'head_not_current', current: { state: 'AWAITING_REVIEW' } } })).toMatchObject({ reason: 'kernel_owned' });
   });
+
+  it('S24: a trunk-blocked delivery is a blocked_on_trunk skip: the sweep files no per-PR retry and does not come back for it', () => {
+    expect(kernelCiOutcome({ result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } })).toEqual({ kind: 'skipped', reason: 'blocked_on_trunk', detail: 'trunk_incident' });
+    expect(kernelCiOutcome({ result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'BLOCKED_ON_TRUNK' } } })).toMatchObject({ kind: 'skipped', reason: 'blocked_on_trunk' });
+  });
 });
 
 describe('legacy CI budget: allocation is consumption, never author or context.iteration', () => {

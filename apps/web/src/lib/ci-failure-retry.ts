@@ -69,7 +69,9 @@ export type CiRetrySkipReason =
   | 'retries_disabled'
   | 'duplicate'
   /** The workflow kernel owns this PR and decided not to dispatch now (its state is the reason). */
-  | 'kernel_owned';
+  | 'kernel_owned'
+  /** The kernel blocked the delivery on a trunk incident (§6.10): the base branch fails the same checks. */
+  | 'blocked_on_trunk';
 
 /** Fixed text per code: the ledger coalesces on (gate, outcome, reason), so the PR number lives in `detail`. */
 const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
@@ -85,6 +87,7 @@ const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
   retries_disabled: 'no CI retry: CI retries are disabled for this workspace',
   duplicate: 'no CI retry: a retry for this PR and head was filed concurrently',
   kernel_owned: 'no CI retry: the workflow kernel owns this PR and its state owes no CI fix now',
+  blocked_on_trunk: 'no CI retry: the base branch fails the same checks; one trunk fix runs for every blocked PR',
 };
 
 export type CiRetryOutcome =
@@ -699,6 +702,7 @@ async function observeKernelCiFailure(input: CiFailureInput, workspaceId: string
     prNumber: input.prNumber,
     installationId: input.installationId,
     headSha: input.headSha,
+    // The seam replaces the placeholder with the failing checks' signature (§6.10).
     signature: 'ci_failed',
     maxAttempts: typeof configured === 'number' ? configured : policyValue('maxCiRetries'),
     source: input.surface,
@@ -719,9 +723,11 @@ export function kernelCiOutcome(seen: { result: { result: string; reason?: strin
         : { kind: 'skipped', reason: 'fix_in_flight', detail: 'ci_attempt_queued' };
     }
     if (to === 'ESCALATED') return { kind: 'skipped', reason: 'retries_exhausted', detail: 'ci_exhausted' };
+    if (to === 'BLOCKED_ON_TRUNK') return { kind: 'skipped', reason: 'blocked_on_trunk', detail: 'trunk_incident' };
     return { kind: 'skipped', reason: 'fix_in_flight', detail: `recorded:${to}` };
   }
   const state = r.current?.state ?? null;
+  if (state === 'BLOCKED_ON_TRUNK') return { kind: 'skipped', reason: 'blocked_on_trunk', detail: `${r.result}:${r.reason ?? ''}` };
   if (r.reason === 'fix_in_flight' || state === 'REPAIRING' || state === 'FIXING' || state === 'WORKING' || state === 'AWAITING_PUSH') {
     return { kind: 'skipped', reason: 'fix_in_flight', detail: `${r.result}:${r.reason ?? ''}:${state ?? ''}` };
   }
