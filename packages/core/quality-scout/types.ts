@@ -148,10 +148,20 @@ export interface ScoutRunParking {
 export const DEFAULT_SCOUT_MAX_PROBES = 4;
 export const MAX_SCOUT_MAX_PROBES = 10;
 
+/** Default `budget.maxCaptureProbes`: one surface probe per run (each costs a workflow run per viewport). */
+export const DEFAULT_SCOUT_MAX_CAPTURE_PROBES = 1;
+export const MAX_SCOUT_MAX_CAPTURE_PROBES = 3;
+
 export interface ScoutBudget {
   maxProbes: number;
   /** Null: no dollar cap beyond the probe count. */
   maxCostUsd: number | null;
+  /**
+   * Surface probes a run may select (each one is a Visual QA workflow run per
+   * viewport on the workspace's Actions minutes). Absent on runs from before
+   * the field: read as `DEFAULT_SCOUT_MAX_CAPTURE_PROBES`.
+   */
+  maxCaptureProbes?: number;
 }
 
 /** The exact state a run exercised. `sha` is what staleness is computed from. */

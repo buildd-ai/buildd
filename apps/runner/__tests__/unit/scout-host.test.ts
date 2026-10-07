@@ -126,6 +126,20 @@ describe('buildScoutBwrapArgv', () => {
     expect(binds('--ro-bind')).toContain('/home/runner/.bun');
   });
 
+  test('masks the shared bun cache with a tmpfs after the read-only ~/.bun bind exposes it', () => {
+    // Removing the cache's rw bind alone left it readable through the ~/.bun ro bind
+    // (caught by apps/runner/src/__tests__/scout-sandbox.e2e.ts in a real namespace).
+    const cache = '/home/runner/.bun/install/cache';
+    const tmpfsAt = argv.findIndex((a, i) => a === '--tmpfs' && argv[i + 1] === cache);
+    const bunBindAt = argv.findIndex((a, i) => a === '--ro-bind' && argv[i + 1] === '/home/runner/.bun');
+    expect(tmpfsAt).toBeGreaterThan(bunBindAt);
+    expect(bunBindAt).toBeGreaterThan(-1);
+    expect([...binds('--bind'), ...binds('--ro-bind')]).not.toContain(cache);
+    // No cache on disk: no mask (its mountpoint could not be created inside the ro bind).
+    const none = buildScoutBwrapArgv({ ...ctx, pathExists: (p) => p !== cache });
+    expect(none).not.toContain(cache);
+  });
+
   test('starts in the worktree', () => {
     expect(argv.slice(-2)).toEqual(['--chdir', '/work/scout-1/wt']);
   });

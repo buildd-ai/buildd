@@ -16,8 +16,13 @@
  *     profile, its command in an allowlisted environment (`buildScoutProbeEnv`:
  *     no runner, GitHub, Claude or Codex credential, no git credential helper)
  *     and, when the host supplies `wrap`, inside its sandbox.
- *  5. Results go back through the run API, one probe per call.
- *  6. The worktree and its temp home are removed, success or not.
+ *  5. A surface probe captures through `visual-qa.yml` with the run-scoped
+ *     token the claim carried (`claimed.capture`). The token lives in this
+ *     function's closure only: not in `env`, not on disk; it is dropped when
+ *     the lease ends and revoked when the run does. No grant, no capture
+ *     port: the probe is `unsupported`. At most `budget.maxCaptureProbes`.
+ *  6. Results go back through the run API, one probe per call.
+ *  7. The worktree and its temp home are removed, success or not.
  *
  * Nothing here writes a finding, files a task or touches a PR: the server
  * finalizes the run.
@@ -38,9 +43,18 @@ import type {
 import { checkCheckoutFetchable, type CheckoutCheck } from '../knowledge-store/full-ingest';
 import { createSecretRedactor } from '../redaction';
 import type { ScoutCapabilityProfile } from '../scout-capabilities';
-import { runScoutProbe, type ScoutCommandOutput, type ScoutProbePorts } from './executors';
+import { planScoutProbe, runScoutProbe, type ScoutCommandOutput, type ScoutProbePorts } from './executors';
 import { exec, gitHead, gitStatus, localCommandPort } from './local-host';
-import type { ScoutProbeRecord, ScoutRun } from './types';
+import { DEFAULT_SCOUT_MAX_CAPTURE_PROBES, type ScoutProbeRecord, type ScoutRun } from './types';
+import {
+  createVisualQaCapturePort,
+  limitScoutCapturePort,
+  revokeInstallationToken,
+  tokenVisualQaActions,
+  type ScoutCaptureCredential,
+  type ScoutCapturePort,
+  type VisualQaCapturePortOptions,
+} from './visual-capture';
 
 export type ScoutClaimed = Extract<ScoutRunClaimResponse, { run: object }>;
 
@@ -206,6 +220,14 @@ export interface HostScoutRunOptions {
   attempts?: number;
   now?: () => Date;
   log?: (msg: string) => void;
+  /** Capture port tuning and the GitHub fetch (tests). */
+  capture?: Pick<VisualQaCapturePortOptions, 'pollMs' | 'sleep' | 'timeoutMs'> & { fetchImpl?: typeof fetch };
+}
+
+/** Is this claimed probe a surface (capture) probe under the frozen profile? */
+function isCaptureProbe(probe: ScoutProbeRecord, profile: ScoutCapabilityProfile): boolean {
+  const plan = planScoutProbe(probe, profile);
+  return plan.status === 'runnable' && plan.action.adapter === 'surface';
 }
 
 export type HostScoutRunOutcome =
@@ -220,7 +242,23 @@ export async function hostClaimedScoutRun(opts: HostScoutRunOptions): Promise<Ho
   const now = opts.now ?? (() => new Date());
   const { run, lease } = claimed;
   const sha = run.candidate.sha;
+  // The capture grant lives in this closure and nowhere else. Every way out
+  // of this function drops and revokes it (GitHub mints for an hour; the run
+  // is done sooner).
+  let credential: ScoutCaptureCredential | null = claimed.capture
+    ? {
+      token: claimed.capture.token,
+      expiresAt: new Date(Math.min(Date.parse(claimed.capture.expiresAt), Date.parse(lease.expiresAt))).toISOString(),
+      repository: claimed.capture.repository,
+    }
+    : null;
+  const revoke = async () => {
+    const held = credential;
+    credential = null;
+    if (held) await revokeInstallationToken(held.token, opts.capture?.fetchImpl);
+  };
   const release = async (reason: string, unfetchable: boolean): Promise<HostScoutRunOutcome> => {
+    await revoke();
     log(`[scout-host] releasing run ${run.id.slice(0, 8)}: ${reason}`);
     try { await api.release(run.id, lease.leaseId, reason); } catch { /* the lease lapses on its own */ }
     return { status: 'released', reason, unfetchable };
@@ -253,12 +291,33 @@ export async function hostClaimedScoutRun(opts: HostScoutRunOptions): Promise<Ho
     const wrap = opts.wrapFor?.({ worktree, home, repoPath });
     const profile = claimed.profile as unknown as ScoutCapabilityProfile;
     const scoutRun = run as unknown as ScoutRun;
-    const redact = createSecretRedactor((opts.secretValues ?? []).filter((v) => v && v.length >= 8));
+    const redactValues = [...(opts.secretValues ?? [])];
     const deadline = Math.min(Date.parse(lease.expiresAt), now().getTime() + lease.runnerMaxDurationMs);
 
-    // Fixture setup, once.
+    const probes = claimed.probes as unknown as ScoutProbeRecord[];
+    const captureIds = new Set(probes.filter((p) => isCaptureProbe(p, profile)).map((p) => p.candidateId));
+
+    // A grant with no surface probe to use it on is revoked now.
+    if (captureIds.size === 0) await revoke();
+    let capturePort: ScoutCapturePort | null = null;
+    if (credential) {
+      redactValues.push(credential.token);
+      const { fetchImpl, ...portOpts } = opts.capture ?? {};
+      capturePort = limitScoutCapturePort(
+        createVisualQaCapturePort(
+          tokenVisualQaActions({ repoFullName: credential.repository, credential: () => credential, fetchImpl, now: () => now().getTime() }),
+          { ...portOpts, now: () => now().getTime(), deadlineMs: deadline },
+        ),
+        run.budget.maxCaptureProbes ?? DEFAULT_SCOUT_MAX_CAPTURE_PROBES,
+      );
+    } else if (captureIds.size > 0) {
+      log(`[scout-host] run ${run.id.slice(0, 8)}: no capture credential (${claimed.captureUnavailable ?? 'none issued'}); surface probes run without a capture port`);
+    }
+    const redact = createSecretRedactor(redactValues.filter((v) => v && v.length >= 8));
+
+    // Fixture setup, once, and only when a command probe needs the checkout's dependencies.
     let fixtureFailure: string | null = null;
-    const fixture = scoutFixtureCommand(profile, worktree);
+    const fixture = probes.some((p) => !captureIds.has(p.candidateId)) ? scoutFixtureCommand(profile, worktree) : null;
     if (fixture) {
       const setup = localCommandPort({ dir: worktree, evidenceDir, env, wrap });
       const out = await setup.port.run({ command: fixture, timeoutMs: Math.max(1_000, Math.min(SCOUT_FIXTURE_TIMEOUT_MS, deadline - now().getTime())), ref: run.candidate.ref, sha });
@@ -271,17 +330,24 @@ export async function hostClaimedScoutRun(opts: HostScoutRunOptions): Promise<Ho
       if (fixtureFailure) log(`[scout-host] run ${run.id.slice(0, 8)}: ${fixtureFailure}`);
     }
 
-    const ports: ScoutProbePorts = fixtureFailure
-      ? { command: { run: async (): Promise<ScoutCommandOutput> => ({ exitCode: null, timedOut: false, stderrTail: SCOUT_FIXTURE_FAILED }) } }
-      : { command: localCommandPort({ dir: worktree, evidenceDir, env, wrap }).port };
+    const ports: ScoutProbePorts = {
+      command: fixtureFailure
+        ? { run: async (): Promise<ScoutCommandOutput> => ({ exitCode: null, timedOut: false, stderrTail: SCOUT_FIXTURE_FAILED }) }
+        : localCommandPort({ dir: worktree, evidenceDir, env, wrap }).port,
+      ...(capturePort ? { capture: capturePort } : {}),
+    };
 
     const posted: string[] = [];
     let finalized = false;
     let stopped: string | null = null;
-    for (const probe of claimed.probes as unknown as ScoutProbeRecord[]) {
+    for (const probe of probes) {
       if (now().getTime() >= deadline) { stopped = 'deadline'; break; }
+      const isCapture = captureIds.has(probe.candidateId);
+      // A fixture failure is about the checkout; a capture runs on GitHub's runner, not here.
+      const fixtureHit = fixtureFailure !== null && !isCapture;
       const exec = await runScoutProbe(scoutRun, probe, profile, ports, {
-        attempts: fixtureFailure ? 1 : opts.attempts ?? DEFAULT_RUNNER_PROBE_ATTEMPTS,
+        // One capture attempt: each is a workflow run per viewport.
+        attempts: fixtureHit || isCapture ? 1 : opts.attempts ?? DEFAULT_RUNNER_PROBE_ATTEMPTS,
         redact,
         now,
       });
@@ -290,7 +356,7 @@ export async function hostClaimedScoutRun(opts: HostScoutRunOptions): Promise<Ho
       const result = exec.probe.result!;
       const entry: ScoutHostedProbeResult = {
         candidateId: probe.candidateId,
-        result: fixtureFailure
+        result: fixtureHit
           ? {
             ...result,
             verdict: result.verdict === 'unsupported' ? 'unsupported' : 'inconclusive',
@@ -318,6 +384,7 @@ export async function hostClaimedScoutRun(opts: HostScoutRunOptions): Promise<Ho
     }
     return { status: 'reported', posted, fixtureFailed: fixtureFailure !== null, finalized, stopped };
   } finally {
+    await revoke().catch(() => false);
     if (added) {
       await exec('git', ['-C', repoPath, 'worktree', 'remove', '--force', worktree], { cwd: repoPath, timeoutMs: 60_000 }).catch(() => null);
     }

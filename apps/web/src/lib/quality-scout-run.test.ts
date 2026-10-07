@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { computeReadiness } from '@buildd/core/workspace-readiness';
 import { discoverScoutCapabilities } from '@buildd/core/scout-capabilities';
 import type { ScoutFindingStore } from '@buildd/core/quality-scout/ledger';
-import type { ScoutCommandOutput, ScoutCommandRequest, ScoutProbePorts } from '@buildd/core/quality-scout/executors';
+import { SCOUT_VIEWPORTS, type ScoutCommandOutput, type ScoutCommandRequest, type ScoutProbePorts } from '@buildd/core/quality-scout/executors';
 import type { ScoutProbeDecider } from '@buildd/core/quality-scout/selector';
 import type {
   ScoutActionState,
@@ -19,8 +19,13 @@ import {
   executeScoutProbes,
   finalizeExpiredScoutRun,
   finalizeScoutRun,
+  MAX_SCOUT_CAPTURE_RUNNER_DURATION_MS,
   mergeScoutExecution,
+  parkScoutRun,
   planScoutRun,
+  SCOUT_CAPTURE_MS_PER_VIEWPORT,
+  SCOUT_LEASE_SLACK_MS,
+  scoutRunnerDuration,
   runQualityScout,
   scoutHostNeed,
   scoutRunId,
@@ -599,6 +604,54 @@ describe('a parked run', () => {
     const { saved } = await parked(memoryWorld(), { host: { runnerMaxDurationMs: 5 * 3_600_000, hostDeadlineMs: 60_000 } });
     expect(saved.parking!.runnerMaxDurationMs).toBe(60 * 60_000);
     expect(Date.parse(saved.parking!.hostDeadline) - T0.getTime()).toBe(65 * 60_000);
+  });
+
+  /** Park a planned run whose records gain `n` runner-hosted surface probes (two viewports each). */
+  async function parkedWithCapture(n: number, host: ScoutRunRequest['host'] = {}) {
+    const w = memoryWorld();
+    const req = request({ host });
+    const d = deps(w, { ports: serverPorts(), runnerHost: runnerOffers('command') });
+    const planned = await planScoutRun(req, d);
+    if (planned.status !== 'planned') throw new Error(planned.status);
+    const surface = (i: number): ScoutProbeRecord => ({
+      candidateId: `surface-${i}`, family: 'surface', probeKind: 'regression', title: 't', invariant: 'i', sourceSignals: [], preconditions: [],
+      executor: 'ui-surface', estimatedCost: 'high', risk: 'medium', mutates: false, evidenceRequirements: [], unsupportedReason: null,
+      selection: { status: 'selected', via: 'decision', reasonCode: 'x', decisionSource: null }, host: 'runner', result: null,
+    });
+    const plan = { ...planned.plan, records: [...planned.plan.records, ...Array.from({ length: n }, (_, i) => surface(i))] };
+    const out = await parkScoutRun(plan, req, d);
+    if (out.status !== 'awaiting_host') throw new Error(out.status);
+    return w.runs.get(out.runId)!.run.parking!;
+  }
+
+  it('with a two-viewport surface probe, defaults to a lease longer than the capture estimate', async () => {
+    const parking = await parkedWithCapture(1);
+    const estimate = SCOUT_VIEWPORTS.length * SCOUT_CAPTURE_MS_PER_VIEWPORT;
+    expect(parking.runnerMaxDurationMs).toBeGreaterThanOrEqual(estimate);
+    expect(parking.runnerMaxDurationMs + SCOUT_LEASE_SLACK_MS).toBeGreaterThan(estimate);
+    // The host deadline still never cuts the lease short.
+    expect(Date.parse(parking.hostDeadline) - T0.getTime()).toBeGreaterThanOrEqual(parking.runnerMaxDurationMs + SCOUT_LEASE_SLACK_MS);
+  });
+
+  it('a capture-aware lease ends before the hour a GitHub installation token lives', async () => {
+    const parking = await parkedWithCapture(3);
+    expect(parking.runnerMaxDurationMs).toBe(MAX_SCOUT_CAPTURE_RUNNER_DURATION_MS);
+    expect(parking.runnerMaxDurationMs + SCOUT_LEASE_SLACK_MS).toBeLessThanOrEqual(55 * 60_000);
+  });
+
+  it('an explicit runner bound still wins with a surface probe, but never past the token-bounded cap', async () => {
+    expect((await parkedWithCapture(1, { runnerMaxDurationMs: 15 * 60_000 })).runnerMaxDurationMs).toBe(15 * 60_000);
+    expect((await parkedWithCapture(1, { runnerMaxDurationMs: 60 * 60_000 })).runnerMaxDurationMs).toBe(MAX_SCOUT_CAPTURE_RUNNER_DURATION_MS);
+  });
+
+  it('a command-only run keeps the 20-minute default', async () => {
+    expect((await parkedWithCapture(0)).runnerMaxDurationMs).toBe(20 * 60_000);
+  });
+
+  it('scoutRunnerDuration: no capture probe is exactly clampRunnerDuration', () => {
+    expect(scoutRunnerDuration(undefined, 0)).toBe(20 * 60_000);
+    expect(scoutRunnerDuration(5 * 3_600_000, 0)).toBe(60 * 60_000);
+    expect(scoutRunnerDuration(undefined, 2)).toBe(MAX_SCOUT_CAPTURE_RUNNER_DURATION_MS);
   });
 
   it('is live: a re-trigger on the same SHA is a duplicate', async () => {

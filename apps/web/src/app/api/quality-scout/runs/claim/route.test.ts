@@ -13,6 +13,13 @@ let world = memoryHostStore();
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => account }));
 mock.module('@/lib/knowledge-ingest-access', () => ({ getIngestAccessibleWorkspaceIds: async () => accessible }));
 mock.module('@/lib/quality-scout-trigger', () => ({ isQualityScoutDisabled: () => disabled }));
+let mintCalls: Array<{ accountId: string; teamId: string; runId: string }> = [];
+mock.module('@/lib/quality-scout-capture-grant', () => ({
+  scoutCaptureGrantMinter: (caller: { accountId: string; teamId: string }) => async (q: { run: { id: string }; repo: string; leaseExpiresAt: Date }) => {
+    mintCalls.push({ accountId: caller.accountId, teamId: caller.teamId, runId: q.run.id });
+    return { ok: true, grant: { token: 'ghs_route_test_token', expiresAt: new Date(Date.now() + 3_600_000).toISOString(), repository: q.repo, pageSource: 'sandbox' } };
+  },
+}));
 mock.module('@/lib/quality-scout-runner-host-store', () => ({
   // Delegates to the current world: the route binds this export once.
   dbScoutRunnerHostStore: new Proxy({}, { get: (_t, k) => (world.store as unknown as Record<string | symbol, unknown>)[k] }),
@@ -33,6 +40,7 @@ describe('POST /api/quality-scout/runs/claim', () => {
     accessible = new Set([WS]);
     disabled = false;
     world = memoryHostStore();
+    mintCalls = [];
   });
 
   it('401 without a valid key, 403 for a trigger token or a key with no team', async () => {
@@ -79,5 +87,38 @@ describe('POST /api/quality-scout/runs/claim', () => {
     world.add(parkedRun(WS, {}, new Date()), { teamId: 'team-a', probes: [probeRecord('c1')] });
     disabled = true;
     expect(await (await POST(req())).json()).toEqual({ run: null, reason: 'disabled' });
+  });
+
+  describe('capture credential', () => {
+    const CAPTURE_BODY = { repos: [REPO], ports: { command: true, capture: true, browser: false } };
+    const surface = () => probeRecord('s1', { executor: 'ui-surface', family: 'surface', probeKind: 'visual' });
+
+    it('a key not flagged as a trusted host runner never gets a surface run or a token', async () => {
+      world.add(parkedRun(WS, {}, new Date()), { teamId: 'team-a', probes: [surface()] });
+      account = { id: 'acct-1', teamId: 'team-a', level: 'worker', hostRunner: false };
+      const body = await (await POST(req(CAPTURE_BODY))).json();
+      expect(body).toEqual({ run: null, reason: 'none' });
+      expect(mintCalls).toEqual([]);
+    });
+
+    it('a trusted host-runner key gets the surface run with a token minted for its team and that run, expiring with the lease', async () => {
+      const run = world.add(parkedRun(WS, {}, new Date()), { teamId: 'team-a', probes: [surface()] });
+      account = { id: 'acct-1', teamId: 'team-a', level: 'worker', hostRunner: true };
+      const res = await POST(req(CAPTURE_BODY));
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      const body = await res.json();
+      expect(body.run.id).toBe(run.id);
+      expect(mintCalls).toEqual([{ accountId: 'acct-1', teamId: 'team-a', runId: run.id }]);
+      expect(body.capture).toMatchObject({ token: 'ghs_route_test_token', repository: REPO, pageSource: 'sandbox', expiresAt: body.lease.expiresAt });
+    });
+
+    it('a trusted host runner that claims a command-only run is handed no token', async () => {
+      world.add(parkedRun(WS, {}, new Date()), { teamId: 'team-a', probes: [probeRecord('c1')] });
+      account = { id: 'acct-1', teamId: 'team-a', level: 'worker', hostRunner: true };
+      const body = await (await POST(req(CAPTURE_BODY))).json();
+      expect(body.run).not.toBeNull();
+      expect(body.capture).toBeUndefined();
+      expect(mintCalls).toEqual([]);
+    });
   });
 });

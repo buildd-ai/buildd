@@ -1,19 +1,23 @@
 import { describe, expect, it } from 'bun:test';
 import { deflateRawSync } from 'zlib';
-import { computeReadiness } from '@buildd/core/workspace-readiness';
-import { discoverScoutCapabilities } from '@buildd/core/scout-capabilities';
-import { SCOUT_EVIDENCE_REQUIREMENTS } from '@buildd/core/quality-scout/candidates';
-import { scoutProbeRecord, startScoutRun } from '@buildd/core/quality-scout/ledger';
-import { runScoutProbe } from '@buildd/core/quality-scout/executors';
+import { computeReadiness } from '../workspace-readiness';
+import { discoverScoutCapabilities } from '../scout-capabilities';
+import { SCOUT_EVIDENCE_REQUIREMENTS } from '../quality-scout/candidates';
+import { scoutProbeRecord, startScoutRun } from '../quality-scout/ledger';
+import { runScoutProbe } from '../quality-scout/executors';
 import {
   captureRecordsToShots,
   createVisualQaCapturePort,
+  limitScoutCapturePort,
   readZipEntry,
   resolveScoutCapturePort,
+  revokeInstallationToken,
+  tokenVisualQaActions,
+  type ScoutCaptureCredential,
   type VisualQaActions,
   type VisualQaCaptureRecord,
   type VisualQaRun,
-} from './quality-scout-visual-adapter';
+} from '../quality-scout/visual-capture';
 
 const SHA = 'c'.repeat(40);
 const REPO = 'acme/web';
@@ -283,5 +287,77 @@ describe('runScoutProbe with the Visual QA capture port', () => {
     const f = fakeActions();
     const resolved = await resolveScoutCapturePort({ gitConfig: { visualQa: { pageSource: 'vercel-preview' } }, actions: f.actions });
     expect(resolved).toMatchObject({ port: null, reason: 'page_source_not_sandbox' });
+  });
+});
+
+// ─── Runner side: run-scoped token, deadline, cap, revoke ────────────────────
+
+describe('tokenVisualQaActions', () => {
+  const cred = (over: Partial<ScoutCaptureCredential> = {}): ScoutCaptureCredential => ({
+    token: 'ghs_runtoken', expiresAt: new Date(T0 + 60_000).toISOString(), repository: REPO, ...over,
+  });
+  function recordingFetch(status = 200, body: unknown = { workflow_runs: [] }) {
+    const calls: Array<{ url: string; method: string; auth: string | undefined }> = [];
+    const f = (async (url: string, init: RequestInit = {}) => {
+      calls.push({ url: String(url), method: init.method ?? 'GET', auth: (init.headers as Record<string, string>)?.Authorization });
+      return new Response(status === 204 ? null : JSON.stringify(body), { status });
+    }) as unknown as typeof fetch;
+    return { f, calls };
+  }
+
+  it('calls only the one repository\'s Actions API, with the run-scoped token', async () => {
+    const { f, calls } = recordingFetch();
+    const a = tokenVisualQaActions({ repoFullName: REPO, credential: () => cred(), fetchImpl: f, now: () => T0 });
+    await a.listDispatchRuns('feature');
+    expect(calls).toEqual([{ url: `https://api.github.com/repos/${REPO}/actions/workflows/visual-qa.yml/runs?event=workflow_dispatch&branch=feature&per_page=10`, method: 'GET', auth: 'Bearer ghs_runtoken' }]);
+  });
+
+  it('refuses to call once the credential is dropped, expired, or for another repository', async () => {
+    const { f, calls } = recordingFetch();
+    let c: ScoutCaptureCredential | null = cred();
+    const a = tokenVisualQaActions({ repoFullName: REPO, credential: () => c, fetchImpl: f, now: () => T0 });
+    c = null;
+    await expect(a.listDispatchRuns('x')).rejects.toThrow('no capture credential');
+    c = cred({ expiresAt: new Date(T0).toISOString() });
+    await expect(a.listDispatchRuns('x')).rejects.toThrow('expired');
+    c = cred({ repository: 'acme/other' });
+    await expect(a.listDispatchRuns('x')).rejects.toThrow('no capture credential');
+    expect(calls).toEqual([]);
+    expect(() => tokenVisualQaActions({ repoFullName: '../evil', credential: () => cred() })).toThrow('owner/name');
+  });
+
+  it('a missing workflow reads as absent, not as an error', async () => {
+    const { f } = recordingFetch(404, { message: 'Not Found' });
+    expect(await tokenVisualQaActions({ repoFullName: REPO, credential: () => cred(), fetchImpl: f, now: () => T0 }).workflowExists()).toBe(false);
+  });
+
+  it('revokeInstallationToken deletes the token and never throws', async () => {
+    const { f, calls } = recordingFetch(204);
+    expect(await revokeInstallationToken('ghs_runtoken', f)).toBe(true);
+    expect(calls).toEqual([{ url: 'https://api.github.com/installation/token', method: 'DELETE', auth: 'Bearer ghs_runtoken' }]);
+    const boom = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
+    expect(await revokeInstallationToken('x', boom)).toBe(false);
+  });
+});
+
+describe('capture port bounds', () => {
+  it('a run deadline cuts a capture short even inside the per-viewport timeout', async () => {
+    const f = fakeActions({ completeAfter: 1_000 });
+    const port = createVisualQaCapturePort(f.actions, { ...f.portOpts, timeoutMs: 600_000, deadlineMs: T0 + 30_000 });
+    await expect(port.capture(req)).rejects.toThrow('did not finish');
+  });
+
+  it('nothing is dispatched once the deadline has passed', async () => {
+    const f = fakeActions();
+    await expect(createVisualQaCapturePort(f.actions, { ...f.portOpts, deadlineMs: T0 - 1 }).capture(req)).rejects.toThrow('deadline');
+    expect(f.dispatches).toHaveLength(0);
+  });
+
+  it('limitScoutCapturePort allows max captures, then throws', async () => {
+    const f = fakeActions();
+    const port = limitScoutCapturePort(createVisualQaCapturePort(f.actions, f.portOpts), 1);
+    await port.capture(req);
+    await expect(port.capture(req)).rejects.toThrow('capture cap');
+    expect(f.dispatches).toHaveLength(2);
   });
 });
