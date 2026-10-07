@@ -382,7 +382,7 @@ export async function POST(req: NextRequest) {
       // path that ever calls GitHub, so re-fetching it just for the review
       // request would be wasted work on the common (non-mission) path too.
       let adoptRepo: { fullName: string; installation: { installationId: number } | null } | undefined;
-      let realPr: { head?: { sha?: string | null }; base?: { ref?: string | null } } | null = null;
+      let realPr: { head?: { sha?: string | null }; base?: { ref?: string | null }; body?: string | null } | null = null;
       // Same escape hatch as the fresh-create path below (PART 2): a
       // multi-repo mission's integration branch may be real in the mission's
       // home repo and absent from THIS task's own repo, in which case
