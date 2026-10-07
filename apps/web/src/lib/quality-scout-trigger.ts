@@ -108,7 +108,7 @@ export interface ScoutTriggerConfig {
   missionCandidate: boolean;
   /** Null: never periodic. */
   periodicHours: number | null;
-  budget: { maxProbes?: number; maxCostUsd?: number | null };
+  budget: { maxProbes?: number; maxCostUsd?: number | null; maxCaptureProbes?: number };
   maxDurationMs: number;
   policy: ScoutActionPolicy;
   /** `auto` (default): runner-only probes go to a runner when one is available. `server`: never. */
@@ -136,6 +136,7 @@ export function resolveScoutTriggerConfig(raw: unknown, env: Env = process.env):
     budget: {
       ...(finite(budget.maxProbes) ? { maxProbes: budget.maxProbes } : {}),
       ...(finite(budget.maxCostUsd) ? { maxCostUsd: budget.maxCostUsd } : {}),
+      ...(finite(budget.maxCaptureProbes) ? { maxCaptureProbes: budget.maxCaptureProbes } : {}),
     },
     maxDurationMs: Math.min(
       clampScoutDuration(finite(budget.maxDurationMs) ? budget.maxDurationMs : DEFAULT_SERVER_SCOUT_DURATION_MS),
@@ -463,10 +464,22 @@ export function scoutRunnerNeeds(environments: readonly unknown[], repoFullName:
   return out;
 }
 
+/**
+ * A heartbeat advert as it counts for routing. A capture probe is served with
+ * a run-scoped GitHub token, which the claim hands only to a key flagged as a
+ * trusted host runner (`accounts.hostRunner`), so another key's `capture`
+ * claim is dropped here: the probe says `no_runner_host` at once instead of
+ * parking for a runner that will never be handed it.
+ */
+export function scoutAdvertForRouting(environment: unknown, hostRunner: boolean): unknown {
+  if (hostRunner || !isRecord(environment) || !isRecord(environment.scoutHost)) return environment;
+  return { ...environment, scoutHost: { ...environment.scoutHost, capture: false } };
+}
+
 /** Recent heartbeats of the workspace's team that advertise a Scout host. */
 async function loadScoutRunnerNeeds(ws: ScoutWorkspace, now: Date): Promise<Set<ScoutHostNeed>> {
   if (!ws.githubRepo) return new Set();
-  const rows = await db.select({ environment: workerHeartbeats.environment })
+  const rows = await db.select({ environment: workerHeartbeats.environment, hostRunner: accounts.hostRunner })
     .from(workerHeartbeats)
     .innerJoin(accounts, eq(accounts.id, workerHeartbeats.accountId))
     .where(and(
@@ -475,7 +488,7 @@ async function loadScoutRunnerNeeds(ws: ScoutWorkspace, now: Date): Promise<Set<
       isNotNull(sql`${workerHeartbeats.environment} -> 'scoutHost'`),
     ))
     .limit(50);
-  return scoutRunnerNeeds(rows.map((r) => r.environment), ws.githubRepo.fullName);
+  return scoutRunnerNeeds(rows.map((r) => scoutAdvertForRouting(r.environment, r.hostRunner === true)), ws.githubRepo.fullName);
 }
 
 // ── Parked-run expiry ───────────────────────────────────────────────────────

@@ -106,6 +106,13 @@ export interface ScoutSelectionOptions {
    * single-host run, where the executor's capability gate says `unsupported`).
    */
   hostable?: (c: ScoutProbeCandidate) => string | null;
+  /**
+   * Surface probes: a capture is a workflow run per viewport, so a run takes
+   * at most `max` of them (`budget.maxCaptureProbes`). A capture candidate
+   * past the cap is skipped `over_budget` (`max_capture_probes`) before it
+   * costs a decision; the slot stays open for a cheaper probe.
+   */
+  capture?: { max: number; needsCapture(c: ScoutProbeCandidate): boolean };
 }
 
 export interface ScoutSelectedProbe {
@@ -211,7 +218,10 @@ export async function selectScoutProbes(
     skipped.push(s);
     done.add(s.candidate.id);
   };
+  const captureCap = options.capture ?? null;
+  let captures = 0;
   const pick = (p: ScoutSelectedProbe) => {
+    if (captureCap?.needsCapture(p.candidate)) captures++;
     selected.push(p);
     done.add(p.candidate.id);
     perFamily.set(p.candidate.family, (perFamily.get(p.candidate.family) ?? 0) + 1);
@@ -234,6 +244,10 @@ export async function selectScoutProbes(
     }
     if ((perFamily.get(c.family) ?? 0) >= maxPerFamily) {
       skip({ candidate: c, reason: 'family_cap', detail: `${c.family} already has ${maxPerFamily} probe(s) selected.` });
+      return false;
+    }
+    if (captureCap && captureCap.needsCapture(c) && captures >= captureCap.max) {
+      skip({ candidate: c, reason: 'over_budget', reasonCode: 'max_capture_probes', detail: `A run captures at most ${captureCap.max} surface probe(s).` });
       return false;
     }
     return true;

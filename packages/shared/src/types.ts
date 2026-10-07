@@ -3656,6 +3656,28 @@ export interface ScoutHostPortsAdvert {
   appBoot?: boolean;
 }
 
+/**
+ * A capture credential minted for one claimed Scout run: a GitHub App
+ * installation token scoped to the run's one repository with Actions write
+ * (dispatch the workflow, read its runs and artifacts) and nothing else.
+ * `expiresAt` is the earlier of the token's own expiry and the lease's.
+ */
+export interface ScoutCaptureGrant {
+  token: string;
+  expiresAt: string;
+  /** `owner/name`: the only repository the token reaches. */
+  repository: string;
+  /** Always `sandbox` in this slice: a preview page source gets no grant. */
+  pageSource: 'sandbox';
+}
+
+export type ScoutCaptureUnavailableReason =
+  | 'page_source_not_sandbox'
+  | 'no_linked_repo'
+  | 'installation_suspended'
+  | 'permissions_unavailable'
+  | 'mint_failed';
+
 /** POST /api/quality-scout/runs/claim */
 export interface ScoutRunClaimRequest {
   /** `owner/name` of the clones this runner can check a SHA out of. */
@@ -3675,7 +3697,7 @@ export interface ScoutHostedRun {
   status: 'awaiting_host';
   candidate: { ref: string; sha: string };
   prior: { runId: string; sha: string } | null;
-  budget: { maxProbes: number; maxCostUsd: number | null };
+  budget: { maxProbes: number; maxCostUsd: number | null; maxCaptureProbes?: number };
   policyVersion: string;
   startedAt: string;
   completedAt: null;
@@ -3707,6 +3729,15 @@ export type ScoutRunClaimResponse =
       repo?: string;
       /** Parked runs of these workspaces that the pre-claim sweep finalized. */
       expired?: string[];
+      /**
+       * Only when a claimed probe is a surface probe: the run-scoped GitHub
+       * token its capture dispatches `visual-qa.yml` with. Held in the runner
+       * process for the capture port; never written to disk, never in a
+       * probe's env. Revoke it when the run ends.
+       */
+      capture?: ScoutCaptureGrant;
+      /** A surface probe was claimed but no capture token could be handed out: why. The probe runs without a capture port (`unsupported`). */
+      captureUnavailable?: ScoutCaptureUnavailableReason;
     }
   | {
       run: null;

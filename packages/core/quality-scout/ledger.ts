@@ -35,7 +35,9 @@ import {
   type VerificationSeverity,
 } from '../verification-check';
 import {
+  DEFAULT_SCOUT_MAX_CAPTURE_PROBES,
   DEFAULT_SCOUT_MAX_PROBES,
+  MAX_SCOUT_MAX_CAPTURE_PROBES,
   MAX_SCOUT_DISMISS_REASON,
   MAX_SCOUT_MAX_PROBES,
   SCOUT_COSTS,
@@ -97,7 +99,7 @@ export interface StartScoutRunInput {
   mode: ScoutMode;
   candidate: { ref: string; sha: string };
   prior?: { runId: string; sha: string } | null;
-  budget?: { maxProbes?: number; maxCostUsd?: number | null };
+  budget?: { maxProbes?: number; maxCostUsd?: number | null; maxCaptureProbes?: number };
   now: Date;
 }
 
@@ -111,7 +113,18 @@ export function clampScoutBudget(b: StartScoutRunInput['budget']): ScoutBudget {
     ? Math.min(Math.max(Math.floor(raw), 1), MAX_SCOUT_MAX_PROBES)
     : DEFAULT_SCOUT_MAX_PROBES;
   const cost = b?.maxCostUsd;
-  return { maxProbes, maxCostUsd: typeof cost === 'number' && Number.isFinite(cost) && cost > 0 ? cost : null };
+  return {
+    maxProbes,
+    maxCostUsd: typeof cost === 'number' && Number.isFinite(cost) && cost > 0 ? cost : null,
+    maxCaptureProbes: clampScoutCaptureProbes(b?.maxCaptureProbes),
+  };
+}
+
+/** Default 1; 0 turns surface probes off for the run; never above `MAX_SCOUT_MAX_CAPTURE_PROBES`. */
+export function clampScoutCaptureProbes(raw: unknown): number {
+  return typeof raw === 'number' && Number.isFinite(raw)
+    ? Math.min(Math.max(Math.floor(raw), 0), MAX_SCOUT_MAX_CAPTURE_PROBES)
+    : DEFAULT_SCOUT_MAX_CAPTURE_PROBES;
 }
 
 function normalizeSha(sha: unknown): string | null {

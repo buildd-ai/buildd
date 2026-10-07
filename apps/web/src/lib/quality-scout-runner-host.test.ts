@@ -21,7 +21,7 @@ import { memoryHostStore, parkedRun, probeRecord, profile, REPO, runnerResult, S
 const TEAM = 'team-a';
 const WS = crypto.randomUUID();
 const PORTS = { command: true, capture: false, browser: false };
-const caller = (over: Partial<ScoutHostCaller> = {}): ScoutHostCaller => ({ accountId: 'acct-1', teamId: TEAM, accessibleWorkspaceIds: new Set([WS]), ...over });
+const caller = (over: Partial<ScoutHostCaller> = {}): ScoutHostCaller => ({ accountId: 'acct-1', teamId: TEAM, accessibleWorkspaceIds: new Set([WS]), hostRunner: false, ...over });
 let leaseN = 0;
 const newLeaseId = () => `00000000-0000-4000-8000-${String(++leaseN).padStart(12, '0')}`;
 
@@ -323,5 +323,79 @@ describe('releaseScoutRunForRunner', () => {
     expect((await releaseScoutRunForRunner({ caller: caller(), runId: run.id, leaseId, reason: ' ', now: T0 }, m.store)).status).toBe(400);
     const other = await releaseScoutRunForRunner({ caller: caller({ accountId: 'acct-2' }), runId: run.id, leaseId, reason: 'x', now: T0 }, m.store);
     expect((other.body as { code: string }).code).toBe('lease_not_held');
+  });
+});
+
+describe('claimScoutRunForRunner — capture credential', () => {
+  const CAPTURE = { command: true, capture: true, browser: false };
+  const surface = () => probeRecord('s1', { executor: 'ui-surface', family: 'surface', probeKind: 'visual' });
+  const TOKEN = 'ghs_scoutcapturetokenvalue';
+  const minter = (expiresAt = new Date(T0.getTime() + 60 * 60_000)) => {
+    const calls: Array<{ runId: string; repo: string }> = [];
+    return {
+      calls,
+      mint: async (q: { run: { id: string }; repo: string }) => {
+        calls.push({ runId: q.run.id, repo: q.repo });
+        return { ok: true as const, grant: { token: TOKEN, expiresAt: expiresAt.toISOString(), repository: REPO, pageSource: 'sandbox' as const } };
+      },
+    };
+  };
+
+  it('a key that is not a trusted host runner is never handed a surface probe, whatever ports it claims', async () => {
+    const m = memoryHostStore();
+    m.add(parkedRun(WS), { teamId: TEAM, probes: [surface()] });
+    const mt = minter();
+    const out = await claimScoutRunForRunner(claimInput({ ports: CAPTURE, caller: caller({ hostRunner: false }), mintCaptureGrant: mt.mint }), m.store);
+    expect(out.run).toBeNull();
+    expect(mt.calls).toEqual([]);
+  });
+
+  it('a trusted host runner gets the surface run with a token minted for it, expiry clipped to the lease', async () => {
+    const m = memoryHostStore();
+    const run = m.add(parkedRun(WS), { teamId: TEAM, probes: [surface()] });
+    const mt = minter();
+    const out = await claimScoutRunForRunner(claimInput({ ports: CAPTURE, caller: caller({ hostRunner: true }), mintCaptureGrant: mt.mint }), m.store);
+    if (!out.run) throw new Error('nothing claimed');
+    expect(mt.calls).toEqual([{ runId: run.id, repo: REPO }]);
+    // GitHub mints for an hour; the grant ends with the lease (25 min here).
+    expect(out.capture).toEqual({ token: TOKEN, expiresAt: out.lease.expiresAt, repository: REPO, pageSource: 'sandbox' });
+    expect(out.captureUnavailable).toBeUndefined();
+  });
+
+  it('a command-only run never mints a token, even for a trusted host runner', async () => {
+    const m = memoryHostStore();
+    m.add(parkedRun(WS), { teamId: TEAM, probes: [probeRecord('c1')] });
+    const mt = minter();
+    const out = await claimScoutRunForRunner(claimInput({ ports: CAPTURE, caller: caller({ hostRunner: true }), mintCaptureGrant: mt.mint }), m.store);
+    expect(out.run).not.toBeNull();
+    expect(mt.calls).toEqual([]);
+    expect(out.run && 'capture' in out ? out.capture : undefined).toBeUndefined();
+  });
+
+  it('a refused or failed mint keeps the claim and says why; the surface probe then runs with no capture port', async () => {
+    for (const [mint, reason] of [
+      [async () => ({ ok: false as const, reason: 'permissions_unavailable' as const }), 'permissions_unavailable'],
+      [async () => { throw new Error('GitHub down'); }, 'mint_failed'],
+      // A token for some other repository is never handed out.
+      [async () => ({ ok: true as const, grant: { token: TOKEN, expiresAt: new Date(T0.getTime() + 3_600_000).toISOString(), repository: 'acme/other', pageSource: 'sandbox' as const } }), 'mint_failed'],
+    ] as const) {
+      const m = memoryHostStore();
+      m.add(parkedRun(WS), { teamId: TEAM, probes: [surface()] });
+      const out = await claimScoutRunForRunner(claimInput({ ports: CAPTURE, caller: caller({ hostRunner: true }), mintCaptureGrant: mint as never }), m.store);
+      if (!out.run) throw new Error('nothing claimed');
+      expect(out.capture).toBeUndefined();
+      expect(out.captureUnavailable).toBe(reason);
+      expect(JSON.stringify(out)).not.toContain(TOKEN);
+    }
+  });
+
+  it('nothing is minted for a run another runner won', async () => {
+    const m = memoryHostStore();
+    m.add(parkedRun(WS), { teamId: TEAM, probes: [surface()] });
+    const mt = minter();
+    await claimScoutRunForRunner(claimInput({ ports: CAPTURE, caller: caller({ hostRunner: true, accountId: 'acct-a' }), mintCaptureGrant: mt.mint }), m.store);
+    const second = await claimScoutRunForRunner(claimInput({ ports: CAPTURE, caller: caller({ hostRunner: true, accountId: 'acct-b' }), mintCaptureGrant: mt.mint }), m.store);
+    expect(second.run).toBeNull();
+    expect(mt.calls).toHaveLength(1);
   });
 });
