@@ -116,7 +116,26 @@ async function dbRecordDecision(input: DecisionLedgerInput): Promise<void> {
   await recordDecision(input);
 }
 
+export type SkipRowExistsFn = (taskId: string, capability: string, reason: string) => Promise<boolean>;
+
+async function dbSkipRowExists(taskId: string, capability: string, reason: string): Promise<boolean> {
+  const { db } = await import('@buildd/core/db');
+  const { decisionRecords } = await import('@buildd/core/db/schema');
+  const { and, eq } = await import('drizzle-orm');
+  const rows = await db.select({ id: decisionRecords.id }).from(decisionRecords)
+    .where(and(
+      eq(decisionRecords.taskId, taskId),
+      eq(decisionRecords.capability, capability),
+      eq(decisionRecords.reason, reason),
+      eq(decisionRecords.status, 'fallback'),
+    ))
+    .limit(1);
+  return rows.length > 0;
+}
+
 export interface ApplyDeps {
+  /** True when a skip row for this task + reason is already recorded. A failed check records anyway. */
+  skipRowExists?: SkipRowExistsFn;
   write?: WriteInferredRole;
   minConfidence?: number;
   isMeasuredModel?: (model: string) => boolean;
@@ -200,7 +219,12 @@ export async function applyTaskRoleDecision(
     // Skips before any call was made still leave a content-free row, so zero rows means zero traffic.
     const skipReason = SKIP_REASONS[shadow.outcome];
     if (skipReason) {
-      await ledger(shadow.fingerprint ?? `skip:${skipReason}`, { status: 'fallback', reason: skipReason });
+      // `decision_records` has no uniqueness on task/capability/reason, so a retry would double-write.
+      let seen = false;
+      try {
+        seen = !!input.teamId && await (deps.skipRowExists ?? dbSkipRowExists)(input.taskId, TASK_ROLE_CAPABILITY, skipReason);
+      } catch { /* a failed check costs at worst a duplicate row */ }
+      if (!seen) await ledger(shadow.fingerprint ?? `skip:${skipReason}`, { status: 'fallback', reason: skipReason });
       return { outcome: emit('no_decision', { shadow: shadow.outcome }) };
     }
     const record = shadow.record;

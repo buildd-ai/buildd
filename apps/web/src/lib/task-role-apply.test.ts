@@ -41,10 +41,21 @@ describe('applyTaskRoleDecision ledger coverage', () => {
   it('writes a content-free fallback row for each skip that made no call', async () => {
     for (const [outcome, reason] of [['too_few_candidates', 'insufficient_candidates'], ['sensitive', 'sensitive_workspace'], ['no_key', 'no_key']] as const) {
       const recordDecision = mock(async () => {});
-      await applyTaskRoleDecision(INPUT, { outcome, applyEnabled: true, fingerprint: 'fp-x' }, { recordDecision, log: () => {} });
+      await applyTaskRoleDecision(INPUT, { outcome, applyEnabled: true, fingerprint: 'fp-x' }, { recordDecision, skipRowExists: async () => false, log: () => {} });
       expect(recordDecision).toHaveBeenCalledTimes(1);
       expect(recordDecision.mock.calls[0][0]).toMatchObject({ status: 'fallback', reason, applied: false, capability: TASK_ROLE_CAPABILITY });
     }
+  });
+
+  it('records at most one skip row per task and reason when apply runs twice', async () => {
+    const rows: Array<{ taskId?: string | null; reason?: string | null }> = [];
+    const recordDecision = mock(async (r: any) => { rows.push(r); });
+    const skipRowExists = async (taskId: string, _cap: string, reason: string) =>
+      rows.some((r) => r.taskId === taskId && r.reason === reason);
+    const shadow = { outcome: 'too_few_candidates' as const, applyEnabled: true, fingerprint: 'fp-x' };
+    await applyTaskRoleDecision(INPUT, shadow, { recordDecision, skipRowExists, log: () => {} });
+    await applyTaskRoleDecision(INPUT, shadow, { recordDecision, skipRowExists, log: () => {} });
+    expect(rows).toHaveLength(1);
   });
 
   it('a disabled capability leaves no row', async () => {
