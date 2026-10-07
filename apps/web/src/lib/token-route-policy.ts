@@ -13,6 +13,8 @@ export function requiredTokenScope(pathname: string, method: string): TokenScope
   if (/^\/api\/secrets(\/|$)/.test(path) || /^\/api\/cloudflare\/credential/.test(path)) return 'secrets';
   if (/^\/api\/runner\/credential-(lease|refresh)$/.test(path)) return 'secrets';
   if (/^\/api\/runner(\/|$)/.test(path) || /\/codex-credential\//.test(path)) return 'workers:write';
+  // A runner hosting Quality Scout probes: the same capability as any runner job.
+  if (/^\/api\/quality-scout\/runs(\/|$)/.test(path)) return 'workers:write';
   if (/^\/api\/knowledge(\/|$)/.test(path)) return read ? 'tasks:read' : 'knowledge:write';
   if (/^\/api\/workspaces\/[^/]+\/(skills|backends)(\/|$)/.test(path) || path === '/api/roles') return read ? 'tasks:read' : 'skills:admin';
   if (/^\/api\/workspaces\/[^/]+\/schedules(\/|$)/.test(path)) return read ? 'tasks:read' : 'schedules:write';

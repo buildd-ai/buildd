@@ -6,7 +6,7 @@
  * and of the runner's own dependency install, and of the warm-repo steps
  * (restore, the post-restore fetch, the snapshot upload; warm-repo.ts).
  * Alongside them: `BUILDD_METRIC=<name> <integer>` for byte counts and ages,
- * and `BUILDD_REPO_SOURCE=warm` or `BUILDD_REPO_SOURCE=clone <reason>` saying
+ * and `BUILDD_REPO_SOURCE=warm`, `BUILDD_REPO_SOURCE=reuse` or `BUILDD_REPO_SOURCE=clone <reason>` saying
  * how the repo got onto the disk, and `BUILDD_WARM_UPLOAD=skipped <reason>`
  * when a warm upload was skipped. apps/cloud-runner reads them all into its
  * per-run report (src/run-report.ts parses the same formats; a test there
@@ -23,6 +23,8 @@ export const RUN_PHASES = [
   'warm_upload_start', 'warm_upload_end',
   'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
   'restore_cache_start', 'restore_cache_end',
+  // A reused container: the clone grown from the packs the reset kept (container-reset.ts).
+  'restore_reuse_start', 'restore_reuse_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 
@@ -77,7 +79,8 @@ export const REPO_SOURCE_LINE_PREFIX = 'BUILDD_REPO_SOURCE=';
 /** Why the repo was cloned rather than restored from a warm snapshot. */
 export const REPO_FALLBACK_REASONS = ['disabled', 'no_snapshot', 'unavailable', 'disk', 'restore_failed'] as const;
 export type RepoFallbackReason = typeof REPO_FALLBACK_REASONS[number];
-export type RepoSource = 'warm' | 'clone';
+/** `reuse`: grown from the packs a container reset kept (container-reset.ts). */
+export type RepoSource = 'warm' | 'clone' | 'reuse';
 
 export function formatMetricLine(name: RunMetric, value: number): string {
   const v = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
@@ -85,7 +88,7 @@ export function formatMetricLine(name: RunMetric, value: number): string {
 }
 
 export function formatRepoSourceLine(source: RepoSource, reason?: RepoFallbackReason): string {
-  return source === 'warm' ? `${REPO_SOURCE_LINE_PREFIX}warm` : `${REPO_SOURCE_LINE_PREFIX}clone ${reason ?? 'disabled'}`;
+  return source === 'clone' ? `${REPO_SOURCE_LINE_PREFIX}clone ${reason ?? 'disabled'}` : `${REPO_SOURCE_LINE_PREFIX}${source}`;
 }
 
 export function formatPhaseLine(phase: RunPhase, at: number): string {

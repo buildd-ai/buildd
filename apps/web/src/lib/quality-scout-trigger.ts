@@ -488,10 +488,21 @@ export interface ExpiredScoutSweep {
   errors: number;
 }
 
+/** Both fields narrow; `teamId` keeps a run whose workspace is outside that team out whatever ids are offered. */
+export interface ScoutExpiryScope {
+  teamId?: string;
+  workspaceIds?: readonly string[];
+}
+
 export interface ExpiredScoutDeps {
   now(): Date;
-  /** Parked runs past their deadline, or whose lease lapsed a second time. Oldest deadline first. */
-  listExpired(now: Date, limit: number): Promise<ScoutRun[]>;
+  /**
+   * Parked runs past their deadline, or whose lease lapsed a second time.
+   * Oldest deadline first. `scope` narrows it (the runner claim route sweeps
+   * only the workspaces it serves, inside its own team); empty, every
+   * workspace (the hourly cron).
+   */
+  listExpired(now: Date, limit: number, scope: ScoutExpiryScope): Promise<ScoutRun[]>;
   /** Atomic hand-off from `awaiting_host` to this sweep; false when someone else took it. */
   take(runId: string): Promise<boolean>;
   loadProbes(runId: string): Promise<ScoutProbeRecord[]>;
@@ -502,10 +513,15 @@ export interface ExpiredScoutDeps {
 
 const dbExpiredScoutDeps: ExpiredScoutDeps = {
   now: () => new Date(),
-  async listExpired(now, limit) {
+  async listExpired(now, limit, { teamId, workspaceIds }) {
+    if (workspaceIds && workspaceIds.length === 0) return [];
     const rows = await db.select().from(qualityScoutRuns)
       .where(and(
         eq(qualityScoutRuns.status, 'awaiting_host'),
+        workspaceIds ? inArray(qualityScoutRuns.workspaceId, [...workspaceIds]) : undefined,
+        teamId
+          ? inArray(qualityScoutRuns.workspaceId, db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.teamId, teamId)))
+          : undefined,
         or(
           lte(qualityScoutRuns.hostDeadline, now),
           and(lte(qualityScoutRuns.hostLeaseExpiresAt, now), gte(qualityScoutRuns.hostLeaseLapses, 1)),
@@ -530,13 +546,22 @@ const dbExpiredScoutDeps: ExpiredScoutDeps = {
     return rows.map(scoutProbeFromRow);
   },
   loadWorkspace: (id) => loadScoutWorkspace(id),
-  finalizeDeps: (ws, run) => ({
+  finalizeDeps: (ws, run) => serverScoutFinalizeDeps(ws, run),
+};
+
+/**
+ * The server stores a parked run is finalized with, whoever finalizes it (the
+ * expiry sweep, or the runner route when the last result lands): findings and
+ * follow-up policy never leave the server.
+ */
+export function serverScoutFinalizeDeps(ws: ScoutWorkspace | null, run: ScoutRun): Pick<ScoutRunDeps, 'now' | 'ledger' | 'actions' | 'headSha'> {
+  return {
     now: () => new Date(),
     ledger: dbScoutRunLedger,
     actions: dbScoutActionStore,
     headSha: async () => (ws ? serverHeadSha(ws, run.candidate.ref) : null),
-  }),
-};
+  };
+}
 
 /**
  * The hourly sweep for parked runs nobody finished: past `hostDeadline`, or a
@@ -547,12 +572,16 @@ const dbExpiredScoutDeps: ExpiredScoutDeps = {
  * run; one bad run is counted and the sweep goes on.
  */
 export async function finalizeExpiredQualityScoutRuns(
-  opts: { limit?: number; deps?: ExpiredScoutDeps } = {},
+  opts: { limit?: number; deps?: ExpiredScoutDeps; teamId?: string; workspaceIds?: readonly string[] } = {},
 ): Promise<ExpiredScoutSweep> {
   const deps = opts.deps ?? dbExpiredScoutDeps;
   const out: ExpiredScoutSweep = { expired: 0, finalized: [], raced: 0, errors: 0 };
   const now = deps.now();
-  const runs = await deps.listExpired(now, opts.limit ?? 20);
+  const scope: ScoutExpiryScope = {
+    ...(opts.teamId !== undefined ? { teamId: opts.teamId } : {}),
+    ...(opts.workspaceIds !== undefined ? { workspaceIds: opts.workspaceIds } : {}),
+  };
+  const runs = await deps.listExpired(now, opts.limit ?? 20, scope);
   for (const run of runs) {
     out.expired++;
     try {

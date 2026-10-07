@@ -642,7 +642,12 @@ export async function finalizeScoutRun(
           continue;
         }
         if (!finding) continue;
-        const acted = await actOnScoutFinding(finding, run, { mode: input.mode, policy, now: deps.now() }, deps.actions);
+        const acted = await actOnScoutFinding(
+          finding,
+          run,
+          { mode: input.mode, policy, now: deps.now(), hostedBy: p.host === 'runner' ? 'runner' : 'server' },
+          deps.actions,
+        );
         actions[acted.outcome]++;
         if (acted.decision.kind === 'file' || acted.decision.kind === 'propose') actionable++;
       }
