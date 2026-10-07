@@ -75,7 +75,7 @@ export { parseHttpExpectation, type ScoutHttpExpectation, type ScoutHttpRequest,
 
 // ── Adapters ────────────────────────────────────────────────────────────────
 
-export { SCOUT_ADAPTERS, type ScoutAdapterKind } from './adapters/kinds';
+export { SCOUT_ADAPTER_BY_KIND, SCOUT_ADAPTERS, type ScoutAdapterKind } from './adapters/kinds';
 
 /** The evidence key each adapter natively produces, usable directly as a requirement key. */
 export const SCOUT_ADAPTER_EVIDENCE: Readonly<Record<ScoutAdapterKind, string>> = {

@@ -3625,8 +3625,16 @@ export interface WorkspaceQualityScoutConfig {
     /** Optional periodic run on the default branch. Absent: never periodic. */
     periodicHours?: number;
   };
-  /** Per-run bounds. */
-  budget?: { maxProbes?: number; maxCostUsd?: number; maxDurationMs?: number };
+  /**
+   * Where probes may run. `auto` (default): probes only a runner can host
+   * (command, capture, app-boot) go to a runner of the team that advertised a
+   * Scout host for this repo in the last 15 minutes; the run waits for it, and
+   * whatever no runner reports ends `unsupported`. `server`: server ports only,
+   * nothing waits.
+   */
+  host?: 'auto' | 'server';
+  /** Per-run bounds. `runnerMaxDurationMs` bounds a runner's execution of a parked run (default 20 min, max 60). */
+  budget?: { maxProbes?: number; maxCostUsd?: number; maxDurationMs?: number; runnerMaxDurationMs?: number };
 }
 
 export interface WorkspaceReadinessItem {
