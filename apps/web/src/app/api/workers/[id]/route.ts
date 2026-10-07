@@ -94,7 +94,7 @@ import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
 import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
-import { markInstructionsDelivered } from '@/lib/worker-instructions';
+import { markInstructionsAcknowledged, markInstructionsDelivered, pendingInstructionIds } from '@/lib/worker-instructions';
 import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
 import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capabilities/reported-pr';
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
@@ -670,6 +670,11 @@ export async function PATCH(
   // the agent. Captured pre-redaction for the same reason as the instruction
   // echo — these are compared against the stored queue, never persisted as text.
   const rawWorkerMessagesDelivered: unknown = body.workerMessagesDelivered;
+  // Ids of human messages / mission notes the consumer injected, and of the
+  // human messages the agent's turn has since read. Compared against stored
+  // ids only, never persisted as text.
+  const rawInstructionIdsDelivered: unknown = body.instructionIdsDelivered;
+  const rawInstructionsAcknowledged: unknown = body.instructionsAcknowledged;
   body = redactSecretsInBody(body, secretValues);
 
   // Metrics-only write: measurement about a session, no state transition. Must
@@ -861,14 +866,23 @@ export async function PATCH(
   // move the queue now:
   //
   //  - `consumeInstructions: true` — the runner's sync loop. It receives the
-  //    payload plus `instructionsAck`, injects it, and confirms with
-  //    `instructionsDelivered: <text>`; the queue is cleared on that
-  //    confirmation, never before.
+  //    payload plus `instructionsAck` (and, with `consumer: 'runner'`,
+  //    `instructionIds`), injects it, and confirms with
+  //    `instructionsDelivered: <text>` (+ `instructionIdsDelivered`); the queue
+  //    is cleared on that confirmation, never before.
+  //  - `consumer: 'agent'` — the agent's own MCP calls (receive_messages,
+  //    update_progress). A consumer ONLY on an interactive worker (runner =
+  //    'mcp'), where no runner exists. On a runner-managed worker the runner is
+  //    the sole consumer: two consumers of one queue raced, and the runner's
+  //    de-duplication only knew what it had injected itself, so the agent could
+  //    see the same text twice. Such a PATCH gets nothing at all.
   //  - a `milestones` / `appendMilestones` array and no flag — a client that
   //    predates the confirmation protocol (an older runner sync, an external
   //    worker posting progress). It gets the old drain-on-read behaviour, because
   //    it will never send a confirmation and re-serving forever would make it
-  //    re-deliver the same message on every progress update.
+  //    re-deliver the same message on every progress update. REMOVE once no
+  //    runner older than the consumeInstructions protocol checks in (every
+  //    worker row with a recent heartbeat has supportsInstructionAck = true).
   //  - anything else — receives a read-only copy (no state change), so an
   //    external worker implementation that reads `instructions` keeps working
   //    while the queue survives for the real consumer.
@@ -878,11 +892,27 @@ export async function PATCH(
   const deliveredMessageIds = Array.isArray(rawWorkerMessagesDelivered)
     ? rawWorkerMessagesDelivered.filter((v): v is string => typeof v === 'string' && v.length > 0)
     : [];
-  const declaresInstructionConsumer = body.consumeInstructions === true;
+  const stringIds = (raw: unknown): string[] => Array.isArray(raw)
+    ? raw.filter((v): v is string => typeof v === 'string' && v.length > 0).slice(0, 100)
+    : [];
+  const instructionIdsDelivered = stringIds(rawInstructionIdsDelivered);
+  const instructionIdsAcknowledged = stringIds(rawInstructionsAcknowledged);
+  const declaredConsumer = body.consumer === 'agent' || body.consumer === 'runner' ? body.consumer as 'agent' | 'runner' : null;
+  // The agent consumes only where no runner does (see above).
+  const agentIsConsumer = declaredConsumer === 'agent' && (worker as { runner?: string | null }).runner === INTERACTIVE_WORKER_RUNNER;
+  const agentExcluded = declaredConsumer === 'agent' && !agentIsConsumer;
+  // A consumer that speaks ids settles notes on ack rather than at serve time.
+  const speaksIds = declaredConsumer !== null;
+  const declaresInstructionConsumer = !agentExcluded && (body.consumeInstructions === true || agentIsConsumer);
   const legacyInstructionConsumer = !declaresInstructionConsumer
+    && !agentExcluded
+    && !declaredConsumer
     && !instructionAckText
     && (Array.isArray(milestones) || Array.isArray(appendMilestones));
   const instructionConsumer = declaresInstructionConsumer || legacyInstructionConsumer;
+  // A bare delivery/read acknowledgement carries nothing else.
+  const isBareAck = (instructionAckText || deliveredMessageIds.length > 0 || instructionIdsDelivered.length > 0 || instructionIdsAcknowledged.length > 0)
+    && status === undefined && currentAction === undefined && milestones === undefined;
 
   const updates: Partial<typeof workers.$inferInsert> = {
     updatedAt: new Date(),
@@ -905,9 +935,10 @@ export async function PATCH(
   // Auto-increment turns for MCP workers that don't send explicit turn counts.
   // A bare delivery acknowledgement is bookkeeping, not a turn — counting it
   // would inflate turns (and the OAuth budget window that reads them). This
-  // covers both queues: instructionsDelivered and workerMessagesDelivered are
-  // each sent as their own PATCH carrying nothing else.
-  else if (!((instructionAckText || deliveredMessageIds.length > 0) && status === undefined && currentAction === undefined && milestones === undefined)) {
+  // covers both queues and both stages: instructionsDelivered /
+  // instructionIdsDelivered, instructionsAcknowledged and workerMessagesDelivered
+  // are each sent as their own PATCH carrying nothing else.
+  else if (!isBareAck) {
     updates.turns = sql`${workers.turns} + 1` as any;
   }
   if (localUiUrl !== undefined) updates.localUiUrl = localUiUrl;
@@ -4016,11 +4047,25 @@ export async function PATCH(
   let pendingInstructions: string | null = null;
   // Echo token for the confirmation round-trip (declared consumers only).
   let instructionsAck: string | null = null;
+  // History-entry ids of the served queue (+ note ids, appended below), for a
+  // consumer that confirms by id.
+  const instructionIds: string[] = [];
+
+  if (instructionAckText || instructionIdsDelivered.length > 0 || instructionIdsAcknowledged.length > 0) {
+    // A consumer confirmed delivery: this is the ONLY place 'delivered' is
+    // written. By id when the consumer sent ids, else by the echoed text.
+    let history: unknown = worker.instructionHistory;
+    if (instructionAckText || instructionIdsDelivered.length > 0) {
+      history = markInstructionsDelivered(history, instructionAckText ?? '', instructionIdsDelivered);
+    }
+    // The agent's turn read them (runner-observed echo, or an MCP tool result).
+    if (instructionIdsAcknowledged.length > 0) {
+      history = markInstructionsAcknowledged(history, instructionIdsAcknowledged);
+    }
+    updates.instructionHistory = history as typeof updates.instructionHistory;
+  }
 
   if (instructionAckText) {
-    // A consumer confirmed delivery: this is the ONLY place 'delivered' is written.
-    updates.instructionHistory = markInstructionsDelivered(worker.instructionHistory, instructionAckText);
-
     // Clear the queue only while it still holds exactly the text that was
     // delivered. A fresh instruction may have been appended after the hand-off;
     // clearing then would destroy text nobody has seen. Atomic compare-and-set
@@ -4038,10 +4083,11 @@ export async function PATCH(
       }
     }
   } else if (queuedInstructions) {
-    pendingInstructions = queuedInstructions;
+    if (!agentExcluded) pendingInstructions = queuedInstructions;
     if (declaresInstructionConsumer) {
       // Held until confirmed. Nothing is cleared here.
       instructionsAck = queuedInstructions;
+      instructionIds.push(...pendingInstructionIds(worker.instructionHistory, queuedInstructions));
     } else if (legacyInstructionConsumer) {
       // Pre-confirmation runner: drain on read, as before. It cannot confirm, so
       // holding the queue would re-inject the same text on every 10s sync.
@@ -4620,6 +4666,25 @@ export async function PATCH(
   //
   // Only a consumer is served: a milestone-only PATCH that ignores the response
   // would otherwise mark notes delivered that nothing ever injected.
+  //
+  // A consumer that speaks ids (`consumer` declared) gets the note ids in
+  // `instructionIds` and `deliveredTo` is stamped when it echoes them back.
+  //
+  // Per-row atomic append (no read-modify-write, so two concurrent check-ins
+  // for different workers cannot clobber each other), idempotent for a
+  // repeated ack. Human-message ids in the same list match no note row.
+  const stampNotesDelivered = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    await db
+      .update(missionNotes)
+      .set({
+        deliveredTo: sql`COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) || ${JSON.stringify([id])}::jsonb`,
+      })
+      .where(and(
+        inArray(missionNotes.id, ids),
+        sql`NOT (COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) @> ${JSON.stringify([id])}::jsonb)`,
+      ));
+  };
   let noteInstructions = '';
   if (instructionConsumer && status !== 'completed' && status !== 'failed' && worker.taskId) {
     try {
@@ -4690,18 +4755,29 @@ export async function PATCH(
         noteInstructions += `\n\n**MISSION GUIDANCE:**\n${guidanceLines.join('\n')}`;
       }
 
-      // Stamp at hand-off, with a per-row atomic append (no read-modify-write, so
-      // two concurrent check-ins for different workers cannot clobber each other).
       if (servedNoteIds.length > 0) {
-        await db
-          .update(missionNotes)
-          .set({
-            deliveredTo: sql`COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) || ${JSON.stringify([id])}::jsonb`,
-          })
-          .where(inArray(missionNotes.id, servedNoteIds));
+        if (speaksIds) {
+          // Stamped on the consumer's ack (instructionIdsDelivered, above), not
+          // here: a consumer that is served but never injects must not mark a
+          // reply delivered that nobody read. Until then it is served again.
+          instructionIds.push(...servedNoteIds);
+        } else {
+          // Older consumers never echo ids: stamp at hand-off, as before.
+          await stampNotesDelivered(servedNoteIds);
+        }
       }
     } catch (err) {
       console.error(`[Worker ${id}] Note delivery failed:`, err);
+    }
+  }
+
+  // Ack half of note delivery. Ids that are not note ids (human-message ids)
+  // match no row, so one list carries both.
+  if (instructionIdsDelivered.length > 0) {
+    try {
+      await stampNotesDelivered(instructionIdsDelivered);
+    } catch (err) {
+      console.error(`[Worker ${id}] Note delivery ack failed:`, err);
     }
   }
 
@@ -4714,7 +4790,13 @@ export async function PATCH(
     // Echo token: the consumer sends this back as `instructionsDelivered` once
     // the text is in the agent session, which is what clears the queue.
     ...(instructionsAck ? { instructionsAck } : {}),
-    ...(retainedWorkerMessages.length > 0 ? { pendingMessages: retainedWorkerMessages } : {}),
+    // Ids for the by-id round trip: `instructionIdsDelivered` once injected,
+    // then `instructionsAcknowledged` (human-message ids) once the agent's turn
+    // read them.
+    ...(instructionIds.length > 0 ? { instructionIds } : {}),
+    // Worker→worker messages follow the same single-consumer rule as the human
+    // queue: the agent is not served them on a runner-managed worker.
+    ...(retainedWorkerMessages.length > 0 && !agentExcluded ? { pendingMessages: retainedWorkerMessages } : {}),
     ...(pathCollisions.length > 0 ? { pathCollisions } : {}),
   }, undefined, { route: req.nextUrl.pathname });
 }

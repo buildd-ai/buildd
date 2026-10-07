@@ -1991,6 +1991,11 @@ export default async function TaskDetailPage({
               instructionHistory={(activeWorker.instructionHistory as any[]) || []}
               runner={activeWorker.runner}
               taskTerminal={isTerminal}
+              earlierRun={(() => {
+                // The run before this one, for the messages it ended before reading.
+                const prev = taskWorkers.find(w => w.id !== activeWorker.id && w.createdAt < activeWorker.createdAt);
+                return prev ? { workerId: prev.id, status: prev.status, history: (prev.instructionHistory as any[]) || [] } : null;
+              })()}
             />
           )}
 

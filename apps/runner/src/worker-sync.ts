@@ -18,6 +18,7 @@ import { reapSession, teardownSession } from './session-teardown';
 import { WORKER_HARD_TIMEOUT_MS } from '@buildd/shared';
 import { sweepWorktreeChanges, refreshBaseRef, type PathCollision } from './path-claim-enforcement';
 import { firstCollision } from './path-collision-defer';
+import { formatWorkerMessages, type WorkerMessage } from '@buildd/core/worker-message-format';
 
 /**
  * Grace period after a worker's own completion/failure before checkStale()
@@ -55,6 +56,9 @@ export const SERVER_TERMINAL_TASK_STATUSES: ReadonlySet<string> = new Set(TERMIN
  * re-send much later.
  */
 const DUPLICATE_INJECTION_WINDOW_MS = 15 * 60 * 1000;
+
+/** A working worker that has not synced for this long is synced anyway, dirty or not. */
+export const QUIET_SYNC_INTERVAL_MS = 30_000;
 
 /**
  * Resolve the main-repo path that owns a worktree by trimming at the
@@ -169,8 +173,12 @@ export interface WorkerSyncContext {
   dirtyForDisk: Set<string>;
   emit: (event: any) => void;
   abort: (workerId: string, reason?: string) => Promise<void>;
-  /** Injects text into the live agent session. Resolves false when it could not. */
-  sendMessage: (workerId: string, message: string) => Promise<boolean | void>;
+  /**
+   * Injects text into the live agent session at its next turn boundary.
+   * `ids` are the served message ids, tracked so the session's own echo can
+   * acknowledge them. Resolves false when it could not.
+   */
+  sendMessage: (workerId: string, message: string, ids?: string[]) => Promise<boolean | void>;
   /** Adaptive stale timeout getter (may be updated externally) */
   getAdaptiveStaleTimeout: () => number;
   setAdaptiveStaleTimeout: (ms: number) => void;
@@ -214,6 +222,9 @@ export class WorkerSync {
 
   private lastSeenUserMessageTs = new Map<string, number>();
 
+  /** Last successful sync per worker, for the quiet-worker fallback (B-6). */
+  private lastSyncedAt = new Map<string, number>();
+
   constructor(private ctx: WorkerSyncContext) {}
 
   /**
@@ -253,9 +264,13 @@ export class WorkerSync {
    * signal that marks an instruction delivered — the send-time optimism it
    * replaces recorded deliveries for messages that never arrived.
    */
-  private async confirmInstructionDelivery(workerId: string, text: string) {
+  private async confirmInstructionDelivery(workerId: string, text: string | null, ids: string[] = []) {
+    if (!text && ids.length === 0) return;
     try {
-      await this.ctx.buildd.updateWorker(workerId, { instructionsDelivered: text } as any);
+      await this.ctx.buildd.updateWorker(workerId, {
+        ...(text ? { instructionsDelivered: text } : {}),
+        ...(ids.length > 0 ? { instructionIdsDelivered: ids } : {}),
+      } as any);
     } catch {
       // Unconfirmed: the instruction stays queued server-side and is served again.
     }
@@ -492,7 +507,10 @@ export class WorkerSync {
         // is what stops every other PATCH (milestones, branch, status) from
         // draining the queue and throwing an undelivered instruction away.
         consumeInstructions: true,
-      } as Parameters<BuilddClient['updateWorker']>[1] & { consumeInstructions?: boolean };
+        // ...and it speaks ids: served `instructionIds` are echoed back on
+        // injection (delivered) and again once the turn reads them (acknowledged).
+        consumer: 'runner',
+      } as Parameters<BuilddClient['updateWorker']>[1] & { consumeInstructions?: boolean; consumer?: 'runner' };
       if (worker.status === 'waiting' && worker.waitingFor) {
         update.waitingFor = worker.waitingFor.type === 'question'
           // Keep the question brief (context, per-option consequence, recommended, where).
@@ -516,6 +534,7 @@ export class WorkerSync {
         throw err;
       }
 
+      this.lastSyncedAt.set(worker.id, Date.now());
       if (gitChanged) this.reportedGit.set(worker.id, { lastCommitSha: gitFacts!.lastCommitSha, commitCount: gitFacts!.commitCount });
       worker.pathClaimDegradedReported = degradedTotal;
 
@@ -607,18 +626,41 @@ export class WorkerSync {
         const toInject = duplicatePrefix && ackText
           ? response.instructions.slice(ackText.length)
           : response.instructions;
+        // History ids of the served messages (+ served mission-note ids).
+        const ids: string[] = Array.isArray(response.instructionIds)
+          ? (response.instructionIds as unknown[]).filter((v): v is string => typeof v === 'string')
+          : [];
 
         let delivered = true;
         if (toInject.trim().length > 0) {
-          delivered = (await this.ctx.sendMessage(worker.id, toInject)) !== false;
+          delivered = (await this.ctx.sendMessage(worker.id, toInject, ids)) !== false;
           // Our own injection must not be re-reported as a foreign delivery on
           // the next cycle.
           if (delivered) this.lastSeenUserMessageTs.set(worker.id, this.latestUserMessageTs(worker));
         }
         // Only a real injection may clear the server-side queue. A failed
         // sendMessage leaves it queued, and the next sync retries it.
-        if (delivered && ackText) {
-          await this.confirmInstructionDelivery(worker.id, ackText);
+        if (delivered) {
+          await this.confirmInstructionDelivery(worker.id, ackText, ids);
+        }
+      }
+
+      // Worker→worker messages: on a runner-managed worker this loop is their
+      // only consumer too (the agent's own MCP check-ins are not served them),
+      // so they reach the agent at its next turn boundary like human text.
+      // Rendered, injected, then acked by id; an unacked one is served again.
+      const workerMessages = Array.isArray(response?.pendingMessages)
+        ? (response.pendingMessages as WorkerMessage[]).filter(m => m && typeof m.id === 'string')
+        : [];
+      if (workerMessages.length > 0) {
+        const injected = (await this.ctx.sendMessage(worker.id, formatWorkerMessages(workerMessages))) !== false;
+        if (injected) {
+          this.lastSeenUserMessageTs.set(worker.id, this.latestUserMessageTs(worker));
+          try {
+            await this.ctx.buildd.updateWorker(worker.id, { workerMessagesDelivered: workerMessages.map(m => m.id) } as any);
+          } catch {
+            // Unconfirmed: served again on the next sync.
+          }
         }
       }
     } catch (err) {
@@ -634,15 +676,32 @@ export class WorkerSync {
   }
 
   /**
+   * Sync one worker now: the `deliver_pending` wake-up, sent (text-free) when a
+   * message is queued for it, so delivery does not wait for its next
+   * activity-driven sync.
+   */
+  async requestSync(workerId: string) {
+    const worker = this.ctx.workers.get(workerId);
+    if (!worker || !(worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting')) return;
+    this.ctx.dirtyWorkers.delete(workerId);
+    await this.syncWorkerToServer(worker);
+  }
+
+  /**
    * Sync only dirty worker states to server.
    * Always includes waiting workers so they can pick up pendingInstructions.
    * Called on a 10s timer.
    */
-  async syncToServer() {
-    // Always sync waiting workers so they can pick up pendingInstructions
-    // (answers to AskUserQuestion) even if Pusher delivery fails.
+  async syncToServer(now: number = Date.now()) {
     for (const [id, worker] of this.ctx.workers) {
+      // Always sync waiting workers so they can pick up pendingInstructions
+      // (answers to AskUserQuestion) even if Pusher delivery fails.
       if (worker.status === 'waiting') {
+        this.ctx.dirtyWorkers.add(id);
+      // A working worker inside one long silent tool call is not dirty and
+      // would never collect a queued message. Without Pusher (or a missed
+      // deliver_pending) this is what bounds delivery: at most ~30s.
+      } else if (worker.status === 'working' && now - (this.lastSyncedAt.get(id) ?? 0) >= QUIET_SYNC_INTERVAL_MS) {
         this.ctx.dirtyWorkers.add(id);
       }
     }

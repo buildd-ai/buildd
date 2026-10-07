@@ -37,9 +37,13 @@ type Json = Record<string, any>;
 
 /**
  * Claude Code / Codex hook events (same schema). `async` keeps the agent loop
- * from waiting on buildd where nothing is returned to it; UserPromptSubmit
- * stays synchronous because it may add a one-line "you have a message" nudge,
- * and SessionEnd because an async hook can be cut off as the process exits.
+ * from waiting on buildd where nothing is returned to it (SessionStart).
+ * UserPromptSubmit, PostToolUse and Stop stay synchronous because each may
+ * hand the agent a one-line "you have a message, call receive_messages" nudge
+ * at that turn boundary (an async hook's output is never read); SessionEnd
+ * because an async hook can be cut off as the process exits. PostToolUse
+ * matches every tool: any tool call is a boundary. It costs one node start per
+ * call, and at most one request a minute (touches are throttled client-side).
  * Codex does not take `async`, so it gets none.
  */
 export function claudeLikeHookEntries(command: string, opts: { async: boolean }): Record<string, Json[]> {
@@ -52,8 +56,8 @@ export function claudeLikeHookEntries(command: string, opts: { async: boolean })
   return {
     SessionStart: [{ hooks: [handler(true)] }],
     UserPromptSubmit: [{ hooks: [handler(false)] }],
-    Stop: [{ hooks: [handler(true)] }],
-    PostToolUse: [{ matcher: 'mcp__.*buildd.*', hooks: [handler(true)] }],
+    Stop: [{ hooks: [handler(false)] }],
+    PostToolUse: [{ hooks: [handler(false)] }],
     SessionEnd: [{ hooks: [handler(false)] }],
   };
 }

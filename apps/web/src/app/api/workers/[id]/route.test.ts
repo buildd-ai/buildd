@@ -15666,6 +15666,80 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
     await patch({ status: 'running', milestones: [] });
     expect(sets.some(v => v.turns !== undefined)).toBe(true);
   });
+
+  // ── Turn-boundary steering: one consumer per worker, explicit ids ──────────
+  const idWorker = {
+    ...baseWorker,
+    runner: 'runner-1',
+    supportsInstructionAck: true,
+    instructionHistory: [
+      { id: 'i-1', type: 'instruction', message: 'Switch to the other auth flow', timestamp: 1, deliveryState: 'pending' },
+    ],
+  };
+
+  it('B-2: the agent is not a consumer on a runner-managed worker — no instructions, queue untouched', async () => {
+    setup(idWorker);
+    const res = await patch({ status: 'running', appendMilestones: [{ type: 'status', label: 'x', ts: 5 }], consumer: 'agent' });
+    const data = await res.json();
+    expect(data.instructions).toBeUndefined();
+    expect(data.instructionIds).toBeUndefined();
+    expect(data.instructionsAck).toBeUndefined();
+    // Not even the legacy drain-on-read: appendMilestones alone used to qualify.
+    expect(sets.some(v => 'pendingInstructions' in v)).toBe(false);
+    expect(sets.some(v => 'instructionHistory' in v)).toBe(false);
+  });
+
+  it('B-2: the agent is the consumer on an interactive worker — served with ids, held until acked', async () => {
+    setup({ ...idWorker, runner: 'mcp' });
+    const res = await patch({ status: 'running', consumer: 'agent' });
+    const data = await res.json();
+    expect(data.instructions).toBe('Switch to the other auth flow');
+    expect(data.instructionsAck).toBe('Switch to the other auth flow');
+    expect(data.instructionIds).toEqual(['i-1']);
+    expect(sets.some(v => v.pendingInstructions === null)).toBe(false);
+  });
+
+  it('the runner sync is served the ids alongside the ack token', async () => {
+    setup(idWorker);
+    const data = await (await patch({ status: 'running', milestones: [], consumeInstructions: true, consumer: 'runner' })).json();
+    expect(data.instructionIds).toEqual(['i-1']);
+  });
+
+  it('settles delivery by id when ids are echoed, flagging the entry as awaiting acknowledgement', async () => {
+    setup(idWorker);
+    await patch({ instructionsDelivered: 'Switch to the other auth flow', instructionIdsDelivered: ['i-1'] });
+    const marked = sets.find(v => v.instructionHistory).instructionHistory;
+    expect(marked[0]).toMatchObject({ id: 'i-1', deliveryState: 'delivered', awaitsAck: true });
+    expect(typeof marked[0].deliveredAt).toBe('number');
+    expect(sets.some(v => v.pendingInstructions === null)).toBe(true);
+    expect(sets.every(v => v.turns === undefined)).toBe(true);
+  });
+
+  it('B-3: instructionsAcknowledged flips exactly that entry, ignores unknown ids, and is not a turn', async () => {
+    setup({
+      ...idWorker,
+      pendingInstructions: null,
+      instructionHistory: [
+        { id: 'i-1', type: 'instruction', message: 'a', timestamp: 1, deliveryState: 'delivered', deliveredAt: 2, awaitsAck: true },
+        { id: 'i-2', type: 'instruction', message: 'b', timestamp: 1, deliveryState: 'delivered', deliveredAt: 2, awaitsAck: true },
+      ],
+    });
+    const res = await patch({ instructionsAcknowledged: ['i-2', 'not-a-message'] });
+    expect(res.status).toBe(200);
+    const marked = sets.find(v => v.instructionHistory).instructionHistory;
+    expect(marked[0].deliveryState).toBe('delivered');
+    expect(marked[1].deliveryState).toBe('acknowledged');
+    expect(typeof marked[1].acknowledgedAt).toBe('number');
+    expect(sets.every(v => v.turns === undefined)).toBe(true);
+  });
+
+  it('delivered and acknowledged in one PATCH (an MCP consumer reads the text in the same turn)', async () => {
+    setup({ ...idWorker, runner: 'mcp' });
+    await patch({ instructionsDelivered: 'Switch to the other auth flow', instructionIdsDelivered: ['i-1'], instructionsAcknowledged: ['i-1'] });
+    const marked = sets.find(v => v.instructionHistory).instructionHistory;
+    expect(marked[0].deliveryState).toBe('acknowledged');
+    expect(typeof marked[0].deliveredAt).toBe('number');
+  });
 });
 
 describe('PATCH /api/workers/[id] — mission note delivery', () => {
@@ -15769,6 +15843,33 @@ describe('PATCH /api/workers/[id] — mission note delivery', () => {
 
     const res = await patch({ status: 'running', milestones: [], consumeInstructions: true });
     expect((await res.json()).instructions).toContain('Use the device flow');
+  });
+
+  it('B-4: an id-speaking consumer is served the note ids and nothing is marked until it acks', async () => {
+    setup();
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-1', outputRequirement: 'none', context: {}, count: 0, scheduleId: null });
+    mockMissionNotesFindMany
+      .mockResolvedValueOnce([{ id: 'q-1', title: 'Which auth flow?' }])
+      .mockResolvedValueOnce([{ id: 'r-1', replyTo: 'q-1', title: 'Use the device flow', body: null }])
+      .mockResolvedValueOnce([{ id: 'g-1', title: 'Prefer small PRs', body: null }]);
+
+    const data = await (await patch({ status: 'running', milestones: [], consumeInstructions: true, consumer: 'runner' })).json();
+    expect(data.instructions).toContain('Use the device flow');
+    expect(data.instructionIds).toEqual(expect.arrayContaining(['r-1', 'g-1']));
+    // A consumer that is served but never injects must not mark anything delivered.
+    expect(missionNotesUpdateSets).toHaveLength(0);
+  });
+
+  it('B-4: the ack stamps deliveredTo for the acked note ids', async () => {
+    setup();
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-1', outputRequirement: 'none', context: {}, count: 0, scheduleId: null });
+    mockMissionNotesFindMany.mockResolvedValue([]);
+
+    const res = await patch({ instructionIdsDelivered: ['r-1'] });
+    expect(res.status).toBe(200);
+    expect(missionNotesUpdateSets).toHaveLength(1);
+    expect(missionNotesUpdateSets[0].deliveredTo).toBeDefined();
+    expect(JSON.stringify(missionNotesUpdateWheres[0])).toContain('r-1');
   });
 });
 

@@ -735,7 +735,8 @@ export interface TaskResult {
 
 // Command from server
 export interface WorkerCommand {
-  action: 'pause' | 'resume' | 'abort' | 'message' | 'rollback' | 'recover';
+  // deliver_pending: a message was queued for this worker; sync to collect it (no text).
+  action: 'pause' | 'resume' | 'abort' | 'message' | 'deliver_pending' | 'rollback' | 'recover';
   text?: string;
   timestamp: number;
   // rollback fields
