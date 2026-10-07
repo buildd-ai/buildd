@@ -74,6 +74,12 @@ export interface DeliveryViewInput {
   lastTransition?: TransitionRef | null;
   attemptTasks?: AttemptTaskRef[];
   remediation?: RemediationRef | null;
+  /**
+   * An approved PR waits on a person, not the landing path: the effective merge
+   * policy is `human`, or `agent-review` approve-only, or a landing handoff is
+   * open at the current head. Computed once in the loader (`landingNeedsPerson`).
+   */
+  approvedNeedsPerson?: boolean;
 }
 
 export type DeliveryCta =
@@ -156,7 +162,7 @@ export function deliveryPrState(d: DeliverySnapshot): PrDisplayState | null {
 const short = (sha: string | null | undefined): string => (sha ? sha.slice(0, 7) : 'unknown');
 
 /** §4: who the platform waits on, per state. Exactly one per non-terminal state. */
-export function ownerOfNextMove(state: DeliveryState, o: { boundAttemptRunning?: boolean; remediation?: RemediationRef | null } = {}): NextMoveOwner {
+export function ownerOfNextMove(state: DeliveryState, o: { boundAttemptRunning?: boolean; remediation?: RemediationRef | null; approvedNeedsPerson?: boolean } = {}): NextMoveOwner {
   switch (state) {
     case 'WORKING': return 'worker';
     case 'AWAITING_PUSH': return 'platform';
@@ -167,7 +173,7 @@ export function ownerOfNextMove(state: DeliveryState, o: { boundAttemptRunning?:
       if (o.remediation && !o.remediation.stalled) return 'worker';
       return o.boundAttemptRunning ? 'worker' : 'platform';
     case 'BLOCKED_ON_TRUNK': return 'trunk';
-    case 'APPROVED':
+    case 'APPROVED': return o.approvedNeedsPerson ? 'human' : 'landing';
     case 'LANDING': return 'landing';
     case 'ESCALATED': return 'human';
     case 'CLOSED_UNMERGED': return 'platform';
@@ -245,7 +251,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
   const compositionVerified = d.approvalBasis === 'composition'
     && d.currentHeadSha != null && d.compositionHeads.includes(d.currentHeadSha);
 
-  let owner = ownerOfNextMove(d.state, { boundAttemptRunning, remediation });
+  let owner = ownerOfNextMove(d.state, { boundAttemptRunning, remediation, approvedNeedsPerson: input.approvedNeedsPerson });
   let stage = stageOf(d.state);
   let headline: string;
   let detail: string | null = null;

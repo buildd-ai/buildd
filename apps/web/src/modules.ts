@@ -21,6 +21,8 @@ import { missionSubscribers } from '@/lib/mission-subscribers';
 import { reviewSubscribers } from '@/lib/review-subscribers';
 import { reviewerSubscribers, reviewerDispatchOnOpen } from '@/lib/reviewer-subscribers';
 import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
+import type { ApprovedMergeRule } from '@/lib/workflow/delivery-view';
+import { approvedNeedsPerson } from '@/lib/merge-policy-approved';
 import type { EffectHandlers } from '@/lib/workflow/effects';
 import { reviewEffectHandlers } from '@/lib/workflow/review-effects';
 import { withCiRetryEffects } from '@/lib/workflow/ci-retry-effects';
@@ -72,6 +74,13 @@ export const COMPLETION_POLICIES: CompletionPolicies = {
  * freshly opened worker PR, and a PR it holds skips core's no-CI auto-merge.
  */
 export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
+
+/**
+ * The approved-merge slot (lib/workflow/delivery-view.ts): the reviews
+ * module's merge policy says whether an APPROVED delivery waits on a person
+ * (needs you) or the landing path merges it (merging).
+ */
+export const APPROVED_MERGE_RULE: ApprovedMergeRule = approvedNeedsPerson;
 
 /**
  * The workflow kernel's effect handlers (lib/workflow/effects.ts). The kernel

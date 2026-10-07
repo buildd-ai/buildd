@@ -650,10 +650,15 @@ export interface BuildActionQueueOptions {
  * a human-owned state (ESCALATED) asks for a person.
  */
 export function chipForDelivery(v: DeliveryView, legacyChip: ActionChip): ActionChip {
-  // Landing: the kernel already holds an approval (verdict, human, policy or
-  // composition), so a legacy REVIEW reading (no reviewer-task approve on
-  // record) becomes the merge it actually is; every other legacy gate stands.
-  if (v.owner === 'landing') return legacyChip === 'REVIEW' ? 'MERGE' : legacyChip;
+  // Landing: the kernel holds an approval and the effective merge policy has
+  // the landing path merge it, so a legacy merge CTA (REVIEW: no reviewer-task
+  // approve on record; MERGE) is the auto-merge in flight it actually is, the
+  // same "merging" the board, list, strip and chat read. Every other legacy
+  // gate (BLOCKED, CI, conflict) stands.
+  if (v.owner === 'landing') return legacyChip === 'REVIEW' || legacyChip === 'MERGE' ? 'AUTO_MERGE' : legacyChip;
+  // An approved PR a person merges (human tier, approve-only, open handoff,
+  // the mission-PR gate) is the merge it actually is.
+  if (v.owner === 'human' && v.state === 'APPROVED' && legacyChip === 'REVIEW') return 'MERGE';
   if (v.owner === 'human') return legacyChip === 'MERGE' || legacyChip === 'BLOCKED' || legacyChip === 'REVIEW' ? legacyChip : 'REVIEW';
   if (v.cta?.action === 'repair_remediation' || v.cta?.action === 'create_conflict_fix' || v.headline === 'Resolving conflicts') return 'RESOLVING';
   switch (v.state) {

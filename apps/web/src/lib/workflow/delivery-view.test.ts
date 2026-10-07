@@ -56,3 +56,27 @@ describe('rowToDeliveryView', () => {
     expect((await getDeliveryViewsForTasks([], async () => { throw new Error('never called'); })).size).toBe(0);
   });
 });
+
+describe('the approved-merge slot: who merges an APPROVED delivery', () => {
+  const approved = { id: 'd1', workspace_id: 'w1', owner_task_id: 't1', pr_number: 7, state: 'APPROVED', version: 4, current_head_sha: 'H1', current_round: 1, max_rounds: 3, approved_heads: ['H1'], composition_heads: [] };
+  const row = { delivery: approved, rounds: [], attempts: [], attempt_tasks: [], remediation: null };
+  test('the rule maps the row to owner human (needs you) or landing (merging)', () => {
+    expect(rowToDeliveryView(row, NOW, () => true)).toMatchObject({ owner: 'human', needsYou: true });
+    expect(rowToDeliveryView(row, NOW, () => false)).toMatchObject({ owner: 'landing', needsYou: false });
+  });
+  test('with no rule a person merges: an unknown policy never hides a merge that waits on you', () => {
+    expect(rowToDeliveryView(row, NOW)).toMatchObject({ owner: 'human', needsYou: true });
+  });
+  test('the rule is asked only about APPROVED deliveries', () => {
+    const asked: unknown[] = [];
+    const rule = (r: Record<string, unknown>) => { asked.push(r); return true; };
+    expect(rowToDeliveryView({ ...row, delivery: { ...approved, state: 'LANDING' } }, NOW, rule)).toMatchObject({ owner: 'landing' });
+    expect(asked).toEqual([]);
+    rowToDeliveryView(row, NOW, rule);
+    expect(asked).toEqual([row]);
+  });
+  test('the loader applies the rule it is given', async () => {
+    const map = await getDeliveryViewsForTasks(['t1'], async () => ({ rows: [row] }), () => false);
+    expect(map.get('t1')).toMatchObject({ owner: 'landing', needsYou: false });
+  });
+});
