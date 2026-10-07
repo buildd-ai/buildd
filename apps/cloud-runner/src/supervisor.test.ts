@@ -585,6 +585,9 @@ describe('run report', () => {
       'BUILDD_WORKER_ID=worker-42',
       'BUILDD_PHASE=clone_start 1000',
       'BUILDD_PHASE=clone_end 3000',
+      'BUILDD_WORKTREE_MODE=clone',
+      'BUILDD_PHASE=worktree_start 3000',
+      'BUILDD_PHASE=worktree_end 3500',
       'BUILDD_PHASE=install_start 4000',
       'BUILDD_PHASE=install_end 9000',
     ]);
@@ -607,7 +610,8 @@ describe('run report', () => {
       taskId: TASK_ID, attempt: 1, workerId: 'worker-42', outcome: 'done', exitCode: 0,
       instanceType: 'standard-1', containerInstanceId: 'do0123abcd', runLabel: `${TASK_ID}.1`,
       runnerPhases: { clone_start: 1000, clone_end: 3000, install_start: 4000, install_end: 9000 },
-      durationsMs: { clone: 2000, install: 5000 },
+      durationsMs: { clone: 2000, worktree: 500, install: 5000 },
+      worktreeMode: 'clone',
       delivery: 'sent',
     });
     expect(r.timestamps.dispatchReceivedAt).toBe(h.state.startedAt!);
