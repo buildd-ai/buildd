@@ -63,6 +63,37 @@ describe('enqueueMissingEffects (§11 op 2)', () => {
     expect(enqueueMissingEffects(v, new Set(['push_recovery:d1:L2:3']))).toEqual([]);
   });
 
+  test('67d34094: a dead push_recovery chain does not block its own re-enqueue: the last try is owed, once', () => {
+    const v = V(D({ state: 'AWAITING_PUSH', pushPendingLocalHead: 'L2' }));
+    const keys = new Set(['push_recovery:d1:L2:1', 'push_recovery:d1:L2:2']);
+    // A chain still running (or finished) holds.
+    expect(enqueueMissingEffects(v, keys, new Map([['push_recovery:d1:L2:1', 'done'], ['push_recovery:d1:L2:2', 'pending']]))).toEqual([]);
+    // Every try dead: the final try is owed, which is T22 when the head has not moved.
+    const deadAll = new Map([['push_recovery:d1:L2:1', 'dead'], ['push_recovery:d1:L2:2', 'dead']]);
+    expect(enqueueMissingEffects(v, keys, deadAll)).toEqual([
+      { kind: 'push_recovery', dedupeKey: 'push_recovery:d1:L2:final', payload: { localHeadSha: 'L2', try: 3, maxTries: 3 } },
+    ]);
+    // …and only once: the final key, dead or not, is held by its dedupe key.
+    const withFinal = new Set([...keys, 'push_recovery:d1:L2:final']);
+    expect(enqueueMissingEffects(v, withFinal, new Map([...deadAll, ['push_recovery:d1:L2:final', 'dead']]))).toEqual([]);
+  });
+
+  test('67d34094: LANDING with no live merge_call or verify_merge owes one read-back per version', () => {
+    const v = V(D({ state: 'LANDING', approvedHeads: ['H1'], version: 7 }));
+    const mergeKey = 'merge_call:d1:H1:v6';
+    // The merge call is still running its retries: nothing owed.
+    expect(enqueueMissingEffects(v, new Set([mergeKey]), new Map([[mergeKey, 'pending']]))).toEqual([]);
+    expect(enqueueMissingEffects(v, new Set([mergeKey]), new Map([[mergeKey, 'delivering']]))).toEqual([]);
+    // Dead (or done with the delivery still LANDING): a verify_merge re-reads the PR.
+    const owed = [{ kind: 'verify_merge', dedupeKey: 'verify_merge:d1:H1:floor:v7', payload: { headSha: 'H1', outcome: 'indeterminate', landingVersion: 7, source: 'floor' } }];
+    expect(enqueueMissingEffects(v, new Set([mergeKey]), new Map([[mergeKey, 'dead']]))).toEqual(owed);
+    expect(enqueueMissingEffects(v, new Set([mergeKey]), new Map([[mergeKey, 'done']]))).toEqual(owed);
+    // A live read-back holds; the floor's own key is never owed twice.
+    const vk = 'verify_merge:d1:H1:x:indeterminate';
+    expect(enqueueMissingEffects(v, new Set([mergeKey, vk]), new Map([[mergeKey, 'done'], [vk, 'pending']]))).toEqual([]);
+    expect(enqueueMissingEffects(v, new Set([mergeKey, owed[0].dedupeKey]), new Map([[mergeKey, 'dead'], [owed[0].dedupeKey, 'dead']]))).toEqual([]);
+  });
+
   test('states that owe nothing to the floor, and terminal states, return nothing', () => {
     for (const state of ['WORKING', 'FIXING', 'APPROVED', 'ESCALATED', 'MERGED', 'CLOSED_UNMERGED'] as const) {
       expect(enqueueMissingEffects(V(D({ state }), [rc]), none)).toEqual([]);
