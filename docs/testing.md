@@ -223,7 +223,7 @@ bun run test --update-durations                                  # refresh scrip
 
 Files run slowest first, using the per-file hints in `scripts/test-durations.json`
 (files under 2s are not listed and run afterwards, alphabetically). Every run
-prints its 10 slowest files and writes every file's duration to the end of
+prints its 25 slowest files and writes every file's duration to the end of
 `.test-report.log`. Refresh the hints with `--update-durations` when a file gets
 much slower or faster; a subset run refreshes only the files it ran.
 

@@ -264,7 +264,12 @@ export function formatDurationHintsFile(hints: DurationHints): string {
   }, null, 2)}\n`;
 }
 
-const SLOWEST_IN_SUMMARY = 10;
+/**
+ * Printed to the console as well as the log because CI keeps no copy of
+ * `.test-report.log`: the job log is the only record of CI's own timings, and
+ * the top 25 is roughly what it takes to refresh the hints from it.
+ */
+const SLOWEST_IN_SUMMARY = 25;
 
 /** Slowest files first, one per line: `  12.3s  path`. */
 export function formatDurations(
