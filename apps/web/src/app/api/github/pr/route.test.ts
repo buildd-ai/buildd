@@ -4154,6 +4154,52 @@ describe('PUT /api/github/pr', () => {
         expect(calls).not.toContain('PUT /repos/owner/repo/pulls/42/update-branch');
       });
 
+      // Final kernel audit (task b6a62a4e): the refresh here pushed to a kernel-owned PR with no
+      // `refresh_branch` effect. For a kernel PR the kernel owns the refresh (T12 `behind`, or T16
+      // when its own merge call is refused as behind), so this door pushes nothing.
+      describe('kernel-owned PR', () => {
+        beforeEach(() => {
+          mockKernelLandingView.mockReset();
+          mockKernelLandingView.mockResolvedValue({ deliveryId: 'd-1', current: { state: 'APPROVED', version: 7, head: 'sha-42', round: 1 } });
+        });
+        afterAll(() => {
+          mockKernelLandingView.mockReset();
+          mockKernelLandingView.mockResolvedValue(null);
+        });
+
+        it('does not refresh the branch: no base-refresh, no update-branch, no merge', async () => {
+          workerOk();
+          mockTasksFindFirst.mockResolvedValue({ id: 'task-1', requiresReview: false, missionId: 'm-1', context: {} });
+          const calls = behindGithub(() => Promise.resolve({ message: 'Updating pull request branch.' }));
+
+          const res = await put();
+
+          expect(res.status).toBe(409);
+          const data = await res.json();
+          expect(data.error).toContain('behind');
+          expect(data.kernelOwned).toBe(true);
+          expect(data.branchUpdated).toBeUndefined();
+          expect(mockRefreshBehindPr).not.toHaveBeenCalled();
+          expect(calls).not.toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+          expect(mockMergePullRequest).not.toHaveBeenCalled();
+        });
+
+        it('a taskless worker on a kernel PR gets no direct update either', async () => {
+          workerOk();
+          mockWorkersFindFirst.mockResolvedValue({
+            id: 'w-1', accountId: 'account-1', prNumber: 42, taskId: null, prUrl: 'https://github.com/owner/repo/pull/42', workspace: WORKSPACE_OK,
+          });
+          const calls = behindGithub(() => Promise.resolve({ message: 'Updating pull request branch.' }));
+
+          const res = await put();
+
+          expect(res.status).toBe(409);
+          expect((await res.json()).branchUpdated).toBeUndefined();
+          expect(calls).not.toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+          expect(mockRefreshBehindPr).not.toHaveBeenCalled();
+        });
+      });
+
       it.each([
         [{ kind: 'in_flight' }, 'in_flight'],
         [{ kind: 'deferred', failure: 'rate_limit', attempts: 1, reason: '429' }, 'deferred'],
