@@ -1,0 +1,1 @@
+ALTER TABLE "connectors" ADD COLUMN "icon_url" text;

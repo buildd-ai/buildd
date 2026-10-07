@@ -1716,6 +1716,13 @@
       "when": 1791338870193,
       "tag": "0253_sudden_darkstar",
       "breakpoints": true
+    },
+    {
+      "idx": 254,
+      "version": "7",
+      "when": 1791339929510,
+      "tag": "0254_empty_prism",
+      "breakpoints": true
     }
   ]
 }
