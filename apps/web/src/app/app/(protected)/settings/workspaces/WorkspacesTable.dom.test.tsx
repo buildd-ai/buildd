@@ -105,7 +105,7 @@ describe('WorkspacesTable', () => {
     render();
     const api = rows()[0];
     expect(api.querySelector('[data-testid="workspace-health-red"]')?.textContent).toBe('1 red PR');
-    expect(api.querySelector('[data-testid="workspace-health-stuck"]')?.getAttribute('href')).toBe('/api/explain?workspaceId=ws-2');
+    expect(api.querySelector('[data-testid="workspace-health-stuck"]')?.getAttribute('href')).toBe('/app/tasks?workspace=ws-2');
     expect(rows()[1].querySelector('[data-testid^="workspace-health-"]')).toBeNull();
   });
 

@@ -100,7 +100,7 @@ function RowMenu({ row, onMove }: { row: WorkspaceRow; onMove: () => void }) {
 function HealthChips({ row }: { row: WorkspaceRow }) {
   const { redPrs, stuckTasks } = row.health;
   if (redPrs === 0 && stuckTasks === 0) return null;
-  const href = `/api/explain?workspaceId=${row.id}`;
+  const href = `/app/tasks?workspace=${encodeURIComponent(row.id)}`;
   return (
     <>
       {redPrs > 0 && (
