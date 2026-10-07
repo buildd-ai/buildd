@@ -10,6 +10,7 @@
  */
 import { parseModelProxyAuthHeader, parseModelProxyUrl } from './outbound';
 import { RUNNER_CLASSES } from './runner-class';
+import { DEFAULT_SEAT_CAP, OWNER_SEAT_SECRET } from './owner-seat';
 
 /** Non-secret webhook view, as GET /api/workspaces returns it (token masked). */
 export interface ObservedWebhook {
@@ -56,11 +57,19 @@ export interface DeployInputs {
    * similar). Each field is optional; an empty string counts as not supplied.
    */
   modelProxy?: { url?: string; key?: string; authHeader?: string };
+  /**
+   * `--owner-seat`: the deployer's own `claude setup-token` value as a Worker
+   * secret on their own Cloudflare account (owner-seat.ts). `token` comes from
+   * the deployer's environment or a prompt; it goes to `wrangler secret put`
+   * and nowhere else (never to buildd, never into the plan's output).
+   */
+  ownerSeat?: { requested: boolean; token?: string };
 }
 
 export type SecretName =
   | 'DISPATCH_TOKEN' | 'BUILDD_SERVER' | 'BUILDD_API_KEY'
-  | 'MODEL_PROXY_URL' | 'MODEL_PROXY_KEY' | 'MODEL_PROXY_AUTH_HEADER';
+  | 'MODEL_PROXY_URL' | 'MODEL_PROXY_KEY' | 'MODEL_PROXY_AUTH_HEADER'
+  | typeof OWNER_SEAT_SECRET;
 
 /** Put with `wrangler secret put` so a later deploy keeps them, but not secret in substance: printed in the plan. */
 const PLAIN_SECRET_NAMES: ReadonlySet<SecretName> = new Set(['BUILDD_SERVER', 'MODEL_PROXY_URL', 'MODEL_PROXY_AUTH_HEADER']);
@@ -233,6 +242,11 @@ export function planDeploy(i: DeployInputs): DeployPlan {
   steps.push(...proxy.steps);
   notes.push(...proxy.notes);
 
+  const seat = planOwnerSeat(i.ownerSeat, secrets);
+  if (!seat.ok) return seat;
+  steps.push(...seat.steps);
+  notes.push(...seat.notes);
+
   // DISPATCH_TOKEN.
   const hasToken = secrets.has('DISPATCH_TOKEN');
   let token: string | null = null;
@@ -277,6 +291,39 @@ export function planDeploy(i: DeployInputs): DeployPlan {
     notes.push(`Replaces the existing webhook ${current.url}.`);
   }
   return { ok: true, steps, notes };
+}
+
+function planOwnerSeat(
+  o: DeployInputs['ownerSeat'],
+  secrets: Set<string>,
+): { ok: true; steps: DeployStep[]; notes: string[] } | { ok: false; error: string } {
+  const has = secrets.has(OWNER_SEAT_SECRET);
+  if (!o?.requested) {
+    return {
+      ok: true,
+      steps: [],
+      notes: has ? [`This Worker has an owner seat (${OWNER_SEAT_SECRET}); \`wrangler secret delete ${OWNER_SEAT_SECRET}\` turns it off.`] : [],
+    };
+  }
+  const token = o.token?.trim();
+  if (!token) {
+    if (has) return { ok: true, steps: [], notes: [`Owner seat unchanged (${OWNER_SEAT_SECRET} is already on the Worker).`] };
+    return {
+      ok: false,
+      error: `--owner-seat needs your own \`claude setup-token\` value: set ${OWNER_SEAT_SECRET} in your environment, or run in a terminal to be prompted. It is stored only as a secret on your Cloudflare Worker.`,
+    };
+  }
+  if (/\s/.test(token) || !token.startsWith('sk-ant-')) {
+    return { ok: false, error: `${OWNER_SEAT_SECRET} does not look like a \`claude setup-token\` value (expected sk-ant-…, no whitespace).` };
+  }
+  return {
+    ok: true,
+    steps: [{ kind: 'put_secret', name: OWNER_SEAT_SECRET, value: token, reason: has ? 'replace owner seat (supplied)' : 'owner seat: your own Claude token, held only on this Worker' }],
+    notes: [
+      'One owner, one token per Worker: every workspace this Worker serves runs on that one subscription. A workspace with its own agent endpoint or Anthropic key keeps using it.',
+      `At most ${DEFAULT_SEAT_CAP} runs use the seat at once (OWNER_SEAT_MAX_CONCURRENT changes it); a usage limit pauses new seat runs until it lifts.`,
+    ],
+  };
 }
 
 function planModelProxy(
