@@ -28,7 +28,7 @@
  */
 
 import { createHash } from 'crypto';
-import type { ScoutProbeKind } from '../decision-kind-scout-probe-selection';
+import type { ScoutProbeKind } from './types';
 import type { ScoutCapability, ScoutCapabilityKind, ScoutCapabilityProfile } from '../scout-capabilities';
 import { SCOUT_ADAPTER_BY_KIND } from './adapters/kinds';
 

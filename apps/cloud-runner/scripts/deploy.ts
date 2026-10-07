@@ -5,26 +5,43 @@
  *   bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…]
  *       [--rotate] [--remove] [--dry-run] [--server <buildd url>] [--worker-server <url>]
  *       [--url <worker base url>] [--print-token] [--model-proxy-url <url>] [--name <worker name>]
+ *       [--secrets-only] [--credential-ref <ref>] [--owner-seat]
  *
  * --name deploys the Worker under another name, with its own snapshot bucket
  * (<name>-snapshots), from a generated copy of wrangler.jsonc. Pass the same
  * --name on every later run against that deployment.
  *
+ * Where the Cloudflare token is used:
+ *   With the token stored in buildd (Settings → Runners → Cloudflare), every Cloudflare
+ *   step except the container build runs SERVER-SIDE through POST /api/deployments: R2
+ *   bucket, Worker secrets, secret listing, workers.dev URL. This machine never sees the
+ *   token for those. Only `wrangler deploy` (it builds and pushes the container image
+ *   here) still needs it locally, so it alone fetches it through the audited reveal route.
+ *   --secrets-only skips that step (rotate a token, re-point a workspace, change the
+ *   model proxy) and so needs no token on this machine at all.
+ *   With CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID set, everything runs locally with
+ *   wrangler, as before (self-hosting, or a token not stored in buildd).
+ *
+ * --credential-ref names the stored credential: its label, or `cloudflare` (default) for
+ * an unlabelled one.
+ *
  * Env:
  *   BUILDD_API_KEY         admin-level buildd API key (reads the workspace, sets its webhook,
- *                          and fetches the stored Cloudflare token if the two below are unset)
+ *                          runs the server-side Cloudflare steps)
  *   BUILDD_SERVER          buildd base URL (default https://buildd.dev; --server wins)
  *   BUILDD_RUNNER_API_KEY  runner key handed to the containers (--runner-key wins). Worker
  *                          level, ideally scoped to the workspace. Needed on first deploy only.
  *   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
- *                          optional; otherwise the token saved in Settings → Runners → Cloudflare
- *                          is fetched with the admin key
+ *                          optional; set both to run every Cloudflare step locally instead
  *   DISPATCH_TOKEN         optional; the existing token, to point another workspace at a
  *                          Worker that is already deployed
  *   MODEL_PROXY_URL        optional (--model-proxy-url wins); route model traffic through an
  *                          Anthropic-compatible proxy such as LiteLLM instead of AI Gateway
  *   MODEL_PROXY_KEY        the proxy's key; required with a new proxy URL. Never printed
  *   MODEL_PROXY_AUTH_HEADER  optional; authorization (default, Bearer) or x-api-key
+ *   CLAUDE_CODE_OAUTH_TOKEN  with --owner-seat: your own `claude setup-token` value (prompted for,
+ *                          hidden, when unset and run in a terminal). Goes to `wrangler secret put`
+ *                          on your Cloudflare account only; never to buildd, never printed
  *
  * The decisions live in src/deploy-plan.ts (tested); this file only observes
  * and executes. Re-running is safe: see planDeploy for what changes when.
@@ -45,17 +62,20 @@ interface Args {
   remove: boolean;
   dryRun: boolean;
   printToken: boolean;
+  ownerSeat: boolean;
   runnerKey?: string;
   server?: string;
   workerServer?: string;
   url?: string;
   modelProxyUrl?: string;
   name?: string;
+  secretsOnly: boolean;
+  credentialRef: string;
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { rotate: false, remove: false, dryRun: false, printToken: false };
-  const takesValue = new Set(['--workspace', '--runner-key', '--server', '--worker-server', '--url', '--model-proxy-url', '--name']);
+  const a: Args = { rotate: false, remove: false, dryRun: false, printToken: false, secretsOnly: false, credentialRef: 'cloudflare', ownerSeat: false };
+  const takesValue = new Set(['--workspace', '--runner-key', '--server', '--worker-server', '--url', '--model-proxy-url', '--name', '--credential-ref']);
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (takesValue.has(k)) {
@@ -68,10 +88,13 @@ function parseArgs(argv: string[]): Args {
       if (k === '--url') a.url = v;
       if (k === '--model-proxy-url') a.modelProxyUrl = v;
       if (k === '--name') a.name = v;
+      if (k === '--credential-ref') a.credentialRef = v;
     } else if (k === '--rotate') a.rotate = true;
     else if (k === '--remove') a.remove = true;
     else if (k === '--dry-run') a.dryRun = true;
     else if (k === '--print-token') a.printToken = true;
+    else if (k === '--secrets-only') a.secretsOnly = true;
+    else if (k === '--owner-seat') a.ownerSeat = true;
     else if (k === '-h' || k === '--help') {
       console.log(readUsage());
       process.exit(0);
@@ -79,11 +102,13 @@ function parseArgs(argv: string[]): Args {
   }
   if (!a.workspace) die('--workspace <id|name> is required');
   if (a.rotate && a.remove) die('--rotate and --remove do not go together');
+  if (a.secretsOnly && a.remove) die('--secrets-only and --remove do not go together');
+  if (a.ownerSeat && a.remove) die('--owner-seat and --remove do not go together');
   return a;
 }
 
 function readUsage(): string {
-  return 'usage: bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…] [--rotate] [--remove] [--dry-run] [--server <url>] [--worker-server <url>] [--url <worker url>] [--print-token] [--model-proxy-url <url>] [--name <worker name>]';
+  return 'usage: bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…] [--rotate] [--remove] [--dry-run] [--server <url>] [--worker-server <url>] [--url <worker url>] [--print-token] [--model-proxy-url <url>] [--name <worker name>] [--secrets-only] [--credential-ref <ref>] [--owner-seat]';
 }
 
 function die(msg: string): never {
@@ -120,16 +145,13 @@ async function resolveWorkspace(server: string, key: string, ref: string): Promi
   die(`no workspace "${ref}" reachable with this API key`);
 }
 
-async function cloudflareCredential(server: string, key: string): Promise<{ apiToken: string; accountId: string; source: string }> {
-  const envToken = process.env.CLOUDFLARE_API_TOKEN;
-  const envAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
-  if (envToken && envAccount) return { apiToken: envToken, accountId: envAccount, source: 'env' };
-  if (envToken || envAccount) die('set both CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, or neither');
+/** Fetch the stored token: the audited `secrets:reveal` escape hatch, used only for `wrangler deploy`. */
+async function revealCloudflareToken(server: string, key: string): Promise<{ apiToken: string; accountId: string }> {
   const c = await buildd<{ apiToken: string; accountId: string; healthStatus: string }>(
     server, key, '/api/cloudflare/credential/reveal', { method: 'POST' },
   );
   if (c.healthStatus === 'revoked') console.warn('deploy: warning: the stored Cloudflare token was rejected at its last verify');
-  return { apiToken: c.apiToken, accountId: c.accountId, source: 'buildd settings' };
+  return { apiToken: c.apiToken, accountId: c.accountId };
 }
 
 // ── wrangler / Cloudflare ─────────────────────────────────────────────────────
@@ -143,6 +165,8 @@ function wranglerEnv(cf: { apiToken: string; accountId: string }): Record<string
   delete env.BUILDD_API_KEY;
   delete env.BUILDD_RUNNER_API_KEY;
   delete env.MODEL_PROXY_KEY;
+  // The owner seat goes to `wrangler secret put` on stdin, not into wrangler's own environment.
+  delete env.CLAUDE_CODE_OAUTH_TOKEN;
   return env;
 }
 
@@ -157,25 +181,129 @@ async function wrangler(args: string[], env: Record<string, string>, stdin?: str
   return { code, out: out + err };
 }
 
-async function listWorkerSecrets(env: Record<string, string>): Promise<string[] | null> {
-  const r = await wrangler(['secret', 'list', '--format', 'json'], env);
-  if (r.code !== 0) {
-    if (/not found|does not exist|10007/i.test(r.out)) return null;
-    die(`wrangler secret list failed:\n${r.out}`);
-  }
-  const start = r.out.indexOf('[');
-  const list = JSON.parse(r.out.slice(start, r.out.lastIndexOf(']') + 1)) as Array<{ name: string }>;
-  return list.map((s) => s.name);
+/** The Cloudflare side of a deploy, wherever the token lives. */
+interface CloudflareOps {
+  source: string;
+  /** Secret names on the Worker, or null when it was never deployed. */
+  listSecrets(): Promise<string[] | null>;
+  workersDevUrl(): Promise<string>;
+  ensureBucket(): Promise<void>;
+  putSecret(name: string, value: string): Promise<void>;
+  /** wrangler's env for `wrangler deploy`; the one step that needs the token here. */
+  deployEnv(): Promise<Record<string, string>>;
 }
 
-async function workersDevUrl(cf: { apiToken: string; accountId: string }, worker: string): Promise<string> {
-  const res = await fetch(`${CF_API}/accounts/${cf.accountId}/workers/subdomain`, {
-    headers: { Authorization: `Bearer ${cf.apiToken}` },
+/** Token in this shell: every step runs locally with wrangler, as before. */
+function localOps(cf: { apiToken: string; accountId: string }, names: DeployNames): CloudflareOps {
+  const env = wranglerEnv(cf);
+  return {
+    source: `local token (account ${cf.accountId.slice(0, 4)}…${cf.accountId.slice(-4)})`,
+    async listSecrets() {
+      const r = await wrangler(['secret', 'list', '--format', 'json'], env);
+      if (r.code !== 0) {
+        if (/not found|does not exist|10007/i.test(r.out)) return null;
+        die(`wrangler secret list failed:\n${r.out}`);
+      }
+      const start = r.out.indexOf('[');
+      const list = JSON.parse(r.out.slice(start, r.out.lastIndexOf(']') + 1)) as Array<{ name: string }>;
+      return list.map((s) => s.name);
+    },
+    async workersDevUrl() {
+      const res = await fetch(`${CF_API}/accounts/${cf.accountId}/workers/subdomain`, { headers: { Authorization: `Bearer ${cf.apiToken}` } });
+      const body = (await res.json().catch(() => ({}))) as { result?: { subdomain?: string } };
+      const sub = body.result?.subdomain;
+      if (!res.ok || !sub) die(`could not read the account's workers.dev subdomain (HTTP ${res.status}); pass --url`);
+      return `https://${names.worker}.${sub}.workers.dev`;
+    },
+    async ensureBucket() {
+      const created = await wrangler(['r2', 'bucket', 'create', names.bucket], env);
+      if (created.code !== 0 && !/already exists|already own/i.test(created.out)) die(`wrangler r2 bucket create failed:\n${created.out}`);
+      for (const rule of SNAPSHOT_BUCKET.lifecycle) {
+        const r = await wrangler(['r2', 'bucket', 'lifecycle', 'add', names.bucket, rule.id, rule.prefix, '--expire-days', String(rule.expireDays), '--force'], env);
+        if (r.code !== 0 && !/already exists/i.test(r.out)) console.log(`  lifecycle rule ${rule.id} not set (set it by hand): ${r.out.trim().split('\n').at(-1)}`);
+      }
+    },
+    async putSecret(name, value) {
+      const r = await wrangler(['secret', 'put', name], env, value);
+      if (r.code !== 0) die(`wrangler secret put ${name} failed:\n${r.out}`);
+    },
+    async deployEnv() { return env; },
+  };
+}
+
+/**
+ * Token stored in buildd: every step but `wrangler deploy` is a server-side
+ * deployment action (POST /api/deployments), so the token stays on the server
+ * and each step lands in the deployment audit trail.
+ */
+function serverOps(server: string, key: string, workspaceId: string, names: DeployNames, credentialRef: string): CloudflareOps {
+  const action = async <T>(operation: string, params: Record<string, unknown> = {}): Promise<T> => {
+    const r = await buildd<{ result: T }>(server, key, '/api/deployments', {
+      method: 'POST',
+      body: JSON.stringify({ workspaceId, provider: 'cloudflare', project: names.worker, environment: 'production', credentialRef, operation, params }),
+    });
+    return r.result;
+  };
+  let status: { exists: boolean; secretNames: string[] | null; workersDevUrl: string | null } | null = null;
+  const readStatus = async () => (status ??= await action('status'));
+  let revealed: Record<string, string> | null = null;
+  return {
+    source: `stored in buildd ("${credentialRef}"), used server-side`,
+    async listSecrets() {
+      const s = await readStatus();
+      return s.exists ? s.secretNames ?? [] : null;
+    },
+    async workersDevUrl() {
+      const s = await readStatus();
+      if (!s.workersDevUrl) die('could not read the account\'s workers.dev subdomain; pass --url');
+      return s.workersDevUrl;
+    },
+    async ensureBucket() {
+      await action('ensure_bucket', { bucket: names.bucket, lifecycle: SNAPSHOT_BUCKET.lifecycle });
+    },
+    async putSecret(name, value) {
+      await action('put_secret', { name, value });
+    },
+    async deployEnv() {
+      // The container image is built and pushed from this machine, so wrangler needs the token here.
+      console.log('  wrangler deploy builds the container here and needs the token: fetching it (audited reveal)');
+      revealed ??= wranglerEnv(await revealCloudflareToken(server, key));
+      return revealed;
+    },
+  };
+}
+
+/**
+ * The deployer's own Claude token for --owner-seat: CLAUDE_CODE_OAUTH_TOKEN,
+ * else a hidden prompt. Never echoed, never logged.
+ */
+async function readOwnerSeatToken(): Promise<string | undefined> {
+  const fromEnv = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+  if (fromEnv) return fromEnv;
+  if (!process.stdin.isTTY) return undefined;
+  process.stderr.write('Your `claude setup-token` value (input hidden): ');
+  const stdin = process.stdin;
+  stdin.setRawMode(true);
+  stdin.resume();
+  stdin.setEncoding('utf8');
+  return await new Promise<string>((resolve) => {
+    let buf = '';
+    const onData = (chunk: string) => {
+      for (const ch of chunk) {
+        if (ch === '\r' || ch === '\n' || ch === '\u0004') {
+          stdin.setRawMode(false);
+          stdin.pause();
+          stdin.off('data', onData);
+          process.stderr.write('\n');
+          return resolve(buf.trim());
+        }
+        if (ch === '\u0003') { stdin.setRawMode(false); process.exit(130); }
+        if (ch === '\u007f') buf = buf.slice(0, -1);
+        else buf += ch;
+      }
+    };
+    stdin.on('data', onData);
   });
-  const body = (await res.json().catch(() => ({}))) as { result?: { subdomain?: string } };
-  const sub = body.result?.subdomain;
-  if (!res.ok || !sub) die(`could not read the account's workers.dev subdomain (HTTP ${res.status}); pass --url`);
-  return `https://${worker}.${sub}.workers.dev`;
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -204,13 +332,17 @@ async function main() {
 
   let workerUrl = args.url;
   let secretNames: string[] | null = [];
-  let env: Record<string, string> | null = null;
+  let ops: CloudflareOps | null = null;
   if (!args.remove) {
-    const cf = await cloudflareCredential(server, adminKey);
-    console.log(`cloudflare: account ${cf.accountId.slice(0, 4)}…${cf.accountId.slice(-4)} (token from ${cf.source})`);
-    env = wranglerEnv(cf);
-    secretNames = await listWorkerSecrets(env);
-    workerUrl ??= await workersDevUrl(cf, names.worker);
+    const envToken = process.env.CLOUDFLARE_API_TOKEN;
+    const envAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
+    if (!!envToken !== !!envAccount) die('set both CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, or neither');
+    ops = envToken && envAccount
+      ? localOps({ apiToken: envToken, accountId: envAccount }, names)
+      : serverOps(server, adminKey, workspace.id, names, args.credentialRef);
+    console.log(`cloudflare: token ${ops.source}`);
+    secretNames = await ops.listSecrets();
+    workerUrl ??= await ops.workersDevUrl();
   }
   workerUrl ??= workspace.webhookConfig?.url?.replace(/\/dispatch$/, '') ?? 'https://unknown.invalid';
 
@@ -224,11 +356,13 @@ async function main() {
     runnerApiKey: runnerKey,
     providedDispatchToken: process.env.DISPATCH_TOKEN || undefined,
     generatedDispatchToken: randomBytes(32).toString('base64url'),
+    ownerSeat: { requested: args.ownerSeat, token: args.ownerSeat ? await readOwnerSeatToken() : undefined },
     modelProxy: {
       url: args.modelProxyUrl ?? process.env.MODEL_PROXY_URL,
       key: process.env.MODEL_PROXY_KEY,
       authHeader: process.env.MODEL_PROXY_AUTH_HEADER,
     },
+    skipWorkerDeploy: args.secretsOnly,
   });
 
   console.log(`${args.dryRun ? 'plan (dry run, nothing changed)' : 'plan'}:`);
@@ -236,7 +370,7 @@ async function main() {
   if (!plan.ok) process.exit(1);
   if (args.dryRun) return;
 
-  for (const step of plan.steps) await execute(step, { server, adminKey, env, bucket: names.bucket });
+  for (const step of plan.steps) await execute(step, { server, adminKey, ops, bucket: names.bucket });
 
   const tokenStep = plan.steps.find((s): s is Extract<DeployStep, { kind: 'put_secret' }> => s.kind === 'put_secret' && s.name === 'DISPATCH_TOKEN');
   if (tokenStep && args.printToken) console.log(`DISPATCH_TOKEN=${tokenStep.value}`);
@@ -244,32 +378,24 @@ async function main() {
   console.log(args.remove ? 'done: workspace detached from the cloud runner' : `done: ${workspace.name} dispatches to ${workerUrl}/dispatch`);
 }
 
-async function execute(step: DeployStep, ctx: { server: string; adminKey: string; env: Record<string, string> | null; bucket: string }) {
+async function execute(step: DeployStep, ctx: { server: string; adminKey: string; ops: CloudflareOps | null; bucket: string }) {
   switch (step.kind) {
-    case 'ensure_snapshot_bucket': {
+    case 'ensure_snapshot_bucket':
       console.log(`→ ensure R2 bucket ${ctx.bucket}`);
-      const created = await wrangler(['r2', 'bucket', 'create', ctx.bucket], ctx.env!);
-      if (created.code !== 0 && !/already exists|already own/i.test(created.out)) die(`wrangler r2 bucket create failed:\n${created.out}`);
-      for (const rule of SNAPSHOT_BUCKET.lifecycle) {
-        const r = await wrangler(['r2', 'bucket', 'lifecycle', 'add', ctx.bucket, rule.id, rule.prefix, '--expire-days', String(rule.expireDays), '--force'], ctx.env!);
-        if (r.code !== 0 && !/already exists/i.test(r.out)) console.log(`  lifecycle rule ${rule.id} not set (set it by hand): ${r.out.trim().split('\n').at(-1)}`);
-      }
+      await ctx.ops!.ensureBucket();
       return;
-    }
     case 'wrangler_deploy': {
       console.log('→ wrangler deploy (builds the container image; slow the first time)');
-      const r = await wrangler(['deploy'], ctx.env!);
+      const r = await wrangler(['deploy'], await ctx.ops!.deployEnv());
       if (r.code !== 0) die(`wrangler deploy failed:\n${r.out}`);
       const url = r.out.match(/https:\/\/[^\s]+\.workers\.dev/)?.[0];
       if (url) console.log(`  deployed ${url}`);
       return;
     }
-    case 'put_secret': {
-      console.log(`→ wrangler secret put ${step.name}`);
-      const r = await wrangler(['secret', 'put', step.name], ctx.env!, step.value);
-      if (r.code !== 0) die(`wrangler secret put ${step.name} failed:\n${r.out}`);
+    case 'put_secret':
+      console.log(`→ put Worker secret ${step.name}`);
+      await ctx.ops!.putSecret(step.name, step.value);
       return;
-    }
     case 'set_webhook':
       console.log(`→ set webhook on ${step.workspaceId}`);
       await buildd(ctx.server, ctx.adminKey, `/api/workspaces/${step.workspaceId}`, {

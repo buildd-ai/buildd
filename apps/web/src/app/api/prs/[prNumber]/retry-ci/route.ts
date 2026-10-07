@@ -244,6 +244,7 @@ export async function POST(
     foreignCommitAuthor: foreignHeadSha
       ? (commitAuthor.login ?? commitAuthor.name ?? commitAuthor.email ?? 'unknown')
       : undefined,
+    prRefs: pr.head?.ref ? { headRef: String(pr.head.ref), baseRef: pr.base?.ref ? String(pr.base.ref) : null } : null,
   });
 
   if (!retryTask) {

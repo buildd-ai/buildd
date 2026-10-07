@@ -54,7 +54,7 @@ const DEFAULT_ENV_KEYS = [
  * is used by the runner to force-disable Claude Code sandboxing when namespaces are
  * unavailable — preventing every Bash tool call from failing with a bwrap error.
  */
-function probeBwrapNamespaces(unshareFlags: readonly string[]): boolean {
+function probeBwrapNamespaces(unshareFlags: readonly string[], loaderBinds = false): boolean {
   // Operator escape hatch — set when the kernel/container config is known-bad
   // and the proc-file approach below is insufficient (e.g. inside a user namespace
   // where the sysctl is not propagated correctly).
@@ -74,9 +74,13 @@ function probeBwrapNamespaces(unshareFlags: readonly string[]): boolean {
   } catch {
     return false; // not installed — sandbox won't be attempted
   }
+  // loaderBinds: on merged-usr hosts /lib and /lib64 are symlinks into /usr and
+  // a binary's ELF interpreter is named by that path, so with /usr alone the
+  // exec fails ENOENT and the probe misreads it as "no namespaces".
+  const binds = loaderBinds ? ' --ro-bind-try /bin /bin --ro-bind-try /lib /lib --ro-bind-try /lib64 /lib64' : '';
   try {
     execSync(
-      `bwrap ${unshareFlags.join(' ')} --uid 0 --gid 0 --ro-bind /usr /usr --proc /proc --dev /dev -- echo ok`,
+      `bwrap ${unshareFlags.join(' ')} --uid 0 --gid 0 --ro-bind /usr /usr${binds} --proc /proc --dev /dev -- echo ok`,
       { timeout: 5000, stdio: 'pipe' },
     );
     return true;
@@ -114,7 +118,11 @@ export function checkBwrapSupport(): boolean {
  * two namespaces, which is the requirement of record.
  */
 export function checkBwrapMountIsolationSupport(): boolean {
-  return probeBwrapNamespaces(['--unshare-user', '--unshare-pid']);
+  // The wrapper's own argv binds /bin, /lib and /lib64 (SYSTEM_RO_BINDS), so the
+  // probe does too. checkBwrapSupport above still binds only /usr: on a
+  // merged-usr host it reads false whatever the kernel allows. Changing that
+  // flips Claude Code's inner sandbox on for those hosts and is a separate change.
+  return probeBwrapNamespaces(['--unshare-user', '--unshare-pid'], true);
 }
 
 /**

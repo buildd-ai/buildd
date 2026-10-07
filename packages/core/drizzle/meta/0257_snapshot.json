@@ -1,5 +1,5 @@
 {
-  "id": "cf91bf25-1f4a-4af2-8338-ea112898419b",
+  "id": "107432b4-a512-48af-b239-c655c42b724e",
   "prevId": "946516a3-103a-4f5d-a7c9-bf77eedcdbe1",
   "version": "7",
   "dialect": "postgresql",
@@ -13106,6 +13106,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "host": {
+          "name": "host",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "verdict": {
           "name": "verdict",
           "type": "text",
@@ -13337,6 +13343,37 @@
           "primaryKey": false,
           "notNull": false
         },
+        "host_state": {
+          "name": "host_state",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "host_deadline": {
+          "name": "host_deadline",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "host_lease_holder": {
+          "name": "host_lease_holder",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "host_lease_expires_at": {
+          "name": "host_lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "host_lease_lapses": {
+          "name": "host_lease_lapses",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "started_at": {
           "name": "started_at",
           "type": "timestamp with time zone",
@@ -13397,6 +13434,27 @@
             },
             {
               "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "quality_scout_runs_status_host_deadline_idx": {
+          "name": "quality_scout_runs_status_host_deadline_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "host_deadline",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -13916,185 +13974,6 @@
         }
       },
       "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.runner_usage": {
-      "name": "runner_usage",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "worker_id": {
-          "name": "worker_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "attempt": {
-          "name": "attempt",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "size": {
-          "name": "size",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "runner_seconds": {
-          "name": "runner_seconds",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "weighted_runner_seconds": {
-          "name": "weighted_runner_seconds",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ended_at": {
-          "name": "ended_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "runner_usage_worker_attempt_idx": {
-          "name": "runner_usage_worker_attempt_idx",
-          "columns": [
-            {
-              "expression": "worker_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "attempt",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "runner_usage_workspace_ended_idx": {
-          "name": "runner_usage_workspace_ended_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "ended_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "runner_usage_task_idx": {
-          "name": "runner_usage_task_idx",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "runner_usage_workspace_id_workspaces_id_fk": {
-          "name": "runner_usage_workspace_id_workspaces_id_fk",
-          "tableFrom": "runner_usage",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "runner_usage_task_id_tasks_id_fk": {
-          "name": "runner_usage_task_id_tasks_id_fk",
-          "tableFrom": "runner_usage",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "runner_usage_worker_id_workers_id_fk": {
-          "name": "runner_usage_worker_id_workers_id_fk",
-          "tableFrom": "runner_usage",
-          "tableTo": "workers",
-          "columnsFrom": [
-            "worker_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -17715,12 +17594,6 @@
         "managed_runner_plan": {
           "name": "managed_runner_plan",
           "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "hosted_runner_hours": {
-          "name": "hosted_runner_hours",
-          "type": "integer",
           "primaryKey": false,
           "notNull": false
         },

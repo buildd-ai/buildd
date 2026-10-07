@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.285.0",
+  "version": "0.286.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -160,9 +160,13 @@
     "./scout-capabilities": "./scout-capabilities.ts",
     "./quality-scout/types": "./quality-scout/types.ts",
     "./quality-scout/ledger": "./quality-scout/ledger.ts",
+    "./quality-scout/probe-check": "./quality-scout/probe-check.ts",
     "./quality-scout/candidates": "./quality-scout/candidates.ts",
     "./quality-scout/selector": "./quality-scout/selector.ts",
     "./quality-scout/executors": "./quality-scout/executors.ts",
+    "./quality-scout/local-host": "./quality-scout/local-host.ts",
+    "./quality-scout/runner-host": "./quality-scout/runner-host.ts",
+    "./quality-scout/visual-capture": "./quality-scout/visual-capture.ts",
     "./onboarding-scaffold": "./onboarding-scaffold.ts",
     "./onboarding-spec": "./onboarding-spec.ts",
     "./spec-conformance": "./spec-conformance.ts",

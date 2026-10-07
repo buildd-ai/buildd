@@ -2417,10 +2417,16 @@ export const evidenceBackends = pgTable('evidence_backends', {
 export const evidenceObjects = pgTable('evidence_objects', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // Owner, exactly one of two shapes (CHECK evidence_objects_one_owner below):
+  // a task run (task_id + root_task_id + worker_id, scout_run_id null), or a
+  // Quality Scout run hosted on a runner (scout_run_id only; it has no task
+  // or worker). Null only in the Scout shape.
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
   // Root task in a retry chain; for lineage and grouping
-  rootTaskId: uuid('root_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
-  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  rootTaskId: uuid('root_task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }),
+  // A runner-hosted Scout run's command log (artifact quality-scout-runner-host §4).
+  scoutRunId: uuid('scout_run_id').references(() => qualityScoutRuns.id, { onDelete: 'cascade' }),
   // PR number if this evidence came from a CI failure on a buildd PR
   prNumber: integer('pr_number'),
   // Kind of evidence: command_output | test_report | ci_job_log | transcript | pr_diff
@@ -2450,6 +2456,12 @@ export const evidenceObjects = pgTable('evidence_objects', {
   backendIdx: index('evidence_objects_backend_idx').on(t.backendId),
   // Task lineage: find all evidence for a task and its retry chain
   taskLineageIdx: index('evidence_objects_task_lineage_idx').on(t.workspaceId, t.rootTaskId, t.taskId),
+  scoutRunIdx: index('evidence_objects_scout_run_idx').on(t.scoutRunId),
+  oneOwner: check(
+    'evidence_objects_one_owner',
+    sql`(${t.scoutRunId} IS NULL AND ${t.taskId} IS NOT NULL AND ${t.rootTaskId} IS NOT NULL AND ${t.workerId} IS NOT NULL)
+      OR (${t.scoutRunId} IS NOT NULL AND ${t.taskId} IS NULL AND ${t.rootTaskId} IS NULL AND ${t.workerId} IS NULL)`,
+  ),
 }));
 
 // Mission notes — lightweight append-only feed for agent↔user communication
@@ -4965,6 +4977,54 @@ export type GateEvent = typeof gateEvents.$inferSelect;
 export type NewGateEvent = typeof gateEvents.$inferInsert;
 
 /**
+ * Audit trail of deployment actions buildd runs server-side with a stored
+ * deploy credential, and of every plaintext reveal of one
+ * (apps/web/src/lib/deployments, docs/specs/deployment-actions.md).
+ *
+ * Unlike gate_events this is not fire-and-forget: the row is written BEFORE
+ * the credential is used (outcome 'started') and settled afterwards, and a
+ * request whose row cannot be written does not run. A crash mid-deploy
+ * therefore still leaves a 'started' row.
+ *
+ * Holds the credential REFERENCE (a label) only. There is no column a
+ * credential value could go in, and `result` is built field by field from an
+ * allowlist, never copied from a provider response.
+ */
+export const deploymentAuditEvents = pgTable('deployment_audit_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // Null only for a reveal, which is team-wide.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  // 'operator': an agent role acting under its workspace grant.
+  // 'admin': a human's admin API key, the escape hatch.
+  principal: text('principal').notNull().$type<'operator' | 'admin'>(),
+  roleSlug: text('role_slug'),
+  operation: text('operation').notNull(),
+  capabilities: jsonb('capabilities').$type<string[]>().notNull(),
+  // True when an elevated capability (secrets:reveal, deployment_secrets:manage) was exercised.
+  elevated: boolean('elevated').default(false).notNull(),
+  provider: text('provider'),
+  project: text('project'),
+  environment: text('environment'),
+  credentialRef: text('credential_ref'),
+  outcome: text('outcome').notNull().$type<'started' | 'denied' | 'succeeded' | 'failed'>(),
+  reason: text('reason'),
+  result: jsonb('result').$type<Record<string, unknown>>(),
+}, (t) => ({
+  workspaceOccurredIdx: index('deployment_audit_events_workspace_occurred_idx').on(t.workspaceId, t.occurredAt),
+  teamOccurredIdx: index('deployment_audit_events_team_occurred_idx').on(t.teamId, t.occurredAt),
+  taskIdx: index('deployment_audit_events_task_idx').on(t.taskId),
+}));
+
+export type DeploymentAuditEvent = typeof deploymentAuditEvents.$inferSelect;
+export type NewDeploymentAuditEvent = typeof deploymentAuditEvents.$inferInsert;
+
+/**
  * One row per worker session end, on every path — completed, failed, the
  * output-requirement gate refusing a completion, and a runner process death
  * reconciled at the next startup. See packages/core/terminal-records.ts.
@@ -5461,12 +5521,25 @@ export const qualityScoutRuns = pgTable('quality_scout_runs', {
   // Full operational readout (stage cost, actions, dedupe, staleness) — written when the run ends.
   metrics: jsonb('metrics').$type<import('../quality-scout/types').ScoutRunMetrics | null>(),
   error: text('error'),
+  // Runner host (status 'awaiting_host'). host_state is frozen at park time:
+  // the profile snapshot the server planned against, the plan summary finalize
+  // needs, and the runner's duration bound. The candidate {ref, sha} is
+  // candidate_ref/candidate_sha above. Kept after the run completes, for the readout.
+  hostState: jsonb('host_state').$type<Pick<import('../quality-scout/types').ScoutRunParking, 'parkedAt' | 'runnerMaxDurationMs' | 'profile' | 'plan'> | null>(),
+  // Past this, the hourly sweep finalizes unexecuted runner probes `unsupported`.
+  hostDeadline: timestamp('host_deadline', { withTimezone: true }),
+  // Empty until a runner claims the run; claims are an atomic UPDATE on these.
+  hostLeaseHolder: text('host_lease_holder'),
+  hostLeaseExpiresAt: timestamp('host_lease_expires_at', { withTimezone: true }),
+  hostLeaseLapses: integer('host_lease_lapses').notNull().default(0),
   startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
   completedAt: timestamp('completed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workspaceCreatedIdx: index('quality_scout_runs_workspace_created_idx').on(t.workspaceId, t.createdAt),
   workspaceRefIdx: index('quality_scout_runs_workspace_ref_idx').on(t.workspaceId, t.candidateRef, t.createdAt),
+  // The parked-run queue: runner claims and the expiry sweep both scan it.
+  statusHostDeadlineIdx: index('quality_scout_runs_status_host_deadline_idx').on(t.status, t.hostDeadline),
 }));
 
 export type QualityScoutRun = typeof qualityScoutRuns.$inferSelect;
@@ -5495,6 +5568,8 @@ export const qualityScoutProbes = pgTable('quality_scout_probes', {
   evidenceRequirements: jsonb('evidence_requirements').notNull().$type<import('../verification-check').EvidenceRequirement[]>(),
   unsupportedReason: text('unsupported_reason'),
   selection: jsonb('selection').notNull().$type<import('../quality-scout/types').ScoutProbeSelection>(),
+  // Where the probe runs ('server' | 'runner'); null on a single-host run.
+  host: text('host').$type<import('../quality-scout/types').ScoutProbeHost>(),
   verdict: text('verdict').$type<import('../verification-check').VerificationVerdict>(),
   signature: text('signature'),
   result: jsonb('result').$type<import('../verification-check').VerificationResult | null>(),

@@ -20,6 +20,15 @@
  *     "budget": { "maxProbes": 4 }, "maxDurationMs": 1800000,
  *     "state": "state.json", "evidenceDir": "evidence", "report": "report.json"
  *   }
+ *
+ * `--server` mode exercises the production path instead: claim a parked run
+ * from a live buildd (the server planned it with its own decider), host its
+ * command probes in a throwaway worktree of `--repo`, and post the results
+ * through the run API, exactly as a runner does. The key is BUILDD_API_KEY.
+ * It never sandboxes, so it refuses unless BUILDD_SCOUT_UNSANDBOXED=1:
+ *
+ *   BUILDD_SCOUT_UNSANDBOXED=1 BUILDD_API_KEY=bld_… \
+ *     bun run scripts/scout-dogfood.ts --server https://buildd.dev --repo /path/to/clone
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -36,6 +45,7 @@ import {
   localScoutStore,
   ruleScoutProbeDecider,
 } from '../src/lib/quality-scout-local-host';
+import { createScoutHostHttpApi, hostClaimedScoutRun, type ScoutClaimed } from '@buildd/core/quality-scout/runner-host';
 import { runQualityScout } from '../src/lib/quality-scout-run';
 import { createVisualQaCapturePort, type VisualQaActions, type VisualQaRun } from '../src/lib/quality-scout-visual-adapter';
 
@@ -104,7 +114,39 @@ function ghVisualQaActions(repo: string): VisualQaActions {
   };
 }
 
+function flag(name: string): string | undefined {
+  const i = process.argv.indexOf(name);
+  return i >= 0 ? process.argv[i + 1] : undefined;
+}
+
+/** `owner/name` of a clone's origin, lowercase. */
+async function originSlug(dir: string): Promise<string | null> {
+  const url = (await exec('git', ['remote', 'get-url', 'origin'], { cwd: dir })).stdout.trim();
+  const m = url.replace(/\.git$/, '').match(/[:/]([\w.-]+\/[\w.-]+)$/);
+  return m ? m[1].toLowerCase() : null;
+}
+
+async function serverMode(serverUrl: string) {
+  const repoDir = resolve(flag('--repo') ?? '');
+  const apiKey = process.env.BUILDD_API_KEY;
+  if (!apiKey) throw new Error('--server needs BUILDD_API_KEY');
+  // Same rule as the runner: no sandbox here, so only on the operator's explicit say-so.
+  if (process.env.BUILDD_SCOUT_UNSANDBOXED !== '1') throw new Error('--server runs probe commands unsandboxed; set BUILDD_SCOUT_UNSANDBOXED=1 to accept that');
+  const slug = await originSlug(repoDir);
+  if (!slug) throw new Error(`${repoDir} has no recognizable origin remote`);
+  const api = createScoutHostHttpApi({ serverUrl, apiKey });
+  const claim = await api.claim({ repos: [slug], ports: { command: true, capture: false, browser: false }, runnerId: 'scout-dogfood' });
+  if (!claim.run) {
+    console.log(JSON.stringify({ claimed: false, reason: claim.reason, expired: claim.expired ?? [] }));
+    return;
+  }
+  const out = await hostClaimedScoutRun({ claimed: claim as ScoutClaimed, repoPath: repoDir, api, secretValues: [apiKey] });
+  console.log(JSON.stringify({ claimed: true, runId: claim.run.id, sha: claim.run.candidate.sha, outcome: out }));
+}
+
 async function main() {
+  const server = flag('--server');
+  if (server) return serverMode(server);
   const planPath = resolve(process.argv[2] ?? '');
   const plan: Plan = JSON.parse(readFileSync(planPath, 'utf8'));
   const base = dirname(planPath);

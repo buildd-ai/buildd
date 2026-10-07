@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { buildPrListWhere, needsAttention, parsePrListState, prSignals, rankPrs, shapePrRows, type PrListRow } from './pr-list';
+import { buildPrListWhere, needsAttention, parsePrListState, prSignals, rankPrs, shapePrRows, waitingReason, type PrListRow } from './pr-list';
 
 /** WHERE clauses rendered through PgDialect, so their shape is observable. */
 const dialect = new PgDialect();
@@ -169,6 +169,40 @@ describe('prSignals', () => {
   it('a state last checked over an hour ago says how old it is', () => {
     const r = shapePrRows([row({ lastCheckedAt: new Date('2026-09-28T09:00:00Z') })], 'open')[0];
     expect(prSignals(r, noAttention, now)).toEqual({ checkedHoursAgo: 3 });
+  });
+});
+
+// "merge is yours" is a claim about the PR as it is now. PR #3673 was listed
+// as "approved, merge is yours" while GitHub reported it dirty with red checks.
+describe('waitingReason', () => {
+  const approved = { conflictFixesSpent: false, escalated: false, approved: true };
+
+  it('says merge is yours only for an approved PR that is green and mergeable', () => {
+    expect(waitingReason({ ...approved, status: 'ci_green' })).toBe('approved, merge is yours');
+  });
+
+  it('#3673 shape: approved but conflicting or red says so, never "merge is yours"', () => {
+    expect(waitingReason({ ...approved, status: 'conflict' })).toBe('approved but conflicting, not mergeable');
+    expect(waitingReason({ ...approved, status: 'ci_failed' })).toBe('approved but CI red, not mergeable');
+  });
+
+  it.each(['ci_running', 'pr_open', null])('approved with CI %s is not mergeable yet', (status) => {
+    expect(waitingReason({ ...approved, status })).toBe('approved but CI not green yet, not mergeable');
+  });
+
+  it('#3502 shape: an escalation on a conflicting PR names the conflict too', () => {
+    expect(waitingReason({ ...approved, approved: false, escalated: true, status: 'conflict' })).toBe('reviewer escalated, conflicting');
+    expect(waitingReason({ ...approved, approved: false, escalated: true, status: 'ci_green' })).toBe('reviewer escalated');
+  });
+
+  it('spent conflict fixes win over every other reading', () => {
+    expect(waitingReason({ ...approved, conflictFixesSpent: true, status: 'conflict' })).toBe('conflict fixes used up');
+  });
+
+  it('a human-merge PR names a red or conflicting state', () => {
+    const human = { conflictFixesSpent: false, escalated: false, approved: false };
+    expect(waitingReason({ ...human, status: 'ci_green' })).toBe('human merge');
+    expect(waitingReason({ ...human, status: 'ci_failed' })).toBe('human merge, CI red');
   });
 });
 

@@ -17,6 +17,7 @@
  * state here that blocks anything, and `SCOUT_AUTHORITY` says so in code.
  */
 
+import type { ScoutCapabilityProfile } from '../scout-capabilities';
 import type {
   EvidenceRequirement,
   VerificationEvidenceRef,
@@ -51,17 +52,116 @@ export type ScoutMode = (typeof SCOUT_MODES)[number];
 export const SCOUT_RUN_TRIGGERS = ['manual', 'mission-candidate', 'periodic', 'pre-release'] as const;
 export type ScoutRunTrigger = (typeof SCOUT_RUN_TRIGGERS)[number];
 
-export const SCOUT_RUN_STATUSES = ['running', 'completed', 'failed'] as const;
+/**
+ * `awaiting_host`: the server ran its own probes and parked the run for a
+ * runner to execute the ones only a runner can host (command, capture,
+ * app-boot). A parked run is live: a re-trigger on its SHA is a duplicate. It
+ * ends `completed` either way, when the runner reports or when the expiry
+ * sweep finalizes its unexecuted probes `unsupported`.
+ */
+/** What a probe checks. The probe-selection decision kind re-exports these. */
+export const SCOUT_PROBE_KINDS = ['route_smoke', 'api_contract', 'visual', 'spec_invariant', 'regression', 'security_boundary'] as const;
+export type ScoutProbeKind = (typeof SCOUT_PROBE_KINDS)[number];
+
+export const SCOUT_RUN_STATUSES = ['running', 'awaiting_host', 'completed', 'failed'] as const;
 export type ScoutRunStatus = (typeof SCOUT_RUN_STATUSES)[number];
+
+// ── Hosts ───────────────────────────────────────────────────────────────────
+
+/**
+ * Where a probe runs. `server`: the trigger's own host (readiness, spec, HTTP
+ * to a declared test environment). `runner`: a team runner that advertised
+ * `environment.scoutHost` for the repo.
+ */
+export const SCOUT_PROBE_HOSTS = ['server', 'runner'] as const;
+export type ScoutProbeHost = (typeof SCOUT_PROBE_HOSTS)[number];
+
+/** What a probe needs from its host. `app-boot` is HTTP to an app the host booted. */
+export const SCOUT_HOST_NEEDS = ['command', 'capture', 'http', 'app-boot', 'spec', 'readiness'] as const;
+export type ScoutHostNeed = (typeof SCOUT_HOST_NEEDS)[number];
+
+/** The needs only a runner can ever serve: the server has no sandbox, no browser and boots nothing. */
+export const SCOUT_RUNNER_NEEDS: readonly ScoutHostNeed[] = ['command', 'capture', 'app-boot'];
+
+/**
+ * `gitConfig.qualityScout.host`. `auto` (default): probes only a runner can
+ * host go to one when a runner advertised it recently. `server`: today's
+ * behaviour exactly; nothing ever parks.
+ */
+export const SCOUT_HOST_MODES = ['auto', 'server'] as const;
+export type ScoutHostMode = (typeof SCOUT_HOST_MODES)[number];
+
+/** What a runner advertises on its heartbeat (`environment.scoutHost`). */
+export interface ScoutRunnerHostAdvert {
+  /** `owner/name` of the clones it can check a SHA out of. */
+  repos: string[];
+  command?: boolean;
+  capture?: boolean;
+  appBoot?: boolean;
+}
+
+/** Why a runner-assigned probe ended without a runner result. Never a pass. */
+export const SCOUT_HOST_EXPIRY_REASONS = ['no_runner_claimed', 'runner_host_lost'] as const;
+export type ScoutHostExpiryReason = (typeof SCOUT_HOST_EXPIRY_REASONS)[number];
+
+/** Runner-hosted runs: execution bound and how long a parked run waits for a runner. */
+export const DEFAULT_SCOUT_RUNNER_MAX_DURATION_MS = 20 * 60_000;
+export const DEFAULT_SCOUT_HOST_DEADLINE_MS = 30 * 60_000;
+export const MAX_SCOUT_HOST_DEADLINE_MS = 6 * 60 * 60_000;
+
+/**
+ * What the plan step learned that finalize needs, frozen when a run parks so a
+ * later finalize (runner result or expiry, possibly another instance) reports
+ * the same run the server planned.
+ */
+export interface ScoutPlanSummary {
+  candidatesGenerated: number;
+  candidatesTruncated: number;
+  decisionsAsked: number;
+  decisionFailures: number;
+  costCapHit: boolean;
+  stages: Record<ScoutStage, ScoutStageMetric>;
+  warnings: string[];
+  /** The server's own execution hit the run's time bound. */
+  deadlineHit: boolean;
+  /** Per executed probe (candidate id): failed the same way twice, or not. */
+  reproducibility: Record<string, ScoutReproducibility>;
+}
+
+/** A parked run's host state (`awaiting_host`). */
+export interface ScoutRunParking {
+  parkedAt: string;
+  /** Past this, the expiry sweep finalizes the run's unexecuted runner probes `unsupported`. */
+  hostDeadline: string;
+  /** Wall-clock bound for the runner's execution of this run. */
+  runnerMaxDurationMs: number;
+  /** The profile the server planned against; a runner judges against this, never its own. */
+  profile: ScoutCapabilityProfile;
+  plan: ScoutPlanSummary;
+  /** Null until a runner claims the run. */
+  lease: { holder: string; expiresAt: string } | null;
+  /** Leases that expired without the holder reporting. Two lapses finalize the run. */
+  leaseLapses: number;
+}
 
 /** Spec §3: a run normally executes 3–5 probes. */
 export const DEFAULT_SCOUT_MAX_PROBES = 4;
 export const MAX_SCOUT_MAX_PROBES = 10;
 
+/** Default `budget.maxCaptureProbes`: one surface probe per run (each costs a workflow run per viewport). */
+export const DEFAULT_SCOUT_MAX_CAPTURE_PROBES = 1;
+export const MAX_SCOUT_MAX_CAPTURE_PROBES = 3;
+
 export interface ScoutBudget {
   maxProbes: number;
   /** Null: no dollar cap beyond the probe count. */
   maxCostUsd: number | null;
+  /**
+   * Surface probes a run may select (each one is a Visual QA workflow run per
+   * viewport on the workspace's Actions minutes). Absent on runs from before
+   * the field: read as `DEFAULT_SCOUT_MAX_CAPTURE_PROBES`.
+   */
+  maxCaptureProbes?: number;
 }
 
 /** The exact state a run exercised. `sha` is what staleness is computed from. */
@@ -89,6 +189,8 @@ export interface ScoutRun {
   completedAt: string | null;
   /** Bounded, machine-readable. Set only on `failed`. */
   error: string | null;
+  /** Set when the run parked for a runner host; kept after it completes, for the readout. */
+  parking?: ScoutRunParking | null;
 }
 
 /** Readout counters written when a run ends (spec §16). */
@@ -155,6 +257,15 @@ export interface ScoutRunMetrics {
   /** The run's time bound cut execution short. */
   deadlineHit: boolean;
   warnings: string[];
+  /** Present when the run had runner-assigned probes. */
+  hosts?: {
+    runnerProbes: number;
+    /** Runner probes that ended `unsupported` because no runner reported. */
+    runnerExpired: number;
+    expiryReason: ScoutHostExpiryReason | null;
+    /** Time spent parked in `awaiting_host`. */
+    awaitingHostMs: number | null;
+  };
 }
 
 // ── Probe ───────────────────────────────────────────────────────────────────
@@ -202,6 +313,8 @@ export interface ScoutProbeRecord {
   /** Why the generator could not match an executor, when it could not. */
   unsupportedReason: string | null;
   selection: ScoutProbeSelection;
+  /** Where it runs; absent when the run assigned no hosts (a single-host run). */
+  host?: ScoutProbeHost;
   /** Null until executed (or finalized as not executed). */
   result: VerificationResult | null;
 }

@@ -21,14 +21,12 @@
  * Nothing here pushes, merges, writes Recall or creates a buildd task.
  */
 
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { exec } from '@buildd/core/quality-scout/local-host';
 import { computeReadiness, type ReadinessReport } from '@buildd/core/workspace-readiness';
 import { discoverScoutCapabilities, type ScoutCapabilityProfile } from '@buildd/core/scout-capabilities';
 import { SCOUT_PROBE_SELECTION_CONFIG } from '@buildd/core/decision-kind-scout-probe-selection';
 import type { ScoutFindingStore } from '@buildd/core/quality-scout/ledger';
-import type { ScoutCommandOutput, ScoutCommandRequest } from '@buildd/core/quality-scout/executors';
 import type { ScoutProbeDecider } from '@buildd/core/quality-scout/selector';
 import type {
   ScoutActionState,
@@ -43,59 +41,23 @@ import { MAX_MANIFEST_BYTES, selectManifestPaths } from './workspace-readiness-i
 import type { ScoutActionStore, ScoutFollowUpTaskInput } from './quality-scout-actions';
 import type { ScoutRunLedger } from './quality-scout-run';
 
-const TAIL_CHARS = 4_000;
+// ── git + command port (shared with the runner: @buildd/core/quality-scout/local-host) ──
 
-// ── git ─────────────────────────────────────────────────────────────────────
-
-export interface Exec {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-  durationMs: number;
-}
-
-/** Run a process; never throws. `timeoutMs` kills the whole process group. */
-export function exec(cmd: string, args: string[], opts: { cwd: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }): Promise<Exec> {
-  const started = Date.now();
-  return new Promise((resolve) => {
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    let child;
-    try {
-      child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env ?? process.env, detached: true });
-    } catch (err) {
-      resolve({ code: null, stdout: '', stderr: String(err), timedOut: false, durationMs: 0 });
-      return;
-    }
-    const timer = opts.timeoutMs
-      ? setTimeout(() => {
-          timedOut = true;
-          try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* already gone */ }
-        }, opts.timeoutMs)
-      : undefined;
-    child.stdout?.on('data', (d) => { stdout += d; });
-    child.stderr?.on('data', (d) => { stderr += d; });
-    child.on('error', (err) => { stderr += String(err); });
-    child.on('close', (code) => {
-      if (timer) clearTimeout(timer);
-      resolve({ code: timedOut ? null : code, stdout, stderr, timedOut, durationMs: Date.now() - started });
-    });
-  });
-}
+export {
+  exec,
+  gitChangedPaths,
+  gitHead,
+  gitStatus,
+  localCommandPort,
+  type Exec,
+  type LocalCommandPortOptions,
+  type LocalCommandRecord,
+} from '@buildd/core/quality-scout/local-host';
 
 async function git(dir: string, args: string[]): Promise<string> {
   const r = await exec('git', args, { cwd: dir, timeoutMs: 60_000 });
   if (r.code !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.trim().slice(0, 200)}`);
   return r.stdout;
-}
-
-export const gitHead = async (dir: string) => (await git(dir, ['rev-parse', 'HEAD'])).trim();
-export const gitStatus = async (dir: string) => git(dir, ['status', '--porcelain', '--untracked-files=all']);
-
-export async function gitChangedPaths(dir: string, base: string, head: string): Promise<string[]> {
-  return (await git(dir, ['diff', '--name-only', `${base}...${head}`])).split('\n').filter(Boolean);
 }
 
 /** The readiness report at `sha`, from the committed tree — never the working copy. */
@@ -118,56 +80,6 @@ export async function gitReadiness(dir: string, sha: string, gitConfig?: Record<
 
 export async function gitScoutProfile(dir: string, sha: string, extension: unknown, gitConfig?: Record<string, unknown> | null): Promise<ScoutCapabilityProfile> {
   return discoverScoutCapabilities({ readiness: await gitReadiness(dir, sha, gitConfig), extension });
-}
-
-// ── Command port ────────────────────────────────────────────────────────────
-
-export interface LocalCommandRecord {
-  request: ScoutCommandRequest;
-  output: ScoutCommandOutput;
-  /** `git status` lines the command added: anything here means the probe wrote to the checkout. */
-  treeChanges: string[];
-}
-
-/**
- * Runs a probe's command in `dir`, which must be a clean checkout of the
- * candidate SHA. Anything else is refused with no exit code (the judge reads
- * that as `inconclusive`), so a probe never reports on a tree it did not test.
- */
-export function localCommandPort(opts: { dir: string; evidenceDir: string; env?: NodeJS.ProcessEnv }) {
-  const records: LocalCommandRecord[] = [];
-  let n = 0;
-  return {
-    records,
-    port: {
-      async run(req: ScoutCommandRequest): Promise<ScoutCommandOutput> {
-        const head = await gitHead(opts.dir).catch(() => null);
-        const before = await gitStatus(opts.dir).catch(() => null);
-        if (head !== req.sha || before === null || before.trim() !== '') {
-          const why = head !== req.sha ? `checkout is at ${head?.slice(0, 12) ?? 'unknown'}, not ${req.sha.slice(0, 12)}` : 'checkout has uncommitted changes';
-          const output: ScoutCommandOutput = { exitCode: null, timedOut: false, stderrTail: `refused: ${why}` };
-          records.push({ request: req, output, treeChanges: [] });
-          return output;
-        }
-        const r = await exec('bash', ['-c', req.command], { cwd: opts.dir, timeoutMs: req.timeoutMs, env: opts.env });
-        mkdirSync(opts.evidenceDir, { recursive: true });
-        // Unique per process and call: an evidence log is never overwritten by a later run.
-        const file = join(opts.evidenceDir, `command-${req.sha.slice(0, 12)}-${process.pid}-${Date.now()}-${++n}.log`);
-        writeFileSync(file, `$ ${req.command}\n# ref ${req.ref} sha ${req.sha}\n# exit ${r.code} timedOut ${r.timedOut} ${r.durationMs}ms\n\n--- stdout ---\n${r.stdout}\n--- stderr ---\n${r.stderr}\n`);
-        const after = (await gitStatus(opts.dir).catch(() => '')).split('\n').filter(Boolean);
-        const output: ScoutCommandOutput = {
-          exitCode: r.code,
-          timedOut: r.timedOut,
-          durationMs: r.durationMs,
-          stdoutTail: r.stdout.slice(-TAIL_CHARS),
-          stderrTail: r.stderr.slice(-TAIL_CHARS),
-          evidenceRef: `file:${file}`,
-        };
-        records.push({ request: req, output, treeChanges: after });
-        return output;
-      },
-    },
-  };
 }
 
 // ── Decider ─────────────────────────────────────────────────────────────────

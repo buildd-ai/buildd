@@ -72,6 +72,27 @@ that tier, and carries the planId buildd reports coding outcomes against
 A service outage never takes buildd down: a failed resolve backs off for 30s
 and serves the last good answer (no planId), then buildd's own default.
 
+### From buildd
+
+Deploy with the Cloudflare credential stored in buildd, which never comes to
+your machine (docs/specs/deployment-actions.md). The script builds the bundle
+with `wrangler deploy --dry-run` (no credential) and buildd uploads it:
+
+```bash
+# A person with an admin buildd key:
+BUILDD_API_KEY=bld_… POLICY_TOKENS=… MODEL_POLICY=… \
+  bun apps/model-policy/scripts/deploy.ts --workspace <id> --credential-ref cloudflare \
+  --secret POLICY_TOKENS --secret MODEL_POLICY
+
+# A Platform Operator task: write the request, then pass it to the `deploy`
+# MCP action. buildd checks the workspace's Operator grant for
+# cloudflare / model-policy / <environment> / <credential ref>.
+bun apps/model-policy/scripts/deploy.ts --emit /tmp/model-policy-deploy.json [--environment staging]
+```
+
+`--environment` other than `production` deploys the Worker
+`model-policy-<environment>`. Secrets set separately survive a code upload.
+
 ## Client side
 
 ```ts
