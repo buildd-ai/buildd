@@ -185,6 +185,7 @@ function TaskDock({ objRef, onSend, onOpen }: { objRef: BuilddObjectRef; onSend(
   const m = taskDockModel(task);
   const act = (a: DockAction) => {
     if (a.kind === 'send' && a.text) onSend(a.text);
+    else if (a.kind === 'open' && a.taskId) onOpen({ kind: 'task', id: a.taskId, workspaceId: task.workspaceId, fallbackText: `${a.label}: ${task.label}` });
     else if (a.kind === 'answer' && task.worker) {
       onOpen({ kind: 'question', id: task.worker.id, taskId: task.id, missionId: task.missionId, workspaceId: task.workspaceId, fallbackText: `A question on ${task.label}` });
     }

@@ -15,7 +15,7 @@ import { groupTasksByPhase } from './flight-strip-nav';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { isGreenAutoMergePending } from './auto-merge-grace';
 import { resolvePrDisplayState } from './pr-presentation';
-import type { DeliveryDisplay } from './workflow/delivery-display';
+import { deliveryReading, type DeliveryDisplay, type DeliveryReadingInput, type DeliveryTone } from './workflow/delivery-display';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -257,22 +257,24 @@ export function deriveFeedPrState(
 /**
  * A kernel-owned delivery's feed state (§17.5). Null for `working`: the
  * delivery waits on the owner's own attempt, so the task's execution state is
- * the reading. Only ESCALATED is yours; every other live state has a
+ * the reading. A person's move (ESCALATED, an approved PR awaiting its merge) is yours; every other live state has a
  * non-human owner and reads as moving, so a fix in flight, a review, a
  * landing or a trunk block is never "needs you" and never FAILED (S35, S36).
  */
-export function feedStateForDelivery(d: Pick<DeliveryDisplay, 'stage'>): { state: PulseState; needsYou: NeedsYouReason | null } | null {
-  switch (d.stage) {
-    case 'working': return null;
-    case 'needs_you': return { state: 'needs_you', needsYou: 'pr' };
-    case 'failed': return { state: 'needs_you', needsYou: 'failed' };
-    case 'merged':
-    case 'superseded':
-    case 'closed':
-    case 'abandoned': return { state: 'done', needsYou: null };
-    default: return { state: 'moving', needsYou: null };
-  }
+export function feedStateForDelivery(d: DeliveryReadingInput): { state: PulseState; needsYou: NeedsYouReason | null } | null {
+  const r = deliveryReading(d);
+  return r ? FEED_FOR_DELIVERY_TONE[r.tone] : null;
 }
+
+/** The feed's state per canonical delivery tone (`deliveryReading`). */
+const FEED_FOR_DELIVERY_TONE: Record<DeliveryTone, { state: PulseState; needsYou: NeedsYouReason | null }> = {
+  needs: { state: 'needs_you', needsYou: 'pr' },
+  failed: { state: 'needs_you', needsYou: 'failed' },
+  landed: { state: 'done', needsYou: null },
+  closed: { state: 'done', needsYou: null },
+  live: { state: 'moving', needsYou: null },
+  stalled: { state: 'moving', needsYou: null },
+};
 
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 const TERMINAL = new Set<string>(TERMINAL_TASK_STATUSES);

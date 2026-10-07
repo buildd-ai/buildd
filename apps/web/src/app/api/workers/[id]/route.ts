@@ -67,7 +67,7 @@ import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
-import { attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
@@ -2975,6 +2975,8 @@ export async function PATCH(
   }
 
   let shouldAutoRetry = false;
+  /** A kernel review round that broke its output contract: the T27 reason T4 sends (§6.6). */
+  let kernelReviewFailure: 'prose_verdict' | 'no_verdict' | 'infra' | null = null;
   if (status === 'completed' || status === 'failed' || status === 'error') {
     updates.completedAt = new Date();
 
@@ -3335,9 +3337,30 @@ export async function PATCH(
         ? parsedReview.reason
         : null;
 
+      // A review round of a kernel-owned delivery: the contract failure is T27
+      // (docs/specs/workflow-state-kernel.md §6.3, §6.6). A prose verdict is a
+      // failure, never a verdict, so none of the legacy handling below runs for
+      // it — no prose fallback, no same-task requeue, no legacy escalation. T4
+      // further down sends ReviewRoundFailed with this reason, and T27's
+      // bounded re-queue then ESCALATED(review_unavailable) decides what's next.
+      const kernelReviewRound = reviewContractViolation
+        ? await isKernelReviewRound({ deliveryId: reviewTaskRow?.deliveryId ?? null, context: reviewTaskCtx }).catch((err) => {
+            console.error(`[review-contract-enforcement] kernel ownership read failed for task ${worker.taskId}:`, err);
+            return false;
+          })
+        : false;
+      if (kernelReviewRound) {
+        kernelReviewFailure = isSilentStartCompletion
+          ? 'infra'
+          : !malformedVerdictReason && extractVerdictFromProse(body.summary).verdict
+            ? 'prose_verdict'
+            : 'no_verdict';
+      }
+
       // Fallback: if structured output parsing failed and it's due to missing
-      // verdict (not malformed), try to extract from prose summary.
-      if (reviewContractViolation && !malformedVerdictReason && !isSilentStartCompletion) {
+      // verdict (not malformed), try to extract from prose summary. Legacy
+      // reviews only: on a kernel round the prose fallback can only propose.
+      if (reviewContractViolation && !malformedVerdictReason && !isSilentStartCompletion && !kernelReviewRound) {
         const proseExtraction = extractVerdictFromProse(body.summary);
         if (proseExtraction.verdict) {
           const fallbackOutput = constructFallbackStructuredOutput(body.summary, proseExtraction);
@@ -3374,9 +3397,12 @@ export async function PATCH(
       const reviewInfraRetryCount =
         typeof reviewTaskCtx.infraRetryCount === 'number' ? reviewTaskCtx.infraRetryCount : 0;
       if (reviewContractViolation) {
-        const willRequeue = reviewSilentStart
-          ? reviewInfraRetryCount < MAX_INFRA_RETRIES_PATCH
-          : reviewContractRetryCount < MAX_REVIEW_CONTRACT_RETRIES;
+        // A kernel round is re-queued by T27 at the same round, never by the task's own requeue.
+        const willRequeue = kernelReviewRound
+          ? false
+          : reviewSilentStart
+            ? reviewInfraRetryCount < MAX_INFRA_RETRIES_PATCH
+            : reviewContractRetryCount < MAX_REVIEW_CONTRACT_RETRIES;
         console.error(
           `[review-contract-enforcement] task ${worker.taskId} (worker ${id}) ` +
           `overriding completed→${willRequeue ? 'pending (requeue)' : 'failed'}: review task ` +
@@ -3420,6 +3446,9 @@ export async function PATCH(
               'the task outputSchema (verdict / confidence / summary). Review the PR again ' +
               'and return the verdict as structuredOutput.',
           };
+        } else if (kernelReviewRound) {
+          // T27 owns the retry budget and the escalation (review_unavailable);
+          // a legacy reviewer_escalated note beside it would be a second authority.
         } else {
           // Retries exhausted and the reviewer contract is dead for this PR.
           // A reviewer task is dispatched only on the webhook's `opened`
@@ -3970,7 +3999,8 @@ export async function PATCH(
       // BT-7/8/9: Reviewer outcome handling — runs when a reviewer task completes.
       await runStep('reviewer-outcome', async () => {
         // Skip for loop requeue — reviewer logic only applies to terminal completions.
-        if (status !== 'completed' || loop?.kind === 'hold') return;
+        // A kernel round that broke its contract has no verdict to act on (T27 below).
+        if (status !== 'completed' || loop?.kind === 'hold' || kernelReviewFailure) return;
         await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput);
         // AFTER the outcome is applied, so an on=merge callback sees the merge
         // this verdict may just have triggered. Single-fire and best-effort.
@@ -3997,6 +4027,7 @@ export async function PATCH(
           ...end,
           source: 'runner',
           taskRetryBudgetLeft: shouldAutoRetry,
+          ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
         });
       });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { PR_PILL, derivePrDisplayState, resolvePrDisplayState, type PrDisplayState } from './pr-presentation';
+import { PR_PILL, canonicalPrState, derivePrDisplayState, prListStatus, prRecord, resolvePrDisplayState, type PrDisplayState } from './pr-presentation';
 
 const pill = (lifecycle: string | null, mergedAt: unknown = null) => PR_PILL[derivePrDisplayState(lifecycle, mergedAt)];
 
@@ -67,5 +67,40 @@ describe('derivePrDisplayState', () => {
   it('a merge stamp wins over any lifecycle value', () => {
     for (const [lifecycle] of TABLE) expect(derivePrDisplayState(lifecycle, new Date())).toBe('merged');
     expect(derivePrDisplayState(null, '2026-01-01T00:00:00Z')).toBe('merged');
+  });
+});
+
+describe('Slice F: the API vocabulary reads the delivery for a kernel-owned PR', () => {
+  const ALL: PrDisplayState[] = ['merged', 'closed', 'unresolvable', 'conflict', 'ci_failed', 'ci_running', 'ci_passed', 'awaiting_ci', 'open'];
+
+  it('prListStatus is the inverse of derivePrDisplayState: list_prs speaks one vocabulary', () => {
+    for (const s of ALL) expect(derivePrDisplayState(prListStatus(s), null)).toBe(s);
+  });
+
+  it('prRecord: a kernel-owned PR is merged only when the delivery says so, whatever the columns say', () => {
+    const stale = { mergedAt: new Date('2026-01-01T00:00:00Z'), prLifecycleStatus: 'merged', supersededByPrNumber: 9, supersededByPrUrl: 'u9', supersededReason: 'old' };
+    const open = prRecord({ ...stale, delivery: { state: 'AWAITING_REVIEW', mergedAt: null, supersededBy: null } });
+    expect(open).toEqual({ merged: false, mergedAt: null, supersededBy: null });
+
+    const merged = prRecord({ mergedAt: null, prLifecycleStatus: 'ci_failed', delivery: { state: 'MERGED', mergedAt: '2026-02-02T00:00:00.000Z', supersededBy: null } });
+    expect(merged).toEqual({ merged: true, mergedAt: '2026-02-02T00:00:00.000Z', supersededBy: null });
+
+    const superseded = prRecord({ delivery: { state: 'SUPERSEDED', mergedAt: null, supersededBy: { prNumber: 12, url: 'u12', reason: 'reopened' } } });
+    expect(superseded.supersededBy).toEqual({ prNumber: 12, url: 'u12', reason: 'reopened' });
+  });
+
+  it('prRecord: a legacy PR keeps the fact-cache columns', () => {
+    expect(prRecord({ mergedAt: null, prLifecycleStatus: 'merged' })).toEqual({ merged: true, mergedAt: null, supersededBy: null });
+    expect(prRecord({ mergedAt: new Date('2026-03-03T00:00:00Z') }).mergedAt).toBe('2026-03-03T00:00:00.000Z');
+    expect(prRecord({ supersededByPrNumber: 4, supersededByPrUrl: 'u4', supersededReason: 'r' }).supersededBy).toEqual({ prNumber: 4, url: 'u4', reason: 'r' });
+    expect(prRecord({}).merged).toBe(false);
+  });
+
+  it('canonicalPrState: GitHub decides, the record fills a merge GitHub reported as a plain close', () => {
+    expect(canonicalPrState({ githubMerged: true, githubClosed: true }, false)).toBe('merged');
+    expect(canonicalPrState({ githubMerged: false, githubClosed: true }, true)).toBe('merged');
+    expect(canonicalPrState({ githubMerged: false, githubClosed: true }, false)).toBe('closed_unmerged');
+    // An open PR on GitHub is open, whatever a stale record says.
+    expect(canonicalPrState({ githubMerged: false, githubClosed: false }, true)).toBe('open');
   });
 });

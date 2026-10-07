@@ -84,6 +84,15 @@ describe('release composition', () => {
     expect(v.needsYou).toBe(false);
   });
 
+  test('S33: a composition approved through its delta round says the review covered only the delta', () => {
+    const delta = R({ id: 'r2', round: 2, kind: 'delta', status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', scope: { composition: true, novelDeltaPaths: ['a.sql', 'b.ts'] } });
+    const v = view({ view: V(D({ state: 'APPROVED', currentRound: 2, approvalBasis: 'composition', compositionHeads: ['H1abcdef'] }), [R({ status: 'superseded' }), delta]) });
+    expect(v.compositionVerified).toBe(true);
+    expect(v.headline).toBe('Release-only changes approved');
+    expect(v.headline).not.toBe('Approved');
+    expect(v.detail).toBe('every other change was reviewed at its own head; this review covered only 2 new paths');
+  });
+
   test('a composition head that is no longer current claims nothing', () => {
     const v = view({ view: V(D({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['OLD'] })) });
     expect(v.compositionVerified).toBe(false);
@@ -231,5 +240,15 @@ describe('S37: conflict remediation already exists', () => {
     const v = view({ view: V(D({ state: 'MERGED', mergeable: 'dirty', mergeableHeadSha: 'H1abcdef' })) });
     expect(v.cta).toBeNull();
     expect(v.headline).toBe('Merged');
+  });
+});
+
+describe('Slice F: the view carries the PR ending get_pr and list_prs report', () => {
+  test('merged_at and the T20 record come from the delivery row', () => {
+    const v = view({ view: V(D({ state: 'MERGED', mergedAt: '2026-10-01T00:00:00.000Z' })) });
+    expect(v.mergedAt).toBe('2026-10-01T00:00:00.000Z');
+    expect(v.supersededBy).toBeNull();
+    const s = view({ view: V(D({ state: 'SUPERSEDED', supersededByPr: 12, supersededByUrl: 'https://github.com/acme/widgets/pull/12', supersededReason: 'reopened' })) });
+    expect(s.supersededBy).toEqual({ prNumber: 12, url: 'https://github.com/acme/widgets/pull/12', reason: 'reopened' });
   });
 });

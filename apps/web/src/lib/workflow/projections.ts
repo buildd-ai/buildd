@@ -18,7 +18,7 @@
  *     attempt stays in `history`, but the delivery's stage comes from its
  *     canonical state and its current attempt, never from the worst attempt.
  */
-import type { PrDisplayState } from '@/lib/pr-presentation';
+import type { PrDisplayState, PrSupersededBy } from '@/lib/pr-presentation';
 import { attemptView } from './reducer';
 import type { AttemptFamily, DeliverySnapshot, DeliveryState, KernelView } from './types';
 
@@ -121,6 +121,10 @@ export interface DeliveryView {
    * a kernel-owned PR. Null when no PR is bound.
    */
   prState: PrDisplayState | null;
+  /** GitHub's `merged_at` as the delivery recorded it (T17); null until merged. */
+  mergedAt: string | null;
+  /** T20's record: the PR this delivery's work landed under. Null without one. */
+  supersededBy: PrSupersededBy | null;
   /** The newest `workflow_transitions` row: what moved the delivery here, and when. */
   lastTransition: TransitionRef | null;
 }
@@ -265,8 +269,18 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     case 'REPAIRING': headline = repairKind === 'ci' ? 'Fixing CI' : 'Repairing'; break;
     case 'BLOCKED_ON_TRUNK': headline = 'Blocked on a red base branch'; break;
     case 'APPROVED':
-      headline = compositionVerified ? 'Release composition verified' : d.approvalBasis === 'policy' ? 'Ready to land' : 'Approved';
-      if (compositionVerified) detail = 'every change in it was reviewed at its own head; nothing new was added';
+      if (compositionVerified) {
+        // §5.9 / S33: a delta round approved the release-only paths; it is not a whole-release verdict.
+        const delta = input.view.rounds.find((r) => r.scope?.composition === true && r.status === 'decided'
+          && r.effectiveVerdict === 'approve' && r.headSha === d.currentHeadSha);
+        const n = delta && Array.isArray(delta.scope?.novelDeltaPaths) ? (delta.scope!.novelDeltaPaths as unknown[]).length : 0;
+        headline = delta ? 'Release-only changes approved' : 'Release composition verified';
+        detail = delta
+          ? `every other change was reviewed at its own head; this review covered only ${n} new ${n === 1 ? 'path' : 'paths'}`
+          : 'every change in it was reviewed at its own head; nothing new was added';
+      } else {
+        headline = d.approvalBasis === 'policy' ? 'Ready to land' : 'Approved';
+      }
       break;
     case 'LANDING': headline = 'Merging'; break;
     case 'ESCALATED':
@@ -327,6 +341,10 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     history,
     cta,
     prState: deliveryPrState(d),
+    mergedAt: d.mergedAt ?? null,
+    supersededBy: d.supersededByPr != null || d.supersededByUrl
+      ? { prNumber: d.supersededByPr ?? null, url: d.supersededByUrl ?? null, reason: d.supersededReason ?? null }
+      : null,
     lastTransition: input.lastTransition ?? null,
   };
 }

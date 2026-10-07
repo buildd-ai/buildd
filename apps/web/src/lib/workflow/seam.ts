@@ -27,6 +27,8 @@ import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy
 import { githubReader, workspaceRepo } from './github-facts';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
+import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
+import { floorCandidatesSql, type FloorCandidate } from './reconcile';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
 export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
@@ -199,6 +201,25 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
   return { owned: true, deliveryId };
 }
 
+// ── §14: one authority per delivery ─────────────────────────────────────────
+
+/**
+ * The kernel delivery that owns PR `prNumber` of the workspace's repo, with the
+ * state a person would be acting against; null = legacy-owned (or no repo).
+ * A door that would file legacy review-family work (a fix task with no
+ * delivery and no ledger row) checks this first and refuses on a kernel PR.
+ */
+export async function kernelDeliveryOfPr(p: { workspaceId: string; prNumber: number }, deps: SeamDeps = {}): Promise<{
+  deliveryId: string; state: string | null; stateReason: string | null; version: number;
+} | null> {
+  const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
+  if (!repo) return null;
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, repo.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return null;
+  const d = (await loadView({ deliveryId }, deps.exec)).delivery;
+  return { deliveryId, state: d?.state ?? null, stateReason: d?.stateReason ?? null, version: d?.version ?? 0 };
+}
+
 // ── T4: an attempt ended ────────────────────────────────────────────────────
 
 export interface AttemptTask {
@@ -207,6 +228,17 @@ export interface AttemptTask {
   deliveryId: string | null;
   deliveryRole: string | null;
   context: unknown;
+}
+
+/**
+ * Whether a reviewer task is a review round of a kernel-owned delivery (§6.3
+ * T27): its contract failures are the kernel's to decide, never the legacy
+ * prose fallback, same-task requeue or escalation. A delivery the kill switch
+ * released is legacy again.
+ */
+export async function isKernelReviewRound(task: { deliveryId?: string | null; context?: unknown }, deps: SeamDeps = {}): Promise<boolean> {
+  if (!task.deliveryId || !ctxOf(task).workflowRoundId) return false;
+  return !!(await kernelDeliveryById(task.deliveryId, deps.exec));
 }
 
 export async function attemptEnded(p: {
@@ -223,6 +255,11 @@ export async function attemptEnded(p: {
   source: string;
   /** The task's own retry is queued (its retry count, not a ledger): an owner end with nothing local stays WORKING. */
   taskRetryBudgetLeft?: boolean;
+  /**
+   * A reviewer that completed but broke its output contract (§6.6): `prose_verdict`
+   * (a verdict written as prose, never applied) or `no_verdict`. Absent = infra.
+   */
+  reviewFailure?: 'prose_verdict' | 'no_verdict' | 'infra';
 }, deps: SeamDeps = {}): Promise<{ handled: boolean; result?: CommandResult }> {
   const attemptKind = p.task.deliveryRole;
   if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind) && attemptKind !== 'review')) return { handled: false };
@@ -237,7 +274,7 @@ export async function attemptEnded(p: {
     const roundId = ctxOf(p.task).workflowRoundId as string | undefined;
     if (!roundId) return { handled: true };
     const result = await applyCommand(
-      { type: 'ReviewRoundFailed', actor: p.source, roundId, reason: 'infra', maxContractRetries: REVIEW_CONTRACT_RETRIES },
+      { type: 'ReviewRoundFailed', actor: p.source, roundId, reason: p.reviewFailure ?? 'infra', maxContractRetries: REVIEW_CONTRACT_RETRIES },
       { ref: { deliveryId }, exec: deps.exec },
     );
     await drainDelivery(deliveryId, deps);
@@ -422,14 +459,13 @@ export async function observeHead(p: {
   installationId: number;
   hintedHeadSha: string | null;
   source: string;
-  carryForward?: (live: LivePr) => Promise<'content_equivalent' | 'own_refresh' | null>;
 }, deps: SeamDeps = {}): Promise<boolean> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return false;
   try {
     const res = await ingestFact({
       kind: 'head_observed', workspaceId: p.workspaceId, source: p.source, repoFullName: p.repoFullName, prNumber: p.prNumber,
-      hintedHeadSha: p.hintedHeadSha, carryForward: p.carryForward,
+      hintedHeadSha: p.hintedHeadSha,
     }, { exec: deps.exec, github: readerFor(deps, p.installationId) });
     if (res.result === 'rejected' || res.result === 'stale') {
       console.log(`[workflow] HeadObserved ${p.repoFullName}#${p.prNumber}: ${res.result} (${res.reason})`);
@@ -518,23 +554,35 @@ export async function abandonDelivery(p: {
  */
 export async function requestReview(p: {
   workspaceId: string; repoFullName: string; prNumber: number; installationId: number; forced: boolean; actor: string;
-}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult }> {
+}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; reviewTaskId: string | null }> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return { handled: false };
   const reader = readerFor(deps, p.installationId);
   const live = await reader.readPr(p.repoFullName, p.prNumber);
   if (!live) {
-    return { handled: true, result: { result: 'rejected', reason: 'live_read_failed', current: { state: null, version: 0, head: null, round: 0 } } };
+    return { handled: true, result: { result: 'rejected', reason: 'live_read_failed', current: { state: null, version: 0, head: null, round: 0 } }, reviewTaskId: null };
   }
-  // Record a head the webhook has not delivered yet, so the request names the current head.
+  // Record a head the webhook has not delivered yet, so the request names the current head
+  // (with the reader's §8.3 evidence, so an approval that still holds is carried, not re-reviewed).
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:review_request`, repoFullName: p.repoFullName, prNumber: p.prNumber },
-    { exec: deps.exec, github: { readPr: async () => live, contains: reader.contains } });
+    { exec: deps.exec, github: { ...reader, readPr: async () => live } });
   const result = await applyCommand(
     { type: 'ReviewRequested', actor: p.actor, headSha: live.headSha, live, forced: p.forced },
     { ref: { deliveryId }, exec: deps.exec },
   );
   await drainDelivery(deliveryId, deps);
-  return { handled: true, result };
+  return { handled: true, result, reviewTaskId: await roundReviewerAt(deliveryId, live.headSha, deps.exec) };
+}
+
+/**
+ * §8.1: the reviewer that answers for the live head is the one on this
+ * delivery's latest round at that head, never the newest reviewer row of the
+ * PR number (that row may be another head's, or another delivery's).
+ */
+async function roundReviewerAt(deliveryId: string, headSha: string, exec?: Exec): Promise<string | null> {
+  const view = await loadView({ deliveryId }, exec).catch(() => null);
+  const atHead = (view?.rounds ?? []).filter((r) => r.headSha === headSha && r.reviewerTaskId);
+  return atHead.sort((a, b) => b.round - a.round)[0]?.reviewerTaskId ?? null;
 }
 
 // ── §6.9: a repair attempt's own commits (provenance by SHA set) ───────────
@@ -717,6 +765,82 @@ export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): 
     } catch (err) {
       s.errors++;
       console.error(`[workflow] trunk recovery of delivery ${b.id} failed:`, err);
+    }
+  }
+  return s;
+}
+
+export interface FloorSummary {
+  /** Kernel-owned deliveries the pass read GitHub for. */
+  checked: number;
+  /** Facts the live read produced that the reducer applied (a head, a merge, a close, a reopen). */
+  imported: number;
+  /** Owed effects that were missing and were re-enqueued under their own dedupe key. */
+  enqueued: number;
+  errors: number;
+}
+
+/**
+ * §11's reconciliation floor for kernel deliveries: for each open delivery
+ * (stalest first, capped) read the PR and import what GitHub says, then
+ * re-enqueue any effect its state owes and lacks. Only the two permitted
+ * operations: a fact through `ingestFact` (source `sweep:kernel-floor`) and an
+ * effect insert under the effect's own dedupe key. A missed `synchronize`
+ * (or a push to a draft PR, which the webhook path skips) or a missed
+ * `closed` is repaired on the next pass instead of stranding the delivery.
+ */
+export async function reconcileKernelDeliveries(
+  deps: SeamDeps = {},
+  o: { limit?: number; minQuietMs?: number; only?: string[] } = {},
+): Promise<FloorSummary> {
+  const exec = deps.exec ?? seamExec;
+  const s: FloorSummary = { checked: 0, imported: 0, enqueued: 0, errors: 0 };
+  const rows = ((await exec(floorCandidatesSql({ limit: o.limit ?? 100, minQuietMs: o.minQuietMs ?? 10 * 60_000, only: o.only ?? null }))).rows ?? []) as FloorCandidate[];
+  const source = 'sweep:kernel-floor';
+  for (const row of rows) {
+    const workspaceId = String(row.workspace_id);
+    const repoFullName = String(row.repo_full_name);
+    const prNumber = Number(row.pr_number);
+    try {
+      // The kill switch: a delivery released to legacy is legacy's to reconcile.
+      const deliveryId = await kernelDeliveryForPr(workspaceId, repoFullName, prNumber, deps.exec);
+      if (!deliveryId) continue;
+      const repo = await (deps.repoFor ?? workspaceRepo)(workspaceId);
+      if (!repo) continue;
+      s.checked++;
+      const reader = readerFor(deps, repo.installationId);
+      const live = await reader.readPr(repoFullName, prNumber);
+      if (!live) { s.errors++; continue; }
+      // One read per delivery: the fact funnel acts on this same live read (R2).
+      const once: GithubFactReader = { ...reader, readPr: async () => live };
+      const base = { workspaceId, source, repoFullName, prNumber };
+      const closedNow = live.merged || live.state !== 'open';
+      const fact = closedNow
+        ? (row.state === 'CLOSED_UNMERGED' && !live.merged ? null : { kind: 'pr_closed' as const, ...base })
+        : row.state === 'CLOSED_UNMERGED'
+          ? { kind: 'pr_closed' as const, ...base } // reopened: the live read makes it T19
+          : live.headSha !== row.current_head_sha ? { kind: 'head_observed' as const, ...base, hintedHeadSha: null } : null;
+      if (fact) {
+        const r = await ingestFact(fact, { exec: deps.exec, github: once });
+        if (r.result === 'applied') s.imported++;
+      }
+      let enqueued = 0;
+      const view = await loadView({ deliveryId }, deps.exec);
+      if (view.delivery) {
+        const existing = new Set((((await exec(existingEffectsSql(deliveryId))).rows ?? []) as Array<{ dedupe_key: string }>).map((e) => String(e.dedupe_key)));
+        for (const e of enqueueMissingEffects(view, existing)) {
+          const ins = ((await exec(enqueueEffectSql(deliveryId, view.delivery.version, e))).rows ?? []).length;
+          if (ins > 0) {
+            enqueued++;
+            s.enqueued++;
+            console.log(`[workflow] floor re-enqueued ${e.kind} for ${repoFullName}#${prNumber} (${e.dedupeKey})`);
+          }
+        }
+      }
+      if (fact || enqueued) await drainDelivery(deliveryId, deps);
+    } catch (err) {
+      s.errors++;
+      console.error(`[workflow] floor reconcile of ${repoFullName}#${prNumber} failed:`, err);
     }
   }
   return s;

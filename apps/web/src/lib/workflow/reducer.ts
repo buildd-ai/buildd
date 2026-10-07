@@ -134,13 +134,24 @@ export function verifyCompositionAttestation(
     seen.add(c.roundId);
     const ev = evidence.find((e) => e.roundId === c.roundId);
     if (!ev) { reasons.push(`constituent_unresolved:${c.roundId}`); continue; }
+    // The cited round must be the constituent's own: its delivery, its PR, this repo.
+    if (ev.deliveryId !== c.deliveryId || ev.prNumber !== c.prNumber || ev.repoFullName !== att.repoFullName) {
+      reasons.push(`constituent_round_foreign:${c.roundId}`);
+    }
     if (ev.roundHeadSha !== c.reviewedHeadSha) reasons.push(`constituent_head_mismatch:${c.roundId}`);
     if (ev.roundStatus !== 'decided' || ev.effectiveVerdict !== 'approve') reasons.push(`constituent_not_approved:${c.roundId}`);
     const unrecorded = c.equivalentHeadShas.filter((h) => !ev.deliveryApprovedHeads.includes(h));
     if (unrecorded.length > 0) reasons.push(`constituent_equivalence_unrecorded:${c.roundId}`);
-    const landedOk = c.landedSha === c.reviewedHeadSha
-      || (c.equivalentHeadShas.includes(c.landedSha) && ev.deliveryApprovedHeads.includes(c.landedSha));
-    if (!landedOk) reasons.push(`constituent_landed_unproven:${c.roundId}`);
+    // GitHub merged the reviewed head or a head its delivery recorded as equivalent…
+    const mergedOk = !!c.mergedHeadSha && (c.mergedHeadSha === c.reviewedHeadSha
+      || (c.equivalentHeadShas.includes(c.mergedHeadSha) && ev.deliveryApprovedHeads.includes(c.mergedHeadSha)));
+    if (!mergedOk) reasons.push(`constituent_landed_unproven:${c.roundId}`);
+    // …and the composed commit carrying it makes exactly the reviewed change:
+    // two patch-ids from two independent reads (the landed commit, the reviewed head).
+    const hex = /^[0-9a-f]{64}$/;
+    if (!c.landedSha || !hex.test(c.landedPatchId ?? '') || c.landedPatchId !== c.reviewedPatchId) {
+      reasons.push(`constituent_patch_unproven:${c.roundId}`);
+    }
   }
   if (att.novelDelta.result === 'present' && att.novelDelta.paths.length === 0) reasons.push('novel_delta_paths_missing');
   return { ok: reasons.length === 0, reasons };
@@ -157,7 +168,7 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
   switch (cmd.type) {
     case 'DeliveryOpened': return `open:${cmd.ownerTaskId}`;
     case 'PrBound': return `bind:${cmd.repoFullName}#${cmd.prNumber}`;
-    case 'HeadObserved': return pr ? `head:${pr}:${cmd.live.headSha}` : null;
+    case 'HeadObserved': return pr && d ? headObservationKey(pr, d.currentHeadSha, cmd.live.headSha, d.version) : null;
     case 'AttemptEnded': return `end:${cmd.workerId}`;
     case 'ReviewVerdictRecorded': return `verdict:${cmd.roundId}`;
     case 'FixClaimed': return `claim:${cmd.attemptId}`;
@@ -180,6 +191,17 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'CompositionAttested': return d ? `compose:${d.id}:${cmd.attestation.aggregateHeadSha}` : null;
     default: return null;
   }
+}
+
+/**
+ * T3's key names the move, not just the head it lands on: the head it moved
+ * from and the version it was read at. A head that returns to an earlier SHA
+ * (A→B→A) is a new observation; a redelivery of the same move reads the same
+ * version and is a duplicate, and one read after the move landed sees an
+ * unchanged head (`head_unchanged`).
+ */
+export function headObservationKey(pr: string, fromHead: string | null, toHead: string, version: number): string {
+  return `head:${pr}:${fromHead ?? 'none'}->${toHead}@v${version}`;
 }
 
 function landingKey(pr: string, headSha: string, version: number): string {
@@ -420,6 +442,25 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const postReview = (event: 'APPROVE' | 'REQUEST_CHANGES'): EffectSpec => ({
         kind: 'post_review', dedupeKey: `post_review:${dd.id}:${round.id}`, payload: { commitId: round.headSha, event, roundId: round.id },
       });
+      if (cmd.effectiveVerdict === 'approve' && round.scope?.composition === true) {
+        // §5.9 / S33: the delta round of a composition reviewed only the novel
+        // paths; every other change rests on its own constituent's verdict. The
+        // approval stays a composition one (head in composition_heads, never in
+        // approved_heads), and its GitHub review says it covers the delta only.
+        const paths = Array.isArray(round.scope.novelDeltaPaths) ? (round.scope.novelDeltaPaths as unknown[]).map(String) : [];
+        const scope = { compositionDelta: true, paths };
+        return c.apply(key, 'APPROVED', {
+          ...common,
+          evidence: { ...common.evidence, compositionDelta: { roundId: round.id, paths } },
+          patch: {
+            compositionHeads: dd.compositionHeads.includes(round.headSha) ? dd.compositionHeads : [...dd.compositionHeads, round.headSha],
+            approvalBasis: 'composition', stateReason: null,
+          },
+          rounds: [decide],
+          attempts: [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }],
+          effects: [{ ...postReview('APPROVE'), payload: { ...postReview('APPROVE').payload, scope } }, { kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${dd.id}:${round.id}`, payload: { families: ['review_fix'], reason: 'approved' } }],
+        });
+      }
       if (cmd.effectiveVerdict === 'approve') {
         return c.apply(key, 'APPROVED', {
           ...common,
@@ -943,7 +984,9 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         method: att.method,
         baseSha: att.baseSha,
         aggregateHeadSha: att.aggregateHeadSha,
-        constituents: att.constituents.map((x) => ({ roundId: x.roundId, prNumber: x.prNumber, reviewedHeadSha: x.reviewedHeadSha, landedSha: x.landedSha })),
+        constituents: att.constituents.map((x) => ({
+          roundId: x.roundId, prNumber: x.prNumber, reviewedHeadSha: x.reviewedHeadSha, mergedHeadSha: x.mergedHeadSha, landedSha: x.landedSha, patchId: x.landedPatchId,
+        })),
         novelDelta: att.novelDelta,
       };
       const key = `compose:${dd.id}:${att.aggregateHeadSha}`;
@@ -972,7 +1015,7 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
   if (!livePrOpen(cmd.live)) return c.rejected('pr_not_open');
   const h = cmd.live.headSha; // §6.3: the live head, never the payload head.
   if (h === d.currentHeadSha) return c.duplicate('head_unchanged');
-  const key = `head:${c.prKey}:${h}`;
+  const key = headObservationKey(c.prKey, d.currentHeadSha, h, d.version);
   const evidence = { live: cmd.live, hintedHeadSha: cmd.hintedHeadSha ?? null, previousHead: d.currentHeadSha };
   const record = (): Decision => c.apply(key, d.state, { patch: { currentHeadSha: h }, evidence });
   const toReview = (extra: { attempts?: AttemptOp[]; effects?: EffectSpec[]; patch?: DeliveryPatch; evidence?: Record<string, unknown> } = {}): Decision => {
@@ -1064,7 +1107,7 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
       }
       if (headCoverage(d, d.currentHeadSha) !== 'none') {
         const cf = carry();
-        if (cf && cf.result === 'apply') return { ...cf, patch: { ...cf.patch, boundAttemptId: null }, attempts, effects: [...cf.effects, ...effects], evidence: ev };
+        if (cf && cf.result === 'apply') return { ...cf, patch: { ...cf.patch, boundAttemptId: null }, attempts, effects: [...cf.effects, ...effects], evidence: { ...ev, carryForward: cf.evidence.carryForward } };
       }
       return toReview({ attempts, effects, evidence: ev });
     }
@@ -1216,6 +1259,26 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
   // failed / lost / unproven-with-nothing: back to the owing state, or exhaust.
   const exhausted = a.attemptNo >= a.maxAttempts;
   if (d.state === 'FIXING') {
+    const round = c.currentRound();
+    const roundHead = round?.headSha ?? a.boundHeadSha;
+    if (d.currentHeadSha && d.currentHeadSha !== roundHead) {
+      // §6.4: the head moved while the fix ran (a mid-fix push, recorded in FIXING). The round
+      // advances now: r+1 at the current head, delta from the last decided one. Re-dispatching the
+      // stale round's fix would be refused by T8 (newer_verdict_supersedes_fix) and strand the PR.
+      const h = d.currentHeadSha;
+      const ev = { ...evidence, headMovedDuringFix: { from: roundHead, to: h } };
+      if (c.openRoundAt(h)) return c.apply(key, 'AWAITING_REVIEW', { patch: { boundAttemptId: null, stateReason: null }, attempts: [end('failed')], evidence: ev });
+      const decided = c.decidedAt(h);
+      if (decided) {
+        const re = reenterVerdict(c, key, decided, h, ev);
+        return re.result === 'apply' ? { ...re, patch: { ...re.patch, boundAttemptId: null }, attempts: [end('failed')] } : re;
+      }
+      const r = c.startRound(h);
+      return c.apply(key, 'AWAITING_REVIEW', {
+        patch: { ...r.patch, boundAttemptId: null, stateReason: null },
+        rounds: r.rounds, attempts: [end('failed')], effects: r.effects, evidence: ev,
+      });
+    }
     if (exhausted) {
       return c.apply(key, 'ESCALATED', {
         patch: { stateReason: 'review_exhausted', boundAttemptId: null }, attempts: [end('failed')],
@@ -1223,7 +1286,6 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
         evidence,
       });
     }
-    const round = c.currentRound();
     return c.apply(key, 'CHANGES_REQUESTED', {
       patch: { boundAttemptId: null }, attempts: [end('failed')],
       effects: [{
@@ -1259,6 +1321,11 @@ function reenterVerdict(c: Ctx, key: string, round: RoundSnapshot, h: string, ev
   const d = c.d!;
   const ev = { ...evidence, note: 'head_already_reviewed', roundId: round.id, verdict: round.effectiveVerdict };
   const base: DeliveryPatch = { currentHeadSha: h, currentRound: Math.max(d.currentRound, round.round) };
+  if (round.effectiveVerdict === 'approve' && round.scope?.composition === true) {
+    // A composition delta approve never becomes a whole-head verdict (§5.9, S33).
+    const heads = d.compositionHeads.includes(h) ? d.compositionHeads : [...d.compositionHeads, h];
+    return c.apply(key, 'APPROVED', { patch: { ...base, compositionHeads: heads, approvalBasis: 'composition', stateReason: null }, evidence: ev });
+  }
   if (round.effectiveVerdict === 'approve') {
     const heads = d.approvedHeads.includes(h) ? d.approvedHeads : [...d.approvedHeads, h];
     return c.apply(key, 'APPROVED', { patch: { ...base, approvedHeads: heads, approvalBasis: 'verdict', stateReason: null }, evidence: ev });

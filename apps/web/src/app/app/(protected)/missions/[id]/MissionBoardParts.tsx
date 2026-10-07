@@ -310,7 +310,7 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
               state={s.state}
               selected={i === sel}
               tall={!compact}
-              label={`Cell ${i + 1} of ${n}${level}, ${STATUS_WORDS[s.state]}: ${t.title}`}
+              label={`Cell ${i + 1} of ${n}${level}, ${t.delivery && s.state !== 'landed' ? t.delivery.label.toLowerCase() : STATUS_WORDS[s.state]}: ${t.title}`}
               onSelect={onSelect}
             />
           );

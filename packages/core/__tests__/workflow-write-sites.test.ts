@@ -5,27 +5,30 @@
  * trunk_incidents. Everything else reaches them through `ingestFact` /
  * `applyCommand`, so no sweep, route or reaper can assign delivery state.
  *
- * While the kernel is dark this also proves nothing outside it reads them.
+ * Blocking mode (Slice F, §13.10): the allowlist is empty. The scan covers
+ * every deployed module (apps, packages, scripts), tests excluded by the same
+ * rule as `pr-fact-write-sites.test.ts`, and it flags table ACCESS: raw SQL
+ * that reads or writes a kernel table, and a Drizzle query builder handed one
+ * of its table objects. A declaration is not access, so the schema needs no
+ * exemption: `pgTable('workflow_deliveries', …)`, an FK `references(() => …)`
+ * and `typeof workflowDeliveries.$inferSelect` name a table without touching it.
  */
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const repo = join(import.meta.dir, '../../..');
-const files = Bun.spawnSync(['git', 'ls-files', '--cached', '--others', '--exclude-standard', 'apps', 'packages', 'scripts'], { cwd: repo })
+const tracked = Bun.spawnSync(['git', 'ls-files', '--cached', '--others', '--exclude-standard', 'apps', 'packages', 'scripts'], { cwd: repo })
   .stdout.toString()
   .split('\n')
   .filter((f) => /\.(ts|tsx)$/.test(f) && !/\.d\.ts$/.test(f));
+/** Deployed source: tests are not write sites (same rule as the PR fact guard). */
+const isTest = (f: string) => /\.test\.tsx?$/.test(f) || /__tests__\//.test(f) || /(^|\/)tests\//.test(f);
+const files = tracked.filter((f) => !isTest(f));
 
 const KERNEL_DIR = 'apps/web/src/lib/workflow/';
-/** Declarations and tests that exercise the kernel itself. */
-const ALLOWED = new Set([
-  'packages/core/db/schema.ts',
-  'packages/core/__tests__/workflow-write-sites.test.ts',
-  'apps/web/tests/db/workflow-kernel.test.ts',
-  'apps/web/tests/db/workflow-seam.test.ts',
-  'apps/web/tests/db/workflow-matrix.test.ts',
-]);
+/** Slice F: empty. A module outside the kernel that needs a kernel table goes through the kernel. */
+const ALLOWED = new Set<string>();
 
 /**
  * S14: routes, sweeps and the reaper reach the kernel only through its route
@@ -44,8 +47,12 @@ const KERNEL_ENTRY_POINTS = new Set(['seam', 'authority', 'github-facts', 'proje
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 const KERNEL_IMPORT = /(?:from\s+|import\()\s*['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:lib\/)?workflow)\/([a-z-]+)['"]/g;
 
-const TABLE_NAMES = /\b(workflow_deliveries|workflow_review_rounds|workflow_facts|workflow_transitions|workflow_effects|workflow_attempts|trunk_incidents)\b/;
-const TABLE_SYMBOLS = /\b(workflowDeliveries|workflowReviewRounds|workflowFacts|workflowTransitions|workflowEffects|workflowAttempts|trunkIncidents)\b/;
+const TABLES = 'workflow_deliveries|workflow_review_rounds|workflow_facts|workflow_transitions|workflow_effects|workflow_attempts|trunk_incidents';
+const SYMBOLS = 'workflowDeliveries|workflowReviewRounds|workflowFacts|workflowTransitions|workflowEffects|workflowAttempts|trunkIncidents';
+/** Raw SQL that reads or writes a kernel table: FROM, JOIN, INSERT INTO, UPDATE, DELETE FROM, TRUNCATE, ALTER/DROP TABLE. */
+const SQL_ACCESS = new RegExp(`\\b(?:FROM|JOIN|INTO|UPDATE|TRUNCATE|TABLE)\\s+(?:ONLY\\s+)?(?:(?:"?public"?)\\.)?"?(?:${TABLES})\\b`, 'i');
+/** A Drizzle query builder over a kernel table object: db.insert/update/delete/select…from/join(t), db.query.t. */
+const DRIZZLE_ACCESS = new RegExp(`(?:\\b(?:insert|update|delete|from|join|leftJoin|rightJoin|innerJoin|fullJoin)\\(\\s*(?:${SYMBOLS})\\b|\\.query\\.(?:${SYMBOLS})\\b)`);
 
 function code(file: string): string {
   return readFileSync(join(repo, file), 'utf8')
@@ -54,26 +61,30 @@ function code(file: string): string {
 }
 
 describe('workflow kernel tables have one writer', () => {
-  it('scans a real tree that contains the kernel', () => {
+  it('scans a real tree that contains the kernel and the schema', () => {
     expect(files.length).toBeGreaterThan(500);
     expect(files).toContain(`${KERNEL_DIR}kernel.ts`);
     expect(files).toContain('packages/core/db/schema.ts');
   });
 
-  it('no module outside apps/web/src/lib/workflow/ names a kernel table in SQL', () => {
-    const offenders = files.filter((f) => !f.startsWith(KERNEL_DIR) && !ALLOWED.has(f) && TABLE_NAMES.test(code(f)));
+  it('blocking mode: the allowlist beyond apps/web/src/lib/workflow/ is empty', () => {
+    expect([...ALLOWED]).toEqual([]);
+  });
+
+  it('no deployed module outside apps/web/src/lib/workflow/ reads or writes a kernel table in SQL', () => {
+    const offenders = files.filter((f) => !f.startsWith(KERNEL_DIR) && !ALLOWED.has(f) && SQL_ACCESS.test(code(f)));
     expect(offenders).toEqual([]);
   });
 
-  it('no module outside apps/web/src/lib/workflow/ uses the Drizzle table objects', () => {
-    const offenders = files.filter((f) => !f.startsWith(KERNEL_DIR) && !ALLOWED.has(f) && TABLE_SYMBOLS.test(code(f)));
+  it('no deployed module outside apps/web/src/lib/workflow/ queries the Drizzle table objects', () => {
+    const offenders = files.filter((f) => !f.startsWith(KERNEL_DIR) && !ALLOWED.has(f) && DRIZZLE_ACCESS.test(code(f)));
     expect(offenders).toEqual([]);
   });
 
   it('S14: outside the kernel, only its route API, kill switch and live reader are imported', () => {
     const offenders: string[] = [];
     for (const f of files) {
-      if (f.startsWith(KERNEL_DIR) || ALLOWED.has(f) || !f.startsWith('apps/web/src/') || /\.test\.tsx?$/.test(f)) continue;
+      if (f.startsWith(KERNEL_DIR) || ALLOWED.has(f) || !f.startsWith('apps/web/src/')) continue;
       for (const m of code(f).matchAll(KERNEL_IMPORT)) {
         if (!KERNEL_ENTRY_POINTS.has(m[1]) && f !== COMPOSITION_ROOT) offenders.push(`${f} → workflow/${m[1]}`);
       }
@@ -87,8 +98,34 @@ describe('workflow kernel tables have one writer', () => {
     expect([...`import { reduce } from '@/lib/workflow/reducer';`.matchAll(KERNEL_IMPORT)].map((m) => m[1])).toEqual(['reducer']);
   });
 
-  it('the guard can fail: it sees the kernel itself', () => {
-    expect(TABLE_NAMES.test(code(`${KERNEL_DIR}kernel.ts`))).toBe(true);
-    expect(TABLE_SYMBOLS.test('db.update(workflowDeliveries)')).toBe(true);
+  it('the guard can fail: it sees the kernel itself, and every access shape', () => {
+    expect(SQL_ACCESS.test(code(`${KERNEL_DIR}kernel.ts`))).toBe(true);
+    for (const s of [
+      'UPDATE workflow_deliveries SET state = $1',
+      'insert into "workflow_effects" (kind) values ($1)',
+      'DELETE FROM public.workflow_attempts WHERE id = $1',
+      'SELECT * FROM workflow_transitions tr JOIN trunk_incidents i ON true',
+      'TRUNCATE workflow_facts',
+    ]) expect(SQL_ACCESS.test(s)).toBe(true);
+    for (const s of [
+      'db.update(workflowDeliveries).set({ state: "MERGED" })',
+      'db.insert(workflowEffects).values(row)',
+      'db.select().from(workflowReviewRounds)',
+      'db.query.trunkIncidents.findFirst()',
+    ]) expect(DRIZZLE_ACCESS.test(s)).toBe(true);
+  });
+
+  it('a declaration is not access: the schema passes without an exemption', () => {
+    const schema = code('packages/core/db/schema.ts');
+    // It does declare the tables, so a pass here is the access rule, not an empty scan.
+    expect(new RegExp(`pgTable\\('(?:${TABLES})'`).test(schema)).toBe(true);
+    expect(SQL_ACCESS.test(schema)).toBe(false);
+    expect(DRIZZLE_ACCESS.test(schema)).toBe(false);
+    for (const s of [
+      "export const workflowDeliveries = pgTable('workflow_deliveries', {",
+      'deliveryId: uuid(\'delivery_id\').references(() => workflowDeliveries.id)',
+      'export type WorkflowDeliveryRow = typeof workflowDeliveries.$inferSelect;',
+      "uniqueIndex('workflow_deliveries_owner_unique')",
+    ]) expect(SQL_ACCESS.test(s) || DRIZZLE_ACCESS.test(s)).toBe(false);
   });
 });

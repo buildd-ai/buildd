@@ -49,6 +49,8 @@ interface FakePr {
   baseRef?: string; baseExists?: boolean | null;
   /** §6.10: failing check names per commit (absent = check runs unreadable), the base branch's head, and commits whose runs are still going. */
   checks?: Record<string, string[]>; baseHead?: string | null; running?: string[];
+  /** §8.3: `[from, to]` head pairs whose PR diff the compare API reports unchanged. */
+  equivalent?: Array<[string, string]>;
 }
 let gh: FakePr;
 const live = (): LivePr => ({
@@ -64,12 +66,14 @@ const reader: GithubFactReader = {
   branchHead: async () => gh.baseHead ?? null,
   failingChecks: async () => gh.failing ?? null,
   branchExists: async () => gh.baseExists ?? null,
+  contentEquivalent: async (_repo, _base, from, to) => (gh.equivalent ?? []).some(([f, t]) => f === from && t === to),
 };
 const repoFor = async () => ({ installationId: 1, repoFullName: REPO, gitConfig: null });
 
 // ── Side-effect leaves, recorded ────────────────────────────────────────────
 
 let posted: Array<{ commitId: string; event: string }>;
+let postedBodies: string[] = [];
 let activity: string[];
 let notified: string[];
 let exhaustions: number;
@@ -124,7 +128,7 @@ mock.module('../../src/lib/github', () => ({
     mergeCalls.push({ prNumber, method, sha });
     return mergeAnswer();
   },
-  postPrReview: async (p: { headSha: string; event: string }) => { posted.push({ commitId: p.headSha, event: p.event }); return { posted: true }; },
+  postPrReview: async (p: { headSha: string; event: string; body?: string }) => { posted.push({ commitId: p.headSha, event: p.event }); postedBodies.push(p.body ?? ''); return { posted: true }; },
 }));
 const realActivity = await import('../../src/lib/pr-activity-comment');
 mock.module('../../src/lib/pr-activity-comment', () => ({
@@ -197,7 +201,7 @@ const { HeaderStatusPill } = await import('../../src/app/app/(protected)/tasks/[
 const { createElement } = await import('react');
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { getOwnerDeliveryDisplays } = await import('../../src/lib/workflow/delivery-view');
-const { deriveStage } = await import('../../src/lib/stage');
+const { deriveStage, deriveStageReading } = await import('../../src/lib/stage');
 const { boardStatusForDelivery } = await import('../../src/lib/mission-board');
 const { feedStateForDelivery } = await import('../../src/lib/mission-pulse');
 const { resolvePrDisplayState } = await import('../../src/lib/pr-presentation');
@@ -229,7 +233,7 @@ beforeAll(async () => {
 });
 beforeEach(() => {
   gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0', ancestors: {} };
-  posted = []; activity = []; notified = []; exhaustions = 0; reviewersCreated = []; override = {}; activityEntries = []; ciEscalations = []; ghApi = null; ghWrite = null; ghWrites.length = 0;
+  posted = []; postedBodies = []; activity = []; notified = []; exhaustions = 0; reviewersCreated = []; override = {}; activityEntries = []; ciEscalations = []; ghApi = null; ghWrite = null; ghWrites.length = 0;
   comments = new Map();
   updateBranchCalls = []; updateBranchError = null; mergeCalls = [];
   // GitHub merges a PR whose head is the pinned one, as the real PUT /merge does.
@@ -290,12 +294,13 @@ const reviewerOf = async (deliveryId: string) => (await taskRow((await tasksOf(d
 async function verdict(o: Delivery, v: 'approve' | 'request-changes' | 'escalate', head = gh.head, d = deps) {
   return seam.recordReviewVerdict({ reviewerTask: await reviewerOf(o.deliveryId), verdict: v, effectiveVerdict: v, headSha: head, confidence: 0.9 }, d);
 }
-const push = (o: Delivery, head: string, extra: { carryForward?: 'content_equivalent' | 'own_refresh' | null; ancestors?: string[] } = {}) => {
+/** A push; `equivalent: true` = the compare API reports the PR diff unchanged from the head it replaces (§8.3). */
+const push = (o: Delivery, head: string, extra: { equivalent?: boolean; ancestors?: string[] } = {}) => {
+  if (extra.equivalent) (gh.equivalent ??= []).push([gh.head, head]);
   gh.head = head;
   if (extra.ancestors) gh.ancestors[head] = extra.ancestors;
   return seam.observeHead({
     workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, hintedHeadSha: head, source: 'webhook:synchronize',
-    ...(extra.carryForward !== undefined ? { carryForward: async () => extra.carryForward ?? null } : {}),
   }, deps);
 };
 const closeOrMerge = (o: Delivery, merged: boolean, updatedAt = 'u1') => {
@@ -505,7 +510,7 @@ describe('S2 — approve at H0, non-equivalent push to H1', () => {
     const o = await openAndHandOn();
     expect(await verdict(o, 'approve')).toMatchObject({ handled: true, toState: 'APPROVED' });
     expect(posted).toEqual([{ commitId: 'H1', event: 'APPROVE' }]);
-    await push(o, 'H2', { carryForward: null });
+    await push(o, 'H2');
     const d = await delivery(o.deliveryId);
     expect(d).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2, approvedHeads: ['H1'] });
     expect((await rounds(o.deliveryId)).map((r) => [r.round, r.kind, r.status])).toEqual([[1, 'full', 'decided'], [2, 'delta', 'queued']]);
@@ -518,7 +523,8 @@ describe('S3 — approve at H0, head moves by a content-equivalent change', () =
     const o = await openAndHandOn();
     await verdict(o, 'approve');
     gh.head = 'H2';
-    const obs = () => seam.observeHead({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, hintedHeadSha: 'H2', source: 'webhook:synchronize', carryForward: async () => 'content_equivalent' }, deps);
+    gh.equivalent = [['H1', 'H2']];
+    const obs = () => seam.observeHead({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, hintedHeadSha: 'H2', source: 'webhook:synchronize' }, deps);
     await Promise.all([obs(), obs(), obs()]);
     const d = await delivery(o.deliveryId);
     expect(d).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H2', approvedHeads: ['H1', 'H2'] });
@@ -529,10 +535,64 @@ describe('S3 — approve at H0, head moves by a content-equivalent change', () =
   test('the platform\'s own refresh carries forward; a later non-equivalent push is still re-reviewed', async () => {
     const o = await openAndHandOn();
     await verdict(o, 'approve');
-    await push(o, 'H2', { carryForward: 'own_refresh' });
+    await push(o, 'H2', { equivalent: true });
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', approvedHeads: ['H1', 'H2'] });
-    await push(o, 'H3', { carryForward: null });
+    await push(o, 'H3');
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H3', currentRound: 2, approvedHeads: ['H1', 'H2'] });
+  });
+});
+
+describe('T13 — carry-forward decides from the delivery (task 1ebce52a)', () => {
+  test('a newer legacy reviewer row at another head saying request-changes does not stop the carry', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    // A reviewer row newer than round 1's, at a head this delivery never reviewed: the old
+    // carry-forward read "the newest reviewer row" and refused on it.
+    const legacy = await seedTask(workspaceId, { status: 'completed', title: 'legacy review' });
+    await q(sql`UPDATE tasks SET category = 'review',
+      context = jsonb_build_object('prNumber', ${o.prNumber}::int, 'headSha', 'HX'),
+      result = jsonb_build_object('structuredOutput', jsonb_build_object('verdict', 'request-changes', 'confidence', 0.9))
+      WHERE id = ${legacy}::uuid`);
+    await push(o, 'H2', { equivalent: true });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H2', approvedHeads: ['H1', 'H2'] });
+    expect(reviewersCreated.length).toBe(1);
+  });
+
+  test('equivalentHeadShas is a projection of an applied T13 onto the approving round\'s reviewer, never ahead of it', async () => {
+    const o = await openAndHandOn();
+    const [r1] = await tasksOf(o.deliveryId, 'review');
+    await verdict(o, 'approve');
+    await push(o, 'H2', { equivalent: true });
+    expect((await taskRow(r1.id)).context.equivalentHeadShas).toEqual(['H2']);
+    // Not equivalent: a delta round, and nothing is projected for H3.
+    await push(o, 'H3');
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H3', currentRound: 2 });
+    expect((await taskRow(r1.id)).context.equivalentHeadShas).toEqual(['H2']);
+    const carried = (await transitions(o.deliveryId)).filter((t) => t.command === 'HeadObserved' && t.to_state === 'APPROVED');
+    expect(carried.map((t) => t.evidence.carryForward)).toEqual(['content_equivalent']);
+  });
+
+  test('a head moved by the platform\'s own refresh_branch, pinned to the approved head, is carried as own_refresh', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    const last = (await transitions(o.deliveryId)).at(-1)!;
+    await q(sql`INSERT INTO workflow_effects (delivery_id, transition_id, kind, dedupe_key, payload, status, outcome)
+      VALUES (${o.deliveryId}::uuid, ${last.id}::uuid, 'refresh_branch', ${`refresh_branch:${o.deliveryId}:H1:test`},
+        jsonb_build_object('headSha', 'H1', 'reason', 'trunk_recovered'), 'done', 'ok:updated')`);
+    await push(o, 'R1', { ancestors: ['H1'], equivalent: true });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'R1', approvedHeads: ['H1', 'R1'] });
+    expect((await transitions(o.deliveryId)).at(-1)!.evidence).toMatchObject({ carryForward: 'own_refresh' });
+  });
+
+  test('without content equivalence nothing carries, even after the platform\'s own refresh', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    const last = (await transitions(o.deliveryId)).at(-1)!;
+    await q(sql`INSERT INTO workflow_effects (delivery_id, transition_id, kind, dedupe_key, payload, status, outcome)
+      VALUES (${o.deliveryId}::uuid, ${last.id}::uuid, 'refresh_branch', ${`refresh_branch:${o.deliveryId}:H1:test`},
+        jsonb_build_object('headSha', 'H1', 'reason', 'trunk_recovered'), 'done', 'ok:updated')`);
+    await push(o, 'R1', { ancestors: ['H1'] });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'R1', currentRound: 2, approvedHeads: ['H1'] });
   });
 });
 
@@ -567,9 +627,28 @@ describe('S5 — duplicate webhook delivery and duplicate reviewer PATCH', () =>
     await push(o, 'H2');
     await push(o, 'H2');
     expect((await transitions(o.deliveryId)).length).toBe(before);
-    const facts = await q(sql`SELECT 1 FROM workflow_facts WHERE workspace_id = ${workspaceId}::uuid AND fact_key = ${`head:${REPO}#${o.prNumber}:H2`}`);
+    // One fact for the move; a redelivery is answered with it (§5.3), not recorded again.
+    const facts = await q(sql`SELECT 1 FROM workflow_facts WHERE workspace_id = ${workspaceId}::uuid AND fact_key LIKE ${`head:${REPO}#${o.prNumber}:%->H2@v%`}`);
     expect(facts.length).toBe(1);
     expect(reviewersCreated.length).toBe(2);
+  });
+
+  test('a head that returns to an earlier SHA (A→B→A) is applied, not dropped as a duplicate (34b69829)', async () => {
+    const o = await openAndHandOn();
+    const before = (await transitions(o.deliveryId)).filter((t) => t.command === 'HeadObserved').length;
+    const heads = async () => (await transitions(o.deliveryId)).filter((t) => t.command === 'HeadObserved').length - before;
+    await push(o, 'H2');
+    expect(await heads()).toBe(1);
+    await push(o, 'H1');
+    expect(await heads()).toBe(2);
+    expect(await delivery(o.deliveryId)).toMatchObject({ currentHeadSha: 'H1' });
+    // …and once more round the cycle: the repeated H1→H2 move is new too.
+    await push(o, 'H2');
+    expect(await heads()).toBe(3);
+    expect(await delivery(o.deliveryId)).toMatchObject({ currentHeadSha: 'H2' });
+    // A redelivery of that last move is still one transition.
+    await push(o, 'H2');
+    expect(await heads()).toBe(3);
   });
 
   test('a replayed reviewer PATCH is a duplicate, sequential or concurrent; effects are not doubled', async () => {
@@ -987,7 +1066,7 @@ describe('S9–S15', () => {
       expect(await delivery(o.deliveryId)).toMatchObject({ state: 'REPAIRING', stateReason: 'behind' });
       // The refresh lands: our own mechanical push, carried forward without a new review.
       const next = `R${i}`;
-      await push(o, next, { ancestors: [head], carryForward: 'own_refresh' });
+      await push(o, next, { ancestors: [head], equivalent: true });
       expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: next });
       head = next;
     }
@@ -1029,7 +1108,7 @@ describe('S9–S15', () => {
     expect(mech).toMatchObject({ family: 'conflict', attemptNo: 1, boundHeadSha: 'H1', taskId: null });
     expect((await effects(o.deliveryId, 'refresh_branch')).map((e) => e.outcome)).toEqual(['ok:updated']);
     // GitHub's update-branch lands as a new head; it is the platform's own refresh.
-    await push(o, 'R1', { ancestors: ['H1'], carryForward: 'own_refresh' });
+    await push(o, 'R1', { ancestors: ['H1'], equivalent: true });
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'R1' });
     mergeAnswer = () => { gh.state = 'closed'; gh.merged = true; return { merged: true, message: 'merged' }; };
     expect(await land('R1')).toMatchObject({ merged: true });
@@ -1132,7 +1211,9 @@ describe('S16–S21', () => {
     expect(deriveStage({ taskStatus: 'completed', prUrl: 'u', prLifecycleStatus: 'ci_green', delivery: d })).toBe('FIXING');
     expect(boardStatusForDelivery(d)).toBe('running');
     expect(feedStateForDelivery(d)).toEqual({ state: 'moving', needsYou: null });
-    expect(dockToneForDelivery(d)).toMatchObject({ label: 'Fixing', tone: 'live' });
+    // One label on every surface (deliveryReading): the push has not reached GitHub yet.
+    expect(dockToneForDelivery(d)).toMatchObject({ label: 'Waiting for push', tone: 'live' });
+    expect(deriveStageReading({ taskStatus: 'completed', prUrl: 'u', prLifecycleStatus: 'ci_green', delivery: d }).label).toBe('Waiting for push');
     expect(resolvePrDisplayState({ delivery: d, prLifecycleStatus: 'ci_green' })).not.toBe('ci_passed');
     const ex = (await explainTask(a.ownerTaskId, { kind: 'admin', accountId: null } as never))!.subjects[0];
     expect(ex.delivery).toMatchObject({ state: view.state, headline: view.headline, owner: view.owner });
@@ -1245,6 +1326,23 @@ describe('S16–S21', () => {
     v = await loadView({ deliveryId: o.deliveryId });
     expect(v.delivery).toMatchObject({ state: 'ESCALATED', stateReason: 'review_exhausted' });
     expect((await tasksOf(o.deliveryId, 'fix')).length).toBe(2);
+  });
+
+  test('S19 variant (ea38b3d5): a fix that pushed mid-attempt and then died → a review round at the pushed head, not a stranded CHANGES_REQUESTED', async () => {
+    const f = await fixing();
+    await push(f, 'H2', { ancestors: ['H1'] });
+    expect(await delivery(f.deliveryId)).toMatchObject({ state: 'FIXING', currentHeadSha: 'H2' });
+    const before = reviewersCreated.length;
+
+    const w = await seedWorker(f.fix.id, { status: 'failed' });
+    await seam.attemptEnded({ task: f.fix, workerId: w, status: 'lost', localHeadSha: null, commitCount: 1, source: 'sweep:stale-workers' }, deps);
+    const v = await loadView({ deliveryId: f.deliveryId });
+    expect(v.delivery).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2, boundAttemptId: null });
+    expect(v.rounds.find((r) => r.round === 2)).toMatchObject({ headSha: 'H2', kind: 'delta', status: 'queued' });
+    expect(v.attempts.map((a) => [a.attemptNo, a.status, a.outcome])).toEqual([[1, 'ended', 'failed']]);
+    // The pushed head is under review; no second fix was filed for the stale round.
+    expect(reviewersCreated.slice(before).map((r) => [r.round, r.head])).toEqual([[2, 'H2']]);
+    expect((await tasksOf(f.deliveryId, 'fix')).length).toBe(1);
   });
 
   test('S20 (kernel): a stale version from a human action is answered stale with the current view; nothing applies', async () => {
@@ -1909,6 +2007,24 @@ describe('S28 — ledger separation', () => {
 });
 
 describe('S29 — reviewer ends with prose or no verdict', () => {
+  test('a prose verdict is a round failure recorded as prose_verdict, never an approve, on the same T27 budget (task 7313de90)', async () => {
+    const o = await openAndHandOn();
+    const r = await reviewerOf(o.deliveryId);
+    expect(await seam.isKernelReviewRound(r)).toBe(true);
+    const w = await seedWorker(r.id, { status: 'failed' });
+    await seam.attemptEnded({ task: r, workerId: w, status: 'failed', localHeadSha: null, commitCount: 0, source: 'runner', reviewFailure: 'prose_verdict' }, deps);
+    expect((await rounds(o.deliveryId)).map((x) => [x.round, x.head_sha, x.status, x.failure_count, x.verdict])).toEqual([[1, 'H1', 'queued', 1, null]]);
+    const t = (await transitions(o.deliveryId)).at(-1)!;
+    expect(t).toMatchObject({ command: 'ReviewRoundFailed', to_state: 'AWAITING_REVIEW', evidence: { reason: 'prose_verdict' } });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', approvedHeads: [] });
+    expect(posted).toEqual([]);
+    expect(await tasksOf(o.deliveryId, 'fix')).toEqual([]);
+    // The kill switch released it: legacy decides the contract failure again.
+    await q(sql`UPDATE workflow_deliveries SET authority = 'legacy' WHERE id = ${o.deliveryId}::uuid`);
+    expect(await seam.isKernelReviewRound(await reviewerOf(o.deliveryId))).toBe(false);
+  });
+
+
   test('the round fails and is re-queued at the same head and round number, then ESCALATED(review_unavailable); a late verdict is never applied', async () => {
     const o = await openAndHandOn();
     const failOnce = async () => {
@@ -1976,6 +2092,76 @@ describe('AWAITING_PUSH — an owner delivery leaves on a push (§6.4, §9)', ()
     await drain(o.deliveryId);
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
     expect(reviewersCreated.map((r) => r.head)).toEqual(['L5']);
+  });
+});
+
+describe('§11 — the reconciliation floor re-imports what a lost webhook never delivered (ddcbe113)', () => {
+  const floor = (o: Delivery) => seam.reconcileKernelDeliveries(deps, { only: [o.deliveryId], minQuietMs: 0 });
+
+  test('a missed synchronize: APPROVED at H1 while GitHub is at H2 → the floor imports the head and a delta round at H2 starts', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H1' });
+    gh.head = 'H2'; // pushed; the synchronize webhook never arrived
+    gh.ancestors.H2 = ['H1'];
+    const before = reviewersCreated.length;
+
+    const s = await floor(o);
+    expect(s).toMatchObject({ checked: 1, imported: 1, errors: 0 });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2 });
+    expect((await rounds(o.deliveryId)).at(-1)).toMatchObject({ round: 2, head_sha: 'H2', kind: 'delta' });
+    expect(reviewersCreated.slice(before).map((r) => [r.round, r.head])).toEqual([[2, 'H2']]);
+    const t = (await transitions(o.deliveryId)).at(-1)!;
+    expect(t.command).toBe('HeadObserved');
+    expect(t.evidence.actor).toBe('sweep:kernel-floor');
+
+    // A second pass with nothing new does nothing.
+    expect(await floor(o)).toMatchObject({ checked: 1, imported: 0, enqueued: 0 });
+    expect(reviewersCreated.length).toBe(before + 1);
+  });
+
+  test('a missed closed(merged): the floor reads merged and the delivery is MERGED', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    gh.state = 'closed'; gh.merged = true; gh.updatedAt = 'u-merged';
+    expect(await floor(o)).toMatchObject({ imported: 1 });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'MERGED' });
+  });
+
+  test('a draft PR\'s push is imported too: the floor reads the live head whatever the draft flag', async () => {
+    const o = await openAndHandOn();
+    gh.head = 'H2';
+    await floor(o);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2 });
+  });
+
+  test('CHANGES_REQUESTED with its dispatch_fix lost: the floor re-enqueues it under its own dedupe key and the fix is filed', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'request-changes', 'H1', crashedDeps);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'CHANGES_REQUESTED' });
+    const [lost] = await effects(o.deliveryId, 'dispatch_fix');
+    await q(sql`DELETE FROM workflow_effects WHERE id = ${lost.id}::uuid`);
+    expect(await tasksOf(o.deliveryId, 'fix')).toEqual([]);
+
+    expect(await floor(o)).toMatchObject({ imported: 0, enqueued: 1 });
+    const again = await effects(o.deliveryId, 'dispatch_fix');
+    expect(again.map((e) => [e.dedupe_key, e.status])).toEqual([[lost.dedupe_key, 'done']]);
+    expect((await tasksOf(o.deliveryId, 'fix')).length).toBe(1);
+    // Owed and present: nothing more to enqueue.
+    expect(await floor(o)).toMatchObject({ enqueued: 0 });
+  });
+
+  test('a delivery the kill switch released to legacy is not touched', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    await q(sql`UPDATE workspaces SET git_config = jsonb_set(COALESCE(git_config, '{}'::jsonb), '{workflowKernel}', 'false'::jsonb) WHERE id = ${workspaceId}::uuid`);
+    try {
+      gh.head = 'H2';
+      expect(await floor(o)).toMatchObject({ checked: 0 });
+      expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H1' });
+    } finally {
+      await q(sql`UPDATE workspaces SET git_config = git_config - 'workflowKernel' WHERE id = ${workspaceId}::uuid`);
+    }
   });
 });
 
@@ -2101,22 +2287,32 @@ describe('S32–S34 — release composition', () => {
    * Fake GitHub for the composed PR `agg` (dev → main): its compare lists one
    * squash commit per constituent, the version bump, and any `extra` commits.
    */
-  function composedGithub(aggPr: number, cs: Delivery[], o: { extra?: Array<{ sha: string; files: string[]; message?: string }>; truncated?: boolean; headRef?: string } = {}) {
+  function composedGithub(aggPr: number, cs: Delivery[], o: {
+    extra?: Array<{ sha: string; files: string[]; message?: string }>; truncated?: boolean; headRef?: string;
+    /** Constituent index whose squash into dev resolved a conflict: what landed differs from the reviewed head. */
+    conflictEdit?: number;
+  } = {}) {
+    const patch = (f: string, body = `+reviewed change to ${f}`) => ({ filename: f, status: 'modified', patch: `@@ -1 +1 @@\n-before\n${body}` });
     const commits = [
-      ...cs.map((c, i) => ({ sha: `SQ${i}`, files: [`src/c${i}.ts`], message: `feat: constituent (#${c.prNumber})`, pr: c.prNumber })),
-      { sha: 'BUMP', files: ['apps/web/package.json', 'CHANGELOG.md'], message: 'chore: bump version to v9.9.9', pr: null as number | null },
-      ...(o.extra ?? []).map((x) => ({ ...x, message: x.message ?? 'edit on the release branch', pr: null as number | null })),
+      ...cs.map((c, i) => ({ sha: `SQ${i}`, files: [`src/c${i}.ts`], message: `feat: constituent (#${c.prNumber})`, pr: c.prNumber, conflict: o.conflictEdit === i })),
+      { sha: 'BUMP', files: ['apps/web/package.json', 'CHANGELOG.md'], message: 'chore: bump version to v9.9.9', pr: null as number | null, conflict: false },
+      ...(o.extra ?? []).map((x) => ({ ...x, message: x.message ?? 'edit on the release branch', pr: null as number | null, conflict: false })),
     ];
+    const parentOf = (i: number) => (i ? commits[i - 1].sha : 'BASE0');
     ghApi = (path) => {
-      if (path === `/repos/${REPO}/pulls/${aggPr}`) return { head: { ref: o.headRef ?? 'dev' }, base: { ref: 'main' } };
+      if (path === `/repos/${REPO}/pulls/${aggPr}`) return { head: { ref: o.headRef ?? 'dev', sha: gh.head }, base: { ref: 'main' } };
       if (path.startsWith(`/repos/${REPO}/compare/main...`)) return {
         merge_base_commit: { sha: 'BASE0' }, base_commit: { sha: 'BASE0' }, total_commits: o.truncated ? 999 : commits.length,
-        commits: commits.map((c, i) => ({ sha: c.sha, parents: [{ sha: i ? commits[i - 1].sha : 'BASE0' }], commit: { message: c.message } })),
+        commits: commits.map((c, i) => ({ sha: c.sha, parents: [{ sha: parentOf(i) }], commit: { message: c.message } })),
         files: commits.flatMap((c) => c.files).map((filename) => ({ filename })),
       };
+      // A constituent's reviewed head (H1), diffed against its squash commit's parent: the change as reviewed.
+      const rv = /^\/repos\/[^/]+\/[^/]+\/compare\/([^.]+)\.\.\.H1$/.exec(path);
+      const ri = rv ? commits.findIndex((c, i) => c.pr != null && parentOf(i) === rv[1]) : -1;
+      if (ri >= 0) return { files: commits[ri].files.map((f) => patch(f)) };
       const m = /^\/repos\/[^/]+\/[^/]+\/commits\/([^/]+)(\/pulls)?$/.exec(path);
       const c = m && commits.find((x) => x.sha === m[1]);
-      if (c && !m![2]) return { files: c.files.map((filename) => ({ filename })) };
+      if (c && !m![2]) return { files: c.files.map((f) => patch(f, c.conflict ? `+conflict resolved by hand in ${f}` : undefined)) };
       if (c) return c.pr == null ? [] : [{ number: c.pr, merged_at: '2026-10-06T00:00:00Z', base: { ref: 'dev' }, head: { sha: 'H1' } }];
       return undefined;
     };
@@ -2135,6 +2331,15 @@ describe('S32–S34 — release composition', () => {
   const reviewersFor = (d: Delivery) => q<{ id: string }>(sql`SELECT id FROM tasks WHERE delivery_id = ${d.deliveryId}::uuid AND delivery_role = 'review'`);
   const compositionFacts = (d: Delivery) => q<{ id: string; payload: { attestation: import('../../src/lib/workflow/types').CompositionAttestation } }>(
     sql`SELECT id, payload FROM workflow_facts WHERE workspace_id = ${workspaceId}::uuid AND kind = 'composition_attested' AND pr_number = ${d.prNumber}::int`);
+
+  test('S32/T13: a composition approval carries forward on a content-equivalent push, with no reviewer task anywhere (task 1ebce52a)', async () => {
+    const cs = await reviewedConstituents();
+    const agg = await composedPr(cs);
+    expect(await delivery(agg.deliveryId)).toMatchObject({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1'] });
+    await push(agg, 'H2', { equivalent: true });
+    expect(await delivery(agg.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H2', compositionHeads: ['H1', 'H2'], approvedHeads: [] });
+    expect(await reviewersFor(agg)).toEqual([]);
+  });
 
   test('S32: release PR mechanically composed of reviewed changes → composition attestation accepted, CI still gates, no second reviewer', async () => {
     const cs = await reviewedConstituents();
@@ -2184,6 +2389,47 @@ describe('S32–S34 — release composition', () => {
 
     expect(await verdict(agg, 'escalate')).toMatchObject({ handled: true, toState: 'ESCALATED' });
     expect(await delivery(agg.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'review_escalated', compositionHeads: [] });
+  });
+
+  test('S33: a delta-round approve stays a composition approval covering the delta only, never a whole-release verdict', async () => {
+    const cs = await reviewedConstituents();
+    const agg = await composedPr(cs, { extra: [{ sha: 'HAND', files: ['packages/core/drizzle/9999_hand.sql'] }] });
+    await drain(agg.deliveryId);
+    const [, r2] = await rounds(agg.deliveryId);
+    posted = []; postedBodies = [];
+
+    expect(await verdict(agg, 'approve')).toMatchObject({ handled: true, toState: 'APPROVED' });
+    await drain(agg.deliveryId);
+    const d = await delivery(agg.deliveryId);
+    expect(d).toMatchObject({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1'], approvedHeads: [] });
+    expect(d.approvalBasis).not.toBe('verdict');
+    expect(headCoverage(d, 'H1')).toBe('composition');
+    const [t] = (await transitions(agg.deliveryId)).filter((x) => x.command === 'ReviewVerdictRecorded');
+    expect(t.evidence).toMatchObject({ compositionDelta: { roundId: r2.id, paths: ['packages/core/drizzle/9999_hand.sql'] } });
+
+    // The GitHub review and the headline both say the review covered only the delta.
+    expect(posted).toEqual([{ commitId: 'H1', event: 'APPROVE' }]);
+    expect(postedBodies[0]).toStartWith('Release-only changes approved');
+    expect(postedBodies[0]).toContain('packages/core/drizzle/9999_hand.sql');
+    const view = (await getDeliveryViewsForTasks([agg.ownerTaskId])).get(agg.ownerTaskId)!;
+    expect(view.headline).not.toBe('Approved');
+    expect(view.headline).toBe('Release-only changes approved');
+  });
+
+  test('S33 regression: a conflict resolved while squashing into dev is a novel delta, never "none"', async () => {
+    const cs = await reviewedConstituents();
+    // GitHub associates SQ0 with constituent 0's PR (approved at H1), but the squash differs from H1's diff.
+    const agg = await composedPr(cs, { conflictEdit: 0 });
+    await drain(agg.deliveryId);
+
+    const d = await delivery(agg.deliveryId);
+    expect(d).toMatchObject({ state: 'AWAITING_REVIEW', compositionHeads: [], approvedHeads: [], approvalBasis: null });
+    const [t] = (await transitions(agg.deliveryId)).filter((x) => x.command === 'CompositionAttested');
+    expect(t.evidence.novelDelta).toEqual({ result: 'present', paths: ['src/c0.ts'] });
+    // Only the constituent whose landed patch equals its reviewed one is cited, at its composed commit.
+    expect(t.evidence.constituents).toEqual([expect.objectContaining({ prNumber: cs[1].prNumber, reviewedHeadSha: 'H1', mergedHeadSha: 'H1', landedSha: 'SQ1' })]);
+    const [, r2] = await rounds(agg.deliveryId);
+    expect([r2.kind, r2.status]).toEqual(['delta', 'queued']);
   });
 
   test('S34: composition proof fails closed; ordinary PRs stay exact-head bound; verification idempotent under redelivery', async () => {

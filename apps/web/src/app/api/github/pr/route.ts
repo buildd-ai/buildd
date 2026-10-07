@@ -47,6 +47,8 @@ import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { loadPrAttempts } from '@/lib/pr-attempts';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { kernelLandingView, landThroughKernel, openKernelDelivery, type KernelLanding } from '@/lib/workflow/seam';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { canonicalPrState, prRecord } from '@/lib/pr-presentation';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
@@ -2385,23 +2387,23 @@ export async function GET(req: NextRequest) {
       pending: reviewStates.filter(s => s === 'PENDING').length,
     };
 
-    // Determine canonical state — GitHub is authoritative for merge detection;
-    // DB fills the gap when prLifecycleStatus='merged' but mergedAt raced to null.
-    const githubMerged = pr.merged === true;
-    const githubClosed = pr.state === 'closed';
-    const dbMerged = !!(worker.mergedAt || worker.prLifecycleStatus === 'merged');
-    let canonicalState: 'open' | 'merged' | 'closed_unmerged';
-    if (githubMerged || (dbMerged && githubClosed)) {
-      canonicalState = 'merged';
-    } else if (githubClosed) {
-      canonicalState = 'closed_unmerged';
-    } else {
-      canonicalState = 'open';
-    }
-
-    const dbMergedAt = worker.mergedAt
-      ? (worker.mergedAt instanceof Date ? worker.mergedAt.toISOString() : String(worker.mergedAt))
-      : null;
+    // Canonical state: GitHub is authoritative for open versus closed; the
+    // record fills a merge GitHub reported as a plain close. For a
+    // kernel-owned PR the record is the delivery (Slice F, §13.10), never the
+    // worker columns; a legacy PR keeps the fact cache.
+    const kernelView = worker.taskId
+      ? (await getDeliveryViewsForTasks([worker.taskId])).get(worker.taskId)
+      : undefined;
+    const record = prRecord({
+      delivery: kernelView && kernelView.prNumber === prNumber ? kernelView : null,
+      mergedAt: worker.mergedAt,
+      prLifecycleStatus: worker.prLifecycleStatus,
+      supersededByPrNumber: worker.supersededByPrNumber,
+      supersededByPrUrl: worker.supersededByPrUrl,
+      supersededReason: worker.supersededReason,
+    });
+    const canonicalState = canonicalPrState({ githubMerged: pr.merged === true, githubClosed: pr.state === 'closed' }, record.merged);
+    const dbMergedAt = record.mergedAt;
 
     // Per-file breakdown so a Drizzle snapshot can't read as the diff size.
     // `additions`/`deletions`/`changedFiles` below are the reviewable figures;
@@ -2454,9 +2456,9 @@ export async function GET(req: NextRequest) {
         // Supersession edge (task fcaf83d5) — only meaningful on a closed,
         // unmerged PR; recordPrSupersession verified this against GitHub at
         // write time, so it is trusted here without a second round-trip.
-        supersededByPrNumber: canonicalState === 'closed_unmerged' ? (worker.supersededByPrNumber ?? null) : null,
-        supersededByPrUrl: canonicalState === 'closed_unmerged' ? (worker.supersededByPrUrl ?? null) : null,
-        supersededReason: canonicalState === 'closed_unmerged' ? (worker.supersededReason ?? null) : null,
+        supersededByPrNumber: canonicalState === 'closed_unmerged' ? (record.supersededBy?.prNumber ?? null) : null,
+        supersededByPrUrl: canonicalState === 'closed_unmerged' ? (record.supersededBy?.url ?? null) : null,
+        supersededReason: canonicalState === 'closed_unmerged' ? (record.supersededBy?.reason ?? null) : null,
       },
       checks: ciSummary,
       reviews: reviewSummary,

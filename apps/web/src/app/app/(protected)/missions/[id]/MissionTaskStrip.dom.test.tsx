@@ -99,12 +99,15 @@ describe('Landed strip', () => {
     expect(drawer().querySelector('[data-testid="task-action-zone"]')?.getAttribute('data-actions')).toBe('claim_hint run_now');
   });
 
-  it('the action column is capped, so a long refusal wraps instead of starving the title column', async () => {
+  it('the drawer is one column: the title takes the full width and the actions sit below it', async () => {
     await mount(missionTaskStripFixture('mid-open'));
-    // An `auto` track grows to the refusal's max-content width and squeezes
-    // the `minmax(0,1fr)` title column to nothing (the title then breaks per letter).
-    expect(drawer().className).toContain('md:grid-cols-[minmax(0,1fr)_fit-content(60%)]');
-    expect(drawer().className).not.toMatch(/grid-cols-\[[^\]]*auto\)?\]/);
+    // A side column for the actions squeezed the title to a word or two per
+    // line in the band's half-width Landed cell (and an `auto` track once
+    // starved it to nothing), so there is no column split at any width.
+    expect(drawer().className).not.toMatch(/grid-cols/);
+    const title = drawer().querySelector('[aria-live="polite"]')!;
+    const open = drawer().querySelector('[data-testid="landed-strip-drawer-open"]')!;
+    expect(title.compareDocumentPosition(open) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('selects the last task when everything landed', async () => {

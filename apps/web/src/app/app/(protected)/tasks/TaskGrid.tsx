@@ -1,8 +1,7 @@
 'use client';
 
-import { stageForDelivery } from '@/lib/stage';
 import { derivePrDisplayState } from '@/lib/pr-presentation';
-import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
+import { deliveryReading, type DeliveryDisplay, type DeliveryTone } from '@/lib/workflow/delivery-display';
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import InteractiveSessions from './InteractiveSessions';
@@ -226,6 +225,11 @@ interface MissionGroup {
 
 // ─── Stage derivation from GridTask (no new column needed) ───────────────────
 
+/** The histogram's bucket per canonical delivery tone (`deliveryReading`): only FAILED is failed. */
+const GRID_BUCKET_FOR_DELIVERY_TONE: Record<DeliveryTone, keyof StageCounts> = {
+  needs: 'REVIEW', live: 'REVIEW', stalled: 'BLOCKED', landed: 'DONE', closed: 'DONE', failed: 'FAILED',
+};
+
 /**
  * Histogram bucket for a row, or `null` for a row that belongs in no bucket.
  * Cancelled work is deliberately stopped: counting it as QUEUED (the old
@@ -237,15 +241,8 @@ export function deriveGridTaskStage(task: GridTask): keyof StageCounts | null {
   // shows (§17.5), never by the fact-cache columns.
   const workerLive = task.workerStatus === 'running' || task.workerStatus === 'starting' ||
     task.workerStatus === 'idle' || task.workerStatus === 'waiting_input';
-  const kernel = task.delivery && !workerLive ? stageForDelivery(task.delivery) : null;
-  if (kernel) {
-    switch (kernel) {
-      case 'DONE': return 'DONE';
-      case 'FAILED': return 'FAILED';
-      case 'BLOCKED': return 'BLOCKED';
-      default: return 'REVIEW';
-    }
-  }
+  const kernel = task.delivery && !workerLive ? deliveryReading(task.delivery) : null;
+  if (kernel) return GRID_BUCKET_FOR_DELIVERY_TONE[kernel.tone];
   if (task.status === 'failed') return 'FAILED';
   if (workerLive) return 'RUNNING';
   if (task.status === 'completed') {

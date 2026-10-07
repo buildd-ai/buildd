@@ -15,9 +15,9 @@ import {
 } from '@/lib/task-presentation';
 import { StageChip, stageChipShowsPrNumber } from '@/components/StageChip';
 import SteerButton from '@/components/chat/SteerButton';
-import { deriveStage, type Stage } from '@/lib/stage';
+import { deriveStageReading, type Stage } from '@/lib/stage';
 import { resolvePrDisplayState } from '@/lib/pr-presentation';
-import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
+import type { DeliveryDisplay, DeliveryReadingInput } from '@/lib/workflow/delivery-display';
 import { DependencyRail } from '@/components/DependencyRail';
 import { SegmentStrip } from '@/components/SegmentStrip';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
@@ -70,7 +70,7 @@ export interface TaskCardProps {
    * (workflow-state-kernel §17.5). Its stage and PR state replace the
    * `prLifecycleStatus` reading; absent for legacy-owned or PR-less tasks.
    */
-  delivery?: Pick<DeliveryDisplay, 'stage' | 'prState'> | null;
+  delivery?: (DeliveryReadingInput & Pick<DeliveryDisplay, 'prState'>) | null;
 
   // Agent current action (shown in inline density when running)
   currentAction?: string | null;
@@ -288,7 +288,7 @@ export function TaskCard({
   const stale = isStaleWorker(workerStatus, workerUpdatedAt, now);
 
   const isBlocked = (chain?.blockedBy?.length ?? 0) > 0;
-  const stage = stageOverride ?? deriveStage({
+  const derived = deriveStageReading({
     taskStatus,
     workerStatus,
     prUrl,
@@ -298,6 +298,9 @@ export function TaskCard({
     isSubjectDead: subjectDead,
     isMissionBudgetExhausted: missionBudgetExhausted,
   });
+  const stage = stageOverride ?? derived.stage;
+  // A kernel-owned delivery's chip says the delivery's canonical words (§17.5).
+  const stageLabel = stageOverride ? null : derived.label;
 
   const timestampLabel = deriveTimestampLabel({
     taskStatus,
@@ -374,7 +377,7 @@ export function TaskCard({
         {/* T3 — chip only for active non-default states */}
         {showChip && (
           <div className="pointer-events-none shrink-0">
-            <StageChip stage={stage} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} />
+            <StageChip stage={stage} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} label={stageLabel} />
           </div>
         )}
 
@@ -464,7 +467,7 @@ export function TaskCard({
         {/* Right — health + provenance */}
         <div className="shrink-0 flex flex-col items-end gap-1 pointer-events-none">
           <div className="flex items-center gap-2">
-            <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} />
+            <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} label={stageLabel} />
             {displayStatus === 'running' && <span className="pointer-events-auto"><SteerButton taskId={id} /></span>}
           </div>
 
@@ -530,7 +533,7 @@ export function TaskCard({
           <span className="truncate">{displayTitle}</span>
           <TaskShipBadge release={release} shippedReleaseId={shippedReleaseId} />
         </div>
-        <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} />
+        <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} label={stageLabel} />
       </div>
 
       {/* T1 — mission + workspace (second row) */}

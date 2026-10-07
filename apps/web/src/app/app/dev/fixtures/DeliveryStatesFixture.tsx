@@ -25,8 +25,10 @@ import { taskDockModel } from '@/components/chat/dock-model';
 import { TaskCard as ChatTaskTile } from '@/components/chat/objects/TaskObject';
 import type { TaskObjectView } from '@/components/chat/objects/object-views';
 
-const NOW = new Date(1_720_008_000_000);
 const MIN = 60_000;
+// Relative to now, so every "12m ago" reads like a live page. Floored to the
+// minute, so the server render and the client's hydration agree.
+const NOW = new Date(Math.floor(Date.now() / MIN) * MIN);
 
 const delivery = (o: Partial<DeliverySnapshot>): DeliverySnapshot => ({
   id: 'fx-d', workspaceId: 'fx-ws', ownerTaskId: 'fx-t', repoFullName: 'acme/widgets', prNumber: 412, baseRef: 'dev',
@@ -126,10 +128,11 @@ function ListSurfaces() {
       <section className="space-y-3">
         <h2 className="font-mono text-[11px] uppercase tracking-[1.2px] text-text-muted">Task list · stage chip</h2>
         <div className="border border-border-default">
-          {listDisplays.map(({ c, id, d }) => (
+          {listDisplays.map(({ c, id, d }, i) => (
             <div key={c.key} data-testid="delivery-task-card" data-stage={d.stage}>
               <TaskCard
-                id={id} title={c.title} taskStatus="completed" workerStatus="completed" taskCreatedAt={NOW.toISOString()} taskUpdatedAt={NOW.toISOString()}
+                id={id} title={c.title} taskStatus="completed" workerStatus="completed"
+                taskCreatedAt={new Date(NOW.getTime() - (50 - i) * MIN).toISOString()} taskUpdatedAt={new Date(NOW.getTime() - (30 - i) * MIN).toISOString()}
                 prUrl={prUrl(c.prNumber)} prNumber={c.prNumber} prLifecycleStatus="ci_green" delivery={d} density="row"
               />
             </div>
