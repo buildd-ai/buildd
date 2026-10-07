@@ -2030,7 +2030,11 @@ export async function POST(req: NextRequest) {
     }
     // Walls recorded against Claude in the pause log (e.g. a team running on a
     // managed Claude credential rather than this account's own session).
-    const pauses = await teamPauses(taskTeamId);
+    // An interactive session is exempt for the same reason as the account flag
+    // above: the wall was hit by a runner's seat, and the session runs the task
+    // on its own credentials. Without this, a task whose runner just died on a
+    // session limit could not be claimed (even with force) until the reset.
+    const pauses = interactiveSession ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
     if (pauses.has('claude')) claudePoolBlocked = true;
 
     // Does a Claude run of THIS task draw on that walled pool? Only when its
