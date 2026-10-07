@@ -2,37 +2,39 @@
  * Post-session quality loop — Stage B triage, the server half (artifact
  * post-session-quality-loop-spec §6; pure half: @buildd/core/post-session-triage).
  *
- * For one `collected` run: evaluate the hard triggers, ask the team's decision
- * model (through `decisionCall`, so whichever model the team configured, under
- * its inference policy), resolve the final routing, and record all three on
- * the run — `triaged` when the final decision is `analyse`, `skipped`
- * otherwise. Stage C picks up `triaged` runs.
+ * For one `collected` run: evaluate the hard triggers, run the registered
+ * `postSessionTriageKind` through `runBuilddDecision` (the team's decision
+ * model under its inference policy; a hard trigger decides without asking one,
+ * and an answer below the kind's confidence threshold falls back to skip),
+ * and record the result on the run — `triaged` when the final decision is
+ * `analyse`, `skipped` otherwise. Stage C picks up `triaged` runs. Every
+ * decision is also a `decision_records` row, subject `post_session_run`, which
+ * Stage C labels with whether its analysis found anything.
  *
  * Invariants:
  *  - **Never throws.** Every outcome is a returned status.
  *  - **Fail open.** No team, a sensitive workspace, no key, a disabled
- *    capability, a timeout, a thrown call or a malformed answer all record
- *    `triage_unavailable`; hard triggers still apply, otherwise the run skips.
+ *    capability, a timeout or a thrown call all record `triage_unavailable`;
+ *    hard triggers still apply, otherwise the run skips.
  *  - **Out of band.** The store writes only `post_session_runs`, fenced on
  *    `state = 'collected'` so two sweeps cannot both triage one run.
  */
 
 import type { PostSessionRunState, StageAFacts } from '@buildd/core/post-session-quality';
 import {
-  POST_SESSION_TRIAGE_CAPABILITY,
-  POST_SESSION_TRIAGE_QUESTIONS,
-  POST_SESSION_TRIAGE_TIMEOUT_MS,
-  buildTriageState,
+  buildTriageFeatures,
   evaluateHardTriggers,
-  readTriageAnswers,
   resolveTriageOutcome,
+  triageRecordFromResponse,
   unavailableTriage,
-  type PostSessionTriageQuestions,
+  type HardTrigger,
   type TriageOutcome,
   type TriageRule,
 } from '@buildd/core/post-session-triage';
+import { POST_SESSION_RUN_SUBJECT, postSessionTriageKind } from '@buildd/core/decision-kind-post-session-triage';
+import { runBuilddDecision, type BuilddDecisionDeps } from '@buildd/core/decision-policy';
 import type { PostSessionTriageRecord, TriageDecision } from '@buildd/core/post-session-quality';
-import type { DecisionReceipt, decisionCall } from '@buildd/core/decision-client';
+import type { DecisionReceipt } from '@buildd/core/decision-client';
 
 export interface PostSessionTriageInput {
   runId: string;
@@ -80,11 +82,10 @@ export type TriagePostSessionResult =
   | { status: 'missing' }
   | { status: 'error'; error: string };
 
-type DecideFn = typeof decisionCall<PostSessionTriageQuestions>;
-
 export interface TriageDeps {
   store?: PostSessionTriageStore;
-  decide?: DecideFn;
+  /** Seams for the policy runner (access, call, ledger write). */
+  decisionDeps?: BuilddDecisionDeps;
   recordReceipts?: (receipts: DecisionReceipt[], scope: { teamId: string; accountId: string | null }) => Promise<void>;
   now?: Date;
 }
@@ -115,33 +116,39 @@ export function triageCost(receipts: DecisionReceipt[]): TriageCost {
   return { calls: receipts.length, usd: usd === null ? null : Number(usd.toFixed(8)), inputTokens, outputTokens };
 }
 
-/** Ask the model. Never throws; every failure is an unavailable record. */
-async function askModel(
+/**
+ * Run the kind. Never throws; every failure is an unavailable record. A
+ * sensitive workspace or a run with no team sends nothing out and writes no
+ * ledger row, but a hard trigger still decides.
+ */
+async function decide(
+  runId: string,
   input: PostSessionTriageInput & { facts: StageAFacts },
+  hardTriggers: HardTrigger[],
   deps: TriageDeps,
   receipts: DecisionReceipt[],
-): Promise<PostSessionTriageRecord> {
-  if (input.dataClass === 'sensitive') return unavailableTriage('sensitive');
-  if (!input.teamId) return unavailableTriage('no_team');
+): Promise<{ record: PostSessionTriageRecord; finalDecision: TriageDecision }> {
+  const skipped = (reason: string) => ({
+    record: unavailableTriage(reason),
+    finalDecision: (hardTriggers.length > 0 ? 'analyse' : 'skip') as TriageDecision,
+  });
+  if (input.dataClass === 'sensitive') return skipped('sensitive');
+  if (!input.teamId) return skipped('no_team');
   const teamId = input.teamId;
-  let record: PostSessionTriageRecord;
+  let out: { record: PostSessionTriageRecord; finalDecision: TriageDecision };
   try {
-    const decide = deps.decide ?? (await import('@buildd/core/decision-client')).decisionCall;
-    const result = await decide({
-      capability: POST_SESSION_TRIAGE_CAPABILITY,
-      teamId,
-      workspaceId: input.workspaceId,
-      state: buildTriageState(input.facts),
-      questions: POST_SESSION_TRIAGE_QUESTIONS,
-      timeoutMs: POST_SESSION_TRIAGE_TIMEOUT_MS,
-      decisionId: POST_SESSION_TRIAGE_CAPABILITY,
-      onUsage: r => { receipts.push(r); },
-    });
-    record = result.ok
-      ? readTriageAnswers(result.answers, { model: result.model, latencyMs: result.latencyMs, attempts: result.attempts })
-      : unavailableTriage(result.error.kind, { latencyMs: result.latencyMs, attempts: result.attempts });
+    const response = await runBuilddDecision(
+      postSessionTriageKind,
+      {
+        features: buildTriageFeatures(input.facts, hardTriggers),
+        subjectRef: { type: POST_SESSION_RUN_SUBJECT, id: runId },
+      },
+      { teamId, workspaceId: input.workspaceId, onUsage: r => { receipts.push(r); } },
+      deps.decisionDeps,
+    );
+    out = { record: triageRecordFromResponse(response), finalDecision: response.decision };
   } catch {
-    record = unavailableTriage('transport');
+    out = skipped('transport');
   }
   if (receipts.length > 0) {
     const write = deps.recordReceipts ?? (async (r: DecisionReceipt[], s: { teamId: string; accountId: string | null }) => {
@@ -151,7 +158,7 @@ async function askModel(
     // Bookkeeping never changes the outcome.
     await write(receipts, { teamId, accountId: null }).catch(() => {});
   }
-  return record;
+  return out;
 }
 
 export async function triagePostSessionRun(runId: string, deps: TriageDeps = {}): Promise<TriagePostSessionResult> {
@@ -166,8 +173,8 @@ export async function triagePostSessionRun(runId: string, deps: TriageDeps = {})
     const facts = input.facts;
     const hardTriggers = evaluateHardTriggers(facts);
     const receipts: DecisionReceipt[] = [];
-    const triage = await askModel({ ...input, facts }, deps, receipts);
-    const outcome = resolveTriageOutcome(triage, hardTriggers);
+    const { record, finalDecision } = await decide(runId, { ...input, facts }, hardTriggers, deps, receipts);
+    const outcome = resolveTriageOutcome(record, finalDecision, hardTriggers);
     const ok = await store.recordTriage(runId, outcome, now);
     if (!ok) return { status: 'fenced', runId };
     return {

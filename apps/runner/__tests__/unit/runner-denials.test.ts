@@ -146,7 +146,24 @@ const CASES: Case[] = [
     name: 'checkpoint guard (enforce): push with a collision',
     run: async () => reasonOf(await makeFactory().createPathCheckpointGuardHook(
       { ...worker, pathClaimMode: 'enforce' } as unknown as LocalWorker,
-      async () => ({ path: 'a.ts', blockingTaskId: 'bbbbbbbb-0000', source: 'pre_push', detectedAt: 1 }),
+      async () => {
+        const collision = { path: 'a.ts', blockingTaskId: 'bbbbbbbb-0000', blockingTaskTitle: null, blockingPath: 'a.ts', source: 'pre_push' as const, detectedAt: 1 };
+        return { kind: 'blocked' as const, collision, blocked: [collision] };
+      },
+    )(pre('Bash', { command: 'git push origin HEAD' }), undefined, signal)),
+  },
+  {
+    name: 'checkpoint guard (enforce): push after a recorded collision',
+    run: async () => reasonOf(await makeFactory().createPathCheckpointGuardHook(
+      { ...worker, pathClaimMode: 'enforce', pathCollision: { path: 'a.ts', blockingTaskId: 'bbbbbbbb-0000', source: 'sync', detectedAt: 1 } } as unknown as LocalWorker,
+      async () => ({ kind: 'complete' as const, generation: 1, heldCount: 1 }),
+    )(pre('Bash', { command: 'git push origin HEAD' }), undefined, signal)),
+  },
+  {
+    name: 'checkpoint guard (enforce): push on coverage the coordinator could not confirm',
+    run: async () => reasonOf(await makeFactory().createPathCheckpointGuardHook(
+      { ...worker, pathClaimMode: 'enforce' } as unknown as LocalWorker,
+      async () => ({ kind: 'unknown' as const, cause: 'timeout' as const, attempts: 3 }),
     )(pre('Bash', { command: 'git push origin HEAD' }), undefined, signal)),
   },
   {

@@ -25,7 +25,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### billing (2)
 
-- [Managed-Runner Entitlements](./managed-runner-entitlements.md) · @builder — verified 2026-10-06
+- [Managed-Runner Entitlements](./managed-runner-entitlements.md) · @builder — verified 2026-10-07
   A Buildd-managed runner claim MUST leave a task queued, never failed, when the team's plan limit on parallel managed runs or monthly runner-hours is reached, and MUST start it once the limit lifts.
 - [Usage & Cost Accounting](./usage-and-cost-accounting.md) · @max — verified 2026-08-30
   Worker usage MUST be recorded only from the worker's own report and attributed to one task, team-month and provider pool, and a budget-blocked claim MUST answer budget_exhausted with a reset time, not race_lost.
@@ -83,7 +83,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-09-29
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
-- [Checkpoint Sweeps and Edit-Claim Enforcement](./checkpoint-sweeps.md) · @max — verified 2026-10-01
+- [Checkpoint Sweeps and Edit-Claim Enforcement](./checkpoint-sweeps.md) · @max — verified 2026-10-07
   Runners MUST sweep worktree changes against the resolved PR base at checkpoints and offer them for exclusive acquisition; under enforcement a confirmed collision MUST deny or defer.
 - [Cloud Egress Merge Guard](./cloud-egress-merge-guard.md) · @max — verified 2026-10-05
   The cloud egress handler MUST refuse a direct GitHub PR merge, a push to a protected branch, and (under an allow-list) any ref move outside the task's own branch, before attaching its token.
@@ -133,7 +133,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A behind-only PR MUST be refreshed agent-free via a head-pinned branch update; only a verified textual conflict dispatches a conflict agent, and an unknown semantic verdict never clears a merge.
 - [Claim Ordering (Batch Planner)](./claim-ordering.md) · @max — verified 2026-10-04
   The claim route MUST order auto-claims through planClaimBatch only when a workspace opts in, MUST never co-schedule across a hard edge, and MUST use predicted scope only above pinned, evidence-backed thresholds.
-- [Decision Kinds (First-Party Adapters and Migration Seam)](./decision-kinds.md) · @max — verified 2026-10-03
+- [Decision Kinds (First-Party Adapters and Migration Seam)](./decision-kinds.md) · @max — verified 2026-10-07
   A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-07
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
@@ -141,8 +141,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 - [Orchestration Decisions (Shadow and Promotion Guard)](./orchestration-decisions-shadow.md) · @max — verified 2026-10-03
   Creation-manifest and claim hold/start decisions MUST only record suggestions unless a committed readout promotion grants a cohort, and MUST fall back to the deterministic rule on every failure.
-- [Path Claim Ownership](./path-claim-ownership.md) · @max — verified 2026-10-01
-  Edit leases MUST be acquired exclusively per workspace, narrowed only by their owner, released on terminal status, and reconciled to a PR's pinned actual diff without ever treating missing data as an empty diff.
+- [Path Claim Ownership](./path-claim-ownership.md) · @max — verified 2026-10-07
+  Edit leases MUST be held exclusively per workspace, kept equal to a task's current owned file set by a delta/ACK protocol, proven complete before any ship (fail closed), and handed to the open PR when the worker ends.
 - [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-09-01
   The PR lifecycle status shown on every surface MUST reflect live GitHub CI state within one read cycle, with terminal states (merged/closed) never overwritten by later CI events.
 - [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29

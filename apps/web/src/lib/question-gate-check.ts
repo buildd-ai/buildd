@@ -19,7 +19,8 @@
  *     (`asked`).
  *
  * Never throws, and every failure sends the question unchanged (fail open).
- * Stage 2's answered calls are recorded as `decision_records` rows
+ * Both stages write `decision_records` rows (stage 1: prompt `qg1`; stage 2:
+ * `qd1`), so pushbacks show in `get_decision_stats` too, in the same ledger
  * (`packages/core/decision-ledger.ts` — the same ledger every other Jev
  * decision in buildd writes to, not a second mechanism); every call that
  * reached the provider, at either stage, also writes its `ai_usage` receipt.
@@ -31,11 +32,14 @@ import {
   HOLD_RESURFACE_MS,
   QUESTION_DECIDE_DECISION_TIMEOUT_MS,
   QUESTION_GATE_DECISION_TIMEOUT_MS,
+  QUESTION_GATE_PROMPT_VERSION,
   detectHardRail,
+  detectIrreversibleAction,
   fingerprintOf,
   gateQuestion,
   resolveDecideOutcome,
   type HardRailInput,
+  type HardRailKind,
   type QuestionDecideAnswer,
   type QuestionGateOutcome,
   type QuestionGateReply,
@@ -140,6 +144,16 @@ async function defaultRecordReceipts(receipts: DecisionReceipt[], scope: { teamI
   await insertDecisionReceipts(receipts, scope);
 }
 
+/** Subject type a decided row is filed under, so the worker's end can label it. */
+export const DECIDED_SUBJECT_TYPE = 'worker';
+
+/** The chosen option's full visible text (label, consequence, description). */
+function chosenOptionText(q: QuestionGateRequest['question'], index: number): string[] {
+  const o = q.options?.[index];
+  if (!o) return [];
+  return typeof o === 'string' ? [o] : [o.label, o.consequence, o.description].filter((t): t is string => !!t);
+}
+
 /** A gateway-routed decision model cannot answer a decision pinned to Jev. */
 function unsupportedModel(access: DecisionAccess & { ok: true }): boolean {
   return !!access.endpoint && access.endpoint.kind !== 'systemone';
@@ -165,7 +179,11 @@ export async function checkQuestion(
   // text leaves the workspace: the repair task is filed in it). A hard rail
   // always wins — those questions go to a person whatever they describe.
   const questionText = briefedQuestionText(req.question);
-  const rail = detectHardRail({ ...scope.hardRail, questionText });
+  // The question's own prompt/context naming an irreversible action is the
+  // pre-call half of the `irreversible` rail (the picked option is the other
+  // half, in stage 2): a person must see it, never Jev or auto-repair.
+  const rail: HardRailKind | null = detectHardRail({ ...scope.hardRail, questionText })
+    ?? (detectIrreversibleAction([req.question.prompt, req.question.context]) ? 'irreversible' : null);
   const blocker = rail ? null : classifyRecoverableBlocker(questionText);
   if (blocker) {
     const spec = repairTaskSpec(blocker, {
@@ -242,11 +260,23 @@ export async function checkQuestion(
       error = 'transport';
     }
     if (gateReceipts.length) await recordReceipts(gateReceipts, { teamId: scope.teamId, accountId: scope.accountId }).catch(() => {});
+    const stage1Base = {
+      teamId: scope.teamId, workspaceId: scope.workspaceId, missionId: scope.missionId, taskId: scope.taskId,
+      capability: 'question_gate', fingerprint: fingerprintOf({ stage: 1, taskId: scope.taskId, req }),
+      promptVersion: QUESTION_GATE_PROMPT_VERSION, minConfidence: DEFAULT_QUESTION_GATE_MIN_CONFIDENCE,
+      latencyMs: now() - started,
+    };
     if (error) {
+      await record({ ...stage1Base, status: 'fallback', applied: false, reason: error }).catch(() => {});
       stage1Outcome = 'error';
       skipStage2 = true;
     } else {
       const gated = gateQuestion(label && confidence !== undefined ? { label, confidence } : null, DEFAULT_QUESTION_GATE_MIN_CONFIDENCE);
+      await record({
+        ...stage1Base, verdict: label ?? null, confidence: confidence ?? null,
+        applied: gated.verdict === 'pushback', status: gated.verdict === 'pushback' ? 'applied' : 'suggested',
+        appliedAnswer: gated.verdict === 'pushback' ? 'pushback' : 'send',
+      }).catch(() => {});
       if (gated.verdict === 'pushback') {
         return {
           verdict: 'pushback',
@@ -334,8 +364,20 @@ export async function checkQuestion(
 
   if (resolution.disposition === 'decide' && resolution.optionIndex !== undefined) {
     const chosenLabel = optionLabels(req.question)[resolution.optionIndex] ?? '';
+    // Option-level rail: the pick itself names an irreversible/external
+    // action, so a person sees the question (`ask`, not `hold`).
+    if (detectIrreversibleAction(chosenOptionText(req.question, resolution.optionIndex))) {
+      await record({
+        ...ledgerBase, applied: false, status: 'suggested', reason: 'rail_blocked:irreversible',
+      }).catch(() => {});
+      return {
+        verdict: 'send', outcome: 'hard_rail', disposition: 'ask', rail: 'irreversible',
+        version: QUESTION_DECIDE_DECISION.version, latencyMs,
+      };
+    }
     await record({
       ...ledgerBase, applied: true, status: 'applied', appliedAnswer: chosenLabel,
+      subjectType: DECIDED_SUBJECT_TYPE, subjectId: scope.workerId,
     }).catch(() => {});
     return {
       verdict: 'decide',

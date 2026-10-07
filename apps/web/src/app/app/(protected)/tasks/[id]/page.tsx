@@ -95,6 +95,8 @@ import { toVisualShots } from '@/lib/mission-visual-review';
 import { parseTaskShippedRecord } from '@/lib/task-shipped';
 import { buildTaskShippedView } from './task-shipped-header';
 import { TaskShippedBody, TaskShippedTitle, type RunDetail } from './TaskShippedHeader';
+import { taskHostedRunnerUsage } from '@/lib/hosted-runner-usage-store';
+import { taskRunnerLine } from '@/lib/hosted-runner-usage';
 import { formatElapsed } from './format-elapsed';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
@@ -326,6 +328,9 @@ export default async function TaskDetailPage({
         .then(([diagnosis, overrides]) => diagnosis ? { diagnosis, canFix: canAdministerTeamKeys(access.role, overrides) } : null)
         .catch(() => null)
     : Promise.resolve(null);
+  // Cloud runs only: its time on the hosted runner, all attempts. Started
+  // here, awaited below, so it adds no round trip of its own.
+  const hostedRunnerUsagePromise = taskHostedRunnerUsage(id).catch(() => null);
   const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
     // Artifacts for all workers on this task
     workerIds.length > 0
@@ -1012,6 +1017,7 @@ export default async function TaskDetailPage({
     errorTraceCount: errorTraces.length,
     inRelease: !!shippedRelease,
   });
+  const hostedRunnerUsage = await hostedRunnerUsagePromise;
   const runDetails: RunDetail[] = [];
   if (shippedView) {
     const runWorkers = workerHistory.map(h => h.worker);
@@ -1239,6 +1245,12 @@ export default async function TaskDetailPage({
             runDetails={runDetails}
             structuredOutput={shippedResult?.structuredOutput ?? null}
           />
+        )}
+
+        {hostedRunnerUsage && (
+          <p data-testid="task-hosted-runner" className="mb-4 text-meta text-text-secondary tabular-nums">
+            {taskRunnerLine(hostedRunnerUsage)}
+          </p>
         )}
 
         <div className="flex flex-col">

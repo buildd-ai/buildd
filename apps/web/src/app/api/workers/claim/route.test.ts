@@ -449,6 +449,21 @@ mock.module('@/lib/entitlements/managed-runner', () => ({
   },
   stampEntitlementBlock: mockStampEntitlementBlock,
 }));
+// Hosted runner allowance: the real check over injectable allowance and usage.
+const realHosted = { ...(await import('@/lib/hosted-runner-usage-store')) };
+const hostedTest = { allowance: null as number | null, countedHours: 0, usageReads: 0 };
+mock.module('@/lib/hosted-runner-usage-store', () => ({
+  ...realHosted,
+  checkHostedRunnerAllowance: (teamId: string, opts: any) => realHosted.checkHostedRunnerAllowance(teamId, opts, {
+    loadAllowanceHours: async () => hostedTest.allowance,
+    loadTeamRows: async () => {
+      hostedTest.usageReads++;
+      const startedAt = new Date(Date.now() - 1000);
+      const seconds = Math.round(hostedTest.countedHours * 3600);
+      return [{ workspaceId: 'ws-1', taskId: 'old', size: 'standard', runnerSeconds: seconds, weightedRunnerSeconds: seconds, startedAt, endedAt: startedAt }];
+    },
+  }),
+}));
 import { POST } from './route';
 import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-workspace-links-plan';
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
@@ -7455,6 +7470,76 @@ describe('claim gate overrides', () => {
       expect(statusesWritten()).not.toContain('failed');
     });
 
+    describe('hosted runner allowance (cloud claims)', () => {
+      beforeEach(() => {
+        hostedTest.allowance = null;
+        hostedTest.countedHours = 0;
+        hostedTest.usageReads = 0;
+      });
+
+      it('allowance used: a cloud claim leaves the task queued with the reason stamped, never failed', async () => {
+        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+        setupClaimBase();
+        mockWorkersFindMany.mockResolvedValue([]);
+        mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+        hostedTest.allowance = 50;
+        hostedTest.countedHours = 50;
+
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', executor: 'cloud' } }));
+        const data = await res.json();
+
+        expect(res.status).toBe(200);
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics?.deferrals?.hosted_runner_hours).toBe(1);
+        expect(mockStampEntitlementBlock.mock.calls[0][1]).toMatchObject({ kind: 'hosted_runner', used: 50, limit: 50 });
+        expect(statusesWritten()).not.toContain('failed');
+      });
+
+      it('under the allowance a cloud claim starts the task', async () => {
+        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+        setupClaimBase();
+        mockWorkersFindMany.mockResolvedValue([]);
+        mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+        hostedTest.allowance = 50;
+        hostedTest.countedHours = 49;
+
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', executor: 'cloud' } }));
+        const data = await res.json();
+
+        expect(data.workers).toHaveLength(1);
+        expect(mockStampEntitlementBlock).not.toHaveBeenCalled();
+      });
+
+      it('no allowance (the default): a cloud claim never reads usage', async () => {
+        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+        setupClaimBase();
+        mockWorkersFindMany.mockResolvedValue([]);
+        mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+        hostedTest.countedHours = 9999;
+
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', executor: 'cloud' } }));
+        const data = await res.json();
+
+        expect(data.workers).toHaveLength(1);
+        expect(hostedTest.usageReads).toBe(0);
+      });
+
+      it('a host runner may still take the task when the hosted allowance is used', async () => {
+        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+        setupClaimBase();
+        mockWorkersFindMany.mockResolvedValue([]);
+        mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+        hostedTest.allowance = 50;
+        hostedTest.countedHours = 80;
+
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+        const data = await res.json();
+
+        expect(data.workers).toHaveLength(1);
+        expect(hostedTest.usageReads).toBe(0);
+      });
+    });
+
     it('a self-hosted runner key ignores the hosted entitlement entirely, even on a plan at its limit', async () => {
       mockAuthenticateApiKey.mockResolvedValue(apiAccount());
       setupClaimBase();
@@ -8656,6 +8741,35 @@ describe('explicit taskId claims (organizer workflow)', () => {
     // has its own credentials and should not be blocked by account budget.
     expect(data.workers).toHaveLength(1);
     expect(data.diagnostics).toBeUndefined();
+  });
+
+  // The team pause log records a wall the RUNNER's seat hit (e.g. "You've hit
+  // your session limit"). An interactive session runs the task on its own
+  // credentials, so that wall is not its wall — same reasoning as the account
+  // flag above. Before this, an explicit claim (even force) of a task whose
+  // runner had just died on a session limit was refused until the reset.
+  it('an interactive session can claim while the team pause log walls Claude', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth' });
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: new Date(Date.now() + 3600000), reason: 'budget' },
+    ]);
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'mcp' }, interactiveHeaders())).json();
+    mockBackendPausesFindMany.mockResolvedValue([]);
+    expect(data.workers).toHaveLength(1);
+    expect(data.diagnostics).toBeUndefined();
+  });
+
+  it('a background runner is still deferred while the team pause log walls Claude', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth' });
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: new Date(Date.now() + 3600000), reason: 'budget' },
+    ]);
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'runner-7' })).json();
+    mockBackendPausesFindMany.mockResolvedValue([]);
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.reason).toBe('budget_exhausted');
   });
 
   it('a background runner cannot claim when account budget is exhausted', async () => {
