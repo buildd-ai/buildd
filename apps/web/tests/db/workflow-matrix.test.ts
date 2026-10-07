@@ -198,7 +198,7 @@ const { HeaderStatusPill } = await import('../../src/app/app/(protected)/tasks/[
 const { createElement } = await import('react');
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { getOwnerDeliveryDisplays } = await import('../../src/lib/workflow/delivery-view');
-const { deriveStage } = await import('../../src/lib/stage');
+const { deriveStage, deriveStageReading } = await import('../../src/lib/stage');
 const { boardStatusForDelivery } = await import('../../src/lib/mission-board');
 const { feedStateForDelivery } = await import('../../src/lib/mission-pulse');
 const { resolvePrDisplayState } = await import('../../src/lib/pr-presentation');
@@ -1152,7 +1152,9 @@ describe('S16–S21', () => {
     expect(deriveStage({ taskStatus: 'completed', prUrl: 'u', prLifecycleStatus: 'ci_green', delivery: d })).toBe('FIXING');
     expect(boardStatusForDelivery(d)).toBe('running');
     expect(feedStateForDelivery(d)).toEqual({ state: 'moving', needsYou: null });
-    expect(dockToneForDelivery(d)).toMatchObject({ label: 'Fixing', tone: 'live' });
+    // One label on every surface (deliveryReading): the push has not reached GitHub yet.
+    expect(dockToneForDelivery(d)).toMatchObject({ label: 'Waiting for push', tone: 'live' });
+    expect(deriveStageReading({ taskStatus: 'completed', prUrl: 'u', prLifecycleStatus: 'ci_green', delivery: d }).label).toBe('Waiting for push');
     expect(resolvePrDisplayState({ delivery: d, prLifecycleStatus: 'ci_green' })).not.toBe('ci_passed');
     const ex = (await explainTask(a.ownerTaskId, { kind: 'admin', accountId: null } as never))!.subjects[0];
     expect(ex.delivery).toMatchObject({ state: view.state, headline: view.headline, owner: view.owner });
