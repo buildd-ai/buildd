@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-10-04
 summary: Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
 domain: tasks
-surfaces: [apps/web/src/lib/dispatch-authority.ts, apps/web/src/lib/dispatch-adapters.ts, packages/core/dispatch-outbox.ts, packages/core/drizzle/0231_task_dispatch_outbox_trigger.sql]
+surfaces: [apps/web/src/lib/dispatch-authority.ts, apps/web/src/lib/dispatch-adapters.ts, packages/core/dispatch-outbox.ts, packages/core/drizzle/0000_baseline.sql]
 related: [webhook-dataflow, mission-task-lifecycle, path-claim-ownership, runner-liveness, external-cron-triggers]
 keywords: [task_dispatch_outbox, wakeTask, task:assigned, dispatch-drain, not_before, start_at, outbox, wake, dispatchNewTask, dispatchRetriedTask, dispatch transport, handed_off, dispatch_transport, orphan reconcile, dispatchFallbackAt, callback rate limit, dispatch_health, unackedStale, dispatch alerts]
 verified_by: [apps/web/tests/db/dispatch-outbox.test.ts, apps/web/tests/db/reconciliation-disabled.test.ts, apps/web/tests/db/path-release.test.ts, apps/web/tests/db/dependency-wake.test.ts, apps/web/tests/db/retry-wake.test.ts, apps/web/tests/db/start-at-timer.test.ts, apps/web/src/lib/dispatch-authority.test.ts, apps/web/src/lib/task-dispatch-delivery.test.ts, scripts/dispatch-authority-guard.test.ts, apps/web/tests/db/dispatch-handoff.test.ts, apps/web/src/lib/dispatch-resolve.test.ts, apps/web/src/lib/dispatch-transport.test.ts, apps/web/src/app/api/dispatch/v1/resolve/route.test.ts, apps/web/src/app/api/dispatch/v1/receipts/route.test.ts, packages/core/__tests__/dispatch-envelope.test.ts, packages/core/__tests__/dispatch-handoff-render.test.ts, apps/web/tests/db/dispatch-reconcile.test.ts, apps/web/src/lib/dispatch-reconcile.test.ts, apps/web/src/lib/dispatch-callback-auth.test.ts, apps/web/tests/db/dispatch-health.test.ts, apps/web/src/lib/dispatch-health.test.ts, apps/web/src/lib/dispatch-alerts.test.ts, apps/web/src/app/api/health/dispatch/route.test.ts, packages/core/__tests__/dispatch-health-report.test.ts]
@@ -513,7 +513,8 @@ policy in `apps/web/src/lib/dispatch-resolve.test.ts`):
   `DISPATCH_CAUSES`, `enqueueDispatchSql`, `outboxInsertSelectSql`,
   `claimDueDispatchesSql`, `markDispatchFailed`; table `taskDispatchOutbox` in
   `packages/core/db/schema.ts`.
-- Trigger: `packages/core/drizzle/0231_task_dispatch_outbox_trigger.sql`.
+- Trigger: `task_dispatch_outbox_on_pending` in `packages/core/drizzle/0000_baseline.sql`
+  (added by migration 0231, since squashed into the baseline).
 - Authority: `apps/web/src/lib/dispatch-authority.ts` — `wakeTask`,
   `wakeTasks`, `announceTaskCreated`, `kickDispatch`, `drainDispatchOutbox`,
   `deliverTaskDispatch`. `primaryCause` lives in
@@ -544,7 +545,8 @@ policy in `apps/web/src/lib/dispatch-resolve.test.ts`):
 - Dependents: `packages/core/dispatch-dependents.ts` —
   `enqueueReadyDependentsSql`, `findPendingTasksWithResolvedDepsAndNoWake`,
   both evaluating the claim route's own `depsGate()` (passed in), never a copy.
-- Trigger hints: `packages/core/drizzle/0233_task_dispatch_trigger_hints.sql`,
+- Trigger hints: the same trigger function in `packages/core/drizzle/0000_baseline.sql`
+  (migration 0233, squashed),
   `withDispatchHint` / `dispatchHintSql` in dispatch-outbox.ts.
 - Delivery primitives: `apps/web/src/lib/task-dispatch-delivery.ts` —
   `buildWebhookPayload`, `dispatchToWebhook`, `buildTaskPayload`,

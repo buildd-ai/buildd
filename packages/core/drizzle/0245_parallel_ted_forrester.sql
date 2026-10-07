@@ -1,1 +1,0 @@
-ALTER TABLE "task_schedules" ADD COLUMN "delegation" jsonb;

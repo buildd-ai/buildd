@@ -1,1 +1,0 @@
-ALTER TABLE "missions" ADD COLUMN "executor" text DEFAULT 'runner' NOT NULL;
