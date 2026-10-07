@@ -24,6 +24,7 @@ import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
 import type { EffectHandlers } from '@/lib/workflow/effects';
 import { reviewEffectHandlers } from '@/lib/workflow/review-effects';
 import { withCiRetryEffects } from '@/lib/workflow/ci-retry-effects';
+import { withPrFactEffects } from '@/lib/workflow/pr-fact-effects';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
 import { notificationSubscribers } from '@/lib/notification-subscribers';
@@ -74,5 +75,7 @@ export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
  * (core) decides and records the effect; the reviews module carries out the
  * review-loop ones (reviewer and fix tasks, GitHub reviews, escalations) and
  * the CI family's (CI fix tasks bound to their ledger row, CI exhaustion).
+ * `stamp_pr_rows` projects a merge or close onto the PR fact cache through
+ * recordPrFact (Slice B).
  */
-export const WORKFLOW_EFFECT_HANDLERS: EffectHandlers = withCiRetryEffects(reviewEffectHandlers);
+export const WORKFLOW_EFFECT_HANDLERS: EffectHandlers = withPrFactEffects(withCiRetryEffects(reviewEffectHandlers));
