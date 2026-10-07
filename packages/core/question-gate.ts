@@ -389,13 +389,16 @@ export function parseQuestionGateRequest(body: unknown): { ok: true; value: Ques
  *  - `off`: the workspace's kill switch (`jevQuestionGate: false`) is set; sent, nothing else runs.
  *  - `error`: a decision call failed (no key, timeout, transport) at either stage; sent (fail open).
  *  - `hard_rail`: a hard rail applies; sent (`reply.rail` names which one).
+ *  - `recovered`: the question describes a recoverable platform blocker (./human-attention.ts
+ *    `classifyRecoverableBlocker`); NOT sent — a repair task was filed or reused (`reply.repairTaskId`)
+ *    and the agent gets `reason` as the tool result. Deterministic, no model call.
  *  - `decided`: Jev picked an option; NOT sent — the agent gets the answer as the tool result.
  *  - `held`: Jev held the question; sent (parked), tagged `disposition: 'hold'`.
  *  - `asked`: Jev said ask, or decide/hold fell back to ask; sent (parked), unchanged from before.
  */
 export type QuestionGateOutcome =
   | 'actionable' | 'pushback' | 'max_pushbacks' | 'sensitive' | 'off' | 'error'
-  | 'hard_rail' | 'decided' | 'held' | 'asked';
+  | 'hard_rail' | 'decided' | 'held' | 'asked' | 'recovered';
 
 export interface QuestionGateDecision {
   optionIndex: number;
@@ -417,6 +420,8 @@ export interface QuestionGateReply {
   holdReason?: string;
   /** ISO timestamp; see `HOLD_RESURFACE_MS`. */
   resurfaceAt?: string;
+  /** Set only when `outcome === 'recovered'`: the repair task filed or reused. */
+  repairTaskId?: string;
   error?: string;
   version: string | null;
   latencyMs: number;

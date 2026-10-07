@@ -2,6 +2,8 @@ import type { ActionQueueItem } from './action-queue';
 import type { HomeQuestion, HomeHeldMission } from '@/app/app/(protected)/home/NeedsYouCards';
 import type { HomeMissionRow } from '@/app/app/(protected)/home/HomeMissionsSummary';
 import type { StrandCta } from './mission-list-card';
+import type { WorkerWaitingFor } from '@buildd/core/db/schema';
+import { unifyWorkerQuestion, type UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
 export type AttentionActionType = 'merge' | 'review' | 'answer' | 'decide' | 'approve' | 'reconnect' | 'resolve' | 'fix' | 'check' | 'view' | 'stranded' | 'start';
 export interface AttentionLink { label: string; href: string }
@@ -28,6 +30,23 @@ export interface HomeAttentionItem {
   held?: HomeHeldMission;
 }
 
+
+/**
+ * A parked worker's question as Home renders it: the same normalized question
+ * as the task page (`unifyWorkerQuestion`), with the worker's own error and the
+ * task title as the context fallback, so the card can never be the bare prompt.
+ */
+export function homeQuestionView(row: { waitingFor: unknown; error?: string | null; taskTitle?: string | null }): UnifiedQuestion | null {
+  const wf = row.waitingFor as WorkerWaitingFor | null;
+  if (!wf || typeof wf.prompt !== 'string' || !wf.prompt.trim()) return null;
+  return unifyWorkerQuestion(wf, null, { workerError: row.error, taskTitle: row.taskTitle });
+}
+
+/** The card's "why": what the agent said, else its default, else where it was asked. */
+function questionSentence(q: HomeQuestion): string {
+  const rec = q.question.options.find(o => o.recommended);
+  return q.question.context ?? q.question.body ?? (rec ? `Recommended: ${rec.label}` : `Asked while working on ${q.label}.`);
+}
 
 type Resolved = Pick<HomeAttentionItem, 'label' | 'tone' | 'title' | 'sentence' | 'meta' | 'href' | 'actionType' | 'primary' | 'details' | 'owner'>;
 
@@ -97,7 +116,7 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
   const items = new Map<string, HomeAttentionItem>();
   for (const q of questions) {
     const key = `question:${q.taskId ?? q.workerId}`;
-    items.set(key, { key, kind: 'question', label: 'needs input', tone: 'warning', title: q.prompt, sentence: 'An agent needs your answer to continue.', meta: q.label, href: q.href ?? '/app/activity', actionType: 'answer', owner: 'human', question: q });
+    items.set(key, { key, kind: 'question', label: 'needs input', tone: 'warning', title: q.question.headline, sentence: questionSentence(q), meta: q.label, href: q.href ?? '/app/activity', actionType: 'answer', owner: 'human', question: q });
   }
   // Conservative precedence: a stale or blocked reading must never become a merge CTA through dedupe.
   const priority = (i: ActionQueueItem) => i.chip === 'STALE' ? 3 : i.chip === 'BLOCKED' ? 2 : 1;

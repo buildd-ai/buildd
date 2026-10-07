@@ -2059,7 +2059,7 @@ export default async function HomePage({
   // ── Fleet redesign ──
   const questions: HomeQuestion[] = (fleetData?.questions ?? []).map(q => ({
     workerId: q.workerId, taskId: q.taskId, label: q.label, runnerName: q.runnerName,
-    askedAt: q.askedAt, prompt: q.prompt, options: q.options,
+    askedAt: q.askedAt, question: q.question,
     href: q.taskId ? homeTaskHref({ missionId: q.missionId, taskId: q.taskId, from: 'home', mode: 'sheet' }) : null,
   }));
   // A parked worker's question renders once, as the one-tap card.
