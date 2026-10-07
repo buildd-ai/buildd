@@ -1573,6 +1573,11 @@ export interface ClaimDiagnostics {
     managed_concurrency?: number;
     /** Same, for the plan's monthly managed runner-hours allowance. */
     managed_runner_hours?: number;
+    /**
+     * A cloud claim held because the team's monthly hosted runner allowance
+     * (counted hours) is used. Only when an allowance is set.
+     */
+    hosted_runner_hours?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).
