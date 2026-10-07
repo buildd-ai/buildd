@@ -508,6 +508,51 @@ if ! zstd_provision; then
   echo -e "${YELLOW}  Install manually: apt-get install zstd (Linux) or brew install zstd (macOS)${NC}"
 fi
 
+# Install mergiraf: structural merge driver for language-aware conflict resolution.
+# Pinned release with SHA256 verification. Best-effort: missing binary just means
+# the merge-drivers.test.ts mergiraf tests will skip, same as today.
+mergiraf_provision() {
+  if command -v mergiraf >/dev/null 2>&1; then
+    return 0
+  fi
+  MERGIRAF_VERSION="0.20.0"
+  case "$(uname -s)" in
+    Linux)
+      # x86_64 only; other architectures are not provisioned here (tested on container or CI)
+      if [ "$(uname -m)" != "x86_64" ]; then
+        return 1
+      fi
+      MERGIRAF_SHA256="4341127da8d1da29eced669fbacc1e5d6e530115098de0b82cc9dc551a1acf37"
+      TMPDIR_MERGIRAF="$(mktemp -d)"
+      if curl -fsSL "https://codeberg.org/mergiraf/mergiraf/releases/download/v${MERGIRAF_VERSION}/mergiraf_x86_64-unknown-linux-gnu.tar.gz" -o "${TMPDIR_MERGIRAF}/mergiraf.tar.gz" 2>/dev/null; then
+        if echo "${MERGIRAF_SHA256}  ${TMPDIR_MERGIRAF}/mergiraf.tar.gz" | sha256sum -c 2>/dev/null >/dev/null; then
+          if tar -xzf "${TMPDIR_MERGIRAF}/mergiraf.tar.gz" -C "${TMPDIR_MERGIRAF}" 2>/dev/null; then
+            if [ -f "${TMPDIR_MERGIRAF}/mergiraf" ]; then
+              mkdir -p "$HOME/.local/bin"
+              install -m 0755 "${TMPDIR_MERGIRAF}/mergiraf" "$HOME/.local/bin/mergiraf"
+              rm -rf "$TMPDIR_MERGIRAF"
+              return 0
+            fi
+          fi
+        fi
+      fi
+      rm -rf "$TMPDIR_MERGIRAF"
+      ;;
+    Darwin)
+      if command -v brew >/dev/null 2>&1; then
+        brew install -q mergiraf
+        return $?
+      fi
+      ;;
+  esac
+  return 1
+}
+
+if ! mergiraf_provision; then
+  echo -e "${YELLOW}Warning: mergiraf not installed — merge-drivers.test.ts mergiraf tests will skip without it.${NC}"
+  echo -e "${YELLOW}  Install manually: https://mergiraf.org/installation.html${NC}"
+fi
+
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"
 
