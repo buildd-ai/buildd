@@ -217,14 +217,25 @@ jobs:
       - name: Type check
         run: bun run type-check
 
+  # Sharded: every shard computes the same selection (scripts/affected-tests.ts
+  # is deterministic over the same checkout) and runs its own slice of it,
+  # balanced by scripts/test-durations.json. A small selection lands entirely
+  # on shard 1 and the others run nothing. The shard count is SHARD_COUNT in
+  # scripts/run-unit-tests.ts; run-unit-tests-shard.test.ts keeps them equal.
+  # fail-fast off: a red shard must not cancel the others, or their failures
+  # go unreported and the next push finds them one shard at a time.
   build-unit-tests:
-    name: build · unit tests
+    name: build · unit tests (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
 
     steps:
       - uses: actions/checkout@v7
         with:
-          # scripts/affected-tests.sh diffs against the PR base / HEAD~1.
+          # scripts/affected-tests.ts diffs a PR against its base.
           fetch-depth: 0
 
       - name: Setup Bun
@@ -239,14 +250,19 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: bun-${{ runner.os }}-
 
+      # Before selection: the import graph resolves workspace packages through
+      # node_modules, exactly as the tests will.
       - name: Install dependencies
         run: bun install
 
+      # Pushes and PRs into main run ALL (dev stays the full safety net); PRs
+      # into dev and mission branches select by reverse import graph. The
+      # reasoning is printed as notices either way.
       - name: Detect affected tests
         id: affected
         run: |
-          AFFECTED=$(bash scripts/affected-tests.sh)
-          echo "tests=$AFFECTED" >> "$GITHUB_OUTPUT"
+          bun scripts/affected-tests.ts > "$RUNNER_TEMP/affected.txt"
+          echo "tests=$(tail -n 1 "$RUNNER_TEMP/affected.txt")" >> "$GITHUB_OUTPUT"
 
       # Always via scripts/run-unit-tests.ts, which runs each file in its OWN
       # process. `bun test <many files>` shares one process, and `mock.module`
@@ -260,12 +276,22 @@ jobs:
         timeout-minutes: 10
         env:
           BUILDD_TEST_CONCURRENCY: 8
+          TESTS: ${{ steps.affected.outputs.tests }}
         run: |
-          TESTS="${{ steps.affected.outputs.tests }}"
-          echo "Affected: $TESTS"
           # ALL and SKIP are sentinels the script understands; a file list is
-          # passed through and filtered to unit tests.
-          bun run scripts/run-unit-tests.ts $TESTS
+          # passed through and filtered to unit tests. Word splitting is the
+          # point here: one argument per file.
+          # shellcheck disable=SC2086
+          bun run scripts/run-unit-tests.ts --shard "${{ matrix.shard }}/3" $TESTS
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-report-${{ matrix.shard }}
+          path: .test-report.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   build-next:
     name: build · next build
@@ -331,7 +357,9 @@ jobs:
 
   # The required check. Branch protection on main requires a check named
   # exactly `build`, and app-side auto-merge reads check-run names too, so this
-  # keeps that name and goes green only when all three parts did. always():
+  # keeps that name and goes green only when all three parts did. The unit
+  # tests are a matrix: `needs.build-unit-tests.result` is success only when
+  # every shard succeeded, and failure/cancelled if any one did not. always():
   # a failed or cancelled part must make this red, never Skipped — a Skipped
   # check satisfies branch protection without running.
   build:
