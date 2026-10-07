@@ -5,7 +5,7 @@
  * recorded to the decision ledger (plus its ai_usage receipt).
  */
 import { describe, expect, it } from 'bun:test';
-import { checkQuestion, gateEnabledFromGitConfig, hardRailContextFromGitConfig, type QuestionCheckDeps, type QuestionCheckScope } from './question-gate-check';
+import { checkQuestion, labelDecidedQuestionOutcomes, gateEnabledFromGitConfig, hardRailContextFromGitConfig, type QuestionCheckDeps, type QuestionCheckScope } from './question-gate-check';
 import type { QuestionGateRequest } from '@buildd/core/question-gate';
 
 const SCOPE: QuestionCheckScope = {
@@ -46,17 +46,19 @@ const FAILED_RUN = async () => ({
 } as any);
 
 function deps(over: Partial<QuestionCheckDeps> = {}) {
-  const records: any[] = [];
+  const all: any[] = [];
+  const records: any[] = []; // stage 2 (qd1) rows
+  const stage1: any[] = []; // stage 1 (qg1) rows
   const receipts: any[] = [];
   const d: QuestionCheckDeps = {
     resolveAccess: async () => ({ ok: true, apiKey: 'sk-team', model: 'jev' }),
     runGate: gateRun('actionable', 0.95) as any,
     runDecide: decideRun('decide', 'opt1', 0.9) as any,
-    record: async (r) => { records.push(r); return 'rec-1'; },
+    record: async (r) => { all.push(r); (r.promptVersion === 'qg1' ? stage1 : records).push(r); return 'rec-1'; },
     recordReceipts: async (r) => { receipts.push(...r); },
     ...over,
   };
-  return { d, records, receipts };
+  return { d, records, stage1, receipts };
 }
 
 describe('checkQuestion', () => {
@@ -71,12 +73,14 @@ describe('checkQuestion', () => {
   });
 
   it('a confident needs_context pushes back, unconditionally, with no running experiment', async () => {
-    const { d, records, receipts } = deps({ runGate: gateRun('needs_context', 0.9) as any });
+    const { d, records, stage1, receipts } = deps({ runGate: gateRun('needs_context', 0.9) as any });
     const reply = await checkQuestion(SCOPE, BARE, d);
     expect(reply.verdict).toBe('pushback');
     expect(reply.outcome).toBe('pushback');
     expect(reply.reason).toStartWith('Not sent: a reader with no context could not decide');
-    expect(records).toEqual([]); // stage 1 has no ledger write — only stage 2 does
+    expect(records).toEqual([]);
+    expect(stage1).toHaveLength(1);
+    expect(stage1[0]).toMatchObject({ capability: 'question_gate', promptVersion: 'qg1', verdict: 'needs_context', applied: true, status: 'applied', appliedAnswer: 'pushback' });
     expect(receipts).toHaveLength(1);
   });
 
@@ -87,6 +91,15 @@ describe('checkQuestion', () => {
     });
     const reply = await checkQuestion(SCOPE, { ...BARE, priorPushbacks: 2 }, d);
     expect(reply).toMatchObject({ verdict: 'send', outcome: 'asked' });
+  });
+
+  it('a passing brief check and a failed one are recorded at stage 1 too', async () => {
+    const ok = deps();
+    await checkQuestion(SCOPE, BARE, ok.d);
+    expect(ok.stage1[0]).toMatchObject({ promptVersion: 'qg1', verdict: 'actionable', applied: false, status: 'suggested' });
+    const bad = deps({ runGate: FAILED_RUN as any });
+    await checkQuestion(SCOPE, BARE, bad.d);
+    expect(bad.stage1[0]).toMatchObject({ promptVersion: 'qg1', applied: false, status: 'fallback' });
   });
 
   it('a sensitive workspace never sends text out, and stage 2 never runs either', async () => {
@@ -123,6 +136,41 @@ describe('checkQuestion', () => {
       expect(reply.outcome).toBe('hard_rail');
       expect(reply.rail).toBe(c.rail);
     }
+  });
+
+  it('irreversible rail: Jev picking a merge option is forced to ask, recorded rail_blocked:irreversible', async () => {
+    const { d, records } = deps({ runDecide: decideRun('decide', 'opt1', 0.9) as any });
+    const req: QuestionGateRequest = { priorPushbacks: 0, question: { prompt: 'What next for the finished PR?', options: ['Park; resume after release', 'Merge it now'] } };
+    const reply = await checkQuestion(SCOPE, req, d);
+    expect(reply).toMatchObject({ verdict: 'send', outcome: 'hard_rail', disposition: 'ask', rail: 'irreversible' });
+    expect(records[0]).toMatchObject({ applied: false, status: 'suggested', reason: 'rail_blocked:irreversible' });
+  });
+
+  it('irreversible rail: a question prompt naming the action blocks before any decide call', async () => {
+    const { d } = deps({ runDecide: (() => { throw new Error('must not run'); }) as any });
+    const req: QuestionGateRequest = { priorPushbacks: 0, question: { prompt: 'Should I force push over the remote?', options: ['Yes', 'No'] } };
+    expect(await checkQuestion(SCOPE, req, d)).toMatchObject({ outcome: 'hard_rail', rail: 'irreversible' });
+  });
+
+  it('a benign option in a question that lists a merge elsewhere is still decided', async () => {
+    const { d } = deps({ runDecide: decideRun('decide', 'opt0', 0.9) as any });
+    const req: QuestionGateRequest = { priorPushbacks: 0, question: { prompt: 'What next for the finished PR?', options: ['Park; resume after release', 'Merge it now'] } };
+    expect(await checkQuestion(SCOPE, req, d)).toMatchObject({ verdict: 'decide', outcome: 'decided' });
+  });
+
+  it('a decided row is filed under the worker so its end can label it', async () => {
+    const { d, records } = deps();
+    await checkQuestion(SCOPE, BARE, d);
+    expect(records[0]).toMatchObject({ subjectType: 'worker', subjectId: 'worker-1' });
+  });
+
+  it('labelDecidedQuestionOutcomes labels the worker\'s decided rows with the terminal status', async () => {
+    const calls: any[] = [];
+    await labelDecidedQuestionOutcomes(
+      { teamId: 't', workerId: 'worker-1', terminalStatus: 'completed' },
+      { label: (async (i: any) => { calls.push(i); return { ok: true, results: [] }; }) as any },
+    );
+    expect(calls).toEqual([{ teamId: 't', capability: 'question_gate', subject: { type: 'worker', id: 'worker-1' }, source: 'task_terminal', label: 'completed' }]);
   });
 
   it('decide: Jev picks an option, verdict is `decide`, the answer stands in for a reply, and it is recorded applied', async () => {
