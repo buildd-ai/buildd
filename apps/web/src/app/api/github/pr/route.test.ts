@@ -1325,6 +1325,8 @@ describe('POST /api/github/pr', () => {
       mockGithubReposFindFirst.mockResolvedValue(REPO);
       optedInMission();
       noExistingPr();
+      // live ref check on the predecessor branch: still exists
+      mockGithubApi.mockResolvedValueOnce({ ref: `refs/heads/${predecessorBranch}` });
       mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
 
       const req = createMockRequest({

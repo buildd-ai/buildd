@@ -307,6 +307,23 @@ describe('resolveTaskPrBase', () => {
     });
   });
 
+  it('falls back to the integration branch when a stacked phase base is gone', () => {
+    const got = resolveTaskPrBase({
+      mission: OPTED_IN,
+      task: {
+        title: 'Phase 2',
+        taskClass: 'work',
+        context: { baseBranch: 'buildd/99999999-phase-1' },
+      },
+      head: 'buildd/abc12345-phase-2',
+      fallbacks: TRUNK_FALLBACKS,
+      stackedBaseMissing: true,
+    });
+    expect(got.base).toBe(OPTED_IN.workingBranch);
+    expect(got.source).toBe('mission_integration');
+    expect(got.enforced).toBe(true);
+  });
+
   it('exempts a stacked plan phase — its base is the predecessor branch', () => {
     const got = resolveTaskPrBase({
       mission: OPTED_IN,
