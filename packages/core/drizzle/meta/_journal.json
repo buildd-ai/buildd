@@ -1730,6 +1730,13 @@
       "when": 1791340575213,
       "tag": "0255_opposite_microchip",
       "breakpoints": true
+    },
+    {
+      "idx": 256,
+      "version": "7",
+      "when": 1791341220676,
+      "tag": "0256_shocking_exodus",
+      "breakpoints": true
     }
   ]
 }

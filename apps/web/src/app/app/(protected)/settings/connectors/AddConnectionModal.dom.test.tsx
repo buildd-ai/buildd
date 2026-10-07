@@ -13,16 +13,20 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 
 const { default: AddConnectionModal } = await import('./AddConnectionModal');
+const { CONNECTOR_CATALOG } = await import('@/lib/connector-catalog');
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 type Call = { url: string; body?: unknown };
-function stubFetch(onCreate: (body: Record<string, unknown>) => Response) {
+function stubFetch(onCreate: (body: Record<string, unknown>) => Response, catalog?: () => Response) {
   const calls: Call[] = [];
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ url: String(url), body });
     if (String(url) === '/api/connectors' && init?.method === 'POST') return onCreate(body);
+    if (String(url) === '/api/connectors/catalog') {
+      return catalog ? catalog() : new Response(JSON.stringify({ canManage: true, entries: CONNECTOR_CATALOG.map(e => ({ ...e, id: null, source: 'builtin', policy: 'available' })) }));
+    }
     return new Response(JSON.stringify({ workspaces: [], teams: [] }), { headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
   return calls;
@@ -56,6 +60,48 @@ describe('AddConnectionModal catalog', () => {
     stubFetch(() => new Response('{}'));
     const { el, unmount } = await mount();
     for (const slug of ['vercel', 'neon', 'axiom', 'custom']) expect(q(el, `connector-catalog-${slug}`)).not.toBeNull();
+    await unmount();
+  });
+
+  it('renders the live catalog from the API and drops blocked entries', async () => {
+    stubFetch(() => new Response('{}'), () => new Response(JSON.stringify({
+      canManage: true,
+      entries: [
+        { slug: 'grafana', name: 'Grafana', url: 'https://mcp.grafana.example/mcp', authMode: 'oauth', description: 'team', category: 'observability', iconUrl: '', id: 'r1', source: 'team', policy: 'preinstalled' },
+        { slug: 'vercel', name: 'Vercel', url: 'https://mcp.vercel.com', authMode: 'oauth', description: '', category: 'deploy', iconUrl: '', id: null, source: 'builtin', policy: 'blocked' },
+      ],
+    })));
+    const { el, unmount } = await mount();
+    expect(q(el, 'connector-catalog-grafana')).not.toBeNull();
+    expect(q(el, 'connector-catalog-grafana')!.textContent).toContain('Preinstalled');
+    expect(q(el, 'connector-catalog-vercel')).toBeNull();
+    await unmount();
+  });
+
+  it('falls back to the built-ins when the catalog request fails', async () => {
+    stubFetch(() => new Response('{}'), () => new Response('boom', { status: 500 }));
+    const { el, unmount } = await mount();
+    expect(q(el, 'connector-catalog-vercel')).not.toBeNull();
+    expect(q(el, 'connector-catalog-neon')).not.toBeNull();
+    await unmount();
+  });
+
+  it('a header-auth preset asks for the key and posts it with the header name', async () => {
+    const calls = stubFetch(
+      () => new Response(JSON.stringify({ connector: { id: 'c9', name: 'Stripe', url: 'https://mcp.stripe.com', authMode: 'header' } }), { status: 201 }),
+      () => new Response(JSON.stringify({ canManage: true, entries: [
+        { slug: 'stripe', name: 'Stripe', url: 'https://mcp.stripe.com', authMode: 'header', headerName: 'Authorization', description: '', category: 'other', iconUrl: '', id: 'p1', source: 'platform', policy: 'available' },
+      ] })),
+    );
+    const { el, added, unmount } = await mount();
+    await click(q(el, 'connector-catalog-stripe'));
+    const key = el.querySelector('input[type="password"]') as HTMLInputElement;
+    expect(key).not.toBeNull();
+    await type(key, 'Bearer sk_test');
+    await act(async () => { el.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    await flush();
+    expect(calls.find(c => c.url === '/api/connectors')?.body).toMatchObject({ authMode: 'header', headerName: 'Authorization', headerValue: 'Bearer sk_test' });
+    expect(added).toEqual([expect.objectContaining({ id: 'c9', status: 'connected' })]);
     await unmount();
   });
 

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { ScopeSelector, type ShareScope } from '@/components/ScopeSelector';
 import { ConnectorIcon } from '@/components/ConnectorIcon';
-import { CONNECTOR_CATALOG, catalogEntryForUrl, type ConnectorCatalogEntry } from '@/lib/connector-catalog';
+import { CONNECTOR_CATALOG, catalogEntryForUrl, normalizeConnectorUrl, type ConnectorCatalogEntry, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
 
 interface CreatedConnector {
   id: string;
@@ -45,8 +45,30 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
     if (step === 'form' && !preset) nameRef.current?.focus();
   }, [step, preset]);
 
+  // The team's live catalog (built-in + platform + team entries with policy).
+  // Until it loads, or if it fails, the built-ins stand in.
+  const [catalog, setCatalog] = useState<ResolvedCatalogEntry[]>(() =>
+    CONNECTOR_CATALOG.map((e) => ({ ...e, id: null, source: 'builtin' as const, policy: 'available' as const })),
+  );
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/connectors/catalog')
+      .then(async (res) => {
+        if (!res.ok) return;
+        const data = await res.json() as { entries?: ResolvedCatalogEntry[] };
+        if (!cancelled && Array.isArray(data.entries)) setCatalog(data.entries);
+      })
+      .catch(() => { /* keep built-ins */ });
+    return () => { cancelled = true; };
+  }, []);
+  const offered = catalog.filter((e) => e.policy !== 'blocked');
+
+  const existing = new Set(existingUrls.map((u) => normalizeConnectorUrl(u)).filter((s): s is string => !!s));
   const installed = new Set(
-    existingUrls.map((u) => catalogEntryForUrl(u)?.slug).filter((s): s is string => !!s),
+    offered.filter((e) => {
+      const key = normalizeConnectorUrl(e.url);
+      return (key && existing.has(key)) || existingUrls.some((u) => catalogEntryForUrl(u)?.slug === e.slug && e.source === 'builtin');
+    }).map((e) => e.slug),
   );
 
   // A catalog pick prefills the same create flow a custom URL uses, so OAuth
@@ -126,7 +148,13 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
       const res = await fetch('/api/connectors', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), url: url.trim() }),
+        body: JSON.stringify(
+          preset?.authMode === 'header'
+            ? { name: name.trim(), url: url.trim(), authMode: 'header', headerName: preset.headerName ?? 'Authorization', headerValue: headerValue.trim() }
+            : preset?.authMode === 'none'
+              ? { name: name.trim(), url: url.trim(), authMode: 'none' }
+              : { name: name.trim(), url: url.trim() },
+        ),
       });
       if (res.ok) {
         const data = await res.json() as { connector: CreatedConnector & { teamId?: string; discoveredMetadata?: Record<string, unknown> | null } };
@@ -140,6 +168,14 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
 
         // Catalog entries are known-good oauth/none servers: hand straight to the
         // parent, which starts the OAuth redirect — no confirm screen.
+        if (preset?.authMode === 'header') {
+          onAdded({ ...connector, authMode: 'header', status: 'connected' });
+          return;
+        }
+        if (preset?.authMode === 'none') {
+          onAdded({ ...connector, authMode: 'none', status: 'connected' });
+          return;
+        }
         if (preset && (discoveredAuthMode === 'oauth' || discoveredAuthMode === 'none')) {
           onAdded({ ...connector, authMode: discoveredAuthMode, status: discoveredAuthMode === 'none' ? 'connected' : 'not_connected' });
           return;
@@ -258,7 +294,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
           {step === 'catalog' && (
             <div className="space-y-4" data-testid="connector-catalog">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[60vh] overflow-y-auto">
-                {CONNECTOR_CATALOG.map((entry) => {
+                {offered.map((entry) => {
                   const added = installed.has(entry.slug);
                   return (
                     <button
@@ -274,6 +310,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                         <span className="flex items-center gap-2">
                           <span className="text-sm font-medium text-text-primary">{entry.name}</span>
                           {added && <span className="text-xs font-mono text-status-success">Added</span>}
+                          {entry.policy === 'preinstalled' && <span className="text-xs font-mono text-text-muted">Preinstalled</span>}
                         </span>
                         <span className="block text-xs text-text-muted mt-0.5">{entry.description}</span>
                       </span>
@@ -315,7 +352,23 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                     <div className="text-xs text-text-muted font-mono truncate">{preset.url}</div>
                   </div>
                 </div>
-              ) : (
+              ) : null}
+              {preset?.authMode === 'header' && (
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-1.5 uppercase tracking-wide">
+                    {preset.headerName || 'API key'}
+                  </label>
+                  <input
+                    type="password"
+                    value={headerValue}
+                    onChange={(e) => setHeaderValue(e.target.value)}
+                    placeholder="Enter your API key"
+                    autoFocus
+                    className="w-full px-3 py-2 bg-surface-3 border border-border-default rounded-md text-base md:text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
+                  />
+                </div>
+              )}
+              {!preset && (
               <>
               <div>
                 <label className="block text-xs font-medium text-text-secondary mb-1.5 uppercase tracking-wide">
@@ -370,7 +423,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting || !name.trim() || !url.trim()}
+                  disabled={submitting || !name.trim() || !url.trim() || (preset?.authMode === 'header' && !headerValue.trim())}
                   className="flex-1 px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 transition-colors"
                 >
                   {submitting ? 'Checking…' : preset ? `Add ${preset.name}` : 'Continue'}
