@@ -59,6 +59,10 @@ export type ScoutRunTrigger = (typeof SCOUT_RUN_TRIGGERS)[number];
  * ends `completed` either way, when the runner reports or when the expiry
  * sweep finalizes its unexecuted probes `unsupported`.
  */
+/** What a probe checks. The probe-selection decision kind re-exports these. */
+export const SCOUT_PROBE_KINDS = ['route_smoke', 'api_contract', 'visual', 'spec_invariant', 'regression', 'security_boundary'] as const;
+export type ScoutProbeKind = (typeof SCOUT_PROBE_KINDS)[number];
+
 export const SCOUT_RUN_STATUSES = ['running', 'awaiting_host', 'completed', 'failed'] as const;
 export type ScoutRunStatus = (typeof SCOUT_RUN_STATUSES)[number];
 
