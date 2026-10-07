@@ -21,6 +21,7 @@ import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
+import { recordPrFact } from '@buildd/core/pr-facts';
 import { escalateConflictExhaustion } from '@/lib/auto-merge';
 import { reconcileSubjectEvent } from '@/lib/supersession';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
@@ -253,10 +254,10 @@ export async function POST(
   // success response, or a live re-check after an indeterminate one below.
   // Every side effect after the PUT itself lives here so both paths agree.
   const finalizeSuccessfulMerge = async (opts: { missionFinalized?: boolean } = {}) => {
-    await db
-      .update(workers)
-      .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
-      .where(eq(workers.id, worker.id));
+    // Through the fact funnel (terminal wins). A merge door holds GitHub's merge
+    // response, not its merged_at; the webhook's later fact never moves this
+    // instant. Slice C moves the doors to T16 + verify_merge.
+    await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
 
     // landPr finalizes the mission PR itself when it merged.
     if (!opts.missionFinalized) {

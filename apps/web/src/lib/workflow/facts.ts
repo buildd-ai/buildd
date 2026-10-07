@@ -186,12 +186,18 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
     case 'head_observed': {
       const ref: DeliveryRef = { workspaceId: fact.workspaceId, repoFullName: fact.repoFullName, prNumber: fact.prNumber };
       // §9 proof input: does the live head contain the bound attempt's reported local head?
-      let proof: { liveContainsLocal: boolean } | undefined;
+      let proof: { liveContainsLocal: boolean; contentDiffChanged?: boolean } | undefined;
       const view = await loadView(ref, exec);
       const bound = view.attempts.find((a) => a.id === view.delivery?.boundAttemptId);
-      const local = bound?.reportedShas.at(-1);
+      const awaitingPush = view.delivery?.state === 'AWAITING_PUSH';
+      // An owner in AWAITING_PUSH has no ledger row: its L is the delivery's pending local head.
+      const local = bound?.reportedShas.at(-1) ?? (awaitingPush ? view.delivery?.pushPendingLocalHead ?? undefined : undefined);
       if (local && live && local !== live.headSha && github?.contains) {
         proof = { liveContainsLocal: await github.contains(fact.repoFullName, local, live.headSha) };
+      } else if (!local && awaitingPush && live && view.delivery?.currentHeadSha && live.headSha !== view.delivery.currentHeadSha && github?.contains) {
+        // §9 with L unknown (the runner died before reporting): the remote moved off
+        // Hb and the PR's content changed, read as "the new head descends from Hb".
+        proof = { liveContainsLocal: false, contentDiffChanged: await github.contains(fact.repoFullName, view.delivery.currentHeadSha, live.headSha) };
       }
       // §6.9 provenance input: does the live head descend from the bound attempt's head?
       let attribution: { descendsFromBound: boolean } | undefined;

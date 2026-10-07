@@ -138,8 +138,10 @@ const seam = await import('../../src/lib/workflow/seam');
 const { reviewEffectHandlers: reviewOnly } = await import('../../src/lib/workflow/review-effects');
 const { withCiRetryEffects } = await import('../../src/lib/workflow/ci-retry-effects');
 const { withConflictEffects } = await import('../../src/lib/workflow/conflict-retry-effects');
-/** The composition root's set (apps/web/src/modules.ts): review loop, the CI family, the conflict/migration families. */
-const reviewEffectHandlers = withConflictEffects(withCiRetryEffects(reviewOnly));
+const { withPrFactEffects } = await import('../../src/lib/workflow/pr-fact-effects');
+const { recordPrFact } = await import('@buildd/core/pr-facts');
+/** The seam's set: the composition root's (review loop, CI, conflict/migration families) plus the fact-cache projection. */
+const reviewEffectHandlers = withPrFactEffects(withConflictEffects(withCiRetryEffects(reviewOnly)));
 const { runEffects } = await import('../../src/lib/workflow/effects');
 const { applyCommand, loadView } = await import('../../src/lib/workflow/kernel');
 const { attemptView, headCoverage } = await import('../../src/lib/workflow/reducer');
@@ -536,10 +538,51 @@ describe('S6 — out of order: closed(merged), then late synchronize / opened / 
     expect((await transitions(o.deliveryId)).length).toBe(n);
   });
 
-  // Intended: the same sequence leaves workers.prLifecycleStatus / mergedAt as the merge set them,
-  // and a check_suite failure for the pre-merge SHA neither overwrites CI on the delivery nor files
-  // a CI fix (T10: head_not_current; recordPrFact funnel replaces the direct column writers).
-  test.todo('S6: workers PR columns unchanged and an old-SHA CI failure does not overwrite (needs spec Slice B: fact funnel / recordPrFact — no task filed)');
+  /** The worker rows of a delivery's PR as the fact cache holds them. */
+  const prRows = (o: Delivery) => q<{ id: string; pr_lifecycle_status: string | null; merged_at: string | null }>(
+    sql`SELECT id, pr_lifecycle_status, merged_at FROM workers WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid ORDER BY created_at, id`);
+  const prUrl = (o: Delivery) => `https://github.com/${REPO}/pull/${o.prNumber}`;
+
+  test('S6: the merge reaches every worker row through stamp_pr_rows; late open-state and CI facts leave them as the merge set them', async () => {
+    const o = await openAndHandOn();
+    await q(sql`UPDATE workers SET pr_url = ${prUrl(o)}, pr_lifecycle_status = 'ci_green' WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
+    await closeOrMerge(o, true);
+    expect((await effects(o.deliveryId, 'stamp_pr_rows')).map((e) => [e.status, e.outcome])).toEqual([['done', 'ok:merged_2']]);
+    const merged = await prRows(o);
+    expect(merged.length).toBe(2);
+    for (const r of merged) {
+      expect(r.pr_lifecycle_status).toBe('merged');
+      // GitHub's merged_at from the kernel's live read, not receipt time.
+      expect(new Date(r.merged_at!).toISOString()).toBe('2026-10-06T00:00:00.000Z');
+    }
+
+    // The late deliveries the webhook and the sweeps would hand the funnel, in a hostile order.
+    const target = { prUrl: prUrl(o), prNumber: o.prNumber };
+    expect(await recordPrFact(target, { kind: 'open' })).toEqual([]); // late synchronize / opened
+    expect(await recordPrFact(target, { kind: 'open', reopened: true })).toEqual([]);
+    expect(await recordPrFact(target, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H1' })).toEqual([]); // late check_suite
+    expect(await recordPrFact(target, { kind: 'closed' })).toEqual([]);
+    expect(await recordPrFact(target, { kind: 'merged', mergedAt: new Date() })).toEqual([]); // a merge door's receipt time
+    // …and the kernel's own late CI fact files nothing on a merged delivery.
+    expect(await ciFail(o, { head: 'H1' })).toMatchObject({ handled: true, result: { result: 'stale' } });
+    expect(await tasksOf(o.deliveryId, 'ci_fix')).toEqual([]);
+    expect(await prRows(o)).toEqual(merged);
+  });
+
+  test('S6: a check_suite failure for the pre-push SHA neither overwrites CI on the delivery nor the fact cache, and files no CI fix', async () => {
+    const o = await openAndHandOn();
+    await q(sql`UPDATE workers SET pr_url = ${prUrl(o)} WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
+    await push(o, 'H2', { ancestors: ['H1'] });
+    await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_green', headSha: 'H2', currentHeadSha: 'H2' });
+    const before = await delivery(o.deliveryId);
+    // The old suite's failure arrives late: its SHA is H1, the PR head is H2.
+    expect(await ciFail(o, { head: 'H1' })).toMatchObject({ handled: true, result: { result: 'stale', reason: 'head_not_current' } });
+    expect(await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H2' })).toEqual([]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: before.state, ci: before.ci, version: before.version, currentHeadSha: 'H2' });
+    expect(await ciAttempts(o.deliveryId)).toEqual([]);
+    expect(await tasksOf(o.deliveryId, 'ci_fix')).toEqual([]);
+    expect((await prRows(o)).map((r) => r.pr_lifecycle_status)).toEqual(['ci_green', 'ci_green']);
+  });
 });
 
 describe('S7 — two fix dispatches race (#3420)', () => {
@@ -602,6 +645,11 @@ describe('S9–S15', () => {
     expect(reviewersCreated).toEqual([]);
     expect((await effects(o.deliveryId, 'push_recovery')).length).toBe(1);
     expect((await taskRow(o.ownerTaskId)).status).not.toBe('completed');
+    // The reaped work reaches GitHub after all (recovered by hand): the local head was never
+    // reported, so §9's proof is "moved off H1 and the PR's content changed" (H2 descends from H1).
+    await push(o, 'H2', { ancestors: ['H1'] });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 1 });
+    expect(reviewersCreated.map((r) => r.head)).toEqual(['H2']);
   });
 
   test('S9: a reaped CI fix that pushed nothing re-dispatches the next ledger row; the attempt is never delivered', async () => {
@@ -1386,6 +1434,50 @@ describe('S29 — reviewer ends with prose or no verdict', () => {
     expect(late).toMatchObject({ handled: true, toState: null });
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', approvedHeads: [] });
     expect(posted).toEqual([]);
+  });
+});
+
+describe('AWAITING_PUSH — an owner delivery leaves on a push (§6.4, §9)', () => {
+  const prUrlOf = (o: Delivery) => `https://github.com/${REPO}/pull/${o.prNumber}`;
+  /** The owner's hand-off failed with local commit L5: AWAITING_PUSH at H1. */
+  async function ownerAwaitingPush(local: string | null = 'L5', status: 'unproven' | 'lost' = 'unproven') {
+    const o = await open();
+    const w = await seedWorker(o.ownerTaskId, { status: 'failed', lastCommitSha: local, prNumber: o.prNumber, commitCount: 2 });
+    await q(sql`UPDATE workers SET pr_url = ${prUrlOf(o)} WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
+    await seam.attemptEnded({ task: ownerTask(o), workerId: w, status, localHeadSha: local, commitCount: 2, source: status === 'lost' ? 'sweep:stale-workers' : 'runner' }, deps);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H1', currentRound: 0 });
+    return o;
+  }
+
+  test('the pushed head (webhook synchronize: the fact funnel plus the kernel hint) proves L5 → AWAITING_REVIEW, round 1 at the new head, review dispatched', async () => {
+    const o = await ownerAwaitingPush();
+    gh.head = 'L5'; gh.ancestors.L5 = ['H1'];
+    // What the synchronize webhook does: the open-state fact to the funnel, the head hint to the kernel.
+    await recordPrFact({ prUrl: prUrlOf(o), prNumber: o.prNumber }, { kind: 'open' });
+    expect(await push(o, 'L5', { ancestors: ['H1'] })).toBe(true);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
+    expect((await rounds(o.deliveryId)).map((r) => [r.round, r.head_sha, r.status])).toEqual([[1, 'L5', 'queued']]);
+    expect(reviewersCreated.map((r) => r.head)).toEqual(['L5']);
+  });
+
+  test('a head that does not contain L5 is recorded, the delivery stays, and the next push_recovery is scheduled; the real push then proves it', async () => {
+    const o = await ownerAwaitingPush();
+    const recoveryBefore = (await effects(o.deliveryId, 'push_recovery')).length;
+    await push(o, 'H7', { ancestors: ['H1'] }); // someone else's push: L5 is not in it
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H7', currentRound: 0 });
+    expect(await rounds(o.deliveryId)).toEqual([]);
+    expect((await effects(o.deliveryId, 'push_recovery')).length).toBe(recoveryBefore + 1);
+    await push(o, 'L5', { ancestors: ['H7', 'H1'] });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
+  });
+
+  test('a push the webhook never delivered is found by push_recovery\'s own re-read and proves the same way', async () => {
+    const o = await ownerAwaitingPush();
+    gh.head = 'L5'; gh.ancestors.L5 = ['H1'];
+    await makeDue(o.deliveryId);
+    await drain(o.deliveryId);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
+    expect(reviewersCreated.map((r) => r.head)).toEqual(['L5']);
   });
 });
 

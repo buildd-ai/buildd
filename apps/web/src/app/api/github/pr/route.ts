@@ -37,6 +37,7 @@ import {
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
 import { resolveIntentSurfaces } from '@/lib/surface-ordering-config';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
+import { recordPrFact } from '@buildd/core/pr-facts';
 import { escalateConflictExhaustion, evaluateAutoMergeSafety, isBehindBaseRefusal } from '@/lib/auto-merge';
 import { refreshBehindPr, type RefreshOutcome } from '@/lib/base-refresh';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
@@ -1754,10 +1755,7 @@ export async function PUT(req: NextRequest) {
         });
         if (landingMode === 'enforce') {
           if (outcome.kind === 'merged') {
-            await db
-              .update(workers)
-              .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
-              .where(eq(workers.id, worker.id));
+            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
           }
           return mergePrLandingResponse(outcome, { prNumber, prUrl: worker.prUrl ?? null, tier: policy.tier });
         }
@@ -2010,10 +2008,8 @@ export async function PUT(req: NextRequest) {
     });
 
     if (result.merged) {
-      await db
-        .update(workers)
-        .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
-        .where(eq(workers.id, worker.id));
+      // Through the fact funnel (terminal wins); Slice C moves this door to T16.
+      await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
       await finalizeMissionPrMerge(mergingTask, repo.installation.installationId, repo.fullName);
       // The merge made a live reviewer and any open fix obsolete. The
       // pull_request.closed webhook fires the same event; the CAS keeps it to
@@ -2047,10 +2043,7 @@ export async function PUT(req: NextRequest) {
           // Merged externally during the race window — stamp DB if not yet set and
           // return idempotent success so the caller can distinguish this from a real failure.
           if (!worker.mergedAt) {
-            await db
-              .update(workers)
-              .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
-              .where(eq(workers.id, worker.id));
+            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
           }
           return NextResponse.json({
             ok: true,

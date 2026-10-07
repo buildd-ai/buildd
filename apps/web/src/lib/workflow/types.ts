@@ -89,6 +89,12 @@ export interface DeliverySnapshot {
   supersededByPr: number | null;
   /** §14 cutover: who decides for this delivery. Absent in fixtures = 'kernel'. */
   authority?: 'kernel' | 'legacy';
+  /**
+   * §9: the local head the attempt reported when the delivery last entered
+   * AWAITING_PUSH (from that transition's evidence). An owner attempt has no
+   * ledger row, so this is the `L` its proof is checked against.
+   */
+  pushPendingLocalHead?: string | null;
 }
 
 export interface RoundSnapshot {

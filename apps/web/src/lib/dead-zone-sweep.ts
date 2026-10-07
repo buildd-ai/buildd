@@ -41,6 +41,7 @@ import {
   installationIdForRepo,
 } from '@/lib/workspace-installation';
 import { resolvePrRepo } from '@/lib/repo-scope';
+import { recordPrFact } from '@buildd/core/pr-facts';
 
 // ── Pure predicates ───────────────────────────────────────────────────────────
 
@@ -263,15 +264,12 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
 
         // PR closed or merged — stamp and skip
         if (pr.state === 'closed') {
-          if (pr.merged && pr.merged_at) {
-            await db.update(workers)
-              .set({ mergedAt: new Date(pr.merged_at), prLifecycleStatus: 'merged', prLastCheckedAt: now, updatedAt: now })
-              .where(eq(workers.id, worker.id));
-          } else {
-            await db.update(workers)
-              .set({ prLifecycleStatus: 'closed', prLastCheckedAt: now, updatedAt: now })
-              .where(eq(workers.id, worker.id));
-          }
+          // A fact for the fact cache (recordPrFact): terminal wins, GitHub's merged_at.
+          await recordPrFact(
+            { workerId: worker.id },
+            pr.merged && pr.merged_at ? { kind: 'merged', mergedAt: pr.merged_at } : { kind: 'closed' },
+          );
+          await db.update(workers).set({ prLastCheckedAt: now, updatedAt: now }).where(eq(workers.id, worker.id));
           result.skipped++;
           continue;
         }
@@ -297,21 +295,13 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           continue;
         }
 
-        // Dirty or red — stamp prLifecycleStatus='conflict' + conflictDetectedAt (if new)
-        if (worker.prLifecycleStatus !== 'conflict') {
-          await db.update(workers)
-            .set({
-              prLifecycleStatus: 'conflict',
-              conflictDetectedAt: now,
-              prLastCheckedAt: now,
-              updatedAt: now,
-            })
-            .where(eq(workers.id, worker.id));
-        } else {
-          await db.update(workers)
-            .set({ prLastCheckedAt: now, updatedAt: now })
-            .where(eq(workers.id, worker.id));
-        }
+        // Dirty is a conflict; red CI is a CI fact, not a conflict (§18.2: the
+        // old write mapped both to `conflict`). conflictDetectedAt is first-seen.
+        await recordPrFact(
+          { workerId: worker.id },
+          isDirty ? { kind: 'conflict' } : { kind: 'ci', status: 'ci_failed', headSha: pr.head.sha, currentHeadSha: pr.head.sha },
+        );
+        await db.update(workers).set({ prLastCheckedAt: now, updatedAt: now }).where(eq(workers.id, worker.id));
 
         const headSha = pr.head.sha;
 

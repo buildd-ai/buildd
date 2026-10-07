@@ -495,7 +495,7 @@ const pushRecovery: EffectHandler = async (e) => {
 };
 
 const LEGACY_OWNED: EffectKind[] = [
-  'stamp_pr_rows', 'emit_pr_merged', 'wake_mission', 'release_attribution', 'finalize_mission_pr',
+  'emit_pr_merged', 'wake_mission', 'release_attribution', 'finalize_mission_pr',
   'scan_supersession', 'project_supersession', 'verify_merge', 'gate_event',
 ];
 

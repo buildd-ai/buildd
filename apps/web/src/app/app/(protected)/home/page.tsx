@@ -1,4 +1,5 @@
 import { isOpenAsk } from '@/lib/open-ask';
+import { after } from 'next/server';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { readGithubApproval } from '@/lib/github-approval';
@@ -501,11 +502,13 @@ export default async function HomePage({
           };
         });
 
-        // Read-through PR state refresh: catch missed merge webhooks before
-        // querying openPrWorkers (Waiting on You) and the fleet ticker.
-        await refreshStaleWorkersForWorkspaces(wsIds).catch(err =>
+        // Read-through PR fact import: catch missed merge webhooks. Enqueued
+        // after the response, never written during the render (spec
+        // workflow-state-kernel §11): this render shows what is stored, the
+        // next one shows what the import found.
+        after(() => refreshStaleWorkersForWorkspaces(wsIds).catch(err =>
           console.error('[home] pr-state-refresh failed (non-fatal):', err),
-        );
+        ));
 
         // 30-day recency window for the resolved-escalations group below.
         const activityWindowStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);

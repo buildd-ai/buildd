@@ -957,14 +957,22 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
       return record();
     case 'AWAITING_PUSH': {
       const a = c.attempt(d.boundAttemptId);
+      // An owner attempt has no ledger row: its L is the one it reported when it
+      // entered AWAITING_PUSH, and its Hb is the head the delivery holds now.
+      const local = a?.reportedShas.at(-1) ?? d.pushPendingLocalHead ?? null;
       const proof = deliveryProof({
         boundHeadSha: a?.boundHeadSha ?? d.currentHeadSha,
-        localHeadSha: a?.reportedShas.at(-1) ?? null,
+        localHeadSha: local,
         liveHeadSha: h,
         liveContainsLocal: cmd.proof?.liveContainsLocal,
         contentDiffChanged: cmd.proof?.contentDiffChanged,
       });
-      if (!proof.holds) return c.apply(key, 'AWAITING_PUSH', { patch: { currentHeadSha: h }, evidence: { ...evidence, proof } });
+      if (!proof.holds) {
+        // Record the head, stay, and re-arm recovery from this head: the push that
+        // arrived is not the work, so the next try re-reads and re-asks (§6.4).
+        const next: EffectSpec = { ...c.pushRecovery(local, 1), dedupeKey: `push_recovery:${d.id}:${local ?? 'none'}:head:${h}` };
+        return c.apply(key, 'AWAITING_PUSH', { patch: { currentHeadSha: h }, effects: [next], evidence: { ...evidence, proof } });
+      }
       const attempts: AttemptOp[] = a ? [{ op: 'update', attemptId: a.id, whenStatus: ['queued', 'running', 'ended'], set: { outcome: 'delivered', pushedHeadSha: h } }] : [];
       return toReview({ attempts });
     }

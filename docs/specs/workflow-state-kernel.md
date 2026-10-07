@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/pr-review-status.ts]
 related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts]
+verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts]
 supersedes: []
 ---
 
@@ -39,9 +39,13 @@ is filed by the `dispatch_ci_fix` effect, pushes are attributed by SHA set (§6.
 `isBuilddWorkerCommit` is gone. **Part 3 adds the read side**: a `DeliveryView` with
 one owner of the next move feeds Home, the task page and the mission failure
 reading; the PR activity comment is regenerated from transitions; release and
-integration PRs are checked by composition; S35–S37 hold. **Slice B part 2 adds the
-conflict and migration families**, mechanical first (§13.4). §13.1, §13.2 and §13.4
-list what landed and the deviations; §14 the cutover and the kill switch.
+integration PRs are checked by composition; S35–S37 hold. **Slice B part 1 moves the
+PR fact cache onto one funnel**: `recordPrFact` (`packages/core/pr-facts.ts`) is the
+only writer of `workers.prLifecycleStatus` / `mergedAt`, with terminal-wins in its
+`WHERE`; `pr-state-reconcile.ts` is deleted and pages no longer write while they
+render. **Slice B part 2 adds the conflict and migration families**, mechanical first
+(§13.4). §13.1–§13.4 and §13.6 list what landed and the deviations; §14 the cutover
+and the kill switch.
 
 **Capability statement.** For every deliverable that is meant to reach GitHub as a
 pull request, exactly one row (the *delivery*) records where the work stands. That row
@@ -827,7 +831,8 @@ page render, the reaper writing `completed`).
 
 Render-time reads: pages that call `refreshStaleWorkersForWorkspaces` or
 `refreshWorkerMergeStateIfStale` while rendering (Home, mission and task pages) MUST
-switch to "enqueue an import and render what is stored".
+switch to "enqueue an import and render what is stored". Done in Slice B part 1: each
+page runs the import in `after()`.
 
 ---
 
@@ -842,8 +847,8 @@ or a projection (written only by `projectDelivery`), or retired. Never two.**
 | `workers.status`, `completedAt`, `waitingFor` | attempt execution | execution fact; unchanged |
 | `workers.lastCommitSha`, `commitCount`, `dirtyWorktree` | runner-reported | local facts (R1); `registerLocalPr` stops writing `lastCommitSha = pr.head.sha` (a fact about GitHub stored in a field named for local state); GitHub head lives in `current_head_sha` |
 | `workers.prUrl`, `prNumber`, `prBaseRef`, `prIsDraft`, `prOpenedBaseSha` | PR identity and facts | fact cache via `PrBound`; the adopt-override paths stop replacing them without a reset (T2 rejects) |
-| `workers.prLifecycleStatus` | mixed: facts (`ci_*`, `conflict`, `merged`, `closed`, `unresolvable`) used as state | **fact cache** for CI/mergeable/merged/closed plus `unresolvable` (a reconcile-bookkeeping flag). No gate or UI reads it to decide workflow; they read `workflow_deliveries`. Written only through `recordPrFact`, which enforces terminal-wins in the `WHERE`. Retire the redundant `pr_open` meaning. |
-| `workers.mergedAt` | merge fact with two clocks | GitHub `merged_at` only; receipt-time stamping removed |
+| `workers.prLifecycleStatus` | mixed: facts (`ci_*`, `conflict`, `merged`, `closed`, `unresolvable`) used as state | **fact cache** for CI/mergeable/merged/closed plus `unresolvable` (a reconcile-bookkeeping flag). No gate or UI reads it to decide workflow; they read `workflow_deliveries`. Written only through `recordPrFact` (shipped in Slice B part 1, §13.6), which enforces terminal-wins in the `WHERE`. Retire the redundant `pr_open` meaning. |
+| `workers.mergedAt` | merge fact with two clocks | GitHub `merged_at` (webhook payload, live read, `stamp_pr_rows` from T17); the first instant recorded is never moved. The merge doors still stamp their own instant until Slice C (§13.6 deviation 2) |
 | `workers.conflictDetectedAt`, `prLastCheckedAt`, `prLastVerifiedAt`, `prCheckFailureCount`, `prUnresolvableReason` | reconcile bookkeeping | unchanged; owned by the importers |
 | `workers.supersededBy*`, `abandoned*` | the supersession edge | **projection** of T20/T21, written by `projectDelivery`; `canCompleteMission` and `prShipState` keep reading them until Slice D |
 | reviewer tasks' `result.structuredOutput`, `effectiveVerdict` | raw model output and server override | raw output stays a fact; the decision lives on `workflow_review_rounds.effective_verdict` |
@@ -1164,12 +1169,7 @@ Deviations:
    server cannot. `packages/core/no-prod-data-prose.ts` is the same count/UUID rule
    in TypeScript. A parity test runs both on one fixture set and fails on any
    disagreement. The identifier half needs CI's secret and stays CI-only.
-2. **An owner in `AWAITING_PUSH` does not leave on a push alone.** Owner attempts
-   have no ledger row, so the local head is only on the transition's evidence, not
-   in `reported_shas`. The `AWAITING_PUSH` proof then has no `L` to check
-   containment against. `push_recovery` and T22 still bound the owner case. This
-   gap predates S30 (S9 has it too) and belongs to the `push_recovery` work.
-3. **Preflight evidence is not stored on the delivery.** Tier 1 refusals and tier 2
+2. **Preflight evidence is not stored on the delivery.** Tier 1 refusals and tier 2
    denials appear in the refusal and the runner milestone. Only tier 3's
    `preflightMiss` is a kernel record.
 
@@ -1244,6 +1244,81 @@ Deviations, each deliberate:
    conflict-family `BudgetExtended` row yet.
 5. **The landing door's own refresh counter** (`refreshCycleCount` in `pr-landing.ts`)
    still runs before it calls the door; the T15/T16 half of S15 is Slice C.
+
+### 13.6 What Slice B part 1 shipped, and its deviations
+
+Shipped live: the fact-ingestion funnel and terminal-wins for the PR fact cache.
+
+- **`recordPrFact(target, fact)`** (`packages/core/pr-facts.ts`) is one statement
+  that applies a PR fact (`merged`, `closed`, `open`, `ci`, `conflict`,
+  `unresolvable`) to the targeted worker rows (one row, a set, or every row of the
+  PR) and returns the rows it changed with their previous status. The ordering rules
+  are in its `WHERE`, so arrival order never matters: `merged` is final and keeps its
+  first instant; `closed` yields only to `merged` or an explicit reopen; a CI fact
+  whose suite SHA is not the PR's current head is dropped; `conflict_detected_at` is
+  first-seen. A pure mirror (`prFactApplies`) answers the same question for a row in
+  hand, and the real-Postgres test checks the two agree on every (status, fact) pair.
+- **Every writer moved** (§18.2): the webhook's open-state, closed and `check_suite`
+  writes; `pr-reconcile.ts`, `pr-state-refresh.ts`, `dead-zone-sweep.ts`,
+  `dead-pr-shutdown.ts`, `register-local-pr.ts`, `mission-pr.ts`, the adoption
+  insert in `pr-review-request.ts`, the `backfill-merged-prs` route and
+  `backfill-mergedat.ts`, the three merge-door stamps, and `stampPrMergedOnAllRows`
+  (now a thin caller). `packages/core/__tests__/pr-fact-write-sites.test.ts` fails any
+  other module that writes `pr_lifecycle_status` or `merged_at`.
+- **Defects closed on the way**: a late `synchronize`/`opened` no longer regresses a
+  merged or closed PR to `pr_open`; a closed-unmerged PR is stamped on every row of
+  the PR, not one; the webhook stamps GitHub's `merged_at` instead of receipt time;
+  red CI is a `ci_failed` fact in the dead-zone sweep, no longer an overloaded
+  `conflict`; `conflict_detected_at` is no longer reset on re-entry; the `check_suite`
+  terminal guard is in the statement, not a read-then-write.
+- **`stamp_pr_rows`** (`lib/workflow/pr-fact-effects.ts`, composed into
+  `WORKFLOW_EFFECT_HANDLERS`) is live: T17/T18 project the merge (with the
+  delivery's GitHub `merged_at`) or the close onto every row of the PR through the
+  funnel. It is no longer acknowledged `legacy_owns`.
+- **Importers feed the kernel** (§11): when `pr-reconcile` or `pr-state-refresh`
+  finds a merge or close GitHub never delivered, a kernel-owned PR also gets it
+  through `observePrState` (T17/T18 from the kernel's own live read).
+- **`pr-state-reconcile.ts` is deleted.** `POST /api/missions/[id]/reconcile` and
+  `scripts/reconcile-pr-merge-state.ts` use `lib/pr-fact-import.ts`, which imports
+  merged/closed facts and writes nothing for an open PR (the old `pr_open` write was
+  the regression).
+- **No render-time writes**: Home, the task page and the mission page enqueue their
+  read-through import with `after()` and render what is stored.
+- **An owner in `AWAITING_PUSH` leaves on a push** (§6.4, §9). An owner attempt has
+  no ledger row, so its `L` is read from the evidence of the transition that entered
+  `AWAITING_PUSH` (`pushPendingLocalHead` on the loaded view; no new column). A head
+  that contains `L` and differs from `Hb` goes to `AWAITING_REVIEW` with a new round
+  and `dispatch_review`, whether it arrives by `synchronize` or by `push_recovery`'s
+  own re-read; a head that does not is recorded, the delivery stays, and recovery is
+  re-armed from that head. With `L` unknown (a reaped owner, S9), the proof is "moved
+  off `Hb` and the new head descends from it", read through the compare API.
+
+Deviations, each deliberate:
+
+1. **The funnel lives in `@buildd/core`, not `lib/workflow/`.** It writes only the
+   `workers` fact cache, never a `workflow_*` table, and the offline backfill script
+   in `packages/core/scripts` must use the same statement; the write-site guard is
+   its own test.
+2. **The merge doors still stamp their own instant** (`merge_pr`, the dashboard
+   merge, the `PUT /api/github/pr` race path): they hold GitHub's merge response, not
+   its `merged_at`. Through the funnel a later fact never moves that instant; Slice C
+   replaces the doors with T16 and `verify_merge`.
+3. **Webhooks stay fact importers.** "Hint, not writer" means they no longer write
+   lifecycle columns directly and never assign delivery state: they hand facts to the
+   funnel (for every PR) and to the kernel (for a kernel-owned PR). Both are
+   convergent, so the webhook stamp and `stamp_pr_rows` cannot disagree.
+4. **The one-time repair of a wrong-repo `merged` stamp is gone with
+   `pr-state-reconcile.ts`.** `merged` is terminal on the fact cache; the repo-scoped
+   lookups that caused those stamps shipped long ago.
+5. **`register-local-pr.ts` still writes `lastCommitSha` from the PR head** (§12):
+   that column is not part of this funnel; Slice E retires the reader that needs it.
+6. **Bookkeeping clocks** (`prLastCheckedAt`, `prLastVerifiedAt`,
+   `prCheckFailureCount`) are written beside the fact by the importers, unguarded:
+   they record that a check ran, not what the PR is.
+7. **"The PR's content changed" is approximated by ancestry.** With `L` unknown, a
+   new head that descends from `Hb` counts as changed content; an empty commit would
+   pass. `push_recovery` re-armed per non-proving head is bounded by the pushes that
+   arrive, and each chain still ends in T22.
 
 ---
 
@@ -1350,7 +1425,7 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S3 | Approve at `H0`, head moves by platform refresh (content-equivalent) | `approved_heads` appended once; concurrent double call appends once | `apps/web/src/lib/approval-carry-forward.test.ts`, reducer test |
 | S4 | Late verdict for a superseded head | stored on its round, no state change, no `post_review`, no merge | reducer test; `apps/web/src/app/api/workers/[id]/route.test.ts` |
 | S5 | Duplicate webhook delivery and duplicate reviewer PATCH | `duplicate`; effects not doubled | reducer test; `apps/web/src/app/api/github/webhook/route.test.ts` |
-| S6 | Out-of-order: `closed(merged)` then late `synchronize`/`opened`/`check_suite` | terminal wins; `workers` columns unchanged; old-SHA CI failure does not overwrite | `apps/web/src/app/api/github/webhook/route.test.ts`, `apps/web/src/lib/pr-state-refresh.test.ts` |
+| S6 | Out-of-order: `closed(merged)` then late `synchronize`/`opened`/`check_suite` | terminal wins; `workers` columns unchanged; old-SHA CI failure does not overwrite | `apps/web/src/app/api/github/webhook/route.test.ts`, `apps/web/src/lib/pr-state-refresh.test.ts`, `apps/web/tests/db/pr-facts.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts`, `packages/core/__tests__/pr-fact-write-sites.test.ts` |
 | S7 | Two fix dispatches race (#3420) | one `dispatch_fix` per `(delivery, round)`; loser `stale`/cancelled; `approve` cancels open fixes | reducer test; `apps/web/src/lib/supersession-store.test.ts` |
 | S8 | Request-changes budget exhausted | `ESCALATED(review_exhausted)` once per head | reducer test; existing reviewer exhaustion tests in `apps/web/src/app/api/workers/[id]/route.test.ts` |
 | S9 | Reaper/cleanup sees a dead worker with only local commits | `AttemptEnded(lost)` → `AWAITING_PUSH`; task not `completed` with `result.sha` | `apps/web/src/lib/stale-workers.test.ts`, `apps/web/src/app/api/tasks/cleanup/route.test.ts` |
@@ -1400,6 +1475,12 @@ families on one delivery), and the kernel transitions of S10, S12 and S15; the r
 legacy write does not run beside the kernel) in the route tests named above and in
 `apps/web/src/app/api/github/webhook/route.test.ts`, `.../github/pr/review/route.test.ts`,
 `.../prs/[prNumber]/re-review/route.test.ts` and `apps/web/src/lib/reviewer.test.ts`.
+
+Slice B part 1 adds S6 on the live path: the merge reaches every worker row through
+`stamp_pr_rows`, late open-state and CI facts leave the rows as the merge set them, and
+an old-SHA CI failure neither moves the delivery nor the fact cache
+(`apps/web/tests/db/workflow-matrix.test.ts`); every (status, fact) ordering of the
+funnel runs on real Postgres in `apps/web/tests/db/pr-facts.test.ts`.
 
 Integration (needs a live server): extend `apps/web/tests/integration/` with one
 end-to-end case for S1 against the dev preview (open PR, request changes, fix attempt
@@ -1681,8 +1762,8 @@ is a site to tick off in the Phase 2 PR that moves it.
 - [ ] `lib/stale-workers.ts:251` auto-complete; `app/api/tasks/cleanup/route.ts:266` assigned-task complete
 - [ ] `lib/pr-supersession.ts:236,285`, `lib/pr-supersession-detect.ts:384`, `app/api/github/pr/supersede/route.ts`
 - [ ] `lib/dead-pr-shutdown.ts:396`; `lib/loop-webhook.ts:72`
-- [ ] `lib/pr-state-reconcile.ts:127` (delete); `lib/dead-zone-sweep.ts:302` `conflict` overload
-- [ ] webhook `handlePullRequestEvent` open-state write `:822/833` and closed `:1048`; `check_suite` writes `:383,412,472`
+- [x] `lib/pr-state-reconcile.ts:127` (delete); `lib/dead-zone-sweep.ts:302` `conflict` overload (Slice B part 1)
+- [x] webhook `handlePullRequestEvent` open-state write `:822/833` and closed `:1048`; `check_suite` writes `:383,412,472` (Slice B part 1: through `recordPrFact`)
 - [ ] `lib/approval-carry-forward.ts:27` `equivalentHeadShas` append
 - [ ] `lib/pr-activity-comment.ts` writers (~18 modules) → `render_activity`
 - [ ] `lib/ci-failure-inspect.ts` `isBuilddWorkerCommit` and every `context.iteration` read used for a decision (CI, review, conflict families)
@@ -1693,14 +1774,14 @@ is a site to tick off in the Phase 2 PR that moves it.
 
 **Projection-only (P)**
 - [ ] `workers.supersededBy*`, `abandoned*`
-- [ ] `lib/pr-merge-stamp.ts:31` `stampPrMergedOnAllRows`; `tasks.status='completed'` on merge (`webhook/route.ts:1141,1221`)
-- [ ] mission notes for reviewer verdicts; `workers.mergedAt`/`prLifecycleStatus` after a transition
+- [ ] `lib/pr-merge-stamp.ts:31` `stampPrMergedOnAllRows` (done, Slice B part 1: a funnel caller); `tasks.status='completed'` on merge (`webhook/route.ts:1141,1221`)
+- [ ] mission notes for reviewer verdicts; `workers.mergedAt`/`prLifecycleStatus` after a transition (done, Slice B part 1: `stamp_pr_rows`)
 - [ ] `tasks.result.shipped`, evidence stores (`task-shipped-store.ts`, `task-evidence-store.ts`)
 
 **External-fact ingestion (F)**
 - [ ] `lib/register-local-pr.ts:26`; webhook base-ref sync `:668` and retarget `:735`
-- [ ] `lib/pr-state-refresh.ts:312`; `lib/pr-reconcile.ts` writers; `lib/dead-zone-sweep.ts:267-311` merged/closed
-- [ ] `app/api/admin/backfill-merged-prs/route.ts:89`; `packages/core/scripts/backfill-mergedat.ts`
+- [x] `lib/pr-state-refresh.ts:312`; `lib/pr-reconcile.ts` writers; `lib/dead-zone-sweep.ts:267-311` merged/closed (Slice B part 1)
+- [x] `app/api/admin/backfill-merged-prs/route.ts:89`; `packages/core/scripts/backfill-mergedat.ts` (Slice B part 1)
 - [ ] `lib/mission-pr.ts:658,792`; `create_pr` adopt/mirror writes (`github/pr/route.ts:494,579,726,772,1123`)
 - [ ] `lib/github-approval.ts` reads; runner metrics `WID:337,1057`, `R/worker-sync.ts`
 
