@@ -18,7 +18,7 @@
  *     attempt stays in `history`, but the delivery's stage comes from its
  *     canonical state and its current attempt, never from the worst attempt.
  */
-import type { PrDisplayState } from '@/lib/pr-presentation';
+import type { PrDisplayState, PrSupersededBy } from '@/lib/pr-presentation';
 import { attemptView } from './reducer';
 import type { AttemptFamily, DeliverySnapshot, DeliveryState, KernelView } from './types';
 
@@ -121,6 +121,10 @@ export interface DeliveryView {
    * a kernel-owned PR. Null when no PR is bound.
    */
   prState: PrDisplayState | null;
+  /** GitHub's `merged_at` as the delivery recorded it (T17); null until merged. */
+  mergedAt: string | null;
+  /** T20's record: the PR this delivery's work landed under. Null without one. */
+  supersededBy: PrSupersededBy | null;
   /** The newest `workflow_transitions` row: what moved the delivery here, and when. */
   lastTransition: TransitionRef | null;
 }
@@ -327,6 +331,10 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     history,
     cta,
     prState: deliveryPrState(d),
+    mergedAt: d.mergedAt ?? null,
+    supersededBy: d.supersededByPr != null || d.supersededByUrl
+      ? { prNumber: d.supersededByPr ?? null, url: d.supersededByUrl ?? null, reason: d.supersededReason ?? null }
+      : null,
     lastTransition: input.lastTransition ?? null,
   };
 }

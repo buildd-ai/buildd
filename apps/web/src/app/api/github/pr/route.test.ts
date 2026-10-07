@@ -69,6 +69,15 @@ mock.module('@/lib/workflow/landing', () => ({
   kernelLandingView: mockKernelLandingView,
   staleLandingVersion: async () => null,
 }));
+// Slice F: get_pr reads a kernel-owned PR's record from its DeliveryView.
+// Default: no kernel delivery, so every legacy case reads the columns.
+const mockGetDeliveryViewsForTasks = mock(async (..._a: any[]): Promise<Map<string, any>> => new Map());
+mock.module('@/lib/workflow/delivery-view', () => ({
+  getDeliveryViewsForTasks: mockGetDeliveryViewsForTasks,
+  getOwnerDeliveryDisplays: async () => new Map(),
+  kernelReplacedFailedTaskIds: async () => new Set(),
+  replacedFailedTaskIds: () => new Set(),
+}));
 mock.module('@/lib/mission-integration-branch', () => ({
   ensureIntegrationBaseForTaskPr: mockEnsureIntegrationBaseForTaskPr,
   missionBranchRemedy: (reason: string) => `remedy for ${reason}`,
@@ -5507,6 +5516,37 @@ describe('GET /api/github/pr', () => {
     expect(data.pr.mergedBy).toBeNull();
     expect(data.pr.mergeCommitSha).toBeNull();
     expect(data.pr.mergedVia).toBeNull();
+  });
+
+  it('Slice F: a kernel-owned PR reads its merge and supersession from the delivery, not the worker columns', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    // The columns contradict the delivery on purpose: a stale merged lifecycle and an old edge.
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-k', accountId: 'account-1', taskId: 'task-k', prNumber: 778,
+      prUrl: 'https://github.com/owner/repo/pull/778',
+      mergedAt: null, prLifecycleStatus: 'merged',
+      supersededByPrNumber: 1, supersededByPrUrl: 'stale', supersededReason: 'stale',
+      lastCommitSha: null, workspace: WORKSPACE_OK,
+    });
+    mockGetDeliveryViewsForTasks.mockResolvedValueOnce(new Map([['task-k', {
+      prNumber: 778, state: 'SUPERSEDED', mergedAt: null,
+      supersededBy: { prNumber: 790, url: 'https://github.com/owner/repo/pull/790', reason: 'reopened on a fresh branch' },
+    }]]));
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 778, title: 'old attempt', body: null, state: 'closed', merged: false, merged_at: null,
+      closed_at: '2026-08-27T09:00:00Z', html_url: 'https://github.com/owner/repo/pull/778',
+      head: { sha: 'h' }, base: { ref: 'dev' }, additions: 1, deletions: 1, changed_files: 1,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]);
+
+    const data = await (await GET(createGetRequest('w-k', 778))).json();
+    expect(mockGetDeliveryViewsForTasks).toHaveBeenCalledWith(['task-k']);
+    // The column's 'merged' would have read merged; the delivery says superseded, so closed-unmerged.
+    expect(data.pr.state).toBe('closed_unmerged');
+    expect(data.pr.supersededByPrNumber).toBe(790);
+    expect(data.pr.supersededReason).toBe('reopened on a fresh branch');
   });
 
   it('merged PR by prNumber (no workerId) returns 200 with merged state', async () => {
