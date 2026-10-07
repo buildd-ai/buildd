@@ -21,6 +21,7 @@ import {
   resolveScoutTriggerConfig,
   serverScoutFinalizeDeps,
 } from '@/lib/quality-scout-trigger';
+import { ownedScoutRunEvidenceIds } from '@/lib/quality-scout-run-evidence-store';
 
 const MAX_RUN_WARNINGS = 20;
 
@@ -185,4 +186,6 @@ export const dbScoutRunnerHostStore: ScoutRunnerHostStore = {
       .returning({ id: runs.id });
     return rows.length > 0;
   },
+
+  ownedEvidenceIds: ownedScoutRunEvidenceIds,
 };

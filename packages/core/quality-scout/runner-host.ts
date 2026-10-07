@@ -32,14 +32,17 @@
 // named import of a function a mock lacks fails at module link time.
 import * as fs from 'node:fs';
 import * as os from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import type {
   ScoutHostedProbeResult,
   ScoutProbeResultsResponse,
   ScoutRunClaimRequest,
   ScoutRunClaimResponse,
+  ScoutRunEvidenceUploadResponse,
   ScoutRunReleaseResponse,
 } from '@buildd/shared';
+import type { VerificationEvidenceRef } from '../verification-check';
 import { checkCheckoutFetchable, type CheckoutCheck } from '../knowledge-store/full-ingest';
 import { createSecretRedactor } from '../redaction';
 import type { ScoutCapabilityProfile } from '../scout-capabilities';
@@ -161,6 +164,12 @@ export interface ScoutHostApi {
   claim(req: ScoutRunClaimRequest): Promise<ScoutRunClaimResponse>;
   postResults(runId: string, leaseId: string, results: ScoutHostedProbeResult[]): Promise<ScoutPostResult>;
   release(runId: string, leaseId: string, reason: string): Promise<boolean>;
+  /**
+   * Store one command log as a run evidence object: ask the server for a
+   * presigned PUT under the run's lease, PUT the bytes, confirm. The evidence
+   * id once stored, else null. The runner never holds a storage credential.
+   */
+  uploadEvidence?(runId: string, leaseId: string, upload: { kind: 'command_output'; seq: number; body: Uint8Array }): Promise<string | null>;
 }
 
 export function createScoutHostHttpApi(opts: { serverUrl: string; apiKey: string; fetchImpl?: typeof fetch; timeoutMs?: number }): ScoutHostApi {
@@ -197,7 +206,71 @@ export function createScoutHostHttpApi(opts: { serverUrl: string; apiKey: string
       if (!res.ok) return false;
       return ((await res.json()) as ScoutRunReleaseResponse).released === true;
     },
+    async uploadEvidence(runId, leaseId, { kind, seq, body }) {
+      const run = encodeURIComponent(runId);
+      const asked = await post(`/api/quality-scout/runs/${run}/evidence`, { leaseId, kind, seq, sizeBytes: body.byteLength });
+      if (!asked.ok) return null;
+      const signed = (await asked.json()) as ScoutRunEvidenceUploadResponse;
+      if (typeof signed?.uploadUrl !== 'string' || typeof signed.evidenceId !== 'string') return null;
+      // To the storage host, not buildd: no Authorization header, only the signed length.
+      const put = await doFetch(signed.uploadUrl, {
+        method: 'PUT',
+        signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
+        headers: { 'Content-Type': 'application/gzip', 'Content-Length': String(body.byteLength) },
+        body: body as unknown as BodyInit,
+      });
+      if (!put.ok) return null;
+      const confirmed = await post(`/api/quality-scout/runs/${run}/evidence/${encodeURIComponent(signed.evidenceId)}/confirm`, { leaseId });
+      if (!confirmed.ok) return null;
+      const state = ((await confirmed.json()) as { uploadState?: unknown }).uploadState;
+      return state === 'stored' ? signed.evidenceId : null;
+    },
   };
+}
+
+// ── Command logs as run evidence ────────────────────────────────────────────
+
+/** A command log is uploaded at most this big; the tail is kept, since a failure is reported at the end. */
+export const MAX_SCOUT_EVIDENCE_TEXT_BYTES = 1024 * 1024;
+
+/**
+ * Replace each `file:` ref a probe produced (a log `localCommandPort` wrote
+ * under `evidenceDir`) with `evidence:<id>`: the log, redacted with the
+ * host's own secret values and gzipped, uploaded through the run API. A path
+ * outside `evidenceDir`, a host API without uploads, or any failure drops the
+ * ref (the server would drop a `file:` ref anyway); the result's bounded
+ * `observed` excerpt still stands. Other refs pass through. Never throws.
+ */
+export async function uploadScoutCommandLogs(
+  refs: readonly VerificationEvidenceRef[],
+  opts: {
+    api: ScoutHostApi;
+    runId: string;
+    leaseId: string;
+    evidenceDir: string;
+    redact: (text: string) => string;
+    nextSeq: () => number;
+    log?: (msg: string) => void;
+  },
+): Promise<VerificationEvidenceRef[]> {
+  const out: VerificationEvidenceRef[] = [];
+  const root = resolve(opts.evidenceDir) + sep;
+  for (const ref of refs) {
+    if (!ref.ref.startsWith('file:')) { out.push(ref); continue; }
+    const path = resolve(ref.ref.slice('file:'.length));
+    if (!path.startsWith(root) || !opts.api.uploadEvidence) continue;
+    try {
+      let raw = fs.readFileSync(path);
+      if (raw.byteLength > MAX_SCOUT_EVIDENCE_TEXT_BYTES) raw = raw.subarray(raw.byteLength - MAX_SCOUT_EVIDENCE_TEXT_BYTES);
+      const body = gzipSync(Buffer.from(opts.redact(raw.toString('utf8')), 'utf8'));
+      const id = await opts.api.uploadEvidence(opts.runId, opts.leaseId, { kind: 'command_output', seq: opts.nextSeq(), body });
+      if (id) out.push({ kind: ref.kind, ref: `evidence:${id}` });
+      else opts.log?.(`[scout-host] run ${opts.runId.slice(0, 8)}: command log not stored; the probe keeps its excerpt`);
+    } catch (err) {
+      opts.log?.(`[scout-host] run ${opts.runId.slice(0, 8)}: command log upload failed (${err instanceof Error ? err.message.slice(0, 120) : 'error'})`);
+    }
+  }
+  return out;
 }
 
 // ── Hosting a claimed run ───────────────────────────────────────────────────
@@ -338,6 +411,7 @@ export async function hostClaimedScoutRun(opts: HostScoutRunOptions): Promise<Ho
     };
 
     const posted: string[] = [];
+    let evidenceSeq = 0;
     let finalized = false;
     let stopped: string | null = null;
     for (const probe of probes) {
@@ -367,6 +441,10 @@ export async function hostClaimedScoutRun(opts: HostScoutRunOptions): Promise<Ho
           : { ...result },
         reproducibility: exec.reproducibility,
       };
+      // Command logs on this host's disk become run evidence objects the server can read back.
+      entry.result.evidenceRefs = await uploadScoutCommandLogs(entry.result.evidenceRefs ?? [], {
+        api, runId: run.id, leaseId: lease.leaseId, evidenceDir, redact, nextSeq: () => evidenceSeq++, log,
+      });
       // The run API's bound; a command judge's parts are far inside it.
       if (entry.result.signatureParts) {
         entry.result.signatureParts = entry.result.signatureParts.slice(0, MAX_SCOUT_SIGNATURE_PARTS).map((p) => p.slice(0, MAX_SIGNATURE_PART_CHARS));
