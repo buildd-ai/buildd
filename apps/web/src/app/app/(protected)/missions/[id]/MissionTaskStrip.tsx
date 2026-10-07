@@ -206,6 +206,8 @@ interface StripDrawerProps {
  * held task's sentence is what holds it (`stripSelectionReason`).
  */
 export function stripReason(t: BoardTask, executor: MissionExecutor | null): string | null {
+  // A kernel-owned delivery says where it stands in its own words (§17.5).
+  if (t.kernelReason && t.status !== 'merged' && t.status !== 'done' && t.status !== 'blocked') return t.kernelReason;
   switch (t.status) {
     case 'merged':
     case 'done':

@@ -55,7 +55,9 @@ describe('S17: every surface agrees with the one DeliveryView', () => {
 
       const yours = d.needsYou;
       expect(card === 'WAITING_INPUT').toBe(yours);
-      expect(tile === 'waiting').toBe(yours);
+      // The Board's `waiting` is an agent's question; a PR awaiting your decision reads `review`.
+      expect(tile === 'waiting').toBe(false);
+      if (yours) expect(tile).toBe('review');
       expect(feed.state === 'needs_you' && feed.needsYou === 'pr').toBe(yours);
       expect(dock.label === 'Needs you').toBe(yours);
       expect(chat.tone === 'attention').toBe(yours);
@@ -73,7 +75,7 @@ describe('S17: every surface agrees with the one DeliveryView', () => {
       if (LIVE.includes(state) && state !== 'CLOSED_UNMERGED') {
         // A non-human owner: nothing says "yours", nothing says done or failed.
         expect(['FIXING', 'REVIEWING', 'BLOCKED', 'MERGE']).toContain(card);
-        expect(['fixing', 'review']).toContain(tile);
+        expect(['running', 'fixing', 'review']).toContain(tile);
         expect(feed.state).toBe('moving');
         expect(dock.tone).toBe('live');
       }

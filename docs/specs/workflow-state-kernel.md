@@ -1601,9 +1601,12 @@ source per row: a surface never combines the delivery with the worker columns.
 - **Mission strip, board and feed.** `deriveFeedTaskState` and
   `deriveBoardStatus` read `task.delivery` (`feedStateForDelivery`,
   `boardStatusForDelivery`). Only ESCALATED is yours. Every other live state
-  is moving, so a fix in flight is never "needs you" and never FAILED. The
-  chat's mission object loads the same displays for its board and AT WORK
-  rows.
+  is moving, so a fix in flight is never "needs you" and never FAILED. On
+  the Board, a review fix or a push recovery reads `running`. A red PR under
+  repair (CI, conflict, a red base) reads `fixing`, the Board's own word for
+  it. The strip drawer gives the kernel's headline and evidence
+  (`BoardTask.kernelReason`) instead of generic copy. The chat's mission
+  object loads the same displays for its board and AT WORK rows.
 - **Chat.** The dock badge (`dockToneForDelivery`), the task tile
   (`taskStateForDelivery`) and the PR object (`prStateOf`) read the delivery.
   The dock's insight and closing line carry the kernel's headline and evidence
@@ -1649,7 +1652,18 @@ Deviations, each deliberate:
    `CondensedTimeline` component keep their column reads.** The timeline's
    rows pass `delivery` to `TaskCard`, so its chip is correct. The drawer's PR
    card still takes `prLifecycleStatus` from its own query.
-5. **The kernel has no "CI running" fact.** An open kernel PR without a verdict
+5. **The Board keeps its own needs-you word.** An ESCALATED delivery is
+   `review` on the Board, as a legacy PR awaiting you is. The Board's
+   `waiting`, its Ask/Reply and its NEEDS YOU count are for an agent's
+   question. Home, the task card, the feed, the chip and the chat all say
+   "needs you". The strip still counts a red PR under repair as "failed"
+   (its tone vocabulary, #3846).
+6. **Visual QA ran locally.** The dispatched capture fails at Run migrations
+   for any mission-branch ref, because a branch migration sits below prod's
+   journal mark and the planner refuses the backfill. That has nothing to do
+   with this PR. The fixture was shot locally with `scripts/qa/shoot.sh`
+   against Docker Postgres through the neon-sql shim.
+7. **The kernel has no "CI running" fact.** An open kernel PR without a verdict
    on its head reads `awaiting_ci` ("Open"), where a legacy row may read
    "CI running".
 

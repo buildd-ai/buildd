@@ -1130,7 +1130,7 @@ describe('S16–S21', () => {
     const d = displays.get(a.ownerTaskId)!;
     expect(d).toMatchObject({ state: view.state, headline: view.headline, needsYou: false });
     expect(deriveStage({ taskStatus: 'completed', prUrl: 'u', prLifecycleStatus: 'ci_green', delivery: d })).toBe('FIXING');
-    expect(boardStatusForDelivery(d)).toBe('fixing');
+    expect(boardStatusForDelivery(d)).toBe('running');
     expect(feedStateForDelivery(d)).toEqual({ state: 'moving', needsYou: null });
     expect(dockToneForDelivery(d)).toMatchObject({ label: 'Fixing', tone: 'live' });
     expect(resolvePrDisplayState({ delivery: d, prLifecycleStatus: 'ci_green' })).not.toBe('ci_passed');

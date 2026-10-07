@@ -180,6 +180,11 @@ export interface BoardTask {
   roleColor: string | null;
   phaseKey: string;
   status: BoardStatus;
+  /**
+   * The kernel's sentence for a kernel-owned delivery (§17.5): its headline
+   * and evidence. The strip drawer says this instead of generic copy.
+   */
+  kernelReason?: string | null;
   /** Runner (display name) of the live worker (the fix attempt's, while fixing), else the last one. */
   runner: string | null;
   /** 0-based slot on that runner, derived from overlap. */
@@ -496,21 +501,25 @@ const isLiveWorker = (w: BoardWorkerInput | null | undefined) => !!w && LIVE.has
  */
 /**
  * A kernel-owned delivery's tile state (§17.5). Null for `working` (the
- * owner's own attempt is the reading). A fix, repair, push recovery or trunk
- * block in flight is `fixing`; review and landing read `review`; only
- * ESCALATED is `waiting` on you.
+ * owner's own attempt is the reading). The Board's own vocabulary holds:
+ * `fixing` is a red PR under repair (CI, conflict, a red base), so a review
+ * fix or a push recovery, whose PR is not red, is `running`. Review and
+ * landing read `review`; so does ESCALATED, whose reason the drawer carries.
  */
 export function boardStatusForDelivery(d: Pick<DeliveryDisplay, 'stage'>): BoardStatus | null {
   switch (d.stage) {
     case 'working': return null;
     case 'awaiting_push':
-    case 'fixing':
+    case 'fixing': return 'running';
     case 'repairing':
     case 'blocked': return 'fixing';
     case 'review':
     case 'approved':
     case 'landing': return 'review';
-    case 'needs_you': return 'waiting';
+    // A person's decision on the PR, not an agent's question: the Board's
+    // `waiting` (and its Ask/Reply) is for questions, so it reads `review`,
+    // as a legacy PR awaiting you does. The drawer names the escalation.
+    case 'needs_you': return 'review';
     case 'merged':
     case 'superseded': return 'merged';
     case 'closed':
@@ -695,6 +704,9 @@ export function buildBoardCells(
       roleColor: role?.color ?? null,
       phaseKey: phaseKeyOf(t),
       status,
+      kernelReason: t.delivery && t.delivery.stage !== 'working'
+        ? (t.delivery.detail ? `${t.delivery.headline}: ${t.delivery.detail}.` : `${t.delivery.headline}.`)
+        : null,
       runner: activeWorker ? displayOf(activeWorker)?.name ?? null : null,
       slot: null,
       workerId: activeWorker?.id ?? null,
