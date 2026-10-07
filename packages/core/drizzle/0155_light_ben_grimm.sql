@@ -1,1 +1,0 @@
-ALTER TABLE "workers" ADD COLUMN "dirty_worktree" boolean DEFAULT false NOT NULL;

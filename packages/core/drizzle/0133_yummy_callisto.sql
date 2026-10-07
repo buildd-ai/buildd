@@ -1,1 +1,0 @@
-ALTER TABLE "teams" DROP COLUMN "memory_api_key";

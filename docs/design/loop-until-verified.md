@@ -3,7 +3,7 @@ status: implemented
 assertions:
   - id: loop-config-migration
     type: migration
-    number: 91
+    number: "0000"
     contains: loop_config
   - id: parse-loop-config-symbol
     type: symbol

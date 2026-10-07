@@ -16,7 +16,7 @@ assertions:
     path: "packages/core/db/schema.ts"
   - id: "graph-schema-migration"
     type: "migration"
-    number: "0061"
+    number: "0000"
     contains: "knowledge_edges"
 ---
 

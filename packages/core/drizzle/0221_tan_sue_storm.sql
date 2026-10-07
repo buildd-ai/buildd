@@ -1,1 +1,0 @@
-ALTER TABLE "workers" ADD COLUMN "pr_is_draft" boolean;

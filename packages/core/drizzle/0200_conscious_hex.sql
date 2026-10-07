@@ -1,1 +1,0 @@
-ALTER TABLE "missions" ADD COLUMN "pr_sweep_last_checked_at" timestamp with time zone;
