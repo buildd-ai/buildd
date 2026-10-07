@@ -1,6 +1,6 @@
 {
-  "id": "107432b4-a512-48af-b239-c655c42b724e",
-  "prevId": "946516a3-103a-4f5d-a7c9-bf77eedcdbe1",
+  "id": "98e7ef0e-874e-471a-ac29-6e7434ae7a49",
+  "prevId": "107432b4-a512-48af-b239-c655c42b724e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -4325,6 +4325,136 @@
           "tableTo": "workspaces",
           "columnsFrom": [
             "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.dependency_releases": {
+      "name": "dependency_releases",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "dependent_task_id": {
+          "name": "dependent_task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "upstream_task_id": {
+          "name": "upstream_task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "upstream_pr_number": {
+          "name": "upstream_pr_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decision": {
+          "name": "decision",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason_code": {
+          "name": "reason_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_branch": {
+          "name": "base_branch",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_reason": {
+          "name": "revoked_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "dependency_releases_dependent_upstream_idx": {
+          "name": "dependency_releases_dependent_upstream_idx",
+          "columns": [
+            {
+              "expression": "dependent_task_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "upstream_task_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "dependency_releases_dependent_task_id_tasks_id_fk": {
+          "name": "dependency_releases_dependent_task_id_tasks_id_fk",
+          "tableFrom": "dependency_releases",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "dependent_task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "dependency_releases_upstream_task_id_tasks_id_fk": {
+          "name": "dependency_releases_upstream_task_id_tasks_id_fk",
+          "tableFrom": "dependency_releases",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "upstream_task_id"
           ],
           "columnsTo": [
             "id"

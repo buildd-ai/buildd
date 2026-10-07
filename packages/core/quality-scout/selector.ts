@@ -28,6 +28,10 @@
  * command / request / capture as one, is a near-duplicate; a probe family is
  * capped at `maxPerFamily`. Neither costs a decision.
  *
+ * Hosts: a candidate no available host can run (`options.hostable`) is
+ * skipped `no_host` up front, so the 3–5 probe budget is spent on probes
+ * something can actually execute. Deterministic; the kind never sees it.
+ *
  * Every candidate ends up exactly once in `selected` or `skipped`, with a reason.
  */
 
@@ -95,6 +99,13 @@ export interface ScoutSelectionOptions {
    * an unknown spend cannot be capped, so it is not.
    */
   cost?: { maxUsd: number; spent(): number | null };
+  /**
+   * Can any available host run this candidate? Return null when one can, or a
+   * reason code when none can: the candidate is skipped `no_host` before it
+   * costs a decision or a budget slot. Absent: every host is assumed (a
+   * single-host run, where the executor's capability gate says `unsupported`).
+   */
+  hostable?: (c: ScoutProbeCandidate) => string | null;
 }
 
 export interface ScoutSelectedProbe {
@@ -106,7 +117,7 @@ export interface ScoutSelectedProbe {
   decisionSource: DecisionSource | null;
 }
 
-export type ScoutSkipReason = 'unsupported' | 'near_duplicate' | 'family_cap' | 'deferred' | 'over_budget' | 'not_considered';
+export type ScoutSkipReason = 'unsupported' | 'no_host' | 'near_duplicate' | 'family_cap' | 'deferred' | 'over_budget' | 'not_considered';
 
 export interface ScoutSkippedProbe {
   candidate: ScoutProbeCandidate;
@@ -209,6 +220,11 @@ export async function selectScoutProbes(
   const gate = (c: ScoutProbeCandidate): boolean => {
     if (!c.supported) {
       skip({ candidate: c, reason: 'unsupported', ...(c.unsupportedReason ? { detail: c.unsupportedReason } : {}) });
+      return false;
+    }
+    const noHost = options.hostable?.(c) ?? null;
+    if (noHost) {
+      skip({ candidate: c, reason: 'no_host', reasonCode: noHost, detail: 'No available host offers what this probe needs.' });
       return false;
     }
     const dup = duplicateOf(c, selected);
