@@ -396,6 +396,22 @@ describe('buildConflictRetryTask', () => {
       expect(result!.description).not.toContain('merge conflicts with the base branch');
     });
 
+    it('names the bound PR head up front when it differs from the worker branch', () => {
+      const result = buildConflictRetryTask(makeInput({
+        migrationCollision: collision,
+        prRefs: { headRef: 'mission/m-1', baseRef: 'dev' },
+      }));
+      expect(result!.description).toContain('Bound PR lineage');
+      expect(result!.description).toContain('Push to `mission/m-1`');
+      expect(result!.description).toContain('409');
+    });
+
+    it('omits the lineage note when the PR head is the worker branch', () => {
+      const result = buildConflictRetryTask(makeInput({ migrationCollision: collision }));
+      expect(result!.description).not.toContain('Bound PR lineage');
+      expect(result!.description).toContain('Push to the existing branch');
+    });
+
     it('sets errorType to migration_collision in failureContext', () => {
       const result = buildConflictRetryTask(makeInput({ migrationCollision: collision }));
       expect((result!.context.failureContext as any).errorType).toBe('migration_collision');
@@ -633,6 +649,110 @@ describe('dispatchConflictRetry', () => {
     });
   });
 
+  // A "dirty" PR is a hint, not a verdict: GitHub computes mergeability lazily
+  // and the flag is often stale right after the base moves. Before an agent is
+  // filed, GitHub's own server-side merge against the CURRENT base tip decides.
+  describe('conflict claim is re-verified against the current base tip', () => {
+    beforeEach(() => {
+      mockUpdateBehindPrBranch.mockReset();
+      mockFireGateEvent.mockClear();
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+    });
+
+    it('stale dirty flag + clean merge: no task, the branch is updated mechanically', async () => {
+      mockUpdateBehindPrBranch.mockResolvedValue({ kind: 'updated' });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: true, branchUpdated: true, conflictFalsePositive: true });
+      expect(mockUpdateBehindPrBranch).toHaveBeenCalledTimes(1);
+      expect(mockUpdateBehindPrBranch.mock.calls[0][0]).toMatchObject({
+        installationId: 5, repoFullName: 'acme/app', prNumber: 99, headSha: 'sha-abc123', taskId: 'task-id',
+      });
+      expect(mockInsert).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
+      const gate = mockFireGateEvent.mock.calls.map((c) => c[0]).find((e) => e.reason === 'conflict_false_positive');
+      expect(gate).toMatchObject({
+        gate: 'base_refresh',
+        surface: 'conflict-retry',
+        workspaceId: 'ws-1',
+        taskId: 'task-id',
+        detail: { prNumber: 99, headSha: 'sha-abc123', recheck: 'updated' },
+      });
+    });
+
+    it('stale dirty flag + head already contains the base: no task, recorded as a false positive', async () => {
+      mockUpdateBehindPrBranch.mockResolvedValue({ kind: 'up_to_date', reason: '422 no new commits' });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: false, alreadyUpToDate: true, conflictFalsePositive: true });
+      expect(mockInsert).not.toHaveBeenCalled();
+      expect(mockFireGateEvent.mock.calls.some((c) => c[0].reason === 'conflict_false_positive')).toBe(true);
+    });
+
+    it('a real textual conflict dispatches the conflict agent as today', async () => {
+      mockUpdateBehindPrBranch.mockResolvedValue({ kind: 'conflict', reason: '422 merge conflict' });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: true, taskId: 'new-task-id' });
+      expect(capturedInsertValues.context.failureContext.errorType).toBe('merge_conflict');
+      expect(mockWakeTask.mock.calls).toEqual([['new-task-id', 'conflict.retry']]);
+      expect(mockFireGateEvent.mock.calls.some((c) => c[0].reason === 'conflict_false_positive')).toBe(false);
+    });
+
+    it.each([
+      ['a thrown recheck', () => Promise.reject(new Error('GitHub API error: 502 Bad Gateway'))],
+      ['an operational failure', () => Promise.resolve({ kind: 'deferred', failure: 'transient', attempts: 1, reason: '502' })],
+      ['exhausted refresh attempts', () => Promise.resolve({ kind: 'exhausted', failure: 'auth', attempts: 3, reason: '403' })],
+      ['a moved head', () => Promise.resolve({ kind: 'head_changed', reason: 'moved' })],
+      ['a refresh already in flight', () => Promise.resolve({ kind: 'in_flight' })],
+      ['unknown semantic coverage', () => Promise.resolve({ kind: 'semantic_unverified', rechecks: 3, reason: 'no index' })],
+      ['no answer at all', () => Promise.resolve(undefined)],
+    ])('%s fails toward today\'s behaviour: the agent is dispatched, never dropped', async (_label, impl) => {
+      mockUpdateBehindPrBranch.mockImplementation(impl as any);
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: true, taskId: 'new-task-id' });
+      expect(capturedInsertValues.context.failureContext.errorType).toBe('merge_conflict');
+      expect(mockWakeTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('a verified same-symbol edit dispatches a semantic conflict review', async () => {
+      mockUpdateBehindPrBranch.mockResolvedValue({
+        kind: 'semantic_conflict',
+        assessment: { verdict: 'same_symbol', reason: 'both edit f', baseRef: 'dev', evidence: [{ path: 'src/a.ts', symbols: ['src/a.ts::f'] }] },
+      });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result.dispatched).toBe(true);
+      expect(capturedInsertValues.context.failureContext.errorType).toBe('semantic_conflict');
+    });
+
+    it('a migration-number collision is not re-checked: git cannot see it, so the renumber task is filed', async () => {
+      const result = await dispatchConflictRetry({
+        ...BASE_PARAMS,
+        migrationCollision: { file: '0100_a.sql', otherFile: '0100_b.sql', otherPrNumber: 7 } as any,
+      });
+
+      expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
+      expect(result.dispatched).toBe(true);
+      expect(capturedInsertValues.context.failureContext.errorType).toBe('migration_collision');
+    });
+
+    it('without a GitHub installation there is nothing to re-check with: dispatched as today', async () => {
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: null });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
+      expect(result).toEqual({ dispatched: true, taskId: 'new-task-id' });
+    });
+  });
+
   // Renovate/Dependabot stop rebasing a branch someone else committed to —
   // GitHub's update-branch run on our behalf counts. The approve → auto-merge
   // → "behind base" path is what pushed to a Renovate branch in production.
@@ -704,6 +824,8 @@ describe('dispatchConflictRetry', () => {
     expect(mockSchedulePrScopeReconcile).not.toHaveBeenCalled();
 
     mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+    // The pre-dispatch recheck confirms a real conflict.
+    mockUpdateBehindPrBranch.mockResolvedValue({ kind: 'conflict', reason: '422 merge conflict' });
     const installed = await dispatchConflictRetry(BASE_PARAMS);
     expect(installed.dispatched).toBe(true);
     expect(mockSchedulePrScopeReconcile).toHaveBeenCalledWith({

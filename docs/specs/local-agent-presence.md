@@ -74,6 +74,7 @@ agent loop it runs in.
 become tracked work only through that session's own verified `claim_task`.
 
 **Invariants**:
+- The hook sends nothing for a session outside the account's workspace repos: only a session in a workspace repo (cached per key, refreshed at most every 10 minutes on an unknown repo, fail closed), in a repo whose `.mcp.json` names buildd, or one that has claimed a task (`bind`) is reported.
 - A `start` carries `interactive`: false for a session nobody is attending (Claude Code `claude -p` and SDK runs, read from `CLAUDE_CODE_SESSION_ATTENDED` then `CLAUDE_CODE_ENTRYPOINT`; Cursor background agents). Such a presence is neither listed nor counted as an interactive session until it binds a worker for a task.
 - `start`/`touch` write only `local_sessions`. They never insert a `workers` row, change `accounts.activeSessions`, or write a task. Presence is never counted as agent capacity; where it is counted it is labelled "Interactive sessions".
 - `bind` attaches a presence to an existing worker only when that worker belongs to the calling account, has `runner = 'mcp'` (written by the claim route only after the HMAC session marker verifies; `mcp-unverified` and runner workers are refused), and is live. Another account's worker and an unknown id get the same 404.
@@ -119,7 +120,7 @@ and exactly once, and MUST never complete unfinished work or rewrite a finished 
 
 ## Install
 
-`buildd install --global` registers the MCP server for Claude Code (as before)
+`buildd install --global` registers the MCP server for Claude Code per folder, only for folders Claude Code has opened whose repo is one of the account's workspaces (a repo whose own `.mcp.json` names buildd is left alone; `--here` adds the current folder, `--everywhere` restores the user-wide entry),
 and installs the hooks and the `buildd-session` skill for every detected client;
 `buildd install` does the same for one repo; `--status` and `--uninstall` inspect
 or remove them. A handler is buildd's if and only if its command names

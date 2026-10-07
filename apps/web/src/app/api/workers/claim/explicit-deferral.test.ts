@@ -9,7 +9,7 @@ const ALL: DeferralReason[] = [
   'mission_budget', 'mission_concurrent', 'mission_paced', 'workspace_cap',
   'provider_unavailable', 'budget_paused', 'routing_paused', 'duplicate_worker',
   'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'role_env_unsatisfied',
-  'managed_concurrency', 'managed_runner_hours',
+  'managed_concurrency', 'managed_runner_hours', 'hosted_runner_hours',
 ];
 
 describe('describeExplicitDeferral', () => {
@@ -20,6 +20,14 @@ describe('describeExplicitDeferral', () => {
       expect(r.detail.length).toBeGreaterThan(10);
       expect(r.detail).not.toMatch(/unknown|does not cover/i);
     }
+  });
+
+  it('says the hosted runner allowance is used, with the numbers and the way out', () => {
+    const d = describeExplicitDeferral('hosted_runner_hours', { used: 50, limit: 50, resetsAt: '2026-11-01T00:00:00.000Z' }).detail;
+    expect(d).toContain('Hosted runner allowance used');
+    expect(d).toContain('50 of 50');
+    expect(d).toContain('2026-11-01T00:00:00.000Z');
+    expect(d).toContain('runner of your own');
   });
 
   it('carries the numbers the loop had in hand', () => {

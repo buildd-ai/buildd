@@ -363,3 +363,22 @@ describe('summarizePrFixAttempts', () => {
     expect(ciRetriesUsed).toBe(1);
   });
 });
+
+describe('bound PR lineage', () => {
+  it('names the PR head as push target and forbids a new create_pr when head differs from the worker branch', () => {
+    const t = buildCIRetryTask({ ...baseParams, prRefs: { headRef: 'mission/m-1', baseRef: 'dev' } });
+    const d = t!.description;
+    expect(d).toContain('Bound PR lineage');
+    expect(d).toContain('`mission/m-1`');
+    expect(d).toContain('Do NOT open a new task-branch PR');
+    expect(d).toContain('5. Push your fixes to `mission/m-1`');
+  });
+
+  it('adds nothing when the PR head is the worker branch or refs are unknown', () => {
+    for (const prRefs of [{ headRef: 'buildd/abc-fix', baseRef: 'dev' }, null, undefined]) {
+      const d = buildCIRetryTask({ ...baseParams, prRefs })!.description;
+      expect(d).not.toContain('Bound PR lineage');
+      expect(d).toContain('Push your fixes to the existing branch');
+    }
+  });
+});
