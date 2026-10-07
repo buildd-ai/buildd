@@ -1267,6 +1267,23 @@ describe('S16–S21', () => {
     expect((await tasksOf(o.deliveryId, 'fix')).length).toBe(2);
   });
 
+  test('S19 variant (ea38b3d5): a fix that pushed mid-attempt and then died → a review round at the pushed head, not a stranded CHANGES_REQUESTED', async () => {
+    const f = await fixing();
+    await push(f, 'H2', { ancestors: ['H1'] });
+    expect(await delivery(f.deliveryId)).toMatchObject({ state: 'FIXING', currentHeadSha: 'H2' });
+    const before = reviewersCreated.length;
+
+    const w = await seedWorker(f.fix.id, { status: 'failed' });
+    await seam.attemptEnded({ task: f.fix, workerId: w, status: 'lost', localHeadSha: null, commitCount: 1, source: 'sweep:stale-workers' }, deps);
+    const v = await loadView({ deliveryId: f.deliveryId });
+    expect(v.delivery).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2, boundAttemptId: null });
+    expect(v.rounds.find((r) => r.round === 2)).toMatchObject({ headSha: 'H2', kind: 'delta', status: 'queued' });
+    expect(v.attempts.map((a) => [a.attemptNo, a.status, a.outcome])).toEqual([[1, 'ended', 'failed']]);
+    // The pushed head is under review; no second fix was filed for the stale round.
+    expect(reviewersCreated.slice(before).map((r) => [r.round, r.head])).toEqual([[2, 'H2']]);
+    expect((await tasksOf(f.deliveryId, 'fix')).length).toBe(1);
+  });
+
   test('S20 (kernel): a stale version from a human action is answered stale with the current view; nothing applies', async () => {
     const o = await open();
     await q(sql`UPDATE workflow_deliveries SET max_rounds = 1 WHERE id = ${o.deliveryId}::uuid`);

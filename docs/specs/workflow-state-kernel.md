@@ -501,6 +501,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | `FIXING`/`REPAIRING`, success, proof holds | T3 path to `AWAITING_REVIEW` (new round) |
 | `FIXING`/`REPAIRING`, success, no proof | `AWAITING_PUSH`; the attempt row stays `completed` as an execution fact; effect `push_recovery` |
 | `FIXING`/`REPAIRING`, `failed`/`lost` | back to `CHANGES_REQUESTED`/`REPAIRING` with `fix_attempts+1`; re-dispatch, or T7/`ESCALATED` when the budget is spent |
+| `FIXING`, `failed`/`lost`, the head moved during the fix (a mid-fix push recorded in `FIXING`, §6.4) | the round advances as §6.4 says: round `r+1` at the current head (delta from the last decided head), `AWAITING_REVIEW`, ledger row `failed`; or the verdict a decided round at that head maps to. The stale round's fix is not re-dispatched (T8 would refuse it, `newer_verdict_supersedes_fix`), whatever the fix budget |
 
 ### 6.6 Completion is a fact, not a transition
 
