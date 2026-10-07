@@ -7,6 +7,7 @@ import { admitWaitingTasks } from '@/lib/home-attention';
 import { publishHomeAttentionCount } from '@/lib/home-attention-store';
 import { useHideNeedsInputBannerOnPhone } from '@/lib/needs-input-hidden';
 import { useNeedsInput } from '@/components/needs-input-context';
+import { needsInputTaskHref } from '@/components/NeedsInputBanner';
 import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import type { HomeShippedMission } from './NeedsYouStack';
 import { shippedDurationFacts, shippedSummaryHref } from './NeedsYouStack';
@@ -93,7 +94,7 @@ export function MobileHome({ items: serverItems, ask, live, capacity, mergedToda
   // One list of what needs you: every task the global banner would name is in
   // it, so the banner steps aside on a phone instead of naming a second list.
   const { tasks: waiting } = useNeedsInput();
-  const items = useMemo(() => admitWaitingTasks(serverItems, waiting), [serverItems, waiting]);
+  const items = useMemo(() => admitWaitingTasks(serverItems, waiting, needsInputTaskHref), [serverItems, waiting]);
   useHideNeedsInputBannerOnPhone(true);
   const open = items.filter(i => !done[i.key]);
   const copy = homeAttentionCopy(open);

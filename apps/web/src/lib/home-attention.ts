@@ -4,7 +4,6 @@ import type { HomeMissionRow } from '@/app/app/(protected)/home/HomeMissionsSumm
 import type { StrandCta } from './mission-list-card';
 import type { WorkerWaitingFor } from '@buildd/core/db/schema';
 import { unifyWorkerQuestion, type UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
-import { missionTaskHref } from './mission-task-href';
 
 export type AttentionActionType = 'merge' | 'review' | 'answer' | 'decide' | 'approve' | 'reconnect' | 'resolve' | 'fix' | 'check' | 'view' | 'stranded' | 'start';
 export interface AttentionLink { label: string; href: string }
@@ -170,8 +169,9 @@ export interface WaitingInputTask {
  * question loader and the banner's feed read different queries (scope, window,
  * row cap), so without this the banner names a task the inbox does not count.
  * Home is the one list of what needs you: whatever the banner holds is in it.
+ * `hrefFor` is the banner's own link, so both point at the same place.
  */
-export function admitWaitingTasks(items: readonly HomeAttentionItem[], waiting: readonly WaitingInputTask[]): HomeAttentionItem[] {
+export function admitWaitingTasks(items: readonly HomeAttentionItem[], waiting: readonly WaitingInputTask[], hrefFor: (t: WaitingInputTask) => string): HomeAttentionItem[] {
   const covered = new Set<string>();
   for (const i of items) {
     if (i.question?.taskId) covered.add(i.question.taskId);
@@ -182,7 +182,7 @@ export function admitWaitingTasks(items: readonly HomeAttentionItem[], waiting: 
     // An answered question waits on the agent, not the person.
     if (t.answerSent || covered.has(t.id)) continue;
     covered.add(t.id);
-    const href = missionTaskHref({ missionId: t.missionId ?? null, taskId: t.id, mode: 'sheet' });
+    const href = hrefFor(t);
     const prompt = t.waitingFor?.prompt?.trim();
     out.push({
       key: `question:${t.id}`, kind: 'question', label: 'needs input', tone: 'warning',
