@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { writeSecretJsonFile } from './secure-file';
-import { writeBuilddMcpEntry } from './claude-json-mcp';
+import { refreshBuilddMcpEntries } from './claude-json-mcp';
 
 const CONFIG_DIR = join(homedir(), '.buildd');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
@@ -74,10 +74,14 @@ function configureMcp(apiKey: string, server: string) {
   if (values['no-mcp']) return;
 
   try {
-    writeBuilddMcpEntry(CLAUDE_JSON, apiKey, server);
-    console.log(`MCP server configured in ${CLAUDE_JSON}`);
+    // Re-key what `buildd install` set up; never add a user-wide entry, so the
+    // workspace-folder scope survives a new login.
+    const n = refreshBuilddMcpEntries(CLAUDE_JSON, apiKey, server);
+    console.log(n > 0
+      ? `Updated the key in ${n} buildd MCP entr${n === 1 ? 'y' : 'ies'} in ${CLAUDE_JSON}.`
+      : 'To use buildd from Claude Code in your workspace folders, run: buildd install --global');
   } catch (err) {
-    console.error('Failed to configure MCP:', err);
+    console.error('Failed to update the buildd MCP entries:', err);
   }
 }
 
@@ -270,9 +274,6 @@ try {
   console.log('');
   console.log(`Authenticated${email ? ` as ${email}` : ''}`);
   console.log(`API key saved to ${CONFIG_FILE}`);
-  if (!values['no-mcp']) {
-    console.log(`MCP server configured in ${CLAUDE_JSON}`);
-  }
   console.log('');
 } catch (err: any) {
   console.error(`\nLogin failed: ${err.message}`);
