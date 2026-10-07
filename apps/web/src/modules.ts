@@ -24,6 +24,7 @@ import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
 import type { EffectHandlers } from '@/lib/workflow/effects';
 import { reviewEffectHandlers } from '@/lib/workflow/review-effects';
 import { withCiRetryEffects } from '@/lib/workflow/ci-retry-effects';
+import { withTrunkEffects } from '@/lib/workflow/ci-red-trunk-effects';
 import { withConflictEffects } from '@/lib/workflow/conflict-retry-effects';
 import { withLandingEffects } from '@/lib/workflow/pr-landing-effects';
 import { withSupersessionEffects } from '@/lib/workflow/supersession-effects';
@@ -78,7 +79,9 @@ export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
  * review-loop ones (reviewer and fix tasks, GitHub reviews, escalations), the
  * CI family's (CI fix tasks bound to their ledger row, CI exhaustion), the
  * conflict/migration families' (mechanical refresh and renumber first, an
- * agent conflict fix only on a refusal, conflict exhaustion), landing and
+ * agent conflict fix only on a refusal, conflict exhaustion), the trunk
+ * breaker's (one trunk-fix task per incident, cancelling the per-PR CI fix
+ * tasks a trunk incident skipped), landing and
  * post-merge work (merge call, verify, post-merge events, mission-PR
  * finalize), and a closed PR's resolution (supersession scan, the edge's
  * projection, mission wake). Each effect kind has exactly one handler.
@@ -89,5 +92,5 @@ export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
  */
 let workflowEffectHandlersMemo: EffectHandlers | null = null;
 export function workflowEffectHandlers(): EffectHandlers {
-  return (workflowEffectHandlersMemo ??= withSupersessionEffects(withLandingEffects(withConflictEffects(withCiRetryEffects(reviewEffectHandlers)))));
+  return (workflowEffectHandlersMemo ??= withSupersessionEffects(withLandingEffects(withTrunkEffects(withConflictEffects(withCiRetryEffects(reviewEffectHandlers))))));
 }

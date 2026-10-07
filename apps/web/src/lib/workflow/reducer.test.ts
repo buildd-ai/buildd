@@ -640,6 +640,17 @@ describe('T10 CiFailedObserved (S23, S28)', () => {
     expect(dec.toState).toBe('BLOCKED_ON_TRUNK');
     expect(dec.attempts).toEqual([{ op: 'cancel_open', families: ['ci'], status: 'skipped' }]);
   });
+  test('S24: a delivery already repairing CI joins the trunk incident; its queued attempt is skipped, not spent', () => {
+    const v = V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1' }), [], [A({ id: 'c1', family: 'ci', status: 'queued' })]);
+    const dec = applied(ci(v, { openTrunkIncidentId: 'i1' }));
+    expect(dec.toState).toBe('BLOCKED_ON_TRUNK');
+    expect(dec.patch).toMatchObject({ resumeState: 'AWAITING_REVIEW', trunkIncidentId: 'i1', boundAttemptId: null });
+    expect(dec.attempts).toEqual([{ op: 'cancel_open', families: ['ci'], status: 'skipped' }]);
+    // Without an incident the in-flight repair still answers first.
+    expectResult(ci(v), 'stale', 'state_not_allowed');
+    // A review fix owes the next head: the CI fact is recorded, nothing is blocked.
+    expect(applied(ci(V(D({ state: 'CHANGES_REQUESTED' })), { openTrunkIncidentId: 'i1' })).toState).toBe('CHANGES_REQUESTED');
+  });
 });
 
 describe('T12 ConflictObserved: mechanical first (S27, AC-18)', () => {

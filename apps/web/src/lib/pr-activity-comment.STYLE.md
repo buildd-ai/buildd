@@ -46,6 +46,8 @@ deciding whether to step in, so every rule below comes down to two things:
 | fix ended, GitHub head unchanged (kernel) | `push_pending` | ○ Fix N of M not on GitHub yet · waiting for the push | none |
 | push recovery gave up (kernel) | `push_undeliverable` | ⚑ Fix never reached GitHub · needs a human | none |
 | release/integration PR composed of reviewed changes (kernel) | `composition_verified` | ✓ Release composition verified · every change was reviewed at its own head | none |
+| base branch fails the same checks (kernel trunk breaker) | `blocked_on_trunk` | ○ Blocked on a red base branch · CI retries paused until the base is green | none |
+| base branch green again (kernel trunk breaker) | `trunk_recovered` | ✓ Base branch green again · resuming | none |
 
 For a kernel-owned PR the header is not the newest row: it is the delivery's
 canonical state (`DeliveryView.headline`, docs/specs/workflow-state-kernel.md

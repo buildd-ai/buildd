@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/workflow/landing.ts]
 related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts]
+verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts]
 supersedes: []
 ---
 
@@ -44,7 +44,11 @@ PR fact cache onto one funnel**: `recordPrFact` (`packages/core/pr-facts.ts`) is
 only writer of `workers.prLifecycleStatus` / `mergedAt`, with terminal-wins in its
 `WHERE`; `pr-state-reconcile.ts` is deleted and pages no longer write while they
 render. **Slice B part 2 adds the conflict and migration families**, mechanical first
-(§13.4). **Slice C moves landing and merge**: every merge door keeps its rails and,
+(§13.4). **Slice B part 3 adds the trunk circuit breaker**: a CI failure the base
+branch shares joins one trunk incident, one trunk fix runs for it, and the blocked
+PRs resume when the base is green (§13.5). Its base-red rule is **on by default**; a
+workspace turns the breaker off with `gitConfig.trunkBreaker = false`. **Slice C
+moves landing and merge**: every merge door keeps its rails and,
 for a kernel-owned PR, hands the merge to the kernel (T15 `LandingRequested` → the
 `merge_call` effect → T16 `MergeCallResult` → `verify_merge` → T17); the post-merge
 work is outbox effects, and a person on a stale version gets HTTP 409 with the
@@ -52,7 +56,7 @@ current view. **Slice D moves a closed PR's resolution and mission completion's
 input**: supersession is T20 and abandonment T21 for a kernel-owned PR (the worker
 columns are their projection), a PR closed because its base branch was deleted is
 `CLOSED_UNMERGED(base_deleted)`, the supersession scan is an effect of the close,
-and `prShipState` answers from the delivery. §13.1–§13.4 and §13.6–§13.8 list what
+and `prShipState` answers from the delivery. §13.1–§13.8 list what
 landed and the deviations; §14 the cutover and the kill switch.
 
 **Capability statement.** For every deliverable that is meant to reach GitHub as a
@@ -553,10 +557,13 @@ attempt is dispatched for that signature; queued ones are cancelled as `skipped`
 `trunk` family attempt (`dispatch_trunk_fix`) exists per incident; affected deliveries
 are `BLOCKED_ON_TRUNK`, visible on the comment and on Home as "blocked on trunk"
 rather than "CI failing"; and the `ci` budget is not consumed. Time-dependent
-("time-bomb") failures are the same case seen first on trunk. Thresholds are policy
-values, defaulting to disabled (`workflowKernel` on, `trunkBreaker` off) so merging
-the kernel changes nothing until a workspace opts in (DESIGN-FORMAT rule 2); the
-safety bound is one trunk-fix attempt per incident and the existing attempt cap on it.
+("time-bomb") failures are the same case seen first on trunk. The base-red rule (a)
+is ON by default with the kernel (owner decision: the kernel ships live; open
+question 7's lean that base-red alone opens the incident); the multi-delivery rule
+(b) is opt-in through `gitConfig.trunkBreaker = { minDeliveries, windowMinutes }`,
+and `trunkBreaker: false` turns the breaker off (§13.5). The safety bound is one
+trunk-fix task per incident, and a PR is blocked only while its every failing check
+also fails on the base.
 
 **Policy checks before PR creation and push.** Failures of rules that are known before
 CI runs (production-data scan of PR body and commits, ratchet and drift tests, lint
@@ -1257,6 +1264,68 @@ Deviations, each deliberate:
    dependency-bot PR reaching `refresh_branch` through T16 (past the doors' own check)
    is never pushed to; the mechanical row ends `failed` and a person lands it (S27).
 
+### 13.5 What Slice B part 3 shipped, and its deviations
+
+Shipped live for kernel-owned deliveries (the trunk circuit breaker, §5.8, §6.10,
+T25/T26, S24, AC-15):
+
+- **Signatures at ingestion.** `observeCiFailure` reads the head's check runs and
+  replaces the placeholder `ci_failed` (§13.1 deviation 11) with
+  `ci:<check>|<check>`: the sorted names of the failing runs, normalised by
+  `normalizeErrorSignature` (`lib/workflow/trunk-signature.ts`). The signature is
+  the `ci` ledger row's trigger reason; ledger keys and budgets are unchanged. A
+  check set that cannot be read keeps the placeholder and never opens an incident.
+- **Classification** (`classifyCiFailure`, `lib/workflow/trunk.ts`), only for a
+  delivery whose current head is the red one and whose state a CI failure moves:
+  join an incident already open on the base whose checks explain the failure;
+  else (a) the base branch's own head fails every check the PR fails; else (b) the
+  opt-in multi-delivery rule over the `ci` ledger rows in the window. Opening and
+  joining is one upsert on `trunk_incidents_open_signature_unique`; the incident
+  carries the base's signature (rule a) or the shared one (rule b).
+- **T25.** `CiFailedObserved` with the incident routes to `TrunkRedObserved`; a
+  delivery already `REPAIRING(ci)` joins too (its queued attempt is `skipped`, it
+  spends nothing). A newly opened incident also takes every kernel delivery on the
+  same base repairing a failure it explains. `dispatch_trunk_fix`
+  (`lib/workflow/ci-red-trunk-effects.ts`) files exactly one trunk-fix task per incident:
+  the task id is the incident id, it is linked after it exists (the FK, §13.1
+  deviation 9), and a base that is already green at dispatch files nothing. The
+  `cancel_open_attempts(blocked_on_trunk)` effect cancels the per-PR CI fix tasks
+  that never started. The CI doors map a blocked delivery to the skip reason
+  `blocked_on_trunk`, so the red-PR sweep files nothing and does not come back.
+- **T26.** `reconcileTrunkIncidents` (seam, on the `pr-reconcile` floor tick)
+  re-reads each unresolved incident's base head. When every run there completed and
+  none of the incident's checks fails, the incident resolves and each delivery
+  blocked on it re-enters `resume_state`; a head that does not contain the new base
+  head gets `refresh_branch`. A delivery left blocked on a resolved incident (an
+  interrupted pass) is recovered on the next pass.
+- **Activity.** `blocked_on_trunk` (with the failing checks) and `trunk_recovered`
+  are rendered from their transitions (§12.1).
+
+Deviations, each deliberate:
+
+1. **The base-red rule is ON by default**, not opt-in as §6.10 first said: the
+   kernel ships live, and the rule blocks only while the base itself fails every
+   check the PR fails. A workspace with no `trunkBreaker` key in its `gitConfig`
+   has it. **To turn the breaker off**, set `gitConfig.trunkBreaker = false`
+   (`WorkspaceGitConfig.trunkBreaker`, read by `trunkBreakerConfig`): no CI failure
+   is classified against the base, no incident opens, and every red PR gets its own
+   `ci` attempt as before (S24 off path in the matrix). The multi-delivery rule
+   stays opt-in: `trunkBreaker: { minDeliveries, windowMinutes? }`.
+2. **"The same signature" is set containment**: the PR's failing checks are a
+   subset of the base's. The incident is keyed by the base's signature, so PRs that
+   fail different subsets of one red trunk share one incident and one fix.
+3. **Recovery is a sweep, not a webhook.** The hourly `pr-reconcile` floor re-reads
+   open incidents; a base push does not resume PRs sooner. A trunk-fix task is a
+   plain task with no delivery role (it is not an attempt of any PR's delivery).
+4. **T26's `refresh_branch` is the conflict family's handler** (§13.4,
+   `conflict-retry-effects.ts`): with no ledger row it is a plain GitHub
+   update-branch pinned to the head T26 judged stale, skipped if the head moved and
+   retried by the outbox on an operational failure. The breaker registers no
+   `refresh_branch` of its own: one handler per effect kind.
+5. **Legacy (pre-cutover) PRs keep the per-PR CI path**; the breaker reads and
+   writes kernel deliveries only. A person's "Fix CI" still records a `manual`
+   signature and is not classified.
+
 ### 13.6 What Slice B part 1 shipped, and its deviations
 
 Shipped live: the fact-ingestion funnel and terminal-wins for the PR fact cache.
@@ -1509,7 +1578,7 @@ the cutover commit moves the whole family at once.
 |---|---|---|---|
 | **A0** | none (schema, reducer as pure code with the §16 matrix green; no wiring) | — | `bun run test` on new files; migration generated |
 | **A** (seam) | review rounds, fix loop, delivery proof, **review and CI attempt ledgers with provenance (§5.7, §6.9)**, dispatch revalidation (§10.5), the activity comment as a regenerated projection (§12.1), for deliveries whose policy is `agent-review`; delivery rows created at `PrBound` with a **one-time import** from GitHub live read plus legacy rows | `handleReviewerOutcomeIfNeeded` fix-task insert, `findReviewTaskForPr` newest-row rule, `announceFix*` direct writes, `maybeReDispatchReviewer` decision logic, `dispatchStaleApprovalReReview` decision logic, `isBuilddWorkerCommit` and every read of `context.iteration` for a decision, `appendPrActivity` read-modify-write | S1–S8, S23, S25, S26, S28 green; flag `workflow.kernel` per workspace; **a workspace is either entirely kernel-owned for the family or entirely legacy**, never both |
-| **B** | conflict and migration families (mechanical effects, §6.7), trunk circuit breaker and `BLOCKED_ON_TRUNK` (§6.10, opt-in), fact ingestion funnel and terminal-wins: `recordPrFact` replaces every writer of `prLifecycleStatus`/`mergedAt` (≈25 sites, §17.2); webhook `closed`/`synchronize`/CI become hints | the listed writers; `pr-state-reconcile.ts`; render-time refresh writes; `conflict-retry.ts` and `migration-collision-retry.ts` decision logic | S5, S6, S9–S11, S24, S27; no reader changes yet (columns keep their values and meaning) |
+| **B** | conflict and migration families (mechanical effects, §6.7), trunk circuit breaker and `BLOCKED_ON_TRUNK` (§6.10; base-red rule on by default, `trunkBreaker: false` turns it off), fact ingestion funnel and terminal-wins: `recordPrFact` replaces every writer of `prLifecycleStatus`/`mergedAt` (≈25 sites, §17.2); webhook `closed`/`synchronize`/CI become hints | the listed writers; `pr-state-reconcile.ts`; render-time refresh writes; `conflict-retry.ts` and `migration-collision-retry.ts` decision logic | S5, S6, S9–S11, S24, S27; no reader changes yet (columns keep their values and meaning) |
 | **C** | landing and merge: the five merge doors and `landPr` run as T15/T16 with `merge_call` effect; post-merge effects become outbox effects | inline `emit()` post-merge work; per-door `mergedAt` stamps; `tryAutoMergeWorkerPr` as a decision-maker (it becomes an adapter calling `LandingRequested`) | S10, S15; `landPr` rails untouched |
 | **D** | supersession, abandonment, mission completion inputs, reaper/cleanup | `recordPrSupersession` direct update; reaper auto-complete for deliveries; `prShipState` reads delivery | S9, S12, S16; `canCompleteMission` ACs of `mission-task-lifecycle` still pass unmodified |
 | **E** | projections: UI, explain, Home, activity comment read `getDeliveryView`; retire duplicate maps (`derivePrLifecycle`, `isPrMerged`, `TaskCard` `PR_LIFECYCLE`, `deriveStage` PR branch, chat `dock-model`, `TaskObject`) | the re-derivations in §17.5 | S17; visual QA per `/visual-review` |
@@ -1616,7 +1685,7 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S21 | Authorization matrix (§17.1) | owner, caller-names-PR, sibling, other workspace, human | `apps/web/src/app/api/github/pr/supersede/route.test.ts`, `apps/web/src/app/api/github/pr/review/route.test.ts`, `apps/web/src/lib/task-token-auth.test.ts` |
 | S22 | Kill switch | with `workflowKernel=false` a delivery is released to legacy (sticky), no new one opens, and a PR with no delivery is untouched by every seam function | `apps/web/tests/db/workflow-seam.test.ts`, `bun run test` |
 | S23 | CI provenance (audit): worker pushes under the owner's git identity; worker pushes under the bot identity; a person pushes | the first two are attributed by SHA set and consume a ledger row; the third is `foreign_push` and consumes none; the cap bounds dispatches in all three; manual "Fix CI" uses the configured cap | `apps/web/src/lib/ci-failure-retry.test.ts`, `apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts`, reducer test (replaces the author-string cases around `isBuilddWorkerCommit`) |
-| S24 | Trunk breakage: one signature red on trunk and on several PRs | one incident, one trunk-fix task, zero per-PR `ci` attempts, queued ones `skipped`, deliveries `BLOCKED_ON_TRUNK`, `ci` budget untouched, recovery re-enters `resume_state`; two dependency-bot PRs do not accumulate retries | `apps/web/src/lib/ci-red-sweep.test.ts`, `apps/web/src/lib/ci-failure-retry.test.ts`, `apps/web/src/lib/workflow/trunk.test.ts` (new) |
+| S24 | Trunk breakage: one signature red on trunk and on several PRs | one incident, one trunk-fix task, zero per-PR `ci` attempts, queued ones `skipped`, deliveries `BLOCKED_ON_TRUNK`, `ci` budget untouched, recovery re-enters `resume_state`; two dependency-bot PRs do not accumulate retries | `apps/web/src/lib/workflow/trunk.test.ts`, `apps/web/src/lib/ci-failure-retry.wake.test.ts`, `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S25 | Stale dispatch: target merged / approved / CI green / conflict resolved between trigger and dispatch, and between dispatch and claim | ledger row `skipped`, no task (or task cancelled as skipped, not failed); replay is a no-op; reason recorded | `apps/web/src/lib/workflow/effects.test.ts` (new), `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/ci-failure-retry.test.ts` |
 | S26 | Comment as projection: concurrent renders, lost-update race (a `reviewing` write racing the merge), entries after merge, duplicate sticky comments, PR with no comment, CI red while approved | final comment equals a fresh render of canonical state; `Merged` stays the headline; one comment; created for every bound PR; "Approved" never heads a `REPAIRING` delivery | `apps/web/src/lib/pr-activity-comment.test.ts`, `apps/web/src/lib/workflow/pr-activity-render.test.ts`, `apps/web/src/lib/workflow/pr-activity-effects.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S27 | Mechanical versus agent repair | behind-only conflict and byte-identical renumber complete with no task; textual conflict and non-identical renumber escalate to an agent attempt; false collision from a lagging mission branch is not a collision; dependency-bot PRs are never pushed to | `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/migration-collision-retry.test.ts`, `apps/web/src/lib/base-refresh.test.ts` |
@@ -1790,7 +1859,7 @@ webhooks; knowledge ingestion; CI log retrieval; agent prompts.
 | Effect storms on a bug | per-delivery effect cap and the existing 8-attempt dead letter; `critical` kinds escalate once |
 | `workflow_effects` growth | prune `done`/`dead` after 14 days like `pruneDispatchOutbox`; `workflow_transitions` kept (audit) with a documented retention decision before launch |
 | Path claims assumed to prevent interleaving | §7.7: correctness never depends on them; degraded enforcement is a known state, not a precondition |
-| Trunk breaker hides a genuinely broken PR behind a signature match | a PR is `BLOCKED_ON_TRUNK` only while trunk itself fails the same signature; on `TrunkRecovered` the PR's own CI re-runs and a remaining failure is its own `ci` attempt; one trunk-fix attempt per incident bounds the cost; breaker is opt-in |
+| Trunk breaker hides a genuinely broken PR behind a signature match | a PR is `BLOCKED_ON_TRUNK` only while trunk itself fails the same signature; on `TrunkRecovered` the PR's own CI re-runs and a remaining failure is its own `ci` attempt; one trunk-fix attempt per incident bounds the cost; the base-red rule is on by default and a workspace turns the breaker off with `gitConfig.trunkBreaker = false` |
 | Provenance by SHA set misattributes a push | allocation is consumption (§5.7 rule 1), so misattribution can only mislabel an outcome (`delivered` vs `unproven`), never lift the cap |
 | Mechanical renumber or update-branch pushes onto a PR a person or bot owns | dependency-bot and human-owned PRs are excluded by the existing `isDependencyBotPrContext` rule; every mechanical push is an effect with a recorded `expected_head` and counts as a push door that other doors must check |
 | Regenerating the comment on every transition costs GitHub calls | renders coalesce per delivery; a burst of transitions yields one render per quiescent point |

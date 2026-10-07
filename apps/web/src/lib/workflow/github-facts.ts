@@ -48,6 +48,15 @@ export function ciGreenFromSuites(suites: Array<{ status?: string; conclusion?: 
 
 const FAILING = new Set(['failure', 'timed_out', 'startup_failure']);
 
+/** §6.10: which check runs fail on a commit, and whether all of them finished. null = no runs. */
+export function checkRunsSummary(runs: Array<{ name?: string; status?: string; conclusion?: string | null }> | null | undefined): { complete: boolean; failing: string[] } | null {
+  if (!runs || runs.length === 0) return null;
+  return {
+    complete: runs.every((r) => r.status === 'completed'),
+    failing: runs.filter((r) => r.status === 'completed' && FAILING.has(String(r.conclusion ?? ''))).map((r) => String(r.name ?? 'unnamed')),
+  };
+}
+
 /** The distinct names of failed workflow runs and check runs. */
 export function failingNames(rows: Array<{ name?: string | null; conclusion?: string | null }>): string[] {
   return [...new Set(rows.filter((r) => FAILING.has(String(r.conclusion ?? '')) && r.name).map((r) => String(r.name)))];
@@ -71,6 +80,14 @@ export function githubReader(installationId: number, api: typeof githubApi = git
         return null;
       }
     },
+    async checkRuns(repoFullName, sha) {
+      try {
+        const data = await api(installationId, `/repos/${repoFullName}/commits/${sha}/check-runs?per_page=100`) as { check_runs?: Array<{ name?: string; status?: string; conclusion?: string | null }> } | null;
+        return checkRunsSummary(data?.check_runs);
+      } catch {
+        return null;
+      }
+    },
     async failingChecks(repoFullName, headSha) {
       try {
         const [runs, checks] = await Promise.all([
@@ -78,6 +95,14 @@ export function githubReader(installationId: number, api: typeof githubApi = git
           api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-runs?per_page=100`) as Promise<{ check_runs?: Array<{ name?: string | null; conclusion?: string | null }> } | null>,
         ]);
         return failingNames([...(runs?.workflow_runs ?? []), ...(checks?.check_runs ?? [])]);
+      } catch {
+        return null;
+      }
+    },
+    async branchHead(repoFullName, ref) {
+      try {
+        const data = await api(installationId, `/repos/${repoFullName}/branches/${ref}`) as { commit?: { sha?: string } } | null;
+        return data?.commit?.sha ?? null;
       } catch {
         return null;
       }

@@ -148,11 +148,18 @@ const refreshBranch: EffectHandler = async (e) => {
     if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
     const owner = await db.query.tasks.findFirst({ where: eq(tasks.id, d.ownerTaskId), columns: { context: true } });
     if (isDependencyBotPrContext(owner?.context)) return { outcome: 'skipped:dependency_bot' };
+    // Pinned to the head T26 judged stale; a head that moved since has its own facts.
+    const head = String(e.payload.headSha ?? '');
+    if (!head || d.currentHeadSha !== head) return { outcome: 'skipped:head_moved' };
     const repo = await workspaceRepo(d.workspaceId);
     if (!repo) throw new Error('no GitHub installation for the workspace');
     const { updateBehindPrBranch } = await import('@/lib/pr-branch-update');
-    const res = await updateBehindPrBranch({ installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, headSha: String(e.payload.headSha ?? d.currentHeadSha), api: deps.api });
-    return { outcome: res.updated ? 'ok:updated' : `skipped:${res.failure ?? 'refused'}` };
+    const res = await updateBehindPrBranch({ installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, headSha: head, api: deps.api });
+    if (res.updated) return { outcome: 'ok:updated' };
+    // Operational: retried by the outbox with backoff. Anything else (conflict, up to date, head
+    // changed, refused) is answered by the PR's own facts (T3, T12).
+    if (res.failure === 'transient' || res.failure === 'rate_limit' || res.failure === 'unknown') throw new Error(res.reason ?? 'update-branch failed');
+    return { outcome: `skipped:${res.failure ?? 'refused'}` };
   }
   const b = await boundAttempt(e, source);
   if ('outcome' in b) return b;

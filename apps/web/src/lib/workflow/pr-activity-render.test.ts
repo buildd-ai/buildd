@@ -44,6 +44,17 @@ const kinds = (ts: ActivityTransition[]) => transitionsToActivityEntries(ts, rou
 const header = (body: string) => body.split('\n')[1];
 
 describe('transitions → timeline', () => {
+  test('S24 / §12.1: blocked on trunk and trunk recovered are their own rows, with the failing checks', () => {
+    const trunk = [
+      T('TrunkRedObserved', 'AWAITING_REVIEW', 'BLOCKED_ON_TRUNK', { incidentId: 'i1', signature: 'ci:lint|unit tests' }, 1),
+      T('TrunkRecovered', 'BLOCKED_ON_TRUNK', 'AWAITING_REVIEW', { incidentId: 'i1' }, 2),
+    ];
+    const entries = transitionsToActivityEntries(trunk, [], []);
+    expect(entries.map((e) => [e.kind, e.detail ?? null])).toEqual([['blocked_on_trunk', 'lint, unit tests'], ['trunk_recovered', null]]);
+    const body = renderDeliveryActivity({ view: { delivery: D({ state: 'BLOCKED_ON_TRUNK' }), rounds: [], attempts: [] }, transitions: trunk.slice(0, 1), timezone: 'UTC' });
+    expect(body).toContain('Blocked on a red base branch');
+  });
+
   test('the fix loop renders once per transition, with the push between fix and re-review', () => {
     expect(kinds(log)).toEqual([
       'review_queued', 'review_changes_requested', 'fix_started', 'changes_pushed', 'fix_ended', 'review_queued', 'review_approved',

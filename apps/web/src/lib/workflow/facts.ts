@@ -31,6 +31,13 @@ export interface GithubFactReader {
    */
   ciGreen?(repoFullName: string, headSha: string): Promise<boolean | null>;
   /**
+   * The check runs on `sha` (§6.10 signatures): the names of the failing ones,
+   * and whether every run has completed. null = unreadable.
+   */
+  checkRuns?(repoFullName: string, sha: string): Promise<{ complete: boolean; failing: string[] } | null>;
+  /** The head commit of branch `ref` now; null = unreadable. */
+  branchHead?(repoFullName: string, ref: string): Promise<string | null>;
+  /**
    * Names of the checks and workflows that failed on `headSha` (§6.10: a CI
    * failure a preflight would have caught is tagged `preflight_miss`).
    * null = unreadable; never read as "nothing failed".

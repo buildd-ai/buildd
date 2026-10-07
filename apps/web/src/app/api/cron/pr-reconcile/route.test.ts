@@ -62,7 +62,8 @@ const mockCiRedSweep = mock((_opts: { source: string }) => Promise.resolve<any>(
 mock.module('@/lib/ci-red-sweep-deps', () => ({ sweepCiRedPrs: mockCiRedSweep }));
 // The workflow kernel's outbox floor drain (lib/workflow/seam.ts).
 const mockDrainDueEffects = mock(async () => ({ claimed: 0, done: 0, skipped: 0, failed: 0, dead: [] }));
-mock.module('@/lib/workflow/seam', () => ({ drainDueEffects: mockDrainDueEffects }));
+const mockTrunk = mock(async () => ({ checked: 1, resolved: 1, recovered: 2, stillRed: 0, errors: 0 }));
+mock.module('@/lib/workflow/seam', () => ({ drainDueEffects: mockDrainDueEffects, reconcileTrunkIncidents: mockTrunk }));
 
 let dueCount: number | null = 0;
 mock.module('@/lib/redis', () => ({
@@ -173,6 +174,9 @@ describe('GET /api/cron/pr-reconcile', () => {
     // The floor pass drains the workflow kernel's outbox.
     expect(mockDrainDueEffects).toHaveBeenCalled();
     expect(body.kernelOutbox).toMatchObject({ claimed: 0 });
+    // …and re-reads every open trunk incident's base head (§6.10, T26).
+    expect(mockTrunk).toHaveBeenCalled();
+    expect(body.trunk).toMatchObject({ resolved: 1, recovered: 2 });
   });
 
   it('returns 500 when reconcileStalePrWorkers throws', async () => {

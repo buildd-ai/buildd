@@ -26,7 +26,8 @@
  *     has no todo left: S12, S16, S18 and S21 run live.
  *   - 4878423d (Slice B part 2: conflict and migration families, mechanical first) has no
  *     todo left: S25 (conflict), S27 and the refresh_branch half of S15 run live.
- *   - "spec Slice B" (the trunk breaker, S24): no task filed yet (§14).
+ *   - 4878423d (Slice B part 3: the trunk circuit breaker, BLOCKED_ON_TRUNK) has no todo left:
+ *     S24 runs live, the base-red rule on by default and `trunkBreaker: false` turning it off.
  */
 import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
@@ -46,6 +47,8 @@ interface FakePr {
   head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]>; ciGreen?: boolean | null; failing?: string[] | null; mergeable?: string | null;
   /** The PR's base branch, and whether it still exists (a deleted mission branch closes its PRs, §4 base_deleted). */
   baseRef?: string; baseExists?: boolean | null;
+  /** §6.10: failing check names per commit (absent = check runs unreadable), the base branch's head, and commits whose runs are still going. */
+  checks?: Record<string, string[]>; baseHead?: string | null; running?: string[];
 }
 let gh: FakePr;
 const live = (): LivePr => ({
@@ -57,6 +60,8 @@ const reader: GithubFactReader = {
   readPr: async () => live(),
   contains: async (_repo, ancestor, head) => ancestor === head || (gh.ancestors[head] ?? []).includes(ancestor),
   ciGreen: async () => gh.ciGreen ?? null,
+  checkRuns: async (_repo, sha) => (gh.checks && sha in gh.checks ? { complete: !(gh.running ?? []).includes(sha), failing: gh.checks[sha] } : null),
+  branchHead: async () => gh.baseHead ?? null,
   failingChecks: async () => gh.failing ?? null,
   branchExists: async () => gh.baseExists ?? null,
 };
@@ -169,13 +174,14 @@ mock.module('../../src/lib/ci-failure-retry', () => ({
 const seam = await import('../../src/lib/workflow/seam');
 const { reviewEffectHandlers: reviewOnly } = await import('../../src/lib/workflow/review-effects');
 const { withCiRetryEffects } = await import('../../src/lib/workflow/ci-retry-effects');
+const { withTrunkEffects } = await import('../../src/lib/workflow/ci-red-trunk-effects');
 const { withConflictEffects } = await import('../../src/lib/workflow/conflict-retry-effects');
 const { withPrFactEffects } = await import('../../src/lib/workflow/pr-fact-effects');
 const { withLandingEffects } = await import('../../src/lib/workflow/pr-landing-effects');
 const { withSupersessionEffects } = await import('../../src/lib/workflow/supersession-effects');
 const { recordPrFact } = await import('@buildd/core/pr-facts');
-/** The composition root's set (apps/web/src/modules.ts): review loop, the CI family, the conflict/migration families, landing, a closed PR's resolution and the fact-cache projection. */
-const reviewEffectHandlers = withPrFactEffects(withSupersessionEffects(withLandingEffects(withConflictEffects(withCiRetryEffects(reviewOnly)))));
+/** The composition root's set (apps/web/src/modules.ts): review loop, the CI family, the conflict/migration families, the trunk breaker, landing, a closed PR's resolution and the fact-cache projection. */
+const reviewEffectHandlers = withPrFactEffects(withSupersessionEffects(withLandingEffects(withTrunkEffects(withConflictEffects(withCiRetryEffects(reviewOnly))))));
 const { runEffects } = await import('../../src/lib/workflow/effects');
 const { applyCommand, loadView } = await import('../../src/lib/workflow/kernel');
 const { attemptView, headCoverage } = await import('../../src/lib/workflow/reducer');
@@ -1423,10 +1429,120 @@ describe('S23 — CI provenance', () => {
 });
 
 describe('S24–S27', () => {
-  // Intended: one signature red on trunk and several PRs → one trunk_incidents row, one trunk-fix
-  // task, zero per-PR ci attempts (queued ones skipped), deliveries BLOCKED_ON_TRUNK, ci budget
-  // untouched, TrunkRecovered re-enters resume_state; two dependency-bot PRs accumulate no retries.
-  test.todo('S24: trunk breakage → one incident, one trunk fix, BLOCKED_ON_TRUNK, recovery resumes (needs spec Slice B — no task filed)');
+  // ── S24: the trunk circuit breaker (§6.10, T25/T26, AC-15) ──
+  const incidentsOf = (signature: string) => q<{ id: string; status: string; signature: string; trunk_fix_task_id: string | null; affected_deliveries: string[] }>(
+    sql`SELECT id, status, signature, trunk_fix_task_id, affected_deliveries FROM trunk_incidents WHERE workspace_id = ${workspaceId}::uuid AND signature = ${signature} ORDER BY first_seen_at`);
+  const trunkFixTasks = (incidentId: string) => q<{ id: string; status: string; title: string }>(sql`SELECT id, status, title FROM tasks WHERE context->>'trunkIncidentId' = ${incidentId}`);
+
+  test('S24: one signature red on trunk and on several PRs → one incident, one trunk fix, zero per-PR attempts (queued ones skipped), BLOCKED_ON_TRUNK; recovery resumes with the ci budget untouched', async () => {
+    gh.baseHead = 'B0'; gh.checks = { B0: [], H1: ['Unit tests'] };
+    // c went red while the base was still green: an ordinary per-PR CI attempt is queued (its task pending).
+    const c = await openAndHandOn();
+    expect(await ciFail(c)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+    const [cTask] = await tasksOf(c.deliveryId, 'ci_fix');
+    expect((await ciAttempts(c.deliveryId))[0]).toMatchObject({ status: 'queued', triggerReason: 'ci:unit tests' });
+
+    // The base breaks on the same check: the next red PR opens the incident; c joins it.
+    gh.baseHead = 'B1'; gh.checks.B1 = ['Unit tests', 'Lint'];
+    const a = await openAndHandOn();
+    const b = await openAndHandOn();
+    expect(await ciFail(a)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+    expect(await ciFail(b)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+    // The sweep coming back for a blocked PR files nothing.
+    expect(await ciFail(a)).toMatchObject({ handled: true, result: { result: 'stale' } });
+
+    const [inc] = await incidentsOf('ci:lint|unit tests');
+    expect(inc).toMatchObject({ status: 'fixing', trunk_fix_task_id: inc.id });
+    expect([...inc.affected_deliveries].sort()).toEqual([a.deliveryId, b.deliveryId, c.deliveryId].sort());
+    expect(await trunkFixTasks(inc.id)).toHaveLength(1);
+    for (const o of [a, b, c]) {
+      expect(await delivery(o.deliveryId)).toMatchObject({ state: 'BLOCKED_ON_TRUNK', trunkIncidentId: inc.id, resumeState: 'AWAITING_REVIEW', boundAttemptId: null });
+      expect((await ciAttempts(o.deliveryId)).filter((x) => x.status !== 'skipped')).toEqual([]);
+    }
+    expect((await ciAttempts(c.deliveryId)).map((x) => x.status)).toEqual(['skipped']);
+    expect((await taskRow(cTask.id)).status).toBe('cancelled');
+    expect(await tasksOf(a.deliveryId, 'ci_fix')).toEqual([]);
+    expect(await tasksOf(b.deliveryId, 'ci_fix')).toEqual([]);
+
+    // Still running on the base: never read as recovered.
+    gh.baseHead = 'B2'; gh.checks.B2 = []; gh.running = ['B2'];
+    await seam.reconcileTrunkIncidents(deps);
+    expect((await incidentsOf('ci:lint|unit tests'))[0].status).toBe('fixing');
+
+    // The base is green: the incident resolves and every blocked PR resumes; its head predates the fix → a mechanical refresh.
+    gh.running = [];
+    const refreshed: string[] = [];
+    override.refresh_branch = async (e) => { refreshed.push(e.deliveryId); return { outcome: 'ok' }; };
+    await seam.reconcileTrunkIncidents(deps);
+    expect((await incidentsOf('ci:lint|unit tests'))[0].status).toBe('resolved');
+    for (const o of [a, b, c]) {
+      expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', trunkIncidentId: null, resumeState: null, currentRound: 1 });
+      expect(attemptView(await ciAttempts(o.deliveryId), 'ci')).toEqual({ n: 0, m: 3 });
+    }
+    const mine = [a.deliveryId, b.deliveryId, c.deliveryId];
+    expect(refreshed.filter((id) => mine.includes(id)).sort()).toEqual([...mine].sort());
+    expect(await trunkFixTasks(inc.id)).toHaveLength(1);
+    // A replayed sweep changes nothing.
+    const n = (await transitions(a.deliveryId)).length;
+    await seam.reconcileTrunkIncidents(deps);
+    expect((await transitions(a.deliveryId)).length).toBe(n);
+    // A PR whose own failure is not the base's still gets its own attempt.
+    gh.checks.H1 = ['Unit tests', 'Typecheck'];
+    expect(await ciFail(a)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+  });
+
+  test('S24: two dependency-bot PRs on a red trunk accumulate no retries, however often CI reports', async () => {
+    gh.baseHead = 'BD'; gh.checks = { BD: ['Build'], H1: ['Build'] };
+    const bots = [await openAndHandOn(), await openAndHandOn()];
+    for (const o of bots) {
+      await q(sql`UPDATE tasks SET context = jsonb_build_object('adoptedPr', jsonb_build_object('author', 'renovate[bot]', 'authorType', 'Bot')) WHERE id = ${o.ownerTaskId}::uuid`);
+      for (let i = 0; i < 3; i++) await ciFail(o);
+      expect(await delivery(o.deliveryId)).toMatchObject({ state: 'BLOCKED_ON_TRUNK' });
+      expect(await ciAttempts(o.deliveryId)).toEqual([]);
+      expect(await tasksOf(o.deliveryId, 'ci_fix')).toEqual([]);
+    }
+    const incs = await incidentsOf('ci:build');
+    expect(incs.filter((i) => i.status !== 'resolved')).toHaveLength(1);
+    expect(await trunkFixTasks(incs.at(-1)!.id)).toHaveLength(1);
+  });
+
+  test('S24 (opt-in): enough deliveries on one signature inside the window open an incident with no base read; the earlier one joins it', async () => {
+    const optIn = { ...deps, repoFor: async () => ({ installationId: 1, repoFullName: REPO, gitConfig: { trunkBreaker: { minDeliveries: 2, windowMinutes: 30 } } }) };
+    gh.baseHead = null; gh.checks = { H1: ['Smoke tests'] };
+    const first = await openAndHandOn();
+    expect(await ciFail(first, { d: optIn })).toMatchObject({ result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+    const second = await openAndHandOn();
+    expect(await ciFail(second, { d: optIn })).toMatchObject({ result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+    const [inc] = (await incidentsOf('ci:smoke tests')).filter((i) => i.status !== 'resolved');
+    expect((await delivery(first.deliveryId)).state).toBe('BLOCKED_ON_TRUNK');
+    expect((await ciAttempts(first.deliveryId)).map((x) => x.status)).toEqual(['skipped']);
+    expect(await trunkFixTasks(inc.id)).toHaveLength(1);
+    // Off by default: the same two failures without the opt-in stay per-PR.
+    gh.checks = { H1: ['Nightly smoke'] };
+    const x = await openAndHandOn();
+    const y = await openAndHandOn();
+    await ciFail(x); await ciFail(y);
+    expect((await delivery(y.deliveryId)).state).toBe('REPAIRING');
+    expect(await incidentsOf('ci:nightly smoke')).toEqual([]);
+  });
+
+  // The base-red rule is on by default; a workspace turns the whole breaker off with
+  // gitConfig.trunkBreaker = false. Off: a PR failing the same checks as its red base is an
+  // ordinary per-PR CI repair, and no incident or trunk fix exists.
+  test('S24 (off): with gitConfig.trunkBreaker = false, a red base failing the same checks opens no incident; each PR gets its own CI attempt', async () => {
+    const off = { ...deps, repoFor: async () => ({ installationId: 1, repoFullName: REPO, gitConfig: { trunkBreaker: false } }) };
+    gh.baseHead = 'BX'; gh.checks = { BX: ['Integration'], H1: ['Integration'] };
+    const o = await openAndHandOn();
+    expect(await ciFail(o, { d: off })).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'REPAIRING', trunkIncidentId: null });
+    expect((await ciAttempts(o.deliveryId)).map((x) => [x.status, x.triggerReason])).toEqual([['queued', 'ci:integration']]);
+    expect(await tasksOf(o.deliveryId, 'ci_fix')).toHaveLength(1);
+    expect(await incidentsOf('ci:integration')).toEqual([]);
+    // The same failure with the default config is the base's: the breaker is on unless turned off.
+    const p2 = await openAndHandOn();
+    expect(await ciFail(p2)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+    expect(await incidentsOf('ci:integration')).toHaveLength(1);
+  });
 
   test('S25: a fix whose head moved between the verdict and the dispatch is skipped at dispatch: no ledger row, no task; replay is a no-op', async () => {
     const o = await openAndHandOn();

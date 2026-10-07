@@ -613,6 +613,14 @@ export interface WorkspaceGitConfig {
   // (sticky per delivery) and open no new ones.
   workflowKernel?: boolean;
 
+  // Trunk circuit breaker (docs/specs/workflow-state-kernel.md §6.10). Absent =
+  // ON with the base-red rule: a kernel PR whose failing checks also fail on
+  // its base branch's own head joins one trunk incident instead of filing a
+  // per-PR CI retry. `{ minDeliveries, windowMinutes }` also opens an incident
+  // when that many deliveries hit one signature inside the window (opt-in).
+  // `false` turns the breaker off.
+  trunkBreaker?: false | { minDeliveries?: number; windowMinutes?: number };
+
   // PR landing function rollout (`apps/web/src/lib/pr-landing.ts`, design:
   // knowledge-base: buildd/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
   // paths only. `shadow` (absent = shadow): the landing decision is computed and
