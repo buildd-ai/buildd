@@ -13,6 +13,7 @@
  * side.
  */
 import type { AgentRestart, CrashReport, RunOutcome } from './lifecycle';
+import type { ReusedContainer } from './container-lease';
 import {
   RUNNER_CLASSES,
   normalizeRunnerSizeDecision,
@@ -31,8 +32,9 @@ import {
  * 6: adds `repo.cacheSkipped`, `repo.bytes.cacheRaw` and `durationsMs.restoreCache` (compressed cache tarball).
  * 7: adds `resources` (memory peak, disk minimum), `interruption` and `runnerSize` (container class, weighted runner-seconds).
  * 8: adds `agentRestarts` (each time the agent restarted under the attempt, and what it did about the run).
+ * 9: adds `reusedContainer` (the attempt ran in a container an earlier run of the workspace left warm).
  */
-export const RUN_REPORT_VERSION = 8;
+export const RUN_REPORT_VERSION = 9;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -761,6 +763,14 @@ export interface RunReport {
    * `weightedRunnerSeconds` times the class weight (standard 1, large 2), for
    * hosted fair use. Nothing bills from it yet.
    */
+  /**
+   * Set when the attempt was handed a container an earlier run of the same
+   * workspace and size left warm (container-lease.ts): which task's, how long
+   * it sat idle, and what that run spent getting ready (container start,
+   * restore, clone) that this one did not. `fallback: 'reset_failed'`: the
+   * reset did not verify clean, so the attempt started in a fresh container.
+   */
+  reusedContainer: ReusedContainer | null;
   runnerSize: {
     size: RunnerSize;
     source: RunnerSizeSource | null;
@@ -796,6 +806,8 @@ export interface RunReportInput {
   interruption?: RunInterruption | null;
   /** See RunReport.agentRestarts. */
   agentRestarts?: AgentRestart[];
+  /** See RunReport.reusedContainer. */
+  reusedContainer?: ReusedContainer | null;
   /** The class this agent is (the container class actually used). Absent: standard. */
   runnerSize?: RunnerSize;
   /** buildd's decision that routed the dispatch here, if one reached the agent. */
@@ -825,6 +837,14 @@ function count(v: unknown): number {
 }
 function span(from: number | null, to: number | null): number | null {
   return from !== null && to !== null && to >= from ? to - from : null;
+}
+
+function reusedContainerSection(v: ReusedContainer | null | undefined): ReusedContainer | null {
+  const fromTaskId = id(v?.fromTaskId);
+  if (!v || !fromTaskId) return null;
+  const idleMs = count(v.idleMs);
+  if ('fallback' in v && v.fallback === 'reset_failed') return { fromTaskId, idleMs, savedRestoreMs: null, fallback: 'reset_failed' };
+  return { fromTaskId, idleMs, savedRestoreMs: typeof v.savedRestoreMs === 'number' && v.savedRestoreMs >= 0 ? Math.floor(v.savedRestoreMs) : null };
 }
 
 export function assembleRunReport(input: RunReportInput): RunReport {
@@ -941,6 +961,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
         versionChanged: typeof r.versionChanged === 'boolean' ? r.versionChanged : null,
       }];
     }),
+    reusedContainer: reusedContainerSection(input.reusedContainer),
     runnerSize: runnerSizeSection(input, timestamps),
   };
 }
