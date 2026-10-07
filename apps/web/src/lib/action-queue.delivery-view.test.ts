@@ -56,18 +56,27 @@ describe('S36 — Needs You renders only canonical human-owned states', () => {
     }
   });
 
-  it('landing keeps the legacy merge chip (merge rails stay legacy until Slice C)', () => {
-    const [card] = build([esc()], [['t-1', viewOf({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1'] })]]);
+  it('an approved PR a person merges (human tier) is the MERGE card', () => {
+    const [card] = build([esc()], [['t-1', viewOf({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1'] }, { approvedNeedsPerson: true })]]);
     expect(card.chip).toBe('MERGE');
+    expect(isActionableChip(card.chip)).toBe(true);
     expect(card.delivery?.compositionVerified).toBe(true);
     expect(card.delivery?.headline).toBe('Release composition verified');
   });
 
-  it('a kernel approval turns a legacy REVIEW reading (no reviewer-task approve on record) into MERGE', () => {
+  it('a kernel approval a person merges turns a legacy REVIEW reading (no reviewer-task approve on record) into MERGE', () => {
     const [legacy] = buildActionQueue([], [esc({ policyTier: 'agent-review' })], { now: NOW });
     expect(legacy.chip).toBe('REVIEW');
-    const [card] = build([esc({ policyTier: 'agent-review' })], [['t-1', viewOf({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1'] })]]);
+    const [card] = build([esc({ policyTier: 'agent-review' })], [['t-1', viewOf({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1'] }, { approvedNeedsPerson: true })]]);
     expect(card.chip).toBe('MERGE');
+  });
+
+  it('an approved PR the landing path merges (approve-and-merge, auto-threshold) is merging, not needs you', () => {
+    for (const legacyTier of ['agent-review', 'human'] as const) {
+      const [card] = build([esc({ policyTier: legacyTier })], [['t-1', viewOf({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1'] })]]);
+      expect(card.delivery?.owner).toBe('landing');
+      expect({ legacyTier, chip: card.chip, actionable: isActionableChip(card.chip) }).toEqual({ legacyTier, chip: 'AUTO_MERGE', actionable: false });
+    }
   });
 
   it('a task with no kernel view keeps today\'s projection', () => {
