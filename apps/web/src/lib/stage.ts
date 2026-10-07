@@ -8,6 +8,9 @@
  * build` and `next dev` both stay quiet). `client-boundary.test.ts` guards it.
  */
 
+import { derivePrDisplayState } from './pr-presentation';
+import type { DeliveryDisplay } from './workflow/delivery-display';
+
 // ─── Stage enum ───────────────────────────────────────────────────────────────
 
 export type Stage =
@@ -18,6 +21,7 @@ export type Stage =
   | 'RUNNING'
   | 'WAITING_INPUT'
   | 'REVIEWING'    // agent review is in progress (caller must set explicitly)
+  | 'FIXING'       // kernel-owned PR: a fix, repair or push recovery is in flight (platform or worker owns it)
   | 'OPEN'         // PR open, no CI signal yet
   | 'CI'           // CI in progress (ci_running)
   | 'CI_FAILING'   // CI completed with at least one failure (ci_failed)
@@ -48,6 +52,37 @@ export interface StageInput {
    * it — another unclaimable-but-looks-queued state.
    */
   isMissionBudgetExhausted?: boolean;
+  /**
+   * The kernel's reading of this task's delivery, when the task is the OWNER
+   * of a kernel-owned delivery (workflow-state-kernel §17.5). It replaces the
+   * PR branch below: a kernel-owned PR's stage never reads the fact-cache
+   * columns. Absent for legacy-owned and PR-less tasks.
+   */
+  delivery?: Pick<DeliveryDisplay, 'stage'> | null;
+}
+
+/**
+ * A kernel-owned delivery's stage in the chip vocabulary. Null for
+ * `working`: the delivery waits on the owner's own attempt, so the task's
+ * execution state (running, queued) is the truthful reading.
+ */
+export function stageForDelivery(d: Pick<DeliveryDisplay, 'stage'>): Stage | null {
+  switch (d.stage) {
+    case 'working': return null;
+    case 'awaiting_push':
+    case 'fixing':
+    case 'repairing': return 'FIXING';
+    case 'review': return 'REVIEWING';
+    case 'blocked': return 'BLOCKED';
+    case 'approved':
+    case 'landing': return 'MERGE';
+    case 'needs_you': return 'WAITING_INPUT';
+    case 'merged':
+    case 'closed':
+    case 'superseded':
+    case 'abandoned': return 'DONE';
+    case 'failed': return 'FAILED';
+  }
 }
 
 /**
@@ -57,26 +92,32 @@ export interface StageInput {
  * context should override to REVIEWING when an agent review is in progress.
  */
 export function deriveStage(input: StageInput): Stage {
-  const { taskStatus, workerStatus, prUrl, prLifecycleStatus, mergedAt, isBlocked, isSubjectDead, isMissionBudgetExhausted } = input;
+  const { taskStatus, workerStatus, prUrl, prLifecycleStatus, mergedAt, isBlocked, isSubjectDead, isMissionBudgetExhausted, delivery } = input;
 
-  if (taskStatus === 'failed') return 'FAILED';
   if (taskStatus === 'cancelled') return 'CANCELLED';
 
-  // Live worker phase
-  if (workerStatus === 'waiting_input') return 'WAITING_INPUT';
-  if (workerStatus === 'running' || workerStatus === 'starting' || workerStatus === 'idle') {
-    return 'RUNNING';
-  }
+  // Live worker phase. A worker's own question stays a question (§13.2 dev. 3).
+  const workerLive = workerStatus === 'running' || workerStatus === 'starting' || workerStatus === 'idle';
+  if (workerStatus === 'waiting_input' && taskStatus !== 'failed') return 'WAITING_INPUT';
+  if (workerLive && taskStatus !== 'failed') return 'RUNNING';
 
-  // Completed task with PR
+  // Kernel-owned delivery: its stage, not the columns, and not a failed
+  // owner attempt the delivery has already carried past (S35).
+  const kernelStage = delivery ? stageForDelivery(delivery) : null;
+  if (kernelStage) return kernelStage;
+
+  if (taskStatus === 'failed') return 'FAILED';
+
+  // Completed task with PR (legacy-owned): the one fact-cache mapping.
   if (taskStatus === 'completed' && prUrl) {
-    const isMerged = !!mergedAt || prLifecycleStatus === 'merged';
-    const isClosed = prLifecycleStatus === 'closed';
-    if (isMerged || isClosed) return 'DONE';
-    if (prLifecycleStatus === 'ci_running') return 'CI';
-    if (prLifecycleStatus === 'ci_failed') return 'CI_FAILING';
-    if (prLifecycleStatus === 'ci_green') return 'MERGE';
-    return 'OPEN';
+    switch (derivePrDisplayState(prLifecycleStatus, mergedAt)) {
+      case 'merged':
+      case 'closed': return 'DONE';
+      case 'ci_running': return 'CI';
+      case 'ci_failed': return 'CI_FAILING';
+      case 'ci_passed': return 'MERGE';
+      default: return 'OPEN';
+    }
   }
 
   if (taskStatus === 'completed') return 'DONE';

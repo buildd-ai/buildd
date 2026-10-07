@@ -1,5 +1,8 @@
 'use client';
 
+import { stageForDelivery } from '@/lib/stage';
+import { derivePrDisplayState } from '@/lib/pr-presentation';
+import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import InteractiveSessions from './InteractiveSessions';
@@ -27,6 +30,8 @@ export interface GridTask {
   prUrl: string | null;
   prNumber: number | null;
   prLifecycleStatus?: string | null;
+  /** The kernel's reading when this task owns a kernel-owned delivery (§17.5); null = legacy. */
+  delivery?: DeliveryDisplay | null;
   summary: string | null;
   hasArtifact: boolean;
   filesChanged: number | null;
@@ -75,11 +80,13 @@ export function gridTaskPrProps(task: GridTask): {
   prUrl: string | null;
   prNumber: number | null;
   prLifecycleStatus: string | null;
+  delivery: DeliveryDisplay | null;
 } {
   return {
     prUrl: task.prUrl,
     prNumber: task.prNumber,
     prLifecycleStatus: task.prLifecycleStatus ?? null,
+    delivery: task.delivery ?? null,
   };
 }
 
@@ -226,11 +233,23 @@ interface MissionGroup {
  */
 export function deriveGridTaskStage(task: GridTask): keyof StageCounts | null {
   if (task.status === 'cancelled') return null;
+  // A kernel-owned delivery buckets by its own stage, the one the card's chip
+  // shows (§17.5), never by the fact-cache columns.
+  const workerLive = task.workerStatus === 'running' || task.workerStatus === 'starting' ||
+    task.workerStatus === 'idle' || task.workerStatus === 'waiting_input';
+  const kernel = task.delivery && !workerLive ? stageForDelivery(task.delivery) : null;
+  if (kernel) {
+    switch (kernel) {
+      case 'DONE': return 'DONE';
+      case 'FAILED': return 'FAILED';
+      case 'BLOCKED': return 'BLOCKED';
+      default: return 'REVIEW';
+    }
+  }
   if (task.status === 'failed') return 'FAILED';
-  if (task.workerStatus === 'running' || task.workerStatus === 'starting' ||
-      task.workerStatus === 'idle' || task.workerStatus === 'waiting_input') return 'RUNNING';
+  if (workerLive) return 'RUNNING';
   if (task.status === 'completed') {
-    const merged = task.prLifecycleStatus === 'merged';
+    const merged = derivePrDisplayState(task.prLifecycleStatus, null) === 'merged';
     if (task.prUrl && !merged) return 'REVIEW';
     return 'DONE';
   }

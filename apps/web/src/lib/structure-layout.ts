@@ -9,6 +9,7 @@
  */
 
 import { deriveStage } from '@/lib/stage';
+import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
 import type { Stage } from '@/lib/stage';
 import type { WorkKind } from '@/lib/task-presentation';
 import type { TaskType } from '@buildd/core/mission-helpers';
@@ -31,6 +32,8 @@ export type StructureTask = {
     prLifecycleStatus: string | null;
     mergedAt: string | null;
   } | null;
+  /** The kernel's reading when this task owns a kernel-owned delivery (§17.5); null = legacy. */
+  delivery?: Pick<DeliveryDisplay, 'stage'> | null;
   loopState?: string | null;
   loopMaxLoops?: number | null;
   loopIteration?: number | null;
@@ -196,6 +199,7 @@ function taskStage<T extends StructureTask>(
     mergedAt: w?.mergedAt ?? null,
     isBlocked,
     isMissionBudgetExhausted: task.missionBudgetExhausted,
+    delivery: task.delivery ?? null,
   });
 }
 

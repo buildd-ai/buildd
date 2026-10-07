@@ -24,6 +24,7 @@ import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { resolvePrDisplayState } from '@/lib/pr-presentation';
 import type { DeliveryPillState } from './TaskSidePanel';
 import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
@@ -603,7 +604,7 @@ export default async function TaskDetailPage({
   // or PR-less tasks get null and keep today's status.
   const deliveryView = (await getDeliveryViewsForTasks([task.id])).get(task.id) ?? null;
   const deliveryPill: DeliveryPillState | null = deliveryView
-    ? { headline: deliveryView.headline, owner: deliveryView.owner, needsYou: deliveryView.needsYou, stage: deliveryView.stage, detail: deliveryView.detail }
+    ? { headline: deliveryView.headline, owner: deliveryView.owner, needsYou: deliveryView.needsYou, stage: deliveryView.stage, detail: deliveryView.detail, prState: deliveryView.prState }
     : null;
 
   // Derive canonical display status from task + active worker state.
@@ -1008,7 +1009,14 @@ export default async function TaskDetailPage({
     summary: shippedResult?.summary ?? null,
     summarySource: shippedResult?.summarySource ?? null,
     pr: prWorker?.prUrl && prWorker.prNumber
-      ? { url: prWorker.prUrl, number: prWorker.prNumber, lifecycle: prWorker.prLifecycleStatus ?? null, merged: !!prWorker.mergedAt }
+      ? {
+          url: prWorker.prUrl,
+          number: prWorker.prNumber,
+          lifecycle: prWorker.prLifecycleStatus ?? null,
+          merged: !!prWorker.mergedAt,
+          // §17.5: a kernel-owned PR's state is the delivery's, not the columns'.
+          state: resolvePrDisplayState({ delivery: deliveryView, prLifecycleStatus: prWorker.prLifecycleStatus, mergedAt: prWorker.mergedAt }),
+        }
       : null,
     openAttempt,
     heroShots: pickHeroShots(undefined, buildHeroPool(toVisualShots(taskArtifacts))),
@@ -1614,11 +1622,14 @@ export default async function TaskDetailPage({
             CI → retry → merge) and checks per commit (AC-4). Shown for an open
             PR and for one that landed. */}
         {(() => {
-          if (!prWorker?.prUrl || !prWorker.prNumber || prWorker.prLifecycleStatus === 'closed') return null;
+          if (!prWorker?.prUrl || !prWorker.prNumber) return null;
+          const prState = resolvePrDisplayState({ delivery: deliveryView, prLifecycleStatus: prWorker.prLifecycleStatus, mergedAt: prWorker.mergedAt });
+          if (prState === 'closed') return null;
           const storedPrFacts = {
             prUrl: prWorker.prUrl,
             prNumber: prWorker.prNumber,
             prLifecycleStatus: prWorker.mergedAt ? 'merged' : prWorker.prLifecycleStatus,
+            prState,
             linesAdded: prWorker.linesAdded,
             linesRemoved: prWorker.linesRemoved,
             filesChanged: prWorker.filesChanged,

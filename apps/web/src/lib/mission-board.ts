@@ -33,6 +33,7 @@ import { classifyTaskFailure, type TaskFailureKind } from './task-failure-kind';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
 import { activeWorkMs, formatDuration } from './mission-duration';
+import type { DeliveryDisplay } from './workflow/delivery-display';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -468,6 +469,7 @@ export function toBoardTaskInput(t: Record<string, unknown> & { id: string; titl
     outputRequirement: str(t.outputRequirement),
     ciRetryPrNumber: num(t.ciRetryPrNumber),
     backend: str(t.backend),
+    delivery: (t.delivery as DeliveryDisplay | null | undefined) ?? null,
     worker: w0
       ? {
           status: w0.status,
@@ -492,9 +494,39 @@ const isLiveWorker = (w: BoardWorkerInput | null | undefined) => !!w && LIVE.has
  * The Board's state for one deliverable row, refining the feed's
  * (`deriveFeedTaskState`). `depsLanded` answers "is anything still holding it".
  */
+/**
+ * A kernel-owned delivery's tile state (§17.5). Null for `working` (the
+ * owner's own attempt is the reading). A fix, repair, push recovery or trunk
+ * block in flight is `fixing`; review and landing read `review`; only
+ * ESCALATED is `waiting` on you.
+ */
+export function boardStatusForDelivery(d: Pick<DeliveryDisplay, 'stage'>): BoardStatus | null {
+  switch (d.stage) {
+    case 'working': return null;
+    case 'awaiting_push':
+    case 'fixing':
+    case 'repairing':
+    case 'blocked': return 'fixing';
+    case 'review':
+    case 'approved':
+    case 'landing': return 'review';
+    case 'needs_you': return 'waiting';
+    case 'merged':
+    case 'superseded': return 'merged';
+    case 'closed':
+    case 'abandoned': return 'done';
+    case 'failed': return 'failed';
+  }
+}
+
 export function deriveBoardStatus(row: DeliverableRow<BoardTaskInput>, depsLanded: boolean): BoardStatus {
   const { task } = row;
   const feed = deriveFeedTaskState(row);
+  // A worker's own question stays a question (§13.2 dev. 3); otherwise the
+  // kernel's reading wins for a kernel-owned delivery.
+  const asked = feed.needsYou === 'input' || feed.needsYou === 'question' || feed.needsYou === 'decision';
+  const kernel = task.delivery && !asked && task.status !== 'cancelled' ? boardStatusForDelivery(task.delivery) : null;
+  if (kernel) return kernel;
   const pr = deriveFeedPrState(task.worker);
   const openAttempt = [...row.attempts].reverse().find(a => !TERMINAL.has(a.status) && a.taskClass !== 'work');
   const attemptLive = !!openAttempt && (isLiveWorker(openAttempt.workers[0]) || openAttempt.status === 'in_progress' || openAttempt.status === 'assigned');
@@ -652,7 +684,7 @@ export function buildBoardCells(
     const own = t.workers[0] ?? null;
     const role = t.roleSlug ? roles.get(t.roleSlug) : undefined;
     const kind = deriveWorkKind({ kind: t.kind ?? null, roleSlug: t.roleSlug ?? null });
-    const prState = deriveFeedPrState(t.worker);
+    const prState = deriveFeedPrState(t.worker, t.delivery);
     tasks[t.id] = {
       id: t.id,
       title: t.title,

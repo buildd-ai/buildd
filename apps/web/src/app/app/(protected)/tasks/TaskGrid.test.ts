@@ -59,6 +59,7 @@ function stageToHistogramBucket(stage: Stage): string {
     case 'CI_FAILING':
     case 'MERGE':
     case 'REVIEWING':
+    case 'FIXING':
       return 'REVIEW';
     case 'WAITING_INPUT':
       return 'RUNNING';
@@ -245,5 +246,34 @@ describe('capGroupedRows', () => {
   it('no cap returns the input', () => {
     const groups = [g('a', 3)];
     expect(capGroupedRows(groups, Infinity)).toBe(groups);
+  });
+});
+
+// §17.5 (Slice E): a kernel-owned delivery buckets by its own stage, the one the
+// card's chip shows, whatever the worker columns say.
+describe('kernel-owned rows: chip and histogram read the delivery', () => {
+  const d = (stage: NonNullable<GridTask['delivery']>['stage']): NonNullable<GridTask['delivery']> => ({
+    ownerTaskId: 't1', state: 'FIXING', stage, owner: 'worker', needsYou: false, headline: 'x', detail: null, prNumber: 1234, prState: 'awaiting_ci', attemptLine: null,
+  });
+  it.each([
+    ['fixing', 'REVIEW'],
+    ['awaiting_push', 'REVIEW'],
+    ['review', 'REVIEW'],
+    ['approved', 'REVIEW'],
+    ['merged', 'DONE'],
+    ['superseded', 'DONE'],
+    ['blocked', 'BLOCKED'],
+  ] as const)('%s reads %s in both views, with columns that say merged', (stage, expected) => {
+    const task = makeTask({ prLifecycleStatus: 'merged', delivery: d(stage) });
+    expect(deriveGridTaskStage(task)).toBe(expected);
+    expect(stageToHistogramBucket(cardStage(task))).toBe(expected);
+  });
+  it('an escalated PR is in review on the histogram and needs you on the chip', () => {
+    const task = makeTask({ delivery: d('needs_you') });
+    expect(deriveGridTaskStage(task)).toBe('REVIEW');
+    expect(cardStage(task)).toBe('WAITING_INPUT');
+  });
+  it('gridTaskPrProps forwards the delivery to the card', () => {
+    expect(gridTaskPrProps(makeTask({ delivery: d('fixing') })).delivery?.stage).toBe('fixing');
   });
 });

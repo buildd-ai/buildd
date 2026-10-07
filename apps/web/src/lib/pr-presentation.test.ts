@@ -1,60 +1,44 @@
 import { describe, it, expect } from 'bun:test';
-import { PR_LIFECYCLE, derivePrLifecycle, derivePrDisplayState, type PrDisplayState } from './pr-presentation';
+import { PR_PILL, derivePrDisplayState, resolvePrDisplayState, type PrDisplayState } from './pr-presentation';
 
-describe('PR_LIFECYCLE map', () => {
-  // AC-3: ci_green must be in the map so it renders as a CI state, never as Open
-  it('contains ci_green (AC-3)', () => {
-    expect(PR_LIFECYCLE.ci_green).toBeDefined();
-    expect(PR_LIFECYCLE.ci_green.label).not.toBe('Open');
+const pill = (lifecycle: string | null, mergedAt: unknown = null) => PR_PILL[derivePrDisplayState(lifecycle, mergedAt)];
+
+describe('PR_PILL (the only PR pill vocabulary)', () => {
+  // AC-6: #2010 regression — ci_green must not fall back to Open
+  it('AC-6: ci_green renders as a CI badge, not Open', () => {
+    expect(pill('ci_green').label).not.toBe('Open');
+    expect(pill('ci_green').label.toLowerCase()).toContain('ci');
   });
 
-  it('ci_green label contains CI-related text', () => {
-    expect(PR_LIFECYCLE.ci_green.label.toLowerCase()).toContain('ci');
+  it('ci_failed and ci_running render as CI badges', () => {
+    expect(pill('ci_failed').label.toLowerCase()).toContain('ci');
+    expect(pill('ci_running').label.toLowerCase()).toContain('ci');
   });
 
-  it('all CI states (ci_running, ci_failed, ci_green) are present', () => {
-    expect(PR_LIFECYCLE.ci_running).toBeDefined();
-    expect(PR_LIFECYCLE.ci_failed).toBeDefined();
-    expect(PR_LIFECYCLE.ci_green).toBeDefined();
+  it('unknown or null status with a PR reads Open', () => {
+    expect(pill('unknown_status').label).toBe('Open');
+    expect(pill(null).label).toBe('Open');
+  });
+
+  it('merged reads Merged, and so does a merge stamp the lifecycle missed (the retired map ignored mergedAt)', () => {
+    expect(pill('merged').label).toBe('Merged');
+    expect(pill('ci_green', '2026-01-01T00:00:00Z').label).toBe('Merged');
+  });
+
+  it('an unresolvable PR does not render as Open', () => {
+    expect(pill('unresolvable').label).not.toBe('Open');
   });
 });
 
-describe('derivePrLifecycle', () => {
-  // AC-6: #2010 regression — ci_green must not fall back to Open
-  it('AC-6: ci_green prLifecycleStatus renders as CI badge, not Open', () => {
-    const result = derivePrLifecycle('ci_green', true);
-    expect(result).not.toBeNull();
-    expect(result?.label).not.toBe('Open');
-    expect(result?.label.toLowerCase()).toContain('ci');
+describe('resolvePrDisplayState (§17.5: the delivery owns a kernel PR)', () => {
+  it('a kernel-owned delivery wins over the fact-cache columns', () => {
+    expect(resolvePrDisplayState({ delivery: { prState: 'ci_failed' }, prLifecycleStatus: 'ci_green', mergedAt: null })).toBe('ci_failed');
+    expect(resolvePrDisplayState({ delivery: { prState: 'awaiting_ci' }, prLifecycleStatus: 'merged', mergedAt: new Date() })).toBe('awaiting_ci');
   });
 
-  it('ci_failed renders as CI failing badge', () => {
-    const result = derivePrLifecycle('ci_failed', true);
-    expect(result?.label.toLowerCase()).toContain('ci');
-  });
-
-  it('ci_running renders as CI running badge', () => {
-    const result = derivePrLifecycle('ci_running', true);
-    expect(result?.label.toLowerCase()).toContain('ci');
-  });
-
-  it('unknown status with PR falls back to Open', () => {
-    const result = derivePrLifecycle('unknown_status', true);
-    expect(result?.label).toBe('Open');
-  });
-
-  it('null status with PR falls back to Open', () => {
-    const result = derivePrLifecycle(null, true);
-    expect(result?.label).toBe('Open');
-  });
-
-  it('null status with no PR returns null', () => {
-    expect(derivePrLifecycle(null, false)).toBeNull();
-  });
-
-  it('merged renders correctly', () => {
-    const result = derivePrLifecycle('merged', true);
-    expect(result?.label).toBe('Merged');
+  it('no delivery (legacy or PR-less) keeps the column projection', () => {
+    expect(resolvePrDisplayState({ delivery: null, prLifecycleStatus: 'ci_green', mergedAt: null })).toBe('ci_passed');
+    expect(resolvePrDisplayState({ prLifecycleStatus: null, mergedAt: '2026-01-01' })).toBe('merged');
   });
 });
 
@@ -83,11 +67,5 @@ describe('derivePrDisplayState', () => {
   it('a merge stamp wins over any lifecycle value', () => {
     for (const [lifecycle] of TABLE) expect(derivePrDisplayState(lifecycle, new Date())).toBe('merged');
     expect(derivePrDisplayState(null, '2026-01-01T00:00:00Z')).toBe('merged');
-  });
-});
-
-describe('derivePrLifecycle: unresolvable', () => {
-  it('an unresolvable PR does not render as Open', () => {
-    expect(derivePrLifecycle('unresolvable', true)?.label).not.toBe('Open');
   });
 });

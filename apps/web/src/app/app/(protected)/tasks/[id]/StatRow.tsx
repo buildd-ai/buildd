@@ -1,4 +1,4 @@
-import { derivePrLifecycle } from '@/lib/pr-presentation';
+import { PR_PILL, type PrDisplayState } from '@/lib/pr-presentation';
 
 export function formatTokens(n: number): string | null {
   if (!n || n <= 0) return null;
@@ -36,13 +36,14 @@ export default function StatRow({
   elapsed: string | null;
   turns: number;
   tokens: number;
-  pr: { url: string; number: number | null; lifecycle: string | null } | null;
+  /** `state` is `resolvePrDisplayState`'s: the delivery's for a kernel-owned PR, else the columns'. */
+  pr: { url: string; number: number | null; state: PrDisplayState } | null;
   filesTouched: number;
   added: number | null;
   removed: number | null;
 }) {
   const tok = formatTokens(tokens);
-  const lifecycle = pr ? derivePrLifecycle(pr.lifecycle, true) : null;
+  const lifecycle = pr ? PR_PILL[pr.state] : null;
   const hasDiff = (added ?? 0) > 0 || (removed ?? 0) > 0;
   return (
     <div data-testid="worker-stats" className="grid grid-cols-2 md:grid-cols-5 border-2 border-border-strong bg-card mt-4 md:mt-5">

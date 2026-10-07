@@ -1,4 +1,6 @@
 import { db } from '@buildd/core/db';
+import { getOwnerDeliveryDisplays } from '@/lib/workflow/delivery-view';
+import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
 import { tasks, workers, workspaces as workspacesTable, missions, initiatives } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte, isNull } from 'drizzle-orm';
 import { deriveTaskType, type TaskType } from '@buildd/core/mission-helpers';
@@ -41,6 +43,7 @@ export default async function TasksPage({
     prUrl: string | null;
     prNumber: number | null;
     prLifecycleStatus: string | null;
+    delivery: DeliveryDisplay | null;
     summary: string | null;
     hasArtifact: boolean;
     filesChanged: number | null;
@@ -257,6 +260,8 @@ export default async function TasksPage({
             .filter(t => t.status === 'completed' && (t.result as { prUrl?: string } | null)?.prUrl)
             .map(t => t.id);
           const prLifecycleByTaskId = new Map<string, string | null>();
+          // §17.5: a kernel-owned delivery's stage and PR state, not the columns.
+          const deliveryByTaskId = await getOwnerDeliveryDisplays(allTasks.map(t => t.id));
           if (completedPrTaskIds.length > 0) {
             const lastWorkers = await db.query.workers.findMany({
               where: inArray(workers.taskId, completedPrTaskIds),
@@ -357,6 +362,7 @@ export default async function TasksPage({
               prUrl: result?.prUrl || null,
               prNumber: result?.prNumber || null,
               prLifecycleStatus: result?.prUrl ? (prLifecycleByTaskId.get(t.id) ?? null) : null,
+              delivery: deliveryByTaskId.get(t.id) ?? null,
               summary: result?.summary || null,
               hasArtifact: !!result?.structuredOutput || (result?.files?.length ?? 0) > 0,
               filesChanged: result?.files?.length ?? null,

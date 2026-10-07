@@ -196,6 +196,13 @@ const { taskScopeTaskNamesPr } = await import('../../src/lib/task-token-auth');
 const { HeaderStatusPill } = await import('../../src/app/app/(protected)/tasks/[id]/TaskSidePanel');
 const { createElement } = await import('react');
 const { renderToStaticMarkup } = await import('react-dom/server');
+const { getOwnerDeliveryDisplays } = await import('../../src/lib/workflow/delivery-view');
+const { deriveStage } = await import('../../src/lib/stage');
+const { boardStatusForDelivery } = await import('../../src/lib/mission-board');
+const { feedStateForDelivery } = await import('../../src/lib/mission-pulse');
+const { resolvePrDisplayState } = await import('../../src/lib/pr-presentation');
+const { dockToneForDelivery } = await import('../../src/components/chat/dock-model');
+const { explainTask } = await import('../../src/lib/explain');
 
 /** The composition root's handlers, with an optional per-test override (a crash, a race). */
 let override: Partial<Record<string, EffectHandler>> = {};
@@ -1113,6 +1120,36 @@ describe('S16–S21', () => {
     expect(card.delivery?.headline).toBe(view.headline);
     expect(header).toContain(view.headline);
     expect(header).toContain(`data-owner="${view.owner}"`);
+
+    // Slice E: the task card stage, mission strip tile, mission feed, chat dock, chat tile,
+    // PR pill and explain's state chain all read the same view. The worker columns say
+    // "CI green" on purpose; no surface may echo them.
+    await q(sql`UPDATE workers SET pr_lifecycle_status = 'ci_green' WHERE task_id = ${a.ownerTaskId}::uuid`);
+    const displays = await getOwnerDeliveryDisplays([a.ownerTaskId, a.fix.id]);
+    expect([...displays.keys()]).toEqual([a.ownerTaskId]);
+    const d = displays.get(a.ownerTaskId)!;
+    expect(d).toMatchObject({ state: view.state, headline: view.headline, needsYou: false });
+    expect(deriveStage({ taskStatus: 'completed', prUrl: 'u', prLifecycleStatus: 'ci_green', delivery: d })).toBe('FIXING');
+    expect(boardStatusForDelivery(d)).toBe('fixing');
+    expect(feedStateForDelivery(d)).toEqual({ state: 'moving', needsYou: null });
+    expect(dockToneForDelivery(d)).toMatchObject({ label: 'Fixing', tone: 'live' });
+    expect(resolvePrDisplayState({ delivery: d, prLifecycleStatus: 'ci_green' })).not.toBe('ci_passed');
+    const ex = (await explainTask(a.ownerTaskId, { kind: 'admin', accountId: null } as never))!.subjects[0];
+    expect(ex.delivery).toMatchObject({ state: view.state, headline: view.headline, owner: view.owner });
+    const link = ex.because.find((l) => l.derivedFrom === 'DeliveryView.lastTransition');
+    expect(link?.claim).toContain(`Delivery is ${view.state}`);
+    expect(link?.refs.prNumber).toBe(a.prNumber);
+    // Explain's state chain reads the delivery, not the columns: with the owner row completed
+    // and a stale merge stamp on its worker, the legacy reading was "completed"; the kernel
+    // says the PR is still waiting for its fix to land, and nothing is waiting on you.
+    await q(sql`UPDATE tasks SET status = 'completed' WHERE id = ${a.ownerTaskId}::uuid`);
+    await q(sql`UPDATE workers SET merged_at = now() WHERE task_id = ${a.ownerTaskId}::uuid`);
+    const ex2 = (await explainTask(a.ownerTaskId, { kind: 'admin', accountId: null } as never))!.subjects[0];
+    expect(ex2.state).not.toBe('completed');
+    expect(ex2.waitingOn).toBeNull();
+    expect(ex2.because.some((l) => l.derivedFrom === 'DeliveryView.lastTransition')).toBe(true);
+    expect(ex2.history.find((h) => h.taskId === a.ownerTaskId)?.prState).toBe('open');
+
     // A legacy-owned delivery is absent: every surface keeps today's projection.
     await q(sql`UPDATE workflow_deliveries SET authority = 'legacy' WHERE id = ${a.deliveryId}::uuid`);
     expect((await getDeliveryViewsForTasks([a.ownerTaskId])).size).toBe(0);

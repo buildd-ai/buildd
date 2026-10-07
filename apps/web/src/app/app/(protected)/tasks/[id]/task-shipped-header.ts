@@ -85,6 +85,17 @@ export interface TaskShippedPr {
   number: number;
   lifecycle: string | null;
   merged: boolean;
+  /**
+   * `resolvePrDisplayState`'s answer: the delivery's PR state when the
+   * kernel owns the PR (§17.5). When set it is the only reading; the two
+   * fact-cache fields above are ignored.
+   */
+  state?: PrDisplayState | null;
+}
+
+/** The one PR state this header reads. */
+function shippedPrState(pr: Pick<TaskShippedPr, 'lifecycle' | 'merged' | 'state'>): PrDisplayState {
+  return pr.state ?? derivePrDisplayState(pr.lifecycle, pr.merged ? true : null);
 }
 
 /** The same shape `loadOpenAttempt` (lib/explain.ts) returns — not re-derived here. */
@@ -152,7 +163,7 @@ function prChipsAndAction(
   pr: TaskShippedPr,
   openAttempt: TaskShippedOpenAttempt | null,
 ): { chip: ShippedChip | null; action: ShippedAction | null; meta: string | null } {
-  const state = derivePrDisplayState(pr.lifecycle, pr.merged ? true : null);
+  const state = shippedPrState(pr);
   const meta = CHECKS_WORDS[state] ? `${CHECKS_WORDS[state]} · PR #${pr.number}` : null;
   switch (state) {
     case 'merged':
@@ -209,7 +220,7 @@ function prChipsAndAction(
 export function buildTaskShippedView(input: BuildTaskShippedViewInput): TaskShippedView | null {
   if (input.taskStatus !== 'completed' || input.taskMode === 'planning') return null;
 
-  const merged = !!input.pr?.merged || derivePrDisplayState(input.pr?.lifecycle ?? null, null) === 'merged';
+  const merged = !!input.pr && shippedPrState(input.pr) === 'merged';
   const shipped = merged || input.inRelease;
   const chips: ShippedChip[] = [shipped ? { label: 'Shipped', tone: 'success' } : { label: 'Done', tone: 'success' }];
   let action: ShippedAction | null = null;

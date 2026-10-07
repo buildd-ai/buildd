@@ -32,6 +32,7 @@ const STAGE_CONFIG: Record<Stage, ChipConfig> = {
   RUNNING:      { label: 'Running',     variant: 'filled', colorCls: 'bg-status-running text-white', pulse: true },
   WAITING_INPUT:{ label: 'Needs Input', variant: 'filled', colorCls: 'bg-status-warning text-white' },
   REVIEWING:    { label: 'Reviewing',   variant: 'soft',   colorCls: 'bg-status-info/10 text-status-info', pulse: true },
+  FIXING:       { label: 'Fixing',      variant: 'soft',   colorCls: 'bg-status-info/10 text-status-info', pulse: true },
   OPEN:         { label: 'Open',        variant: 'soft',   colorCls: 'bg-accent/10 text-accent-text' },
   CI:           { label: 'CI',          variant: 'soft',   colorCls: 'bg-status-info/10 text-status-info' },
   CI_FAILING:   { label: 'CI Failing',  variant: 'soft',   colorCls: 'bg-status-error/10 text-status-error' },
