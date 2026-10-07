@@ -484,6 +484,54 @@ describe('predictCreationManifest', () => {
     expect(row.unknownScope).toBe(true);
   });
 
+  it('slow size estimate does not cause retrieval_deadline: neighbours return, size times out, picks complete with null expectedSize', async () => {
+    let t = 0;
+    const recordPrediction = mock(async (_row: any) => {});
+    const call = pickFirst(2);
+    await src.predictCreationManifest(input(), {
+      now: () => t,
+      deadlineMs: 300,
+      resolveAccess: async () => okAccess,
+      loadNeighbours: async () => { t = 50; return [{ taskId: N1, score: 0.9, completedAt: BEFORE, paths: ['a.ts'] }]; },
+      estimateSize: async (args: any) => {
+        // Simulates slow size estimate that would exceed the remaining deadline
+        // remaining at t=50 is 250ms, this waits 400ms
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => resolve({ files: 4, minutes: 30, source: 'neighbours' as const, k: 5, n: 1 }), 400);
+          args.signal?.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(new Error('aborted'));
+          });
+        });
+      },
+      call: call as any,
+      recordPrediction, recordDecision: async () => {},
+    });
+    const row = (recordPrediction.mock.calls[0] as any)[0];
+    // Neighbours are retrieved successfully, picks complete, but size times out
+    expect(row.candidates.length).toBeGreaterThan(0);
+    expect(row.stopReason).not.toBe('retrieval_deadline');
+    expect(row.expectedSize).toBeNull();
+    expect(call).toHaveBeenCalled();
+  });
+
+  it('slow neighbour retrieval causes retrieval_deadline as before', async () => {
+    let t = 0;
+    const call = pickFirst(5);
+    const recordPrediction = mock(async (_row: any) => {});
+    await src.predictCreationManifest(input(), {
+      now: () => t,
+      deadlineMs: 50,
+      resolveAccess: async () => okAccess,
+      loadNeighbours: () => new Promise(resolve => setTimeout(() => { t = 1_000; resolve([]); }, 200)),
+      call: call as any,
+      recordPrediction, recordDecision: async () => {},
+    });
+    expect(call).not.toHaveBeenCalled();
+    const row = (recordPrediction.mock.calls[0] as any)[0];
+    expect(row.stopReason).toBe('retrieval_deadline');
+  });
+
   it('never throws: a throwing neighbour load, decision and ledger all fail safe', async () => {
     const r = await src.predictCreationManifest(input(), {
       resolveAccess: async () => okAccess,
