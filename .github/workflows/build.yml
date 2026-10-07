@@ -217,14 +217,25 @@ jobs:
       - name: Type check
         run: bun run type-check
 
+  # Sharded: every shard computes the same selection (scripts/affected-tests.ts
+  # is deterministic over the same checkout) and runs its own slice of it,
+  # balanced by scripts/test-durations.json. A small selection lands entirely
+  # on shard 1 and the others run nothing. The shard count is SHARD_COUNT in
+  # scripts/run-unit-tests.ts; run-unit-tests-shard.test.ts keeps them equal.
+  # fail-fast off: a red shard must not cancel the others, or their failures
+  # go unreported and the next push finds them one shard at a time.
   build-unit-tests:
-    name: build · unit tests
+    name: build · unit tests (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
 
     steps:
       - uses: actions/checkout@v7
         with:
-          # scripts/affected-tests.sh diffs against the PR base / HEAD~1.
+          # scripts/affected-tests.ts diffs a PR against its base.
           fetch-depth: 0
 
       - name: Setup Bun
@@ -239,14 +250,19 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: bun-${{ runner.os }}-
 
+      # Before selection: the import graph resolves workspace packages through
+      # node_modules, exactly as the tests will.
       - name: Install dependencies
         run: bun install
 
+      # Pushes and PRs into main run ALL (dev stays the full safety net); PRs
+      # into dev and mission branches select by reverse import graph. The
+      # reasoning is printed as notices either way.
       - name: Detect affected tests
         id: affected
         run: |
-          AFFECTED=$(bash scripts/affected-tests.sh)
-          echo "tests=$AFFECTED" >> "$GITHUB_OUTPUT"
+          bun scripts/affected-tests.ts > "$RUNNER_TEMP/affected.txt"
+          echo "tests=$(tail -n 1 "$RUNNER_TEMP/affected.txt")" >> "$GITHUB_OUTPUT"
 
       # Always via scripts/run-unit-tests.ts, which runs each file in its OWN
       # process. `bun test <many files>` shares one process, and `mock.module`
@@ -260,12 +276,22 @@ jobs:
         timeout-minutes: 10
         env:
           BUILDD_TEST_CONCURRENCY: 8
+          TESTS: ${{ steps.affected.outputs.tests }}
         run: |
-          TESTS="${{ steps.affected.outputs.tests }}"
-          echo "Affected: $TESTS"
           # ALL and SKIP are sentinels the script understands; a file list is
-          # passed through and filtered to unit tests.
-          bun run scripts/run-unit-tests.ts $TESTS
+          # passed through and filtered to unit tests. Word splitting is the
+          # point here: one argument per file.
+          # shellcheck disable=SC2086
+          bun run scripts/run-unit-tests.ts --shard "${{ matrix.shard }}/3" $TESTS
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-report-${{ matrix.shard }}
+          path: .test-report.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   build-next:
     name: build · next build
@@ -331,7 +357,9 @@ jobs:
 
   # The required check. Branch protection on main requires a check named
   # exactly `build`, and app-side auto-merge reads check-run names too, so this
-  # keeps that name and goes green only when all three parts did. always():
+  # keeps that name and goes green only when all three parts did. The unit
+  # tests are a matrix: `needs.build-unit-tests.result` is success only when
+  # every shard succeeded, and failure/cancelled if any one did not. always():
   # a failed or cancelled part must make this red, never Skipped — a Skipped
   # check satisfies branch protection without running.
   build:
@@ -352,7 +380,8 @@ jobs:
 
   # The ONLY test that spawns a real bwrap namespace and asserts that blocked paths
   # are genuinely inaccessible (apps/runner/src/__tests__/mount-isolation.e2e.ts,
-  # `describe('negative isolation')`). Every other bwrap test only snapshots argv
+  # `describe('negative isolation')`), plus the Quality Scout probe sandbox suite
+  # (apps/runner/src/__tests__/scout-sandbox.e2e.ts). Every other bwrap test only snapshots argv
   # strings or mocks the SDK. Until now nothing invoked this file: it is *.e2e.ts, so
   # scripts/run-unit-tests.ts (which globs **/*.test.{ts,tsx} under a fixed set of
   # roots) cannot collect it, and no workflow or package script named it.
@@ -417,38 +446,60 @@ jobs:
             echo "$key = $(sysctl -n "$key" 2>/dev/null || echo '<unset>')"
           done
 
-      - name: Mount isolation probe
+      # Two suites, one per sandbox, each spawning real bwrap namespaces:
+      #   * mount-isolation.e2e.ts -- the agent worker's outer mount allowlist
+      #     (buildWorkerBwrapArgv), banner MOUNT_ISOLATION_MODE;
+      #   * scout-sandbox.e2e.ts -- the Quality Scout command-probe sandbox
+      #     (buildScoutBwrapArgv + buildScoutProbeEnv), banner SCOUT_SANDBOX_MODE.
+      #
+      # A `skipped` banner FAILS this job. Until the capability probes bound the
+      # ELF loader dirs (/lib, /lib64), every run here printed
+      # `execvp /usr/bin/env: No such file or directory`, reported `skipped`, and
+      # passed with a warning nobody read -- the job never once verified
+      # isolation. GitHub's hosted runners do support the namespaces (after the
+      # sysctl above), so a skip here is a broken probe, not a kernel limit.
+      - name: Sandbox isolation probes
         timeout-minutes: 10
         run: |
           set -o pipefail
-          FILE=apps/runner/src/__tests__/mount-isolation.e2e.ts
-          if [ ! -f "$FILE" ]; then
-            echo "::error::$FILE is missing -- the sandbox isolation gate has nothing to run."
-            exit 1
-          fi
-          # The ./ prefix matters: without it `bun test` treats the argument as a name
-          # filter, and since the file is *.e2e.ts rather than *.test.ts it matches
-          # nothing.
-          bun test "./$FILE" 2>&1 | tee /tmp/mount-isolation.log
-
-          # Silent-green guard. This suite's whole history is "excluded and nobody
-          # noticed", so a run that collected nothing must fail, not pass.
-          if ! grep -q "^Ran [0-9]* tests across 1 file" /tmp/mount-isolation.log; then
-            echo "::error::mount-isolation probe collected no tests -- the file was renamed, moved, or failed to load."
-            exit 1
-          fi
-          if grep -q "MOUNT_ISOLATION_MODE=skipped" /tmp/mount-isolation.log; then
-            echo "::warning::SKIPPED: this kernel denies unprivileged user namespaces. Only the pure-JS pattern and escape-hatch tests ran -- nothing proved the sandbox actually denies access on this host."
-          elif grep -q "MOUNT_ISOLATION_MODE=full" /tmp/mount-isolation.log; then
-            echo "::notice::bwrap namespaces available -- negative isolation assertions ran (blocked paths verified inaccessible inside a real namespace)."
-            if grep -qE "^ *[0-9]+ skip" /tmp/mount-isolation.log; then
-              echo "::error::bwrap was available but tests still reported skipped -- the capability probe and the per-test guards disagree."
-              exit 1
+          status=0
+          for spec in \
+            "apps/runner/src/__tests__/mount-isolation.e2e.ts MOUNT_ISOLATION_MODE" \
+            "apps/runner/src/__tests__/scout-sandbox.e2e.ts SCOUT_SANDBOX_MODE"; do
+            set -- $spec
+            FILE=$1; BANNER=$2; LOG="/tmp/$(basename "$FILE" .e2e.ts).log"
+            echo "::group::$FILE"
+            if [ ! -f "$FILE" ]; then
+              echo "::error::$FILE is missing -- the sandbox isolation gate has nothing to run."
+              status=1; echo "::endgroup::"; continue
             fi
-          else
-            echo "::error::mount-isolation probe printed neither MOUNT_ISOLATION_MODE=full nor MOUNT_ISOLATION_MODE=skipped -- the capability banner is gone, so a skipped run could pass unnoticed."
-            exit 1
-          fi
+            # The ./ prefix matters: without it `bun test` treats the argument as a
+            # name filter, and since the file is *.e2e.ts rather than *.test.ts it
+            # matches nothing.
+            bun test "./$FILE" 2>&1 | tee "$LOG" || status=1
+            echo "::endgroup::"
+
+            # Silent-green guard: a run that collected nothing must fail, not pass.
+            if ! grep -q "^Ran [0-9]* tests across 1 file" "$LOG"; then
+              echo "::error::$FILE collected no tests -- the file was renamed, moved, or failed to load."
+              status=1; continue
+            fi
+            if grep -q "^$BANNER=full" "$LOG"; then
+              if grep -qE "^ *[0-9]+ skip" "$LOG"; then
+                echo "::error::$FILE: bwrap was available but tests still reported skipped -- the capability probe and the per-test guards disagree."
+                status=1
+              else
+                echo "::notice::$FILE: $BANNER=full -- negative isolation assertions ran inside a real bwrap namespace."
+              fi
+            elif grep -q "^$BANNER=skipped" "$LOG"; then
+              echo "::error::$FILE: $BANNER=skipped -- no namespace assertion ran. This runner supports bwrap user namespaces, so the capability probe is broken (see its 'probe declined' line above)."
+              status=1
+            else
+              echo "::error::$FILE printed no $BANNER=full|skipped banner -- a skipped run could pass unnoticed."
+              status=1
+            fi
+          done
+          exit $status
 
   # Pre-promote schema drift check — must produce a definitive pass/fail on every PR,
   # never Skipped. GitHub branch protection treats Skipped as satisfying a required

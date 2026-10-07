@@ -5,7 +5,7 @@
  *   bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…]
  *       [--rotate] [--remove] [--dry-run] [--server <buildd url>] [--worker-server <url>]
  *       [--url <worker base url>] [--print-token] [--model-proxy-url <url>] [--name <worker name>]
- *       [--secrets-only] [--credential-ref <ref>]
+ *       [--secrets-only] [--credential-ref <ref>] [--owner-seat]
  *
  * --name deploys the Worker under another name, with its own snapshot bucket
  * (<name>-snapshots), from a generated copy of wrangler.jsonc. Pass the same
@@ -39,6 +39,9 @@
  *                          Anthropic-compatible proxy such as LiteLLM instead of AI Gateway
  *   MODEL_PROXY_KEY        the proxy's key; required with a new proxy URL. Never printed
  *   MODEL_PROXY_AUTH_HEADER  optional; authorization (default, Bearer) or x-api-key
+ *   CLAUDE_CODE_OAUTH_TOKEN  with --owner-seat: your own `claude setup-token` value (prompted for,
+ *                          hidden, when unset and run in a terminal). Goes to `wrangler secret put`
+ *                          on your Cloudflare account only; never to buildd, never printed
  *
  * The decisions live in src/deploy-plan.ts (tested); this file only observes
  * and executes. Re-running is safe: see planDeploy for what changes when.
@@ -59,6 +62,7 @@ interface Args {
   remove: boolean;
   dryRun: boolean;
   printToken: boolean;
+  ownerSeat: boolean;
   runnerKey?: string;
   server?: string;
   workerServer?: string;
@@ -70,7 +74,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { rotate: false, remove: false, dryRun: false, printToken: false, secretsOnly: false, credentialRef: 'cloudflare' };
+  const a: Args = { rotate: false, remove: false, dryRun: false, printToken: false, secretsOnly: false, credentialRef: 'cloudflare', ownerSeat: false };
   const takesValue = new Set(['--workspace', '--runner-key', '--server', '--worker-server', '--url', '--model-proxy-url', '--name', '--credential-ref']);
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
@@ -90,6 +94,7 @@ function parseArgs(argv: string[]): Args {
     else if (k === '--dry-run') a.dryRun = true;
     else if (k === '--print-token') a.printToken = true;
     else if (k === '--secrets-only') a.secretsOnly = true;
+    else if (k === '--owner-seat') a.ownerSeat = true;
     else if (k === '-h' || k === '--help') {
       console.log(readUsage());
       process.exit(0);
@@ -98,11 +103,12 @@ function parseArgs(argv: string[]): Args {
   if (!a.workspace) die('--workspace <id|name> is required');
   if (a.rotate && a.remove) die('--rotate and --remove do not go together');
   if (a.secretsOnly && a.remove) die('--secrets-only and --remove do not go together');
+  if (a.ownerSeat && a.remove) die('--owner-seat and --remove do not go together');
   return a;
 }
 
 function readUsage(): string {
-  return 'usage: bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…] [--rotate] [--remove] [--dry-run] [--server <url>] [--worker-server <url>] [--url <worker url>] [--print-token] [--model-proxy-url <url>] [--name <worker name>] [--secrets-only] [--credential-ref <ref>]';
+  return 'usage: bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…] [--rotate] [--remove] [--dry-run] [--server <url>] [--worker-server <url>] [--url <worker url>] [--print-token] [--model-proxy-url <url>] [--name <worker name>] [--secrets-only] [--credential-ref <ref>] [--owner-seat]';
 }
 
 function die(msg: string): never {
@@ -159,6 +165,8 @@ function wranglerEnv(cf: { apiToken: string; accountId: string }): Record<string
   delete env.BUILDD_API_KEY;
   delete env.BUILDD_RUNNER_API_KEY;
   delete env.MODEL_PROXY_KEY;
+  // The owner seat goes to `wrangler secret put` on stdin, not into wrangler's own environment.
+  delete env.CLAUDE_CODE_OAUTH_TOKEN;
   return env;
 }
 
@@ -265,6 +273,39 @@ function serverOps(server: string, key: string, workspaceId: string, names: Depl
   };
 }
 
+/**
+ * The deployer's own Claude token for --owner-seat: CLAUDE_CODE_OAUTH_TOKEN,
+ * else a hidden prompt. Never echoed, never logged.
+ */
+async function readOwnerSeatToken(): Promise<string | undefined> {
+  const fromEnv = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+  if (fromEnv) return fromEnv;
+  if (!process.stdin.isTTY) return undefined;
+  process.stderr.write('Your `claude setup-token` value (input hidden): ');
+  const stdin = process.stdin;
+  stdin.setRawMode(true);
+  stdin.resume();
+  stdin.setEncoding('utf8');
+  return await new Promise<string>((resolve) => {
+    let buf = '';
+    const onData = (chunk: string) => {
+      for (const ch of chunk) {
+        if (ch === '\r' || ch === '\n' || ch === '\u0004') {
+          stdin.setRawMode(false);
+          stdin.pause();
+          stdin.off('data', onData);
+          process.stderr.write('\n');
+          return resolve(buf.trim());
+        }
+        if (ch === '\u0003') { stdin.setRawMode(false); process.exit(130); }
+        if (ch === '\u007f') buf = buf.slice(0, -1);
+        else buf += ch;
+      }
+    };
+    stdin.on('data', onData);
+  });
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -315,6 +356,7 @@ async function main() {
     runnerApiKey: runnerKey,
     providedDispatchToken: process.env.DISPATCH_TOKEN || undefined,
     generatedDispatchToken: randomBytes(32).toString('base64url'),
+    ownerSeat: { requested: args.ownerSeat, token: args.ownerSeat ? await readOwnerSeatToken() : undefined },
     modelProxy: {
       url: args.modelProxyUrl ?? process.env.MODEL_PROXY_URL,
       key: process.env.MODEL_PROXY_KEY,

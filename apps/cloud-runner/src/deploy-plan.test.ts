@@ -354,3 +354,54 @@ describe('planDeploy: model proxy (--model-proxy-url)', () => {
     expect(p.ok && kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER']);
   });
 });
+
+describe('owner seat (--owner-seat)', () => {
+  const TOKEN = 'sk-ant-oat01-owner-seat-secret';
+  const deployed = { workerSecretNames: ['BUILDD_SERVER', 'BUILDD_API_KEY', 'DISPATCH_TOKEN'], workspace: { id: 'ws-1', name: 'demo', webhookConfig: { url: DISPATCH, enabled: true, hasToken: true, events: [...DISPATCH_EVENTS] } } };
+
+  it('is off by default: no secret is put, nothing mentioned', () => {
+    const p = planDeploy(inputs(deployed));
+    expect(p.ok && kinds(p.steps)).not.toContain('put:CLAUDE_CODE_OAUTH_TOKEN');
+  });
+
+  it('puts the token as a Worker secret, and the plan output never shows it', () => {
+    const p = planDeploy(inputs({ ...deployed, ownerSeat: { requested: true, token: TOKEN } }));
+    if (!p.ok) throw new Error(p.error);
+    const put = p.steps.find((s) => s.kind === 'put_secret' && s.name === 'CLAUDE_CODE_OAUTH_TOKEN');
+    expect(put).toMatchObject({ value: TOKEN });
+    const text = describePlan(p).join('\n');
+    expect(text).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(text).not.toContain(TOKEN);
+    expect(text).toMatch(/one owner, one token per Worker/i);
+  });
+
+  it('is the only step that carries the token: no webhook config, no other secret', () => {
+    const p = planDeploy(inputs({ ...deployed, ownerSeat: { requested: true, token: TOKEN } }));
+    if (!p.ok) throw new Error(p.error);
+    const others = p.steps.filter((s) => !(s.kind === 'put_secret' && s.name === 'CLAUDE_CODE_OAUTH_TOKEN'));
+    expect(JSON.stringify(others)).not.toContain(TOKEN);
+  });
+
+  it('requested with no token and none on the Worker is an error that says where to get it', () => {
+    const p = planDeploy(inputs({ ...deployed, ownerSeat: { requested: true } }));
+    expect(p.ok).toBe(false);
+    expect(!p.ok && p.error).toContain('claude setup-token');
+  });
+
+  it('requested with no token keeps the one already on the Worker', () => {
+    const p = planDeploy(inputs({ ...deployed, workerSecretNames: [...deployed.workerSecretNames, 'CLAUDE_CODE_OAUTH_TOKEN'], ownerSeat: { requested: true } }));
+    expect(p.ok && kinds(p.steps)).not.toContain('put:CLAUDE_CODE_OAUTH_TOKEN');
+    expect(p.ok).toBe(true);
+  });
+
+  it('rejects a value that is not a setup-token', () => {
+    for (const token of ['hello world', 'bld_runner_key', 'sk-ant-oat01-with space']) {
+      expect(planDeploy(inputs({ ...deployed, ownerSeat: { requested: true, token } })).ok).toBe(false);
+    }
+  });
+
+  it('a Worker that already has a seat says so, and how to turn it off', () => {
+    const p = planDeploy(inputs({ ...deployed, workerSecretNames: [...deployed.workerSecretNames, 'CLAUDE_CODE_OAUTH_TOKEN'] }));
+    expect(p.ok && p.notes.join(' ')).toContain('wrangler secret delete CLAUDE_CODE_OAUTH_TOKEN');
+  });
+});

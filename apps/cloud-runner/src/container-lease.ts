@@ -24,7 +24,14 @@
  * it. Never after a park (the parked state waits for its own resume), a crash,
  * or anything else. The next task starts with a reset in the container
  * (apps/runner/src/container-reset.ts); a reset that does not verify clean
- * destroys the container and starts a fresh one. It never runs dirty.
+ * destroys the container and starts a fresh one. It never runs dirty. After
+ * the reset the next task grows its clone from the packs the reset kept and
+ * keeps the dependency cache on disk: no snapshot or cache restore.
+ *
+ * What reuse saved is measured, not estimated: a reused run's own prep time
+ * (prepMsOf) against the prep time of the fresh run that started the
+ * container (the workspace's fresh-container baseline). Negative when the
+ * reuse cost time.
  *
  * The workspace a lease is keyed by comes from buildd's runner-size answer
  * (authenticated with the runner key and the dispatch token), never from the
@@ -103,17 +110,23 @@ export interface WarmContainer {
   /** When that run ended (agent clock). */
   since: number;
   /**
-   * What that run spent getting its container ready (container start,
-   * warm restore, cache restore, clone): what the next task does not pay.
-   * An estimate from the previous run's report; null when it measured none.
+   * prepMsOf the fresh run that started this container (carried unchanged
+   * through every reuse): what a fresh container costs this workspace. Null
+   * when that run did not measure it.
    */
-  savedRestoreMs: number | null;
+  baselinePrepMs: number | null;
 }
 
-/** On the run report: this attempt ran in a container another run left warm. */
+/**
+ * On the run report: this attempt ran in a container another run left warm.
+ * `resetMs`: the reset, as the agent timed it. `prepMs`: this run's own
+ * prepMsOf. `savedMs` = baselinePrepMs - prepMs, negative when reuse was
+ * slower than a fresh container; null when either side is unmeasured.
+ * `prepMs` and `savedMs` are filled in when the report is assembled.
+ */
 export type ReusedContainer =
-  | { fromTaskId: string; idleMs: number; savedRestoreMs: number | null }
-  | { fromTaskId: string; idleMs: number; savedRestoreMs: null; fallback: 'reset_failed' };
+  | { fromTaskId: string; idleMs: number; baselinePrepMs: number | null; resetMs?: number | null; prepMs?: number | null; savedMs?: number | null }
+  | { fromTaskId: string; idleMs: number; fallback: 'reset_failed'; resetMs?: number | null };
 
 export type LeaseClaimDecision =
   | { claim: 'warm'; warm: WarmContainer }
@@ -146,12 +159,20 @@ export function keepsContainerWarm(outcome: RunState['outcome'] | undefined): bo
   return outcome === 'done' || outcome === 'failed';
 }
 
-/** See WarmContainer.savedRestoreMs. */
-export function savedRestoreMsOf(report: { durationsMs?: Partial<Record<string, number | null>> } | undefined): number | null {
-  const d = report?.durationsMs;
-  if (!d) return null;
-  const parts = [d.containerStart, d.restoreWarm, d.restoreCache, d.clone].filter((v): v is number => typeof v === 'number' && v >= 0);
-  return parts.length ? parts.reduce((a, b) => a + b, 0) : null;
+/**
+ * What a run spent before its repo was ready: dispatch to claim (container
+ * start, or the reset of a reused one, then the runner's start and claim),
+ * then whichever way the repo got onto the disk (clone; warm restore, its
+ * cache restore and fetch; or the seed from kept packs). The steps never
+ * overlap. Null when dispatch to claim was not measured: without it two
+ * runs are not comparable.
+ */
+export function prepMsOf(durationsMs: Partial<Record<string, number | null>> | undefined): number | null {
+  const d = durationsMs;
+  if (!d || typeof d.containerStart !== 'number' || typeof d.toClaim !== 'number') return null;
+  const parts = [d.containerStart, d.toClaim, d.clone, d.restoreWarm, d.restoreCache, d.fetch, d.restoreReuse]
+    .filter((v): v is number => typeof v === 'number' && v >= 0);
+  return parts.reduce((a, b) => a + b, 0);
 }
 
 /** Sent to a lease agent. `taskId` and `workspaceId` are the router's, from buildd. */

@@ -23,6 +23,40 @@ describe('build job split', () => {
     expect(run).toContain('exit 1');
   });
 
+  test('unit tests are a matrix of shards that does not cancel itself, and `build` needs all of it', () => {
+    const unit = wf.jobs['build-unit-tests'];
+    const shards: number[] = unit.strategy.matrix.shard;
+    expect(shards.length).toBeGreaterThan(1);
+    // A failed shard must not cancel the rest: their failures would go unreported.
+    expect(unit.strategy['fail-fast']).toBe(false);
+    // `needs` on a matrix job waits for every shard, and its result is success
+    // only when all of them succeeded; the aggregator checks exactly that.
+    expect(wf.jobs.build.needs).toContain('build-unit-tests');
+    const run = wf.jobs.build.steps.map((s: any) => s.run ?? '').join('\n');
+    expect(run).toContain('needs.build-unit-tests.result');
+    expect(run).toMatch(/\[ "\$\{r#\*=\}" = "success" \] \|\| failed=1/);
+  });
+
+  test('every shard uploads its .test-report.log, pass or fail', () => {
+    const steps = wf.jobs['build-unit-tests'].steps;
+    const upload = steps.find((s: any) => String(s.uses ?? '').startsWith('actions/upload-artifact'));
+    expect(upload).toBeDefined();
+    expect(upload.if).toBe('always()');
+    expect(upload.with.path).toBe('.test-report.log');
+    expect(upload.with.name).toContain('${{ matrix.shard }}');
+  });
+
+  test('selection runs after install (the graph resolves through node_modules) and feeds the shard', () => {
+    const steps = wf.jobs['build-unit-tests'].steps;
+    const install = steps.findIndex((s: any) => s.run === 'bun install');
+    const detect = steps.findIndex((s: any) => s.name === 'Detect affected tests');
+    expect(install).toBeLessThan(detect);
+    expect(steps[detect].run).toContain('scripts/affected-tests.ts');
+    const tests = steps.find((s: any) => s.name === 'Run tests');
+    expect(tests.run).toContain('--shard "${{ matrix.shard }}/');
+    expect(tests.env.TESTS).toBe('${{ steps.affected.outputs.tests }}');
+  });
+
   test('no part is skippable at job level', () => {
     for (const p of PARTS) expect(wf.jobs[p].if).toBeUndefined();
   });

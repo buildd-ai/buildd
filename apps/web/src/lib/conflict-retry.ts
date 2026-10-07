@@ -9,10 +9,16 @@
  *   - Do NOT create a separate integration task.
  *   - Flip the originating task back to needs-work on the same branch.
  *   - One retry task per (workspaceId, prNumber, headSha) — deduped.
+ *   - One live fix attempt per PR (conflict, CI or review fix): they all push
+ *     to the same branch.
  *
  * Guard:
  *   - Honors maxConflictIterations (default 3). On exhaustion, does NOT dispatch
- *     and returns { exhausted: true } — callers must escalate to human.
+ *     and returns { exhausted: true } — callers must escalate to human. The
+ *     budget bounds attempts at ONE conflict: when the caller names the base
+ *     tip, a conflict basis (head + base) no attempt has seen yet gets one
+ *     more attempt past the cap. The base moving is what makes a new
+ *     conflict, so this stays bounded by real merges, never by retries.
  *   - Controlled by workspace gitConfig.autoResolveMergeConflicts (default ON).
  */
 
@@ -185,6 +191,13 @@ export interface ConflictRetryInput {
    * merits — reusing the same dedup/cap/dispatch machinery.
    */
   semanticConflict?: SemanticAssessment;
+  /** The conflict basis (`conflictBasisKey`) this attempt repairs, stamped on its context. */
+  conflictBasis?: string | null;
+}
+
+/** The conflict an attempt repairs: the PR head and the base tip it conflicts with. */
+export function conflictBasisKey(headSha: string, baseSha: string): string {
+  return `${headSha}:${baseSha}`;
 }
 
 export interface ConflictRetryTask {
@@ -207,7 +220,7 @@ export interface ConflictRetryTask {
  * Returns null when retries are exhausted or disabled (maxConflictIterations === 0).
  */
 export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?: string | null }): ConflictRetryTask | null {
-  const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision, semanticConflict, prRefs } = params;
+  const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision, semanticConflict, prRefs, conflictBasis } = params;
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 0;
@@ -285,6 +298,7 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
         : {}),
       conflictIteration: nextIteration,
       maxConflictIterations: maxIterations,
+      ...(conflictBasis ? { conflictBasis } : {}),
       prNumber: worker.prNumber,
       ...lineageStamp(originalTask, [worker.prNumber]),
       // Cross-repo override: when the PR is in a different repo than the task's workspace,
@@ -483,6 +497,12 @@ export interface DispatchConflictRetryParams {
    * top of the attempts already spent.
    */
   humanInitiated?: boolean;
+  /**
+   * The base branch tip the conflict is against, when the caller read it. Keys
+   * the attempt to its conflict basis (head + base) so a spent budget from an
+   * earlier conflict does not strand this one. Omitted, the cap is absolute.
+   */
+  baseSha?: string | null;
 }
 
 export interface DispatchConflictRetryResult {
@@ -555,24 +575,34 @@ export async function dispatchConflictRetry(
     return { dispatched: false, disabled: true };
   }
 
-  // One live conflict retry per PR, whatever the head. The unique index keys on
+  // One live fix attempt per PR, whatever the head. The unique index keys on
   // (PR, head SHA), but the retry itself pushes to the PR — a new head, so a
   // new key — and a merge attempt against that head used to file a second
-  // retry onto the branch the first was still working. Checked before the
-  // behind-only update too: moving the branch under a working agent races its
-  // push.
+  // retry onto the branch the first was still working. A live CI or review
+  // fix pushes to the same branch, so it counts too (its agent merges the base
+  // as part of its own push). Checked before the behind-only update too:
+  // moving the branch under a working agent races its push.
   const liveRetry = await db.query.tasks.findFirst({
     where: and(
       eq(tasks.workspaceId, workspaceId),
-      eq(tasks.conflictRetryPrNumber, prNumber),
+      or(
+        eq(tasks.conflictRetryPrNumber, prNumber),
+        eq(tasks.ciRetryPrNumber, prNumber),
+        eq(tasks.reviewerRetryPrNumber, prNumber),
+      ),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
     ),
-    columns: { id: true, conflictRetryHeadSha: true },
+    columns: { id: true, status: true, conflictRetryPrNumber: true },
   });
   if (liveRetry) {
     console.log(
-      `[conflict-retry] PR #${prNumber} already has live conflict retry ${liveRetry.id} — not filing another`,
+      `[conflict-retry] PR #${prNumber} already has live fix attempt ${liveRetry.id} — not filing another`,
     );
+    // A conflict repair that is still waiting to start is woken, not doubled:
+    // a lost wake must not leave the one repair sitting in the queue.
+    if (liveRetry.status === 'pending' && liveRetry.conflictRetryPrNumber === prNumber) {
+      await wakeTask(liveRetry.id, 'conflict.retry');
+    }
     return { dispatched: false, inFlightTaskId: liveRetry.id };
   }
 
@@ -757,7 +787,8 @@ export async function dispatchConflictRetry(
       .catch(() => null);
   }
 
-  const retryTask = buildConflictRetryTask({
+  const basis = params.baseSha ? conflictBasisKey(headSha, params.baseSha) : null;
+  const buildRetry = (maxConflictIterations?: number) => buildConflictRetryTask({
     originalTask: {
       id: task.id,
       title: task.title,
@@ -774,15 +805,33 @@ export async function dispatchConflictRetry(
     migrationCollision,
     prRefs,
     semanticConflict,
-    ...(params.humanInitiated
-      ? {
-          maxConflictIterations:
-            (typeof (task.context as Record<string, unknown> | null)?.conflictIteration === 'number'
-              ? ((task.context as Record<string, unknown>).conflictIteration as number)
-              : 0) + policyValue('maxConflictIterations'),
-        }
-      : {}),
+    conflictBasis: basis,
+    ...(maxConflictIterations !== undefined ? { maxConflictIterations } : {}),
   });
+  const spentIterations =
+    typeof (task.context as Record<string, unknown> | null)?.conflictIteration === 'number'
+      ? ((task.context as Record<string, unknown>).conflictIteration as number)
+      : 0;
+
+  let retryTask = buildRetry(params.humanInitiated ? spentIterations + policyValue('maxConflictIterations') : undefined);
+
+  // The cap counts attempts at earlier conflicts too. A basis no attempt has
+  // seen (the base moved, or the head did) is a new conflict and gets one
+  // attempt; the same basis twice is a person's.
+  if (!retryTask && basis && !params.humanInitiated && policyValue('maxConflictIterations') > 0) {
+    const attempted = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.workspaceId, workspaceId),
+        eq(tasks.conflictRetryPrNumber, prNumber),
+        sql`${tasks.context}->>'conflictBasis' = ${basis}`,
+      ),
+      columns: { id: true, subjectHeadSha: true },
+    });
+    if (!attempted) {
+      console.log(`[conflict-retry] PR #${prNumber} budget spent on earlier conflicts; new basis ${basis.slice(0, 7)} gets one attempt`);
+      retryTask = buildRetry(spentIterations + 1);
+    }
+  }
 
   if (!retryTask) {
     console.log(`[conflict-retry] iteration cap reached for PR #${prNumber} — escalate to human`);
