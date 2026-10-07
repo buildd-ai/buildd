@@ -51,12 +51,14 @@ import {
   type ScoutBudget,
   type ScoutCost,
   type ScoutFinding,
+  type ScoutHostExpiryReason,
   type ScoutMode,
   type ScoutProbeFamily,
   type ScoutProbeRecord,
   type ScoutProbeSelection,
   type ScoutReproducibility,
   type ScoutRun,
+  type ScoutRunParking,
   type ScoutRunMetrics,
   type ScoutRunTotals,
   type ScoutRunTrigger,
@@ -286,6 +288,44 @@ function notExecutedResult(run: ScoutRun, probe: ScoutProbeRecord, now: Date): V
     recurrenceKey: checkId,
     provenance: { flavor: SCOUT_FLAVOR, origin: `run:${run.id}`, executor: 'none', ranAt: now.toISOString() },
   };
+}
+
+/**
+ * A runner-assigned probe no runner reported for. `unsupported`, never `pass`:
+ * nothing exercised it, and no host that could is reachable.
+ */
+export function hostExpiredResult(run: ScoutRun, probe: ScoutProbeRecord, reason: ScoutHostExpiryReason, now: Date): VerificationResult {
+  return { ...notExecutedResult(run, probe, now), verdict: 'unsupported', reason };
+}
+
+/**
+ * Has a parked run waited long enough? Past its host deadline, or its lease
+ * lapsed a second time (the claim route re-queues after the first lapse).
+ * `runner_host_lost` when a runner ever held it, else `no_runner_claimed`.
+ */
+export function scoutParkingExpiry(parking: ScoutRunParking, now: Date): ScoutHostExpiryReason | null {
+  const t = now.getTime();
+  const leaseLapsedNow = !!parking.lease && Date.parse(parking.lease.expiresAt) <= t;
+  const lapses = parking.leaseLapses + (leaseLapsedNow ? 1 : 0);
+  const expired = Date.parse(parking.hostDeadline) <= t || lapses >= 2;
+  if (!expired) return null;
+  return parking.lease || parking.leaseLapses > 0 ? 'runner_host_lost' : 'no_runner_claimed';
+}
+
+/** Finalize every runner probe that has no result yet as `unsupported` with `reason`. Server results are kept. */
+export function expireRunnerProbes(
+  run: ScoutRun,
+  probes: readonly ScoutProbeRecord[],
+  reason: ScoutHostExpiryReason,
+  now: Date,
+): { probes: ScoutProbeRecord[]; expired: number } {
+  let expired = 0;
+  const out = probes.map(p => {
+    if (p.selection.status !== 'selected' || p.host !== 'runner' || p.result) return p;
+    expired++;
+    return Object.freeze({ ...p, result: hostExpiredResult(run, p, reason, now) });
+  });
+  return { probes: out, expired };
 }
 
 /** Every selected probe ends with a result: one that never ran is `inconclusive`/`not_executed`. */
@@ -641,9 +681,74 @@ export function scoutRunRow(run: ScoutRun, totals?: ScoutRunTotals, metrics?: Sc
     costUsd: totals?.costUsd == null ? null : totals.costUsd.toFixed(4),
     metrics: metrics ?? null,
     error: run.error,
+    hostState: run.parking
+      ? { parkedAt: run.parking.parkedAt, runnerMaxDurationMs: run.parking.runnerMaxDurationMs, profile: run.parking.profile, plan: run.parking.plan }
+      : null,
+    hostDeadline: run.parking ? new Date(run.parking.hostDeadline) : null,
+    hostLeaseHolder: run.parking?.lease?.holder ?? null,
+    hostLeaseExpiresAt: run.parking?.lease ? new Date(run.parking.lease.expiresAt) : null,
+    hostLeaseLapses: run.parking?.leaseLapses ?? 0,
     startedAt: new Date(run.startedAt),
     completedAt: run.completedAt ? new Date(run.completedAt) : null,
   };
+}
+
+type RunRow = typeof qualityScoutRuns.$inferSelect;
+type ProbeRow = typeof qualityScoutProbes.$inferSelect;
+
+/** The inverse of `scoutRunRow`, for a run finalized after it parked. */
+export function scoutRunFromRow(row: RunRow): ScoutRun {
+  const hs = row.hostState;
+  return {
+    id: row.id,
+    workspaceId: row.workspaceId,
+    missionId: row.missionId,
+    trigger: row.trigger,
+    mode: row.mode,
+    status: row.status,
+    candidate: { ref: row.candidateRef, sha: row.candidateSha },
+    prior: row.priorRunId && row.priorSha ? { runId: row.priorRunId, sha: row.priorSha } : null,
+    budget: row.budget,
+    policyVersion: row.policyVersion,
+    startedAt: row.startedAt.toISOString(),
+    completedAt: iso(row.completedAt),
+    error: row.error,
+    parking: hs && row.hostDeadline
+      ? {
+          parkedAt: hs.parkedAt,
+          hostDeadline: row.hostDeadline.toISOString(),
+          runnerMaxDurationMs: hs.runnerMaxDurationMs,
+          profile: hs.profile,
+          plan: hs.plan,
+          lease: row.hostLeaseHolder && row.hostLeaseExpiresAt
+            ? { holder: row.hostLeaseHolder, expiresAt: row.hostLeaseExpiresAt.toISOString() }
+            : null,
+          leaseLapses: row.hostLeaseLapses ?? 0,
+        }
+      : null,
+  };
+}
+
+/** The inverse of `scoutProbeRow`. */
+export function scoutProbeFromRow(row: ProbeRow): ScoutProbeRecord {
+  return Object.freeze({
+    candidateId: row.candidateId,
+    family: row.family,
+    probeKind: row.probeKind,
+    title: row.title,
+    invariant: row.invariant,
+    sourceSignals: row.sourceSignals,
+    preconditions: row.preconditions,
+    executor: row.executor,
+    estimatedCost: row.estimatedCost,
+    risk: row.risk,
+    mutates: row.mutates,
+    evidenceRequirements: row.evidenceRequirements,
+    unsupportedReason: row.unsupportedReason,
+    selection: row.selection,
+    ...(row.host ? { host: row.host } : {}),
+    result: row.result ?? null,
+  });
 }
 
 export function scoutProbeRow(run: ScoutRun, p: ScoutProbeRecord) {
@@ -664,6 +769,7 @@ export function scoutProbeRow(run: ScoutRun, p: ScoutProbeRecord) {
     evidenceRequirements: p.evidenceRequirements,
     unsupportedReason: p.unsupportedReason,
     selection: p.selection,
+    host: p.host ?? null,
     verdict: p.result?.verdict ?? null,
     signature: p.result?.signature ?? null,
     result: p.result,
@@ -685,6 +791,7 @@ export async function saveScoutProbes(run: ScoutRun, probes: readonly ScoutProbe
       target: [qualityScoutProbes.runId, qualityScoutProbes.candidateId],
       set: {
         selection: sql`excluded.selection`,
+        host: sql`excluded.host`,
         verdict: sql`excluded.verdict`,
         signature: sql`excluded.signature`,
         result: sql`excluded.result`,

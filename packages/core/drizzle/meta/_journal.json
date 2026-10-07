@@ -1737,6 +1737,13 @@
       "when": 1791341220676,
       "tag": "0256_shocking_exodus",
       "breakpoints": true
+    },
+    {
+      "idx": 257,
+      "version": "7",
+      "when": 1791342291071,
+      "tag": "0257_secret_lilandra",
+      "breakpoints": true
     }
   ]
 }
