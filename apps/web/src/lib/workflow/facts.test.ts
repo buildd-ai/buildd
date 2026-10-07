@@ -193,7 +193,7 @@ describe('ingestFact', () => {
 
   test('composition_attested resolves constituents from the ledger and cites the fact', async () => {
     const { exec } = router({
-      constituent_evidence: () => ({ rows: [{ round_id: 'rx', head_sha: 'C1', status: 'decided', effective_verdict: 'approve', approved_heads: ['C1'] }] }),
+      constituent_evidence: () => ({ rows: [{ round_id: 'rx', head_sha: 'C1', status: 'decided', effective_verdict: 'approve', approved_heads: ['C1'], delivery_id: 'dx', pr_number: 3, repo_full_name: 'acme/widgets' }] }),
       insert_fact: () => ({ rows: [{ id: 'f5' }] }),
       load_view: () => ({ rows: [{ delivery: delivery({ state: 'AWAITING_REVIEW' }), rounds: [], attempts: [] }] }),
       find_transition: () => ({ rows: [] }),
@@ -203,7 +203,7 @@ describe('ingestFact', () => {
       kind: 'composition_attested', workspaceId: 'w1', source: 'kernel',
       attestation: {
         repoFullName: 'acme/widgets', prNumber: 7, baseSha: 'B0', aggregateHeadSha: 'H1', method: 'patch_set_equal', verifiedAt: 'now', verifier: 'kernel',
-        constituents: [{ deliveryId: 'dx', roundId: 'rx', prNumber: 3, reviewedHeadSha: 'C1', equivalentHeadShas: [], landedSha: 'C1' }],
+        constituents: [{ deliveryId: 'dx', roundId: 'rx', prNumber: 3, reviewedHeadSha: 'C1', equivalentHeadShas: [], mergedHeadSha: 'C1', landedSha: 'SQ1', landedPatchId: 'a'.repeat(64), reviewedPatchId: 'a'.repeat(64) }],
         novelDelta: { result: 'none' },
       },
     }, { exec });

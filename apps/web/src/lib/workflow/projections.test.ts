@@ -83,6 +83,15 @@ describe('release composition', () => {
     expect(v.needsYou).toBe(false);
   });
 
+  test('S33: a composition approved through its delta round says the review covered only the delta', () => {
+    const delta = R({ id: 'r2', round: 2, kind: 'delta', status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', scope: { composition: true, novelDeltaPaths: ['a.sql', 'b.ts'] } });
+    const v = view({ view: V(D({ state: 'APPROVED', currentRound: 2, approvalBasis: 'composition', compositionHeads: ['H1abcdef'] }), [R({ status: 'superseded' }), delta]) });
+    expect(v.compositionVerified).toBe(true);
+    expect(v.headline).toBe('Release-only changes approved');
+    expect(v.headline).not.toBe('Approved');
+    expect(v.detail).toBe('every other change was reviewed at its own head; this review covered only 2 new paths');
+  });
+
   test('a composition head that is no longer current claims nothing', () => {
     const v = view({ view: V(D({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['OLD'] })) });
     expect(v.compositionVerified).toBe(false);

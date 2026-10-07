@@ -106,6 +106,26 @@ describe('renderDeliveryActivity (S26)', () => {
     expect(body).toContain('Release composition verified');
   });
 
+  test('S33: a composition delta approve reads as covering only the delta, never plain "Approved"', () => {
+    const deltaRounds: RoundSnapshot[] = [
+      { id: 'r1', round: 1, headSha: 'H2', kind: 'full', status: 'superseded', verdict: null, effectiveVerdict: null, failureCount: 0 },
+      { id: 'r2', round: 2, headSha: 'H2', kind: 'delta', status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', failureCount: 0, scope: { composition: true, novelDeltaPaths: ['packages/core/x.ts'] } },
+    ];
+    const ts = [
+      T('PrBound', null, 'AWAITING_REVIEW', { live: live('H2') }, 0),
+      T('CompositionAttested', 'AWAITING_REVIEW', 'AWAITING_REVIEW', { novelDelta: { result: 'present', paths: ['packages/core/x.ts'] } }, 1),
+      T('ReviewVerdictRecorded', 'AWAITING_REVIEW', 'APPROVED', { roundId: 'r2', verdict: 'approve', effectiveVerdict: 'approve', compositionDelta: { roundId: 'r2', paths: ['packages/core/x.ts'] } }, 2),
+    ];
+    expect(transitionsToActivityEntries(ts, deltaRounds, []).map((e) => e.kind)).toContain('composition_delta_approved');
+    expect(transitionsToActivityEntries(ts, deltaRounds, []).map((e) => e.kind)).not.toContain('review_approved');
+    const body = renderDeliveryActivity({
+      view: { delivery: D({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H2'] }), rounds: deltaRounds, attempts: [] }, transitions: ts,
+    });
+    expect(header(body)).toContain('Release-only changes approved');
+    expect(header(body)).not.toMatch(/✓ Approved\b/);
+    expect(body).toContain('Release-only changes approved');
+  });
+
   test('diverted notes: kinds a transition owns are dropped, the rest are kept', () => {
     const body = renderDeliveryActivity({
       view: view({ state: 'APPROVED', approvedHeads: ['H2'], approvalBasis: 'verdict' }), transitions: log,
