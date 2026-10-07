@@ -245,7 +245,7 @@ export interface PeriodicScoutDeps {
   autoRunState(runId: string): Promise<{ status: string; startedAt: Date } | null>;
 }
 
-const dbPeriodicScoutDeps: PeriodicScoutDeps = {
+export const dbPeriodicScoutDeps: PeriodicScoutDeps = {
   listConfigured: () =>
     db.select({ id: workspaces.id, gitConfig: workspaces.gitConfig }).from(workspaces)
       .where(isNotNull(sql`${workspaces.gitConfig} -> 'qualityScout' -> 'triggers' -> 'periodicHours'`)),

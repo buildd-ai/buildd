@@ -28,7 +28,8 @@ import {
 import type { ScoutProbeRecord, ScoutRun } from '@buildd/core/quality-scout/types';
 import type { VerificationExecutor } from '@buildd/core/verification-check';
 import { dbScoutActionStore } from '@/lib/quality-scout-actions';
-import { dbScoutRunLedger, runPeriodicQualityScouts } from '@/lib/quality-scout-trigger';
+import { scoutRunId } from '@/lib/quality-scout-run';
+import { dbPeriodicScoutDeps, dbScoutRunLedger, runPeriodicQualityScouts, type PeriodicScoutDeps } from '@/lib/quality-scout-trigger';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
 
 const SHA = 'a'.repeat(40);
@@ -375,6 +376,19 @@ describe('periodic sweep', () => {
     return workspaceId;
   }
 
+  // The listing, the last-run read and the run-row lookup are the real SQL;
+  // only the repo and its head (GitHub) are stood in for.
+  const HEAD = 'c'.repeat(40);
+  const deps: PeriodicScoutDeps = {
+    ...dbPeriodicScoutDeps,
+    loadWorkspace: async (id) => ({
+      id, teamId: id, gitConfig: null, configStatus: 'admin_confirmed', releaseConfig: null,
+      githubRepo: { fullName: 'example/repo', defaultBranch: 'main', installation: { installationId: 1 } },
+    }),
+    headSha: async () => HEAD,
+  };
+  const sweep = (now: Date) => runPeriodicQualityScouts(now, { maxWorkspaces: 100_000, schedule: () => {}, deps, env: {} });
+
   test('schedules only opted-in workspaces that are due, judged by each workspace\'s own last run', async () => {
     const now = new Date();
     const periodic = { mode: 'shadow', triggers: { periodicHours: 6 } };
@@ -391,12 +405,27 @@ describe('periodic sweep', () => {
     // Recent runs elsewhere must not make ranLongAgo look fresh.
     await saveScoutRun(scoutRun(noPeriodic, { startedAt: now.toISOString() }));
 
-    const scheduledTasks: Array<() => Promise<unknown>> = [];
-    const out = await runPeriodicQualityScouts(now, { maxWorkspaces: 100_000, schedule: t => { scheduledTasks.push(t); } });
+    const listed = new Set((await dbPeriodicScoutDeps.listConfigured()).map(r => r.id));
+    expect([neverRan, ranLongAgo, ranRecently, modeOff, badHours].every(id => listed.has(id))).toBe(true);
+    expect(listed.has(noPeriodic) || listed.has(noConfig)).toBe(false);
+
+    const out = await sweep(now);
     const mine = new Set([neverRan, ranLongAgo, ranRecently, modeOff, noPeriodic, noConfig, badHours]);
-    const scheduled = out.scheduled.filter(id => mine.has(id)).sort();
-    expect(scheduled).toEqual([neverRan, ranLongAgo].sort());
+    expect(out.scheduled.filter(id => mine.has(id)).sort()).toEqual([neverRan, ranLongAgo].sort());
     expect(out.errors).toBe(0);
-    expect(scheduledTasks.length).toBe(out.scheduled.length);
+  });
+
+  test('a head that already has its automatic run is passed over; a failed one is owed again', async () => {
+    const now = new Date();
+    const periodic = { mode: 'shadow', triggers: { periodicHours: 6 } };
+    const exercised = await workspaceWith(periodic);
+    const failedHead = await workspaceWith(periodic);
+    const old = new Date(now.getTime() - 7 * HOUR).toISOString();
+    await saveScoutRun(scoutRun(exercised, { id: scoutRunId(exercised, 'periodic', HEAD), trigger: 'periodic', status: 'completed', startedAt: old, candidate: { ref: 'main', sha: HEAD } }));
+    await saveScoutRun(scoutRun(failedHead, { id: scoutRunId(failedHead, 'periodic', HEAD), trigger: 'periodic', status: 'failed', startedAt: old, candidate: { ref: 'main', sha: HEAD } }));
+
+    const out = await sweep(now);
+    expect(out.scheduled).toContain(failedHead);
+    expect(out.scheduled).not.toContain(exercised);
   });
 });
