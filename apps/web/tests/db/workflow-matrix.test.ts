@@ -564,6 +564,11 @@ describe('S9–S15', () => {
     expect(reviewersCreated).toEqual([]);
     expect((await effects(o.deliveryId, 'push_recovery')).length).toBe(1);
     expect((await taskRow(o.ownerTaskId)).status).not.toBe('completed');
+    // The reaped work reaches GitHub after all (recovered by hand): the local head was never
+    // reported, so §9's proof is "moved off H1 and the PR's content changed" (H2 descends from H1).
+    await push(o, 'H2', { ancestors: ['H1'] });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 1 });
+    expect(reviewersCreated.map((r) => r.head)).toEqual(['H2']);
   });
 
   test('S9: a reaped CI fix that pushed nothing re-dispatches the next ledger row; the attempt is never delivered', async () => {
@@ -1228,6 +1233,50 @@ describe('S29 — reviewer ends with prose or no verdict', () => {
     expect(late).toMatchObject({ handled: true, toState: null });
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', approvedHeads: [] });
     expect(posted).toEqual([]);
+  });
+});
+
+describe('AWAITING_PUSH — an owner delivery leaves on a push (§6.4, §9)', () => {
+  const prUrlOf = (o: Delivery) => `https://github.com/${REPO}/pull/${o.prNumber}`;
+  /** The owner's hand-off failed with local commit L5: AWAITING_PUSH at H1. */
+  async function ownerAwaitingPush(local: string | null = 'L5', status: 'unproven' | 'lost' = 'unproven') {
+    const o = await open();
+    const w = await seedWorker(o.ownerTaskId, { status: 'failed', lastCommitSha: local, prNumber: o.prNumber, commitCount: 2 });
+    await q(sql`UPDATE workers SET pr_url = ${prUrlOf(o)} WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
+    await seam.attemptEnded({ task: ownerTask(o), workerId: w, status, localHeadSha: local, commitCount: 2, source: status === 'lost' ? 'sweep:stale-workers' : 'runner' }, deps);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H1', currentRound: 0 });
+    return o;
+  }
+
+  test('the pushed head (webhook synchronize: the fact funnel plus the kernel hint) proves L5 → AWAITING_REVIEW, round 1 at the new head, review dispatched', async () => {
+    const o = await ownerAwaitingPush();
+    gh.head = 'L5'; gh.ancestors.L5 = ['H1'];
+    // What the synchronize webhook does: the open-state fact to the funnel, the head hint to the kernel.
+    await recordPrFact({ prUrl: prUrlOf(o), prNumber: o.prNumber }, { kind: 'open' });
+    expect(await push(o, 'L5', { ancestors: ['H1'] })).toBe(true);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
+    expect((await rounds(o.deliveryId)).map((r) => [r.round, r.head_sha, r.status])).toEqual([[1, 'L5', 'queued']]);
+    expect(reviewersCreated.map((r) => r.head)).toEqual(['L5']);
+  });
+
+  test('a head that does not contain L5 is recorded, the delivery stays, and the next push_recovery is scheduled; the real push then proves it', async () => {
+    const o = await ownerAwaitingPush();
+    const recoveryBefore = (await effects(o.deliveryId, 'push_recovery')).length;
+    await push(o, 'H7', { ancestors: ['H1'] }); // someone else's push: L5 is not in it
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H7', currentRound: 0 });
+    expect(await rounds(o.deliveryId)).toEqual([]);
+    expect((await effects(o.deliveryId, 'push_recovery')).length).toBe(recoveryBefore + 1);
+    await push(o, 'L5', { ancestors: ['H7', 'H1'] });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
+  });
+
+  test('a push the webhook never delivered is found by push_recovery\'s own re-read and proves the same way', async () => {
+    const o = await ownerAwaitingPush();
+    gh.head = 'L5'; gh.ancestors.L5 = ['H1'];
+    await makeDue(o.deliveryId);
+    await drain(o.deliveryId);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
+    expect(reviewersCreated.map((r) => r.head)).toEqual(['L5']);
   });
 });
 

@@ -1168,12 +1168,7 @@ Deviations:
    server cannot. `packages/core/no-prod-data-prose.ts` is the same count/UUID rule
    in TypeScript. A parity test runs both on one fixture set and fails on any
    disagreement. The identifier half needs CI's secret and stays CI-only.
-2. **An owner in `AWAITING_PUSH` does not leave on a push alone.** Owner attempts
-   have no ledger row, so the local head is only on the transition's evidence, not
-   in `reported_shas`. The `AWAITING_PUSH` proof then has no `L` to check
-   containment against. `push_recovery` and T22 still bound the owner case. This
-   gap predates S30 (S9 has it too) and belongs to the `push_recovery` work.
-3. **Preflight evidence is not stored on the delivery.** Tier 1 refusals and tier 2
+2. **Preflight evidence is not stored on the delivery.** Tier 1 refusals and tier 2
    denials appear in the refusal and the runner milestone. Only tier 3's
    `preflightMiss` is a kernel record.
 
@@ -1216,6 +1211,14 @@ Shipped live: the fact-ingestion funnel and terminal-wins for the PR fact cache.
   the regression).
 - **No render-time writes**: Home, the task page and the mission page enqueue their
   read-through import with `after()` and render what is stored.
+- **An owner in `AWAITING_PUSH` leaves on a push** (§6.4, §9). An owner attempt has
+  no ledger row, so its `L` is read from the evidence of the transition that entered
+  `AWAITING_PUSH` (`pushPendingLocalHead` on the loaded view; no new column). A head
+  that contains `L` and differs from `Hb` goes to `AWAITING_REVIEW` with a new round
+  and `dispatch_review`, whether it arrives by `synchronize` or by `push_recovery`'s
+  own re-read; a head that does not is recorded, the delivery stays, and recovery is
+  re-armed from that head. With `L` unknown (a reaped owner, S9), the proof is "moved
+  off `Hb` and the new head descends from it", read through the compare API.
 
 Deviations, each deliberate:
 
@@ -1239,6 +1242,10 @@ Deviations, each deliberate:
 6. **Bookkeeping clocks** (`prLastCheckedAt`, `prLastVerifiedAt`,
    `prCheckFailureCount`) are written beside the fact by the importers, unguarded:
    they record that a check ran, not what the PR is.
+7. **"The PR's content changed" is approximated by ancestry.** With `L` unknown, a
+   new head that descends from `Hb` counts as changed content; an empty commit would
+   pass. `push_recovery` re-armed per non-proving head is bounded by the pushes that
+   arrive, and each chain still ends in T22.
 
 ---
 
