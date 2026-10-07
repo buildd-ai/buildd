@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { branchCarriesTaskId, ownershipApplies, verifyPrOwnership, type PrOwnershipInput } from './pr-ownership';
+import { branchCarriesTaskId, needsHeadHolders, ownershipApplies, verifyPrOwnership, type PrOwnershipInput } from './pr-ownership';
 
 // ── fixtures (illustrative) ───────────────────────────────────────────────────
 
@@ -87,6 +87,56 @@ describe('verifyPrOwnership — shapes a task owns', () => {
 });
 
 // ── refused shapes ────────────────────────────────────────────────────────────
+
+describe('verifyPrOwnership — worker assigned the mission branch', () => {
+  const assigned = (o: Partial<PrOwnershipInput> = {}) => input({
+    head: 'task/no-id-in-name',
+    workerBranch: 'mission/integration',
+    task: { context: { baseBranch: 'mission/integration' } },
+    ...o,
+  });
+
+  it('owns a task branch cut from the assigned integration branch', async () => {
+    expect(await verify(assigned())).toEqual({ owned: true, basis: 'cut_from_assigned_base' });
+  });
+
+  it('owns its own task-id branch via lineage first', async () => {
+    expect(await verify(assigned({ head: 'buildd/aaaa1111-cut' }))).toEqual({ owned: true, basis: 'task_lineage' });
+  });
+
+  it('refuses another task’s branch', async () => {
+    const v = await verify(assigned({ head: 'buildd/dddd4444-someone-else' }));
+    expect(v).toMatchObject({ owned: false, reasonCode: 'head_not_owned' });
+  });
+
+  it('refuses a head another live worker holds', async () => {
+    const v = await verify(assigned({ otherHeadHolders: [{ workerId: 'w2', taskId: DEP_ID, status: 'running', hasPr: false }] }));
+    expect(v).toMatchObject({ owned: false, reasonCode: 'head_claimed' });
+  });
+
+  it('refuses a head another task already opened a PR from', async () => {
+    const v = await verify(assigned({ otherHeadHolders: [{ workerId: 'w2', taskId: DEP_ID, status: 'completed', hasPr: true }] }));
+    expect(v).toMatchObject({ owned: false, reasonCode: 'head_claimed' });
+  });
+
+  it('still refuses a protected head', async () => {
+    expect(await verify(assigned({ head: 'dev' }))).toMatchObject({ owned: false, reasonCode: 'protected_head' });
+  });
+
+  it('does not apply when the worker branch is not the task base', async () => {
+    const v = await verify(input({ head: 'task/no-id-in-name', workerBranch: 'buildd/aaaa1111-x', task: { context: { baseBranch: 'mission/integration' } } }));
+    expect(v.owned).toBe(false);
+  });
+});
+
+describe('needsHeadHolders', () => {
+  it('interactive sessions and workers assigned their task base', () => {
+    expect(needsHeadHolders(true, 'x', null)).toBe(true);
+    expect(needsHeadHolders(false, 'mission/m', { id: TASK_ID, context: { baseBranch: 'mission/m' } })).toBe(true);
+    expect(needsHeadHolders(false, 'buildd/aaaa1111-x', { id: TASK_ID, context: { baseBranch: 'mission/m' } })).toBe(false);
+    expect(needsHeadHolders(false, null, { id: TASK_ID, context: {} })).toBe(false);
+  });
+});
 
 describe('verifyPrOwnership — refused', () => {
   it('another, unrelated task’s branch', async () => {
