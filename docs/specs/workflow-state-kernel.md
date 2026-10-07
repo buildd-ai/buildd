@@ -1279,6 +1279,22 @@ not own keeps the legacy conflict retry unchanged:
   `DispatchConflictRetryResult` the doors already understand (a landed mechanical
   refresh reads as `branchUpdated`, an agent attempt as `dispatched` with its task, a
   spent budget as `exhausted`).
+- **The dead-zone sweep asks first** (`dead-zone-sweep.ts`, final-audit fix b6a62a4e).
+  A kernel owner task is normally `completed` while its delivery is live, so a kernel
+  PR qualifies as a dead-zone candidate. Before the legacy retry count, the sweep
+  asks `kernelDeliveryForPr`. A dirty kernel PR goes through `dispatchConflictRetry`,
+  which is T12. A red one is left to the kernel CI family (T10) and nothing is filed.
+  An authority read error files nothing for that PR. Only a legacy PR reaches the
+  direct insert and `releaseSpentConflictRetryKey`. Until this fix the sweep inserted
+  the conflict task directly for kernel PRs too: no `delivery_id`, no ledger row, no
+  budget, and the task's push read as foreign.
+- **`merge_pr` does not refresh a kernel PR** (`app/api/github/pr/route.ts`,
+  final-audit fix b6a62a4e). When the door's legacy safety check refuses a merge as
+  behind base (landing mode `shadow` or `off`), a kernel-owned PR gets a 409 with
+  `kernelOwned: true`, and `refreshBehindPr` / `updateBehindPrBranch` never run. The
+  refresh belongs to the kernel's `refresh_branch` effect, reached through T12
+  `behind` (the auto-merge door) or T16 (the kernel's own merge call refused as
+  behind). A legacy PR keeps the in-door refresh.
 - **Mechanical first (§6.7), in `conflict-retry-effects.ts`** (composed into
   `workflowEffectHandlers()`). `refresh_branch` runs `refreshBehindPr` pinned to the
   bound head (GitHub update-branch with `expected_head_sha`, so the semantic check, the
@@ -2297,12 +2313,12 @@ is a site to tick off in the Phase 2 PR that moves it.
 - [ ] `lib/pr-review-request.ts` `findReviewTaskForPr` / owner lookup / `insertPrOwnerWorker`
 - [ ] `lib/supersession-store.ts:275,290` and rules in `lib/supersession.ts`
 - [ ] `lib/ci-failure-retry.ts` (`:180,487,612,636`), `app/api/prs/[prNumber]/retry-ci/route.ts`
-- [x] `lib/conflict-retry.ts` (`:241,422,812,893,974`), `lib/migration-collision-retry.ts`, `lib/dead-zone-sweep.ts` retry insert (kernel-owned PRs, §13.4)
+- [x] `lib/conflict-retry.ts` (`:241,422,812,893,974`), `lib/migration-collision-retry.ts`, `lib/dead-zone-sweep.ts` retry insert (kernel-owned PRs, §13.4; the sweep asks `kernelDeliveryForPr` and routes a kernel PR through `dispatchConflictRetry`, final-audit fix b6a62a4e; it was ticked before the sweep was migrated)
 - [x] `lib/auto-merge.ts` `:777` merge door (Slice C: an adapter calling `LandingRequested` for a kernel-owned PR)
 - [ ] `lib/auto-merge.ts` `:991,1055,1071,1141,1158` escalation stamps
 - [x] `lib/pr-landing.ts` `landPr` merge call (Slice C: T15/T16; its rails, marker, handoff and sweep are unchanged)
 - [ ] `lib/pr-landing-marker.ts`, `pr-landing-handoff.ts`, `pr-landing-sweep*.ts` decision data → delivery
-- [x] `app/api/prs/[prNumber]/merge/route.ts:566,257`; `app/api/github/pr/route.ts:1956,1722,1978,2016` (Slice C, kernel-owned PRs)
+- [x] `app/api/prs/[prNumber]/merge/route.ts:566,257`; `app/api/github/pr/route.ts:1956,1722,1978,2016` (Slice C, kernel-owned PRs); `app/api/github/pr/route.ts` behind-base refresh skipped for a kernel-owned PR (§13.4, final-audit fix b6a62a4e)
 - [x] `lib/stale-workers.ts:251` auto-complete; `app/api/tasks/cleanup/route.ts:266` assigned-task complete (Slice A part 2: a kernel attempt is never promoted from local commits; `AttemptEnded(lost)`)
 - [x] `lib/pr-supersession.ts:236,285`, `lib/pr-supersession-detect.ts:384`, `app/api/github/pr/supersede/route.ts` (Slice D: T20/T21 for a kernel-owned PR; the route authorises on the caller's task)
 - [ ] `lib/dead-pr-shutdown.ts:396`; `lib/loop-webhook.ts:72`
