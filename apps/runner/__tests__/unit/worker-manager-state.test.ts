@@ -372,7 +372,11 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 150));
+      // Wait for the terminal state rather than a fixed sleep: a loaded CI
+      // host can take longer than 150ms to drain the session.
+      for (let i = 0; i < 40 && manager.getWorker('w-done-1')?.status !== 'done'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       const worker = manager.getWorker('w-done-1');
       expect(worker?.status).toBe('done');

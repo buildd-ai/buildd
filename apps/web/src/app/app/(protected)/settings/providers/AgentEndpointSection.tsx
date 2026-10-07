@@ -64,9 +64,9 @@ export function toolSearchDefault(kind: Kind): boolean {
 }
 
 const TOOL_SEARCH_HINT: Record<Kind, string> = {
-  gateway: 'Loads MCP tool definitions on demand instead of all up front, which cuts input tokens. Turn on only if your LiteLLM gateway passes Anthropic ToolSearch / tool_reference blocks through; if it does not, runs that use tools fail.',
-  openrouter: 'Loads MCP tool definitions on demand instead of all up front, which cuts input tokens. OpenRouter supports Anthropic ToolSearch / tool_reference, so this is on by default.',
-  'anthropic-compatible': 'Loads MCP tool definitions on demand instead of all up front, which cuts input tokens. Turn on only if this endpoint supports Anthropic ToolSearch / tool_reference blocks; if it does not, runs that use tools fail.',
+  gateway: 'Loads MCP tools on demand to cut input tokens. Your gateway must pass Anthropic ToolSearch / tool_reference through, or tool runs fail.',
+  openrouter: 'Loads MCP tools on demand to cut input tokens. On by default: OpenRouter supports Anthropic ToolSearch / tool_reference.',
+  'anthropic-compatible': 'Loads MCP tools on demand to cut input tokens. The endpoint must support Anthropic ToolSearch / tool_reference, or tool runs fail.',
 };
 
 async function errorText(res: Response): Promise<string> {
