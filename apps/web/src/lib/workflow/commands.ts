@@ -1,0 +1,320 @@
+/**
+ * Kernel commands (docs/specs/workflow-state-kernel.md §6.3, T1–T27) and the
+ * reducer's decision shape (§6.1). Every live GitHub read a transition needs
+ * is carried IN the command as evidence, so the reducer stays a pure function
+ * of (view, command); the caller (fact ingestion, a route) does the read.
+ */
+import type {
+  Actor,
+  AttemptFamily,
+  AttemptMode,
+  AttemptOutcome,
+  AttemptStatus,
+  ApprovalBasis,
+  CloseCause,
+  CompositionAttestation,
+  ConstituentEvidence,
+  DeliveryState,
+  RoundKind,
+  RoundStatus,
+  Verdict,
+} from './types';
+
+/** A GitHub `GET /pulls/{n}` read the kernel took after the command arrived (R2). */
+export interface LivePr {
+  state: 'open' | 'closed';
+  merged: boolean;
+  headSha: string;
+  headRepoFullName: string | null;
+  baseRef: string | null;
+  mergedAt?: string | null;
+  mergeCommitSha?: string | null;
+  updatedAt?: string | null;
+}
+
+interface Base {
+  actor: Actor;
+  /** Human/agent callers send back the version they read (§7.2); reducer-driven callers omit it. */
+  expectedVersion?: number;
+}
+
+export type Command =
+  | (Base & { type: 'DeliveryOpened'; workspaceId: string; ownerTaskId: string; requiresPr: boolean; maxRounds?: number })
+  | (Base & {
+      type: 'PrBound';
+      repoFullName: string;
+      prNumber: number;
+      live: LivePr;
+      /** Adoption of a PR buildd did not open: creates the delivery (synthetic owner task). */
+      adoption?: { workspaceId: string; ownerTaskId: string; maxRounds?: number };
+    })
+  | (Base & {
+      type: 'HeadObserved';
+      /** The head a webhook payload claimed; diagnostic only. */
+      hintedHeadSha?: string | null;
+      live: LivePr;
+      /** §9 proof inputs for the bound attempt, when one exists. */
+      proof?: { liveContainsLocal: boolean; contentDiffChanged?: boolean };
+      /** §8.3 carry-forward evidence for an APPROVED/LANDING delivery. */
+      carryForward?: 'content_equivalent' | 'own_refresh' | null;
+    })
+  | (Base & {
+      type: 'AttemptEnded';
+      /** The worker row whose exit this is: one task can run several workers (retries). */
+      workerId: string;
+      /** Owner attempts are named by task id; repair attempts by workflow_attempts id. */
+      taskId?: string;
+      attemptId?: string;
+      outcome: 'success' | 'failed' | 'lost' | 'unproven';
+      localHeadSha: string | null;
+      commitCount: number;
+      live: LivePr | null;
+      proof?: { liveContainsLocal: boolean; contentDiffChanged?: boolean };
+      carryForward?: 'content_equivalent' | 'own_refresh' | null;
+      /** The owner task's own (infra) retry budget, not a ledger. */
+      taskRetryBudgetLeft?: boolean;
+      /** Whether this workspace's policy wants a review round once a head exists. */
+      reviewRequired?: boolean;
+    })
+  | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean })
+  | (Base & {
+      type: 'ReviewVerdictRecorded';
+      roundId: string;
+      verdict: Verdict;
+      /** Server escalation rules (file list, confidence) applied by the caller. */
+      effectiveVerdict: Verdict;
+      headBound: string;
+      confidence?: number | null;
+    })
+  | (Base & { type: 'ReviewBudgetExhausted' })
+  | (Base & {
+      type: 'FixDispatched';
+      roundId: string;
+      taskId: string;
+      maxAttempts: number;
+      revalidation: { live: LivePr; newerApprove: boolean };
+    })
+  | (Base & { type: 'FixClaimed'; attemptId: string; revalidation: { live: LivePr; approved: boolean } })
+  | (Base & {
+      type: 'CiFailedObserved';
+      headSha: string;
+      signature: string;
+      maxAttempts: number;
+      /** An open trunk incident whose signature matches (§6.10); routes to T25. */
+      openTrunkIncidentId?: string | null;
+      trigger?: 'automatic' | 'human';
+      triggerFactId?: string | null;
+    })
+  | (Base & {
+      type: 'ConflictObserved';
+      headSha: string;
+      /** From a live read taken now, not a stored snapshot. */
+      mergeable: 'dirty' | 'behind';
+      migrationCollision?: boolean;
+      /** Set when the mechanical attempt for this head was refused (textual conflict). */
+      mechanicalRefused?: boolean;
+      maxMechanical?: number;
+      maxAgentAttempts: number;
+      isDependencyBot?: boolean;
+    })
+  | (Base & { type: 'HumanApproved'; reviewId: string; commitId: string; hasMergePermission: boolean })
+  | (Base & {
+      type: 'LandingRequested';
+      door: string;
+      headSha: string;
+      live: LivePr;
+      rails: { passed: boolean; redCi?: boolean; denyPaths?: boolean; reasons?: string[] };
+      override?: { reason: string } | null;
+    })
+  | (Base & {
+      type: 'MergeCallResult';
+      headSha: string;
+      outcome: 'merged' | 'indeterminate' | 'behind' | 'conflict' | 'refused';
+      detail?: string;
+    })
+  | (Base & { type: 'PrMerged'; live: LivePr })
+  | (Base & { type: 'PrClosedUnmerged'; live: LivePr; closeCause: CloseCause })
+  | (Base & { type: 'PrReopened'; live: LivePr })
+  | (Base & {
+      type: 'SupersessionRecorded';
+      target: { repoFullName: string; prNumber: number; merged: boolean; url: string | null };
+      reason: string;
+      authorised: boolean;
+    })
+  | (Base & { type: 'Abandon'; reason: string })
+  | (Base & { type: 'PushRecoveryExhausted'; localHeadSha: string | null })
+  | (Base & {
+      type: 'HumanResolve';
+      choice: 'approve' | 'request_changes' | 'apply_recommendation' | 'dismiss';
+      reason?: string;
+    })
+  | (Base & { type: 'DeliveryFailed'; reason: string })
+  | (Base & {
+      type: 'TrunkRedObserved';
+      incidentId: string;
+      signature: string;
+      headSha: string;
+      /** Base branch's own head fails the signature, or the multi-delivery threshold is met. */
+      thresholdMet: boolean;
+    })
+  | (Base & { type: 'TrunkRecovered'; incidentId: string; baseStillRed: boolean; headPredatesFix: boolean })
+  | (Base & {
+      type: 'ReviewRoundFailed';
+      roundId: string;
+      reason: 'no_verdict' | 'prose_verdict' | 'infra';
+      maxContractRetries: number;
+    })
+  | (Base & {
+      type: 'CompositionAttested';
+      attestation: CompositionAttestation;
+      /** Resolved per constituent by the caller; keyed by roundId. */
+      constituents: ConstituentEvidence[];
+      factId?: string | null;
+    });
+
+export type CommandType = Command['type'];
+
+// ── Decision (§6.1) ─────────────────────────────────────────────────────────
+
+export type EffectKind =
+  | 'dispatch_review'
+  | 'dispatch_fix'
+  | 'dispatch_ci_fix'
+  | 'dispatch_conflict_fix'
+  | 'dispatch_trunk_fix'
+  | 'post_review'
+  | 'merge_call'
+  | 'verify_merge'
+  | 'refresh_branch'
+  | 'renumber_migration'
+  | 'push_recovery'
+  | 'stamp_pr_rows'
+  | 'cancel_open_attempts'
+  | 'render_activity'
+  | 'notify'
+  | 'mission_note'
+  | 'wake_mission'
+  | 'release_attribution'
+  | 'finalize_mission_pr'
+  | 'emit_pr_merged'
+  | 'scan_supersession'
+  | 'project_supersession'
+  | 'escalate_exhaustion'
+  | 'gate_event';
+
+export interface EffectSpec {
+  kind: EffectKind;
+  dedupeKey: string;
+  payload: Record<string, unknown>;
+  /** Delay before the effect is due, ms. */
+  delayMs?: number;
+}
+
+export interface DeliveryPatch {
+  repoFullName?: string | null;
+  prNumber?: number | null;
+  baseRef?: string | null;
+  stateReason?: string | null;
+  currentHeadSha?: string | null;
+  currentRound?: number;
+  maxRounds?: number;
+  boundAttemptId?: string | null;
+  resumeState?: DeliveryState | null;
+  trunkIncidentId?: string | null;
+  approvedHeads?: string[];
+  approvalBasis?: ApprovalBasis | null;
+  compositionHeads?: string[];
+  ci?: string | null;
+  ciHeadSha?: string | null;
+  mergeable?: string | null;
+  mergeableHeadSha?: string | null;
+  mergedAt?: string | null;
+  mergeCommitSha?: string | null;
+  supersededByPr?: number | null;
+  supersededByUrl?: string | null;
+  supersededReason?: string | null;
+  recordedBy?: string | null;
+}
+
+export type RoundOp =
+  | { op: 'insert'; id: string; round: number; headSha: string; kind: RoundKind; priorRound: number | null; scope?: Record<string, unknown> | null }
+  | {
+      op: 'update';
+      roundId: string;
+      whenStatus: RoundStatus[];
+      set: {
+        status?: RoundStatus;
+        verdict?: Verdict | null;
+        effectiveVerdict?: Verdict | null;
+        confidence?: number | null;
+        decided?: boolean;
+        failureCount?: number;
+        clearReviewer?: boolean;
+      };
+    };
+
+export type AttemptOp =
+  | {
+      op: 'insert';
+      /** Pre-assigned so the same statement can bind it (delivery.bound_attempt_id) and effects can name it. */
+      id: string;
+      family: AttemptFamily;
+      attemptNo: number;
+      mode: AttemptMode;
+      boundHeadSha: string | null;
+      triggerReason: string | null;
+      triggerFactId?: string | null;
+      taskId: string | null;
+      trigger: 'automatic' | 'human';
+      status: AttemptStatus;
+      maxAttempts: number;
+    }
+  | {
+      op: 'update';
+      attemptId: string;
+      whenStatus: AttemptStatus[];
+      set: { status?: AttemptStatus; outcome?: AttemptOutcome | null; pushedHeadSha?: string | null; appendReportedSha?: string; ended?: boolean };
+    }
+  | { op: 'cancel_open'; families: AttemptFamily[]; status: 'cancelled' | 'skipped'; headSha?: string | null };
+
+export interface CurrentView {
+  state: DeliveryState | null;
+  version: number;
+  head: string | null;
+  round: number;
+}
+
+/** Writes that are recorded even though the delivery does not transition (a stale verdict kept for audit). */
+export interface RecordOnly {
+  rounds: RoundOp[];
+  attempts: AttemptOp[];
+}
+
+export interface CreateSpec {
+  workspaceId: string;
+  ownerTaskId: string;
+  maxRounds: number;
+}
+
+export interface ApplyDecision {
+  result: 'apply';
+  command: CommandType;
+  idempotencyKey: string;
+  /** Present for T1 and T2-adoption: the statement inserts the delivery row. */
+  create?: CreateSpec;
+  fromState: DeliveryState | null;
+  toState: DeliveryState;
+  guard: { version: number; states: DeliveryState[]; headSha?: string | null; round?: number };
+  patch: DeliveryPatch;
+  rounds: RoundOp[];
+  attempts: AttemptOp[];
+  effects: EffectSpec[];
+  evidence: Record<string, unknown>;
+  bypass?: Record<string, unknown> | null;
+}
+
+export type Decision =
+  | ApplyDecision
+  | { result: 'duplicate'; reason: string; current: CurrentView }
+  | { result: 'stale'; reason: string; current: CurrentView; record?: RecordOnly }
+  | { result: 'rejected'; reason: string; missing?: string[]; current: CurrentView; record?: RecordOnly };
