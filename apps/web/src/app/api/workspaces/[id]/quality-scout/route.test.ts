@@ -6,6 +6,7 @@ let user: { id: string } | null = null;
 let access = true;
 let ownerTeam = 'team-1';
 const triggerCalls: unknown[] = [];
+let rate: { allowed: boolean; retryAfterSec?: number } = { allowed: true };
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => user }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => apiAccount }));
@@ -20,6 +21,7 @@ mock.module('@/lib/quality-scout-trigger', () => ({
   loadScoutWorkspace: async (id: string) => ({ id, teamId: 'team-1', gitConfig: { qualityScout: { mode: 'shadow' } }, githubRepo: null }),
   resolveScoutTriggerConfig: (raw: { mode?: string } | undefined) => ({ mode: raw?.mode ?? 'off' }),
   serverHeadSha: async () => null,
+  checkManualScoutRateLimit: async () => rate,
   triggerQualityScout: async (input: unknown) => {
     triggerCalls.push(input);
     return { status: 'skipped', reason: 'duplicate', runId: 'r' };
@@ -40,6 +42,7 @@ beforeEach(() => {
   access = true;
   ownerTeam = 'team-1';
   triggerCalls.length = 0;
+  rate = { allowed: true };
 });
 
 describe('/api/workspaces/[id]/quality-scout', () => {
@@ -74,6 +77,14 @@ describe('/api/workspaces/[id]/quality-scout', () => {
   it('POST with no body runs the default branch head', async () => {
     await POST(req('POST'), params);
     expect(triggerCalls[0]).toEqual({ workspaceId: 'ws-1', trigger: 'manual', ref: null, sha: null });
+  });
+
+  it('POST is rate limited per workspace beyond the double-tap bucket: 429 with Retry-After, no run', async () => {
+    rate = { allowed: false, retryAfterSec: 600 };
+    const res = await POST(req('POST'), params);
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('600');
+    expect(triggerCalls).toHaveLength(0);
   });
 
   it('POST refuses a short SHA', async () => {

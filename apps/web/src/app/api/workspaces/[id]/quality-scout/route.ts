@@ -8,7 +8,8 @@
  *        branch's head). Bounded by the workspace budget and the server cap;
  *        answers with the run's outcome. Refused only by `mode: off`, which
  *        is reported, not an error. A double tap inside a few minutes is the
- *        same run (`skipped: duplicate`).
+ *        same run (`skipped: duplicate`); beyond that, a workspace gets at most
+ *        MANUAL_SCOUT_RUNS_PER_HOUR manual runs an hour (429 + Retry-After).
  *
  * Advisory only: nothing here blocks a merge or release.
  */
@@ -21,7 +22,13 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { loadScoutReadout } from '@/lib/quality-scout-readout';
-import { loadScoutWorkspace, resolveScoutTriggerConfig, serverHeadSha, triggerQualityScout } from '@/lib/quality-scout-trigger';
+import {
+  checkManualScoutRateLimit,
+  loadScoutWorkspace,
+  resolveScoutTriggerConfig,
+  serverHeadSha,
+  triggerQualityScout,
+} from '@/lib/quality-scout-trigger';
 
 // A server-hosted run is capped below this (SERVER_SCOUT_MAX_DURATION_MS).
 export const maxDuration = 300;
@@ -78,6 +85,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'sha must be a full 40-character commit SHA' }, { status: 400 });
   }
   const sha = typeof body.sha === 'string' ? body.sha.toLowerCase() : null;
+
+  const rate = await checkManualScoutRateLimit(id, new Date());
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: 'Too many manual Quality Scout runs for this workspace; try again later', retryAfterSec: rate.retryAfterSec },
+      { status: 429, headers: { 'Retry-After': String(rate.retryAfterSec) } },
+    );
+  }
 
   const outcome = await triggerQualityScout({ workspaceId: id, trigger: 'manual', ref, sha });
   return NextResponse.json(outcome, { status: outcome.status === 'failed' ? 502 : 200 });
