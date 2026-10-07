@@ -82,7 +82,7 @@ function fakeScheduler() {
   return { port, scheduled, cancelled };
 }
 
-function harness(opts: { unattachable?: boolean; config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response>; now?: () => number } = {}) {
+function harness(opts: { unattachable?: boolean; config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response>; now?: () => number; ownerSeat?: SupervisorDeps['ownerSeat'] } = {}) {
   let state: RunState = opts.initial ?? INITIAL_STATE;
   const sched = fakeScheduler();
   const fc = fakeContainer({ unattachable: opts.unattachable });
@@ -120,6 +120,7 @@ function harness(opts: { unattachable?: boolean; config?: Partial<SupervisorDeps
       return new Response('{}', { status: opts.fetchStatus ?? 200 });
     }) as unknown as typeof fetch,
     scheduler: sched.port,
+    ...(opts.ownerSeat ? { ownerSeat: opts.ownerSeat } : {}),
     now: opts.now ?? (() => Date.now()),
     sleep: () => new Promise(r => setTimeout(r, 1)),
     log: (m) => logs.push(m),
@@ -1331,5 +1332,100 @@ describe('container class: the report says which class ran and why, and how the 
     h.fc.exits[0]!.resolve(0);
     await h.settle();
     expect(h.state.report!.resources).toEqual({ memoryPeakBytes: 3_900_000_000, memoryLimitBytes: 4_294_967_296, diskFreeMinBytes: 2_000_000_000, diskTotalBytes: null });
+  });
+});
+
+describe('owner seat: per-Worker cap and wall pause', () => {
+  const NOW = 2_000_000;
+  const SEAT_TOKEN = 'sk-ant-oat01-owner-seat-secret';
+
+  function seatPort(acquire: Awaited<ReturnType<NonNullable<SupervisorDeps['ownerSeat']>['acquire']>>, modelAuth: 'owner_seat' | 'metered' | null = 'owner_seat') {
+    const calls: string[] = [];
+    const port: NonNullable<SupervisorDeps['ownerSeat']> = {
+      acquire: async () => { calls.push('acquire'); return acquire; },
+      release: async () => { calls.push('release'); },
+      modelAuth: () => modelAuth,
+    };
+    return { port, calls };
+  }
+
+  test('a granted slot starts the run as usual, records modelAuth, and releases the slot at the end', async () => {
+    const seat = seatPort({ granted: true });
+    const h = harness({ now: () => NOW, ownerSeat: seat.port });
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    expect(seat.calls).toEqual(['acquire']);
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    expect(h.state.outcome).toBe('done');
+    expect(seat.calls).toEqual(['acquire', 'release']);
+    expect(h.state.report).toMatchObject({ modelAuth: 'owner_seat' });
+  });
+
+  test('a metered run on a Worker with a seat reports modelAuth metered', async () => {
+    const seat = seatPort({ granted: true }, 'metered');
+    const h = harness({ now: () => NOW, ownerSeat: seat.port });
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    expect(h.state.report).toMatchObject({ modelAuth: 'metered' });
+  });
+
+  test('the cap is full: no container, no token minted, deferred with owner_seat_cap and a retry scheduled', async () => {
+    const seat = seatPort({ granted: false, reason: 'owner_seat_cap', retryAfterMs: 60_000 }, null);
+    const h = harness({ now: () => NOW, ownerSeat: seat.port });
+    h.sup.dispatch();
+    await h.settle();
+    expect(h.fc.calls).not.toContain('start');
+    expect(h.fc.calls).not.toContain('mintTaskToken');
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'deferred', claimDeferredReason: 'owner_seat_cap', deferredRetryCount: 1 });
+    expect(h.state.report).toMatchObject({ outcome: 'deferred', modelAuth: null, deferredRetry: { retryNumber: 1, backoffMs: 60_000, reason: 'owner_seat_cap' } });
+    expect([...h.sched.scheduled.values()]).toEqual([{ at: NOW + 60_000, payload: { notBefore: NOW + 60_000, deferredRetry: true } }]);
+    // A deferral is a wait: nothing is reported failed.
+    expect(h.fetches).toHaveLength(0);
+  });
+
+  test('a usage wall pauses the run with owner_seat_wall instead of failing it', async () => {
+    const seat = seatPort({ granted: false, reason: 'owner_seat_wall', retryAfterMs: 900_000 }, null);
+    const h = harness({ now: () => NOW, ownerSeat: seat.port });
+    h.sup.dispatch();
+    await h.settle();
+    expect(h.fc.calls).not.toContain('start');
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'deferred', claimDeferredReason: 'owner_seat_wall' });
+    expect(h.state.outcome).not.toBe('failed');
+    expect(h.state.report).toMatchObject({ deferredRetry: { reason: 'owner_seat_wall' } });
+  });
+
+  test('a crash still releases the slot', async () => {
+    const seat = seatPort({ granted: true });
+    const h = harness({ now: () => NOW, ownerSeat: seat.port });
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.kill();
+    await h.settle();
+    expect(h.state.outcome).toBe('crashed');
+    expect(seat.calls).toEqual(['acquire', 'release']);
+  });
+
+  test('without the seat port nothing changes and the report says nothing about auth', async () => {
+    const h = harness({ now: () => NOW });
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    expect(h.state.report).toMatchObject({ outcome: 'done', modelAuth: null });
+  });
+
+  test('the token is nowhere the supervisor writes: state, logs, container env, fetches', async () => {
+    const seat = seatPort({ granted: true });
+    const h = harness({ now: () => NOW, ownerSeat: seat.port, config: { CLAUDE_CODE_OAUTH_TOKEN: SEAT_TOKEN } as Partial<SupervisorDeps['config']> });
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    const everything = JSON.stringify([h.state, h.logs, h.fc.starts, h.fc.execEnvs, h.fetches.map(f => [f.url, f.init])]);
+    expect(everything).not.toContain(SEAT_TOKEN);
+    expect(everything).not.toContain('CLAUDE_CODE_OAUTH_TOKEN');
   });
 });

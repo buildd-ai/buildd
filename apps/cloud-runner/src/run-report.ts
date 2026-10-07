@@ -12,6 +12,7 @@
  * one, so a stray credential passed in by mistake cannot come out the other
  * side.
  */
+import type { ModelAuth } from './owner-seat';
 import type { AgentRestart, CrashReport, RunOutcome } from './lifecycle';
 import type { ReusedContainer } from './container-lease';
 import {
@@ -33,8 +34,9 @@ import {
  * 7: adds `resources` (memory peak, disk minimum), `interruption` and `runnerSize` (container class, weighted runner-seconds).
  * 8: adds `agentRestarts` (each time the agent restarted under the attempt, and what it did about the run).
  * 9: adds `reusedContainer` (the attempt ran in a container an earlier run of the workspace left warm).
+ * 10: adds `modelAuth` (`owner_seat` | `metered`: which kind of credential paid for the model calls; never the credential).
  */
-export const RUN_REPORT_VERSION = 9;
+export const RUN_REPORT_VERSION = 10;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -771,6 +773,13 @@ export interface RunReport {
    * reset did not verify clean, so the attempt started in a fresh container.
    */
   reusedContainer: ReusedContainer | null;
+  /**
+   * Who paid for this attempt's model calls: the deployer's own Claude token
+   * on this Worker (`owner_seat`) or a metered route (gateway, proxy, team
+   * endpoint or Anthropic key). Null when no model call went out. A label
+   * only; the token itself is never in a report.
+   */
+  modelAuth: ModelAuth | null;
   runnerSize: {
     size: RunnerSize;
     source: RunnerSizeSource | null;
@@ -808,6 +817,8 @@ export interface RunReportInput {
   agentRestarts?: AgentRestart[];
   /** See RunReport.reusedContainer. */
   reusedContainer?: ReusedContainer | null;
+  /** See RunReport.modelAuth. */
+  modelAuth?: ModelAuth | null;
   /** The class this agent is (the container class actually used). Absent: standard. */
   runnerSize?: RunnerSize;
   /** buildd's decision that routed the dispatch here, if one reached the agent. */
@@ -962,6 +973,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       }];
     }),
     reusedContainer: reusedContainerSection(input.reusedContainer),
+    modelAuth: input.modelAuth === 'owner_seat' || input.modelAuth === 'metered' ? input.modelAuth : null,
     runnerSize: runnerSizeSection(input, timestamps),
   };
 }

@@ -619,9 +619,61 @@ Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
 | team's own Anthropic key (`proxy` shape) | buildd returns the task's own `anthropic_api_key` for this task — it won the same ranking a self-hosted runner applies (docs/credentials-architecture.md) | `https://api.anthropic.com/...` unchanged | `x-api-key: <the team's key>` |
 | `proxy` | `MODEL_PROXY_URL` is set | `<MODEL_PROXY_URL><original path and query>`, e.g. `https://litellm.example.com/v1/messages` | `Authorization: Bearer <MODEL_PROXY_KEY>` (default), or `x-api-key: <MODEL_PROXY_KEY>` with `MODEL_PROXY_AUTH_HEADER=x-api-key` |
 | team endpoint (`proxy` shape) | Neither of the above, and buildd returns the team's `agent_endpoint` for this task (Settings → Model providers) | `<endpoint baseUrl><original path and query>` | The endpoint's key, as `Authorization: Bearer` or `x-api-key` per its setting |
+| `owner_seat` | `CLAUDE_CODE_OAUTH_TOKEN` is set on the Worker and none of the routes above applies (see Running on your own Claude token) | `https://api.anthropic.com/...` unchanged | `Authorization: Bearer <your token>` plus the `oauth-2025-04-20` beta flag |
 | `gateway` | `AI_GATEWAY_ACCOUNT_ID`, `AI_GATEWAY_ID` and `AI_GATEWAY_TOKEN` are set | `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic/...` | `cf-aig-authorization: Bearer <AI_GATEWAY_TOKEN>`; the Anthropic key lives in AI Gateway (BYOK) or Unified Billing |
 
 If none applies, model requests get `503`.
+
+### Running on your own Claude token
+
+The self-hosted equivalent of a CI secret: your own `claude setup-token` value,
+set by you on your own Cloudflare account, used for the model calls of the
+workspaces your Worker serves.
+
+```bash
+CLAUDE_CODE_OAUTH_TOKEN=… bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> --owner-seat
+# or omit the variable in a terminal and paste it at the hidden prompt
+```
+
+Where the token lives, and where it does not:
+
+- It is stored only as the Worker secret `CLAUDE_CODE_OAUTH_TOKEN` on your
+  Cloudflare account. buildd's server never receives, stores, logs or returns
+  it: it is not in the `secrets` table, a claim response, a run report or a log.
+  The deploy script never prints it and hands it to `wrangler secret put` on
+  stdin.
+- The container never sees it. The egress handler removes whatever auth the
+  container supplied, then adds the token on model calls, exactly as it does
+  for the other model routes. A cloud claim still carries no server-side seat
+  credential.
+- **One owner, one token per Worker.** Every workspace the Worker serves runs
+  on that one subscription. There is no pooling of several people's tokens and
+  no per-member token map; give each owner their own Worker (`--name`).
+- Off by default and only active while the secret is present.
+  `wrangler secret delete CLAUDE_CODE_OAUTH_TOKEN` turns it off. A hosted
+  runner never enables it (`MANAGED_CLOUD_RUNNER=1`).
+
+Precedence: the seat applies only to workspaces whose effective model route is
+the default Anthropic one. A workspace with its own agent endpoint or Anthropic
+key keeps using it, and a `MODEL_PROXY_URL` on the Worker stays in front of the
+seat. The seat takes the place of the AI Gateway route.
+
+One subscription shared by many containers reaches its usage limits quickly, so
+seat runs are paced on the Worker:
+
+- At most `OWNER_SEAT_MAX_CONCURRENT` (default 2) runs use the seat at once. A
+  run over the cap does not start a container: it is deferred with the reason
+  `owner_seat_cap` and retried with backoff.
+- When the seat answers a model call with a usage limit (429), new seat runs wait
+  until it lifts, deferred with `owner_seat_wall`; they are not failed. Runs
+  already going continue.
+- The pacing is kept per Worker, in the Worker; buildd's server is not told about
+  the seat's usage.
+- A run claims its slot before it starts, before the Worker knows whether the
+  workspace has its own key, so a metered run holds a slot until its first model
+  call and is held back while a wall is up.
+
+The run report records `modelAuth`: `owner_seat` or `metered`, never the token.
 
 **The team's own Anthropic key jumps ahead of `MODEL_PROXY_URL`** — the one
 precedence flip here. Storing a plain API key is not an opt-in to route agents
@@ -704,6 +756,9 @@ be path-scoped and relies on the token's own scope.
 | `ALLOW_DIRECT_ANTHROPIC` | var | no | **Local development only.** `1` together with `ANTHROPIC_DIRECT_API_KEY` sends model traffic straight to Anthropic with that key instead of the gateway. Default off. Never set it on a deployed Worker |
 | `ANTHROPIC_DIRECT_API_KEY` | secret | no | **Local development only**, see above. Ignored unless `ALLOW_DIRECT_ANTHROPIC=1` |
 | `DISPATCH_TOKEN` | secret | yes | Also authenticates the GitHub token request |
+| `CLAUDE_CODE_OAUTH_TOKEN` | secret | no | Your own `claude setup-token` value, for the owner seat. Off unless set. See Running on your own Claude token |
+| `OWNER_SEAT_MAX_CONCURRENT` | var | no | Runs that may use the owner seat at once. Default 2, 1 to 20 |
+| `MANAGED_CLOUD_RUNNER` | var | no | `1` on a hosted runner: the owner seat is refused even if the secret is present |
 
 The container is started with `BUILDD_EXECUTOR=cloud`, so the claim response
 carries no credential material (`CLAIM_CREDENTIAL_FIELDS` in
