@@ -1,4 +1,5 @@
 import { expect, it, mock } from 'bun:test';
+import { OPT_IN_CAPABILITIES } from '@buildd/core/inference-policy';
 const manifestRows = [{ workspaceId: 'ws', missionId: 'mission', kind: 'engineering', total: 4, concrete: 2, advisory: 1, none: 1 }];
 const claimRows = [{ surface: 'mcp:check_path_claim', claimed: 2, blocked: 1, deadlock: 1, rejected: 1, firstRecordedAt: '2026-09-30' }];
 const selections: any[] = [];
@@ -27,13 +28,12 @@ it('returns empty populations without issuing queries for an empty scope', async
  expect(selections.length).toBe(before);
 });
 
-it('distinguishes disabled orchestration capabilities from empty evidence', async () => {
+it('distinguishes disabled opt-in capabilities from empty evidence', async () => {
  const stats = await fetchCoordinationStats({ workspaceIds: ['ws'], window: '7d' });
- expect(stats.manifestCoverage.decisionCapabilities).toEqual([
-  { workspaceId: 'ws', capability: 'orchestration_manifest', status: 'capability_disabled' },
-  { workspaceId: 'ws', capability: 'orchestration_claim', status: 'enabled' },
-  { workspaceId: 'ws', capability: 'orchestration_ordering', status: 'capability_disabled' },
- ]);
+ const caps = stats.manifestCoverage.decisionCapabilities!;
+ expect(caps.map(c => c.capability)).toEqual([...OPT_IN_CAPABILITIES]);
+ expect(caps.find(c => c.capability === 'task_role_shadow')?.status).toBe('capability_disabled');
+ expect(caps.filter(c => c.status === 'enabled').map(c => c.capability)).toEqual(['orchestration_claim']);
  expect(stats.pathClaims.decisionCapabilities).toEqual(stats.manifestCoverage.decisionCapabilities);
 });
 
@@ -44,8 +44,6 @@ it('reports each workspace independently when a team has never opted in', async 
  ];
  const stats = await fetchCoordinationStats({ workspaceIds: ['ws', 'other'], window: '24h' });
  expect(stats.manifestCoverage.decisionCapabilities?.filter(c => c.workspaceId === 'other')).toEqual([
-  { workspaceId: 'other', capability: 'orchestration_manifest', status: 'capability_disabled' },
-  { workspaceId: 'other', capability: 'orchestration_claim', status: 'capability_disabled' },
-  { workspaceId: 'other', capability: 'orchestration_ordering', status: 'capability_disabled' },
+  ...OPT_IN_CAPABILITIES.map(capability => ({ workspaceId: 'other', capability, status: 'capability_disabled' })),
  ]);
 });
