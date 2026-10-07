@@ -14,6 +14,15 @@
  *    A decider that throws or answers outside the kind's decision set gets the
  *    kind's own deterministic fallback, so a failure stays bounded.
  *
+ * Cost: the decisions are the only model spend in a Scout run, so a dollar cap
+ * (`options.cost`) is enforced here, before each call — not after selection.
+ * A call is skipped when spend so far plus the dearest call seen so far would
+ * pass the cap; that candidate, and every later one, gets the same rule the
+ * kind falls back to (run what touches the change, defer the rest) with a
+ * `*_cost_cap` reason code, so the cap degrades selection quality, never
+ * coverage. No cap, or a decider that cannot report spend, leaves the call
+ * count bounded by `maxDecisions` alone (at most three per budget slot).
+ *
  * Independence: a candidate that shares an anchor and family with, or largely overlaps the
  * paths of, an already-selected probe of the same kind, or would run the same
  * command / request / capture as one, is a near-duplicate; a probe family is
@@ -80,6 +89,12 @@ export interface ScoutSelectionOptions {
   maxPerFamily?: number;
   /** Max decisions asked. Default three per budget slot. */
   maxDecisions?: number;
+  /**
+   * Dollar cap on decision spend. `spent()` is the cumulative cost (USD) the
+   * decider has reported since selection began, or null when it cannot tell —
+   * an unknown spend cannot be capped, so it is not.
+   */
+  cost?: { maxUsd: number; spent(): number | null };
 }
 
 export interface ScoutSelectedProbe {
@@ -108,6 +123,10 @@ export interface ScoutProbeSelection {
   decisionsAsked: number;
   /** Decisions that threw or answered outside the kind's set; the kind's fallback was used. */
   decisionFailures: number;
+  /** Decisions not asked because the cost cap would have been passed; the fallback rule answered. */
+  decisionsCapped: number;
+  /** The cost cap stopped at least one decision call. */
+  costCapHit: boolean;
 }
 
 const clampInt = (v: number | undefined, fallback: number, lo: number, hi: number) =>
@@ -155,6 +174,12 @@ async function decideOne(decide: ScoutProbeDecider, request: DecisionRequest<Sco
   }
   const fb = SCOUT_PROBE_SELECTION_CONFIG.fallback(request.features, 'provider_failure');
   return { result: { ...fb, source: 'fallback' }, failed: true };
+}
+
+/** The kind's fallback rule, answering for a decision the cost cap did not let us ask. */
+function costCapVerdict(features: ScoutProbeFeatures): ScoutProbeDecisionResult {
+  const fb = SCOUT_PROBE_SELECTION_CONFIG.fallback(features, 'provider_failure');
+  return { decision: fb.decision, reasonCode: fb.decision === 'run' ? 'heuristic_run_cost_cap' : 'heuristic_defer_cost_cap', source: 'fallback' };
 }
 
 export async function selectScoutProbes(
@@ -211,6 +236,19 @@ export async function selectScoutProbes(
   // Stage 2: the decision kind, in candidate order.
   let decisionsAsked = 0;
   let decisionFailures = 0;
+  let decisionsCapped = 0;
+  let costCapHit = false;
+  /** The dearest single call so far: the estimate for the next one. */
+  let dearestCall = 0;
+  const cap = options.cost && Number.isFinite(options.cost.maxUsd) ? options.cost : null;
+  const readSpent = (): number | null => {
+    try {
+      const v = cap?.spent() ?? null;
+      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+    } catch {
+      return null;
+    }
+  };
   for (const c of set.candidates) {
     if (done.has(c.id)) continue;
     if (selected.length >= budget) {
@@ -222,13 +260,25 @@ export async function selectScoutProbes(
       skip({ candidate: c, reason: 'not_considered', detail: `Decision limit of ${maxDecisions} reached.` });
       continue;
     }
-    decisionsAsked++;
-    const { result, failed } = await decideOne(decide, {
-      features: scoutProbeFeatures(c, set.changedFiles, budget - selected.length),
-      featureSchemaVersion: SCOUT_PROBE_SELECTION_CONFIG.featureSchemaVersion,
-      subjectRef: { type: 'scout_candidate', id: c.id },
-    });
-    if (failed) decisionFailures++;
+    const features = scoutProbeFeatures(c, set.changedFiles, budget - selected.length);
+    const before = cap ? readSpent() : null;
+    if (!costCapHit && cap && before !== null && (before >= cap.maxUsd || before + dearestCall > cap.maxUsd)) costCapHit = true;
+    let result: ScoutProbeDecisionResult;
+    if (costCapHit) {
+      decisionsCapped++;
+      result = costCapVerdict(features);
+    } else {
+      decisionsAsked++;
+      const asked = await decideOne(decide, {
+        features,
+        featureSchemaVersion: SCOUT_PROBE_SELECTION_CONFIG.featureSchemaVersion,
+        subjectRef: { type: 'scout_candidate', id: c.id },
+      });
+      result = asked.result;
+      if (asked.failed) decisionFailures++;
+      const after = before === null ? null : readSpent();
+      if (after !== null && before !== null) dearestCall = Math.max(dearestCall, after - before);
+    }
     if (result.decision === 'run') {
       pick({ candidate: c, via: 'decision', reasonCode: result.reasonCode, decisionSource: result.source });
     } else {
@@ -236,7 +286,7 @@ export async function selectScoutProbes(
     }
   }
 
-  return { budget, selected, skipped, decisionsAsked, decisionFailures };
+  return { budget, selected, skipped, decisionsAsked, decisionFailures, decisionsCapped, costCapHit };
 }
 
 /** The default decider: the shared kind, run under the team's decision policy and recorded in its ledger. */

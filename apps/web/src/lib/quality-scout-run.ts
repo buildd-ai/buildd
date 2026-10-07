@@ -11,8 +11,18 @@
  *
  * Bounded: at most `budget.maxProbes` probes, a wall-clock bound
  * (`maxDurationMs`) checked before each probe and raced against it, and a
- * dollar bound on the decision cost. A probe the bound cuts off is finalized
- * `inconclusive`/`not_executed` — never dropped, never `pass`.
+ * dollar bound (`budget.maxCostUsd`) on the decision cost. A probe the time
+ * bound cuts off is finalized `inconclusive`/`not_executed` — never dropped,
+ * never `pass`.
+ *
+ * The dollar bound applies where the money is spent: probe selection is the
+ * only model cost in a run, so the cap is checked before each decision call
+ * (see `selectScoutProbes`), and a capped run falls back to the deterministic
+ * rule for its remaining slots and records `costCapHit`. Probe execution has
+ * no model cost and is never withheld on cost. An absent cap is deliberately
+ * not a dollar ceiling: selection is already bounded by call count (at most
+ * three small structured decisions per probe slot, so ≤ 30 per run), and a
+ * team that wants a hard dollar ceiling sets `maxCostUsd`.
  *
  * Fail-open: nothing here throws. A broken profile fails the run (recorded,
  * returned); a broken signal source degrades to "no change signals"; a broken
@@ -222,9 +232,26 @@ export async function runQualityScout(req: ScoutRunRequest, deps: ScoutRunDeps):
     for (const w of set.warnings) warn(w);
 
     const costBefore = deps.takeDecisionCost?.() ?? null;
-    const selection = await timed('select', () => selectScoutProbes(set, deps.decide, { budget: run.budget.maxProbes }));
+    const maxCostUsd = run.budget.maxCostUsd;
+    const selection = await timed('select', () =>
+      selectScoutProbes(set, deps.decide, {
+        budget: run.budget.maxProbes,
+        ...(maxCostUsd !== null && deps.takeDecisionCost
+          ? {
+              cost: {
+                maxUsd: maxCostUsd,
+                // Null means no receipt has carried a cost yet: nothing spent this run.
+                spent: () => (deps.takeDecisionCost?.() ?? 0) - (costBefore ?? 0),
+              },
+            }
+          : {}),
+      }),
+    );
     const costAfter = deps.takeDecisionCost?.() ?? null;
     stages.select.costUsd = costAfter === null ? null : costAfter - (costBefore ?? 0);
+    if (selection.costCapHit) {
+      warn(`cost cap of $${maxCostUsd} reached during selection; ${selection.decisionsCapped} decision(s) answered by the fallback rule`);
+    }
 
     // Freeze every candidate's contract — selected or not — before anything executes.
     let records: ScoutProbeRecord[] = [];
@@ -252,12 +279,6 @@ export async function runQualityScout(req: ScoutRunRequest, deps: ScoutRunDeps):
         if (p.selection.status !== 'selected') continue;
         const left = maxDurationMs - elapsed();
         if (left <= 0) { deadlineHit = true; break; }
-        const spent = stages.select.costUsd ?? 0;
-        if (run.budget.maxCostUsd !== null && spent >= run.budget.maxCostUsd) {
-          warn('cost budget exhausted before execution');
-          deadlineHit = true;
-          break;
-        }
         try {
           const exec = await within(
             runScoutProbe(run, p, profile, deps.ports, { attempts: DEFAULT_SCOUT_PROBE_ATTEMPTS, ...req.probeOptions, now: deps.now }),
@@ -348,6 +369,7 @@ export async function runQualityScout(req: ScoutRunRequest, deps: ScoutRunDeps):
       probesNotExecuted: notExecuted,
       decisionsAsked: selection.decisionsAsked,
       decisionFailures: selection.decisionFailures,
+      costCapHit: selection.costCapHit,
       verdicts: completed.totals.verdicts,
       stages,
       costUsd: stageCosts.length > 0 ? stageCosts.reduce((a, b) => a + b, 0) : null,
