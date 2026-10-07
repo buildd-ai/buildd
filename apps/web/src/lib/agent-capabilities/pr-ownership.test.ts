@@ -88,6 +88,17 @@ describe('verifyPrOwnership — shapes a task owns', () => {
 
 // ── refused shapes ────────────────────────────────────────────────────────────
 
+describe('verifyPrOwnership — worker assigned the mission branch', () => {
+  it('owns a task branch cut from the assigned integration branch', async () => {
+    const v = await verify(input({
+      head: 'task/no-id-in-name',
+      workerBranch: 'mission/integration',
+      task: { id: 'aaaa1111-0000-0000-0000-000000000000', context: { baseBranch: 'mission/integration' } },
+    }));
+    expect(v).toEqual({ owned: true, basis: 'cut_from_assigned_base' });
+  });
+});
+
 describe('verifyPrOwnership — refused', () => {
   it('another, unrelated task’s branch', async () => {
     const v = await verify(input({ head: 'buildd/dddd4444-someone-else', prNumber: 9 }));

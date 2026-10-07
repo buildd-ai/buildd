@@ -668,7 +668,7 @@ export async function POST(req: NextRequest) {
     // attribution, and the DERIVE-DON'T-ACCEPT mission-base check just below)
     // all key off workers.branch, and the generated name claim_task handed
     // this worker was never the real one.
-    if (headOwnership && headOwnership.owned && headOwnership.basis === 'interactive_head' && worker.branch !== head) {
+    if (headOwnership && headOwnership.owned && (headOwnership.basis === 'interactive_head' || headOwnership.basis === 'cut_from_assigned_base') && worker.branch !== head) {
       await db.update(workers).set({ branch: head, updatedAt: new Date() }).where(eq(workers.id, workerId));
       worker.branch = head;
     }
@@ -991,7 +991,10 @@ export async function POST(req: NextRequest) {
     // stacked-plan phase (`isStackedPhaseBase` — its correct base is a
     // sibling task's own branch, not the integration branch).
     if (integrationBase && !isMissionPrOwner && !isStackedPhase) {
-      if (worker.branch && head !== worker.branch) {
+      // A worker assigned the integration branch itself pushed its real work to a
+      // task branch cut from it; that head is legitimate (ownership checked above).
+      const assignedIntegrationBranch = worker.branch === integrationBase && head !== integrationBase;
+      if (worker.branch && head !== worker.branch && !assignedIntegrationBranch) {
         const error = `Task PR head '${head}' does not match this worker's own branch ('${worker.branch}'). A task PR's head must be the branch this worker actually committed to.`;
         // The embedded branch names are exactly what normalizeErrorSignature
         // collapses, so four workers hitting this refusal land on one row

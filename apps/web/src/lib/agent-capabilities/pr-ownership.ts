@@ -47,7 +47,8 @@ export type PrOwnershipBasis =
   | 'stacked_base'
   | 'depends_on'
   | 'task_lineage'
-  | 'interactive_head';
+  | 'interactive_head'
+  | 'cut_from_assigned_base';
 
 export type PrOwnershipVerdict =
   | { owned: true; basis: PrOwnershipBasis }
@@ -161,6 +162,12 @@ export async function verifyPrOwnership(input: PrOwnershipInput, loadLineage: Lo
 
   const ctx = (task.context && typeof task.context === 'object') ? task.context as Record<string, unknown> : {};
   if (ctx.baseBranch === head || ctx.headBranch === head) return { owned: true, basis: 'stacked_base' };
+
+  // The worker was assigned the mission integration branch as its own branch
+  // (workers.branch === context.baseBranch). Its real work lives on a task
+  // branch cut from it, so that branch is the deliverable. Protected heads were
+  // refused above; the integration branch itself is the `own_branch` case.
+  if (workerBranch && ctx.baseBranch === workerBranch) return { owned: true, basis: 'cut_from_assigned_base' };
 
   const deps = Array.isArray(task.dependsOn) ? task.dependsOn.filter((d): d is string => typeof d === 'string') : [];
   if (deps.some(d => branchCarriesTaskId(head, d))) return { owned: true, basis: 'depends_on' };
