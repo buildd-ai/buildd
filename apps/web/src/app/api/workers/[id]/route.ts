@@ -67,7 +67,7 @@ import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
-import { attemptEnded as workflowAttemptEnded, fixCompletionGate, recordReviewVerdict } from '@/lib/workflow/seam';
+import { attemptEnded as workflowAttemptEnded, fixCompletionGate, isRepairRole, recordLocalHead, recordReviewVerdict } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
@@ -1057,6 +1057,11 @@ export async function PATCH(
   if (typeof branch === 'string' && branch.length > 0) updates.branch = branch;
   // Git stats
   if (lastCommitSha !== undefined) updates.lastCommitSha = lastCommitSha;
+  // §6.9 provenance: a repair attempt's reported local head joins its SHA set, so the push that
+  // carries it is recognised as this attempt's by SHA, never by commit author.
+  if (typeof lastCommitSha === 'string' && lastCommitSha && lastCommitSha !== worker.lastCommitSha && worker.taskId) {
+    await recordLocalHead(worker.taskId, lastCommitSha).catch((err) => console.error(`[workflow] recordLocalHead failed for worker ${worker.id}:`, err));
+  }
   if (typeof commitCount === 'number') updates.commitCount = commitCount;
   // Prefer non-zero existing stats over zeros from the runner: if the PR creation route
   // already recorded real diff stats and the runner reports 0 (e.g. wrong git base), keep the real values.
@@ -1639,7 +1644,7 @@ export async function PATCH(
     // attempt may not report `completed` while the PR's GitHub head is still
     // the head its review round was made on. A local commit is never delivery;
     // without this, a fix that never pushed read as done (#3754).
-    if (terminalTaskRow[0]?.deliveryRole === 'fix' && worker.taskId) {
+    if (isRepairRole(terminalTaskRow[0]?.deliveryRole) && worker.taskId) {
       const refusal = await fixCompletionGate({
         task: {
           id: worker.taskId, workspaceId: worker.workspaceId,

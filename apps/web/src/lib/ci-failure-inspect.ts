@@ -30,14 +30,6 @@ export interface CIFailureInfo {
   failedJobNames: string[];
 }
 
-export interface CommitAuthorInfo {
-  /** GitHub login of the commit's associated account, or null if unresolvable. */
-  login: string | null;
-  /** Commit author email from the git metadata. */
-  email: string | null;
-  /** Commit author display name. */
-  name: string | null;
-}
 
 /** Check if a PR is a draft via the GitHub API. Fails open (returns false). */
 export async function checkPrIsDraft(
@@ -77,43 +69,9 @@ export async function fetchPrRetryGate(
   }
 }
 
-// Fetch the commit author/committer identity for the given SHA via the GitHub API.
-// Fails open — returns all-null on any error so the caller can still proceed.
-export async function fetchCommitAuthor(
-  installationId: number,
-  repoFullName: string,
-  sha: string,
-): Promise<CommitAuthorInfo> {
-  const empty: CommitAuthorInfo = { login: null, email: null, name: null };
-  try {
-    const data = await githubApi(installationId, `/repos/${repoFullName}/commits/${sha}`);
-    if (!data || typeof data !== 'object') return empty;
-    const d = data as Record<string, unknown>;
-    const login = typeof d.author === 'object' && d.author !== null
-      ? ((d.author as Record<string, unknown>).login as string | null) ?? null
-      : null;
-    const commitMeta = typeof d.commit === 'object' && d.commit !== null
-      ? (d.commit as Record<string, unknown>).author
-      : null;
-    const email = typeof commitMeta === 'object' && commitMeta !== null
-      ? ((commitMeta as Record<string, unknown>).email as string | null) ?? null
-      : null;
-    const name = typeof commitMeta === 'object' && commitMeta !== null
-      ? ((commitMeta as Record<string, unknown>).name as string | null) ?? null
-      : null;
-    return { login, email, name };
-  } catch {
-    return empty;
-  }
-}
-
-// Returns true when the commit was authored by the buildd GitHub App bot.
-// The bot commits as 'buildd-ai[bot]' with a noreply email containing the same string.
-export function isBuilddWorkerCommit(author: CommitAuthorInfo): boolean {
-  if (author.login && author.login.includes('buildd-ai')) return true;
-  if (author.email && author.email.includes('buildd-ai[bot]')) return true;
-  return false;
-}
+// Commit author identity is deliberately not read here: whose push a head is
+// is decided by provenance (SHA sets, docs/specs/workflow-state-kernel.md §6.9),
+// and the CI budget is spent at dispatch (§5.7), never by author string.
 
 // Fetch failed-job/step names from GitHub Actions for actionable retry context.
 // Returns the failing-step summary plus the run id/url so the agent can pull the

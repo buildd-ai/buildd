@@ -25,6 +25,11 @@ export interface GithubFactReader {
   readPr(repoFullName: string, prNumber: number): Promise<LivePr | null>;
   /** Compare API: is `ancestorSha` contained in `headSha`? */
   contains?(repoFullName: string, ancestorSha: string, headSha: string): Promise<boolean>;
+  /**
+   * Is CI green on `headSha` now (every check suite completed, none failing)?
+   * null = unknown (still running, no suites, unreadable): never read as green.
+   */
+  ciGreen?(repoFullName: string, headSha: string): Promise<boolean | null>;
 }
 
 export type FactInput =
@@ -182,14 +187,19 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
       if (local && live && local !== live.headSha && github?.contains) {
         proof = { liveContainsLocal: await github.contains(fact.repoFullName, local, live.headSha) };
       }
+      // §6.9 provenance input: does the live head descend from the bound attempt's head?
+      let attribution: { descendsFromBound: boolean } | undefined;
+      if (bound?.boundHeadSha && live && bound.boundHeadSha !== live.headSha && !bound.reportedShas.includes(live.headSha) && github?.contains) {
+        attribution = { descendsFromBound: await github.contains(fact.repoFullName, bound.boundHeadSha, live.headSha) };
+      }
       const d = view.delivery;
       const carryForward = d && live && live.headSha !== d.currentHeadSha && (d.state === 'APPROVED' || d.state === 'LANDING' || d.state === 'REPAIRING') && fact.carryForward
         ? await fact.carryForward(live)
         : null;
       return {
-        command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}) },
+        command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(attribution ? { attribution } : {}) },
         ref,
-        payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null, carryForward },
+        payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null, carryForward, attribution: attribution ?? null },
         repoFullName: fact.repoFullName, prNumber: fact.prNumber,
       };
     }

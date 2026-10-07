@@ -35,6 +35,15 @@ export function toLivePr(pr: GithubPull | null | undefined): LivePr | null {
   };
 }
 
+const PASSING = new Set(['success', 'neutral', 'skipped']);
+
+/** §10.5 revalidation of a CI repair: green only when every suite completed and none failed. */
+export function ciGreenFromSuites(suites: Array<{ status?: string; conclusion?: string | null }> | null | undefined): boolean | null {
+  if (!suites || suites.length === 0) return null;
+  if (suites.some((x) => x.status !== 'completed')) return null;
+  return suites.every((x) => PASSING.has(String(x.conclusion ?? '')));
+}
+
 export function githubReader(installationId: number, api: typeof githubApi = githubApi): GithubFactReader {
   return {
     async readPr(repoFullName, prNumber) {
@@ -42,6 +51,14 @@ export function githubReader(installationId: number, api: typeof githubApi = git
         return toLivePr(await api(installationId, `/repos/${repoFullName}/pulls/${prNumber}`) as GithubPull);
       } catch (err) {
         console.warn(`[workflow] live read of ${repoFullName}#${prNumber} failed:`, err);
+        return null;
+      }
+    },
+    async ciGreen(repoFullName, headSha) {
+      try {
+        const data = await api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-suites`) as { check_suites?: Array<{ status?: string; conclusion?: string | null }> } | null;
+        return ciGreenFromSuites(data?.check_suites);
+      } catch {
         return null;
       }
     },

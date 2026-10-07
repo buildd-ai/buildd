@@ -10,10 +10,13 @@
  * this action offers the same diagnose-only path for a drift failure that the
  * webhook does.
  *
- * Unlike the automatic path, a deliberate human click is never declined for
- * exhausted or disabled retries — same reasoning as `apply-recommendation`'s
- * fresh budget: the automatic loop's counter does not bind a one-off human
- * decision.
+ * A PR whose delivery the workflow kernel owns takes the kernel door instead
+ * (docs/specs/workflow-state-kernel.md §5.7 rule 5): the click is a
+ * trigger=human attempt under the workspace's configured cap, and one past it
+ * is a visible BudgetExtended transition by this person — never a fresh
+ * "iteration 0" budget. The legacy path below runs only for PRs the kernel
+ * does not own (opened before cutover, or released by the kill switch); it
+ * keeps the one-off human budget it always had.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -24,7 +27,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { githubApi } from '@/lib/github';
 import { resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
-import { checkPrIsDraft, fetchCIFailureLogs, fetchCommitAuthor, isBuilddWorkerCommit } from '@/lib/ci-failure-inspect';
+import { checkPrIsDraft, fetchCIFailureLogs } from '@/lib/ci-failure-inspect';
+import { requestCiRetry } from '@/lib/workflow/seam';
 import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-diagnose';
 import { buildCIRetryTask } from '@/lib/ci-retry';
 import { policyValue } from '@/lib/policy-overrides';
@@ -134,6 +138,28 @@ export async function POST(
   const isDraft = await checkPrIsDraft(installationId, repoFullName, prNumber);
   if (isDraft) return bad(`PR #${prNumber} is a draft — not ready for CI feedback`, 409);
 
+  // Workflow kernel door: one authority per delivery, so the legacy dispatch below never runs beside it.
+  const configuredMax = (workspace.gitConfig as { maxCiRetries?: number } | null)?.maxCiRetries;
+  const kernel = await requestCiRetry({
+    workspaceId,
+    repoFullName,
+    prNumber,
+    installationId,
+    actor: `human:${user.id}`,
+    maxAttempts: typeof configuredMax === 'number' ? configuredMax : policyValue('maxCiRetries'),
+    reason: typeof body?.reason === 'string' && body.reason.trim() ? body.reason.trim() : 'Fix CI from the dashboard',
+  });
+  if (kernel.handled) {
+    const r = kernel.result;
+    if (r.result === 'applied' && r.decision.toState === 'REPAIRING') {
+      return NextResponse.json({ ok: true, dispatched: true, diagnoseOnly: false, taskId: kernel.attemptTaskId, budgetExtended: kernel.extended });
+    }
+    if (r.result === 'rejected' && r.reason === 'fix_in_flight') {
+      return NextResponse.json({ ok: true, dispatched: false, inFlight: true, taskId: null, diagnoseOnly: false });
+    }
+    return bad(`The workflow kernel did not dispatch a CI fix for PR #${prNumber}: ${'reason' in r ? r.reason : r.result}`, 409, { current: 'current' in r ? r.current : null });
+  }
+
   const { ownerWorker, originalTask } = await resolveOrAdoptPrOwner({
     workspaceId,
     installationId,
@@ -144,10 +170,7 @@ export async function POST(
   });
 
   const headSha = pr.head?.sha as string;
-  const [ciLogs, commitAuthor] = await Promise.all([
-    fetchCIFailureLogs(installationId, repoFullName, headSha),
-    fetchCommitAuthor(installationId, repoFullName, headSha),
-  ]);
+  const ciLogs = await fetchCIFailureLogs(installationId, repoFullName, headSha);
   const failureContext = ciLogs.summary ||
     `CI failing on ${repoFullName} PR #${prNumber} (SHA: ${headSha})`;
 
@@ -217,9 +240,6 @@ export async function POST(
     });
   }
 
-  const isWorkerCommit = isBuilddWorkerCommit(commitAuthor);
-  const foreignHeadSha = !isWorkerCommit;
-
   // A deliberate human click is never a dead end — fresh iteration budget,
   // same reasoning as apply-recommendation's APPLY_MAX_ITERATIONS. This
   // ignores the workspace's maxCiRetries/exhaustion counter on purpose: that
@@ -230,7 +250,7 @@ export async function POST(
       title: originalTask.title,
       description: originalTask.description,
       workspaceId,
-      context: { iteration: 0 },
+      context: {},
       missionId: originalTask.missionId,
     },
     worker: { id: ownerWorker.id, branch: ownerWorker.branch, prNumber },
@@ -240,10 +260,7 @@ export async function POST(
     ciFailedJobId: ciLogs.failedJobId,
     ciRunUrl: ciLogs.runUrl,
     workspaceMaxCiRetries: policyValue('maxCiRetries'),
-    foreignHeadSha,
-    foreignCommitAuthor: foreignHeadSha
-      ? (commitAuthor.login ?? commitAuthor.name ?? commitAuthor.email ?? 'unknown')
-      : undefined,
+    attemptsUsed: 0,
   });
 
   if (!retryTask) {
