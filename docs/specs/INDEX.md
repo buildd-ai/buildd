@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (54)
+## Active (55)
 
 ### auth (5)
 
@@ -26,10 +26,12 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Usage & Cost Accounting](./usage-and-cost-accounting.md) · @max — verified 2026-08-30
   Worker usage MUST be recorded only from the worker's own report and attributed to one task, team-month and provider pool, and a budget-blocked claim MUST answer budget_exhausted with a reset time, not race_lost.
 
-### integrations (4)
+### integrations (5)
 
 - [External Cron Triggers](./external-cron-triggers.md) · @max — verified 2026-10-05
   Every /api/cron/* route MUST have exactly one trigger whose cadence is declared in version control, so a route that never fires is a reviewable diff rather than a silent production gap.
+- [Model Policy Cells and the Dial](./model-policy-cells.md) · @max — verified 2026-10-07
+  Each tier x surface cell MUST serve its primary until the team's own graded coding outcomes show an alternate keeps up within the dial's tolerance, and MUST revert, recorded, when it slips.
 - [Standalone Model Policy](./model-policy.md) · @max — verified 2026-10-05
   A caller MUST get provider, model and effort from surface (chat or coding) plus tier alone, locally or from the policy service, with a fallback answer always and no provider secret ever crossing the boundary.
 - [Webhook Dataflow](./webhook-dataflow.md) · @max — verified 2026-10-03

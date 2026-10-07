@@ -42,6 +42,9 @@ export interface PoolRow {
   incumbentFloor: number;
   explorationCap: number;
   frozenAt: Date | null;
+  /** `dial` mode: the cell's dial and its stored state (`./tier-dial.ts`). */
+  dial: number;
+  dialState: Record<string, unknown> | null;
 }
 
 export interface ArmRow {
@@ -77,6 +80,8 @@ const poolColumns = {
   incumbentFloor: tierPools.incumbentFloor,
   explorationCap: tierPools.explorationCap,
   frozenAt: tierPools.frozenAt,
+  dial: tierPools.dial,
+  dialState: tierPools.dialState,
 };
 
 /** WHERE clause for one team pool. */
@@ -94,6 +99,15 @@ export async function loadPool(teamId: string, poolId: string): Promise<{ pool: 
   if (!pool) return null;
   const arms = await db.select().from(tierPoolArms)
     .where(and(eq(tierPoolArms.poolId, poolId), ne(tierPoolArms.status, 'removed')));
+  return { pool: pool as PoolRow, arms: arms as ArmRow[] };
+}
+
+/** The team pool for (tier, surface), with its live arms, or null when none exists yet. */
+export async function findTeamPool(teamId: string, tier: string, surface: PoolSurface): Promise<{ pool: PoolRow; arms: ArmRow[] } | null> {
+  const [pool] = await db.select(poolColumns).from(tierPools).where(teamPoolScope(teamId, tier, surface)).limit(1);
+  if (!pool) return null;
+  const arms = await db.select().from(tierPoolArms)
+    .where(and(eq(tierPoolArms.poolId, pool.id), ne(tierPoolArms.status, 'removed')));
   return { pool: pool as PoolRow, arms: arms as ArmRow[] };
 }
 

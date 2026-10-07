@@ -32,7 +32,7 @@ import { eq } from 'drizzle-orm';
 export type { Tier, TierProvider, TierEntry, TierSurface } from './model-tier-defaults';
 export { TIER_DEFAULTS, TIERS, TIER_SURFACES } from './model-tier-defaults';
 import type { Tier, TierEntry, TierProvider, TierSurface } from './model-tier-defaults';
-import { TIERS, bundledTierEntry } from './model-tier-defaults';
+import { TIERS, TIER_SURFACES, bundledTierEntry } from './model-tier-defaults';
 import { resolveRegistryTier, resolveRemoteTier, tierEntryFromRegistry, tierEntryFromRemote, type TierPolicyMeta } from './model-policy';
 import { pickTierModel } from './model-catalog';
 import { getCachedOpenRouterCatalog } from './model-catalog-cache';
@@ -212,6 +212,26 @@ async function loadTeamRows(teamId: string): Promise<RegistryRow[] | null> {
     // DB unavailable — fall through to the default layer.
     return null;
   }
+}
+
+/**
+ * Workspaces with their own registry row per tier x surface (a NULL-surface
+ * workspace row overrides both surfaces). These keep their own model whatever
+ * the team cell's dial does. Empty when the DB is unreachable.
+ */
+export async function workspaceOverrideCounts(teamId: string): Promise<Map<string, number>> {
+  const rows = (await loadTeamRows(teamId)) ?? [];
+  const seen = new Map<string, Set<string>>();
+  for (const r of rows) {
+    if (!r.workspaceId) continue;
+    for (const surface of r.surface ? [r.surface] : TIER_SURFACES) {
+      const key = `${r.tier}:${surface}`;
+      const set = seen.get(key) ?? new Set<string>();
+      set.add(r.workspaceId);
+      seen.set(key, set);
+    }
+  }
+  return new Map([...seen].map(([k, v]) => [k, v.size]));
 }
 
 /**
