@@ -188,7 +188,10 @@ attempts that share one timestamp. `&scenario=<key>` shows one. Its DOM assertio
 `RunActivityFixture.dom.test.tsx`; its 360px layout gate (no sideways scroll, tap targets ≥ 44px)
 is `scripts/qa/plans/run-activity.json`, dispatched with
 `gh workflow run visual-qa.yml --ref <branch> -f plan=scripts/qa/plans/run-activity.json -f viewport=360x780`
-(and again with `-f viewport=desktop`). A run with a layout violation exits 4.
+(and again with `-f viewport=desktop`). A layout-gated state exits 4 on a layout violation,
+a failed prerequisite step, or a measurement error. Screenshots and failure metadata are
+written before exit; `scripts/qa/capture.test.ts` guards that behavior without requiring
+a browser installation in the unit-test job.
 
 ## data-testid Conventions
 

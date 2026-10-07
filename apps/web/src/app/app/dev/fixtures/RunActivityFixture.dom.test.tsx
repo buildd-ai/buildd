@@ -3,10 +3,9 @@
  * the DOM. Layout (overflow at 360px, 44px tap targets) cannot be measured here;
  * scripts/qa/plans/run-activity.json asserts it in a real browser.
  *
- * `test.todo` entries are the assertions the mission's build tasks turn on as
- * they land: A = lifecycle evidence (c29b48fc), B = steering ack states
- * (4b58ca10), C = attempt order + mobile rail (5b3f9af4). Runs in its own
- * process (scripts/run-unit-tests.ts), so the globals stay here.
+ * Lifecycle and steering assertions use the merged mission components. The
+ * remaining ordering assertion is activated when step C lands. Runs in its
+ * own process (scripts/run-unit-tests.ts), so the globals stay here.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register({ url: 'http://localhost/app/dev/fixtures?state=run-activity' });
