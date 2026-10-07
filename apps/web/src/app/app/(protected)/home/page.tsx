@@ -25,7 +25,7 @@ import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
-import { isActionableChip, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { isActionableChip, kernelInboxMembership, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { actionCardTaskLink } from '@/lib/action-card-context';
@@ -1309,11 +1309,17 @@ export default async function HomePage({
                 };
               });
 
+            // Kernel-owned deliveries decide membership themselves (S36).
+            const inboxDeliveryViews = await getDeliveryViewsForTasks(
+              openPrWorkers.flatMap(w => (w.taskId ? [w.taskId] : [])),
+            );
             escalationInbox = openPrWorkers
               .filter(w => {
                 const taskTitle = (w.task as any)?.title ?? '';
                 if (taskTitle.startsWith('[smoke-test')) return false;
                 if (w.taskId && supersededTaskIds.has(w.taskId)) return false;
+                const kernelView = w.taskId ? inboxDeliveryViews.get(w.taskId) : undefined;
+                if (kernelView && kernelView.owner !== 'landing') return kernelInboxMembership(kernelView, false);
                 // Include if a conflict retry is live (renders as RESOLVING)
                 if (w.prNumber != null && conflictRetryMap.has(`${w.workspaceId}:${w.prNumber}`)) return true;
                 // Dead zone exhausted — all retries failed, PR needs human action (BLOCKED)
@@ -1398,7 +1404,7 @@ export default async function HomePage({
                   leaseState,
                   escalationReason: deadZoneInfo
                     ? `Agents failed ${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts. Resolve the conflict yourself.`
-                    : (gate?.reason ?? null),
+                    : (gate?.reason ?? (w.taskId ? inboxDeliveryViews.get(w.taskId)?.detail ?? inboxDeliveryViews.get(w.taskId)?.headline : null) ?? null),
                   // Dead-zone (conflict retries exhausted) has its own dedicated
                   // CTA set below and is never sourced from a reviewer note —
                   // keep it out of the fix-dispatch branch even if a stale
