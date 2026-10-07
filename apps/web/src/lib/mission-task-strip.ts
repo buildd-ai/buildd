@@ -46,15 +46,31 @@ const ERROR: ReadonlySet<StripState> = new Set(['ci_failed', 'fixing', 'failed']
 export const isErrorState = (s: StripState) => ERROR.has(s);
 
 /**
- * A cell's colour tone: the one landed/failed/open vocabulary every surface
- * (strip cell fill, outline, tick digit, drawer border+pill) renders from, so
- * a failed cell can never read as "open" in one place and "failed" in another.
+ * A cell's colour tone: the one landed/failed/open/held vocabulary every
+ * surface (strip cell, tick digit, drawer border+pill, selection) renders
+ * from, so a failed cell can never read as "open" in one place and "failed"
+ * in another. `active` is work in motion (running, in review, needs you);
+ * `open` is not started (ready); `held` is blocked or queued behind work.
  */
-export type StripTone = 'ok' | 'error' | 'open';
+export type StripTone = 'ok' | 'error' | 'active' | 'open' | 'held';
 export function stripTone(state: StripState): StripTone {
   if (state === 'landed') return 'ok';
   if (isErrorState(state)) return 'error';
-  return 'open';
+  if (isHeldState(state)) return 'held';
+  if (state === 'ready') return 'open';
+  return 'active';
+}
+
+/**
+ * Raw execution state → mission presentation state, named. A task whose raw
+ * status is `blocked`/`queued` ("blocked on dependency") projects to the
+ * mission-level HELD bucket; everything else keeps its own state. Raw state
+ * stays on `BoardTask.status`; this is the only translation.
+ */
+export type StripBucket = 'landed' | 'failed' | 'open' | 'held' | 'active';
+export function stripBucket(state: StripState): StripBucket {
+  const tone = stripTone(state);
+  return tone === 'ok' ? 'landed' : tone === 'error' ? 'failed' : tone;
 }
 
 /** Active slots whose state is the failed/error bucket, in strip order. */
@@ -62,17 +78,13 @@ export function errorIndices(slots: readonly StripSlot[]): number[] {
   return slots.flatMap((s, i) => (s.kind === 'task' && isErrorState(s.state) ? [i] : []));
 }
 
-const READINESS: Record<StripState, number> = {
-  landed: 0, review: 1, running: 2, fixing: 2, waiting: 2, ci_failed: 3, failed: 3, ready: 4, blocked: 5, queued: 6,
-};
-
 // ── Order (§2) ──────────────────────────────────────────────────────────────
 
 /**
- * Component (by its earliest member), then level, then readiness, phase,
- * createdAt, id. Every on-strip edge raises the level, and component and level
- * outrank every state key, so dependencies sit left of dependents (ORD-1) and
- * a state change only moves a cell within its own level (ORD-3).
+ * Component (by its earliest member), then level, phase, createdAt, id. Every
+ * on-strip edge raises the level, so dependencies sit left of dependents
+ * (ORD-1). No key reads runtime state: a status change never moves a cell,
+ * so ‹ / › and the arrow keys always step to the adjacent rendered cell.
  */
 export function stripOrder(model: StripModel): string[] {
   const ids = model.phases.flatMap(p => p.taskIds);
@@ -83,7 +95,6 @@ export function stripOrder(model: StripModel): string[] {
     const f = first.get(t.component);
     if (!f || t.createdAt < f.createdAt || (t.createdAt === f.createdAt && t.id < f.id)) first.set(t.component, t);
   }
-  const state = new Map(ids.map(id => [id, stripState(model, id)]));
   const cmpId = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
   return [...ids].sort((a, b) => {
     const ta = tasks[a];
@@ -94,7 +105,6 @@ export function stripOrder(model: StripModel): string[] {
       return fa.createdAt - fb.createdAt || cmpId(fa.id, fb.id);
     }
     return ta.level - tb.level
-      || READINESS[state.get(a)!] - READINESS[state.get(b)!]
       || (ta.phaseIndex ?? Infinity) - (tb.phaseIndex ?? Infinity)
       || ta.createdAt - tb.createdAt
       || cmpId(a, b);

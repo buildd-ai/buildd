@@ -10,7 +10,7 @@ import type { MissionBoardModel } from './mission-board';
 import {
   activeIndices, defaultStripSelection, errorIndices, heldCount, nextOpenIndex, slotMarks, stepIndex,
   stripBlockerCount, stripCaretLeft, stripKeyTarget, stripMarks, stripOrder, stripOrdinal, stripSelectionReason,
-  stripSlots, stripState, stripTick, stripTone, type StripMark,
+  stripBucket, stripSlots, stripState, stripTick, stripTone, type StripMark,
 } from './mission-task-strip';
 
 /** The strip order as task tokens. */
@@ -337,14 +337,14 @@ describe('one adjacency derivation (AC-20, AC-21)', () => {
 });
 
 describe('TONE-1: failed is its own tone, not "open" (the chip-vs-outline gotcha one layer up)', () => {
-  it('stripTone buckets ci_failed/fixing/failed as error, landed as ok, everything else open', () => {
+  it('stripTone: error, ok, held (gray), open (ready), active (in motion)', () => {
     expect(stripTone('failed')).toBe('error');
     expect(stripTone('ci_failed')).toBe('error');
     expect(stripTone('fixing')).toBe('error');
     expect(stripTone('landed')).toBe('ok');
-    for (const s of ['review', 'running', 'waiting', 'ready', 'blocked', 'queued'] as const) {
-      expect(stripTone(s)).toBe('open');
-    }
+    for (const s of ['review', 'running', 'waiting'] as const) expect(stripTone(s)).toBe('active');
+    for (const s of ['blocked', 'queued'] as const) expect(stripTone(s)).toBe('held');
+    expect(stripTone('ready')).toBe('open');
   });
 
   it('a failed task counts as active (it still needs a look) but not as "open": the header must split them', () => {
@@ -359,5 +359,51 @@ describe('TONE-1: failed is its own tone, not "open" (the chip-vs-outline gotcha
     expect(failed.every(i => slots[i].kind === 'task' && stripTone(slots[i].state) === 'error')).toBe(true);
     // The count a header shows as "open" must exclude the failed one.
     expect(active.length - failed.length).toBe(1);
+  });
+});
+
+const EIGHT: DagSpec = {
+  tasks: ['01', '02', '03', '04', '05', '06', '07', '08'],
+  edges: { '06': ['05'], '07': ['06'], '08': ['07'] },
+  states: { '01': 'landed', '02': 'failed', '03': 'failed', '04': 'failed' },
+};
+
+describe('the 8-node mission: one projection for every surface', () => {
+  const model = dagBoard(EIGHT);
+  const slots = stripSlots(model);
+  const buckets = slots.map(s => stripBucket(s.state));
+
+  it('projects 1 landed, 3 failed, 1 open, 3 held', () => {
+    const count = (b: string) => buckets.filter(x => x === b).length;
+    expect([count('landed'), count('failed'), count('open'), count('held')]).toEqual([1, 3, 1, 3]);
+    expect(errorIndices(slots).length).toBe(3);
+    expect(heldCount(slots)).toBe(3);
+  });
+
+  it('a held task keeps its raw status separate from its held projection', () => {
+    const id = dagId(EIGHT, '08');
+    expect(model.tasks[id].status).toBe('blocked');
+    expect(stripBucket(stripState(model, id))).toBe('held');
+    expect(stripTone(stripState(model, id))).toBe('held');
+  });
+});
+
+describe('strip order is stable under state changes (ORD-3, stepping)', () => {
+  const peers: DagSpec = { tasks: ['A', 'B', 'C', 'D', 'E'], states: {} };
+  const before = dagBoard(peers);
+  const after = dagBoard({ ...peers, states: { A: 'failed', B: 'running', C: 'landed', D: 'review', E: 'pending' } });
+
+  it('same-level peers do not reorder when their states change', () => {
+    expect(stripOrder(after)).toEqual(stripOrder(before));
+  });
+
+  it('› from a selected cell lands on the cell to its right, before and after', () => {
+    for (const m of [before, after]) {
+      const slots = stripSlots(m);
+      const sel = slots.findIndex(s => s.id === dagId(peers, 'B'));
+      expect(slots[stepIndex(sel, 1, slots.length)].id).toBe(dagId(peers, 'C'));
+      expect(slots[stripKeyTarget('ArrowRight', sel, slots.length)!].id).toBe(dagId(peers, 'C'));
+      expect(slots[stripKeyTarget('ArrowLeft', sel, slots.length)!].id).toBe(dagId(peers, 'A'));
+    }
   });
 });
