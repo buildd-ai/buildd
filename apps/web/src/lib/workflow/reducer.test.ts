@@ -86,6 +86,7 @@ const APPLIED: Array<[string, KernelView, Command, string]> = [
   ['T27 ReviewRoundFailed', V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R()]), { type: 'ReviewRoundFailed', actor: 'reviewer', roundId: 'r1', reason: 'prose_verdict', maxContractRetries: 2 }, 'AWAITING_REVIEW'],
   ['CompositionAttested', V(D({ state: 'AWAITING_REVIEW' })), { type: 'CompositionAttested', actor: 'kernel', attestation: att, constituents: attEv }, 'APPROVED'],
   ['BudgetExtended', V(D({ state: 'ESCALATED', stateReason: 'ci_exhausted' }), [], [1, 2, 3].map((n) => A({ id: `c${n}`, family: 'ci', attemptNo: n, status: 'ended' }))), { type: 'BudgetExtended', actor: 'human:u', family: 'ci', headSha: 'H1', signature: 'sig', maxAttempts: 3, reason: 'one more try' }, 'REPAIRING'],
+  ['MechanicalRepairFailed', V(D({ state: 'REPAIRING', stateReason: 'behind', boundAttemptId: 'm1' }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', taskId: null, triggerReason: 'behind' })]), { type: 'MechanicalRepairFailed', actor: 'effect:refresh_branch', attemptId: 'm1', reason: 'update-branch refused' }, 'ESCALATED'],
   ['RepairNotNeeded', V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig' })]), { type: 'RepairNotNeeded', actor: 'kernel', attemptId: 'c1', reason: 'ci_green' }, 'APPROVED'],
 ];
 
@@ -248,7 +249,8 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     expect(cf.toState).toBe('APPROVED');
     expect(cf.patch.approvedHeads).toEqual(['H1', 'H2']);
     expect(cf.attempts[0]).toMatchObject({ attemptId: 'm1', set: { outcome: 'delivered', pushedHeadSha: 'H2' } });
-    expect(applied(h(v, 'H2', { proof: { liveContainsLocal: false, contentDiffChanged: true } })).toState).toBe('AWAITING_REVIEW');
+    // The platform's own refresh_branch is an own refresh even when the caller did not say so (T13).
+    expect(applied(h(v, 'H2', { proof: { liveContainsLocal: false, contentDiffChanged: true } })).toState).toBe('APPROVED');
     // A known non-descendant while the attempt runs is a foreign push: recorded, the attempt still decides.
     const foreign = applied(h(v, 'H2', { attribution: { descendsFromBound: false } }));
     expect(foreign.toState).toBe('REPAIRING');
@@ -563,7 +565,7 @@ describe('T8 FixDispatched / T9 FixClaimed (S7, S25, §10.5)', () => {
     expectResult(claim(V(D({ state: 'FIXING', boundAttemptId: 'a1' }), [decidedRC], [A({ status: 'running' })])), 'duplicate', 'already_claimed');
     // A CI attempt is claimed by the repair path: not bound here (the delivery is CHANGES_REQUESTED), so it skips.
     expectResult(claim(cr([A({ family: 'ci' })])), 'rejected', 'fix_superseded');
-    expectResult(claim(cr([A({ family: 'conflict' })])), 'rejected', 'unknown_attempt');
+    expectResult(claim(cr([A({ family: 'conflict' })])), 'rejected', 'fix_superseded');
     expectResult(claim(V(D({ state: 'AWAITING_REVIEW' }), [], [A()])), 'stale', 'state_moved');
     expectResult(claim(cr([A({ status: 'running' })])), 'rejected', 'attempt_not_queued');
   });
@@ -632,6 +634,69 @@ describe('T12 ConflictObserved: mechanical first (S27, AC-18)', () => {
     expectResult(co(base, { isDependencyBot: true }), 'rejected', 'dependency_bot_pr');
     expectResult(co(base, { headSha: 'H0' }), 'stale', 'head_not_current');
     expectResult(co(V(D({ state: 'WORKING' }))), 'stale', 'state_not_allowed');
+  });
+  test('a mechanical refusal carries its evidence into the agent dispatch payload', () => {
+    const v = V(D({ state: 'REPAIRING', stateReason: 'conflict', boundAttemptId: 'm1' }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', status: 'queued' })]);
+    const dec = applied(co(v, { mechanicalRefused: true, refusal: { reason: 'merge conflict', semantic: null } }));
+    expect(dec.effects.find((e) => e.kind === 'dispatch_conflict_fix')!.payload).toMatchObject({ repairKind: 'conflict', refusal: { reason: 'merge conflict' } });
+  });
+});
+
+describe('Slice B part 2: conflict family on the live path (S15, S25, S27)', () => {
+  const mech = (o: Partial<AttemptSnapshot> = {}) => A({ id: 'm1', family: 'conflict', mode: 'mechanical', status: 'queued', taskId: null, triggerReason: 'behind', ...o });
+  const repairing = (o: Partial<DeliverySnapshot> = {}, attempts: AttemptSnapshot[] = [mech()]) =>
+    V(D({ state: 'REPAIRING', stateReason: 'behind', boundAttemptId: attempts[0]?.id ?? null, prNumber: 7, ...o }), [], attempts);
+
+  test('the platform refresh landing a new head ends the mechanical row (delivered) and, approved, carries the approval forward without a round', () => {
+    const v = repairing({ approvedHeads: ['H1'], approvalBasis: 'verdict' });
+    const dec = applied(run(v, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), attribution: { descendsFromBound: true } }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch).toMatchObject({ currentHeadSha: 'H2', approvedHeads: ['H1', 'H2'], boundAttemptId: null });
+    expect(dec.attempts[0]).toMatchObject({ op: 'update', attemptId: 'm1', set: { outcome: 'delivered', status: 'ended', pushedHeadSha: 'H2' } });
+    expect(effectKinds(dec)).not.toContain('dispatch_review');
+  });
+
+  test('a mechanical renumber is not an own refresh: an approved head gets a delta round', () => {
+    const v = repairing({ stateReason: 'migration', approvedHeads: ['H1'], approvalBasis: 'verdict' }, [mech({ family: 'migration', triggerReason: 'migration' })]);
+    const dec = applied(run(v, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), attribution: { descendsFromBound: true } }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.attempts[0]).toMatchObject({ set: { status: 'ended', outcome: 'delivered' } });
+  });
+
+  test('an unapproved head refreshed by the platform goes to review at the new head', () => {
+    const dec = applied(run(repairing(), { type: 'HeadObserved', actor: 'webhook', live: live('H2'), attribution: { descendsFromBound: true } }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(effectKinds(dec)).toContain('dispatch_review');
+  });
+
+  test('FixClaimed on a conflict agent attempt: proceeds while still conflicting; resolved meanwhile → skipped and the delivery resumes', () => {
+    const agent = A({ id: 'g1', family: 'conflict', mode: 'agent', status: 'queued', triggerReason: 'conflict', taskId: 'g1' });
+    const v = repairing({ stateReason: 'conflict', boundAttemptId: 'g1', approvedHeads: ['H1'], approvalBasis: 'verdict' }, [agent]);
+    const go = applied(run(v, { type: 'FixClaimed', actor: 'claim:g1', attemptId: 'g1', revalidation: { live: live('H1'), approved: false } }));
+    expect(go.toState).toBe('REPAIRING');
+    expect(go.attempts[0]).toMatchObject({ set: { status: 'running' } });
+    const resolved = applied(run(v, { type: 'FixClaimed', actor: 'claim:g1', attemptId: 'g1', revalidation: { live: live('H1'), approved: false, conflictResolved: true } }));
+    expect(resolved.toState).toBe('APPROVED');
+    expect(resolved.evidence.skipped).toBe('conflict_resolved');
+    expect(resolved.attempts[0]).toMatchObject({ set: { status: 'skipped', outcome: 'noop' } });
+    expect(resolved.patch).toMatchObject({ mergeable: 'clean', mergeableHeadSha: 'H1' });
+  });
+
+  test('MechanicalRepairFailed (operational, not a conflict) ends the row and hands landing to a person; never an agent', () => {
+    const dec = applied(run(repairing(), { type: 'MechanicalRepairFailed', actor: 'effect:refresh_branch', attemptId: 'm1', reason: 'update-branch failed 3 times' }));
+    expect(dec.toState).toBe('ESCALATED');
+    expect(dec.patch).toMatchObject({ stateReason: 'landing_needs_human', boundAttemptId: null });
+    expect(dec.attempts[0]).toMatchObject({ op: 'update', attemptId: 'm1', set: { status: 'ended', outcome: 'failed' } });
+    expect(effectKinds(dec)).toContain('notify');
+    expect(effectKinds(dec)).not.toContain('dispatch_conflict_fix');
+    expectResult(run(repairing({ boundAttemptId: 'other' }), { type: 'MechanicalRepairFailed', actor: 'x', attemptId: 'm1', reason: 'r' }), 'stale', 'attempt_not_bound');
+    expect(stableIdempotencyKey({ type: 'MechanicalRepairFailed', actor: 'x', attemptId: 'm1', reason: 'r' }, D())).toBe('mechfail:m1');
+  });
+
+  test('RepairNotNeeded on a mechanical row (already up to date) resumes and records mergeable clean', () => {
+    const dec = applied(run(repairing({ approvedHeads: ['H1'], approvalBasis: 'verdict' }), { type: 'RepairNotNeeded', actor: 'effect:refresh_branch', attemptId: 'm1', reason: 'up_to_date' }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch).toMatchObject({ mergeable: 'clean', mergeableHeadSha: 'H1' });
   });
 });
 

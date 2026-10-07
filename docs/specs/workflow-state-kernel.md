@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/pr-review-status.ts]
 related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts]
+verified_by: [apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts]
 supersedes: []
 ---
 
@@ -39,8 +39,9 @@ is filed by the `dispatch_ci_fix` effect, pushes are attributed by SHA set (§6.
 `isBuilddWorkerCommit` is gone. **Part 3 adds the read side**: a `DeliveryView` with
 one owner of the next move feeds Home, the task page and the mission failure
 reading; the PR activity comment is regenerated from transitions; release and
-integration PRs are checked by composition; S35–S37 hold. §13.1 and §13.2 list what
-landed and the deviations; §14 the cutover and the kill switch.
+integration PRs are checked by composition; S35–S37 hold. **Slice B part 2 adds the
+conflict and migration families**, mechanical first (§13.4). §13.1, §13.2 and §13.4
+list what landed and the deviations; §14 the cutover and the kill switch.
 
 **Capability statement.** For every deliverable that is meant to reach GitHub as a
 pull request, exactly one row (the *delivery*) records where the work stands. That row
@@ -1138,6 +1139,78 @@ Deviations, each deliberate:
    `REVIEW_RUNNING`, `FIXING_REVIEW`, `FIXING_CI` and `RESOLVING`, and carries the
    headline as its reason line, so no card component changed.
 
+### 13.4 What Slice B part 2 shipped, and its deviations
+
+Shipped live (kill switch only), for kernel-owned deliveries; a PR the kernel does
+not own keeps the legacy conflict retry unchanged:
+
+- **One door (T12).** Every caller that decided a conflict retry (landing, the merge
+  routes, auto-merge, the dead-zone sweep, the landing-action tap and the PR-opened
+  migration-collision dispatch) reaches `dispatchConflictRetry`, which now asks
+  `observeConflict` (`seam.ts`) first. For a kernel-owned PR it takes a live read of
+  `mergeable_state` now (the door's own reading is used only when GitHub says
+  `unknown`), records the head first, and applies `ConflictObserved`. The legacy
+  decision does not run: no `conflictIteration` counter, no spent-key release, no
+  behind-only refresh, no task insert. `kernelConflictOutcome` maps the answer onto the
+  `DispatchConflictRetryResult` the doors already understand (a landed mechanical
+  refresh reads as `branchUpdated`, an agent attempt as `dispatched` with its task, a
+  spent budget as `exhausted`).
+- **Mechanical first (§6.7), in `conflict-retry-effects.ts`** (composed into
+  `WORKFLOW_EFFECT_HANDLERS`). `refresh_branch` runs `refreshBehindPr` pinned to the
+  bound head (GitHub update-branch with `expected_head_sha`, so the semantic check, the
+  single-flight lease and the operational bound still apply). Success: the new head
+  arrives through T3, is attributed to the mechanical row by §6.9, ends it `delivered`,
+  and, on an approved head, carries the approval forward as the platform's own refresh
+  (T13, no new round). GitHub's textual-conflict 422 or a same-symbol overlap refuses
+  the mechanical row and allocates the agent attempt (`ConflictObserved{mechanicalRefused}`,
+  with the refusal handed to the task). Up to date: `RepairNotNeeded`. An operational
+  dead end (update-branch kept failing, refused, semantic overlap unverifiable) is the
+  new `MechanicalRepairFailed` command: the row ends `failed` and landing needs a
+  person, never an agent.
+- **`renumber_migration`** re-verifies the collision against live trees with the
+  migration inspector (which compares only open PRs into the same base, so a mission
+  branch lagging trunk is not a collision: `RepairNotNeeded(collision_resolved)`), then
+  renames the migration through the git data API into the next index past the PR's
+  head, its base, the trunk and the colliding PR's head. The renamed path points at the
+  same blob, so it is byte-identical by construction, and the ref update is
+  fast-forward only. A directory with a drizzle journal (`meta/`) is refused
+  (`journal_regenerate_required`) and becomes an agent attempt with the renumber recipe.
+- **`dispatch_conflict_fix`** revalidates at dispatch (§10.5: PR open, head still the
+  bound head, still conflicting now, or the collision still there) and files the
+  legacy-shaped conflict task with `delivery_role = conflict_fix`; its task id is the
+  attempt id, and its title and "attempt N of M" come from the ledger row.
+  `conflict_fix` is a repair role, so the §9 completion gate (`delivery_not_advanced`),
+  `recordLocalHead` provenance and T4 apply. Claim-time revalidation: a conflict that
+  GitHub no longer reports cancels the task as skipped and resumes the delivery.
+  Conflict exhaustion escalates through `escalateConflictExhaustion`.
+- **S37 under the kernel.** The kernel's live conflict fix is the canonical
+  remediation: a second door gets `fix_in_flight` with that task, and a stalled one is
+  re-woken or requeued in place by the same `recoverStalledConflictFix` row repair.
+  A conflict retry filed by the legacy path (no `delivery_id`) is left to legacy.
+
+Deviations, each deliberate:
+
+1. **The drizzle case is always an agent.** A drizzle migration's journal and snapshot
+   chain cannot be renumbered byte-identically server-side (open question 9), so for
+   buildd itself the mechanical renumber always refuses; the mechanical rename covers
+   plain SQL migration directories. Runner-side regeneration of derived files (task
+   a2829bdb, not landed) can make the agent attempt cheap; nothing in the kernel
+   assumes a derived-file conflict needs an agent once the mechanical refresh resolves it.
+2. **The mechanical refresh is the conflict recheck.** A conflict flagged from a stale
+   snapshot that GitHub's own merge of today's base resolves never reaches an agent. A
+   sharper pre-agent check (a merge-tree replay against the base tip, task 61dbc148,
+   not landed) plugs in at `agentIsOwed` in `conflict-retry-effects.ts`.
+3. **A migration collision found at PR open stays legacy** unless the kernel already
+   owns the PR: the opened door dispatches the renumber before the kernel opens a
+   delivery, so that PR never becomes kernel-owned. A collision on a kernel delivery
+   still in `WORKING` is `stale(state_not_allowed)` and falls through to the door's
+   normal handling.
+4. **A person's "fix the conflict" past the cap** raises the agent budget by the
+   configured cap on top of what is spent (as the legacy path did); there is no
+   conflict-family `BudgetExtended` row yet.
+5. **The landing door's own refresh counter** (`refreshCycleCount` in `pr-landing.ts`)
+   still runs before it calls the door; the T15/T16 half of S15 is Slice C.
+
 ---
 
 ## 14. Migration plan: no two authorities, ever
@@ -1567,7 +1640,7 @@ is a site to tick off in the Phase 2 PR that moves it.
 - [ ] `lib/pr-review-request.ts` `findReviewTaskForPr` / owner lookup / `insertPrOwnerWorker`
 - [ ] `lib/supersession-store.ts:275,290` and rules in `lib/supersession.ts`
 - [ ] `lib/ci-failure-retry.ts` (`:180,487,612,636`), `app/api/prs/[prNumber]/retry-ci/route.ts`
-- [ ] `lib/conflict-retry.ts` (`:241,422,812,893,974`), `lib/migration-collision-retry.ts`, `lib/dead-zone-sweep.ts` retry insert
+- [x] `lib/conflict-retry.ts` (`:241,422,812,893,974`), `lib/migration-collision-retry.ts`, `lib/dead-zone-sweep.ts` retry insert (kernel-owned PRs, §13.4)
 - [ ] `lib/auto-merge.ts` (`:777` merge door; `:991,1055,1071,1141,1158` escalation stamps)
 - [ ] `lib/pr-landing.ts` `landPr` decision and `lib/pr-landing-marker.ts`, `pr-landing-handoff.ts`, `pr-landing-sweep*.ts`
 - [ ] `app/api/prs/[prNumber]/merge/route.ts:566,257`; `app/api/github/pr/route.ts:1956,1722,1978,2016`
@@ -1580,7 +1653,8 @@ is a site to tick off in the Phase 2 PR that moves it.
 - [ ] `lib/pr-activity-comment.ts` writers (~18 modules) → `render_activity`
 - [ ] `lib/ci-failure-inspect.ts` `isBuilddWorkerCommit` and every `context.iteration` read used for a decision (CI, review, conflict families)
 - [ ] `app/api/prs/[prNumber]/retry-ci/route.ts` manual CI path (ignores the workspace cap, restarts at 0)
-- [ ] `lib/migration-collision-retry.ts`, `lib/conflict-retry.ts` dispatch decisions (mechanical-first, §6.7); `lib/ci-red-sweep*.ts`/`ci-red-queue.ts` per-PR retry fan-out (§6.10)
+- [x] `lib/migration-collision-retry.ts`, `lib/conflict-retry.ts` dispatch decisions (mechanical-first, §6.7; §13.4)
+- [ ] `lib/ci-red-sweep*.ts`/`ci-red-queue.ts` per-PR retry fan-out (§6.10)
 - [ ] `lib/reviewer-output.ts` / `WID:3255-3440` prose-verdict fallback (§6.6, T27)
 
 **Projection-only (P)**

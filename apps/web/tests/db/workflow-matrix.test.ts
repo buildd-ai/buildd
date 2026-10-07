@@ -33,11 +33,12 @@ let prSeq = 9100;
 
 // ── Fake GitHub: one PR whose head, state and ancestry a test moves ─────────
 
-interface FakePr { head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]>; ciGreen?: boolean | null }
+interface FakePr { head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]>; ciGreen?: boolean | null; mergeable?: string | null }
 let gh: FakePr;
 const live = (): LivePr => ({
   state: gh.state, merged: gh.merged, headSha: gh.head, headRepoFullName: REPO, baseRef: 'dev', updatedAt: gh.updatedAt,
   mergedAt: gh.merged ? '2026-10-06T00:00:00Z' : null, mergeCommitSha: gh.merged ? `M-${gh.head}` : null,
+  mergeableState: gh.mergeable ?? null,
 });
 const reader: GithubFactReader = {
   readPr: async () => live(),
@@ -64,10 +65,18 @@ let comments: Map<number, string>;
 let commentSeq = 1;
 /** Composed-PR reads (§5.9 collector: pulls, compare, commits), served per test; undefined = not faked. */
 let ghApi: ((path: string) => unknown) | null = null;
+/** GitHub writes outside the PR comment (update-branch, git data API), served per test; undefined = accepted. */
+let ghWrite: ((path: string, method: string, body: unknown) => unknown) | null = null;
+const ghWrites: Array<{ path: string; method: string; body: unknown }> = [];
 async function fakeGithubApi(_installationId: number, path: string, opts?: RequestInit): Promise<unknown> {
   const method = opts?.method ?? 'GET';
   if (ghApi && method === 'GET' && !/\/issues\//.test(path)) { const out = ghApi(path); if (out !== undefined) return out; }
-  if (!/\/issues\//.test(path)) return null;
+  if (!/\/issues\//.test(path)) {
+    if (method === 'GET') return null;
+    const body = opts?.body ? JSON.parse(String(opts.body)) : null;
+    ghWrites.push({ path, method, body });
+    return ghWrite ? ghWrite(path, method, body) ?? {} : {};
+  }
   const id = /comments\/(\d+)$/.exec(path);
   if (method === 'GET') return path.includes('page=1') ? [...comments.entries()].map(([cid, body]) => ({ id: cid, body })) : [];
   if (method === 'POST') { const cid = commentSeq++; comments.set(cid, JSON.parse(String(opts!.body)).body); return { id: cid }; }
@@ -125,8 +134,9 @@ mock.module('../../src/lib/ci-failure-retry', () => ({
 const seam = await import('../../src/lib/workflow/seam');
 const { reviewEffectHandlers: reviewOnly } = await import('../../src/lib/workflow/review-effects');
 const { withCiRetryEffects } = await import('../../src/lib/workflow/ci-retry-effects');
-/** The composition root's set (apps/web/src/modules.ts): review loop plus the CI family. */
-const reviewEffectHandlers = withCiRetryEffects(reviewOnly);
+const { withConflictEffects } = await import('../../src/lib/workflow/conflict-retry-effects');
+/** The composition root's set (apps/web/src/modules.ts): review loop, the CI family, the conflict/migration families. */
+const reviewEffectHandlers = withConflictEffects(withCiRetryEffects(reviewOnly));
 const { runEffects } = await import('../../src/lib/workflow/effects');
 const { applyCommand, loadView } = await import('../../src/lib/workflow/kernel');
 const { attemptView, headCoverage } = await import('../../src/lib/workflow/reducer');
@@ -156,10 +166,15 @@ const crashedDeps = { ...deps, drain: async () => null };
 beforeAll(async () => {
   assertDbConfigured();
   ({ workspaceId } = await seedWorkspace());
+  // The conflict doors read the workspace's installation (the GitHub surface itself is faked).
+  const instNo = Math.floor(Math.random() * 1e12);
+  const [inst] = await q<{ id: string }>(sql`INSERT INTO github_installations (installation_id, account_type, account_login, account_id)
+    VALUES (${instNo}, 'Organization', 'acme', ${instNo}) RETURNING id`);
+  await q(sql`UPDATE workspaces SET github_installation_id = ${inst.id}::uuid WHERE id = ${workspaceId}::uuid`);
 });
 beforeEach(() => {
   gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0', ancestors: {} };
-  posted = []; activity = []; notified = []; exhaustions = 0; reviewersCreated = []; override = {}; activityEntries = []; ciEscalations = []; ghApi = null;
+  posted = []; activity = []; notified = []; exhaustions = 0; reviewersCreated = []; override = {}; activityEntries = []; ciEscalations = []; ghApi = null; ghWrite = null; ghWrites.length = 0;
   comments = new Map();
 });
 
@@ -273,6 +288,72 @@ async function ciRepairing(o: Delivery, max = 3) {
   const t = (await taskRow((seen as { attemptTaskId: string }).attemptTaskId)).task;
   expect(await seam.claimFix(t, deps)).toEqual({ action: 'proceed' });
   return t;
+}
+
+
+// ── The conflict and migration families (Slice B part 2) ────────────────────
+
+const conflictTasks = (deliveryId: string) => tasksOf(deliveryId, 'conflict_fix' as never);
+/** Mechanical rows before agent rows, each by attempt number: the order the kernel allocates them. */
+const repairAttempts = async (deliveryId: string) => (await loadView({ deliveryId })).attempts
+  .filter((a) => a.family === 'conflict' || a.family === 'migration')
+  .sort((x, y) => (x.mode === y.mode ? x.attemptNo - y.attemptNo : x.mode === 'mechanical' ? -1 : 1));
+const prWorkerOf = async (o: Delivery) => (await q<{ id: string }>(sql`SELECT id FROM workers WHERE task_id = ${o.ownerTaskId}::uuid AND pr_number = ${o.prNumber}::int ORDER BY created_at LIMIT 1`))[0].id;
+/** Every door that used to decide a conflict retry funnels through dispatchConflictRetry. */
+const conflictDoor = async (o: Delivery, extra: Partial<Parameters<typeof dispatchConflictRetry>[0]> = {}) =>
+  dispatchConflictRetry({ workerId: await prWorkerOf(o), taskId: o.ownerTaskId, prNumber: o.prNumber, headSha: gh.head, repoFullName: REPO, workspaceId, ...extra });
+/** GitHub's update-branch: either merges the base in (a new head descending from the old) or refuses. */
+function updateBranch(outcome: { merged: string } | { conflict: true; thenMergeable?: string }) {
+  ghWrite = (path, method) => {
+    if (!/\/update-branch$/.test(path) || method !== 'PUT') return undefined;
+    if ('merged' in outcome) {
+      gh.ancestors[outcome.merged] = [gh.head];
+      gh.head = outcome.merged; gh.mergeable = 'clean';
+      return { message: 'Updating pull request branch.' };
+    }
+    if (outcome.thenMergeable) gh.mergeable = outcome.thenMergeable;
+    throw new Error('GitHub API error: 422 {"message":"merge conflict between base and head"}');
+  };
+}
+const b64 = (t: string) => ({ encoding: 'base64', content: Buffer.from(t).toString('base64') });
+/**
+ * A PR adding `packages/core/drizzle/0007_add.sql` while open PR #77 into `peerBase` adds another
+ * 0007. `journal`: the directory carries drizzle's meta/ (a chained journal, not renumberable).
+ */
+function migrationRepo(o: Delivery, opts: { journal: boolean; peerBase?: string; ourBase?: string }) {
+  const dir = 'packages/core/drizzle';
+  const ourBase = opts.ourBase ?? 'dev';
+  ghApi = (path) => {
+    if (path.startsWith(`/repos/${REPO}/pulls/${o.prNumber}/files`)) return [{ filename: `${dir}/0007_add.sql`, status: 'added' }];
+    if (path.startsWith(`/repos/${REPO}/pulls/77/files`)) return [{ filename: `${dir}/0007_other.sql`, status: 'added' }];
+    if (path.startsWith(`/repos/${REPO}/pulls?state=open`)) {
+      return [{ number: o.prNumber, base: { ref: ourBase }, head: { sha: gh.head } }, { number: 77, base: { ref: opts.peerBase ?? ourBase }, head: { sha: 'O1' } }];
+    }
+    if (path === `/repos/${REPO}/pulls/${o.prNumber}`) return { head: { ref: 'feat/matrix', sha: gh.head }, base: { ref: ourBase, repo: { default_branch: 'dev' } } };
+    if (path === `/repos/${REPO}/pulls/77`) return { head: { sha: 'O1' } };
+    const file = /\/contents\/(.+)\?ref=(.+)$/.exec(path);
+    if (file) {
+      const [p2, ref] = [decodeURIComponent(file[1]), decodeURIComponent(file[2])];
+      if (p2 === `${dir}/0007_add.sql`) return ref === gh.head ? b64('CREATE TABLE "a" ();') : null;
+      if (p2 === `${dir}/0007_other.sql`) return ref === 'O1' ? b64('CREATE TABLE "b" ();') : null;
+      if (p2 === dir) {
+        const base = [{ name: '0005_x.sql', path: `${dir}/0005_x.sql`, sha: 's5', type: 'file' }, { name: '0006_y.sql', path: `${dir}/0006_y.sql`, sha: 's6', type: 'file' }];
+        if (ref === gh.head) return [...base, { name: '0007_add.sql', path: `${dir}/0007_add.sql`, sha: 'BLOB7', type: 'file' }, ...(opts.journal ? [{ name: 'meta', path: `${dir}/meta`, sha: 'm', type: 'dir' }] : [])];
+        if (ref === 'O1') return [...base, { name: '0007_other.sql', path: `${dir}/0007_other.sql`, sha: 'o7', type: 'file' }];
+        return base;
+      }
+      return null;
+    }
+    if (/\/git\/commits\/[^/]+$/.test(path)) return { tree: { sha: 'TREE0' } };
+    return undefined;
+  };
+  ghWrite = (path, method) => {
+    if (path.endsWith('/git/trees') && method === 'POST') return { sha: 'TREE1' };
+    if (path.endsWith('/git/commits') && method === 'POST') return { sha: 'N1' };
+    if (/\/git\/refs\/heads\//.test(path) && method === 'PATCH') { gh.ancestors.N1 = [gh.head]; gh.head = 'N1'; return {}; }
+    return undefined;
+  };
+  return { file: '0007_add.sql', otherFile: '0007_other.sql', otherPrNumber: 77 };
 }
 
 // ══ S1–S8: the review / fix / approval loop ══════════════════════════════════
@@ -678,7 +759,22 @@ describe('S9–S15', () => {
 
   // Intended: landPr and the landing sweep raise MergeCallResult(behind) from their real merge call,
   // and the refresh_branch effect runs pr-branch-update with its expected_head (§6.7).
-  test.todo('S15: landPr / the landing sweep drive the treadmill through T16 and refresh_branch (needs spec Slice B/C — no task filed)');
+  test('S15 (refresh_branch): the platform refresh is GitHub update-branch pinned to the bound head; the refreshed head keeps the approval', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    gh.mergeable = 'behind';
+    updateBranch({ merged: 'R1' });
+    expect(await conflictDoor(o, { behindOnly: true })).toMatchObject({ dispatched: true, branchUpdated: true });
+    const put = ghWrites.find((w) => w.path.endsWith('/update-branch'))!;
+    expect(put).toMatchObject({ method: 'PUT', path: `/repos/${REPO}/pulls/${o.prNumber}/update-branch`, body: { expected_head_sha: 'H1' } });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'R1', approvedHeads: ['H1', 'R1'] });
+    expect((await repairAttempts(o.deliveryId)).map((a) => [a.mode, a.status, a.outcome, a.taskId])).toEqual([['mechanical', 'ended', 'delivered', null]]);
+    expect(reviewersCreated.length).toBe(1);
+  });
+
+  // Intended: landPr and the landing sweep raise LandingRequested/MergeCallResult(behind) from their
+  // real merge call (the T15/T16 door half of S15; the refresh_branch half above is Slice B).
+  test.todo('S15: landPr / the landing sweep drive the treadmill through T15/T16 (needs spec Slice C landing — task 6eab5bf4)');
 });
 
 // ══ S16–S21: projections and authorization ═══════════════════════════════════
@@ -1028,7 +1124,41 @@ describe('S24–S27', () => {
 
   // Intended: the same skip for the conflict family (conflict resolved meanwhile) at dispatch and at
   // claim, once conflict-retry dispatches through T12 (§6.7).
-  test.todo('S25: conflict-resolved targets skipped at dispatch and claim for the conflict family (needs spec Slice B — no task filed)');
+  test('S25 (conflict): resolved between the mechanical refusal and the agent dispatch → the agent row is skipped, no task; replay is a no-op', async () => {
+    const o = await openAndHandOn();
+    gh.mergeable = 'dirty';
+    // update-branch refuses with a textual conflict; by the time the agent is dispatched it is gone.
+    updateBranch({ conflict: true, thenMergeable: 'clean' });
+    await conflictDoor(o);
+    const rows = await repairAttempts(o.deliveryId);
+    expect(rows.map((a) => [a.mode, a.status, a.outcome])).toEqual([['mechanical', 'ended', 'failed'], ['agent', 'skipped', 'noop']]);
+    expect(await conflictTasks(o.deliveryId)).toEqual([]);
+    const [df] = await effects(o.deliveryId, 'dispatch_conflict_fix');
+    expect(df).toMatchObject({ status: 'done', outcome: 'skipped:conflict_resolved' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', mergeable: 'clean', currentRound: 1 });
+    await q(sql`UPDATE workflow_effects SET status = 'pending', not_before = now() WHERE id = ${df.id}::uuid`);
+    await drain(o.deliveryId);
+    expect(await conflictTasks(o.deliveryId)).toEqual([]);
+    expect((await repairAttempts(o.deliveryId)).length).toBe(2);
+  });
+
+  test('S25 (conflict): resolved between dispatch and claim → the task is cancelled as skipped, not failed, and the delivery resumes', async () => {
+    const o = await openAndHandOn();
+    gh.mergeable = 'dirty';
+    updateBranch({ conflict: true });
+    const res = await conflictDoor(o);
+    expect(res).toMatchObject({ dispatched: true });
+    const [cf] = await conflictTasks(o.deliveryId);
+    expect(res.taskId).toBe(cf.id);
+    gh.mergeable = 'clean'; // someone merged the base in by hand; the head did not move
+    const t = (await taskRow(cf.id)).task;
+    const decision = await seam.claimFix(t, deps);
+    expect(decision).toEqual({ action: 'cancel', reason: 'conflict_resolved' });
+    await seam.cancelSkippedTask(cf.id, 'conflict_resolved');
+    expect(await taskRow(cf.id)).toMatchObject({ status: 'cancelled', result: { skipped: true, skipReason: 'conflict_resolved' } });
+    expect((await repairAttempts(o.deliveryId)).at(-1)).toMatchObject({ mode: 'agent', status: 'skipped', outcome: 'noop' });
+    expect((await delivery(o.deliveryId)).state).toBe('AWAITING_REVIEW');
+  });
 
   test('S26: the activity comment is regenerated from transitions: one comment, equal to a fresh render, Merged stays the headline', async () => {
     const { renderDeliveryActivity } = await import('../../src/lib/workflow/pr-activity-render');
@@ -1088,7 +1218,78 @@ describe('S24–S27', () => {
   // Intended: behind-only conflict and a byte-identical migration renumber complete as mechanical
   // attempts with no task; a textual conflict and a non-identical renumber escalate to an agent
   // attempt; a lagging mission branch is not a collision; dependency-bot PRs are never pushed to.
-  test.todo('S27: mechanical vs agent repair for conflict and migration families (needs spec Slice B — no task filed)');
+  test('S27: a behind-only branch is brought up to date mechanically: no task, no agent budget spent', async () => {
+    const o = await openAndHandOn();
+    gh.mergeable = 'behind';
+    updateBranch({ merged: 'R1' });
+    expect(await conflictDoor(o, { behindOnly: true })).toMatchObject({ dispatched: true, branchUpdated: true });
+    expect(await conflictTasks(o.deliveryId)).toEqual([]);
+    expect((await repairAttempts(o.deliveryId)).map((a) => [a.family, a.mode, a.outcome])).toEqual([['conflict', 'mechanical', 'delivered']]);
+    // Unapproved: the refreshed head is reviewed (a delta round), it never borrows a verdict.
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'R1', currentRound: 2 });
+  });
+
+  test('S27: a textual conflict escalates to exactly one agent attempt; a second door finds it in flight', async () => {
+    const o = await openAndHandOn();
+    gh.mergeable = 'dirty';
+    updateBranch({ conflict: true });
+    const first = await conflictDoor(o);
+    const [cf] = await conflictTasks(o.deliveryId);
+    expect(first).toMatchObject({ dispatched: true, taskId: cf.id });
+    expect(cf).toMatchObject({ creation_source: 'conflict', context: { workflowAttemptId: cf.id } });
+    expect(cf.title).toContain('after conflict #1');
+    expect((await repairAttempts(o.deliveryId)).map((a) => [a.mode, a.attemptNo, a.status, a.outcome])).toEqual([['mechanical', 1, 'ended', 'failed'], ['agent', 1, 'queued', null]]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'REPAIRING', stateReason: 'conflict' });
+    // The legacy counter never moved: the ledger is the budget.
+    expect((await taskRow(o.ownerTaskId)).context?.conflictIteration ?? null).toBeNull();
+    expect(await conflictDoor(o)).toMatchObject({ dispatched: false, inFlightTaskId: cf.id });
+    expect((await conflictTasks(o.deliveryId)).length).toBe(1);
+  });
+
+  test('S27: a byte-identical migration renumber is a mechanical rename (same blob, next free slot past base, trunk and the peer); no task', async () => {
+    const o = await openAndHandOn();
+    const collision = migrationRepo(o, { journal: false });
+    expect(await conflictDoor(o, { migrationCollision: collision })).toMatchObject({ dispatched: true, branchUpdated: true });
+    const tree = ghWrites.find((w) => w.path.endsWith('/git/trees'))!;
+    expect(tree.body).toMatchObject({ base_tree: 'TREE0', tree: [
+      { path: 'packages/core/drizzle/0008_add.sql', sha: 'BLOB7' },
+      { path: 'packages/core/drizzle/0007_add.sql', sha: null },
+    ] });
+    expect(ghWrites.find((w) => /\/git\/refs\/heads\/feat\/matrix$/.test(w.path))!.body).toEqual({ sha: 'N1', force: false });
+    expect(await conflictTasks(o.deliveryId)).toEqual([]);
+    expect((await repairAttempts(o.deliveryId)).map((a) => [a.family, a.mode, a.status, a.outcome])).toEqual([['migration', 'mechanical', 'ended', 'delivered']]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'N1' });
+  });
+
+  test('S27: a renumber that must be regenerated (drizzle journal) escalates to an agent attempt with the renumber recipe', async () => {
+    const o = await openAndHandOn();
+    const collision = migrationRepo(o, { journal: true });
+    expect(await conflictDoor(o, { migrationCollision: collision })).toMatchObject({ dispatched: true });
+    const [cf] = await conflictTasks(o.deliveryId);
+    expect(cf.title).toContain('migration collision');
+    expect((await repairAttempts(o.deliveryId)).map((a) => [a.family, a.mode, a.status])).toEqual([['migration', 'mechanical', 'ended'], ['migration', 'agent', 'queued']]);
+    expect(ghWrites.some((w) => w.path.endsWith('/git/trees'))).toBe(false);
+  });
+
+  test('S27: a "collision" with a PR into another base (a mission branch lagging trunk) is not a collision: nothing renumbered, nothing filed', async () => {
+    const o = await openAndHandOn();
+    const collision = migrationRepo(o, { journal: false, ourBase: 'mission/m1', peerBase: 'dev' });
+    expect(await conflictDoor(o, { migrationCollision: collision })).toMatchObject({ dispatched: false, alreadyUpToDate: true });
+    expect(ghWrites).toEqual([]);
+    expect(await conflictTasks(o.deliveryId)).toEqual([]);
+    expect((await repairAttempts(o.deliveryId)).map((a) => [a.mode, a.status])).toEqual([['mechanical', 'skipped']]);
+    expect((await delivery(o.deliveryId)).state).toBe('AWAITING_REVIEW');
+  });
+
+  test('S27: a dependency-bot PR is never pushed to: no update-branch, no task', async () => {
+    const o = await openAndHandOn();
+    await q(sql`UPDATE tasks SET context = jsonb_build_object('adoptedPr', jsonb_build_object('author', 'renovate[bot]', 'authorType', 'Bot')) WHERE id = ${o.ownerTaskId}::uuid`);
+    gh.mergeable = 'behind';
+    updateBranch({ merged: 'R1' });
+    expect(await conflictDoor(o, { behindOnly: true })).toMatchObject({ dispatched: false, dependencyBot: true });
+    expect(ghWrites).toEqual([]);
+    expect(await repairAttempts(o.deliveryId)).toEqual([]);
+  });
 });
 
 describe('S28 — ledger separation', () => {

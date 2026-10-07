@@ -24,6 +24,7 @@ import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
 import type { EffectHandlers } from '@/lib/workflow/effects';
 import { reviewEffectHandlers } from '@/lib/workflow/review-effects';
 import { withCiRetryEffects } from '@/lib/workflow/ci-retry-effects';
+import { withConflictEffects } from '@/lib/workflow/conflict-retry-effects';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
 import { notificationSubscribers } from '@/lib/notification-subscribers';
@@ -73,6 +74,8 @@ export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
  * The workflow kernel's effect handlers (lib/workflow/effects.ts). The kernel
  * (core) decides and records the effect; the reviews module carries out the
  * review-loop ones (reviewer and fix tasks, GitHub reviews, escalations) and
- * the CI family's (CI fix tasks bound to their ledger row, CI exhaustion).
+ * the CI family's (CI fix tasks bound to their ledger row, CI exhaustion) and
+ * the conflict/migration families' (mechanical refresh and renumber first, an
+ * agent conflict fix only on a refusal, conflict exhaustion).
  */
-export const WORKFLOW_EFFECT_HANDLERS: EffectHandlers = withCiRetryEffects(reviewEffectHandlers);
+export const WORKFLOW_EFFECT_HANDLERS: EffectHandlers = withConflictEffects(withCiRetryEffects(reviewEffectHandlers));

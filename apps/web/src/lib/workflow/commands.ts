@@ -30,6 +30,8 @@ export interface LivePr {
   mergedAt?: string | null;
   mergeCommitSha?: string | null;
   updatedAt?: string | null;
+  /** GitHub's `mergeable_state` at read time (`clean`, `dirty`, `behind`, `blocked`, `unstable`, `unknown`, ...). */
+  mergeableState?: string | null;
 }
 
 interface Base {
@@ -104,7 +106,7 @@ export type Command =
       type: 'FixClaimed';
       attemptId: string;
       /** `ciGreen`: the CI family's own trigger fact is no longer true at the head (§10.5). */
-      revalidation: { live: LivePr; approved: boolean; ciGreen?: boolean };
+      revalidation: { live: LivePr; approved: boolean; ciGreen?: boolean; conflictResolved?: boolean };
     })
   | (Base & {
       /**
@@ -154,6 +156,21 @@ export type Command =
       maxMechanical?: number;
       maxAgentAttempts: number;
       isDependencyBot?: boolean;
+      /** What the refused mechanical attempt saw (update-branch refusal, semantic overlap), handed to the agent attempt. */
+      refusal?: Record<string, unknown> | null;
+      /** The repair's subject, carried on its effects (e.g. the migration collision: file, otherFile, otherPrNumber). */
+      detail?: Record<string, unknown> | null;
+    })
+  | (Base & {
+      /**
+       * A mechanical repair failed for an operational reason (update-branch kept
+       * failing, refused by GitHub, semantic overlap unverifiable), not a textual
+       * conflict. No agent can fix that: the bound mechanical row ends `failed`
+       * and landing needs a person (§6.7).
+       */
+      type: 'MechanicalRepairFailed';
+      attemptId: string;
+      reason: string;
     })
   | (Base & { type: 'HumanApproved'; reviewId: string; commitId: string; hasMergePermission: boolean })
   | (Base & {

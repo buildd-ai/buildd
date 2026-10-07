@@ -170,6 +170,7 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     // The target is part of the key: a second, different target must reach the reducer and be refused (edge_exists).
     case 'SupersessionRecorded': return pr ? `supersede:${pr}:${cmd.target.repoFullName}#${cmd.target.prNumber}` : null;
     case 'RepairNotNeeded': return `notneeded:${cmd.attemptId}`;
+    case 'MechanicalRepairFailed': return `mechfail:${cmd.attemptId}`;
     case 'Abandon': return pr ? `abandon:${pr}` : null;
     case 'DeliveryFailed': return d ? `fail:${d.ownerTaskId}` : null;
     case 'TrunkRedObserved': return d ? `trunk:${cmd.incidentId}:${d.id}` : null;
@@ -484,7 +485,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
     case 'FixClaimed': {
       const dd = d!;
       const a = c.attempt(cmd.attemptId);
-      if (a?.family === 'ci') return repairClaimed(c, cmd, a);
+      if (a?.family === 'ci' || a?.family === 'conflict' || a?.family === 'migration') return repairClaimed(c, cmd, a);
       if (!a || a.family !== 'review_fix') return c.rejected('unknown_attempt');
       if (dd.state === 'FIXING' && dd.boundAttemptId === a.id) return c.duplicate('already_claimed');
       if (dd.state !== 'CHANGES_REQUESTED') return c.stale('state_moved');
@@ -582,7 +583,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!dd.currentHeadSha) return c.rejected('no_head');
       return resumeAfterRepair(c, `notneeded:${a.id}`, dd.currentHeadSha, {
         attempts: [skip],
-        patch: cmd.reason === 'ci_green' ? { ci: 'green', ciHeadSha: dd.currentHeadSha } : {},
+        patch: cmd.reason === 'ci_green' ? { ci: 'green', ciHeadSha: dd.currentHeadSha }
+          : (cmd.reason === 'up_to_date' || cmd.reason === 'conflict_resolved') ? { mergeable: 'clean', mergeableHeadSha: dd.currentHeadSha } : {},
         evidence: { attemptId: a.id, family: a.family, skipped: cmd.reason, live: cmd.live ?? null },
       });
     }
@@ -602,6 +604,23 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         maxMechanical: cmd.maxMechanical ?? DEFAULT_MAX_MECHANICAL,
         maxAgent: cmd.maxAgentAttempts,
         patch: { mergeable: cmd.mergeable, mergeableHeadSha: cmd.headSha },
+        refusal: cmd.refusal ?? null,
+        detail: cmd.detail ?? null,
+      });
+    }
+
+    // §6.7: a mechanical repair that failed operationally. Not a conflict, so no agent.
+    case 'MechanicalRepairFailed': {
+      const dd = d!;
+      const a = c.attempt(cmd.attemptId);
+      if (!a || a.mode !== 'mechanical') return c.rejected('unknown_attempt');
+      if (dd.state !== 'REPAIRING' || dd.boundAttemptId !== a.id) return c.stale('attempt_not_bound');
+      if (!OPEN_ATTEMPT.has(a.status)) return c.stale('attempt_not_open');
+      return c.apply(`mechfail:${a.id}`, 'ESCALATED', {
+        patch: { stateReason: 'landing_needs_human', boundAttemptId: null },
+        attempts: [{ op: 'update', attemptId: a.id, whenStatus: ['queued', 'running'], set: { status: 'ended', outcome: 'failed', ended: true } }],
+        effects: [{ kind: 'notify', dedupeKey: `notify:${dd.id}:mechfail:${a.id}`, payload: { event: 'landing_needs_human', detail: cmd.reason, family: a.family } }],
+        evidence: { attemptId: a.id, family: a.family, reason: cmd.reason },
       });
     }
 
@@ -922,12 +941,13 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
       rounds: r.rounds, attempts: extra.attempts, effects: [...r.effects, ...(extra.effects ?? [])], evidence: extra.evidence ?? evidence,
     });
   };
-  const carry = (): Decision | null => {
-    if (!cmd.carryForward) return null;
+  const carry = (implied?: 'own_refresh'): Decision | null => {
+    const basis = cmd.carryForward ?? implied;
+    if (!basis) return null;
     const p: DeliveryPatch = d.approvalBasis === 'composition'
       ? { compositionHeads: [...d.compositionHeads, h] }
       : { approvedHeads: [...d.approvedHeads, h] };
-    return c.apply(key, 'APPROVED', { patch: { ...p, currentHeadSha: h, stateReason: null }, evidence: { ...evidence, carryForward: cmd.carryForward } });
+    return c.apply(key, 'APPROVED', { patch: { ...p, currentHeadSha: h, stateReason: null }, evidence: { ...evidence, carryForward: basis } });
   };
 
   switch (d.state) {
@@ -961,14 +981,18 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
           contentDiffChanged: cmd.proof?.contentDiffChanged ?? true,
         });
         if (!proof.holds) return c.apply(key, 'REPAIRING', { patch: { currentHeadSha: h }, evidence: { ...evidence, proof, attributedTo: a.id } });
-        const attempts: AttemptOp[] = [{ op: 'update', attemptId: a.id, whenStatus: ['queued', 'running', 'ended'], set: { outcome: 'delivered', pushedHeadSha: h, appendReportedSha: h } }];
+        // A mechanical attempt has no worker to end it: the head it pushed is its end.
+        const attempts: AttemptOp[] = [{ op: 'update', attemptId: a.id, whenStatus: ['queued', 'running', 'ended'], set: { outcome: 'delivered', pushedHeadSha: h, appendReportedSha: h, ...(a.mode === 'mechanical' ? { status: 'ended' as const, ended: true } : {}) } }];
         if (d.approvalBasis === 'policy') {
           // A repaired head under a no-review policy goes straight back to APPROVED by policy.
           return c.apply(key, 'APPROVED', { patch: { currentHeadSha: h, stateReason: 'policy_no_review', boundAttemptId: null }, attempts, evidence: { ...evidence, proof, policy: 'no_review', attributedTo: a.id } });
         }
         if (headCoverage(d, d.currentHeadSha) !== 'none') {
-          const cf = carry();
-          if (cf && cf.result === 'apply') return { ...cf, attempts };
+          // §6.3 T13: a head moved only by the platform's own refresh_branch (the base merged in
+          // server-side, expected_head pinned) keeps the approval. A renumber changes content: reviewed.
+          const ownRefresh = a.mode === 'mechanical' && a.family === 'conflict';
+          const cf = carry(ownRefresh ? 'own_refresh' : undefined);
+          if (cf && cf.result === 'apply') return { ...cf, patch: { ...cf.patch, boundAttemptId: null }, attempts };
         }
         return toReview({ attempts });
       }
@@ -1206,6 +1230,8 @@ function reenterVerdict(c: Ctx, key: string, round: RoundSnapshot, h: string, ev
 
 function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'migration', o: {
   key: string; mechanicalRefused: boolean; maxMechanical: number; maxAgent: number; patch: DeliveryPatch; maxBehindRefreshes?: number;
+  refusal?: Record<string, unknown> | null;
+  detail?: Record<string, unknown> | null;
 }): Decision {
   const d = c.d!;
   const family: AttemptFamily = kind === 'migration' ? 'migration' : 'conflict';
@@ -1237,7 +1263,7 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
       guardHead: true,
       patch: { ...o.patch, stateReason: kind, boundAttemptId: id },
       attempts,
-      effects: [{ kind: effectKind, dedupeKey: `${effectKind}:${d.id}:${head}:mechanical:${n}`, payload: { attemptId: id, attemptNo: n, headSha: head, expectedHead: head } }],
+      effects: [{ kind: effectKind, dedupeKey: `${effectKind}:${d.id}:${head}:mechanical:${n}`, payload: { attemptId: id, attemptNo: n, headSha: head, expectedHead: head, repairKind: kind, maxAgent: o.maxAgent, detail: o.detail ?? null } }],
       evidence: { ...evidence, mode: 'mechanical' },
     });
   }
@@ -1256,7 +1282,7 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
     guardHead: true,
     patch: { ...o.patch, stateReason: kind, boundAttemptId: id },
     attempts,
-    effects: [{ kind: 'dispatch_conflict_fix', dedupeKey: `dispatch_conflict_fix:${d.id}:${head}:${n}`, payload: { attemptId: id, attemptNo: n, headSha: head, repairKind: kind } }],
+    effects: [{ kind: 'dispatch_conflict_fix', dedupeKey: `dispatch_conflict_fix:${d.id}:${head}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: o.maxAgent, headSha: head, repairKind: kind, refusal: o.refusal ?? null, detail: o.detail ?? null } }],
     evidence: { ...evidence, mode: 'agent' },
   });
 }
@@ -1294,6 +1320,12 @@ function repairClaimed(c: Ctx, cmd: Extract<Command, { type: 'FixClaimed' }>, a:
   const live = cmd.revalidation.live;
   // A closed/merged PR or a moved head is answered by its own fact (T17/T18, T3); the attempt only skips.
   if (!livePrOpen(live) || live.headSha !== a.boundHeadSha) return recordSkip('fix_not_needed');
+  if (a.family !== 'ci' && cmd.revalidation.conflictResolved && d.currentHeadSha) {
+    return resumeAfterRepair(c, `claim:${a.id}`, d.currentHeadSha, {
+      attempts: [skip], patch: { mergeable: 'clean', mergeableHeadSha: d.currentHeadSha },
+      evidence: { attemptId: a.id, family: a.family, skipped: 'conflict_resolved', live },
+    });
+  }
   if (cmd.revalidation.ciGreen && d.currentHeadSha) {
     return resumeAfterRepair(c, `claim:${a.id}`, d.currentHeadSha, {
       attempts: [skip], patch: { ci: 'green', ciHeadSha: d.currentHeadSha },
