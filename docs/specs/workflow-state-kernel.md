@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/pr-review-status.ts]
 related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/handlers.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts]
+verified_by: [apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts]
 supersedes: []
 ---
 
@@ -942,7 +942,7 @@ Later slices add the files named in §14.
 
 Shipped live (part 1, the review family): schema linkage (§5.6, `authority`);
 `seam.ts` (route API), `authority.ts` (kill switch and release), `github-facts.ts`
-(live reads), `handlers.ts` (effects); `openKernelDelivery` at the two legacy
+(live reads), `review-effects.ts` (effects, owned by the reviews module and wired through the composition root `WORKFLOW_EFFECT_HANDLERS`); `openKernelDelivery` at the two legacy
 first-review points (the PR `opened` policy after pre-flight and role resolution, and
 create_pr's integration-branch review); T4 at the terminal worker PATCH; the
 `delivery_not_advanced` gate; T6 in `handleReviewerOutcomeIfNeeded`; T9 at claim;

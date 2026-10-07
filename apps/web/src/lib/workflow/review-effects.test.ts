@@ -1,5 +1,5 @@
 /**
- * The fix-loop effect handlers (handlers.ts, docs/specs/workflow-state-kernel.md
+ * The fix-loop effect handlers (review-effects.ts, docs/specs/workflow-state-kernel.md
  * §10.2): idempotent, they re-read the delivery and act only on what is still
  * owed. The kernel and the legacy helpers they call are stubbed; the CAS and
  * the whole loop run on real Postgres in apps/web/tests/db/workflow-seam.test.ts.
@@ -88,7 +88,7 @@ mock.module('@/lib/reviewer', () => ({ createReviewerTask: mockCreateReviewer, s
 const mockEscalateExhaustion = mock(async (..._a: any[]) => undefined);
 mock.module('@/lib/auto-merge', () => ({ escalateReviewerExhaustion: mockEscalateExhaustion }));
 
-const { __handlers, kernelEffectHandlers } = await import('./handlers');
+const { __handlers, reviewEffectHandlers } = await import('./review-effects');
 
 const D = (o: any = {}) => ({
   id: 'd1', workspaceId: 'ws1', ownerTaskId: 'owner-1', repoFullName: 'acme/w', prNumber: 7, baseRef: 'dev', state: 'CHANGES_REQUESTED',
@@ -230,6 +230,6 @@ test('every effect the fix-loop reducer can emit has a handler (none retries for
   for (const k of ['dispatch_review', 'dispatch_fix', 'post_review', 'escalate_exhaustion', 'mission_note', 'notify', 'cancel_open_attempts',
     'push_recovery', 'render_activity', 'stamp_pr_rows', 'emit_pr_merged', 'wake_mission', 'release_attribution', 'finalize_mission_pr',
     'scan_supersession', 'project_supersession', 'verify_merge', 'gate_event']) {
-    expect(typeof (kernelEffectHandlers as Record<string, unknown>)[k]).toBe('function');
+    expect(typeof (reviewEffectHandlers as Record<string, unknown>)[k]).toBe('function');
   }
 });

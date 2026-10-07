@@ -1,6 +1,9 @@
 /**
  * Effect handlers for the fix-loop seam (docs/specs/workflow-state-kernel.md
- * §10.2). Each one is idempotent: the outbox delivers at least once, so every
+ * §10.2), owned by the reviews module: they create reviewer and fix tasks,
+ * post GitHub reviews and raise review escalations. Core reaches them only
+ * through the composition root (`WORKFLOW_EFFECT_HANDLERS` in
+ * apps/web/src/modules.ts), never by import. Each one is idempotent: the outbox delivers at least once, so every
  * handler re-reads the delivery and acts only on what is still owed.
  *
  * Effects owned by later slices (post-merge work, landing, CI/conflict/trunk
@@ -434,7 +437,7 @@ const LEGACY_OWNED: EffectKind[] = [
   'scan_supersession', 'project_supersession', 'verify_merge', 'gate_event',
 ];
 
-export const kernelEffectHandlers: EffectHandlers = {
+export const reviewEffectHandlers: EffectHandlers = {
   dispatch_review: dispatchReview,
   dispatch_fix: dispatchFix,
   post_review: postReview,

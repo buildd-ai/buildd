@@ -14,17 +14,16 @@
  *  - drains the delivery's due effects before returning, so the common path
  *    never waits for a cron (§10.3).
  */
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, or, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import type { Command, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
 import { ingestFact, type GithubFactReader } from './facts';
-import { runEffects, type DrainSummary } from './effects';
+import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { headCoverage } from './reducer';
 import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
-import { kernelEffectHandlers } from './handlers';
 import type { Verdict } from './types';
 
 export type DeliveryRole = 'owner' | 'fix' | 'ci_fix' | 'conflict_fix' | 'review';
@@ -42,9 +41,20 @@ export interface SeamDeps {
 
 const readerFor = (deps: SeamDeps, installationId: number): GithubFactReader => (deps.reader ?? githubReader)(installationId);
 
+/**
+ * The effect handlers, filled in by the composition root: the review-loop
+ * effects belong to the reviews module, which core never imports
+ * (scripts/module-boundaries.test.ts). Lazy, so loading the seam does not load
+ * every module.
+ */
+async function effectHandlers(): Promise<EffectHandlers> {
+  return (await import('@/modules')).WORKFLOW_EFFECT_HANDLERS;
+}
+
 export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Promise<DrainSummary | null> {
   if (deps.drain) return deps.drain(deliveryId);
   try {
+    const kernelEffectHandlers = await effectHandlers();
     // Effects can enqueue follow-ups for the same delivery; a few passes settle it.
     let total: DrainSummary | null = null;
     for (let pass = 0; pass < 3; pass++) {
@@ -64,7 +74,7 @@ export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Pr
 
 /** Cron floor tick: drain due effects across every delivery. */
 export async function drainDueEffects(limit = 50): Promise<DrainSummary> {
-  return runEffects({ handlers: kernelEffectHandlers, limit });
+  return runEffects({ handlers: await effectHandlers(), limit });
 }
 
 function ctxOf(task: { context?: unknown }): Record<string, unknown> {
@@ -190,12 +200,12 @@ export async function attemptEnded(p: {
   commitCount: number;
   source: string;
 }, deps: SeamDeps = {}): Promise<{ handled: boolean; result?: CommandResult }> {
-  const role = p.task.deliveryRole;
-  if (!p.task.deliveryId || (role !== 'owner' && role !== 'fix' && role !== 'review')) return { handled: false };
+  const attemptKind = p.task.deliveryRole;
+  if (!p.task.deliveryId || (attemptKind !== 'owner' && attemptKind !== 'fix' && attemptKind !== 'review')) return { handled: false };
   const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec);
   if (!deliveryId) return { handled: false };
 
-  if (role === 'review') {
+  if (attemptKind === 'review') {
     // A completed reviewer is answered by its verdict (T6). One that ended
     // without a verdict fails its round (T27): re-queued at the same head and
     // round number, then review_unavailable. Never inferred as a verdict.
@@ -223,12 +233,12 @@ export async function attemptEnded(p: {
       proof = await liveProof(reader, d.repoFullName, p.localHeadSha, live);
     }
   }
-  const attemptId = role === 'fix' ? (ctxOf(p.task).workflowAttemptId as string | undefined) : undefined;
+  const attemptId = attemptKind === 'fix' ? (ctxOf(p.task).workflowAttemptId as string | undefined) : undefined;
   const cmd: Command = {
     type: 'AttemptEnded',
     actor: p.source,
     workerId: p.workerId,
-    ...(role === 'owner' ? { taskId: p.task.id } : { attemptId }),
+    ...(attemptKind === 'owner' ? { taskId: p.task.id } : { attemptId }),
     outcome: p.status === 'completed' ? 'success' : p.status,
     localHeadSha: p.localHeadSha,
     commitCount: p.commitCount,
@@ -239,7 +249,7 @@ export async function attemptEnded(p: {
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
   if (result.result !== 'applied' && result.result !== 'duplicate') {
-    console.log(`[workflow] AttemptEnded(${role}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+    console.log(`[workflow] AttemptEnded(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
   }
   await drainDelivery(deliveryId, deps);
   return { handled: true, result };
@@ -324,7 +334,7 @@ export async function cancelSkippedTask(taskId: string, reason: string): Promise
       result: sql`COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('skipped', true, 'summary', ${`Skipped at claim: ${reason}`}::text, 'skipReason', ${reason}::text)`,
       updatedAt: new Date(),
     })
-    .where(and(eq(tasks.id, taskId), inArray(tasks.status, ['pending', 'assigned'])));
+    .where(and(eq(tasks.id, taskId), or(eq(tasks.status, 'pending'), eq(tasks.status, 'assigned'))));
 }
 
 // ── T6: a reviewer's verdict ────────────────────────────────────────────────

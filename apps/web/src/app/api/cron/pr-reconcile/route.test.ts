@@ -172,7 +172,7 @@ describe('GET /api/cron/pr-reconcile', () => {
     expect(mockDeadZone).toHaveBeenCalledTimes(1);
     // The floor pass drains the workflow kernel's outbox.
     expect(mockDrainDueEffects).toHaveBeenCalled();
-    expect(body.workflowEffects).toMatchObject({ claimed: 0 });
+    expect(body.kernelOutbox).toMatchObject({ claimed: 0 });
   });
 
   it('returns 500 when reconcileStalePrWorkers throws', async () => {

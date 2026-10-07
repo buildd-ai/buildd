@@ -109,7 +109,7 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, workflowEffects] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -257,7 +257,7 @@ export async function GET(req: NextRequest) {
       errors:
         reconcile.errors + missionPrErrors + strandedErrors + specRecheckErrors + lineageErrors
         + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors,
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, workflowEffects },
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox },
     });
 
     return NextResponse.json({
@@ -273,7 +273,7 @@ export async function GET(req: NextRequest) {
       refreshRedrive,
       ciRed,
       closedPrs,
-      workflowEffects,
+      kernelOutbox,
     });
   });
 }
