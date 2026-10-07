@@ -52,6 +52,7 @@ import { publishPendingDispatches } from '@/lib/dispatch-transport';
 import { reconcileOrphans, type ReconcileCounts } from '@/lib/dispatch-reconcile';
 import type { DispatchOutboxHealth } from '@buildd/core/dispatch-outbox';
 import { alertFloorRepair, floorRepairConditions } from '@/lib/dispatch-alerts';
+import { sweepEntitlementBlockedTasks } from '@/lib/entitlements/managed-runner';
 
 export const maxDuration = 60;
 
@@ -129,6 +130,10 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
   // ones, which the reseed below publishes.
   const startAtBackfilled = await isolate(backfillStartAtWakes());
   const dependencyWakes = await isolate(repairDependencyWakes());
+  // Work a commercial entitlement held whose limit has since lifted (the
+  // monthly allowance refilled, billing raised the plan). Not a repair: the
+  // wait was by design, so it is not an alert condition.
+  const entitlementWakes = await isolate(sweepEntitlementBlockedTasks());
   // Dispatch transport: re-publish rows Dispatch never acked (a no-op unless
   // configured and some workspace opted in) before the drain, so the drain
   // only takes what is still unacked past the publish grace.
@@ -168,13 +173,14 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
   const dependencyCount = failed(dependencyWakes) ? 0 : (dependencyWakes as number);
   const rc = failed(reconciled) ? null : (reconciled as ReconcileCounts);
   const reconcileChanged = rc ? rc.republished + rc.projected + rc.fellBack : 0;
-  const repairErrors = [startAtBackfilled, dependencyWakes, published, reconciled, timer, health].filter(failed).length
+  const repairErrors = [startAtBackfilled, dependencyWakes, published, reconciled, timer, health, entitlementWakes].filter(failed).length
     + (rc?.workerErrors ?? 0);
   const result = {
     gate: gate.reason,
     drain: totals,
     timer: failed(timer) ? timer : 'reseeded',
     repair: { startAtBackfilled, dependencyWakes, published, reconciled, health, alert },
+    entitlementWakes,
   };
   console.log(
     `[dispatch-drain] floor claimed=${totals.claimed} delivered=${totals.delivered} skipped=${totals.skipped}` +

@@ -9,6 +9,7 @@ export type { McpServerInfo } from './mcp-json';
 import { extractVarReferences, parseMcpJsonContent, type McpServerInfo } from './mcp-json';
 import { resolveClaudeCliVersion } from './sdk-binary-path';
 import { checkBrowserCapability } from './browser-capability';
+import { hostSeatMode, localCodexAuthPath } from './host-seat';
 
 export interface ScanConfig {
   extraEnvKeys?: string[];
@@ -268,6 +269,14 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
   const mcpServers = scanMcpServersRich(mcpJsonPaths);
 
   const envKeys = [...new Set([...scanEnvKeys(config?.extraEnvKeys), 'backend:codex'])];
+
+  // A plain `codex login` on this machine (~/.codex/auth.json, no CODEX_HOME
+  // set) is local Codex auth too: advertise it under the same key the claim
+  // route already reads, so a runner with only its own login is offered Codex
+  // tasks. Presence only; the file is never read here.
+  if (!envKeys.includes('CODEX_HOME') && hostSeatMode() !== 'off' && localCodexAuthPath()) {
+    envKeys.push('CODEX_HOME');
+  }
 
   // Self-check: does headless Chromium actually launch on this runner?
   // Logs one line with what was found or why not (see browser-capability.ts).

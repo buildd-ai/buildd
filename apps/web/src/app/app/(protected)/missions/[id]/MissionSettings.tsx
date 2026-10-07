@@ -7,6 +7,7 @@ import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/li
 import type { MissionDisplayState } from '@/lib/mission-helpers';
 import Spinner from '@/components/Spinner';
 import { Select } from '@/components/ui/Select';
+import { humanPickableRoles } from '@buildd/shared';
 
 /**
  * Every way a manual orchestrator run can end. `runMission` has five distinct
@@ -38,9 +39,13 @@ export function quickAddTaskBody(input: {
   return roleSlug ? { title, workspaceId, missionId, roleSlug } : { title, workspaceId, missionId };
 }
 
-/** The quick-add picker's options: "Any role" first, then the workspace's roles. */
+/**
+ * The quick-add picker's options: "Any role" first, then the workspace's
+ * roles, without the system ones (the visual auditor is the header's "Visual
+ * review", never a hand-written task).
+ */
 export function quickAddRoleOptions(roles: { slug: string; name: string }[]): { value: string; label: string }[] {
-  return [{ value: '', label: 'Any role' }, ...roles.map(r => ({ value: r.slug, label: r.name }))];
+  return [{ value: '', label: 'Any role' }, ...humanPickableRoles(roles).map(r => ({ value: r.slug, label: r.name }))];
 }
 
 interface MissionSettingsProps {
@@ -64,6 +69,8 @@ interface MissionSettingsProps {
    * owner had to decode. When the header has a suggestion, this panel has none.
    */
   hasPrimaryAction?: boolean;
+  /** Who claims the tasks: runners, or a person's local session. Null hides the switch. */
+  executor?: 'runner' | 'local' | null;
 }
 
 export default function MissionSettings({
@@ -77,6 +84,7 @@ export default function MissionSettings({
   isHeld: initialIsHeld,
   displayState,
   hasPrimaryAction = false,
+  executor = null,
 }: MissionSettingsProps) {
   const router = useRouter();
   const [statusLoading, setStatusLoading] = useState(false);
@@ -94,6 +102,7 @@ export default function MissionSettings({
   const [cronSaving, setCronSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [executorLoading, setExecutorLoading] = useState(false);
 
   const isTerminal = ['completed', 'archived'].includes(currentStatus);
   /**
@@ -268,6 +277,34 @@ export default function MissionSettings({
     setCronSaving(false);
   }
 
+  // Local → runner re-dispatches the open tasks (the PATCH route does it), so
+  // nothing else is needed here. The route's refusal (no workspace, terminal)
+  // is shown as it is.
+  async function handleSwitchExecutor() {
+    const next = executor === 'local' ? 'runner' : 'local';
+    setExecutorLoading(true);
+    try {
+      const res = await fetch(`/api/missions/${missionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ executor: next }),
+      });
+      if (res.ok) {
+        setError(null);
+        router.refresh();
+      } else {
+        const body = await res.json().catch(() => ({}));
+        setError(typeof body?.error === 'string' ? body.error : 'Failed to update mission');
+        setTimeout(() => setError(null), 5000);
+      }
+    } catch {
+      setError('Failed to update mission');
+      setTimeout(() => setError(null), 3000);
+    }
+    setExecutorLoading(false);
+  }
+
   async function handleDelete() {
     setDeleteLoading(true);
     try {
@@ -424,6 +461,24 @@ export default function MissionSettings({
               </>
             )}
 
+            {/* Where it runs: runners, or a person's local session. */}
+            {executor && (
+              <>
+                <button
+                  data-testid="mission-executor-toggle"
+                  onClick={handleSwitchExecutor}
+                  disabled={executorLoading}
+                  className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+                  title={executor === 'local'
+                    ? 'Hand this mission to runners: they claim its open tasks on their next poll.'
+                    : 'Work this mission from your own session: runners stop claiming its tasks.'}
+                >
+                  {executorLoading ? '…' : executor === 'local' ? 'Run on runners' : 'Run locally'}
+                </button>
+                <span className="h-3 border-r border-card-border" />
+              </>
+            )}
+
             {/* Schedule editor */}
             {!editingCron && (
               <button
@@ -573,7 +628,7 @@ export default function MissionSettings({
                 placeholder="Add a task to this mission…"
                 className="min-w-0 flex-1 px-3 py-2 rounded-lg bg-surface-3 border border-card-border text-base md:text-[13px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 transition-colors"
               />
-              {roles.length > 0 && (
+              {humanPickableRoles(roles).length > 0 && (
                 <Select
                   aria-label="Role"
                   testId="quick-task-role"

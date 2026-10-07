@@ -82,7 +82,7 @@ describe('NEEDS YOU', () => {
       [
         t('pr', { status: 'completed', updatedAt: new Date(base + 5_000), worker: { status: 'completed', prNumber: 3 } }),
         t('in', { status: 'in_progress', worker: { status: 'waiting_input', updatedAt: new Date(base + 1_000) } }),
-        t('q', { status: 'completed', worker: { status: 'completed' } }),
+        t('q', { status: 'in_progress', worker: { status: 'waiting_input' } }),
         t('dec', {}),
         t('f', { status: 'failed', updatedAt: new Date(base + 2_000) }),
         t('ok', { status: 'completed' }),

@@ -37,11 +37,12 @@
     // overrides it via `.dev.vars` or `--var`.
     "BUILDD_SERVER": "https://buildd.dev",
     // Adapter types that call resolve and record the decision
-    // (`dry-run:<type>:<decision>`) but never POST. Webhooks (`http`) are live
-    // since the scratch cutover; this is global, so while it is live a
-    // `shadow` workspace WITH a webhook gets that webhook twice (Dispatch and
-    // in-app). Only put webhook-less workspaces on shadow, or move them to
-    // `dispatch`. GitHub Actions stays dry until a workspace needs it.
-    "DRY_RUN_TYPES": "github-repository-dispatch"
+    // (`dry-run:<type>:<decision>`) but never POST. Empty: nothing is dry.
+    // Webhooks (`http`) are live since the scratch cutover; this is global,
+    // so a `shadow` workspace WITH a webhook gets that webhook twice
+    // (Dispatch and in-app). Only put webhook-less workspaces on shadow, or
+    // move them to `dispatch`. Keep the var: absent means the `http` dry-run
+    // default (src/config.ts), which would silence every webhook.
+    "DRY_RUN_TYPES": ""
   }
 }

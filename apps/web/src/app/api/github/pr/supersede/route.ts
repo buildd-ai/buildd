@@ -7,12 +7,14 @@
  *
  * Auth: API key / OAuth bearer (same as the sibling PATCH/PUT/GET handlers on
  * `/api/github/pr`), never a session — this is an agent-callable write.
+ * A per-task token may supersede only the PR its own run opened, and only
+ * with a PR in its own workspace's repo (not another repo of the mission).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr } from '@/lib/task-token-auth';
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { recordPrSupersession } from '@/lib/pr-supersession';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
@@ -21,7 +23,7 @@ export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey, req);
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -56,14 +58,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'supersedingRepo must be owner/name' }, { status: 400 });
   }
 
-  let resolvedWorkerId: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let resolved: any;
 
   if (prNumber != null) {
     // prNumber is explicit — resolve by it. This takes precedence over workerId
     // (which may be implicitly added by the MCP handler). Explicit prNumber means
     // "supersede THIS PR", regardless of which worker initially created it.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const resolved: any = await resolveWorkerByPrNumber(account, prNumber, workspaceId ?? null);
+    // A task token resolves in its own workspace unless it names one, so a PR
+    // number shared with another workspace does not come back as ambiguous.
+    const searchWorkspaceId = workspaceId ?? account.taskScope?.workspaceId ?? null;
+    resolved = await resolveWorkerByPrNumber(account, prNumber, searchWorkspaceId);
     if (typeof resolved.status === 'number') {
       return NextResponse.json(
         { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
@@ -73,20 +78,23 @@ export async function POST(req: NextRequest) {
     if (!(await canActOnWorkerPr(account, resolved))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
-    resolvedWorkerId = resolved.id as string;
   } else if (workerId) {
     // workerId supplied directly — still must belong to the caller's team.
-    const worker = await db.query.workers.findFirst({
+    resolved = await db.query.workers.findFirst({
       where: eq(workers.id, workerId),
       with: { workspace: true },
     });
-    if (!worker) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
-    if (!(await canActOnWorkerPr(account, worker))) {
+    if (!resolved) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+    if (!(await canActOnWorkerPr(account, resolved))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
-    resolvedWorkerId = workerId;
   } else {
     return NextResponse.json({ error: 'workerId or prNumber is required' }, { status: 400 });
+  }
+  const resolvedWorkerId = resolved.id as string;
+
+  if (account.taskScope && (resolved.prNumber == null || !taskScopeAllowsWorkerPr(account, resolved, resolved.prNumber))) {
+    return NextResponse.json({ error: 'A task token may supersede only its own PR' }, { status: 403 });
   }
 
   const result = await recordPrSupersession({
@@ -95,6 +103,7 @@ export async function POST(req: NextRequest) {
     supersedingRepo: supersedingRepo ?? null,
     reason,
     recordedBy: account.name,
+    ...(account.taskScope ? { targetRepoWithinWorkspace: true } : {}),
   });
 
   if (!result.ok) {

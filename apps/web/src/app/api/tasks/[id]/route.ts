@@ -20,7 +20,7 @@ function validateTaskId(id: string): NextResponse | null {
 }
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { authenticateTaskScopedCaller, taskScopeAllowsTask } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, isOrchestrationTaskToken, taskScopeAllowsMissionTask, taskScopeAllowsMissionTaskRead, taskScopeAllowsTask } from '@/lib/task-token-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -88,7 +88,9 @@ export async function GET(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  // A per-task token (cloud container) may read only its own task.
+  // A per-task token may read only its own task; an orchestration task's
+  // admin token also the tasks on its own task's mission (checked once the
+  // task is read).
   const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount) {
@@ -98,11 +100,10 @@ export async function GET(
   const idError = validateTaskId(id);
   if (idError) return idError;
 
-  if (apiAccount && !taskScopeAllowsTask(apiAccount, id)) {
-    return NextResponse.json({ error: 'Task not found' }, { status: 404 });
-  }
-
   try {
+    // A task token for a worker-level caller needs to check if the requested
+    // task is its own task or a child task, which requires fetching the task.
+    // We can't know this without a DB query, so we fetch first then check.
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, id),
       with: {
@@ -112,6 +113,9 @@ export async function GET(
     });
 
     if (!task) {
+      return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    }
+    if (apiAccount && !(await taskScopeAllowsMissionTaskRead(apiAccount, task))) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
@@ -248,6 +252,7 @@ export async function PATCH(
     if (!task) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
+    // A task token can only edit its own task, not child tasks
     if (apiAccount && !taskScopeAllowsTask(apiAccount, id)) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }

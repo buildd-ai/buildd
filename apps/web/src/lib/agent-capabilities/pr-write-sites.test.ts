@@ -18,6 +18,9 @@
  *                       the pr_required fallback, and the self-report
  *                       (both through verifyReportedWorkerPr)
  *   mission-pr.ts       the mission's own integration PR (server-side)
+ *   register-local-pr.ts signed GitHub webhook adoption (server-side), scoped
+ *                       to the exact worker branch and workspace repository;
+ *                       only fills an unset prUrl
  */
 import { describe, it, expect } from 'bun:test';
 import { execFileSync } from 'child_process';
@@ -30,6 +33,7 @@ const PINNED: Record<string, number> = {
   'apps/web/src/app/api/github/pr/route.ts': 4,
   'apps/web/src/app/api/workers/[id]/route.ts': 3,
   'apps/web/src/lib/mission-pr.ts': 2,
+  'apps/web/src/lib/register-local-pr.ts': 1,
 };
 
 /** `db.update(workers)…set({ … prUrl / prNumber … })` up to its `.where(`, plus `updates.prUrl =` assignments. */

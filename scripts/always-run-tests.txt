@@ -92,3 +92,14 @@ apps/web/src/lib/agent-capabilities/pr-write-sites.test.ts
 # a new prompt-bearing module must join the prompt catalog the deploy seed and
 # the fallback alert read, and the file that adds one is never this test's neighbour.
 apps/web/src/lib/prompt-catalog.test.ts
+# Reads every worker MCP action's handler and the task-token OPTED_IN list:
+# an action whose route is not opted in (and has no stated reason) fails here,
+# and the change that causes it lands in mcp-tools.ts or a route, never beside this test.
+apps/web/src/lib/task-token-mcp-coverage.test.ts
+# Scans tracked source for call sites that pick a tier's model outside the
+# model policy (TIER_DEFAULTS indexing, registry reads, direct kit resolver calls).
+packages/core/__tests__/model-policy-authority.test.ts
+# Import-boundary ratchet: counts runtime imports from core files into module
+# files (classifier in scripts/module-boundaries.ts) against a committed,
+# shrink-only baseline. The file that adds an import is never this test's neighbour.
+scripts/module-boundaries.test.ts

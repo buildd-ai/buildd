@@ -12,6 +12,8 @@ import { checkMissionBudgetExhausted } from '../../../workers/claim/mission-budg
 import { checkWorkspaceCap } from '../../../workers/claim/workspace-cap-gate';
 import { BYPASS_SUBJECT_GATE_KEY, isSubjectDead } from '@/lib/subject-gate-contract';
 import { BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY, hasBypassFlag } from '@/lib/bypass-flags';
+import { ENTITLEMENT_BLOCK_CONTEXT_KEY } from '@buildd/shared';
+import { checkManagedRunnerEntitlement } from '@/lib/entitlements/managed-runner';
 
 /**
  * POST /api/tasks/[id]/start
@@ -290,6 +292,28 @@ export async function POST(
           cap: capResult.cap,
           queuePosition: pendingAhead.length,
           canExempt: true,
+        }, { status: 422 });
+      }
+    }
+
+    // ── Commercial entitlement (managed runners) ────────────────────────────
+    // Only a task a managed runner already deferred carries the stamp, so a
+    // self-hosted team never reaches the check. Re-evaluated with fresh
+    // numbers: a limit that has lifted lets the start through (the claim
+    // clears the stamp). Not forceable and not an error: the task stays
+    // queued and the dashboard shows the entitlement state.
+    const entitlementTeamId = (task.workspace as { teamId?: string | null } | undefined)?.teamId;
+    if (entitlementTeamId && (task.context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY]) {
+      const block = await checkManagedRunnerEntitlement(entitlementTeamId);
+      if (block) {
+        return NextResponse.json({
+          error: block.kind === 'concurrency'
+            ? `Queued: ${block.active} of ${block.limit} managed runs are active. It starts when one finishes.`
+            : `Queued: this month's ${block.limit} managed runner-hours are used. It starts when the allowance refills or grows.`,
+          gateReason: 'entitlement_blocked',
+          blockClass: 'entitlement',
+          entitlement: block,
+          canForce: false,
         }, { status: 422 });
       }
     }

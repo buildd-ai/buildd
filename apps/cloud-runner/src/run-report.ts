@@ -12,14 +12,29 @@
  * one, so a stray credential passed in by mistake cannot come out the other
  * side.
  */
-import type { CrashReport, RunOutcome } from './lifecycle';
+import type { AgentRestart, CrashReport, RunOutcome } from './lifecycle';
+import type { ReusedContainer } from './container-lease';
+import {
+  RUNNER_CLASSES,
+  normalizeRunnerSizeDecision,
+  runnerSeconds,
+  type RunnerSize,
+  type RunnerSizeDecision,
+  type RunnerSizeReason,
+  type RunnerSizeSource,
+} from './runner-class';
 
 /**
  * 2: adds `repo` (warm restore vs clone) and the restore/fetch/upload durations.
  * 3: adds `resume` (a parked run continued in a new container) and the park durations.
  * 4: adds `schedule` (a `task.scheduled` start: when it was due, when it started).
+ * 5: adds `deferredRetry` (a `deferred`/`start_deferred` outcome's self-scheduled backoff retry).
+ * 6: adds `repo.cacheSkipped`, `repo.bytes.cacheRaw` and `durationsMs.restoreCache` (compressed cache tarball).
+ * 7: adds `resources` (memory peak, disk minimum), `interruption` and `runnerSize` (container class, weighted runner-seconds).
+ * 8: adds `agentRestarts` (each time the agent restarted under the attempt, and what it did about the run).
+ * 9: adds `reusedContainer` (the attempt ran in a container an earlier run of the workspace left warm).
  */
-export const RUN_REPORT_VERSION = 4;
+export const RUN_REPORT_VERSION = 9;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -46,6 +61,7 @@ export const RUN_PHASES = [
   'restore_warm_start', 'restore_warm_end', 'fetch_start', 'fetch_end',
   'warm_upload_start', 'warm_upload_end',
   'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
+  'restore_cache_start', 'restore_cache_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 export type RunnerPhases = Partial<Record<RunPhase, number>>;
@@ -65,7 +81,8 @@ export function parsePhaseLine(line: string): { phase: RunPhase; at: number } | 
 export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
 export const RUN_METRICS = [
   'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
-  'park_bytes', 'resume_layer', 'warm_repo_bytes',
+  'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes',
+  'mem_peak_bytes', 'mem_limit_bytes', 'disk_free_min_bytes', 'disk_total_bytes',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 export type RunnerMetrics = Partial<Record<RunMetric, number>>;
@@ -81,6 +98,32 @@ export function parseWarmUploadLine(line: string): WarmUploadLine | null {
   const m = WARM_UPLOAD_LINE_RE.exec(line.trim());
   const reason = m?.[1] as WarmUploadSkipReason | undefined;
   return reason && WARM_UPLOAD_SKIP_REASONS.includes(reason) ? { skipped: reason } : null;
+}
+
+/**
+ * `BUILDD_CACHE_SKIPPED=<part> <bytes> <cap>`: a subtree of the dependency
+ * cache (or the whole cache tarball) was left out of the warm upload for
+ * size. `bytes` is its size on disk, `cap` the workspace's warm cap.
+ */
+export const CACHE_SKIPPED_LINE_PREFIX = 'BUILDD_CACHE_SKIPPED=';
+export const CACHE_SKIP_PARTS = ['pnpm-store', 'cache'] as const;
+export type CacheSkipPart = typeof CACHE_SKIP_PARTS[number];
+export type CacheSkippedLine = { part: CacheSkipPart; bytes: number; cap: number };
+const CACHE_SKIPPED_LINE_RE = /^BUILDD_CACHE_SKIPPED=([a-z-]+) (\d{1,16}) (\d{1,16})$/;
+
+/** From a `BUILDD_CACHE_SKIPPED=<part> <bytes> <cap>` line, or null. */
+export function parseCacheSkippedLine(line: string): CacheSkippedLine | null {
+  const m = CACHE_SKIPPED_LINE_RE.exec(line.trim());
+  if (!m || !CACHE_SKIP_PARTS.includes(m[1] as CacheSkipPart)) return null;
+  const bytes = Number(m[2]), cap = Number(m[3]);
+  return Number.isSafeInteger(bytes) && Number.isSafeInteger(cap) ? { part: m[1] as CacheSkipPart, bytes, cap } : null;
+}
+
+function cacheSkipped(v: unknown): CacheSkippedLine | null {
+  const c = v as Partial<CacheSkippedLine> | undefined;
+  if (!c || !CACHE_SKIP_PARTS.includes(c.part as CacheSkipPart)) return null;
+  const ok = (n: unknown) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  return ok(c.bytes) && ok(c.cap) ? { part: c.part as CacheSkipPart, bytes: c.bytes!, cap: c.cap! } : null;
 }
 
 export const REPO_SOURCE_LINE_PREFIX = 'BUILDD_REPO_SOURCE=';
@@ -161,8 +204,10 @@ export function egressClassForKind(kind: 'anthropic' | 'github' | 'passthrough')
  * Why the handler refused a request. Mirrors outbound.ts RejectReason.
  * `merge_blocked`: a direct PR merge (REST or GraphQL) or a push to a
  * protected branch — see outbound.ts "Merge guard".
+ * `push_not_allowed`: a push or ref write outside the grant's
+ * `pushableBranches` — see outbound.ts "Push allow-list".
  */
-export const REJECT_REASONS = ['path', 'unconfigured', 'plain_http', 'port', 'unparseable', 'merge_blocked', 'other'] as const;
+export const REJECT_REASONS = ['path', 'unconfigured', 'plain_http', 'port', 'unparseable', 'merge_blocked', 'push_not_allowed', 'other'] as const;
 export type RejectReason = typeof REJECT_REASONS[number];
 /** Mirrors outbound.ts RejectedPathLabel: where a `path` refusal was going, as a fixed label. */
 export const REJECTED_PATH_LABELS = ['api_hello', 'event_logging', 'oauth', 'claude_code_api', 'other_api', 'files', 'batches', 'other_v1', 'other'] as const;
@@ -577,6 +622,8 @@ export interface RunTimings {
   repoSource?: RepoSourceLine;
   /** From a `BUILDD_WARM_UPLOAD=skipped` line. */
   warmUpload?: WarmUploadLine;
+  /** From a `BUILDD_CACHE_SKIPPED=` line. */
+  cacheSkipped?: CacheSkippedLine;
   /** A `task.scheduled` start: the time the wake was scheduled for. */
   scheduledFor?: number;
 }
@@ -623,6 +670,8 @@ export interface RunReport {
     park: number | null;
     /** Downloading and applying the park bundle in a resumed run. */
     restorePark: number | null;
+    /** Downloading and extracting the dependency cache of a warm restore (streamed). */
+    restoreCache: number | null;
     toFirstModelRequest: number | null;
     total: number | null;
   };
@@ -641,8 +690,18 @@ export interface RunReport {
      * Null: uploaded, or no upload was due.
      */
     warmUploadSkipReason: WarmUploadSkipReason | null;
-    /** `warmRepo`: the clone's object store as measured against the cap. */
-    bytes: { clone: number | null; restore: number | null; fetch: number | null; cache: number | null; upload: number | null; warmRepo: number | null };
+    /**
+     * A part of the dependency cache the upload left out for size (the pnpm
+     * store, or the whole cache tarball), its size on disk and the cap.
+     * Null: nothing was left out, or no upload was due.
+     */
+    cacheSkipped: CacheSkippedLine | null;
+    /**
+     * `warmRepo`: the clone's object store as measured against the cap.
+     * `cache`: the cache tarball as stored (zstd-compressed when the image
+     * has zstd); `cacheRaw`: the same tarball before compression, on upload.
+     */
+    bytes: { clone: number | null; restore: number | null; fetch: number | null; cache: number | null; cacheRaw: number | null; upload: number | null; warmRepo: number | null };
   };
   /**
    * Resumable runs. `resumed`: this attempt continued a parked worker.
@@ -664,7 +723,66 @@ export interface RunReport {
   exitCode: number | null;
   outcome: RunOutcome | null;
   crashReport: CrashReport | null;
+  /**
+   * Set only when `outcome` is `deferred` or `start_deferred`: the backoff
+   * retry the supervisor scheduled itself (or declined to, past the cap).
+   * `reason`: the claim's taskExclusion/diagnostics code for `deferred`,
+   * `'container_capacity'` for `start_deferred`, null if the runner printed
+   * none. `retryNumber` is 1-indexed; `backoffMs` null means the cap
+   * (MAX_DEFERRED_RETRIES) was hit and nothing was scheduled.
+   */
+  deferredRetry: { retryNumber: number; backoffMs: number | null; reason: string | null } | null;
+  /**
+   * What the run used of its container, from the runner's sampler
+   * (apps/runner/src/resource-sampler.ts): the working-set peak and the
+   * memory it was measured against, and the lowest free disk seen with the
+   * disk's size. Null when the runner printed none (an older image).
+   */
+  resources: { memoryPeakBytes: number | null; memoryLimitBytes: number | null; diskFreeMinBytes: number | null; diskTotalBytes: number | null };
+  /**
+   * Why the run did not end on its own exit, when it did not:
+   * `container_stopped` the container died under it (OOM, a platform stop);
+   * `agent_restart` the agent restarted (a deploy) and found it orphaned;
+   * `question` it parked waiting for an answer. buildd's size rule
+   * (apps/web/src/lib/runner-size.ts) counts only the first.
+   */
+  interruption: RunInterruption | null;
+  /**
+   * Each time the agent (Durable Object) restarted while this attempt was
+   * live, oldest first. `recovery`: `reattached` the runner was still going
+   * and the new agent adopted it; `parked` it parked the run and resumed it;
+   * `crashed` it could do neither. `versionChanged` true means a Worker
+   * deploy; false means the restart had another cause (eviction, an isolate
+   * limit); null when a version was unavailable.
+   */
+  agentRestarts: AgentRestart[];
+  /**
+   * The container class this attempt ran in and the decision that chose it
+   * (buildd's runner size route; `source` null when none reached the agent).
+   * `runnerSeconds`: container running to exit, rounded up;
+   * `weightedRunnerSeconds` times the class weight (standard 1, large 2), for
+   * hosted fair use. Nothing bills from it yet.
+   */
+  /**
+   * Set when the attempt was handed a container an earlier run of the same
+   * workspace and size left warm (container-lease.ts): which task's, how long
+   * it sat idle, and what that run spent getting ready (container start,
+   * restore, clone) that this one did not. `fallback: 'reset_failed'`: the
+   * reset did not verify clean, so the attempt started in a fresh container.
+   */
+  reusedContainer: ReusedContainer | null;
+  runnerSize: {
+    size: RunnerSize;
+    source: RunnerSizeSource | null;
+    reason: RunnerSizeReason | null;
+    weight: number;
+    runnerSeconds: number | null;
+    weightedRunnerSeconds: number | null;
+  };
 }
+
+export const RUN_INTERRUPTIONS = ['container_stopped', 'agent_restart', 'question'] as const;
+export type RunInterruption = typeof RUN_INTERRUPTIONS[number];
 
 export interface RunReportInput {
   taskId: string | null | undefined;
@@ -682,12 +800,26 @@ export interface RunReportInput {
   resumed?: boolean;
   /** End of the parked attempt this one resumes (agent clock). */
   parkedAt?: number;
+  /** See RunReport.deferredRetry. */
+  deferredRetry?: { retryNumber: number; backoffMs: number | null; reason: string | null } | null;
+  /** See RunReport.interruption. */
+  interruption?: RunInterruption | null;
+  /** See RunReport.agentRestarts. */
+  agentRestarts?: AgentRestart[];
+  /** See RunReport.reusedContainer. */
+  reusedContainer?: ReusedContainer | null;
+  /** The class this agent is (the container class actually used). Absent: standard. */
+  runnerSize?: RunnerSize;
+  /** buildd's decision that routed the dispatch here, if one reached the agent. */
+  runnerSizeDecision?: RunnerSizeDecision | null;
 }
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const INSTANCE_TYPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
-const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'parked', 'crashed'];
+const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'parked', 'deferred', 'start_deferred', 'crashed'];
 const CRASH_REPORTS: readonly CrashReport[] = ['sent', 'rejected', 'error', 'no_worker_id'];
+const AGENT_RECOVERIES: readonly AgentRestart['recovery'][] = ['reattached', 'parked', 'crashed'];
+const DEFERRED_REASON_RE = /^[A-Za-z0-9_]{1,64}$/;
 
 // Shapes of credentials an identifier must never be mistaken for (Anthropic,
 // buildd, GitHub, Slack, AWS, generic `key-`/`token`). Task and worker IDs are
@@ -705,6 +837,14 @@ function count(v: unknown): number {
 }
 function span(from: number | null, to: number | null): number | null {
   return from !== null && to !== null && to >= from ? to - from : null;
+}
+
+function reusedContainerSection(v: ReusedContainer | null | undefined): ReusedContainer | null {
+  const fromTaskId = id(v?.fromTaskId);
+  if (!v || !fromTaskId) return null;
+  const idleMs = count(v.idleMs);
+  if ('fallback' in v && v.fallback === 'reset_failed') return { fromTaskId, idleMs, savedRestoreMs: null, fallback: 'reset_failed' };
+  return { fromTaskId, idleMs, savedRestoreMs: typeof v.savedRestoreMs === 'number' && v.savedRestoreMs >= 0 ? Math.floor(v.savedRestoreMs) : null };
 }
 
 export function assembleRunReport(input: RunReportInput): RunReport {
@@ -759,6 +899,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       warmUpload: span(phase('warm_upload_start'), phase('warm_upload_end')),
       park: span(phase('park_start'), phase('park_end')),
       restorePark: span(phase('restore_park_start'), phase('restore_park_end')),
+      restoreCache: span(phase('restore_cache_start'), phase('restore_cache_end')),
       toFirstModelRequest: span(timestamps.claimedAt, timestamps.firstModelRequestAt),
       total: span(timestamps.dispatchReceivedAt, timestamps.exitedAt),
     },
@@ -768,11 +909,13 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       fallbackReason,
       snapshotAgeMs: metric('snapshot_age_ms'),
       warmUploadSkipReason,
+      cacheSkipped: cacheSkipped(t.cacheSkipped),
       bytes: {
         clone: metric('clone_bytes'),
         restore: metric('restore_bytes'),
         fetch: metric('fetch_bytes'),
         cache: metric('cache_bytes'),
+        cacheRaw: metric('cache_raw_bytes'),
         upload: metric('warm_upload_bytes'),
         warmRepo: metric('warm_repo_bytes'),
       },
@@ -793,6 +936,47 @@ export function assembleRunReport(input: RunReportInput): RunReport {
     exitCode: typeof input.exitCode === 'number' && Number.isInteger(input.exitCode) ? input.exitCode : null,
     outcome: input.outcome && OUTCOMES.includes(input.outcome) ? input.outcome : null,
     crashReport: input.crashReport && CRASH_REPORTS.includes(input.crashReport) ? input.crashReport : null,
+    deferredRetry: input.deferredRetry
+      ? {
+          retryNumber: count(input.deferredRetry.retryNumber),
+          backoffMs: ts(input.deferredRetry.backoffMs),
+          reason: typeof input.deferredRetry.reason === 'string' && DEFERRED_REASON_RE.test(input.deferredRetry.reason) ? input.deferredRetry.reason : null,
+        }
+      : null,
+    resources: {
+      memoryPeakBytes: metric('mem_peak_bytes'),
+      memoryLimitBytes: metric('mem_limit_bytes'),
+      diskFreeMinBytes: metric('disk_free_min_bytes'),
+      diskTotalBytes: metric('disk_total_bytes'),
+    },
+    interruption: RUN_INTERRUPTIONS.includes(input.interruption as RunInterruption) ? input.interruption as RunInterruption : null,
+    agentRestarts: (input.agentRestarts ?? []).slice(0, 5).flatMap((r): AgentRestart[] => {
+      const at = ts(r?.at);
+      if (at === null || !AGENT_RECOVERIES.includes(r.recovery)) return [];
+      return [{
+        at,
+        recovery: r.recovery,
+        containerRunning: r.containerRunning === true,
+        runningForMs: ts(r.runningForMs),
+        versionChanged: typeof r.versionChanged === 'boolean' ? r.versionChanged : null,
+      }];
+    }),
+    reusedContainer: reusedContainerSection(input.reusedContainer),
+    runnerSize: runnerSizeSection(input, timestamps),
+  };
+}
+
+function runnerSizeSection(input: RunReportInput, t: { containerRunningAt: number | null; exitedAt: number | null }): RunReport['runnerSize'] {
+  const size: RunnerSize = input.runnerSize === 'large' ? 'large' : 'standard';
+  const decision = normalizeRunnerSizeDecision(input.runnerSizeDecision);
+  const secs = runnerSeconds(size, t.containerRunningAt, t.exitedAt);
+  return {
+    size,
+    source: decision?.source ?? null,
+    reason: decision?.reason ?? null,
+    weight: RUNNER_CLASSES[size].weight,
+    runnerSeconds: secs?.seconds ?? null,
+    weightedRunnerSeconds: secs?.weighted ?? null,
   };
 }
 

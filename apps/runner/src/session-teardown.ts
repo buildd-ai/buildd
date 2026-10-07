@@ -54,7 +54,7 @@ export function teardownSession(
 /**
  * Abort a session whose worker already finished, WITHOUT removing its map
  * entry. The session's own finally block is conditioned on that entry and is
- * where the per-worker credential, config and CBM dirs get removed — deleting
+ * where the per-worker credential and config dirs get removed — deleting
  * the entry here would skip all of it. `reapedAt` is set BEFORE aborting so
  * the session's catch path sees this abort as cleanup, not a failure.
  */

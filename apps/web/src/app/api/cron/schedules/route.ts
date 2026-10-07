@@ -27,10 +27,8 @@ import {
 } from '@/lib/heartbeat-circuit-breaker';
 import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-completion';
 import { applyCriteriaRearm } from '@/lib/criteria-rearm';
-import { runStaleWorkerCleanup } from './maintenance/stale-workers';
 import { runOverdueHeartbeatAlerts } from './maintenance/overdue-heartbeats';
 import { runMissionArchive } from './maintenance/archive-missions';
-import { sweepAbandonedPathClaims } from './maintenance/path-claims';
 import { sweepTaskCategories } from '@/lib/task-category-sweep';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { resolveEffectiveRoleSlugs } from '@/lib/effective-roles';
@@ -1046,8 +1044,6 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       }
     }
 
-    const heartbeatOrphans = await runStaleWorkerCleanup(now);
-
     let healthWatcher: Awaited<ReturnType<typeof runHealthWatcher>> | { error: string } = { checked: 0, fired: 0, errors: 0, skipped: 0 };
     try {
       healthWatcher = await runHealthWatcher();
@@ -1061,8 +1057,6 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
     const archivedMissions = await runMissionArchive(now);
 
-    const abandonedClaimsReleased = await sweepAbandonedPathClaims();
-
     // Category looks for tasks created off the POST /api/tasks path (missions,
     // schedules, webhooks, retries). Bounded and last, so it can't crowd out the
     // tick; a failure only means the next hour tries again.
@@ -1072,6 +1066,19 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     } catch (sweepErr) {
       taskCategories = { error: sweepErr instanceof Error ? sweepErr.message : String(sweepErr) };
       console.warn('[Cron] task category sweep failed:', taskCategories.error);
+    }
+
+    // Quality Scout periodic runs (workspace opt-in via
+    // gitConfig.qualityScout.triggers.periodicHours). Only the due check runs
+    // here; the runs themselves start after the tick responds and are bounded
+    // and fail-open, so a Scout problem can never cost this tick anything.
+    let qualityScout: { configured: number; due: number; scheduled: string[]; errors: number } | { error: string };
+    try {
+      const { runPeriodicQualityScouts } = await import('@/lib/quality-scout-trigger');
+      qualityScout = await runPeriodicQualityScouts(now);
+    } catch (scoutErr) {
+      qualityScout = { error: scoutErr instanceof Error ? scoutErr.message : String(scoutErr) };
+      console.warn('[Cron] quality scout periodic check failed:', qualityScout.error);
     }
 
     // The watcher and overdue-heartbeat sweeps ride this tick, so their results
@@ -1085,7 +1092,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       processed,
       changed: created,
       errors: errors + healthWatcherErrors,
-      result: { created, skipped, deferred, errors, triggerChecks, heartbeatOrphans, archivedMissions, abandonedClaimsReleased, taskCategories, healthWatcher, overdueHeartbeatAlerts },
+      result: { created, skipped, deferred, errors, triggerChecks, archivedMissions, taskCategories, healthWatcher, overdueHeartbeatAlerts, qualityScout },
     });
 
     return NextResponse.json({
@@ -1095,7 +1102,6 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       deferred,
       errors,
       triggerChecks,
-      heartbeatOrphans,
       deterministicHeartbeatSkips,
       llmHeartbeatInvocations,
       backstopDispatches,
@@ -1104,8 +1110,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       healthWatcher,
       archivedMissions,
       overdueHeartbeatAlerts,
-      abandonedClaimsReleased,
       taskCategories,
+      qualityScout,
     });
   } catch (error) {
     console.error('Cron schedules error:', error);

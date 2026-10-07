@@ -534,7 +534,7 @@ export function buildHealthProbeSpawn(opts: {
   return {
     // --debug is explicit: the HTTP server only exists in debug mode, and a
     // probe with no server to answer would read as an unhealthy build.
-    cmd: ['bun', 'run', RUNNER_ENTRY, '--debug'],
+    cmd: ['bun', '--no-env-file', 'run', RUNNER_ENTRY, '--debug'],
     cwd: opts.installDir,
     env,
   };

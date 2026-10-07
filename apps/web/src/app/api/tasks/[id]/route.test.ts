@@ -58,6 +58,26 @@ mock.module('@/lib/api-auth', () => ({
   extractApiKeyPrefix: (key: string) => key.substring(0, 12),
 }));
 
+// Mock task-token functions to allow testing without real tokens
+mock.module('@/lib/task-token', () => ({
+  isTaskToken: (key: string | null) => key?.startsWith('bldt_') || false,
+  verifyTaskToken: (token: string) => {
+    // For test purposes, parse a mock token format bldt_<taskId>_<workspaceId>
+    if (!token.startsWith('bldt_')) return null;
+    return {
+      taskId: 'task-1',  // Default mock value
+      workspaceId: 'ws-1',  // Will be overridden by test setup
+      accountId: 'account-123',
+      keyBinding: 'hash-1',
+      level: 'worker',
+      expiresAt: Date.now() + 60_000,
+    };
+  },
+  taskTokenKeyBinding: (apiKey: string) => 'hash-1',
+  canMintAdminTaskToken: () => false,
+  missingTaskTokenScopes: () => [],
+}));
+
 // Mock team-access
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
@@ -217,6 +237,7 @@ describe('GET /api/tasks/[id]', () => {
       status: 'pending',
       workspaceId: 'ws-1',
       workspace: { id: 'ws-1', teamId: 'team-1' },
+      parentTaskId: null,
     };
     mockGetCurrentUser.mockResolvedValue(null);
     mockTasksFindFirst.mockResolvedValue(mockTask);
@@ -226,13 +247,70 @@ describe('GET /api/tasks/[id]', () => {
     });
     const refused = await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
     expect(refused.status).toBe(404);
-    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+    // Now that we support child tasks, the route must fetch the task to check if it's a child task
 
     mockAccountsFindFirst.mockResolvedValue({
       id: 'account-123', level: 'worker', taskScope: { taskId: TASK_ID, expiresAt: Date.now() + 60_000 },
     });
     const served = await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
     expect(served.status).toBe(200);
+  });
+
+  it('allows a per-task token to read its own child tasks', async () => {
+    const parentTaskId = '22222222-2222-2222-2222-222222222222';
+    const childTaskId = '33333333-3333-3333-3333-333333333333';
+    const mockChildTask = {
+      id: childTaskId,
+      title: 'Child Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+      parentTaskId,
+      missionId: null,
+      mission: null,
+    };
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockTasksFindFirst.mockResolvedValue(mockChildTask);
+
+    mockAccountsFindFirst.mockResolvedValue({
+      id: 'account-123', level: 'worker', taskScope: { taskId: parentTaskId, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 },
+    });
+    // Use regular API key format (bld_xxx), not task token format, so authenticateApiKey handles it
+    const response = await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), childTaskId);
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.id).toBe(childTaskId);
+    expect(data.parentTaskId).toBe(parentTaskId);
+  });
+
+  it("lets a task token read any task in its own workspace, and nothing outside it", async () => {
+    const OWN = '22222222-2222-4222-8222-222222222222';
+    const sibling = (over: Record<string, unknown>) => ({
+      id: TASK_ID, title: 'Sibling', status: 'pending', workspaceId: 'ws-1', missionId: 'm-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' }, ...over,
+    });
+    let row: any = sibling({});
+    // The route's read of the task, and the scope helper's read of the token's own task.
+    mockTasksFindFirst.mockImplementation(async (args: any) =>
+      args?.with?.mission?.columns?.initiativeId ? { missionId: 'm-1', workspaceId: 'ws-1', mission: { initiativeId: null } } : row);
+    mockGetCurrentUser.mockResolvedValue(null);
+    const get = () => callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
+    const taskScope = { taskId: OWN, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 };
+
+    // Any task token may READ any task in its own workspace (the tasks
+    // list_tasks shows it), on its mission or not, and nothing outside it.
+    for (const level of ['admin', 'worker']) {
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', level, taskScope });
+      row = sibling({});
+      expect((await get()).status).toBe(200);
+      row = sibling({ missionId: 'm-2' });
+      expect((await get()).status).toBe(200);
+      row = sibling({ missionId: null });
+      expect((await get()).status).toBe(200);
+      row = sibling({ workspaceId: 'ws-2' });
+      expect((await get()).status).toBe(404);
+    }
+    mockTasksFindFirst.mockReset();
   });
 
   it('never returns the workspace dispatch token, to a per-task token or an account key', async () => {

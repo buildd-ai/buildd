@@ -24,6 +24,7 @@ type CardState =
   | 'merging'
   | 'merged'
   | 'error'
+  | 'pending'
   | 'conflict_dispatched'
   | 'conflict_exhausted'
   | 're_reviewing'
@@ -166,6 +167,12 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           setState('conflict_dispatched');
           break;
         case 'conflict_exhausted':
+          setErrorMsg('');
+          setState('conflict_exhausted');
+          break;
+        case 'conflict_blocked':
+          // Retrying the same merge cannot help: no Retry, no Dismiss.
+          setErrorMsg(outcome.message);
           setState('conflict_exhausted');
           break;
         case 'review_blocked':
@@ -176,6 +183,12 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           setErrorMsg(outcome.clearedBy ? `${outcome.message}. ${outcome.clearedBy}` : outcome.message);
           setMergeRetrySafe(true);
           setState('error');
+          break;
+        case 'pending':
+          // Checks or a review round are still running — a platform-owned
+          // wait, so no Retry and no Dismiss (see merge-outcome.ts).
+          setErrorMsg(outcome.message);
+          setState('pending');
           break;
         case 'indeterminate':
           setErrorMsg(outcome.message);
@@ -464,6 +477,13 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
             </div>
           )}
 
+          {state === 'pending' && (
+            <div className="mt-2.5 pt-2 flex items-center gap-1.5" data-testid="review-card-pending">
+              <Spinner size="xs" className="flex-shrink-0" aria-label="Waiting on checks or review" />
+              <span className="text-[11px] text-text-secondary min-w-0">{errorMsg}</span>
+            </div>
+          )}
+
           {state === 'error' && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
               <span className="text-[11px] text-status-error min-w-0">{errorMsg}</span>
@@ -564,8 +584,8 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
 
           {state === 'conflict_exhausted' && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20">
-              <p className="text-[11px] text-status-error mb-1.5">
-                Agents ran out of conflict-resolution retries.
+              <p className="text-[11px] text-status-error mb-1.5 break-words">
+                {errorMsg || 'Agents ran out of conflict-resolution retries.'}
               </p>
               <div className="flex items-center gap-3">
                 {item.prUrl && (

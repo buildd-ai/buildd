@@ -7,13 +7,13 @@ import { eq, desc, inArray, asc, ne, and, isNotNull, sql } from 'drizzle-orm';
 import { deriveTaskEyebrow, taskEyebrowText } from '@/lib/task-eyebrow';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied, findBlockingPrWorker } from '@/lib/task-presentation';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
-import { isAnswerableWaitingFor } from '@/lib/answer-resume';
+import { isOpenAsk, isOpenQuestionNote } from '@/lib/open-ask';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { displayWorkspaceName, LIVE_WORKER_STATUSES, isLiveWorkerStatus, isTerminalTaskStatus } from '@buildd/shared';
+import { displayWorkspaceName, LIVE_WORKER_STATUSES, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { isValidTaskId } from '@/lib/task-id';
 import Spinner from '@/components/Spinner';
@@ -41,6 +41,8 @@ import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopHistoryEntry } from '@buildd/shared';
 import { isSummaryDuplicate } from '@/components/artifact-helpers';
 import TaskArtifactsSection from './TaskArtifactsSection';
+import TaskAccessSection from './TaskAccessSection';
+import { loadTaskAccess } from '@/lib/agent-capabilities/access-log';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
@@ -59,11 +61,17 @@ import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSource
 import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
 import { loadOpenAttempt } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
+import { explainProviderAuthFailure, plainWorkerError } from '@/lib/provider-auth-failure';
 import TaskEvidenceFiles from './TaskEvidenceFiles';
 import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence-read';
 import { evidenceViewOf } from '@/lib/task-evidence';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
+import { auditTaskIdFor, loadTaskFailureKind } from '@/lib/task-failure-kind-load';
+import RunnerReachBanner from './RunnerReachBanner';
+import { loadRunnerReachDiagnosis } from '@/lib/runner-reach';
+import { canAdministerTeamKeys } from '@/lib/key-level-policy';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 import TaskOverflowMenu from './TaskOverflowMenu';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
 import { missionContextBarFor, type MissionContextBarData } from './mission-context-bar';
@@ -247,8 +255,13 @@ export default async function TaskDetailPage({
         })
       : Promise.resolve(null),
   ]);
-  const openQuestionCount = openQuestionRows.length;
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
+  const taskBackend = (task.backend as 'claude' | 'codex' | null) ?? null;
+  // A failed run whose agent could not sign in to its model provider: the action
+  // zone says so in plain words, so the raw error chrome below steps back.
+  const authFailure = task.status === 'failed'
+    ? explainProviderAuthFailure(taskWorkers[0]?.error ?? null, taskBackend)
+    : null;
   const missionContextBar: MissionContextBarData | null = missionContextBarFor(
     missionContextRow as unknown as MissionCardRow | null,
     task.id,
@@ -297,7 +310,23 @@ export default async function TaskDetailPage({
       console.error('[task-page] evidence list failed:', err instanceof Error ? err.message : err);
       return [];
     });
-  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt] = await Promise.all([
+  // Why no runner can claim a pending task: a restricted workspace its
+  // runners are not linked to (a new user's "My Workspace" before the login
+  // fix). Runner work only; a local mission's task is claimed from a session.
+  // Shown only when the task can start (filtered below, once deps are known).
+  const runnerReachLoad = task.status === 'pending' && missionExecutorOf(missionContextRow) !== 'local' && task.workspace
+    ? Promise.all([
+        loadRunnerReachDiagnosis({
+          id: task.workspace.id,
+          teamId: task.workspace.teamId,
+          accessMode: task.workspace.accessMode,
+        }),
+        getTeamPermissionOverrides(access.teamId),
+      ])
+        .then(([diagnosis, overrides]) => diagnosis ? { diagnosis, canFix: canAdministerTeamKeys(access.role, overrides) } : null)
+        .catch(() => null)
+    : Promise.resolve(null);
+  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
     // Artifacts for all workers on this task
     workerIds.length > 0
       ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
@@ -382,6 +411,13 @@ export default async function TaskDetailPage({
     prWorker?.prUrl && prWorker.prNumber && prWorker.prLifecycleStatus !== 'closed'
       ? loadOpenAttempt(task.id)
       : Promise.resolve(null),
+    runnerReachLoad,
+    // What this task's runs were given and refused (agent_capability_decisions).
+    // A read failure hides the section; it never fails the page.
+    loadTaskAccess(id).catch(() => []),
+    // Worker vs verification failure. Costs no query unless the task failed;
+    // joined here rather than awaited after the phase is derived.
+    loadTaskFailureKind({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null),
   ]);
   const shippedRelease = ship.shippedRelease;
   // Runners by hostname, never their raw URL (runner-display).
@@ -559,24 +595,13 @@ export default async function TaskDetailPage({
     }
   }
 
-  // Get the active worker (if any)
-  // Prefer a truly active worker; otherwise fall back to any worker that
-  // still has an unanswered question. The runner's inputAsRetry mode aborts
-  // the session when AskUserQuestion fires, leaving the worker in
-  // status=error with waitingFor populated — without this fallback the
-  // task page renders no worker and the user has nothing to click.
-  //
-  // Both steps go through isAnswerableWaitingFor — the rule /respond enforces —
-  // so a card is only ever rendered when answering it can work. A permission
-  // prompt left on an ended worker (its hook was denied when the session
-  // stopped) is dropped rather than offered as a live "Allow once".
-  const activeWorkerRow =
-    taskWorkers.find(w => isLiveWorkerStatus(w.status)) ||
-    taskWorkers.find(w => isAnswerableWaitingFor(w.status, w.waitingFor as { type?: string } | null));
-  const activeWorker = activeWorkerRow?.waitingFor
-    && !isAnswerableWaitingFor(activeWorkerRow.status, activeWorkerRow.waitingFor as { type?: string } | null)
-    ? { ...activeWorkerRow, waitingFor: null }
-    : activeWorkerRow;
+  // Never revive an ended worker merely because it retained a question.
+  const activeWorkerRow = !isTerminalTaskStatus(task.status)
+    ? taskWorkers.find(w => isLiveWorkerStatus(w.status)) : undefined;
+  const activeWorker = activeWorkerRow?.waitingFor && !isOpenAsk(task.status, activeWorkerRow.status)
+    ? { ...activeWorkerRow, waitingFor: null } : activeWorkerRow;
+
+  const openQuestionCount = openQuestionRows.filter(n => isOpenQuestionNote(n, task.status, activeWorker)).length;
 
   // Derive canonical display status from task + active worker state.
   // If the worker is running, the chip shows "Running" not "Assigned".
@@ -710,6 +735,7 @@ export default async function TaskDetailPage({
 
   const canReassign = task.status !== 'completed' && task.status !== 'pending';
   const canStart = task.status === 'pending' && !isBlocked;
+  const runnerReach = canStart ? runnerReachRaw : null;
 
   // Canonical lifecycle phase — the single spine the whole page (and the mission
   // drawer, via the same fn) keys off to decide what to foreground.
@@ -723,6 +749,7 @@ export default async function TaskDetailPage({
     isSubjectDead: subjectDead,
     isMissionBudgetExhausted: missionBudgetExhausted,
   });
+  const failureKind = phase === 'failed' ? failureKindRaw : null;
   // Triage metadata (priority / runner / backend) only earns top-level space in
   // the pending family; everywhere else it demotes into the Details disclosure.
   const isPendingFamily = phase === 'pending' || phase === 'blocked' || phase === 'budget_paused' || phase === 'assigned' || phase === 'subject_dead' || phase === 'mission_budget_exhausted';
@@ -1124,7 +1151,7 @@ export default async function TaskDetailPage({
             )}
             {/* On a completed task, matched errors are a hiccup the run got
                 past (the quiet row under "Your move"), not a red chip. */}
-            {errorTraces.length > 0 && !shippedView && (
+            {errorTraces.length > 0 && !shippedView && !authFailure && (
               <a
                 href="#agent-error-traces"
                 className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-status-error/30 text-status-error hover:bg-status-error/10 transition-colors"
@@ -1169,6 +1196,9 @@ export default async function TaskDetailPage({
             different things. The page alone adds runner targeting. An open
             question is answered in the live worker view below
             (worker-needs-input-banner), which leads the list on mobile. */}
+        {runnerReach && (
+          <RunnerReachBanner workspaceId={task.workspaceId} diagnosis={runnerReach.diagnosis} canFix={runnerReach.canFix} />
+        )}
         {(phase === 'failed' || canStart || isBlocked) && (
           <div className="mb-6" data-testid="task-page-action-zone">
             <TaskPageActionZone
@@ -1178,10 +1208,13 @@ export default async function TaskDetailPage({
               isBlocked={isBlocked}
               blockedByCount={unresolvedDeps.length}
               backend={(task.backend as 'claude' | 'codex' | null) ?? null}
-              lastError={failedExcerpt ? { excerpt: failedExcerpt } : null}
+              failureKind={failureKind}
+              auditTaskId={auditTaskIdFor(task, failureKind)}
+              lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}
               worker={null}
               roleSlug={task.roleSlug}
               missionExecutor={missionExecutorOf(missionContextRow)}
+              entitlementBlock={task.status === 'pending' ? parseEntitlementBlock((task.context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY]) : null}
               runnerPicker
             />
           </div>
@@ -1191,6 +1224,7 @@ export default async function TaskDetailPage({
             task's included (S6: no mission gate). An open question is the
             decision, so it sits with the action, above anything to read. */}
         <TaskQuestionFeed
+          taskStatus={task.status}
           taskId={task.id}
           missionId={task.missionId ?? null}
           activeWorkerId={activeWorker?.id ?? null}
@@ -1349,7 +1383,7 @@ export default async function TaskDetailPage({
           />
         )}
 
-        <TaskEvidenceCard status={task.status} result={task.result} />
+        <TaskEvidenceCard status={task.status} result={task.result} workerError={taskWorkers[0]?.error ?? null} backend={taskBackend} />
 
         <TaskEvidenceFiles
           taskId={task.id}
@@ -1364,8 +1398,10 @@ export default async function TaskDetailPage({
             <details className="card">
               {/* Red only where the errors may have cost the result; a done
                   task got past them. */}
-              <summary className={`cursor-pointer p-4 font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] select-none ${shippedView ? 'text-text-muted hover:text-text-secondary' : 'text-red-400 hover:text-red-300'}`}>
-                {shippedView ? 'Handled errors' : 'Agent errors'} · {errorTraces.length}
+              {/* Muted, too, once the failure is explained above: the same
+                  sign-in error matched six times is not six problems. */}
+              <summary className={`cursor-pointer p-4 font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] select-none ${shippedView || authFailure ? 'text-text-muted hover:text-text-secondary' : 'text-red-400 hover:text-red-300'}`}>
+                {shippedView ? 'Handled errors' : authFailure ? 'Matched errors' : 'Agent errors'} · {errorTraces.length}
               </summary>
               <div className="px-4 pb-4 space-y-2 border-t border-border-default pt-3">
                 <p className="text-xs text-text-muted mb-2">
@@ -1531,6 +1567,7 @@ export default async function TaskDetailPage({
         {activeWorker && (
           <div className="mb-8 order-first" data-testid="task-active-worker">
             <RealTimeWorkerView
+              taskStatus={task.status}
               taskId={task.id}
               initialWorker={{
                 id: activeWorker.id,
@@ -1769,9 +1806,14 @@ export default async function TaskDetailPage({
                         <span title={worker.branch}>{displayBranchName(worker.branch)}</span>
                         {worker.account && ` \u00B7 ${worker.account.name}`}
                       </div>
-                      {worker.error && (
-                        <p className="font-mono text-[11px] text-status-error mt-0.5 whitespace-pre-wrap break-words" title={worker.error}>{worker.error}</p>
-                      )}
+                      {(() => {
+                        // "Not logged in · Please run /login" and kin, in plain words (raw on hover).
+                        const shown = plainWorkerError(worker.error, taskBackend);
+                        if (!shown) return null;
+                        return (
+                          <p className={`mt-0.5 whitespace-pre-wrap break-words text-status-error ${shown.plain ? 'text-[12px]' : 'font-mono text-[11px]'}`} title={shown.raw}>{shown.text}</p>
+                        );
+                      })()}
                       {worker.status === 'superseded' && (
                         <p className="text-[11px] text-text-muted mt-0.5">
                           Session ended after you answered the question.{' '}
@@ -1900,6 +1942,8 @@ export default async function TaskDetailPage({
           </div>
         )}
 
+        <TaskAccessSection items={accessItems} />
+
         {/* Empty state */}
         {taskWorkers.length === 0 && task.status === 'pending' && (
           <div className="border border-dashed border-border-default p-8 text-center">
@@ -1932,6 +1976,8 @@ export default async function TaskDetailPage({
               status={activeWorker.status}
               hasUnansweredQuestion={!!activeWorker.waitingFor}
               instructionHistory={(activeWorker.instructionHistory as any[]) || []}
+              runner={activeWorker.runner}
+              taskTerminal={isTerminal}
             />
           )}
 

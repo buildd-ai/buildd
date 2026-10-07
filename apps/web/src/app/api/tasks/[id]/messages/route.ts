@@ -4,9 +4,10 @@ import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { desc, eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { authenticateApiKey } from '@/lib/api-auth';
-import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, holdsInWorkspace } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
+
 
 // GET /api/tasks/[id]/messages - Return instruction history for the task's latest worker
 export async function GET(
@@ -21,7 +22,8 @@ export async function GET(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token reads messages only for tasks in its own task's workspace.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -41,6 +43,9 @@ export async function GET(
       const access = await verifyWorkspaceAccess(user.id, task.workspaceId);
       if (!access) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     } else if (apiAccount) {
+      if (!taskScopeAllowsWorkspace(apiAccount, task.workspaceId)) {
+        return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+      }
       const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId);
       if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
@@ -62,7 +67,7 @@ export async function GET(
     // applies, so the Steer canvas doesn't offer a composer whose every send 404s.
     const canSend = apiAccount && hasTokenRouteAdminAccess(apiAccount, req, 'workers:admin')
       ? apiAccount.teamId === task.workspace?.teamId
-      : user ? !!(await verifyWorkspaceAccess(user.id, task.workspaceId, 'admin')) : false;
+      : user ? await holdsInWorkspace(user.id, task.workspaceId, 'steer_workers') : false;
 
     return NextResponse.json({ taskId: id, workerId: worker?.id ?? null, canSend, messages });
   } catch (error) {

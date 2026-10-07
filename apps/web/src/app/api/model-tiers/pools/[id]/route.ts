@@ -66,6 +66,11 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     const { pool, arms } = loaded;
 
     const nextMode = mode ?? pool.mode;
+    if (nextMode === 'dial' && weightsPatch !== undefined) {
+      // A dial pool serves from its dial and learning state; typed weights
+      // would be stored and never served. An exact split is mode `split`.
+      return NextResponse.json({ error: 'This cell is run by its dial. Set mode to split for an exact split.', code: 'dial_mode' }, { status: 400 });
+    }
     if (body.allocation !== undefined && nextMode === 'explore') {
       return NextResponse.json({ error: 'buildd sets the shares in explore' }, { status: 400 });
     }

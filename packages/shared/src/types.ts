@@ -206,6 +206,26 @@ export type TeamRoleValue = typeof TeamRole[keyof typeof TeamRole];
 
 export type TeamPlan = 'free' | 'pro' | 'team';
 
+// Billing routes (apps/web/src/app/api/teams/[id]/billing/*). Plan changes land
+// only through the Stripe webhook; these routes hand the owner a Stripe URL.
+export type PaidTeamPlan = Exclude<TeamPlan, 'free'>;
+
+/** POST /api/teams/[id]/billing/checkout. `seats` is Team only; never below 5 or current members + invites. */
+export interface BillingCheckoutRequest {
+  plan: PaidTeamPlan;
+  seats?: number;
+}
+
+/** POST /api/teams/[id]/billing/seats — the Team plan's new total seat count. */
+export interface BillingSeatsRequest {
+  seats: number;
+}
+
+/** checkout and portal answer with the Stripe page to send the owner to. */
+export interface BillingRedirectResponse {
+  url: string;
+}
+
 export interface Team {
   id: string;
   name: string;
@@ -1354,8 +1374,7 @@ export interface ClaimTasksInput {
   claimAcrossAccessible?: boolean;
   /**
    * Protocol features this runner build implements, so the server does not send
-   * a payload field an older runner would silently ignore. See
-   * CBM_WITHHOLD_RUNNER_FEATURE in @buildd/core/cbm-access-experiment.
+   * a payload field an older runner would silently ignore.
    */
   runnerFeatures?: string[];
   /**
@@ -1538,6 +1557,15 @@ export interface ClaimDiagnostics {
      * degraded or fail at provisioning. See claim/role-env-injection.ts.
      */
     role_env_unsatisfied?: number;
+    /**
+     * Commercial entitlement, managed-runner claims only (accounts.managedRunner):
+     * the team is at its plan's parallel managed-run limit. Not an error; the
+     * task stays pending and starts when a managed run ends.
+     * See packages/shared/src/entitlements.ts.
+     */
+    managed_concurrency?: number;
+    /** Same, for the plan's monthly managed runner-hours allowance. */
+    managed_runner_hours?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).
@@ -1613,12 +1641,6 @@ export interface ClaimTasksResponse {
     task: Task;
     skillBundles?: SkillBundle[];
     childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
-    /**
-     * Set when the task is enrolled in a running `cbm_access` experiment.
-     * `withheld: true` means the runner must run it WITHOUT codebase-memory:
-     * no mount, no steering, every CBM tool denied.
-     */
-    cbmExperiment?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; withheld: boolean };
     /**
      * Set when the team runs a `question_gate` experiment and the runner sent
      * the `question_gate` feature. The runner then routes AskUserQuestion
@@ -2070,6 +2092,21 @@ export const VISUAL_AUDITOR_ROLE_SLUG = 'visual-auditor';
 // keeps the legacy rule (an empty `availableSkills` list claims anything).
 export const EXPLICIT_ROLE_SLUGS: readonly string[] = [VISUAL_AUDITOR_ROLE_SLUG];
 
+// Role slugs a person never picks for a task they write. buildd files these
+// tasks itself: a visual review is a mission command (POST
+// /api/missions/[id]/surface-audit), and a hand-written visual-auditor task
+// would miss its dependencies, routes and evidence contract.
+export const SYSTEM_ROLE_SLUGS: readonly string[] = [VISUAL_AUDITOR_ROLE_SLUG];
+
+export function isSystemRoleSlug(slug: string | null | undefined): boolean {
+  return !!slug && SYSTEM_ROLE_SLUGS.includes(slug);
+}
+
+/** The roles a generic task picker offers a person: everything but the system roles. */
+export function humanPickableRoles<T extends { slug: string }>(roles: readonly T[]): T[] {
+  return roles.filter(r => !isSystemRoleSlug(r.slug));
+}
+
 // ============================================================================
 // VISUAL REVIEW (docs/design/visual-qa-human-review.md)
 // ============================================================================
@@ -2168,6 +2205,23 @@ export interface VisualReviewCaptureGap {
   expectedRef: string;
   auditTaskId: string | null;
   round: number;
+}
+
+/**
+ * A cell stuck "awaiting a new screenshot" after its fix merged, whose place
+ * (route, viewport and state) a different cell — another variant key —
+ * captured after the merge: a later round often re-shoots only the routes it
+ * fixed with no title collision, so the recapture lands in a sibling cell
+ * instead of this one's history. Hidden from `cells`/`queue`/the summary
+ * counts; kept here for audit (docs/design/visual-qa-human-review.md).
+ */
+export interface VisualReviewResolvedElsewhere {
+  key: string;
+  route: string;
+  viewport: VisualQaViewport;
+  variant: string | null;
+  /** The cell key whose current shot, captured after the merge, resolves this one. */
+  resolvedBy: string;
 }
 
 /** One audit screenshot, as every surface renders it. */
@@ -2394,6 +2448,8 @@ export interface VisualReviewModel {
   superseded?: VisualReviewSupersededShot[];
   /** Wrong-ref shots the auditor still has to recapture. Never in `cells` or `queue`. */
   captureGaps?: VisualReviewCaptureGap[];
+  /** Cells resolved by a later round's capture of the same place under a different variant. Never in `cells` or `queue`. */
+  resolvedElsewhere?: VisualReviewResolvedElsewhere[];
   generatedAt: string;
 }
 
@@ -3081,7 +3137,7 @@ export interface GateReasonFamily {
 
 export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'concluded';
 export type ExperimentVisibility = 'admins' | 'team';
-export type ExperimentKind = 'model_routing' | 'cbm_access' | 'heartbeat_triage' | 'question_gate';
+export type ExperimentKind = 'model_routing' | 'heartbeat_triage' | 'question_gate';
 
 /** An `experiments` row as the API returns it. Dates are ISO strings. */
 export interface Experiment {
@@ -3202,6 +3258,10 @@ export interface LaneBar {
   /** Role colour from the role's own data; null = neutral. */
   color: string | null;
   roleSlug?: string | null;
+  /** The role's display name ("Builder"), for the hover card. */
+  roleName?: string | null;
+  /** The PR this run opened, if any. */
+  prNumber?: number | null;
   state: 'running' | 'waiting' | 'done' | 'failed';
   href?: string | null;
 }
@@ -3542,6 +3602,71 @@ export interface WorkspaceOnboardingConfig {
   lastSeenPolicyInitAt?: string;
 }
 
+/**
+ * `gitConfig.qualityScout`: what an owner declares so Quality Scout can probe
+ * the workspace safely. Only what the repo cannot tell us; everything else is
+ * projected from the readiness report. Stored as typed but untrusted: read it
+ * only through `resolveScoutExtension` (packages/core/scout-capabilities.ts).
+ */
+export interface WorkspaceQualityScoutConfig {
+  /**
+   * `off` (default when absent): no runs. `shadow`: run and record, never file.
+   * `propose`: apply the deduped follow-up policy. No blocking mode exists.
+   * Read only through `resolveScoutMode` (packages/core/quality-scout/ledger.ts).
+   */
+  mode?: 'off' | 'shadow' | 'propose';
+  /** Overrides the detected test command as Scout's verification command. */
+  verificationCommand?: string;
+  /** Where probes may run. `ephemeral: true` is the only thing that permits writes. */
+  testEnvironment?: { baseUrl?: string; ephemeral?: boolean; description?: string };
+  /**
+   * Critical journeys. API `path` is relative to the test environment (or the
+   * app booted in the sandbox); absolute URLs are refused. `mutates` defaults to
+   * true for a CLI journey and to "not GET/HEAD/OPTIONS" for an API journey.
+   * `paths` (exact, `dir/` prefix or glob) scopes a journey to the code it
+   * exercises: Scout uses it for changes there and not for unrelated ones;
+   * unscoped journeys are shared across changes in turn.
+   */
+  journeys?: Array<
+    | { name: string; kind: 'cli'; command: string; mutates?: boolean; expect?: string; paths?: string[] }
+    | { name: string; kind: 'api'; method?: string; path: string; mutates?: boolean; expect?: string; paths?: string[] }
+  >;
+  /** UI route patterns worth looking at, e.g. `/`, `/items/:id`. */
+  uiRoutes?: string[];
+  /** Command that seeds fixtures. Always treated as mutating. */
+  fixtureSetup?: { command: string };
+  constraints?: {
+    /** Default `ephemeral-only`. `never` = read-only probes only. */
+    allowWrites?: 'never' | 'ephemeral-only';
+    /** A probe command containing any of these substrings is never run. */
+    forbiddenPatterns?: string[];
+  };
+  /**
+   * Follow-up thresholds (`propose` mode). Read only through
+   * `resolveScoutActionPolicy` (apps/web/src/lib/quality-scout-actions.ts);
+   * an out-of-range value falls back to the default rather than being clamped.
+   */
+  policy?: {
+    /** critical/high/medium file only at or above this confidence. Default 0.7. */
+    minConfidence?: number;
+    /** A medium finding files once seen `count` times, the last within `windowDays`. Default 2 in 7. */
+    mediumRecurrence?: { count?: number; windowDays?: number };
+  };
+  /**
+   * When runs start on their own. Read only through `resolveScoutTriggerConfig`
+   * (apps/web/src/lib/quality-scout-trigger.ts). A manual run is always allowed
+   * unless the mode is `off`.
+   */
+  triggers?: {
+    /** Run when a mission's integration branch becomes a candidate. Default true. */
+    missionCandidate?: boolean;
+    /** Optional periodic run on the default branch. Absent: never periodic. */
+    periodicHours?: number;
+  };
+  /** Per-run bounds. */
+  budget?: { maxProbes?: number; maxCostUsd?: number; maxDurationMs?: number };
+}
+
 export interface WorkspaceReadinessItem {
   id: WorkspaceReadinessItemId;
   label: string;
@@ -3579,8 +3704,13 @@ export interface PromptEvalResultSummary {
   /** First 12 hex of the sha256 of the text scored. */
   promptHash: string;
   promptVersion: string;
+  /**
+   * The model that scored it, or for `no_eval_set` the model that serves it in
+   * production (nothing was called). Null for a dry run.
+   */
   model: string | null;
-  status: 'scored' | 'dry_run' | 'no_cases';
+  /** `no_eval_set`: no benchmark set or no labelled cases; every score is null. `no_cases` is the older name. */
+  status: 'scored' | 'dry_run' | 'no_eval_set' | 'no_cases';
   cases: number;
   accuracy: number | null;
   baselineAccuracy: number | null;
@@ -3595,6 +3725,7 @@ export interface PromptEvalResultSummary {
 export interface PromptEvalRunSummary {
   id: string;
   teamId: string | null;
+  /** `cron`: a run from the retired weekly schedule. */
   trigger: 'push' | 'cron' | 'manual';
   status: 'running' | 'passed' | 'failed' | 'refused' | 'skipped';
   promptsRef: string | null;
@@ -3602,7 +3733,7 @@ export interface PromptEvalRunSummary {
   /** The model the team's live decisions use. */
   prodModel: string | null;
   modelMismatch: boolean;
-  /** Present when `modelMismatch`: the scores do not predict production behaviour. */
+  /** Set only when a per-run override scored on another model than production: the scores do not predict production behaviour. */
   modelMismatchNote?: string;
   dryRun: boolean;
   loadedPrompts: number | null;

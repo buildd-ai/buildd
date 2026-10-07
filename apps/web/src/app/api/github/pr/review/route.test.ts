@@ -53,7 +53,7 @@ mock.module('@/lib/dispatch-authority', () => ({
   enqueueTaskDispatch: async () => {},
   drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
   deliverTaskDispatch: async () => 'pusher',
-  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
   webhookWants: () => false,
   primaryCause: (_causes: string[], fallback: string) => fallback,
   DISPATCH_DUE_QUEUE: 'dispatch',
@@ -399,7 +399,7 @@ describe('POST /api/github/pr/review — adoption', () => {
     expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
     expect(mockAppendPrActivity.mock.calls[0][0]).toMatchObject({
       prNumber: 42,
-      entry: { kind: 'reviewing' },
+      entry: { kind: 'review_queued' },
     });
   });
 
@@ -716,6 +716,36 @@ describe('per-task token', () => {
     const res = await POST(post({ prNumber: 42 }));
     expect(res.status).toBe(403);
     expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  it('requests review of a PR its own task names, even though a different task’s worker owns it', async () => {
+    // A coordination/cleanup task ("resolve conflicts on #42") repairing a PR
+    // it never opened — same fallback pr/route.ts already applies to close/merge.
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({
+      id: 'task-1', title: 'Repair stale PRs', description: 'resolve conflicts on #42', context: {}, workspaceId: 'ws-1',
+    });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(201);
+  });
+
+  it('still refuses when neither its own worker nor its task names the PR', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({
+      id: 'task-1', title: 'Unrelated work', description: 'nothing about PRs here', context: {}, workspaceId: 'ws-1',
+    });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  it('does not trust another task naming the PR when the task row has drifted out of its own workspace', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({
+      id: 'task-1', title: 'Repair stale PRs', description: 'resolve conflicts on #42', context: {}, workspaceId: 'ws-2',
+    });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
   });
 
   it('refuses review of a PR buildd does not own, rather than adopting it', async () => {

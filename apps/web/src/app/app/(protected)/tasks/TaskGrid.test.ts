@@ -8,6 +8,7 @@ import {
   gridTaskPrProps,
   selectMobileRunningTasks,
   splitTaskRoots,
+  capGroupedRows,
   type GridTask,
 } from './TaskGrid';
 
@@ -227,3 +228,22 @@ describe('splitTaskRoots', () => {
   });
 });
 
+
+describe('capGroupedRows', () => {
+  const g = (label: string, n: number) => ({ label, items: Array.from({ length: n }, (_, i) => `${label}${i}`) });
+
+  it('keeps groups whole while under the cap', () => {
+    expect(capGroupedRows([g('a', 2), g('b', 3)], 10)).toEqual([g('a', 2), g('b', 3)]);
+  });
+
+  it('truncates across groups in order and drops groups past the cap', () => {
+    const out = capGroupedRows([g('a', 3), g('b', 4), g('c', 2)], 5);
+    expect(out.map(x => x.label)).toEqual(['a', 'b']);
+    expect(out[1].items).toEqual(['b0', 'b1']);
+  });
+
+  it('no cap returns the input', () => {
+    const groups = [g('a', 3)];
+    expect(capGroupedRows(groups, Infinity)).toBe(groups);
+  });
+});

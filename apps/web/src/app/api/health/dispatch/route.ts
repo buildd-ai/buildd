@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
 import { db } from '@buildd/core/db';
@@ -20,14 +20,15 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  *   teamId      — dashboard session only: pin to one of the user's teams.
  *
  * Auth and scope match /api/health/failures: an API key reads its own team;
- * a session reads the user's teams (or the pinned one). Read-only.
+ * a session reads the user's teams (or the pinned one); a per-task token reads
+ * only its own task's workspace. Read-only.
  *
  * Response: DispatchHealthReport (@buildd/core/dispatch-health-report).
  */
 export async function GET(req: NextRequest) {
   try {
     const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') ?? null;
-    const account = await authenticateApiKey(apiKey, req);
+    const account = await authenticateTaskScopedCaller(apiKey, req);
     const sessionUser = account ? null : await getCurrentUser();
     if (!account && !sessionUser) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -49,10 +50,12 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: `Invalid workspaceId: expected a UUID, got "${workspaceId}".` }, { status: 400 });
       }
       const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { id: true, teamId: true } });
-      if (!ws || !teamIds.includes(ws.teamId)) {
+      if (!ws || !teamIds.includes(ws.teamId) || (account && !taskScopeAllowsWorkspace(account, ws.id))) {
         return NextResponse.json({ error: 'Workspace not found or not in your team' }, { status: 404 });
       }
       scoped = [workspaceId];
+    } else if (account?.taskScope) {
+      scoped = [account.taskScope.workspaceId];
     } else if (account) {
       const rows = await db.query.workspaces.findMany({ where: eq(workspaces.teamId, account.teamId), columns: { id: true } });
       scoped = rows.map((w: { id: string }) => w.id);

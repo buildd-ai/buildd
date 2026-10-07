@@ -514,7 +514,7 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
         // access is actually denied (pr-mutation-enforcement.ts), say so here rather
         // than let the agent discover it as an unexplained tool failure mid-task.
         if (shouldDenyPrMutation(task.roleSlug, hasApiKey)) {
-          gitContext.push(`- \`gh pr create/edit/merge/close/reopen/ready/review\` are blocked for this role — use \`create_pr\`/\`merge_pr\`/\`close_pr\`/\`request_pr_review\` instead. Read-only \`gh pr view/list/checks\` and \`gh api <GET>\` still work.`);
+          gitContext.push(`- \`gh pr create/edit/merge/close/reopen/ready/review\` are blocked for this role — use \`create_pr\`/\`merge_pr\`/\`close_pr\`/\`update_pr\`/\`request_pr_review\` instead. Read-only \`gh pr view/list/checks\` and \`gh api <GET>\` still work.`);
         }
       } else {
         gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);

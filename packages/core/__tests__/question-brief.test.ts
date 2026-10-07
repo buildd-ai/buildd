@@ -120,7 +120,7 @@ describe('questionNotificationText', () => {
       context: 'isWeekend() decides weekend surcharges. Second sentence.',
       recommended: { label: 'Local time', reason: 'Customers are charged by their own calendar.' },
     });
-    expect(n.title).toBe('Agent needs your input');
+    expect(n.title).toBe('Agent needs input');
     expect(n.message.split('\n')).toEqual([
       'Should it use local time or UTC?',
       'isWeekend() decides weekend surcharges.',

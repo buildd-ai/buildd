@@ -3,7 +3,8 @@
  * dispatcher presents: the runner key (already authenticated by the route),
  * the workspace's dispatch token, and `{ taskId, workerId? }`.
  *
- * Used by /api/runner/github-token and /api/runner/model-endpoint.
+ * Used by /api/runner/github-token and /api/runner/model-endpoint;
+ * resolveDispatchTask alone by /api/runner/runner-size.
  */
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
@@ -21,7 +22,7 @@ import {
 async function loadTask(taskId: string) {
   return db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { id: true, workspaceId: true, backend: true },
+    columns: { id: true, workspaceId: true, backend: true, context: true },
     with: {
       workspace: {
         columns: { id: true, teamId: true, accessMode: true, webhookConfig: true, githubRepoId: true, gitConfig: true, releaseConfig: true },
@@ -48,10 +49,20 @@ export type DispatchPrincipalResult =
 
 const NOT_FOUND: PrincipalRefusal = { ok: false, status: 404, error: 'Task not found', reasonCode: 'not_found' };
 
-export async function resolveDispatchPrincipal(
+export type DispatchTaskResult =
+  | { ok: true; task: LoadedTask; workspace: DispatchWorkspace }
+  | PrincipalRefusal;
+
+/**
+ * The dispatcher's half of the check, before any worker exists: the task is in
+ * a workspace the account may claim from, and the dispatch token is that
+ * workspace's. Used alone by /api/runner/runner-size, which the dispatcher
+ * calls before it starts a container.
+ */
+export async function resolveDispatchTask(
   account: PrincipalAccount,
-  input: { taskId: string; workerId?: string; dispatchToken: string },
-): Promise<DispatchPrincipalResult> {
+  input: { taskId: string; dispatchToken: string },
+): Promise<DispatchTaskResult> {
   const task = await loadTask(input.taskId);
   const ws = task?.workspace;
   if (!task || !ws || task.workspaceId !== ws.id) return NOT_FOUND;
@@ -61,10 +72,20 @@ export async function resolveDispatchPrincipal(
   if (!dispatchTokenMatches(ws.webhookConfig, input.dispatchToken)) {
     return { ok: false, status: 403, error: 'Dispatch token does not match this workspace', reasonCode: 'dispatch_token_mismatch' };
   }
+  return { ok: true, task, workspace: ws };
+}
+
+export async function resolveDispatchPrincipal(
+  account: PrincipalAccount,
+  input: { taskId: string; workerId?: string; dispatchToken: string },
+): Promise<DispatchPrincipalResult> {
+  const resolved = await resolveDispatchTask(account, input);
+  if (!resolved.ok) return resolved;
+  const { task, workspace: ws } = resolved;
 
   const rows = await db.query.workers.findMany({
     where: and(eq(workers.taskId, input.taskId), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
-    columns: { id: true, accountId: true, workspaceId: true, status: true, taskId: true },
+    columns: { id: true, accountId: true, workspaceId: true, status: true, taskId: true, branch: true },
   });
   const mine = ownLiveWorkers(rows, { taskId: input.taskId, workspaceId: ws.id, accountId: account.id, workerId: input.workerId });
   if (mine.length === 0) {
@@ -79,6 +100,7 @@ export async function resolveDispatchPrincipal(
       // Without a workerId the task's live worker stands in. One task has at
       // most one live worker in practice; any of them satisfies the rule above.
       workerId: mine[0]!.id,
+      workerBranch: rows.find(w => w.id === mine[0]!.id)?.branch ?? null,
       taskId: task.id,
       workspaceId: ws.id,
       teamId: ws.teamId,
@@ -87,4 +109,29 @@ export async function resolveDispatchPrincipal(
     task,
     workspace: ws,
   };
+}
+
+/**
+ * The branches a cloud run may move (the egress push allow-list in
+ * apps/cloud-runner/src/outbound.ts): the worker's own branch, plus the task's
+ * `context.headBranch` when it pins one (a mission's shared working branch,
+ * which every task on that mission pushes; the claim route normally makes it
+ * the worker's branch as well). A stacked phase pushes its own branch on top
+ * of its predecessor's, so `context.baseBranch` is never included. A protected
+ * branch is never pushable, whatever the task says.
+ */
+export function taskPushableBranches(args: {
+  workerBranch?: string | null;
+  context?: unknown;
+  protectedBranches: readonly string[];
+}): string[] {
+  const head = (args.context as { headBranch?: unknown } | null | undefined)?.headBranch;
+  const out: string[] = [];
+  for (const b of [args.workerBranch, head]) {
+    if (typeof b !== 'string') continue;
+    const name = b.trim();
+    if (!name || args.protectedBranches.includes(name) || out.includes(name)) continue;
+    out.push(name);
+  }
+  return out;
 }

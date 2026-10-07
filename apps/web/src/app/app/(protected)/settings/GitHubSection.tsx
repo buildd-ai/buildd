@@ -18,6 +18,8 @@ interface Installation {
 export default function GitHubSection() {
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [loading, setLoading] = useState(true);
+  // False when this buildd server has no GitHub App: connecting cannot work.
+  const [configured, setConfigured] = useState(true);
   const [syncing, setSyncing] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [disconnecting, setDisconnecting] = useState<{ id: string; login: string } | null>(null);
@@ -32,6 +34,7 @@ export default function GitHubSection() {
       const res = await fetch('/api/github/installations');
       if (res.ok) {
         const data = await res.json();
+        setConfigured(data.configured !== false);
         setInstallations(data.installations || []);
       }
     } catch (err) {
@@ -100,7 +103,7 @@ export default function GitHubSection() {
     <SettingsSection
       title="GitHub"
       bare
-      action={<a href="/api/github/install" className="btn btn-quiet">+ Connect org</a>}
+      action={configured ? <a href="/api/github/install" className="btn btn-quiet">+ Connect org</a> : undefined}
     >
       {message && (
         <div className={`notice mb-3 ${
@@ -112,6 +115,18 @@ export default function GitHubSection() {
 
       {loading ? (
         <div className="text-text-secondary text-sm">Loading…</div>
+      ) : !configured ? (
+        <div className="card p-6" data-testid="github-unavailable">
+          <p className="text-sm text-text-primary mb-2">GitHub is not set up on this buildd server.</p>
+          <p className="text-sm text-text-secondary">
+            You can still work with a repository: paste its address when you create a workspace, or in the
+            workspace&apos;s settings under Link a repository.
+          </p>
+          <p className="text-xs text-text-muted mt-3">
+            Running this server yourself? Create a GitHub App and set its ID, client ID and private key in the
+            server&apos;s environment, then restart it.
+          </p>
+        </div>
       ) : installations.length === 0 ? (
         <div className="card p-6 text-center">
           <p className="text-text-muted mb-3 text-sm">No GitHub organizations connected</p>

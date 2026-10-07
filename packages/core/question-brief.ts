@@ -46,7 +46,7 @@ export interface QuestionBriefFields {
   disposition?: 'hold';
   /** Why it was held, in the words a person reads on the parked question. */
   holdReason?: string;
-  /** ISO timestamp. Not yet consulted by any notification path — see question-gate.ts `HOLD_RESURFACE_MS`. */
+  /** ISO timestamp: when a held question is surfaced to a person if still unanswered. See question-gate.ts `HOLD_RESURFACE_MS`. */
   resurfaceAt?: string;
 }
 
@@ -305,9 +305,9 @@ export function questionNotificationText(
   q: BriefedQuestion | null | undefined,
   opts: { sensitive?: boolean } = {},
 ): { title: string; message: string } {
-  const title = 'Agent needs your input';
+  const title = 'Agent needs input';
   if (opts.sensitive) return { title, message: 'Agent waiting for input' };
-  const prompt = clean(q?.prompt, 160) ?? 'A task needs your response';
+  const prompt = clean(q?.prompt, 160) ?? 'A task needs a response';
   const lines = [prompt];
   const context = q?.context
     ? firstSentence(q.context, 140)

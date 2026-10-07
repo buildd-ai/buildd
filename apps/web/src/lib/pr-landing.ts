@@ -61,8 +61,17 @@ import {
   readLandingMarker,
   writeLandingMarker,
   clearLandingMarker,
+  claimReviewRevalidation as defaultClaimReviewRevalidation,
   type LandingMarker,
 } from '@/lib/pr-landing-marker';
+import {
+  extractMutableClaims,
+  hasMutableClaims,
+  judgeBlockingVerdict,
+  MAX_SIBLING_PR_READS,
+  type SiblingState,
+} from '@/lib/escalation-revalidation';
+import { LANDING_CYCLE_COOLDOWN_MS } from '@/lib/pr-landing-sweep';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -100,7 +109,10 @@ export type HumanCause =
   | 'branch_protection'
   | 'migration'
   | 'unsafe_other'
+  /** The refresh cycle ran out while the base kept moving, and the gap was too big (or unlistable) to land across. Retried next cycle. */
   | 'refresh_exhausted'
+  /** The refresh cycle ran out and the base keeps changing what this PR changes (shared files, migrations, schema, lockfiles). Retried next cycle. */
+  | 'refresh_unsafe'
   /** update-branch kept failing for an operational reason (rate limit, auth, transient) — not a conflict. */
   | 'refresh_failed'
   /** Opted-in semantic check: the PR and base share files and symbol coverage stayed unknown. */
@@ -190,8 +202,15 @@ export interface LandPrDeps {
   now?: () => number;
   /** Raises the one-per-key page for an outcome that needs a person (enforce only). Defaults to the DB-bound alert. */
   alert?: (input: LandingAlertInput) => Promise<void>;
+  /** Persists or clears the record Home reads to tell a person owns the PR. Enforce only. */
+  recordHandoff?: (taskId: string, handoff: { prNumber: number; headSha: string; cause: string; reason: string } | null) => Promise<void>;
   /** When the newest review of this PR concluded (epoch ms), or null. Half of the landing clock. Defaults to the DB-bound read. */
   readApprovedAt?: (workspaceId: string, prNumber: number) => Promise<number | null>;
+  /**
+   * Claims the one fresh review a stale blocking verdict is owed (true for
+   * exactly one caller per review task). Defaults to the marker-backed claim.
+   */
+  claimReviewRevalidation?: (taskId: string, reviewTaskId: string) => Promise<boolean>;
 }
 
 // ── Constants and pure pieces ──────────────────────────────────────────────────
@@ -203,13 +222,24 @@ export interface LandPrDeps {
 export const TREADMILL_MAX_BASE_COMMITS = POLICY_DEFAULTS.treadmillMaxBaseCommits;
 /** Refreshes per landing cycle before a person is asked. Public default; live value via `policyValue('treadmillMaxRefreshes')`. */
 export const TREADMILL_MAX_REFRESHES = POLICY_DEFAULTS.treadmillMaxRefreshes;
+/**
+ * Once a cycle's refreshes are spent, a head our refresh produced may land
+ * across a base gap of up to this many commits — still only when the moved
+ * files are listable, disjoint from the PR's and free of migrations, schema and
+ * lockfiles. This is what stops a busy base from starving a clean PR: the
+ * refresh treadmill ends in a merge, not in a page.
+ */
+export const TREADMILL_EXHAUSTED_MAX_BASE_COMMITS = 20;
 
 const LOCKFILE = /(^|\/)(bun\.lockb?|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$|\.lock$/;
 const SCHEMA_FILE = 'packages/core/db/schema.ts';
 
 const isRiskyPath = (path: string) => isGeneratedMigrationPath(path) || path === SCHEMA_FILE || LOCKFILE.test(path);
 
-export type TreadmillVerdict = { accepted: true } | { accepted: false; reason: string };
+export type TreadmillVerdict =
+  | { accepted: true }
+  /** `unsafe`: the gap itself is the problem (shared files, risky paths), not its size. */
+  | { accepted: false; reason: string; unsafe?: boolean };
 
 /**
  * May the landing proceed on a head that is a little behind base, rather than
@@ -225,12 +255,14 @@ export function evaluateTreadmillBound(input: {
   baseCommitsSince: number;
   baseFiles: string[] | null;
   prFiles: string[] | null;
+  /** Overrides the base-commit limit (the exhausted-cycle rule passes the wider one). */
+  maxBaseCommits?: number;
 }): TreadmillVerdict {
   const { marker, liveHeadSha, baseCommitsSince, baseFiles, prFiles } = input;
   if (!marker || marker.pendingHeadSha !== liveHeadSha) {
     return { accepted: false, reason: 'this head was not produced by a platform refresh' };
   }
-  const maxBaseCommits = policyValue('treadmillMaxBaseCommits');
+  const maxBaseCommits = input.maxBaseCommits ?? policyValue('treadmillMaxBaseCommits');
   if (baseCommitsSince > maxBaseCommits) {
     return { accepted: false, reason: `the base gained ${baseCommitsSince} commits since the last refresh (limit ${maxBaseCommits})` };
   }
@@ -238,11 +270,27 @@ export function evaluateTreadmillBound(input: {
     return { accepted: false, reason: 'could not list the files on one side of the gap' };
   }
   const risky = [...baseFiles, ...prFiles].find(isRiskyPath);
-  if (risky) return { accepted: false, reason: `the gap involves a migration, schema or lockfile (${risky})` };
+  if (risky) return { accepted: false, unsafe: true, reason: `the gap involves a migration, schema or lockfile (${risky})` };
   const mine = new Set(prFiles);
   const overlap = baseFiles.find((f) => mine.has(f));
-  if (overlap) return { accepted: false, reason: `the base changed a file this PR changes (${overlap})` };
+  if (overlap) return { accepted: false, unsafe: true, reason: `the base changed a file this PR changes (${overlap})` };
   return { accepted: true };
+}
+
+/**
+ * How many refreshes the current landing cycle has spent. A cycle belongs to a
+ * head the platform produced: a push by anyone else (an author fix, a conflict
+ * resolution) starts a new one, and so does a spent cycle once it has cooled
+ * down — so a PR that lost the race is retried on the next quiet window rather
+ * than parked for good.
+ */
+export function refreshCycleCount(marker: LandingMarker | null, liveHeadSha: string, nowMs: number): number {
+  if (!marker || marker.pendingHeadSha !== liveHeadSha) return 0;
+  if (marker.refreshCount >= policyValue('treadmillMaxRefreshes')) {
+    const at = marker.updatedAt ? Date.parse(marker.updatedAt) : NaN;
+    if (Number.isFinite(at) && nowMs - at >= LANDING_CYCLE_COOLDOWN_MS) return 0;
+  }
+  return marker.refreshCount;
 }
 
 /** The rollout mode for a workspace. Shadow is the default: observe before acting. */
@@ -380,6 +428,7 @@ export async function landPr(input: LandPrInput, deps: LandPrDeps = {}): Promise
   try {
     const outcome = await decideAndLand(input, deps, trace);
     await raiseAlert(input, outcome, trace, deps);
+    await recordHandoff(input, outcome, trace, deps);
     return outcome;
   } catch (err) {
     const reason = `the landing function failed: ${errMessage(err)}`;
@@ -453,6 +502,30 @@ async function raiseAlert(input: LandPrInput, outcome: LandingOutcome, trace: La
   }
 }
 
+/**
+ * Enforce only, never throws. A person owns the PR only when landing says so
+ * for a cause that is not "could not tell" and not a spent refresh cycle (both
+ * come back as the platform's to retry). Any other outcome clears the record.
+ */
+async function recordHandoff(input: LandPrInput, outcome: LandingOutcome, trace: LandingTrace, deps: LandPrDeps): Promise<void> {
+  if (input.mode !== 'enforce' || !input.owner.taskId) return;
+  try {
+    const mod = await import('@/lib/pr-landing-handoff');
+    const write = deps.recordHandoff ?? ((taskId, h) => (h ? mod.writeLandingHandoff(taskId, h) : mod.clearLandingHandoff(taskId)));
+    const headSha = trace.headSha ?? input.eventHeadSha;
+    const transient = outcome.kind === 'needs_human'
+      && (outcome.cause === 'landing_error' || outcome.cause === 'github_unreadable'
+        || outcome.cause === 'refresh_exhausted' || outcome.cause === 'refresh_unsafe');
+    if (outcome.kind === 'needs_human' && !transient && headSha) {
+      await write(input.owner.taskId, { prNumber: input.prNumber, headSha, cause: outcome.cause, reason: outcome.reason });
+    } else if (outcome.kind !== 'needs_human') {
+      await write(input.owner.taskId, null);
+    }
+  } catch (err) {
+    console.warn(`[pr-landing] handoff record failed for PR #${input.prNumber}:`, errMessage(err));
+  }
+}
+
 async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: LandingTrace): Promise<LandingOutcome> {
   const { workspaceId, installationId, repoFullName, prNumber, owner, actor, policy } = input;
   const act = input.mode === 'enforce';
@@ -468,6 +541,8 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   let marker: LandingMarker | null = null;
   // Set once the verdict and CI rails have passed: from here on the PR is "approved and green".
   let approvedGreenAtMs: number | null = null;
+  // Set when a behind head lands under the spent-cycle freshness rule rather than the ordinary bound.
+  let freshnessRule: 'spent_cycle' | null = null;
 
   const done = (outcome: LandingOutcome, reason: string, extra: Record<string, unknown> = {}): LandingOutcome => {
     if (input.mode === 'off') return outcome;
@@ -523,6 +598,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     fix: Exclude<FixKind, 'conflict'>,
     reason: string,
     dispatch: LandPrDeps['dispatchFix'] = deps.dispatchFix,
+    extra: Record<string, unknown> = {},
   ): Promise<LandingOutcome> => {
     let taskId: string | undefined;
     let dispatched = false;
@@ -545,17 +621,19 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     return done(
       { kind: 'needs_fix', fix, reason, ...(taskId ? { taskId } : {}) },
       reason,
-      { fix, fixDispatched: dispatched, ...(fixSkipped ? { fixSkipped } : {}) },
+      { ...extra, fix, fixDispatched: dispatched, ...(fixSkipped ? { fixSkipped } : {}) },
     );
   };
 
   // A stale approval's fix is a reviewer for the live head, through the same
   // dispatcher the legacy auto-merge door uses (resolveReReviewPlan + the
   // reviewer-task dedupe). Already-reviewing names that reviewer as the owner.
-  const staleApprovalReReview: NonNullable<LandPrDeps['dispatchFix']> = async (fi) => {
+  // A stale blocking verdict uses the same dispatcher, labelled with why.
+  const reReviewVia = (staleReason?: string): NonNullable<LandPrDeps['dispatchFix']> => async (fi) => {
     const send = deps.dispatchStaleApprovalReReview
       ?? (await import('@/lib/stale-approval-re-review')).dispatchStaleApprovalReReview;
     const res = await send({
+      ...(staleReason ? { staleReason } : {}),
       workspaceId: fi.workspaceId,
       installationId: fi.installationId,
       repoFullName: fi.repoFullName,
@@ -568,6 +646,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     });
     return res.outcome === 'skipped' ? { skipped: res.reason } : { taskId: res.reviewTaskId };
   };
+  const staleApprovalReReview = reReviewVia();
 
   const readMarker = async () => {
     if (!owner.taskId) return null;
@@ -720,7 +799,13 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       if (live) {
         return done({ kind: 'needs_fix', fix: 're_review', reason, taskId: live }, reason, { ...extra, fix: 're_review', fixDispatched: false });
       }
-      return human('blocking_verdict', reason, extra);
+      const revalidated = await revalidateBlockingVerdict(gate, reason, extra);
+      if (revalidated) return revalidated;
+      return human(
+        'blocking_verdict',
+        `${reason}. Next: a person acts on the finding; a push that fixes it is re-reviewed automatically`,
+        extra,
+      );
     }
   }
 
@@ -765,8 +850,10 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       if (override.freshness) {
         bypass(GATE_SLUGS.MERGE_BASE_FRESHNESS, `${gap}; a person merged it anyway`, { baseRef, behindBy });
       } else {
-        const tolerated = await treadmillAccepts(baseRef);
-        if (!tolerated.accepted) return refresh(tolerated.reason, baseRef);
+        const spent = refreshCycleCount(marker, liveHead, now()) >= policyValue('treadmillMaxRefreshes');
+        const tolerated = await treadmillAccepts(baseRef, spent);
+        if (!tolerated.accepted) return refresh(tolerated.reason, baseRef, tolerated.unsafe === true);
+        if (spent) freshnessRule = 'spent_cycle';
       }
     }
   }
@@ -806,6 +893,8 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   }
   if (/base branch was modified/i.test(message)) return refresh(message, baseRef ?? '');
   if (/head branch was modified/i.test(message)) return waiting(message);
+  // Branch protection that requires an up-to-date branch: same work as behind base.
+  if (/(is|was) (out of date|not up to date)/i.test(message)) return refresh(message, baseRef ?? '');
   if (classifyMergeFailure(message) === 'conflict') return conflictOutcome(message);
   return human('merge_failed', message);
 
@@ -822,11 +911,81 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     return done(
       { kind: 'merged', sha },
       'merged',
-      starts.length > 0 ? { timeToLandMs: Math.max(0, now() - Math.min(...starts)) } : { timeToLandUnmeasured: true },
+      {
+        ...(starts.length > 0 ? { timeToLandMs: Math.max(0, now() - Math.min(...starts)) } : { timeToLandUnmeasured: true }),
+        ...(freshnessRule ? { freshnessRule } : {}),
+      },
     );
   }
 
-  async function treadmillAccepts(base: string): Promise<TreadmillVerdict> {
+  /**
+   * A blocking verdict whose basis no longer holds — given on an earlier head,
+   * or resting on sibling-PR / migration / conflict state that has since
+   * changed — earns one fresh review of the live head instead of a page. It is
+   * never merged past: the fresh reviewer decides. One per head and basis, so a
+   * verdict that blocks again goes to a person. Null when the verdict stands.
+   *
+   * The migration and conflict claims are judged against the rails above: this
+   * runs only after `evaluateAutoMergeSafety` passed on the live head, so the
+   * migration inspector found no collision and GitHub reports no conflict now.
+   */
+  async function revalidateBlockingVerdict(
+    g: Awaited<ReturnType<typeof guardReviewVerdict>>,
+    reason: string,
+    extra: Record<string, unknown>,
+  ): Promise<LandingOutcome | null> {
+    if (g.kind !== 'escalated' && g.kind !== 'changes_requested') return null;
+    const status = await reviewStatus();
+    const text = [status?.escalationReason, status?.feedback, status?.summary, reason].filter(Boolean).join('\n');
+    const claims = extractMutableClaims(text, prNumber);
+    const reviewHeadSha = g.reviewHeadSha ?? status?.reviewHeadSha ?? null;
+    const headMoved = !!reviewHeadSha && reviewHeadSha !== liveHead;
+    const siblings: Record<number, SiblingState> = {};
+    if (!headMoved && hasMutableClaims(claims) && claims.prNumbers.length <= MAX_SIBLING_PR_READS) {
+      await Promise.all(
+        claims.prNumbers.map(async (n) => {
+          const p = await githubApi(installationId, `${ghPath}/pulls/${n}`).catch(() => null);
+          siblings[n] = p?.merged === true ? 'merged' : p?.state === 'open' ? 'open' : p?.state === 'closed' ? 'closed' : 'unknown';
+        }),
+      );
+    }
+    const judged = judgeBlockingVerdict({
+      reviewHeadSha,
+      liveHeadSha: liveHead,
+      equivalentHeadShas: status?.reviewEquivalentHeadShas ?? null,
+      claims,
+      siblings,
+      migrationClear: true,
+      conflictClear: true,
+    });
+    if (!judged.stale) return null;
+
+    const staleExtra = { ...extra, staleVerdict: judged.basis, staleBecause: judged.why };
+    const why = `the reviewer's verdict no longer describes this PR: ${judged.why}`;
+    if (!act) {
+      return done({ kind: 'needs_fix', fix: 're_review', reason: why }, `would request a fresh review: ${why}`, {
+        ...staleExtra, fix: 're_review', fixDispatched: false,
+      });
+    }
+    if (!owner.taskId) return null;
+    const claim = deps.claimReviewRevalidation ?? defaultClaimReviewRevalidation;
+    const won = await claim(owner.taskId, `${liveHead}:${judged.basis}`).catch(() => false);
+    if (!won) {
+      return human(
+        'blocking_verdict',
+        `${reason}. A fresh review was already requested for this head after the earlier verdict went stale (${judged.why}), and the PR is still blocked. Next: a person acts on the finding`,
+        { ...staleExtra, revalidated: true },
+      );
+    }
+    return needsFix(
+      're_review',
+      `${why}. Next: a fresh review of ${liveHead.slice(0, 7)} was requested; its verdict decides the landing`,
+      deps.dispatchFix ?? reReviewVia(judged.why),
+      staleExtra,
+    );
+  }
+
+  async function treadmillAccepts(base: string, spent = false): Promise<TreadmillVerdict> {
     if (!marker || marker.pendingHeadSha !== liveHead) {
       return { accepted: false, reason: 'this head was not produced by a platform refresh' };
     }
@@ -840,14 +999,26 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       baseCommitsSince: typeof baseSide?.ahead_by === 'number' ? baseSide.ahead_by : Number.POSITIVE_INFINITY,
       baseFiles: filenames(baseSide?.files),
       prFiles: filenames(prSide),
+      ...(spent ? { maxBaseCommits: Math.max(TREADMILL_EXHAUSTED_MAX_BASE_COMMITS, policyValue('treadmillMaxBaseCommits')) } : {}),
     });
   }
 
-  /** One refresh: update the branch, key the marker to the head it produced. */
-  async function refresh(why: string, base: string): Promise<LandingOutcome> {
-    const count = marker?.refreshCount ?? 0;
+  /**
+   * One refresh: update the branch, key the marker to the head it produced.
+   *
+   * A spent cycle is told apart by why the head could not land: `unsafe` (the
+   * base keeps changing what this PR changes) is not the same as a base that is
+   * merely busy. Either way the platform keeps owning it — a new cycle starts
+   * after the cooldown — and the page says so.
+   */
+  async function refresh(why: string, base: string, unsafe = false): Promise<LandingOutcome> {
+    const stored = marker?.refreshCount ?? 0;
+    const count = refreshCycleCount(marker, liveHead, now());
     if (count >= policyValue('treadmillMaxRefreshes')) {
-      return human('refresh_exhausted', `the base kept moving after ${count} refreshes (${why})`, { refreshCount: count });
+      const next = `Next: landing starts a new refresh cycle within ${Math.round(LANDING_CYCLE_COOLDOWN_MS / 60_000)}m and lands it in the first quiet window; a person can merge it now with a freshness override`;
+      return unsafe
+        ? human('refresh_unsafe', `after ${count} refreshes the base still changes what this PR changes (${why}), so a green on an older base is not proof. ${next}`, { refreshCount: count })
+        : human('refresh_exhausted', `the base kept moving after ${count} refreshes (${why}). ${next}`, { refreshCount: count });
     }
     if (!owner.taskId || !owner.workerId) {
       return human('no_owner', `${why}, and no task owns this PR to refresh it`);
@@ -877,7 +1048,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
           firstApprovedGreenAt: marker?.firstApprovedGreenAt ?? new Date(now()).toISOString(),
           lastOutcome: 'updating_branch',
         },
-        count,
+        stored,
       ).catch(() => false);
       return done({ kind: 'updating_branch', newHeadSha: newHead }, `refreshed the branch: ${why}`, { refreshCount: count + 1, markerWritten: won });
     }
@@ -919,9 +1090,9 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     if (res.baseRewritten) return human('base_rewritten', 'the base branch was rewritten after this PR opened');
     if (res.exhausted) {
       if (owner.taskId) await escalate(owner.taskId, repoFullName, prNumber, liveHead).catch(() => {});
-      return human('fix_exhausted', `the conflict-fix attempts are exhausted (${reason})`);
+      return human('fix_exhausted', `the conflict-fix attempts are exhausted (${reason}). Next: a person resolves the conflict or closes the PR; a push that resolves it re-enters landing`);
     }
-    if (res.disabled) return human('auto_resolve_disabled', `automatic conflict resolution is off for this workspace (${reason})`);
+    if (res.disabled) return human('auto_resolve_disabled', `automatic conflict resolution is off for this workspace (${reason}). Next: a person resolves the conflict, or turns automatic resolution on`);
     const taskId = res.inFlightTaskId ?? res.taskId;
     return done(
       { kind: 'needs_fix', fix: 'conflict', reason, ...(taskId ? { taskId } : {}) },

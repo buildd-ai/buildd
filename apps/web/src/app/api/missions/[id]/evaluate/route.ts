@@ -4,7 +4,7 @@ import { db } from '@buildd/core/db';
 import { missions, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, gte, count } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, isOrchestrationTaskToken, taskScopeAllowsMission } from '@/lib/task-token-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { evaluateCriteriaNow, ON_DEMAND_NOTE_TITLE } from '@/lib/mission-criteria-eval';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
@@ -50,13 +50,19 @@ export async function POST(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // An orchestration task's admin per-task token may evaluate its own task's
+  // mission; hasTokenRouteAdminAccess is false for any task token.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
+  if (apiAccount?.taskScope) {
+    if (!isOrchestrationTaskToken(apiAccount) || !(await taskScopeAllowsMission(apiAccount, id))) {
+      return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+    }
+  } else if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 
@@ -145,10 +151,15 @@ export async function GET(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token reads only its own task's mission, as an orchestration run.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  if (apiAccount?.taskScope && (!isOrchestrationTaskToken(apiAccount) || !(await taskScopeAllowsMission(apiAccount, id)))) {
+    return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
   }
 
   try {

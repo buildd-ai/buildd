@@ -106,3 +106,21 @@ describe('GET /api/workers/[id]/page-source', () => {
     expect((await GET(req('?prNumber=12abc'), params())).status).toBe(400);
   });
 });
+
+describe('per-task token', () => {
+  const scoped = (taskId: string) => ({ id: ACCOUNT, level: 'worker', taskScope: { taskId, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } });
+
+  it('reads the page source for its own task’s worker', async () => {
+    authed = scoped('task-1');
+    worker = { ...worker!, taskId: 'task-1' };
+    expect((await GET(req(), params())).status).toBe(200);
+    expect(resolverArgs).not.toBeNull();
+  });
+
+  it('404s another task’s worker of the same account, before resolving', async () => {
+    authed = scoped('task-1');
+    worker = { ...worker!, taskId: 'task-2' };
+    expect((await GET(req(), params())).status).toBe(404);
+    expect(resolverArgs).toBeNull();
+  });
+});

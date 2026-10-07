@@ -16,12 +16,14 @@ import { resolveChatModel } from '@/lib/chat/models';
 import { FALLBACK_TIER } from '@/lib/chat/routing';
 import type { ChatAvailabilityResponse } from '@buildd/shared';
 import { getUserTeamRole } from '@/lib/team-access';
-import { roleHas } from '@/lib/permissions';
+import { roleHas, getTeamPermissionOverrides, type PermissionOverrides } from '@/lib/permissions';
 
 export interface ChatAvailabilityDeps {
   keyPolicy(teamId: string): Promise<InferenceKeyPolicy>;
   hasKey(teamId: string, userId: string, keyPolicy: InferenceKeyPolicy): Promise<boolean>;
   role(userId: string, teamId: string): Promise<string | null>;
+  /** The team's permission overrides; defaults to the per-request cached read. */
+  overrides?(teamId: string): Promise<PermissionOverrides>;
 }
 
 const defaultDeps: ChatAvailabilityDeps = {
@@ -45,7 +47,7 @@ export async function computeChatAvailability(
   if (!teamId) return { available: false, reason: 'no_key', canManageTeamKeys: false };
   try {
     const [keyPolicy, role] = await Promise.all([deps.keyPolicy(teamId), deps.role(userId, teamId).catch(() => null)]);
-    const canManageTeamKeys = roleHas(role, 'manage_inference_providers');
+    const canManageTeamKeys = roleHas(role, 'manage_inference_providers', await (deps.overrides ?? getTeamPermissionOverrides)(teamId));
     if (!(await deps.hasKey(teamId, userId, keyPolicy))) return { available: false, reason: 'no_key', canManageTeamKeys, keyPolicy };
     return { available: true, reason: null, canManageTeamKeys, keyPolicy };
   } catch {

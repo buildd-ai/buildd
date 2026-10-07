@@ -4,10 +4,15 @@
  *   GET  ?limit=N   the latest runs (default 10, max 50), each with its per-set
  *                   results: prompt id, row version + content hash, model,
  *                   status, cases, accuracy, baseline, coverage/accuracy at 0.9,
- *                   errors, cost. A run scored on a model other than the one
- *                   live decisions use carries `modelMismatchNote`.
- *   POST            run one now. Body (all optional): { ref, model, dryRun }.
- *                   The caller's team pays, through its own decision route.
+ *                   errors, cost. A run whose `model` override differs from
+ *                   the model live decisions use carries `modelMismatchNote`.
+ *   POST            run one now, over every loaded prompt id whatever its
+ *                   hash (a push only evaluates changed text; this is the
+ *                   manual trigger, and there is no scheduled one). Body (all
+ *                   optional): { ref, model, dryRun }. Each prompt is scored
+ *                   with its production model; `model` is an experiment-only
+ *                   override of the decision model, recorded on the run. The
+ *                   caller's team pays, through its own decision route.
  *
  * Content-free: nothing here carries prompt text or case content.
  *

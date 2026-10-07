@@ -245,7 +245,6 @@ export interface ToolCountSummary {
   distinct: number | null;
   recall: number | null;
   learn: number | null;
-  cbm: number | null;
   buildd: number | null;
   top: Array<{ tool: string; count: number }>;
 }
@@ -306,7 +305,6 @@ export interface StageAFacts {
     qualityMode: PostSessionQualityMode;
   };
   knowledge: {
-    codeGraph: { outcome: string; disableReason: string | null; bootstrapResult: string | null } | null;
     corpora: { code: CorpusAvailability; docs: CorpusAvailability } | null;
   };
   trace: {
@@ -335,15 +333,14 @@ function finiteOrNull(value: unknown): number | null {
 
 const RECALL_TOOL = /(^|__)(recall|query_knowledge)$/;
 const LEARN_TOOL = /(^|__)(learn|buildd_memory)$/;
-const CBM_PREFIX = 'mcp__codebase-memory__';
 const BUILDD_PREFIX = 'mcp__buildd__';
 
 /** Collapse the runner's per-tool histogram into the families triage cares about. */
 export function classifyToolCounts(toolCounts: Record<string, number> | null | undefined): ToolCountSummary {
   if (!toolCounts || typeof toolCounts !== 'object') {
-    return { known: false, total: null, distinct: null, recall: null, learn: null, cbm: null, buildd: null, top: [] };
+    return { known: false, total: null, distinct: null, recall: null, learn: null, buildd: null, top: [] };
   }
-  let total = 0, distinct = 0, recall = 0, learn = 0, cbm = 0, buildd = 0;
+  let total = 0, distinct = 0, recall = 0, learn = 0, buildd = 0;
   const entries: Array<{ tool: string; count: number }> = [];
   for (const [tool, raw] of Object.entries(toolCounts)) {
     const count = finiteOrNull(raw);
@@ -352,12 +349,11 @@ export function classifyToolCounts(toolCounts: Record<string, number> | null | u
     total += count;
     if (RECALL_TOOL.test(tool)) recall += count;
     if (LEARN_TOOL.test(tool)) learn += count;
-    if (tool.startsWith(CBM_PREFIX)) cbm += count;
     if (tool.startsWith(BUILDD_PREFIX)) buildd += count;
     entries.push({ tool: tool.slice(0, MAX_TOOL_NAME), count });
   }
   entries.sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool));
-  return { known: true, total, distinct, recall, learn, cbm, buildd, top: entries.slice(0, MAX_TOP_TOOLS) };
+  return { known: true, total, distinct, recall, learn, buildd, top: entries.slice(0, MAX_TOP_TOOLS) };
 }
 
 const CI_STATE: Record<string, CiState> = {
@@ -406,7 +402,6 @@ export function buildStageAFacts(src: StageASource): StageAFacts {
     ? Math.max(0, worker.completedAt.getTime() - worker.startedAt.getTime())
     : null;
 
-  const cbm = meta?.cbm;
   const errors = src.errorTraces
     ? {
         total: src.errorTraces.reduce((n, e) => n + (finiteOrNull(e.count) ?? 0), 0),
@@ -466,13 +461,6 @@ export function buildStageAFacts(src: StageASource): StageAFacts {
       qualityMode: src.mode,
     },
     knowledge: {
-      codeGraph: cbm
-        ? {
-            outcome: clip(cbm.outcome, 32) ?? 'unknown',
-            disableReason: clip(cbm.disableReason ?? null, 32),
-            bootstrapResult: clip(cbm.bootstrapResult ?? null, 32),
-          }
-        : null,
       corpora: src.corpora,
     },
     trace: {

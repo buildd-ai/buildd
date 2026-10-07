@@ -6,7 +6,8 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
-import { CLOUD_EXECUTOR, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
+import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
+import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
@@ -34,7 +35,8 @@ import {
 } from '@buildd/core/oauth-budget';
 import { countLiveSeatWorkers, loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
-import { readModelPin } from '@buildd/core/model-pin';
+import { readModelPin, shorthandPinTier } from '@buildd/core/model-pin';
+import type { TierPolicyMeta } from '@buildd/core/model-policy';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
 import { getCachedOpenRouterCatalog } from '@buildd/core/model-catalog-cache';
 import {
@@ -44,7 +46,7 @@ import {
 } from '@buildd/core/dispatch-model-guard';
 import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment } from '@buildd/core/model-routing-experiment-source';
 import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type AgentPoolDraw } from '@buildd/core/tier-pool-source';
-import { BACKEND_ROUTING_KEY, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
+import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
 import { findBlockingPr, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -52,7 +54,6 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
   BYPASS_MISSION_BUDGET_KEY,
   CAP_EXEMPT_KEY,
-  bypassFlagCondition,
   hasBypassFlag,
 } from '@/lib/bypass-flags';
 import { getActiveClaimsByWorkspace, registerClaimDeferralWaiters, type ClaimDeferralWaiter } from '@buildd/core/path-claim';
@@ -65,8 +66,12 @@ import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { describeExplicitDeferral } from './explicit-deferral';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { missionNotHeld, missionNotLocal, taskNotHeld, checkTaskMissionLocal } from './held-gate';
-import { diagnoseExplicitTaskExclusion, evaluateForcedGates, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
+import { diagnoseExplicitTaskExclusion, evaluateForcedGates, explicitExclusionGateEvent, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
+// The workspace concurrency cap as a claim predicate (see the call site for the
+// rules). A function so a force claim can evaluate it for the audit without
+// applying it.
+import { workspaceCapGate } from './workspace-cap-gate';
 import { workspaceExecutorGate } from './workspace-executor-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
@@ -75,7 +80,6 @@ import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
-import { attachCbmExperimentArm } from './cbm-experiment';
 import { attachQuestionGate } from './question-gate';
 import { attachRoleEnvSecrets, runRoleEnvPreFilter } from './role-env-injection';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
@@ -97,7 +101,7 @@ import { resolveClaudeModelRoute, routeUsesOauthSeat, type ClaudeModelRoute } fr
 import { attachGitHubCredentialModes } from './github-credential-injection';
 import { AGENT_GITHUB_TOKEN_ROLLOUT_ENV, parseAgentGitHubRollout } from '@buildd/core/agent-github-credentials';
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
-import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
+import { announceFixClaimed, announceReviewClaimed } from '@/lib/pr-activity-fix-claimed';
 import { isDispatchedReview } from '@/lib/read-only-review';
 import { planClaimBatch, type ClaimPlan, type PlannerThresholds } from '@buildd/core/claim-planner';
 import {
@@ -136,36 +140,6 @@ const CLAIM_COOLDOWN_MS = 60_000;
  */
 function producesNoFileEdits(outputRequirement: unknown): boolean {
   return outputRequirement === 'artifact_required' || outputRequirement === 'none';
-}
-
-/**
- * The workspace concurrency cap as a claim predicate (see the call site for the
- * rules). A function so a force claim can evaluate it for the audit without
- * applying it.
- */
-function workspaceCapGate() {
-  return or(
-      bypassFlagCondition(tasks.context, CAP_EXEMPT_KEY),
-      sql`(
-      SELECT COUNT(*) FROM ${workers} w2
-      JOIN ${tasks} t3 ON t3.id = w2.task_id
-      WHERE t3.workspace_id = ${tasks.workspaceId}
-      AND w2.status IN ('running', 'starting', 'idle')
-      AND t3.id != ${tasks.id}
-      AND EXISTS (
-        SELECT 1 FROM ${workspaces} ws
-        WHERE ws.id = t3.workspace_id
-        AND ws.repo IS NOT NULL
-      )
-    ) < GREATEST(
-      (SELECT COALESCE(ws2.max_concurrent_tasks, 3) FROM ${workspaces} ws2
-       WHERE ws2.id = ${tasks.workspaceId}),
-      COALESCE(
-        (SELECT m.max_concurrent_tasks FROM ${missions} m WHERE m.id = ${tasks.missionId}),
-        0
-      )
-    )`,
-    )!;
 }
 
 export async function POST(req: NextRequest) {
@@ -360,14 +334,25 @@ export async function POST(req: NextRequest) {
     if (taskId && payload.diagnostics.reason !== 'race_lost') {
       const stampTaskId = taskId;
       const deferrals = payload.diagnostics.deferrals as Record<string, number> | undefined;
+      const exclusion = payload.diagnostics.taskExclusion;
       resolveClaimableWorkspaceIds()
-        .then((ids) => stampLastClaimAttempt({
-          taskId: stampTaskId,
-          workspaceIds: ids,
-          reason: payload.diagnostics.reason,
-          ...(deferrals ? { deferrals } : {}),
-          now: new Date(),
-        }))
+        .then((ids) => {
+          // A WHERE-clause gate that dropped the named task (a runner's wake
+          // claim) otherwise leaves no gate-ledger row — the task's gate
+          // history stays empty and explain can only call it a wait.
+          const event = exclusion
+            ? explicitExclusionGateEvent({ taskId: stampTaskId, exclusion, workspaceId: ids.length === 1 ? ids[0] : null })
+            : null;
+          if (event) fireDeferralEvent(event);
+          return stampLastClaimAttempt({
+            taskId: stampTaskId,
+            workspaceIds: ids,
+            reason: payload.diagnostics.reason,
+            ...(deferrals ? { deferrals } : {}),
+            ...(exclusion ? { exclusion } : {}),
+            now: new Date(),
+          });
+        })
         .catch((err) => console.warn(`[claim] failed to stamp lastClaimAttempt for task ${stampTaskId}:`, err));
     }
     // A cloud container has no credential broker and must not learn secret ids.
@@ -1170,6 +1155,8 @@ export async function POST(req: NextRequest) {
     oauth_parallelism: 0,
     role_env_unsatisfied: 0,
     ordered_behind: 0,
+    managed_concurrency: 0,
+    managed_runner_hours: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
@@ -1238,6 +1225,9 @@ export async function POST(req: NextRequest) {
   // workers per workspace and stop claiming once a repo workspace reaches its cap.
   const DEFAULT_MAX_CONCURRENT_TASKS = 3;
   const activeByWorkspace = new Map<string, number>();
+  // Managed runs this batch started, per team: not yet visible to the
+  // entitlement's live-worker count.
+  const managedClaimedByTeam = new Map<string, number>();
   for (const w of activeWorkers) {
     if (!['running', 'starting', 'idle'].includes(w.status)) continue;
     activeByWorkspace.set(w.workspaceId, (activeByWorkspace.get(w.workspaceId) || 0) + 1);
@@ -1252,12 +1242,16 @@ export async function POST(req: NextRequest) {
   const codexFlippedWorkspaces = new Set<string>();
   const activeTaskIds = activeWorkers.map(w => w.taskId).filter(Boolean) as string[];
   if (activeTaskIds.length > 0) {
-    const activeCodexTasks = await db.query.tasks.findMany({
-      where: and(inArray(tasks.id, activeTaskIds), eq(tasks.backend, 'codex')),
-      columns: { workspaceId: true },
+    // Not filtered on the stored column: a budget-failover flip leaves the row
+    // on 'claude' and records the Codex run only in the claim stamp, so a
+    // `backend = 'codex'` WHERE missed every failover-started Codex worker and
+    // the next claim request flipped another task onto the same window.
+    const activeTasks = await db.query.tasks.findMany({
+      where: inArray(tasks.id, activeTaskIds),
+      columns: { workspaceId: true, backend: true, context: true },
     });
-    for (const t of activeCodexTasks) {
-      if (t.workspaceId) codexBusyWorkspaces.add(t.workspaceId);
+    for (const t of activeTasks) {
+      if (t.workspaceId && claimedBackendOf(t.backend, t.context) === 'codex') codexBusyWorkspaces.add(t.workspaceId);
     }
   }
   // Flip a task to Codex in-memory, respecting runner-side Codex auth
@@ -1929,6 +1923,26 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Commercial entitlement: Buildd-managed runner keys only (packages/shared/
+    // src/entitlements.ts). A self-hosted runner never gets here, and the
+    // operational caps above stay as they are. Not forceable and not an error:
+    // the task stays pending with the block stamped on it for the dashboard,
+    // and a managed run ending (or the hourly sweep) wakes it.
+    if (account.managedRunner) {
+      const entitlementTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (entitlementTeamId) {
+        const block = await checkManagedRunnerEntitlement(entitlementTeamId, {
+          claimedInBatch: managedClaimedByTeam.get(entitlementTeamId) ?? 0,
+          now,
+        });
+        if (block) {
+          deferTask(task, entitlementDeferralKey(block), { ...block });
+          await stampEntitlementBlock(task.id, block, now);
+          continue;
+        }
+      }
+    }
+
     // Team provider toggle (reversible mask) — applied BEFORE budget logic so the
     // rest sees the effective backend. Disabling a provider here redirects matching
     // jobs to an enabled one at dispatch time, without touching stored settings;
@@ -1964,8 +1978,9 @@ export async function POST(req: NextRequest) {
     const claudeEnabledForTeam = !enabledBackends || enabledBackends.includes('claude');
     let claudePoolBlocked = false;
 
-    if (accountBudgetExhausted && !tenantCtx?.tenantId) {
-      // Account's own OAuth session/budget is exhausted.
+    if (accountBudgetExhausted && !tenantCtx?.tenantId && !interactiveSession) {
+      // Account's own OAuth session/budget is exhausted. Interactive sessions
+      // have their own credentials and do not consume this account budget.
       claudePoolBlocked = true;
     } else if (tenantCtx?.tenantId) {
       const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
@@ -2171,12 +2186,17 @@ export async function POST(req: NextRequest) {
       routerModel: routingDecision.model, roleModel, budgetPressure: dailyBudgetPct,
     });
 
-    // Resolve the concrete model ID via the tier registry.
-    // - explicit override: bypass registry, pass full ID to runner as-is.
-    // - tier path: task.tier → router alias → registry → full model ID.
+    // Resolve the concrete model ID through the model policy (the team's tier
+    // registry is its document — packages/core/model-policy.ts).
+    // - exact-id pin: the escape hatch; bypass tier resolution, pass the full
+    //   ID to the runner as-is.
+    // - shorthand pin (`opus`/`sonnet`/`haiku`): a tier request, resolved like
+    //   any tier so the policy decides which model that is.
+    // - tier path: task.tier → router alias → policy → full model ID.
     // taskTeamId already defined above (line ~619)
+    const pinTier = shorthandPinTier(explicitModel);
     let resolvedModel: string;
-    let resolvedTierMeta: { tier: string; provider: string; source?: string } | undefined;
+    let resolvedTierMeta: { tier: string; provider: string; source?: string; policy?: TierPolicyMeta } | undefined;
     let poolDraw: AgentPoolDraw | null = null;
     // Where `resolvedModel` came from, and the tier entry a rejected model falls
     // back to. The catalog is read once per claim (cached in-process and in
@@ -2199,13 +2219,13 @@ export async function POST(req: NextRequest) {
     const tierModelSource = (s: string | undefined): DispatchModelSource =>
       s === 'catalog' ? 'tier_catalog' : s === 'default' ? 'tier_default' : 'tier_row';
 
-    if (routingDecision.reason === 'explicit_override') {
+    if (routingDecision.reason === 'explicit_override' && !pinTier) {
       resolvedModel = routingDecision.model;
     } else {
-      // Determine the tier to look up: task.tier takes precedence, then a
+      // Determine the tier to look up: a shorthand pin, then task.tier, then a
       // premium-plus role floor (above the router's opus ceiling), then the
       // router alias.
-      const derivedTier = taskTier ?? roleTierOverride ?? mapRouterAlias(routingDecision.model);
+      const derivedTier = pinTier ?? taskTier ?? roleTierOverride ?? mapRouterAlias(routingDecision.model);
       guardTier = derivedTier;
 
       if (taskTeamId) {
@@ -2217,9 +2237,11 @@ export async function POST(req: NextRequest) {
           runnerCliVersion,
         );
         resolvedModel = entry.model;
-        resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source };
+        resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source, ...(entry.policy ? { policy: entry.policy } : {}) };
         modelSource = tierModelSource(entry.source);
         tierEntryModel = { model: entry.model, source: modelSource };
+        // A treatment or pool arm below replaces resolvedTierMeta without the
+        // policy decision: that route is the experiment's, not the policy's.
         if (experimentDraw) {
           const treatment = await applyModelRoutingTreatment(experimentDraw, {
             controlModel: entry.model, routerReason: routingDecision.reason, taskTier, backend: task.backend,
@@ -2254,9 +2276,13 @@ export async function POST(req: NextRequest) {
           }
         }
       } else {
-        // No team — fall back to router alias (resolver would fail without teamId)
-        resolvedModel = routingDecision.model;
-        modelSource = 'router_alias';
+        // No team, so no registry: the policy's default layer still answers,
+        // rather than handing the runner a bare router alias to interpret.
+        const entry = await resolveTierEntry(derivedTier, null, task.workspaceId, 'agent', runnerCliVersion);
+        resolvedModel = entry.model;
+        resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source, ...(entry.policy ? { policy: entry.policy } : {}) };
+        modelSource = tierModelSource(entry.source);
+        tierEntryModel = { model: entry.model, source: modelSource };
       }
     }
 
@@ -2273,7 +2299,7 @@ export async function POST(req: NextRequest) {
         // A rejected pin: fall back to the workspace default for its family.
         const entry = await resolveTierEntry(guardTier, taskTeamId, task.workspaceId, 'agent', runnerCliVersion);
         fallbacks = [{ model: entry.model, source: tierModelSource(entry.source) }];
-        resolvedTierMeta = { tier: guardTier, provider: entry.provider, source: entry.source };
+        resolvedTierMeta = { tier: guardTier, provider: entry.provider, source: entry.source, ...(entry.policy ? { policy: entry.policy } : {}) };
       }
       const guarded = guardDispatchModel({
         resolved: resolvedModel,
@@ -2294,7 +2320,10 @@ export async function POST(req: NextRequest) {
         resolvedModel = guarded.model;
         modelSource = guarded.source;
         if (resolvedTierMeta) {
-          resolvedTierMeta = { ...resolvedTierMeta, source: guarded.source === 'tier_default' ? 'default' : resolvedTierMeta.source };
+          // The policy's pick did not run, so its decision no longer describes
+          // this claim: drop it, and no outcome is reported against it.
+          const { policy: _notServed, ...rest } = resolvedTierMeta;
+          resolvedTierMeta = { ...rest, source: guarded.source === 'tier_default' ? 'default' : resolvedTierMeta.source };
         }
       }
     }
@@ -2356,6 +2385,8 @@ export async function POST(req: NextRequest) {
     // Why this claim's backend differs from the stored one — or nothing, so a
     // previous attempt's flip never reads as this one's.
     delete (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY];
+    // Claimed: it no longer waits on an entitlement.
+    delete (patchedContext as Record<string, unknown>)[ENTITLEMENT_BLOCK_CONTEXT_KEY];
     const routing = backendRouting.get(task.id);
     if (routing && routing.backend === (task as any).backend) {
       (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY] = routing;
@@ -2423,6 +2454,10 @@ export async function POST(req: NextRequest) {
 
     // Count this claim toward the per-workspace cap for the rest of the batch.
     activeByWorkspace.set(task.workspaceId, (activeByWorkspace.get(task.workspaceId) || 0) + 1);
+    if (account.managedRunner) {
+      const entitlementTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (entitlementTeamId) managedClaimedByTeam.set(entitlementTeamId, (managedClaimedByTeam.get(entitlementTeamId) ?? 0) + 1);
+    }
 
     // Mirror into the Codex single-flight tracker so a second originally-Codex
     // task for this workspace, later in the same batch, hits the defer above
@@ -2707,7 +2742,10 @@ export async function POST(req: NextRequest) {
     // Same signal for a wall on any OTHER provider: every candidate was deferred
     // by `budget_paused`, so the runner needs the earliest reset across the pauses
     // this batch actually saw — `account.budgetResetsAt` only tracks Claude.
-    if (accountBudgetExhausted || deferrals.budget_paused > 0) {
+    // Exception: interactive sessions have their own credentials and do not consume
+    // the account's provider budget, so they should not be blocked by accountBudgetExhausted.
+    const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !interactiveSession;
+    if (accountBudgetBlocksBackgroundRunner || deferrals.budget_paused > 0) {
       return emptyClaim({
         budgetResetsAt: earliestFutureReset(),
         diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
@@ -2781,9 +2819,10 @@ export async function POST(req: NextRequest) {
           worker: { id: cw.id, name: account.name, status: 'idle' },
         }
       );
-      // A fix attempt just got a worker: the PR's activity comment may now say
-      // "Fixing" instead of "fix queued". No-op for any other task.
+      // A fix attempt or reviewer just got a worker: the PR's activity comment
+      // may now say "Fixing" / "Reviewing" instead of queued. No-op otherwise.
       await announceFixClaimed(claimedTask);
+      await announceReviewClaimed(claimedTask);
     }
   }
 
@@ -2820,13 +2859,6 @@ export async function POST(req: NextRequest) {
   await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
   await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
   if (!cloudExecutor) await attachRoleEnvSecrets(claimedWorkers, filteredTasks, account.id);
-  // CBM-access experiment: after role config (eligibility reads the role's CBM
-  // opt-out) and before the prompt-context blocks (the task-area hint drops its
-  // graph mention for a withheld task). No-op without a running experiment.
-  await attachCbmExperimentArm(claimedWorkers, {
-    cliVersion: body.environment?.claudeCliVersion,
-    features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
-  });
   // Question gate: marks workers whose questions go through
   // /api/workers/[id]/question-check. No-op for a runner that never sent the feature.
   attachQuestionGate(claimedWorkers, {
@@ -3002,7 +3034,9 @@ export async function POST(req: NextRequest) {
       ? { ...cw, task: { ...(cw.task as any), workspace: withoutDispatchToken((cw.task as any).workspace) } }
       : cw)),
     ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
-    ...(accountBudgetExhausted && {
+    // Only report partial budget exhaustion for background runners. Interactive sessions
+    // have their own credentials and should not be told about account budget state.
+    ...(accountBudgetExhausted && !interactiveSession && {
       budgetResetsAt: earliestFutureReset(),
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),

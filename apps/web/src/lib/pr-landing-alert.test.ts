@@ -215,7 +215,7 @@ describe('alertOnLanding: copy and tap URL', () => {
       deps,
     );
     const { title, message, urlTitle } = state.sent[0].payload;
-    expect(title).toBe("PR #42 won't land: it lost the race to the base branch");
+    expect(title).toBe("PR #42 won't land: it lost the race to the base branch (retrying next cycle)");
     expect(message).toContain('Add the thing');
     expect(message).toContain('Approved 1h 30m ago');
     expect(message).toContain('stuck 50m');
@@ -307,6 +307,7 @@ describe('actionsForReason: what one tap does', () => {
     ['superseded', 'needs_human:superseded', 'close_superseded'],
     ['blocking verdict', 'needs_human:blocking_verdict', 're_review'],
     ['lost the race', 'needs_human:refresh_exhausted', 'retry_landing'],
+    ['base keeps changing the same files', 'needs_human:refresh_unsafe', 'retry_landing'],
     ['invariant', 'invariant', 'retry_landing'],
   ])('%s → primary %s', (_n, reason, primary) => {
     expect(actionsForReason(reason).primary).toBe(primary as any);

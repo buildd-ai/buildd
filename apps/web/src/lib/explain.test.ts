@@ -506,7 +506,7 @@ describe('explainTask', () => {
     expect(answer.waitingOn?.kind).toBe('pr_closed_unmerged');
     expect(answer.situation.headline).toContain('closed without merging');
     expect(answer.situation.headline).not.toContain('open PR');
-    expect(answer.situation.headline).not.toContain('waiting on you to merge');
+    expect(answer.situation.headline).not.toContain('ready to merge');
     expect(answer.nextAction).toContain('record_pr_supersession');
     expect(answer.because.some(l => l.claim.includes('record_pr_supersession'))).toBe(true);
   });

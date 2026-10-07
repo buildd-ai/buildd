@@ -28,7 +28,15 @@
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { existsSync, readFileSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'fs';
+// Namespace import for realpathSync/readlinkSync: several test files replace
+// `fs` wholesale via `mock.module('fs', () => ({ ...a fixed set of names... }))`
+// that doesn't include these two, which breaks a *named* import's binding at
+// module-load time (SyntaxError, not a runtime TypeError) for every test file
+// that transitively imports this module. Accessing them off the namespace
+// object instead only risks `fs.realpathSync is not a function` at call time,
+// which the callers below already treat as "can't prove it" and catch.
+import * as fs from 'fs';
 import { join } from 'path';
 import { findLockfileRule } from '@buildd/core/ecosystem-detect';
 
@@ -416,6 +424,8 @@ export interface ExecuteOptions {
   commit?: string;
   /** Monotonic clock injection for tests; defaults to wall clock. */
   now?: () => number;
+  /** Delay injection for tests (lock-contention backoff); defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 // Async so a slow readiness probe (tsc, lint) never blocks the runner's single
@@ -457,6 +467,97 @@ function failMessage(out: CommandOutcome): string {
 }
 
 /**
+ * The lock file path a `could not lock config file .../File exists` or
+ * `Unable to create '.../index.lock': File exists` error names, or null for
+ * any other failure. A lock left by a process killed mid-write blocks every
+ * later `git config`/index write to that same `.git` dir — not just the
+ * worktree that happened to hit it — so this is worth recognizing by name.
+ */
+export function staleLockPathFromError(stderr: string): string | null {
+  const configMatch = stderr.match(/could not lock config file (.+?): File exists/);
+  if (configMatch) return `${configMatch[1]}.lock`;
+  const indexMatch = stderr.match(/Unable to create '(.+?)': File exists/);
+  if (indexMatch) return indexMatch[1];
+  return null;
+}
+
+/**
+ * Best-effort: does any live process currently hold `lockPath` open? Scans
+ * `/proc/<pid>/fd` (this runner's host is always Linux). Any failure along the
+ * way — no `/proc`, no permission on another user's pid, an fd closing between
+ * the readdir and the readlink — is read as "can't prove it's held", which
+ * leaves the age check in `clearStaleGitLock` as the deciding signal rather
+ * than this scan silently vetoing every removal on a permission gap.
+ */
+function isLockHeldByLiveProcess(lockPath: string): boolean {
+  let target: string;
+  try {
+    target = fs.realpathSync(lockPath);
+  } catch {
+    return false; // already gone — nothing to be held
+  }
+  let pids: string[];
+  try {
+    pids = readdirSync('/proc').filter((p) => /^\d+$/.test(p));
+  } catch {
+    return false;
+  }
+  for (const pid of pids) {
+    let fds: string[];
+    try {
+      fds = readdirSync(`/proc/${pid}/fd`);
+    } catch {
+      continue; // process gone, or owned by another user
+    }
+    for (const fd of fds) {
+      try {
+        if (fs.readlinkSync(`/proc/${pid}/fd/${fd}`) === target) return true;
+      } catch {
+        // fd closed between readdir and readlink — a race, not a signal
+      }
+    }
+  }
+  return false;
+}
+
+/** A lock younger than this could belong to a write still genuinely in flight. */
+const STALE_LOCK_MIN_AGE_MS = 15_000;
+
+/**
+ * Backoff between attempts when a provision step hits a lock that is live, not
+ * stale. Every worktree of a clone shares one `.git/config`, so parallel worker
+ * starts race on it — and a clone that has accumulated thousands of `[branch]`
+ * sections makes each rewrite slow enough that the race is routinely lost.
+ * Total wait (~7s) stays well under STALE_LOCK_MIN_AGE_MS, so a lock that
+ * outlives every retry is reported, not silently waited on forever.
+ */
+const LOCK_CONTENTION_BACKOFF_MS = [250, 750, 1_500, 2_000, 2_500];
+
+/**
+ * Remove `lockPath` if it looks abandoned — old enough that no in-flight git
+ * write plausibly still owns it, AND no live process has it open right now —
+ * and log the removal. Returns false (and touches nothing) on any ambiguity,
+ * so a lock that might still be live is left for git to report normally.
+ */
+export function clearStaleGitLock(lockPath: string): boolean {
+  let age: number;
+  try {
+    age = Date.now() - statSync(lockPath).mtimeMs;
+  } catch {
+    return false; // already gone
+  }
+  if (age < STALE_LOCK_MIN_AGE_MS) return false;
+  if (isLockHeldByLiveProcess(lockPath)) return false;
+  try {
+    unlinkSync(lockPath);
+    console.warn(`[env-verify] Removed stale lock ${lockPath} (age ${Math.round(age / 1000)}s, no process holds it)`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Execute planned steps in order, stopping at the first failure (later phases
  * assume earlier ones passed — running install before the runtime exists is
  * noise). Returns a structured report; never throws.
@@ -465,6 +566,7 @@ export async function executeSteps(steps: Step[], opts: ExecuteOptions): Promise
   const env = opts.env ?? process.env;
   const run = opts.runCommand ?? defaultRunCommand;
   const now = opts.now ?? (() => Date.now());
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const skip = new Set(opts.skipPhases ?? []);
   const results: StepResult[] = [];
   let aborted = false;
@@ -493,7 +595,29 @@ export async function executeSteps(steps: Step[], opts: ExecuteOptions): Promise
         ? { phase: step.phase, label: step.label, status: 'ok', message: 'found' }
         : { phase: step.phase, label: step.label, status: 'fail', message: `\`${step.tool}\` not on PATH` };
     } else {
-      const out = await run(step.command!, { cwd: opts.root, timeoutMs: step.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS, env });
+      let out = await run(step.command!, { cwd: opts.root, timeoutMs: step.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS, env });
+      // Scoped to the provision phase — the manifest's own `git config
+      // core.hooksPath` step is the one that actually hits this in practice,
+      // writing into the shared (non-worktree-local) `.git/config`. A stale
+      // lock from an earlier killed process fails every subsequent provision
+      // in the checkout with the same signature until something clears it, so
+      // recognize it, clear it once, and retry. A lock that is NOT stale is a
+      // concurrent writer (another worker provisioning off the same clone):
+      // back off and retry without touching it. Any other command failure, or
+      // a lock still held after every retry, falls straight through below.
+      if (out.code !== 0 && step.phase === 'provision') {
+        const runStep = () => run(step.command!, { cwd: opts.root, timeoutMs: step.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS, env });
+        const lockPath = staleLockPathFromError(out.stderr);
+        if (lockPath && clearStaleGitLock(lockPath)) {
+          out = await runStep();
+        } else if (lockPath) {
+          for (const waitMs of LOCK_CONTENTION_BACKOFF_MS) {
+            await sleep(waitMs);
+            out = await runStep();
+            if (out.code === 0 || staleLockPathFromError(out.stderr) !== lockPath) break;
+          }
+        }
+      }
       if (out.code === 0) {
         result = { phase: step.phase, label: step.label, status: 'ok', message: 'ok' };
       } else if (step.phase === 'readiness' && out.code === 2) {

@@ -220,6 +220,44 @@ describe('get_error_traces', () => {
     expect(mockApi.mock.calls[0][0]).toMatch(/^\/api\/tasks\/abcdef12\/error-traces/);
   });
 
+  it('falls back to the bound workspace when a per-task token cannot list workspaces', async () => {
+    // GET /api/workspaces has no task-token auth path and 401s for a per-task
+    // token even when the name passed matches the token's own workspace.
+    mockApi.mockRejectedValueOnce(new Error('API error: 401 - {"error":"Unauthorized"}'));
+    mockApi.mockResolvedValueOnce({ patterns: [] });
+
+    const res = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'get_error_traces',
+      { workspaceId: 'buildd' },
+      ctx(),
+    );
+
+    expect(res.isError).toBeFalsy();
+    expect(mockApi.mock.calls[0][0]).toBe('/api/workspaces');
+    expect(mockApi.mock.calls[1][0]).toMatch(new RegExp(`^/api/workspaces/${MOCK_WORKSPACE_ID}/error-traces`));
+  });
+
+  it('does not swallow a non-auth failure when listing workspaces', async () => {
+    mockApi.mockRejectedValueOnce(new Error('API error: 500 - {"error":"Internal Server Error"}'));
+    await expect(handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'get_error_traces',
+      { workspaceId: 'buildd' },
+      ctx(),
+    )).rejects.toThrow(/API error: 500/);
+  });
+
+  it('surfaces the original 401 when there is no bound workspace to fall back to', async () => {
+    mockApi.mockRejectedValueOnce(new Error('API error: 401 - {"error":"Unauthorized"}'));
+    await expect(handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'get_error_traces',
+      { workspaceId: 'buildd' },
+      ctx({ workspaceId: undefined, getWorkspaceId: async () => null }),
+    )).rejects.toThrow(/API error: 401/);
+  });
+
   it('passes through since and limit query params', async () => {
     mockApi.mockResolvedValueOnce({ traces: [], count: 0 });
 

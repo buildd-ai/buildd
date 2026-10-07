@@ -84,6 +84,12 @@ export interface EvalOptions {
   readCases?: (file: string) => Promise<string | null>;
   dryRun: boolean;
   require: boolean;
+  /**
+   * With `require`, also fail when no set has labelled cases (default: same as
+   * `require`). The server passes false: a set without cases is reported as
+   * having no eval set, which is an answer, not a failure.
+   */
+  requireCases?: boolean;
   apiKey: string | null;
   /** Where the key is sent (default: Jev on OpenRouter). */
   endpoint?: DecisionEndpoint;
@@ -111,9 +117,9 @@ export async function runPrivatePromptEval(opts: EvalOptions): Promise<EvalRepor
   const sets = opts.sets ?? SETS;
   const problems: string[] = [];
   if (opts.require && !opts.entries?.length) problems.push('no private prompt text was loaded');
-  if (opts.require && !opts.dryRun && !opts.apiKey) {
-    problems.push(opts.missingKeyProblem ?? `${MISSING_KEY_SECRET} is not set, so no decision call can be made (set the repo secret ${MISSING_KEY_SECRET})`);
-  }
+  const missingKey = opts.missingKeyProblem ?? `${MISSING_KEY_SECRET} is not set, so no decision call can be made (set the repo secret ${MISSING_KEY_SECRET})`;
+  const casesOptional = opts.requireCases === false;
+  if (opts.require && !casesOptional && !opts.dryRun && !opts.apiKey) problems.push(missingKey);
   const read = casesReader(opts);
 
   const reports: SetReport[] = [];
@@ -173,7 +179,9 @@ export async function runPrivatePromptEval(opts: EvalOptions): Promise<EvalRepor
     });
   }
 
-  if (opts.require && !reports.some(r => r.cases > 0)) {
+  // Cases optional: a missing key only matters when there was something to score.
+  if (opts.require && casesOptional && !opts.dryRun && !opts.apiKey && reports.some(r => r.cases > 0)) problems.unshift(missingKey);
+  if (opts.require && !casesOptional && !reports.some(r => r.cases > 0)) {
     problems.push(`no labelled cases found${opts.casesDir ? ' under the cases directory' : ''} (expected <set>.jsonl, e.g. task-category.jsonl)`);
   }
   if (opts.require && reports.some(r => r.cases > 0 && r.fingerprint.source !== 'private')) {

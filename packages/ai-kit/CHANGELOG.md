@@ -12,6 +12,39 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.20.0 — 2026-10-05
+
+Minor: `openai-codex` is a policy provider.
+
+- `POLICY_PROVIDERS` (`KIT_PROVIDERS` plus `openai-codex`) and
+  `PolicyProvider`: a route may name a subscription-backed coding runtime, as
+  buildd's tier registry already can. Coding surface only in practice; a chat
+  app that is handed one should treat it as unreachable and use its fallback.
+  `KIT_PROVIDERS` and the chat/plan types are unchanged.
+
+## 0.19.0 — 2026-10-05
+
+Minor: standalone model policy (`@builddai/ai-kit/policy`, new entry point).
+
+- The caller declares `surface` (`chat | coding`) and requests a `tier`; the
+  policy picks provider, model and effort. No intent or workload field: a
+  request carrying one is refused.
+- `createPolicyClient({ policy })` resolves from a local `ModelPolicy` with no
+  service. `policy: remotePolicy({ endpoint, token })` asks a policy service
+  and falls back to the last good answer, then `fallback`
+  (`DEFAULT_MODEL_POLICY`, buildd's code-level tier defaults).
+- Precedence: app/workspace (+ surface) override → `surfaces[surface][tier]` →
+  `tiers[tier]` → fallback. buildd's `agent` surface is `coding` here
+  (`toPolicySurface`).
+- A policy token is not a provider key: `remotePolicy` refuses a
+  provider-key-shaped token, and a remote answer carrying anything
+  credential-shaped is refused.
+- Experiments: `pinned`, `split`, `shadow`, and `adaptive` only with a
+  trustworthy outcome signal for its surface (none for chat yet). Outcomes are
+  typed observations keyed by `planId` (`reportOutcome`), never one score.
+- `/decide`: `runDecisionPool` no longer passes `undefined` to `clearTimeout`
+  (types only; no behaviour change).
+
 ## 0.18.0 — 2026-10-04
 
 Minor: a turn has one answer, live then settled.

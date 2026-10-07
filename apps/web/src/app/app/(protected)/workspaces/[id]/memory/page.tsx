@@ -10,6 +10,7 @@ import { getMemoryStoreForTeam } from '@/lib/memory-helper';
 import { workspaceProjectKey } from '@buildd/core/project-scope';
 import ObservationList from './ObservationList';
 import { roleHas } from '@/lib/permission-registry';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 async function fetchInitialMemories(workspaceId: string): Promise<{ memories: Memory[]; total: number }> {
   try {
@@ -105,7 +106,7 @@ export default async function WorkspaceMemoryPage({
             reverifyFlaggedAt: m.reverifyFlaggedAt ?? null,
             reverifyRef: m.reverifyRef ?? null,
           }))}
-          canReview={roleHas(access.role, 'review_memory')}
+          canReview={roleHas(access.role, 'review_memory', await getTeamPermissionOverrides(access.teamId))}
         />
       </div>
     </main>

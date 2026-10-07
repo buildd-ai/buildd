@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback } from 'react';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import AddConnectionModal from './AddConnectionModal';
 import { Select } from '@/components/ui/Select';
-import { roleHas } from '@/lib/permission-registry';
+import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
+import { ConnectorIcon } from '@/components/ConnectorIcon';
 
 interface Connector {
   id: string;
@@ -15,12 +16,14 @@ interface Connector {
   /** Present when the connector is shared *to* the current team (grantee view). */
   shared?: boolean;
   ownerTeamName?: string | null;
+  iconUrl?: string | null;
 }
 
 interface Team {
   id: string;
   name: string;
   role: string; // 'owner' | 'admin' | 'member'
+  permissionOverrides?: PermissionOverrides;
 }
 
 interface ConnectorShare {
@@ -125,10 +128,11 @@ export default function ConnectionsClient({
         const res = await fetch('/api/teams');
         if (res.ok) {
           const data = await res.json();
-          setTeams((data.teams || []).map((t: { id: string; name: string; role?: string }) => ({
+          setTeams((data.teams || []).map((t: { id: string; name: string; role?: string; permissionOverrides?: PermissionOverrides }) => ({
             id: t.id,
             name: t.name,
             role: t.role ?? 'member',
+            permissionOverrides: t.permissionOverrides,
           })));
         }
       } catch {
@@ -356,7 +360,7 @@ export default function ConnectionsClient({
   // ownership moves only to a team the actor is owner/admin of).
   const sharedTeamIds = new Set(shares.map(s => s.sharedWithTeamId));
   const shareableTeams = teams.filter(t => t.id !== ownerTeamId && !sharedTeamIds.has(t.id));
-  const transferableTeams = teams.filter(t => t.id !== ownerTeamId && roleHas(t.role, 'manage_connectors'));
+  const transferableTeams = teams.filter(t => t.id !== ownerTeamId && roleHas(t.role, 'manage_connectors', t.permissionOverrides ?? null));
 
   return (
     <div className={embedded ? '' : 'px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-4xl'}>
@@ -404,6 +408,7 @@ export default function ConnectionsClient({
               <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 sm:gap-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap mb-1">
+                    <ConnectorIcon name={connector.name} iconUrl={connector.iconUrl} size={18} />
                     <span className="font-medium text-text-primary">{connector.name}</span>
                     <StatusBadge authMode={connector.authMode} status={connector.status} />
                     {connector.shared && (
@@ -490,6 +495,7 @@ export default function ConnectionsClient({
         <AddConnectionModal
           onClose={() => setShowAddModal(false)}
           onAdded={handleAdded}
+          existingUrls={connectors.filter((c) => !c.shared).map((c) => c.url)}
         />
       )}
 

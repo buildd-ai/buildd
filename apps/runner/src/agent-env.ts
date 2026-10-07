@@ -34,6 +34,11 @@ export const RUNNER_ENV_PASSTHROUGH: ReadonlySet<string> = new Set([
   // LLM credentials, not runner coordination secrets. Server-managed keys (below)
   // override them when present.
   'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
+  // A Claude subscription seat in the runner's own environment (a
+  // `claude setup-token` value). It is the machine's own login and wins over a
+  // server-delivered seat (host-seat.ts, agent-model-env.ts). Dropped again
+  // under BUILDD_HOST_SEAT=off, and never sent to a non-Anthropic endpoint.
+  'CLAUDE_CODE_OAUTH_TOKEN',
   // OpenAI key — needed for Codex tasks and any agent that calls OpenAI APIs.
   // OPENAI_BASE_URL: the Codex equivalent of ANTHROPIC_BASE_URL above — a
   // machine-level override that beats the team's agent model endpoint

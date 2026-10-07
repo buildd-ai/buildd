@@ -28,7 +28,14 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  # `build` used to be one serial job: lints + type check, unit tests and the
+  # Next build back to back. It is now three parallel jobs (build-checks,
+  # build-unit-tests, build-next) plus the `build` aggregator at the end, which
+  # keeps the check name branch protection on main requires. Every step below
+  # is the same step it was; only the grouping changed. Guarded by
+  # scripts/build-workflow-split.test.ts.
+  build-checks:
+    name: build · lints + type check
     runs-on: ubuntu-latest
 
     steps:
@@ -66,6 +73,13 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
+
+      - name: Cache bun install cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
 
       - name: Install dependencies
         run: bun install
@@ -184,8 +198,49 @@ jobs:
           bun run scripts/lint-hand-built-sql.ts --self-test
           bun run scripts/lint-hand-built-sql.ts
 
+      # `next build` in build-next skips its own type check (CI_TYPECHECK_DONE,
+      # see apps/web/next.config.mjs), so this step must cover what it covered:
+      # the same apps/web tsconfig, including the generated route types under
+      # .next/types that tsconfig includes and only exist after typegen.
+      - name: Generate Next route types
+        run: cd apps/web && bunx next typegen
+
+      # apps/web's tsconfig is `incremental`; tsc validates the restored
+      # buildinfo by file content hashes, so a stale entry only costs a recheck.
+      - name: Cache apps/web tsbuildinfo
+        uses: actions/cache@v4
+        with:
+          path: apps/web/tsconfig.tsbuildinfo
+          key: tsbuildinfo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: tsbuildinfo-${{ runner.os }}-
+
       - name: Type check
         run: bun run type-check
+
+  build-unit-tests:
+    name: build · unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # scripts/affected-tests.sh diffs against the PR base / HEAD~1.
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Cache bun install cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: bun install
 
       - name: Detect affected tests
         id: affected
@@ -212,6 +267,30 @@ jobs:
           # passed through and filtered to unit tests.
           bun run scripts/run-unit-tests.ts $TESTS
 
+  build-next:
+    name: build · next build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Cache bun install cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: bun install
+
       # The kit's source imports are extensionless so apps/web (Turbopack) can
       # consume it from source; its build rewrites them to `.js` for the
       # published ESM. The apps/web build below proves the first half; this
@@ -230,12 +309,46 @@ jobs:
       - name: Install @builddai/ai-kit into a clean consumer project
         run: node packages/ai-kit/scripts/smoke-consumer.mjs
 
+      - name: Cache Next build cache
+        uses: actions/cache@v4
+        with:
+          path: apps/web/.next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('bun.lock') }}-${{ hashFiles('apps/web/src/**', 'apps/web/public/**', 'apps/web/*.mjs', 'apps/web/*.json', 'packages/**/*.ts', 'packages/**/*.tsx', '!**/node_modules/**') }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ hashFiles('bun.lock') }}-
+            nextjs-${{ runner.os }}-
+
       - name: Build
         run: cd apps/web && bun run build:only
         env:
           # Dummy values for build (not connecting to real DB)
           DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
           AUTH_SECRET: "dummy-secret-for-build"
+          # build-checks type-checks the same tsconfig, and `build` needs it,
+          # so the Next build skips its duplicate check. Honoured only in
+          # GitHub Actions — see buildSkipsTypecheck in apps/web/next.config.mjs.
+          CI_TYPECHECK_DONE: "1"
+
+  # The required check. Branch protection on main requires a check named
+  # exactly `build`, and app-side auto-merge reads check-run names too, so this
+  # keeps that name and goes green only when all three parts did. always():
+  # a failed or cancelled part must make this red, never Skipped — a Skipped
+  # check satisfies branch protection without running.
+  build:
+    needs: [build-checks, build-unit-tests, build-next]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All build parts passed
+        run: |
+          failed=0
+          for r in "checks=${{ needs.build-checks.result }}" \
+                   "unit-tests=${{ needs.build-unit-tests.result }}" \
+                   "next=${{ needs.build-next.result }}"; do
+            echo "$r"
+            [ "${r#*=}" = "success" ] || failed=1
+          done
+          [ "$failed" -eq 0 ] || { echo "::error::a build part did not succeed (see above)"; exit 1; }
 
   # The ONLY test that spawns a real bwrap namespace and asserts that blocked paths
   # are genuinely inaccessible (apps/runner/src/__tests__/mount-isolation.e2e.ts,
@@ -274,6 +387,13 @@ jobs:
 
       - name: Install bubblewrap
         run: |
+          # The runner image preloads a packages.microsoft.com source (for
+          # dotnet/azure-cli/etc.) that this job never uses. When that repo's
+          # signing key rotates or 403s, it fails `apt-get update` outright even
+          # though the Ubuntu archive bubblewrap actually comes from is fine --
+          # so drop it before updating rather than let an unrelated repo's
+          # flakiness take this job down.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends bubblewrap
           bwrap --version
@@ -427,11 +547,6 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U demo -d buildd_test"
           --health-interval 2s --health-timeout 3s --health-retries 30
-      neon-proxy:
-        image: ghcr.io/timowilhelm/local-neon-http-proxy:main
-        env:
-          PG_CONNECTION_STRING: postgres://demo:demo@postgres:5432/buildd_test
-        ports: ["4444:4444"]
     env:
       DATABASE_URL: postgres://demo:demo@localhost:5432/buildd_test
       NEON_LOCAL_FETCH_ENDPOINT: http://127.0.0.1:4444/sql
@@ -441,19 +556,31 @@ jobs:
         with:
           bun-version: "1.4.2"
       - run: bun install
-      - name: Wait for neon-http proxy
+      # The app's unchanged neon-http driver talks to scripts/ci/neon-sql-shim.ts:
+      # the same /sql wire protocol as the local neon-http proxy it replaced,
+      # over one persistent pg pool instead of a control-plane lookup, a SCRAM
+      # handshake and a fresh connection per query. Migrate and the tests both
+      # go through it, so they still run the app's own driver and migrator;
+      # apps/web/tests/db/neon-sql-shim.test.ts pins its fidelity on real Postgres.
+      - name: Start neon-sql shim
         run: |
+          nohup bun scripts/ci/neon-sql-shim.ts > "$RUNNER_TEMP/neon-sql-shim.log" 2>&1 &
           for i in $(seq 1 30); do
-            curl -s -o /dev/null -X POST http://127.0.0.1:4444/sql \
-              -H 'Neon-Connection-String: postgres://demo:demo@localhost:5432/buildd_test' \
+            curl -sf -o /dev/null -X POST "$NEON_LOCAL_FETCH_ENDPOINT" \
+              -H "Neon-Connection-String: $DATABASE_URL" \
+              -H 'Neon-Raw-Text-Output: true' -H 'Neon-Array-Mode: true' \
               -H 'Content-Type: application/json' -d '{"query":"select 1","params":[]}' && exit 0
-            sleep 2
+            sleep 1
           done
-          echo "neon proxy never answered" && exit 1
+          cat "$RUNNER_TEMP/neon-sql-shim.log"
+          echo "neon-sql shim never answered" && exit 1
       - name: Migrate
         run: cd packages/core && bun db:migrate
       - name: Run DB architecture tests
         run: bun run test:db
+      - name: Shim log
+        if: failure()
+        run: cat "$RUNNER_TEMP/neon-sql-shim.log" || true
 
   # Detect which areas changed to skip expensive integration/E2E when unnecessary
   changes:

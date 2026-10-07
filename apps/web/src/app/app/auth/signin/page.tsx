@@ -4,6 +4,7 @@ import { signIn } from 'next-auth/react';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef } from 'react';
 import Spinner from '@/components/Spinner';
+import { TAGLINE_LEAD, TAGLINE_TAIL } from './tagline';
 
 const ALLOWED_PROVIDERS = ['google', 'github'];
 
@@ -24,63 +25,40 @@ function SignInContent() {
 
   if (provider && ALLOWED_PROVIDERS.includes(provider) && !error) {
     return (
-      <main className="relative min-h-screen flex items-center justify-center p-6 overflow-hidden bg-[#2a2d3a]">
-        <div className="text-center text-white">
+      <main className="min-h-screen flex items-center justify-center p-6 bg-surface-1 text-text-primary">
+        <div className="text-center">
           <Spinner className="mb-4" aria-label="Redirecting" />
-          <p>Redirecting to {provider === 'github' ? 'GitHub' : 'Google'}...</p>
+          <p className="text-body">Redirecting to {provider === 'github' ? 'GitHub' : 'Google'}…</p>
         </div>
       </main>
     );
   }
 
   return (
-    <main className="relative min-h-screen flex items-center justify-center p-6 overflow-hidden bg-[#2a2d3a]">
-      {/* Hero Background */}
-      <div className="absolute inset-0 z-0">
-        <picture>
-          <source
-            media="(min-width: 1024px)"
-            srcSet="/hero/logo-desktop.webp"
-            type="image/webp"
-          />
-          <source
-            media="(min-width: 768px)"
-            srcSet="/hero/logo-tablet.webp"
-            type="image/webp"
-          />
-          <source srcSet="/hero/logo-mobile.webp" type="image/webp" />
-          <img
-            src="/hero/logo-desktop.png"
-            alt=""
-            className="w-full h-full object-cover scale-110 blur-sm opacity-40"
-          />
-        </picture>
-        {/* Dark overlay */}
-        <div className="absolute inset-0 bg-gradient-to-b from-[#2a2d3a]/60 via-[#2a2d3a]/80 to-[#2a2d3a]/95" />
-      </div>
-
-      {/* Glassmorphic Card */}
-      <div className="relative z-10 w-full max-w-md">
-        <div className="backdrop-blur-xl bg-white/10 border border-white/20 rounded-2xl p-8 shadow-2xl">
-          <div className="text-center mb-8">
-            <h1 className="text-4xl font-bold text-white mb-2">buildd</h1>
-            <p className="text-text-secondary">
-              AI Dev Team Orchestration
+    <main className="min-h-screen flex items-center justify-center p-6 bg-surface-1 text-text-primary">
+      <div className="w-full max-w-sm">
+        <div className="card p-8">
+          <div className="mb-8">
+            <h1 className="text-display font-bold tracking-tight">buildd</h1>
+            <p className="text-lede text-text-secondary mt-3" data-testid="signin-tagline">
+              {TAGLINE_LEAD}{' '}
+              <span className="text-accent-text whitespace-nowrap">{TAGLINE_TAIL}</span>
             </p>
           </div>
 
           {error && (
-            <div className="mb-6 bg-status-error/10 border border-status-error/30 rounded-lg p-4 text-status-error">
+            <div role="alert" className="notice notice-err mb-6">
               {error === 'AccessDenied'
                 ? 'Access denied. Your email is not on the allowed list.'
                 : 'Sign-in failed. Try again.'}
             </div>
           )}
 
-          <div className="space-y-4">
+          <div className="space-y-3">
             <button
+              type="button"
               onClick={() => signIn('google', { callbackUrl })}
-              className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-surface-1 text-text-primary font-medium rounded-md hover:bg-surface-3 transition-colors shadow-lg"
+              className="btn btn-lg min-h-11 w-full gap-3"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24">
                 <path
@@ -104,8 +82,9 @@ function SignInContent() {
             </button>
 
             <button
+              type="button"
               onClick={() => signIn('github', { callbackUrl })}
-              className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-[#24292f] text-white font-medium rounded-lg hover:bg-[#32383f] transition-colors shadow-lg"
+              className="btn btn-lg min-h-11 w-full gap-3"
             >
               <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
@@ -115,17 +94,16 @@ function SignInContent() {
 
             {process.env.NODE_ENV === 'development' && (
               <button
+                type="button"
                 onClick={() => signIn('dev-auto-login', { callbackUrl })}
-                className="w-full px-4 py-3 bg-white/10 text-white rounded-lg hover:bg-white/20 transition-colors text-sm border border-white/10"
+                className="btn btn-quiet min-h-11 w-full"
               >
                 Dev Auto Login
               </button>
             )}
           </div>
 
-          <p className="mt-6 text-center text-sm text-text-muted">
-            Free for personal use
-          </p>
+          <p className="mt-8 text-meta text-text-muted">Free for personal use.</p>
         </div>
       </div>
     </main>
@@ -134,7 +112,7 @@ function SignInContent() {
 
 export default function SignInPage() {
   return (
-    <Suspense fallback={<div className="flex min-h-screen items-center justify-center">Loading…</div>}>
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-surface-1 text-text-muted">Loading…</div>}>
       <SignInContent />
     </Suspense>
   );
