@@ -8,7 +8,7 @@ import { useMoveToTeam, type MoveTeam } from '@/components/MoveToTeamDialog';
 import { groupWorkspaceRows, type WorkspaceRow } from './list-groups';
 
 /** Workspace · runs on · last activity · open · menu. Below md the row stacks. */
-const GRID = 'md:grid md:grid-cols-[minmax(0,1fr)_8rem_7rem_4rem_2.75rem] md:items-center md:gap-x-4';
+const GRID = 'md:grid md:grid-cols-[minmax(0,1fr)_9.5rem_6.5rem_4rem_2.75rem] md:items-center md:gap-x-4';
 const EXECUTOR_LABEL = { cloud: 'Cloud', host: 'Host', any: 'Any runner' } as const;
 
 function runsOn(row: WorkspaceRow): string {
@@ -162,6 +162,18 @@ function Row({ row, now, onMove }: { row: WorkspaceRow; now: Date; onMove: (row:
   );
 }
 
+function ColumnLabels() {
+  return (
+    <div aria-hidden="true" className={`hidden ${GRID} px-3 pb-1.5 text-meta text-text-muted`}>
+      <span>Workspace</span>
+      <span>Runs on</span>
+      <span>Last task</span>
+      <span>Open</span>
+      <span />
+    </div>
+  );
+}
+
 function RowList({ rows, now, onMove }: { rows: WorkspaceRow[]; now: Date; onMove: (row: WorkspaceRow) => void }) {
   return (
     <ul className="card p-0 divide-y divide-border-default">
@@ -201,17 +213,12 @@ export default function WorkspacesTable({
       <p className="text-meta text-text-muted mb-4" data-testid="workspace-defaults">
         Default: {defaults.gitWorkflow} · {defaults.mergePolicy}
       </p>
-      <div aria-hidden="true" className={`hidden ${GRID} px-3 pb-1.5 text-meta text-text-muted`}>
-        <span>Workspace</span>
-        <span>Runs on</span>
-        <span>Last task</span>
-        <span>Open</span>
-        <span />
-      </div>
       <div className="space-y-6">
-        {groups.map((g) => (
+        {groups.map((g, i) => (
           <section key={g.teamId} aria-label={showTeamHeadings ? g.teamName : undefined} data-testid="workspace-team-group">
             {showTeamHeadings && <h3 className="section-label mb-2">{g.teamName}</h3>}
+            {/* Column labels once, under the first team heading; md and up only. */}
+            {i === 0 && g.active.length > 0 && <ColumnLabels />}
             {g.active.length > 0 && <RowList rows={g.active} now={now} onMove={onMove} />}
             {g.inactive.length > 0 && (
               <Disclosure summary={`Inactive (${g.inactive.length})`} className={g.active.length > 0 ? 'mt-2' : ''}>
