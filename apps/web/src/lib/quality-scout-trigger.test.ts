@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'bun:test';
 import { scoutRunId, type ScoutRunDeps, type ScoutRunOutcome, type ScoutRunRequest } from './quality-scout-run';
+import type { ScoutProbeRecord, ScoutRun, ScoutRunMetrics } from '@buildd/core/quality-scout/types';
 import {
+  buildServerScoutRunDeps,
   checkManualScoutRateLimit,
+  finalizeExpiredQualityScoutRuns,
+  type ExpiredScoutDeps,
+  scoutRunnerNeeds,
   isPeriodicScoutDue,
   isQualityScoutDisabled,
   MANUAL_SCOUT_RUNS_PER_HOUR,
@@ -367,5 +372,132 @@ describe('checkManualScoutRateLimit', () => {
 
   it('fails open when the count cannot be read', async () => {
     expect(await checkManualScoutRateLimit('ws-1', NOW, { recentManualStarts: async () => { throw new Error('db'); } })).toEqual({ allowed: true });
+  });
+});
+
+// ── Runner host ─────────────────────────────────────────────────────────────
+
+describe('gitConfig.qualityScout.host', () => {
+  it('defaults to auto; server is the opt-out; nonsense falls back to auto', () => {
+    expect(resolveScoutTriggerConfig({ mode: 'shadow' }).host).toBe('auto');
+    expect(resolveScoutTriggerConfig({ mode: 'shadow', host: 'server' }).host).toBe('server');
+    expect(resolveScoutTriggerConfig({ mode: 'shadow', host: 'cloud' }).host).toBe('auto');
+  });
+
+  it('reads the runner bound from budget.runnerMaxDurationMs: default 20 min, capped at 60', () => {
+    expect(resolveScoutTriggerConfig({ mode: 'shadow' }).runnerMaxDurationMs).toBe(20 * 60_000);
+    expect(resolveScoutTriggerConfig({ mode: 'shadow', budget: { runnerMaxDurationMs: 5 * 60_000 } }).runnerMaxDurationMs).toBe(5 * 60_000);
+    expect(resolveScoutTriggerConfig({ mode: 'shadow', budget: { runnerMaxDurationMs: 5 * H } }).runnerMaxDurationMs).toBe(60 * 60_000);
+  });
+
+  it('the trigger hands the runner bound to the run', async () => {
+    const t = triggerDeps(workspace({ mode: 'shadow', budget: { runnerMaxDurationMs: 7 * 60_000 } }));
+    await triggerQualityScout({ workspaceId: 'ws-1', trigger: 'manual' }, t.deps);
+    expect(t.runs[0].host).toEqual({ runnerMaxDurationMs: 7 * 60_000 });
+  });
+
+  it('host: server builds a single-host run with no runner lookup — today\'s pipeline exactly', () => {
+    const req = { workspaceId: 'ws-1', trigger: 'manual', mode: 'shadow', candidate: { ref: 'trunk', sha: SHA } } as ScoutRunRequest;
+    expect(buildServerScoutRunDeps(workspace({ mode: 'shadow', host: 'server' }), req).runnerHost).toBeUndefined();
+    expect(typeof buildServerScoutRunDeps(workspace({ mode: 'shadow' }), req).runnerHost).toBe('function');
+  });
+});
+
+describe('scoutRunnerNeeds', () => {
+  it('unions the adverts that name the repo, case-insensitively', () => {
+    const envs = [
+      { scoutHost: { repos: ['Acme/Tool'], command: true } },
+      { scoutHost: { repos: ['acme/tool', 'acme/other'], capture: true } },
+      { scoutHost: { repos: ['acme/other'], appBoot: true } },
+    ];
+    expect([...scoutRunnerNeeds(envs, 'acme/tool')].sort()).toEqual(['capture', 'command']);
+  });
+
+  it('a malformed advert, or one that says false, counts for nothing', () => {
+    const envs = [null, {}, { scoutHost: 'yes' }, { scoutHost: { repos: 'acme/tool', command: true } }, { scoutHost: { repos: ['acme/tool'], command: 'true', capture: false } }];
+    expect(scoutRunnerNeeds(envs, 'acme/tool').size).toBe(0);
+  });
+});
+
+describe('runPeriodicQualityScouts — a parked run', () => {
+  it('a head whose run is awaiting a runner counts as exercised, not due', async () => {
+    const p = periodicDeps([{ id: 'parked', lastStartedAt: new Date(NOW.getTime() - 48 * H), head: 'p'.repeat(40), runState: { status: 'awaiting_host', startedAt: new Date(NOW.getTime() - 48 * H) } }]);
+    const out = await runPeriodicQualityScouts(NOW, { deps: p.deps, schedule: p.schedule, env: {} });
+    expect(out.scheduled).toEqual([]);
+    expect(out.unchanged).toBe(1);
+  });
+});
+
+describe('finalizeExpiredQualityScoutRuns', () => {
+  const parkedRun = (id: string): ScoutRun => ({
+    id, workspaceId: 'ws-1', missionId: null, trigger: 'periodic', mode: 'shadow', status: 'awaiting_host',
+    candidate: { ref: 'trunk', sha: SHA }, prior: null, budget: { maxProbes: 4, maxCostUsd: null }, policyVersion: 'scout-v1',
+    startedAt: new Date(NOW.getTime() - 2 * H).toISOString(), completedAt: null, error: null,
+    parking: {
+      parkedAt: new Date(NOW.getTime() - 2 * H).toISOString(),
+      hostDeadline: new Date(NOW.getTime() - H).toISOString(),
+      runnerMaxDurationMs: 20 * 60_000,
+      profile: { capabilities: [] } as unknown as NonNullable<ScoutRun['parking']>['profile'],
+      plan: {
+        candidatesGenerated: 1, candidatesTruncated: 0, decisionsAsked: 0, decisionFailures: 0, costCapHit: false,
+        stages: Object.fromEntries(['profile', 'signals', 'generate', 'select', 'execute', 'act'].map((s) => [s, { ms: 0, costUsd: null }])) as NonNullable<ScoutRun['parking']>['plan']['stages'],
+        warnings: [], deadlineHit: false, reproducibility: {},
+      },
+      lease: null,
+      leaseLapses: 0,
+    },
+  });
+  const runnerProbe: ScoutProbeRecord = {
+    candidateId: 'cmd', family: 'contract', probeKind: 'regression', title: 't', invariant: 'i', sourceSignals: [], preconditions: [],
+    executor: 'verification-command', estimatedCost: 'low', risk: 'medium', mutates: false, evidenceRequirements: [], unsupportedReason: null,
+    selection: { status: 'selected', via: 'decision', reasonCode: 'x', decisionSource: null }, host: 'runner', result: null,
+  };
+
+  function sweepDeps(runs: ScoutRun[], takeable: Set<string>) {
+    const saved = new Map<string, { run: ScoutRun; metrics?: ScoutRunMetrics }>();
+    const probes = new Map<string, ScoutProbeRecord[]>();
+    const ledger = {
+      latestRun: async () => null,
+      claimRun: async () => 'claimed' as const,
+      async saveRun(run: ScoutRun, _t?: unknown, metrics?: ScoutRunMetrics) { saved.set(run.id, { run, metrics }); },
+      async saveProbes(run: ScoutRun, ps: readonly ScoutProbeRecord[]) { probes.set(run.id, [...ps]); },
+      findings: { find: async () => null, insert: async () => true, update: async () => true },
+      resolveForPass: async () => [],
+    };
+    const deps: ExpiredScoutDeps = {
+      now: () => NOW,
+      listExpired: async () => runs,
+      take: async (id) => takeable.delete(id),
+      loadProbes: async () => [runnerProbe],
+      loadWorkspace: async () => workspace({ mode: 'shadow' }),
+      finalizeDeps: () => ({ now: () => NOW, ledger, actions: {} as ScoutRunDeps['actions'], headSha: async () => SHA }),
+    };
+    return { deps, saved, probes };
+  }
+
+  it('finalizes an expired parked run: its runner probes end unsupported no_runner_claimed, never pass', async () => {
+    const s = sweepDeps([parkedRun('r1')], new Set(['r1']));
+    const out = await finalizeExpiredQualityScoutRuns({ deps: s.deps });
+    expect(out).toEqual({ expired: 1, finalized: ['r1'], raced: 0, errors: 0 });
+    expect(s.saved.get('r1')!.run.status).toBe('completed');
+    const [p] = s.probes.get('r1')!;
+    expect(p.result?.verdict).toBe('unsupported');
+    expect(p.result?.reason).toBe('no_runner_claimed');
+    expect(s.saved.get('r1')!.metrics!.verdicts.pass).toBe(0);
+  });
+
+  it('a run someone else already took is counted as raced and not finalized twice', async () => {
+    const s = sweepDeps([parkedRun('r1')], new Set());
+    const out = await finalizeExpiredQualityScoutRuns({ deps: s.deps });
+    expect(out).toMatchObject({ expired: 1, finalized: [], raced: 1 });
+    expect(s.saved.size).toBe(0);
+  });
+
+  it('one run throwing is counted and the sweep goes on', async () => {
+    const s = sweepDeps([parkedRun('bad'), parkedRun('ok')], new Set(['bad', 'ok']));
+    const loadProbes = s.deps.loadProbes;
+    s.deps.loadProbes = async (id) => { if (id === 'bad') throw new Error('db'); return loadProbes(id); };
+    const out = await finalizeExpiredQualityScoutRuns({ deps: s.deps });
+    expect(out).toMatchObject({ expired: 2, finalized: ['ok'], errors: 1 });
   });
 });
