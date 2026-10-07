@@ -9,6 +9,11 @@
  * shim (scripts/ci/neon-sql-shim.ts), migrates, then runs this. Locally:
  * scripts/demo/up.sh's stack, or any migrated loopback Postgres behind
  * NEON_LOCAL_FETCH_ENDPOINT (`bun scripts/ci/neon-sql-shim.ts` is the fast one).
+ *
+ * Guard: workflow-matrix.test.ts (§16 kernel acceptance) runs twice per CI job via
+ * RUN_DB_TESTS_DOUBLE_RUN=1, catching state leaks where the second run fails due to
+ * stale rows from the first. Each run creates a unique workspace; no shared state
+ * between runs means the second run passes iff workspace isolation is correct.
  */
 import { readdirSync } from 'fs';
 import { join } from 'path';
@@ -36,15 +41,26 @@ const files = requested.length
   : readdirSync(join(ROOT, DIR)).filter(f => f.endsWith('.test.ts')).sort().map(f => join(DIR, f));
 if (files.length === 0) fail(`no test files under ${DIR}`);
 
+const doubleRun = process.env.RUN_DB_TESTS_DOUBLE_RUN === '1';
 const failed: string[] = [];
+
 for (const file of files) {
   const rel = file.startsWith('apps/web/') ? file.slice('apps/web/'.length) : file;
-  const r = spawnSync('bun', ['test', '--preload', '../../tests/setup.ts', rel], {
-    cwd: join(ROOT, 'apps/web'),
-    stdio: 'inherit',
-    env: { ...process.env, NODE_ENV: 'test' },
-  });
-  if (r.status !== 0) failed.push(file);
+  const runs = doubleRun ? 2 : 1;
+
+  for (let run = 1; run <= runs; run++) {
+    const label = doubleRun && runs > 1 ? ` (run ${run}/${runs})` : '';
+    const r = spawnSync('bun', ['test', '--preload', '../../tests/setup.ts', rel], {
+      cwd: join(ROOT, 'apps/web'),
+      stdio: 'inherit',
+      env: { ...process.env, NODE_ENV: 'test' },
+    });
+    if (r.status !== 0) {
+      failed.push(`${file}${label}`);
+      break;
+    }
+  }
 }
-if (failed.length) fail(`${failed.length}/${files.length} file(s) failed:\n  ${failed.join('\n  ')}`);
-console.log(`[test:db] ${files.length} file(s) passed`);
+
+if (failed.length) fail(`${failed.length}/${doubleRun ? files.length * 2 : files.length} run(s) failed:\n  ${failed.join('\n  ')}`);
+console.log(`[test:db] ${files.length} file(s) passed${doubleRun ? ' (double run)' : ''}`);

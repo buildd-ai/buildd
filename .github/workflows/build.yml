@@ -601,6 +601,7 @@ jobs:
     env:
       DATABASE_URL: postgres://demo:demo@localhost:5432/buildd_test
       NEON_LOCAL_FETCH_ENDPOINT: http://127.0.0.1:4444/sql
+      RUN_DB_TESTS_DOUBLE_RUN: "1"
     steps:
       - uses: actions/checkout@v7
       # apps/web/tests/db/migration-baseline.test.ts replays the pre-squash
