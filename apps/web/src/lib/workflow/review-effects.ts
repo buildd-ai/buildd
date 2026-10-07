@@ -11,6 +11,7 @@
  * that names them must not make the outbox retry forever.
  */
 import { and, desc, eq, ne, sql } from 'drizzle-orm';
+import { prWorkerWhere } from './pr-worker-where';
 import { randomUUID } from 'node:crypto';
 import { db } from '@buildd/core/db';
 import { missionNotes, missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
@@ -49,9 +50,9 @@ async function roundOutput(round: RoundSnapshot | undefined): Promise<Output> {
   return out && typeof out === 'object' ? (out as Output) : {};
 }
 
-async function prWorker(workspaceId: string, prNumber: number) {
+async function prWorker(workspaceId: string, repoFullName: string, prNumber: number) {
   return db.query.workers.findFirst({
-    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+    where: prWorkerWhere(workspaceId, repoFullName, prNumber),
     columns: { id: true, branch: true, prUrl: true, prBaseRef: true, lastCommitSha: true },
     orderBy: [desc(workers.createdAt)],
   });
@@ -149,7 +150,7 @@ const dispatchReview: EffectHandler = async (e) => {
     columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true },
   });
   const repo = await workspaceRepo(d.workspaceId);
-  const prw = await prWorker(d.workspaceId, d.prNumber);
+  const prw = await prWorker(d.workspaceId, d.repoFullName, d.prNumber);
   if (!workspace || !owner || !repo) return { outcome: 'skipped:missing_context' };
 
   const mission = owner.missionId
@@ -286,7 +287,7 @@ const dispatchFix: EffectHandler = async (e) => {
     await appendPrActivity({ installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, entry: { kind: 'review_escalated', detail: 'dependency-bot PR · no fix pushed', note: feedback }, workspaceId: d.workspaceId });
     return { outcome: 'skipped:dependency_bot' };
   }
-  const prw = await prWorker(d.workspaceId, d.prNumber);
+  const prw = await prWorker(d.workspaceId, d.repoFullName, d.prNumber);
   const branch = prw?.branch ?? '';
   const lastCommitSha = prw?.lastCommitSha ?? null;
   // The (workspace, PR, head) dedupe index allows one row per head; a second

@@ -22,7 +22,7 @@
  * The ledger row was allocated by the transition that queued the effect
  * (allocation is consumption, §5.7 rule 1). Handlers never count anything.
  */
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -37,6 +37,7 @@ import type { EffectHandler, EffectHandlers } from './effects';
 import { applyCommand, loadView, type Exec } from './kernel';
 import { ingestFact } from './facts';
 import { githubReader, workspaceRepo } from './github-facts';
+import { prWorkerWhere } from './pr-worker-where';
 import type { DeliverySnapshot, AttemptSnapshot } from './types';
 import type { LivePr } from './commands';
 
@@ -54,9 +55,9 @@ let deps: ConflictEffectDeps = {};
 export function __setConflictEffectDeps(d: ConflictEffectDeps): void { deps = d; }
 const api = (): Api => deps.api ?? (githubApi as Api);
 
-async function prWorker(workspaceId: string, prNumber: number) {
+async function prWorker(workspaceId: string, repoFullName: string, prNumber: number) {
   return db.query.workers.findFirst({
-    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+    where: prWorkerWhere(workspaceId, repoFullName, prNumber),
     columns: { id: true, branch: true, prNumber: true },
     orderBy: [desc(workers.createdAt)],
   });
@@ -159,7 +160,7 @@ const refreshBranch: EffectHandler = async (e) => {
   // A dependency bot owns its branch: the platform never pushes to it (S27). A landing door reaches
   // here through T16 without the conflict doors' own check; no agent may push either, so a person lands it.
   if (isDependencyBotPrContext(owner?.context)) return mechanicalFailed(b, source, 'dependency_bot_pr: the platform does not push to a dependency bot\'s branch');
-  const prw = await prWorker(b.d.workspaceId, b.d.prNumber!);
+  const prw = await prWorker(b.d.workspaceId, b.d.repoFullName!, b.d.prNumber!);
   const refresh = deps.refresh ?? (await import('@/lib/base-refresh')).refreshBehindPr;
   const out = await refresh({
     installationId: b.repo.installationId, repoFullName: b.d.repoFullName!, prNumber: b.d.prNumber!, headSha: b.attempt.boundHeadSha!,
@@ -342,7 +343,7 @@ const dispatchConflictFix: EffectHandler = async (e) => {
   const [owner, workspace, prw] = await Promise.all([
     db.query.tasks.findFirst({ where: eq(tasks.id, b.d.ownerTaskId) }),
     db.query.workspaces.findFirst({ where: eq(workspaces.id, b.d.workspaceId) }),
-    prWorker(b.d.workspaceId, b.d.prNumber!),
+    prWorker(b.d.workspaceId, b.d.repoFullName!, b.d.prNumber!),
   ]);
   if (!owner || !workspace || !prw?.branch) return { outcome: 'skipped:missing_context' };
   const headSha = b.attempt.boundHeadSha!;

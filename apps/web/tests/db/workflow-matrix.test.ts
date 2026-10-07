@@ -365,9 +365,12 @@ const repairAttempts = async (deliveryId: string) => (await loadView({ deliveryI
   .sort((x, y) => (x.mode === y.mode ? x.attemptNo - y.attemptNo : x.mode === 'mechanical' ? -1 : 1));
 /** The owner task's own PR worker (the one the conflict doors are called with). */
 const ownerPrWorkerOf = async (o: Delivery) => (await q<{ id: string }>(sql`SELECT id FROM workers WHERE task_id = ${o.ownerTaskId}::uuid AND pr_number = ${o.prNumber}::int ORDER BY created_at LIMIT 1`))[0].id;
-/** Every door that used to decide a conflict retry funnels through dispatchConflictRetry. */
+/**
+ * Every door that used to decide a conflict retry funnels through dispatchConflictRetry. The PR's
+ * worker rows carry its URL, as create_pr records it: the handlers find the PR worker by repo.
+ */
 const conflictDoor = async (o: Delivery, extra: Partial<Parameters<typeof dispatchConflictRetry>[0]> = {}) =>
-  dispatchConflictRetry({ workerId: await ownerPrWorkerOf(o), taskId: o.ownerTaskId, prNumber: o.prNumber, headSha: gh.head, repoFullName: REPO, workspaceId, ...extra });
+  (await stampPrUrl(o), dispatchConflictRetry({ workerId: await ownerPrWorkerOf(o), taskId: o.ownerTaskId, prNumber: o.prNumber, headSha: gh.head, repoFullName: REPO, workspaceId, ...extra }));
 /** GitHub's update-branch: either merges the base in (a new head descending from the old) or refuses. */
 function updateBranch(outcome: { merged: string } | { conflict: true; thenMergeable?: string }) {
   ghWrite = (path, method) => {

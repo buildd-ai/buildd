@@ -238,6 +238,33 @@ describe('cleanupStuckWaitingInput', () => {
     expect(workerUpdateSet.exitCause).toBe('needs_input');
   });
 
+  it('ends a kernel fix attempt through the seam (lost) and files no unlinked clone', async () => {
+    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: { type: 'question', prompt: 'q' } },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', title: 'Fix', description: 'd', priority: 0, context: { workflowAttemptId: 'a1' },
+      deliveryId: 'd1', deliveryRole: 'review_fix', requiredCapabilities: [], missionId: null,
+    });
+    kernelOwned = 'd1';
+    mockWorkflowAttemptEnded.mockClear();
+    mockTasksInsert.mockClear();
+    try {
+      const result = await cleanupStuckWaitingInput('account-1');
+      expect(result.retriedTasks).toBe(0);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({
+        task: { id: 'task-1', deliveryId: 'd1', deliveryRole: 'review_fix' },
+        workerId: 'w1',
+        status: 'lost',
+      });
+    } finally {
+      kernelOwned = null;
+    }
+  });
+
   it('does not touch waiting_input workers under 24 hours old', async () => {
     const recentDate = new Date(Date.now() - 12 * 60 * 60 * 1000); // 12 hours ago
     mockWorkersFindMany.mockResolvedValue([]); // Query with lt(24h) returns nothing

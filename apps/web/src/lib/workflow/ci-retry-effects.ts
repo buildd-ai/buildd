@@ -10,6 +10,7 @@
  * schema-drift diagnose task), bound to that row. It never counts anything.
  */
 import { eq, sql } from 'drizzle-orm';
+import { prWorkerWhere } from './pr-worker-where';
 import { after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
@@ -29,9 +30,9 @@ import { githubReader, workspaceRepo } from './github-facts';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
-async function prWorker(workspaceId: string, prNumber: number) {
+async function prWorker(workspaceId: string, repoFullName: string, prNumber: number) {
   return db.query.workers.findFirst({
-    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+    where: prWorkerWhere(workspaceId, repoFullName, prNumber),
     columns: { id: true, branch: true, prUrl: true, prNumber: true },
     orderBy: [desc(workers.createdAt)],
   });
@@ -76,7 +77,7 @@ const dispatchCiFix: EffectHandler = async (e) => {
   const [owner, workspace, prw] = await Promise.all([
     db.query.tasks.findFirst({ where: eq(tasks.id, d.ownerTaskId) }),
     db.query.workspaces.findFirst({ where: eq(workspaces.id, d.workspaceId) }),
-    prWorker(d.workspaceId, d.prNumber),
+    prWorker(d.workspaceId, d.repoFullName, d.prNumber),
   ]);
   if (!owner || !workspace) return { outcome: 'skipped:missing_context' };
   const headSha = attempt.boundHeadSha;
