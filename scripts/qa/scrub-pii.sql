@@ -261,6 +261,10 @@ DELETE FROM prompt_eval_runs;
 DELETE FROM decision_records;
 DELETE FROM review_feedback;
 DELETE FROM spec_discrepancies;
+-- Quality Scout ledger: refs, observed output and evidence refs are repo text.
+DELETE FROM quality_scout_findings;
+DELETE FROM quality_scout_probes;
+DELETE FROM quality_scout_runs;
 TRUNCATE knowledge_chunks, knowledge_entities, entity_aliases, chunk_entities,
   pending_entity_refs, knowledge_edges, knowledge_ingest_jobs, pr_reverts;
 

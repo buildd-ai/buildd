@@ -147,7 +147,7 @@ function transientCloneFailure(stderr: string): boolean {
   if (isGithubThrottle(stderr)) return true;
   const code = /returned error: (\d{3})/.exec(stderr)?.[1] ?? /\bHTTP (\d{3})\b/.exec(stderr)?.[1];
   if (code) return code.startsWith('5') || code === '408';
-  return /RPC failed|early EOF|unexpected disconnect|could not resolve host|connection (reset|refused|timed out)|operation timed out|gnutls|ssl/i.test(stderr);
+  return /RPC failed|early EOF|unexpected disconnect|could not resolve host|connection (reset|refused|timed out)|operation timed out|gnutls|openssl|\bssl[_ ]/i.test(stderr);
 }
 
 /**
