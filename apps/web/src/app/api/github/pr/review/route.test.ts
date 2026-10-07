@@ -79,6 +79,15 @@ mock.module('@/lib/pr-review-request', () => ({
 // contract this route is judged on, and stubbing them would only assert that
 // the route calls its own stubs.
 
+// The PR fact funnel (recordPrFact): the adoption records what GitHub says
+// about the PR as a fact after the insert.
+const recordedFacts: Array<{ target: unknown; fact: unknown }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: unknown) => { recordedFacts.push({ target, fact }); return []; },
+  recordPrFactSql: () => null,
+  prFactApplies: () => true,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -312,8 +321,9 @@ describe('POST /api/github/pr/review — adoption', () => {
       prNumber: 42,
       prUrl: OPEN_PR.html_url,
       branch: 'fix/spinner',
-      prLifecycleStatus: 'pr_open',
     });
+    expect(workerInsert.values.prLifecycleStatus).toBeUndefined();
+    expect(recordedFacts.at(-1)).toMatchObject({ fact: { kind: 'open' } });
     // Diff stats come from the PR so policy thresholds see real numbers.
     expect(workerInsert.values.linesAdded).toBe(40);
     expect(workerInsert.values.filesChanged).toBe(2);

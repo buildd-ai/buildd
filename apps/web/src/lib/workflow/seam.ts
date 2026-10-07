@@ -21,6 +21,7 @@ import type { Command, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
 import { ingestFact, type GithubFactReader } from './facts';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
+import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
 import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
@@ -52,7 +53,9 @@ const readerFor = (deps: SeamDeps, installationId: number): GithubFactReader => 
  * every module.
  */
 async function effectHandlers(): Promise<EffectHandlers> {
-  return (await import('@/modules')).WORKFLOW_EFFECT_HANDLERS;
+  // The kernel's own projection onto the PR fact cache (stamp_pr_rows) is core,
+  // not a module's: it is added here rather than at the composition root.
+  return withPrFactEffects((await import('@/modules')).WORKFLOW_EFFECT_HANDLERS);
 }
 
 export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Promise<DrainSummary | null> {

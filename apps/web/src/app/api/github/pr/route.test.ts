@@ -225,6 +225,27 @@ mock.module('@/lib/surface-ordering-door', () => ({
   mergeInSurfaceSlot: mockMergeInSurfaceSlot,
 }));
 
+// The PR fact funnel: the one writer of mergedAt / prLifecycleStatus.
+// Terminal-wins is proven on real Postgres (apps/web/tests/db/pr-facts.test.ts);
+// here we assert the fact this merge door hands over. drizzle-orm is stubbed
+// above, so the real module (raw SQL) is not spread in.
+const recordedFacts: Array<{ target: unknown; fact: any; opts?: unknown }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: any, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return [{ id: 'w-1', taskId: 'task-1', workspaceId: 'ws-1', previousStatus: 'pr_open' }];
+  },
+}));
+beforeEach(() => { recordedFacts.length = 0; });
+
+/** The merge door stamped exactly one merged fact on this worker, at the door's own instant. */
+function expectMergedFactFor(workerId: string) {
+  expect(recordedFacts).toHaveLength(1);
+  expect(recordedFacts[0]!.target).toEqual({ workerId });
+  expect(recordedFacts[0]!.fact.kind).toBe('merged');
+  expect(recordedFacts[0]!.fact.mergedAt).toBeInstanceOf(Date);
+}
+
 // Import handler AFTER mocks
 const mockCloseAncestorRetryPrs = mock(async (_opts: any) => [] as any[]);
 // The behind-base refresh (lib/base-refresh.ts) owns the lease, failure
@@ -3539,6 +3560,7 @@ describe('PUT /api/github/pr', () => {
       const res = await put();
       expect((await res.json()).merged).toBe(false);
       expect(mockWorkersUpdate).not.toHaveBeenCalled();
+      expect(recordedFacts).toHaveLength(0);
     });
 
     describe('landing function (gitConfig.landing.mode=enforce)', () => {
@@ -3579,7 +3601,7 @@ describe('PUT /api/github/pr', () => {
         });
         // The merge is landPr's, never a second one from the route.
         expect(mockMergePullRequest).not.toHaveBeenCalled();
-        expect(mockWorkersUpdate).toHaveBeenCalled();
+        expectMergedFactFor('w-1');
       });
 
       it('behind base: the branch is refreshed with a marker; 202, nothing more asked of the caller', async () => {
@@ -4224,8 +4246,7 @@ describe('PUT /api/github/pr', () => {
     expect(data.ok).toBe(true);
     expect(data.merged).toBe(true);
     expect(data.pr.number).toBe(42);
-    expect(capturedSetData.mergedAt).toBeInstanceOf(Date);
-    expect(capturedSetData.prLifecycleStatus).toBe('merged');
+    expectMergedFactFor('w-1');
     expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'squash', 'sha-42');
   });
 
@@ -4405,8 +4426,7 @@ describe('PUT /api/github/pr', () => {
     const data = await res.json();
     expect(data.merged).toBe(true);
     // mergedAt must be stamped on the resolved worker
-    expect(capturedSetData.mergedAt).toBeInstanceOf(Date);
-    expect(capturedSetData.prLifecycleStatus).toBe('merged');
+    expectMergedFactFor('w-resolved');
   });
 
   it('returns 404 when prNumber-only resolve finds no matching worker', async () => {

@@ -105,6 +105,27 @@ mock.module('@/lib/surface-ordering-door', () => ({
 const mockCheckBaseRefreshHold = mock(async (_input: any): Promise<any> => ({ blocks: false }));
 mock.module('@/lib/base-refresh', () => ({ checkBaseRefreshHold: mockCheckBaseRefreshHold }));
 
+// The PR fact funnel: the one writer of mergedAt / prLifecycleStatus.
+// Terminal-wins is proven on real Postgres (apps/web/tests/db/pr-facts.test.ts);
+// here we assert the fact this merge door hands over. drizzle-orm is stubbed
+// above, so the real module (raw SQL) is not spread in.
+const recordedFacts: Array<{ target: unknown; fact: any; opts?: unknown }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: any, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return [{ id: 'w-1', taskId: 't-1', workspaceId: 'ws-1', previousStatus: 'pr_open' }];
+  },
+}));
+beforeEach(() => { recordedFacts.length = 0; });
+
+/** The merge door stamped exactly one merged fact on this worker, at the door's own instant. */
+function expectMergedFactFor(workerId: string) {
+  expect(recordedFacts).toHaveLength(1);
+  expect(recordedFacts[0]!.target).toEqual({ workerId });
+  expect(recordedFacts[0]!.fact.kind).toBe('merged');
+  expect(recordedFacts[0]!.fact.mergedAt).toBeInstanceOf(Date);
+}
+
 import { POST } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 
@@ -235,6 +256,7 @@ describe('POST /api/prs/[prNumber]/merge', () => {
       'squash',
       'head-A',
     );
+    expectMergedFactFor('w-1');
   });
 
   it('returns 422 when workspace has no GitHub installation', async () => {
@@ -402,7 +424,7 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
     const body = await res.json();
     expect(body).toEqual({ ok: true, merged: true });
     // The reconciled path must run the same success side effects as a normal merge.
-    expect(mockWorkersUpdate).toHaveBeenCalled();
+    expectMergedFactFor('w-1');
   });
 
   it('offers a safe retry when the live PR state confirms it is still open', async () => {
@@ -793,7 +815,7 @@ describe('POST /api/prs/[prNumber]/merge — review-verdict gate', () => {
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
     expect(res.status).toBe(422);
-    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+    expect(recordedFacts).toHaveLength(0);
   });
 
   it('lets an approve-after-changes through untouched', async () => {
@@ -847,7 +869,7 @@ describe('POST /api/prs/[prNumber]/merge — red CI and the landing function', (
     expect(data.error).toContain('CI');
     expect(data.fix).toBe('ci_fix');
     expect(mockMergePullRequest).not.toHaveBeenCalled();
-    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+    expect(recordedFacts).toHaveLength(0);
     // The override reaches landPr as a verdict override only.
     expect(mockLandPr.mock.calls[0]![0]).toMatchObject({
       door: 'dashboard', mode: 'enforce', eventHeadSha: null,
@@ -915,7 +937,7 @@ describe('POST /api/prs/[prNumber]/merge — red CI and the landing function', (
     expect(res.status).toBe(200);
     expect((await res.json()).merged).toBe(true);
     expect(mockMergePullRequest).not.toHaveBeenCalled();
-    expect(mockWorkersUpdate).toHaveBeenCalled();
+    expectMergedFactFor('w-1');
     expect(mockLandPr.mock.calls[0]![0].actor).toEqual({ kind: 'human', userId: 'u-1' });
   });
 

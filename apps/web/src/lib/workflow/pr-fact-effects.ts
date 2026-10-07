@@ -36,7 +36,7 @@ export function stampPrRowsHandler(deps: { exec?: Exec; record?: typeof recordPr
   };
 }
 
-/** The fact-cache projection added to the composition root's handlers. */
+/** The fact-cache projection, added by the seam to the composition root's handlers. */
 export function withPrFactEffects(base: EffectHandlers): EffectHandlers {
   return { ...base, stamp_pr_rows: stampPrRowsHandler() };
 }

@@ -104,6 +104,19 @@ const mockInheritAttemptIdentity = mock((_parentTaskId: string | null | undefine
 }));
 mock.module('@/lib/attempt-identity', () => ({ inheritAttemptIdentity: mockInheritAttemptIdentity }));
 
+// The PR fact funnel (terminal-wins proven on real Postgres in
+// tests/db/pr-facts.test.ts); here we only assert the fact handed over.
+// Not spread from the real module: drizzle-orm above is a partial surface.
+const recordedFacts: Array<{ target: unknown; fact: unknown; opts?: unknown }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: unknown, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return [{ id: 'w1', taskId: 't1', workspaceId: 'ws1', previousStatus: null }];
+  },
+  recordPrFactSql: () => null,
+  prFactApplies: () => true,
+}));
+
 // ─── Import after mocks ───────────────────────────────────────────────────────
 
 import { sweepDeadZonePrs } from './dead-zone-sweep';
@@ -149,6 +162,7 @@ describe('sweepDeadZonePrs repo resolution', () => {
     mockGithubApi.mockReset();
     mockBuildConflictRetryTask.mockReset();
     mockInsertValues.length = 0;
+    recordedFacts.length = 0;
     mockDbUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
     mockTasksFindMany.mockResolvedValue([]);
     mockGithubApi.mockResolvedValue(DIRTY_PR);
@@ -202,6 +216,8 @@ describe('sweepDeadZonePrs repo resolution', () => {
     expect(mockBuildConflictRetryTask).toHaveBeenCalledWith(
       expect.objectContaining({ repoFullName: 'owner/repo' }),
     );
+    // A dirty PR is a conflict fact on the fact cache, for this worker.
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'conflict' }, opts: undefined }]);
   });
 
   it('sweeps a worker whose workspace has no repo, using its prUrl', async () => {
@@ -286,5 +302,81 @@ describe('sweepDeadZonePrs retry identity', () => {
     expect(mockInheritAttemptIdentity).toHaveBeenCalledWith('t1');
     expect(mockInsertValues).toHaveLength(1);
     expect(mockInsertValues[0]).toMatchObject({ roleSlug: 'builder', taskClass: 'attempt', parentTaskId: 't1' });
+  });
+});
+
+describe('sweepDeadZonePrs PR facts', () => {
+  const WORKSPACE = {
+    id: 'ws1', repo: 'owner/repo', gitConfig: {},
+    githubRepo: { installation: { installationId: 123 } },
+  };
+
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubApi.mockReset();
+    mockBuildConflictRetryTask.mockReset();
+    mockInsertValues.length = 0;
+    recordedFacts.length = 0;
+    mockTasksFindMany.mockResolvedValue([]);
+    mockWorkersFindMany.mockResolvedValue([deadZoneWorker()]);
+    mockWorkspacesFindFirst.mockResolvedValue(WORKSPACE);
+  });
+
+  it('records red CI as a ci_failed fact for the head it ran on, never as a conflict', async () => {
+    // §18.2: the old write mapped red CI to `conflict`, overloading the status.
+    mockGithubApi.mockImplementation((async (_inst: number, path: string) => (
+      path.includes('/check-runs')
+        ? { check_runs: [{ status: 'completed', conclusion: 'failure' }] }
+        : { state: 'open', merged: false, merged_at: null, mergeable_state: 'blocked', head: { sha: 'cafe01' } }
+    )) as any);
+
+    await sweepDeadZonePrs();
+
+    expect(recordedFacts).toEqual([{
+      target: { workerId: 'w1' },
+      fact: { kind: 'ci', status: 'ci_failed', headSha: 'cafe01', currentHeadSha: 'cafe01' },
+      opts: undefined,
+    }]);
+    expect(recordedFacts.some((r) => (r.fact as { kind: string }).kind === 'conflict')).toBe(false);
+  });
+
+  it('records a merged PR as a merged fact carrying GitHub\'s merged_at', async () => {
+    mockGithubApi.mockResolvedValue({
+      state: 'closed', merged: true, merged_at: '2026-01-02T03:04:05Z',
+      mergeable_state: null, head: { sha: 'cafe01' },
+    });
+
+    const result = await sweepDeadZonePrs();
+
+    expect(recordedFacts).toEqual([{
+      target: { workerId: 'w1' },
+      fact: { kind: 'merged', mergedAt: '2026-01-02T03:04:05Z' },
+      opts: undefined,
+    }]);
+    expect(result.skipped).toBe(1);
+    expect(mockBuildConflictRetryTask).not.toHaveBeenCalled();
+  });
+
+  it('records a PR closed without merging as a closed fact', async () => {
+    mockGithubApi.mockResolvedValue({
+      state: 'closed', merged: false, merged_at: null,
+      mergeable_state: null, head: { sha: 'cafe01' },
+    });
+
+    await sweepDeadZonePrs();
+
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'closed' }, opts: undefined }]);
+  });
+
+  it('records no fact for a clean open PR', async () => {
+    mockGithubApi.mockResolvedValue({
+      state: 'open', merged: false, merged_at: null, mergeable_state: 'clean', head: { sha: 'cafe01' },
+    });
+
+    await sweepDeadZonePrs();
+
+    expect(recordedFacts).toEqual([]);
   });
 });

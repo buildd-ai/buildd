@@ -125,8 +125,10 @@ mock.module('../../src/lib/ci-failure-retry', () => ({
 const seam = await import('../../src/lib/workflow/seam');
 const { reviewEffectHandlers: reviewOnly } = await import('../../src/lib/workflow/review-effects');
 const { withCiRetryEffects } = await import('../../src/lib/workflow/ci-retry-effects');
-/** The composition root's set (apps/web/src/modules.ts): review loop plus the CI family. */
-const reviewEffectHandlers = withCiRetryEffects(reviewOnly);
+const { withPrFactEffects } = await import('../../src/lib/workflow/pr-fact-effects');
+const { recordPrFact } = await import('@buildd/core/pr-facts');
+/** The composition root's set (apps/web/src/modules.ts): review loop, the CI family and the fact-cache projection. */
+const reviewEffectHandlers = withPrFactEffects(withCiRetryEffects(reviewOnly));
 const { runEffects } = await import('../../src/lib/workflow/effects');
 const { applyCommand, loadView } = await import('../../src/lib/workflow/kernel');
 const { attemptView, headCoverage } = await import('../../src/lib/workflow/reducer');
@@ -452,10 +454,51 @@ describe('S6 — out of order: closed(merged), then late synchronize / opened / 
     expect((await transitions(o.deliveryId)).length).toBe(n);
   });
 
-  // Intended: the same sequence leaves workers.prLifecycleStatus / mergedAt as the merge set them,
-  // and a check_suite failure for the pre-merge SHA neither overwrites CI on the delivery nor files
-  // a CI fix (T10: head_not_current; recordPrFact funnel replaces the direct column writers).
-  test.todo('S6: workers PR columns unchanged and an old-SHA CI failure does not overwrite (needs spec Slice B: fact funnel / recordPrFact — no task filed)');
+  /** The worker rows of a delivery's PR as the fact cache holds them. */
+  const prRows = (o: Delivery) => q<{ id: string; pr_lifecycle_status: string | null; merged_at: string | null }>(
+    sql`SELECT id, pr_lifecycle_status, merged_at FROM workers WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid ORDER BY created_at, id`);
+  const prUrl = (o: Delivery) => `https://github.com/${REPO}/pull/${o.prNumber}`;
+
+  test('S6: the merge reaches every worker row through stamp_pr_rows; late open-state and CI facts leave them as the merge set them', async () => {
+    const o = await openAndHandOn();
+    await q(sql`UPDATE workers SET pr_url = ${prUrl(o)}, pr_lifecycle_status = 'ci_green' WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
+    await closeOrMerge(o, true);
+    expect((await effects(o.deliveryId, 'stamp_pr_rows')).map((e) => [e.status, e.outcome])).toEqual([['done', 'ok:merged_2']]);
+    const merged = await prRows(o);
+    expect(merged.length).toBe(2);
+    for (const r of merged) {
+      expect(r.pr_lifecycle_status).toBe('merged');
+      // GitHub's merged_at from the kernel's live read, not receipt time.
+      expect(new Date(r.merged_at!).toISOString()).toBe('2026-10-06T00:00:00.000Z');
+    }
+
+    // The late deliveries the webhook and the sweeps would hand the funnel, in a hostile order.
+    const target = { prUrl: prUrl(o), prNumber: o.prNumber };
+    expect(await recordPrFact(target, { kind: 'open' })).toEqual([]); // late synchronize / opened
+    expect(await recordPrFact(target, { kind: 'open', reopened: true })).toEqual([]);
+    expect(await recordPrFact(target, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H1' })).toEqual([]); // late check_suite
+    expect(await recordPrFact(target, { kind: 'closed' })).toEqual([]);
+    expect(await recordPrFact(target, { kind: 'merged', mergedAt: new Date() })).toEqual([]); // a merge door's receipt time
+    // …and the kernel's own late CI fact files nothing on a merged delivery.
+    expect(await ciFail(o, { head: 'H1' })).toMatchObject({ handled: true, result: { result: 'stale' } });
+    expect(await tasksOf(o.deliveryId, 'ci_fix')).toEqual([]);
+    expect(await prRows(o)).toEqual(merged);
+  });
+
+  test('S6: a check_suite failure for the pre-push SHA neither overwrites CI on the delivery nor the fact cache, and files no CI fix', async () => {
+    const o = await openAndHandOn();
+    await q(sql`UPDATE workers SET pr_url = ${prUrl(o)} WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
+    await push(o, 'H2', { ancestors: ['H1'] });
+    await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_green', headSha: 'H2', currentHeadSha: 'H2' });
+    const before = await delivery(o.deliveryId);
+    // The old suite's failure arrives late: its SHA is H1, the PR head is H2.
+    expect(await ciFail(o, { head: 'H1' })).toMatchObject({ handled: true, result: { result: 'stale', reason: 'head_not_current' } });
+    expect(await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H2' })).toEqual([]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: before.state, ci: before.ci, version: before.version, currentHeadSha: 'H2' });
+    expect(await ciAttempts(o.deliveryId)).toEqual([]);
+    expect(await tasksOf(o.deliveryId, 'ci_fix')).toEqual([]);
+    expect((await prRows(o)).map((r) => r.pr_lifecycle_status)).toEqual(['ci_green', 'ci_green']);
+  });
 });
 
 describe('S7 — two fix dispatches race (#3420)', () => {
