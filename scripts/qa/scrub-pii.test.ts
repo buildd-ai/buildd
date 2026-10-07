@@ -217,8 +217,9 @@ const SAFE: Record<string, string[]> = {
   heartbeat_triage_looks: ['arm', 'prompt_version', 'model', 'pick', 'reason'],
   // Tier pools hold no text by design: shares and weight levels keyed by arm
   // id, model ids, and an audit log of those same shares plus a system actor
-  // label.
-  tier_pools: ['allocation', 'weights'],
+  // label. dial_state is a state label, arm ids, ISO times and a reason built
+  // from a fixed sentence plus rates and model ids (packages/core/tier-dial.ts).
+  tier_pools: ['allocation', 'weights', 'dial_state'],
   tier_pool_arms: ['model', 'stats'],
   tier_pool_changes: ['before', 'after', 'evidence', 'actor_system'],
   tenant_budgets: ['tenant_id'],
