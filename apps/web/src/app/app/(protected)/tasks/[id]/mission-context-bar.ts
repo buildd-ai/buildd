@@ -15,6 +15,7 @@ import { buildMissionFeedGroups } from '@/lib/mission-feed-groups';
 import type { PulseSegment } from '@/lib/mission-pulse';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 import { buildTaskSheetNav } from '../../missions/[id]/task-sheet-nav';
+import { type DeliveryView } from '@/lib/workflow/projections';
 
 export interface MissionContextBarData {
   missionId: string;
@@ -28,8 +29,12 @@ export interface MissionContextBarData {
   upHref: string;
 }
 
-export function buildMissionContextBar(row: MissionCardRow, taskId: string): MissionContextBarData {
-  const card = buildMissionCardView(row, { from: 'missions' });
+export function buildMissionContextBar(
+  row: MissionCardRow,
+  taskId: string,
+  opts?: { deliveryViews?: ReadonlyMap<string, DeliveryView> | null },
+): MissionContextBarData {
+  const card = buildMissionCardView(row, { from: 'missions', deliveryViews: opts?.deliveryViews });
   const model = buildMissionFeedGroups((row.tasks ?? []).map(toFeedTask));
 
   let rowId: string | null = model.rowsById.has(taskId) ? taskId : null;
@@ -60,6 +65,7 @@ export function buildMissionContextBar(row: MissionCardRow, taskId: string): Mis
 export function missionContextBarFor(
   row: MissionCardRow | null | undefined,
   taskId: string,
+  opts?: { deliveryViews?: ReadonlyMap<string, DeliveryView> | null },
 ): MissionContextBarData | null {
-  return row ? buildMissionContextBar(row, taskId) : null;
+  return row ? buildMissionContextBar(row, taskId, opts) : null;
 }

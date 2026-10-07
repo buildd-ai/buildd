@@ -3,6 +3,7 @@ import { initiatives, missions } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, ne, type SQL } from 'drizzle-orm';
 import { buildMissionCardView, summarizeMissionForCard, type BlockingTask, type MissionCardRow } from './mission-card-view';
 import { buildMissionListCard, type ListMissionRow } from './mission-list-card';
+import { getDeliveryViewsForTasks } from './workflow/delivery-view';
 import { MISSION_BASE_COLUMNS, MISSION_TASK_BASE_COLUMNS, MISSION_WORKER_BASE_COLUMNS } from './missions-query';
 import { buildMissionWithInitiativeUrl } from './initiative-breadcrumb';
 import {
@@ -81,11 +82,14 @@ export async function loadInitiativeCards(opts: {
   const taskIndex = new Map<string, BlockingTask>();
   for (const m of missionRows) for (const t of m.tasks ?? []) taskIndex.set(t.id, t as BlockingTask);
 
+  // S35: kernel-owned deliveries decide whether a failed task is replaced work.
+  const deliveryViews = await getDeliveryViewsForTasks([...taskIndex.keys()]);
+
   const byInitiative = new Map<string, InitiativeMissionInput[]>();
   for (const m of missionRows) {
     const row = m as MissionCardRow;
     const summary = summarizeMissionForCard(row, { now });
-    const view = buildMissionCardView(row, { from: 'missions', now, summary, taskIndex });
+    const view = buildMissionCardView(row, { from: 'missions', now, summary, taskIndex, deliveryViews });
     const list = buildMissionListCard(m as ListMissionRow, view, summary, { now, taskIndex });
     const input: InitiativeMissionInput = {
       id: m.id,

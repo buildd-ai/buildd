@@ -18,6 +18,7 @@ import {
   type BlockingTask,
   type MissionCardRow,
 } from '@/lib/mission-card-view';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { MissionGrid, type MissionItem } from './MissionGrid';
 import {
   COMPLETED_MISSIONS_PAGE_SIZE,
@@ -198,6 +199,10 @@ export default async function MissionsPage({
   // One model per card — the same builder Home uses (lib/mission-card-view.ts),
   // so a mission's chip, sentence, pulse and group read the same on both.
   const now = Date.now();
+  // S35: kernel-owned deliveries decide whether a failed task is replaced work.
+  const allTaskIds = allMissions.flatMap((m) => (m.tasks || []).map((t: any) => t.id).filter(Boolean));
+  const deliveryViews = await getDeliveryViewsForTasks(allTaskIds);
+
   const missionsList: MissionItem[] = allMissions.map((obj) => {
     const row = obj as MissionCardRow;
     const summary = summarizeMissionForCard(row, { now });
@@ -207,6 +212,7 @@ export default async function MissionsPage({
       summary,
       taskIndex: allMissionTaskMap,
       flightStrip: flightStripByMission.get(obj.id) ?? null,
+      deliveryViews,
     });
 
     // lastActivityAt: most recent task update or lastTaskStartedAt

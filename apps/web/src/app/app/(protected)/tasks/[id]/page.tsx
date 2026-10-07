@@ -266,9 +266,13 @@ export default async function TaskDetailPage({
   const authFailure = task.status === 'failed'
     ? explainProviderAuthFailure(taskWorkers[0]?.error ?? null, taskBackend)
     : null;
+  // S35: kernel-owned deliveries decide whether a failed task is replaced work.
+  const missionTaskIds = missionContextRow?.tasks?.map((t: any) => t.id).filter(Boolean) ?? [];
+  const missionDeliveryViews = missionTaskIds.length > 0 ? await getDeliveryViewsForTasks(missionTaskIds) : null;
   const missionContextBar: MissionContextBarData | null = missionContextBarFor(
     missionContextRow as unknown as MissionCardRow | null,
     task.id,
+    { deliveryViews: missionDeliveryViews },
   );
 
   // Read-through PR fact import: if the latest worker is completed with an
