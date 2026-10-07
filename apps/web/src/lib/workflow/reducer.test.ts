@@ -716,6 +716,42 @@ describe('T15 LandingRequested / T16 MergeCallResult (S10)', () => {
     expectResult(res(l, 'merged', 'H0'), 'stale', 'head_not_current');
     expectResult(res(V(D({ state: 'APPROVED' })), 'merged'), 'stale', 'state_moved');
   });
+  test('not_merged (verify read shows the PR open) hands the approval back; nothing is escalated', () => {
+    const dec = applied(res(V(D({ state: 'LANDING', approvedHeads: ['H1'] })), 'not_merged'));
+    expect(dec.toState).toBe('APPROVED');
+    expect(effectKinds(dec)).not.toContain('notify');
+  });
+  test('one landing per (head, version): a second door while LANDING is a duplicate; a re-landing after a refusal is a new request (Slice C)', () => {
+    expectResult(land(V(D({ state: 'LANDING', approvedHeads: ['H1'] }))), 'duplicate', 'landing_in_flight');
+    const at = (version: number) => V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict', version }));
+    const cmd: Command = { type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live('H1'), rails: { passed: true } };
+    expect(stableIdempotencyKey(cmd, at(4).delivery)).not.toBe(stableIdempotencyKey(cmd, at(7).delivery));
+    const first = applied(land(at(4)));
+    expect(first.idempotencyKey).toBe(stableIdempotencyKey(cmd, at(4).delivery));
+    expect(first.effects[0]).toMatchObject({ kind: 'merge_call', dedupeKey: expect.stringContaining(':v5'), payload: { landingVersion: 5, mergeMethod: 'squash' } });
+    expect(applied(land(at(7), { mergeMethod: 'rebase' })).effects[0].payload).toMatchObject({ landingVersion: 8, mergeMethod: 'rebase' });
+    // The result of one landing is not mistaken for another's.
+    const r = (landingVersion: number): Command => ({ type: 'MergeCallResult', actor: 'kernel', headSha: 'H1', outcome: 'refused', landingVersion });
+    const l = V(D({ state: 'LANDING', approvedHeads: ['H1'] })).delivery;
+    expect(stableIdempotencyKey(r(5), l)).not.toBe(stableIdempotencyKey(r(8), l));
+  });
+  test('the override door: a person may merge past a review verdict from the review states, never past red CI; an agent may not (§17.2)', () => {
+    const human = (state: DeliverySnapshot['state']) => land(V(D({ state })), { actor: 'human:owner', door: 'dashboard', override: { reason: 'owner call' }, rails: { passed: true } });
+    for (const state of ['AWAITING_REVIEW', 'CHANGES_REQUESTED', 'ESCALATED'] as const) {
+      expect(applied(human(state)).bypass).toMatchObject({ door: 'dashboard', reason: 'owner call', actor: 'human:owner', overrodeState: state });
+    }
+    expectResult(human('REPAIRING'), 'rejected', 'state_not_allowed');
+    expectResult(land(V(D({ state: 'AWAITING_REVIEW' })), { actor: 'agent:w1', door: 'merge_pr', override: { reason: 'x' } }), 'rejected', 'state_not_allowed');
+    expectResult(land(V(D({ state: 'ESCALATED' })), { actor: 'human:owner', door: 'dashboard', override: { reason: 'x' }, rails: { passed: false, redCi: true } }), 'rejected', 'rail_not_overridable');
+    // Without an override, a person lands only what is approved at this head.
+    expectResult(land(V(D({ state: 'ESCALATED' })), { actor: 'human:owner', door: 'dashboard' }), 'rejected', 'state_not_allowed');
+  });
+  test('S20: a stale version from a person is answered stale with the current view; nothing applies', () => {
+    const v = V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict', version: 9 }));
+    const dec = land(v, { actor: 'human:owner', door: 'dashboard', expectedVersion: 8 });
+    expect(dec).toEqual({ result: 'stale', reason: 'version_moved', current: { state: 'APPROVED', version: 9, head: 'H1', round: v.delivery!.currentRound } });
+    expect(applied(land(v, { actor: 'human:owner', door: 'dashboard', expectedVersion: 9 })).toState).toBe('LANDING');
+  });
 });
 
 describe('T17–T21 terminal-wins and closure (S6, S11, S12, AC-8, AC-9)', () => {
@@ -731,7 +767,10 @@ describe('T17–T21 terminal-wins and closure (S6, S11, S12, AC-8, AC-9)', () =>
     expect(dec.patch).toMatchObject({ mergedAt: '2026-10-06T01:00:00Z', mergeCommitSha: 'M1' });
     expect(dec.evidence.reviewClass).toBe('merged_unreviewed');
     expect(dec.rounds).toEqual([{ op: 'update', roundId: 'r1', whenStatus: ['queued', 'reviewing'], set: { status: 'superseded' } }]);
-    expect(effectKinds(dec)).toEqual(expect.arrayContaining(['stamp_pr_rows', 'emit_pr_merged', 'wake_mission', 'release_attribution', 'finalize_mission_pr']));
+    expect(effectKinds(dec)).toEqual(expect.arrayContaining(['stamp_pr_rows', 'cancel_open_attempts', 'emit_pr_merged', 'finalize_mission_pr']));
+    // The mission wake and release attribution ride emit_pr_merged's one task.pr_merged fan-out.
+    expect(effectKinds(dec)).not.toContain('wake_mission');
+    expect(effectKinds(dec)).not.toContain('release_attribution');
     expect(applied(run(V(D({ state: 'CHANGES_REQUESTED' }), [decidedRC]), { type: 'PrMerged', actor: 'webhook', live: merged })).evidence.reviewClass).toBe('merged_over_verdict');
     expect(applied(run(V(D({ state: 'APPROVED', approvedHeads: ['H1'] })), { type: 'PrMerged', actor: 'webhook', live: merged })).evidence.reviewClass).toBe('covered:verdict');
     expect(applied(run(V(D({ state: 'APPROVED', compositionHeads: ['H1'], approvalBasis: 'composition' })), { type: 'PrMerged', actor: 'webhook', live: merged })).evidence.reviewClass).toBe('covered:composition');

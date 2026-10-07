@@ -24,6 +24,7 @@ import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
 import type { EffectHandlers } from '@/lib/workflow/effects';
 import { reviewEffectHandlers } from '@/lib/workflow/review-effects';
 import { withCiRetryEffects } from '@/lib/workflow/ci-retry-effects';
+import { withLandingEffects } from '@/lib/workflow/pr-landing-effects';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
 import { notificationSubscribers } from '@/lib/notification-subscribers';

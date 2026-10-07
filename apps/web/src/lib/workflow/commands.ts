@@ -164,13 +164,28 @@ export type Command =
       headSha: string;
       live: LivePr;
       rails: { passed: boolean; redCi?: boolean; denyPaths?: boolean; reasons?: string[] };
+      /**
+       * A person merging past a review verdict (the dashboard's "Merge anyway"):
+       * recorded in `bypass`, allowed from the review states, never past red CI
+       * or a deny path.
+       */
       override?: { reason: string } | null;
+      /** How GitHub combines the PR; carried to the `merge_call` effect. Default squash. */
+      mergeMethod?: 'merge' | 'squash' | 'rebase';
     })
   | (Base & {
       type: 'MergeCallResult';
       headSha: string;
-      outcome: 'merged' | 'indeterminate' | 'behind' | 'conflict' | 'refused';
+      /**
+       * GitHub's answer to the pinned merge call. `not_merged`: the live read a
+       * `verify_merge` took after an indeterminate answer shows the PR still open
+       * and unmerged at the head (or the head moved under the call), so nothing
+       * landed and landing may be requested again.
+       */
+      outcome: 'merged' | 'indeterminate' | 'behind' | 'conflict' | 'refused' | 'not_merged';
       detail?: string;
+      /** The version T15 left the delivery at: one landing request, so a re-landing at the same head after a refusal is a new key. */
+      landingVersion?: number;
     })
   | (Base & { type: 'PrMerged'; live: LivePr })
   | (Base & { type: 'PrClosedUnmerged'; live: LivePr; closeCause: CloseCause })

@@ -59,6 +59,16 @@ const mockEnsureIntegrationBaseForTaskPr = mock(
   () => Promise.resolve({ usable: true, recreated: false }) as any,
 );
 const mockReportMissionBranchUnresolved = mock(async (_input: any) => {});
+// Workflow kernel landing (lib/workflow/landing.ts; real-SQL cases in
+// apps/web/tests/db/workflow-matrix.test.ts S10/S15/S20). Default: no kernel
+// delivery, so every legacy merge case below runs unchanged.
+const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
+const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+mock.module('@/lib/workflow/landing', () => ({
+  landThroughKernel: mockLandThroughKernel,
+  kernelLandingView: mockKernelLandingView,
+  staleLandingVersion: async () => null,
+}));
 mock.module('@/lib/mission-integration-branch', () => ({
   ensureIntegrationBaseForTaskPr: mockEnsureIntegrationBaseForTaskPr,
   missionBranchRemedy: (reason: string) => `remedy for ${reason}`,
@@ -3610,6 +3620,63 @@ describe('PUT /api/github/pr', () => {
       expect((await res.json()).merged).toBe(false);
       expect(mockWorkersUpdate).not.toHaveBeenCalled();
       expect(recordedFacts).toHaveLength(0);
+    });
+
+    // Workflow kernel (workflow-state-kernel.md §14 Slice C): a kernel-owned PR is merged by the
+    // kernel (T15/T16) and its post-merge work is the kernel's; a stale version is a 409 (S20).
+    describe('kernel-owned PR (Slice C)', () => {
+      const current = { state: 'APPROVED', version: 7, head: 'sha-42', round: 1 };
+      const putV = (version?: number) => PUT(createPutRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', prNumber: 42, ...(version !== undefined ? { version } : {}) },
+      }));
+      beforeEach(() => {
+        mockLandThroughKernel.mockReset();
+        mockKernelLandingView.mockReset();
+        mockKernelLandingView.mockResolvedValue({ deliveryId: 'd-1', current });
+      });
+      afterAll(() => {
+        mockKernelLandingView.mockReset();
+        mockKernelLandingView.mockResolvedValue(null);
+        mockLandThroughKernel.mockReset();
+        mockLandThroughKernel.mockResolvedValue(null);
+      });
+
+      it('S20: a stale version is a 409 with the current view; no policy rail runs and nothing merges', async () => {
+        workerOk();
+        const res = await putV(6);
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ merged: false, stale: true, reason: 'version_moved', current });
+        expect(mockLandThroughKernel).not.toHaveBeenCalled();
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+        expect(mockReadPrReviewStatus).not.toHaveBeenCalled();
+      });
+
+      it('merges through the kernel, pinned to the checked head; the door stamps nothing', async () => {
+        workerOk();
+        mockLandThroughKernel.mockResolvedValue({ merged: true, outcome: 'merged', reason: 'merged', message: 'merged', mergeCommitSha: 'M1', current: { ...current, state: 'MERGED' }, result: null });
+        const res = await putV(7);
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ ok: true, merged: true, pr: { number: 42, mergeCommitSha: 'M1' } });
+        expect(mockLandThroughKernel.mock.calls[0]![0]).toMatchObject({
+          repoFullName: 'owner/repo', prNumber: 42, headSha: 'sha-42', door: 'merge_pr', actor: 'agent:w-1', mergeMethod: 'squash', expectedVersion: 7,
+        });
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+        expect(recordedFacts).toHaveLength(0);
+      });
+
+      it('a kernel refusal is a 409 carrying the current view; a refresh it queued is a 202', async () => {
+        workerOk();
+        mockLandThroughKernel.mockResolvedValue({ merged: false, outcome: 'rejected', reason: 'state_not_allowed', message: 'not approved', mergeCommitSha: null, current: { ...current, state: 'AWAITING_REVIEW' }, result: null });
+        let res = await putV();
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ merged: false, kernel: { outcome: 'rejected', reason: 'state_not_allowed' }, current: { state: 'AWAITING_REVIEW' } });
+        mockLandThroughKernel.mockResolvedValue({ merged: false, outcome: 'behind', reason: 'behind', message: 'behind', mergeCommitSha: null, current: { ...current, state: 'REPAIRING' }, result: null });
+        res = await putV();
+        expect(res.status).toBe(202);
+        expect(await res.json()).toMatchObject({ merged: false, branchUpdated: true });
+        expect(recordedFacts).toHaveLength(0);
+      });
     });
 
     describe('landing function (gitConfig.landing.mode=enforce)', () => {

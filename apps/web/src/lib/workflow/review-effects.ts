@@ -6,10 +6,9 @@
  * apps/web/src/modules.ts), never by import. Each one is idempotent: the outbox delivers at least once, so every
  * handler re-reads the delivery and acts only on what is still owed.
  *
- * Effects owned by later slices (post-merge work, landing, CI/conflict/trunk
- * repair) are acknowledged `skipped:legacy_owns`: the legacy code still runs
- * them in this slice, and a transition that names them must not make the
- * outbox retry forever.
+ * Effects owned by later slices (supersession, trunk repair) are acknowledged
+ * `skipped:legacy_owns`: the legacy code still runs them, and a transition
+ * that names them must not make the outbox retry forever.
  */
 import { and, desc, eq, ne, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
@@ -494,9 +493,11 @@ const pushRecovery: EffectHandler = async (e) => {
   return { outcome: 'ok:exhausted' };
 };
 
+// Supersession and abandonment (T18/T20/T21) are Slice D's: their mission wake and
+// release attribution, the supersession scan and its projection still run on the
+// legacy path. The landing and post-merge effects are pr-landing-effects.ts's.
 const LEGACY_OWNED: EffectKind[] = [
-  'emit_pr_merged', 'wake_mission', 'release_attribution', 'finalize_mission_pr',
-  'scan_supersession', 'project_supersession', 'verify_merge', 'gate_event',
+  'wake_mission', 'release_attribution', 'scan_supersession', 'project_supersession', 'gate_event',
 ];
 
 export const reviewEffectHandlers: EffectHandlers = {

@@ -162,8 +162,10 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'ReviewVerdictRecorded': return `verdict:${cmd.roundId}`;
     case 'FixClaimed': return `claim:${cmd.attemptId}`;
     case 'HumanApproved': return pr ? `approve:${pr}:${cmd.reviewId}` : null;
-    case 'LandingRequested': return pr ? `merge:${pr}:${cmd.headSha}` : null;
-    case 'MergeCallResult': return pr ? `mergeresult:${pr}:${cmd.headSha}:${cmd.outcome}` : null;
+    // One landing request per (head, version): a replay is a duplicate, while a person re-landing
+    // the same head after a refusal (the delivery moved on since) is a new request.
+    case 'LandingRequested': return pr && d ? landingKey(pr, cmd.headSha, d.version) : null;
+    case 'MergeCallResult': return pr ? mergeResultKey(pr, cmd) : null;
     case 'PrMerged': return pr ? `merged:${pr}` : null;
     case 'PrClosedUnmerged': return pr ? `closed:${pr}:${cmd.live.updatedAt ?? 'unknown'}` : null;
     case 'PrReopened': return pr ? `reopen:${pr}:${cmd.live.updatedAt ?? 'unknown'}` : null;
@@ -177,6 +179,14 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'CompositionAttested': return d ? `compose:${d.id}:${cmd.attestation.aggregateHeadSha}` : null;
     default: return null;
   }
+}
+
+function landingKey(pr: string, headSha: string, version: number): string {
+  return `merge:${pr}:${headSha}:v${version}`;
+}
+
+function mergeResultKey(pr: string, cmd: Extract<Command, { type: 'MergeCallResult' }>): string {
+  return `mergeresult:${pr}:${cmd.headSha}:${cmd.landingVersion ?? 'x'}:${cmd.outcome}`;
 }
 
 // ── Reducer ─────────────────────────────────────────────────────────────────
@@ -625,18 +635,29 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
     // T15
     case 'LandingRequested': {
       const dd = d!;
+      // A second door asking while the first one's merge call is in flight: one LANDING, one merge call.
+      if (dd.state === 'LANDING' && dd.currentHeadSha === cmd.headSha) return c.duplicate('landing_in_flight');
       if (cmd.headSha !== dd.currentHeadSha || cmd.live.headSha !== cmd.headSha) return c.stale('head_moved');
       if (!livePrOpen(cmd.live)) return c.rejected('pr_not_open');
-      const overrideDoor = cmd.door === 'dashboard_override' && !!cmd.override;
-      if (dd.state !== 'APPROVED' && !(overrideDoor && (dd.state === 'CHANGES_REQUESTED' || dd.state === 'ESCALATED'))) return c.rejected('state_not_allowed');
+      // The override door: a person merging past a review verdict (the dashboard's "Merge anyway").
+      const overrideDoor = !!cmd.override && (cmd.door === 'dashboard_override' || isHumanActor(cmd.actor));
+      const overridable: DeliveryState[] = ['APPROVED', 'AWAITING_REVIEW', 'CHANGES_REQUESTED', 'ESCALATED'];
+      if (dd.state !== 'APPROVED' && !(overrideDoor && overridable.includes(dd.state))) return c.rejected('state_not_allowed');
       if (cmd.rails.redCi || cmd.rails.denyPaths) return c.rejected('rail_not_overridable', { missing: cmd.rails.reasons });
       if (!cmd.rails.passed && !overrideDoor) return c.rejected('rails_failed', { missing: cmd.rails.reasons });
-      if (dd.state === 'APPROVED' && headCoverage(dd, cmd.headSha) === 'none') return c.rejected('head_not_approved');
-      return c.apply(`merge:${c.prKey}:${cmd.headSha}`, 'LANDING', {
+      const coverage = headCoverage(dd, cmd.headSha);
+      if (dd.state === 'APPROVED' && coverage === 'none' && !overrideDoor) return c.rejected('head_not_approved');
+      const landingVersion = dd.version + 1;
+      return c.apply(landingKey(c.prKey, cmd.headSha, dd.version), 'LANDING', {
         guardHead: true,
-        effects: [{ kind: 'merge_call', dedupeKey: `merge_call:${dd.id}:${cmd.headSha}`, payload: { headSha: cmd.headSha, door: cmd.door } }],
-        evidence: { door: cmd.door, coverage: headCoverage(dd, cmd.headSha), rails: cmd.rails },
-        bypass: overrideDoor ? { door: cmd.door, reason: cmd.override!.reason, actor: cmd.actor } : null,
+        states: [dd.state],
+        patch: { stateReason: null },
+        effects: [{
+          kind: 'merge_call', dedupeKey: `merge_call:${dd.id}:${cmd.headSha}:v${landingVersion}`,
+          payload: { headSha: cmd.headSha, door: cmd.door, mergeMethod: cmd.mergeMethod ?? 'squash', landingVersion },
+        }],
+        evidence: { door: cmd.door, coverage, rails: cmd.rails, fromState: dd.state },
+        bypass: overrideDoor ? { door: cmd.door, reason: cmd.override!.reason, actor: cmd.actor, overrodeState: dd.state } : null,
       });
     }
 
@@ -645,20 +666,28 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const dd = d!;
       if (dd.state !== 'LANDING') return c.stale('state_moved');
       if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
-      const key = `mergeresult:${c.prKey}:${cmd.headSha}:${cmd.outcome}`;
+      const key = mergeResultKey(c.prKey, cmd);
+      const evidence = { outcome: cmd.outcome, detail: cmd.detail ?? null, landingVersion: cmd.landingVersion ?? null };
       if (cmd.outcome === 'merged' || cmd.outcome === 'indeterminate') {
         // The merged fact comes from a live read (verify_merge → PrMerged), never from this response.
         return c.apply(key, 'LANDING', {
           guardHead: true,
-          effects: [{ kind: 'verify_merge', dedupeKey: `verify_merge:${dd.id}:${cmd.headSha}:${cmd.outcome}`, payload: { headSha: cmd.headSha } }],
-          evidence: { outcome: cmd.outcome, detail: cmd.detail ?? null },
+          effects: [{
+            kind: 'verify_merge', dedupeKey: `verify_merge:${dd.id}:${cmd.headSha}:${cmd.landingVersion ?? 'x'}:${cmd.outcome}`,
+            payload: { headSha: cmd.headSha, outcome: cmd.outcome, landingVersion: cmd.landingVersion ?? null },
+          }],
+          evidence,
         });
+      }
+      if (cmd.outcome === 'not_merged') {
+        // Nothing landed: the approval still stands, a door or the sweep may land it again.
+        return c.apply(key, 'APPROVED', { guardHead: true, patch: { stateReason: null }, evidence });
       }
       if (cmd.outcome === 'refused') {
         return c.apply(key, 'ESCALATED', {
           guardHead: true, patch: { stateReason: 'landing_needs_human' },
-          effects: [{ kind: 'notify', dedupeKey: `notify:${dd.id}:landing:${cmd.headSha}`, payload: { event: 'landing_needs_human', detail: cmd.detail ?? null } }],
-          evidence: { outcome: cmd.outcome, detail: cmd.detail ?? null },
+          effects: [{ kind: 'notify', dedupeKey: `notify:${dd.id}:landing:${cmd.headSha}:${cmd.landingVersion ?? 'x'}`, payload: { event: 'landing_needs_human', detail: cmd.detail ?? null } }],
+          evidence,
         });
       }
       return conflictRepair(c, cmd.headSha, cmd.outcome, {
@@ -682,7 +711,9 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch: { mergedAt: cmd.live.mergedAt ?? null, mergeCommitSha: cmd.live.mergeCommitSha ?? null, boundAttemptId: null, resumeState: null },
         rounds: c.openRounds().map((r) => ({ op: 'update', roundId: r.id, whenStatus: ['queued', 'reviewing'], set: { status: 'superseded' } })),
         attempts: [{ op: 'cancel_open', families: ['review_fix', 'ci', 'conflict', 'migration'], status: 'cancelled' }],
-        effects: [fx('stamp_pr_rows'), fx('cancel_open_attempts'), fx('emit_pr_merged'), fx('wake_mission'), fx('release_attribution'), fx('finalize_mission_pr')],
+        // The mission wake and the release attribution are subscribers of the one `task.pr_merged`
+        // fan-out `emit_pr_merged` makes, so they see the task transition this merge produced.
+        effects: [fx('stamp_pr_rows'), fx('cancel_open_attempts'), fx('emit_pr_merged'), fx('finalize_mission_pr')],
         evidence: { live: cmd.live, reviewClass },
       });
     }

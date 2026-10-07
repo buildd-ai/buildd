@@ -4,6 +4,9 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 // A fake GitHub answers by path, so the real `evaluateAutoMergeSafety` runs its
 // rails against it: a row that merges did so because every rail passed.
 
+// The workflow kernel's landing (lib/workflow/landing.ts): no kernel delivery here, so the
+// sweep's legacy merge path runs. The kernel path is S10/S15 in tests/db/workflow-matrix.test.ts.
+mock.module('@/lib/workflow/landing', () => ({ landThroughKernel: async () => null, kernelLandingView: async () => null, staleLandingVersion: async () => null }));
 mock.module('@/lib/notify', () => ({ notifyTeamOf: async () => {} }));
 mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 
