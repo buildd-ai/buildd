@@ -53,10 +53,10 @@ const effectKinds = (d: ApplyDecision) => d.effects.map((e) => e.kind);
 const decidedRC = R({ status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' });
 const att: CompositionAttestation = {
   repoFullName: REPO, prNumber: 7, baseSha: 'B0', aggregateHeadSha: 'H1', method: 'tree_equal', verifiedAt: '2026-10-06T00:00:00Z', verifier: 'kernel',
-  constituents: [{ deliveryId: 'dx', roundId: 'rx', prNumber: 3, reviewedHeadSha: 'C1', equivalentHeadShas: [], landedSha: 'C1' }],
+  constituents: [{ deliveryId: 'dx', roundId: 'rx', prNumber: 3, reviewedHeadSha: 'C1', equivalentHeadShas: [], mergedHeadSha: 'C1', landedSha: 'SQ1', landedPatchId: 'a'.repeat(64), reviewedPatchId: 'a'.repeat(64) }],
   novelDelta: { result: 'none' },
 };
-const attEv: ConstituentEvidence[] = [{ roundId: 'rx', roundHeadSha: 'C1', roundStatus: 'decided', effectiveVerdict: 'approve', deliveryApprovedHeads: ['C1'] }];
+const attEv: ConstituentEvidence[] = [{ roundId: 'rx', deliveryId: 'dx', prNumber: 3, repoFullName: REPO, roundHeadSha: 'C1', roundStatus: 'decided', effectiveVerdict: 'approve', deliveryApprovedHeads: ['C1'] }];
 
 /** One applied case per command (name, view, command, expected to-state). */
 const APPLIED: Array<[string, KernelView, Command, string]> = [
@@ -419,6 +419,23 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     const ex = applied(end(fixing({ attemptNo: 3 }), { attemptId: 'a1', outcome: 'failed' }));
     expect(ex.toState).toBe('ESCALATED');
     expect(ex.patch.stateReason).toBe('review_exhausted');
+  });
+  test('S19 variant (ea38b3d5): a fix that pushed mid-attempt and then died starts round r+1 at the pushed head', () => {
+    // FIXING bound to (H1, r1, a1); a mid-fix push H2 was recorded (current head H2), then the attempt was lost.
+    const pushed = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running', reportedShas: ['H2'] })]);
+    for (const outcome of ['lost', 'failed'] as const) {
+      const dec = applied(end(pushed, { attemptId: 'a1', outcome, live: live('H2') }));
+      expect(dec.toState).toBe('AWAITING_REVIEW');
+      expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H2', kind: 'delta', priorRound: 1 }));
+      expect(dec.patch).toMatchObject({ currentRound: 2, boundAttemptId: null });
+      expect(effectKinds(dec)).toContain('dispatch_review');
+      // The stale round's fix is never re-dispatched: T8 would refuse it (newer_verdict_supersedes_fix).
+      expect(effectKinds(dec)).not.toContain('dispatch_fix');
+      expect(dec.attempts[0]).toMatchObject({ attemptId: 'a1', set: { status: 'ended', outcome: 'failed' } });
+    }
+    // The fix budget being spent does not hide the pushed head: it is reviewed, not escalated.
+    const last = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running', attemptNo: 3 })]);
+    expect(applied(end(last, { attemptId: 'a1', outcome: 'lost', live: live('H2') })).toState).toBe('AWAITING_REVIEW');
   });
   const repairing = (o: Partial<AttemptSnapshot> = {}, d: Partial<DeliverySnapshot> = {}) =>
     V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', ...d }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'running', ...o })]);
@@ -1008,6 +1025,26 @@ describe('composition attestation: release PRs from already-reviewed changes', (
     expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, kind: 'delta', scope: { novelDeltaPaths: ['packages/core/x.ts'], composition: true } }));
     expect(dec.patch.compositionHeads).toBeUndefined();
   });
+  test('S33: an approve of the composition delta round stays a composition approval scoped to the delta', () => {
+    const delta = R({ id: 'r2', round: 2, kind: 'delta', status: 'reviewing', scope: { novelDeltaPaths: ['packages/core/x.ts'], composition: true } });
+    const view = V(D({ state: 'AWAITING_REVIEW', currentRound: 2 }), [R({ status: 'superseded' }), delta]);
+    const dec = applied(run(view, { type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId: 'r2', verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }));
+    expect(dec.toState).toBe('APPROVED');
+    // Not a whole-release verdict: the head is composition-covered, approved_heads untouched.
+    expect(dec.patch).toEqual({ compositionHeads: ['H1'], approvalBasis: 'composition', stateReason: null });
+    expect(dec.patch.approvedHeads).toBeUndefined();
+    expect(dec.evidence).toMatchObject({ compositionDelta: { roundId: 'r2', paths: ['packages/core/x.ts'] } });
+    // The GitHub review is told it covers only the delta.
+    const post = dec.effects.find((e) => e.kind === 'post_review')!;
+    expect(post.payload).toMatchObject({ event: 'APPROVE', commitId: 'H1', scope: { compositionDelta: true, paths: ['packages/core/x.ts'] } });
+    expect(headCoverage({ ...D(), approvedHeads: [], compositionHeads: ['H1'], approvalBasis: 'composition' }, 'H1')).toBe('composition');
+  });
+  test('an ordinary delta round (changes since the last verdict) still approves on its verdict', () => {
+    const delta = R({ id: 'r2', round: 2, kind: 'delta', status: 'reviewing' });
+    const view = V(D({ state: 'AWAITING_REVIEW', currentRound: 2 }), [R({ status: 'decided' }), delta]);
+    const dec = applied(run(view, { type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId: 'r2', verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }));
+    expect(dec.patch).toMatchObject({ approvedHeads: ['H1'], approvalBasis: 'verdict' });
+  });
   test('unverifiable, wrong PR, wrong head, wrong state and failed verification claim nothing', () => {
     expectResult(ca(v(), { novelDelta: { result: 'unverifiable', reason: 'tree mismatch' } }), 'rejected', 'composition_unverifiable');
     expectResult(ca(v(), { prNumber: 8 }), 'rejected', 'attestation_pr_mismatch');
@@ -1021,10 +1058,20 @@ describe('composition attestation: release PRs from already-reviewed changes', (
   test('verifyCompositionAttestation: exact-head binding of every constituent', () => {
     const ok = verifyCompositionAttestation(att, attEv);
     expect(ok).toEqual({ ok: true, reasons: [] });
-    const eq = { ...att, constituents: [{ ...att.constituents[0], equivalentHeadShas: ['C2'], landedSha: 'C2' }] };
+    const eq = { ...att, constituents: [{ ...att.constituents[0], equivalentHeadShas: ['C2'], mergedHeadSha: 'C2' }] };
     expect(verifyCompositionAttestation(eq, [{ ...attEv[0], deliveryApprovedHeads: ['C1', 'C2'] }]).ok).toBe(true);
     expect(verifyCompositionAttestation(eq, attEv).reasons).toEqual(['constituent_equivalence_unrecorded:rx', 'constituent_landed_unproven:rx']);
-    expect(verifyCompositionAttestation({ ...att, constituents: [{ ...att.constituents[0], landedSha: 'C9' }] }, attEv).reasons).toEqual(['constituent_landed_unproven:rx']);
+    expect(verifyCompositionAttestation({ ...att, constituents: [{ ...att.constituents[0], mergedHeadSha: 'C9' }] }, attEv).reasons).toEqual(['constituent_landed_unproven:rx']);
+    // The patch proof: equal, well-formed patch-ids from the landed commit and the reviewed head.
+    expect(verifyCompositionAttestation({ ...att, constituents: [{ ...att.constituents[0], reviewedPatchId: 'b'.repeat(64) }] }, attEv).reasons).toEqual(['constituent_patch_unproven:rx']);
+    expect(verifyCompositionAttestation({ ...att, constituents: [{ ...att.constituents[0], landedPatchId: '', reviewedPatchId: '' }] }, attEv).reasons).toEqual(['constituent_patch_unproven:rx']);
+    const legacy = { ...att.constituents[0] } as Partial<typeof att.constituents[0]>;
+    delete legacy.landedPatchId; delete legacy.reviewedPatchId;
+    expect(verifyCompositionAttestation({ ...att, constituents: [legacy as typeof att.constituents[0]] }, attEv).reasons).toEqual(['constituent_patch_unproven:rx']);
+    // The cited round must belong to the constituent's own delivery and PR.
+    expect(verifyCompositionAttestation(att, [{ ...attEv[0], prNumber: 4 }]).reasons).toEqual(['constituent_round_foreign:rx']);
+    expect(verifyCompositionAttestation(att, [{ ...attEv[0], deliveryId: 'dy' }]).reasons).toEqual(['constituent_round_foreign:rx']);
+    expect(verifyCompositionAttestation(att, [{ ...attEv[0], repoFullName: 'acme/other' }]).reasons).toEqual(['constituent_round_foreign:rx']);
     expect(verifyCompositionAttestation(att, [{ ...attEv[0], effectiveVerdict: 'request_changes' }]).reasons).toEqual(['constituent_not_approved:rx']);
     expect(verifyCompositionAttestation(att, []).reasons).toEqual(['constituent_unresolved:rx']);
     expect(verifyCompositionAttestation({ ...att, constituents: [att.constituents[0], att.constituents[0]] }, attEv).reasons).toEqual(['duplicate_constituent:rx']);

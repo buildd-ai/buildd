@@ -269,8 +269,18 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     case 'REPAIRING': headline = repairKind === 'ci' ? 'Fixing CI' : 'Repairing'; break;
     case 'BLOCKED_ON_TRUNK': headline = 'Blocked on a red base branch'; break;
     case 'APPROVED':
-      headline = compositionVerified ? 'Release composition verified' : d.approvalBasis === 'policy' ? 'Ready to land' : 'Approved';
-      if (compositionVerified) detail = 'every change in it was reviewed at its own head; nothing new was added';
+      if (compositionVerified) {
+        // §5.9 / S33: a delta round approved the release-only paths; it is not a whole-release verdict.
+        const delta = input.view.rounds.find((r) => r.scope?.composition === true && r.status === 'decided'
+          && r.effectiveVerdict === 'approve' && r.headSha === d.currentHeadSha);
+        const n = delta && Array.isArray(delta.scope?.novelDeltaPaths) ? (delta.scope!.novelDeltaPaths as unknown[]).length : 0;
+        headline = delta ? 'Release-only changes approved' : 'Release composition verified';
+        detail = delta
+          ? `every other change was reviewed at its own head; this review covered only ${n} new ${n === 1 ? 'path' : 'paths'}`
+          : 'every change in it was reviewed at its own head; nothing new was added';
+      } else {
+        headline = d.approvalBasis === 'policy' ? 'Ready to land' : 'Approved';
+      }
       break;
     case 'LANDING': headline = 'Merging'; break;
     case 'ESCALATED':

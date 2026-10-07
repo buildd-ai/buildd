@@ -122,7 +122,8 @@ LIMIT 1`;
  */
 export function constituentEvidenceSql(workspaceId: string, roundIds: string[]): SQL {
   return sql`-- workflow:constituent_evidence
-SELECT r.id AS round_id, r.head_sha, r.status, r.effective_verdict, d.approved_heads
+SELECT r.id AS round_id, r.head_sha, r.status, r.effective_verdict, d.approved_heads,
+  d.id AS delivery_id, d.pr_number, d.repo_full_name
 FROM workflow_review_rounds r
 JOIN workflow_deliveries d ON d.id = r.delivery_id
 WHERE d.workspace_id = ${workspaceId}::uuid
@@ -350,6 +351,9 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
       const rows = ((await exec(constituentEvidenceSql(fact.workspaceId, att.constituents.map((c) => c.roundId)))).rows ?? []) as Array<Record<string, unknown>>;
       const constituents: ConstituentEvidence[] = rows.map((r) => ({
         roundId: String(r.round_id),
+        deliveryId: r.delivery_id == null ? null : String(r.delivery_id),
+        prNumber: r.pr_number == null ? null : Number(r.pr_number),
+        repoFullName: r.repo_full_name == null ? null : String(r.repo_full_name),
         roundHeadSha: r.head_sha == null ? null : String(r.head_sha),
         roundStatus: (r.status ?? null) as ConstituentEvidence['roundStatus'],
         effectiveVerdict: (r.effective_verdict ?? null) as ConstituentEvidence['effectiveVerdict'],

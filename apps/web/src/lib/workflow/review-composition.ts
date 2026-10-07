@@ -18,6 +18,7 @@
  * makes the result `unverifiable`, which claims nothing and leaves the normal
  * full review in place.
  */
+import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { isReleaseBranchPr } from '@buildd/core/release-strategy';
 import type { Exec } from './kernel';
@@ -68,12 +69,79 @@ export function isReleaseArtifactCommit(c: Pick<CommitFacts, 'message' | 'parent
 
 // ── Pure builder ────────────────────────────────────────────────────────────
 
+/** One file of a diff as GitHub returns it in a commit's or a compare's `files[]`. */
+export interface FileDiff {
+  filename: string;
+  status?: string | null;
+  previousFilename?: string | null;
+  /** The unified diff hunks; GitHub omits it for binary and very large files. */
+  patch?: string | null;
+  /** The file's blob after the change (GitHub's `files[].sha`). */
+  blobSha?: string | null;
+}
+
+export interface PatchId {
+  /** sha256 over every file's normalized patch; '' when any file is unreadable. */
+  id: string;
+  /** path → that file's normalized patch-id. */
+  perFile: Map<string, string>;
+  /** Files whose change cannot be read (no patch and no blob). */
+  unreadable: string[];
+}
+
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+
+/**
+ * A patch-id in the sense of `git patch-id`: what a diff changes, independent
+ * of where. Hunk headers (line numbers) and context lines are dropped; every
+ * added and removed line is kept, in order, with trailing whitespace trimmed.
+ * Two diffs with the same id make the same change; any differing added or
+ * removed line, file, rename or mode makes the ids differ. A file GitHub
+ * gives no patch for (binary, too large) is identified by its resulting blob,
+ * and one with neither is unreadable, which fails the proof closed.
+ */
+export function patchIdOf(diff: FileDiff[]): PatchId {
+  const perFile = new Map<string, string>();
+  const unreadable: string[] = [];
+  for (const f of diff) {
+    const status = f.status === 'changed' ? 'modified' : (f.status ?? 'modified');
+    const head = `${status} ${f.previousFilename ?? ''}->${f.filename}`;
+    let body: string;
+    if (typeof f.patch === 'string' && f.patch.length > 0) {
+      body = f.patch.split('\n')
+        .filter((l) => (l.startsWith('+') || l.startsWith('-')) && !l.startsWith('+++') && !l.startsWith('---'))
+        .map((l) => l.replace(/\s+$/, ''))
+        .join('\n');
+    } else if (f.blobSha) {
+      body = `blob ${f.blobSha}`;
+    } else if (status === 'renamed' || status === 'removed') {
+      body = ''; // a pure rename or a deletion is fully described by its header
+    } else {
+      unreadable.push(f.filename);
+      continue;
+    }
+    perFile.set(f.filename, sha256(`${head}\n${body}`));
+  }
+  const id = unreadable.length || perFile.size === 0
+    ? ''
+    : sha256([...perFile.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([p, h]) => `${p} ${h}`).join('\n'));
+  return { id, perFile, unreadable: unreadable.sort() };
+}
+
+/** Paths whose change differs between two diffs (present in one only, or a different patch). */
+function differingPaths(a: PatchId, b: PatchId): string[] {
+  const paths = new Set([...a.perFile.keys(), ...b.perFile.keys()]);
+  return [...paths].filter((p) => a.perFile.get(p) !== b.perFile.get(p)).sort();
+}
+
 export interface CommitFacts {
   sha: string;
   parents: string[];
   message: string;
   /** Paths the commit changed against its first parent; null = unreadable or truncated. */
   files: string[] | null;
+  /** The commit's own diff against its first parent, with patches; null/absent = unreadable. */
+  diff?: FileDiff[] | null;
   /** For a merge commit: every non-first parent is already contained in the base. */
   mergeParentsInBase?: boolean;
 }
@@ -102,6 +170,12 @@ export interface CompositionInput {
   aggregateFiles: string[] | null;
   /** commit sha → the merged PR it landed, or null when none. */
   constituentsByCommit: Record<string, ConstituentPr | null>;
+  /**
+   * landed commit sha → the diff its constituent's REVIEWED head makes against
+   * that commit's parent (GitHub `compare/{parent}...{reviewedHead}`), read
+   * independently of the commit itself. Absent or null = unreadable.
+   */
+  reviewedDiffs?: Record<string, FileDiff[] | null>;
   verifier?: string;
   now?: string;
 }
@@ -114,7 +188,7 @@ export interface CompositionResult {
 }
 
 /** The decided approve round that covers `head` in a constituent's delivery. */
-function coveringRound(dl: ConstituentDelivery, head: string) {
+export function coveringRound(dl: ConstituentDelivery, head: string) {
   const approves = dl.rounds.filter((r) => r.status === 'decided' && r.effectiveVerdict === 'approve');
   const exact = approves.find((r) => r.headSha === head);
   if (exact) return { round: exact, equivalent: [] as string[] };
@@ -156,16 +230,43 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
       if (c.files.length) novel.push({ sha: c.sha, reason: pr.delivery ? `pr_${pr.prNumber}_not_approved_at_merged_head` : `pr_${pr.prNumber}_no_kernel_review`, paths: c.files });
       continue;
     }
+    // The proof: what this commit actually changed must be what was reviewed.
+    // GitHub's commit→PR association only says which PR to compare against.
+    const reviewedDiff = input.reviewedDiffs?.[c.sha] ?? null;
+    if (!c.diff) { unverifiable = unverifiable ?? `landed_patch_unreadable:${c.sha.slice(0, 12)}`; continue; }
+    if (!reviewedDiff) { unverifiable = unverifiable ?? `reviewed_patch_unreadable:${c.sha.slice(0, 12)}`; continue; }
+    const landed = patchIdOf(c.diff);
+    const reviewed = patchIdOf(reviewedDiff);
+    if (landed.unreadable.length || reviewed.unreadable.length) {
+      unverifiable = unverifiable ?? `patch_unreadable:${c.sha.slice(0, 12)}:${[...landed.unreadable, ...reviewed.unreadable][0]}`;
+      continue;
+    }
+    if (!landed.id || landed.id !== reviewed.id) {
+      // Owed a review: the files whose landed change differs from the reviewed
+      // one (a conflict resolved while merging, a hand edit in the squash). A
+      // file the reviewed head changed but that never landed still means this
+      // commit is not the reviewed change, so the whole commit is novel then.
+      const differ = differingPaths(landed, reviewed);
+      const landedDiffer = differ.filter((p) => landed.perFile.has(p));
+      novel.push({ sha: c.sha, reason: `pr_${pr.prNumber}_landed_patch_differs`, paths: landedDiffer.length ? landedDiffer : c.files });
+      continue;
+    }
     constituents.push({
       deliveryId: pr.delivery.deliveryId,
       roundId: cov.round.id,
       prNumber: pr.prNumber,
       reviewedHeadSha: cov.round.headSha,
       equivalentHeadShas: cov.equivalent,
-      landedSha: pr.mergedHeadSha,
+      mergedHeadSha: pr.mergedHeadSha,
+      landedSha: c.sha,
+      landedPatchId: landed.id,
+      reviewedPatchId: reviewed.id,
     });
     evidence.push({
       roundId: cov.round.id,
+      deliveryId: pr.delivery.deliveryId,
+      prNumber: pr.prNumber,
+      repoFullName: input.repoFullName,
       roundHeadSha: cov.round.headSha,
       roundStatus: cov.round.status,
       effectiveVerdict: cov.round.effectiveVerdict,
@@ -219,6 +320,14 @@ interface GhCompare {
   files?: Array<{ filename: string }>;
 }
 
+type GhFiles = { files?: Array<{ filename: string; status?: string; previous_filename?: string; patch?: string; sha?: string }> };
+
+/** A commit's or compare's `files[]` as diffs; null when absent or at GitHub's file cap (the list may be cut). */
+function toFileDiffs(r: GhFiles | null): FileDiff[] | null {
+  if (!r?.files || r.files.length >= DIFF_FILE_CAP) return null;
+  return r.files.map((f) => ({ filename: f.filename, status: f.status ?? null, previousFilename: f.previous_filename ?? null, patch: f.patch ?? null, blobSha: f.sha ?? null }));
+}
+
 export function deliveryRoundsSql(workspaceId: string, repoFullName: string, prNumbers: number[]) {
   return sql`-- workflow:composition_constituents
 SELECT d.id, d.pr_number, d.approved_heads,
@@ -252,11 +361,11 @@ export async function collectComposition(p: {
   const prsByCommit: Record<string, { prNumber: number; mergedHeadSha: string } | null> = {};
   for (const c of rawCommits) {
     const parents = (c.parents ?? []).map((x) => x.sha);
-    let files: string[] | null = null;
+    let diff: FileDiff[] | null = null;
     try {
-      const full = (await api(inst, `/repos/${repo}/commits/${c.sha}`)) as { files?: Array<{ filename: string }> } | null;
-      files = full?.files && full.files.length < DIFF_FILE_CAP ? full.files.map((f) => f.filename) : null;
-    } catch { files = null; }
+      diff = toFileDiffs((await api(inst, `/repos/${repo}/commits/${c.sha}`)) as GhFiles | null);
+    } catch { diff = null; }
+    const files = diff ? diff.map((f) => f.filename) : null;
     let mergeParentsInBase: boolean | undefined;
     if (parents.length > 1) {
       mergeParentsInBase = true;
@@ -273,7 +382,7 @@ export async function collectComposition(p: {
         prsByCommit[c.sha] = hit ? { prNumber: hit.number, mergedHeadSha: hit.head!.sha! } : null;
       } catch { prsByCommit[c.sha] = null; }
     }
-    commits.push({ sha: c.sha, parents, message: c.commit?.message ?? '', files, mergeParentsInBase });
+    commits.push({ sha: c.sha, parents, message: c.commit?.message ?? '', files, diff, mergeParentsInBase });
   }
 
   const prNumbers = [...new Set(Object.values(prsByCommit).filter(Boolean).map((x) => x!.prNumber))];
@@ -295,6 +404,19 @@ export async function collectComposition(p: {
     constituentsByCommit[sha] = pr ? { ...pr, delivery: deliveries.get(pr.prNumber) ?? null } : null;
   }
 
+  // The second, independent read: what each constituent's reviewed head
+  // changes against the landed commit's parent (the three-dot compare diffs
+  // from their merge base, i.e. the PR's own change as it was reviewed).
+  const reviewedDiffs: Record<string, FileDiff[] | null> = {};
+  for (const c of commits) {
+    const pr = constituentsByCommit[c.sha];
+    const cov = pr?.delivery ? coveringRound(pr.delivery, pr.mergedHeadSha) : null;
+    if (!cov || c.parents.length !== 1) continue;
+    try {
+      reviewedDiffs[c.sha] = toFileDiffs((await api(inst, `/repos/${repo}/compare/${c.parents[0]}...${cov.round.headSha}`)) as GhFiles | null);
+    } catch { reviewedDiffs[c.sha] = null; }
+  }
+
   return buildCompositionAttestation({
     repoFullName: repo,
     prNumber: p.prNumber,
@@ -303,5 +425,6 @@ export async function collectComposition(p: {
     commits: truncatedCommits ? null : commits,
     aggregateFiles,
     constituentsByCommit,
+    reviewedDiffs,
   });
 }
