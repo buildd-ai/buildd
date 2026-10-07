@@ -15,6 +15,7 @@ import {
   readWorkspaceCache,
   isWorkspaceRepo,
   WORKSPACE_REFRESH_MS,
+  resolveAuth,
 } from '../../plugin/scripts/buildd-hook.mjs';
 import {
   claudeLikeHookEntries,
@@ -289,6 +290,46 @@ describe('workspace scope', () => {
     await run({ client: 'claude', stdin: ev('SessionStart'), env: env(), fetchImpl });
     expect(calls).toEqual(['http://127.0.0.1:9/api/workspaces']);
     expect(init.body).toBeUndefined();
+  });
+});
+
+describe('presence token', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'buildd-hook-')); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const TOKEN = 'bldp_eyJ0IjoieCIsInUiOiJ5In0.sig';
+  const login = (cfg: Record<string, string>) => writeFileSync(join(dir, 'config.json'), JSON.stringify(cfg));
+
+  it("the person's presence token wins over the account key, from config or the environment", () => {
+    login({ apiKey: 'bld_team_key', presenceToken: TOKEN, builddServer: 'https://b.test/' });
+    expect(resolveAuth({ BUILDD_HOME: dir })).toEqual({ apiKey: TOKEN, server: 'https://b.test', kind: 'presence' });
+    expect(resolveAuth({ BUILDD_HOME: dir, BUILDD_API_KEY: 'bld_env_key' })?.kind).toBe('presence');
+    login({ apiKey: 'bld_team_key' });
+    expect(resolveAuth({ BUILDD_HOME: dir })).toEqual({ apiKey: 'bld_team_key', server: 'https://buildd.dev', kind: 'key' });
+    expect(resolveAuth({ BUILDD_HOME: dir, BUILDD_PRESENCE_TOKEN: TOKEN })?.kind).toBe('presence');
+  });
+
+  it('a value that is not a presence token is ignored, not sent', () => {
+    login({ apiKey: 'bld_team_key', presenceToken: 'bld_wrong_slot' });
+    expect(resolveAuth({ BUILDD_HOME: dir })?.apiKey).toBe('bld_team_key');
+  });
+
+  it('with a presence token the scope list comes from the presence endpoint, cached under the token', async () => {
+    workspaceCheckout(dir, 'acme/widget', []);
+    writeWorkspaceCache({ BUILDD_HOME: dir }, TOKEN, [], 0);
+    login({ apiKey: 'bld_team_key', presenceToken: TOKEN, builddServer: 'https://b.test' });
+    const urls: string[] = [];
+    let auth: string | null = null;
+    const fetchImpl = (async (url: string, init: any) => {
+      urls.push(url);
+      auth = init?.headers?.Authorization ?? null;
+      return url.endsWith('/workspaces') ? Response.json({ workspaces: [{ repo: 'acme/widget' }] }) : Response.json({ ok: true });
+    }) as any;
+    const r = await run({ client: 'claude', stdin: JSON.stringify({ session_id: 'pt-1', cwd: dir, hook_event_name: 'SessionStart' }), env: { BUILDD_HOME: dir }, fetchImpl });
+    expect(r.sent).toBe(true);
+    expect(urls).toEqual(['https://b.test/api/workers/local-sessions/workspaces', 'https://b.test/api/workers/local-sessions']);
+    expect(auth).toBe(`Bearer ${TOKEN}`);
+    expect(readWorkspaceCache({ BUILDD_HOME: dir }, TOKEN)?.repos).toEqual(['acme/widget']);
   });
 });
 

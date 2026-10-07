@@ -34,6 +34,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const HOOK_VERSION = '1';
+export const PRESENCE_TOKEN_PREFIX = 'bldp_';
 /** Client-side coalescing: at most one touch a minute per session. */
 export const TOUCH_INTERVAL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 3_000;
@@ -178,20 +179,25 @@ export function gitRepo(cwd) {
   }
 }
 
+/**
+ * The credential the hook sends. The person's presence token (written by
+ * `buildd login`, BUILDD_PRESENCE_TOKEN overrides) wins: it reaches every team
+ * the person is in and can do nothing but report presence. Else the account
+ * API key. `apiKey` is the bearer either way; `kind` says which.
+ */
 export function resolveAuth(env = process.env, home = homedir()) {
-  let apiKey = env.BUILDD_API_KEY || null;
-  let server = env.BUILDD_SERVER || null;
-  if (!apiKey || !server) {
-    try {
-      const cfg = JSON.parse(readFileSync(join(env.BUILDD_HOME || join(home, '.buildd'), 'config.json'), 'utf8'));
-      apiKey = apiKey || cfg.apiKey || null;
-      server = server || cfg.builddServer || null;
-    } catch { /* not logged in */ }
-  }
-  return apiKey ? { apiKey, server: (server || 'https://buildd.dev').replace(/\/+$/, '') } : null;
+  let cfg = {};
+  try {
+    cfg = JSON.parse(readFileSync(join(env.BUILDD_HOME || join(home, '.buildd'), 'config.json'), 'utf8')) ?? {};
+  } catch { /* not logged in */ }
+  const server = (env.BUILDD_SERVER || cfg.builddServer || 'https://buildd.dev').replace(/\/+$/, '');
+  const presence = env.BUILDD_PRESENCE_TOKEN || cfg.presenceToken || null;
+  if (typeof presence === 'string' && presence.startsWith(PRESENCE_TOKEN_PREFIX)) return { apiKey: presence, server, kind: 'presence' };
+  const apiKey = env.BUILDD_API_KEY || cfg.apiKey || null;
+  return apiKey ? { apiKey, server, kind: 'key' } : null;
 }
 
-/** One list per key: two teams' keys on one machine never share a workspace list. */
+/** One list per credential: two teams' keys, or a key and a presence token, never share a workspace list. */
 export function workspaceCachePath(env = process.env, apiKey = '', home = homedir()) {
   const id = createHash('sha256').update(apiKey).digest('hex').slice(0, 16);
   return join(env.BUILDD_HOME || join(home, '.buildd'), `workspace-repos-${id}.json`);
@@ -232,7 +238,10 @@ export async function fetchWorkspaceRepos(auth, fetchImpl = globalThis.fetch) {
  */
 export async function fetchWorkspaces(auth, fetchImpl = globalThis.fetch) {
   try {
-    const res = await fetchImpl(`${auth.server}/api/workspaces`, {
+    // A presence token reads the person's workspace repos across all their
+    // teams; it is refused by /api/workspaces like by every non-presence route.
+    const path = auth.kind === 'presence' ? '/api/workers/local-sessions/workspaces' : '/api/workspaces';
+    const res = await fetchImpl(`${auth.server}${path}`, {
       headers: { Authorization: `Bearer ${auth.apiKey}`, 'X-Buildd-Hook': HOOK_VERSION },
       signal: AbortSignal.timeout(LIST_TIMEOUT_MS),
     });

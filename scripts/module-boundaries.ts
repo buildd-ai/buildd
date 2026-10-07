@@ -44,7 +44,8 @@ export const MODULE_RULES: ReadonlyArray<readonly [ModuleId, RegExp]> = [
   ['releases', /(?<!path-claim-)release|\/api\/deploy-identity|health-watcher-vercel|deploy-identity/],
   ['missions', /(?<!per)mission|initiative|heartbeat-(triage|prepass|wait|circuit)|approve-plan|goal-criteri|criteria-|orchestrat|loop-(dispatcher|webhook|config)|mission-loop|plan-first|surface-ordering|change-intent|action-queue|action-card|action-events|coordination-intent|subject-(intake|sweep|anchor|gate-contract)/],
   ['knowledge', /knowledge|memory|evidence|linked-knowledge|retrieval|feedback-digest|\/api\/feedback|recall|learn|embed|entity-|scip|prior-work|insight/],
-  ['notifications', /notif|pushover|away-delivery|subscription|watch-|watched-project|artifact-notify|presence|stall-notify|connector-block-notify|personal-workspace-links/],
+  // `presence-token` is the agent plugin hooks' auth credential (core), not chat/notification presence.
+  ['notifications', /notif|pushover|away-delivery|subscription|watch-|watched-project|artifact-notify|presence(?!-token)|stall-notify|connector-block-notify|personal-workspace-links/],
   ['schedules', /schedule/],
   ['roles-skills', /role-(config|colors|outcomes|tool-scope|routing|env)|default-roles|effective-roles|task-role|delegate-options|\/api\/roles|\/skills|role-gate|skill-and-role|role-model-routing|\/team\//],
   ['reviews-merge', /reviewer-evidence|(?<!p)review|merge-policy|auto-merge|pr-landing|landing-action|ci-red|ci-failure|ci-retry|ci-drift|ci-gate|ci-lifecycle|ci-job-log|failed-checks|conflict-retry|dead-zone|dead-pr|supersession|pr-re-review|stale-approval|pr-lede-correction|pr-activity|dependency-bot|pr-attention|pr-branch-update|base-refresh|pr-scope-reconcile|spec-|discrepanc|doc-fix|migration-collision|\/prs\//],

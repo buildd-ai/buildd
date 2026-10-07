@@ -25,7 +25,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFi
 import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 // The hook's own helpers, so the installer and the hook agree on what a workspace repo is.
-import { fetchWorkspaces, gitRepo, gitRoot, hasProjectBuilddMcp, writeWorkspaceCache } from '../plugin/scripts/buildd-hook.mjs';
+import { fetchWorkspaceRepos, fetchWorkspaces, gitRepo, gitRoot, hasProjectBuilddMcp, resolveAuth, writeWorkspaceCache } from '../plugin/scripts/buildd-hook.mjs';
 import { resolveBuilddHome } from './buildd-home';
 
 export const BUILDD_HOOK_MARKER = 'buildd-hook.mjs';
@@ -440,12 +440,22 @@ async function registerMcp(mode: McpMode, oauth: boolean, home: string, cwd: str
   const { apiKey, server } = readBuilddConfig(home, env);
   if (!apiKey) return { ok: false, lines: ["Not logged in. Run 'buildd login' first."], workspaceRepos: null };
   // The workspace list drives both the MCP folders and the hooks' scope, so it is refreshed either way.
+  // The MCP entries use the account key, so their folders (and the OAuth endpoint ids) come from its list.
   const workspaces = await fetchWorkspaces({ server, apiKey }, e.fetchImpl ?? globalThis.fetch);
   const workspaceRepos = workspaces ? [...new Set(workspaces.map(w => w.repo as string))].sort() : null;
   // First workspace per repo, in the server's order: the id the OAuth endpoint is bound to.
   const workspaceIdByRepo = new Map<string, string>();
   for (const w of workspaces ?? []) if (w.id && !workspaceIdByRepo.has(w.repo as string)) workspaceIdByRepo.set(w.repo as string, w.id);
-  if (workspaceRepos) writeWorkspaceCache({ ...env, BUILDD_HOME: resolveBuilddHome({ env }) }, apiKey, workspaceRepos, e.now ?? Date.now());
+  // The hooks' scope list is cached under the credential the hooks send: the person's
+  // presence token when login issued one (every team they are in), else the key.
+  const hookEnv = { ...env, BUILDD_HOME: resolveBuilddHome({ env }) };
+  const hookAuth = resolveAuth(hookEnv);
+  const hookRepos = hookAuth?.kind === 'presence'
+    ? await fetchWorkspaceRepos(hookAuth, e.fetchImpl ?? globalThis.fetch)
+    : workspaceRepos;
+  const now = e.now ?? Date.now();
+  if (hookAuth?.kind === 'presence' && hookRepos) writeWorkspaceCache(hookEnv, hookAuth.apiKey, hookRepos, now);
+  if (workspaceRepos) writeWorkspaceCache(hookEnv, apiKey, workspaceRepos, now);
   if (mode === 'workspaces' && !workspaceRepos) {
     return { ok: false, lines: [`Could not load your workspaces from ${server}. Nothing was changed; try again, or pass --everywhere.`], workspaceRepos };
   }
@@ -492,7 +502,7 @@ async function registerMcp(mode: McpMode, oauth: boolean, home: string, cwd: str
     lines.push('  New checkout? Run buildd install --global again.');
     lines.push('  Need buildd somewhere else, e.g. to set up a new workspace? Run buildd install --here in that folder.');
   }
-  return { ok: true, lines, workspaceRepos };
+  return { ok: true, lines, workspaceRepos: hookRepos ?? workspaceRepos };
 }
 
 export async function runCli(argv: string[], e: CliEnv = {}): Promise<{ code: number; lines: string[] }> {
