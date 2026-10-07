@@ -346,13 +346,24 @@ MCPEOF
   logout)
     CONFIG_FILE="$HOME/.buildd/config.json"
     if [ -f "$CONFIG_FILE" ]; then
+      # Revoke the session presence token server-side (best effort), then drop
+      # both credentials from the file.
       bun --no-env-file -e "
         const fs = require('fs');
         const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf-8'));
-        delete config.apiKey;
-        fs.writeFileSync('$CONFIG_FILE', JSON.stringify(config, null, 2));
+        const token = config.presenceToken;
+        const server = (config.builddServer || 'https://buildd.dev').replace(/\/+$/, '');
+        const done = () => {
+          delete config.apiKey;
+          delete config.presenceToken;
+          fs.writeFileSync('$CONFIG_FILE', JSON.stringify(config, null, 2), { mode: 0o600 });
+        };
+        if (typeof token === 'string' && token.startsWith('bldp_')) {
+          fetch(server + '/api/auth/presence-token', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(5000) })
+            .catch(() => {}).finally(done);
+        } else done();
       "
-      echo "Logged out. API key removed from $CONFIG_FILE"
+      echo "Logged out. API key and session presence token removed from $CONFIG_FILE"
     else
       echo "Not logged in (no config file found)"
     fi

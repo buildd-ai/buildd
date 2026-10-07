@@ -25,7 +25,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFi
 import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 // The hook's own helpers, so the installer and the hook agree on what a workspace repo is.
-import { fetchWorkspaceRepos, gitRepo, gitRoot, hasProjectBuilddMcp, writeWorkspaceCache } from '../plugin/scripts/buildd-hook.mjs';
+import { fetchWorkspaceRepos, gitRepo, gitRoot, hasProjectBuilddMcp, resolveAuth, writeWorkspaceCache } from '../plugin/scripts/buildd-hook.mjs';
 import { resolveBuilddHome } from './buildd-home';
 
 export const BUILDD_HOOK_MARKER = 'buildd-hook.mjs';
@@ -392,9 +392,12 @@ async function registerMcp(mode: McpMode, home: string, cwd: string, e: CliEnv):
   const env = e.env ?? process.env;
   const { apiKey, server } = readBuilddConfig(home, env);
   if (!apiKey) return { ok: false, lines: ["Not logged in. Run 'buildd login' first."], workspaceRepos: null };
-  // The workspace list drives both the MCP folders and the hooks' scope, so it is refreshed either way.
-  const workspaceRepos = await fetchWorkspaceRepos({ server, apiKey }, e.fetchImpl ?? globalThis.fetch);
-  if (workspaceRepos) writeWorkspaceCache({ ...env, BUILDD_HOME: resolveBuilddHome({ env }) }, apiKey, workspaceRepos, e.now ?? Date.now());
+  // The workspace list drives both the MCP folders and the hooks' scope, so it is refreshed either way,
+  // with the credential the hooks will use (the person's presence token when login issued one).
+  const hookEnv = { ...env, BUILDD_HOME: resolveBuilddHome({ env }) };
+  const listAuth = resolveAuth(hookEnv) ?? { server, apiKey, kind: 'key' };
+  const workspaceRepos = await fetchWorkspaceRepos(listAuth, e.fetchImpl ?? globalThis.fetch);
+  if (workspaceRepos) writeWorkspaceCache(hookEnv, listAuth.apiKey, workspaceRepos, e.now ?? Date.now());
   if (mode === 'workspaces' && !workspaceRepos) {
     return { ok: false, lines: [`Could not load your workspaces from ${server}. Nothing was changed; try again, or pass --everywhere.`], workspaceRepos };
   }
