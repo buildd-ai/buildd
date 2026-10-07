@@ -273,7 +273,8 @@ DELETE FROM quality_scout_findings;
 DELETE FROM quality_scout_probes;
 DELETE FROM quality_scout_runs;
 TRUNCATE knowledge_chunks, knowledge_entities, entity_aliases, chunk_entities,
-  pending_entity_refs, knowledge_edges, knowledge_ingest_jobs, pr_reverts;
+  pending_entity_refs, knowledge_edges, knowledge_ingest_jobs, pr_reverts,
+  task_pull_requests;
 
 -- ---------------------------------------------------------------------------
 -- People and tenancy
