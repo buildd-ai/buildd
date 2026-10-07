@@ -46,7 +46,7 @@ export function sidePanelPeers(
       scope,
       title: label,
       fullTitle: t.title,
-      phase: deriveRunEvidence({ ...w, outputRequirement: t.outputRequirement, milestones: Array.isArray(w.milestones) ? w.milestones : undefined }).phases.filter(p => p.state === 'done' || p.state === 'failed').at(-1)?.label ?? 'Claimed',
+      phase: deriveRunEvidence({ ...w, outputRequirement: t.outputRequirement, milestones: Array.isArray(w.milestones) ? w.milestones : undefined }).phases.filter(p => p.state === 'done' || p.state === 'current' || p.state === 'failed').at(-1)?.label ?? 'Claimed',
       href: taskPageHref({ taskId: t.id, missionId: t.missionId }),
       waiting: w.status === 'waiting_input',
     });

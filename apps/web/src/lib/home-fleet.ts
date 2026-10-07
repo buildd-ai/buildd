@@ -212,7 +212,7 @@ export async function loadHomeFleet(input: {
     id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
     startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
     waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'],
-    phase: deriveRunEvidence(r).phases.filter(p => p.state === 'done' || p.state === 'failed').at(-1)?.label ?? 'Claimed',
+    phase: deriveRunEvidence(r).phases.filter(p => p.state === 'done' || p.state === 'current' || p.state === 'failed').at(-1)?.label ?? 'Claimed',
     task: r.taskId ? {
       id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode,
       roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,

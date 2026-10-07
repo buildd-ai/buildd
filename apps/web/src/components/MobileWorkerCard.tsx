@@ -43,7 +43,7 @@ export default function MobileWorkerCard({
   startedAt,
   taskId,
 }: Props) {
-  const phase = deriveRunEvidence({ status, startedAt, milestones: milestones.map(m => ({ ...m, ts: m.timestamp })) }).phases.filter(p => p.state === 'done' || p.state === 'failed').at(-1)?.label;
+  const phase = deriveRunEvidence({ status, startedAt, milestones: milestones.map(m => ({ ...m, ts: m.timestamp })) }).phases.filter(p => p.state === 'done' || p.state === 'current' || p.state === 'failed').at(-1)?.label;
   const isWaiting = status === 'waiting_input';
 
   return (

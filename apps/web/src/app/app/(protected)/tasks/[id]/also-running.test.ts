@@ -51,6 +51,10 @@ describe('sidePanelPeers', () => {
     ...extra,
   });
 
+  it('names checks that are currently running', () => {
+    expect(sidePanelPeers([row('checks', 'Checks', { prNumber:1, prLifecycleStatus:'ci_running' })], { missionId:'m1', excludeTaskIds:new Set() })[0].phase).toBe('CI');
+  });
+
   // Regression (demo reshoot, merged step): a dependent that had been claimed
   // was listed under both "Also running" and "Unblocked by this". The rule: a
   // task that depends on this one is shown once, under "Unblocked by this",
