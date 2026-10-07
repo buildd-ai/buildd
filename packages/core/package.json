@@ -238,6 +238,7 @@
     "./gate-slugs": "./gate-slugs.ts",
     "./gate-friction-signature": "./gate-friction-signature.ts",
     "./gate-analytics": "./gate-analytics.ts",
+    "./path-coordination-signal": "./path-coordination-signal.ts",
     "./terminal-records": "./terminal-records.ts",
     "./terminal-records-query": "./terminal-records-query.ts",
     "./release-baseline": "./release-baseline.ts",

@@ -287,9 +287,23 @@ export interface LocalWorker {
   // never reset mid-worker, or two builds would collide on buildIndex.
   promptBuildIndex?: number;
   // Paths written while path-claim endpoint was unreachable (timeout/error). Flushed
-  // on the next successful claim call. Also included in update_progress PATCH body so
-  // the server can register them retroactively if the hook never recovers.
+  // on the next successful claim call. Runner-local only: the working-set
+  // tracker (below) is what tells the server about every edit, hook or not.
   pendingPaths?: string[];
+  /**
+   * Authoritative working set (working-set.ts): the task-owned file set from
+   * git with its generation, what the server has acknowledged holding, and the
+   * holders blocking the rest. Persisted so a restart replays from it.
+   */
+  workingSet?: import('./working-set').WorkingSetState;
+  /**
+   * Ship checkpoints whose coverage could not be proven, not yet reported to
+   * the server (the server was unreachable at the time, by definition).
+   * Drained by the next successful sync.
+   */
+  pendingShipReports?: import('@buildd/shared').ShipCheckpointReport[];
+  /** Coverage-unknown milestones already posted, so a retried ship does not repeat them. Transient. */
+  shipCoverageMilestones?: string[];
   /**
    * Workspace `gitConfig.pathClaimEnforcement`, resolved at session start.
    * Absent = advisory (the default). See path-claim-enforcement.ts.
@@ -307,6 +321,10 @@ export interface LocalWorker {
   pathClaimDegraded?: number;
   /** How many of `pathClaimDegraded` the server has been told about (the next sync sends the delta). */
   pathClaimDegradedReported?: number;
+  /** `pathClaimDegraded` split by cause, so the server can tell a timeout from a network/5xx error. */
+  pathClaimDegradedByCause?: { timeout: number; error: number };
+  /** The `pathClaimDegradedByCause` totals the server has been told about. */
+  pathClaimDegradedByCauseReported?: { timeout: number; error: number };
   /** Last time the sweep refreshed the base ref with a fetch (ms epoch). */
   pathSweepBaseFetchedAt?: number;
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
