@@ -340,7 +340,7 @@ describe('assembleRunReport', () => {
     const r = assembleRunReport(FULL);
     expect(r).toMatchObject({
       kind: 'cloud-run-report',
-      version: 8,
+      version: 9,
       taskId: 'task-1',
       attempt: 2,
       workerId: 'worker-9',
@@ -425,7 +425,7 @@ describe('assembleRunReport', () => {
   test('only allowlisted top-level keys', () => {
     expect(Object.keys(assembleRunReport({ ...FULL, extra: 'x' } as RunReportInput)).sort()).toEqual([
       'agentRestarts', 'attempt', 'containerInstanceId', 'crashReport', 'deferredRetry', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'interruption', 'kind',
-      'outcome', 'repo', 'resources', 'resume', 'runLabel', 'runnerPhases', 'runnerSize', 'schedule', 'taskId', 'timestamps', 'version', 'workerId',
+      'outcome', 'repo', 'resources', 'resume', 'reusedContainer', 'runLabel', 'runnerPhases', 'runnerSize', 'schedule', 'taskId', 'timestamps', 'version', 'workerId',
     ]);
   });
 
