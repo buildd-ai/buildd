@@ -172,8 +172,16 @@ export function waitingReason(i: {
   escalated: boolean;
   approved: boolean;
   status: string | null;
+  /** Landing's own needs_human record: it saw the PR approved and green and still could not land it. */
+  handoff?: { cause: string; reason: string } | null;
 }): string {
   if (i.conflictFixesSpent) return 'conflict fixes used up';
+  // The handoff outranks a stale lifecycle ("CI not green yet"), but not a
+  // PR that has since gone conflicting or red.
+  if (i.handoff && i.status !== 'conflict' && i.status !== 'ci_failed') {
+    if (i.handoff.cause === 'deny_path') return `${i.approved ? 'approved, ' : ''}protected path — merge is yours`;
+    return `landing needs you: ${i.handoff.reason}`;
+  }
   const blocked = i.status === 'conflict' ? 'conflicting'
     : i.status === 'ci_failed' ? 'CI red'
     : i.status === 'ci_green' ? null
@@ -199,6 +207,7 @@ async function loadAttentionIndex(prs: ShapedPr[], workspaceIds: string[]): Prom
       conflictFixesSpent: attention.deadZoneExhaustedMap.has(w.id),
       escalated: !!w.taskId && attention.escalationMap.has(w.taskId),
       approved: !!w.taskId && attention.approvalMap.has(w.taskId),
+      handoff: w.taskId ? attention.landingHandoffMap.get(w.taskId) ?? null : null,
       status: statusByWorker.get(w.id) ?? null,
     }));
   }
