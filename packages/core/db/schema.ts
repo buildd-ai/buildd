@@ -28,7 +28,7 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { relations, sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation } from '../token-delegation';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -469,6 +469,13 @@ export interface WorkspaceGitConfig {
   // Edit/Write/MultiEdit before the write, and a checkpoint sweep that finds a
   // collision (Bash/untracked/Codex writes) stops push/completion and defers the task.
   pathClaimEnforcement?: 'advisory' | 'enforce' | null;
+
+  // Files a runner regenerates instead of merging (see DerivedFileRule). Absent
+  // or empty: runners register no merge driver and conflicts go to the agent.
+  derivedFiles?: DerivedFileRule[];
+  // Register mergiraf (structural merge) as a driver in runner clones for the
+  // languages it parses. Off by default; skipped quietly if the binary is absent.
+  mergiraf?: boolean;
 
   // Block config file changes during worker sessions (SDK v0.2.49+ ConfigChange hook)
   // When true, returns { continue: false } to prevent agents from modifying config files.
