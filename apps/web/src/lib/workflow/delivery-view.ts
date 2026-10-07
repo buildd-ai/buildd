@@ -40,7 +40,13 @@ SELECT to_jsonb(d.*) AS delivery,
      LEFT JOIN LATERAL (SELECT ww.status, ww.updated_at FROM workers ww WHERE ww.task_id = t.id ORDER BY ww.created_at DESC LIMIT 1) w ON true
      WHERE t.workspace_id = d.workspace_id AND d.pr_number IS NOT NULL AND t.conflict_retry_pr_number = d.pr_number
        AND t.status IN ('pending', 'assigned', 'in_progress')
-     ORDER BY t.created_at DESC LIMIT 1) AS remediation
+     ORDER BY t.created_at DESC LIMIT 1) AS remediation,
+  (SELECT jsonb_build_object('git_config', w.git_config) FROM workspaces w WHERE w.id = d.workspace_id) AS workspace,
+  (SELECT jsonb_build_object('requires_review', ot.requires_review, 'landing', ot.context->'landing', 'landing_handoff', ot.context->'landingHandoff',
+            'mission', (SELECT jsonb_build_object('merge_policy', m.merge_policy, 'requires_review', m.requires_review,
+                          'working_branch', m.working_branch, 'integration_branch_enabled', m.integration_branch_enabled)
+                        FROM missions m WHERE m.id = ot.mission_id))
+     FROM tasks ot WHERE ot.id = d.owner_task_id) AS owner_task
 FROM dl d`;
 }
 
@@ -60,7 +66,31 @@ export function remediationFrom(r: J | null | undefined, now: number): Remediati
   return { taskId: String(r.id), family: 'conflict', taskStatus: String(r.status), stalled: v.stalled, stallReason: v.reason };
 }
 
-export function rowToDeliveryView(row: J, now = Date.now()): DeliveryView | null {
+/**
+ * The approved-merge slot: does an APPROVED delivery wait on a person to merge
+ * it (true: owner `human`, needs you) or does the landing path merge it (false:
+ * owner `landing`, merging)? Answered from the loader row (delivery, workspace
+ * git config, owner task, mission) by the effective merge policy for that PR.
+ * That policy belongs to the reviews module, which core never imports
+ * (scripts/module-boundaries.test.ts): the composition root fills the slot
+ * (`apps/web/src/modules.ts` `APPROVED_MERGE_RULE`).
+ */
+export type ApprovedMergeRule = (row: J) => boolean;
+
+/** With no rule a person merges: an unknown policy never hides a merge that waits on you. */
+const PERSON_MERGES: ApprovedMergeRule = () => true;
+
+/** The composition root's rule, loaded on first use so this file does not load every module. */
+async function approvedMergeRule(): Promise<ApprovedMergeRule> {
+  try {
+    return (await import('@/modules')).APPROVED_MERGE_RULE;
+  } catch (err) {
+    console.warn('[workflow] approved-merge rule unavailable; approved PRs read as yours:', err instanceof Error ? err.message : err);
+    return PERSON_MERGES;
+  }
+}
+
+export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson: ApprovedMergeRule = PERSON_MERGES): DeliveryView | null {
   if (!row.delivery) return null;
   const rounds = ((row.rounds as J[]) ?? []).map(toRoundSnapshot);
   const attempts = ((row.attempts as J[]) ?? []).map(toAttemptSnapshot);
@@ -77,6 +107,7 @@ export function rowToDeliveryView(row: J, now = Date.now()): DeliveryView | null
     lastTransition,
     attemptTasks,
     remediation: remediationFrom(row.remediation as J | null, now),
+    approvedNeedsPerson: (row.delivery as J).state === 'APPROVED' ? approvedNeedsPerson(row) : false,
   });
 }
 
@@ -85,15 +116,17 @@ export function rowToDeliveryView(row: J, now = Date.now()): DeliveryView | null
  * to a kernel-owned delivery. Never throws: a projection read failing must
  * degrade the surface to its legacy projection, not break the page.
  */
-export async function getDeliveryViewsForTasks(taskIds: string[], exec: Exec = dbExec): Promise<Map<string, DeliveryView>> {
+export async function getDeliveryViewsForTasks(taskIds: string[], exec: Exec = dbExec, rule?: ApprovedMergeRule): Promise<Map<string, DeliveryView>> {
   const out = new Map<string, DeliveryView>();
   const ids = [...new Set(taskIds.filter(Boolean))];
   if (ids.length === 0) return out;
   try {
     const res = await exec(deliveryViewsSql(ids));
     const want = new Set(ids);
-    for (const row of (res.rows ?? []) as J[]) {
-      const v = rowToDeliveryView(row);
+    const rows = (res.rows ?? []) as J[];
+    const needsPerson = rule ?? (rows.some(r => (r.delivery as J | null)?.state === 'APPROVED') ? await approvedMergeRule() : PERSON_MERGES);
+    for (const row of rows) {
+      const v = rowToDeliveryView(row, Date.now(), needsPerson);
       if (!v) continue;
       if (want.has(v.ownerTaskId)) out.set(v.ownerTaskId, v);
       for (const h of v.history) if (want.has(h.taskId)) out.set(h.taskId, v);

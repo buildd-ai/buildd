@@ -1279,6 +1279,22 @@ not own keeps the legacy conflict retry unchanged:
   `DispatchConflictRetryResult` the doors already understand (a landed mechanical
   refresh reads as `branchUpdated`, an agent attempt as `dispatched` with its task, a
   spent budget as `exhausted`).
+- **The dead-zone sweep asks first** (`dead-zone-sweep.ts`, final-audit fix b6a62a4e).
+  A kernel owner task is normally `completed` while its delivery is live, so a kernel
+  PR qualifies as a dead-zone candidate. Before the legacy retry count, the sweep
+  asks `kernelDeliveryForPr`. A dirty kernel PR goes through `dispatchConflictRetry`,
+  which is T12. A red one is left to the kernel CI family (T10) and nothing is filed.
+  An authority read error files nothing for that PR. Only a legacy PR reaches the
+  direct insert and `releaseSpentConflictRetryKey`. Until this fix the sweep inserted
+  the conflict task directly for kernel PRs too: no `delivery_id`, no ledger row, no
+  budget, and the task's push read as foreign.
+- **`merge_pr` does not refresh a kernel PR** (`app/api/github/pr/route.ts`,
+  final-audit fix b6a62a4e). When the door's legacy safety check refuses a merge as
+  behind base (landing mode `shadow` or `off`), a kernel-owned PR gets a 409 with
+  `kernelOwned: true`, and `refreshBehindPr` / `updateBehindPrBranch` never run. The
+  refresh belongs to the kernel's `refresh_branch` effect, reached through T12
+  `behind` (the auto-merge door) or T16 (the kernel's own merge call refused as
+  behind). A legacy PR keeps the in-door refresh.
 - **Mechanical first (§6.7), in `conflict-retry-effects.ts`** (composed into
   `workflowEffectHandlers()`). `refresh_branch` runs `refreshBehindPr` pinned to the
   bound head (GitHub update-branch with `expected_head_sha`, so the semantic check, the
@@ -1671,7 +1687,7 @@ source per row: a surface never combines the delivery with the worker columns.
 - **Mission strip, board and feed.** `deriveFeedTaskState` and
   `deriveBoardStatus` read `task.delivery` (`feedStateForDelivery`,
   `boardStatusForDelivery`, both over `deliveryReading`). A person's move
-  (ESCALATED, or an approved PR awaiting its merge) is yours. Every other live
+  (ESCALATED, or an approved PR whose merge policy leaves the merge to a person) is yours. Every other live
   state is moving, so a fix in flight is never "needs you" and never FAILED.
   On the Board every non-human live state reads `running` and the tile says
   the reading's label (deviation 5). The strip drawer gives the kernel's headline and evidence
@@ -1733,8 +1749,15 @@ Deviations, each deliberate:
    needs-you and failed answer per delivery. The task chip and histogram, the
    board tile, strip drawer and band, the feed, the chat tile and the dock take
    it as is. Each maps the tone through one total palette table and never maps
-   a state. An approved PR reads "Ready to merge" and needs you, as Home's Merge
-   card does. A stalled remediation reads "Conflict fix stalled" and offers
+   a state. An approved PR reads "Ready to merge" and needs you only when a
+   person merges it (tier `human`, `agent-review` approve-only, or a landing
+   handoff open at the current head, or a mission that requires review on its
+   mission PR; the loader asks the approved-merge slot once per row, which the
+   composition root fills with the reviews module's `approvedNeedsPerson`, and
+   `ownerOfNextMove` turns a yes into owner `human`). Under approve-and-merge or
+   auto-threshold (a task PR into its mission integration branch included) the
+   landing path merges it and it reads live, "Approved · merging"; Home's chip
+   for it is `AUTO_MERGE` ("merging"), never a MERGE card. A stalled remediation reads "Conflict fix stalled" and offers
    Home's "Run fix" in the strip drawer and the dock. Only a FAILED delivery is
    failed. The Board still keeps `waiting` (and its Ask/Reply) for an agent's
    question. A delivery that needs you reads `review` and is counted in Needs
@@ -2290,12 +2313,12 @@ is a site to tick off in the Phase 2 PR that moves it.
 - [ ] `lib/pr-review-request.ts` `findReviewTaskForPr` / owner lookup / `insertPrOwnerWorker`
 - [ ] `lib/supersession-store.ts:275,290` and rules in `lib/supersession.ts`
 - [ ] `lib/ci-failure-retry.ts` (`:180,487,612,636`), `app/api/prs/[prNumber]/retry-ci/route.ts`
-- [x] `lib/conflict-retry.ts` (`:241,422,812,893,974`), `lib/migration-collision-retry.ts`, `lib/dead-zone-sweep.ts` retry insert (kernel-owned PRs, §13.4)
+- [x] `lib/conflict-retry.ts` (`:241,422,812,893,974`), `lib/migration-collision-retry.ts`, `lib/dead-zone-sweep.ts` retry insert (kernel-owned PRs, §13.4; the sweep asks `kernelDeliveryForPr` and routes a kernel PR through `dispatchConflictRetry`, final-audit fix b6a62a4e; it was ticked before the sweep was migrated)
 - [x] `lib/auto-merge.ts` `:777` merge door (Slice C: an adapter calling `LandingRequested` for a kernel-owned PR)
 - [ ] `lib/auto-merge.ts` `:991,1055,1071,1141,1158` escalation stamps
 - [x] `lib/pr-landing.ts` `landPr` merge call (Slice C: T15/T16; its rails, marker, handoff and sweep are unchanged)
 - [ ] `lib/pr-landing-marker.ts`, `pr-landing-handoff.ts`, `pr-landing-sweep*.ts` decision data → delivery
-- [x] `app/api/prs/[prNumber]/merge/route.ts:566,257`; `app/api/github/pr/route.ts:1956,1722,1978,2016` (Slice C, kernel-owned PRs)
+- [x] `app/api/prs/[prNumber]/merge/route.ts:566,257`; `app/api/github/pr/route.ts:1956,1722,1978,2016` (Slice C, kernel-owned PRs); `app/api/github/pr/route.ts` behind-base refresh skipped for a kernel-owned PR (§13.4, final-audit fix b6a62a4e)
 - [x] `lib/stale-workers.ts:251` auto-complete; `app/api/tasks/cleanup/route.ts:266` assigned-task complete (Slice A part 2: a kernel attempt is never promoted from local commits; `AttemptEnded(lost)`)
 - [x] `lib/pr-supersession.ts:236,285`, `lib/pr-supersession-detect.ts:384`, `app/api/github/pr/supersede/route.ts` (Slice D: T20/T21 for a kernel-owned PR; the route authorises on the caller's task)
 - [ ] `lib/dead-pr-shutdown.ts:396`; `lib/loop-webhook.ts:72`

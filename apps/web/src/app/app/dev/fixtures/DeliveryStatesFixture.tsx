@@ -54,7 +54,11 @@ const CASES: Case[] = [
   },
   {
     key: 'composition', title: 'Ship mission: workflow kernel', prNumber: 420,
-    input: { view: { delivery: delivery({ id: 'd3', ownerTaskId: 't3', prNumber: 420, state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['9f3c2a17e0'] }), rounds: [], attempts: [] } },
+    input: { view: { delivery: delivery({ id: 'd3', ownerTaskId: 't3', prNumber: 420, state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['9f3c2a17e0'] }), rounds: [], attempts: [] }, approvedNeedsPerson: true },
+  },
+  {
+    key: 'approved-landing', title: 'fix(web): trim the task list query', prNumber: 421,
+    input: { view: { delivery: delivery({ id: 'd5', ownerTaskId: 't5', prNumber: 421, state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['9f3c2a17e0'] }), rounds: [], attempts: [] } },
   },
   {
     key: 'escalated', title: 'feat(api): rotate runner tokens', prNumber: 423,
