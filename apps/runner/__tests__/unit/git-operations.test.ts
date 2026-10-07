@@ -266,9 +266,12 @@ describe('setupWorktree', () => {
 
     const addIdx = syncCalls.findIndex(c => c.cmd.includes('git worktree add'));
     expect(addIdx).toBeGreaterThanOrEqual(0);
-    // git worktree add is the last sync call; the install happens after it.
+    // Only upstream-config calls (git config) may follow the add; the install
+    // (execFileSync, tracked in fileCalls) happens after all sync calls.
     expect(fileCalls.length).toBeGreaterThan(0);
-    expect(addIdx).toBe(syncCalls.length - 1);
+    for (const c of syncCalls.slice(addIdx + 1)) {
+      expect(c.cmd).toContain('git config');
+    }
   });
 
   test('falls back to an unfrozen install when the frozen lockfile install fails', async () => {
