@@ -138,7 +138,7 @@ const isReadAction = (m: Milestone) => m.type === 'action' && m.tool === 'Read';
  *   Read) folds into it: its `count` is bumped and `ts` refreshed. Returns
  *   `{ folded: true }` and nothing is appended.
  * - Over `cap`: drop the oldest Read action first, then the oldest other
- *   action, then the oldest milestone of any type.
+ *   action, then the oldest non-checkpoint milestone. Checkpoints survive the cap.
  */
 export function appendMilestone(list: Milestone[], milestone: Milestone, cap = MILESTONE_CAP): { folded: boolean } {
   const prev = list[list.length - 1];
@@ -155,7 +155,8 @@ export function appendMilestone(list: Milestone[], milestone: Milestone, cap = M
   while (list.length > cap) {
     let idx = list.findIndex(isReadAction);
     if (idx < 0) idx = list.findIndex(m => m.type === 'action');
-    if (idx < 0) idx = 0;
+    if (idx < 0) idx = list.findIndex(m => m.type !== 'checkpoint');
+    if (idx < 0) break;
     list.splice(idx, 1);
   }
   return { folded: false };

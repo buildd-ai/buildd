@@ -6056,7 +6056,6 @@ export class WorkerManager {
                 worker.commits.shift();
               }
               this.addMilestone(worker, { type: 'status', label: `Commit: ${message}`, ts: Date.now() });
-              this.addCheckpoint(worker, CheckpointEvent.FIRST_COMMIT);
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
             worker.currentAction = `Searching...`;

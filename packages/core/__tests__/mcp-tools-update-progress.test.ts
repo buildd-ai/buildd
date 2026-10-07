@@ -25,7 +25,20 @@ describe('MCP update_progress', () => {
     expect(api.mock.calls[0]?.[0]).toBe(`/api/workers/${WORKER_ID}`);
     expect(api.mock.calls[0]?.[1]?.method).toBe('PATCH');
     expect(JSON.parse(String(api.mock.calls[0]?.[1]?.body)).kind).toBe('engineering');
-    expect(result.content[0]?.text).toContain('Progress updated: 10%');
+    expect(result.content[0]?.text).toContain('Progress updated');
+  });
+
+  it('does not invent a percent when progress is omitted', async () => {
+    const api = mock(async () => ({ status: 'running' }));
+    const result = await handleBuilddAction(api as unknown as ApiFn, 'update_progress',
+      { message: 'Tests passed', plan: 'Verify and ship' }, context);
+    const body = JSON.parse(String(api.mock.calls[0]?.[1]?.body));
+    expect(body).not.toHaveProperty('progress');
+    for (const milestone of body.appendMilestones) {
+      expect(milestone).not.toHaveProperty('progress');
+      expect(milestone.origin).toBe('agent');
+    }
+    expect(result.content[0]?.text).not.toContain('%');
   });
 
   it('honours an explicit workerId instead of the session default', async () => {
@@ -78,18 +91,20 @@ describe('MCP update_progress', () => {
     expect(body.appendMilestones).toEqual([
       {
         type: 'plan',
+        origin: 'agent',
         label: '1. Add regression test\n2. Fix progress routing',
         progress: 25,
         ts: expect.any(Number),
       },
       {
         type: 'status',
+        origin: 'agent',
         label: 'Plan ready',
         progress: 25,
         ts: expect.any(Number),
       },
     ]);
-    expect(result.content[0]?.text).toContain('Progress updated: 25% - Plan ready');
+    expect(result.content[0]?.text).toContain('Progress updated - Plan ready');
   });
 
   // update_progress surfaces the served instruction in its tool result, so it is

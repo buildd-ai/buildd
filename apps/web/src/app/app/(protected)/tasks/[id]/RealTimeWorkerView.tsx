@@ -90,6 +90,11 @@ interface Worker {
   prUrl: string | null;
   prNumber: number | null;
   prLifecycleStatus?: string | null;
+  createdAt?: string | null;
+  mergedAt?: string | null;
+  dirtyWorktree?: boolean | null;
+  observedTouches?: string[] | null;
+  prIsDraft?: boolean | null;
   localUiUrl: string | null;
   commitCount: number | null;
   filesChanged: number | null;
@@ -114,6 +119,10 @@ interface Worker {
 
 interface Props {
   initialWorker: Worker;
+  outputRequirement?: string;
+  deliverableArtifactCount?: number;
+  usesReviewer?: boolean;
+  reviewState?: string;
   /**
    * Keys the coalesced-refresh debounce — must match the taskId TaskAutoRefresh
    * uses on the same page so their refreshes for the same PATCH collapse into
@@ -144,7 +153,7 @@ interface Props {
 // trees can be reconstructed; see @/lib/agent-tree.
 type TaskProgressEntry = AgentProgressEntry;
 
-export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp }: Props) {
+export default function RealTimeWorkerView({ initialWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp }: Props) {
   const router = useRouter();
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const lastStatusRef = useRef(initialWorker.status);
@@ -327,9 +336,10 @@ export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus =
   const milestones = worker.milestones || [];
   const startMs = worker.startedAt ? new Date(worker.startedAt).getTime() : null;
   const now = deriveNow(milestones, {
-    status: worker.status,
+    ...worker,
     currentAction: worker.currentAction,
     prUrl: worker.prUrl,
+    outputRequirement, deliverableArtifactCount, usesReviewer, reviewState,
     startMs,
     nowMs,
   });
@@ -401,11 +411,11 @@ export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus =
           />
         </div>
 
-        <PausedBar pct={now.pct} elapsed={elapsed} turns={worker.turns} tokens={formatTokens(tokens)} />
+        <PausedBar evidence={now.evidence} elapsed={elapsed} turns={worker.turns} tokens={formatTokens(tokens)} />
 
         <div data-testid="worker-paused-context" className="border-t border-border-default">
           {now.headline && now.headline !== question.headline && (
-            <ContextRow label="Why it stopped" summary={collapseWorkspacePath(now.headline)} meta={now.pct != null ? `${now.pct}%` : null} />
+            <ContextRow label="Why it stopped" summary={collapseWorkspacePath(now.headline)} meta={null} />
           )}
           <ContextRow
             label="Activity"

@@ -193,7 +193,7 @@ describe('"Also running" — tasks/[id]/page.tsx', () => {
     expect(pageSource).toContain('loadAlsoRunningWorkers({ task, liveStatuses: LIVE_WORKER_STATUSES })');
     const loader = await Bun.file(new URL('./also-running-loader.ts', import.meta.url)).text();
     // The peer query must select the column the lineage walk reads, and filter on it.
-    expect(loader).toContain('missionId: true, parentTaskId: true } } },');
+    expect(loader).toMatch(/missionId: true, parentTaskId: true[^}]*}/);
     expect(loader).toContain('!isInTaskLineage(w.task.id, task.id, parentOf)');
   });
 });

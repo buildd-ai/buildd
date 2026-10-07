@@ -1694,7 +1694,8 @@ export type WorkerWaitingFor = {
  */
 export type WorkerMilestone =
   | { type: 'phase'; label?: string; toolCount: number; ts: number; pending?: boolean }
-  | { type: 'status'; label?: string; progress?: number; ts: number }
+  | { type: 'status'; label?: string; progress?: number; ts: number; origin?: 'agent' }
+  | { type: 'plan'; label?: string; progress?: number; ts: number; origin?: 'agent' }
   | { type: 'checkpoint'; event: string; label?: string; ts: number }
   | {
       type: 'action';

@@ -627,7 +627,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active"), missionId? (full UUID) } — unknown params and bad values are rejected, never ignored. "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling"|"dispatch", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource; "dispatch" adds the task\'s dispatch outbox trail, one line per wake: cause, status, transport, handed-off time, delivered via, attempts, last error), fullDescription? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
-    update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats.',
+    update_progress: '{ workerId?, progress? (legacy self-report; never displayed), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats.',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd? } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same plain overwrite as update_progress (a later, smaller report replaces rather than merges with the prior value), the only way an interactive MCP session\'s cost gets counted in get_usage_stats. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), lede (required — see below), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation; on that path a missing lede is derived from the title instead of refused, because the PR already exists.\n\n'
       + 'head must be the branch claim_task assigned this worker — a mismatch is refused as head_not_owned. The one exception: a worker claimed from your own interactive session (claim_task called from this session, not a background runner) may instead use any other branch it actually pushed to, as long as no other worker already holds that exact name (refused as head_claimed, naming the other task, when one does).\n\n'
@@ -2174,21 +2174,23 @@ export async function handleBuilddAction(
         const appendMilestones = [
           ...(params.plan ? [{
             type: 'plan',
+            origin: 'agent',
             label: params.plan,
-            progress: params.progress || 0,
+            ...(typeof params.progress === 'number' && { progress: params.progress }),
             ts: milestoneTs,
           }] : []),
           ...(params.message ? [{
             type: 'status',
+            origin: 'agent',
             label: params.message,
-            progress: params.progress || 0,
+            ...(typeof params.progress === 'number' && { progress: params.progress }),
             ts: milestoneTs,
           }] : []),
         ];
 
         const progressBody: Record<string, unknown> = {
           status: 'running',
-          progress: params.progress || 0,
+          ...(typeof params.progress === 'number' && { progress: params.progress }),
           ...(appendMilestones.length > 0 && { appendMilestones }),
           // This call surfaces `response.instructions` to the agent below, so it
           // is a real consumer of the instruction queue and says so. Undeclared
@@ -2220,7 +2222,7 @@ export async function handleBuilddAction(
         throw err;
       }
 
-      let resultText = `Progress updated: ${params.progress}%${params.message ? ` - ${params.message}` : ''}`;
+      let resultText = `Progress updated${params.message ? ` - ${params.message}` : ''}`;
 
       const instructions = response.instructions;
       if (instructions) {

@@ -77,13 +77,13 @@ describe('sidePanelPeers', () => {
     expect(fx.title).not.toContain(':');
   });
 
-  it('keeps only the same mission, one row per task, with the latest progress', () => {
+  it('keeps only the same mission, one row per task, with observed lifecycle evidence', () => {
     const peers = sidePanelPeers([
-      row('a', 'feat(a): one', { milestones: [{ type: 'status', progress: 10 }, { type: 'status', progress: 55 }] }),
+      row('a', 'feat(a): one', { milestones: [{ type: 'checkpoint', event: 'first_push', ts: 100 }] }),
       row('a', 'feat(a): one'),
       row('other', 'x', { task: { id: 'other', title: 'feat(b): two', label: null, missionId: 'm2' } }),
     ], { missionId: 'm1', excludeTaskIds: new Set() });
-    expect(peers.map(p => [p.taskId, p.pct])).toEqual([['a', 55]]);
+    expect(peers.map(p => [p.taskId, p.phase])).toEqual([['a', 'Pushed']]);
   });
 });
 

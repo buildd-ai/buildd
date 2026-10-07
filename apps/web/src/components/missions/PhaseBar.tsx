@@ -6,7 +6,7 @@
  * - `sm`: Home's compact missions summary — no labels, no captions.
  *
  * Colour is tokens only: done = success fill, in CI = success outline,
- * running = accent outline with an accent fill to the worker's progress,
+ * running = accent outline,
  * needs you = warning fill, failed = error fill, queued = hairline.
  */
 import Link from 'next/link';
@@ -55,13 +55,6 @@ function Cell({ cell, size }: { cell: ListCell; size: 'lg' | 'sm' }) {
       title={`${cell.title} · ${CELL_STATE_LABEL[cell.state]}`}
       className={`relative block min-w-0 flex-1 overflow-hidden ${h} ${CELL_BOX[cell.state]} hover:opacity-90`}
     >
-      {cell.state === 'running' && (
-        <span
-          aria-hidden="true"
-          className="absolute inset-y-0 left-0 bg-accent"
-          style={{ width: `${Math.round(cell.fill * 100)}%` }}
-        />
-      )}
       {size === 'lg' && (
         <span
           className={`absolute inset-0 flex items-center justify-center overflow-hidden whitespace-nowrap px-0.5 font-mono text-[11px] md:text-[10px] font-semibold ${CELL_TEXT[cell.state]}`}
@@ -110,7 +103,6 @@ export function PhaseBarLegend() {
       {LEGEND.map(s => (
         <span key={s} className="inline-flex items-center gap-1.5">
           <i aria-hidden="true" className={`relative inline-block h-2.5 w-2.5 overflow-hidden ${CELL_BOX[s]}`}>
-            {s === 'running' && <b className="absolute inset-y-0 left-0 w-1/2 bg-accent" />}
           </i>
           {CELL_STATE_LABEL[s]}
         </span>

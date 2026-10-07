@@ -6,24 +6,15 @@
  * e.g. sub-tasks of one plan) are genuine peers and stay.
  */
 
+import { deriveRunEvidence, type RunEvidenceInput } from '@buildd/core/run-evidence';
 import { taskDisplayLabel } from '@buildd/core/task-label';
 import { taskPageHref } from '@/lib/mission-task-href';
 import type { PeerTask } from './TaskSidePanel';
 
-interface PeerWorkerRow {
+interface PeerWorkerRow extends Omit<RunEvidenceInput, 'milestones'> {
   status: string;
   milestones: unknown;
-  task: { id: string; title: string; label?: string | null; missionId: string | null } | null;
-}
-
-/** Latest self-reported progress on a worker's milestone list. */
-function latestPct(ms: unknown): number | null {
-  const list = Array.isArray(ms) ? (ms as Array<{ type?: string; progress?: unknown }>) : [];
-  for (let i = list.length - 1; i >= 0; i--) {
-    const m = list[i];
-    if (m.type === 'status' && typeof m.progress === 'number') return m.progress;
-  }
-  return null;
+  task: { id: string; title: string; label?: string | null; outputRequirement?: string; missionId: string | null } | null;
 }
 
 /**
@@ -55,7 +46,7 @@ export function sidePanelPeers(
       scope,
       title: label,
       fullTitle: t.title,
-      pct: latestPct(w.milestones),
+      phase: deriveRunEvidence({ ...w, outputRequirement: t.outputRequirement, milestones: Array.isArray(w.milestones) ? w.milestones : undefined }).phases.filter(p => p.state === 'done' || p.state === 'failed').at(-1)?.label ?? 'Claimed',
       href: taskPageHref({ taskId: t.id, missionId: t.missionId }),
       waiting: w.status === 'waiting_input',
     });

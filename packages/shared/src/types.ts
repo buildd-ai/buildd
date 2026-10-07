@@ -3290,8 +3290,8 @@ export interface FleetSlotWorker {
   roleName: string | null;
   roleColor: string | null;
   status: string;
-  /** 0..100, or null when the runner has not reported progress. */
-  progress: number | null;
+  /** Latest phase supported by lifecycle evidence. */
+  phase: string | null;
   startedAt: string | null;
   /** Set while the worker is parked on a question. */
   question: string | null;

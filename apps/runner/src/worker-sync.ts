@@ -1,4 +1,7 @@
 import { TERMINAL_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import { observeGitProgress, type GitProgressObservation } from './git-observe';
+import { appendMilestone } from './tool-milestones';
+import { CHECKPOINT_LABELS, CheckpointEvent } from './types';
 import { questionPayload } from './question-gate.js';
 import type { LocalWorker, CheckpointEventType } from './types';
 import type { BuilddClient } from './buildd';
@@ -206,6 +209,9 @@ export class WorkerSync {
    * Seeded (not reported) the first time a worker is seen, so a runner restart
    * does not re-confirm history it did not deliver.
    */
+  private gitObservations = new Map<string, { at: number; head: string; facts: GitProgressObservation | null }>();
+  private reportedGit = new Map<string, { lastCommitSha: string; commitCount: number }>();
+
   private lastSeenUserMessageTs = new Map<string, number>();
 
   constructor(private ctx: WorkerSyncContext) {}
@@ -365,6 +371,34 @@ export class WorkerSync {
    */
   async syncWorkerToServer(worker: LocalWorker) {
     try {
+      let gitFacts: GitProgressObservation | null = null;
+      if (worker.worktreePath && worker.prBaseRef && worker.branch && existsSync(worker.worktreePath)) {
+        try {
+          const head = execSync('git rev-parse HEAD', { cwd: worker.worktreePath, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+          const cached = this.gitObservations.get(worker.id);
+          if (!cached || cached.head !== head || Date.now() - cached.at >= 30_000) {
+            gitFacts = observeGitProgress(worker.worktreePath, worker.prBaseRef, worker.branch);
+            this.gitObservations.set(worker.id, { at: Date.now(), head, facts: gitFacts });
+          } else gitFacts = cached.facts;
+          if (gitFacts) {
+            worker.checkpointEvents ??= new Set<CheckpointEventType>();
+            for (const event of [
+              ...(gitFacts.commitCount > 0 ? [CheckpointEvent.FIRST_COMMIT] : []),
+              ...(gitFacts.pushed ? [CheckpointEvent.FIRST_PUSH] : []),
+            ]) {
+              if (worker.checkpointEvents.has(event)) continue;
+              worker.checkpointEvents.add(event);
+              const milestone = { type: 'checkpoint' as const, event, label: CHECKPOINT_LABELS[event], ts: Date.now() };
+              // Avoid addMilestone's immediate sync recursion: these facts are already on this PATCH.
+              appendMilestone(worker.milestones, milestone);
+              this.ctx.dirtyForDisk.add(worker.id);
+              this.ctx.emit({ type: 'milestone', workerId: worker.id, milestone });
+            }
+          }
+        } catch { /* Passive observation never interrupts the worker. */ }
+      }
+      const priorGit = this.reportedGit.get(worker.id);
+      const gitChanged = gitFacts && (!priorGit || priorGit.lastCommitSha !== gitFacts.lastCommitSha || priorGit.commitCount !== gitFacts.commitCount);
       // Build milestones array, appending current in-progress phase as pending
       const milestones: any[] = worker.milestones.map(m => ({ ...m }));
       if (worker.phaseText && worker.phaseToolCount > 0) {
@@ -432,6 +466,7 @@ export class WorkerSync {
         status: worker.status === 'waiting' ? 'waiting_input' : 'running',
         currentAction: worker.currentAction,
         milestones,
+        ...(gitChanged ? { lastCommitSha: gitFacts!.lastCommitSha, commitCount: gitFacts!.commitCount } : {}),
         localUiUrl: this.ctx.config.localUiUrl,
         // Re-send on every tick so a workers.branch row corrupted by a prior
         // (now-fixed, #2305) redaction bug self-heals within one sync interval
@@ -481,6 +516,7 @@ export class WorkerSync {
         throw err;
       }
 
+      if (gitChanged) this.reportedGit.set(worker.id, { lastCommitSha: gitFacts!.lastCommitSha, commitCount: gitFacts!.commitCount });
       worker.pathClaimDegradedReported = degradedTotal;
 
       // A path this sync reported is held by another live task. In enforce mode
@@ -707,6 +743,8 @@ export class WorkerSync {
         this.ctx.workers.delete(id);
         teardownSession(this.ctx.sessions, id);
         this.lastSeenUserMessageTs.delete(id);
+        this.gitObservations.delete(id);
+        this.reportedGit.delete(id);
         // Every terminal worker passes through here before leaving memory —
         // whether it already unsubscribed via an explicit abort (redundant,
         // idempotent no-op) or never did (normal completion, auth failure,

@@ -2313,6 +2313,43 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedSet.milestones[1].progress).toBe(50);
   });
 
+  it('preserves appended agent narration through a full runner milestone sync', async () => {
+    let capturedSet: any;
+    mockWorkersUpdate.mockReturnValue({ set: mock((updates: any) => {
+      capturedSet = updates;
+      return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+    }) });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    const worker: any = { id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', milestones: [], pendingInstructions: null };
+    mockWorkersFindFirst.mockResolvedValue(worker);
+    const agent = { type: 'status', label: 'Tests passed', ts: 2000 };
+    expect((await PATCH(createMockRequest({ method: 'PATCH', body: { appendMilestones: [agent] } }), { params: mockParams })).status).toBe(200);
+    expect(capturedSet.milestones[0].origin).toBe('agent');
+    worker.milestones = capturedSet.milestones;
+    const runner = { type: 'checkpoint', event: 'session_started', ts: 1000 };
+    expect((await PATCH(createMockRequest({ method: 'PATCH', body: { milestones: [runner] } }), { params: mockParams })).status).toBe(200);
+    expect(capturedSet.milestones).toEqual([runner, { ...agent, origin: 'agent' }]);
+    worker.milestones = capturedSet.milestones;
+    await PATCH(createMockRequest({ method: 'PATCH', body: { milestones: capturedSet.milestones } }), { params: mockParams });
+    expect(capturedSet.milestones).toHaveLength(2);
+  });
+
+  it('caps full runner snapshots without evicting lifecycle checkpoints', async () => {
+    let capturedSet: any;
+    mockWorkersUpdate.mockReturnValue({ set: mock((updates: any) => {
+      capturedSet = updates;
+      return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+    }) });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', milestones: [{ type: 'plan', origin: 'agent', label: 'Ship verified work', ts: 200 }], pendingInstructions: null });
+    const checkpoint = { type: 'checkpoint', event: 'session_started', ts: 0 };
+    const runner = [checkpoint, ...Array.from({ length: 100 }, (_, ts) => ({ type: 'status', label: 'Running', ts: ts + 1 }))];
+    await PATCH(createMockRequest({ method: 'PATCH', body: { milestones: runner } }), { params: mockParams });
+    expect(capturedSet.milestones).toHaveLength(100);
+    expect(capturedSet.milestones[0]).toEqual(checkpoint);
+    expect(capturedSet.milestones.at(-1).origin).toBe('agent');
+  });
+
   it('caps appendMilestones at 50 entries', async () => {
     let capturedSet: any = null;
     mockWorkersUpdate.mockReturnValue({
@@ -10651,7 +10688,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(capturedSet.milestones).toHaveLength(2);
       // Label prose stripped — only type and ts preserved
       expect(capturedSet.milestones[0]).toEqual({ type: 'phase', ts: 1000 });
-      expect(capturedSet.milestones[1]).toEqual({ type: 'status', ts: 2000 });
+      expect(capturedSet.milestones[1]).toEqual({ type: 'status', ts: 2000, origin: 'agent' });
       expect(capturedSet.milestones[0].label).toBeUndefined();
       expect(capturedSet.milestones[1].progress).toBeUndefined();
     });
