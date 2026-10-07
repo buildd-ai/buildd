@@ -567,9 +567,28 @@ describe('S5 — duplicate webhook delivery and duplicate reviewer PATCH', () =>
     await push(o, 'H2');
     await push(o, 'H2');
     expect((await transitions(o.deliveryId)).length).toBe(before);
-    const facts = await q(sql`SELECT 1 FROM workflow_facts WHERE workspace_id = ${workspaceId}::uuid AND fact_key = ${`head:${REPO}#${o.prNumber}:H2`}`);
+    // One fact for the move; a redelivery is answered with it (§5.3), not recorded again.
+    const facts = await q(sql`SELECT 1 FROM workflow_facts WHERE workspace_id = ${workspaceId}::uuid AND fact_key LIKE ${`head:${REPO}#${o.prNumber}:%->H2@v%`}`);
     expect(facts.length).toBe(1);
     expect(reviewersCreated.length).toBe(2);
+  });
+
+  test('a head that returns to an earlier SHA (A→B→A) is applied, not dropped as a duplicate (34b69829)', async () => {
+    const o = await openAndHandOn();
+    const before = (await transitions(o.deliveryId)).filter((t) => t.command === 'HeadObserved').length;
+    const heads = async () => (await transitions(o.deliveryId)).filter((t) => t.command === 'HeadObserved').length - before;
+    await push(o, 'H2');
+    expect(await heads()).toBe(1);
+    await push(o, 'H1');
+    expect(await heads()).toBe(2);
+    expect(await delivery(o.deliveryId)).toMatchObject({ currentHeadSha: 'H1' });
+    // …and once more round the cycle: the repeated H1→H2 move is new too.
+    await push(o, 'H2');
+    expect(await heads()).toBe(3);
+    expect(await delivery(o.deliveryId)).toMatchObject({ currentHeadSha: 'H2' });
+    // A redelivery of that last move is still one transition.
+    await push(o, 'H2');
+    expect(await heads()).toBe(3);
   });
 
   test('a replayed reviewer PATCH is a duplicate, sequential or concurrent; effects are not doubled', async () => {
