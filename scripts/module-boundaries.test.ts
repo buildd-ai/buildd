@@ -188,6 +188,9 @@ describe('the guard sees the files it polices', () => {
     // Ops paging is core infrastructure every layer uses, not the health module.
     expect(moduleOf('packages/core/report-ops.ts')).toBe('core');
     expect(moduleOf('apps/web/src/app/api/cron/maintenance/route.ts')).toBe('core');
+    // The hosted-runner allowance gates the claim, so its store is core; usage analytics is not.
+    expect(moduleOf('apps/web/src/lib/hosted-runner-usage-store.ts')).toBe('core');
+    expect(moduleOf('apps/web/src/lib/usage-stats.ts')).toBe('health-quality');
   });
 
   test('the scan finds the hot spot it exists to shrink', () => {

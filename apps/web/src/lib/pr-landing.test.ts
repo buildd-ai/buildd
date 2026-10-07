@@ -817,6 +817,13 @@ describe('landPr — safety rails', () => {
     expect(mockDispatchConflictRetry.mock.calls[0]![0].behindOnly).toBeFalsy();
   });
 
+  it('a stale dirty flag that merged cleanly is a branch update, not a conflict fix', async () => {
+    gh.mergeableState = 'dirty';
+    mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, branchUpdated: true, conflictFalsePositive: true }));
+    const out = await land();
+    expect(out).toMatchObject({ kind: 'updating_branch' });
+  });
+
   it('branch protection is a human decision', async () => {
     gh.mergeableState = 'blocked';
     expect(await land()).toMatchObject({ kind: 'needs_human', cause: 'branch_protection' });

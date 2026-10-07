@@ -1104,6 +1104,17 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   }
 
   async function mapRetry(res: DispatchConflictRetryResult, reason: string, extra: Record<string, unknown> = {}): Promise<LandingOutcome> {
+    // The conflict flag was stale: a merge against the current base tip was
+    // clean, so the branch was updated with no agent. The new head earns its
+    // own CI and lands on its own event.
+    if (res.conflictFalsePositive && res.branchUpdated) {
+      const after = await readLivePr(installationId, repoFullName, prNumber).catch(() => null);
+      return done(
+        { kind: 'updating_branch', newHeadSha: after?.headSha ?? liveHead },
+        `flagged as conflicting, but the base merged in cleanly; updated the branch instead of filing a fix (${reason})`,
+        { ...extra, refresh: 'conflict_false_positive' },
+      );
+    }
     // Refresh outcomes that are not conflicts (lib/base-refresh.ts): no fix was
     // filed and none is owed. A later event or the sweep re-drives the PR.
     if (res.headChanged) return waiting(`the PR head moved before the refresh (${reason}); re-reading on the new head`, { refresh: 'head_changed' });
