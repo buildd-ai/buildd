@@ -11,8 +11,7 @@ import { ActionQueueCard } from '../../(protected)/home/ActionQueueCard';
 import { HeaderStatusPill } from '../../(protected)/tasks/[id]/TaskSidePanel';
 import RealTimeWorkerView from '../../(protected)/tasks/[id]/RealTimeWorkerView';
 import { buildActionQueue, type EscalationRawItem } from '@/lib/action-queue';
-import { deriveDeliveryView, type DeliveryView, type DeliveryViewInput } from '@/lib/workflow/projections';
-import type { DeliverySnapshot } from '@/lib/workflow/types';
+import { deriveDeliveryView, type DeliverySnapshot, type DeliveryView, type DeliveryViewInput } from '@/lib/workflow/projections';
 import { mockWorkers } from './fixtures-data';
 
 const NOW = new Date(1_720_008_000_000);

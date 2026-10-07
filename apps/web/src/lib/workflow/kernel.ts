@@ -336,6 +336,7 @@ export function toAttemptSnapshot(r: J): AttemptSnapshot {
     boundHeadSha: s(r.bound_head_sha), triggerReason: s(r.trigger_reason), taskId: s(r.task_id),
     status: r.status as AttemptSnapshot['status'], outcome: (r.outcome ?? null) as AttemptSnapshot['outcome'],
     maxAttempts: n(r.max_attempts), reportedShas: (r.reported_shas as string[] | null) ?? [],
+    trigger: r.trigger === 'human' ? 'human' : 'automatic',
   };
 }
 

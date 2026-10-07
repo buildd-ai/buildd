@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/pr-review-status.ts]
 related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts]
+verified_by: [apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts]
 supersedes: []
 ---
 
@@ -32,11 +32,15 @@ first review is dispatched after deploy is kernel-owned: deliveries open at the
 legacy first-review dispatch points, review rounds, the verdict (T6), fix dispatch
 (T8) and claim (T9), attempt end (T4), the §9 completion gate, `synchronize` heads
 (T3) and close/reopen facts (T17–T19) run through `apps/web/src/lib/workflow/seam.ts`,
-and the legacy write is skipped for those PRs. Part 3 adds the read side: a
-`DeliveryView` with one owner of the next move feeds Home, the task page and the
-mission failure reading; the PR activity comment is regenerated from transitions;
-release and integration PRs are checked by composition; S35–S37 hold. §13.1 and
-§13.2 list what landed and the deviations; §14 the cutover and the kill switch.
+and the legacy write is skipped for those PRs. **Part 2 adds the CI family**: a
+red CI result on a kernel-owned PR is T10 on the `ci` ledger (the `check_suite`
+webhook, the red-PR sweep and the dashboard "Fix CI" all reach it), the CI fix task
+is filed by the `dispatch_ci_fix` effect, pushes are attributed by SHA set (§6.9) and
+`isBuilddWorkerCommit` is gone. **Part 3 adds the read side**: a `DeliveryView` with
+one owner of the next move feeds Home, the task page and the mission failure
+reading; the PR activity comment is regenerated from transitions; release and
+integration PRs are checked by composition; S35–S37 hold. §13.1 and §13.2 list what
+landed and the deviations; §14 the cutover and the kill switch.
 
 **Capability statement.** For every deliverable that is meant to reach GitHub as a
 pull request, exactly one row (the *delivery*) records where the work stands. That row
@@ -934,7 +938,7 @@ Files that change in the seam (Slice A):
 | `apps/web/src/lib/reviewer-subscribers.ts`, `reviewer.ts`, `stale-approval-re-review.ts`, `pr-re-review.ts`, `pr-review-request.ts` | dispatch through T5/`dispatch_review`; `findReviewTaskForPr`/`derivePrReviewStatus` read rounds |
 | `apps/web/src/app/api/github/webhook/route.ts` | `synchronize` emits `HeadObserved` hint; `closed` emits `PrMerged`/`PrClosedUnmerged` hints (Slice A only for the head path) |
 | `apps/web/src/lib/pr-activity-fix-claimed.ts`, `pr-activity-comment.ts`, `pr-activity-comment.STYLE.md` | renders from transitions (§12.1); new kinds |
-| `apps/web/src/lib/ci-failure-retry.ts`, `ci-failure-inspect.ts` (`isBuilddWorkerCommit` deleted), `app/api/prs/[prNumber]/retry-ci/route.ts` | CI family on the ledger with provenance (§5.7, §6.9) |
+| `apps/web/src/lib/ci-failure-retry.ts`, `ci-failure-inspect.ts` (author helpers deleted), `app/api/prs/[prNumber]/retry-ci/route.ts` | CI family on the ledger with provenance (§5.7, §6.9) |
 | `apps/web/src/app/api/github/pr/review/route.ts`, `apps/web/src/app/api/prs/[prNumber]/re-review/route.ts` | callers of T5; stop using `worker.lastCommitSha` as head and hard-coded `iteration:0,maxIterations:3` |
 | `apps/runner/src/workers.ts`, `apps/runner/src/git-operations.ts` | completion payload carries `remoteHeadSha`, `unpushedCommits` |
 | `apps/web/src/lib/stale-workers.ts`, `apps/web/src/app/api/tasks/cleanup/route.ts`, `apps/web/src/lib/worker-deliverables.ts` | stop auto-completing on bare commit count for tasks with a delivery |
@@ -955,11 +959,76 @@ close/reopen; T5 for `request_pr_review` and the dashboard re-review; T27 for a
 reviewer that ended without a verdict; the outbox floor drain on the `pr-reconcile`
 full pass plus an inline drain after every applied transition.
 
-Deferred: part 2 — the CI family on the ledger with provenance by SHA set (§5.7,
-§6.9), deleting `isBuilddWorkerCommit`, the manual retry-CI path and a
-`BudgetExtended` command. Part 3 — `DeliveryView` with one owner-of-next-move for
-Home/task/activity projections, `render_activity` regenerating the comment from
-transitions (§12.1), release composition, and S35/S37.
+Shipped live in part 2 (the CI family):
+
+- **T10 doors.** `retryCiFailureForPr` (the `check_suite` webhook and the red-PR
+  sweep) asks `observeCiFailure` first; for a kernel-owned PR the legacy decision
+  does not run, and the kernel's answer is mapped onto the outcomes those doors
+  already understand (`kernelCiOutcome`). The head is recorded from a live read
+  first, so an old-SHA failure is `stale(head_not_current)`.
+- **Ledger.** `ledgerBudget` is the one budget rule: every dispatched row spends one,
+  except a `skipped` one (revalidation found nothing to do); the cap is the
+  configured `maxCiRetries`, raised only by a `trigger=human` row. `attemptView`
+  counts the same rows, so N of M is 1-based and identical in the title, the task
+  context and the activity entry.
+- **`dispatch_ci_fix`** (`ci-retry-effects.ts`, reviews module, composed into
+  `WORKFLOW_EFFECT_HANDLERS`) revalidates at dispatch (PR open, head still the bound
+  head, CI not green now), then files the legacy-shaped CI fix or drift-diagnose task
+  with `delivery_role = ci_fix`; its task id is the attempt id, so a re-run files
+  nothing twice. CI exhaustion escalates through `escalateCiRedHead`.
+- **Claim (T9 for `ci`).** `FixClaimed` on a `ci` attempt moves it to `running`; CI
+  green at claim resumes the delivery and cancels the task as skipped.
+  `RepairNotNeeded` is the dispatch-time equivalent.
+- **Provenance (§6.9).** The runner's metric sync appends its local head to the
+  attempt's `reported_shas` (`recordLocalHead`); `HeadObserved` attributes a head to
+  the bound attempt when the SHA is reported, or the attempt is running and the head
+  descends from its bound head (compare API). A head the running attempt cannot
+  claim is a `foreignPush` (recorded, no row); one that arrives while the attempt is
+  only queued skips that row and is handled by the normal head rules.
+- **`BudgetExtended`.** A person's "Fix CI" past the cap allocates exactly one more
+  attempt (`trigger=human`, numbered after the last, `bypass` records who and why);
+  under the cap it is an ordinary T10 attempt with `trigger=human`. Never
+  "iteration 0".
+- **§8 / R1 in the CI family.** No CI decision reads `context.iteration` or
+  `lastCommitSha` as the head; `buildCIRetryTask` takes `attemptsUsed` explicitly.
+  `isBuilddWorkerCommit` and `fetchCommitAuthor` are deleted, and the legacy path
+  (PRs opened before cutover) now counts every filed CI retry against the cap.
+- **S9.** An owner attempt that ends `lost`/`failed` with commits and no reported
+  head is not proof: `AWAITING_PUSH` with `push_recovery` (T22 after its tries). The
+  cleanup route no longer promotes a kernel attempt's dead worker to `completed`.
+
+Part 2 deviations:
+
+9. **A running CI attempt blocks a new T10 at any head** (`fix_in_flight`), as the
+   legacy in-flight rule did: the worker is still watching its checks. The sweep
+   comes back after it ends.
+10. **T10 from `AWAITING_REVIEW` leaves the open review round queued**; a verdict
+    that lands while `REPAIRING` is stale and kept, and the repaired head starts a new
+    round.
+11. **The CI signature is a placeholder** (`ci_failed`) at ingestion; the failing
+    step digest is read by the dispatch effect. The trunk breaker stays off.
+12. **CI green means every check suite completed and none failed**; a running or
+    empty suite set is never read as green, so revalidation fails toward doing the
+    work.
+13. **The owner `lost` case goes to `AWAITING_PUSH`, not straight to
+    `ESCALATED(push_undeliverable)`** (§6.5): AC-10 asks for `AWAITING_PUSH`, and T22
+    reaches a person after the bounded recovery.
+14. **`SupersessionRecorded`'s idempotency key carries the target**, so a second,
+    different target reaches the reducer and is refused `edge_exists` instead of
+    answering `duplicate`.
+15. **Landing, supersession and the treadmill are kernel transitions only.** S10,
+    S12 and S15 run `LandingRequested`/`MergeCallResult`/`SupersessionRecorded` on real
+    Postgres, and `conflictRepair` bounds base refreshes across heads
+    (`DEFAULT_MAX_BEHIND_REFRESHES`, the treadmill default); the doors that would call
+    them stay legacy until Slices B–D.
+16. A queued mechanical attempt counts as live for attribution (the platform's own
+    refresh is in flight from dispatch). The runner's `remoteHeadSha` /
+    `unpushedCommits` payload is not added: provenance uses the reported local heads.
+
+Deferred to part 3, which shipped them (§13.2): `DeliveryView` with one owner of the
+next move, `render_activity` regenerating the comment from transitions (§12.1),
+release composition, explain's `attemptView`, and S35/S37. The conflict and migration
+families stay legacy (Slice B).
 
 Deviations, each deliberate:
 
@@ -1017,6 +1086,9 @@ PR-less task is absent from every map below and keeps today's projection:
   attempt of a live or shipped delivery as superseded, in `explain` and in the mission
   page's fallback (which now also applies the existing title/PR supersession rule it
   skipped).
+- **Explain (S28)**: a task subject whose delivery is kernel-owned carries
+  `delivery` (state, owner, headline, evidence) with `attemptLine`, the one
+  family-labelled "CI 1 of 3 · review 1 of 3" line the comment and titles use.
 - **`render_activity`** (`lib/workflow/pr-activity-render.ts`, `pr-activity-effects.ts`):
   the comment is rendered from the delivery row and every `workflow_transitions` row,
   with the headline from canonical state and a `buildd-render-version` marker. A
@@ -1051,9 +1123,9 @@ Deviations, each deliberate:
    (the remediation family is implied by `conflict_retry_pr_number`). It is not a
    kernel effect, and `ConflictObserved` is still not wired; the view reads `mergeable`
    on the current head and the open conflict-fix row.
-2. **Explain, the mission strip and the chat dock** still read their own
-   projections (Slice E); S17 covers Home, the task header and the mission failure
-   reading.
+2. **Explain's state chain, the mission strip and the chat dock** still read their
+   own projections (Slice E); explain only adds the `delivery` block. S17 covers
+   Home, the task header and the mission failure reading.
 3. **A fix worker's own question stays a question.** A worker-owned delivery whose
    worker is `waiting_input` keeps the needs-input banner. Only a platform-owned
    blocker is restated; generic `needs_input` is task 01b8a69d's.
@@ -1213,7 +1285,11 @@ assertions beside it. The matrix is accepted when no todo is left. S14 is the st
 
 Slice A part 1 coverage of the live path: S1 (both arms), S2, S3, S4, S5, S7, S8, S25,
 the cutover and the kill switch run end to end on real Postgres in
-`apps/web/tests/db/workflow-seam.test.ts` (`bun run test:db`); the route wiring (the
+`apps/web/tests/db/workflow-seam.test.ts` (`bun run test:db`). Part 2 adds, in
+`apps/web/tests/db/workflow-matrix.test.ts`: S9 (owner and CI fix reaped), S23 (CI
+provenance by SHA set, the cap, an old-SHA failure, `BudgetExtended`), S25 for the CI
+family (green at dispatch and at claim, head moved before dispatch), S28 (CI and review
+families on one delivery), and the kernel transitions of S10, S12 and S15; the route wiring (the
 legacy write does not run beside the kernel) in the route tests named above and in
 `apps/web/src/app/api/github/webhook/route.test.ts`, `.../github/pr/review/route.test.ts`,
 `.../prs/[prNumber]/re-review/route.test.ts` and `apps/web/src/lib/reviewer.test.ts`.

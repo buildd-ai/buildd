@@ -5,7 +5,15 @@
  * with an existing remediation offers Run/Repair instead of a second fix (S37).
  */
 import { describe, expect, test } from 'bun:test';
-import { attemptFailureCounts, deriveDeliveryView, ownerOfNextMove, type DeliveryViewInput } from './projections';
+import { attemptFailureCounts, attemptLine, deriveDeliveryView, ownerOfNextMove, type DeliveryViewInput } from './projections';
+
+describe('attemptLine (§5.7 rule 4)', () => {
+  test('family-labelled, 1-based, only the families the ledger has', () => {
+    expect(attemptLine({ ci: { n: 1, m: 3 }, review_fix: { n: 2, m: 3 } })).toBe('CI 1 of 3 · review 2 of 3');
+    expect(attemptLine({ conflict: { n: 1, m: 2 } })).toBe('conflict 1 of 2');
+    expect(attemptLine({})).toBeNull();
+  });
+});
 import { DELIVERY_STATES, type AttemptSnapshot, type DeliverySnapshot, type DeliveryState, type KernelView, type RoundSnapshot } from './types';
 
 const D = (o: Partial<DeliverySnapshot> = {}): DeliverySnapshot => ({

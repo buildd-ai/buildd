@@ -223,10 +223,10 @@ directions reached production:
   satisfied. The gate is therefore a *step*-level condition: the job always
   runs, exits 0 immediately when `base_ref != main`, and performs the real check
   only for dev→main.
-- Any change under `packages/core/` other than a `package.json` makes
-  `affected-tests.sh` emit `ALL`. A new migration is by definition such a change
-  (`packages/core/drizzle/NNNN_*.sql` + `meta/_journal.json`), so the journal
-  tests always run on a PR that adds one.
+- A PR that adds a migration (`packages/core/drizzle/NNNN_*.sql` +
+  `meta/_journal.json`) selects the journal tests: `scripts/affected-tests.ts`
+  selects every test that names `_journal.json` or lists the `drizzle`
+  directory, and pushes to `dev` and PRs into `main` run the full suite anyway.
 
 ## Acceptance criteria
 
@@ -330,7 +330,7 @@ directions reached production:
 | preview-branch migrate | `.github/workflows/build.yml:409-411` |
 | deploy ordering (`db:migrate && next build`) | `apps/web/package.json:7` |
 | `migrations:lint` | `package.json:42` |
-| core-change → ALL tests fan-out | `scripts/affected-tests.sh:40-46` |
+| migration change → journal tests selected | `scripts/affected-tests.ts` (`referenceNeedles`) |
 | squashed baseline (released history up to the cut) | `packages/core/drizzle/0000_baseline.sql` |
 | `findBaselineMillis`, `PreBaselineDatabaseError`, `LAST_RELEASE_BEFORE_SQUASH` | `packages/core/db/migrate-plan.ts` |
 | squash equivalence proof (old tree vs new tree, real Postgres) | `apps/web/tests/db/migration-baseline.test.ts` |
@@ -412,6 +412,6 @@ code; do not read any of them as enforced.
     `next build`. CI builds with `build:only`, so dropping the migrate step
     would go green and ship code against an un-migrated database.
 12. **`migrations:lint` is not wired into CI.** No workflow references it;
-    journal coverage depends entirely on `affected-tests.sh` fanning out to
-    `ALL` for `packages/core/` changes. It also runs only the ordering test, not
+    journal coverage on a PR depends on `affected-tests.ts` selecting the
+    journal tests for a migration change. It also runs only the ordering test, not
     the broader `migration-journal.test.ts`.

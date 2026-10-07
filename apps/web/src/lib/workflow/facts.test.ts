@@ -96,9 +96,28 @@ describe('ingestFact', () => {
       { kind: 'head_observed', workspaceId: 'w1', source: 'webhook', repoFullName: 'acme/widgets', prNumber: 7 },
       { exec, github: { readPr: async () => live('M3'), contains: async (_r, a, h) => { asked.push(`${a}<${h}`); return true; } } },
     );
-    expect(asked).toEqual(['L2<M3']);
+    // §9 containment of the local head, then §6.9 provenance: does the head descend from the bound head?
+    expect(asked).toEqual(['L2<M3', 'H1<M3']);
     expect(r).toMatchObject({ result: 'applied' });
-    if (r.result === 'applied') expect(r.decision.toState).toBe('AWAITING_REVIEW');
+    if (r.result === 'applied') {
+      expect(r.decision.toState).toBe('AWAITING_REVIEW');
+      expect(r.decision.evidence.live).toMatchObject({ headSha: 'M3' });
+    }
+  });
+
+  test('head_observed skips the provenance compare for a head the attempt already reported', async () => {
+    const asked: string[] = [];
+    const { exec } = router({
+      load_view: () => ({ rows: [{ delivery: delivery({ state: 'FIXING', bound_attempt_id: 'a1' }), rounds: [], attempts: [{ id: 'a1', family: 'review_fix', attempt_no: 1, mode: 'agent', bound_head_sha: 'H1', status: 'running', max_attempts: 3, reported_shas: ['M3'] }] }] }),
+      insert_fact: () => ({ rows: [{ id: 'f4' }] }),
+      find_transition: () => ({ rows: [] }),
+      transition: () => ({ rows: [{ transition_id: 'tr4', delivery_id: 'd1', version: 3 }] }),
+    });
+    await ingestFact(
+      { kind: 'head_observed', workspaceId: 'w1', source: 'webhook', repoFullName: 'acme/widgets', prNumber: 7 },
+      { exec, github: { readPr: async () => live('M3'), contains: async (_r, a, h) => { asked.push(a + '<' + h); return true; } } },
+    );
+    expect(asked).toEqual([]);
   });
 
   test('a duplicate fact returns the first application; an unapplied duplicate is applied again', async () => {

@@ -75,7 +75,7 @@ import { workspaceCapGate } from './workspace-cap-gate';
 import { workspaceExecutorGate } from './workspace-executor-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
-import { cancelSkippedTask, claimFix as claimKernelFix } from '@/lib/workflow/seam';
+import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
@@ -2448,12 +2448,12 @@ export async function POST(req: NextRequest) {
     }
 
     // Workflow kernel T9 (docs/specs/workflow-state-kernel.md §10.5): a review
-    // fix is revalidated against a live read at claim. One whose target was
+    // or CI fix is revalidated against a live read at claim. One whose target was
     // resolved while it queued (approved, merged, head moved, round superseded)
     // is cancelled as skipped — never started, and not a worker failure.
-    if ((task as any).deliveryRole === 'fix' && (task as any).deliveryId) {
+    if (isRepairRole((task as any).deliveryRole) && (task as any).deliveryId) {
       const fixDecision = await claimKernelFix({
-        id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: 'fix', context: task.context,
+        id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: (task as any).deliveryRole, context: task.context,
       }).catch((err): { action: 'defer'; reason: string } => {
         console.error(`[claim] workflow kernel FixClaimed failed for task ${task.id}:`, err);
         return { action: 'defer', reason: 'kernel_error' };

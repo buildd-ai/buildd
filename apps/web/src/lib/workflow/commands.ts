@@ -57,6 +57,12 @@ export type Command =
       proof?: { liveContainsLocal: boolean; contentDiffChanged?: boolean };
       /** §8.3 carry-forward evidence for an APPROVED/LANDING delivery. */
       carryForward?: 'content_equivalent' | 'own_refresh' | null;
+      /**
+       * §6.9 provenance input from the compare API: does the live head descend
+       * from the bound attempt's head? Combined with the attempt's own
+       * reported_shas and its running status, never with a commit author.
+       */
+      attribution?: { descendsFromBound: boolean };
     })
   | (Base & {
       type: 'AttemptEnded';
@@ -94,7 +100,39 @@ export type Command =
       maxAttempts: number;
       revalidation: { live: LivePr; newerApprove: boolean };
     })
-  | (Base & { type: 'FixClaimed'; attemptId: string; revalidation: { live: LivePr; approved: boolean } })
+  | (Base & {
+      type: 'FixClaimed';
+      attemptId: string;
+      /** `ciGreen`: the CI family's own trigger fact is no longer true at the head (§10.5). */
+      revalidation: { live: LivePr; approved: boolean; ciGreen?: boolean };
+    })
+  | (Base & {
+      /**
+       * §10.5 dispatch-time revalidation for a repair family: the bound repair
+       * attempt's target no longer needs work (head moved, PR not open, CI green).
+       * The ledger row is `skipped` (it consumes no budget) and the delivery
+       * resumes the state the repair interrupted.
+       */
+      type: 'RepairNotNeeded';
+      attemptId: string;
+      reason: string;
+      live?: LivePr | null;
+    })
+  | (Base & {
+      /**
+       * §5.7 rule 5 / AC-14: a person asks for one more attempt of a family whose
+       * budget is spent. Allocates that attempt (trigger=human, numbered after
+       * the last, never 0) in the same statement, so the extension is visible as
+       * its own transition and bounds exactly one dispatch.
+       */
+      type: 'BudgetExtended';
+      family: 'ci';
+      headSha: string;
+      signature: string;
+      /** The configured cap (gitConfig.maxCiRetries or the policy default). */
+      maxAttempts: number;
+      reason: string;
+    })
   | (Base & {
       type: 'CiFailedObserved';
       headSha: string;

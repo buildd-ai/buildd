@@ -21,6 +21,8 @@
 import { attemptView } from './reducer';
 import type { AttemptFamily, DeliveryState, KernelView } from './types';
 
+export type { DeliverySnapshot } from './types';
+
 export type NextMoveOwner = 'worker' | 'reviewer' | 'platform' | 'human' | 'landing' | 'trunk' | 'none';
 
 export type DeliveryStage =
@@ -268,7 +270,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
   }
 
   const attempts: DeliveryView['attempts'] = {};
-  for (const fam of ['review_fix', 'ci', 'conflict', 'migration'] as AttemptFamily[]) {
+  for (const fam of ['review_fix', 'ci', 'conflict', 'migration', 'trunk'] as AttemptFamily[]) {
     if (input.view.attempts.some((a) => a.family === fam)) attempts[fam] = attemptView(input.view.attempts, fam, d.maxRounds);
   }
 
@@ -292,6 +294,19 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     history,
     cta,
   };
+}
+
+const FAMILY_LABEL: Record<AttemptFamily, string> = { ci: 'CI', review_fix: 'review', conflict: 'conflict', migration: 'migration', trunk: 'trunk' };
+
+/**
+ * §5.7 rule 4 / §12.1: the one family-labelled "attempt N of M" line
+ * ("CI 1 of 3 · review 1 of 3"), identical wherever it is shown. Only the
+ * families the ledger has rows for; null when it has none.
+ */
+export function attemptLine(attempts: DeliveryView['attempts']): string | null {
+  const order: AttemptFamily[] = ['ci', 'review_fix', 'conflict', 'migration', 'trunk'];
+  const parts = order.filter((f) => attempts[f]).map((f) => `${FAMILY_LABEL[f]} ${attempts[f]!.n} of ${attempts[f]!.m}`);
+  return parts.length ? parts.join(' · ') : null;
 }
 
 /**

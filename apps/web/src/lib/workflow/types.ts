@@ -117,6 +117,8 @@ export interface AttemptSnapshot {
   outcome: AttemptOutcome | null;
   maxAttempts: number;
   reportedShas: string[];
+  /** `human`: a manual retry ("Fix CI"); one past the cap is a BudgetExtended row. Absent = automatic. */
+  trigger?: 'automatic' | 'human';
 }
 
 export interface KernelView {

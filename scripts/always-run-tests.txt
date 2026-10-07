@@ -103,6 +103,9 @@ packages/core/__tests__/model-policy-authority.test.ts
 # files (classifier in scripts/module-boundaries.ts) against a committed,
 # shrink-only baseline. The file that adds an import is never this test's neighbour.
 scripts/module-boundaries.test.ts
+# Splits every tracked unit test into CI shards and asserts the union is exactly
+# the collected set: a new test file anywhere changes its input.
+scripts/run-unit-tests-shard.test.ts
 # Workflow kernel write-site guard: no module outside apps/web/src/lib/workflow/
 # touches the kernel tables. The offending file is never this test's neighbour.
 packages/core/__tests__/workflow-write-sites.test.ts

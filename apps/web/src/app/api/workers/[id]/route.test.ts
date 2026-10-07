@@ -691,11 +691,14 @@ mock.module('@/lib/pr-activity-fix-claimed', () => ({
 // it at the right points and that the legacy write does not run beside it.
 const mockWorkflowAttemptEnded = mock(async (_p: any) => ({ handled: false }));
 const mockFixCompletionGate = mock(async (_p: any): Promise<any> => null);
+const mockRecordLocalHead = mock(async (_taskId: string, _sha: string) => undefined);
 const mockRecordReviewVerdict = mock(async (_p: any): Promise<any> => ({ handled: false }));
 mock.module('@/lib/workflow/seam', () => ({
   attemptEnded: mockWorkflowAttemptEnded,
   fixCompletionGate: mockFixCompletionGate,
   recordReviewVerdict: mockRecordReviewVerdict,
+  isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
+  recordLocalHead: mockRecordLocalHead,
   openKernelDelivery: mock(async () => ({ owned: false })),
   observeHead: mock(async () => false),
   observePrState: mock(async () => false),

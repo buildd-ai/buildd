@@ -85,6 +85,8 @@ const APPLIED: Array<[string, KernelView, Command, string]> = [
   ['T26 TrunkRecovered', V(D({ state: 'BLOCKED_ON_TRUNK', trunkIncidentId: 'i1', resumeState: 'APPROVED', approvedHeads: ['H1'] })), { type: 'TrunkRecovered', actor: 'kernel', incidentId: 'i1', baseStillRed: false, headPredatesFix: true }, 'APPROVED'],
   ['T27 ReviewRoundFailed', V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R()]), { type: 'ReviewRoundFailed', actor: 'reviewer', roundId: 'r1', reason: 'prose_verdict', maxContractRetries: 2 }, 'AWAITING_REVIEW'],
   ['CompositionAttested', V(D({ state: 'AWAITING_REVIEW' })), { type: 'CompositionAttested', actor: 'kernel', attestation: att, constituents: attEv }, 'APPROVED'],
+  ['BudgetExtended', V(D({ state: 'ESCALATED', stateReason: 'ci_exhausted' }), [], [1, 2, 3].map((n) => A({ id: `c${n}`, family: 'ci', attemptNo: n, status: 'ended' }))), { type: 'BudgetExtended', actor: 'human:u', family: 'ci', headSha: 'H1', signature: 'sig', maxAttempts: 3, reason: 'one more try' }, 'REPAIRING'],
+  ['RepairNotNeeded', V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig' })]), { type: 'RepairNotNeeded', actor: 'kernel', attemptId: 'c1', reason: 'ci_green' }, 'APPROVED'],
 ];
 
 describe('generic: every applied transition is a version CAS (§7)', () => {
@@ -247,7 +249,10 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     expect(cf.patch.approvedHeads).toEqual(['H1', 'H2']);
     expect(cf.attempts[0]).toMatchObject({ attemptId: 'm1', set: { outcome: 'delivered', pushedHeadSha: 'H2' } });
     expect(applied(h(v, 'H2', { proof: { liveContainsLocal: false, contentDiffChanged: true } })).toState).toBe('AWAITING_REVIEW');
-    expect(applied(h(v, 'H2')).toState).toBe('REPAIRING');
+    // A known non-descendant while the attempt runs is a foreign push: recorded, the attempt still decides.
+    const foreign = applied(h(v, 'H2', { attribution: { descendsFromBound: false } }));
+    expect(foreign.toState).toBe('REPAIRING');
+    expect(foreign.evidence.foreignPush).toBe(true);
   });
 });
 
@@ -327,7 +332,10 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
   test('WORKING failed: retry budget left → WORKING; spent → FAILED (no PR) / ESCALATED (unpushed) / review', () => {
     expect(applied(end(V(D()), { outcome: 'failed', taskRetryBudgetLeft: true })).toState).toBe('WORKING');
     expect(applied(end(V(D({ prNumber: null, repoFullName: null })), { outcome: 'lost', live: null })).toState).toBe('FAILED');
-    expect(applied(end(V(D()), { outcome: 'failed', localHeadSha: 'L9' })).patch.stateReason).toBe('push_undeliverable');
+    // Local commits not on GitHub: push recovery first (AC-10); T22 reaches a person after its tries.
+    const unpushed = applied(end(V(D()), { outcome: 'failed', localHeadSha: 'L9' }));
+    expect(unpushed.toState).toBe('AWAITING_PUSH');
+    expect(effectKinds(unpushed)).toContain('push_recovery');
     expect(applied(end(V(D()), { outcome: 'failed', commitCount: 0, localHeadSha: null })).toState).toBe('AWAITING_REVIEW');
     // Budget spent, PR bound, nothing reviewable: a person owns it, never a silent WORKING.
     const closed = applied(end(V(D(), [R()]), { outcome: 'failed', commitCount: 0, localHeadSha: null, live: live('H1', { state: 'closed' }) }));
@@ -388,8 +396,17 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(effectKinds(migr)).toContain('renumber_migration');
     const agentConflict = applied(end(repairing({ family: 'conflict' }), { attemptId: 'c1', outcome: 'failed' }));
     expect(effectKinds(agentConflict)).toContain('dispatch_conflict_fix');
-    expect(applied(end(repairing({ attemptNo: 3 }), { attemptId: 'c1', outcome: 'failed' })).patch.stateReason).toBe('ci_exhausted');
-    expect(applied(end(repairing({ attemptNo: 3, family: 'conflict' }), { attemptId: 'c1', outcome: 'failed' })).patch.stateReason).toBe('conflict_exhausted');
+    // The ledger counts dispatched rows (allocation is consumption), not the attempt number.
+    const spentView = (family: 'ci' | 'conflict') => {
+      const v = repairing({ attemptNo: 3, family });
+      return { ...v, attempts: [A({ id: 'p1', family, attemptNo: 1, status: 'ended' }), A({ id: 'p2', family, attemptNo: 2, status: 'ended' }), ...v.attempts] };
+    };
+    expect(applied(end(spentView('ci'), { attemptId: 'c1', outcome: 'failed' })).patch.stateReason).toBe('ci_exhausted');
+    expect(applied(end(spentView('conflict'), { attemptId: 'c1', outcome: 'failed' })).patch.stateReason).toBe('conflict_exhausted');
+    // A skipped row (revalidation found nothing to do) spends nothing: attempt 3 after a skip is not the last.
+    const skipped = repairing({ attemptNo: 3 });
+    const withSkip = { ...skipped, attempts: [A({ id: 'p1', family: 'ci', attemptNo: 1, status: 'ended' }), A({ id: 'p2', family: 'ci', attemptNo: 2, status: 'skipped' }), ...skipped.attempts] };
+    expect(applied(end(withSkip, { attemptId: 'c1', outcome: 'failed' })).toState).toBe('REPAIRING');
   });
 });
 
@@ -544,7 +561,9 @@ describe('T8 FixDispatched / T9 FixClaimed (S7, S25, §10.5)', () => {
   });
   test('claim replay, unknown attempt, wrong state, not queued', () => {
     expectResult(claim(V(D({ state: 'FIXING', boundAttemptId: 'a1' }), [decidedRC], [A({ status: 'running' })])), 'duplicate', 'already_claimed');
-    expectResult(claim(cr([A({ family: 'ci' })])), 'rejected', 'unknown_attempt');
+    // A CI attempt is claimed by the repair path: not bound here (the delivery is CHANGES_REQUESTED), so it skips.
+    expectResult(claim(cr([A({ family: 'ci' })])), 'rejected', 'fix_superseded');
+    expectResult(claim(cr([A({ family: 'conflict' })])), 'rejected', 'unknown_attempt');
     expectResult(claim(V(D({ state: 'AWAITING_REVIEW' }), [], [A()])), 'stale', 'state_moved');
     expectResult(claim(cr([A({ status: 'running' })])), 'rejected', 'attempt_not_queued');
   });
@@ -568,7 +587,8 @@ describe('T10 CiFailedObserved (S23, S28)', () => {
   });
   test('in-flight ci attempt defers; ledger cap escalates; human trigger recorded', () => {
     expectResult(ci(V(D({ state: 'AWAITING_REVIEW' }), [], [A({ family: 'ci', status: 'running' })])), 'rejected', 'fix_in_flight');
-    expect(applied(ci(V(D({ state: 'AWAITING_REVIEW' }), [], [A({ family: 'ci', attemptNo: 3, status: 'ended' })]))).patch.stateReason).toBe('ci_exhausted');
+    const three = [1, 2, 3].map((n) => A({ id: `c${n}`, family: 'ci', attemptNo: n, status: 'ended' }));
+    expect(applied(ci(V(D({ state: 'AWAITING_REVIEW' }), [], three))).patch.stateReason).toBe('ci_exhausted');
     expect(applied(ci(V(D({ state: 'AWAITING_REVIEW' })), { trigger: 'human' })).attempts[0]).toMatchObject({ trigger: 'human' });
   });
   test('S28: families count independently — review fixes never consume the ci budget', () => {
@@ -872,7 +892,8 @@ describe('pure helpers', () => {
   test('attemptView is 1-based, per family, ignores skipped rows (S28)', () => {
     const rows = [A({ family: 'ci', attemptNo: 1, status: 'ended' }), A({ family: 'ci', attemptNo: 2, status: 'skipped' }), A({ attemptNo: 2, maxAttempts: 5 })];
     expect(attemptView(rows, 'ci')).toEqual({ n: 1, m: 3 });
-    expect(attemptView(rows, 'review_fix')).toEqual({ n: 2, m: 5 });
+    // N is the count of dispatched rows (1-based), M the highest cap any of them carries.
+    expect(attemptView(rows, 'review_fix')).toEqual({ n: 1, m: 5 });
     expect(attemptView(rows, 'conflict')).toEqual({ n: 0, m: 3 });
   });
   test('stableIdempotencyKey is null without the identity it needs', () => {
@@ -880,5 +901,143 @@ describe('pure helpers', () => {
     expect(stableIdempotencyKey({ type: 'ReviewBudgetExhausted', actor: 'k' }, D())).toBeNull();
     expect(stableIdempotencyKey({ type: 'DeliveryFailed', actor: 'k', reason: 'x' }, null)).toBeNull();
     expect(stableIdempotencyKey({ type: 'HeadObserved', actor: 'k', live: live('H2') }, D())).toBe(`head:${REPO}#7:H2`);
+  });
+});
+
+// ── Slice A part 2: the CI family on the ledger (§5.7, §6.9, §10.5, AC-13/14/16) ──
+
+describe('CI family (S23, S25, S28, AC-13/14/16)', () => {
+  const ciAttempt = (o: Partial<AttemptSnapshot> = {}) => A({ id: 'c1', family: 'ci', triggerReason: 'sig', ...o });
+  const repairing = (a: AttemptSnapshot[], d: Partial<DeliverySnapshot> = {}) =>
+    V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', currentRound: 1, ...d }), [R({ status: 'queued' })], a);
+  const head = (v: KernelView, h: string, extra: Partial<Extract<Command, { type: 'HeadObserved' }>> = {}) =>
+    run(v, { type: 'HeadObserved', actor: 'webhook', live: live(h), ...extra } as Command);
+  const ciFail = (v: KernelView, o: Partial<Extract<Command, { type: 'CiFailedObserved' }>> = {}) =>
+    run(v, { type: 'CiFailedObserved', actor: 'webhook', headSha: 'H1', signature: 'sig', maxAttempts: 3, ...o } as Command);
+
+  test('S23: a push the running attempt reported, or that descends from its head, is its delivery, whoever authored it', () => {
+    for (const attribution of [undefined, { descendsFromBound: true }]) {
+      const dec = applied(head(repairing([ciAttempt({ status: 'running' })]), 'H2', attribution ? { attribution } : {}));
+      expect(dec.toState).toBe('AWAITING_REVIEW');
+      expect(dec.attempts[0]).toMatchObject({ attemptId: 'c1', set: { outcome: 'delivered', pushedHeadSha: 'H2', appendReportedSha: 'H2' } });
+      expect(dec.attempts.some((x) => x.op === 'insert')).toBe(false);
+    }
+    // A SHA in reported_shas is the attempt's even when the compare API says otherwise.
+    const reported = applied(head(repairing([ciAttempt({ status: 'running', reportedShas: ['H2'] })]), 'H2', { attribution: { descendsFromBound: false } }));
+    expect(reported.toState).toBe('AWAITING_REVIEW');
+  });
+
+  test('S23: a person pushing while a CI fix is only queued skips that row (no budget) and handles the head normally', () => {
+    const dec = applied(head(repairing([ciAttempt({ status: 'queued' })]), 'HUMAN1', { attribution: { descendsFromBound: true } }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.attempts).toEqual([{ op: 'update', attemptId: 'c1', whenStatus: ['queued'], set: { status: 'skipped', outcome: 'noop', ended: true } }]);
+    expect(dec.effects.find((e) => e.kind === 'cancel_open_attempts')?.payload).toEqual({ families: ['ci'], reason: 'head_moved' });
+    expect(dec.evidence).toMatchObject({ foreignPush: true, repairSkipped: true });
+    expect(dec.patch.boundAttemptId).toBeNull();
+    const ap = applied(head(repairing([ciAttempt()], { approvedHeads: ['H1'], approvalBasis: 'verdict' }), 'H2', { carryForward: 'content_equivalent' }));
+    expect(ap.toState).toBe('APPROVED');
+    expect(ap.patch).toMatchObject({ approvedHeads: ['H1', 'H2'], boundAttemptId: null });
+  });
+
+  test('S23: the cap bounds dispatches in every case; a skipped row frees its slot, every other row spends one', () => {
+    const rows = [ciAttempt({ id: 'p1', attemptNo: 1, status: 'ended', outcome: 'delivered' }), ciAttempt({ id: 'p2', attemptNo: 2, status: 'skipped' }), ciAttempt({ id: 'p3', attemptNo: 3, status: 'cancelled' })];
+    const next = applied(ciFail(V(D({ state: 'AWAITING_REVIEW' }), [], rows)));
+    expect(next.toState).toBe('REPAIRING');
+    expect(next.attempts[0]).toMatchObject({ op: 'insert', family: 'ci', attemptNo: 4, maxAttempts: 3 });
+    expect(next.evidence).toMatchObject({ spent: 3, max: 3 });
+    const full = [...rows, ciAttempt({ id: 'p4', attemptNo: 4, status: 'ended' })];
+    expect(applied(ciFail(V(D({ state: 'AWAITING_REVIEW' }), [], full))).toState).toBe('ESCALATED');
+  });
+
+  test('AC-14: a human "Fix CI" past the cap is refused by T10 and allowed only as BudgetExtended, numbered after the last', () => {
+    const spent = [1, 2, 3].map((n) => ciAttempt({ id: `c${n}`, attemptNo: n, status: 'ended' }));
+    expectResult(ciFail(V(D({ state: 'ESCALATED', stateReason: 'ci_exhausted' }), [], spent), { trigger: 'human', actor: 'human:u' }), 'rejected', 'budget_exhausted');
+    const ext = (o: Partial<Extract<Command, { type: 'BudgetExtended' }>> = {}) => run(V(D({ state: 'ESCALATED', stateReason: 'ci_exhausted' }), [], spent),
+      { type: 'BudgetExtended', actor: 'human:u', family: 'ci', headSha: 'H1', signature: 'sig', maxAttempts: 3, reason: 'one more', ...o } as Command);
+    const dec = applied(ext());
+    expect(dec.toState).toBe('REPAIRING');
+    expect(dec.attempts[0]).toMatchObject({ op: 'insert', attemptNo: 4, trigger: 'human', maxAttempts: 4 });
+    expect(dec.bypass).toMatchObject({ actor: 'human:u', budgetFrom: 3, budgetTo: 4 });
+    expect(dec.idempotencyKey).toBe('budget:d1:ci:4');
+    expectResult(ext({ actor: 'runner' }), 'rejected', 'human_required');
+    expectResult(ext({ reason: ' ' }), 'rejected', 'reason_required');
+    // Under the cap there is nothing to extend: the human retry is an ordinary T10 attempt.
+    expectResult(run(V(D({ state: 'AWAITING_REVIEW' })), { type: 'BudgetExtended', actor: 'human:u', family: 'ci', headSha: 'H1', signature: 'sig', maxAttempts: 3, reason: 'x' }), 'rejected', 'budget_not_exhausted');
+    const human = applied(ciFail(V(D({ state: 'AWAITING_REVIEW' })), { trigger: 'human', actor: 'human:u' }));
+    expect(human.attempts[0]).toMatchObject({ attemptNo: 1, trigger: 'human', maxAttempts: 3 });
+    // The extension raises the cap by exactly one: the next automatic failure escalates again.
+    const extended = [...spent, ciAttempt({ id: 'c4', attemptNo: 4, status: 'ended', trigger: 'human', maxAttempts: 4 })];
+    expect(applied(ciFail(V(D({ state: 'AWAITING_REVIEW' }), [], extended))).patch.stateReason).toBe('ci_exhausted');
+  });
+
+  test('S25/AC-16: CI green at claim or dispatch skips the row and resumes; a moved head or closed PR only skips', () => {
+    const claimCi = (v: KernelView, rev: { live: LivePr; approved: boolean; ciGreen?: boolean }) =>
+      run(v, { type: 'FixClaimed', actor: 'claim:x', attemptId: 'c1', revalidation: rev } as Command);
+    const ok = applied(claimCi(repairing([ciAttempt()]), { live: live('H1'), approved: false }));
+    expect(ok.toState).toBe('REPAIRING');
+    expect(ok.attempts).toEqual([{ op: 'update', attemptId: 'c1', whenStatus: ['queued'], set: { status: 'running' } }]);
+    expectResult(claimCi(repairing([ciAttempt({ status: 'running' })]), { live: live('H1'), approved: false }), 'duplicate', 'already_claimed');
+    const green = applied(claimCi(repairing([ciAttempt()]), { live: live('H1'), approved: false, ciGreen: true }));
+    expect(green.toState).toBe('AWAITING_REVIEW');
+    expect(green.evidence.skipped).toBe('ci_green');
+    expect(green.patch).toMatchObject({ ci: 'green', boundAttemptId: null });
+    expect(green.rounds).toEqual([]); // round 1 is still open at H1
+    for (const l of [live('H9'), live('H1', { state: 'closed' })]) {
+      const dec = claimCi(repairing([ciAttempt()]), { live: l, approved: false });
+      expectResult(dec, 'rejected', 'fix_not_needed');
+      expect((dec as { record: { attempts: unknown[] } }).record.attempts).toHaveLength(1);
+    }
+    const notNeeded = applied(run(repairing([ciAttempt()]), { type: 'RepairNotNeeded', actor: 'kernel', attemptId: 'c1', reason: 'ci_green' }));
+    expect(notNeeded.toState).toBe('AWAITING_REVIEW');
+    expect(notNeeded.idempotencyKey).toBe('notneeded:c1');
+    // No open round at the head: one is queued so the delivery has an owner.
+    const noRound = applied(run(V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1' }), [], [ciAttempt()]), { type: 'RepairNotNeeded', actor: 'kernel', attemptId: 'c1', reason: 'ci_green' }));
+    expect(effectKinds(noRound)).toContain('dispatch_review');
+  });
+
+  test('S28: families count independently; a review fix on a delivery that spent CI attempts starts at 1', () => {
+    const rows = [ciAttempt({ id: 'c1', attemptNo: 1, status: 'ended' }), ciAttempt({ id: 'c2', attemptNo: 2, status: 'ended' }), A({ id: 'm1', family: 'conflict', mode: 'mechanical', attemptNo: 1, status: 'ended', maxAttempts: 2 })];
+    expect(attemptView(rows, 'ci')).toEqual({ n: 2, m: 3 });
+    expect(attemptView(rows, 'review_fix')).toEqual({ n: 0, m: 3 });
+    expect(attemptView(rows, 'conflict')).toEqual({ n: 0, m: 3 }); // mechanical rows never count against the agent budget
+    const dec = applied(run(V(D({ state: 'CHANGES_REQUESTED', currentRound: 1 }), [decidedRC], rows), { type: 'FixDispatched', actor: 'kernel', roundId: 'r1', taskId: 'ft', maxAttempts: 3, revalidation: { live: live('H1'), newerApprove: false } }));
+    expect(dec.attempts[0]).toMatchObject({ family: 'review_fix', attemptNo: 1 });
+  });
+
+  test('an attempt that ends after the delivery moved on records its end without moving the delivery', () => {
+    const v = V(D({ state: 'AWAITING_REVIEW', currentRound: 2, currentHeadSha: 'H2' }), [], [ciAttempt({ status: 'running', outcome: 'delivered' })]);
+    const dec = run(v, { type: 'AttemptEnded', actor: 'runner', workerId: 'w', attemptId: 'c1', outcome: 'success', localHeadSha: 'H2', commitCount: 1, live: live('H2') });
+    expectResult(dec, 'stale', 'attempt_not_bound');
+    expect((dec as { record: { attempts: Array<{ set: Record<string, unknown> }> } }).record.attempts[0].set).toEqual({ status: 'ended', ended: true, appendReportedSha: 'H2' });
+  });
+});
+
+describe('S9, S12, S15 kernel rules', () => {
+  test('S9: an owner attempt reaped with commits and no reported head is not proof: AWAITING_PUSH + push_recovery', () => {
+    const dec = applied(run(V(D()), { type: 'AttemptEnded', actor: 'sweep:stale-workers', workerId: 'w', taskId: 't1', outcome: 'lost', localHeadSha: null, commitCount: 2, live: live('H1') }));
+    expect(dec.toState).toBe('AWAITING_PUSH');
+    expect(effectKinds(dec)).toContain('push_recovery');
+    // Nothing local to lose: a reaped attempt with no commits hands on as before.
+    expect(applied(run(V(D()), { type: 'AttemptEnded', actor: 'sweep:stale-workers', workerId: 'w', taskId: 't1', outcome: 'lost', localHeadSha: null, commitCount: 0, live: live('H1') })).toState).toBe('AWAITING_REVIEW');
+  });
+
+  test('S12: a second, different supersession target reaches the reducer and is refused; the same one is a replay', () => {
+    const cmd = (prNumber: number): Command => ({ type: 'SupersessionRecorded', actor: 'agent:t2', target: { repoFullName: REPO, prNumber, merged: true, url: null }, reason: 'r', authorised: true });
+    const sup = V(D({ state: 'SUPERSEDED', supersededByPr: 9 }));
+    expect(stableIdempotencyKey(cmd(9), sup.delivery)).not.toBe(stableIdempotencyKey(cmd(10), sup.delivery));
+    expectResult(run(sup, cmd(10)), 'rejected', 'edge_exists');
+    expectResult(run(sup, cmd(9)), 'duplicate', 'edge_exists_same');
+  });
+
+  test('S15: a base that keeps moving is refreshed mechanically a bounded number of times across heads, then a person lands it', () => {
+    const behind = (n: number) => Array.from({ length: n }, (_, i) => A({ id: `m${i}`, family: 'conflict', mode: 'mechanical', attemptNo: i + 1, boundHeadSha: `B${i}`, triggerReason: 'behind', status: 'ended', maxAttempts: 2 }));
+    const mc = (rows: AttemptSnapshot[]) => run(V(D({ state: 'LANDING', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], rows), { type: 'MergeCallResult', actor: 'kernel', headSha: 'H1', outcome: 'behind' });
+    const first = applied(mc(behind(2)));
+    expect(first.toState).toBe('REPAIRING');
+    expect(effectKinds(first)).toContain('refresh_branch');
+    const capped = applied(mc(behind(3)));
+    expect(capped.toState).toBe('ESCALATED');
+    expect(capped.patch.stateReason).toBe('landing_needs_human');
+    expect(capped.attempts).toEqual([]);
   });
 });

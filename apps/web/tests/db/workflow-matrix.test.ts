@@ -9,11 +9,13 @@
  * comment, notifications, the dispatch wake, the reviewer prompt) are faked:
  * the decisions under test are the kernel's.
  *
- * Slice A part 1 (PR #3821, §13.1) is what runs live. A scenario that needs
+ * Slice A parts 1–2 (PR #3821; the CI ledger, §13.1) are what runs live. A scenario that needs
  * later work is a `test.todo` naming the task that owns it, with the intended
  * assertions beside it; that task turns it into a passing test. The matrix is
  * accepted only when no todo is left.
- *   - 556cd910: Slice A part 2 (CI ledger, provenance by SHA set, BudgetExtended)
+ *   - 556cd910 (Slice A part 2: CI ledger, provenance by SHA set, BudgetExtended) has no todo
+ *     left: S9, S23, S25 and S28 run live; S10, S12 and S15 run the kernel transitions on real
+ *     Postgres, with their route wiring a todo of the spec slice that moves those doors.
  *   - 7ab4916f: Slice A part 3 (DeliveryView / owner of next move, activity from
  *     transitions, release composition, S35–S37)
  *   - "spec Slice B/C/D": no task filed yet (§14).
@@ -31,7 +33,7 @@ let prSeq = 9100;
 
 // ── Fake GitHub: one PR whose head, state and ancestry a test moves ─────────
 
-interface FakePr { head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]> }
+interface FakePr { head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]>; ciGreen?: boolean | null }
 let gh: FakePr;
 const live = (): LivePr => ({
   state: gh.state, merged: gh.merged, headSha: gh.head, headRepoFullName: REPO, baseRef: 'dev', updatedAt: gh.updatedAt,
@@ -40,6 +42,7 @@ const live = (): LivePr => ({
 const reader: GithubFactReader = {
   readPr: async () => live(),
   contains: async (_repo, ancestor, head) => ancestor === head || (gh.ancestors[head] ?? []).includes(ancestor),
+  ciGreen: async () => gh.ciGreen ?? null,
 };
 const repoFor = async () => ({ installationId: 1, repoFullName: REPO, gitConfig: null });
 
@@ -50,6 +53,8 @@ let activity: string[];
 let notified: string[];
 let exhaustions: number;
 let reviewersCreated: Array<{ taskId: string; round: number; head: string }>;
+let activityEntries: Array<Record<string, unknown>>;
+let ciEscalations: string[];
 
 const realGithubFacts = await import('../../src/lib/workflow/github-facts');
 mock.module('../../src/lib/workflow/github-facts', () => ({ ...realGithubFacts, githubReader: () => reader, workspaceRepo: repoFor }));
@@ -78,7 +83,7 @@ mock.module('../../src/lib/github', () => ({
 const realActivity = await import('../../src/lib/pr-activity-comment');
 mock.module('../../src/lib/pr-activity-comment', () => ({
   ...realActivity,
-  appendPrActivity: async (p: { entry: { kind: string } }) => { activity.push(p.entry.kind); return { action: 'created' }; },
+  appendPrActivity: async (p: { entry: { kind: string } }) => { activity.push(p.entry.kind); activityEntries.push(p.entry); return { action: 'created' }; },
 }));
 const realNotify = await import('../../src/lib/notify');
 mock.module('../../src/lib/notify', () => ({ ...realNotify, notifyTeamOf: async (_s: unknown, _e: unknown, p: { title: string }) => { notified.push(p.title); } }));
@@ -104,8 +109,24 @@ mock.module('../../src/lib/reviewer', () => ({
   supersedeFixTaskOnApproval: async () => ({ superseded: true }),
 }));
 
+const realInspect = await import('../../src/lib/ci-failure-inspect');
+mock.module('../../src/lib/ci-failure-inspect', () => ({
+  ...realInspect,
+  fetchCIFailureLogs: async () => ({ summary: 'unit tests failed', runId: 11, runUrl: 'https://ci.example.test/run/11', failedJobId: 12, failedJobNames: ['Unit tests'] }),
+}));
+const realEvidence = await import('../../src/lib/ci-job-log-evidence');
+mock.module('../../src/lib/ci-job-log-evidence', () => ({ ...realEvidence, captureCiJobLogEvidence: async () => ({ kind: 'skipped' }) }));
+const realCiRetry = await import('../../src/lib/ci-failure-retry');
+mock.module('../../src/lib/ci-failure-retry', () => ({
+  ...realCiRetry,
+  escalateCiRedHead: async (i: { headSha: string; detail: string }) => { ciEscalations.push(i.detail); return true; },
+}));
+
 const seam = await import('../../src/lib/workflow/seam');
-const { reviewEffectHandlers } = await import('../../src/lib/workflow/review-effects');
+const { reviewEffectHandlers: reviewOnly } = await import('../../src/lib/workflow/review-effects');
+const { withCiRetryEffects } = await import('../../src/lib/workflow/ci-retry-effects');
+/** The composition root's set (apps/web/src/modules.ts): review loop plus the CI family. */
+const reviewEffectHandlers = withCiRetryEffects(reviewOnly);
 const { runEffects } = await import('../../src/lib/workflow/effects');
 const { applyCommand, loadView } = await import('../../src/lib/workflow/kernel');
 const { attemptView, headCoverage } = await import('../../src/lib/workflow/reducer');
@@ -138,7 +159,7 @@ beforeAll(async () => {
 });
 beforeEach(() => {
   gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0', ancestors: {} };
-  posted = []; activity = []; notified = []; exhaustions = 0; reviewersCreated = []; override = {}; ghApi = null;
+  posted = []; activity = []; notified = []; exhaustions = 0; reviewersCreated = []; override = {}; activityEntries = []; ciEscalations = []; ghApi = null;
   comments = new Map();
 });
 
@@ -178,8 +199,8 @@ async function taskRow(id: string) {
     sql`SELECT id, delivery_id, delivery_role, context, status, title, result FROM tasks WHERE id = ${id}::uuid`);
   return { ...t, task: { id: t.id, workspaceId, deliveryId: t.delivery_id, deliveryRole: t.delivery_role, context: t.context } };
 }
-const tasksOf = (deliveryId: string, role: 'fix' | 'review') => q<{ id: string; status: string; title: string; context: Record<string, unknown> }>(
-  sql`SELECT id, status, title, context FROM tasks WHERE delivery_id = ${deliveryId}::uuid AND delivery_role = ${role} ORDER BY created_at, id`);
+const tasksOf = (deliveryId: string, role: 'fix' | 'review' | 'ci_fix') => q<{ id: string; status: string; title: string; context: Record<string, unknown>; creation_source: string; result: Record<string, unknown> | null }>(
+  sql`SELECT id, status, title, context, creation_source, result FROM tasks WHERE delivery_id = ${deliveryId}::uuid AND delivery_role = ${role} ORDER BY created_at, id`);
 const rounds = (deliveryId: string) => q<{ id: string; round: number; head_sha: string; status: string; kind: string; verdict: string | null; failure_count: number }>(
   sql`SELECT id, round, head_sha, status, kind, verdict, failure_count FROM workflow_review_rounds WHERE delivery_id = ${deliveryId}::uuid ORDER BY round`);
 const transitions = (deliveryId: string) => q<{ id: string; command: string; to_state: string; evidence: Record<string, unknown>; to_version: number }>(
@@ -227,6 +248,31 @@ async function awaitingPush() {
   const ended = await seam.attemptEnded({ task: f.fix, workerId, status: 'completed', localHeadSha: 'L2', commitCount: 1, source: 'runner' }, deps);
   expect((await delivery(f.deliveryId)).state).toBe('AWAITING_PUSH');
   return { ...f, workerId, ended };
+}
+
+// ── The CI family (Slice A part 2) ──────────────────────────────────────────
+
+/** The check_suite webhook / red-PR sweep door for a kernel-owned PR (T10). */
+const ciFail = (o: Delivery, opts: { head?: string; max?: number; d?: typeof deps } = {}) => seam.observeCiFailure({
+  workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, headSha: opts.head ?? gh.head,
+  signature: 'ci_failed', maxAttempts: opts.max ?? 3, source: 'webhook:check_suite',
+}, opts.d ?? deps);
+const ciAttempts = async (deliveryId: string) => (await loadView({ deliveryId })).attempts.filter((a) => a.family === 'ci');
+
+/** A CI fix worker ended: the terminal PATCH settles the task row, then T4 runs. */
+async function endCi(t: { id: string } & Record<string, unknown>, status: 'completed' | 'failed' | 'lost', o: { local?: string | null; commits?: number } = {}) {
+  await q(sql`UPDATE tasks SET status = ${status === 'completed' ? 'completed' : 'failed'} WHERE id = ${t.id}::uuid`);
+  const w = await seedWorker(t.id, { status: status === 'completed' ? 'completed' : 'failed', lastCommitSha: o.local ?? null, commitCount: o.commits ?? 0 });
+  return seam.attemptEnded({ task: t as never, workerId: w, status, localHeadSha: o.local ?? null, commitCount: o.commits ?? 0, source: status === 'lost' ? 'sweep:stale-workers' : 'runner' }, deps);
+}
+
+/** CI red on the current head; the CI fix task filed by the real dispatch_ci_fix and claimed. */
+async function ciRepairing(o: Delivery, max = 3) {
+  const seen = await ciFail(o, { max });
+  expect(seen).toMatchObject({ handled: true, result: { result: 'applied' } });
+  const t = (await taskRow((seen as { attemptTaskId: string }).attemptTaskId)).task;
+  expect(await seam.claimFix(t, deps)).toEqual({ action: 'proceed' });
+  return t;
 }
 
 // ══ S1–S8: the review / fix / approval loop ══════════════════════════════════
@@ -461,12 +507,54 @@ describe('S9–S15', () => {
   // queued at the old head. (Part 1 today: lost + unknown L counts as "contained", so a PR whose
   // head is still open hands on to review at the old head — the case to close.) Also the cleanup
   // route (apps/web/src/app/api/tasks/cleanup) for a delivery task.
-  test.todo('S9: reaper sees a dead worker with only local commits → AWAITING_PUSH, never completed (needs 556cd910)');
+  test('S9: the reaper ends an owner attempt whose commits never reached GitHub → AWAITING_PUSH + push_recovery; no round at the old head', async () => {
+    const o = await open();
+    const w = await seedWorker(o.ownerTaskId, { status: 'failed', prNumber: o.prNumber, commitCount: 2 });
+    const end = () => seam.attemptEnded({ task: ownerTask(o), workerId: w, status: 'lost', localHeadSha: null, commitCount: 2, source: 'sweep:stale-workers' }, deps);
+    expect((await end()).result).toMatchObject({ result: 'applied' });
+    expect((await end()).result).toMatchObject({ result: 'duplicate' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H1', currentRound: 0 });
+    expect(await rounds(o.deliveryId)).toEqual([]);
+    expect(reviewersCreated).toEqual([]);
+    expect((await effects(o.deliveryId, 'push_recovery')).length).toBe(1);
+    expect((await taskRow(o.ownerTaskId)).status).not.toBe('completed');
+  });
+
+  test('S9: a reaped CI fix that pushed nothing re-dispatches the next ledger row; the attempt is never delivered', async () => {
+    const o = await openAndHandOn();
+    const t = await ciRepairing(o);
+    await endCi(t, 'lost', { commits: 1 });
+    const rows = await ciAttempts(o.deliveryId);
+    expect(rows.map((a) => [a.attemptNo, a.status, a.outcome])).toEqual([[1, 'ended', 'failed'], [2, 'queued', null]]);
+    expect((await delivery(o.deliveryId)).state).toBe('REPAIRING');
+    expect((await tasksOf(o.deliveryId, 'ci_fix')).length).toBe(2);
+  });
 
   // Intended: MergeCallResult(indeterminate) stays LANDING with one verify_merge; a second merge
   // call for the same head is `duplicate` (merge:{pr}:{head}); PrMerged arrives once; the merge
   // is pinned at current_head_sha. Landing is still the legacy door (§13.1 deviation 2).
-  test.todo('S10: merge indeterminate and double merge → LANDING, verify_merge, one PrMerged (needs 556cd910 per mission plan; spec Slice C landing)');
+  test('S10 (kernel): merge indeterminate and a double merge call → LANDING pinned at the head, one verify_merge, one PrMerged', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    const land = () => applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } });
+    expect(await land()).toMatchObject({ result: 'applied' });
+    expect(await land()).toMatchObject({ result: 'duplicate' });
+    const [mc] = await effects(o.deliveryId, 'merge_call');
+    expect(mc.dedupe_key).toBe(`merge_call:${o.deliveryId}:H1`);
+    const result = () => applyCommand({ type: 'MergeCallResult', actor: 'kernel', headSha: 'H1', outcome: 'indeterminate' }, { ref: { deliveryId: o.deliveryId } });
+    expect(await result()).toMatchObject({ result: 'applied' });
+    expect(await result()).toMatchObject({ result: 'duplicate' });
+    expect((await delivery(o.deliveryId)).state).toBe('LANDING');
+    expect((await effects(o.deliveryId, 'verify_merge')).length).toBe(1);
+    await closeOrMerge(o, true);
+    await closeOrMerge(o, true);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'MERGED', mergeCommitSha: 'M-H1' });
+    expect((await transitions(o.deliveryId)).filter((t) => t.command === 'PrMerged').length).toBe(1);
+  });
+
+  // Intended: the five merge doors (auto-merge, landPr, the merge route, PUT /api/github/pr, the
+  // sweep) issue LandingRequested/MergeCallResult instead of merging directly (§13.1 deviation 2).
+  test.todo('S10: the merge doors call T15/T16 instead of merging directly (needs spec Slice C landing — no task filed)');
 
   test('S11: a person merges on GitHub while AWAITING_REVIEW → MERGED from any state; open rounds superseded; classified merged_unreviewed', async () => {
     const o = await openAndHandOn();
@@ -497,7 +585,27 @@ describe('S9–S15', () => {
   // shipped — through POST /api/github/pr/supersede and record_pr_supersession. An attempt to
   // overwrite must come back REFUSED (409 edge_exists): today applyCommand answers it `duplicate`
   // via the target-less stable key `supersede:{pr}` (see S18 below).
-  test.todo('S12: closed unmerged, shipped under another PR, caller task names it → T20 via the supersede route (needs 556cd910 per mission plan; spec Slice D)');
+  test('S12 (kernel): T20 only from CLOSED_UNMERGED; a second, different target is refused edge_exists and never overwrites', async () => {
+    const o = await openAndHandOn();
+    const caller = await seedTask(workspaceId, { status: 'in_progress', title: 'friction: record the supersession' });
+    const supersede = (prNumber: number, authorised = true) => applyCommand({
+      type: 'SupersessionRecorded', actor: `agent:${caller}`, target: { repoFullName: REPO, prNumber, merged: true, url: null }, reason: 're-opened fresh', authorised,
+    }, { ref: { deliveryId: o.deliveryId } });
+    expect(await supersede(4242)).toMatchObject({ result: 'rejected', reason: 'not_closed_unmerged' });
+    await closeOrMerge(o, false, 'u-closed');
+    expect(await supersede(4242, false)).toMatchObject({ result: 'rejected', reason: 'not_authorised' });
+    expect(await supersede(4242)).toMatchObject({ result: 'applied' });
+    expect(await supersede(4242)).toMatchObject({ result: 'duplicate' });
+    expect(await supersede(4343)).toMatchObject({ result: 'rejected', reason: 'edge_exists' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'SUPERSEDED', supersededByPr: 4242 });
+    const t20 = (await transitions(o.deliveryId)).filter((t) => t.command === 'SupersessionRecorded');
+    expect(t20.map((t) => t.evidence.actor)).toEqual([`agent:${caller}`]);
+  });
+
+  // Intended: POST /api/github/pr/supersede and record_pr_supersession call T20, authorised on the
+  // CALLER's task naming the PR (not the owner's), and canCompleteMission treats the superseded PR
+  // as shipped from the delivery.
+  test.todo('S12: the supersede route and record_pr_supersession call T20 on the caller\'s task (needs spec Slice D — no task filed)');
 
   test('S13: the transition and its effects commit together; a crash before the inline drain is picked up by the next drain', async () => {
     const o = await openAndHandOn();
@@ -545,7 +653,32 @@ describe('S9–S15', () => {
   // Intended: a base that keeps moving under an APPROVED delivery cycles LANDING ↔ REPAIRING(behind)
   // through mechanical refresh_branch attempts bounded by the treadmill cap (DEFAULT_MAX_MECHANICAL
   // per head), then escalates; landPr's hard gates unchanged.
-  test.todo('S15: base keeps moving under an approved PR → bounded LANDING/REPAIRING(behind) (needs 556cd910 per mission plan; spec Slice B/C)');
+  test('S15 (kernel): a base that keeps moving under an approved PR is refreshed mechanically a bounded number of times, then a person lands it', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    override.refresh_branch = async () => ({ outcome: 'ok' }); // the platform's own update-branch (no agent)
+    let head = 'H1';
+    for (let i = 1; i <= 3; i++) {
+      expect(await applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: head, live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } })).toMatchObject({ result: 'applied' });
+      expect(await applyCommand({ type: 'MergeCallResult', actor: 'kernel', headSha: head, outcome: 'behind' }, { ref: { deliveryId: o.deliveryId } })).toMatchObject({ result: 'applied' });
+      expect(await delivery(o.deliveryId)).toMatchObject({ state: 'REPAIRING', stateReason: 'behind' });
+      // The refresh lands: our own mechanical push, carried forward without a new review.
+      const next = `R${i}`;
+      await push(o, next, { ancestors: [head], carryForward: 'own_refresh' });
+      expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: next });
+      head = next;
+    }
+    expect(await applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: head, live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } })).toMatchObject({ result: 'applied' });
+    expect(await applyCommand({ type: 'MergeCallResult', actor: 'kernel', headSha: head, outcome: 'behind' }, { ref: { deliveryId: o.deliveryId } })).toMatchObject({ result: 'applied' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'landing_needs_human' });
+    const mech = (await loadView({ deliveryId: o.deliveryId })).attempts.filter((a) => a.mode === 'mechanical');
+    expect(mech.map((a) => [a.attemptNo, a.outcome])).toEqual([[1, 'delivered'], [1, 'delivered'], [1, 'delivered']].map(([, out], i) => [i + 1, out]));
+    expect(reviewersCreated.length).toBe(1);
+  });
+
+  // Intended: landPr and the landing sweep raise MergeCallResult(behind) from their real merge call,
+  // and the refresh_branch effect runs pr-branch-update with its expected_head (§6.7).
+  test.todo('S15: landPr / the landing sweep drive the treadmill through T16 and refresh_branch (needs spec Slice B/C — no task filed)');
 });
 
 // ══ S16–S21: projections and authorization ═══════════════════════════════════
@@ -734,7 +867,81 @@ describe('S23 — CI provenance', () => {
   // attributed to the CI attempt by SHA set (reported_shas) and consume one `ci` ledger row each; a
   // person's push is `foreign_push` and consumes none; the cap bounds dispatches in all three; manual
   // "Fix CI" (retry-ci route) is trigger=human with the configured maxCiRetries and BudgetExtended past it.
-  test.todo('S23: CI provenance by SHA set across owner/bot/human pushes; manual Fix CI uses the configured cap (needs 556cd910)');
+  test('S23 (CI): pushes are attributed by SHA set, never author: a reported SHA and an unreported descendant both deliver; each consumed one row', async () => {
+    const o = await openAndHandOn();
+    const t1 = await ciRepairing(o);
+    expect(t1).toMatchObject({ deliveryRole: 'ci_fix' });
+    expect((await taskRow(t1.id)).title).toContain('after CI #1');
+    // The runner reported its local head (metric sync) before pushing it.
+    await seam.recordLocalHead(t1.id, 'C1');
+    expect((await ciAttempts(o.deliveryId))[0].reportedShas).toEqual(['C1']);
+    await push(o, 'C1', { ancestors: ['H1'] });
+    let v = await loadView({ deliveryId: o.deliveryId });
+    expect(v.delivery).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'C1', currentRound: 2 });
+    expect(v.attempts.find((a) => a.family === 'ci')).toMatchObject({ outcome: 'delivered' });
+    // While that worker still runs (it watches the checks), a red C1 is its to fix: no second row.
+    expect((await ciFail(o) as { result: { reason: string } }).result.reason).toBe('fix_in_flight');
+    expect((await endCi(t1, 'completed', { local: 'C1', commits: 1 })).result).toMatchObject({ result: 'stale' });
+    expect((await ciAttempts(o.deliveryId))[0]).toMatchObject({ status: 'ended', outcome: 'delivered' });
+
+    // CI red again; this push was never reported by the runner (a bot-identity commit): it descends from the bound head.
+    const t2 = await ciRepairing(o);
+    await push(o, 'C2', { ancestors: ['C1', 'H1'] });
+    v = await loadView({ deliveryId: o.deliveryId });
+    expect(v.delivery).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'C2' });
+    const rows = v.attempts.filter((a) => a.family === 'ci');
+    expect(rows.map((a) => [a.attemptNo, a.outcome])).toEqual([[1, 'delivered'], [2, 'delivered']]);
+    const [r1, r2] = await q<{ pushed_head_sha: string }>(sql`SELECT pushed_head_sha FROM workflow_attempts WHERE delivery_id = ${o.deliveryId}::uuid AND family = 'ci' ORDER BY attempt_no`);
+    expect([r1.pushed_head_sha, r2.pushed_head_sha]).toEqual(['C1', 'C2']);
+    expect((await taskRow(t2.id)).title).toContain('after CI #2');
+    // The completed worker ends its (already delivered) row without moving the delivery.
+    expect((await endCi(t2, 'completed', { local: 'C2', commits: 1 })).result).toMatchObject({ result: 'stale' });
+    expect((await ciAttempts(o.deliveryId))[1]).toMatchObject({ status: 'ended', outcome: 'delivered' });
+  });
+
+  test('S23 (CI): a person pushing while the CI fix is only queued consumes no row; the queued task is cancelled', async () => {
+    const o = await openAndHandOn();
+    const seen = await ciFail(o);
+    const taskId = (seen as { attemptTaskId: string }).attemptTaskId;
+    await push(o, 'HUMAN1', { ancestors: ['H1'] });
+    const rows = await ciAttempts(o.deliveryId);
+    expect(rows.map((a) => [a.attemptNo, a.status])).toEqual([[1, 'skipped']]);
+    expect(attemptView(rows, 'ci')).toEqual({ n: 0, m: 3 });
+    expect((await taskRow(taskId)).status).toBe('cancelled');
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'HUMAN1', currentRound: 2 });
+  });
+
+  test('S23 (CI): the cap bounds dispatches; an old-SHA failure is recorded only; manual Fix CI past the cap is a BudgetExtended attempt', async () => {
+    const o = await openAndHandOn();
+    const max = 2;
+    const t1 = await ciRepairing(o, max);
+    await endCi(t1, 'failed');
+    const [, second] = await tasksOf(o.deliveryId, 'ci_fix');
+    const t2 = (await taskRow(second.id)).task;
+    expect(await seam.claimFix(t2, deps)).toEqual({ action: 'proceed' });
+    await endCi(t2, 'failed');
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'ci_exhausted' });
+    expect(ciEscalations.length).toBe(1);
+    // The sweep coming back changes nothing.
+    expect((await ciFail(o, { max }) as { result: { result: string } }).result.result).toBe('stale');
+    expect(await seam.observeCiFailure({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, headSha: 'H0', signature: 'ci_failed', maxAttempts: max, source: 'webhook:check_suite' }, deps))
+      .toMatchObject({ handled: true, result: { result: 'stale', reason: 'head_not_current' } });
+    expect((await tasksOf(o.deliveryId, 'ci_fix')).length).toBe(2);
+
+    const manual = await seam.requestCiRetry({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, actor: 'human:owner', maxAttempts: max, reason: 'flaky runner' }, deps);
+    expect(manual).toMatchObject({ handled: true, extended: true, result: { result: 'applied' } });
+    const t = (await transitions(o.deliveryId)).at(-1)!;
+    expect(t.command).toBe('BudgetExtended');
+    const rows = await ciAttempts(o.deliveryId);
+    expect(rows.at(-1)).toMatchObject({ attemptNo: 3, trigger: 'human', maxAttempts: 3 });
+    const tasks3 = await tasksOf(o.deliveryId, 'ci_fix');
+    expect(tasks3.length).toBe(3);
+    expect(tasks3[2]).toMatchObject({ creation_source: 'dashboard' });
+    expect(tasks3[2].title).toContain('after CI #3');
+    // A second click while that attempt is open stacks nothing.
+    expect(await seam.requestCiRetry({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, actor: 'human:owner', maxAttempts: max, reason: 'again' }, deps))
+      .toMatchObject({ handled: true, result: { result: 'rejected', reason: 'fix_in_flight' } });
+  });
 });
 
 describe('S24–S27', () => {
@@ -780,7 +987,48 @@ describe('S24–S27', () => {
 
   // Intended: the S25 skip for the other families — CI green on the current head, conflict resolved
   // meanwhile — at dispatch and at claim (conflict-retry, ci-failure-retry).
-  test.todo('S25: CI-green / conflict-resolved targets skipped at dispatch and claim for the ci and conflict families (needs 556cd910)');
+  test('S25 (CI): CI green at dispatch skips the row, files no task and resumes review; replay is a no-op', async () => {
+    const o = await openAndHandOn();
+    await ciFail(o, { d: crashedDeps });
+    gh.ciGreen = true; // the re-run passed before the dispatch effect ran
+    await drain(o.deliveryId);
+    const [df] = await effects(o.deliveryId, 'dispatch_ci_fix');
+    expect(df).toMatchObject({ status: 'done', outcome: 'skipped:ci_green' });
+    expect((await ciAttempts(o.deliveryId)).map((a) => a.status)).toEqual(['skipped']);
+    expect(await tasksOf(o.deliveryId, 'ci_fix')).toEqual([]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', ci: 'green', currentRound: 1 });
+    await q(sql`UPDATE workflow_effects SET status = 'pending', not_before = now() WHERE id = ${df.id}::uuid`);
+    await drain(o.deliveryId);
+    expect(await tasksOf(o.deliveryId, 'ci_fix')).toEqual([]);
+    expect((await ciAttempts(o.deliveryId)).length).toBe(1);
+  });
+
+  test('S25 (CI): green between dispatch and claim cancels the task as skipped, not failed; a moved head skips at dispatch', async () => {
+    const a = await openAndHandOn();
+    const seen = await ciFail(a);
+    const t = (await taskRow((seen as { attemptTaskId: string }).attemptTaskId)).task;
+    gh.ciGreen = true;
+    const decision = await seam.claimFix(t, deps);
+    expect(decision).toEqual({ action: 'cancel', reason: 'ci_green' });
+    await seam.cancelSkippedTask(t.id, 'ci_green');
+    expect(await taskRow(t.id)).toMatchObject({ status: 'cancelled', result: { skipped: true, skipReason: 'ci_green' } });
+    expect((await ciAttempts(a.deliveryId))[0]).toMatchObject({ status: 'skipped', outcome: 'noop' });
+    expect((await delivery(a.deliveryId)).state).toBe('AWAITING_REVIEW');
+
+    gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0', ancestors: {} };
+    const b = await openAndHandOn();
+    await ciFail(b, { d: crashedDeps });
+    gh.head = 'H9'; gh.ancestors.H9 = ['H1']; // pushed; the webhook has not arrived
+    await drain(b.deliveryId);
+    expect((await effects(b.deliveryId, 'dispatch_ci_fix'))[0]).toMatchObject({ outcome: 'skipped:head_moved' });
+    expect((await ciAttempts(b.deliveryId)).map((x) => x.status)).toEqual(['skipped']);
+    expect(await tasksOf(b.deliveryId, 'ci_fix')).toEqual([]);
+    expect(await delivery(b.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H9', currentRound: 2 });
+  });
+
+  // Intended: the same skip for the conflict family (conflict resolved meanwhile) at dispatch and at
+  // claim, once conflict-retry dispatches through T12 (§6.7).
+  test.todo('S25: conflict-resolved targets skipped at dispatch and claim for the conflict family (needs spec Slice B — no task filed)');
 
   test('S26: the activity comment is regenerated from transitions: one comment, equal to a fresh render, Merged stays the headline', async () => {
     const { renderDeliveryActivity } = await import('../../src/lib/workflow/pr-activity-render');
@@ -860,7 +1108,54 @@ describe('S28 — ledger separation', () => {
   // Intended: CI, review, conflict, migration and trunk families count independently on one
   // delivery; a reviewer spawned on a CI-fix task does not inherit the CI count; infra requeues
   // change no ledger; attemptView is identical in the activity comment, the task title and explain.
-  test.todo('S28: CI/conflict/migration/trunk families count independently; one attemptView in comment, title and explain (needs 556cd910)');
+  test('S28: CI and review families count independently on one delivery; a re-claim (infra requeue) adds no row; comment and title show the same N of M', async () => {
+    const o = await openAndHandOn();
+    const t = await ciRepairing(o);
+    // An infra requeue re-claims the same task: same row, still running, no new attempt.
+    expect(await seam.claimFix(t, deps)).toEqual({ action: 'proceed' });
+    expect((await ciAttempts(o.deliveryId)).length).toBe(1);
+    await seam.recordLocalHead(t.id, 'C1');
+    await push(o, 'C1', { ancestors: ['H1'] });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentRound: 2 });
+    // Round 2's reviewer requests changes: the review fix is attempt 1, not 2.
+    expect(await verdict(o, 'request-changes')).toMatchObject({ toState: 'CHANGES_REQUESTED' });
+    const v = await loadView({ deliveryId: o.deliveryId });
+    expect(v.attempts.map((a) => [a.family, a.attemptNo]).sort()).toEqual([['ci', 1], ['review_fix', 1]]);
+    expect(attemptView(v.attempts, 'ci')).toEqual({ n: 1, m: 3 });
+    expect(attemptView(v.attempts, 'review_fix')).toEqual({ n: 1, m: 3 });
+    const [fix] = await tasksOf(o.deliveryId, 'fix');
+    expect(fix.context).toMatchObject({ iteration: 1, maxIterations: 3 });
+    const [ciTask] = await tasksOf(o.deliveryId, 'ci_fix');
+    expect(ciTask.context).toMatchObject({ iteration: 1, maxIterations: 3 });
+    expect(ciTask.title).toContain('after CI #1');
+    // The reviewer of round 2 was spawned after a CI fix and carries no CI count.
+    const reviewer = await reviewerOf(o.deliveryId);
+    expect(reviewer.context).not.toHaveProperty('ciRetryPrNumber');
+    // The activity comment's CI line reads the same 1-based N of M as the ledger.
+    expect(activityEntries.find((e) => e.kind === 'ci_fixing')).toMatchObject({ iteration: 1, maxIterations: 3 });
+  });
+
+  // Intended: explain's because[] and the DeliveryView read attemptView, so explain says "CI 1 of 3"
+  // exactly as the comment and the title do.
+  test('S28: explain renders the same family-labelled attemptView as the ledger, the comment and the title', async () => {
+    const o = await openAndHandOn();
+    const t = await ciRepairing(o);
+    await seam.recordLocalHead(t.id, 'C1');
+    await push(o, 'C1', { ancestors: ['H1'] });
+    await verdict(o, 'request-changes');
+    const v = await loadView({ deliveryId: o.deliveryId });
+    const ci = attemptView(v.attempts, 'ci');
+    const review = attemptView(v.attempts, 'review_fix');
+    const { explainTask } = await import('../../src/lib/explain');
+    const res = await explainTask(o.ownerTaskId, {});
+    const answer = res!.subjects[0];
+    expect(answer.delivery?.attempts).toBe(`CI ${ci.n} of ${ci.m} · review ${review.n} of ${review.m}`);
+    expect(answer.delivery).toMatchObject({ state: 'CHANGES_REQUESTED', owner: 'platform', needsYou: false });
+    // The same numbers the CI fix task's title and the activity comment carry.
+    const [ciTask] = await tasksOf(o.deliveryId, 'ci_fix');
+    expect(ciTask.title).toContain(`after CI #${ci.n}`);
+    expect(activityEntries.find((e) => e.kind === 'ci_fixing')).toMatchObject({ iteration: ci.n, maxIterations: ci.m });
+  });
 });
 
 describe('S29 — reviewer ends with prose or no verdict', () => {
