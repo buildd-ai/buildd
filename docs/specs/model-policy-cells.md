@@ -99,6 +99,9 @@ that same `z`.
 - A shifted cell reverts when, on the cell's own runs since the shift, the
   alternate's rate on any signal is more than the margin below the primary's.
   A revert holds 14 days, then learning restarts on evidence after the revert.
+- A revert records which alternate slipped (`revertedFrom`), so the UI can
+  name it; the response also carries `overrideWorkspaces`, the distinct
+  workspaces with an override row of their own.
 - Every state change is one compare-and-set write with a `tier_pool_changes`
   row (`promotion`, `revert` or `dial`) carrying its reason. Nothing moves
   traffic silently.
@@ -129,7 +132,9 @@ that same `z`.
 ## Out of scope
 
 Chat cells report their configured state only; chat evidence comes from the
-chat-learning work. UI is separate.
+chat-learning work (the optional chat fields on `whatRan` stay absent until
+then). The settings page (`apps/web/src/app/app/(protected)/settings/models/`)
+renders this read model verbatim and is not part of this contract.
 
 ## Code surface
 

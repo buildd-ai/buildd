@@ -25,7 +25,7 @@ import type {
 import { db } from './db/client';
 import { experiments, tierPoolArms, tierPools } from './db/schema';
 import { INFRA_EXIT_CAUSES } from './experiment-readout';
-import { resolveAllTiers, workspaceOverrideCounts } from './model-tier-registry';
+import { resolveAllTiers, workspaceOverrides } from './model-tier-registry';
 import { TIERS, type Tier, type TierEntry, type TierSurface } from './model-tier-defaults';
 import {
   DEFAULT_DIAL, cellState, decideDialCell, dialAllocation, evidenceFrom, gradeRun, gradedPace, isDial,
@@ -385,10 +385,10 @@ interface CellPoolRow {
  * alternates, dial, learning state and what ran.
  */
 export async function buildModelPolicyCells(teamId: string, now = new Date()): Promise<ModelPolicyCellsResponse> {
-  const [agentTiers, chatTiers, overrides, poolRows, runs, routingExps] = await Promise.all([
+  const [agentTiers, chatTiers, overrideInfo, poolRows, runs, routingExps] = await Promise.all([
     resolveAllTiers(teamId, null, 'agent'),
     resolveAllTiers(teamId, null, 'chat'),
-    workspaceOverrideCounts(teamId),
+    workspaceOverrides(teamId),
     db.select({
       id: tierPools.id, tier: tierPools.tier, surface: tierPools.surface, mode: tierPools.mode,
       dial: tierPools.dial, dialState: tierPools.dialState,
@@ -398,6 +398,7 @@ export async function buildModelPolicyCells(teamId: string, now = new Date()): P
     db.select({ config: experiments.config }).from(experiments)
       .where(and(eq(experiments.teamId, teamId), eq(experiments.kind, 'model_routing'), eq(experiments.status, 'running'))),
   ]);
+  const overrides = overrideInfo.byCell;
   const pools = poolRows as CellPoolRow[];
   const arms = pools.length
     ? await db.select({
@@ -448,6 +449,7 @@ export async function buildModelPolicyCells(teamId: string, now = new Date()): P
       const exactSplit = !!pool && (pool.mode === 'split' || pool.mode === 'explore') && alternates.some(a => (pool.allocation[a.id] ?? 0) > 0);
       if (exactSplit || (surface === 'agent' && routingTiers.has(tier))) cell.experimentRunning = true;
       if (record?.revertReason) cell.revertReason = record.revertReason;
+      if (state === 'reverted' && record?.revertedFrom) cell.revertedFrom = record.revertedFrom;
 
       if (isDialPool && state === 'shifted' && record?.alternateArmId) {
         const alt = alternates.find(a => a.id === record.alternateArmId);
@@ -473,5 +475,5 @@ export async function buildModelPolicyCells(teamId: string, now = new Date()): P
       cells.push(cell);
     }
   }
-  return { teamId, generatedAt: now.toISOString(), windowDays: WHAT_RAN_DAYS, cells };
+  return { teamId, generatedAt: now.toISOString(), windowDays: WHAT_RAN_DAYS, cells, overrideWorkspaces: overrideInfo.workspaces };
 }

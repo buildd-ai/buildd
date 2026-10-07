@@ -254,6 +254,8 @@ export interface DialStateRecord {
   alternateArmId?: string | null;
   /** `reverted`: why, in plain words. Kept after the cell moves on. */
   revertReason?: string;
+  /** `reverted`: the alternate that slipped (model id). Kept with the reason. */
+  revertedFrom?: string;
   revertedAt?: string;
   /** Learning only counts evidence from this time on (set after a revert). */
   evidenceSince?: string;
@@ -380,7 +382,7 @@ export function decideDialCell(input: DialCellInput): DialDecision {
     const reason = slipped(alt.inCell.rates, comparator, s.margin);
     if (reason) {
       return {
-        record: { state: 'reverted', since: nowIso, alternateArmId: null, revertReason: reason, revertedAt: nowIso, evidenceSince: nowIso },
+        record: { state: 'reverted', since: nowIso, alternateArmId: null, revertReason: reason, revertedFrom: alt.model, revertedAt: nowIso, evidenceSince: nowIso },
         share: 0,
         alternateArmId: null,
         event: {
@@ -444,6 +446,7 @@ function keep(prior: DialStateRecord | null): Partial<DialStateRecord> {
   if (!prior) return {};
   return {
     ...(prior.revertReason ? { revertReason: prior.revertReason } : {}),
+    ...(prior.revertedFrom ? { revertedFrom: prior.revertedFrom } : {}),
     ...(prior.revertedAt ? { revertedAt: prior.revertedAt } : {}),
     ...(prior.evidenceSince ? { evidenceSince: prior.evidenceSince } : {}),
   };

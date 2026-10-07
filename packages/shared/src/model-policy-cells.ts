@@ -81,6 +81,14 @@ export interface ModelPolicyCellRun {
   mergedRate: number | null;
   reviewOkRate: number | null;
   costPerRunUsd: number | null;
+  /**
+   * Chat cells only, once chat learning reports them: share of conversations
+   * rated satisfied, thumbs counts, and share re-asked. Absent until then.
+   */
+  satisfiedRate?: number | null;
+  thumbsUp?: number;
+  thumbsDown?: number;
+  reaskedRate?: number | null;
   recentRuns: ModelPolicyRecentRun[];
 }
 
@@ -104,6 +112,8 @@ export interface ModelPolicyCell {
   overrideCount: number;
   /** Set while `reverted` (and kept in history after). */
   revertReason?: string;
+  /** Set while `reverted`: the alternate that slipped. */
+  revertedFrom?: string;
   /** The pool backing this cell, when one exists. */
   poolId?: string | null;
   whatRan: ModelPolicyCellRun[];
@@ -115,6 +125,8 @@ export interface ModelPolicyCellsResponse {
   /** Days of runs `whatRan` covers. */
   windowDays: number;
   cells: ModelPolicyCell[];
+  /** Distinct workspaces with their own registry row for any tier. */
+  overrideWorkspaces: number;
 }
 
 export function isModelPolicyDial(v: unknown): v is ModelPolicyDial {
