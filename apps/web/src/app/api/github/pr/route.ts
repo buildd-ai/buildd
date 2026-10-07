@@ -2062,7 +2062,11 @@ export async function PUT(req: NextRequest) {
         } else if (dispatchResult.exhausted && worker.taskId) {
           await escalateConflictExhaustion(worker.taskId, repo.fullName, prNumber, headSha);
         }
-        const message = dispatchResult.dispatched
+        const message = dispatchResult.conflictFalsePositive
+          ? dispatchResult.branchUpdated
+            ? `PR #${prNumber} was flagged as conflicting, but it merges cleanly with its base. The branch was updated; merge once CI passes on the new head.`
+            : `PR #${prNumber} was flagged as conflicting, but it already contains its base. Retry the merge.`
+          : dispatchResult.dispatched
           ? `PR #${prNumber} has merge conflicts. Conflict-resolution task dispatched (${dispatchResult.taskId}).`
           : dispatchResult.superseded
           ? `PR #${prNumber} appears superseded — its changes are already in base. Escalated for human review.`
@@ -2073,7 +2077,8 @@ export async function PUT(req: NextRequest) {
           ok: false,
           merged: false,
           message,
-          conflictRetryDispatched: dispatchResult.dispatched,
+          conflictRetryDispatched: dispatchResult.dispatched && !dispatchResult.conflictFalsePositive,
+          conflictFalsePositive: dispatchResult.conflictFalsePositive,
           conflictSuperseded: dispatchResult.superseded,
           conflictExhausted: dispatchResult.exhausted,
           pr: { number: prNumber, url: worker.prUrl ?? null },
