@@ -1060,6 +1060,14 @@ describe('T27 ReviewRoundFailed (S29, AC-19)', () => {
     expectResult(f(V(D({ state: 'APPROVED' }))), 'stale', 'state_moved');
     expectResult(f(v({ status: 'decided' })), 'stale', 'round_not_current');
   });
+  test('a human takeover (reviewer interrupted) is never re-queued: ESCALATED(review_unavailable) on the first failure', () => {
+    const dec = applied(run(v(), { type: 'ReviewRoundFailed', actor: 'human:interrupt', roundId: 'r1', reason: 'human_takeover', maxContractRetries: 2 }));
+    expect(dec.toState).toBe('ESCALATED');
+    expect(dec.patch.stateReason).toBe('review_unavailable');
+    expect(dec.rounds).toEqual([{ op: 'update', roundId: 'r1', whenStatus: ['queued', 'reviewing'], set: { status: 'failed', failureCount: 1 } }]);
+    expect(dec.effects.some((e) => e.kind === 'dispatch_review')).toBe(false);
+    expect(dec.evidence).toMatchObject({ roundId: 'r1', reason: 'human_takeover' });
+  });
 });
 
 describe('composition attestation: release PRs from already-reviewed changes', () => {

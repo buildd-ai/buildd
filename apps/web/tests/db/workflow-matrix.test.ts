@@ -2084,6 +2084,22 @@ describe('S28 — ledger separation', () => {
 });
 
 describe('S29 — reviewer ends with prose or no verdict', () => {
+  // Final kernel audit (task 708a55c0): a person interrupting a kernel round's reviewer
+  // (POST /api/workers/[id]/interrupt) is T27 with human_takeover — no re-queue, no new
+  // reviewer: the delivery escalates and the person owns the review.
+  test('a human takeover fails the round once → ESCALATED(review_unavailable), no reviewer re-dispatched', async () => {
+    const o = await openAndHandOn();
+    const r = await reviewerOf(o.deliveryId);
+    const before = reviewersCreated.length;
+    const w = await seedWorker(r.id, { status: 'failed' });
+    await seam.attemptEnded({ task: r, workerId: w, status: 'failed', localHeadSha: null, commitCount: 0, source: 'human:interrupt', reviewFailure: 'human_takeover' }, deps);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'review_unavailable', currentRound: 1, approvedHeads: [] });
+    expect((await rounds(o.deliveryId)).map((x) => [x.round, x.status, x.failure_count])).toEqual([[1, 'failed', 1]]);
+    expect((await transitions(o.deliveryId)).at(-1)).toMatchObject({ command: 'ReviewRoundFailed', to_state: 'ESCALATED', evidence: { reason: 'human_takeover' } });
+    expect(reviewersCreated.length).toBe(before);
+    expect(posted).toEqual([]);
+  });
+
   test('a prose verdict is a round failure recorded as prose_verdict, never an approve, on the same T27 budget (task 7313de90)', async () => {
     const o = await openAndHandOn();
     const r = await reviewerOf(o.deliveryId);
@@ -2169,6 +2185,21 @@ describe('AWAITING_PUSH — an owner delivery leaves on a push (§6.4, §9)', ()
     await drain(o.deliveryId);
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
     expect(reviewersCreated.map((r) => r.head)).toEqual(['L5']);
+  });
+
+  // Final kernel audit (task 708a55c0): the waiting-input sweep sent localHeadSha null and
+  // commitCount 0, which the reducer reads as "nothing local to lose" and hands the remote head
+  // on to review. With what the worker reported (stale-workers.test.ts pins the pass-through),
+  // unpushed owner commits wait for their push instead.
+  test('the waiting-input sweep ends an owner attempt with unpushed commits → AWAITING_PUSH + push_recovery; no round at the old head', async () => {
+    const o = await open();
+    const w = await seedWorker(o.ownerTaskId, { status: 'failed', lastCommitSha: 'L5', prNumber: o.prNumber, commitCount: 2 });
+    const r = await seam.attemptEnded({ task: ownerTask(o), workerId: w, status: 'lost', localHeadSha: 'L5', commitCount: 2, source: 'sweep:waiting-input' }, deps);
+    expect(r.result).toMatchObject({ result: 'applied' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H1', currentRound: 0 });
+    expect(await rounds(o.deliveryId)).toEqual([]);
+    expect(reviewersCreated).toEqual([]);
+    expect((await effects(o.deliveryId, 'push_recovery')).length).toBe(1);
   });
 });
 

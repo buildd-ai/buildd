@@ -315,8 +315,9 @@ export async function attemptEnded(p: {
   /**
    * A reviewer that completed but broke its output contract (§6.6): `prose_verdict`
    * (a verdict written as prose, never applied) or `no_verdict`. Absent = infra.
+   * `human_takeover`: a person interrupted the reviewer; never re-queued.
    */
-  reviewFailure?: 'prose_verdict' | 'no_verdict' | 'infra';
+  reviewFailure?: 'prose_verdict' | 'no_verdict' | 'infra' | 'human_takeover';
 }, deps: SeamDeps = {}): Promise<{ handled: boolean; result?: CommandResult }> {
   const attemptKind = p.task.deliveryRole;
   if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind) && attemptKind !== 'review')) return { handled: false };

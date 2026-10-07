@@ -7055,13 +7055,15 @@ describe('webhook → reviews (characterization)', () => {
 
   // Slice D: a kernel-owned PR's close (T18) owes a scan_supersession effect; the subscriber
   // does not run a second, request-bound scan beside it.
-  it('closed unmerged, kernel-owned PR: no inline detection; the kernel\'s scan_supersession owns it', async () => {
+  // Neither inline detection nor the legacy reconcile: T18's own scan_supersession and
+  // cancel_open_attempts own a kernel PR's close (final kernel audit, task 708a55c0).
+  it('closed unmerged, kernel-owned PR: no inline detection and no legacy reconcile; the kernel\'s T18 effects own it', async () => {
     mockWorkersFindFirst.mockReturnValue(worker());
     mockKernelDeliveryForPr.mockImplementation(async () => 'delivery-93');
     try {
       await POST(createWebhookRequest('pull_request', prEvent({ merged: false })));
       expect(mockKernelDeliveryForPr).toHaveBeenCalledWith('ws1', 'test-org/test-repo', 93);
-      expect(order()).toEqual(['appendPrActivity', 'deliverPrReviewCallback', 'reconcileSubjectEvent', 'shutdownDeadBuilddPrs']);
+      expect(order()).toEqual(['appendPrActivity', 'deliverPrReviewCallback', 'shutdownDeadBuilddPrs']);
     } finally {
       mockKernelDeliveryForPr.mockImplementation(async () => null);
     }
