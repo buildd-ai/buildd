@@ -365,6 +365,7 @@ export async function claimScoutRunForRunner(input: ScoutClaimInput, store: Scou
         runnerMaxDurationMs: parking.runnerMaxDurationMs,
         hostDeadline: parking.hostDeadline,
       },
+      repo: c.repo,
       ...tail,
     };
   }

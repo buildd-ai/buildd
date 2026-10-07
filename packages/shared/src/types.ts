@@ -1191,6 +1191,13 @@ export interface WorkerEnvironment {
    * server then derives it from the heartbeat URL.
    */
   fleet?: RunnerFleetIdentity;
+  /**
+   * Quality Scout host advert (apps/runner/src/scout-host.ts): the repos this
+   * runner can host Scout probes for and which ports. Present only when the
+   * runner can sandbox a probe command (bwrap) or the operator set
+   * BUILDD_SCOUT_UNSANDBOXED=1; absent with BUILDD_SCOUT_HOST=0.
+   */
+  scoutHost?: { repos: string[]; command?: boolean; capture?: boolean; appBoot?: boolean };
 }
 
 export interface RunnerUpdateCanaryReport {
@@ -3696,6 +3703,8 @@ export type ScoutRunClaimResponse =
       /** The capability profile the server planned against (core `ScoutCapabilityProfile`). Judge against this, never a local one. */
       profile: Record<string, unknown>;
       lease: ScoutRunLease;
+      /** `owner/name` of the run's workspace repo: which of the offered clones to check the SHA out of. */
+      repo?: string;
       /** Parked runs of these workspaces that the pre-claim sweep finalized. */
       expired?: string[];
     }

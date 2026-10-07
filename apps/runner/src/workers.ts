@@ -50,6 +50,7 @@ import {
   DEFAULT_AUTH_CONTEXT,
 } from './claim-breaker';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
+import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, credentialBroker } from './broker';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker, loadTerminalWorkersCached, __resetDiskWorkersCache } from './worker-store';
@@ -756,6 +757,8 @@ export class WorkerManager {
   private workerSync: WorkerSync;
   // Full knowledge-ingest jobs (KM v2 A2) — claimed only when this runner is idle.
   private knowledgeIngestPoller: KnowledgeIngestPoller;
+  // Quality Scout command probes (runner-host design §6) — idle ticks only, never a worker slot.
+  private scoutHostPoller: ScoutHostPoller;
   // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
   private recentCycleTimes: number[] = [];  // Duration in ms of last N completed workers
   private adaptiveStaleTimeout: number = 300_000;  // Start at 5 min, adapt from cycle data
@@ -913,6 +916,19 @@ export class WorkerManager {
       scanRepos: () => this.resolver.scanGitRepos(),
     });
 
+    // Quality Scout runner host. Hosts command probes only when it can wrap
+    // them in bwrap (or BUILDD_SCOUT_UNSANDBOXED=1); BUILDD_SCOUT_HOST=0 opts out.
+    this.scoutHostPoller = createScoutHostPoller({
+      builddServer: config.builddServer,
+      apiKey: config.apiKey,
+      scanRepos: () => this.resolver.scanGitRepos(),
+      bwrapSupported: isMountIsolationBwrapSupported,
+      // Busy = any worker that holds a slot, including one waiting for input.
+      isBusy: () => Array.from(this.workers.values()).some(
+        w => w.status === 'working' || w.status === 'stale' || w.status === 'waiting',
+      ),
+    });
+
     // Send heartbeat to register availability (immediate + periodic)
     // Heartbeat is now a lightweight ping (no workspace queries server-side)
     if (!config.serverless) {
@@ -941,6 +957,8 @@ export class WorkerManager {
         // the poller serializes itself and never throws).
         if (active === 0 && !this.config.singleTask) {
           this.knowledgeIngestPoller.poll().catch(() => {});
+          // Same gate for Scout runs: one at a time, no worker slot, re-checks busy before checkout.
+          this.scoutHostPoller.poll().catch(() => {});
         }
       }, RUNNER_HEARTBEAT_INTERVAL_MS);
 
@@ -1061,7 +1079,10 @@ export class WorkerManager {
   /** Environment as sent on the heartbeat: the scan, post-update canary status and (`--once`) the fleet identity. */
   private heartbeatEnvironment(): WorkerEnvironment | undefined {
     const canary = getUpdateCanary();
-    const env = !this.environment || !canary ? this.environment : { ...this.environment, updateCanary: canary.report() };
+    let env = !this.environment || !canary ? this.environment : { ...this.environment, updateCanary: canary.report() };
+    // A single-task runner never polls for Scout runs, so it never advertises one.
+    const scoutHost = env && !this.config.singleTask ? this.scoutHostPoller?.advert() : undefined;
+    if (env && scoutHost) env = { ...env, scoutHost };
     return withFleetIdentity(env, this.config.fleetIdentity);
   }
 

@@ -57,6 +57,8 @@ describe('claimScoutRunForRunner', () => {
     expect(out.run.id).toBe(run.id);
     expect(out.run.candidate).toEqual({ ref: 'main', sha: SHA });
     expect(out.probes.map((p) => p.candidateId)).toEqual(['c1']);
+    // Which offered clone to check the SHA out of.
+    expect(out.repo).toBe(REPO);
     expect(out.profile).toEqual(profile as never);
     expect(out.lease.expiresAt).toBe(new Date(T0.getTime() + 25 * 60_000).toISOString());
     expect(m.run(run.id)!.parking!.lease!.holder).toBe(scoutLeaseHolder('acct-1', out.lease.leaseId));
