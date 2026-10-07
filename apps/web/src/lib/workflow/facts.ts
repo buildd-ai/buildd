@@ -195,7 +195,8 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
       let proof: { liveContainsLocal: boolean; contentDiffChanged?: boolean } | undefined;
       const view = await loadView(ref, exec);
       const bound = view.attempts.find((a) => a.id === view.delivery?.boundAttemptId);
-      const awaitingPush = view.delivery?.state === 'AWAITING_PUSH';
+      const awaitingPush = view.delivery?.state === 'AWAITING_PUSH'
+        || (view.delivery?.state === 'ESCALATED' && view.delivery.stateReason === 'push_undeliverable');
       // An owner in AWAITING_PUSH has no ledger row: its L is the delivery's pending local head.
       const local = bound?.reportedShas.at(-1) ?? (awaitingPush ? view.delivery?.pushPendingLocalHead ?? undefined : undefined);
       if (local && live && local !== live.headSha && github?.contains) {
