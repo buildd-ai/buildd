@@ -3,9 +3,9 @@ title: Path Claim Ownership
 status: active
 owner: max
 last_verified: 2026-10-07
-summary: Edit leases MUST be acquired exclusively per workspace, narrowed only by their owner, released on terminal status, kept equal to a task's current owned file set by an authoritative delta/ACK protocol, proven complete before any ship, handed to the open PR when the worker ends, and reconciled to a PR's pinned actual diff without ever treating missing data as an empty diff.
+summary: Edit leases MUST be held exclusively per workspace, kept equal to a task's current owned file set by a delta/ACK protocol, proven complete before any ship (fail closed), and handed to the open PR when the worker ends.
 domain: tasks
-surfaces: [packages/core/path-claim.ts, packages/core/working-set.ts, packages/core/path-coordination-signal.ts, apps/web/src/lib/path-claim-check.ts, apps/web/src/lib/path-claim-release.ts, apps/web/src/lib/pr-scope-reconcile.ts, apps/web/src/lib/working-set-sync.ts, apps/runner/src/working-set.ts, apps/runner/src/ship-checkpoint.ts]
+surfaces: [packages/core/path-claim.ts, packages/core/working-set.ts, apps/web/src/lib/working-set-sync.ts, apps/runner/src/ship-checkpoint.ts]
 related: [orchestration-decisions-shadow, mission-task-lifecycle, claim-ordering]
 keywords: [path_claims, check_path_claim, lease, narrow, pathManifest, path_declaration, path_claim_revision, waiter, retry scope, working set, ship checkpoint, observedTouches, coverage_unknown_at_ship, observation_truncated]
 verified_by: [packages/core/__tests__/path-claim-ownership.test.ts, packages/core/__tests__/working-set-reconcile.test.ts, packages/core/__tests__/path-coordination-signal.test.ts, apps/web/src/lib/working-set-sync.test.ts, apps/runner/__tests__/unit/working-set-tracker.test.ts, apps/runner/__tests__/unit/ship-checkpoint.test.ts, apps/runner/__tests__/unit/path-claim-hook.test.ts, apps/web/src/lib/pr-scope-reconcile.test.ts, apps/web/src/app/api/tasks/[id]/path-claim/route.test.ts, apps/web/src/lib/approve-plan.test.ts]

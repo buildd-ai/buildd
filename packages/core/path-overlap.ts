@@ -367,10 +367,12 @@ export function findRegenerable(path: string): RegenerablePath | null {
  */
 export function leasablePaths(paths: readonly unknown[] | null | undefined): string[] {
   const out: string[] = [];
+  const seen = new Set<string>();
   for (const raw of paths ?? []) {
     if (typeof raw !== 'string') continue;
     const p = stripTrailingSep(raw.trim());
-    if (!p || p === REPO_WIDE_SENTINEL || findRegenerable(p) || out.includes(p)) continue;
+    if (!p || p === REPO_WIDE_SENTINEL || seen.has(p) || findRegenerable(p)) continue;
+    seen.add(p);
     out.push(p);
   }
   return out;

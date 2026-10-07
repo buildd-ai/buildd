@@ -655,11 +655,29 @@ const mockAcquireObservedPaths = mock(async (ws: string, task: string, paths: st
 }));
 const mockReleaseClaims = mock(async () => null);
 const mockRearmWaiter = mock(async () => undefined);
+// The authoritative working-set surface (core working-set.ts) that
+// lib/working-set-sync.ts reaches through the same module. Its own behaviour
+// is pinned in packages/core/__tests__/working-set-reconcile.test.ts; here
+// only the route's wiring is asserted.
+const mockReconcileWorkingSet = mock(async (input: any) => ({
+  ack: {
+    generation: input.delta.generation, acquired: input.delta.add, blocked: [], released: input.delta.remove,
+    heldCount: input.delta.add.length, applied: true, coverage: input.delta.complete ? 'complete' : 'partial',
+  },
+  blocked: [], release: null, latencyMs: 1, sizeBucket: '<=50',
+}));
+const mockActiveLeasePaths = mock(async (_ws: string, _task: string): Promise<string[]> => []);
+const mockPromoteLeasesToPrScope = mock(async (_input: any): Promise<any> => null);
 mock.module('@buildd/core/path-claim', () => ({
   claimObservedPaths: mockClaimObservedPaths,
   acquireObservedPaths: mockAcquireObservedPaths,
   releaseClaims: mockReleaseClaims,
   rearmWaiter: mockRearmWaiter,
+  reconcileWorkingSet: mockReconcileWorkingSet,
+  activeLeasePaths: mockActiveLeasePaths,
+  promoteLeasesToPrScope: mockPromoteLeasesToPrScope,
+  recordWorkingSet: mock(async () => undefined),
+  workingSetRecord: (input: any) => ({ generation: input.ack.generation, coverage: input.ack.coverage }),
 }));
 
 // Orchestration decision outcome labels (conflict-aware orchestration §5):
@@ -14964,18 +14982,16 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     expect(overlapEvent).toBeUndefined();
   });
 
-  it('cap: 501 paths stored as 500, warning logged', async () => {
+  it('cap: 501 paths keep a 500-path sample, one observation_truncated advisory, and every path is still leased', async () => {
     setupBaseWorkerMock();
     mockWorkersFindMany.mockResolvedValue([]);
     mockTasksFindFirst.mockResolvedValue({
       scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {},
     });
+    gateEventInserts.length = 0;
 
-    const warnCalls: any[] = [];
-    const origWarn = console.warn;
-    console.warn = (...args: any[]) => { warnCalls.push(args); };
-
-    // Send 501 paths — worker.observedTouches is null (first accumulation)
+    // Send 501 paths — worker.observedTouches is null (first accumulation).
+    // An older runner (no `workingSet`): the touched paths are what is leased.
     const paths501 = Array.from({ length: 501 }, (_, i) => `apps/file-${i}.ts`);
 
     let capturedSet: any;
@@ -14996,16 +15012,20 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
       body: { status: 'running', touchedPaths: paths501 },
     });
     await PATCH(req, { params: mockParams });
+    await new Promise(r => setTimeout(r, 0));
 
-    console.warn = origWarn;
-
-    // observedTouches should be capped at 500
+    // The diagnostic sample is bounded…
     expect(capturedSet?.observedTouches).toBeDefined();
     expect(capturedSet.observedTouches.length).toBe(500);
-
-    // Warning should have been logged
-    const capWarning = warnCalls.find((c: any[]) => String(c[0]).includes('cap hit'));
-    expect(capWarning).toBeDefined();
+    // …coverage is not: the 501st path is leased like the rest.
+    const offered = mockClaimObservedPaths.mock.calls.at(-1)![2] as string[];
+    expect(offered.length).toBe(501);
+    expect(offered).toContain('apps/file-500.ts');
+    // The cap is an advisory, never "enforcement degraded".
+    const rows = gateEventInserts.filter((g: any) => g.gate === 'path_claim' && g.outcome === 'warned');
+    expect(rows.length).toBe(1);
+    expect(rows[0].detail).toMatchObject({ signal: 'observation_truncated', cap: 500, dropped: 1 });
+    expect(String(rows[0].reason)).not.toContain('degraded');
   });
 
   it('full payload shape: all 7 required fields present on path_overlap_detected event', async () => {
@@ -15313,7 +15333,7 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     );
   });
 
-  it('a checkpoint sweep past the cap leases only recorded paths, and records the drop as degraded', async () => {
+  it('a checkpoint sweep past the cap leases every swept path; the full sample is not a coverage event', async () => {
     setupBaseWorkerMock();
     const stored = Array.from({ length: 499 }, (_, i) => `src/f${i}.ts`);
     mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, observedTouches: stored });
@@ -15331,12 +15351,49 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     await PATCH(req, { params: mockParams });
     await new Promise(r => setTimeout(r, 0));
 
-    // 499 stored + new-a fills the column; new-b/new-c are past it.
+    // 499 stored + new-a fills the sample; new-b/new-c are past it and leased anyway.
     const offered = mockClaimObservedPaths.mock.calls.at(-1)![2] as string[];
-    expect(offered).toEqual(['src/f0.ts', 'src/new-a.ts']);
+    expect(offered).toEqual(['src/f0.ts', 'src/new-a.ts', 'src/new-b.ts', 'src/new-c.ts']);
     const row = gateEventInserts.find((g: any) => g.gate === 'path_claim' && g.outcome === 'warned');
     expect(row).toBeDefined();
-    expect(row.detail).toMatchObject({ cap: 500, dropped: 2 });
+    expect(row.detail).toMatchObject({ signal: 'observation_truncated', dropped: 2 });
+  });
+
+  it('a working-set delta is reconciled authoritatively and ACKed; the legacy touched-path lease is skipped', async () => {
+    setupBaseWorkerMock();
+    mockReconcileWorkingSet.mockClear();
+    const delta = { generation: 7, add: ['src/a.ts', 'src/b.ts'], remove: ['src/old.ts'], complete: true, checkpoint: 'pre_push' };
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: delta.add, workingSet: delta },
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+
+    expect(mockReconcileWorkingSet).toHaveBeenCalledTimes(1);
+    const input = mockReconcileWorkingSet.mock.calls[0][0] as any;
+    expect(input).toMatchObject({ workspaceId: 'ws-1', taskId: 'task-1', readOnly: false });
+    expect(input.delta).toMatchObject({ generation: 7, add: delta.add, remove: delta.remove, complete: true, checkpoint: 'pre_push' });
+    expect(json.workingSetAck).toMatchObject({ generation: 7, applied: true, coverage: 'complete', released: ['src/old.ts'] });
+    // One authority per request: the delta, not a second legacy offer.
+    expect(mockClaimObservedPaths).not.toHaveBeenCalled();
+  });
+
+  it('a malformed working-set delta is ignored, never a failed progress report', async () => {
+    setupBaseWorkerMock();
+    mockReconcileWorkingSet.mockClear();
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', workingSet: { generation: -1, add: 'nope' } },
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(mockReconcileWorkingSet).not.toHaveBeenCalled();
+    expect((await res.json()).workingSetAck).toBeUndefined();
   });
 
   it('a read-only reviewer leases nothing: checking out the PR branch is not an edit', async () => {
