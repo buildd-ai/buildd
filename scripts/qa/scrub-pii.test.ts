@@ -163,7 +163,8 @@ const SAFE: Record<string, string[]> = {
     'chat_default_tier', // a chat tier name (CHAT_TIER_NAMES) or null
     'chat_retro', // { lessons, proposals } booleans (apps/web/src/lib/chat-retro/settings.ts)
     'permission_overrides', // permission names -> team role names, both fixed sets (lib/permission-registry.ts)
-    'plan', 'billing_status'], // fixed vocabularies (packages/core/entitlements.ts); stripe ids are wiped
+    'plan', 'billing_status', // fixed vocabularies (packages/core/entitlements.ts); stripe ids are wiped
+    'managed_runner_plan'], // { plan: fixed plan id, numeric limits, 'block'|'allow' } (lib/entitlements/plans.ts)
   team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
     'chat_composer_prefs'], // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
   users: ['timezone'],
