@@ -10,6 +10,7 @@ import { getSecretsProvider } from '@buildd/core/secrets';
 import { encrypt } from '@buildd/core/secrets';
 import { discoverOAuthMetadata, registerClient, getCallbackUrl } from '@/lib/mcp-oauth';
 import { deriveConnectorStatus as deriveStatus } from '@/lib/connector-status';
+import { resolveConnectorIcon } from '@/lib/connector-icon';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 
@@ -121,6 +122,7 @@ export async function GET(req: NextRequest) {
       // Migrated legacy placeholders (spec §4) carry needsReview in discoveredMetadata;
       // the role editor surfaces a "needs review" badge from this flag.
       needsReview: (c.discoveredMetadata as { needsReview?: boolean } | null)?.needsReview === true,
+      iconUrl: c.iconUrl ?? null,
     });
 
     const result = [
@@ -212,6 +214,16 @@ export async function POST(req: NextRequest) {
     if (!url) {
       return NextResponse.json({ error: 'url is required' }, { status: 400 });
     }
+    // `new URL('ttps://…')` parses fine (any scheme does), so a dropped
+    // character only surfaced later as a discovery throw → bare 500.
+    let protocol: string | null = null;
+    try { protocol = new URL(url).protocol; } catch { /* unparsable */ }
+    if (protocol !== 'https:' && protocol !== 'http:') {
+      return NextResponse.json(
+        { error: 'invalid_url', message: 'URL must start with https:// (or http://).' },
+        { status: 400 },
+      );
+    }
   }
 
   // stdio auth is env-only → authMode forced to 'none'. http defaults to oauth.
@@ -247,8 +259,21 @@ export async function POST(req: NextRequest) {
     let clientId = bodyClientId;
     let encryptedClientSecret: string | undefined;
 
+    // Icon lookup runs alongside discovery; it never fails the create.
+    const iconPromise = transport === 'http' && url
+      ? resolveConnectorIcon(url).catch(() => null)
+      : Promise.resolve(null);
+
     if (authMode === 'oauth' && url) {
-      const discovered = await discoverOAuthMetadata(url);
+      let discovered: Awaited<ReturnType<typeof discoverOAuthMetadata>>;
+      try {
+        discovered = await discoverOAuthMetadata(url);
+      } catch (err) {
+        return NextResponse.json(
+          { error: 'discovery_failed', message: `Could not reach this MCP server: ${(err as Error).message}` },
+          { status: 422 },
+        );
+      }
       if (discovered.authMode === 'oauth') {
         discoveredMetadata = discovered as unknown as Record<string, unknown>;
         if (!clientId && discovered.authorizationServer.registration_endpoint) {
@@ -285,6 +310,7 @@ export async function POST(req: NextRequest) {
       encryptedClientSecret: encryptedClientSecret ?? null,
       assertionAudience: authMode === 'assertion' ? (bodyAssertionAudience ?? null) : null,
       assertionTokenEndpoint: authMode === 'assertion' ? (bodyAssertionTokenEndpoint ?? null) : null,
+      iconUrl: await iconPromise,
     }).returning();
 
     if (authMode === 'header' && headerValue) {
