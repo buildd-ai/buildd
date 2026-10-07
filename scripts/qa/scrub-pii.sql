@@ -223,6 +223,7 @@ DELETE FROM conversation_messages;
 DELETE FROM conversations;
 -- Standing rules are text a person wrote about how they work; wiped like chat.
 DELETE FROM chat_directives;
+DELETE FROM local_sessions;         -- presence of people's local coding sessions (repo, client)
 DELETE FROM device_codes;
 DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;
@@ -360,7 +361,8 @@ UPDATE connectors c SET
   client_id = NULL,
   encrypted_client_secret = NULL,
   assertion_audience = pg_temp.qa_url(c.assertion_audience),
-  assertion_token_endpoint = pg_temp.qa_url(c.assertion_token_endpoint)
+  assertion_token_endpoint = pg_temp.qa_url(c.assertion_token_endpoint),
+  icon_url = NULL -- derived from the (scrubbed) url's host
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM connectors) s WHERE c.id = s.id;
 
 -- Unique per (account_id, local_ui_url): one host per row, never a constant.
