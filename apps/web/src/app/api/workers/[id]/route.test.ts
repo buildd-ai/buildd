@@ -2869,6 +2869,49 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedTaskSet.result.lastQuestion).toBe('Which auth method?');
   });
 
+  it('PR handoff: a completion with its PR still open promotes the leases onto the PR scope BEFORE releasing them', async () => {
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+    });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+      branch: 'feature/test', milestones: [], pendingInstructions: null, commitCount: 1, lastCommitSha: 'abc1234',
+      prUrl: 'https://github.com/test/repo/pull/1', prNumber: 1,
+    });
+    const order: string[] = [];
+    mockPromoteLeasesToPrScope.mockClear();
+    mockPromoteLeasesToPrScope.mockImplementationOnce(async () => { order.push('promote'); return null; });
+    mockReleaseClaims.mockImplementationOnce(async () => { order.push('release'); return null; });
+
+    const req = createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed' } });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(mockPromoteLeasesToPrScope).toHaveBeenCalledTimes(1);
+    expect(mockPromoteLeasesToPrScope.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-1', taskId: 'task-1', prNumber: 1 });
+    expect(order).toEqual(['promote', 'release']);
+  });
+
+  it('PR handoff: a completion with no PR promotes nothing', async () => {
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+    });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+      branch: 'feature/test', milestones: [], pendingInstructions: null,
+    });
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', missionId: null });
+    mockPromoteLeasesToPrScope.mockClear();
+
+    const req = createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed' } });
+    expect((await PATCH(req, { params: mockParams })).status).toBe(200);
+    expect(mockPromoteLeasesToPrScope).not.toHaveBeenCalled();
+  });
+
   describe('handoff gate (task has downstream dependents)', () => {
     function setupDependentCompletion() {
       mockTasksUpdate.mockReturnValue({
