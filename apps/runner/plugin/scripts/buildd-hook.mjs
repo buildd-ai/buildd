@@ -66,20 +66,33 @@ export function claimedWorkerId(toolInput, toolResponse) {
  * Returns { event, clientSessionId, cwd, clientVersion?, interactive?, workerId?, reason? }.
  * Only these fields are ever read from the payload.
  */
-export function normalizeHookEvent(client, payload) {
+export function normalizeHookEvent(client, payload, env = process.env) {
   if (!payload || typeof payload !== 'object') return null;
   if (client === 'cursor') return normalizeCursor(payload);
-  if (client === 'claude' || client === 'codex') return normalizeClaudeLike(client, payload);
+  if (client === 'claude' || client === 'codex') return normalizeClaudeLike(client, payload, env);
   return null;
 }
 
-function normalizeClaudeLike(client, p) {
+/**
+ * Whether a person is at the keyboard. Claude Code sets both variables on every
+ * hook it spawns: ATTENDED=0 / ENTRYPOINT=sdk-* for `claude -p` and SDK runs.
+ * ATTENDED is checked first because a child process can inherit its parent's
+ * ENTRYPOINT. A client that sets neither (Codex) is treated as attended.
+ */
+function attended(client, env) {
+  if (client !== 'claude') return true;
+  if (env.CLAUDE_CODE_SESSION_ATTENDED === '0') return false;
+  if (env.CLAUDE_CODE_SESSION_ATTENDED === '1') return true;
+  return !(typeof env.CLAUDE_CODE_ENTRYPOINT === 'string' && env.CLAUDE_CODE_ENTRYPOINT.startsWith('sdk'));
+}
+
+function normalizeClaudeLike(client, p, env) {
   const clientSessionId = typeof p.session_id === 'string' ? p.session_id : null;
   if (!clientSessionId) return null;
   const base = { clientSessionId, cwd: typeof p.cwd === 'string' ? p.cwd : process.cwd() };
   switch (p.hook_event_name) {
     case 'SessionStart':
-      return { ...base, event: 'start', interactive: true };
+      return { ...base, event: 'start', interactive: attended(client, env) };
     case 'UserPromptSubmit':
     case 'Stop':
       return { ...base, event: 'touch' };
@@ -236,7 +249,7 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
   let payload;
   try { payload = JSON.parse(stdin || '{}'); } catch { return { sent: false, why: 'bad_payload', output: '' }; }
   const hookEventName = payload?.hook_event_name;
-  const n = normalizeHookEvent(client, payload);
+  const n = normalizeHookEvent(client, payload, env);
   if (!n) return { sent: false, why: 'ignored', output: hookOutput(client, hookEventName, null) };
   const auth = resolveAuth(env);
   if (!auth) return { sent: false, why: 'no_key', output: hookOutput(client, hookEventName, null) };
