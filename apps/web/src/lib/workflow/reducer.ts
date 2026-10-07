@@ -9,7 +9,8 @@
  * (R2: the caller took a live read after the hint). Ids for rows the statement
  * inserts are drawn from `opts.newId` so the same statement can bind them.
  *
- * DARK: no route calls this yet (Phase 2 part 1/3).
+ * Live for the review and CI families (Slice A parts 1–2): routes reach it
+ * through seam.ts.
  */
 import type {
   ApplyDecision,
@@ -48,6 +49,8 @@ const NON_TERMINAL: DeliveryState[] = [
 
 /** Default bound on mechanical attempts per head (§6.7). */
 export const DEFAULT_MAX_MECHANICAL = 2;
+/** Mechanical base refreshes a delivery may take across heads before landing needs a person (§16 S15; `treadmillMaxRefreshes`). */
+export const DEFAULT_MAX_BEHIND_REFRESHES = 3;
 /** `push_recovery` backoff (§9): 2m, 10m, 30m, then T22. */
 export const PUSH_RECOVERY_BACKOFF_MS = [120_000, 600_000, 1_800_000] as const;
 
@@ -87,12 +90,25 @@ export function headCoverage(d: Pick<DeliverySnapshot, 'approvedHeads' | 'approv
   return 'none';
 }
 
+/**
+ * §5.7 rule 1: what a ledger family has spent and may spend. Allocation is
+ * consumption: every dispatched row counts whoever authored the commit it
+ * produced, except a `skipped` one (§10.5: revalidation found nothing to do,
+ * so no work was dispatched). The cap is the configured one, raised only by a
+ * person's BudgetExtended row (trigger=human, its own max_attempts).
+ */
+export function ledgerBudget(attempts: AttemptSnapshot[], family: AttemptFamily, configuredMax: number, mode: AttemptMode = 'agent'): { spent: number; max: number } {
+  const rows = attempts.filter((a) => a.family === family && a.mode === mode);
+  const spent = rows.filter((a) => a.status !== 'skipped').length;
+  const extended = rows.filter((a) => a.trigger === 'human').reduce((m, a) => Math.max(m, a.maxAttempts), 0);
+  return { spent, max: Math.max(configuredMax, extended) };
+}
+
 /** §5.7 rule 4: the one 1-based "attempt N of M" view of a ledger family. */
 export function attemptView(attempts: AttemptSnapshot[], family: AttemptFamily, defaultMax = 3): { n: number; m: number } {
   const rows = attempts.filter((a) => a.family === family && a.mode === 'agent' && a.status !== 'skipped');
   if (rows.length === 0) return { n: 0, m: defaultMax };
-  const latest = rows.reduce((x, y) => (y.attemptNo > x.attemptNo ? y : x));
-  return { n: latest.attemptNo, m: latest.maxAttempts };
+  return { n: rows.length, m: rows.reduce((m, a) => Math.max(m, a.maxAttempts), 0) };
 }
 
 /**
@@ -151,7 +167,9 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'PrMerged': return pr ? `merged:${pr}` : null;
     case 'PrClosedUnmerged': return pr ? `closed:${pr}:${cmd.live.updatedAt ?? 'unknown'}` : null;
     case 'PrReopened': return pr ? `reopen:${pr}:${cmd.live.updatedAt ?? 'unknown'}` : null;
-    case 'SupersessionRecorded': return pr ? `supersede:${pr}` : null;
+    // The target is part of the key: a second, different target must reach the reducer and be refused (edge_exists).
+    case 'SupersessionRecorded': return pr ? `supersede:${pr}:${cmd.target.repoFullName}#${cmd.target.prNumber}` : null;
+    case 'RepairNotNeeded': return `notneeded:${cmd.attemptId}`;
     case 'Abandon': return pr ? `abandon:${pr}` : null;
     case 'DeliveryFailed': return d ? `fail:${d.ownerTaskId}` : null;
     case 'TrunkRedObserved': return d ? `trunk:${cmd.incidentId}:${d.id}` : null;
@@ -206,6 +224,9 @@ class Ctx {
   }
   nextNo(family: AttemptFamily, mode: AttemptMode): number {
     return this.ledger(family, mode).reduce((m, a) => Math.max(m, a.attemptNo), 0) + 1;
+  }
+  budget(family: AttemptFamily, configuredMax: number, mode: AttemptMode = 'agent'): { spent: number; max: number } {
+    return ledgerBudget(this.view.attempts, family, configuredMax, mode);
   }
   openAttempt(families: AttemptFamily[], head?: string | null): AttemptSnapshot | undefined {
     return this.view.attempts.find((a) => families.includes(a.family) && OPEN_ATTEMPT.has(a.status) && (head === undefined || a.boundHeadSha === head));
@@ -463,6 +484,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
     case 'FixClaimed': {
       const dd = d!;
       const a = c.attempt(cmd.attemptId);
+      if (a?.family === 'ci') return repairClaimed(c, cmd, a);
       if (!a || a.family !== 'review_fix') return c.rejected('unknown_attempt');
       if (dd.state === 'FIXING' && dd.boundAttemptId === a.id) return c.duplicate('already_claimed');
       if (dd.state !== 'CHANGES_REQUESTED') return c.stale('state_moved');
@@ -484,9 +506,12 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
     // T10
     case 'CiFailedObserved': {
       const dd = d!;
+      const human = cmd.trigger === 'human';
       if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
       const allowed: DeliveryState[] = ['AWAITING_REVIEW', 'APPROVED', 'LANDING', 'CHANGES_REQUESTED'];
-      if (!allowed.includes(dd.state)) return c.stale('state_not_allowed');
+      // A person's "Fix CI" may restart a family that escalated, while the (possibly raised) cap allows.
+      const reopen = human && dd.state === 'ESCALATED' && dd.stateReason === 'ci_exhausted';
+      if (!allowed.includes(dd.state) && !reopen) return c.stale('state_not_allowed');
       if (cmd.openTrunkIncidentId) {
         return reduce(view, { type: 'TrunkRedObserved', actor: cmd.actor, incidentId: cmd.openTrunkIncidentId, signature: cmd.signature, headSha: cmd.headSha, thresholdMet: true }, opts);
       }
@@ -494,24 +519,71 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const ciPatch: DeliveryPatch = { ci: 'red', ciHeadSha: cmd.headSha };
       if (dd.state === 'CHANGES_REQUESTED') {
         // The owed review fix will push a new head; record the CI fact only.
-        return c.apply(key, 'CHANGES_REQUESTED', { guardHead: true, patch: ciPatch, evidence: { signature: cmd.signature } });
+        return c.apply(`${key}:review_fix_owed`, 'CHANGES_REQUESTED', { guardHead: true, patch: ciPatch, evidence: { signature: cmd.signature, deferral: 'fix_in_flight' } });
       }
-      if (c.openAttempt(['ci'], cmd.headSha)) return c.rejected('fix_in_flight');
-      const n = c.nextNo('ci', 'agent');
-      if (n > cmd.maxAttempts) {
-        return c.apply(key, 'ESCALATED', {
-          guardHead: true, patch: { ...ciPatch, stateReason: 'ci_exhausted' },
-          effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:ci:${cmd.headSha}`, payload: { family: 'ci', attempts: n - 1 } }],
-          evidence: { signature: cmd.signature },
+      if (c.openAttempt(['ci'])) return c.rejected('fix_in_flight');
+      const { spent, max } = c.budget('ci', cmd.maxAttempts);
+      if (spent >= max) {
+        // A person past the cap extends the budget explicitly (BudgetExtended), never as "iteration 0".
+        if (human) return c.rejected('budget_exhausted', { missing: [`ci ${spent} of ${max}`] });
+        return c.apply(`${key}:exhausted`, 'ESCALATED', {
+          guardHead: true, patch: { ...ciPatch, stateReason: 'ci_exhausted', boundAttemptId: null },
+          effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:ci:${cmd.headSha}`, payload: { family: 'ci', attempts: spent, max, headSha: cmd.headSha, signature: cmd.signature } }],
+          evidence: { signature: cmd.signature, spent, max },
         });
       }
+      const n = c.nextNo('ci', 'agent');
       const id = c.newId();
-      return c.apply(key, 'REPAIRING', {
+      return c.apply(`${key}:${n}`, 'REPAIRING', {
         guardHead: true,
         patch: { ...ciPatch, stateReason: 'ci', boundAttemptId: id },
-        attempts: [{ op: 'insert', id, family: 'ci', attemptNo: n, mode: 'agent', boundHeadSha: cmd.headSha, triggerReason: cmd.signature, triggerFactId: cmd.triggerFactId ?? null, taskId: null, trigger: cmd.trigger ?? 'automatic', status: 'queued', maxAttempts: cmd.maxAttempts }],
-        effects: [{ kind: 'dispatch_ci_fix', dedupeKey: `dispatch_ci_fix:${dd.id}:${cmd.headSha}:${n}`, payload: { attemptId: id, attemptNo: n, headSha: cmd.headSha, signature: cmd.signature } }],
-        evidence: { signature: cmd.signature, attemptNo: n },
+        attempts: [{ op: 'insert', id, family: 'ci', attemptNo: n, mode: 'agent', boundHeadSha: cmd.headSha, triggerReason: cmd.signature, triggerFactId: cmd.triggerFactId ?? null, taskId: null, trigger: human ? 'human' : 'automatic', status: 'queued', maxAttempts: max }],
+        effects: [{ kind: 'dispatch_ci_fix', dedupeKey: `dispatch_ci_fix:${dd.id}:${cmd.headSha}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: cmd.headSha, signature: cmd.signature, trigger: human ? 'human' : 'automatic' } }],
+        evidence: { signature: cmd.signature, attemptNo: n, spent: spent + 1, max },
+      });
+    }
+
+    // §5.7 rule 5 / AC-14
+    case 'BudgetExtended': {
+      const dd = d!;
+      if (!isHumanActor(cmd.actor)) return c.rejected('human_required');
+      if (!cmd.reason.trim()) return c.rejected('reason_required');
+      if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
+      // An open CI attempt answers first: a second click stacks nothing (and says why).
+      if (c.openAttempt(['ci'])) return c.rejected('fix_in_flight');
+      const ok = dd.state === 'AWAITING_REVIEW' || dd.state === 'APPROVED' || dd.state === 'LANDING'
+        || (dd.state === 'ESCALATED' && dd.stateReason === 'ci_exhausted');
+      if (!ok) return c.rejected('state_not_allowed');
+      const { spent, max } = c.budget('ci', cmd.maxAttempts);
+      if (spent < max) return c.rejected('budget_not_exhausted', { missing: [`ci ${spent} of ${max}`] });
+      const n = c.nextNo('ci', 'agent');
+      const id = c.newId();
+      const to = spent + 1;
+      return c.apply(`budget:${dd.id}:ci:${n}`, 'REPAIRING', {
+        guardHead: true,
+        patch: { ci: 'red', ciHeadSha: cmd.headSha, stateReason: 'ci', boundAttemptId: id },
+        attempts: [{ op: 'insert', id, family: 'ci', attemptNo: n, mode: 'agent', boundHeadSha: cmd.headSha, triggerReason: cmd.signature, taskId: null, trigger: 'human', status: 'queued', maxAttempts: to }],
+        effects: [{ kind: 'dispatch_ci_fix', dedupeKey: `dispatch_ci_fix:${dd.id}:${cmd.headSha}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: to, headSha: cmd.headSha, signature: cmd.signature, trigger: 'human' } }],
+        evidence: { family: cmd.family, signature: cmd.signature, attemptNo: n, budgetFrom: max, budgetTo: to },
+        bypass: { actor: cmd.actor, reason: cmd.reason, family: cmd.family, budgetFrom: max, budgetTo: to },
+      });
+    }
+
+    // §10.5 dispatch-time revalidation of a repair attempt
+    case 'RepairNotNeeded': {
+      const dd = d!;
+      const a = c.attempt(cmd.attemptId);
+      if (!a) return c.rejected('unknown_attempt');
+      const skip: AttemptOp = { op: 'update', attemptId: a.id, whenStatus: ['queued'], set: { status: 'skipped', outcome: 'noop', ended: true } };
+      if (dd.state !== 'REPAIRING' || dd.boundAttemptId !== a.id) {
+        return a.status === 'queued' ? c.rejected('repair_superseded', { record: { rounds: [], attempts: [skip] } }) : c.stale('attempt_not_bound');
+      }
+      if (a.status !== 'queued') return c.rejected('attempt_not_queued');
+      if (!dd.currentHeadSha) return c.rejected('no_head');
+      return resumeAfterRepair(c, `notneeded:${a.id}`, dd.currentHeadSha, {
+        attempts: [skip],
+        patch: cmd.reason === 'ci_green' ? { ci: 'green', ciHeadSha: dd.currentHeadSha } : {},
+        evidence: { attemptId: a.id, family: a.family, skipped: cmd.reason, live: cmd.live ?? null },
       });
     }
 
@@ -653,7 +725,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!cmd.target.merged) return c.rejected('target_not_merged');
       if (!cmd.authorised) return c.rejected('not_authorised');
       if (!cmd.reason.trim()) return c.rejected('reason_required');
-      return c.apply(`supersede:${c.prKey}`, 'SUPERSEDED', {
+      return c.apply(`supersede:${c.prKey}:${cmd.target.repoFullName}#${cmd.target.prNumber}`, 'SUPERSEDED', {
         patch: { supersededByPr: cmd.target.prNumber, supersededByUrl: cmd.target.url, supersededReason: cmd.reason, recordedBy: cmd.actor },
         effects: [
           { kind: 'project_supersession', dedupeKey: `project_supersession:${dd.id}`, payload: { target: cmd.target } },
@@ -843,11 +915,11 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
   const key = `head:${c.prKey}:${h}`;
   const evidence = { live: cmd.live, hintedHeadSha: cmd.hintedHeadSha ?? null, previousHead: d.currentHeadSha };
   const record = (): Decision => c.apply(key, d.state, { patch: { currentHeadSha: h }, evidence });
-  const toReview = (extra: { attempts?: AttemptOp[]; effects?: EffectSpec[]; patch?: DeliveryPatch } = {}): Decision => {
+  const toReview = (extra: { attempts?: AttemptOp[]; effects?: EffectSpec[]; patch?: DeliveryPatch; evidence?: Record<string, unknown> } = {}): Decision => {
     const r = c.startRound(h);
     return c.apply(key, 'AWAITING_REVIEW', {
       patch: { ...r.patch, currentHeadSha: h, stateReason: null, boundAttemptId: null, ...(extra.patch ?? {}) },
-      rounds: r.rounds, attempts: extra.attempts, effects: [...r.effects, ...(extra.effects ?? [])], evidence,
+      rounds: r.rounds, attempts: extra.attempts, effects: [...r.effects, ...(extra.effects ?? [])], evidence: extra.evidence ?? evidence,
     });
   };
   const carry = (): Decision | null => {
@@ -861,8 +933,7 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
   switch (d.state) {
     case 'WORKING':
       return record();
-    case 'AWAITING_PUSH':
-    case 'REPAIRING': {
+    case 'AWAITING_PUSH': {
       const a = c.attempt(d.boundAttemptId);
       const proof = deliveryProof({
         boundHeadSha: a?.boundHeadSha ?? d.currentHeadSha,
@@ -871,20 +942,58 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
         liveContainsLocal: cmd.proof?.liveContainsLocal,
         contentDiffChanged: cmd.proof?.contentDiffChanged,
       });
-      if (!proof.holds) {
-        if (d.state === 'REPAIRING') return record();
-        return c.apply(key, 'AWAITING_PUSH', { patch: { currentHeadSha: h }, evidence: { ...evidence, proof } });
-      }
+      if (!proof.holds) return c.apply(key, 'AWAITING_PUSH', { patch: { currentHeadSha: h }, evidence: { ...evidence, proof } });
       const attempts: AttemptOp[] = a ? [{ op: 'update', attemptId: a.id, whenStatus: ['queued', 'running', 'ended'], set: { outcome: 'delivered', pushedHeadSha: h } }] : [];
-      if (d.state === 'REPAIRING' && d.approvalBasis === 'policy') {
-        // A repaired head under a no-review policy goes straight back to APPROVED by policy.
-        return c.apply(key, 'APPROVED', { patch: { currentHeadSha: h, stateReason: 'policy_no_review', boundAttemptId: null }, attempts, evidence: { ...evidence, proof, policy: 'no_review' } });
-      }
-      if (d.state === 'REPAIRING' && headCoverage(d, d.currentHeadSha) !== 'none') {
-        const cf = carry();
-        if (cf && cf.result === 'apply') return { ...cf, attempts };
-      }
       return toReview({ attempts });
+    }
+    case 'REPAIRING': {
+      const a = c.attempt(d.boundAttemptId);
+      const by = attributeHead(a, h, cmd.attribution);
+      if (by === 'attempt' && a) {
+        // §6.9 rule 2: the bound attempt's own push. §9 proof: it moved off the bound head and contains its work.
+        const known = a.reportedShas.includes(h);
+        const proof = deliveryProof({
+          boundHeadSha: a.boundHeadSha,
+          localHeadSha: known ? h : a.reportedShas.at(-1) ?? null,
+          liveHeadSha: h,
+          liveContainsLocal: known || cmd.proof?.liveContainsLocal,
+          // Descends from the bound head and differs from it: the PR's content moved.
+          contentDiffChanged: cmd.proof?.contentDiffChanged ?? true,
+        });
+        if (!proof.holds) return c.apply(key, 'REPAIRING', { patch: { currentHeadSha: h }, evidence: { ...evidence, proof, attributedTo: a.id } });
+        const attempts: AttemptOp[] = [{ op: 'update', attemptId: a.id, whenStatus: ['queued', 'running', 'ended'], set: { outcome: 'delivered', pushedHeadSha: h, appendReportedSha: h } }];
+        if (d.approvalBasis === 'policy') {
+          // A repaired head under a no-review policy goes straight back to APPROVED by policy.
+          return c.apply(key, 'APPROVED', { patch: { currentHeadSha: h, stateReason: 'policy_no_review', boundAttemptId: null }, attempts, evidence: { ...evidence, proof, policy: 'no_review', attributedTo: a.id } });
+        }
+        if (headCoverage(d, d.currentHeadSha) !== 'none') {
+          const cf = carry();
+          if (cf && cf.result === 'apply') return { ...cf, attempts };
+        }
+        return toReview({ attempts });
+      }
+      if (by === 'foreign_running') {
+        // §6.9 rule 3: a push the running attempt cannot claim. Recorded; it consumes no ledger row,
+        // and the attempt's own end still decides.
+        return c.apply(key, 'REPAIRING', { patch: { currentHeadSha: h }, evidence: { ...evidence, foreignPush: true } });
+      }
+      // The repair never started (or already ended): the new head makes it moot. The queued row is
+      // skipped, so it spends nothing, and the head is handled as it would have been before the repair.
+      const attempts: AttemptOp[] = a && a.status === 'queued'
+        ? [{ op: 'update', attemptId: a.id, whenStatus: ['queued'], set: { status: 'skipped', outcome: 'noop', ended: true } }]
+        : [];
+      const effects: EffectSpec[] = a && a.status === 'queued'
+        ? [{ kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${d.id}:head:${h}`, payload: { families: [a.family], reason: 'head_moved' } }]
+        : [];
+      const ev = { ...evidence, foreignPush: true, repairSkipped: attempts.length > 0 };
+      if (d.approvalBasis === 'policy') {
+        return c.apply(key, 'APPROVED', { patch: { currentHeadSha: h, stateReason: 'policy_no_review', boundAttemptId: null }, attempts, effects, evidence: ev });
+      }
+      if (headCoverage(d, d.currentHeadSha) !== 'none') {
+        const cf = carry();
+        if (cf && cf.result === 'apply') return { ...cf, patch: { ...cf.patch, boundAttemptId: null }, attempts, effects: [...cf.effects, ...effects], evidence: ev };
+      }
+      return toReview({ attempts, effects, evidence: ev });
     }
     case 'AWAITING_REVIEW':
       return toReview();
@@ -894,13 +1003,14 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
         effects: [{ kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${d.id}:head:${h}`, payload: { families: ['review_fix'], reason: 'head_moved' } }],
       });
     case 'FIXING': {
-      // Mid-fix pushes are normal; the round advances at AttemptEnded. Record
-      // the SHA as provenance for the running attempt (§6.9).
+      // Mid-fix pushes are normal; the round advances at AttemptEnded. A push
+      // the running attempt can claim is recorded as its provenance (§6.9).
       const a = c.attempt(d.boundAttemptId);
+      const by = attributeHead(a, h, cmd.attribution);
       return c.apply(key, 'FIXING', {
         patch: { currentHeadSha: h },
-        attempts: a ? [{ op: 'update', attemptId: a.id, whenStatus: ['queued', 'running'], set: { appendReportedSha: h } }] : [],
-        evidence,
+        attempts: a && by === 'attempt' ? [{ op: 'update', attemptId: a.id, whenStatus: ['queued', 'running'], set: { appendReportedSha: h } }] : [],
+        evidence: by === 'attempt' ? evidence : { ...evidence, foreignPush: true },
       });
     }
     case 'APPROVED':
@@ -926,7 +1036,17 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
 function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): Decision {
   const d = c.d!;
   const key = `end:${cmd.workerId}`;
-  if (!['WORKING', 'FIXING', 'REPAIRING'].includes(d.state)) return c.stale('attempt_not_bound');
+  // An attempt the delivery has moved past (its head was delivered, the PR merged) still ends:
+  // its row records the end for audit, the delivery does not move.
+  const unbound = (): Decision => {
+    const a = c.attempt(cmd.attemptId);
+    if (!a || !OPEN_ATTEMPT.has(a.status)) return c.stale('attempt_not_bound');
+    return c.stale('attempt_not_bound', { rounds: [], attempts: [{
+      op: 'update', attemptId: a.id, whenStatus: ['queued', 'running'],
+      set: { status: 'ended', ended: true, ...(a.outcome ? {} : { outcome: cmd.outcome === 'success' ? 'unproven' : 'failed' }), ...(cmd.localHeadSha ? { appendReportedSha: cmd.localHeadSha } : {}) },
+    }] });
+  };
+  if (!['WORKING', 'FIXING', 'REPAIRING'].includes(d.state)) return unbound();
   const L = cmd.localHeadSha;
   const live = cmd.live;
   const evidence = { outcome: cmd.outcome, localHeadSha: L, commitCount: cmd.commitCount, live };
@@ -934,7 +1054,10 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
   if (d.state === 'WORKING') {
     if (cmd.taskId !== d.ownerTaskId) return c.stale('attempt_not_bound');
     const prOpen = d.prNumber != null && livePrOpen(live);
-    const contains = prOpen && (!L || live!.headSha === L || cmd.proof?.liveContainsLocal === true);
+    // An unknown local head counts as contained only when nothing local exists to lose: a reaped
+    // (lost) or failed attempt that reported commits but no SHA is not proof (§9, AC-10, S9).
+    const unknownLocalIsSafe = cmd.outcome === 'success' || cmd.commitCount === 0;
+    const contains = prOpen && ((!L && unknownLocalIsSafe) || (!!L && live!.headSha === L) || cmd.proof?.liveContainsLocal === true);
     const success = cmd.outcome === 'success';
     // §6.5 row 1 (§15 step 2): the owner attempt ended and its head is on
     // GitHub, so the worker no longer owns the next move — hand it on.
@@ -959,7 +1082,8 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
     if (cmd.taskRetryBudgetLeft) return c.apply(key, 'WORKING', { evidence: { ...evidence, requeue: true } });
     if (d.prNumber == null) return c.apply(key, 'FAILED', { patch: { stateReason: `attempt_${cmd.outcome}` }, evidence });
     if (cmd.commitCount > 0 && !contains) {
-      return c.apply(key, 'ESCALATED', { patch: { stateReason: 'push_undeliverable' }, effects: [c.pushRecovery(L)], evidence });
+      // Local commits that are not on GitHub: push recovery first, a person after its tries (T22).
+      return c.apply(key, 'AWAITING_PUSH', { effects: [c.pushRecovery(L)], evidence });
     }
     if (livePrOpen(live)) return handOn(live!.headSha);
     // Budget spent, PR bound, but no open PR head to hand on (closed, merged, or
@@ -970,7 +1094,7 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
 
   // FIXING / REPAIRING: the bound repair attempt.
   const a = c.attempt(cmd.attemptId);
-  if (!a || a.id !== d.boundAttemptId) return c.stale('attempt_not_bound');
+  if (!a || a.id !== d.boundAttemptId) return unbound();
   const end = (outcome: 'delivered' | 'unproven' | 'failed', pushed?: string | null): AttemptOp => ({
     op: 'update', attemptId: a.id, whenStatus: ['queued', 'running'],
     set: { status: 'ended', outcome, ended: true, ...(pushed ? { pushedHeadSha: pushed } : {}), ...(L ? { appendReportedSha: L } : {}) },
@@ -1031,8 +1155,9 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
       evidence,
     });
   }
-  // REPAIRING
-  if (exhausted) {
+  // REPAIRING: the family's ledger decides, counting every dispatched row (§5.7 rule 1).
+  const { spent, max } = c.budget(a.family, a.maxAttempts, a.mode);
+  if (spent >= max) {
     const reason = a.family === 'ci' ? 'ci_exhausted' : 'conflict_exhausted';
     return c.apply(key, 'ESCALATED', {
       patch: { stateReason: reason, boundAttemptId: null }, attempts: [end('failed')],
@@ -1041,12 +1166,12 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
     });
   }
   const id = c.newId();
-  const n = a.attemptNo + 1;
+  const n = c.nextNo(a.family, a.mode);
   const kind: EffectSpec['kind'] = a.family === 'ci' ? 'dispatch_ci_fix' : a.mode === 'mechanical' ? (a.family === 'migration' ? 'renumber_migration' : 'refresh_branch') : 'dispatch_conflict_fix';
   return c.apply(key, 'REPAIRING', {
     patch: { boundAttemptId: id },
-    attempts: [end('failed'), { op: 'insert', id, family: a.family, attemptNo: n, mode: a.mode, boundHeadSha: a.boundHeadSha, triggerReason: a.triggerReason, taskId: null, trigger: 'automatic', status: 'queued', maxAttempts: a.maxAttempts }],
-    effects: [{ kind, dedupeKey: `${kind}:${d.id}:${a.boundHeadSha}:${a.mode}:${n}`, payload: { attemptId: id, attemptNo: n, headSha: a.boundHeadSha } }],
+    attempts: [end('failed'), { op: 'insert', id, family: a.family, attemptNo: n, mode: a.mode, boundHeadSha: a.boundHeadSha, triggerReason: a.triggerReason, taskId: null, trigger: 'automatic', status: 'queued', maxAttempts: max }],
+    effects: [{ kind, dedupeKey: `${kind}:${d.id}:${a.boundHeadSha}:${a.mode}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: a.boundHeadSha, signature: a.triggerReason } }],
     evidence,
   });
 }
@@ -1080,7 +1205,7 @@ function reenterVerdict(c: Ctx, key: string, round: RoundSnapshot, h: string, ev
 // ── T12 / T16 shared: mechanical first, agent on refusal (§6.7) ─────────────
 
 function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'migration', o: {
-  key: string; mechanicalRefused: boolean; maxMechanical: number; maxAgent: number; patch: DeliveryPatch;
+  key: string; mechanicalRefused: boolean; maxMechanical: number; maxAgent: number; patch: DeliveryPatch; maxBehindRefreshes?: number;
 }): Decision {
   const d = c.d!;
   const family: AttemptFamily = kind === 'migration' ? 'migration' : 'conflict';
@@ -1092,6 +1217,17 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
     attempts.push({ op: 'update', attemptId: openMech.id, whenStatus: ['queued', 'running'], set: { status: 'ended', outcome: 'failed', ended: true } });
   }
   const evidence = { repairKind: kind, headSha: head };
+  if (kind === 'behind' && !o.mechanicalRefused) {
+    // S15 treadmill: a base that keeps moving is refreshed a bounded number of times across heads.
+    const refreshes = c.ledger(family, 'mechanical').filter((a) => a.triggerReason === 'behind' && a.status !== 'skipped').length;
+    if (refreshes >= (o.maxBehindRefreshes ?? DEFAULT_MAX_BEHIND_REFRESHES)) {
+      return c.apply(o.key + ':treadmill', 'ESCALATED', {
+        guardHead: true, patch: { ...o.patch, stateReason: 'landing_needs_human', boundAttemptId: null }, attempts,
+        effects: [{ kind: 'notify', dedupeKey: `notify:${d.id}:treadmill:${head}`, payload: { event: 'landing_needs_human', detail: `base moved ${refreshes} times under the approved PR` } }],
+        evidence: { ...evidence, refreshes },
+      });
+    }
+  }
   if (!o.mechanicalRefused && mechAtHead.length < o.maxMechanical) {
     const id = c.newId();
     const n = c.nextNo(family, 'mechanical');
@@ -1123,4 +1259,70 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
     effects: [{ kind: 'dispatch_conflict_fix', dedupeKey: `dispatch_conflict_fix:${d.id}:${head}:${n}`, payload: { attemptId: id, attemptNo: n, headSha: head, repairKind: kind } }],
     evidence: { ...evidence, mode: 'agent' },
   });
+}
+
+// ── §6.9 provenance ─────────────────────────────────────────────────────────
+
+/**
+ * Whose push is `h`? By SHA set and timing, never by author string (§6.9):
+ *  - `attempt`: `h` is one of the bound attempt's reported SHAs, or the attempt
+ *    is running (a platform mechanical effect counts from dispatch) and `h`
+ *    descends from its bound head per the compare API. Unknown ancestry while
+ *    running is attributed on timing alone; a known non-descendant is not.
+ *  - `foreign_running`: an attempt is running but cannot claim `h` (a person,
+ *    a bot, another session force-pushed): recorded, consumes nothing.
+ *  - `none`: no running attempt to attribute it to.
+ */
+export function attributeHead(a: AttemptSnapshot | undefined, h: string, attribution?: { descendsFromBound: boolean }): 'attempt' | 'foreign_running' | 'none' {
+  if (!a) return 'none';
+  if (a.reportedShas.includes(h)) return 'attempt';
+  const live = a.status === 'running' || (a.mode === 'mechanical' && a.status === 'queued');
+  if (!live) return 'none';
+  return attribution?.descendsFromBound === false ? 'foreign_running' : 'attempt';
+}
+
+// ── Repair family claim and resume (§10.5) ──────────────────────────────────
+
+/** T9's CI-family equivalent: claim-time revalidation of a queued repair attempt. */
+function repairClaimed(c: Ctx, cmd: Extract<Command, { type: 'FixClaimed' }>, a: AttemptSnapshot): Decision {
+  const d = c.d!;
+  if (d.state === 'REPAIRING' && d.boundAttemptId === a.id && a.status === 'running') return c.duplicate('already_claimed');
+  if (a.status !== 'queued') return c.rejected('attempt_not_queued');
+  const skip: AttemptOp = { op: 'update', attemptId: a.id, whenStatus: ['queued'], set: { status: 'skipped', outcome: 'noop', ended: true } };
+  const recordSkip = (reason: string): Decision => c.rejected(reason, { record: { rounds: [], attempts: [skip] } });
+  if (d.state !== 'REPAIRING' || d.boundAttemptId !== a.id) return recordSkip('fix_superseded');
+  const live = cmd.revalidation.live;
+  // A closed/merged PR or a moved head is answered by its own fact (T17/T18, T3); the attempt only skips.
+  if (!livePrOpen(live) || live.headSha !== a.boundHeadSha) return recordSkip('fix_not_needed');
+  if (cmd.revalidation.ciGreen && d.currentHeadSha) {
+    return resumeAfterRepair(c, `claim:${a.id}`, d.currentHeadSha, {
+      attempts: [skip], patch: { ci: 'green', ciHeadSha: d.currentHeadSha },
+      evidence: { attemptId: a.id, family: a.family, skipped: 'ci_green', live },
+    });
+  }
+  return c.apply(`claim:${a.id}`, 'REPAIRING', {
+    guardHead: true,
+    attempts: [{ op: 'update', attemptId: a.id, whenStatus: ['queued'], set: { status: 'running' } }],
+    evidence: { attemptId: a.id, family: a.family, live },
+  });
+}
+
+/**
+ * Leave REPAIRING without a push because the repair turned out to be
+ * unnecessary: back to what the head was owed before (approval, an open or
+ * decided round, or a fresh round).
+ */
+function resumeAfterRepair(c: Ctx, key: string, h: string, o: { attempts: AttemptOp[]; patch: DeliveryPatch; evidence: Record<string, unknown> }): Decision {
+  const d = c.d!;
+  const base: DeliveryPatch = { ...o.patch, boundAttemptId: null, stateReason: null };
+  if (d.approvalBasis === 'policy') return c.apply(key, 'APPROVED', { guardHead: true, patch: { ...base, stateReason: 'policy_no_review' }, attempts: o.attempts, evidence: o.evidence });
+  if (headCoverage(d, h) !== 'none') return c.apply(key, 'APPROVED', { guardHead: true, patch: base, attempts: o.attempts, evidence: o.evidence });
+  if (c.openRoundAt(h)) return c.apply(key, 'AWAITING_REVIEW', { guardHead: true, patch: base, attempts: o.attempts, evidence: o.evidence });
+  const decided = c.decidedAt(h);
+  if (decided) {
+    const r = reenterVerdict(c, key, decided, h, o.evidence);
+    return r.result === 'apply' ? { ...r, patch: { ...base, ...r.patch }, attempts: [...o.attempts, ...r.attempts] } : r;
+  }
+  const r = c.startRound(h);
+  return c.apply(key, 'AWAITING_REVIEW', { guardHead: true, patch: { ...base, ...r.patch }, rounds: r.rounds, attempts: o.attempts, effects: r.effects, evidence: o.evidence });
 }

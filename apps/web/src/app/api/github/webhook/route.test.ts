@@ -611,6 +611,7 @@ mock.module('@/lib/workflow/seam', () => ({
   openKernelDelivery: mockOpenKernelDelivery,
   observeHead: mockObserveHead,
   observePrState: mockObservePrState,
+  observeCiFailure: mock(async () => ({ handled: false })),
 }));
 mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr }));
 
@@ -1306,6 +1307,11 @@ describe('POST /api/github/webhook', () => {
       });
     }
 
+    /** n automatic CI retries already filed for PR #42: the budget is counted from these rows. */
+    const spentCiRows = (n: number) => Array.from({ length: n }, (_, i) => ({
+      id: `spent-${i}`, status: 'completed', creationSource: 'webhook', ciRetryPrNumber: 42, context: {}, createdAt: `2026-01-01T0${i}:00:00Z`,
+    }));
+
     it('skips CI retry when no buildd worker owns the PR', async () => {
       // Default worker mock is null → nothing to retry
       const req = createWebhookRequest('check_suite', makeCheckSuitePayload());
@@ -1457,8 +1463,8 @@ describe('POST /api/github/webhook', () => {
     });
 
     it('fails the task and notifies the mission when retries are exhausted', async () => {
-      // iteration already at the max → buildCIRetryTask returns null
-      withFailedWorkerPr({ taskCtx: { iteration: 3 }, gitConfig: { maxCiRetries: 3 } });
+      // three CI retries already filed → buildCIRetryTask returns null
+      withFailedWorkerPr({ fixAttempts: spentCiRows(3), gitConfig: { maxCiRetries: 3 } });
 
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
@@ -1473,7 +1479,7 @@ describe('POST /api/github/webhook', () => {
       // whole result object on exhaustion would destroy the only advice the
       // human gets, at exactly the moment they inherit the PR.
       withFailedWorkerPr({
-        taskCtx: { iteration: 3 },
+        fixAttempts: spentCiRows(3),
         gitConfig: { maxCiRetries: 3 },
         taskResult: { summary: 'Fixed lint, tests still red', nextSuggestion: 'Backfill migration 0071 by hand, then re-run CI.' },
       });
@@ -1488,7 +1494,7 @@ describe('POST /api/github/webhook', () => {
     });
 
     it('tells the PR a human is needed once CI retries are exhausted', async () => {
-      withFailedWorkerPr({ taskCtx: { iteration: 3 }, gitConfig: { maxCiRetries: 3 } });
+      withFailedWorkerPr({ fixAttempts: spentCiRows(3), gitConfig: { maxCiRetries: 3 } });
 
       await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
@@ -1512,9 +1518,9 @@ describe('POST /api/github/webhook', () => {
       expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
     });
 
-    // ── Non-worker-authored commits ────────────────────────────────────────
+    // ── Commit author never decides the budget (allocation is consumption) ──
 
-    it('non-worker SHA: creates retry task without incrementing the attempt counter', async () => {
+    it('a non-worker SHA spends an attempt like any other, and records no foreign-push marker', async () => {
       withFailedWorkerPr({ foreignCommit: true });
 
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
@@ -1522,19 +1528,18 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(1);
       const inserted = insertCalls[0].values;
-      // Task is still created (PR is red and needs fixing)
       expect(inserted.parentTaskId).toBe('t1');
       expect(inserted.ciRetryPrNumber).toBe(42);
-      // iteration must NOT advance — agent budget preserved
-      expect((inserted.context as any).iteration).toBe(0);
-      // Provenance fields recorded
-      expect((inserted.context as any).foreign_head_sha).toBe(true);
-      expect((inserted.context as any).foreignCommitAuthor).toBe('maxjacu');
+      expect((inserted.context as any).iteration).toBe(1);
+      expect((inserted.context as any).foreign_head_sha).toBeUndefined();
+      expect((inserted.context as any).foreignCommitAuthor).toBeUndefined();
+      // The author is not even read.
+      expect((mockGithubApi.mock.calls as any[]).some((c) => typeof c[1] === 'string' && /\/commits\/[^/]+$/.test(c[1]))).toBe(false);
       expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
       expect(mockWakeTask).toHaveBeenCalledTimes(1);
     });
 
-    it('worker-authored SHA (regression guard): attempt counter increments normally', async () => {
+    it('a worker-authored SHA spends an attempt the same way', async () => {
       withFailedWorkerPr();
 
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
@@ -1545,42 +1550,27 @@ describe('POST /api/github/webhook', () => {
       expect((insertCalls[0].values.context as any).foreign_head_sha).toBeUndefined();
     });
 
-    it('three consecutive non-worker pushes do not exhaust the agent budget', async () => {
-      // Simulate: task context starts at iteration:0; three foreign SHAs fire one at a time.
-      // Each must create a retry task and must keep iteration at 0.
-      for (let i = 0; i < 3; i++) {
-        insertCalls = [];
-        updateCalls = [];
-        mockAnnounceTaskCreated.mockReset();
-        mockWakeTask.mockReset();
-        mockAnnounceTaskCreated.mockReturnValue(Promise.resolve());
+    it('the cap bounds dispatches whoever pushed: a non-worker push after a spent budget escalates', async () => {
+      withFailedWorkerPr({ foreignCommit: true, fixAttempts: spentCiRows(3), gitConfig: { maxCiRetries: 3 } });
 
-        // Each fire uses a new SHA so dedup doesn't block it
-        const payload = makeCheckSuitePayload({ check_suite: { head_sha: `foreign-sha-${i}` } });
-        withFailedWorkerPr({ foreignCommit: true });
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
-        const res = await POST(createWebhookRequest('check_suite', payload));
-        expect(res.status).toBe(200);
-        expect(insertCalls.length).toBe(1);
-        expect((insertCalls[0].values.context as any).iteration).toBe(0);
-      }
-      // Task must never have been marked failed
-      const allUpdates = updateCalls.flat();
-      expect(allUpdates.some((c: any) => c?.setValues?.status === 'failed')).toBe(false);
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
     });
 
-    it('exhaustion message distinguishes agent failures from disabled retries (foreign push + retries off)', async () => {
+    it('the disabled-retries message names the workspace switch, not who pushed', async () => {
       withFailedWorkerPr({ gitConfig: { maxCiRetries: 0 }, foreignCommit: true });
 
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
       expect(res.status).toBe(200);
-      // Still marks task failed (retries disabled globally)
       const failUpdate = updateCalls.find(c => (c.setValues as any).status === 'failed');
       expect(failUpdate).toBeDefined();
-      // Summary mentions non-worker push, not generic "max retries"
       const summary = (failUpdate!.setValues as any).result?.summary ?? '';
-      expect(summary).toContain('non-worker commit');
+      expect(summary).toContain('CI retries are disabled');
+      expect(summary).not.toContain('non-worker');
     });
 
     it('ignores non-completed check_suite actions', async () => {
@@ -1645,22 +1635,25 @@ describe('POST /api/github/webhook', () => {
     });
 
     it('counts the budget from the CI retries already filed, not the completed owner\'s context', async () => {
-      // The root task carries no iteration; two earlier agent CI retries did.
+      // The owner context claims a spent budget; it is ignored. The three filed CI retries count,
+      // including the old row an earlier rule marked foreign (allocation is consumption).
       withFailedWorkerPr({
         status: 'completed',
+        taskCtx: { iteration: 9 },
         fixAttempts: [
           { id: 'c1', status: 'completed', creationSource: 'webhook', ciRetryPrNumber: 42, context: { iteration: 1 }, createdAt: '2026-01-01T00:00:00Z' },
           { id: 'c2', status: 'completed', creationSource: 'webhook', ciRetryPrNumber: 42, context: { iteration: 2 }, createdAt: '2026-01-01T01:00:00Z' },
-          // A foreign push and a drift diagnosis never burn the budget.
           { id: 'c3', status: 'completed', creationSource: 'webhook', ciRetryPrNumber: 42, context: { foreign_head_sha: true }, createdAt: '2026-01-01T02:00:00Z' },
+          // A drift diagnosis never burns the budget.
           { id: 'd1', status: 'completed', creationSource: 'webhook', outputRequirement: 'artifact_required', ciRetryPrNumber: 42, context: {}, createdAt: '2026-01-01T03:00:00Z' },
         ],
+        gitConfig: { maxCiRetries: 5 },
       });
 
       await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
       expect(insertCalls.length).toBe(1);
-      expect((insertCalls[0].values.context as any).iteration).toBe(3);
+      expect((insertCalls[0].values.context as any).iteration).toBe(4);
     });
 
     it('a completed owner whose PR already used the whole budget escalates instead of retrying', async () => {
@@ -1863,7 +1856,7 @@ describe('POST /api/github/webhook', () => {
       });
 
       it('retry budget used up → retries_exhausted', async () => {
-        withFailedWorkerPr({ taskCtx: { iteration: 3 }, gitConfig: { maxCiRetries: 3 } });
+        withFailedWorkerPr({ fixAttempts: spentCiRows(3), gitConfig: { maxCiRetries: 3 } });
         await fail();
         const [e] = skipEvents();
         expect(e.detail.skipReason).toBe('retries_exhausted');
@@ -2034,13 +2027,20 @@ describe('POST /api/github/webhook', () => {
           title: 'PR #42: Release v1.2.3',
           description: 'Release notes',
           workspaceId: 'ws1',
-          // A prior CI failure already produced one retry attempt.
           missionId: null,
-          context: { adoptedPr: { prNumber: 42 }, iteration: 1 },
+          context: { adoptedPr: { prNumber: 42 } },
           result: null,
           status: 'completed',
         },
       });
+      // A prior CI failure already filed one retry attempt: the budget is counted from that row.
+      let rows: any[] | null = [{ id: 'prior-ci', status: 'completed', creationSource: 'webhook', ciRetryPrNumber: 42, context: {}, createdAt: '2026-01-01T00:00:00Z' }];
+      selectTableResults = (table: any) => {
+        if (table !== schemaMock.tasks) return null;
+        const out = rows;
+        rows = null;
+        return out;
+      };
       mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: {} });
       mockGithubApi.mockImplementation((_installationId: number, url: string) => {
         if (typeof url === 'string' && url.includes('/commits/')) {

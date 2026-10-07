@@ -21,12 +21,16 @@ import type { Command, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
 import { ingestFact, type GithubFactReader } from './facts';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
-import { headCoverage } from './reducer';
+import { headCoverage, ledgerBudget } from './reducer';
 import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
 import type { Verdict } from './types';
 
 export type DeliveryRole = 'owner' | 'fix' | 'ci_fix' | 'conflict_fix' | 'review';
+
+/** Attempt roles that repair a PR and must deliver a pushed head (§9). */
+const REPAIR_ROLES: ReadonlySet<string> = new Set(['fix', 'ci_fix']);
+export const isRepairRole = (role: string | null | undefined): boolean => !!role && REPAIR_ROLES.has(role);
 
 /** Reviewer runs a round may lose to infra before it escalates as review_unavailable (T27). */
 export const REVIEW_CONTRACT_RETRIES = 2;
@@ -201,7 +205,7 @@ export async function attemptEnded(p: {
   source: string;
 }, deps: SeamDeps = {}): Promise<{ handled: boolean; result?: CommandResult }> {
   const attemptKind = p.task.deliveryRole;
-  if (!p.task.deliveryId || (attemptKind !== 'owner' && attemptKind !== 'fix' && attemptKind !== 'review')) return { handled: false };
+  if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind) && attemptKind !== 'review')) return { handled: false };
   const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec);
   if (!deliveryId) return { handled: false };
 
@@ -233,7 +237,7 @@ export async function attemptEnded(p: {
       proof = await liveProof(reader, d.repoFullName, p.localHeadSha, live);
     }
   }
-  const attemptId = attemptKind === 'fix' ? (ctxOf(p.task).workflowAttemptId as string | undefined) : undefined;
+  const attemptId = isRepairRole(attemptKind) ? (ctxOf(p.task).workflowAttemptId as string | undefined) : undefined;
   const cmd: Command = {
     type: 'AttemptEnded',
     actor: p.source,
@@ -272,7 +276,7 @@ export interface GateRefusal {
  * when GitHub cannot be read (T4 then decides from what it can see).
  */
 export async function fixCompletionGate(p: { task: AttemptTask; localHeadSha: string | null }, deps: SeamDeps = {}): Promise<GateRefusal | null> {
-  if (!p.task.deliveryId || p.task.deliveryRole !== 'fix') return null;
+  if (!p.task.deliveryId || !isRepairRole(p.task.deliveryRole)) return null;
   const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec);
   if (!deliveryId) return null;
   const view = await loadView({ deliveryId }, deps.exec);
@@ -286,7 +290,7 @@ export async function fixCompletionGate(p: { task: AttemptTask; localHeadSha: st
   if (live.headSha !== attempt.boundHeadSha) return null;
   return {
     code: 'delivery_not_advanced',
-    error: `Your fix is not on GitHub: PR #${d.prNumber}'s head is still ${live.headSha.slice(0, 7)}, the commit the review asked you to change.`
+    error: `Your fix is not on GitHub: PR #${d.prNumber}'s head is still ${live.headSha.slice(0, 7)}, the commit ${p.task.deliveryRole === 'ci_fix' ? 'whose CI failed' : 'the review asked you to change'}.`
       + (p.localHeadSha && p.localHeadSha !== live.headSha ? ` Your local head is ${p.localHeadSha.slice(0, 7)}.` : ''),
     hint: 'Push your branch (git push), confirm with git ls-remote that the PR head moved, then complete again.',
     boundHeadSha: attempt.boundHeadSha,
@@ -306,7 +310,7 @@ export type ClaimDecision = { action: 'proceed' } | { action: 'cancel'; reason: 
  * cancels the task as skipped (not failed).
  */
 export async function claimFix(task: AttemptTask, deps: SeamDeps = {}): Promise<ClaimDecision> {
-  if (!task.deliveryId || task.deliveryRole !== 'fix') return { action: 'proceed' };
+  if (!task.deliveryId || !isRepairRole(task.deliveryRole)) return { action: 'proceed' };
   const deliveryId = await kernelDeliveryById(task.deliveryId, deps.exec);
   if (!deliveryId) return { action: 'proceed' };
   const attemptId = ctxOf(task).workflowAttemptId as string | undefined;
@@ -319,9 +323,16 @@ export async function claimFix(task: AttemptTask, deps: SeamDeps = {}): Promise<
   const live = await readerFor(deps, repo.installationId).readPr(d.repoFullName, d.prNumber);
   if (!live) return { action: 'defer', reason: 'live_read_failed' };
   const approved = d.state === 'APPROVED' || headCoverage(d, live.headSha) !== 'none';
-  const result = await applyCommand({ type: 'FixClaimed', actor: `claim:${task.id}`, attemptId, revalidation: { live, approved } }, { ref: { deliveryId }, exec: deps.exec });
+  const reader = readerFor(deps, repo.installationId);
+  // The CI family's own trigger fact: a re-run that went green while the fix queued.
+  const ciGreen = task.deliveryRole === 'ci_fix' && reader.ciGreen ? (await reader.ciGreen(d.repoFullName, live.headSha)) === true : false;
+  const result = await applyCommand({ type: 'FixClaimed', actor: `claim:${task.id}`, attemptId, revalidation: { live, approved, ciGreen } }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);
-  if (result.result === 'applied' || result.result === 'duplicate') return { action: 'proceed' };
+  if (result.result === 'applied') {
+    const skipped = result.decision.evidence.skipped;
+    return typeof skipped === 'string' ? { action: 'cancel', reason: skipped } : { action: 'proceed' };
+  }
+  if (result.result === 'duplicate') return { action: 'proceed' };
   return { action: 'cancel', reason: result.reason };
 }
 
@@ -445,4 +456,106 @@ export async function requestReview(p: {
   );
   await drainDelivery(deliveryId, deps);
   return { handled: true, result };
+}
+
+// ── §6.9: a repair attempt's own commits (provenance by SHA set) ───────────
+
+/**
+ * The runner's metric sync reported a local head for a repair attempt: record
+ * it on the attempt's `reported_shas`, so a head that arrives later is
+ * recognised as this attempt's push by SHA, not by who authored it. One
+ * statement; a no-op for any task that is not an open kernel repair attempt.
+ */
+export async function recordLocalHead(taskId: string, sha: string, exec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>): Promise<void> {
+  await exec(sql`-- workflow:record_local_head
+UPDATE workflow_attempts wa
+SET reported_shas = CASE WHEN ${sha}::text = ANY(wa.reported_shas) THEN wa.reported_shas ELSE array_append(wa.reported_shas, ${sha}::text) END,
+    updated_at = now()
+FROM tasks t
+JOIN workflow_deliveries d ON d.id = t.delivery_id AND d.authority = 'kernel'
+WHERE t.id = ${taskId}::uuid
+  AND t.delivery_role IN ('fix', 'ci_fix')
+  AND wa.id = NULLIF(t.context->>'workflowAttemptId', '')::uuid
+  AND wa.delivery_id = d.id
+  AND wa.status IN ('queued', 'running')`);
+}
+
+// ── T10: CI failed on a kernel-owned PR ─────────────────────────────────────
+
+export interface CiFailureSeen {
+  handled: true;
+  result: CommandResult;
+  /** The CI fix task the dispatch effect filed, once drained. */
+  attemptTaskId: string | null;
+}
+
+async function attemptTaskOf(deliveryId: string, result: CommandResult, exec?: Exec): Promise<string | null> {
+  if (result.result !== 'applied') return null;
+  const ins = result.decision.attempts.find((a) => a.op === 'insert') as { id: string } | undefined;
+  if (!ins) return null;
+  const view = await loadView({ deliveryId }, exec);
+  return view.attempts.find((a) => a.id === ins.id)?.taskId ?? null;
+}
+
+/**
+ * The `check_suite` webhook and the red-PR sweep for a kernel-owned PR: T10
+ * from a live read. The head is recorded first (R2), so an old-SHA failure is
+ * answered `stale(head_not_current)` and never overwrites a newer head.
+ * `handled: false` = not the kernel's PR; the legacy retry runs as before.
+ */
+export async function observeCiFailure(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number;
+  headSha: string; signature: string; maxAttempts: number; source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: false } | CiFailureSeen> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return { handled: false };
+  const reader = readerFor(deps, p.installationId);
+  const live = await reader.readPr(p.repoFullName, p.prNumber);
+  if (!live) return { handled: true, result: { result: 'rejected', reason: 'live_read_failed', current: { state: null, version: 0, head: null, round: 0 } }, attemptTaskId: null };
+  await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.source}:ci`, repoFullName: p.repoFullName, prNumber: p.prNumber },
+    { exec: deps.exec, github: { ...reader, readPr: async () => live } });
+  const result = await applyCommand(
+    { type: 'CiFailedObserved', actor: p.source, headSha: p.headSha, signature: p.signature, maxAttempts: p.maxAttempts },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  await drainDelivery(deliveryId, deps);
+  return { handled: true, result, attemptTaskId: await attemptTaskOf(deliveryId, result, deps.exec) };
+}
+
+/**
+ * A person's "Fix CI" on a kernel-owned PR (§5.7 rule 5). Under the
+ * configured cap it is an ordinary T10 attempt with trigger=human; past it, a
+ * visible BudgetExtended transition by that person allocates exactly one more.
+ * Never "iteration 0", never a fresh budget.
+ */
+export async function requestCiRetry(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number;
+  actor: string; maxAttempts: number; reason: string;
+}, deps: SeamDeps = {}): Promise<{ handled: false } | (CiFailureSeen & { extended: boolean })> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return { handled: false };
+  const reader = readerFor(deps, p.installationId);
+  const live = await reader.readPr(p.repoFullName, p.prNumber);
+  if (!live) return { handled: true, extended: false, attemptTaskId: null, result: { result: 'rejected', reason: 'live_read_failed', current: { state: null, version: 0, head: null, round: 0 } } };
+  await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:retry_ci`, repoFullName: p.repoFullName, prNumber: p.prNumber },
+    { exec: deps.exec, github: { ...reader, readPr: async () => live } });
+  const view = await loadView({ deliveryId }, deps.exec);
+  const { spent, max } = ledgerBudget(view.attempts, 'ci', p.maxAttempts);
+  let extended = false;
+  let result: CommandResult | null = null;
+  if (spent < max) {
+    result = await applyCommand(
+      { type: 'CiFailedObserved', actor: p.actor, headSha: live.headSha, signature: 'manual', maxAttempts: p.maxAttempts, trigger: 'human' },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+  }
+  if (!result || (result.result === 'rejected' && result.reason === 'budget_exhausted')) {
+    extended = true;
+    result = await applyCommand(
+      { type: 'BudgetExtended', actor: p.actor, family: 'ci', headSha: live.headSha, signature: 'manual', maxAttempts: p.maxAttempts, reason: p.reason },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+  }
+  await drainDelivery(deliveryId, deps);
+  return { handled: true, extended, result, attemptTaskId: await attemptTaskOf(deliveryId, result, deps.exec) };
 }

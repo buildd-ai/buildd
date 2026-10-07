@@ -321,6 +321,7 @@ const mockCancelSkippedTask = mock(async (_id: string, _reason: string) => undef
 mock.module('@/lib/workflow/seam', () => ({
   claimFix: mockClaimKernelFix,
   cancelSkippedTask: mockCancelSkippedTask,
+  isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
 }));
 // Claim planner I/O (./claim-plan-store). Default: no signals, writes captured.
 const emptyPlannerSignals = () => ({ predictions: new Map(), overlapAnswers: [], starvationCredit: new Map(), dependentCount: new Map() });
