@@ -119,7 +119,7 @@ interface Worker {
 
 interface Props {
   initialWorker: Worker;
-  outputRequirement?: string;
+  outputRequirement?: string | null;
   deliverableArtifactCount?: number;
   usesReviewer?: boolean;
   reviewState?: string;

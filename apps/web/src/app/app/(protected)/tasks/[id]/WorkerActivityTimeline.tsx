@@ -17,6 +17,7 @@ type LabelledMilestone = Milestone & { label: string };
 const TYPE_FALLBACK_LABELS: Record<Milestone['type'], string> = {
   phase: 'Phase',
   status: 'Status update',
+  plan: 'Plan',
   checkpoint: 'Checkpoint',
   action: 'Action',
 };
@@ -417,7 +418,7 @@ function StatusRow({
   milestone,
   formatTime,
 }: {
-  milestone: Extract<LabelledMilestone, { type: 'status' }>;
+  milestone: Extract<LabelledMilestone, { type: 'status' | 'plan' }>;
   formatTime: (ts: number) => string;
 }) {
   const [rowExpanded, setRowExpanded] = useState(false);

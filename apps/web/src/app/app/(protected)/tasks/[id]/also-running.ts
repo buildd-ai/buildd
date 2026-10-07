@@ -14,7 +14,7 @@ import type { PeerTask } from './TaskSidePanel';
 interface PeerWorkerRow extends Omit<RunEvidenceInput, 'milestones'> {
   status: string;
   milestones: unknown;
-  task: { id: string; title: string; label?: string | null; outputRequirement?: string; missionId: string | null } | null;
+  task: { id: string; title: string; label?: string | null; outputRequirement?: string | null; missionId: string | null } | null;
 }
 
 /**
