@@ -19,6 +19,7 @@ import KnowledgeHealthSection from './KnowledgeHealthSection';
 import SubjectPolicySection from './SubjectPolicySection';
 import ExecutorSection from './ExecutorSection';
 import RunnerSizeSection from './RunnerSizeSection';
+import CiRetrySection from './CiRetrySection';
 import ConcurrencySection from './ConcurrencySection';
 import { isRunnerSize, isWorkspaceExecutor, resolveWorkspaceExecutor } from '@buildd/shared';
 import { resolveWorkspaceRunnerSize } from '@/lib/runner-size-store';
@@ -151,6 +152,12 @@ export default async function WorkspaceConfigPage({
                         reason={runnerSize.reason}
                     />
                 )}
+
+                <CiRetrySection
+                    workspaceId={workspace.id}
+                    initial={(workspace.gitConfig as WorkspaceGitConfig | null)?.enforceGreenCI === true}
+                    canEdit={roleHas(access.role, 'manage_workspace_settings', overrides)}
+                />
 
                 <ConcurrencySection
                     workspaceId={workspace.id}
