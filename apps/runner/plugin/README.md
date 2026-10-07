@@ -66,8 +66,16 @@ Anywhere else they send nothing, not even the folder name. If the list cannot
 be loaded they send nothing.
 
 `buildd install --global` registers the buildd MCP server the same way: per
-folder, for the folders Claude Code has opened whose repo is a workspace.
+folder, for the folders Claude Code has opened whose repo is a workspace in
+any team you are in (your presence token's list, from `buildd login`).
 Re-run it after a new checkout, or use `--here` in any folder.
+
+Your login key belongs to one team. A folder whose workspace that team cannot
+reach always gets the key-free OAuth entry below, never the key: a key entry
+there would shadow the folder's own `.mcp.json` with a key that cannot see the
+workspace. Re-running switches any such key entry to OAuth and says which
+folders it changed; `--status --global` flags one it finds. Without a presence
+token (an older login) only the key's team is covered, and install says so.
 
 With `--oauth` (opt-in) no key is written for those folders: each one points
 at its workspace's OAuth MCP endpoint, `<server>/api/mcp-oauth/<workspaceId>`,
