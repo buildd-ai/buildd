@@ -40,7 +40,7 @@ const CLAIM_TEXT = `Claimed 1 task(s):\n\n**Worker ID:** ${WORKER}\n**Task:** Fi
 describe('client adapters', () => {
   it('Claude Code: start, touch, bind, end', () => {
     const base = { session_id: 'cc-1', cwd: '/repo', transcript_path: '/t.jsonl' };
-    expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'SessionStart', source: 'startup' }))
+    expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'SessionStart', source: 'startup' }, {}))
       .toEqual({ clientSessionId: 'cc-1', cwd: '/repo', event: 'start', interactive: true });
     expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'UserPromptSubmit', user_prompt: 'secret plan' })?.event).toBe('touch');
     expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'Stop', last_assistant_message: 'x' })?.event).toBe('touch');
@@ -140,6 +140,43 @@ describe('throttle and output', () => {
     expect(out.hookSpecificOutput.additionalContext).toContain('update_progress');
     expect(hookOutput('claude', 'Stop', { pendingInstructions: true })).toBe('');
     expect(hookOutput('cursor', 'sessionStart', null)).toBe('{}');
+  });
+});
+
+describe('Claude Code: attended vs headless', () => {
+  // Claude Code sets these on every hook it spawns: an interactive TUI session
+  // reads ATTENDED=1 / ENTRYPOINT=cli, `claude -p` and SDK runs read 0 / sdk-*.
+  const start = { session_id: 'cc-1', cwd: '/repo', hook_event_name: 'SessionStart', source: 'startup' };
+  const interactive = (env: Record<string, string>) => normalizeHookEvent('claude', start, env)?.interactive;
+
+  it('an unattended session (claude -p, SDK) starts as not interactive', () => {
+    expect(interactive({ CLAUDE_CODE_SESSION_ATTENDED: '0', CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' })).toBe(false);
+    expect(interactive({ CLAUDE_CODE_SESSION_ATTENDED: '0' })).toBe(false);
+    expect(interactive({ CLAUDE_CODE_ENTRYPOINT: 'sdk-ts' })).toBe(false);
+  });
+
+  it('an attended session, or a client that says nothing, stays interactive', () => {
+    expect(interactive({ CLAUDE_CODE_SESSION_ATTENDED: '1', CLAUDE_CODE_ENTRYPOINT: 'cli' })).toBe(true);
+    expect(interactive({ CLAUDE_CODE_ENTRYPOINT: 'cli' })).toBe(true);
+    expect(interactive({})).toBe(true);
+  });
+
+  it('ATTENDED wins over a stale inherited ENTRYPOINT', () => {
+    expect(interactive({ CLAUDE_CODE_SESSION_ATTENDED: '1', CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' })).toBe(true);
+    expect(interactive({ CLAUDE_CODE_SESSION_ATTENDED: '0', CLAUDE_CODE_ENTRYPOINT: 'cli' })).toBe(false);
+  });
+
+  it('run() reads the hook environment, so the POSTed start says interactive: false', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'buildd-hook-'));
+    try {
+      let body: any = null;
+      const fetchImpl = async (_url: string, init: any) => { body = JSON.parse(init.body); return Response.json({ ok: true }); };
+      await run({
+        client: 'claude', stdin: JSON.stringify({ ...start, cwd: dir }), fetchImpl: fetchImpl as any,
+        env: { BUILDD_API_KEY: 'bld_test', BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_HOME: dir, CLAUDE_CODE_SESSION_ATTENDED: '0' },
+      });
+      expect(body).toMatchObject({ event: 'start', client: 'claude', interactive: false });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

@@ -2,7 +2,7 @@ import { describe, it, expect, mock } from 'bun:test';
 
 mock.module('@buildd/core/db', () => ({ db: {} }));
 
-const { classifyLocalSession, sortLocalSessions, countInteractiveSessions } = await import('./local-session-view');
+const { classifyLocalSession, sortLocalSessions, countInteractiveSessions, shownInSessionList } = await import('./local-session-view');
 type Row = import('./local-session-view').LocalSessionRow;
 
 const NOW = new Date('2026-10-07T12:00:00Z');
@@ -62,5 +62,22 @@ describe('ordering and count', () => {
     expect(sortLocalSessions(views).map(v => v.id)).toEqual(['bound', 'on', 'off', 'ended']);
     // "Interactive sessions" counts only online ones, and never feeds agent capacity.
     expect(countInteractiveSessions(views)).toBe(2);
+  });
+});
+
+describe('headless sessions', () => {
+  // `claude -p`, SDK runs and Cursor background agents report interactive: false.
+  const headless = classifyLocalSession(row({ id: 'headless', interactive: false }), NOW);
+  const headlessWorking = classifyLocalSession(
+    row({ id: 'headless-working', interactive: false, boundWorkerId: 'w', workerStatus: 'running', workerUpdatedAt: minsAgo(1), taskId: 't' }), NOW);
+  const person = classifyLocalSession(row({ id: 'person' }), NOW);
+
+  it('a headless presence with no task is not listed and not counted', () => {
+    expect([headless, person].filter(shownInSessionList).map(v => v.id)).toEqual(['person']);
+    expect(countInteractiveSessions([headless, person])).toBe(1);
+  });
+
+  it('a headless session that claimed a task is still listed: it holds real work', () => {
+    expect(shownInSessionList(headlessWorking)).toBe(true);
   });
 });
