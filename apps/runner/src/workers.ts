@@ -103,7 +103,8 @@ import {
 } from './prompt-builder';
 import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunnerMemoryIndex } from './memory-digest-policy';
 import { retrieveTaskMemory } from './task-memory-retrieval';
-import { resolveClaudeBinaryPath } from './sdk-binary-path';
+import { resolveClaudeBinaryPath, resolveClaudeCliVersion } from './sdk-binary-path';
+import { ModelProbePoller, createModelProbeHttpApi, sdkProbe } from './model-probe';
 import { HookFactory } from './hook-factory';
 import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
 import { deferOnPathCollision } from './path-collision-defer';
@@ -767,6 +768,7 @@ export class WorkerManager {
   private knowledgeIngestPoller: KnowledgeIngestPoller;
   // Quality Scout command probes (runner-host design §6) — idle ticks only, never a worker slot.
   private scoutHostPoller: ScoutHostPoller;
+  private modelProbePoller: ModelProbePoller;
   // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
   private recentCycleTimes: number[] = [];  // Duration in ms of last N completed workers
   private adaptiveStaleTimeout: number = 300_000;  // Start at 5 min, adapt from cycle data
@@ -937,6 +939,15 @@ export class WorkerManager {
       ),
     });
 
+    // Model certification probe (packages/core/model-certification.ts): only
+    // runs for accounts the server trusts to certify; BUILDD_MODEL_PROBE=0 opts out.
+    this.modelProbePoller = new ModelProbePoller({
+      api: createModelProbeHttpApi({ serverUrl: config.builddServer, apiKey: config.apiKey }),
+      probe: sdkProbe,
+      cliVersion: () => resolveClaudeCliVersion(),
+      enabled: process.env.BUILDD_MODEL_PROBE !== '0',
+    });
+
     // Send heartbeat to register availability (immediate + periodic)
     // Heartbeat is now a lightweight ping (no workspace queries server-side)
     if (!config.serverless) {
@@ -967,6 +978,7 @@ export class WorkerManager {
           this.knowledgeIngestPoller.poll().catch(() => {});
           // Same gate for Scout runs: one at a time, no worker slot, re-checks busy before checkout.
           this.scoutHostPoller.poll().catch(() => {});
+          this.modelProbePoller.poll().catch(() => {});
         }
       }, RUNNER_HEARTBEAT_INTERVAL_MS);
 
