@@ -368,14 +368,23 @@ export class BuilddClient {
     subagentSpansObserved?: number;
     // Sum of durationMs for isBackground=true spans.
     backgroundAgentMs?: number;
-    // Paths written while path-claim endpoint was unreachable; server registers them retroactively.
-    pendingPaths?: string[];
-    // Incremental file paths touched since last check-in (from git diff --name-only).
-    // Server accumulates into workers.observedTouches for passive collision detection (§6d).
+    /**
+     * Authoritative working-set delta (working-set.ts): paths added to / removed
+     * from the task-owned set since the server's last ACK, one bounded chunk.
+     * The server leases `add`, releases `remove`, and answers `workingSetAck`.
+     */
+    workingSet?: import('@buildd/shared').WorkingSetDelta;
+    // Observed-touch SAMPLE for the dashboard (bounded, diagnostic): the same
+    // paths as `workingSet.add`. Also what a server predating `workingSet`
+    // leases from, so a mixed deploy never leaves a session without leases.
     touchedPaths?: string[];
     /** Path-claim calls that went ahead degraded since the last report (a delta). */
     pathClaimDegraded?: number;
-    /** Pre-push/completion sweep: the server re-offers every path in touchedPaths, not only new ones. */
+    /** Same calls split by cause, for the coordination_unavailable attribution. */
+    pathClaimDegradedByCause?: Partial<Record<'timeout' | 'error', number>>;
+    /** Ship checkpoints whose coverage could not be proven (see ship-checkpoint.ts). */
+    shipCheckpoints?: import('@buildd/shared').ShipCheckpointReport[];
+    /** Legacy pre-push/completion sweep flag (servers before `workingSet`). */
     checkpointSweep?: boolean;
     /**
      * Sent with a `Deferred:` failure when enforce-mode path claims found a

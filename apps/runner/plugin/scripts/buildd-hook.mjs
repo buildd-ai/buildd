@@ -226,6 +226,17 @@ export function writeWorkspaceCache(env, apiKey, repos, now = Date.now()) {
  * any failure. A plain list call: it says nothing about the caller's folder.
  */
 export async function fetchWorkspaceRepos(auth, fetchImpl = globalThis.fetch) {
+  const list = await fetchWorkspaces(auth, fetchImpl);
+  return list ? [...new Set(list.map(w => w.repo))].sort() : null;
+}
+
+/**
+ * `{ id, repo }` (repo as lowercased owner/name) of every workspace with a repo
+ * that this key reaches, in the server's order, or null on any failure. The
+ * installer needs the id for the per-workspace OAuth MCP endpoint; the hook's
+ * cached list keeps only the repos.
+ */
+export async function fetchWorkspaces(auth, fetchImpl = globalThis.fetch) {
   try {
     // A presence token reads the person's workspace repos across all their
     // teams; it is refused by /api/workspaces like by every non-presence route.
@@ -237,7 +248,9 @@ export async function fetchWorkspaceRepos(auth, fetchImpl = globalThis.fetch) {
     if (!res.ok) return null;
     const body = await res.json();
     if (!Array.isArray(body?.workspaces)) return null;
-    return [...new Set(body.workspaces.map(w => repoSlug(w?.repo)).filter(Boolean).map(r => r.toLowerCase()))].sort();
+    return body.workspaces
+      .map(w => ({ id: typeof w?.id === 'string' ? w.id : null, repo: repoSlug(w?.repo)?.toLowerCase() ?? null }))
+      .filter(w => w.repo);
   } catch {
     return null;
   }

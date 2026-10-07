@@ -120,7 +120,7 @@ and exactly once, and MUST never complete unfinished work or rewrite a finished 
 
 ## Install
 
-`buildd install --global` registers the MCP server for Claude Code per folder, only for folders Claude Code has opened whose repo is one of the account's workspaces (a repo whose own `.mcp.json` names buildd is left alone; `--here` adds the current folder, `--everywhere` restores the user-wide entry),
+`buildd install --global` registers the MCP server for Claude Code per folder, only for folders Claude Code has opened whose repo is one of the account's workspaces (a repo whose own `.mcp.json` names buildd is left alone; `--here` adds the current folder, `--everywhere` restores the user-wide entry; `--oauth`, opt-in, writes each folder's entry as the key-free per-workspace OAuth endpoint `/api/mcp-oauth/<workspaceId>` instead, and `--status --global` reports each entry as key or OAuth without the network),
 and installs the hooks and the `buildd-session` skill for every detected client;
 `buildd install` does the same for one repo; `--status` and `--uninstall` inspect
 or remove them. A handler is buildd's if and only if its command names

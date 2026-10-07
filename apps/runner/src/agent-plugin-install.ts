@@ -25,7 +25,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFi
 import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 // The hook's own helpers, so the installer and the hook agree on what a workspace repo is.
-import { fetchWorkspaceRepos, gitRepo, gitRoot, hasProjectBuilddMcp, resolveAuth, writeWorkspaceCache } from '../plugin/scripts/buildd-hook.mjs';
+import { fetchWorkspaceRepos, fetchWorkspaces, gitRepo, gitRoot, hasProjectBuilddMcp, resolveAuth, writeWorkspaceCache } from '../plugin/scripts/buildd-hook.mjs';
 import { resolveBuilddHome } from './buildd-home';
 
 export const BUILDD_HOOK_MARKER = 'buildd-hook.mjs';
@@ -268,13 +268,18 @@ function installSkill(ctx: InstallContext): void {
 // loads no buildd tools at all. `--here` registers it for the current folder
 // regardless (e.g. to set up a new workspace); `--everywhere` keeps the old
 // user-wide entry.
+//
+// `--oauth` writes no key: each workspace folder points at that workspace's
+// OAuth MCP endpoint (/api/mcp-oauth/<workspaceId>) and Claude Code signs the
+// person in in the browser the first time the folder uses buildd. Opt-in until
+// a full Claude Code sign-in against it has been proven end to end.
 
 export type McpMode = 'workspaces' | 'here' | 'everywhere';
 
 export interface McpPlan {
   config: Json;
-  /** Folders that now have the buildd entry (new or refreshed). */
-  folders: Array<{ path: string; repo: string | null }>;
+  /** Folders that now have the buildd entry (new or refreshed), and whether it signs in with OAuth. */
+  folders: Array<{ path: string; repo: string | null; oauth: boolean }>;
   /** Workspace folders left alone because their own .mcp.json already names buildd. */
   selfConfigured: Array<{ path: string; repo: string | null }>;
   /** An old user-wide buildd entry was removed. */
@@ -285,15 +290,32 @@ export function builddMcpEntry(server: string, apiKey: string): Json {
   return { type: 'http', url: `${server.replace(/\/+$/, '')}/api/mcp`, headers: { Authorization: `Bearer ${apiKey}` } };
 }
 
-/** An entry named buildd pointing at a buildd MCP endpoint: ours to move. */
+/** Key-free entry for one workspace: Claude Code runs the OAuth sign-in itself. */
+export function builddOAuthMcpEntry(server: string, workspaceId: string): Json {
+  return { type: 'http', url: `${server.replace(/\/+$/, '')}/api/mcp-oauth/${encodeURIComponent(workspaceId)}` };
+}
+
+const OAUTH_MCP_URL = /\/api\/mcp-oauth\/[^/?#]+\/?$/;
+
+/** An entry named buildd pointing at a buildd MCP endpoint (key or OAuth): ours to move. */
 export function isBuilddMcpEntry(entry: unknown): boolean {
   const url = (entry as { url?: unknown } | null)?.url;
-  return typeof url === 'string' && /\/api\/mcp\/?(\?.*)?$/.test(url);
+  return typeof url === 'string' && (/\/api\/mcp\/?(\?.*)?$/.test(url) || OAUTH_MCP_URL.test(url));
+}
+
+/** How a buildd entry signs in, for --status. Never returns the credential. */
+export function builddMcpAuthKind(entry: unknown): 'OAuth' | 'key' | null {
+  if (!isBuilddMcpEntry(entry)) return null;
+  const e = entry as { url: string; headers?: Record<string, unknown> };
+  return OAUTH_MCP_URL.test(e.url) && !e.headers?.Authorization ? 'OAuth' : 'key';
 }
 
 export function planMcpRegistration(opts: {
   claudeJson: Json;
+  /** The key entry, used everywhere unless oauthEntry gives one for the folder. */
   entry: Json;
+  /** Per-folder OAuth entry, or null when the folder has no workspace to sign in to. */
+  oauthEntry?: (repo: string | null) => Json | null;
   mode: McpMode;
   cwd: string;
   /** Candidate folders with their repo (owner/name), e.g. every folder Claude Code has opened. */
@@ -312,9 +334,12 @@ export function planMcpRegistration(opts: {
     ? [opts.candidates.find(c => c.path === opts.cwd) ?? { path: opts.cwd, repo: null }]
     : opts.candidates.filter(c => isWorkspace(c) && !c.projectMcp);
   config.projects = { ...(config.projects ?? {}) };
+  const written: McpPlan['folders'] = [];
   for (const f of folders) {
+    const oauth = opts.oauthEntry?.(f.repo) ?? null;
     const project = config.projects[f.path] ?? {};
-    config.projects[f.path] = { ...project, mcpServers: { ...(project.mcpServers ?? {}), buildd: opts.entry } };
+    config.projects[f.path] = { ...project, mcpServers: { ...(project.mcpServers ?? {}), buildd: oauth ?? opts.entry } };
+    written.push({ path: f.path, repo: f.repo, oauth: !!oauth });
   }
   let removedGlobal = false;
   if (opts.mode === 'workspaces' && isBuilddMcpEntry(config.mcpServers?.buildd)) {
@@ -322,7 +347,7 @@ export function planMcpRegistration(opts: {
     config.mcpServers = rest;
     removedGlobal = true;
   }
-  return { config, folders: folders.map(({ path, repo }) => ({ path, repo })), selfConfigured: selfConfigured.map(({ path, repo }) => ({ path, repo })), removedGlobal };
+  return { config, folders: written, selfConfigured: selfConfigured.map(({ path, repo }) => ({ path, repo })), removedGlobal };
 }
 
 /** Folders Claude Code has opened (its own project list) plus cwd, that still exist, with their repo. */
@@ -343,6 +368,22 @@ function readBuilddConfig(home: string, env: Record<string, string | undefined>)
 
 const tilde = (path: string, home: string) => (path === home ? '~' : path.startsWith(home + '/') ? '~' + path.slice(home.length) : path);
 
+/** Each buildd MCP entry in ~/.claude.json and how it signs in. Reads the file only; no network. */
+export function mcpStatusLines(home: string): string[] {
+  let cfg: Json;
+  try { cfg = readJson(join(home, '.claude.json')); } catch { return ['buildd MCP server: ~/.claude.json could not be parsed.']; }
+  const rows: Array<[string, string]> = [];
+  const global = builddMcpAuthKind(cfg?.mcpServers?.buildd);
+  if (global) rows.push(['every session', global]);
+  for (const [path, project] of Object.entries((cfg?.projects ?? {}) as Record<string, Json>).sort(([a], [b]) => a.localeCompare(b))) {
+    const kind = builddMcpAuthKind(project?.mcpServers?.buildd);
+    if (kind) rows.push([tilde(path, home), kind]);
+  }
+  if (rows.length === 0) return ['buildd MCP server: not registered in ~/.claude.json.'];
+  const width = Math.max(...rows.map(([p]) => p.length));
+  return ['buildd MCP server:', ...rows.map(([p, k]) => `  ${p.padEnd(width)}  ${k}`)];
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 export interface CliOptions {
@@ -350,6 +391,8 @@ export interface CliOptions {
   scope: InstallScope;
   clients: AgentClient[] | null;
   mcp: McpMode | null;
+  /** Sign each workspace folder in with OAuth instead of writing the key. */
+  oauth: boolean;
 }
 
 export function parseCliArgs(argv: string[]): CliOptions | { error: string } {
@@ -357,12 +400,14 @@ export function parseCliArgs(argv: string[]): CliOptions | { error: string } {
   let scope: InstallScope = 'project';
   let clients: AgentClient[] | null = null;
   let mcp: McpMode | null = null;
+  let oauth = false;
   for (const a of argv) {
     if (a === '--global') scope = 'global';
     else if (a === '--uninstall') mode = 'uninstall';
     else if (a === '--status') mode = 'status';
     else if (a === '--everywhere') mcp = 'everywhere';
     else if (a === '--here') mcp = 'here';
+    else if (a === '--oauth') oauth = true;
     else if (a.startsWith('--client=')) {
       const list = a.slice('--client='.length).split(',').filter(Boolean);
       const bad = list.filter(c => !(AGENT_CLIENTS as readonly string[]).includes(c));
@@ -372,10 +417,12 @@ export function parseCliArgs(argv: string[]): CliOptions | { error: string } {
   }
   if (mcp === 'everywhere' && scope !== 'global') return { error: '--everywhere only applies with --global' };
   if (mcp === 'here' && scope === 'global') return { error: '--here and --global are alternatives: pick one' };
+  if (oauth && mcp === 'everywhere') return { error: '--oauth signs in per workspace folder, so it cannot apply --everywhere' };
+  if (oauth && !(scope === 'global' || mcp === 'here')) return { error: '--oauth applies with --global or --here' };
   // A global install registers the MCP server for workspace folders unless told otherwise.
   if (mode === 'install' && scope === 'global' && !mcp) mcp = 'workspaces';
-  if (mode !== 'install') mcp = null;
-  return { mode, scope, clients, mcp };
+  if (mode !== 'install') { mcp = null; oauth = false; }
+  return { mode, scope, clients, mcp, oauth };
 }
 
 export interface CliEnv {
@@ -388,16 +435,27 @@ export interface CliEnv {
 }
 
 /** Register the MCP server per --global/--here/--everywhere. Returns the lines to print. */
-async function registerMcp(mode: McpMode, home: string, cwd: string, e: CliEnv): Promise<{ ok: boolean; lines: string[]; workspaceRepos: string[] | null }> {
+async function registerMcp(mode: McpMode, oauth: boolean, home: string, cwd: string, e: CliEnv): Promise<{ ok: boolean; lines: string[]; workspaceRepos: string[] | null }> {
   const env = e.env ?? process.env;
   const { apiKey, server } = readBuilddConfig(home, env);
   if (!apiKey) return { ok: false, lines: ["Not logged in. Run 'buildd login' first."], workspaceRepos: null };
-  // The workspace list drives both the MCP folders and the hooks' scope, so it is refreshed either way,
-  // with the credential the hooks will use (the person's presence token when login issued one).
+  // The workspace list drives both the MCP folders and the hooks' scope, so it is refreshed either way.
+  // The MCP entries use the account key, so their folders (and the OAuth endpoint ids) come from its list.
+  const workspaces = await fetchWorkspaces({ server, apiKey }, e.fetchImpl ?? globalThis.fetch);
+  const workspaceRepos = workspaces ? [...new Set(workspaces.map(w => w.repo as string))].sort() : null;
+  // First workspace per repo, in the server's order: the id the OAuth endpoint is bound to.
+  const workspaceIdByRepo = new Map<string, string>();
+  for (const w of workspaces ?? []) if (w.id && !workspaceIdByRepo.has(w.repo as string)) workspaceIdByRepo.set(w.repo as string, w.id);
+  // The hooks' scope list is cached under the credential the hooks send: the person's
+  // presence token when login issued one (every team they are in), else the key.
   const hookEnv = { ...env, BUILDD_HOME: resolveBuilddHome({ env }) };
-  const listAuth = resolveAuth(hookEnv) ?? { server, apiKey, kind: 'key' };
-  const workspaceRepos = await fetchWorkspaceRepos(listAuth, e.fetchImpl ?? globalThis.fetch);
-  if (workspaceRepos) writeWorkspaceCache(hookEnv, listAuth.apiKey, workspaceRepos, e.now ?? Date.now());
+  const hookAuth = resolveAuth(hookEnv);
+  const hookRepos = hookAuth?.kind === 'presence'
+    ? await fetchWorkspaceRepos(hookAuth, e.fetchImpl ?? globalThis.fetch)
+    : workspaceRepos;
+  const now = e.now ?? Date.now();
+  if (hookAuth?.kind === 'presence' && hookRepos) writeWorkspaceCache(hookEnv, hookAuth.apiKey, hookRepos, now);
+  if (workspaceRepos) writeWorkspaceCache(hookEnv, apiKey, workspaceRepos, now);
   if (mode === 'workspaces' && !workspaceRepos) {
     return { ok: false, lines: [`Could not load your workspaces from ${server}. Nothing was changed; try again, or pass --everywhere.`], workspaceRepos };
   }
@@ -408,32 +466,43 @@ async function registerMcp(mode: McpMode, home: string, cwd: string, e: CliEnv):
   }
   const plan = planMcpRegistration({
     claudeJson, entry: builddMcpEntry(server, apiKey), mode, cwd,
+    oauthEntry: oauth ? (repo => {
+      const id = repo ? workspaceIdByRepo.get(repo.toLowerCase()) : undefined;
+      return id ? builddOAuthMcpEntry(server, id) : null;
+    }) : undefined,
     candidates: mode === 'here' ? [{ path: cwd, repo: gitRepo(cwd) }] : candidateFolders(claudeJson, cwd),
     workspaceRepos: workspaceRepos ?? [],
   });
   writeJson(file, plan.config);
-  chmodSync(file, 0o600); // the entry holds the key, like ~/.buildd/config.json
+  chmodSync(file, 0o600); // an entry may hold the key, like ~/.buildd/config.json
   const lines: string[] = [];
+  const signIn = (f: { oauth: boolean }) => (f.oauth ? '  browser sign-in on first use' : '');
   if (mode === 'everywhere') {
     lines.push(`buildd MCP server: registered for every Claude Code session (${tilde(file, home)}).`);
   } else if (mode === 'here') {
-    lines.push(`buildd MCP server: registered for this folder, ${tilde(cwd, home)}.`);
+    const f = plan.folders[0];
+    lines.push(f?.oauth
+      ? `buildd MCP server: registered for this folder, ${tilde(cwd, home)}, signing in with OAuth (browser sign-in on first use).`
+      : `buildd MCP server: registered for this folder, ${tilde(cwd, home)}.`);
+    if (oauth && f && !f.oauth) lines.push('  This folder is not a workspace yet, so it uses your key. Run buildd install --here --oauth again once it is.');
   } else {
     if (plan.folders.length === 0 && plan.selfConfigured.length === 0) {
       lines.push('buildd MCP server: none of the folders Claude Code has opened is a checkout of one of your workspaces yet.');
       lines.push('  Open one in Claude Code and run buildd install --global again.');
     } else {
       const all = [...plan.folders, ...plan.selfConfigured];
-      lines.push(`buildd MCP server: registered for your workspace folders only (${all.length}):`);
+      lines.push(`buildd MCP server: registered for your workspace folders only (${all.length})${oauth ? ', signing in with OAuth' : ''}:`);
       const width = Math.max(...all.map(f => tilde(f.path, home).length));
-      for (const f of plan.folders) lines.push(`  ${tilde(f.path, home).padEnd(width)}  ${f.repo}`);
+      const repoWidth = Math.max(...plan.folders.map(f => (f.repo ?? '').length), 0);
+      for (const f of plan.folders) lines.push(`  ${tilde(f.path, home).padEnd(width)}  ${signIn(f) ? (f.repo ?? '').padEnd(repoWidth) + signIn(f) : f.repo}`);
       for (const f of plan.selfConfigured) lines.push(`  ${tilde(f.path, home).padEnd(width)}  ${f.repo ?? ''}  (its own .mcp.json)`);
     }
     if (plan.removedGlobal) lines.push('  Removed the old every-session entry, so other folders load no buildd tools.');
+    if (oauth && plan.folders.some(f => f.oauth)) lines.push('  No key is written for those folders. Claude Code signs you in once per workspace (/mcp shows it).');
     lines.push('  New checkout? Run buildd install --global again.');
     lines.push('  Need buildd somewhere else, e.g. to set up a new workspace? Run buildd install --here in that folder.');
   }
-  return { ok: true, lines, workspaceRepos };
+  return { ok: true, lines, workspaceRepos: hookRepos ?? workspaceRepos };
 }
 
 export async function runCli(argv: string[], e: CliEnv = {}): Promise<{ code: number; lines: string[] }> {
@@ -443,8 +512,9 @@ export async function runCli(argv: string[], e: CliEnv = {}): Promise<{ code: nu
   const cwd = e.cwd ?? process.cwd();
   const lines: string[] = [];
   let workspaceRepos: string[] | null = null;
+  if (parsed.mode === 'status' && parsed.scope === 'global') lines.push(...mcpStatusLines(home), '');
   if (parsed.mcp) {
-    const r = await registerMcp(parsed.mcp, home, cwd, e);
+    const r = await registerMcp(parsed.mcp, parsed.oauth, home, cwd, e);
     if (!r.ok) return { code: 1, lines: r.lines };
     lines.push(...r.lines, '');
     workspaceRepos = r.workspaceRepos;
