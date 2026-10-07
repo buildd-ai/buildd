@@ -16,6 +16,10 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamRole, resolveActiveTeamScope } from '@/lib/team-access';
 import { teamHostedRunnerBanner } from '@/lib/hosted-runner-usage-store';
 import { HostedRunnerBanner } from '@/components/hosted-runner/HostedRunnerBanner';
+import ModelUpgradeNotice from '@/components/models/ModelUpgradeNotice';
+import { loadModelUpgradeNotice } from '@/lib/model-upgrade-notice-loader';
+import type { ModelUpgradeNotice as ModelUpgradeNoticeData } from '@/lib/model-upgrade-notice';
+import { roleHas as roleHasPermission } from '@/lib/permission-registry';
 import { splitWaitingOnYou, rightNowState, recordBestEffort, groupInFlight, homeAudience, type HomeAudience } from './home-view';
 import { InFlightGroupCard } from './InFlightGroupCard';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
@@ -151,6 +155,9 @@ export default async function HomePage({
   let hasAgentCredential: boolean | null = null;
   // Hosted runner allowance at 80% / used; null below that or without one.
   let hostedRunnerBanner: { level: 'warn' | 'used'; text: string } | null = null;
+  // A tier left on a deprecated/superseded model by policy or pin; admins only.
+  let modelUpgradeNotice: ModelUpgradeNoticeData | null = null;
+  let modelUpgradeTeamId: string | null = null;
   let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
 
   let pendingSuggestions: {
@@ -313,7 +320,7 @@ export default async function HomePage({
       if (activeTeamId) {
         // Role and chat availability are independent: one wait. Availability
         // stops at one column read for a team that hasn't turned chat on.
-        const [role, chatAvail, recent, overrides, agentKey, hostedBanner] = await Promise.all([
+        const [role, chatAvail, recent, overrides, agentKey, hostedBanner, modelNotice] = await Promise.all([
           getUserTeamRole(user.id, activeTeamId).catch(() => null),
           getChatAvailability(user.id, activeTeamId).catch(() => null),
           listConversations(user.id, activeTeamId, 3).catch(() => [] as ConversationListItem[]),
@@ -321,9 +328,14 @@ export default async function HomePage({
           // A failed lookup reads as "has a key": never nag a working team.
           teamHasAgentCredential(activeTeamId).catch(() => true),
           teamHostedRunnerBanner(activeTeamId).catch(() => null),
+          loadModelUpgradeNotice(user.id, activeTeamId),
         ]);
         hasAgentCredential = agentKey;
         hostedRunnerBanner = hostedBanner;
+        if (modelNotice && roleHasPermission(role, 'manage_model_tiers', overrides)) {
+          modelUpgradeNotice = modelNotice;
+          modelUpgradeTeamId = activeTeamId;
+        }
         audience = homeAudience(role, overrides);
         chatPlacement = homeChatPlacement(audience, chatAvail);
         chatRecent = recent;
@@ -2111,6 +2123,11 @@ export default async function HomePage({
       {hostedRunnerBanner && (
         <div className="mx-auto max-w-[1320px]">
           <HostedRunnerBanner level={hostedRunnerBanner.level} text={hostedRunnerBanner.text} />
+        </div>
+      )}
+      {modelUpgradeNotice && modelUpgradeTeamId && (
+        <div className="mx-auto max-w-[1320px]">
+          <ModelUpgradeNotice notice={modelUpgradeNotice} teamId={modelUpgradeTeamId} />
         </div>
       )}
       <MobileHome items={phoneAttention} ask={phoneAsk} live={live} capacity={fleetData?.fleet.capacity ?? 0} mergedToday={stats?.mergedToday ?? 0} inCi={stats?.prsInCi.length ?? 0} shipped={shippedMissions} flight={[...phoneFlight.values()]} timeZone={teamTz} />
