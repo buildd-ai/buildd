@@ -21,44 +21,14 @@
 import { execFileSync, execSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, isAbsolute, join } from 'path';
-import type { DerivedFileRule } from '@buildd/shared';
+import type { NormalizedDerivedFileRule } from '@buildd/shared';
 
-export type NormalizedDerivedFileRule = Required<DerivedFileRule>;
+export { normalizeDerivedFiles, type NormalizedDerivedFileRule } from '@buildd/shared';
 
-const MAX_RULES = 20;
 const REGENERATE_TIMEOUT_MS = 5 * 60_000;
 const PENDING_FILE = 'buildd-derived-pending';
 const BLOCK_START = '# >>> buildd derived files (managed by the buildd runner) >>>';
 const BLOCK_END = '# <<< buildd derived files <<<';
-
-/** Patterns that cover (nearly) the whole tree: a driver there would swallow real conflicts. */
-const REPO_WIDE = /^[/*]*$/;
-
-/**
- * Migration chains are never regenerated: renumbering reorders schema changes,
- * and each file carries DDL only its author can reproduce. The drizzle journal
- * included — the migration-collision path owns it.
- */
-const MIGRATION_CHAIN = /(^|\/)(drizzle|migrations?|migrate|alembic|versions)(\/|$)|\.sql$/i;
-
-/** Read `gitConfig.derivedFiles` defensively: anything unsafe or malformed is dropped. */
-export function normalizeDerivedFiles(input: unknown): NormalizedDerivedFileRule[] {
-  if (!Array.isArray(input)) return [];
-  const out: NormalizedDerivedFileRule[] = [];
-  for (const raw of input) {
-    if (!raw || typeof raw !== 'object') continue;
-    const r = raw as Record<string, unknown>;
-    const glob = typeof r.glob === 'string' ? r.glob.trim() : '';
-    const regenerate = typeof r.regenerate === 'string' ? r.regenerate.trim() : '';
-    if (!glob || !regenerate) continue;
-    // gitattributes patterns are whitespace-delimited; one with a space can't be a single pattern.
-    if (/\s/.test(glob) || glob.startsWith('#') || glob.startsWith('!')) continue;
-    if (REPO_WIDE.test(glob) || MIGRATION_CHAIN.test(glob)) continue;
-    out.push({ glob, regenerate, strategy: r.strategy === 'ours' ? 'ours' : 'theirs' });
-    if (out.length >= MAX_RULES) break;
-  }
-  return out;
-}
 
 // ── Plan ─────────────────────────────────────────────────────────────────────
 
