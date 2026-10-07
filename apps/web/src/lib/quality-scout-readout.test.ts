@@ -34,6 +34,7 @@ function metrics(over: Partial<ScoutRunMetrics> = {}): ScoutRunMetrics {
     headSha: A,
     staleness: 'fresh',
     deadlineHit: false,
+    costCapHit: false,
     warnings: [],
     ...over,
   };
