@@ -183,6 +183,19 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     expect(applied(h(V(D()))).patch.currentHeadSha).toBe('H2');
     expectResult(h(V(D()), 'H1'), 'duplicate', 'head_unchanged');
   });
+  test('a head that returns to an earlier SHA (A→B→A) is a new observation, not a replay (34b69829)', () => {
+    // A (H1) → B (H2) → A (H1): the return to H1 must get its own key, or the
+    // kernel answers it from the first H1 observation and keeps B as current.
+    const first = applied(h(V(D({ currentHeadSha: 'H0', version: 3 })), 'H1'));
+    const away = applied(h(V(D({ currentHeadSha: 'H1', version: 4 })), 'H2'));
+    const back = applied(h(V(D({ currentHeadSha: 'H2', version: 5 })), 'H1'));
+    expect(back.patch.currentHeadSha).toBe('H1');
+    expect(new Set([first.idempotencyKey, away.idempotencyKey, back.idempotencyKey]).size).toBe(3);
+    expect(back.idempotencyKey).toBe(stableIdempotencyKey({ type: 'HeadObserved', actor: 'k', live: live('H1') }, D({ currentHeadSha: 'H2', version: 5 })));
+    // A cycle that repeats the same move (A→B again) is still new: the version is in the key.
+    const awayAgain = applied(h(V(D({ currentHeadSha: 'H1', version: 6 })), 'H2'));
+    expect(awayAgain.idempotencyKey).not.toBe(away.idempotencyKey);
+  });
   test('terminal, unbound and closed are not applied', () => {
     expectResult(h(V(D({ state: 'MERGED' }))), 'stale', 'terminal');
     expectResult(h(V(D({ prNumber: null }))), 'rejected', 'pr_not_bound');
@@ -218,7 +231,7 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     const dec = applied(h(V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict' })), 'H2', { carryForward: 'own_refresh' }));
     expect(dec.toState).toBe('APPROVED');
     expect(dec.patch.approvedHeads).toEqual(['H1', 'H2']);
-    expect(dec.idempotencyKey).toBe(`head:${REPO}#7:H2`);
+    expect(dec.idempotencyKey).toBe(`head:${REPO}#7:H1->H2@v5`);
   });
   test('LANDING: aborts landing to a new round when not equivalent', () => {
     expect(applied(h(V(D({ state: 'LANDING', approvedHeads: ['H1'] })))).toState).toBe('AWAITING_REVIEW');
@@ -1093,7 +1106,7 @@ describe('pure helpers', () => {
     expect(stableIdempotencyKey({ type: 'PrMerged', actor: 'w', live: live('H1') }, D({ prNumber: null }))).toBeNull();
     expect(stableIdempotencyKey({ type: 'ReviewBudgetExhausted', actor: 'k' }, D())).toBeNull();
     expect(stableIdempotencyKey({ type: 'DeliveryFailed', actor: 'k', reason: 'x' }, null)).toBeNull();
-    expect(stableIdempotencyKey({ type: 'HeadObserved', actor: 'k', live: live('H2') }, D())).toBe(`head:${REPO}#7:H2`);
+    expect(stableIdempotencyKey({ type: 'HeadObserved', actor: 'k', live: live('H2') }, D())).toBe(`head:${REPO}#7:H1->H2@v5`);
   });
 });
 
