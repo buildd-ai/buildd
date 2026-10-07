@@ -434,11 +434,6 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U demo -d buildd_test"
           --health-interval 2s --health-timeout 3s --health-retries 30
-      neon-proxy:
-        image: ghcr.io/timowilhelm/local-neon-http-proxy:main
-        env:
-          PG_CONNECTION_STRING: postgres://demo:demo@postgres:5432/buildd_test
-        ports: ["4444:4444"]
     env:
       DATABASE_URL: postgres://demo:demo@localhost:5432/buildd_test
       NEON_LOCAL_FETCH_ENDPOINT: http://127.0.0.1:4444/sql
@@ -448,19 +443,31 @@ jobs:
         with:
           bun-version: "1.4.2"
       - run: bun install
-      - name: Wait for neon-http proxy
+      # The app's unchanged neon-http driver talks to scripts/ci/neon-sql-shim.ts:
+      # the same /sql wire protocol as the local neon-http proxy it replaced,
+      # over one persistent pg pool instead of a control-plane lookup, a SCRAM
+      # handshake and a fresh connection per query. Migrate and the tests both
+      # go through it, so they still run the app's own driver and migrator;
+      # apps/web/tests/db/neon-sql-shim.test.ts pins its fidelity on real Postgres.
+      - name: Start neon-sql shim
         run: |
+          nohup bun scripts/ci/neon-sql-shim.ts > "$RUNNER_TEMP/neon-sql-shim.log" 2>&1 &
           for i in $(seq 1 30); do
-            curl -s -o /dev/null -X POST http://127.0.0.1:4444/sql \
-              -H 'Neon-Connection-String: postgres://demo:demo@localhost:5432/buildd_test' \
+            curl -sf -o /dev/null -X POST "$NEON_LOCAL_FETCH_ENDPOINT" \
+              -H "Neon-Connection-String: $DATABASE_URL" \
+              -H 'Neon-Raw-Text-Output: true' -H 'Neon-Array-Mode: true' \
               -H 'Content-Type: application/json' -d '{"query":"select 1","params":[]}' && exit 0
-            sleep 2
+            sleep 1
           done
-          echo "neon proxy never answered" && exit 1
+          cat "$RUNNER_TEMP/neon-sql-shim.log"
+          echo "neon-sql shim never answered" && exit 1
       - name: Migrate
         run: cd packages/core && bun db:migrate
       - name: Run DB architecture tests
         run: bun run test:db
+      - name: Shim log
+        if: failure()
+        run: cat "$RUNNER_TEMP/neon-sql-shim.log" || true
 
   # Detect which areas changed to skip expensive integration/E2E when unnecessary
   changes:
