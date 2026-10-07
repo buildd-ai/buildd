@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   classifyExtraSchemaObjects,
   classifyMissingSchemaObjects,
+  createTableColumns,
   loadMigrationSources,
   loadSnapshotMetas,
   reconcileAppliedCount,
@@ -115,6 +116,59 @@ describe('classifyMissingSchemaObjects', () => {
   });
 });
 
+/**
+ * drizzle/0000_baseline.sql is a pg_dump, not drizzle-kit output: names are
+ * schema-qualified (`public.tasks`), only quoted when they must be, and
+ * constraints arrive as `ALTER TABLE ONLY`. Every column it creates must still
+ * be attributed to it, or the drift gate reads the whole squashed schema as
+ * "no migration creates it".
+ */
+describe('pg_dump-format baseline attribution', () => {
+  const dump = [
+    `CREATE TABLE public.tasks (\n    id uuid DEFAULT gen_random_uuid() NOT NULL,\n    "position" integer,\n    path_manifest jsonb,\n    CONSTRAINT tasks_kind_check CHECK ((kind <> ''::text))\n);`,
+    `ALTER TABLE ONLY public.tasks\n    ADD CONSTRAINT tasks_pkey PRIMARY KEY (id);`,
+  ];
+
+  it('reads schema-qualified, unquoted CREATE TABLE columns and skips table constraints', () => {
+    expect(createTableColumns(dump[0]!)).toEqual(['tasks.id', 'tasks.position', 'tasks.path_manifest']);
+  });
+
+  it('still reads drizzle-kit-style CREATE TABLE', () => {
+    expect(createTableColumns('CREATE TABLE "a" (\n\t"id" uuid PRIMARY KEY,\n\t"name" text\n);')).toEqual([
+      'a.id',
+      'a.name',
+    ]);
+  });
+
+  it('attributes the table and its columns to the baseline, which prod records as applied', () => {
+    const result = classifyMissingSchemaObjects({
+      sources: [source('0000_baseline', 500, dump)],
+      appliedWhens: new Set([500]),
+      expected: new Map([['tasks', new Set(['id', 'path_manifest'])]]),
+      actual: new Map([['tasks', new Set(['id'])]]),
+    });
+    expect(result.measured.expectedWithoutCreator).toBe(0);
+    expect(result.drift).toEqual([
+      'tasks.path_manifest — added by 0000_baseline, which __drizzle_migrations records as APPLIED',
+    ]);
+    expect(result.unexplained).toEqual([]);
+  });
+
+  it('calls an extra baseline-created column a snapshot gap, not manual DDL', () => {
+    const result = classifyExtraSchemaObjects({
+      sources: [source('0000_baseline', 500, dump)],
+      appliedWhens: new Set([500]),
+      expected: new Map([['tasks', new Set(['id'])]]),
+      actual: new Map([['tasks', new Set(['id', 'path_manifest'])]]),
+      droppedTables: new Set(),
+      droppedColumns: new Set(),
+      ignoredTables: new Set(),
+    });
+    expect(result.manualDdl).toEqual([]);
+    expect(result.snapshotGap.length).toBe(1);
+  });
+});
+
 describe('loadMigrationSources', () => {
   it('loads this repo\'s real journal with statements for every entry', () => {
     const sources = loadMigrationSources(new URL('../drizzle', import.meta.url).pathname);
@@ -122,11 +176,12 @@ describe('loadMigrationSources', () => {
     console.log(`loadMigrationSources: ${sources.length} migrations, ` +
       `${sources.reduce((n, s) => n + s.statements.length, 0)} statements`);
 
-    expect(sources.length).toBeGreaterThan(100);
+    // The squashed baseline comes first and carries the whole released schema,
+    // one statement per breakpoint.
+    expect(sources[0]!.tag).toBe('0000_baseline');
+    expect(sources[0]!.statements.length).toBeGreaterThan(500);
     // Every entry must carry SQL: a journal entry whose file failed to read
     // would silently make its columns look "unexplained" instead of drifted.
-    // (The only all-comments file in the repo, 0024_numerous_firebird.sql, is an
-    // orphan the journal never references, so it is not loaded here at all.)
     expect(sources.filter((s) => s.statements.length === 0).map((s) => s.tag)).toEqual([]);
     expect(sources.every((s) => Number.isFinite(s.when) && s.when > 0)).toBe(true);
   });
@@ -378,7 +433,8 @@ describe('resolveSnapshotSelection', () => {
 
   it("resolves THIS repo's own snapshot chain — a live fork must fail the suite, not the release", () => {
     const metas = loadSnapshotMetas(join(import.meta.dir, '..', 'drizzle', 'meta'));
-    expect(metas.length).toBeGreaterThan(100);
+    // The squash left the baseline's snapshot plus one per later migration.
+    expect(metas.length).toBeGreaterThan(0);
 
     const result = resolveSnapshotSelection(metas);
     if (result.kind === 'forked') {

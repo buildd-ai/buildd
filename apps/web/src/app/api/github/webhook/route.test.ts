@@ -600,6 +600,19 @@ mock.module('@/lib/surface-ordering', () => ({
 }));
 const mockCarryForwardApproval = mock(async (_p: any): Promise<any> => ({ carried: false, reason: 'test' }));
 mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUnchanged: mockCarryForwardApproval }));
+// Workflow kernel seam (lib/workflow/seam.ts; real-SQL suite in
+// apps/web/tests/db/workflow-seam.test.ts). Defaults: no kernel delivery, so
+// every legacy case below runs unchanged.
+const mockOpenKernelDelivery = mock(async (_p: any): Promise<any> => ({ owned: false }));
+const mockObserveHead = mock(async (_p: any): Promise<boolean> => false);
+const mockObservePrState = mock(async (_p: any): Promise<boolean> => false);
+const mockReleaseKernelDeliveryForPr = mock(async (..._a: any[]) => undefined);
+mock.module('@/lib/workflow/seam', () => ({
+  openKernelDelivery: mockOpenKernelDelivery,
+  observeHead: mockObserveHead,
+  observePrState: mockObservePrState,
+}));
+mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr }));
 
 // The mission loop-on-merge and integration-PR helpers, recorded in call order
 // for the missions characterization at the end of this file. Real modules are
@@ -4048,6 +4061,34 @@ describe('POST /api/github/webhook', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
+    it('workflow kernel: a PR the kernel takes at its first-review point dispatches no legacy reviewer', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: false });
+      mockOpenKernelDelivery.mockResolvedValueOnce({ owned: true, deliveryId: 'delivery-42' });
+
+      const res = await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockOpenKernelDelivery).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: 'ws1', ownerTaskId: 'task-1', repoFullName: 'test-org/test-repo', prNumber: 42, installationId: 5000,
+      }));
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      // Held: the no-CI auto-merge path must not run either.
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    it('workflow kernel: a pre-flight human escalation releases any kernel delivery and opens none', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockOpenKernelDelivery.mockClear();
+      mockReleaseKernelDeliveryForPr.mockClear();
+      mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: true, reason: 'touches schema' });
+
+      await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(mockReleaseKernelDeliveryForPr).toHaveBeenCalledWith('ws1', 'test-org/test-repo', 42, expect.stringContaining('pre-flight'));
+      expect(mockOpenKernelDelivery).not.toHaveBeenCalled();
+    });
+
     it('announces on the PR that a review is queued — not Reviewing until claimed', async () => {
       withAgentReviewWorkspaceAndWorker();
       mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: false });
@@ -4315,6 +4356,31 @@ describe('POST /api/github/webhook', () => {
         prNumber: 42,
         expectedHeadSha: NEW_SHA,
       });
+    });
+
+    it('workflow kernel: a push to a kernel-owned PR is a HeadObserved fact; the legacy re-dispatch and carry-forward do not run', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      withChangesRequestedVerdict();
+      mockObserveHead.mockResolvedValueOnce(true);
+      mockCarryForwardApproval.mockClear();
+
+      await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(mockObserveHead).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: 'ws1', repoFullName: 'test-org/test-repo', prNumber: 42, installationId: 5000, hintedHeadSha: NEW_SHA,
+      }));
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      expect(mockCarryForwardApproval).not.toHaveBeenCalled();
+    });
+
+    it('workflow kernel: when ownership cannot be read, the push takes the legacy path (behaviour before the kernel)', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      withChangesRequestedVerdict();
+      mockObserveHead.mockRejectedValueOnce(new Error('db down'));
+
+      await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
     });
 
     it('re-dispatches exactly one reviewer when a push follows a request-changes verdict', async () => {

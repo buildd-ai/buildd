@@ -6,8 +6,9 @@ import { hostname } from 'os';
 import { config } from '../config';
 import { applyNeonLocalOverride } from './neon-local';
 import { dirname, join } from 'path';
+import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { planMigrations } from './migrate-plan';
+import { findBaselineMillis, planMigrations, type JournalLike } from './migrate-plan';
 import { backfillTrackingRows } from './migrate-backfill';
 import { withMigrationLock } from './migrate-lock';
 import {
@@ -20,7 +21,11 @@ import {
 } from './migrate-client';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsFolder = join(__dirname, '..', 'drizzle');
+// BUILDD_MIGRATIONS_DIR points the migrator at another migration tree. It exists
+// for the squash-equivalence proof (scripts/ci/migration-squash-equivalence.ts and
+// apps/web/tests/db/migration-baseline.test.ts), which replays the pre-squash tree
+// from git history through this same migrator. Nothing in a deploy sets it.
+const migrationsFolder = process.env.BUILDD_MIGRATIONS_DIR || join(__dirname, '..', 'drizzle');
 
 async function applyMigrations(session: MigrateSession): Promise<void> {
   // Fetch ALL applied migration timestamps (not just the last). This read now
@@ -35,7 +40,15 @@ async function applyMigrations(session: MigrateSession): Promise<void> {
   // high-water mark are safe to execute blind; anything older with a missing row
   // is a backfill CANDIDATE, and must prove its DDL is already present before a
   // tracking row is written. See migrate-plan.ts and migrate-backfill.ts.
-  const { toRun, toBackfill } = planMigrations(migrations, rows);
+  //
+  // The squashed baseline (if this tree has one) runs only on an empty tracking
+  // table; planMigrations throws PreBaselineDatabaseError for a database that
+  // stopped partway through the history it absorbed.
+  const journal = JSON.parse(
+    readFileSync(join(migrationsFolder, 'meta', '_journal.json'), 'utf8')
+  ) as JournalLike;
+  const baselineMillis = findBaselineMillis(journal);
+  const { toRun, toBackfill } = planMigrations(migrations, rows, { baselineMillis });
 
   let backfilled = 0;
   if (toBackfill.length > 0) {

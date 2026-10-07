@@ -1535,6 +1535,12 @@ export interface ClaimDiagnostics {
      */
     sibling_retry_open?: number;
     /**
+     * Workflow-kernel review fix skipped at claim: its target was resolved
+     * while it queued (approved, merged, head moved, round superseded), or the
+     * live revalidation could not run and the claim was rolled back.
+     */
+    fix_not_needed?: number;
+    /**
      * Claim planner in `apply` mode ordered this task behind a picked, in-flight
      * or open-PR node it would collide with. Replaces the per-poll
      * path_overlap / advisory_manifest deferral for that task.
@@ -3556,6 +3562,79 @@ export interface WorkspaceOnboardingConfig {
   /** The open scaffold PR, when one exists. */
   scaffoldPr?: { number: number; branch: string };
   lastSeenPolicyInitAt?: string;
+}
+
+/**
+ * `gitConfig.qualityScout`: what an owner declares so Quality Scout can probe
+ * the workspace safely. Only what the repo cannot tell us; everything else is
+ * projected from the readiness report. Stored as typed but untrusted: read it
+ * only through `resolveScoutExtension` (packages/core/scout-capabilities.ts).
+ */
+export interface WorkspaceQualityScoutConfig {
+  /**
+   * `off` (default when absent): no runs. `shadow`: run and record, never file.
+   * `propose`: apply the deduped follow-up policy. No blocking mode exists.
+   * Read only through `resolveScoutMode` (packages/core/quality-scout/ledger.ts).
+   */
+  mode?: 'off' | 'shadow' | 'propose';
+  /** Overrides the detected test command as Scout's verification command. */
+  verificationCommand?: string;
+  /** Where probes may run. `ephemeral: true` is the only thing that permits writes. */
+  testEnvironment?: { baseUrl?: string; ephemeral?: boolean; description?: string };
+  /**
+   * Critical journeys. API `path` is relative to the test environment (or the
+   * app booted in the sandbox); absolute URLs are refused. `mutates` defaults to
+   * true for a CLI journey and to "not GET/HEAD/OPTIONS" for an API journey.
+   * `paths` (exact, `dir/` prefix or glob) scopes a journey to the code it
+   * exercises: Scout uses it for changes there and not for unrelated ones;
+   * unscoped journeys are shared across changes in turn.
+   */
+  journeys?: Array<
+    | { name: string; kind: 'cli'; command: string; mutates?: boolean; expect?: string; paths?: string[] }
+    | { name: string; kind: 'api'; method?: string; path: string; mutates?: boolean; expect?: string; paths?: string[] }
+  >;
+  /** UI route patterns worth looking at, e.g. `/`, `/items/:id`. */
+  uiRoutes?: string[];
+  /** Command that seeds fixtures. Always treated as mutating. */
+  fixtureSetup?: { command: string };
+  constraints?: {
+    /** Default `ephemeral-only`. `never` = read-only probes only. */
+    allowWrites?: 'never' | 'ephemeral-only';
+    /** A probe command containing any of these substrings is never run. */
+    forbiddenPatterns?: string[];
+  };
+  /**
+   * Follow-up thresholds (`propose` mode). Read only through
+   * `resolveScoutActionPolicy` (apps/web/src/lib/quality-scout-actions.ts);
+   * an out-of-range value falls back to the default rather than being clamped.
+   */
+  policy?: {
+    /** critical/high/medium file only at or above this confidence. Default 0.7. */
+    minConfidence?: number;
+    /** A medium finding files once seen `count` times, the last within `windowDays`. Default 2 in 7. */
+    mediumRecurrence?: { count?: number; windowDays?: number };
+  };
+  /**
+   * When runs start on their own. Read only through `resolveScoutTriggerConfig`
+   * (apps/web/src/lib/quality-scout-trigger.ts). A manual run is always allowed
+   * unless the mode is `off`.
+   */
+  triggers?: {
+    /** Run when a mission's integration branch becomes a candidate. Default true. */
+    missionCandidate?: boolean;
+    /** Optional periodic run on the default branch. Absent: never periodic. */
+    periodicHours?: number;
+  };
+  /**
+   * Where probes may run. `auto` (default): probes only a runner can host
+   * (command, capture, app-boot) go to a runner of the team that advertised a
+   * Scout host for this repo in the last 15 minutes; the run waits for it, and
+   * whatever no runner reports ends `unsupported`. `server`: server ports only,
+   * nothing waits.
+   */
+  host?: 'auto' | 'server';
+  /** Per-run bounds. `runnerMaxDurationMs` bounds a runner's execution of a parked run (default 20 min, max 60). */
+  budget?: { maxProbes?: number; maxCostUsd?: number; maxDurationMs?: number; runnerMaxDurationMs?: number };
 }
 
 export interface WorkspaceReadinessItem {

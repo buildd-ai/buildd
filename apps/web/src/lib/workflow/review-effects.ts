@@ -1,0 +1,453 @@
+/**
+ * Effect handlers for the fix-loop seam (docs/specs/workflow-state-kernel.md
+ * §10.2), owned by the reviews module: they create reviewer and fix tasks,
+ * post GitHub reviews and raise review escalations. Core reaches them only
+ * through the composition root (`WORKFLOW_EFFECT_HANDLERS` in
+ * apps/web/src/modules.ts), never by import. Each one is idempotent: the outbox delivers at least once, so every
+ * handler re-reads the delivery and acts only on what is still owed.
+ *
+ * Effects owned by later slices (post-merge work, landing, CI/conflict/trunk
+ * repair) are acknowledged `skipped:legacy_owns`: the legacy code still runs
+ * them in this slice, and a transition that names them must not make the
+ * outbox retry forever.
+ */
+import { and, desc, eq, ne, sql } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { db } from '@buildd/core/db';
+import { missionNotes, missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { postPrReview } from '@/lib/github';
+import { notifyTeamOf } from '@/lib/notify';
+import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
+import { listWorkspaceRoles } from '@/lib/pr-review-request';
+import { pickReviewerRole } from '@/lib/pr-review-status';
+import { conformanceManifest } from '@/lib/path-declaration';
+import { formatAttemptTitle, reviewerTitle } from '@/lib/task-title';
+import { attemptIdentityFrom } from '@/lib/attempt-identity';
+import { lineageStamp } from '@/lib/attempt-lineage';
+import { isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
+import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
+import type { EffectKind } from './commands';
+import type { ClaimedEffect, EffectHandler, EffectHandlers } from './effects';
+import { insertFollowupEffectSql } from './effects';
+import { applyCommand, loadView, type Exec } from './kernel';
+import { ingestFact } from './facts';
+import { githubReader, workspaceRepo } from './github-facts';
+import type { KernelView, RoundSnapshot } from './types';
+
+const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
+
+type Output = { verdict?: string; confidence?: number; summary?: string; feedback?: string | null; escalationReason?: string | null };
+
+/** The reviewer's structured output for a round (the raw fact the verdict came from). */
+async function roundOutput(round: RoundSnapshot | undefined): Promise<Output> {
+  if (!round?.reviewerTaskId) return {};
+  const t = await db.query.tasks.findFirst({ where: eq(tasks.id, round.reviewerTaskId), columns: { result: true } });
+  const result = (t?.result ?? {}) as Record<string, unknown>;
+  const out = result.structuredOutput;
+  return out && typeof out === 'object' ? (out as Output) : {};
+}
+
+async function prWorker(workspaceId: string, prNumber: number) {
+  return db.query.workers.findFirst({
+    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+    columns: { id: true, branch: true, prUrl: true, prBaseRef: true, lastCommitSha: true },
+    orderBy: [desc(workers.createdAt)],
+  });
+}
+
+async function viewFor(e: ClaimedEffect): Promise<KernelView> {
+  return loadView({ deliveryId: e.deliveryId }, dbExec);
+}
+
+const legacyOwns: EffectHandler = async () => ({ outcome: 'skipped:legacy_owns' });
+
+/** Pending reviewer/fix tasks of this delivery that a newer decision made pointless. */
+async function cancelPendingAttemptTasks(deliveryId: string, role: 'review' | 'fix', keepTaskId: string | null, reason: string): Promise<number> {
+  const rows = await db.update(tasks)
+    .set({
+      status: 'cancelled',
+      result: sql`COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('skipped', true, 'skipReason', ${reason}::text, 'summary', ${`Superseded before it started: ${reason}`}::text)`,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(tasks.deliveryId, deliveryId),
+      eq(tasks.deliveryRole, role),
+      eq(tasks.status, 'pending'),
+      ...(keepTaskId ? [ne(tasks.id, keepTaskId)] : []),
+    ))
+    .returning({ id: tasks.id });
+  return rows.length;
+}
+
+// ── dispatch_review: one reviewer task per round ────────────────────────────
+
+const dispatchReview: EffectHandler = async (e) => {
+  const view = await viewFor(e);
+  const d = view.delivery;
+  const roundId = String(e.payload.roundId ?? '');
+  const round = view.rounds.find((r) => r.id === roundId);
+  if (!d || !round || (round.status !== 'queued' && round.status !== 'reviewing')) return { outcome: 'skipped:round_closed' };
+  if (round.reviewerTaskId) return { outcome: 'skipped:already_dispatched' };
+  if (!d.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
+
+  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, d.workspaceId) });
+  const owner = await db.query.tasks.findFirst({
+    where: eq(tasks.id, d.ownerTaskId),
+    columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true },
+  });
+  const repo = await workspaceRepo(d.workspaceId);
+  const prw = await prWorker(d.workspaceId, d.prNumber);
+  if (!workspace || !owner || !repo) return { outcome: 'skipped:missing_context' };
+
+  const mission = owner.missionId
+    ? await db.query.missions.findFirst({ where: eq(missions.id, owner.missionId), columns: RESOLVE_POLICY_MISSION_COLUMNS })
+    : null;
+  const policy = resolvePolicy(workspace as never, mission as never, null, { baseRef: d.baseRef });
+  const roles = await listWorkspaceRoles(workspace.id, workspace.teamId);
+  const picked = pickReviewerRole({ requested: null, policyRole: policy.agentReview?.reviewerRole ?? null, available: roles });
+  if (!picked.role) {
+    // No role can run the review: the round cannot be served (T27 → review_unavailable).
+    await applyCommand({ type: 'ReviewRoundFailed', actor: 'kernel', roundId, reason: 'infra', maxContractRetries: 0 }, { ref: { deliveryId: d.id }, exec: dbExec });
+    return { outcome: 'skipped:no_reviewer_role' };
+  }
+
+  // A delta round reviews the change since the last decided verdict.
+  let priorVerdict: import('@/lib/reviewer').PriorVerdict | undefined;
+  if (round.kind === 'delta') {
+    const prior = view.rounds.filter((r) => r.status === 'decided' && r.round < round.round).sort((a, b) => b.round - a.round)[0];
+    if (prior && prior.headSha !== round.headSha) {
+      const out = await roundOutput(prior);
+      if (out.verdict === 'request-changes' || out.verdict === 'escalate' || out.verdict === 'approve') {
+        priorVerdict = {
+          headSha: prior.headSha, verdict: out.verdict as never, confidence: out.confidence ?? 0,
+          summary: out.summary ?? '', feedback: out.feedback ?? null, escalationReason: out.escalationReason ?? null,
+        };
+      }
+    }
+  }
+
+  const { createReviewerTask } = await import('@/lib/reviewer');
+  const prUrl = prw?.prUrl ?? `https://github.com/${d.repoFullName}/pull/${d.prNumber}`;
+  const created = await createReviewerTask({
+    workspaceId: d.workspaceId,
+    originalTaskId: owner.id,
+    originalTask: {
+      title: owner.title, description: owner.description, backend: owner.backend, missionId: owner.missionId ?? null,
+      pathManifest: conformanceManifest(owner as never),
+      // Display only: the round budget is the delivery's, not this context.
+      iteration: round.round - 1, maxIterations: d.maxRounds,
+    },
+    worker: { branch: prw?.branch ?? '' },
+    prNumber: d.prNumber,
+    prUrl,
+    headSha: round.headSha,
+    reviewerRole: picked.role,
+    confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
+    installationId: repo.installationId,
+    repoFullName: d.repoFullName,
+    policyConfig: (workspace.gitConfig as { policyConfig?: never } | null)?.policyConfig ?? undefined,
+    baseRef: d.baseRef,
+    priorVerdict,
+    workflowRound: { deliveryId: d.id, roundId: round.id, round: round.round },
+  });
+  if (!created) return { outcome: 'skipped:dispatch_refused' };
+
+  if (created.deduplicated) {
+    // Another door's live reviewer already covers this head: adopt it as the round's.
+    await db.update(tasks)
+      .set({
+        deliveryId: d.id, deliveryRole: 'review',
+        context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('workflowRoundId', ${round.id}::text)`,
+      })
+      .where(and(eq(tasks.id, created.id), sql`${tasks.deliveryId} IS NULL`));
+  }
+  await dbExec(sql`-- workflow:link_round_reviewer
+UPDATE workflow_review_rounds SET reviewer_task_id = ${created.id}::uuid, updated_at = now()
+WHERE id = ${round.id}::uuid AND reviewer_task_id IS NULL`);
+  await cancelPendingAttemptTasks(d.id, 'review', created.id, `round ${round.round} superseded it`);
+
+  if (!created.deduplicated) {
+    await announceTaskCreated({
+      id: created.id, title: reviewerTitle(d.prNumber, owner.title), description: null, workspaceId: d.workspaceId,
+      missionId: owner.missionId ?? null, backend: owner.backend, roleSlug: picked.role,
+    } as never, workspace as never);
+    await wakeTask(created.id, 'task.created');
+    await appendPrActivity({ installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, entry: { kind: 'review_queued' }, workspaceId: d.workspaceId });
+  }
+  return { outcome: created.deduplicated ? 'ok:adopted_live_reviewer' : 'ok' };
+};
+
+// ── dispatch_fix: T8 then the fix task ──────────────────────────────────────
+
+const dispatchFix: EffectHandler = async (e) => {
+  let view = await viewFor(e);
+  const d = view.delivery;
+  if (!d || d.state !== 'CHANGES_REQUESTED') return { outcome: 'skipped:state_moved' };
+  if (!d.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
+  const roundId = (e.payload.roundId as string | null) ?? view.rounds.find((r) => r.round === d.currentRound)?.id ?? null;
+  const round = view.rounds.find((r) => r.id === roundId);
+  if (!round) return { outcome: 'skipped:no_round' };
+  const repo = await workspaceRepo(d.workspaceId);
+  if (!repo) throw new Error('no GitHub installation for the workspace');
+
+  const openFix = () => view.attempts.find((a) => a.family === 'review_fix' && a.triggerReason === round.id && (a.status === 'queued' || a.status === 'running'));
+  let attempt = openFix();
+  if (!attempt) {
+    const live = await githubReader(repo.installationId).readPr(d.repoFullName, d.prNumber);
+    if (!live) throw new Error('live PR read failed');
+    const newerApprove = view.rounds.some((r) => r.round > round.round && r.status === 'decided' && r.effectiveVerdict === 'approve');
+    const res = await applyCommand({
+      type: 'FixDispatched', actor: 'kernel', roundId: round.id, taskId: randomUUID(), maxAttempts: d.maxRounds,
+      revalidation: { live, newerApprove },
+    }, { ref: { deliveryId: d.id }, exec: dbExec });
+    if (res.result === 'rejected' || res.result === 'stale') return { outcome: `skipped:${res.reason}` };
+    view = await loadView({ deliveryId: d.id }, dbExec);
+    attempt = openFix();
+    if (!attempt) return { outcome: 'skipped:no_open_attempt' };
+  }
+  const taskId = attempt.taskId;
+  if (!taskId) return { outcome: 'skipped:attempt_has_no_task' };
+  const existing = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { id: true } });
+  if (existing) return { outcome: 'ok:task_exists' };
+
+  const owner = await db.query.tasks.findFirst({
+    where: eq(tasks.id, d.ownerTaskId),
+    columns: {
+      id: true, title: true, description: true, missionId: true, pathManifest: true, backend: true, roleSlug: true,
+      kind: true, complexity: true, missionPhaseIndex: true, missionPhaseLabel: true, context: true,
+    },
+  });
+  if (!owner) return { outcome: 'skipped:no_owner' };
+  const out = await roundOutput(round);
+  const feedback = out.feedback ?? out.summary ?? 'Reviewer requested changes';
+  if (isDependencyBotPrContext(owner.context)) {
+    await appendPrActivity({ installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, entry: { kind: 'review_escalated', detail: 'dependency-bot PR · no fix pushed', note: feedback }, workspaceId: d.workspaceId });
+    return { outcome: 'skipped:dependency_bot' };
+  }
+  const prw = await prWorker(d.workspaceId, d.prNumber);
+  const branch = prw?.branch ?? '';
+  const lastCommitSha = prw?.lastCommitSha ?? null;
+  // The (workspace, PR, head) dedupe index allows one row per head; a second
+  // attempt on the same head (the first one failed) is deduped by the ledger.
+  const firstAtHead = view.attempts.filter((a) => a.family === 'review_fix' && a.boundHeadSha === attempt!.boundHeadSha).length <= 1;
+  const prUrl = prw?.prUrl ?? `https://github.com/${d.repoFullName}/pull/${d.prNumber}`;
+
+  const [fixTask] = await db.insert(tasks).values({
+    id: taskId,
+    workspaceId: d.workspaceId,
+    title: formatAttemptTitle('builder', owner.title, { reason: 'after review', iteration: attempt.attemptNo }),
+    description: owner.description,
+    missionId: owner.missionId,
+    parentTaskId: owner.id,
+    taskClass: 'attempt',
+    ...attemptIdentityFrom(owner),
+    reviewerRetryPrNumber: d.prNumber,
+    reviewerRetryHeadSha: firstAtHead ? attempt.boundHeadSha : null,
+    deliveryId: d.id,
+    deliveryRole: 'fix',
+    context: {
+      // Display only (attempt N of M): the budget is the ledger row.
+      iteration: attempt.attemptNo,
+      maxIterations: attempt.maxAttempts,
+      baseBranch: prw?.prBaseRef ?? d.baseRef ?? branch,
+      resumeBranch: branch,
+      ...(lastCommitSha ? { lastCommitSha } : {}),
+      failureContext: { summary: feedback, errorType: 'reviewer_request_changes', ...(lastCommitSha ? { commitSha: lastCommitSha } : {}) },
+      prNumber: d.prNumber,
+      prUrl,
+      workerBranch: branch,
+      headSha: attempt.boundHeadSha,
+      workflowAttemptId: attempt.id,
+      workflowRoundId: round.id,
+      ...lineageStamp(owner as never, [d.prNumber]),
+    },
+    pathManifest: owner.pathManifest,
+    release: 'false',
+    priority: 8,
+    status: 'pending',
+    creationSource: 'webhook',
+  } as never).onConflictDoNothing().returning();
+  if (!fixTask) return { outcome: 'ok:task_exists' };
+
+  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, d.workspaceId) });
+  if (workspace) await announceTaskCreated(fixTask as never, workspace as never);
+  await wakeTask(fixTask.id, 'review.fix_requested');
+  schedulePrScopeReconcile({ workspaceId: d.workspaceId, installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, expectedHeadSha: attempt.boundHeadSha ?? undefined } as never);
+  await appendPrActivity({
+    installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber,
+    entry: { kind: 'review_changes_requested', iteration: attempt.attemptNo, maxIterations: attempt.maxAttempts, note: feedback, taskUrl: taskActivityUrl(fixTask.id), taskTitle: fixTask.title },
+    workspaceId: d.workspaceId,
+  });
+  return { outcome: 'ok' };
+};
+
+// ── post_review: the GitHub review, at the round's own commit ───────────────
+
+const postReview: EffectHandler = async (e) => {
+  const view = await viewFor(e);
+  const d = view.delivery;
+  const round = view.rounds.find((r) => r.id === e.payload.roundId);
+  if (!d?.repoFullName || d.prNumber == null || !round) return { outcome: 'skipped:no_round' };
+  const repo = await workspaceRepo(d.workspaceId);
+  if (!repo) return { outcome: 'skipped:no_installation' };
+  const out = await roundOutput(round);
+  const event = e.payload.event === 'APPROVE' ? 'APPROVE' : 'REQUEST_CHANGES';
+  const res = await postPrReview({
+    installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber,
+    // §8.4: commit_id is the round's head, never whatever the PR shows now.
+    headSha: String(e.payload.commitId ?? round.headSha),
+    event,
+    body: event === 'APPROVE'
+      ? `Approved by buildd reviewer (confidence ${(out.confidence ?? 0).toFixed(2)}): ${out.summary ?? ''}`
+      : `Changes requested by buildd reviewer: ${out.feedback ?? out.summary ?? ''}`,
+  }).catch((err) => ({ posted: false as const, reason: err instanceof Error ? err.message : 'unknown error' }));
+  if (!res.posted && res.reason !== 'a matching review already exists for this commit') {
+    const owner = await db.query.tasks.findFirst({ where: eq(tasks.id, d.ownerTaskId), columns: { missionId: true } });
+    if (owner?.missionId) {
+      await db.insert(missionNotes).values({
+        missionId: owner.missionId, taskId: d.ownerTaskId, authorType: 'system', type: 'warning',
+        title: `Reviewer verdict could not be posted to GitHub for PR #${d.prNumber}`,
+        body: `buildd recorded a ${event === 'APPROVE' ? 'approve' : 'request-changes'} verdict, but posting it to GitHub as a review failed: ${res.reason ?? 'unknown error'}`,
+        status: 'open',
+      });
+    }
+    return { outcome: `failed_post:${res.reason ?? 'unknown'}` };
+  }
+  return { outcome: 'ok' };
+};
+
+// ── Escalations ─────────────────────────────────────────────────────────────
+
+const escalateExhaustion: EffectHandler = async (e) => {
+  if (e.payload.family !== 'review_fix') return { outcome: 'skipped:legacy_owns' };
+  const view = await viewFor(e);
+  const d = view.delivery;
+  if (!d?.repoFullName || d.prNumber == null || !d.currentHeadSha) return { outcome: 'skipped:no_pr' };
+  const out = await roundOutput(view.rounds.find((r) => r.round === d.currentRound));
+  const { escalateReviewerExhaustion } = await import('@/lib/auto-merge');
+  await escalateReviewerExhaustion(d.ownerTaskId, d.repoFullName, d.prNumber, d.currentHeadSha, d.maxRounds, out.feedback ?? null);
+  const repo = await workspaceRepo(d.workspaceId);
+  if (repo) {
+    await appendPrActivity({
+      installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber,
+      entry: { kind: 'review_escalated', detail: `after ${d.currentRound} review rounds`, note: out.feedback ?? null },
+      workspaceId: d.workspaceId,
+    });
+  }
+  return { outcome: 'ok' };
+};
+
+const missionNote: EffectHandler = async (e) => {
+  if (e.payload.reason !== 'review_escalated') return { outcome: 'skipped:legacy_owns' };
+  const view = await viewFor(e);
+  const d = view.delivery;
+  if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
+  const round = view.rounds.find((r) => r.id === e.payload.roundId);
+  const out = await roundOutput(round);
+  const reviewer = round?.reviewerTaskId
+    ? await db.query.tasks.findFirst({ where: eq(tasks.id, round.reviewerTaskId), columns: { result: true } })
+    : null;
+  const overrideReason = ((reviewer?.result ?? {}) as { effectiveVerdictReason?: string }).effectiveVerdictReason ?? null;
+  const message = overrideReason ?? out.escalationReason ?? out.summary ?? 'see the review';
+  const prUrl = `https://github.com/${d.repoFullName}/pull/${d.prNumber}`;
+  void notifyTeamOf({ workspaceId: d.workspaceId }, 'needsAttention', { title: `PR #${d.prNumber} escalated by reviewer`, message, url: prUrl, urlTitle: 'View PR' });
+  const repo = await workspaceRepo(d.workspaceId);
+  if (repo) {
+    await appendPrActivity({ installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, entry: { kind: 'review_escalated', note: message }, workspaceId: d.workspaceId });
+  }
+  return { outcome: 'ok' };
+};
+
+const notify: EffectHandler = async (e) => {
+  if (e.payload.event !== 'push_undeliverable') return { outcome: 'skipped:no_channel' };
+  const view = await viewFor(e);
+  const d = view.delivery;
+  if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
+  const local = (e.payload.localHeadSha as string | null) ?? null;
+  void notifyTeamOf({ workspaceId: d.workspaceId }, 'needsAttention', {
+    title: `PR #${d.prNumber}: a fix never reached GitHub`,
+    message: `The fix attempt ended but the PR head is still ${d.currentHeadSha?.slice(0, 7) ?? 'unchanged'}${local ? `; its local commit was ${local.slice(0, 7)}` : ''}. Push the branch or re-run the fix.`,
+    url: `https://github.com/${d.repoFullName}/pull/${d.prNumber}`,
+    urlTitle: 'View PR',
+  });
+  return { outcome: 'ok' };
+};
+
+// ── Cancellations ───────────────────────────────────────────────────────────
+
+const cancelOpenAttempts: EffectHandler = async (e) => {
+  const reason = e.payload.reason;
+  const view = await viewFor(e);
+  const d = view.delivery;
+  if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
+  if (reason === 'head_moved') {
+    const n = await cancelPendingAttemptTasks(d.id, 'fix', null, 'the PR head moved before the fix started');
+    return { outcome: `ok:cancelled_${n}` };
+  }
+  if (reason === 'approved') {
+    const repo = await workspaceRepo(d.workspaceId);
+    if (!repo) return { outcome: 'skipped:no_installation' };
+    const { supersedeFixTaskOnApproval } = await import('@/lib/reviewer');
+    await supersedeFixTaskOnApproval({ originalTaskId: d.ownerTaskId, workspaceId: d.workspaceId, installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber });
+    await cancelPendingAttemptTasks(d.id, 'fix', null, 'the PR was approved');
+    return { outcome: 'ok' };
+  }
+  // Merge / close / trunk cancellations: the legacy supersession rules still run them.
+  return { outcome: 'skipped:legacy_owns' };
+};
+
+// ── push_recovery (§9): bounded re-reads, then a person ─────────────────────
+
+const pushRecovery: EffectHandler = async (e) => {
+  const view = await viewFor(e);
+  const d = view.delivery;
+  if (!d || d.state !== 'AWAITING_PUSH') return { outcome: 'skipped:state_moved' };
+  if (!d.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
+  const repo = await workspaceRepo(d.workspaceId);
+  if (!repo) throw new Error('no GitHub installation for the workspace');
+  const reader = githubReader(repo.installationId);
+  const live = await reader.readPr(d.repoFullName, d.prNumber);
+  if (live && live.headSha !== d.currentHeadSha) {
+    // A head arrived that the webhook did not deliver: T3 decides whether it is proof.
+    await ingestFact({ kind: 'head_observed', workspaceId: d.workspaceId, source: 'effect:push_recovery', repoFullName: d.repoFullName, prNumber: d.prNumber }, { exec: dbExec, github: reader });
+    return { outcome: 'ok:head_observed' };
+  }
+  const tryNo = Number(e.payload.try ?? 1);
+  const maxTries = Number(e.payload.maxTries ?? 3);
+  const local = (e.payload.localHeadSha as string | null) ?? null;
+  if (tryNo < maxTries) {
+    const { PUSH_RECOVERY_BACKOFF_MS } = await import('./reducer');
+    await dbExec(insertFollowupEffectSql({
+      deliveryId: d.id, transitionId: e.transitionId, kind: 'push_recovery',
+      dedupeKey: `push_recovery:${d.id}:${local ?? 'none'}:${tryNo + 1}`,
+      payload: { ...e.payload, try: tryNo + 1 },
+      delayMs: PUSH_RECOVERY_BACKOFF_MS[Math.min(tryNo, PUSH_RECOVERY_BACKOFF_MS.length - 1)],
+    }));
+    return { outcome: `ok:retry_${tryNo + 1}` };
+  }
+  await applyCommand({ type: 'PushRecoveryExhausted', actor: 'effect:push_recovery', localHeadSha: local }, { ref: { deliveryId: d.id }, exec: dbExec });
+  return { outcome: 'ok:exhausted' };
+};
+
+const LEGACY_OWNED: EffectKind[] = [
+  'render_activity', // §12.1 regeneration ships with the projections slice; appendPrActivity still writes the comment
+  'stamp_pr_rows', 'emit_pr_merged', 'wake_mission', 'release_attribution', 'finalize_mission_pr',
+  'scan_supersession', 'project_supersession', 'verify_merge', 'gate_event',
+];
+
+export const reviewEffectHandlers: EffectHandlers = {
+  dispatch_review: dispatchReview,
+  dispatch_fix: dispatchFix,
+  post_review: postReview,
+  escalate_exhaustion: escalateExhaustion,
+  mission_note: missionNote,
+  notify,
+  cancel_open_attempts: cancelOpenAttempts,
+  push_recovery: pushRecovery,
+  ...Object.fromEntries(LEGACY_OWNED.map((k) => [k, legacyOwns])),
+};
+
+// Exported for tests.
+export const __handlers = { dispatchReview, dispatchFix, postReview, escalateExhaustion, missionNote, notify, cancelOpenAttempts, pushRecovery };

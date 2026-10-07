@@ -67,6 +67,7 @@ import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
+import { attemptEnded as workflowAttemptEnded, fixCompletionGate, recordReviewVerdict } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
@@ -1483,7 +1484,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, dependsOn: tasks.dependsOn })
+        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, dependsOn: tasks.dependsOn, deliveryId: tasks.deliveryId, deliveryRole: tasks.deliveryRole })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1631,6 +1632,49 @@ export async function PATCH(
             hint: 'structuredOutput.verdict',
           }, { status: 400 });
         }
+      }
+    }
+
+    // §9 completion gate (docs/specs/workflow-state-kernel.md): a kernel fix
+    // attempt may not report `completed` while the PR's GitHub head is still
+    // the head its review round was made on. A local commit is never delivery;
+    // without this, a fix that never pushed read as done (#3754).
+    if (terminalTaskRow[0]?.deliveryRole === 'fix' && worker.taskId) {
+      const refusal = await fixCompletionGate({
+        task: {
+          id: worker.taskId, workspaceId: worker.workspaceId,
+          deliveryId: terminalTaskRow[0].deliveryId ?? null, deliveryRole: terminalTaskRow[0].deliveryRole ?? null,
+          context: terminalTaskRow[0].context,
+        },
+        localHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+      }).catch((err) => {
+        console.error(`[workflow] completion gate check failed for worker ${worker.id} (allowing; AttemptEnded decides):`, err);
+        return null;
+      });
+      if (refusal) {
+        await applyMetricsOnlyPatch(id, worker, body).catch(() => null);
+        const frictionSignature = fireGateEvent({
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: 'completion refused: delivery_not_advanced',
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: { code: refusal.code, boundHeadSha: refusal.boundHeadSha, liveHeadSha: refusal.liveHeadSha, localHeadSha: refusal.localHeadSha },
+        });
+        return NextResponse.json({
+          error: refusal.error,
+          hint: refusal.hint,
+          code: refusal.code,
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          frictionSignature,
+          boundHeadSha: refusal.boundHeadSha,
+          liveHeadSha: refusal.liveHeadSha,
+          localHeadSha: refusal.localHeadSha,
+        }, { status: 400 });
       }
     }
 
@@ -3928,6 +3972,23 @@ export async function PATCH(
         await deliverReviewCallbackIfRequested(taskId, worker.workspaceId);
       });
 
+      // Workflow kernel T4 (docs/specs/workflow-state-kernel.md §6.5): the owner
+      // or fix attempt of a kernel delivery ended. The kernel decides what is
+      // next (review round, push recovery, re-dispatch, escalation) from a live
+      // GitHub read; an infra requeue is not an attempt end (§5.7 rule 2).
+      await runStep('workflow-attempt-ended', async () => {
+        const row = terminalTaskRow[0];
+        if (!row?.deliveryId || shouldAutoRetry || loop?.kind === 'hold' || releaseHeld) return;
+        await workflowAttemptEnded({
+          task: { id: taskId, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
+          workerId: id,
+          status: (contractViolation || slotFailure ? 'failed' : status) === 'completed' ? 'completed' : 'failed',
+          localHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+          commitCount: commitCount ?? worker.commitCount ?? 0,
+          source: 'runner',
+        });
+      });
+
       // Notify on task completion/failure — routed to the OWNING team's channel.
       await runStep('notify', async () => {
         const taskRecord = await db.query.tasks.findFirst({
@@ -4754,7 +4815,7 @@ async function handleReviewerOutcomeIfNeeded(
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, reviewerTaskId),
-    columns: { id: true, category: true, context: true, missionId: true, title: true, createdAt: true },
+    columns: { id: true, category: true, context: true, missionId: true, title: true, createdAt: true, deliveryId: true },
   });
 
   if (!reviewerTask) return;
@@ -4919,6 +4980,35 @@ async function handleReviewerOutcomeIfNeeded(
       );
   }
 
+  // ── Workflow kernel (docs/specs/workflow-state-kernel.md T6) ────────────
+  // A review round of a kernel delivery: the verdict is recorded against the
+  // round's own head. Only an APPLIED verdict acts; a verdict for a superseded
+  // head or round is kept on its round for audit and does nothing else (no
+  // GitHub review, no fix, no merge). The kernel's effects post the review,
+  // dispatch the fix and raise escalations; the legacy writes below do not run.
+  let kernelOwnsVerdict = false;
+  if (reviewerTask.deliveryId && ctx.workflowRoundId) {
+    kernelOwnsVerdict = true;
+    const kv = await recordReviewVerdict({
+      reviewerTask: { id: reviewerTaskId, deliveryId: reviewerTask.deliveryId, context: ctx },
+      verdict: output.verdict,
+      effectiveVerdict,
+      headSha,
+      confidence: output.confidence,
+    }).catch((err) => {
+      console.error(`[reviewer] workflow kernel could not record the verdict for PR #${prNumber}:`, err);
+      void reportOps({ source: 'workflow-kernel:verdict', severity: 'error', message: `verdict not recorded for PR #${prNumber}`, detail: err instanceof Error ? err.message : String(err) });
+      return null;
+    });
+    if (!kv) return;
+    if (!kv.handled) {
+      kernelOwnsVerdict = false; // released to legacy (kill switch): the legacy path below decides
+    } else if (kv.result.result !== 'applied') {
+      console.log(`[reviewer] PR #${prNumber}: verdict ${output.verdict} at ${headSha.slice(0, 7)} ${kv.result.result} (${kv.result.reason}) — recorded, not applied`);
+      return;
+    }
+  }
+
   // ── Corrected lede ───────────────────────────────────────────────────────
   // Applied HERE, server-side, because the reviewer agent is read-only and
   // never touches the PR — it proposes, this handler applies, the same division
@@ -4989,7 +5079,7 @@ async function handleReviewerOutcomeIfNeeded(
   // postPrReview is idempotent per (PR, head SHA, resulting state), so a forced
   // re-review that reaches the same verdict on the same commit does not stack a
   // second approval.
-  if (effectiveVerdict === 'approve' || effectiveVerdict === 'request-changes') {
+  if (!kernelOwnsVerdict && (effectiveVerdict === 'approve' || effectiveVerdict === 'request-changes')) {
     const reviewPostResult = await postPrReview({
       installationId,
       repoFullName,
@@ -5047,7 +5137,12 @@ async function handleReviewerOutcomeIfNeeded(
     door: 'PATCH /api/workers/[id] (reviewer verdict)',
     pr: { installationId, repoFullName },
   };
-  await reconcileSubjectEvent(verdictEvent);
+  if (!kernelOwnsVerdict) await reconcileSubjectEvent(verdictEvent);
+
+  // Kernel deliveries: the fix dispatch, exhaustion and escalation were the
+  // kernel's effects. Only an approval continues, into the landing doors,
+  // which stay legacy until the landing slice (§14 Slice C).
+  if (kernelOwnsVerdict && effectiveVerdict !== 'approve') return;
 
   switch (effectiveVerdict) {
     case 'approve': {

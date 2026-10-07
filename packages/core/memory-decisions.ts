@@ -9,14 +9,27 @@
  *
  * | Decision        | Mode   | Acts on the verdict                                     |
  * |-----------------|--------|---------------------------------------------------------|
- * | keep            | live   | tags a "not durable" memory for the candidate step; never drops it |
+ * | keep            | live   | tags a "not durable" memory; the candidate step holds it until pulled |
  * | type            | live   | overrides the caller's type above a high threshold      |
  * | update          | live   | resolves the 0.88 to 0.94 near-duplicate band           |
  * | use             | live   | writes memory_uses.outcome used / ignored               |
  * | relevance       | shadow | nothing; logs a verdict per pushed hit                  |
- * | promote         | shadow | nothing; defined for the candidate step                 |
+ * | promote         | live   | veto only: defers a rule-promoted candidate one cycle   |
  * | chat_tier       | live   | proposes a directive card in chat (judgeChatDirective)  |
  * | directive_scope | live   | preselects the card's scope (judgeChatDirective)        |
+ *
+ * Rollback. Each act has one constant; set it to false and the act stops,
+ * while verdicts keep being logged:
+ *
+ * - `KEEP_DEMOTES_LIVE` (./memory-candidates, next to its reader): the
+ *   candidate step ignores KEEP_NOT_DURABLE_TAG. learn still adds the tag.
+ * - `PROMOTE_VETO_LIVE`: the lifecycle asks promote for every item in shadow
+ *   and the deterministic rule alone decides (./memory-lifecycle).
+ * - `TYPE_OVERRIDE_LIVE`, `UPDATE_LIVE`, `USE_LABELS_LIVE`, `CHAT_TIER_LIVE`,
+ *   `DIRECTIVE_SCOPE_LIVE`: their gate returns "not confident", so the rule
+ *   that ran before the decision existed decides.
+ *
+ * Relevance is shadow and has nothing to roll back.
  *
  * Every verdict is logged as a `memory_decisions` row (verdict, confidence,
  * what the rule said, whether it was applied). The thresholds are provisional:
@@ -79,17 +92,44 @@ export const CHAT_TIER_MIN_CONFIDENCE = 0.8;
 /** Directive scope: preselects a scope the user confirms. */
 export const DIRECTIVE_SCOPE_MIN_CONFIDENCE = 0.8;
 
+/**
+ * Promote veto: a rule-promoted candidate is deferred one cycle only when Jev
+ * says "do not promote" at p <= 0.2. 0.8, not 0.9: the act is the cheapest one
+ * in the table (a one-cycle delay, never a demotion, and the second cycle
+ * promotes by the rule alone), and with no labelled data the readout needs
+ * applied vetoes to grade; at 0.9 the veto would rarely fire at all.
+ */
+export const PROMOTE_VETO_MIN_CONFIDENCE = 0.8;
+
+// ── Rollback (one constant per decision; see the header) ─────────────────────
+
+export const TYPE_OVERRIDE_LIVE = true;
+export const UPDATE_LIVE = true;
+export const USE_LABELS_LIVE = true;
+export const PROMOTE_VETO_LIVE = true;
+export const CHAT_TIER_LIVE = true;
+export const DIRECTIVE_SCOPE_LIVE = true;
+
 /** Use labels written per completed task. */
 export const MAX_USE_LABELS_PER_TASK = 10;
-/** Promote verdicts per lifecycle call (shadow). */
+/** Promote verdicts per lifecycle call (veto and shadow together). */
 export const MAX_PROMOTE_SHADOW_ITEMS = 10;
 /** Relevance verdicts per retrieval (shadow). */
 export const MAX_RELEVANCE_SHADOW_HITS = 8;
 /** Run budget for the off-path fan-outs (use labels, relevance shadow). */
 export const MEMORY_DECISION_POOL_BUDGET_MS = 15_000;
 
-/** Tag added to a memory Jev confidently judged a task summary. The candidate step demotes on it. */
+/**
+ * Tag added to a memory Jev confidently judged a task summary. The candidate
+ * step holds a tagged candidate until an agent pulls it (decidePromotion).
+ */
 export const KEEP_NOT_DURABLE_TAG = 'jev:not-durable';
+
+/**
+ * Tag on a candidate whose promotion the promote veto deferred. The next cycle
+ * does not ask again: the rule alone decides. Removed on promotion.
+ */
+export const PROMOTE_DEFERRED_TAG = 'jev:promote-deferred';
 
 /**
  * Per-field character caps. Jev's limit is 32K tokens for the state plus the
@@ -113,6 +153,8 @@ export function clip(text: string | null | undefined, max: number): string {
 // ── Questions and definitions ────────────────────────────────────────────────
 
 const PROMPT_VERSION = 'md1';
+/** promote went from shadow to a live veto: its own version so readouts split pre/post. */
+const PROMOTE_PROMPT_VERSION = 'md2';
 
 export const MEMORY_LEARN_DECISION = definePromptedDecision({
   id: 'buildd.memory_learn',
@@ -210,7 +252,7 @@ export const MEMORY_RELEVANCE_DECISION = definePromptedDecision({
 
 export const MEMORY_PROMOTE_DECISION = definePromptedDecision({
   id: 'buildd.memory_promote',
-  promptVersion: PROMPT_VERSION,
+  promptVersion: PROMOTE_PROMPT_VERSION,
   questions: {
     promote: noul(
       {
@@ -223,7 +265,8 @@ export const MEMORY_PROMOTE_DECISION = definePromptedDecision({
       },
     ),
   },
-  mode: 'shadow',
+  mode: 'gated',
+  minConfidence: PROMOTE_VETO_MIN_CONFIDENCE,
   timeoutMs: MEMORY_DECISION_TIMEOUT_MS,
 });
 
@@ -343,33 +386,39 @@ export interface TypeGate { type: MemoryDecisionType; jev: MemoryDecisionType | 
 
 export function gateType(callerType: MemoryDecisionType, answer: ChoiceAnswer<MemoryDecisionType> | null | undefined): TypeGate {
   if (!answer) return { type: callerType, jev: null, confidence: null, overridden: false };
-  const overridden = answer.choice !== callerType && answer.confidence >= TYPE_OVERRIDE_MIN_CONFIDENCE;
+  const overridden = TYPE_OVERRIDE_LIVE && answer.choice !== callerType && answer.confidence >= TYPE_OVERRIDE_MIN_CONFIDENCE;
   return { type: overridden ? answer.choice : callerType, jev: answer.choice, confidence: answer.confidence, overridden };
 }
 
 /** The action to take, or null for today's conflict reply. */
 export function gateUpdate(answer: ChoiceAnswer<MemoryUpdateAction> | null | undefined): MemoryUpdateAction | null {
-  if (!answer) return null;
+  if (!answer || !UPDATE_LIVE) return null;
   const min = answer.choice === 'UPDATE' ? UPDATE_MERGE_MIN_CONFIDENCE : UPDATE_MIN_CONFIDENCE;
   return answer.confidence >= min ? answer.choice : null;
 }
 
 export function gateUse(answer: NoulAnswer | null | undefined): 'used' | 'ignored' | null {
-  if (!answer || !Number.isFinite(answer.noul)) return null;
+  if (!USE_LABELS_LIVE || !answer || !Number.isFinite(answer.noul)) return null;
   if (noulConfidence(answer.noul) < USE_MIN_CONFIDENCE) return null;
   return answer.noul >= 0.5 ? 'used' : 'ignored';
 }
 
 /** The tier to propose on a card, or null (propose nothing). */
 export function gateChatMemoryTier(answer: ChoiceAnswer<ChatMemoryTier> | null | undefined): Exclude<ChatMemoryTier, 'neither'> | null {
-  if (!answer || answer.confidence < CHAT_TIER_MIN_CONFIDENCE || answer.choice === 'neither') return null;
+  if (!CHAT_TIER_LIVE || !answer || answer.confidence < CHAT_TIER_MIN_CONFIDENCE || answer.choice === 'neither') return null;
   return answer.choice;
 }
 
 /** The scope to preselect, or null (the user picks from scratch). */
 export function gateDirectiveScope(answer: ChoiceAnswer<DirectiveScope> | null | undefined): DirectiveScope | null {
-  if (!answer || answer.confidence < DIRECTIVE_SCOPE_MIN_CONFIDENCE) return null;
+  if (!DIRECTIVE_SCOPE_LIVE || !answer || answer.confidence < DIRECTIVE_SCOPE_MIN_CONFIDENCE) return null;
   return answer.choice;
+}
+
+/** Veto (defer one cycle) only on a confident "do not promote". */
+export function gatePromoteVeto(answer: NoulAnswer | null | undefined): boolean {
+  if (!answer || !Number.isFinite(answer.noul)) return false;
+  return answer.noul < 0.5 && noulConfidence(answer.noul) >= PROMOTE_VETO_MIN_CONFIDENCE;
 }
 
 // ── Log rows ─────────────────────────────────────────────────────────────────
@@ -481,8 +530,8 @@ export interface RelevanceShadowHit {
   gatedBy: string | null;
 }
 
-/** One candidate the lifecycle pass judged, for the shadow promote verdict. */
-export interface PromoteShadowItem {
+/** One candidate the lifecycle pass asks promote about. */
+export interface PromoteItem {
   memoryId: string;
   title?: string | null;
   content: string;
@@ -491,14 +540,23 @@ export interface PromoteShadowItem {
   evidence: Record<string, unknown>;
   /** What the deterministic rule decided: 'promote' or 'hold:<reason>'. */
   rule: string;
+  /**
+   * The verdict can veto: the rule promotes it and it was not deferred
+   * before. False: a challenger, logged in shadow and never acted on.
+   */
+  live: boolean;
 }
+
+export interface PromoteVerdict { memoryId: string; veto: boolean }
 
 export interface MemoryDecider {
   /**
-   * Shadow: ask "promote?" over the evidence and log the verdict next to the
-   * rule's. Never acts, never throws. Optional so older fakes still type.
+   * Ask "promote?" over the evidence and log the verdict next to the rule's.
+   * Returns one verdict per item; `veto` is true only for a `live` item Jev
+   * confidently says not to promote. Fails open (no veto), never throws.
+   * Optional so older fakes still type.
    */
-  shadowPromote?(input: { scope: MemoryDecisionScope; items: PromoteShadowItem[] }): Promise<void>;
+  judgePromote?(input: { scope: MemoryDecisionScope; items: PromoteItem[] }): Promise<PromoteVerdict[]>;
   judgeLearn(input: { scope: MemoryDecisionScope; title: string; content: string; type: MemoryDecisionType }): Promise<LearnJudgement>;
   judgeUpdate(input: { scope: MemoryDecisionScope; incoming: MemoryText; existing: MemoryText & { id: string } }): Promise<UpdateJudgement>;
   labelUses(input: { scope: MemoryDecisionScope; summary: string; memories: Array<MemoryText & { memoryId: string }> }): Promise<UseLabel[]>;
@@ -703,12 +761,14 @@ export function createMemoryDecider(deps: MemoryDecisionDeps): MemoryDecider {
         if (!tierRun) return null;
         const tierAns = tierRun.result.ok ? (tierRun.result.answers.tier as ChoiceAnswer<ChatMemoryTier>) : null;
         const scopeAns = scopeRun?.result.ok ? (scopeRun.result.answers.scope as ChoiceAnswer<DirectiveScope>) : null;
-        const tierConfident = !!tierAns && tierAns.confidence >= CHAT_TIER_MIN_CONFIDENCE;
+        // A non-empty message always yields card text (directiveText falls
+        // back to the whole message), so a confident directive is a card.
+        const cardProposed = gateChatMemoryTier(tierAns) === 'directive';
         const rows: MemoryDecisionRow[] = [{
           ...baseRow(scope, tierRun as DecisionRun<DecisionQuestions>, CHAT_MEMORY_TIER_DECISION as Decision<DecisionQuestions>),
           memoryId: null, decision: 'chat_tier', mode: 'live', caller: 'chat',
           verdict: tierAns?.choice ?? null, confidence: tierAns?.confidence ?? null, probability: null,
-          rule: rule ? 'directive' : 'neither', applied: tierConfident,
+          rule: rule ? 'directive' : 'neither', applied: cardProposed,
         }];
         if (scopeRun) {
           rows.push({
@@ -728,27 +788,32 @@ export function createMemoryDecider(deps: MemoryDecisionDeps): MemoryDecider {
       }
     },
 
-    async shadowPromote({ scope, items }) {
+    async judgePromote({ scope, items }) {
+      const none = items.map(i => ({ memoryId: i.memoryId, veto: false }));
       const batch = items.slice(0, MAX_PROMOTE_SHADOW_ITEMS);
-      if (batch.length === 0) return;
+      if (batch.length === 0) return none;
       try {
         const runs = await runMany(MEMORY_PROMOTE_DECISION, scope, batch, i => promoteState(i, i.evidence));
-        if (!runs) return;
+        if (!runs) return none;
+        const vetoed = new Set<string>();
         const rows: MemoryDecisionRow[] = runs.filter(r => r.run).map(({ item, run }) => {
           const answer = run!.result.ok ? run!.result.answers.promote : null;
+          const veto = item.live && gatePromoteVeto(answer);
+          if (veto) vetoed.add(item.memoryId);
           return {
             ...baseRow(scope, run as DecisionRun<DecisionQuestions>, MEMORY_PROMOTE_DECISION as Decision<DecisionQuestions>),
-            memoryId: item.memoryId, decision: 'promote' as const, mode: 'shadow' as const, caller: null,
+            memoryId: item.memoryId, decision: 'promote' as const, mode: item.live ? 'live' as const : 'shadow' as const, caller: null,
             verdict: answer ? String(answer.noul >= 0.5) : null,
             confidence: answer ? noulConfidence(answer.noul) : null,
             probability: answer?.noul ?? null,
             rule: item.rule,
-            applied: false,
+            applied: veto,
           };
         });
         safeRecord(deps, rows, receiptsOf(runs.map(r => r.run as DecisionRun<DecisionQuestions> | null)), scope);
+        return items.map(i => ({ memoryId: i.memoryId, veto: vetoed.has(i.memoryId) }));
       } catch {
-        // Shadow: nothing depends on it.
+        return none;
       }
     },
 

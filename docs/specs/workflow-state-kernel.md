@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/pr-review-status.ts]
 related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: []
+verified_by: [apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts]
 supersedes: []
 ---
 
@@ -26,6 +26,14 @@ the quoted symbol before editing a site.
 stub, because design prose belongs in the private knowledge base. This contract has to
 be reviewable in the PR and checked by `bun run specs:check`, so it is a draft spec.
 When Phase 2 ships, flip `status` to `active` and fill `verified_by` (§16).
+
+**Slice A part 1 is live (no dark phase).** The review fix loop of every PR whose
+first review is dispatched after deploy is kernel-owned: deliveries open at the
+legacy first-review dispatch points, review rounds, the verdict (T6), fix dispatch
+(T8) and claim (T9), attempt end (T4), the §9 completion gate, `synchronize` heads
+(T3) and close/reopen facts (T17–T19) run through `apps/web/src/lib/workflow/seam.ts`,
+and the legacy write is skipped for those PRs. §13.1 lists what landed, what is
+deferred to parts 2–3, and the deviations; §14 the cutover and the kill switch.
 
 **Capability statement.** For every deliverable that is meant to reach GitHub as a
 pull request, exactly one row (the *delivery*) records where the work stands. That row
@@ -244,6 +252,7 @@ at the base commit of this branch the last index is 0248).
 | `ci` text, `ci_head_sha`, `mergeable`, `mergeable_head_sha` | latest fact for the *current* head only |
 | `merged_at`, `merge_commit_sha` | GitHub's values, never receipt time |
 | `superseded_by_pr`, `superseded_by_url`, `superseded_reason`, `recorded_by` | the existing supersession edge, owned here |
+| `authority` (`kernel`\|`legacy`, default `kernel`), `released_at` | who decides (§14). `legacy` once the kill switch handed the delivery back; sticky |
 | `created_at`, `updated_at`, `last_transition_at` | |
 
 ### 5.2 `workflow_review_rounds` (exact-head binding, §8)
@@ -282,7 +291,10 @@ source for the PR activity comment, mission notes and the explain `because[]` ch
 
 ### 5.6 Attempt linkage
 
-`tasks.delivery_id` (nullable) and `tasks.delivery_role`; `workers` keep their rows
+`tasks.delivery_id` (nullable, indexed, no FK: the delivery row already references
+its owner task) and `tasks.delivery_role` (`owner`, `fix`, `ci_fix`, `conflict_fix`,
+`review`; a reviewer task of a round carries `review` and `context.workflowRoundId`,
+a fix task `fix` and `context.workflowAttemptId`); `workers` keep their rows
 unchanged. `tasks.reviewer_retry_pr_number`/`reviewer_retry_head_sha` and the other
 `*RetryPrNumber`/`*RetryHeadSha` columns keep their unique indexes until Slice C, when
 `dedupe_key` on `workflow_effects` replaces them as the dedupe authority (an index on
@@ -556,7 +568,7 @@ runner without it is no less safe, only noisier.
    `db.transaction()` (neon-http), so the transition row, fact link and effect rows are
    written by the **same single statement** using data-modifying CTEs, the pattern
    `enqueueDispatchSql` in `packages/core/dispatch-outbox.ts` uses and the trigger in
-   `0231_task_dispatch_outbox_trigger.sql` backs up.
+   migration 0231 (now in `packages/core/drizzle/0000_baseline.sql`) backs up.
 2. **Who supplies `expectedVersion`.**
    - Human and agent callers (dashboard, MCP, task token) receive `version` with every
      read of a delivery and send it back; a stale one gets `stale` plus the current
@@ -926,6 +938,54 @@ Files that change in the seam (Slice A):
 
 Later slices add the files named in §14.
 
+### 13.1 What Slice A part 1 shipped, and its deviations
+
+Shipped live (part 1, the review family): schema linkage (§5.6, `authority`);
+`seam.ts` (route API), `authority.ts` (kill switch and release), `github-facts.ts`
+(live reads), `review-effects.ts` (effects, owned by the reviews module and wired through the composition root `WORKFLOW_EFFECT_HANDLERS`); `openKernelDelivery` at the two legacy
+first-review points (the PR `opened` policy after pre-flight and role resolution, and
+create_pr's integration-branch review); T4 at the terminal worker PATCH; the
+`delivery_not_advanced` gate; T6 in `handleReviewerOutcomeIfNeeded`; T9 at claim;
+T3 on `synchronize` (with §8.3 carry-forward through `carryForwardApprovalIfUnchanged`,
+which also projects `equivalentHeadShas` for the legacy landing gate); T17–T19 on
+close/reopen; T5 for `request_pr_review` and the dashboard re-review; T27 for a
+reviewer that ended without a verdict; the outbox floor drain on the `pr-reconcile`
+full pass plus an inline drain after every applied transition.
+
+Deferred: part 2 — the CI family on the ledger with provenance by SHA set (§5.7,
+§6.9), deleting `isBuilddWorkerCommit`, the manual retry-CI path and a
+`BudgetExtended` command. Part 3 — `DeliveryView` with one owner-of-next-move for
+Home/task/activity projections, `render_activity` regenerating the comment from
+transitions (§12.1), release composition, and S35/S37.
+
+Deviations, each deliberate:
+
+1. **Round 1 is queued when the owner attempt ends**, not when the PR opens
+   (§6.5 row 1, §15 step 2). Opening a delivery dispatches nothing; a delivery opened
+   after the owner attempt already ended (the webhook arrived late) applies T4 at once.
+2. **Landing stays on the legacy doors.** An applied approve returns to the legacy
+   approve tail (`landPr` / `tryAutoMergeWorkerPr`), which reads the reviewer task the
+   round created. The kernel posts the GitHub review (`post_review`); the legacy post
+   does not run. Slice C moves landing.
+3. **The legacy activity comment stays** (`appendPrActivity` from the handlers);
+   `render_activity` is acknowledged `skipped:legacy_owns` until part 3. Post-merge and
+   supersession effects of T17/T18 are likewise acknowledged: the webhook still runs
+   them.
+4. **`push_recovery` re-reads and bounds, it does not instruct.** Each try reads the PR;
+   a new head goes through T3, otherwise the next try is enqueued (2m/10m/30m), then
+   T22 notifies a person. The live worker is told to push by the completion gate's 400
+   instead. Tries after the first ride the hourly floor drain.
+5. **A pre-flight human escalation releases the delivery to legacy** (and opens none),
+   so no kernel round is queued behind a human gate.
+6. **`createReviewerTask` refuses a reviewer for a kernel-owned PR** unless the call is
+   the round's own `dispatch_review`; every legacy door (re-dispatch on push, stale
+   approval, integration review) is closed in one place.
+7. The completion gate reuses the `output_requirement` gate slug with
+   `detail.code = delivery_not_advanced`; no new slug.
+8. `max_attempts` of a review fix is the delivery's `max_rounds`. A second attempt on
+   the same head (the first failed) leaves `reviewerRetryHeadSha` empty: the ledger,
+   not that unique index, dedupes it.
+
 ---
 
 ## 14. Migration plan: no two authorities, ever
@@ -955,9 +1015,27 @@ live head becomes round 1's verdict (otherwise round 1 is queued fresh), fix tas
 a live attempt are bound as `FIXING`. In-flight legacy retries finish under the legacy
 code path only for workspaces still flagged off.
 
-**Per-workspace flag.** `gitConfig.workflowKernel = 'off' | 'on'`, default `off` so
-merging changes nothing (DESIGN-FORMAT rule 2). Flipping to `on` is the cutover for
-that family; there is no `shadow` value on purpose.
+**Per-workspace kill switch.** `gitConfig.workflowKernel` is a boolean, absent = on:
+the kernel ships live, not dark (owner decision for Slice A, superseding the earlier
+default-off plan). `false` (or `'off'`) is the emergency rollback. There is no `shadow`
+value on purpose.
+
+**Cutover: pre-existing deliveries finish on legacy.** A delivery row is opened only at
+the point the legacy code would dispatch a PR's first review, so a PR that is already
+open (mid-review, mid-fix) at deploy has no row and every seam function answers "not
+mine" for it; it finishes exactly as before. Lazy adoption of in-flight PRs was
+rejected: the import would have to trust legacy columns (reviewer JSONB, `iteration`)
+for state the kernel did not see, which is the ambiguity the kernel exists to remove,
+and the population drains on its own as those PRs merge or close.
+
+**Kill switch semantics.** With the switch off, the first kernel touch of a delivery
+releases it (`authority = 'legacy'`, `released_at`) in the same statement that reads
+it; no new delivery opens. The release is sticky: switching back on does not hand a
+released delivery back, because legacy may have acted on it meanwhile. Effects already
+committed still drain (they are decisions already made, and they create legacy-shaped
+tasks: fix tasks carry `reviewerRetry*`, `iteration`, `resumeBranch`; reviewer tasks
+carry the full legacy context), so legacy can carry a released delivery on. Neither
+direction rewrites kernel state.
 
 **Rollback.** Turning the flag off returns the family to legacy, and the projections
 (`workers.*`, `tasks.*`) already hold correct values because the kernel projects into
@@ -1029,7 +1107,7 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S19 | Fix worker killed after claim | `FIXING → CHANGES_REQUESTED`, the ledger row ends `failed`, the next dispatch allocates the next `attempt_no`, or exhausts | reducer test |
 | S20 | Stale `version` from a human action | `stale` + current view, HTTP 409; nothing applied | reducer test; route tests for `/api/prs/[prNumber]/merge` and `/api/github/pr` |
 | S21 | Authorization matrix (§17.1) | owner, caller-names-PR, sibling, other workspace, human | `apps/web/src/app/api/github/pr/supersede/route.test.ts`, `apps/web/src/app/api/github/pr/review/route.test.ts`, `apps/web/src/lib/task-token-auth.test.ts` |
-| S22 | Flag off | with `workflowKernel='off'` every legacy test passes unchanged | `bun run test` |
+| S22 | Kill switch | with `workflowKernel=false` a delivery is released to legacy (sticky), no new one opens, and a PR with no delivery is untouched by every seam function | `apps/web/tests/db/workflow-seam.test.ts`, `bun run test` |
 | S23 | CI provenance (audit): worker pushes under the owner's git identity; worker pushes under the bot identity; a person pushes | the first two are attributed by SHA set and consume a ledger row; the third is `foreign_push` and consumes none; the cap bounds dispatches in all three; manual "Fix CI" uses the configured cap | `apps/web/src/lib/ci-failure-retry.test.ts`, `apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts`, reducer test (replaces the author-string cases around `isBuilddWorkerCommit`) |
 | S24 | Trunk breakage: one signature red on trunk and on several PRs | one incident, one trunk-fix task, zero per-PR `ci` attempts, queued ones `skipped`, deliveries `BLOCKED_ON_TRUNK`, `ci` budget untouched, recovery re-enters `resume_state`; two dependency-bot PRs do not accumulate retries | `apps/web/src/lib/ci-red-sweep.test.ts`, `apps/web/src/lib/ci-failure-retry.test.ts`, `apps/web/src/lib/workflow/trunk.test.ts` (new) |
 | S25 | Stale dispatch: target merged / approved / CI green / conflict resolved between trigger and dispatch, and between dispatch and claim | ledger row `skipped`, no task (or task cancelled as skipped, not failed); replay is a no-op; reason recorded | `apps/web/src/lib/workflow/effects.test.ts` (new), `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/ci-failure-retry.test.ts` |
@@ -1038,7 +1116,16 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S28 | Ledger separation | CI, review, conflict, migration, trunk families count independently; a reviewer spawned on a CI-fix task does not inherit the CI count; infra requeues change no ledger; `attemptView` is 1-based and identical in comment, title and `explain` | reducer test; `apps/web/src/lib/pr-activity-comment.test.ts`, `apps/web/src/lib/explain.test.ts` |
 | S29 | Reviewer prose or no verdict | round fails (T27), re-queued at the same head without a new round number, then `ESCALATED(review_unavailable)`; prose is never applied as approve | `apps/web/src/lib/reviewer-output.test.ts`, `apps/web/src/app/api/workers/[id]/route.test.ts` |
 | S30 | Runner hand-off failures (no confirmed outcome, commits but no PR, uncommitted changes) | `AttemptEnded(unproven)` → `AWAITING_PUSH` or requeue; never `completed` delivery | `apps/runner/__tests__/unit/` (new case beside the existing completion tests), `apps/web/src/app/api/workers/[id]/route.test.ts` |
+| S35 | Replacement chains read current, not FAILED | a superseded predecessor attempt stays auditable but the delivery and mission situation project the current attempt; owner of next move is canonical | `apps/web/src/lib/workflow/projections.test.ts` (part 3) |
+| S37 | Conflict remediation already exists | a conflicted PR with a valid pending/stalled conflict-fix task re-dispatches or repairs it instead of filing a second; the recovery effect is keyed by delivery + remediation family; UI says "Conflict fix stalled" vs "Resolve conflicts" | `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/workflow/projections.test.ts` (part 3) |
 | S31 | Preflight | `create_pr` refuses a body the CI scan would reject, with the reason; runner preflight failure keeps the attempt open; CI miss is tagged `preflight_miss` | `apps/web/src/app/api/github/pr/route.test.ts`, `scripts/check-no-prod-data-local.test.ts` |
+
+Slice A part 1 coverage of the live path: S1 (both arms), S2, S3, S4, S5, S7, S8, S25,
+the cutover and the kill switch run end to end on real Postgres in
+`apps/web/tests/db/workflow-seam.test.ts` (`bun run test:db`); the route wiring (the
+legacy write does not run beside the kernel) in the route tests named above and in
+`apps/web/src/app/api/github/webhook/route.test.ts`, `.../github/pr/review/route.test.ts`,
+`.../prs/[prNumber]/re-review/route.test.ts` and `apps/web/src/lib/reviewer.test.ts`.
 
 Integration (needs a live server): extend `apps/web/tests/integration/` with one
 end-to-end case for S1 against the dev preview (open PR, request changes, fix attempt
@@ -1362,7 +1449,7 @@ is a site to tick off in the Phase 2 PR that moves it.
 - AC-8: GIVEN `PrMerged` WHEN any later `synchronize`, `check_suite` or `opened` fact arrives THEN the delivery stays `MERGED` and no fact-cache column regresses.
 - AC-9: GIVEN `SupersessionRecorded` for a delivery not in `CLOSED_UNMERGED`, or whose target PR is not merged THEN it is rejected, and an existing edge is never overwritten.
 - AC-10: GIVEN a task with a delivery WHEN the reaper or cleanup finds its worker dead with only local commits THEN `tasks.status` is not set to `completed`, and the delivery is `AWAITING_PUSH`.
-- AC-11: GIVEN `workflowKernel='off'` THEN every legacy test and route behaves exactly as before the change.
+- AC-11: GIVEN `workflowKernel=false` THEN no new delivery opens, an existing one is released to legacy and stays there, and a PR with no delivery behaves exactly as before the kernel.
 - AC-12: GIVEN `canCompleteMission` inputs from before the change THEN its results are unchanged.
 - AC-13: GIVEN a worker pushes a CI fix under any git author identity WHEN the head advances during or just after its attempt THEN the push is attributed to that attempt by SHA set and the `ci` ledger row exists with `attempt_no` allocated at dispatch.
 - AC-14: GIVEN a ledger family with `max_attempts` reached WHEN another dispatch is requested THEN no task is created and the delivery is `ESCALATED(ci_exhausted)` (or the family's equivalent); a human retry records `BudgetExtended` and is never numbered 0.
@@ -1401,7 +1488,8 @@ is a site to tick off in the Phase 2 PR that moves it.
 
 - Existing, to be migrated or wrapped: `apps/web/src/app/api/workers/[id]/route.ts`, `apps/web/src/app/api/github/webhook/route.ts`, `apps/web/src/app/api/github/pr/route.ts`, `apps/web/src/app/api/github/pr/review/route.ts`, `apps/web/src/app/api/github/pr/supersede/route.ts`, `apps/web/src/lib/pr-landing.ts`, `apps/web/src/lib/auto-merge.ts`, `apps/web/src/lib/pr-review-status.ts`, `apps/web/src/lib/review-verdict-gate.ts`, `apps/web/src/lib/reviewer.ts`, `apps/web/src/lib/pr-activity-comment.ts`, `apps/web/src/lib/pr-presentation.ts`, `apps/web/src/lib/mission-completion.ts`, `packages/core/pr-shipped.ts`, `packages/core/db/schema.ts`.
 - Pattern sources: `packages/core/dispatch-outbox.ts`, `apps/web/src/lib/dispatch-authority.ts`, `packages/core/gate-events.ts`.
-- New (Phase 2): `apps/web/src/lib/workflow/*`, `packages/core/__tests__/workflow-write-sites.test.ts`.
+- Wired in Slice A part 1: `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/prs/[prNumber]/re-review/route.ts`, `apps/web/src/app/api/cron/pr-reconcile/route.ts`, `apps/web/src/lib/reviewer-subscribers.ts`.
+- New (Phase 2): `apps/web/src/lib/workflow/*` (the route seam is `seam.ts`), `packages/core/__tests__/workflow-write-sites.test.ts`, `apps/web/tests/db/workflow-seam.test.ts`.
 
 ## 23. Out of scope
 

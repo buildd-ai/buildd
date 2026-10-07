@@ -11,6 +11,7 @@ const fake = {
   arms: [] as any[],
   runs: [] as any[],
   verdicts: [] as any[],
+  thumbs: [] as any[],
   writes: [] as string[],
   writeReturns: [{ allocation_version: 9 }] as any[],
 };
@@ -32,6 +33,7 @@ mock.module('../db/client', () => ({
     execute: async (q: any) => {
       const s = text(q);
       if (s.includes('FROM task_outcomes')) return { rows: fake.runs };
+      if (s.includes('FROM user_feedback')) return { rows: fake.thumbs };
       if (s.includes("context ? 'reviewerFor'") && s.includes('effectiveVerdict')) return { rows: fake.verdicts };
       fake.writes.push(s);
       return { rows: s.includes('allocation_version = allocation_version + 1') ? fake.writeReturns : [] };
@@ -67,6 +69,7 @@ beforeEach(() => {
   fake.arms = [];
   fake.runs = [];
   fake.verdicts = [];
+  fake.thumbs = [];
   fake.writes = [];
   fake.writeReturns = [{ allocation_version: 9 }];
 });
@@ -146,13 +149,101 @@ describe('runDialStep', () => {
   });
 });
 
+describe('runDialStep — chat cells', () => {
+  const chatArms = () => [
+    { id: INC, poolId: 'pool-c', model: 'claude-sonnet-5', role: 'incumbent', status: 'active', addedAt: new Date('2026-08-01') },
+    { id: ALT, poolId: 'pool-c', model: 'openai/gpt-6-mini', role: 'challenger', status: 'active', addedAt: new Date('2026-08-02') },
+  ];
+  const chatPool = (over: Record<string, unknown> = {}) => ({
+    id: 'pool-c', teamId: 'team-1', tier: 'standard', surface: 'chat', dial: 5,
+    dialState: { state: 'learning', since: '2026-09-01T00:00:00Z' },
+    allocation: { [INC]: 1, [ALT]: 0 }, allocationVersion: 4, ...over,
+  });
+  /** Judged windows, each served wholly by `model`, all satisfied. */
+  const windows = (model: string, n: number, judge = 'typesafe/jev-1.13') => Array.from({ length: n }, (_, i) => {
+    const at = new Date(NOW.getTime() - 50 * DAY + i * 60_000);
+    return { conversationId: `${model}-${i}`, fromAt: at, at, satisfied: i % 5 === 0 ? 'no' : 'yes', clean: true, judgeModel: judge, served: [{ model, tier: 'standard' }] };
+  });
+  const source = (enabled: boolean, judgeModel: string | null, vs: any[]) => {
+    const calls = { verdicts: 0 };
+    return {
+      calls,
+      status: async () => ({ enabled, judgeModel }),
+      verdicts: async () => { calls.verdicts += 1; return vs; },
+    };
+  };
+  const plenty = () => [...windows('claude-sonnet-5', 400), ...windows('openai/gpt-6-mini', 400)];
+
+  it('with retros on and an independent judge, a chat cell that keeps up is promoted', async () => {
+    fake.pools = [chatPool()];
+    fake.arms = chatArms();
+    const s = await src.runDialStep({ now: NOW, chatQuality: source(true, 'typesafe/jev-1.13', plenty()) });
+    expect(s.transitions).toEqual([{ poolId: 'pool-c', kind: 'promotion', to: 'shifted' }]);
+    expect(fake.writes.some(w => w.includes('INSERT INTO tier_pool_changes'))).toBe(true);
+  });
+
+  it('without a quality source the chat cell stays in shadow: no transition, no verdicts read', async () => {
+    fake.pools = [chatPool()];
+    fake.arms = chatArms();
+    const s = await src.runDialStep({ now: NOW });
+    expect(s.transitions).toEqual([]);
+    expect(fake.writes.every(w => !w.includes('tier_pool_changes'))).toBe(true);
+  });
+
+  it('retros off: verdicts are not even read', async () => {
+    fake.pools = [chatPool()];
+    fake.arms = chatArms();
+    const src2 = source(false, 'typesafe/jev-1.13', plenty());
+    const s = await src.runDialStep({ now: NOW, chatQuality: src2 });
+    expect(s.transitions).toEqual([]);
+    expect(src2.calls.verdicts).toBe(0);
+  });
+
+  it('a judge from an arm\'s family keeps the cell in shadow', async () => {
+    fake.pools = [chatPool()];
+    fake.arms = chatArms();
+    const s = await src.runDialStep({ now: NOW, chatQuality: source(true, 'anthropic/claude-haiku-5', plenty()) });
+    expect(s.transitions).toEqual([]);
+  });
+
+  it('a failing source is no quality signal, never an error that moves traffic', async () => {
+    fake.pools = [chatPool()];
+    fake.arms = chatArms();
+    const broken = { status: async () => { throw new Error('down'); }, verdicts: async () => [] };
+    const s = await src.runDialStep({ now: NOW, chatQuality: broken });
+    expect(s.errors).toBe(0);
+    expect(s.transitions).toEqual([]);
+  });
+
+  it('a thumbs-down trend reverts a shifted chat cell', async () => {
+    const shiftedAt = new Date(NOW.getTime() - 3 * DAY).toISOString();
+    fake.pools = [chatPool({ dial: 3, dialState: { state: 'shifted', since: shiftedAt, alternateArmId: ALT }, allocation: { [INC]: 0.5, [ALT]: 0.5 } })];
+    fake.arms = chatArms();
+    fake.thumbs = Array.from({ length: 4 }, (_, i) => ({
+      message_id: `m${i}`, conversation_id: `c${i}`, at: new Date(NOW.getTime() - DAY).toISOString(),
+      tier: 'standard', model: 'openai/gpt-6-mini', signal: 'down', reason: 'wrong_answer',
+    }));
+    const s = await src.runDialStep({ now: NOW, chatQuality: source(true, 'typesafe/jev-1.13', []) });
+    expect(s.transitions).toEqual([{ poolId: 'pool-c', kind: 'revert', to: 'reverted' }]);
+    expect(fake.writes.find(w => w.includes('tier_pool_changes'))).toBeDefined();
+  });
+});
+
+describe('loadTeamChatThumbs', () => {
+  it('scopes to the team and reads ids, labels and the serving model only', async () => {
+    fake.thumbs = [{ message_id: 'm1', conversation_id: 'c1', at: '2026-10-01T00:00:00Z', tier: 'standard', model: 'x', signal: 'up', reason: null }];
+    const t = await src.loadTeamChatThumbs('team-1', new Date(0));
+    expect(t).toEqual([{ messageId: 'm1', conversationId: 'c1', at: new Date('2026-10-01T00:00:00Z'), tier: 'standard', model: 'x', signal: 'up', reason: null }]);
+  });
+});
+
 describe('dialInputFor', () => {
   it('primary evidence is the cell only; alternate evidence is the team\'s runs on that model anywhere', async () => {
     const all = [...runs('primary-model', 'standard', 10, 1), ...runs('primary-model', 'premium', 10, 0), ...runs('cheap-model', 'budget', 7, 1)];
     fake.runs = all;
     const loaded = await src.loadTeamCodingRuns('team-1', new Date(0));
     const input = src.dialInputFor({
-      id: 'p', teamId: 't', tier: 'standard', dial: 3, dialState: null, allocation: {}, allocationVersion: 1,
+      id: 'p', teamId: 't', tier: 'standard', surface: 'agent', dial: 3, dialState: null, allocation: {}, allocationVersion: 1,
       arms: arms() as any,
     }, loaded, NOW)!;
     expect(input.primary.evidence.rates.merged).toEqual({ n: 10, k: 10 });
@@ -165,7 +256,7 @@ describe('dialInputFor', () => {
     const loaded = await src.loadTeamCodingRuns('team-1', new Date(0));
     const since = new Date(NOW.getTime() - 5 * DAY).toISOString();
     const input = src.dialInputFor({
-      id: 'p', teamId: 't', tier: 'standard', dial: 3,
+      id: 'p', teamId: 't', tier: 'standard', surface: 'agent', dial: 3,
       dialState: { state: 'learning', since, evidenceSince: since }, allocation: {}, allocationVersion: 1, arms: arms() as any,
     }, loaded, NOW)!;
     expect(input.alternates[0].evidence.rates.merged.n).toBe(0);

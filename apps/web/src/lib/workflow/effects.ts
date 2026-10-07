@@ -9,7 +9,9 @@
  * transition must still describe the delivery (same version, or the same
  * state); otherwise the effect is done as `skipped:superseded`.
  *
- * DARK: no handler is registered by any route or cron yet.
+ * Handlers live in handlers.ts; seam.ts drains a delivery's effects at the end
+ * of the request that applied its transition, and the pr-reconcile cron drains
+ * whatever is still due.
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
@@ -63,12 +65,13 @@ export function effectIsCurrent(e: Pick<ClaimedEffect, 'kind' | 'delivery' | 'tr
   return e.delivery.state === e.transition.toState;
 }
 
-export function claimDueEffectsSql(limit: number, leaseMs = EFFECT_LEASE_MS): SQL {
+export function claimDueEffectsSql(limit: number, leaseMs = EFFECT_LEASE_MS, deliveryId?: string | null): SQL {
   return sql`-- workflow:claim_effects
 WITH due AS (
   SELECT id FROM workflow_effects
-  WHERE (status = 'pending' AND not_before <= now())
-     OR (status = 'delivering' AND lease_until < now())
+  WHERE ((status = 'pending' AND not_before <= now())
+     OR (status = 'delivering' AND lease_until < now()))
+    ${deliveryId ? sql`AND delivery_id = ${deliveryId}::uuid` : sql``}
   ORDER BY not_before
   LIMIT ${limit}::int
   FOR UPDATE SKIP LOCKED
@@ -131,9 +134,9 @@ function toClaimed(r: Record<string, unknown>): ClaimedEffect {
 }
 
 /** Drain up to `limit` due effects once. Handlers MUST be idempotent (§10.2). */
-export async function runEffects(opts: { handlers: EffectHandlers; limit?: number; exec?: Exec }): Promise<DrainSummary> {
+export async function runEffects(opts: { handlers: EffectHandlers; limit?: number; exec?: Exec; deliveryId?: string | null }): Promise<DrainSummary> {
   const exec = opts.exec ?? dbExec;
-  const rows = ((await exec(claimDueEffectsSql(opts.limit ?? 25))).rows ?? []) as Array<Record<string, unknown>>;
+  const rows = ((await exec(claimDueEffectsSql(opts.limit ?? 25, EFFECT_LEASE_MS, opts.deliveryId ?? null))).rows ?? []) as Array<Record<string, unknown>>;
   const summary: DrainSummary = { claimed: rows.length, done: 0, skipped: 0, failed: 0, dead: [] };
   for (const raw of rows) {
     const e = toClaimed(raw);
@@ -156,4 +159,21 @@ export async function runEffects(opts: { handlers: EffectHandlers; limit?: numbe
     }
   }
   return summary;
+}
+
+/**
+ * A follow-up of an effect that is still running its course (the next
+ * `push_recovery` try): recorded against the same transition, idempotent on
+ * its own dedupe key. Not a decision: the transition that owes it already
+ * committed.
+ */
+export function insertFollowupEffectSql(e: {
+  deliveryId: string; transitionId: string; kind: EffectKind; dedupeKey: string; payload: Record<string, unknown>; delayMs?: number;
+}): SQL {
+  return sql`-- workflow:followup_effect
+INSERT INTO workflow_effects (delivery_id, transition_id, kind, dedupe_key, payload, not_before)
+VALUES (${e.deliveryId}::uuid, ${e.transitionId}::uuid, ${e.kind}::text, ${e.dedupeKey}::text, ${JSON.stringify(e.payload)}::jsonb,
+  now() + make_interval(secs => ${e.delayMs ?? 0}::bigint / 1000.0))
+ON CONFLICT (dedupe_key) DO NOTHING
+RETURNING id`;
 }

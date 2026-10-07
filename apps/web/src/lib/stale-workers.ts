@@ -12,6 +12,7 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { detachInteractiveWorkersOfEndedTasks, releaseConcurrencySeats } from '@/lib/interactive-detach';
 import { withoutForceClaim } from '@/lib/force-claim';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
+import { kernelDeliveryById } from '@/lib/workflow/authority';
 import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 import { PARK_MAX_MS, PARK_MISSION_MAX_MS, notParkedScope } from '@/lib/worker-park';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -77,7 +78,7 @@ async function resolveStaleTask(
   // be re-queued — the user explicitly cancelled it and its worker was aborted.
   const currentTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { kind: true, pathManifest: true, outputRequirement: true, taskClass: true, status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true, missionId: true, roleSlug: true },
+    columns: { kind: true, pathManifest: true, outputRequirement: true, taskClass: true, status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true, missionId: true, roleSlug: true, deliveryId: true, deliveryRole: true },
   });
   // A visual-auditor mission task is settled only by its own evidence check
   // (workers/[id]/route.ts): the reaper never completes it from artifacts, and
@@ -89,6 +90,29 @@ async function resolveStaleTask(
     await resolveCompletedTask(taskId, workspaceId);
     return;
   }
+
+  // An attempt of a workflow-kernel delivery (docs/specs/workflow-state-kernel.md
+  // §9): the reaper never promotes its local commits to `completed`, and when it
+  // ends the task for good the kernel hears AttemptEnded(lost) and decides what
+  // is next. An infra requeue (back to pending) is not an attempt end.
+  const kernelDeliveryId = currentTask?.deliveryId
+    ? await kernelDeliveryById(currentTask.deliveryId).catch(() => null)
+    : null;
+  const kernelAttemptEnded = async () => {
+    if (!kernelDeliveryId || !currentTask) return;
+    const after = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { status: true } });
+    if (after?.status !== 'failed') return;
+    // Lazy: the seam loads the effect handlers, which load half the app.
+    const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');
+    await workflowAttemptEnded({
+      task: { id: taskId, workspaceId, deliveryId: currentTask.deliveryId ?? null, deliveryRole: currentTask.deliveryRole ?? null, context: currentTask.context },
+      workerId: staleWorker?.id ?? `reaper:${taskId}`,
+      status: 'lost',
+      localHeadSha: null,
+      commitCount: staleWorker?.commitCount ?? 0,
+      source: 'sweep:stale-workers',
+    }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${taskId}:`, err));
+  };
 
   // Reaper exemption: a task in condition_unmet with a pr_merged exit condition
   // is waiting for a webhook event — no in-flight worker to kill. Leave as pending
@@ -128,7 +152,8 @@ async function resolveStaleTask(
   if (currentTask?.category === 'review') {
     const ctx = (currentTask.context ?? {}) as Record<string, unknown>;
     const prNumber = ctx.prNumber as number | undefined;
-    const escalate = () => escalateReviewContractFailure({
+    // A kernel round re-queues itself (T27) instead of escalating at the first loss.
+    const escalate = () => kernelDeliveryId ? Promise.resolve() : escalateReviewContractFailure({
       taskId,
       repoFullName: String(ctx.repoFullName ?? ''),
       prNumber: Number(prNumber ?? 0),
@@ -206,6 +231,7 @@ async function resolveStaleTask(
         .where(eq(tasks.id, taskId));
     }
 
+    await kernelAttemptEnded();
     await resolveCompletedTask(taskId, workspaceId);
     return;
   }
@@ -227,7 +253,7 @@ async function resolveStaleTask(
   }
   // Reaper completion is evidence-backed: PR/artifact or positive commits.
   // Run the same predicate so future deliverable changes cannot bypass it.
-  const hasDeliverables = !!deliverables?.hasAny && !isMissionVisualAudit && !isSilentCompletion({
+  const hasDeliverables = !!deliverables?.hasAny && !isMissionVisualAudit && !kernelDeliveryId && !isSilentCompletion({
     status: 'completed', outputRequirement: currentTask?.outputRequirement,
     kind: currentTask?.kind, pathManifest: currentTask?.pathManifest,
     taskClass: currentTask?.taskClass,
@@ -365,6 +391,7 @@ async function resolveStaleTask(
     console.error(`[stale-workers] releaseAndNotify failed for task ${taskId}:`, e),
   );
 
+  await kernelAttemptEnded();
   await resolveCompletedTask(taskId, workspaceId);
 }
 

@@ -21,10 +21,13 @@ import { missionSubscribers } from '@/lib/mission-subscribers';
 import { reviewSubscribers } from '@/lib/review-subscribers';
 import { reviewerSubscribers, reviewerDispatchOnOpen } from '@/lib/reviewer-subscribers';
 import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
+import type { EffectHandlers } from '@/lib/workflow/effects';
+import { reviewEffectHandlers } from '@/lib/workflow/review-effects';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
 import { notificationSubscribers } from '@/lib/notification-subscribers';
 import { roleSubscribers } from '@/lib/default-roles-subscribers';
+import { connectorCatalogSubscribers } from '@/lib/connector-catalog-subscribers';
 import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
@@ -42,6 +45,7 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // pr.ci_failed: the ledger records the red head before the CI-fix retry is asked.
   ...reviewerSubscribers,
   ...roleSubscribers,
+  ...connectorCatalogSubscribers,
   // A held release's outcome-analytics row, recorded when its CI resolves it.
   ...routingAnalyticsSubscribers,
 ];
@@ -63,3 +67,10 @@ export const COMPLETION_POLICIES: CompletionPolicies = {
  * freshly opened worker PR, and a PR it holds skips core's no-CI auto-merge.
  */
 export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
+
+/**
+ * The workflow kernel's effect handlers (lib/workflow/effects.ts). The kernel
+ * (core) decides and records the effect; the reviews module carries out the
+ * review-loop ones (reviewer and fix tasks, GitHub reviews, escalations).
+ */
+export const WORKFLOW_EFFECT_HANDLERS: EffectHandlers = reviewEffectHandlers;

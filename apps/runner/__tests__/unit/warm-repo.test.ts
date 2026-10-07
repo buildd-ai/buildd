@@ -8,11 +8,10 @@
  * transport is exercised against a real HTTP server in a child process at the
  * bottom (spawnSync blocks this thread, so the server cannot live in it).
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { execFileSync, spawn, spawnSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from 'fs';
 import { randomBytes } from 'crypto';
-import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   WARM_FETCH_REFRESH_BYTES,
@@ -40,6 +39,7 @@ import {
 import { ensureIsolatedClone } from '../../src/workspace';
 import { CLOUD_CLONE_DEPTH, ensureRemoteBranch } from '../../src/git-clone';
 import { makeDeepOrigin, remoteBranches } from '../fixtures/deep-origin';
+import { templateDir } from '../fixtures/template-dir';
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
@@ -195,8 +195,13 @@ function cloneThrough(s: WarmRepoSession, wsId = 'ws-1') {
   return ensureIsolatedClone({ id: wsId, repo: origin }, join(dir, 'iso'), s.cloneHooks());
 }
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'warm-repo-'));
+/**
+ * origin + seed clone (one commit) + a dependency cache, built once and
+ * copied per test (see fixtures/template-dir.ts). Every test still starts from
+ * exactly this state and owns its copy.
+ */
+const fixture = templateDir('warm-repo-', root => {
+  dir = root;
   origin = join(dir, 'origin.git');
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
   seedClone = join(dir, 'seed');
@@ -205,6 +210,14 @@ beforeEach(() => {
   pushCommit('README.md', 'hello\n');
   mkdirSync(join(dir, 'cache', 'is-number@7.0.0'), { recursive: true });
   writeFileSync(join(dir, 'cache', 'is-number@7.0.0', 'index.js'), 'module.exports = 1;\n');
+});
+
+afterAll(() => fixture.dispose());
+
+beforeEach(() => {
+  dir = fixture.setup();
+  origin = join(dir, 'origin.git');
+  seedClone = join(dir, 'seed');
   store = new FakeStore();
   lines = [];
   // Phase, metric and source lines (warm-repo.ts and the clone in
@@ -224,7 +237,7 @@ let origLog: typeof console.log;
 afterEach(() => {
   console.log = origLog;
   if (prevExecutor === undefined) delete process.env.BUILDD_EXECUTOR; else process.env.BUILDD_EXECUTOR = prevExecutor;
-  rmSync(dir, { recursive: true, force: true });
+  fixture.teardown();
 });
 
 describe('warmRepoEnabled', () => {

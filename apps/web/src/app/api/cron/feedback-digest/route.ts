@@ -11,7 +11,7 @@
  * wake window of its own.
  *
  * And the memory lifecycle pass (packages/core/memory-lifecycle.ts):
- * candidate extraction, promotion (Jev `promote` in shadow), expiry and
+ * candidate extraction, promotion (Jev `promote` as a one-cycle veto), expiry and
  * re-verify flags, each bounded per run. Only workspaces with
  * `memoryCandidateWrites` on produce candidates, so with the flag off
  * everywhere it reads and changes nothing.

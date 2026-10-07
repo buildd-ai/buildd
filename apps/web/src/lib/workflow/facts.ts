@@ -4,13 +4,13 @@
  * reducer pass over it. A fact never assigns state by itself; the transition
  * it maps to does, and only if the transition table allows it.
  *
- * Fact kinds wired in this slice: `delivery_opened`, `pr_bound`,
- * `head_observed`, plus `composition_attested` (evidence that a composed PR's
- * head is built from already-reviewed changes). R2: for PR facts the kernel
- * takes its own GitHub read after the hint arrived and acts on that, never on
- * the hint's payload.
+ * Fact kinds: `delivery_opened`, `pr_bound`, `head_observed`, `pr_closed`
+ * (merged or closed unmerged, decided by the live read), plus
+ * `composition_attested` (evidence that a composed PR's head is built from
+ * already-reviewed changes). R2: for PR facts the kernel takes its own GitHub
+ * read after the hint arrived and acts on that, never on the hint's payload.
  *
- * DARK: no route calls `ingestFact` yet.
+ * Routes reach this through seam.ts.
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
@@ -39,7 +39,12 @@ export type FactInput =
       ownerTaskId: string;
       adoption?: boolean;
     }
-  | { kind: 'head_observed'; workspaceId: string; source: string; repoFullName: string; prNumber: number; hintedHeadSha?: string | null }
+  | {
+      kind: 'head_observed'; workspaceId: string; source: string; repoFullName: string; prNumber: number; hintedHeadSha?: string | null;
+      /** §8.3 carry-forward evidence the caller established for the live head (APPROVED/LANDING only). */
+      carryForward?: (live: LivePr) => Promise<'content_equivalent' | 'own_refresh' | null>;
+    }
+  | { kind: 'pr_closed'; workspaceId: string; source: string; repoFullName: string; prNumber: number }
   | { kind: 'composition_attested'; workspaceId: string; source: string; attestation: CompositionAttestation };
 
 export type FactKind = FactInput['kind'];
@@ -87,6 +92,11 @@ export function factKeyFor(f: FactInput, live?: LivePr | null): string {
     case 'delivery_opened': return `open:${f.ownerTaskId}`;
     case 'pr_bound': return `bind:${f.repoFullName}#${f.prNumber}`;
     case 'head_observed': return `head:${f.repoFullName}#${f.prNumber}:${live?.headSha ?? 'unknown'}`;
+    case 'pr_closed':
+      // The live read decides what this is: merged, closed unmerged, or reopened since.
+      return live?.merged ? `merged:${f.repoFullName}#${f.prNumber}`
+        : live?.state === 'open' ? `reopen:${f.repoFullName}#${f.prNumber}:${live?.updatedAt ?? 'unknown'}`
+          : `closed:${f.repoFullName}#${f.prNumber}:${live?.updatedAt ?? 'unknown'}`;
     case 'composition_attested': return `compose:${f.attestation.repoFullName}#${f.attestation.prNumber}:${f.attestation.aggregateHeadSha}`;
   }
 }
@@ -106,7 +116,7 @@ export interface IngestDeps {
 export async function ingestFact(fact: FactInput, deps: IngestDeps = {}): Promise<IngestResult> {
   const exec = deps.exec ?? dbExec;
   let live: LivePr | null = null;
-  if (fact.kind === 'pr_bound' || fact.kind === 'head_observed') {
+  if (fact.kind === 'pr_bound' || fact.kind === 'head_observed' || fact.kind === 'pr_closed') {
     if (!deps.github) throw new Error(`ingestFact(${fact.kind}): a GitHub reader is required (R2: act on a live read)`);
     live = await deps.github.readPr(fact.repoFullName, fact.prNumber);
     if (!live) return { factId: null, factKey: null, firstSeen: false, result: 'rejected', reason: 'live_read_failed', current: null };
@@ -172,12 +182,25 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
       if (local && live && local !== live.headSha && github?.contains) {
         proof = { liveContainsLocal: await github.contains(fact.repoFullName, local, live.headSha) };
       }
+      const d = view.delivery;
+      const carryForward = d && live && live.headSha !== d.currentHeadSha && (d.state === 'APPROVED' || d.state === 'LANDING' || d.state === 'REPAIRING') && fact.carryForward
+        ? await fact.carryForward(live)
+        : null;
       return {
-        command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}) },
+        command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}) },
         ref,
-        payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null },
+        payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null, carryForward },
         repoFullName: fact.repoFullName, prNumber: fact.prNumber,
       };
+    }
+    case 'pr_closed': {
+      const ref: DeliveryRef = { workspaceId: fact.workspaceId, repoFullName: fact.repoFullName, prNumber: fact.prNumber };
+      const command: Command = live!.merged
+        ? { type: 'PrMerged', actor, live: live! }
+        : live!.state === 'open'
+          ? { type: 'PrReopened', actor, live: live! }
+          : { type: 'PrClosedUnmerged', actor, live: live!, closeCause: 'unknown' };
+      return { command, ref, payload: { live }, repoFullName: fact.repoFullName, prNumber: fact.prNumber };
     }
     case 'composition_attested': {
       const att = fact.attestation;

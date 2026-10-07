@@ -16,7 +16,7 @@ assertions:
     path: "packages/core/db/schema.ts"
   - id: "task-area-events-migration"
     type: "migration"
-    number: "0170"
+    number: "0000"
     contains: "task_area_prediction_events"
   - id: "claim-route-injects-prediction"
     type: "symbol_reachable"

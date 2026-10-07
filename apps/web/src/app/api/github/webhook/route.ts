@@ -42,6 +42,7 @@ import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
+import { observePrState } from '@/lib/workflow/seam';
 
 // A push to the prompts repo runs the prompt eval in after() (up to ~240s).
 export const maxDuration = 300;
@@ -866,6 +867,14 @@ async function handlePullRequestEvent(event: {
       }
     }
 
+    // A reopened PR the workflow kernel owns: T19 from a live read (a new round).
+    if (event.installation && action === 'reopened' && openWorker?.workspaceId) {
+      await observePrState({
+        workspaceId: openWorker.workspaceId, repoFullName: repository.full_name, prNumber: pr.number,
+        installationId: event.installation.id, source: 'webhook:reopened',
+      }).catch((err) => console.error(`[webhook] workflow kernel reopen fact failed for PR #${pr.number}:`, err));
+    }
+
     // On PR open (not synchronize/reopen): the PR-opened policy slot (reviews)
     // may take the PR (a reviewer dispatched, a human escalation, a mechanical
     // fix), and a PR it holds skips core's no-CI auto-merge below.
@@ -973,6 +982,16 @@ async function handlePullRequestEvent(event: {
     where: workerOwnsPr(repository.full_name, pr.number),
     with: { task: true },
   });
+
+  // The workflow kernel records the close as a fact on a kernel-owned PR
+  // (T17 / T18, from a live read). Post-merge work below stays here until the
+  // landing slice moves it into effects.
+  if (worker?.workspaceId && event.installation) {
+    await observePrState({
+      workspaceId: worker.workspaceId, repoFullName: repository.full_name, prNumber: pr.number,
+      installationId: event.installation.id, source: 'webhook:closed',
+    }).catch((err) => console.error(`[webhook] workflow kernel close fact failed for PR #${pr.number}:`, err));
+  }
 
   // Is this handler LEARNING about the merge, or is it a redelivery of one it
   // already processed? Captured here because the stamp below destroys the

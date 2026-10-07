@@ -60,6 +60,9 @@ const CI_RED_ZERO = {
 };
 const mockCiRedSweep = mock((_opts: { source: string }) => Promise.resolve<any>(CI_RED_ZERO));
 mock.module('@/lib/ci-red-sweep-deps', () => ({ sweepCiRedPrs: mockCiRedSweep }));
+// The workflow kernel's outbox floor drain (lib/workflow/seam.ts).
+const mockDrainDueEffects = mock(async () => ({ claimed: 0, done: 0, skipped: 0, failed: 0, dead: [] }));
+mock.module('@/lib/workflow/seam', () => ({ drainDueEffects: mockDrainDueEffects }));
 
 let dueCount: number | null = 0;
 mock.module('@/lib/redis', () => ({
@@ -167,6 +170,9 @@ describe('GET /api/cron/pr-reconcile', () => {
 
     expect(mockReconcile).toHaveBeenCalledTimes(1);
     expect(mockDeadZone).toHaveBeenCalledTimes(1);
+    // The floor pass drains the workflow kernel's outbox.
+    expect(mockDrainDueEffects).toHaveBeenCalled();
+    expect(body.kernelOutbox).toMatchObject({ claimed: 0 });
   });
 
   it('returns 500 when reconcileStalePrWorkers throws', async () => {

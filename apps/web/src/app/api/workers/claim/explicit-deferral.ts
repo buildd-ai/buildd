@@ -79,6 +79,13 @@ export function describeExplicitDeferral(
         code: reason,
         detail: 'Another fix attempt for the same PR is already open, so this one was cancelled rather than started beside it: one retry lineage updates one PR.',
       };
+    case 'fix_not_needed': {
+      const why = str(detail.reason);
+      return {
+        code: reason,
+        detail: `The review fix was revalidated at claim and is no longer needed${why ? ` (${why})` : ''}; it was skipped, not failed.`,
+      };
+    }
     case 'ordered_behind': {
       const blocker = str(detail.blockedBy);
       return {

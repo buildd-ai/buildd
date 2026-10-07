@@ -44,6 +44,7 @@ import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/depend
 import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { loadPrAttempts } from '@/lib/pr-attempts';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
+import { openKernelDelivery } from '@/lib/workflow/seam';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
@@ -125,6 +126,21 @@ async function requestIntegrationBranchReview(params: {
       available: roles,
     });
     if (!picked.role) return;
+
+    // The workflow kernel owns the review loop of a PR whose first review is
+    // dispatched from now on: it queues round 1 when the owner attempt ends.
+    const kernel = await openKernelDelivery({
+      workspaceId: params.workspace.id,
+      ownerTaskId: params.task.id,
+      repoFullName: params.repoFullName,
+      prNumber: params.prNumber,
+      installationId: params.installationId,
+      source: 'create_pr',
+    }).catch((err) => {
+      console.error(`[create_pr] workflow kernel could not open a delivery for PR #${params.prNumber}; legacy review dispatch:`, err);
+      return { owned: false };
+    });
+    if (kernel.owned) return;
 
     const reviewerTask = await createReviewerTask({
       workspaceId: params.workspace.id,

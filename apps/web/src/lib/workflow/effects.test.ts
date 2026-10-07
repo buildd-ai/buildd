@@ -12,6 +12,7 @@ import {
   effectBackoffMs,
   effectIsCurrent,
   failEffectSql,
+  insertFollowupEffectSql,
   runEffects,
   EFFECT_MAX_ATTEMPTS,
 } from './effects';
@@ -29,6 +30,16 @@ describe('SQL', () => {
     expect(text).toContain('attempt_count = e.attempt_count + 1');
     expect(text).toContain("jsonb_build_object('to_state', tr.to_state, 'to_version', tr.to_version)");
     expect(params).toEqual([10, 120_000]);
+  });
+  test('an inline drain claims only its own delivery\'s effects', () => {
+    const { sql: text, params } = render(claimDueEffectsSql(10, 120_000, 'd1'));
+    expect(text).toContain('AND delivery_id = $1::uuid');
+    expect(params).toEqual(['d1', 10, 120_000]);
+  });
+  test('a follow-up effect is idempotent on its own dedupe key and rides the same transition', () => {
+    const { sql: text, params } = render(insertFollowupEffectSql({ deliveryId: 'd1', transitionId: 't1', kind: 'push_recovery', dedupeKey: 'push_recovery:d1:L2:2', payload: { try: 2 }, delayMs: 600_000 }));
+    expect(text).toContain('ON CONFLICT (dedupe_key) DO NOTHING');
+    expect(params).toEqual(['d1', 't1', 'push_recovery', 'push_recovery:d1:L2:2', '{"try":2}', 600_000]);
   });
   test('ack and fail only touch a row this drain holds', () => {
     expect(render(ackEffectSql('e1', 'ok')).sql).toContain("WHERE id = $2::uuid AND status = 'delivering'");

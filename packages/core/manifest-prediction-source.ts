@@ -475,34 +475,14 @@ export async function predictCreationManifest(
     const retrieval = (async () => {
       const loadNeighbours = deps.loadNeighbours ?? (async (a) => loadNeighbourEvidence(await defaultStore(), a));
       const tree = deps.tree ?? getServerTreeCandidateAdapter();
-      const estimateSize = deps.estimateSize ?? ((a) => estimateTaskSize(a));
-      const [[neighbours, expectedSize], treeResult] = await Promise.all([
+      // Neighbours and tree retrieval race against the deadline; size estimation is separate
+      const [neighbours, treeResult] = await Promise.all([
         loadNeighbours({ workspaceId: input.workspaceId, taskId: input.taskId, seedText, cutoff: input.createdAt, signal: controller.signal })
-          .catch((err) => { console.warn('[manifest-prediction] neighbour lookup failed:', (err as Error)?.message ?? err); return [] as NeighbourEvidence[]; })
-          // The size reads the same neighbours: no second retrieval. Fewer
-          // than k ⇒ the Jev S/M/L bucket fallback (jev-scheduling §3).
-          .then(async (found): Promise<[NeighbourEvidence[], ExpectedTaskSize | null]> => [
-            found,
-            await estimateExpectedSize({
-              workspaceId: input.workspaceId,
-              taskId: input.taskId,
-              seedText,
-              cutoff: input.createdAt,
-              neighbourTaskIds: found.map(n => n.taskId),
-              signal: controller.signal,
-              teamId: input.teamId,
-              missionId: input.missionId ?? null,
-              accountId: input.accountId ?? null,
-              userId: input.userId ?? null,
-              title: input.title,
-              description: input.description ?? null,
-            }, { estimateSize, ...deps.sizeBucketDeps })
-              .catch((err) => { console.warn('[manifest-prediction] size estimate failed:', (err as Error)?.message ?? err); return null; }),
-          ]),
+          .catch((err) => { console.warn('[manifest-prediction] neighbour lookup failed:', (err as Error)?.message ?? err); return [] as NeighbourEvidence[]; }),
         tree.lookup({ workspaceId: input.workspaceId, baseRef: input.baseRef ?? null, seedText, limit: MANIFEST_TREE_RANKED_LIMIT, signal: controller.signal })
           .catch((err): TreeCandidateResult => ({ status: 'unavailable', reason: `adapter error: ${String((err as Error)?.message ?? err).slice(0, 120)}` })),
       ]);
-      return { neighbours, expectedSize, treeResult };
+      return { neighbours, treeResult };
     })();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const raced = await Promise.race([
@@ -517,7 +497,32 @@ export async function predictCreationManifest(
       return { row };
     }
 
-    const { neighbours, expectedSize, treeResult } = raced;
+    const { neighbours, treeResult } = raced;
+    // Size estimation runs after neighbours are resolved, with its own short deadline
+    // so a slow size estimate never turns a successful retrieval into retrieval_deadline
+    const estimateSize = deps.estimateSize ?? ((a) => estimateTaskSize(a));
+    const sizeController = new AbortController();
+    const sizeTimer = setTimeout(() => sizeController.abort(), Math.max(0, remaining()));
+    let expectedSize: ExpectedTaskSize | null = null;
+    try {
+      expectedSize = await estimateExpectedSize({
+        workspaceId: input.workspaceId,
+        taskId: input.taskId,
+        seedText,
+        cutoff: input.createdAt,
+        neighbourTaskIds: neighbours.map(n => n.taskId),
+        signal: sizeController.signal,
+        teamId: input.teamId,
+        missionId: input.missionId ?? null,
+        accountId: input.accountId ?? null,
+        userId: input.userId ?? null,
+        title: input.title,
+        description: input.description ?? null,
+      }, { estimateSize, ...deps.sizeBucketDeps })
+        .catch((err) => { console.warn('[manifest-prediction] size estimate failed:', (err as Error)?.message ?? err); return null; });
+    } finally {
+      clearTimeout(sizeTimer);
+    }
     const candidates = buildManifestCandidates({ cutoff: input.createdAt, neighbours, tree: treeResult, namedPaths: regexPaths });
     // Same-task neighbour-union baseline over the same leakage-filtered neighbours.
     const pastNeighbours = neighbours

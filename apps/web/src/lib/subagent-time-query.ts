@@ -1,7 +1,7 @@
 /**
  * Read side of the per-worker subagent-delegation columns (`subagent_spans`,
  * `subagent_spans_observed`, `background_agent_ms`) added in migration 0107
- * (packages/core/drizzle/0107_absent_the_executioner.sql). See
+ * (since squashed into packages/core/drizzle/0000_baseline.sql). See
  * `buildSubagentDelegationPanel` in `./subagent-time` for what they compute.
  */
 
