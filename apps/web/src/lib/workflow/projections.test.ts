@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { attemptFailureCounts, attemptLine, deriveDeliveryView, ownerOfNextMove, type DeliveryViewInput } from './projections';
+import { replacedFailedTaskIds } from './delivery-display';
 
 describe('attemptLine (§5.7 rule 4)', () => {
   test('family-labelled, 1-based, only the families the ledger has', () => {
@@ -130,6 +131,71 @@ describe('S35: replacement chains read current, not FAILED', () => {
     expect(attemptFailureCounts(merged, 'fix1')).toBe(false);
     const failed = view({ view: V(D({ state: 'FAILED', prNumber: null })), attemptTasks: [{ taskId: 't1', role: 'owner', status: 'failed', createdAt: '2026-10-06T00:00:00Z' }] });
     expect(attemptFailureCounts(failed, 't1')).toBe(true);
+  });
+});
+
+describe('replacedFailedTaskIds: filters failed tasks by kernel delivery state', () => {
+  const tasks = [
+    { taskId: 'fix1', role: 'fix', status: 'failed', createdAt: '2026-10-06T01:00:00Z' },
+    { taskId: 'fix2', role: 'fix', status: 'in_progress', createdAt: '2026-10-06T02:00:00Z' },
+    { taskId: 't1', role: 'owner', status: 'completed', createdAt: '2026-10-06T00:00:00Z' },
+  ];
+
+  test('a failed attempt of a live delivery (FIXING) is replaced', () => {
+    const v = view({
+      view: V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a2' }), [R({ status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' })], [
+        A({ id: 'a1', taskId: 'fix1', status: 'ended', outcome: 'failed' }),
+        A({ id: 'a2', attemptNo: 2, taskId: 'fix2', status: 'running' }),
+      ]),
+      attemptTasks: tasks,
+    });
+    const views = new Map([['fix1', v]]);
+    const replaced = replacedFailedTaskIds(views, ['fix1']);
+    expect(replaced.has('fix1')).toBe(true);
+  });
+
+  test('a failed attempt of a merged delivery is replaced', () => {
+    const v = view({ view: V(D({ state: 'MERGED' })), attemptTasks: tasks });
+    const views = new Map([['fix1', v]]);
+    const replaced = replacedFailedTaskIds(views, ['fix1']);
+    expect(replaced.has('fix1')).toBe(true);
+  });
+
+  test('a failed owner task of a FAILED delivery is not replaced', () => {
+    const v = view({
+      view: V(D({ state: 'FAILED', prNumber: null })),
+      attemptTasks: [{ taskId: 't1', role: 'owner', status: 'failed', createdAt: '2026-10-06T00:00:00Z' }],
+    });
+    const views = new Map([['t1', v]]);
+    const replaced = replacedFailedTaskIds(views, ['t1']);
+    expect(replaced.has('t1')).toBe(false);
+  });
+
+  test('a legacy task (no delivery view) stays as a failure', () => {
+    const views = new Map();
+    const replaced = replacedFailedTaskIds(views, ['legacy-task']);
+    expect(replaced.has('legacy-task')).toBe(false);
+  });
+
+  test('multiple failed tasks: some replaced, some not', () => {
+    const fixingV = view({
+      view: V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a2' }), [], [
+        A({ id: 'a1', taskId: 'fix1', status: 'ended', outcome: 'failed' }),
+        A({ id: 'a2', attemptNo: 2, taskId: 'fix2', status: 'running' }),
+      ]),
+      attemptTasks: tasks,
+    });
+    const failedV = view({
+      view: V(D({ state: 'FAILED', prNumber: null })),
+      attemptTasks: [{ taskId: 'failed-owner', role: 'owner', status: 'failed', createdAt: '2026-10-06T00:00:00Z' }],
+    });
+    const views = new Map([
+      ['fix1', fixingV],
+      ['failed-owner', failedV],
+    ]);
+    const replaced = replacedFailedTaskIds(views, ['fix1', 'failed-owner']);
+    expect(replaced.has('fix1')).toBe(true);
+    expect(replaced.has('failed-owner')).toBe(false);
   });
 });
 

@@ -11,7 +11,7 @@
  * keeps the fact-cache projection until the legacy population drains (§14).
  */
 import type { PrDisplayState } from '@/lib/pr-presentation';
-import { attemptLine, type DeliveryCta, type DeliveryStage, type DeliveryView, type NextMoveOwner } from './projections';
+import { attemptFailureCounts, attemptLine, type DeliveryCta, type DeliveryStage, type DeliveryView, type NextMoveOwner } from './projections';
 import type { DeliveryState } from './types';
 
 export interface DeliveryDisplay {
@@ -54,6 +54,28 @@ export function toDeliveryDisplay(v: DeliveryView): DeliveryDisplay {
 export function ownerDeliveryDisplays(views: ReadonlyMap<string, DeliveryView>): Map<string, DeliveryDisplay> {
   const out = new Map<string, DeliveryDisplay>();
   for (const [taskId, v] of views) if (v.ownerTaskId === taskId) out.set(taskId, toDeliveryDisplay(v));
+  return out;
+}
+
+/**
+ * S35: which of these failed tasks are replaced work, not failures. A task is
+ * replaced iff it belongs to a kernel-owned delivery (it has a view) and it is
+ * not that delivery's failure: the delivery's reading is not `failed` (it is
+ * live, shipped, superseded or abandoned), or it is FAILED but this task is an
+ * older, superseded attempt rather than the current attempt or the owner
+ * (`attemptFailureCounts`). A task with no view, including every task when the
+ * view read failed, is not replaced: its failure shows through the legacy
+ * reading rather than being hidden.
+ *
+ * Every failed count reads this: the mission page and card health, explain,
+ * and (per item) the Home action queue.
+ */
+export function replacedFailedTaskIds(views: ReadonlyMap<string, DeliveryView>, failedTaskIds: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const id of failedTaskIds) {
+    const v = views.get(id);
+    if (v && !attemptFailureCounts(v, id)) out.add(id);
+  }
   return out;
 }
 

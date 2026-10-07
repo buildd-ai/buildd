@@ -8,7 +8,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { deriveDeliveryView, deliveryPrState } from './projections';
-import { deliveryReading, deliverySettled, deliveryShipped, ownerDeliveryDisplays, toDeliveryDisplay, type DeliveryDisplay, type DeliveryTone } from './delivery-display';
+import { deliveryReading, deliverySettled, deliveryShipped, ownerDeliveryDisplays, replacedFailedTaskIds, toDeliveryDisplay, type DeliveryDisplay, type DeliveryTone } from './delivery-display';
 import { DELIVERY_STATES, type DeliverySnapshot, type DeliveryState } from './types';
 import type { DeliveryViewInput } from './projections';
 import { deriveStage, deriveStageReading, stageForDelivery } from '../stage';
@@ -293,5 +293,19 @@ describe('ownerDeliveryDisplays', () => {
     const out = ownerDeliveryDisplays(new Map([['t1', v], ['fix1', v]]));
     expect([...out.keys()]).toEqual(['t1']);
     expect(out.get('t1')).toMatchObject({ state: 'FIXING', stage: 'fixing', prNumber: 7 });
+  });
+});
+
+describe('S35: the failed-task count and the delivery reading agree', () => {
+  test('for every state, a failed owner task is replaced exactly when deliveryReading does not call it failed', () => {
+    for (const state of DELIVERY_STATES) {
+      const v = deriveDeliveryView({ view: { delivery: D({ state, stateReason: REASON[state] ?? null, prNumber: state === 'FAILED' ? null : 7 }), rounds: [], attempts: [] } })!;
+      const failed = deliveryReading(toDeliveryDisplay(v))?.failed ?? false;
+      expect({ state, replaced: replacedFailedTaskIds(new Map([['t1', v]]), ['t1']).has('t1') }).toEqual({ state, replaced: !failed });
+    }
+  });
+
+  test('a task with no view is never replaced (legacy, or the view read failed)', () => {
+    expect(replacedFailedTaskIds(new Map(), ['t1']).size).toBe(0);
   });
 });

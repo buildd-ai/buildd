@@ -54,6 +54,7 @@ import type { BlockingTask } from '@/lib/mission-card-view';
 export const dynamic = 'force-dynamic';
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
 import {
+  failedDeliverableTaskIds,
   summarizeMissionForCard,
   type MissionCardRow,
   type MissionCardSummary,
@@ -570,11 +571,14 @@ export default async function HomePage({
             for (const r of liveRows) if (r.missionId) liveWorkerCounts.set(r.missionId, r.n);
           }
 
+          // S35: one DeliveryView load for every failed deliverable, so a
+          // failed attempt the kernel already replaced does not read FAILED.
+          const missionDeliveryViews = await getDeliveryViewsForTasks(failedDeliverableTaskIds(allMissions as MissionCardRow[]));
           const nowMs = Date.now();
           const summaries = new Map<string, MissionCardSummary>();
           for (const m of allMissions) {
             summaries.set(m.id, summarizeMissionForCard(m as MissionCardRow, {
-              now: nowMs, liveWorkers: liveWorkerCounts.get(m.id) ?? 0,
+              now: nowMs, liveWorkers: liveWorkerCounts.get(m.id) ?? 0, deliveryViews: missionDeliveryViews,
             }));
           }
           missions = allMissions.map(m => ({
@@ -611,7 +615,7 @@ export default async function HomePage({
                 .sort((a, b) => new Date(b.createdAt as any).getTime() - new Date(a.createdAt as any).getTime())[0];
               if (last && lastTick) (lastTick as any).result = { summary: last };
             }
-            const view = buildHomeCardView(row, { from: 'home', now: nowMs, summary, taskIndex: homeMissionTaskMap });
+            const view = buildHomeCardView(row, { from: 'home', now: nowMs, summary, taskIndex: homeMissionTaskMap, deliveryViews: missionDeliveryViews });
             const model = buildMissionListCard(row, view, summary, { now: nowMs, taskIndex: homeMissionTaskMap });
             return [{ view, model, completedAt: m.completedAt, row }];
           });
