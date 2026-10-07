@@ -2188,6 +2188,32 @@ describe('AWAITING_PUSH — an owner delivery leaves on a push (§6.4, §9)', ()
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
     expect(reviewersCreated.map((r) => r.head)).toEqual(['L5']);
   });
+
+  test('S1/S9 owner: push lands later → review round at pushed head (reaped owner, push_recovery read)', async () => {
+    const o = await ownerAwaitingPush('L5', 'lost');
+    gh.head = 'L5'; gh.ancestors.L5 = ['H1'];
+    await makeDue(o.deliveryId);
+    await drain(o.deliveryId);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
+    expect((await rounds(o.deliveryId)).map((r) => [r.round, r.head_sha])).toEqual([[1, 'L5']]);
+    expect(reviewersCreated.map((r) => r.head)).toEqual(['L5']);
+  });
+
+  test('ESCALATED(push_undeliverable) → AWAITING_REVIEW when the owner\'s L5 finally lands (T22: a head with proof wins)', async () => {
+    const o = await ownerAwaitingPush();
+    for (let i = 0; i < 3; i++) {
+      await makeDue(o.deliveryId);
+      await drain(o.deliveryId);
+    }
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'push_undeliverable' });
+    // A head that does not contain L5 is only recorded.
+    await push(o, 'H7', { ancestors: ['H1'] });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'push_undeliverable', currentHeadSha: 'H7' });
+    expect(reviewersCreated).toEqual([]);
+    await push(o, 'L5', { ancestors: ['H7', 'H1'] });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
+    expect(reviewersCreated.map((r) => r.head)).toEqual(['L5']);
+  });
 });
 
 describe('§11 — the reconciliation floor re-imports what a lost webhook never delivered (ddcbe113)', () => {

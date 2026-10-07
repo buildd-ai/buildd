@@ -272,6 +272,15 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     expect(applied(h(unknown, 'H2')).toState).toBe('AWAITING_PUSH');
     expect(applied(h(unknown, 'H2', { proof: { liveContainsLocal: false, contentDiffChanged: true } })).toState).toBe('AWAITING_REVIEW');
   });
+  test('ESCALATED(push_undeliverable): a head with §9 proof wins (T22); without proof it is only recorded', () => {
+    const v = V(D({ state: 'ESCALATED', stateReason: 'push_undeliverable', currentRound: 0, currentHeadSha: 'H1', boundAttemptId: null, pushPendingLocalHead: 'L5' }));
+    const ok = applied(h(v, 'L5'));
+    expect(ok.toState).toBe('AWAITING_REVIEW');
+    expect(ok.patch).toMatchObject({ currentHeadSha: 'L5', currentRound: 1, stateReason: null });
+    const other = applied(h(v, 'H7'));
+    expect(other.toState).toBe('ESCALATED');
+    expect(other.patch).toMatchObject({ currentHeadSha: 'H7' });
+  });
   test('REPAIRING: proof → new round, or APPROVED by carry-forward (T11/T13); no proof records only', () => {
     const v = V(D({ state: 'REPAIRING', stateReason: 'behind', approvedHeads: ['H1'], approvalBasis: 'verdict', boundAttemptId: 'm1' }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', status: 'running', triggerReason: 'behind' })]);
     const cf = applied(h(v, 'H2', { carryForward: 'own_refresh', proof: { liveContainsLocal: false, contentDiffChanged: true } }));

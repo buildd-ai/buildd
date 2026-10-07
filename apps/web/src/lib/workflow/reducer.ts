@@ -1057,6 +1057,10 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
   switch (d.state) {
     case 'WORKING':
       return record();
+    case 'ESCALATED':
+      if (d.stateReason !== 'push_undeliverable') return d.stateReason?.startsWith('review_') ? toReview() : record();
+      // T22: a head with §9 proof observed after the escalation wins over it.
+    // falls through
     case 'AWAITING_PUSH': {
       const a = c.attempt(d.boundAttemptId);
       // An owner attempt has no ledger row: its L is the one it reported when it
@@ -1070,6 +1074,7 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
         contentDiffChanged: cmd.proof?.contentDiffChanged,
       });
       if (!proof.holds) {
+        if (d.state === 'ESCALATED') return record();
         // Record the head, stay, and re-arm recovery from this head: the push that
         // arrived is not the work, so the next try re-reads and re-asks (§6.4).
         const next: EffectSpec = { ...c.pushRecovery(local, 1), dedupeKey: `push_recovery:${d.id}:${local ?? 'none'}:head:${h}` };
@@ -1159,8 +1164,6 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
         return c.apply(key, 'APPROVED', { patch: { currentHeadSha: h }, evidence: { ...evidence, policy: 'no_review', landingAborted: true } });
       }
       return carry() ?? toReview();
-    case 'ESCALATED':
-      return d.stateReason?.startsWith('review_') ? toReview() : record();
     default:
       // BLOCKED_ON_TRUNK, CLOSED_UNMERGED: record the head; T26 / T19 re-evaluate.
       return record();
