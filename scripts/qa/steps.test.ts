@@ -9,6 +9,7 @@ import {
   planText,
   runSteps,
   isMutatingMethod,
+  layoutViolations,
   WAIT_MS_CAP,
   type Step,
 } from './steps';
@@ -178,5 +179,68 @@ describe('runSteps', () => {
     expect(failed).toEqual({ index: 1, selector: 'testid:missing-dialog', error: 'locator.waitFor: Timeout 50ms exceeded.' });
     expect(log).toEqual(['click testid opener']);
     expect(seen).toEqual([[0, true], [1, false]]);
+  });
+});
+
+describe('assertLayout', () => {
+  const plan = (step: Record<string, unknown>) => [{ route: '/app/dev/fixtures?state=run-activity', states: [{ key: 'layout', steps: [step] }] }];
+
+  it('validates with an optional scope and minTarget', () => {
+    const [r] = validatePlan(plan({ action: 'assertLayout', selector: 'testid:run-activity-fixture', minTarget: 48 }), { pageSource: 'vercel-preview' });
+    expect(r.states[0].steps[0]).toEqual({ action: 'assertLayout', selector: 'testid:run-activity-fixture', minTarget: 48 });
+    expect(validatePlan(plan({ action: 'assertLayout' }), { pageSource: 'sandbox' })[0].states[0].steps[0]).toEqual({ action: 'assertLayout' });
+    expect(() => validatePlan(plan({ action: 'assertLayout', minTarget: 0 }), { pageSource: 'sandbox' })).toThrow(/minTarget/);
+    expect(() => validatePlan(plan({ action: 'click', selector: 'x', minTarget: 44 }), { pageSource: 'sandbox' })).toThrow(/minTarget/);
+  });
+
+  it('passes a page that fits and whose targets are big enough', () => {
+    expect(layoutViolations({ viewportWidth: 360, scrollWidth: 360, overflowing: [], targets: [{ desc: 'button "Send"', width: 120, height: 44 }] }, { minTarget: 44 })).toEqual([]);
+  });
+
+  it('names horizontal overflow, the elements past the edge, and every small target', () => {
+    const v = layoutViolations({
+      viewportWidth: 360,
+      scrollWidth: 412,
+      overflowing: ['div[data-testid=worker-step-rail]'],
+      targets: [{ desc: 'a "PR #12"', width: 60, height: 20 }, { desc: 'button "×"', width: 24, height: 44 }, { desc: 'summary "Log"', width: 300, height: 48 }],
+    }, { minTarget: 44 });
+    expect(v).toEqual([
+      'horizontal overflow: page is 412px wide in a 360px viewport',
+      'past the right edge: div[data-testid=worker-step-rail]',
+      'tap target a "PR #12" is 60x20, under 44px',
+      'tap target button "×" is 24x44, under 44px',
+    ]);
+  });
+
+  it('skips the tap-target rule at desktop widths (md and up)', () => {
+    expect(layoutViolations({ viewportWidth: 1280, scrollWidth: 1280, overflowing: [], targets: [{ desc: 'a "x"', width: 10, height: 10 }] }, { minTarget: 44 })).toEqual([]);
+  });
+
+  it('fails the step as an assertion, with every violation on one line', async () => {
+    const page = stubPage([]) as any;
+    const measured = { viewportWidth: 360, scrollWidth: 400, overflowing: [], targets: [{ desc: 'button "Go"', width: 30, height: 30 }] };
+    page.locator = () => ({ first: () => ({ evaluate: async () => measured }) });
+    const failed = await runSteps(page, [{ action: 'assertLayout' }]);
+    expect(failed).toEqual({
+      index: 0,
+      selector: null,
+      assertion: true,
+      error: 'layout: horizontal overflow: page is 400px wide in a 360px viewport; tap target button "Go" is 30x30, under 44px',
+    });
+    measured.scrollWidth = 360;
+    measured.targets = [];
+    expect(await runSteps(page, [{ action: 'assertLayout' }])).toBeNull();
+  });
+});
+
+describe('scripts/qa/plans/run-activity.json', () => {
+  it('is a valid preview-safe plan that layout-checks every run-activity scenario', async () => {
+    const { RUN_ACTIVITY_SCENARIOS } = await import('../../apps/web/src/app/app/dev/fixtures/run-activity-fixtures');
+    const plan = parsePlan(readFileSync(join(import.meta.dir, 'plans/run-activity.json'), 'utf-8'), { pageSource: 'vercel-preview' });
+    expect(plan.map(r => new URLSearchParams(r.route.split('?')[1]).get('scenario'))).toEqual([...RUN_ACTIVITY_SCENARIOS]);
+    for (const r of plan) {
+      const layout = r.states.find(s => s.key === 'layout');
+      expect(layout?.steps.at(-1)).toEqual({ action: 'assertLayout', selector: 'testid:run-activity-fixture' });
+    }
   });
 });

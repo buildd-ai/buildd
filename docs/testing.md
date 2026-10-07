@@ -181,6 +181,15 @@ Available states:
 ### How It Works
 The fixtures page (`apps/web/src/app/app/dev/fixtures/page.tsx`) renders the `RealTimeWorkerView` component with hardcoded mock data for each state.
 
+`?state=run-activity` (`RunActivityFixture.tsx`, data in `run-activity-fixtures.ts`) renders the
+run-detail view over six scenarios: a research task, a legacy worker whose percent stream goes
+40 → 70 → 30 → 90, waiting for input, a failed run, steering messages in each delivery state, and
+attempts that share one timestamp. `&scenario=<key>` shows one. Its DOM assertions live in
+`RunActivityFixture.dom.test.tsx`; its 360px layout gate (no sideways scroll, tap targets ≥ 44px)
+is `scripts/qa/plans/run-activity.json`, dispatched with
+`gh workflow run visual-qa.yml --ref <branch> -f plan=scripts/qa/plans/run-activity.json -f viewport=360x780`
+(and again with `-f viewport=desktop`). A run with a layout violation exits 4.
+
 ## data-testid Conventions
 
 UI components have `data-testid` attributes for reliable E2E test selectors.
