@@ -68,7 +68,7 @@ describe('phone Home and the needs-input banner', () => {
   });
 
   it('a task already in the inbox from the server is not listed twice', () => {
-    mount([waiting], [{ workerId: 'w-1', taskId: 'task-waiting', label: 'rollout', runnerName: null, askedAt: null, prompt: 'Ship to canary first?', options: [], href: '/app/tasks/task-waiting' }]);
+    mount([waiting], [{ workerId: 'w-1', taskId: 'task-waiting', label: 'rollout', runnerName: null, askedAt: null, href: '/app/tasks/task-waiting', question: { headline: 'Ship to canary first?', body: null, options: [], noteId: null } }]);
     expect(text('phone-needs-you-count')).toBe('2 open');
   });
 
