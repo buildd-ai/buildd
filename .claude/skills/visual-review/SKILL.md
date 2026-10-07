@@ -142,6 +142,9 @@ file, or the JSON itself. Spec: `docs/specs/qa-capture-steps.md`.
   viewport shot, id `<route-id>--<key>`, `state` in `captures.json`).
 - Actions (closed list): `click`, `hover`, `fill` (`value`), `press` (`key`),
   `select` (`value`), `waitFor` (`state: visible | hidden`), `waitMs` (`ms`, max 5000).
+  `assertLayout` (optional scope `selector`, `minTarget` px) fails the run (exit 4) on sideways
+  scroll, or below 768px on a tap target under 44px. The run-detail regression plan is
+  `scripts/qa/plans/run-activity.json`: dispatch it with `-f viewport=360x780` and `-f viewport=desktop`.
   Selectors: `testid:<id>`, `role:<role>[name=<name>]`, `text:<text>`, `css:<css>`.
 - **Steps never commit.** Open, reveal, type; never confirm, submit or save. A step that
   sends a write needs `commit: true`, honoured only with `QA_PAGE_SOURCE=sandbox`; a

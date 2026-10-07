@@ -169,19 +169,19 @@ export function ActivityTape({
     <div data-testid="worker-activity-tape" className="relative pt-12">
       {tape.flags.map((f, i) => {
         const isLast = f === lastFlag;
-        // Labels are wide: the latest always gets one, the one before only when
-        // it sits far enough left not to run into it.
-        const labelled = isLast || (i === tape.flags.length - 2 && lastFlag.pos - f.pos > 0.62);
         const flip = f.pos > 0.6;
+        // A marker and its time, not the reported percent (a stream of them,
+        // 40 70 30 90, is noise) and not the label: a label wide enough to read
+        // ran over the neighbouring markers, and the Now strip names the latest.
         return (
           <div
             key={`${f.pos}-${i}`}
+            title={f.label || undefined}
             className="absolute top-0 font-mono text-[11px] whitespace-nowrap"
             style={{ left: `${f.pos * 100}%`, transform: flip ? 'translateX(-100%)' : undefined }}
           >
-            <div className={`flex items-center gap-2 ${flip ? 'flex-row-reverse' : ''}`}>
-              <span className={`px-1 font-semibold tabular-nums ${isLast ? 'bg-accent text-[var(--on-accent)]' : 'bg-text-primary text-surface-1'}`}>{f.at}</span>
-              {labelled && <span className="text-text-secondary max-w-[40vw] md:max-w-[360px] truncate">{f.label}</span>}
+            <div className={`flex ${flip ? 'justify-end' : ''}`}>
+              <span aria-hidden="true" className={`w-2 h-2 ${isLast ? 'bg-accent' : 'bg-text-primary'}`} />
             </div>
             <div className={`text-text-muted tabular-nums ${flip ? 'text-right' : ''}`}>{f.at}</div>
           </div>
@@ -454,6 +454,8 @@ function StatusRow({
       <span className={`flex-1 min-w-0 ${!isError && !rowExpanded ? 'line-clamp-2' : ''} ${
         isError ? 'text-status-error font-medium' : isConfigChange ? 'text-status-warning' : 'text-text-secondary'
       }`}>
+        {/* The label only: a self-reported percent per row read as a field of
+            numbers that went backwards (40, 70, 30, 90) on older agents. */}
         {milestone.label}
       </span>
       <div className="flex items-center gap-1 flex-shrink-0">
