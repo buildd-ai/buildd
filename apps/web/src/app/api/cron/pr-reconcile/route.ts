@@ -78,6 +78,7 @@ import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
 import { redriveDeferredRefreshes, type RefreshRedriveResult } from '@/lib/refresh-redrive';
 import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
 import { sweepCiRedPrs } from '@/lib/ci-red-sweep-deps';
+import { drainDueEffects } from '@/lib/workflow/seam';
 import type { CiRedSweepResult } from '@/lib/ci-red-sweep';
 import { CI_RED_DUE_QUEUE } from '@/lib/ci-red-queue';
 import { gateOnDueQueue } from '@/lib/cron-due-queue';
@@ -108,7 +109,7 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, workflowEffects] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -159,6 +160,12 @@ export async function GET(req: NextRequest) {
       // a suggestion (lib/pr-supersession-detect.ts). Backfill for webhook
       // misses and PRs closed before the webhook door existed. Isolated.
       sweepClosedUnsupersededPrs().catch((err): { error: string } => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // The workflow kernel's outbox floor drain (docs/specs/workflow-state-kernel.md
+      // §10.3): effects a request's inline drain did not finish (a crash, a
+      // backed-off retry, a delayed push_recovery try). Isolated.
+      drainDueEffects().catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
     ]);
@@ -250,7 +257,7 @@ export async function GET(req: NextRequest) {
       errors:
         reconcile.errors + missionPrErrors + strandedErrors + specRecheckErrors + lineageErrors
         + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors,
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs },
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, workflowEffects },
     });
 
     return NextResponse.json({
@@ -266,6 +273,7 @@ export async function GET(req: NextRequest) {
       refreshRedrive,
       ciRed,
       closedPrs,
+      workflowEffects,
     });
   });
 }

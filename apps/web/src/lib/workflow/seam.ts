@@ -184,7 +184,8 @@ export interface AttemptTask {
 export async function attemptEnded(p: {
   task: AttemptTask;
   workerId: string;
-  status: 'completed' | 'failed';
+  /** `lost`: the reaper ended it (no report, no local head known). */
+  status: 'completed' | 'failed' | 'lost';
   localHeadSha: string | null;
   commitCount: number;
   source: string;
@@ -228,7 +229,7 @@ export async function attemptEnded(p: {
     actor: p.source,
     workerId: p.workerId,
     ...(role === 'owner' ? { taskId: p.task.id } : { attemptId }),
-    outcome: p.status === 'completed' ? 'success' : 'failed',
+    outcome: p.status === 'completed' ? 'success' : p.status,
     localHeadSha: p.localHeadSha,
     commitCount: p.commitCount,
     live,

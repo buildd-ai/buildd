@@ -268,6 +268,21 @@ describe('S7/S8/S25 — fix dispatch races, budget, claim-time revalidation', ()
     expect(dispatched.filter((x) => x.kind === 'fix').length).toBe(0);
   });
 
+  test('S19: a fix worker the reaper lost re-dispatches the next attempt (never "completed" with local commits)', async () => {
+    const { deliveryId, review } = await openAndHandOn();
+    await requestChanges(deliveryId, review);
+    const fix = dispatched.find((x) => x.kind === 'fix')!;
+    const t = await fixTask(fix.taskId);
+    await claimFix(t, deps);
+    const workerId = await seedWorker(fix.taskId, { status: 'failed' });
+    await attemptEnded({ task: t, workerId, status: 'lost', localHeadSha: null, commitCount: 2, source: 'sweep:stale-workers' }, deps);
+    const after = await loadView({ deliveryId });
+    expect(after.delivery!.state).toBe('CHANGES_REQUESTED');
+    const fixes = after.attempts.filter((a) => a.family === 'review_fix').sort((a, b) => a.attemptNo - b.attemptNo);
+    expect(fixes.map((a) => [a.attemptNo, a.status, a.outcome])).toEqual([[1, 'ended', 'failed'], [2, 'queued', null]]);
+    expect(dispatched.filter((x) => x.kind === 'fix').length).toBe(2);
+  });
+
   test('S25: a fix whose PR was approved while it queued is skipped at claim, not started', async () => {
     const { deliveryId, review } = await openAndHandOn();
     await requestChanges(deliveryId, review);

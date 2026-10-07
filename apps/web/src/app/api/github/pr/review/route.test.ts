@@ -1,6 +1,6 @@
 process.env.NODE_ENV = 'production';
 
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
@@ -98,6 +98,11 @@ mock.module('@buildd/core/db', () => ({
     }),
   },
 }));
+
+// Workflow kernel (lib/workflow/seam.ts): a kernel-owned PR's review request is
+// T5. Default: not a kernel PR, so every legacy case below runs unchanged.
+const mockRequestKernelReview = mock(async (_p: any): Promise<any> => ({ handled: false }));
+mock.module('@/lib/workflow/seam', () => ({ requestReview: mockRequestKernelReview }));
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
@@ -468,6 +473,37 @@ describe('POST /api/github/pr/review — idempotency', () => {
     expect(json.alreadyRequested).toBe(true);
     expect(json.status.state).toBe('approved');
     expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  describe('workflow kernel PR', () => {
+    const current = { state: 'AWAITING_REVIEW', version: 3, head: 'h', round: 1 };
+    afterEach(() => { mockRequestKernelReview.mockReset(); mockRequestKernelReview.mockResolvedValue({ handled: false }); });
+
+    it('is T5 on the live head and never creates a legacy reviewer', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't', deliveryId: 'd', version: 4, decision: {} } });
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      expect(res.status).toBe(201);
+      const json = await res.json();
+      expect(json).toMatchObject({ ok: true, kernel: true, alreadyRequested: false });
+      expect(mockRequestKernelReview.mock.calls[0][0]).toMatchObject({ prNumber: 42, forced: false });
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('force is a recorded bypass actor, never a second reviewer on a running round', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current } });
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
+      expect(res.status).toBe(200);
+      expect((await res.json()).alreadyRequested).toBe(true);
+      expect(mockRequestKernelReview.mock.calls[0][0]).toMatchObject({ forced: true, actor: 'force' });
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('a request the table refuses is a 409 with the current view', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'state_not_allowed', current } });
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      expect(res.status).toBe(409);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
   });
 
   it('force re-reviews a PR whose review already finished', async () => {
