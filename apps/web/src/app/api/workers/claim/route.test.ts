@@ -8743,6 +8743,35 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics).toBeUndefined();
   });
 
+  // The team pause log records a wall the RUNNER's seat hit (e.g. "You've hit
+  // your session limit"). An interactive session runs the task on its own
+  // credentials, so that wall is not its wall — same reasoning as the account
+  // flag above. Before this, an explicit claim (even force) of a task whose
+  // runner had just died on a session limit was refused until the reset.
+  it('an interactive session can claim while the team pause log walls Claude', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth' });
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: new Date(Date.now() + 3600000), reason: 'budget' },
+    ]);
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'mcp' }, interactiveHeaders())).json();
+    mockBackendPausesFindMany.mockResolvedValue([]);
+    expect(data.workers).toHaveLength(1);
+    expect(data.diagnostics).toBeUndefined();
+  });
+
+  it('a background runner is still deferred while the team pause log walls Claude', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth' });
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: new Date(Date.now() + 3600000), reason: 'budget' },
+    ]);
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'runner-7' })).json();
+    mockBackendPausesFindMany.mockResolvedValue([]);
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.reason).toBe('budget_exhausted');
+  });
+
   it('a background runner cannot claim when account budget is exhausted', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
       ...account(),
