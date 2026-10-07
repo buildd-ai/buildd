@@ -325,7 +325,7 @@ function measureLayout(scope: Element): LayoutMeasurement {
 
 // --- Running ---
 
-/** `assertion` marks a failed `assertLayout`: a finding about the page, not a step that did not settle. */
+/** `assertion` marks a failed layout gate, including a prerequisite or measurement failure. */
 export type StepFailure = { index: number; selector: string | null; error: string; assertion?: true };
 
 /**
@@ -382,7 +382,7 @@ export async function runSteps(
         }
       }
     } catch (err) {
-      return { index, selector: step.selector ?? null, error: String((err as Error)?.message ?? err).split('\n')[0] };
+      return { index, selector: step.selector ?? null, ...(steps.some(s => s.action === 'assertLayout') ? { assertion: true as const } : {}), error: String((err as Error)?.message ?? err).split('\n')[0] };
     } finally {
       opts.afterStep?.(step, index);
     }

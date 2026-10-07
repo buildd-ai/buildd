@@ -193,6 +193,22 @@ describe('assertLayout', () => {
     expect(() => validatePlan(plan({ action: 'click', selector: 'x', minTarget: 44 }), { pageSource: 'sandbox' })).toThrow(/minTarget/);
   });
 
+  it('fails the layout gate when a prerequisite selector never resolves', async () => {
+    const failed = await runSteps(stubPage([]), [
+      { action: 'waitFor', selector: 'testid:missing-scenario' },
+      { action: 'assertLayout' },
+    ]);
+    expect(failed).toMatchObject({ index: 0, assertion: true });
+  });
+
+  it('fails the layout gate when measurement throws', async () => {
+    const page = stubPage([]);
+    page.locator = () => ({ first: () => ({ evaluate: async () => { throw new Error('measurement failed'); } }) });
+    expect(await runSteps(page, [{ action: 'assertLayout' }])).toEqual({
+      index: 0, selector: null, assertion: true, error: 'measurement failed',
+    });
+  });
+
   it('passes a page that fits and whose targets are big enough', () => {
     expect(layoutViolations({ viewportWidth: 360, scrollWidth: 360, overflowing: [], targets: [{ desc: 'button "Send"', width: 120, height: 44 }] }, { minTarget: 44 })).toEqual([]);
   });

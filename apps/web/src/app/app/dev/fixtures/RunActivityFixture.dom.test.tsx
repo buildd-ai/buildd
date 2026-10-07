@@ -62,7 +62,7 @@ const text = (el: Element) => el.textContent ?? '';
 /** Every "<n>%" label in the rendered text. */
 const percentLabels = (el: Element) => text(el).match(/\b\d{1,3}\s*%/g) ?? [];
 const stepStates = (el: Element) =>
-  Object.fromEntries([...el.querySelectorAll('[data-testid="worker-step-rail"] li')].map(li => [li.textContent?.replace(/[\d:]+|next/g, '').trim().toLowerCase(), li.getAttribute('data-state')]));
+  Object.fromEntries([...el.querySelectorAll('[data-testid="run-evidence-rail"] li')].map(li => [li.getAttribute('data-phase'), li.getAttribute('data-state')]));
 
 describe('legacy worker with a non-monotonic percent stream', () => {
   test('shows no earlier stream value and never a field of percentage labels', async () => {
@@ -78,11 +78,11 @@ describe('legacy worker with a non-monotonic percent stream', () => {
     expect(s.querySelector('[data-testid="worker-current-action"]')?.textContent).toContain(LEGACY_LATEST_HEADLINE);
     expect(text(s)).toContain('http.ts');
     const steps = stepStates(s);
-    expect(steps).toMatchObject({ started: 'done', read: 'done', edit: 'done', commit: 'done' });
-    expect(steps.pr).not.toBe('done');
+    expect(steps).toMatchObject({ started: 'done', changed: 'done', committed: 'done' });
+    expect(steps.pr_open).not.toBe('done');
   });
 
-  test.todo('A: no percent label at all; the run-evidence rail replaces the step rail');
+  test('no percent label remains', async () => { expect(percentLabels(await mount('legacy-percent-stream'))).toEqual([]); });
 });
 
 describe('research task', () => {
@@ -90,12 +90,14 @@ describe('research task', () => {
     const s = await mount('research-lifecycle');
     const steps = stepStates(s);
     expect(steps.started).toBe('done');
-    expect(steps.read).toBe('done');
-    for (const k of ['edit', 'commit', 'pr', 'done']) expect(steps[k]).not.toBe('done');
+    for (const k of ['changed', 'committed', 'pushed', 'pr_open', 'ci', 'review', 'merged']) expect(steps[k]).not.toBe('done');
     expect(percentLabels(s)).toEqual([]);
   });
 
-  test.todo('A: an artifact-deliverable run renders no commit, push, PR, CI, review or merge phase');
+  test('artifact runs omit irrelevant phases', async () => {
+    const s = await mount('research-lifecycle');
+    for (const phase of ['committed', 'pushed', 'pr_open', 'ci', 'review', 'merged']) expect(s.querySelector(`[data-phase="${phase}"]`)).toBeNull();
+  });
 });
 
 describe('waiting for input and error are explicit', () => {
@@ -120,20 +122,16 @@ describe('waiting for input and error are explicit', () => {
 });
 
 describe('steering message delivery states', () => {
-  test('every message is on screen, and only the queued one reads as not yet delivered', async () => {
+  test('each human message has a distinct visible delivery label', async () => {
     const s = await mount('steering-acks');
-    const live = s.querySelector('[data-testid="run-activity-steer-live"]')!;
-    for (const m of [STEERING_MESSAGES.acknowledged, STEERING_MESSAGES.delivered, STEERING_MESSAGES.queued]) {
-      expect(text(live)).toContain(m);
+    for (const [state, label] of Object.entries({ queued: 'Queued', delivered: 'Delivered', acknowledged: 'Read by the agent', undelivered: 'Not delivered' })) {
+      const message = STEERING_MESSAGES[state as keyof typeof STEERING_MESSAGES];
+      const bubble = [...s.querySelectorAll('p')].find(p => p.textContent === message)!.parentElement!;
+      expect(text(bubble)).toContain(label);
+      if (state === 'undelivered') expect(bubble.querySelector('button')?.textContent).toContain('Resend');
     }
-    const bubble = (m: string) => [...live.querySelectorAll('p')].find(p => p.textContent === m)!.parentElement!;
-    expect(text(bubble(STEERING_MESSAGES.queued))).toContain('Pending delivery');
-    expect(text(bubble(STEERING_MESSAGES.delivered))).not.toContain('Pending delivery');
-    expect(text(bubble(STEERING_MESSAGES.acknowledged))).not.toContain('Pending delivery');
-    expect(text(s.querySelector('[data-testid="run-activity-steer-ended"]')!)).toContain(STEERING_MESSAGES.undelivered);
   });
 
-  test.todo('B: chips read Queued / Delivered / Read by the agent / Not delivered as text, and Not delivered offers Resend');
 });
 
 describe('attempts with equal timestamps', () => {

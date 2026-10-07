@@ -490,9 +490,9 @@ if (walls.length > 0) {
   process.exit(3);
 }
 
-// A failed assertLayout step is a finding the plan asked to gate on (overflow,
-// a small tap target), unlike a step that did not settle: the shots are all
-// written, then the run fails so a dispatch comes back red.
+// A layout gate also fails when a prerequisite or measurement failed: it
+// never passes without checking the requested scenario. Screenshots and
+// metadata are written before the nonzero exit.
 const layoutFailures = captures.filter((c) => c.stepFailed?.assertion);
 if (layoutFailures.length > 0) {
   for (const c of layoutFailures) console.error(`[capture] LAYOUT FAILED ${c.id}: ${c.stepFailed!.error}`);

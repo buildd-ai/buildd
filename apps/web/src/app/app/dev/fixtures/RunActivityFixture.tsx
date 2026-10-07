@@ -39,6 +39,7 @@ function WorkerView({ worker, taskStatus = 'running' }: { worker: RunActivityWor
       taskId={`fixture-${worker.id}`}
       initialWorker={worker as never}
       taskStatus={taskStatus}
+      outputRequirement={worker.id === 'research' ? 'artifact_required' : 'pr_required'}
       roleName="Builder"
       nowMs={RUN_ACTIVITY_NOW}
     />
@@ -109,7 +110,7 @@ function Scenario({ scenario }: { scenario: RunActivityScenario }) {
           </div>
           <div data-testid="run-activity-steer-ended">
             <p className="section-label">Ended run</p>
-            <InstructionHistory history={steeringEndedWorker.instructionHistory as never} />
+            <InstructionHistory history={steeringEndedWorker.instructionHistory as never} workerStatus={steeringEndedWorker.status} onResend={() => {}} />
           </div>
         </div>
       );
