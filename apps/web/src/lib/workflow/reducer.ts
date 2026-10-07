@@ -157,7 +157,7 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
   switch (cmd.type) {
     case 'DeliveryOpened': return `open:${cmd.ownerTaskId}`;
     case 'PrBound': return `bind:${cmd.repoFullName}#${cmd.prNumber}`;
-    case 'HeadObserved': return pr ? `head:${pr}:${cmd.live.headSha}` : null;
+    case 'HeadObserved': return pr && d ? headObservationKey(pr, d.currentHeadSha, cmd.live.headSha, d.version) : null;
     case 'AttemptEnded': return `end:${cmd.workerId}`;
     case 'ReviewVerdictRecorded': return `verdict:${cmd.roundId}`;
     case 'FixClaimed': return `claim:${cmd.attemptId}`;
@@ -180,6 +180,17 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'CompositionAttested': return d ? `compose:${d.id}:${cmd.attestation.aggregateHeadSha}` : null;
     default: return null;
   }
+}
+
+/**
+ * T3's key names the move, not just the head it lands on: the head it moved
+ * from and the version it was read at. A head that returns to an earlier SHA
+ * (A→B→A) is a new observation; a redelivery of the same move reads the same
+ * version and is a duplicate, and one read after the move landed sees an
+ * unchanged head (`head_unchanged`).
+ */
+export function headObservationKey(pr: string, fromHead: string | null, toHead: string, version: number): string {
+  return `head:${pr}:${fromHead ?? 'none'}->${toHead}@v${version}`;
 }
 
 function landingKey(pr: string, headSha: string, version: number): string {
@@ -972,7 +983,7 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
   if (!livePrOpen(cmd.live)) return c.rejected('pr_not_open');
   const h = cmd.live.headSha; // §6.3: the live head, never the payload head.
   if (h === d.currentHeadSha) return c.duplicate('head_unchanged');
-  const key = `head:${c.prKey}:${h}`;
+  const key = headObservationKey(c.prKey, d.currentHeadSha, h, d.version);
   const evidence = { live: cmd.live, hintedHeadSha: cmd.hintedHeadSha ?? null, previousHead: d.currentHeadSha };
   const record = (): Decision => c.apply(key, d.state, { patch: { currentHeadSha: h }, evidence });
   const toReview = (extra: { attempts?: AttemptOp[]; effects?: EffectSpec[]; patch?: DeliveryPatch; evidence?: Record<string, unknown> } = {}): Decision => {

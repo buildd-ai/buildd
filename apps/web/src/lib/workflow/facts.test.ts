@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import type { LivePr } from './commands';
-import { constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, type GithubFactReader } from './facts';
+import { constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, lastAppliedHeadFactSql, type GithubFactReader } from './facts';
 import type { Exec } from './kernel';
 
 const dialect = new PgDialect();
@@ -35,13 +35,20 @@ describe('fact keys', () => {
   test('one natural key per kind; head facts key on the LIVE head', () => {
     expect(factKeyFor({ kind: 'delivery_opened', workspaceId: 'w', source: 's', ownerTaskId: 't', requiresPr: true })).toBe('open:t');
     expect(factKeyFor({ kind: 'pr_bound', workspaceId: 'w', source: 's', repoFullName: 'a/b', prNumber: 1, ownerTaskId: 't' })).toBe('bind:a/b#1');
-    expect(factKeyFor({ kind: 'head_observed', workspaceId: 'w', source: 's', repoFullName: 'a/b', prNumber: 1, hintedHeadSha: 'HINT' }, live('LIVE'))).toBe('head:a/b#1:LIVE');
+    const head = { kind: 'head_observed', workspaceId: 'w', source: 's', repoFullName: 'a/b', prNumber: 1, hintedHeadSha: 'HINT' } as const;
+    expect(factKeyFor(head, live('LIVE'), { headSha: 'H1', version: 4 })).toBe('head:a/b#1:H1->LIVE@v4');
+    // A→B→A (34b69829): the return to an earlier head is its own fact, not a replay of the first.
+    expect(factKeyFor(head, live('A'), { headSha: 'B', version: 5 })).not.toBe(factKeyFor(head, live('A'), { headSha: 'Z', version: 3 }));
   });
   test('SQL renders and is idempotent on (workspace, fact_key)', () => {
     const ins = render(insertFactSql({ workspaceId: 'w', kind: 'pr_bound', factKey: 'k', source: 'runner', payload: { a: 1 } }));
     expect(ins.sql).toContain('ON CONFLICT (workspace_id, fact_key) DO NOTHING');
     expect(ins.params).toEqual(['w', null, null, 'pr_bound', 'k', 'runner', '{"a":1}']);
     expect(render(findFactSql('w', 'k')).params).toEqual(['w', 'k']);
+    const last = render(lastAppliedHeadFactSql('w', 'd1'));
+    expect(last.sql).toContain('JOIN workflow_transitions t ON t.id = f.applied_transition_id');
+    expect(last.sql).toContain("t.command = 'HeadObserved'");
+    expect(last.params).toEqual(['w', 'd1']);
     const ev = render(constituentEvidenceSql('w', ['r1', 'r2']));
     expect(ev.sql).toContain('JOIN workflow_deliveries d ON d.id = r.delivery_id');
     expect(ev.params).toEqual(['w', '["r1","r2"]']);
@@ -73,7 +80,7 @@ describe('ingestFact', () => {
 
     const { exec } = router({
       load_view: () => ({ rows: [{ delivery: delivery(), rounds: [], attempts: [] }] }),
-      insert_fact: (_t, params) => { expect(params).toContain('head:acme/widgets#7:LIVE'); return { rows: [{ id: 'f2' }] }; },
+      insert_fact: (_t, params) => { expect(params).toContain('head:acme/widgets#7:H1->LIVE@v2'); return { rows: [{ id: 'f2' }] }; },
       find_transition: () => ({ rows: [] }),
       transition: (_t, params) => { expect(params).toContain('LIVE'); expect(params).not.toContain('HINT'); return { rows: [{ transition_id: 'tr2', delivery_id: 'd1', version: 3 }] }; },
     });
@@ -81,7 +88,7 @@ describe('ingestFact', () => {
       { kind: 'head_observed', workspaceId: 'w1', source: 'webhook:synchronize', repoFullName: 'acme/widgets', prNumber: 7, hintedHeadSha: 'HINT' },
       { exec, github: { readPr: async () => live('LIVE') } },
     );
-    expect(r).toMatchObject({ result: 'applied', factKey: 'head:acme/widgets#7:LIVE' });
+    expect(r).toMatchObject({ result: 'applied', factKey: 'head:acme/widgets#7:H1->LIVE@v2' });
   });
 
   test('head_observed asks the compare API whether the live head contains the bound attempt\'s local head', async () => {
