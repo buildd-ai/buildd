@@ -87,6 +87,14 @@ describe('dispatchStaleApprovalReReview', () => {
     expect(created.priorVerdict).toBeUndefined();
   });
 
+  it('a first review of a never-reviewed PR is labelled as a request, not as a stale approval', async () => {
+    const d = deps({ resolvePlan: mock(async () => ({ kind: 'full' }) as const) });
+    const res = await dispatchStaleApprovalReReview({ ...input, firstReview: true }, d);
+    expect(res).toMatchObject({ outcome: 'dispatched', plan: 'full' });
+    const activity = (d.appendPrActivity.mock.calls[0] as any[])[0];
+    expect(activity.entry).toEqual({ kind: 'review_queued', detail: 'review requested · the PR was ready and no review was on file' });
+  });
+
   it('skips with a reason when no task owns the PR', async () => {
     const d = deps();
     const res = await dispatchStaleApprovalReReview({ ...input, taskId: null }, d);
