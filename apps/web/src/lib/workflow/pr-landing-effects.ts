@@ -2,7 +2,7 @@
  * Landing and post-merge effect handlers of the workflow kernel
  * (docs/specs/workflow-state-kernel.md §10.2, T15–T17, §14 Slice C), owned by
  * the reviews/merge module and reached only through the composition root
- * (`WORKFLOW_EFFECT_HANDLERS` in apps/web/src/modules.ts).
+ * (`workflowEffectHandlers()` in apps/web/src/modules.ts).
  *
  *  - `merge_call`: the one `PUT /pulls/{n}/merge` of a kernel-owned PR, pinned
  *    to the head T15 approved; its answer is T16, never a merged fact.

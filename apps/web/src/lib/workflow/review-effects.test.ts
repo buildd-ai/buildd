@@ -292,10 +292,11 @@ describe('push_recovery (§9)', () => {
   });
 });
 
+// The supersession effects (wake_mission, scan_supersession, project_supersession) are
+// supersession-effects.ts's since Slice D; modules.test.ts checks the composed set.
 test('every effect the fix-loop reducer can emit has a handler (none retries forever on "no handler")', () => {
   for (const k of ['dispatch_review', 'dispatch_fix', 'post_review', 'escalate_exhaustion', 'mission_note', 'notify', 'cancel_open_attempts',
-    'push_recovery', 'render_activity', 'wake_mission', 'release_attribution',
-    'scan_supersession', 'project_supersession', 'gate_event']) {
+    'push_recovery', 'render_activity', 'release_attribution', 'gate_event']) {
     expect(typeof (reviewEffectHandlers as Record<string, unknown>)[k]).toBe('function');
   }
   // stamp_pr_rows is the fact-cache projection, composed in by withPrFactEffects (pr-fact-effects.test.ts);

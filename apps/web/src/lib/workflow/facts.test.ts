@@ -158,6 +158,32 @@ describe('ingestFact', () => {
     expect(await ingestFact({ kind: 'pr_bound', workspaceId: 'w1', source: 'webhook', repoFullName: 'acme/widgets', prNumber: 7, ownerTaskId: 's1', adoption: true }, { exec: routes(true).exec, github: gh })).toMatchObject({ result: 'applied' });
   });
 
+  test('pr_closed: a PR closed because its base branch is gone is CLOSED_UNMERGED(base_deleted), from a live branch read', async () => {
+    const closedLive: LivePr = { ...live('H1'), state: 'closed', baseRef: 'mission/x', updatedAt: 'u1' };
+    const run = async (branchExists: GithubFactReader['branchExists']) => {
+      const asked: string[] = [];
+      const { exec } = router({
+        load_view: () => ({ rows: [{ delivery: delivery({ state: 'AWAITING_REVIEW' }), rounds: [], attempts: [] }] }),
+        insert_fact: () => ({ rows: [{ id: 'f6' }] }),
+        find_transition: () => ({ rows: [] }),
+        transition: () => ({ rows: [{ transition_id: 'tr6', delivery_id: 'd1', version: 3 }] }),
+      });
+      const r = await ingestFact({ kind: 'pr_closed', workspaceId: 'w1', source: 'webhook:closed', repoFullName: 'acme/widgets', prNumber: 7 }, {
+        exec, github: { readPr: async () => closedLive, ...(branchExists ? { branchExists: async (repo, ref) => { asked.push(`${repo}:${ref}`); return branchExists(repo, ref); } } : {}) },
+      });
+      return { r, asked };
+    };
+    const gone = await run(async () => false);
+    expect(gone.asked).toEqual(['acme/widgets:mission/x']);
+    expect(gone.r).toMatchObject({ result: 'applied' });
+    if (gone.r.result === 'applied') expect(gone.r.decision).toMatchObject({ toState: 'CLOSED_UNMERGED', patch: { stateReason: 'base_deleted' } });
+    // The base still exists, or the read failed: the cause is not known. Never guessed.
+    for (const answer of [async () => true, async () => null, undefined] as const) {
+      const r = (await run(answer)).r;
+      if (r.result === 'applied') expect(r.decision.patch.stateReason).toBe('unknown');
+    }
+  });
+
   test('composition_attested resolves constituents from the ledger and cites the fact', async () => {
     const { exec } = router({
       constituent_evidence: () => ({ rows: [{ round_id: 'rx', head_sha: 'C1', status: 'decided', effective_verdict: 'approve', approved_heads: ['C1'] }] }),

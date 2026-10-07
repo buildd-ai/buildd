@@ -87,6 +87,10 @@ export interface DeliverySnapshot {
   mergedAt: string | null;
   mergeCommitSha: string | null;
   supersededByPr: number | null;
+  /** T20/T21's record (Slice D): projected onto `workers.supersededBy*` / `abandoned*`. */
+  supersededByUrl?: string | null;
+  supersededReason?: string | null;
+  recordedBy?: string | null;
   /** §14 cutover: who decides for this delivery. Absent in fixtures = 'kernel'. */
   authority?: 'kernel' | 'legacy';
   /**

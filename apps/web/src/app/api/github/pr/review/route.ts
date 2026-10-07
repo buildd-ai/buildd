@@ -16,8 +16,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missions, githubRepos } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace, type TaskScope } from '@/lib/task-token-auth';
-import { taskNamesPr } from '@/lib/agent-capabilities/pr-ownership';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace, taskScopeTaskNamesPr, type TaskScope } from '@/lib/task-token-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
@@ -139,31 +138,6 @@ async function resolveTarget(
   };
 }
 
-/**
- * Does the task token's OWN task name this PR — in its title, description or
- * context, or as a retry attempt's subject? Mirrors the fallback `pr/route.ts`
- * already applies to close/merge via `agentRunMayActOnPr`: a coordination or
- * cleanup task that never opened a PR of its own may still act on one its
- * brief explicitly names (e.g. "resolve conflicts on #3492").
- */
-async function taskScopeNamesPr(scope: TaskScope, prNumber: number): Promise<boolean> {
-  const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, scope.taskId),
-    columns: {
-      id: true,
-      title: true,
-      description: true,
-      context: true,
-      workspaceId: true,
-      reviewerRetryPrNumber: true,
-      ciRetryPrNumber: true,
-      conflictRetryPrNumber: true,
-    },
-  });
-  if (!task || task.workspaceId !== scope.workspaceId) return false;
-  return taskNamesPr(task, prNumber);
-}
-
 /** The GitHub repo + installation behind a workspace. */
 async function resolveRepo(workspace: ResolvedTarget['workspace']) {
   if (!workspace.githubRepoId || !workspace.githubInstallationId) return null;
@@ -250,7 +224,9 @@ export async function POST(req: NextRequest) {
 
   const existingWorker = await findPrOwningWorker(workspace.id, prNumber);
   const ownsViaWorker = !!existingWorker && taskScopeAllowsWorkerPr(account, { ...existingWorker, prNumber }, prNumber);
-  if (account.taskScope && !ownsViaWorker && !(await taskScopeNamesPr(account.taskScope, prNumber))) {
+  // Or a PR the token's OWN task names (a coordination task repairing a PR it never opened),
+  // never one the owner's task names (§17.1 of docs/specs/workflow-state-kernel.md).
+  if (account.taskScope && !ownsViaWorker && !(await taskScopeTaskNamesPr(account, { workspaceId: account.taskScope.workspaceId, prNumber }))) {
     return bad('A task token may request review only of its own PR, or one its task names', 403);
   }
 

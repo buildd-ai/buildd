@@ -231,31 +231,17 @@ export type CommandType = Command['type'];
 
 // ── Decision (§6.1) ─────────────────────────────────────────────────────────
 
-export type EffectKind =
-  | 'dispatch_review'
-  | 'dispatch_fix'
-  | 'dispatch_ci_fix'
-  | 'dispatch_conflict_fix'
-  | 'dispatch_trunk_fix'
-  | 'post_review'
-  | 'merge_call'
-  | 'verify_merge'
-  | 'refresh_branch'
-  | 'renumber_migration'
-  | 'push_recovery'
-  | 'stamp_pr_rows'
-  | 'cancel_open_attempts'
-  | 'render_activity'
-  | 'notify'
-  | 'mission_note'
-  | 'wake_mission'
-  | 'release_attribution'
-  | 'finalize_mission_pr'
-  | 'emit_pr_merged'
-  | 'scan_supersession'
-  | 'project_supersession'
-  | 'escalate_exhaustion'
-  | 'gate_event';
+/** Every effect kind the kernel can record (§10.2); a runtime list so the composition root can be checked against it. */
+export const EFFECT_KINDS = [
+  'dispatch_review', 'dispatch_fix', 'dispatch_ci_fix', 'dispatch_conflict_fix',
+  'dispatch_trunk_fix', 'post_review', 'merge_call', 'verify_merge', 'refresh_branch',
+  'renumber_migration', 'push_recovery', 'stamp_pr_rows', 'cancel_open_attempts',
+  'render_activity', 'notify', 'mission_note', 'wake_mission', 'release_attribution',
+  'finalize_mission_pr', 'emit_pr_merged', 'scan_supersession', 'project_supersession',
+  'escalate_exhaustion', 'gate_event',
+] as const;
+
+export type EffectKind = (typeof EFFECT_KINDS)[number];
 
 export interface EffectSpec {
   kind: EffectKind;

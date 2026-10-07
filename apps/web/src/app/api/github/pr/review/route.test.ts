@@ -785,6 +785,16 @@ describe('per-task token', () => {
     expect(mockCreateReviewerTask).not.toHaveBeenCalled();
   });
 
+  // S21 (§17.1): the rule is the caller's task. The owner's task naming its own PR gives a
+  // sibling's token nothing; the lookup reads the caller's task only.
+  it('S21: a sibling task is refused even though the PR owner\'s task names the PR', async () => {
+    mockFindPrOwningWorker.mockReturnValue({ ...owner('task-2'), task: { id: 'task-2', title: 'Fix #42', description: 'land #42', context: {} } });
+    mockTasksFindFirst.mockImplementation(((..._a: unknown[]) => ({ id: 'task-1', title: 'Sibling work', description: 'touches the same files', context: {}, workspaceId: 'ws-1' })) as never);
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
   it('does not trust another task naming the PR when the task row has drifted out of its own workspace', async () => {
     mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
     mockTasksFindFirst.mockReturnValue({
