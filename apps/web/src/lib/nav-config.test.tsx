@@ -86,6 +86,8 @@ describe('mobilePageTitle', () => {
   it('titles every primary nav surface so the mobile header renders there', () => {
     expect(mobilePageTitle('/app/home')).toBe('Home');
     expect(mobilePageTitle('/app/dashboard')).toBe('Home');
+    expect(mobilePageTitle('/app/chat')).toBe('Chat');
+    expect(mobilePageTitle('/app/chat/abc')).toBeNull();
     expect(mobilePageTitle('/app/missions')).toBe('Missions');
     expect(mobilePageTitle('/app/releases')).toBe('Releases');
     expect(mobilePageTitle('/app/initiatives')).toBe('Initiatives');

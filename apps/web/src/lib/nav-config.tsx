@@ -174,6 +174,7 @@ export function navItemsFor(ctx: NavContext, surface: 'desktop' | 'mobile'): Nav
  */
 export function mobilePageTitle(pathname: string): string | null {
   if (pathname === '/app/home' || pathname === '/app/dashboard') return 'Home';
+  if (pathname === '/app/chat') return 'Chat';
   if (pathname === '/app/missions') return 'Missions';
   if (pathname === '/app/releases') return 'Releases';
   if (pathname === '/app/initiatives') return 'Initiatives';
