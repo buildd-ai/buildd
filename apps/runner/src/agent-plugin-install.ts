@@ -26,6 +26,7 @@ import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 // The hook's own helpers, so the installer and the hook agree on what a workspace repo is.
 import { fetchWorkspaceRepos, gitRepo, gitRoot, hasProjectBuilddMcp, writeWorkspaceCache } from '../plugin/scripts/buildd-hook.mjs';
+import { resolveBuilddHome } from './buildd-home';
 
 export const BUILDD_HOOK_MARKER = 'buildd-hook.mjs';
 export const BUILDD_SKILL_NAME = 'buildd-session';
@@ -333,7 +334,7 @@ export function candidateFolders(claudeJson: Json, cwd: string): Array<{ path: s
 
 function readBuilddConfig(home: string, env: Record<string, string | undefined>): { apiKey: string | null; server: string } {
   let cfg: Json = {};
-  try { cfg = JSON.parse(readFileSync(join(env.BUILDD_HOME || join(home, '.buildd'), 'config.json'), 'utf8')); } catch { /* not logged in */ }
+  try { cfg = JSON.parse(readFileSync(join(resolveBuilddHome({ env }), 'config.json'), 'utf8')); } catch { /* not logged in */ }
   return {
     apiKey: env.BUILDD_API_KEY || cfg.apiKey || null,
     server: (env.BUILDD_SERVER || cfg.builddServer || 'https://buildd.dev').replace(/\/+$/, ''),
@@ -393,7 +394,7 @@ async function registerMcp(mode: McpMode, home: string, cwd: string, e: CliEnv):
   if (!apiKey) return { ok: false, lines: ["Not logged in. Run 'buildd login' first."], workspaceRepos: null };
   // The workspace list drives both the MCP folders and the hooks' scope, so it is refreshed either way.
   const workspaceRepos = await fetchWorkspaceRepos({ server, apiKey }, e.fetchImpl ?? globalThis.fetch);
-  if (workspaceRepos) writeWorkspaceCache({ ...env, BUILDD_HOME: env.BUILDD_HOME || join(home, '.buildd') }, apiKey, workspaceRepos, e.now ?? Date.now());
+  if (workspaceRepos) writeWorkspaceCache({ ...env, BUILDD_HOME: resolveBuilddHome({ env }) }, apiKey, workspaceRepos, e.now ?? Date.now());
   if (mode === 'workspaces' && !workspaceRepos) {
     return { ok: false, lines: [`Could not load your workspaces from ${server}. Nothing was changed; try again, or pass --everywhere.`], workspaceRepos };
   }
