@@ -1,7 +1,7 @@
 import type { RoleBundle, RoleConfig, RoleInstructions } from './roles.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
 import type { BashCommandCounts } from './bash-classify.js';
-import type { RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
+import type { DerivedFileRule, RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -261,6 +261,11 @@ export interface LocalWorker {
    * a restored worker does not sweep with an empty committed half.
    */
   prBaseRef?: string;
+  /**
+   * What the runner's pre-agent base merge did on a conflict retry (merged, or
+   * left in progress with the real conflicts). Appended to the system prompt.
+   */
+  derivedMergeNote?: string;
   /**
    * Set when the worker's environment was provisioned but degraded — today only
    * by a dependency install that failed for a non-structural reason (drift,
@@ -657,6 +662,10 @@ export interface BuilddTask {
 
 // Git workflow configuration (matches server schema)
 export interface WorkspaceGitConfig {
+  /** Files regenerated instead of merged (packages/shared DerivedFileRule; see merge-drivers.ts). */
+  derivedFiles?: DerivedFileRule[];
+  /** Register mergiraf as a structural merge driver in this runner's clones. */
+  mergiraf?: boolean;
   // Branching
   defaultBranch: string;
   branchingStrategy: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';

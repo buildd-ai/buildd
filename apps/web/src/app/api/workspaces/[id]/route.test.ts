@@ -693,6 +693,44 @@ describe('PATCH /api/workspaces/[id]', () => {
     }
   });
 
+  // Files runners regenerate instead of merging (packages/shared/src/derived-files.ts).
+  it('accepts well-formed gitConfig.derivedFiles and null to clear', async () => {
+    for (const value of [[{ glob: '/bun.lock', regenerate: 'bun install' }], [{ glob: 'x.lock', regenerate: 'y', strategy: 'ours' }], [], null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { derivedFiles: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, derivedFiles: value });
+    }
+  });
+
+  it('rejects a derivedFiles rule the runner would drop (repo-wide, migration chain, malformed)', async () => {
+    for (const value of [
+      [{ glob: '**', regenerate: 'x' }],
+      [{ glob: 'packages/core/drizzle/meta/_journal.json', regenerate: 'bun db:generate' }],
+      [{ glob: 'bun.lock' }],
+      [{ glob: 'bun.lock', regenerate: 'bun install', strategy: 'union' }],
+      'bun.lock',
+      { glob: 'bun.lock', regenerate: 'bun install' },
+    ]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { derivedFiles: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/^gitConfig\.derivedFiles/);
+    }
+  });
+
+  it('rejects a non-boolean gitConfig.mergiraf', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+    const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { mergiraf: 'yes' } } });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+  });
+
   // Cloud-runner container class (packages/shared/src/runner-size.ts).
   it('accepts gitConfig.runnerSize standard/large and null to clear', async () => {
     for (const value of ['standard', 'large', null]) {

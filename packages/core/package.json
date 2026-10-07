@@ -157,6 +157,7 @@
     "./external-links": "./external-links.ts",
     "./ecosystem-detect": "./ecosystem-detect.ts",
     "./risk-class-detect": "./risk-class-detect.ts",
+    "./derived-files-detect": "./derived-files-detect.ts",
     "./workspace-readiness": "./workspace-readiness.ts",
     "./scout-capabilities": "./scout-capabilities.ts",
     "./quality-scout/types": "./quality-scout/types.ts",

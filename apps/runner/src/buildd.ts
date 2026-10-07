@@ -5,7 +5,7 @@ import { QUESTION_GATE_RUNNER_FEATURE, type QuestionGateReply } from '@buildd/co
 import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { PromptBundlesPayload } from './session-prompt-bundles';
-import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
+import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule } from '@buildd/shared';
 import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
@@ -623,6 +623,9 @@ export class BuilddClient {
       maxBudgetUsd?: number;
       /** Workspace opt-in; absent = advisory. See path-claim-enforcement.ts. */
       pathClaimEnforcement?: 'advisory' | 'enforce' | null;
+      /** See merge-drivers.ts. */
+      derivedFiles?: DerivedFileRule[];
+      mergiraf?: boolean;
     };
     configStatus: 'unconfigured' | 'admin_confirmed';
   }> {

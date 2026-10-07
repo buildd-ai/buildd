@@ -5658,6 +5658,7 @@ export async function handleBuilddAction(
             fileCount: number;
             detectedClassCount: number;
             hint: string;
+            derivedFiles?: { proposed: Array<{ glob: string; regenerate: string }>; hint: string };
             specConformance: {
               detected: { specsRoot: string | null; designRoot: string | null };
               proposed: { specsRoot: string; designRoot: string };
@@ -5688,7 +5689,7 @@ export async function handleBuilddAction(
             return text(`policy-init scan returned no result for workspace ${wsId}`);
           }
 
-          const { proposed, repoFullName, fileCount, detectedClassCount, specConformance } = scanResult;
+          const { proposed, repoFullName, fileCount, detectedClassCount, specConformance, derivedFiles } = scanResult;
 
           // Format proposed policy for human confirmation
           const riskClasses = (proposed as any).riskClasses ?? [];
@@ -5713,6 +5714,13 @@ export async function handleBuilddAction(
             `\`\`\`\n\n` +
             `Paths are derived from the repo — they cannot be typed. Re-run action=init after the repo changes to refresh them.\n` +
             `To change the preset: re-run with preset=cautious or preset=autonomous.\n\n` +
+            (derivedFiles && derivedFiles.proposed.length > 0
+              ? `## Proposed Derived Files\n\n` +
+                `Lockfiles runners regenerate instead of merging, so a conflict in one never needs an agent:\n` +
+                derivedFiles.proposed.map((r) => `  - ${r.glob} → \`${r.regenerate}\``).join('\n') + `\n\n` +
+                `**To apply:** manage_workspaces action=update workspaceId=${wsId} gitConfig={ "derivedFiles": ${JSON.stringify(derivedFiles.proposed)} }\n` +
+                `Add a generated index with its own generator the same way (e.g. { "glob": "docs/specs/INDEX.md", "regenerate": "bun run specs:check" }).\n\n`
+              : '') +
             `## Proposed Spec Conformance Setup (docs/design/spec-conformance.md §14)\n\n` +
             `${specRootsLine}.\n\n` +
             `**To apply:** manage_workspaces action=update workspaceId=${wsId} gitConfig={ "specConformance": ${JSON.stringify(specConformance.proposed)} }\n\n` +
