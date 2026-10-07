@@ -8,10 +8,15 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { deriveDeliveryView, deliveryPrState } from './projections';
-import { deliverySettled, deliveryShipped, ownerDeliveryDisplays, toDeliveryDisplay, type DeliveryDisplay } from './delivery-display';
+import { deliveryReading, deliverySettled, deliveryShipped, ownerDeliveryDisplays, toDeliveryDisplay, type DeliveryDisplay, type DeliveryTone } from './delivery-display';
 import { DELIVERY_STATES, type DeliverySnapshot, type DeliveryState } from './types';
-import { deriveStage, stageForDelivery } from '../stage';
-import { boardStatusForDelivery } from '../mission-board';
+import type { DeliveryViewInput } from './projections';
+import { deriveStage, deriveStageReading, stageForDelivery } from '../stage';
+import { boardStatusForDelivery, buildMissionBoard, type BoardTaskInput } from '../mission-board';
+import { stripCountsLabel, stripSlotCounts, stripSlots, stripState } from '../mission-task-strip';
+import { buildActionQueue, chipForDelivery, isActionableChip, kernelInboxMembership } from '../action-queue';
+import { deriveGridTaskStage, type GridTask } from '@/app/app/(protected)/tasks/TaskGrid';
+import { stripDrawerPill } from '@/app/app/(protected)/missions/[id]/MissionTaskStrip';
 import { deriveFeedPrState, feedStateForDelivery } from '../mission-pulse';
 import { resolvePrDisplayState } from '../pr-presentation';
 import { dockToneForDelivery, taskDockModel } from '@/components/chat/dock-model';
@@ -53,29 +58,31 @@ describe('S17: every surface agrees with the one DeliveryView', () => {
       const dock = taskDockModel(taskView(d)).badge;
       const chat = taskState(taskView(d));
 
-      const yours = d.needsYou;
+      // Yours: a person's move (ESCALATED, or an approved PR waiting for its merge).
+      const yours = deliveryReading(d)!.needsYou;
+      expect(yours).toBe(state === 'ESCALATED' || state === 'APPROVED');
       expect(card === 'WAITING_INPUT').toBe(yours);
       // The Board's `waiting` is an agent's question; a PR awaiting your decision reads `review`.
       expect(tile === 'waiting').toBe(false);
       if (yours) expect(tile).toBe('review');
       expect(feed.state === 'needs_you' && feed.needsYou === 'pr').toBe(yours);
-      expect(dock.label === 'Needs you').toBe(yours);
+      expect(dock.tone === 'needs' && dock.label !== 'Failed').toBe(yours);
       expect(chat.tone === 'attention').toBe(yours);
 
       const shipped = deliveryShipped(d);
       expect(tile === 'merged').toBe(shipped);
-      expect(dock.label === 'Landed').toBe(shipped);
+      expect(dock.tone === 'landed').toBe(shipped);
       if (shipped) expect(card).toBe('DONE');
 
       const failed = state === 'FAILED';
       expect(card === 'FAILED').toBe(failed);
       expect(tile === 'failed').toBe(failed);
-      expect(dock.label === 'Stopped').toBe(failed);
+      expect(dock.label === 'Failed').toBe(failed);
 
-      if (LIVE.includes(state) && state !== 'CLOSED_UNMERGED') {
+      if (LIVE.includes(state) && state !== 'CLOSED_UNMERGED' && !yours) {
         // A non-human owner: nothing says "yours", nothing says done or failed.
-        expect(['FIXING', 'REVIEWING', 'BLOCKED', 'MERGE']).toContain(card);
-        expect(['running', 'fixing', 'review']).toContain(tile);
+        expect(['FIXING', 'STALLED']).toContain(card);
+        expect(tile).toBe('running');
         expect(feed.state).toBe('moving');
         expect(dock.tone).toBe('live');
       }
@@ -99,8 +106,8 @@ describe('S17: every surface agrees with the one DeliveryView', () => {
     expect(deriveStage({ taskStatus: 'completed', prUrl: 'u', prLifecycleStatus: 'merged', mergedAt: '2026-01-01', delivery: d })).toBe('FIXING');
     expect(resolvePrDisplayState({ delivery: d, prLifecycleStatus: 'merged', mergedAt: new Date() })).toBe('ci_failed');
     expect(deriveFeedPrState({ status: 'completed', prNumber: 7, prLifecycleStatus: 'merged', mergedAt: new Date() }, d)).toEqual({ number: 7, state: 'ci_failed' });
-    expect(taskDockModel(taskView(d, { prLifecycleStatus: 'merged', mergedAt: 1 })).badge.label).toBe('Fixing');
-    expect(taskState(taskView(d, { prLifecycleStatus: 'merged', mergedAt: 1 })).label).toBe('#7 fixing');
+    expect(taskDockModel(taskView(d, { prLifecycleStatus: 'merged', mergedAt: 1 })).badge.label).toBe('Fixing CI');
+    expect(taskState(taskView(d, { prLifecycleStatus: 'merged', mergedAt: 1 })).label).toBe('#7 Fixing CI');
   });
 
   test('a worker\'s own question stays a question (§13.2 dev. 3)', () => {
@@ -110,7 +117,7 @@ describe('S17: every surface agrees with the one DeliveryView', () => {
   });
 
   test('a failed owner attempt of a live delivery reads the delivery, not FAILED (S35)', () => {
-    expect(deriveStage({ taskStatus: 'failed', delivery: display('AWAITING_REVIEW') })).toBe('REVIEWING');
+    expect(deriveStage({ taskStatus: 'failed', delivery: display('AWAITING_REVIEW') })).toBe('FIXING');
     expect(deriveStage({ taskStatus: 'failed', delivery: display('FAILED') })).toBe('FAILED');
     expect(deriveStage({ taskStatus: 'failed' })).toBe('FAILED');
   });
@@ -122,6 +129,120 @@ describe('S17: every surface agrees with the one DeliveryView', () => {
     expect(m.insight?.text).toContain('abc1234');
     const esc = taskDockModel(taskView(display('ESCALATED')));
     expect(esc.happened.at(-1)).toMatchObject({ ts: null, text: 'The reviewer escalated this PR.', needs: true });
+  });
+});
+
+// ─── One label, one tone, one count per canonical state, on every surface ────
+// The `delivery-states` fixture's deliveries plus the rest of the §4 states.
+// Each surface maps the canonical tone through one total palette table; none
+// maps a state.
+
+interface Row { name: string; input: DeliveryViewInput; label: string; tone: DeliveryTone; action?: string }
+const V = (o: Partial<DeliverySnapshot>, extra: Partial<DeliveryViewInput> = {}): DeliveryViewInput => ({ view: { delivery: D(o), rounds: [], attempts: [] }, ...extra });
+const TABLE: Row[] = [
+  { name: 'awaiting push', input: V({ state: 'AWAITING_PUSH' }), label: 'Waiting for push', tone: 'live' },
+  {
+    name: 'stalled conflict fix', label: 'Conflict fix stalled', tone: 'stalled', action: 'Run fix',
+    input: V({ state: 'AWAITING_REVIEW', mergeable: 'dirty', mergeableHeadSha: 'H1abcdef' }, { remediation: { taskId: 'cf-1', family: 'conflict', taskStatus: 'pending', stalled: true, stallReason: 'no runner claim' } }),
+  },
+  { name: 'conflict, no fix filed', input: V({ state: 'REPAIRING', stateReason: 'conflict' }), label: 'Merge conflict', tone: 'stalled' },
+  {
+    name: 'conflict fix running', label: 'Resolving conflicts', tone: 'live',
+    input: V({ state: 'REPAIRING', stateReason: 'conflict' }, { remediation: { taskId: 'cf-1', family: 'conflict', taskStatus: 'in_progress', stalled: false } }),
+  },
+  { name: 'CI fix in flight', input: V({ state: 'REPAIRING', stateReason: 'ci', ci: 'red', ciHeadSha: 'H1abcdef' }), label: 'Fixing CI', tone: 'live' },
+  { name: 'composition verified', input: V({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1abcdef'] }), label: 'Ready to merge', tone: 'needs' },
+  { name: 'approved', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }), label: 'Ready to merge', tone: 'needs' },
+  { name: 'escalated', input: V({ state: 'ESCALATED', stateReason: 'review_escalated' }), label: 'Needs you', tone: 'needs' },
+  { name: 'in review', input: V({ state: 'AWAITING_REVIEW' }), label: 'In review', tone: 'live' },
+  { name: 'changes requested', input: V({ state: 'CHANGES_REQUESTED' }), label: 'Changes requested', tone: 'live' },
+  { name: 'fixing review feedback', input: V({ state: 'FIXING' }), label: 'Fixing', tone: 'live' },
+  { name: 'red base', input: V({ state: 'BLOCKED_ON_TRUNK' }), label: 'Blocked on base', tone: 'stalled' },
+  { name: 'merging', input: V({ state: 'LANDING' }), label: 'Merging', tone: 'live' },
+  { name: 'merged', input: V({ state: 'MERGED' }), label: 'Merged', tone: 'landed' },
+  { name: 'superseded', input: V({ state: 'SUPERSEDED', supersededByPr: 9 }), label: 'Shipped elsewhere', tone: 'landed' },
+  { name: 'closed', input: V({ state: 'CLOSED_UNMERGED' }), label: 'Closed', tone: 'closed' },
+  { name: 'failed', input: V({ state: 'FAILED', stateReason: 'attempt_failed' }), label: 'Failed', tone: 'failed' },
+];
+
+// Each surface's palette, read back to the canonical tone.
+const CARD_STAGE: Record<DeliveryTone, string> = { needs: 'WAITING_INPUT', live: 'FIXING', stalled: 'STALLED', landed: 'DONE', closed: 'DONE', failed: 'FAILED' };
+const DOCK_TONE: Record<DeliveryTone, string> = { needs: 'needs', live: 'live', stalled: 'live', landed: 'landed', closed: 'idle', failed: 'needs' };
+const CHAT_TONE: Record<DeliveryTone, string> = { needs: 'attention', live: 'live', stalled: 'neutral', landed: 'ok', closed: 'idle', failed: 'bad' };
+
+// Unrelated titles, so the board never folds one row into another as its retry.
+const ROW_SCOPES = ['auth', 'home', 'release', 'tokens', 'runners', 'picker'];
+const boardInput = (d: DeliveryDisplay, i: number): BoardTaskInput => ({
+  id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`, title: `feat(${ROW_SCOPES[i]}): ${ROW_SCOPES[i]} rework ${i}`, status: 'completed', taskClass: 'work',
+  createdAt: new Date(1_000 + i), missionPhaseIndex: 1, missionPhaseLabel: 'Build', roleSlug: 'builder', outputRequirement: 'pr_required', delivery: d,
+  workers: [{ id: `w${i}`, status: 'completed', runner: 'alpha', startedAt: 1, completedAt: 2, updatedAt: 2, mergedAt: null, prNumber: 7, prUrl: 'u', prLifecycleStatus: 'ci_green', currentAction: null, waitingFor: null, milestones: [], linesAdded: 1, linesRemoved: 0 }],
+  worker: { status: 'completed', startedAt: new Date(1), updatedAt: new Date(2), prNumber: 7, prUrl: 'u', prLifecycleStatus: 'ci_green', mergedAt: null },
+} as BoardTaskInput);
+
+const gridTask = (d: DeliveryDisplay): GridTask => ({
+  id: 't1', title: 'x', status: 'completed', category: null, createdAt: '', updatedAt: '', workspaceName: 'w', prUrl: 'u', prNumber: 7,
+  prLifecycleStatus: 'ci_green', delivery: d, summary: null, hasArtifact: false, filesChanged: null, waitingPrompt: null, missionId: null, missionTitle: null,
+} as GridTask);
+
+describe('S17: each canonical state reads the same label, tone and counts on every surface', () => {
+  for (const row of TABLE) {
+    test(row.name, () => {
+      const view = deriveDeliveryView(row.input)!;
+      const d = toDeliveryDisplay(view);
+      const r = deliveryReading(d)!;
+      expect({ label: r.label, tone: r.tone, action: r.action?.label }).toEqual({ label: row.label, tone: row.tone, action: row.action });
+      expect(r.needsYou).toBe(row.tone === 'needs');
+      expect(r.failed).toBe(row.tone === 'failed');
+
+      // Task list: the chip's label and style, and the histogram's failed bucket.
+      const card = deriveStageReading({ taskStatus: 'completed', prUrl: 'u', prLifecycleStatus: 'ci_green', delivery: d });
+      expect(card).toEqual({ stage: CARD_STAGE[r.tone] as never, label: r.label });
+      expect(deriveGridTaskStage(gridTask(d)) === 'FAILED').toBe(r.failed);
+
+      // Mission board, strip and band.
+      const model = buildMissionBoard({ now: 10_000, missionCreatedAt: 0, missionStatus: 'active', tasks: [boardInput(d, 0)] });
+      const [id] = Object.keys(model.tasks);
+      const bt = model.tasks[id];
+      expect(bt.delivery?.label).toBe(r.label);
+      expect(model.needsYou.includes(id)).toBe(r.needsYou);
+      const slots = stripSlots(model);
+      expect(stripSlotCounts(slots).failed > 0).toBe(r.failed);
+      if (!r.failed) expect(stripCountsLabel(stripSlotCounts(slots))).not.toContain('failed');
+      expect(stripDrawerPill(bt, stripState(model, id), 'runner')).toBe(r.label);
+
+      // Mission feed.
+      const feed = feedStateForDelivery(d)!;
+      expect(feed.state === 'needs_you' && feed.needsYou === 'pr').toBe(r.needsYou);
+      expect(feed.needsYou === 'failed').toBe(r.failed);
+
+      // Chat: dock badge and task tile.
+      const dock = taskDockModel(taskView(d));
+      expect(dock.badge).toEqual({ label: r.label, tone: DOCK_TONE[r.tone] as never });
+      const tile = taskState(taskView(d));
+      expect(tile.label).toBe(`#7 ${r.label}`);
+      expect(tile.tone).toBe(CHAT_TONE[r.tone] as never);
+      if (r.action) expect(dock.actions.map(a => a.label)).toContain(r.action.label);
+
+      // Home: the same ownership. A landing card keeps Home's legacy merge
+      // rail, which an approved PR's MERGE chip already is.
+      if (view.owner !== 'landing') expect(kernelInboxMembership(view, false)).toBe(r.needsYou);
+      if (d.state === 'APPROVED') expect(chipForDelivery(view, 'REVIEW')).toBe('MERGE');
+    });
+  }
+
+  test('the fixture deliveries: Home and the mission agree on who needs you and on nothing failed', () => {
+    const rows = TABLE.filter(t => ['awaiting push', 'stalled conflict fix', 'composition verified', 'escalated', 'CI fix in flight', 'merged'].includes(t.name));
+    const displays = rows.map(t => toDeliveryDisplay(deriveDeliveryView(t.input)!));
+    const model = buildMissionBoard({ now: 10_000, missionCreatedAt: 0, missionStatus: 'active', tasks: displays.map(boardInput) });
+    expect(model.needsYou.length).toBe(2);
+    expect(stripCountsLabel(stripSlotCounts(stripSlots(model)))).toBe('5 open');
+
+    const views = new Map(rows.map((t, i) => [`t${i}`, deriveDeliveryView(t.input)!] as const));
+    const queue = buildActionQueue([], rows.map((t, i) => ({
+      workerId: `w${i}`, taskId: `t${i}`, taskTitle: t.name, workspaceId: 'w1', workspaceName: 'w', prNumber: 410 + i, prUrl: `https://github.com/acme/widgets/pull/${410 + i}`, policyTier: 'agent-review',
+      escalationReason: null, waitingMinutes: 1, prOpenedAt: new Date(), prLifecycleVerifiedAt: new Date(), prLifecycleStatus: 'ci_green', prLifecycleUpdatedAt: new Date(),
+    })), { now: new Date(), deliveryViews: views });
+    expect(queue.filter(c => isActionableChip(c.chip)).length).toBe(model.needsYou.length);
   });
 });
 

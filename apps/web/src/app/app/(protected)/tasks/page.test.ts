@@ -130,10 +130,10 @@ describe('mission-budget plumbing — TaskGrid.tsx', () => {
 });
 
 describe('mission-budget plumbing — TaskCard.tsx', () => {
-  it('accepts the prop and feeds it to deriveStage', () => {
+  it('accepts the prop and feeds it to deriveStageReading', () => {
     expect(cardSource).toContain('missionBudgetExhausted?: boolean;');
     const stageCall = cardSource.slice(
-      cardSource.indexOf('const stage = stageOverride ?? deriveStage({'),
+      cardSource.indexOf('const derived = deriveStageReading({'),
       cardSource.indexOf('const timestampLabel'),
     );
     expect(stageCall).toContain('isSubjectDead: subjectDead');

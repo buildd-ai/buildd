@@ -47,7 +47,8 @@ const STAGE_NODE_CLS: Record<Stage, string> = {
   WAITING_INPUT: 'bg-status-warning/15 border-status-warning border-2 border-dashed',
   REVIEWING:     'bg-status-info/10 border-status-info',
   FIXING:        'bg-status-info/10 border-status-info',
-  OPEN:          'bg-accent/10 border-accent',
+  STALLED:       'bg-status-warning/10 border-status-warning',
+  OPEN:         'bg-accent/10 border-accent',
   CI:            'bg-accent/10 border-accent',
   CI_FAILING:    'bg-status-error/8 border-status-error/40',
   MERGE:         'bg-accent/10 border-accent',
@@ -236,6 +237,7 @@ function StructureNodeView({
           loopIteration={node.loopIteration}
           startAt={node.startAt}
           loopExitConditionType={node.loopExitConditionType}
+          label={node.stageLabel}
         />
       </div>
 

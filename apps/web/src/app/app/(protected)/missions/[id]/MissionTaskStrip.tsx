@@ -70,6 +70,15 @@ const STATUS_PILL: Record<StripState, string> = {
   ci_failed: 'CI failed', fixing: 'Fixing', failed: 'Failed', ready: 'Ready', blocked: 'Blocked', queued: 'Queued',
 };
 
+/**
+ * The drawer's status pill: a kernel-owned delivery's canonical label (the
+ * words Home, the task list and chat say), else the strip state's own word.
+ */
+export function stripDrawerPill(t: Pick<BoardTask, 'delivery'>, state: StripState, executor: MissionExecutor | null): string {
+  if (t.delivery) return t.delivery.label;
+  return state === 'ready' && executor === 'local' ? 'Needs claim' : STATUS_PILL[state];
+}
+
 const STEP_BTN = 'inline-flex h-11 items-center justify-center border-[1.5px] border-border-default font-mono text-text-primary hover:bg-surface-3 disabled:opacity-40';
 
 export function LandedStrip({ model, compact, link, workspaceId, executor, focus, count }: LandedStripProps) {
@@ -240,13 +249,16 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
     blockedByCount,
   });
   const why = landed ? null : reason ?? selectionReason ?? stripReason(t, executor);
-  const pill = state === 'ready' && executor === 'local' ? 'Needs claim' : STATUS_PILL[state];
+  const pill = stripDrawerPill(t, state, executor);
   const meta = [
     t.pr ? `PR #${t.pr.number}` : null,
     landed && t.endedAt != null ? `landed ${formatAge(now - t.endedAt)} ago` : null,
     t.id.slice(0, 8),
   ].filter(Boolean).join(' · ');
-  const twoCol = compact ? '' : 'md:grid md:grid-cols-[minmax(0,1fr)_fit-content(60%)] md:gap-6';
+  // One column at every width: the title and reason take the drawer's full
+  // width, and the actions sit below them (a side column squeezed the title
+  // to a word or two per line in the band's half-width Landed cell).
+  const action = !landed && t.delivery?.action ? t.delivery.action : null;
 
   return (
     <div
@@ -256,7 +268,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
       data-testid="landed-strip-drawer"
       data-task-ref={t.id}
       data-status={state}
-      className={`relative mt-2.5 border-2 bg-surface-1 p-4 outline-none transition-colors duration-200 motion-reduce:transition-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-text-primary ${TONE_BORDER[tone]} ${twoCol}`}
+      className={`relative mt-2.5 border-2 bg-surface-1 p-4 outline-none transition-colors duration-200 motion-reduce:transition-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-text-primary ${TONE_BORDER[tone]}`}
     >
       {/* The caret: the drawer's own corner, pointing at the selected cell. */}
       <span
@@ -278,7 +290,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
         {why && <p data-testid="landed-strip-drawer-reason" className="font-mono text-body leading-normal text-text-secondary [overflow-wrap:anywhere]">{why}</p>}
         <p className="font-mono text-meta text-text-muted">{meta}</p>
       </div>
-      <div className={`mt-3 flex min-w-0 flex-col gap-2 ${compact ? '' : 'md:mt-0'}`}>
+      <div className="mt-3 flex min-w-0 flex-col gap-2">
         {!landed && (
           <TaskActionZone
             key={t.id}
@@ -300,6 +312,16 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
           />
         )}
         <div className="flex flex-wrap gap-2">
+          {action && (
+            // S37: the same next move Home's card offers for this delivery.
+            <a
+              href={taskPageHref({ taskId: action.taskId, missionId: link.missionId })}
+              data-testid="landed-strip-drawer-delivery-action"
+              className="inline-flex h-11 flex-1 items-center justify-center border-[1.5px] border-accent bg-accent px-3.5 font-mono text-body font-semibold text-white hover:bg-primary-hover"
+            >
+              {action.label}
+            </a>
+          )}
           {landed && t.pr?.url && (
             <a href={t.pr.url} target="_blank" rel="noopener noreferrer" className="inline-flex h-11 flex-1 items-center justify-center border-[1.5px] border-border-strong px-3.5 font-mono text-body font-semibold text-text-primary hover:bg-surface-3">
               {`PR #${t.pr.number} ↗`}
