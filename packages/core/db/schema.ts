@@ -2384,10 +2384,16 @@ export const evidenceBackends = pgTable('evidence_backends', {
 export const evidenceObjects = pgTable('evidence_objects', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // Owner, exactly one of two shapes (CHECK evidence_objects_one_owner below):
+  // a task run (task_id + root_task_id + worker_id, scout_run_id null), or a
+  // Quality Scout run hosted on a runner (scout_run_id only; it has no task
+  // or worker). Null only in the Scout shape.
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
   // Root task in a retry chain; for lineage and grouping
-  rootTaskId: uuid('root_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
-  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  rootTaskId: uuid('root_task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }),
+  // A runner-hosted Scout run's command log (artifact quality-scout-runner-host §4).
+  scoutRunId: uuid('scout_run_id').references(() => qualityScoutRuns.id, { onDelete: 'cascade' }),
   // PR number if this evidence came from a CI failure on a buildd PR
   prNumber: integer('pr_number'),
   // Kind of evidence: command_output | test_report | ci_job_log | transcript | pr_diff
@@ -2417,6 +2423,12 @@ export const evidenceObjects = pgTable('evidence_objects', {
   backendIdx: index('evidence_objects_backend_idx').on(t.backendId),
   // Task lineage: find all evidence for a task and its retry chain
   taskLineageIdx: index('evidence_objects_task_lineage_idx').on(t.workspaceId, t.rootTaskId, t.taskId),
+  scoutRunIdx: index('evidence_objects_scout_run_idx').on(t.scoutRunId),
+  oneOwner: check(
+    'evidence_objects_one_owner',
+    sql`(${t.scoutRunId} IS NULL AND ${t.taskId} IS NOT NULL AND ${t.rootTaskId} IS NOT NULL AND ${t.workerId} IS NOT NULL)
+      OR (${t.scoutRunId} IS NOT NULL AND ${t.taskId} IS NULL AND ${t.rootTaskId} IS NULL AND ${t.workerId} IS NULL)`,
+  ),
 }));
 
 // Mission notes — lightweight append-only feed for agent↔user communication

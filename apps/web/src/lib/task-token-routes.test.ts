@@ -30,6 +30,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/discrepancies/[id]/route.ts',
   'apps/web/src/app/api/discrepancies/route.ts',
   'apps/web/src/app/api/evidence/route.ts',
+  // GET only (read_evidence on a Scout run's log): the run's workspace via taskScopeAllowsWorkspace. POST is runner-key only.
+  'apps/web/src/app/api/quality-scout/runs/[id]/evidence/route.ts',
   'apps/web/src/app/api/experiments/[id]/route.ts',
   'apps/web/src/app/api/experiments/route.ts',
   'apps/web/src/app/api/explain/route.ts',

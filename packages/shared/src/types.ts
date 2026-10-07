@@ -3391,9 +3391,12 @@ export type EvidenceKind = 'command_output' | 'test_report' | 'ci_job_log' | 'tr
 export interface EvidenceObjectSummary {
   id: string;
   workspaceId: string;
-  taskId: string;
-  rootTaskId: string;
-  workerId: string;
+  /** Null exactly when the object belongs to a Scout run (`scoutRunId`) instead of a task run. */
+  taskId: string | null;
+  rootTaskId: string | null;
+  workerId: string | null;
+  /** The runner-hosted Quality Scout run that wrote it; null for task-run evidence. */
+  scoutRunId: string | null;
   prNumber: number | null;
   kind: EvidenceKind;
   bytes: number;
@@ -3439,6 +3442,41 @@ export interface EvidenceLookupResponse {
   prNumber: number | null;
   taskIds: string[];
   objects: EvidenceObjectSummary[];
+}
+
+/** GET /api/quality-scout/runs/:id/evidence */
+export interface ScoutRunEvidenceListResponse {
+  scoutRunId: string;
+  workspaceId: string;
+  objects: EvidenceObjectSummary[];
+}
+
+/** GET /api/quality-scout/runs/:id/evidence?evidenceId=… */
+export interface ScoutRunEvidenceReadResponse extends EvidenceReadResult {
+  scoutRunId: string;
+  workspaceId: string;
+  object: EvidenceObjectSummary;
+}
+
+/**
+ * POST /api/quality-scout/runs/:id/evidence — a lease-holding runner asks for
+ * a presigned PUT for one command log. The runner gets a URL bound to one key
+ * and one byte length, never a backend credential; it cites the object in a
+ * probe result as `{ kind: 'evidence', ref: 'evidence:<evidenceId>' }` after
+ * confirming the upload (POST …/evidence/:evidenceId/confirm).
+ */
+export interface ScoutRunEvidenceUploadRequest {
+  leaseId: string;
+  kind: 'command_output' | 'test_report';
+  seq: number;
+  sizeBytes: number;
+}
+
+export interface ScoutRunEvidenceUploadResponse {
+  uploadUrl: string;
+  evidenceId: string;
+  contentLength: number;
+  expiresIn: number;
 }
 
 /** Aggregate coordination telemetry; no worker, user or cost details. */
