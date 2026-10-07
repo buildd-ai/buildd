@@ -1,0 +1,74 @@
+/**
+ * The kernel's live GitHub reads (R2, docs/specs/workflow-state-kernel.md §2):
+ * a webhook payload or a runner report is a hint; the reducer acts on a read
+ * the kernel took after the hint arrived.
+ */
+import { eq } from 'drizzle-orm';
+import { db } from '@buildd/core/db';
+import { workspaces } from '@buildd/core/db/schema';
+import { githubApi } from '@/lib/github';
+import type { LivePr } from './commands';
+import type { GithubFactReader } from './facts';
+
+interface GithubPull {
+  state?: string;
+  merged?: boolean;
+  merged_at?: string | null;
+  merge_commit_sha?: string | null;
+  updated_at?: string | null;
+  head?: { sha?: string; repo?: { full_name?: string } | null };
+  base?: { ref?: string };
+}
+
+export function toLivePr(pr: GithubPull | null | undefined): LivePr | null {
+  const headSha = pr?.head?.sha;
+  if (!pr || !headSha) return null;
+  return {
+    state: pr.state === 'closed' ? 'closed' : 'open',
+    merged: pr.merged === true || !!pr.merged_at,
+    headSha,
+    headRepoFullName: pr.head?.repo?.full_name ?? null,
+    baseRef: pr.base?.ref ?? null,
+    mergedAt: pr.merged_at ?? null,
+    mergeCommitSha: pr.merge_commit_sha ?? null,
+    updatedAt: pr.updated_at ?? null,
+  };
+}
+
+export function githubReader(installationId: number, api: typeof githubApi = githubApi): GithubFactReader {
+  return {
+    async readPr(repoFullName, prNumber) {
+      try {
+        return toLivePr(await api(installationId, `/repos/${repoFullName}/pulls/${prNumber}`) as GithubPull);
+      } catch (err) {
+        console.warn(`[workflow] live read of ${repoFullName}#${prNumber} failed:`, err);
+        return null;
+      }
+    },
+    async contains(repoFullName, ancestorSha, headSha) {
+      try {
+        const cmp = await api(installationId, `/repos/${repoFullName}/compare/${ancestorSha}...${headSha}`) as { status?: string } | null;
+        return cmp?.status === 'ahead' || cmp?.status === 'identical';
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+export interface WorkspaceRepo {
+  installationId: number;
+  repoFullName: string;
+  gitConfig: unknown;
+}
+
+export async function workspaceRepo(workspaceId: string): Promise<WorkspaceRepo | null> {
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+    columns: { id: true, gitConfig: true },
+    with: { githubRepo: { columns: { fullName: true }, with: { installation: { columns: { installationId: true } } } } },
+  });
+  const installationId = ws?.githubRepo?.installation?.installationId;
+  const repoFullName = ws?.githubRepo?.fullName;
+  return installationId && repoFullName ? { installationId, repoFullName, gitConfig: ws?.gitConfig ?? null } : null;
+}

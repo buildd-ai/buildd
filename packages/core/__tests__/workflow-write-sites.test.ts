@@ -23,6 +23,7 @@ const ALLOWED = new Set([
   'packages/core/db/schema.ts',
   'packages/core/__tests__/workflow-write-sites.test.ts',
   'apps/web/tests/db/workflow-kernel.test.ts',
+  'apps/web/tests/db/workflow-seam.test.ts',
 ]);
 
 const TABLE_NAMES = /\b(workflow_deliveries|workflow_review_rounds|workflow_facts|workflow_transitions|workflow_effects|workflow_attempts|trunk_incidents)\b/;

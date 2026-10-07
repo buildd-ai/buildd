@@ -75,6 +75,7 @@ import { workspaceCapGate } from './workspace-cap-gate';
 import { workspaceExecutorGate } from './workspace-executor-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
+import { cancelSkippedTask, claimFix as claimKernelFix } from '@/lib/workflow/seam';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
@@ -1150,6 +1151,7 @@ export async function POST(req: NextRequest) {
     routing_paused: 0,
     duplicate_worker: 0,
     sibling_retry_open: 0,
+    fix_not_needed: 0,
     runner_capability: 0,
     codex_single_flight: 0,
     oauth_parallelism: 0,
@@ -2443,6 +2445,35 @@ export async function POST(req: NextRequest) {
         await releaseGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, insertedIds: gatedStartLeaseIds });
       }
       continue;
+    }
+
+    // Workflow kernel T9 (docs/specs/workflow-state-kernel.md §10.5): a review
+    // fix is revalidated against a live read at claim. One whose target was
+    // resolved while it queued (approved, merged, head moved, round superseded)
+    // is cancelled as skipped — never started, and not a worker failure.
+    if ((task as any).deliveryRole === 'fix' && (task as any).deliveryId) {
+      const fixDecision = await claimKernelFix({
+        id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: 'fix', context: task.context,
+      }).catch((err): { action: 'defer'; reason: string } => {
+        console.error(`[claim] workflow kernel FixClaimed failed for task ${task.id}:`, err);
+        return { action: 'defer', reason: 'kernel_error' };
+      });
+      if (fixDecision.action !== 'proceed') {
+        if (gatedStartLeaseIds.length > 0) {
+          await releaseGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, insertedIds: gatedStartLeaseIds });
+        }
+        if (fixDecision.action === 'cancel') {
+          console.log(`[claim] task ${task.id} skipped: ${fixDecision.reason}`);
+          await cancelSkippedTask(task.id, fixDecision.reason);
+        } else {
+          await withDispatchHint({ suppress: 'claim_rollback' }, db
+            .update(tasks)
+            .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
+            .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id))));
+        }
+        deferTask(task, 'fix_not_needed', { reason: fixDecision.reason });
+        continue;
+      }
     }
 
     if (experimentDraw) {

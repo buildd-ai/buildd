@@ -1535,6 +1535,12 @@ export interface ClaimDiagnostics {
      */
     sibling_retry_open?: number;
     /**
+     * Workflow-kernel review fix skipped at claim: its target was resolved
+     * while it queued (approved, merged, head moved, round superseded), or the
+     * live revalidation could not run and the claim was rolled back.
+     */
+    fix_not_needed?: number;
+    /**
      * Claim planner in `apply` mode ordered this task behind a picked, in-flight
      * or open-PR node it would collide with. Replaces the per-poll
      * path_overlap / advisory_manifest deferral for that task.

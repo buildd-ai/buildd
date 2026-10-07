@@ -11,8 +11,6 @@
  *
  * A replayed idempotency key violates workflow_transitions' unique index and
  * aborts the whole statement; the runner re-reads and answers `duplicate`.
- *
- * DARK: no route calls `applyCommand` yet.
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
@@ -318,6 +316,7 @@ export function toDeliverySnapshot(r: J): DeliverySnapshot {
     mergedAt: s(r.merged_at),
     mergeCommitSha: s(r.merge_commit_sha),
     supersededByPr: r.superseded_by_pr == null ? null : Number(r.superseded_by_pr),
+    authority: r.authority === 'legacy' ? 'legacy' : 'kernel',
   };
 }
 
@@ -326,6 +325,7 @@ export function toRoundSnapshot(r: J): RoundSnapshot {
     id: String(r.id), round: n(r.round), headSha: String(r.head_sha), kind: r.kind as RoundSnapshot['kind'],
     status: r.status as RoundSnapshot['status'], verdict: (r.verdict ?? null) as RoundSnapshot['verdict'],
     effectiveVerdict: (r.effective_verdict ?? null) as RoundSnapshot['effectiveVerdict'], failureCount: n(r.failure_count),
+    reviewerTaskId: s(r.reviewer_task_id),
   };
 }
 

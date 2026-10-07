@@ -1,9 +1,8 @@
 /**
  * Workflow state kernel vocabulary (docs/specs/workflow-state-kernel.md §4–§6).
  *
- * DARK: nothing outside apps/web/src/lib/workflow/ imports this yet. The seam
- * task wires routes to `ingestFact` / `applyCommand`; until then these types
- * describe the contract the reducer and the CAS statement builder implement.
+ * Routes reach the kernel only through `seam.ts`; these types describe the
+ * contract the reducer and the CAS statement builder implement.
  */
 
 // ── §4 State vocabulary ─────────────────────────────────────────────────────
@@ -88,6 +87,8 @@ export interface DeliverySnapshot {
   mergedAt: string | null;
   mergeCommitSha: string | null;
   supersededByPr: number | null;
+  /** §14 cutover: who decides for this delivery. Absent in fixtures = 'kernel'. */
+  authority?: 'kernel' | 'legacy';
 }
 
 export interface RoundSnapshot {
@@ -99,6 +100,7 @@ export interface RoundSnapshot {
   verdict: Verdict | null;
   effectiveVerdict: Verdict | null;
   failureCount: number;
+  reviewerTaskId?: string | null;
 }
 
 export interface AttemptSnapshot {

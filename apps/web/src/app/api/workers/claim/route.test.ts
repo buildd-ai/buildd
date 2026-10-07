@@ -313,6 +313,15 @@ mock.module('@/lib/supersession', () => ({
   checkDispatch: mock(() => Promise.resolve({ verdict: 'keep', rule: null })),
   guardDispatchedTask: mock(() => Promise.resolve(false)),
 }));
+// Workflow kernel T9 (lib/workflow/seam.ts; real-SQL suite in
+// apps/web/tests/db/workflow-seam.test.ts). Here only the wiring: a kernel fix
+// is revalidated after the claim CAS, and one the kernel skips is cancelled.
+const mockClaimKernelFix = mock(async (_t: any): Promise<any> => ({ action: 'proceed' }));
+const mockCancelSkippedTask = mock(async (_id: string, _reason: string) => undefined);
+mock.module('@/lib/workflow/seam', () => ({
+  claimFix: mockClaimKernelFix,
+  cancelSkippedTask: mockCancelSkippedTask,
+}));
 // Claim planner I/O (./claim-plan-store). Default: no signals, writes captured.
 const emptyPlannerSignals = () => ({ predictions: new Map(), overlapAnswers: [], starvationCredit: new Map(), dependentCount: new Map() });
 const mockLoadPlannerSignals = mock(async (_ids: string[], _ws: string[]): Promise<any> => emptyPlannerSignals());
@@ -8424,6 +8433,42 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect((mockGuardClaimedRetry.mock.calls[0] as any[])[0]).toMatchObject({ id: 'task-1', reviewerRetryPrNumber: 3431 });
     expect(data.diagnostics.deferrals.sibling_retry_open).toBe(1);
     expect(data.diagnostics.taskExclusion.code).toBe('sibling_retry_open');
+  });
+
+  it('T9: a kernel review fix whose target was resolved while it queued is cancelled as skipped, not claimed', async () => {
+    mockClaimKernelFix.mockReset();
+    mockCancelSkippedTask.mockClear();
+    mockClaimKernelFix.mockResolvedValueOnce({ action: 'cancel', reason: 'fix_not_needed' });
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'attempt', reviewerRetryPrNumber: 77, parentTaskId: 'orig', deliveryId: 'delivery-1', deliveryRole: 'fix', context: { workflowAttemptId: 'attempt-1' } })]);
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(mockClaimKernelFix).toHaveBeenCalledTimes(1);
+    expect((mockClaimKernelFix.mock.calls[0] as any[])[0]).toMatchObject({ id: 'task-1', deliveryId: 'delivery-1', deliveryRole: 'fix' });
+    expect(mockCancelSkippedTask).toHaveBeenCalledWith('task-1', 'fix_not_needed');
+    expect(data.diagnostics.deferrals.fix_not_needed).toBe(1);
+    expect(data.diagnostics.taskExclusion.code).toBe('fix_not_needed');
+  });
+
+  it('T9: a kernel fix that cannot be revalidated (GitHub unreadable) is rolled back to pending, not cancelled', async () => {
+    mockClaimKernelFix.mockReset();
+    mockCancelSkippedTask.mockClear();
+    mockClaimKernelFix.mockResolvedValueOnce({ action: 'defer', reason: 'live_read_failed' });
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'attempt', deliveryId: 'delivery-1', deliveryRole: 'fix', context: {} })]);
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(mockCancelSkippedTask).not.toHaveBeenCalled();
+    expect(data.diagnostics.deferrals.fix_not_needed).toBe(1);
+  });
+
+  it('a task with no kernel delivery never consults the kernel at claim', async () => {
+    mockClaimKernelFix.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'attempt', reviewerRetryPrNumber: 3431, parentTaskId: 'orig' })]);
+    await claim({ runner: 'mcp' });
+    expect(mockClaimKernelFix).not.toHaveBeenCalled();
   });
 
   it('a task that is not an attempt never consults the retry guard', async () => {

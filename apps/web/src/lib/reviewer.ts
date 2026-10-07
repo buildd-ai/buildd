@@ -403,6 +403,14 @@ export interface CreateReviewerTaskParams {
   priorVerdict?: PriorVerdict;
   /** The delta's files (`priorVerdict.headSha..headSha`), when already fetched. */
   deltaFiles?: GithubPrFile[];
+  /**
+   * Set only by the workflow kernel's `dispatch_review` effect: the review
+   * round this task serves (docs/specs/workflow-state-kernel.md §8). Without
+   * it, a reviewer for a PR the kernel owns is refused — every review of a
+   * kernel delivery is a round, so no legacy door can stack a second
+   * authority's reviewer onto it.
+   */
+  workflowRound?: { deliveryId: string; roundId: string; round: number };
 }
 
 /** Task states in which a reviewer task still owns its subject. */
@@ -477,6 +485,17 @@ export async function createReviewerTask(
   if (dispatch.verdict === 'skip_dispatch') {
     console.log(`[reviewer] Not creating a reviewer for PR #${prNumber}: ${dispatch.rule}`);
     return null;
+  }
+
+  // One authority per delivery (§14): a PR the workflow kernel owns is reviewed
+  // only in kernel rounds, dispatched by its own effect.
+  if (!params.workflowRound) {
+    const { kernelDeliveryForPr } = await import('./workflow/authority');
+    const owned = await kernelDeliveryForPr(workspaceId, repoFullName, prNumber).catch(() => null);
+    if (owned) {
+      console.log(`[reviewer] Not creating a reviewer for PR #${prNumber}: the workflow kernel owns its reviews (delivery ${owned})`);
+      return null;
+    }
   }
 
   // The reviewer task's subject IS this PR at this commit, asserted by the
@@ -616,7 +635,9 @@ export async function createReviewerTask(
         // lands on the claim it was made about, not on whatever now sits at
         // that index.
         ...(missionCriteria.length > 0 ? { [REVIEWER_CRITERIA_CONTEXT_KEY]: missionCriteria } : {}),
+        ...(params.workflowRound ? { workflowRoundId: params.workflowRound.roundId } : {}),
       },
+      ...(params.workflowRound ? { deliveryId: params.workflowRound.deliveryId, deliveryRole: 'review' as const } : {}),
       release: 'false', // reviewer tasks never trigger releases
       priority: 8,      // reviewer tasks are high priority
       status: 'pending',

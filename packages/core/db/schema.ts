@@ -579,6 +579,13 @@ export interface WorkspaceGitConfig {
   // with no pushback and no decide/hold.
   jevQuestionGate?: boolean;
 
+  // Workflow state kernel (docs/specs/workflow-state-kernel.md §14). Absent /
+  // true = ON: a PR delivery opened from then on is owned by the kernel (review
+  // rounds, fix loop, delivery proof). Set to false, the emergency kill switch,
+  // to hand every kernel delivery of this workspace back to the legacy paths
+  // (sticky per delivery) and open no new ones.
+  workflowKernel?: boolean;
+
   // PR landing function rollout (`apps/web/src/lib/pr-landing.ts`, design:
   // knowledge-base: buildd/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
   // paths only. `shadow` (absent = shadow): the landing decision is computed and
@@ -1343,6 +1350,12 @@ export const tasks = pgTable('tasks', {
   // on the same headSha; only one fix task per (workspace, PR, headSha).
   reviewerRetryPrNumber: integer('reviewer_retry_pr_number'),
   reviewerRetryHeadSha: text('reviewer_retry_head_sha'),
+  // Workflow kernel attempt linkage (docs/specs/workflow-state-kernel.md §5.6):
+  // the delivery this task is an attempt of, and its role in it. NULL = not a
+  // kernel delivery's attempt (legacy, or not PR work). No FK: the delivery row
+  // references tasks (owner_task_id), and a delivery is never deleted on its own.
+  deliveryId: uuid('delivery_id'),
+  deliveryRole: text('delivery_role').$type<'owner' | 'fix' | 'ci_fix' | 'conflict_fix' | 'review'>(),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review' | 'research'>(),
   // How `category` was decided, once the decision model has looked at the task
@@ -1500,6 +1513,7 @@ export const tasks = pgTable('tasks', {
   // CI retries carry the same subject anchor, so `category` scopes it to reviews;
   // `creation_source = 'webhook'` + a parent scopes it to createReviewerTask rows,
   // so a human/API filing auto-classified as 'review' never collides with it.
+  deliveryIdx: index('tasks_delivery_idx').on(t.deliveryId).where(sql`${t.deliveryId} IS NOT NULL`),
   onePendingReviewPerHeadIdx: uniqueIndex('tasks_one_pending_review_per_head_unique')
     .on(t.workspaceId, t.subjectPrNumber, t.subjectHeadSha)
     .where(sql`${t.category} = 'review' AND ${t.status} = 'pending' AND ${t.creationSource} = 'webhook' AND ${t.parentTaskId} IS NOT NULL AND ${t.subjectPrNumber} IS NOT NULL AND ${t.subjectHeadSha} IS NOT NULL`),
@@ -4644,7 +4658,7 @@ export const taskDispatchOutbox = pgTable('task_dispatch_outbox', {
 export type TaskDispatchOutboxRow = typeof taskDispatchOutbox.$inferSelect;
 
 // ── Workflow state kernel (docs/specs/workflow-state-kernel.md §5) ──────────
-// DARK: nothing outside apps/web/src/lib/workflow/ reads or writes these tables
+// Only apps/web/src/lib/workflow/ reads or writes these tables
 // (packages/core/__tests__/workflow-write-sites.test.ts). Every state change is
 // one version-CAS statement written by apps/web/src/lib/workflow/kernel.ts.
 
@@ -4695,6 +4709,12 @@ export const workflowDeliveries = pgTable('workflow_deliveries', {
   supersededByUrl: text('superseded_by_url'),
   supersededReason: text('superseded_reason'),
   recordedBy: text('recorded_by'),
+  // Who decides for this delivery (§14 cutover): 'kernel', or 'legacy' once the
+  // gitConfig.workflowKernel kill switch handed it back. Sticky: a delivery
+  // released to legacy finishes there even if the switch is turned on again,
+  // so no delivery ever has two authorities.
+  authority: text('authority').default('kernel').notNull().$type<'kernel' | 'legacy'>(),
+  releasedAt: timestamp('released_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   lastTransitionAt: timestamp('last_transition_at', { withTimezone: true }),
