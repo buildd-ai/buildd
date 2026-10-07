@@ -32,7 +32,7 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
 import { notifyTeamOf } from '@/lib/notify';
 import { githubApi } from '@/lib/github';
-import { refreshBehindPr } from '@/lib/base-refresh';
+import { refreshBehindPr, type RefreshOutcome } from '@/lib/base-refresh';
 import type { SemanticAssessment } from '@/lib/semantic-refresh';
 import type { BranchUpdateFailure } from '@/lib/pr-branch-update';
 import { formatAttemptTitle } from '@/lib/task-title';
@@ -548,6 +548,12 @@ export interface DispatchConflictRetryResult {
   semanticUnverified?: boolean;
   /** GitHub said there is nothing to merge in: the "behind" reading was stale. Re-read. */
   alreadyUpToDate?: boolean;
+  /**
+   * The PR was flagged as conflicting, but a merge against the current base
+   * tip was clean: the flag was stale. No agent was filed; `branchUpdated` or
+   * `alreadyUpToDate` says what was done instead.
+   */
+  conflictFalsePositive?: boolean;
 }
 
 /**
@@ -645,19 +651,61 @@ export async function dispatchConflictRetry(
   // in) a verified same-symbol edit, falls through to an agent; operational
   // failures, a moved head and unknown symbol coverage never do.
   const behindInstallationId = workspace.githubInstallation?.installationId ?? null;
+  const refreshParams = behindInstallationId
+    ? {
+        installationId: behindInstallationId,
+        repoFullName,
+        prNumber,
+        headSha,
+        workspaceId,
+        taskId,
+        workerId,
+        missionId: task.missionId ?? null,
+        gitConfig: workspace.gitConfig as WorkspaceGitConfig | null,
+      }
+    : null;
   let semanticConflict: SemanticAssessment | undefined;
-  if (params.behindOnly && behindInstallationId) {
-    const refresh = await refreshBehindPr({
-      installationId: behindInstallationId,
-      repoFullName,
-      prNumber,
-      headSha,
-      workspaceId,
-      taskId,
-      workerId,
-      missionId: task.missionId ?? null,
-      gitConfig: workspace.gitConfig as WorkspaceGitConfig | null,
+
+  // Claimed conflict: `mergeable: dirty` is a hint, never the verdict. GitHub
+  // computes it lazily, so right after the base moves it is often stale, and
+  // most PRs it flags merge cleanly. Before an agent is filed, the same
+  // update-branch merge is attempted against the CURRENT base tip — GitHub's
+  // own server-side merge is the merge-tree check. Clean: the branch is
+  // updated mechanically and no agent runs. Only a definitive clean answer
+  // skips the agent; a real conflict, a moved head, an operational failure or
+  // any error falls through to today's dispatch, never a silent drop. A
+  // migration-number collision is invisible to git, so it is not re-checked.
+  if (refreshParams && !params.behindOnly && !migrationCollision) {
+    const recheck: RefreshOutcome | null = await refreshBehindPr(refreshParams).catch((err) => {
+      console.warn(`[conflict-retry] conflict recheck failed for PR #${prNumber} — dispatching as before:`, err);
+      return null;
     });
+    if (recheck?.kind === 'updated' || recheck?.kind === 'up_to_date') {
+      console.log(`[conflict-retry] PR #${prNumber} flagged as conflicting but merges cleanly with its base (${recheck.kind}) — no agent dispatched`);
+      fireGateEvent({
+        gate: GATE_SLUGS.BASE_REFRESH,
+        surface: 'conflict-retry',
+        outcome: 'warned',
+        reason: 'conflict_false_positive',
+        workspaceId,
+        missionId: task.missionId ?? null,
+        taskId,
+        workerId,
+        callerOrigin: 'system',
+        detail: { prNumber, headSha, repoFullName, recheck: recheck.kind, stage: 'conflict_recheck' },
+      });
+      return recheck.kind === 'updated'
+        ? { dispatched: true, branchUpdated: true, conflictFalsePositive: true }
+        : { dispatched: false, alreadyUpToDate: true, conflictFalsePositive: true };
+    }
+    if (recheck?.kind === 'semantic_conflict') semanticConflict = recheck.assessment;
+    else if (recheck?.kind !== 'conflict') {
+      console.warn(`[conflict-retry] conflict recheck for PR #${prNumber} was inconclusive (${recheck?.kind ?? 'no answer'}) — dispatching as before`);
+    }
+  }
+
+  if (params.behindOnly && refreshParams) {
+    const refresh = await refreshBehindPr(refreshParams);
     switch (refresh.kind) {
       case 'updated':
         console.log(`[conflict-retry] PR #${prNumber} was behind its base — updated via GitHub, no agent dispatched`);
