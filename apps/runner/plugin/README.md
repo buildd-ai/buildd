@@ -78,10 +78,21 @@ is never touched. A `--here --oauth` folder that is not a workspace yet keeps
 the key until it is. `buildd install --global --status` lists every buildd
 entry and whether it uses the key or OAuth.
 
+## Credential
+
+`buildd login` saves a **presence token** for you (`presenceToken` in
+`~/.buildd/config.json`, one per machine) next to the API key, and the hooks
+send that. It covers every team you are in, so a claim made with another team's
+key or over OAuth still binds and is released on exit. It can only report
+presence, read your workspace repos and bind or release your own interactive
+workers; every other buildd route refuses it. `buildd logout` revokes it. A
+config without one (an older login) falls back to the API key.
+
 ## Configuration
 
 | Variable | Effect |
 |---|---|
+| `BUILDD_PRESENCE_TOKEN` | Override the saved presence token |
 | `BUILDD_API_KEY`, `BUILDD_SERVER` | Override `~/.buildd/config.json` |
 | `BUILDD_HOOKS_DISABLED=1` | Hooks do nothing (MCP-only mode) |
 | `BUILDD_HOOK_DEBUG=1` | Log hook decisions to stderr |
