@@ -18,6 +18,8 @@
  *     Postgres, with their route wiring a todo of the spec slice that moves those doors.
  *   - 7ab4916f: Slice A part 3 (DeliveryView / owner of next move, activity from
  *     transitions, release composition, S35–S37)
+ *   - 2583024f: S30 (runner hand-off failures → AttemptEnded(unproven)) and S31 (preflight,
+ *     preflight_miss) run live.
  *   - "spec Slice B/C/D": no task filed yet (§14).
  */
 import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
@@ -33,7 +35,7 @@ let prSeq = 9100;
 
 // ── Fake GitHub: one PR whose head, state and ancestry a test moves ─────────
 
-interface FakePr { head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]>; ciGreen?: boolean | null }
+interface FakePr { head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]>; ciGreen?: boolean | null; failing?: string[] | null }
 let gh: FakePr;
 const live = (): LivePr => ({
   state: gh.state, merged: gh.merged, headSha: gh.head, headRepoFullName: REPO, baseRef: 'dev', updatedAt: gh.updatedAt,
@@ -43,6 +45,7 @@ const reader: GithubFactReader = {
   readPr: async () => live(),
   contains: async (_repo, ancestor, head) => ancestor === head || (gh.ancestors[head] ?? []).includes(ancestor),
   ciGreen: async () => gh.ciGreen ?? null,
+  failingChecks: async () => gh.failing ?? null,
 };
 const repoFor = async () => ({ installationId: 1, repoFullName: REPO, gitConfig: null });
 
@@ -1248,10 +1251,41 @@ describe('S30 — runner hand-off failures', () => {
 });
 
 describe('S31 — preflight', () => {
-  // Intended: create_pr refuses a body the no-prod-data CI scan would reject, with the reason, via
-  // the function the CI script shares; a runner preflight failure keeps the attempt open with the
-  // output as its next instruction; a CI miss of a preflight class is tagged preflight_miss.
-  test.todo('S31: create_pr and runner preflight; CI miss tagged preflight_miss (§6.10 — no task filed)');
+  // Tier 1 (create_pr refuses a body CI's prose scan would reject, via the TS port held to the
+  // Python script by packages/core/__tests__/no-prod-data-prose.test.ts) is covered in
+  // apps/web/src/app/api/github/pr/route.test.ts; tier 2 (the runner's preflight denies the push
+  // with the output as the next instruction, attempt open) in
+  // apps/runner/__tests__/unit/preflight-guard.test.ts. Tier 3 runs here, on the live CI door.
+  test('S31: a CI failure of a preflight class is tagged preflight_miss on its transition; the repair is exactly as without it', async () => {
+    const o = await openAndHandOn();
+    gh.failing = ['Build', 'No Production Data'];
+    const seen = await ciFail(o);
+    expect(seen).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+    const t = (await transitions(o.deliveryId)).at(-1)!;
+    expect(t).toMatchObject({ command: 'CiFailedObserved', to_state: 'REPAIRING' });
+    expect(t.evidence).toMatchObject({ preflightMiss: 'No Production Data', signature: 'ci_failed', attemptNo: 1 });
+    expect((await ciAttempts(o.deliveryId)).map((a) => [a.attemptNo, a.status])).toEqual([[1, 'queued']]);
+  });
+
+  test('S31: a product failure, or an unreadable check list, is not a miss', async () => {
+    const o = await openAndHandOn();
+    gh.failing = ['Unit tests'];
+    await ciFail(o);
+    expect((await transitions(o.deliveryId)).at(-1)!.evidence).not.toHaveProperty('preflightMiss');
+
+    const o2 = await openAndHandOn();
+    gh.failing = null;
+    await ciFail(o2);
+    expect((await transitions(o2.deliveryId)).at(-1)!.evidence).not.toHaveProperty('preflightMiss');
+  });
+
+  test('S31: a workspace names its own preflight classes (gitConfig.preflight.ciChecks)', async () => {
+    const o = await openAndHandOn();
+    gh.failing = ['Lint ratchet'];
+    const own = { ...deps, repoFor: async () => ({ installationId: 1, repoFullName: REPO, gitConfig: { preflight: { ciChecks: ['lint'] } } }) };
+    await ciFail(o, { d: own });
+    expect((await transitions(o.deliveryId)).at(-1)!.evidence).toMatchObject({ preflightMiss: 'Lint ratchet' });
+  });
 });
 
 // ══ S32–S34: release composition ═════════════════════════════════════════════

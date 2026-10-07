@@ -588,6 +588,18 @@ describe('T10 CiFailedObserved (S23, S28)', () => {
     expect(ins).toMatchObject({ family: 'ci', attemptNo: 1, trigger: 'automatic' });
     expect(dec.patch).toMatchObject({ ci: 'red', ciHeadSha: 'H1', stateReason: 'ci', boundAttemptId: ins.id });
   });
+  test('S31: a preflight-class failure is tagged preflightMiss on the transition, and changes nothing else', () => {
+    const tagged = applied(ci(V(D({ state: 'AWAITING_REVIEW' })), { preflightMiss: 'No Production Data' }));
+    const plain = applied(ci(V(D({ state: 'AWAITING_REVIEW' }))));
+    expect(tagged.evidence).toMatchObject({ preflightMiss: 'No Production Data' });
+    expect(plain.evidence).not.toHaveProperty('preflightMiss');
+    expect(tagged.toState).toBe(plain.toState);
+    expect(effectKinds(tagged)).toEqual(effectKinds(plain));
+    // Every T10 outcome carries it: deferral while a review fix is owed, and the exhausted escalation.
+    expect(applied(ci(V(D({ state: 'CHANGES_REQUESTED' })), { preflightMiss: 'x' })).evidence).toMatchObject({ preflightMiss: 'x' });
+    const three = [1, 2, 3].map((n) => A({ id: `c${n}`, family: 'ci', attemptNo: n, status: 'ended' }));
+    expect(applied(ci(V(D({ state: 'AWAITING_REVIEW' }), [], three), { preflightMiss: 'x' })).evidence).toMatchObject({ preflightMiss: 'x' });
+  });
   test('an old-SHA failure is recorded only; CHANGES_REQUESTED keeps state', () => {
     expectResult(ci(V(D({ state: 'AWAITING_REVIEW' })), { headSha: 'H0' }), 'stale', 'head_not_current');
     const cr = applied(ci(V(D({ state: 'CHANGES_REQUESTED' }))));

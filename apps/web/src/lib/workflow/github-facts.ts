@@ -44,6 +44,13 @@ export function ciGreenFromSuites(suites: Array<{ status?: string; conclusion?: 
   return suites.every((x) => PASSING.has(String(x.conclusion ?? '')));
 }
 
+const FAILING = new Set(['failure', 'timed_out', 'startup_failure']);
+
+/** The distinct names of failed workflow runs and check runs. */
+export function failingNames(rows: Array<{ name?: string | null; conclusion?: string | null }>): string[] {
+  return [...new Set(rows.filter((r) => FAILING.has(String(r.conclusion ?? '')) && r.name).map((r) => String(r.name)))];
+}
+
 export function githubReader(installationId: number, api: typeof githubApi = githubApi): GithubFactReader {
   return {
     async readPr(repoFullName, prNumber) {
@@ -58,6 +65,17 @@ export function githubReader(installationId: number, api: typeof githubApi = git
       try {
         const data = await api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-suites`) as { check_suites?: Array<{ status?: string; conclusion?: string | null }> } | null;
         return ciGreenFromSuites(data?.check_suites);
+      } catch {
+        return null;
+      }
+    },
+    async failingChecks(repoFullName, headSha) {
+      try {
+        const [runs, checks] = await Promise.all([
+          api(installationId, `/repos/${repoFullName}/actions/runs?head_sha=${headSha}&per_page=50`) as Promise<{ workflow_runs?: Array<{ name?: string | null; conclusion?: string | null }> } | null>,
+          api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-runs?per_page=100`) as Promise<{ check_runs?: Array<{ name?: string | null; conclusion?: string | null }> } | null>,
+        ]);
+        return failingNames([...(runs?.workflow_runs ?? []), ...(checks?.check_runs ?? [])]);
       } catch {
         return null;
       }
