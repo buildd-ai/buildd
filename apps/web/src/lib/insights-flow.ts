@@ -174,7 +174,7 @@ export interface FlowSeries {
   headline: FlowHeadline;
 }
 
-export const UNASSIGNED_ROLE = 'unassigned';
+export const UNASSIGNED_ROLE = 'general-purpose';
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 const SHIPPED_RELEASE_STATES = new Set(['healthy', 'degraded']);
 const CLOSED_PR = new Set(['closed', 'unresolvable']);
