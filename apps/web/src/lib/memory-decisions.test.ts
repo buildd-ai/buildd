@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import {
   createRelevanceShadow,
+  createRelevanceJudge,
+  memoryRelevanceLiveEnabled,
   decisionUsageRow,
   scheduleAfter,
   scheduleMemoryUseLabels,
@@ -133,7 +135,64 @@ describe('createRelevanceShadow', () => {
   });
 });
 
+function judgeHarness(over: Record<string, unknown> = {}) {
+  const calls: any[] = [];
+  const judge = createRelevanceJudge({
+    liveDecider: () => stubDecider({
+      judgeRelevance: async (i) => { calls.push(i); return { demote: new Set(['m1']), record: () => {} }; },
+    }),
+    loadWorkspace: async () => ({ dataClass: 'standard', gitConfig: null }),
+    taskInWorkspace: async () => true,
+    disabled: () => false,
+    liveEnabled: () => true,
+    ...over,
+  } as any);
+  return { judge, calls };
+}
+
+describe('createRelevanceJudge', () => {
+  it('asks the decider inside the budget, with the mandatory flag and the scope', async () => {
+    const { judge, calls } = judgeHarness();
+    const v = await judge({ ...SHADOW_INPUT, budgetMs: 1_000, hits: [{ ...SHADOW_INPUT.hits[0], mandatory: true }] });
+    expect([...(v?.demote ?? [])]).toEqual(['m1']);
+    expect(calls[0]).toMatchObject({
+      scope: { teamId: TEAM, workspaceId: WS, taskId: TASK },
+      task: 'fix it',
+      caller: 'claim_context',
+      hits: [{ memoryId: 'm1', content: 'body', gatedBy: null, mandatory: true }],
+    });
+    expect(calls[0].budgetMs).toBeGreaterThan(0);
+    expect(calls[0].budgetMs).toBeLessThanOrEqual(1_000);
+  });
+
+  it('null (rule order and the shadow) when live is off, decisions are disabled, or the workspace/task does not check out', async () => {
+    for (const over of [
+      { liveEnabled: () => false },
+      { disabled: () => true },
+      { loadWorkspace: async () => ({ dataClass: 'sensitive' }) },
+      { taskInWorkspace: async () => false },
+      { loadWorkspace: async () => { throw new Error('db'); } },
+    ]) {
+      const { judge, calls } = judgeHarness(over);
+      expect(await judge({ ...SHADOW_INPUT, budgetMs: 1_000 })).toBeNull();
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it('a decider without judgeRelevance (an older fake) judges nothing', async () => {
+    const { judge } = judgeHarness({ liveDecider: () => stubDecider() });
+    expect(await judge({ ...SHADOW_INPUT, budgetMs: 1_000 })).toBeNull();
+  });
+});
+
 describe('config', () => {
+  it('relevance live is on by default; MEMORY_RELEVANCE_LIVE=0 returns to shadow only', () => {
+    expect(memoryRelevanceLiveEnabled({})).toBe(true);
+    expect(memoryRelevanceLiveEnabled({ MEMORY_RELEVANCE_LIVE: '0' })).toBe(false);
+    expect(memoryRelevanceLiveEnabled({ MEMORY_RELEVANCE_LIVE: 'off' })).toBe(false);
+    expect(memoryRelevanceLiveEnabled({ MEMORY_RELEVANCE_LIVE: '1' })).toBe(true);
+  });
+
   it('sample rate defaults to 0.25 and is clamped; the kill switch reads truthy values', () => {
     expect(relevanceShadowSampleRate({})).toBe(0.25);
     expect(relevanceShadowSampleRate({ MEMORY_RELEVANCE_SHADOW_SAMPLE: '0.5' })).toBe(0.5);
