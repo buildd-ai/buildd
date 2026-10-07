@@ -4608,6 +4608,23 @@ describe('POST /api/github/webhook', () => {
       expect(mockCarryForwardApproval).not.toHaveBeenCalled();
     });
 
+    it('workflow kernel: a push to a DRAFT kernel-owned PR is still a HeadObserved fact (ddcbe113); legacy still skips drafts', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      withChangesRequestedVerdict();
+      mockObserveHead.mockClear();
+      mockObserveHead.mockResolvedValueOnce(true);
+
+      await POST(createWebhookRequest('pull_request', makeSynchronizePayload({ pull_request: { draft: true } })));
+
+      expect(mockObserveHead).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 42, hintedHeadSha: NEW_SHA }));
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+
+      // A legacy (not kernel-owned) draft keeps its old behaviour: no re-dispatch.
+      mockObserveHead.mockResolvedValueOnce(false);
+      await POST(createWebhookRequest('pull_request', makeSynchronizePayload({ pull_request: { draft: true } })));
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
     it('workflow kernel: when ownership cannot be read, the push takes the legacy path (behaviour before the kernel)', async () => {
       withAgentReviewWorkspaceAndWorker();
       withChangesRequestedVerdict();

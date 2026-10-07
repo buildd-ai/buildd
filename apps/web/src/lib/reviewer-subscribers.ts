@@ -536,8 +536,9 @@ export const reviewerSubscribers: readonly AnySubscriber[] = [
   // reviewer against the new head. Without this the review loop never
   // closes; see maybeReDispatchReviewer's doc comment.
   subscriber('reviews', 'pr.synchronized', 'reviewer-redispatch-on-push', async e => {
-    if (e.pr.draft || !e.worker.taskId) return;
-    // A kernel-owned PR: the push is a HeadObserved fact (T3). The kernel
+    // A kernel-owned PR: the push is a HeadObserved fact (T3), draft or not — a
+    // draft's head is still the PR's head, and skipping it left the delivery bound
+    // to a stale one (task ddcbe113). The kernel
     // decides re-review, carry-forward (T13, from its own approved heads, never
     // the newest reviewer row) and fix supersession; the legacy re-dispatch
     // below must not run beside it.
@@ -553,7 +554,7 @@ export const reviewerSubscribers: readonly AnySubscriber[] = [
       console.error(`[reviewer] workflow kernel ownership check failed for PR #${e.pr.number}:`, err);
       return false;
     });
-    if (kernelHandled) return;
+    if (kernelHandled || e.pr.draft || !e.worker.taskId) return;
     await maybeReDispatchReviewer(e.installationId, e.repoFullName, webhookPr(e.pr), { ...e.worker, taskId: e.worker.taskId });
   }),
   // CI went red: hand the PR to retryCiFailureForPr, which files a bounded
