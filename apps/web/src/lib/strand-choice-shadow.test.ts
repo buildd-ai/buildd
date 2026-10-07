@@ -11,8 +11,8 @@ const strandedRow = () => ({
 });
 const cta = () => ({ missionId: 'm', quietMs: 0, taskId: 't', claimable: 1, blockedReason: null, order: 'runner-first' as const });
 const deps = (choice: string, confidence: number, calls: { n: number }) => ({
-  resolveAccess: (async () => ({ ok: true, apiKey: 'k', model: 'jev' })) as any,
-  decide: (async () => { calls.n++; return { ok: true, answers: { pick: { choice, confidence } }, model: 'jev', latencyMs: 1 }; }) as any,
+  resolveAccess: (async () => ({ ok: true, apiKey: 'k', model: 'typesafe/jev-1.13' })) as any,
+  decide: (async () => { calls.n++; return { ok: true, answers: { pick: { choice, confidence } }, model: 'typesafe/jev-1.13', latencyMs: 1 }; }) as any,
   cache: new Map(), log: () => {},
 });
 
@@ -50,8 +50,8 @@ describe('applyStrandChoice', () => {
     const card = { row: strandedRow() as any, strand: cta() };
     const cache = new Map();
     const deps_obj = {
-      resolveAccess: (async () => ({ ok: true, apiKey: 'k', model: 'jev' })) as any,
-      decide: (async () => { calls.n++; return { ok: true, answers: { pick: { choice: 'wait-for-local', confidence: 0.99 } }, model: 'jev', latencyMs: 1 }; }) as any,
+      resolveAccess: (async () => ({ ok: true, apiKey: 'k', model: 'typesafe/jev-1.13' })) as any,
+      decide: (async () => { calls.n++; return { ok: true, answers: { pick: { choice: 'wait-for-local', confidence: 0.99 } }, model: 'typesafe/jev-1.13', latencyMs: 1 }; }) as any,
       cache, log: () => {},
     };
     await applyStrandChoice([card], {
@@ -63,6 +63,13 @@ describe('applyStrandChoice', () => {
     // Cache miss: should render fallback order immediately (non-blocking)
     expect(card.strand.order).toBe('runner-first');
     // Call should be scheduled for later
-    expect(scheduled.length).toBeGreaterThan(0);
+    expect(scheduled).toHaveLength(1);
+    await scheduled[0]();
+    expect(calls.n).toBe(1);
+    scheduled.length = 0;
+    await applyStrandChoice([card], { now: NOW, mode: 'gated', schedule: fn => { scheduled.push(fn); }, deps: deps_obj });
+    expect(card.strand.order).toBe('local-first');
+    expect(scheduled).toHaveLength(0);
+    expect(calls.n).toBe(1);
   });
 });

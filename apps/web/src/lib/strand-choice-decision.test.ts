@@ -31,11 +31,11 @@ const facts: StrandChoiceFacts = {
 const okDecide = (choice: string, confidence: number) => async () => ({
   ok: true as const,
   answers: { pick: { choice, confidence } },
-  model: 'jev-test',
+  model: 'typesafe/jev-1.13',
   latencyMs: 12,
   usage: { inputTokens: 100, outputTokens: 0, costUsd: 0.00001 },
 });
-const allowed = async () => ({ ok: true as const, apiKey: 'k', model: 'jev-test' });
+const allowed = async () => ({ ok: true as const, apiKey: 'k', model: 'typesafe/jev-1.13' });
 
 describe('strand choice: structured facts only', () => {
   it('state carries numbers, slugs and flags — never a title, description or diff', () => {
@@ -159,79 +159,49 @@ describe('the owner’s tap is recorded as a label', () => {
     });
   });
 });
-describe("adviseStrandChoice - gated mode ledger recording", () => {
-  it("records applied decision with prompt version ms1, confidence, ruleAnswer when confident wait-for-local", async () => {
-    const lines: string[] = [];
-    const recordedDecisions: any[] = [];
-    const deps = {
-      resolveAccess: allowed as any,
-      decide: (async () => okDecide('wait-for-local', 0.92)()) as any,
-      cache: new Map(),
-      log: (l: string) => lines.push(l),
-    };
-    // Mock recordDecision
-    const origRecord = (await import('./strand-choice-decision')).recordDecision;
-    (globalThis as any).__mockRecordDecision = (input: any) => {
-      recordedDecisions.push(input);
-      return Promise.resolve(null);
-    };
 
-    const r = await adviseStrandChoice(facts, deps);
-    expect(r).toEqual({ pick: 'wait-for-local', confidence: 0.92 });
-    const rec = JSON.parse(lines[0].slice('[decision-shadow] '.length));
-    expect(rec).toMatchObject({
-      site: 'mission_strand',
-      mission: '11111111',
-      pick: 'wait-for-local',
-      confidence: 0.92,
-      mode: 'gated',
+describe('decision ledger recording', () => {
+  for (const [choice, confidence, applied] of [
+    ['wait-for-local', 0.92, true],
+    ['wait-for-local', 0.85, true],
+    ['wait-for-local', 0.80, false],
+    ['continue-on-runner', 0.99, false],
+  ] as const) {
+    it(`records ${choice} at ${confidence}`, async () => {
+      const rows: any[] = [];
+      await adviseStrandChoice(facts, {
+        resolveAccess: allowed as any, decide: okDecide(choice, confidence) as any,
+        cache: new Map(), log: () => {},
+        recordDecision: async row => { rows.push(row); return null; },
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        capability: 'mission_strand_choice', missionId: facts.missionId,
+        promptVersion: 'ms1', confidence, ruleAnswer: 'runner-first',
+        applied, status: applied ? 'applied' : 'suggested',
+      });
     });
-    expect(rec.v).toContain('ms1');
-  });
-
-  it("records suggested decision (below threshold) with applied vs suggested status", async () => {
-    const lines: string[] = [];
-    const cache = new Map();
-    const deps = {
-      resolveAccess: allowed as any,
-      decide: (async () => okDecide('wait-for-local', 0.80)()) as any,
-      cache, log: (l: string) => lines.push(l),
-    };
-    const r = await adviseStrandChoice(facts, deps);
-    expect(r).toEqual({ pick: 'wait-for-local', confidence: 0.80 });
-    // Below threshold, so should be suggested not applied
-    const rec = JSON.parse(lines[0].slice('[decision-shadow] '.length));
-    expect(rec.confidence).toBe(0.80);
-  });
-
-  it("records fallback row with ruleAnswer runner-first on timeout", async () => {
-    const lines: string[] = [];
-    const cache = new Map();
-    const deps = {
-      resolveAccess: allowed as any,
-      decide: (async () => ({ ok: false, error: { kind: 'timeout' }, latencyMs: 3000 })) as any,
-      cache, log: (l: string) => lines.push(l),
-    };
-    const r = await adviseStrandChoice(facts, deps);
-    expect(r).toBeNull();
-    const rec = JSON.parse(lines[0].slice('[decision-shadow] '.length));
-    expect(rec).toMatchObject({ site: 'mission_strand', error: 'timeout' });
-  });
-
-  it("caches results and returns cached pick on second call", async () => {
-    let callCount = 0;
-    const cache = new Map();
-    const deps = {
-      resolveAccess: allowed as any,
-      decide: (async () => { callCount++; return okDecide('wait-for-local', 0.92)(); }) as any,
-      cache, log: () => {},
-    };
-    const r1 = await adviseStrandChoice(facts, deps);
-    expect(r1).toEqual({ pick: 'wait-for-local', confidence: 0.92 });
-    expect(callCount).toBe(1);
-
-    const r2 = await adviseStrandChoice(facts, deps);
-    expect(r2).toEqual({ pick: 'wait-for-local', confidence: 0.92 });
-    expect(callCount).toBe(1); // Should not have called again
-  });
+  }
+  for (const reason of ['missing_key', 'timeout', 'sensitive', 'non_jev', 'throw']) {
+    it(`records fallback for ${reason}`, async () => {
+      const rows: any[] = [];
+      const result = await adviseStrandChoice({ ...facts, dataClass: reason === 'sensitive' ? 'sensitive' : null }, {
+        resolveAccess: (async () => reason === 'missing_key'
+          ? { ok: false, error: { kind: 'missing_key' } } : await allowed()) as any,
+        decide: (async () => {
+          if (reason === 'throw') throw new Error('test failure');
+          return reason === 'timeout' ? { ok: false, error: { kind: 'timeout' }, latencyMs: 3000 }
+            : { ...await okDecide('wait-for-local', 0.99)(), model: reason === 'non_jev' ? 'other-model' : 'typesafe/jev-1.13' };
+        }) as any,
+        cache: new Map(), log: () => {},
+        recordDecision: async row => { rows.push(row); return null; },
+      });
+      expect(result).toBeNull();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        promptVersion: 'ms1', ruleAnswer: 'runner-first', appliedAnswer: 'runner-first',
+        applied: false, status: 'fallback',
+      });
+    });
+  }
 });

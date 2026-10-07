@@ -4,31 +4,39 @@ import { NextRequest } from 'next/server';
 /**
  * POST /api/missions/[id]/strand-choice: the owner's tap on a stranded local
  * mission ("Continue on a runner" / "Keep local"), recorded as a decision
- * label. It writes nothing; the executor flip is the mission PATCH.
+ * observational outcome. The executor flip is the mission PATCH.
  */
 
 const ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 let missionRow: any = null;
+let decisionRow: any = null;
+const outcomes: any[] = [];
+let query: any;
+let outcomeFails = false;
 let currentUser: any = { id: 'u-1' };
 let apiAccountRow: any = null;
 
 mock.module('drizzle-orm', () => ({
+  and: (...a: any[]) => ({ _op: 'and', a }),
   eq: (...a: any[]) => ({ _op: 'eq', a }),
   desc: (...a: any[]) => ({ _op: 'desc', a }),
 }));
 mock.module('@buildd/core/db/schema', () => ({
   missions: Symbol('missions'),
-  decisionRecords: Symbol('decisionRecords'),
+  decisionRecords: { missionId: 'missionId', capability: 'capability', teamId: 'teamId', createdAt: 'createdAt' },
   decisionOutcomes: Symbol('decisionOutcomes'),
 }));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       missions: { findFirst: () => Promise.resolve(missionRow) },
-      decisionRecords: { findFirst: () => Promise.resolve(null) },
+      decisionRecords: { findFirst: (q: any) => { query = q; if (typeof q.where === 'function') q.where({}); return Promise.resolve(decisionRow); } },
     },
     insert: () => ({ values: () => ({ catch: () => Promise.resolve() }) }),
   },
+}));
+mock.module('@buildd/core/decision-outcomes', () => ({
+  labelDecisionOutcome: async (row: any) => { outcomes.push(row); return outcomeFails ? { ok: false, error: 'store_failed' } : { ok: true, results: [] }; },
 }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: () => Promise.resolve(currentUser) }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: () => Promise.resolve(apiAccountRow) }));
@@ -55,6 +63,7 @@ beforeEach(() => {
   currentUser = { id: 'u-1' };
   apiAccountRow = null;
   logged.length = 0;
+  decisionRow = null; outcomeFails = false; outcomes.length = 0; query = null;
 });
 
 describe('POST /api/missions/[id]/strand-choice', () => {
@@ -87,17 +96,29 @@ describe('POST /api/missions/[id]/strand-choice', () => {
 
 describe("POST /api/missions/[id]/strand-choice - gated mode", () => {
   it("responds 200 even if decision outcome recording fails", async () => {
+    decisionRow = { id: 'decision-1', missionId: ID, teamId: 'team-1', capability: 'mission_strand_choice' };
+    outcomeFails = true;
     const res = await call({ label: 'wait-for-local', order: 'local-first', quietMs: 60 * 60_000 });
     expect(res.status).toBe(200);
     expect(logged.length).toBeGreaterThan(0);
   });
 
-  it("verifies most recent decision record is a mission_strand_choice before attaching outcome", async () => {
-    const res = await call({ label: 'wait-for-local', order: 'local-first', quietMs: 60 * 60_000 });
-    expect(res.status).toBe(200);
-    // The mock currently returns null for findFirst, so no outcome is recorded
-    // A real DB would verify the capability matches before inserting
+  it('labels the latest matching decision as an observation', async () => {
+    decisionRow = { id: 'decision-1', missionId: ID, teamId: 'team-1', capability: 'mission_strand_choice' };
+    expect((await call({ label: 'wait-for-local', order: 'local-first' })).status).toBe(200);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ decisionRecordId: 'decision-1', source: 'human',
+      label: 'human_choice', metadata: { button: 'wait-for-local', order: 'local-first' } });
+    expect(query.where._op).toBe('and');
+    expect(query.orderBy._op).toBe('desc');
   });
+  for (const mismatch of [null, { capability: 'other' }, { missionId: 'other' }, { teamId: 'other' }]) {
+    it('does not label missing or mismatched records', async () => {
+      decisionRow = mismatch && { id: 'decision-1', missionId: ID, teamId: 'team-1', capability: 'mission_strand_choice', ...mismatch };
+      await call({ label: 'wait-for-local', order: 'local-first' });
+      expect(outcomes).toHaveLength(0);
+    });
+  }
 
   it("logs [decision-label] line with all required fields", async () => {
     logged.length = 0;
