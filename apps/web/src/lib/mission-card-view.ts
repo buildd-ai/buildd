@@ -26,7 +26,7 @@ import {
   isDeliverableTask,
   type MissionFlightStripData,
 } from '@buildd/core/mission-helpers';
-import { attemptFailureCounts } from './workflow/projections';
+import { attemptFailureCounts, type DeliveryView } from './workflow/projections';
 import {
   deriveMissionStateView,
   missionNeedsYou,
@@ -296,7 +296,7 @@ export const MISSION_CARD_VIEW_CAP = 30;
  */
 export function summarizeMissionForCard(
   row: MissionCardRow,
-  opts: { now?: number; liveWorkers?: number; deliveryViews?: ReadonlyMap<string, any> | null } = {},
+  opts: { now?: number; liveWorkers?: number; deliveryViews?: ReadonlyMap<string, DeliveryView> | null } = {},
 ): MissionCardSummary {
   const now = opts.now ?? Date.now();
   const tasks = row.tasks ?? [];
@@ -447,7 +447,7 @@ export function cardLocalStrand(row: MissionCardRow, now: number): LocalStrand |
  */
 function deriveCardState(
   row: MissionCardRow,
-  s: { liveWorkers: number; progress: number; healthState: Health; hasPendingDeliverableWork: boolean; now: number; deliveryViews?: ReadonlyMap<string, any> | null },
+  s: { liveWorkers: number; progress: number; healthState: Health; hasPendingDeliverableWork: boolean; now: number; deliveryViews?: ReadonlyMap<string, DeliveryView> | null },
 ): MissionStateView {
   const tasks = row.tasks ?? [];
   const deliverables = tasks.filter(t => isDeliverableTask(t as any));
@@ -568,7 +568,7 @@ export interface BuildMissionCardViewOptions {
   taskIndex?: ReadonlyMap<string, BlockingTask>;
   flightStrip?: MissionFlightStripData | null;
   /** S35: kernel-owned deliveries decide whether a failed task is replaced work. */
-  deliveryViews?: ReadonlyMap<string, any> | null;
+  deliveryViews?: ReadonlyMap<string, DeliveryView> | null;
 }
 
 const ms = (d: DateLike) => (d == null ? NaN : new Date(d).getTime());
@@ -640,7 +640,7 @@ function hasFlightStripActivity(data: MissionFlightStripData | null | undefined)
 export function buildMissionCardView(row: MissionCardRow, opts: BuildMissionCardViewOptions): MissionCardView {
   const now = opts.now ?? Date.now();
   const tasks = row.tasks ?? [];
-  const summary = opts.summary ?? summarizeMissionForCard(row, { now });
+  const summary = opts.summary ?? summarizeMissionForCard(row, { now, deliveryViews: opts.deliveryViews });
   // ── One chip, one sentence: the detail header's accessor (D2), derived once
   // in the summary so the group and the chip agree (F1). ──
   const state = summary.state;
