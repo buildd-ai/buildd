@@ -331,66 +331,11 @@ MCPEOF
         exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$AGENT_PLUGIN_INSTALL" "$@"
         ;;
     esac
-    if [ "${2:-}" != "--global" ]; then
-      # Project scope: hooks for this repo only (MCP entry: `buildd init`).
-      shift
-      exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$AGENT_PLUGIN_INSTALL" "$@"
-    fi
-    if [ "${2:-}" = "--global" ]; then
-      # Global MCP registration: writes to ~/.claude.json
-      CLAUDE_JSON="$HOME/.claude.json"
-
-      # Read API key from config
-      CONFIG_FILE="$HOME/.buildd/config.json"
-      BUILDD_KEY=""
-      BUILDD_SERVER="https://buildd.dev"
-      if [ -f "$CONFIG_FILE" ]; then
-        BUILDD_KEY=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.apiKey||'')" 2>/dev/null)
-        BUILDD_SERVER=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.builddServer||'https://buildd.dev')" 2>/dev/null)
-      fi
-      if [ -z "$BUILDD_KEY" ]; then
-        echo "Error: not logged in. Run 'buildd login' first." >&2
-        exit 1
-      fi
-
-      if [ -f "$CLAUDE_JSON" ]; then
-        # Merge into existing config
-        bun --no-env-file -e "
-          const fs = require('fs');
-          const config = JSON.parse(fs.readFileSync('$CLAUDE_JSON', 'utf-8'));
-          if (!config.mcpServers) config.mcpServers = {};
-          config.mcpServers.buildd = {
-            type: 'http',
-            url: '${BUILDD_SERVER}/api/mcp',
-            headers: { Authorization: 'Bearer ${BUILDD_KEY}' }
-          };
-          fs.writeFileSync('$CLAUDE_JSON', JSON.stringify(config, null, 2) + '\n');
-        "
-      else
-        cat > "$CLAUDE_JSON" << GLOBALEOF
-{
-  "mcpServers": {
-    "buildd": {
-      "type": "http",
-      "url": "${BUILDD_SERVER}/api/mcp",
-      "headers": {
-        "Authorization": "Bearer ${BUILDD_KEY}"
-      }
-    }
-  }
-}
-GLOBALEOF
-      fi
-      # The entry holds the key: owner-only, like ~/.buildd/config.json.
-      chmod 600 "$CLAUDE_JSON"
-
-      echo "Registered buildd MCP server globally in ~/.claude.json"
-      echo "Buildd will be available in every Claude Code session."
-      echo ""
-      echo "Session presence hooks:"
-      shift
-      exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$AGENT_PLUGIN_INSTALL" "$@"
-    fi
+    # Everything else (--global, --here, --everywhere, project scope) is the
+    # installer's: it registers the MCP server for your workspace folders and
+    # installs the presence hooks, and prints exactly what it did.
+    shift
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$AGENT_PLUGIN_INSTALL" "$@"
     ;;
 
   login)
