@@ -63,6 +63,13 @@ describe('S36 — Needs You renders only canonical human-owned states', () => {
     expect(card.delivery?.headline).toBe('Release composition verified');
   });
 
+  it('a kernel approval turns a legacy REVIEW reading (no reviewer-task approve on record) into MERGE', () => {
+    const [legacy] = buildActionQueue([], [esc({ policyTier: 'agent-review' })], { now: NOW });
+    expect(legacy.chip).toBe('REVIEW');
+    const [card] = build([esc({ policyTier: 'agent-review' })], [['t-1', viewOf({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1'] })]]);
+    expect(card.chip).toBe('MERGE');
+  });
+
   it('a task with no kernel view keeps today\'s projection', () => {
     const [legacy] = buildActionQueue([], [esc()], { now: NOW });
     const [same] = build([esc()], [['other-task', viewOf({ state: 'AWAITING_PUSH' })]]);

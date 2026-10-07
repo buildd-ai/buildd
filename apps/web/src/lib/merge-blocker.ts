@@ -60,6 +60,17 @@ export function describeMergeBlocker(item: ActionQueueItem): MergeBlockerView | 
   if (item.recommendation) details.push(`Agent's suggestion: ${item.recommendation}`);
   details.push('GitHub reports the branch conflicts with its base, so the merge cannot go through as is.');
 
+  // S37: the live fix exists but stalled. Say so, and offer to run THAT fix
+  // (its task page carries Start / retry), never to file a second one.
+  if (item.chip === 'RESOLVING' && item.remediationStalled && item.conflictRetryTaskId) {
+    return {
+      needsYou: false,
+      state: 'Conflict fix stalled',
+      reason: item.remediationStalled,
+      action: { kind: 'view_task', label: 'Run fix', taskId: item.conflictRetryTaskId },
+      details: [reason, ...details],
+    };
+  }
   if (item.chip === 'RESOLVING') {
     return {
       needsYou: false,

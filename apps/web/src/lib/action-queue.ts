@@ -404,6 +404,8 @@ export interface EscalationRawItem {
    * generic line.
    */
   conflictReason?: string | null;
+  /** S37: why the live conflict fix for this PR has stalled; null when it has not. */
+  remediationStalled?: string | null;
   /**
    * Persisted lifecycle value. `'unresolvable'` is terminal and drops the row
    * out of the queue entirely — it belongs on the health/orphans surface, not
@@ -510,6 +512,8 @@ export interface ActionQueueItem {
   mergeConflict?: boolean;
   /** See {@link EscalationRawItem.conflictReason}. */
   conflictReason?: string | null;
+  /** S37: why the live conflict fix for this PR has stalled; null when it has not. */
+  remediationStalled?: string | null;
   /** Set when chip === 'RECONNECT' — the connector needing re-auth. */
   connectorId?: string;
   connectorName?: string;
@@ -646,7 +650,10 @@ export interface BuildActionQueueOptions {
  * a human-owned state (ESCALATED) asks for a person.
  */
 export function chipForDelivery(v: DeliveryView, legacyChip: ActionChip): ActionChip {
-  if (v.owner === 'landing') return legacyChip;
+  // Landing: the kernel already holds an approval (verdict, human, policy or
+  // composition), so a legacy REVIEW reading (no reviewer-task approve on
+  // record) becomes the merge it actually is; every other legacy gate stands.
+  if (v.owner === 'landing') return legacyChip === 'REVIEW' ? 'MERGE' : legacyChip;
   if (v.owner === 'human') return legacyChip === 'MERGE' || legacyChip === 'BLOCKED' || legacyChip === 'REVIEW' ? legacyChip : 'REVIEW';
   if (v.cta?.action === 'repair_remediation' || v.cta?.action === 'create_conflict_fix' || v.headline === 'Resolving conflicts') return 'RESOLVING';
   switch (v.state) {
@@ -1314,7 +1321,7 @@ export function buildActionQueue(
       conflictRetryIteration: item.conflictRetryIteration ?? undefined,
       deadZoneExhausted: item.deadZoneExhausted ?? undefined,
       deadZoneLastRetryTaskId: item.deadZoneLastRetryTaskId ?? undefined,
-      ...(mergeConflict ? { mergeConflict: true, conflictReason: item.conflictReason ?? null } : {}),
+      ...(mergeConflict ? { mergeConflict: true, conflictReason: item.conflictReason ?? null, remediationStalled: item.remediationStalled ?? null } : {}),
       missionMergeBlockedReason: item.missionMergeBlockedReason ?? null,
       pendingGates,
       ...(kernelView ? {
@@ -1323,7 +1330,7 @@ export function buildActionQueue(
         ...(kernelView.owner !== 'landing' || kernelView.compositionVerified
           ? { escalationReason: kernelView.detail ? `${kernelView.headline} · ${kernelView.detail}` : kernelView.headline }
           : {}),
-        ...(kernelView.cta?.action === 'repair_remediation' ? { mergeConflict: true, conflictReason: kernelView.detail, conflictRetryTaskId: kernelView.cta.taskId } : {}),
+        ...(kernelView.cta?.action === 'repair_remediation' ? { mergeConflict: true, conflictReason: kernelView.detail, conflictRetryTaskId: kernelView.cta.taskId, remediationStalled: kernelView.detail } : {}),
       } : {}),
     });
   }
