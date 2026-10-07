@@ -55,7 +55,7 @@ const FRESHNESS_META: Record<
     label: 'No index',
     dot: 'bg-status-error',
     text: 'text-status-error',
-    blurb: 'No code index yet. buildd builds one after the next merged PR.',
+    blurb: 'No code index. Built after the next merged PR.',
   },
 };
 
@@ -160,7 +160,7 @@ export default function KnowledgeHealthSection({ workspaceId }: Props) {
               </table>
             </div>
           ) : (
-            <p className="text-sm text-text-muted">No indexed chunks yet.</p>
+            <p className="text-sm text-text-muted">No indexed chunks.</p>
           )}
 
           {/* Last ingest per repo */}

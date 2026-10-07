@@ -21,7 +21,7 @@ import { computeMissionProgress, validateGoalCriteria } from '@buildd/core/missi
 import { parseMergePolicy, findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
 import {
   DEFAULT_HEARTBEAT_CRON,
-  DEFAULT_MISSION_HEARTBEAT_CHECKLIST,
+  organizerChecklist,
 } from '@/lib/heartbeat-helpers';
 import { wouldCreateCycle } from '@/lib/mission-dependency';
 import { maybePostWorkTrackerNote } from '@/lib/work-tracker';
@@ -465,7 +465,7 @@ export async function POST(req: NextRequest) {
       if (model) templateContext.model = model;
       if (effectiveHeartbeat) {
         templateContext.heartbeat = true;
-        templateContext.heartbeatChecklist = heartbeatChecklist || DEFAULT_MISSION_HEARTBEAT_CHECKLIST;
+        templateContext.heartbeatChecklist = heartbeatChecklist || organizerChecklist();
       }
       if (activeHoursStart != null) templateContext.activeHoursStart = activeHoursStart;
       if (activeHoursEnd != null) templateContext.activeHoursEnd = activeHoursEnd;

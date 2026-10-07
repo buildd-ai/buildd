@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import AddConnectionModal from './AddConnectionModal';
 import { Select } from '@/components/ui/Select';
+import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 
 interface Connector {
   id: string;
@@ -20,6 +21,7 @@ interface Team {
   id: string;
   name: string;
   role: string; // 'owner' | 'admin' | 'member'
+  permissionOverrides?: PermissionOverrides;
 }
 
 interface ConnectorShare {
@@ -124,10 +126,11 @@ export default function ConnectionsClient({
         const res = await fetch('/api/teams');
         if (res.ok) {
           const data = await res.json();
-          setTeams((data.teams || []).map((t: { id: string; name: string; role?: string }) => ({
+          setTeams((data.teams || []).map((t: { id: string; name: string; role?: string; permissionOverrides?: PermissionOverrides }) => ({
             id: t.id,
             name: t.name,
             role: t.role ?? 'member',
+            permissionOverrides: t.permissionOverrides,
           })));
         }
       } catch {
@@ -355,7 +358,7 @@ export default function ConnectionsClient({
   // ownership moves only to a team the actor is owner/admin of).
   const sharedTeamIds = new Set(shares.map(s => s.sharedWithTeamId));
   const shareableTeams = teams.filter(t => t.id !== ownerTeamId && !sharedTeamIds.has(t.id));
-  const transferableTeams = teams.filter(t => t.id !== ownerTeamId && t.role !== 'member');
+  const transferableTeams = teams.filter(t => t.id !== ownerTeamId && roleHas(t.role, 'manage_connectors', t.permissionOverrides ?? null));
 
   return (
     <div className={embedded ? '' : 'px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-4xl'}>
@@ -385,8 +388,7 @@ export default function ConnectionsClient({
         <div className="text-text-secondary text-sm">Loading…</div>
       ) : connectors.length === 0 ? (
         <div className="card p-10 text-center">
-          <p className="text-text-muted text-sm mb-3">No connectors yet.</p>
-          <p className="text-text-muted text-xs mb-4">Add a remote MCP server to give your agents its tools.</p>
+          <p className="text-text-muted text-sm mb-4">No connectors.</p>
           <button
             onClick={() => setShowAddModal(true)}
             className="btn"
@@ -551,8 +553,7 @@ export default function ConnectionsClient({
               Sharing · {sharingConnector.name}
             </h2>
             <p className="text-xs text-text-muted mb-4">
-              Grantee teams use this connector with your team&apos;s credential. They can
-              enable it per workspace and opt roles in. They can&apos;t edit or reconnect it.
+              Shared teams use your team&apos;s credential. They can enable it per workspace, not edit or reconnect it.
             </p>
 
             {shareError && (

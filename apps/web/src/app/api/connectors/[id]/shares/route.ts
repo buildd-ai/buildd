@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
+import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -39,7 +40,9 @@ async function isTeamAdmin(userId: string, teamId: string): Promise<boolean> {
     where: and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, teamId)),
     columns: { role: true },
   });
-  return membership?.role !== 'member';
+  // No row = the caller's personal team, which they own.
+  if (!membership) return true;
+  return roleHas(membership.role, 'manage_connectors', await getTeamPermissionOverrides(teamId));
 }
 
 type OwnerAdminContext = {

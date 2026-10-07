@@ -33,6 +33,8 @@ interface Props {
   autoVerify: boolean | null;
   readonly?: boolean;
   failingCiPrNumbers?: number[];
+  /** Distinct PRs the mission has opened (passed through to the criteria sheet). */
+  missionPrCount?: number;
   overall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null;
   /**
    * No pill, only the sheet: a terminal mission shows no "Needs verification"
@@ -58,6 +60,7 @@ function MissionVerifiedPillInner({
   autoVerify,
   readonly,
   failingCiPrNumbers,
+  missionPrCount,
   overall,
   sheetOnly = false,
 }: Props) {
@@ -105,6 +108,7 @@ function MissionVerifiedPillInner({
           autoVerify={autoVerify}
           readonly={readonly}
           failingCiPrNumbers={failingCiPrNumbers}
+          missionPrCount={missionPrCount}
         />
       </SideSheet>
     );
@@ -129,6 +133,7 @@ function MissionVerifiedPillInner({
             autoVerify={autoVerify}
             readonly={readonly}
             failingCiPrNumbers={failingCiPrNumbers}
+          missionPrCount={missionPrCount}
           />
         </SideSheet>
       </>
@@ -137,14 +142,14 @@ function MissionVerifiedPillInner({
 
   let icon = '?';
   let text = 'Needs verification';
-  let title = 'Goal criteria set but not yet verified';
+  let title = 'Goal criteria unverified';
   let toneClass = CRITERIA_GATE_TONE_CLASS.warning;
 
   if (overall == null) {
     // Nothing has evaluated the criteria yet: name them, claim no verdict.
     icon = '';
     text = `${criteriaCount} ${criteriaCount === 1 ? 'criterion' : 'criteria'}`;
-    title = 'Goal criteria, not evaluated yet';
+    title = 'Goal criteria not evaluated';
     toneClass = CRITERIA_GATE_TONE_CLASS.neutral;
   } else if (overall === 'NOT_EVALUATED') {
     icon = '–';
@@ -161,7 +166,7 @@ function MissionVerifiedPillInner({
     if (gate) {
       icon = gate.state === 'clear' ? '✓' : gate.state === 'failing' ? '✗' : '?';
       text = gate.state === 'clear' ? 'Verified' : gate.state === 'failing' ? 'Not met' : 'Needs verification';
-      title = gate.state === 'clear' ? 'All goal criteria verified' : gate.state === 'failing' ? 'Goal criteria not met' : 'Goal criteria set but not yet verified';
+      title = gate.state === 'clear' ? 'All goal criteria verified' : gate.state === 'failing' ? 'Goal criteria not met' : 'Goal criteria unverified';
       toneClass = CRITERIA_GATE_TONE_CLASS[gate.tone];
     }
   }
@@ -185,6 +190,7 @@ function MissionVerifiedPillInner({
           autoVerify={autoVerify}
           readonly={readonly}
           failingCiPrNumbers={failingCiPrNumbers}
+          missionPrCount={missionPrCount}
         />
       </SideSheet>
     </>

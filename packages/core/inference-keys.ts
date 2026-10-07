@@ -55,27 +55,13 @@ import { secrets, teams } from './db/schema';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { decrypt } from './secrets';
 import { isInferenceKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
-import { ROUTES, routeAuthHeaders } from '@builddai/ai-kit/models';
+import { ROUTES, routeAuthHeaders } from '@builddai/ai-kit/models/routes';
 
-/** Providers with an API-key form. */
-export type InferenceKeyProvider = 'anthropic' | 'openai' | 'openrouter';
+import { PERSONAL_KEY_PROVIDERS, isPersonalKeyProvider, providerKeyCapability, type PersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
 
-export const INFERENCE_KEY_PROVIDERS: readonly InferenceKeyProvider[] = ['anthropic', 'openai', 'openrouter'];
-
+export type InferenceKeyProvider = PersonalKeyProvider;
+export const INFERENCE_KEY_PROVIDERS = PERSONAL_KEY_PROVIDERS;
 export const INFERENCE_KEY_PURPOSE = 'inference_key' as const;
-
-/** Accepted purposes per provider, in default preference order. */
-const PROVIDER_PURPOSES: Record<InferenceKeyProvider, readonly string[]> = {
-  anthropic: [INFERENCE_KEY_PURPOSE, 'anthropic_api_key'],
-  openai: [INFERENCE_KEY_PURPOSE],
-  openrouter: [INFERENCE_KEY_PURPOSE, 'decision_key'],
-};
-
-const ENV_VAR: Record<InferenceKeyProvider, string> = {
-  anthropic: 'ANTHROPIC_API_KEY',
-  openai: 'OPENAI_API_KEY',
-  openrouter: 'OPENROUTER_API_KEY',
-};
 
 export { INFERENCE_KEY_POLICIES, isInferenceKeyPolicy, policyAllowsOwnKey, type InferenceKeyPolicy } from './inference-key-policy';
 
@@ -94,7 +80,7 @@ export async function loadInferenceKeyPolicy(teamId: string): Promise<InferenceK
 }
 
 export function isInferenceKeyProvider(value: unknown): value is InferenceKeyProvider {
-  return typeof value === 'string' && (INFERENCE_KEY_PROVIDERS as readonly string[]).includes(value);
+  return isPersonalKeyProvider(value);
 }
 
 /**
@@ -130,6 +116,8 @@ export type InferenceKeyScope = 'user' | 'account' | 'workspace' | 'team' | 'env
 
 export interface ResolvedInferenceCredential {
   key: string;
+  /** Actual API provider, independent of the owner of the credential. */
+  provider: InferenceKeyProvider;
   scope: InferenceKeyScope;
   /** Null for env. */
   secretId: string | null;
@@ -151,7 +139,7 @@ interface CandidateRow {
 /** Rank of a row for this caller, or null when it must not be used at all. */
 function scopeRank(r: CandidateRow, opts: ResolveInferenceKeyOptions, policy: InferenceKeyPolicy): { rank: number; scope: InferenceKeyScope } | null {
   if (r.userId != null) {
-    if (policy === 'team') return null;
+    if (policy === 'team' || !providerKeyCapability(opts.provider)?.personalKeys) return null;
     return opts.userId && r.userId === opts.userId ? { rank: 0, scope: 'user' } : null;
   }
   // Everyone brings their own key: nothing shared stands in for a person's.
@@ -170,7 +158,7 @@ export async function resolveInferenceCredential(
 ): Promise<ResolvedInferenceCredential | null> {
   if (!isInferenceKeyProvider(opts.provider)) return null;
   const provider = opts.provider;
-  const accepted = PROVIDER_PURPOSES[provider];
+  const accepted = providerKeyCapability(provider)!.purposes;
   const purposes = opts.purposes
     ? [...opts.purposes.filter(p => accepted.includes(p)), ...accepted.filter(p => !opts.purposes!.includes(p))]
     : accepted;
@@ -214,15 +202,16 @@ export async function resolveInferenceCredential(
   for (const { r, s } of ranked) {
     try {
       const value = decrypt(r.encryptedValue);
-      if (value) return { key: value, scope: s.scope, secretId: r.id, purpose: r.purpose };
+      if (value) return { provider, key: value, scope: s.scope, secretId: r.id, purpose: r.purpose };
     } catch (e) {
       console.error(`[inference-keys] failed to decrypt secret ${r.id}:`, e);
     }
   }
 
   if (envKeysAllowed() && policy !== 'own') {
-    const value = process.env[ENV_VAR[provider]];
-    if (value) return { key: value, scope: 'env', secretId: null, purpose: null };
+    const envVar = ROUTES[provider].key?.envVar;
+    const value = envVar ? process.env[envVar] : undefined;
+    if (value) return { provider, key: value, scope: 'env', secretId: null, purpose: null };
   }
   return null;
 }
@@ -275,13 +264,14 @@ export async function verifyProviderKey(
 ): Promise<{ health: ProviderKeyHealth; error: string | null }> {
   const fetcher = opts.fetcher ?? ((u, i) => fetch(u, i));
   const route = ROUTES[provider];
-  const url = `${route.baseURL}${route.verifyPath}`;
+  const verification = providerKeyCapability(provider)!.verification;
+  const url = `${verification.baseURL}${verification.path}`;
   const headers = { ...routeAuthHeaders(provider, key), ...route.headers };
   const scrub = (s: string) => (key ? s.split(key).join('[key]') : s).slice(0, 200);
   try {
-    const res = await fetcher(url, { method: 'GET', headers, signal: AbortSignal.timeout(opts.timeoutMs ?? 5000) });
+    const res = await fetcher(url, { method: verification.method, headers, signal: AbortSignal.timeout(opts.timeoutMs ?? 5000) });
     if (res.ok) return { health: 'healthy', error: null };
-    if (res.status === 401 || res.status === 403) {
+    if (verification.rejectedStatuses.includes(res.status)) {
       return { health: 'revoked', error: `provider rejected the key (HTTP ${res.status})` };
     }
     return { health: 'unknown', error: `provider returned HTTP ${res.status}` };

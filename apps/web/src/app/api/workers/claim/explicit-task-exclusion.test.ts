@@ -59,6 +59,7 @@ import {
   diagnoseExplicitTaskExclusion,
   evaluateForcedGates,
   explicitTaskScope,
+  explicitExclusionGateEvent,
   stampLastClaimAttempt,
   type ExplicitTaskProbe,
 } from './explicit-task-exclusion';
@@ -126,6 +127,7 @@ describe('classifyExplicitTaskExclusion', () => {
       ['role', 'role_mismatch'],
       ['runnerCooldown', 'runner_cooldown'],
       ['workspaceCap', 'workspace_cap'],
+      ['workspaceExecutor', 'workspace_executor'],
     ];
     for (const [gate, code] of cases) {
       expect(classifyExplicitTaskExclusion(probe({ gates: { [gate]: false } }), NOW).code).toBe(code as any);
@@ -138,6 +140,13 @@ describe('classifyExplicitTaskExclusion', () => {
     expect(r.detail).toContain('This mission runs in a local session');
     expect(r.detail).toContain('claim_task {taskId}');
     expect(r.detail).toMatch(/Start with override/);
+  });
+
+  it('a workspace whose work runs elsewhere → workspace_executor, naming the setting and the override', () => {
+    const r = classifyExplicitTaskExclusion(probe({ gates: { workspaceExecutor: false } }), NOW);
+    expect(r.code).toBe('workspace_executor');
+    expect(r.detail).toContain('gitConfig.executor');
+    expect(r.detail).toContain('force: true');
   });
 
   it('a held mission outranks the local executor (held is the pause)', () => {
@@ -357,8 +366,50 @@ describe('stampLastClaimAttempt', () => {
     expect(updateCalls).toHaveLength(0);
   });
 
+  it('stamps the exact exclusion beside the coarse reason', async () => {
+    await stampLastClaimAttempt({
+      taskId: 'task-1', workspaceIds: ['ws-a'], reason: 'no_pending_tasks', now: NOW,
+      exclusion: { code: 'workspace_cap', detail: 'cap' },
+    });
+    const q = render(updateCalls[0].set.context);
+    const stamped = JSON.parse(q.params.find((p): p is string => typeof p === 'string' && p.includes('lastClaimAttempt'))!);
+    expect(stamped).toMatchObject({
+      lastClaimAttemptReason: 'no_pending_tasks',
+      lastClaimAttemptExclusion: { code: 'workspace_cap', detail: 'cap' },
+    });
+  });
+
   it('never throws, even when the write fails', async () => {
     const failing = stampLastClaimAttempt({ taskId: 'task-1', workspaceIds: ['ws-a'], reason: 'x', now: NOW, deferrals: { mission_paced: 1 } });
     await expect(failing).resolves.toBeUndefined();
+  });
+});
+
+// A runner's wake claim names its task. When a WHERE gate drops it, the runner
+// gets `no_pending_tasks` and — before this — nothing was written to the gate
+// ledger, so the task's gate history was empty and `explain` could only read
+// the pending reviewer as a self-resolving wait (PR #3678: refused by the
+// workspace cap on every wake for hours, with an idle runner).
+describe('explicitExclusionGateEvent', () => {
+  it('records a gate refusal as a claim_loop_deferral on the task, reason = the exclusion code', () => {
+    const event = explicitExclusionGateEvent({
+      taskId: 'task-1',
+      exclusion: { code: 'workspace_cap', detail: 'The workspace is at its concurrent-task cap.' },
+      workspaceId: 'ws-a',
+    });
+    expect(event).toMatchObject({
+      gate: 'claim_loop_deferral',
+      outcome: 'deferred',
+      reason: 'workspace_cap',
+      taskId: 'task-1',
+      workspaceId: 'ws-a',
+      detail: { explicitClaim: true, detail: 'The workspace is at its concurrent-task cap.' },
+    });
+  });
+
+  it('records nothing when the task was not claimable at all (gone, done, running, changed)', () => {
+    for (const code of ['not_found', 'not_pending', 'already_claimed', 'active_worker', 'state_changed'] as const) {
+      expect(explicitExclusionGateEvent({ taskId: 'task-1', exclusion: { code, detail: '' }, workspaceId: null })).toBeNull();
+    }
   });
 });

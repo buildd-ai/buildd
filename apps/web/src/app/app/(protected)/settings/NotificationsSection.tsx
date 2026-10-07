@@ -135,8 +135,7 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
     <SettingsSection title="Notifications">
       <div className="space-y-5">
         <p className="text-sm text-text-secondary">
-          Route alerts to <strong className="text-text-primary">this team&apos;s</strong> own channel. Set a Pushover
-          user/group key, a webhook URL, or both, then pick the events. A team with no channel gets no alerts.
+          Alerts for <strong className="text-text-primary">this team</strong>. Set a Pushover key, a webhook URL or both, then pick events.
         </p>
 
         {loading ? (
@@ -174,8 +173,7 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
                   className="w-full h-10 px-3 bg-surface font-mono text-xs"
                 />
                 <p className="text-xs text-text-muted">
-                  Both come from your Pushover account. Create an application to get the app token, and use your user
-                  or group key as the recipient. Alerts go out through your Pushover app.
+                  Both are in your Pushover account. The app token comes from creating an application.
                 </p>
               </div>
 

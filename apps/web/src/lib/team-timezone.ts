@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { teams, users, workspaces, teamMembers } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { DEFAULT_TIMEZONE, isValidTimezone, resolveTimezone } from '@buildd/core/timezone';
+import { roleHas, TEAM_ROLES } from '@/lib/permissions';
 
 /**
  * Timezone lookups. Two stored zones, no override chain — see
@@ -74,6 +75,9 @@ export async function getViewerTimezone(
   return getTeamTimezone(teamId);
 }
 
+/** Team roles whose own timezone seeds the team's (`seed_team_timezone`: owner). */
+export const SEEDING_ROLES = TEAM_ROLES.filter(role => roleHas(role, 'seed_team_timezone', null /* locked */));
+
 /**
  * Persist a zone detected from this user's browser, and seed it onto any team
  * they OWN that has no zone yet.
@@ -96,7 +100,7 @@ export async function recordUserTimezone(
   const owned = await db
     .select({ teamId: teamMembers.teamId })
     .from(teamMembers)
-    .where(and(eq(teamMembers.userId, userId), eq(teamMembers.role, 'owner')));
+    .where(and(eq(teamMembers.userId, userId), inArray(teamMembers.role, SEEDING_ROLES)));
 
   if (owned.length === 0) return { timezone, seededTeamIds: [] };
 

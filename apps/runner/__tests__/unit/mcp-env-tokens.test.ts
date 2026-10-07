@@ -13,20 +13,20 @@ const CTX = {
 
 describe('resolveMcpEnvTokens', () => {
   test('substitutes __WORKER_ID__', () => {
-    expect(resolveMcpEnvTokens({ CBM_CACHE_DIR: '/tmp/cbm-__WORKER_ID__' }, CTX)).toEqual({
-      CBM_CACHE_DIR: '/tmp/cbm-abc-123',
+    expect(resolveMcpEnvTokens({ CACHE_DIR: '/tmp/cache-__WORKER_ID__' }, CTX)).toEqual({
+      CACHE_DIR: '/tmp/cache-abc-123',
     });
   });
 
   test('substitutes __WORKTREE_PATH__', () => {
-    expect(resolveMcpEnvTokens({ CBM_ALLOWED_ROOT: '__WORKTREE_PATH__' }, CTX)).toEqual({
-      CBM_ALLOWED_ROOT: '/home/coder/project/buildd/.buildd-worktrees/branch-xyz',
+    expect(resolveMcpEnvTokens({ ALLOWED_ROOT: '__WORKTREE_PATH__' }, CTX)).toEqual({
+      ALLOWED_ROOT: '/home/coder/project/buildd/.buildd-worktrees/branch-xyz',
     });
   });
 
   test('substitutes __WORKSPACE_DIR__ (spec alias for __WORKTREE_PATH__)', () => {
-    expect(resolveMcpEnvTokens({ CBM_ALLOWED_ROOT: '__WORKSPACE_DIR__' }, CTX)).toEqual({
-      CBM_ALLOWED_ROOT: '/home/coder/project/buildd/.buildd-worktrees/branch-xyz',
+    expect(resolveMcpEnvTokens({ ALLOWED_ROOT: '__WORKSPACE_DIR__' }, CTX)).toEqual({
+      ALLOWED_ROOT: '/home/coder/project/buildd/.buildd-worktrees/branch-xyz',
     });
   });
 
@@ -71,13 +71,13 @@ describe('resolveMcpEnvTokens', () => {
   });
 
   test('two concurrent workers get distinct CACHE paths', () => {
-    const env = { CACHE: '/tmp/cbm-__WORKER_ID__' };
+    const env = { CACHE: '/tmp/cache-__WORKER_ID__' };
     const ctx1 = { workerId: 'worker-1', worktreePath: '/worktree/1' };
     const ctx2 = { workerId: 'worker-2', worktreePath: '/worktree/2' };
     const r1 = resolveMcpEnvTokens(env, ctx1);
     const r2 = resolveMcpEnvTokens(env, ctx2);
-    expect(r1.CACHE).toBe('/tmp/cbm-worker-1');
-    expect(r2.CACHE).toBe('/tmp/cbm-worker-2');
+    expect(r1.CACHE).toBe('/tmp/cache-worker-1');
+    expect(r2.CACHE).toBe('/tmp/cache-worker-2');
     expect(r1.CACHE).not.toBe(r2.CACHE);
   });
 

@@ -48,7 +48,7 @@ mock.module('drizzle-orm', () => ({
 process.env.CRON_SECRET = 'test-secret';
 
 import { GET } from './route';
-import { watcherEvents, workerActionEvents } from '@buildd/core/db/schema';
+import { agentCapabilityDecisions, watcherEvents, workerActionEvents } from '@buildd/core/db/schema';
 
 function findDelete(table: unknown): CapturedDelete | undefined {
   return capturedDeletes.find(d => d.table === table);
@@ -194,7 +194,18 @@ describe('GET /api/cron/task-archive — retention prunes', () => {
     const body = await res.json();
     expect(body.prunedActionEvents).toBe(0);
     expect(body.prunedWatcherEvents).toBe(1);
-    expect(capturedDeletes.map(d => d.table)).toEqual([workerActionEvents, watcherEvents]);
+    expect(capturedDeletes.map(d => d.table)).toEqual([workerActionEvents, watcherEvents, agentCapabilityDecisions]);
+  });
+
+  it('prunes agent_capability_decisions after 90 days and reports the count', async () => {
+    const now = Date.now();
+    deleteRows.set(agentCapabilityDecisions, [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }]);
+    const body = await (await GET(makeRequest())).json();
+    expect(body.prunedCapabilityDecisions).toBe(3);
+    const pruned = findDelete(agentCapabilityDecisions);
+    expect(pruned!.predicate.op).toBe('lt');
+    expect(pruned!.predicate.column).toBe(agentCapabilityDecisions.occurredAt);
+    expect(retentionDays(pruned!.predicate, now)).toBe(90);
   });
 
   // Delivered/failed dispatch intents are kept for the "why did it (not)

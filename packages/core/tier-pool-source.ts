@@ -21,6 +21,7 @@ import {
   poolEligibility,
   poolTakesDraws,
   routeBackend,
+  type AgentArmDecision,
   type Allocation,
   type ArmRoute,
   type PoolIneligibleReason,
@@ -31,6 +32,7 @@ import {
 import { DEFAULT_MAX_BUDGET_PRESSURE } from './model-routing-experiment';
 import { getCachedOpenRouterCatalog } from './model-catalog-cache';
 import { chatModelVerdict } from './chat-model-eligibility';
+import { DEFAULT_DIAL, decideDialArm, dialAllocation, isDial, type Dial, type DialStateRecord } from './tier-dial';
 
 // ── Pool lookup (cached) ────────────────────────────────────────────────────
 
@@ -53,6 +55,9 @@ export interface LoadedPool {
   policyVersion: number;
   allocation: Allocation;
   allocationVersion: number;
+  /** `dial` mode only: the cell's dial and its learning state. */
+  dial: Dial;
+  dialState: DialStateRecord | null;
   /** Live (not removed) arms, incumbent first, then by when they joined. */
   arms: LoadedArm[];
 }
@@ -98,6 +103,8 @@ export async function loadTeamPools(teamId: string): Promise<LoadedPool[]> {
       experimentId: tierPools.experimentId,
       allocation: tierPools.allocation,
       allocationVersion: tierPools.allocationVersion,
+      dial: tierPools.dial,
+      dialState: tierPools.dialState,
       policyVersion: experiments.policyVersion,
     })
     .from(tierPools)
@@ -128,11 +135,37 @@ export async function loadTeamPools(teamId: string): Promise<LoadedPool[]> {
       policyVersion: p.policyVersion ?? 1,
       allocation: (p.allocation ?? {}) as Allocation,
       allocationVersion: p.allocationVersion,
+      dial: isDial(p.dial) ? p.dial : DEFAULT_DIAL,
+      dialState: readDialState(p.dialState),
       arms: orderArms(armRows.filter(a => a.poolId === p.id).map(a => ({ ...a, addedAt: new Date(a.addedAt) }))),
     }));
   }
   poolCache.set(teamId, { at: Date.now(), pools });
   return pools;
+}
+
+/** A stored `dial_state`, or null when it is missing or malformed. */
+export function readDialState(raw: unknown): DialStateRecord | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const st = (raw as { state?: unknown }).state;
+  if (st !== 'always' && st !== 'learning' && st !== 'shifted' && st !== 'reverted') return null;
+  return raw as DialStateRecord;
+}
+
+/**
+ * The allocation a pool serves. A dial pool's comes from its state, not the
+ * stored column, so a learning cell can never serve an alternate whatever
+ * the column says.
+ */
+export function servingAllocation(pool: LoadedPool): Allocation {
+  return pool.mode === 'dial' ? dialAllocation(pool.arms, pool.dialState, pool.dial) : pool.allocation;
+}
+
+/** The alternate a learning cell would pick: the step's candidate, else the first active alternate. */
+function shadowArm(pool: LoadedPool): LoadedArm | null {
+  const live = pool.arms.filter(a => a.status === 'active' && a.role === 'challenger');
+  const named = pool.dialState?.candidateArmId;
+  return live.find(a => a.id === named) ?? live[0] ?? null;
 }
 
 async function findPool(teamId: string, tier: string, surface: PoolSurface): Promise<LoadedPool | null> {
@@ -248,8 +281,15 @@ export async function drawAgentPoolArm(args: AgentPoolArgs): Promise<AgentPoolDr
       .from(experimentAssignments)
       .where(agentPriorsScope(pool.experimentId, parentId ? [args.task.id, parentId] : [args.task.id], unit.unitId));
 
-    const live = activeIds(pool);
-    const decision = decideAgentArm({
+    const allocation = servingAllocation(pool);
+    const isDialPool = pool.mode === 'dial';
+    // A dial pool only lets a run stick to an arm that is serving now: after a
+    // revert, a mission whose earlier task ran the alternate goes back to the
+    // primary with everyone else.
+    const live = isDialPool
+      ? new Set([...activeIds(pool)].filter(id => (allocation[id] ?? 0) > 0))
+      : activeIds(pool);
+    const drawn = decideAgentArm({
       taskId: args.task.id,
       parentId,
       unitId: unit.unitId,
@@ -260,11 +300,30 @@ export async function drawAgentPoolArm(args: AgentPoolArgs): Promise<AgentPoolDr
         experimentId: pool.experimentId!,
         policyVersion: pool.policyVersion,
         drawKey: unit.unitId,
-        allocation: pool.allocation,
+        allocation,
         armOrder: pool.arms.filter(a => live.has(a.id)).map(a => a.id),
       }),
     });
-    if (decision.source === 'none') return null;
+    if (drawn.source === 'none') return null;
+    let decision: Exclude<AgentArmDecision, { source: 'none' }> = drawn;
+    let dialEligibility: Record<string, unknown> = {};
+    if (isDialPool) {
+      const incumbentArm = pool.arms.find(a => a.role === 'incumbent' && a.status === 'active');
+      if (!incumbentArm) return null;
+      const shadow = shadowArm(pool);
+      const pick = decideDialArm({
+        record: pool.dialState, incumbentId: incumbentArm.id,
+        drawnArmId: pool.dial === 1 ? null : decision.armId, shadowArmId: shadow?.id ?? null,
+      });
+      if (pick.armId !== decision.armId) {
+        decision = { source: decision.source === 'existing' ? 'existing' : 'drawn', armId: pick.armId, propensity: allocation[pick.armId] ?? 1, allocationVersion: pool.allocationVersion };
+      }
+      dialEligibility = {
+        dial: pool.dial,
+        dialState: pool.dialState?.state ?? 'learning',
+        ...(pick.shadowArmId ? { shadowArmId: pick.shadowArmId, shadowModel: shadow?.model ?? null } : {}),
+      };
+    }
     // A reused arm that has since been removed has no row in `pool.arms`.
     // The unit still belongs to it (intent to treat) but runs the incumbent.
     const arm = pool.arms.find(a => a.id === decision.armId) ?? null;
@@ -289,6 +348,7 @@ export async function drawAgentPoolArm(args: AgentPoolArgs): Promise<AgentPoolDr
         source: decision.source,
         budgetPressure: args.budgetPressure,
         ...(decision.source === 'inherited' && parentId ? { inheritedFromTaskId: parentId } : {}),
+        ...dialEligibility,
       },
     };
   } catch (err) {
@@ -373,6 +433,8 @@ export interface ChatPoolDraw {
   served: boolean;
   defaultModel: string | null;
   assignedModel: string | null;
+  /** Dial pools: the dial, the cell's state and, while learning, the shadow pick. */
+  eligibility?: Record<string, unknown>;
 }
 
 export interface ChatPoolArgs {
@@ -418,7 +480,13 @@ export async function drawChatPoolArm(args: ChatPoolArgs): Promise<ChatPoolDraw 
     });
     if (!elig.eligible) return null;
 
-    const live = activeIds(pool);
+    const allocation = servingAllocation(pool);
+    const isDialPool = pool.mode === 'dial';
+    // As for agent runs: a dial pool's chain only continues on an arm that is
+    // serving now, so a revert takes every conversation back to the primary.
+    const live = isDialPool
+      ? new Set([...activeIds(pool)].filter(id => (allocation[id] ?? 0) > 0))
+      : activeIds(pool);
     let prevArmId: string | null = null;
     let prevPropensity = 1;
     if (args.previous) {
@@ -442,10 +510,28 @@ export async function drawChatPoolArm(args: ChatPoolArgs): Promise<ChatPoolDraw 
     } else {
       const d = drawPoolArm({
         experimentId: pool.experimentId, policyVersion: pool.policyVersion, drawKey: args.drawKey,
-        allocation: pool.allocation, armOrder: pool.arms.filter(a => live.has(a.id)).map(a => a.id),
+        allocation, armOrder: pool.arms.filter(a => live.has(a.id)).map(a => a.id),
       });
       if (!d) return null;
       armId = d.armId; propensity = d.propensity; source = 'drawn';
+    }
+    let eligibility: Record<string, unknown> | undefined;
+    if (isDialPool) {
+      const incumbentArm = pool.arms.find(a => a.role === 'incumbent' && a.status === 'active');
+      if (!incumbentArm) return null;
+      const shadow = shadowArm(pool);
+      const pick = decideDialArm({
+        record: pool.dialState, incumbentId: incumbentArm.id,
+        drawnArmId: pool.dial === 1 ? null : armId, shadowArmId: shadow?.id ?? null,
+      });
+      if (pick.armId !== armId) {
+        armId = pick.armId; propensity = allocation[pick.armId] ?? 1; source = 'drawn';
+      }
+      eligibility = {
+        dial: pool.dial,
+        dialState: pool.dialState?.state ?? 'learning',
+        ...(pick.shadowArmId ? { shadowArmId: pick.shadowArmId, shadowModel: shadow?.model ?? null } : {}),
+      };
     }
     const arm = pool.arms.find(a => a.id === armId);
     if (!arm) return null;
@@ -460,6 +546,7 @@ export async function drawChatPoolArm(args: ChatPoolArgs): Promise<ChatPoolDraw 
       poolId: pool.id, experimentId: pool.experimentId, policyVersion: pool.policyVersion,
       allocationVersion: pool.allocationVersion, arm, propensity, conversationId: args.conversationId,
       source, served: arm.role === 'incumbent', defaultModel: null, assignedModel: null,
+      ...(eligibility ? { eligibility } : {}),
     };
   } catch (err) {
     console.warn(`[tier-pool] chat draw failed for conversation ${args.conversationId}; serving the incumbent:`, err);
@@ -485,7 +572,7 @@ export async function recordChatPoolAssignment(draw: ChatPoolDraw, args: { messa
       defaultModel: draw.defaultModel,
       assignedModel: draw.assignedModel,
       served: draw.served,
-      eligibility: { source: draw.source },
+      eligibility: { source: draw.source, ...draw.eligibility },
     }).onConflictDoNothing();
   } catch (err) {
     console.warn(`[tier-pool] failed to record assignment for message ${args.messageId}:`, err);

@@ -16,6 +16,13 @@ export type MergeOutcome =
   | { kind: 'conflict_dispatched'; taskId: string | null }
   | { kind: 'conflict_exhausted' }
   /**
+   * GitHub refused the merge for conflicts and no automatic fix was filed
+   * (automatic resolution is off, or the dispatch was refused). The same merge
+   * cannot succeed until the branch changes, so this is never a Retry: the
+   * card points at the conflict instead.
+   */
+  | { kind: 'conflict_blocked'; message: string }
+  /**
    * The merge request itself got no usable answer from GitHub (empty/unparseable
    * body, timeout, network failure) — NOT a rejection. The server already
    * re-read the PR's live state before returning this: `open` means the merge
@@ -30,6 +37,13 @@ export type MergeOutcome =
    * `override: true`, which is recorded as a bypass server-side.
    */
   | { kind: 'review_blocked'; message: string; clearedBy: string | null }
+  /**
+   * The landing function answered `waiting_ci`: checks or a review round are
+   * still running on the PR head. A machine-owned wait, not a failure — there
+   * is nothing to retry and nothing to dismiss; the card re-derives on refresh
+   * and moves out of "Needs you" (resolveMergeChip).
+   */
+  | { kind: 'pending'; message: string }
   | { kind: 'error'; message: string };
 
 /** `/api/prs/[prNumber]/merge` returns this 404 when no unmerged worker matches. */
@@ -49,7 +63,13 @@ export function resolveMergeOutcome(
   if (body?.conflictExhausted) return { kind: 'conflict_exhausted' };
 
   const message = typeof body?.error === 'string' ? body.error : '';
+  if (body?.mergeConflict) return { kind: 'conflict_blocked', message: message || 'The PR has merge conflicts' };
   if (status === 404 && ALREADY_MERGED_RE.test(message)) return { kind: 'stale' };
+
+  const landing = body?.landing;
+  if (landing && typeof landing === 'object' && (landing as { kind?: unknown }).kind === 'waiting_ci') {
+    return { kind: 'pending', message: message || 'Checks or the review are still running on the PR head.' };
+  }
 
   if (body?.reviewGateBlocked) {
     return {
@@ -65,19 +85,4 @@ export function resolveMergeOutcome(
   }
 
   return { kind: 'error', message: message || 'Merge failed' };
-}
-
-/**
- * Minimum quiet period before a tab regaining visibility re-renders Home.
- * Long enough that flicking between tabs doesn't hammer the server component,
- * short enough that a tab left open overnight is never acted on stale.
- */
-export const MIN_VISIBILITY_REFRESH_MS = 30_000;
-
-export function shouldRefreshOnVisible(
-  lastRefreshAt: number,
-  now: number,
-  minIntervalMs: number = MIN_VISIBILITY_REFRESH_MS,
-): boolean {
-  return now - lastRefreshAt >= minIntervalMs;
 }

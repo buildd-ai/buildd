@@ -7,6 +7,20 @@ triggers are not declared in `vercel.json`. Schedules use the manifest's
 `America/New_York` timezone. Use `bun run cron:plan` to preview reconciliation,
 `bun run cron:sync` to apply it, and `bun run cron:check` to check scheduler drift.
 
+## Profiles
+
+Every job carries a `profile`. A deployment can schedule a subset.
+
+| Profile | Meaning |
+|---|---|
+| `core` | The coordination loop needs it: dispatch drain, PR merge-state and landing reconcile, `waiting_input` sweep, credential refresh and lease guard, task archive, and `maintenance` (stale workers, abandoned path claims). |
+| `ops` | Operator alarms: queue stall, fleet idle, role outcomes. |
+| `module:<name>` | Optional. A no-op while the module's tables are empty. |
+
+`bun run cron:sync --profile core,ops` (or `CRON_PROFILES=core,ops`) reconciles
+only those jobs. `module:*` selects every module. With no list, every job is
+scheduled. In CI, set the `CRON_PROFILES` repository variable to choose.
+
 ## Orchestration readout
 
 `GET /api/cron/orchestration-readout` runs daily at 11:00

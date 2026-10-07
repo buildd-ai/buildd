@@ -92,7 +92,7 @@ export function taskDockModel(view: TaskObjectView): TaskDockModel {
         : null;
 
   const happened: TaskDockModel['happened'] = [...(view.happened ?? [])];
-  if (t.tone === 'needs') happened.push({ ts: null, text: t.stopped ? 'Stopped. Waiting on you.' : 'Waiting on you.', needs: true });
+  if (t.tone === 'needs') happened.push({ ts: null, text: t.stopped ? 'Stopped. Needs input.' : 'Needs input.', needs: true });
 
   const title = taskHeading({ title: view.title, label: view.label || null }, null).heading;
   // Mid-sentence the heading reads lower-case (an acronym such as CSV keeps its capitals).
@@ -115,7 +115,7 @@ export function taskDockModel(view: TaskObjectView): TaskDockModel {
 export interface AtWorkRow { id: string; label: string; state: string; tone: DockTone }
 
 const WORDS: Partial<Record<BoardStatus, [string, DockTone]>> = {
-  waiting: ['waiting on you', 'needs'],
+  waiting: ['needs input', 'needs'],
   ci_failed: ['CI failed', 'needs'],
   failed: ['stopped', 'needs'],
   fixing: ['fixing', 'live'],

@@ -68,6 +68,7 @@ import type { VisualReviewModel } from '@buildd/shared';
 import { MissionVisualReviewProvider } from './MissionVisualReview';
 import MissionVisualReviewSetting from './MissionVisualReviewSetting';
 import MissionScreensRow from './MissionScreensRow';
+import MissionVisualReviewAction from './MissionVisualReviewAction';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionReleaseSection } from './MissionReleaseSection';
 import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionTrunkMergedAt } from '@/lib/mission-delivery';
@@ -111,10 +112,10 @@ export default async function MissionDetailPage({
 }: {
   params: Promise<{ id: string }>;
   // `?tab=` is retired: accepted and ignored, so old links still land.
-  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string }>;
 }) {
   const { id } = await params;
-  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam, layout: layoutParam } = await searchParams;
+  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam, layout: layoutParam, visualReview: visualReviewParam } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -1026,7 +1027,7 @@ export default async function MissionDetailPage({
           </div>
           <p className="text-[13px] text-text-secondary">
             {missionIntegrationPr.state === 'not_opened'
-              ? `Task PRs merge into this mission's integration branch. No PR from that branch into the target branch exists yet, so none of this mission's work is on the target branch.`
+              ? `Task PRs merge into the integration branch. No PR to the target branch is open, so none of this work has shipped.`
               : missionIntegrationPr.state === 'merged'
                 ? `This mission's work reached the target branch through one PR from its integration branch.`
                 : `The mission's review gate: one PR from the integration branch into the target branch. The merge policy applies to this PR only.`}
@@ -1138,7 +1139,7 @@ export default async function MissionDetailPage({
           <div className="mb-3 border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
             <div className="flex items-start gap-2">
               <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
-                Needs your decision
+                Decision needed
               </span>
               <span className="min-w-0 text-[12px] text-text-secondary [overflow-wrap:anywhere]">
                 {surfaceAuditBlocked ? surfaceAuditHeadline(surfaceAuditPaths.length) : readingCopy}
@@ -1368,11 +1369,15 @@ export default async function MissionDetailPage({
       autoVerify={autoVerifyFlag}
       readonly={isTerminal}
       failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
+      missionPrCount={prCount}
       overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
     />
   );
   // Chat is how you ask about work: opens a conversation with this mission docked.
   const askAbout = <AskAboutLink kind="mission" id={id} teamId={mission.teamId} workspaceId={mission.workspaceId} />;
+  // The mission's visual review as a mission command (never the task composer):
+  // on any open mission with a workspace to run it in.
+  const visualReviewAction = !isTerminal && mission.workspaceId ? <MissionVisualReviewAction missionId={id} initialOpen={visualReviewParam === '1'} /> : null;
   const overflowMenu = (
     <MissionOverflowMenu
       missionId={id}
@@ -1385,6 +1390,7 @@ export default async function MissionDetailPage({
       isHeld={isHeld}
       displayState={displayState}
       hasPrimaryAction={hasPrimaryAction}
+      executor={(mission as any).executor === 'local' ? 'local' : (mission as any).executor === 'runner' ? 'runner' : null}
     />
   );
   const back = mastheadBack(from, breadcrumb.links);
@@ -1465,7 +1471,7 @@ export default async function MissionDetailPage({
       title={mission.title}
       chip={stateChip}
       verified={verifiedPill}
-      actions={<>{askAbout}{overflowMenu}</>}
+      actions={<>{askAbout}{visualReviewAction}{overflowMenu}</>}
       goal={goalLine}
       description={mission.description || !isTerminal ? <MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} defaultExpanded /> : undefined}
       serverNow={renderedAt}

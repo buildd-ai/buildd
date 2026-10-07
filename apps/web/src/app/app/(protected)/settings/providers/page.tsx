@@ -2,6 +2,7 @@ import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { getChatAvailability } from '@/lib/chat-availability';
 import ModelProvidersClient from './ModelProvidersClient';
+import { PROVIDERS_DESCRIPTION } from './provider-copy';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +19,7 @@ export default async function ModelProvidersPage() {
   return (
     <SettingsPage
       title="Model providers"
-      description="OpenRouter reaches every model tier with one key."
+      description={PROVIDERS_DESCRIPTION}
     >
       {currentTeam ? (
         <ModelProvidersClient

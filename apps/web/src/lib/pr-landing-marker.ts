@@ -89,6 +89,29 @@ export async function writeLandingMarker(
   return rows.length > 0;
 }
 
+/**
+ * Claim the one fresh review a stale blocking verdict is owed. Atomically adds
+ * `reviewTaskId` to `landing.revalidatedReviews`; true only for the caller whose
+ * UPDATE matched, so a verdict that blocks again after its fresh review is not
+ * re-reviewed a second time — that one is a person's.
+ */
+export async function claimReviewRevalidation(taskId: string, reviewTaskId: string): Promise<boolean> {
+  const rows = await db
+    .update(tasks)
+    .set({
+      context: sql`jsonb_set(COALESCE(${tasks.context}, '{}'::jsonb), '{landing}', COALESCE(${tasks.context}->'landing', '{}'::jsonb) || jsonb_build_object('revalidatedReviews', COALESCE(${tasks.context}->'landing'->'revalidatedReviews', '[]'::jsonb) || jsonb_build_array(${reviewTaskId}::text)), true)`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(tasks.id, taskId),
+        sql`NOT (COALESCE(${tasks.context}->'landing'->'revalidatedReviews', '[]'::jsonb) @> jsonb_build_array(${reviewTaskId}::text))`,
+      ),
+    )
+    .returning({ id: tasks.id });
+  return rows.length > 0;
+}
+
 /** Drop the marker once the PR has merged (the landing cycle is over). */
 export async function clearLandingMarker(taskId: string): Promise<void> {
   await db

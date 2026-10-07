@@ -4,6 +4,7 @@ import MissionsBottomNav from '@/components/MissionsBottomNav';
 import MissionsSidebar from '@/components/MissionsSidebar';
 import MobilePageHeader from '@/components/MobilePageHeader';
 import TimezoneSync from '@/components/TimezoneSync';
+import AppFreshness from '@/components/AppFreshness';
 import { DisplayTimezoneProvider } from '@/components/DisplayTimezone';
 import { NeedsInputProvider } from '@/components/NeedsInputProvider';
 import NeedsInputBanner from '@/components/NeedsInputBanner';
@@ -19,6 +20,7 @@ import { CHAT_SETTINGS_HREF } from '@/components/chat/ChatSetupCard';
 import type { NavContext } from '@/lib/nav-config';
 import { KeyHintsProvider } from '@/components/KeyHints';
 import { ChatCanvasProvider } from '@/components/chat/ChatCanvas';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 export default async function ProtectedLayout({
   children,
@@ -61,9 +63,10 @@ export default async function ProtectedLayout({
         // cache()d, so Home and /app/chat reuse the answer.
         .then(async (scope) => {
           if (!scope.teamId) return { scope, nav, chatEntry };
-          const [avail, role] = await Promise.all([
+          const [avail, role, overrides] = await Promise.all([
             getChatAvailability(user.id, scope.teamId).catch(() => null),
             getUserTeamRole(user.id, scope.teamId).catch(() => null),
+            getTeamPermissionOverrides(scope.teamId),
           ]);
           const entry: ChatEntryValue = {
             available: avail?.available === true,
@@ -71,7 +74,7 @@ export default async function ProtectedLayout({
             // The missing key is an owner's or admin's to fix.
             setupHref: avail && !avail.available && avail.canManageTeamKeys ? CHAT_SETTINGS_HREF.teamKeys : null,
           };
-          return { scope, nav: { audience: homeAudience(role) } as NavContext, chatEntry: entry };
+          return { scope, nav: { audience: homeAudience(role, overrides) } as NavContext, chatEntry: entry };
         }),
     ]);
     userTeams = userTeamsResult;
@@ -138,6 +141,9 @@ export default async function ProtectedLayout({
               </main>
             </div>
           </div>
+
+          {/* Catch up on resume / reconnect / back-nav, and pull-to-refresh on mobile */}
+          <AppFreshness />
 
           {/* Silently keep users.timezone in step with the browser */}
           {user && <TimezoneSync knownTimezone={user.timezone} />}

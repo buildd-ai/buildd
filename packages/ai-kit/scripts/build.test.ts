@@ -12,7 +12,7 @@ describe('dist package.json', () => {
     expect(Object.keys(out).sort()).toEqual(Object.keys(pkg.exports).sort());
   });
   it('has the entry points the design names', () => {
-    for (const e of ['./models', './decide', './chat/contract', './chat/server', './chat/react', './chat/theme.css', './chat/styles.css', './chat/schema.sql', './surfaces']) {
+    for (const e of ['./models', './policy', './decide', './chat/contract', './chat/server', './chat/react', './chat/theme.css', './chat/styles.css', './chat/schema.sql', './surfaces']) {
       expect(pkg.exports).toHaveProperty([e]);
     }
   });

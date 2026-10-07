@@ -7,7 +7,8 @@
  * (restore, the post-restore fetch, the snapshot upload; warm-repo.ts).
  * Alongside them: `BUILDD_METRIC=<name> <integer>` for byte counts and ages,
  * and `BUILDD_REPO_SOURCE=warm` or `BUILDD_REPO_SOURCE=clone <reason>` saying
- * how the repo got onto the disk. apps/cloud-runner reads all three into its
+ * how the repo got onto the disk, and `BUILDD_WARM_UPLOAD=skipped <reason>`
+ * when a warm upload was skipped. apps/cloud-runner reads them all into its
  * per-run report (src/run-report.ts parses the same formats; a test there
  * keeps the two in step). Nothing else is printed: no paths, no URLs.
  *
@@ -21,15 +22,56 @@ export const RUN_PHASES = [
   'restore_warm_start', 'restore_warm_end', 'fetch_start', 'fetch_end',
   'warm_upload_start', 'warm_upload_end',
   'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
+  'restore_cache_start', 'restore_cache_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 
 export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
 export const RUN_METRICS = [
   'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
-  'park_bytes', 'resume_layer',
+  'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes',
+  // resource-sampler.ts: working-set peak, the memory it is measured against,
+  // lowest free disk and the disk's size. Re-printed as they move; last wins.
+  'mem_peak_bytes', 'mem_limit_bytes', 'disk_free_min_bytes', 'disk_total_bytes',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
+
+/**
+ * `BUILDD_WARM_UPLOAD=skipped <reason>`: the run ended without uploading a
+ * warm snapshot it would otherwise have uploaded. `too_large`: the repo (or
+ * the bundle, as it streamed) was over the cap (warm-repo.ts).
+ */
+export const WARM_UPLOAD_LINE_PREFIX = 'BUILDD_WARM_UPLOAD=';
+export const WARM_UPLOAD_SKIP_REASONS = ['too_large'] as const;
+export type WarmUploadSkipReason = typeof WARM_UPLOAD_SKIP_REASONS[number];
+
+/**
+ * `BUILDD_WARM_REFRESH=<reason>`: why a warm snapshot was refreshed (uploaded).
+ * `age`: older than WARM_MAX_AGE_MS. `fetch`: post-restore fetch was large.
+ * `cache_growth`: cache grew materially during the run.
+ */
+export const WARM_REFRESH_LINE_PREFIX = 'BUILDD_WARM_REFRESH=';
+export const WARM_REFRESH_REASONS = ['age', 'fetch', 'cache_growth'] as const;
+export type WarmRefreshReason = typeof WARM_REFRESH_REASONS[number];
+
+export function formatWarmUploadSkippedLine(reason: WarmUploadSkipReason): string {
+  return `${WARM_UPLOAD_LINE_PREFIX}skipped ${reason}`;
+}
+
+/**
+ * `BUILDD_CACHE_SKIPPED=<part> <bytes> <cap>`: part of the dependency cache
+ * was left out of the warm upload for size. `pnpm-store`: the pnpm store
+ * alone (the rest of the cache still uploads); `cache`: the whole cache
+ * tarball. `bytes` is the part's size on disk, `cap` the warm cap.
+ */
+export const CACHE_SKIPPED_LINE_PREFIX = 'BUILDD_CACHE_SKIPPED=';
+export const CACHE_SKIP_PARTS = ['pnpm-store', 'cache'] as const;
+export type CacheSkipPart = typeof CACHE_SKIP_PARTS[number];
+
+export function formatCacheSkippedLine(part: CacheSkipPart, bytes: number, cap: number): string {
+  const n = (v: number) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+  return `${CACHE_SKIPPED_LINE_PREFIX}${part} ${n(bytes)} ${n(cap)}`;
+}
 
 export const REPO_SOURCE_LINE_PREFIX = 'BUILDD_REPO_SOURCE=';
 /** Why the repo was cloned rather than restored from a warm snapshot. */
@@ -74,8 +116,23 @@ export function emitRepoSource(source: RepoSource, reason?: RepoFallbackReason, 
   (opts?.log ?? console.log)(formatRepoSourceLine(source, reason));
 }
 
+export function emitWarmUploadSkipped(reason: WarmUploadSkipReason, opts: EmitOpts = {}): void {
+  if (!phaseLinesEnabled(opts?.env ?? process.env)) return;
+  (opts?.log ?? console.log)(formatWarmUploadSkippedLine(reason));
+}
+
+export function emitCacheSkipped(part: CacheSkipPart, bytes: number, cap: number, opts: EmitOpts = {}): void {
+  if (!phaseLinesEnabled(opts?.env ?? process.env)) return;
+  (opts?.log ?? console.log)(formatCacheSkippedLine(part, bytes, cap));
+}
+
+export function emitWarmRefresh(reason: WarmRefreshReason, opts: EmitOpts = {}): void {
+  if (!phaseLinesEnabled(opts?.env ?? process.env)) return;
+  (opts?.log ?? console.log)(`${WARM_REFRESH_LINE_PREFIX}${reason}`);
+}
+
 /** Run `fn` between `<step>_start` and `<step>_end`; the end is printed even if it throws. */
-export function timedPhase<T>(step: 'clone' | 'install' | 'restore_warm' | 'fetch' | 'warm_upload' | 'park' | 'restore_park', fn: () => T, opts?: EmitOpts): T {
+export function timedPhase<T>(step: 'clone' | 'install' | 'restore_warm' | 'fetch' | 'warm_upload' | 'park' | 'restore_park' | 'restore_cache', fn: () => T, opts?: EmitOpts): T {
   emitPhase(`${step}_start`, opts);
   try {
     return fn();

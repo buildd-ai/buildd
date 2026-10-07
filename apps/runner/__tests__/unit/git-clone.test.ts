@@ -9,11 +9,16 @@
  * the retry policy (GitHub's 429 cannot be produced locally).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { execFileSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { DEEP_ORIGIN_COMMITS, git, makeDeepOrigin, remoteBranches } from '../fixtures/deep-origin';
 import {
+  CLOUD_BRANCH_FETCH_DEPTH,
+  ensureRemoteBranch,
+  remoteBranchFetchArgs,
+  type GitCwdRun,
   CLONE_RETRY_BUDGET_MS,
   FETCH_RETRY_BUDGET_MS,
   fetchOriginWithRetry,
@@ -42,11 +47,25 @@ describe('cloneArgs', () => {
     expect(cloneArgs('https://github.com/acme/widget.git', '/w/ws-1', { BUILDD_EXECUTOR: 'host' })).toEqual(['clone', 'https://github.com/acme/widget.git', '/w/ws-1']);
   });
 
-  test('cloud container: shallow, but every branch tip (mission and resume branches resolve from origin/<branch>)', () => {
-    const args = cloneArgs('https://github.com/acme/widget.git', '/w/ws-1', { BUILDD_EXECUTOR: 'cloud' });
-    expect(args).toEqual(['clone', '--depth', String(CLOUD_CLONE_DEPTH), '--no-single-branch', 'https://github.com/acme/widget.git', '/w/ws-1']);
+  test('cloud container: depth 1, one branch: the workspace default branch when known', () => {
+    const args = cloneArgs('https://github.com/acme/widget.git', '/w/ws-1', { BUILDD_EXECUTOR: 'cloud' }, 'dev');
+    expect(CLOUD_CLONE_DEPTH).toBe(1);
+    expect(args).toEqual(['clone', '--depth', '1', '--single-branch', '--branch', 'dev', 'https://github.com/acme/widget.git', '/w/ws-1']);
     // Not a partial clone: bundles (warm, park) and lazy blob fetches do not mix.
     expect(args.some(a => a.startsWith('--filter'))).toBe(false);
+    expect(args).not.toContain('--no-single-branch');
+  });
+
+  test('cloud container, default branch unknown: git picks the remote HEAD (plain --single-branch)', () => {
+    expect(cloneArgs('https://github.com/acme/widget.git', '/w/ws-1', { BUILDD_EXECUTOR: 'cloud' })).toEqual(
+      ['clone', '--depth', '1', '--single-branch', 'https://github.com/acme/widget.git', '/w/ws-1'],
+    );
+    // A name git would read as an option is never passed as a branch.
+    expect(cloneArgs('https://github.com/acme/widget.git', '/w/ws-1', { BUILDD_EXECUTOR: 'cloud' }, '--upload-pack=x')).not.toContain('--branch');
+  });
+
+  test('host runner: the branch is ignored, a full clone as before', () => {
+    expect(cloneArgs('https://github.com/acme/widget.git', '/w/ws-1', {}, 'dev')).toEqual(['clone', 'https://github.com/acme/widget.git', '/w/ws-1']);
   });
 
   test('normalizeCloneUrl expands an owner/repo slug', () => {
@@ -210,39 +229,144 @@ describe('fetchOriginWithRetry', () => {
 
 describe('cloneRepo against a real origin', () => {
   let dir: string;
-  const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  let origin: string;
+  let url: string;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'git-clone-'));
-    const origin = join(dir, 'origin.git');
-    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
-    // One fast-import stream: CLOUD_CLONE_DEPTH + 10 commits on main.
-    let stream = '';
-    for (let i = 0; i < CLOUD_CLONE_DEPTH + 10; i++) {
-      const data = `${i}\n`;
-      stream += `commit refs/heads/main\nmark :${i + 1}\ncommitter t <t@example.com> ${1_700_000_000 + i} +0000\ndata 3\nc${String(i).padStart(2, '0')}\n`;
-      if (i > 0) stream += `from :${i}\n`;
-      stream += `M 100644 inline f.txt\ndata ${data.length}\n${data}\n`;
-    }
-    execFileSync('git', ['fast-import', '--quiet'], { cwd: origin, input: stream });
-    git(origin, 'branch', 'mission/x', 'main~3');
+    ({ origin, url } = makeDeepOrigin(dir));
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  test('cloud: shallow at the fixed depth, with every branch as origin/<branch>', () => {
+  test('cloud, default branch known: depth 1, that branch only, origin/HEAD names it', () => {
     const path = join(dir, 'cloud');
-    cloneRepo(`file://${join(dir, 'origin.git')}`, path, { env: { BUILDD_EXECUTOR: 'cloud' }, log: () => {} });
+    cloneRepo(url, path, { env: { BUILDD_EXECUTOR: 'cloud' }, branch: 'dev', log: () => {} });
     expect(git(path, 'rev-parse', '--is-shallow-repository')).toBe('true');
-    const depth = Number(git(path, 'rev-list', '--count', 'origin/main'));
-    expect(depth).toBeGreaterThanOrEqual(CLOUD_CLONE_DEPTH);
-    expect(depth).toBeLessThan(CLOUD_CLONE_DEPTH + 10);
-    expect(git(path, 'rev-parse', 'origin/mission/x')).toBe(git(join(dir, 'origin.git'), 'rev-parse', 'mission/x'));
-    expect(git(path, 'config', 'remote.origin.fetch')).toBe('+refs/heads/*:refs/remotes/origin/*');
+    expect(Number(git(path, 'rev-list', '--count', 'origin/dev'))).toBe(1);
+    expect(remoteBranches(path)).toEqual(['dev']);
+    // A later plain `git fetch origin` brings this branch only, never every branch's history.
+    expect(git(path, 'config', '--get-all', 'remote.origin.fetch')).toBe('+refs/heads/dev:refs/remotes/origin/dev');
+    expect(git(path, 'symbolic-ref', 'refs/remotes/origin/HEAD')).toBe('refs/remotes/origin/dev');
+    expect(git(path, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('dev');
   });
 
-  test('host: a full clone', () => {
+  test('cloud, default branch unknown: the remote HEAD, at depth 1', () => {
+    const path = join(dir, 'cloud');
+    cloneRepo(url, path, { env: { BUILDD_EXECUTOR: 'cloud' }, log: () => {} });
+    expect(remoteBranches(path)).toEqual(['main']);
+    expect(Number(git(path, 'rev-list', '--count', 'origin/main'))).toBe(1);
+    expect(git(path, 'symbolic-ref', 'refs/remotes/origin/HEAD')).toBe('refs/remotes/origin/main');
+  });
+
+  test('cloud, a configured default branch the remote does not have: falls back to the remote HEAD', () => {
+    const path = join(dir, 'cloud');
+    const logs: string[] = [];
+    cloneRepo(url, path, { env: { BUILDD_EXECUTOR: 'cloud' }, branch: 'trunk', sleep: () => { throw new Error('not transient'); }, log: (m) => logs.push(m) });
+    expect(remoteBranches(path)).toEqual(['main']);
+    expect(logs.join('\n')).toContain('trunk');
+  });
+
+  test('host: a full clone with every branch, exactly as before', () => {
     const path = join(dir, 'host');
-    cloneRepo(`file://${join(dir, 'origin.git')}`, path, { env: {}, log: () => {} });
+    cloneRepo(url, path, { env: {}, branch: 'dev', log: () => {} });
     expect(git(path, 'rev-parse', '--is-shallow-repository')).toBe('false');
-    expect(Number(git(path, 'rev-list', '--count', 'origin/main'))).toBe(CLOUD_CLONE_DEPTH + 10);
+    expect(Number(git(path, 'rev-list', '--count', 'origin/main'))).toBe(DEEP_ORIGIN_COMMITS);
+    expect(remoteBranches(path)).toEqual(['buildd/old', 'dev', 'main', 'mission/x']);
+  });
+});
+
+describe('ensureRemoteBranch: origin/<branch> on demand in a narrow clone', () => {
+  let dir: string;
+  let origin: string;
+  let url: string;
+  /** The real git, recording every command. */
+  function recordingRun(cwd: string) {
+    const calls: string[][] = [];
+    const run: GitCwdRun = (args, timeoutMs) => {
+      calls.push(args);
+      const r = spawnSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: timeoutMs });
+      return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', signal: r.signal };
+    };
+    return { calls, run, fetches: () => calls.filter(a => a[0] === 'fetch') };
+  }
+  function cloudClone(): string {
+    const path = join(dir, 'cloud');
+    cloneRepo(url, path, { env: { BUILDD_EXECUTOR: 'cloud' }, branch: 'dev', log: () => {} });
+    return path;
+  }
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'ensure-branch-'));
+    ({ origin, url } = makeDeepOrigin(dir));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('a branch already there: no fetch', () => {
+    const path = cloudClone();
+    const r = recordingRun(path);
+    expect(ensureRemoteBranch(path, 'dev', { run: r.run, log: () => {} })).toBe('present');
+    expect(r.fetches()).toEqual([]);
+  });
+
+  test('a missing branch is fetched at CLOUD_BRANCH_FETCH_DEPTH, into origin/<branch> only; the clone stays shallow', () => {
+    const path = cloudClone();
+    const r = recordingRun(path);
+    expect(ensureRemoteBranch(path, 'mission/x', { run: r.run, log: () => {} })).toBe('fetched');
+    expect(r.fetches()).toEqual([[
+      'fetch', '-q', '--no-tags', '--depth', String(CLOUD_BRANCH_FETCH_DEPTH), 'origin', '+refs/heads/mission/x:refs/remotes/origin/mission/x',
+    ]]);
+    expect(git(path, 'rev-parse', 'origin/mission/x')).toBe(git(origin, 'rev-parse', 'mission/x'));
+    expect(git(path, 'rev-parse', '--is-shallow-repository')).toBe('true');
+    expect(Number(git(path, 'rev-list', '--count', 'origin/mission/x'))).toBeLessThanOrEqual(CLOUD_BRANCH_FETCH_DEPTH);
+    // Nothing else came in, and the default branch was not deepened.
+    expect(remoteBranches(path)).toEqual(['dev', 'mission/x']);
+    expect(Number(git(path, 'rev-list', '--count', 'origin/dev'))).toBe(1);
+    // A second ask is answered locally.
+    expect(ensureRemoteBranch(path, 'mission/x', { run: r.run, log: () => {} })).toBe('present');
+    expect(r.fetches()).toHaveLength(1);
+  });
+
+  test('a branch the remote does not have: missing, at once, no retry', () => {
+    const path = cloudClone();
+    const r = recordingRun(path);
+    expect(ensureRemoteBranch(path, 'no/such-branch', { run: r.run, sleep: () => { throw new Error('must not wait'); }, log: () => {} })).toBe('missing');
+    expect(r.fetches()).toHaveLength(1);
+  });
+
+  test('a transient failure is retried on the shared policy', () => {
+    const path = cloudClone();
+    const real = recordingRun(path);
+    let failed = false;
+    const sleeps: number[] = [];
+    const run: GitCwdRun = (args, t) => {
+      if (args[0] === 'fetch' && !failed) { failed = true; return { status: 128, stdout: '', stderr: 'error: RPC failed; curl 18 transfer closed\nfatal: early EOF', signal: null }; }
+      return real.run(args, t);
+    };
+    expect(ensureRemoteBranch(path, 'mission/x', { run, sleep: (ms) => sleeps.push(ms), retryAfter: () => null, log: () => {} })).toBe('fetched');
+    expect(sleeps).toHaveLength(1);
+  });
+
+  test('a full clone (host) never fetches on demand: its `git fetch origin` already brought every branch', () => {
+    const path = join(dir, 'host');
+    cloneRepo(url, path, { env: {}, log: () => {} });
+    const r = recordingRun(path);
+    expect(ensureRemoteBranch(path, 'mission/x', { run: r.run, log: () => {} })).toBe('present');
+    expect(ensureRemoteBranch(path, 'no/such-branch', { run: r.run, log: () => {} })).toBe('not_needed');
+    expect(r.fetches()).toEqual([]);
+  });
+
+  test('a name git would read as an option is refused without running anything', () => {
+    const path = cloudClone();
+    const r = recordingRun(path);
+    expect(ensureRemoteBranch(path, '--upload-pack=touch /tmp/x', { run: r.run, log: () => {} })).toBe('missing');
+    expect(r.calls).toEqual([]);
+  });
+
+  test('remoteBranchFetchArgs: a depth only for a branch this shallow clone does not have yet', () => {
+    const path = cloudClone();
+    // An existing ref is updated incrementally: a depth there could cut off the commit a worktree was cut from.
+    expect(remoteBranchFetchArgs(path, 'dev')).toEqual(['fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/dev:refs/remotes/origin/dev']);
+    expect(remoteBranchFetchArgs(path, 'mission/x')).toEqual(['fetch', '--no-tags', '--quiet', '--depth', String(CLOUD_BRANCH_FETCH_DEPTH), 'origin', '+refs/heads/mission/x:refs/remotes/origin/mission/x']);
+    const host = join(dir, 'host');
+    cloneRepo(url, host, { env: {}, log: () => {} });
+    expect(remoteBranchFetchArgs(host, 'mission/x')).toEqual(['fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/mission/x:refs/remotes/origin/mission/x']);
   });
 });

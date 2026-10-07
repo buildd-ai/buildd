@@ -8,12 +8,15 @@
  */
 import { createHash } from 'node:crypto';
 import type { ChoiceAnswer, ChoiceQuestion } from '@buildd/core/decision-client';
+import { renderTemplate, resolvePromptValue } from '@buildd/core/prompts';
 import type { Candidate, WindowTotals } from './skeleton';
 import {
-  CANDIDATE_KINDS, CAUSE_LABELS, CHAT_RETRO_VERSION, EVIDENCE_KEYS, LESSON_TEXT_COLUMNS,
-  type CauseLabel, type FixClassLabel, type IntentLabel, type RetroStatus,
-  type SatisfiedLabel, type SkipReason, type TurnLabel,
+  CANDIDATE_KINDS, CAUSE_LABELS, CHAT_RETRO_VERSION, EVIDENCE_KEYS, LESSON_TEXT_COLUMNS, VISIBLE_CANDIDATE_KINDS,
+  type CauseLabel, type FixClassLabel, type IntentLabel, type ModelFixClassLabel, type RetroStatus,
+  type SatisfiedLabel, type SkipReason, type TurnLabel, type VisibleCandidateKind, type VisibleCauseLabel,
 } from './vocab';
+import { VISIBLE_CAUSE_OF, VISIBLE_CAUSE_ORDER, VISIBLE_FIX_CLASS, VISIBLE_HIGH_CONF } from './visible-answer';
+import { registerValuePrompt } from '@buildd/core/prompts';
 
 export const GATES = { satisfied: 0.8, intent: 0.7, turn: 0.8, fixClass: 0.7 } as const;
 
@@ -57,7 +60,7 @@ const TURN_CRITERIA: Record<TurnLabel, { what: string; not_for: string }> = {
   wrong_tier: { what: 'The routed tier was too weak or too strong for the turn.', not_for: 'A tool or description problem.' },
 };
 
-const FIX_CLASS_Q: ChoiceQuestion<FixClassLabel> = {
+const FIX_CLASS_Q: ChoiceQuestion<ModelFixClassLabel> = {
   type: 'choice',
   instructions: { question: 'Which kind of change to buildd would most have prevented the waste in this session?', rule: 'Pick one class; the details are worked out later by a person.' },
   criteria: {
@@ -72,18 +75,41 @@ const FIX_CLASS_Q: ChoiceQuestion<FixClassLabel> = {
 
 export type RetroQuestions = Record<string, ChoiceQuestion<string>>;
 
-/** The questions for one window. `stopped` candidates are labelled by code and not asked. */
+/**
+ * The retro's question text, resolved through the versioned prompts table
+ * (`@buildd/core/prompts`): an active row's body is JSON of exactly this shape
+ * (same labels, the turn question keeping its placeholders), else this public
+ * default runs.
+ */
+export const CHAT_RETRO_PROMPT_ID = 'buildd.chat_retro.questions';
+
+export const CHAT_RETRO_PROMPT_DEFAULT = {
+  satisfied: SATISFIED_Q,
+  intent: INTENT_Q,
+  turnQuestion: 'Was flagged candidate turn_{{id}} ({{kind}} at turn #{{turn}}) needed, or wasted, and why?',
+  turnCriteria: TURN_CRITERIA,
+  fixClass: FIX_CLASS_Q,
+};
+
+const isVisible = (c: Pick<Candidate, 'kind'>): c is Candidate & { kind: VisibleCandidateKind } =>
+  (VISIBLE_CANDIDATE_KINDS as readonly string[]).includes(c.kind);
+
+/** Candidates code labels itself: `stopped`, and the visible-answer kinds. */
+export const isCodeLabelled = (c: Pick<Candidate, 'kind'>): boolean => c.kind === 'stopped' || isVisible(c);
+
+/** The questions for one window. Code-labelled candidates are not asked. */
 export function buildQuestions(candidates: Candidate[]): RetroQuestions {
-  const q: RetroQuestions = { satisfied: SATISFIED_Q, intent: INTENT_Q };
+  const text = resolvePromptValue(CHAT_RETRO_PROMPT_ID, CHAT_RETRO_PROMPT_DEFAULT);
+  const q: RetroQuestions = { satisfied: text.satisfied, intent: text.intent };
   for (const c of candidates) {
-    if (c.kind === 'stopped') continue;
+    if (isCodeLabelled(c)) continue;
     q[`turn_${c.id}`] = {
       type: 'choice',
-      instructions: { question: `Was flagged candidate turn_${c.id} (${c.kind} at turn #${c.turn}) needed, or wasted, and why?` },
-      criteria: TURN_CRITERIA,
+      instructions: { question: renderTemplate(text.turnQuestion, { id: c.id, kind: c.kind, turn: c.turn }) },
+      criteria: text.turnCriteria,
     };
   }
-  if (candidates.length > 0) q.fix_class = FIX_CLASS_Q;
+  if (candidates.some(c => !isVisible(c))) q.fix_class = text.fixClass;
   return q;
 }
 
@@ -203,13 +229,14 @@ export function judgedLesson(args: {
   const wasteTurns = new Set<number>();
   const counted = new Set<string>();
   for (const c of candidates) {
-    const coded = c.kind === 'stopped';
-    const a = coded ? { label: 'reasoning_timeout', conf: 1 } : gated(answers[`turn_${c.id}`], GATES.turn);
+    const coded = isCodeLabelled(c);
+    const codeLabel = isVisible(c) ? { label: VISIBLE_CAUSE_OF[c.kind], conf: c.conf ?? 1 } : { label: 'reasoning_timeout', conf: 1 };
+    const a = coded ? codeLabel : gated(answers[`turn_${c.id}`], GATES.turn);
     const raw = answers[`turn_${c.id}`];
     row.evidence.push({
       turn: c.turn, messageId: c.messageId, kind: c.kind, tokens: c.tokens,
-      label: coded ? 'reasoning_timeout' : raw?.choice ?? null,
-      conf: coded ? 1 : raw?.confidence ?? null,
+      label: coded ? codeLabel.label : raw?.choice ?? null,
+      conf: coded ? codeLabel.conf : raw?.confidence ?? null,
     });
     if (!a || a.label === 'needed' || !(CAUSE_LABELS as readonly string[]).includes(a.label)) continue;
     const cause = a.label as CauseLabel;
@@ -227,6 +254,9 @@ export function judgedLesson(args: {
   row.wastedTurns = wasteTurns.size;
   row.wastedTokens = [...byCause.values()].reduce((s, e) => s + e.tokens, 0);
 
+  // Only what code is sure of outranks the model's causes; a guessed retry competes on tokens.
+  const sure = new Set(candidates.filter(c => isVisible(c) && (c.conf ?? 1) >= VISIBLE_HIGH_CONF).map(c => VISIBLE_CAUSE_OF[c.kind as VisibleCandidateKind]));
+  if (applyVisibleVerdict(row, sure)) return row;
   if (byCause.size > 0) {
     // Most wasted tokens wins; a tie goes to the cause code detected, then vocabulary order.
     const [cause, entry] = [...byCause.entries()].sort((a, b) =>
@@ -243,6 +273,47 @@ export function judgedLesson(args: {
     }
   }
   return row;
+}
+
+/**
+ * A visible-answer cause outranks any waste as the primary cause, and its fix
+ * class is code's: the signature exists whatever the model answered.
+ */
+function applyVisibleVerdict(row: LessonRow, causes: { has(c: CauseLabel): boolean }): boolean {
+  const cause = VISIBLE_CAUSE_ORDER.find(c => causes.has(c));
+  if (!cause) return false;
+  row.primaryCause = cause;
+  row.toolName = null;
+  row.fixClass = VISIBLE_FIX_CLASS[cause];
+  row.fixClassConf = 1;
+  row.signature = retroSignature(cause, row.fixClass, null);
+  return true;
+}
+
+/**
+ * The visible-answer findings of a window that was not judged (the decision
+ * failed, or the team cap or state budget skipped it): code found them
+ * without the model, so the lesson still carries them and their signature.
+ * A sensitive window never reaches this.
+ */
+export function withVisibleAnswer(row: LessonRow, candidates: Candidate[]): LessonRow {
+  const visible = candidates.filter(isVisible);
+  if (visible.length === 0) return row;
+  const out: LessonRow = { ...row, evidence: [...row.evidence] };
+  const causes = new Map<CauseLabel, true>();
+  const turns = new Set<number>();
+  let tokens = 0;
+  for (const c of visible) {
+    const cause: VisibleCauseLabel = VISIBLE_CAUSE_OF[c.kind];
+    out.evidence.push({ turn: c.turn, messageId: c.messageId, kind: c.kind, tokens: c.tokens, label: cause, conf: c.conf ?? 1 });
+    causes.set(cause, true);
+    if (!turns.has(c.turn)) tokens += c.tokens;
+    turns.add(c.turn);
+  }
+  out.wastedTurns = turns.size;
+  out.wastedTokens = tokens;
+  applyVisibleVerdict(out, causes);
+  return out;
 }
 
 const TEXT_FIELDS: Record<string, keyof LessonRow> = {
@@ -276,3 +347,6 @@ export function assertContentFree(row: LessonRow): void {
     if (e.conf !== null && typeof e.conf !== 'number') throw new Error('chat_retros.evidence: non-numeric confidence');
   }
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerValuePrompt(CHAT_RETRO_PROMPT_ID, CHAT_RETRO_PROMPT_DEFAULT);

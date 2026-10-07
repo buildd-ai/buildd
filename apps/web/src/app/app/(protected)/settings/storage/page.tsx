@@ -18,7 +18,7 @@ export default async function StorageSettingsPage() {
   return (
     <SettingsPage
       title="Storage"
-      description="Where run evidence is kept: failing command output, test reports, CI logs and transcripts. Use your own S3, R2 or S3-compatible bucket, for the whole team or for one workspace."
+      description="Command output, test reports, CI logs and transcripts from agent runs."
     >
       <StorageSection workspaces={teamWorkspaces} />
     </SettingsPage>

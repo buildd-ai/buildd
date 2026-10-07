@@ -13,7 +13,8 @@ Design: [`docs/design/cloudflare-sandbox-runner.md`](../../docs/design/cloudflar
 
 | File | What it is |
 |---|---|
-| `src/index.ts` | Worker entry: `fetch` handler, re-exports `WorkerAgent` |
+| `src/index.ts` | Worker entry: `fetch` handler, re-exports `WorkerAgent` and `WorkerAgentLarge` |
+| `src/runner-class.ts` | The two container classes (standard, large), buildd's size lookup, weighted runner-seconds. Runtime-free |
 | `src/http.ts` | Routes, bearer auth, body validation. Runtime-free |
 | `src/worker-agent.ts` | `WorkerAgent`: wires the supervisor to `ctx.container`, state and keepAlive |
 | `src/supervisor.ts` | One run: start the container, exec, wait, record, stop, crash report. Runtime-free |
@@ -87,10 +88,17 @@ tick delivers the wake when due, as `task.retry` to a webhook that lists that
 event: the backstop. Only a `crashed` outcome is reported;
 the runner's own exits (1 failed, 3 refused, 4 parked, 64 usage) are not.
 
-**Restarts.** If the Durable Object is evicted mid-run (deploy, limits), the
-exec'd process cannot be re-attached. On the next start the agent finds the
-run marked live, destroys the container, and records `crashed` (and reports
-it as above).
+**Restarts.** The container outlives the Durable Object, so an agent restart
+(a deploy, an eviction, an isolate reset) does not end the run. Cloudflare
+cannot re-open the exec stream of the process the old agent started, so the
+runner leaves its pid and exit code in its home directory and the new agent
+execs `buildd-once --attach-orphan`, which waits on that runner and exits with
+its code. The run then finishes as if nothing happened (egress is re-installed
+and a fresh task token minted first). If the runner is not there (exit 6), the
+agent falls back to parking and resuming it (resumable runs), then to marking
+the run `crashed` and reporting it as above. Every restart is recorded on the
+run report as `agentRestarts` (`recovery`, `containerRunning`, `runningForMs`,
+and `versionChanged`: true is a Worker deploy, false is some other cause).
 
 ## Configuration
 
@@ -102,16 +110,49 @@ it as above).
 | `MODEL`, `PUSHER_KEY`, `PUSHER_CLUSTER`, `BUILDD_ONCE_MAX_WAIT_MS` | var | no | Passed through, same meaning as on a long-lived runner |
 | `CONTAINER_INACTIVITY_TIMEOUT_MS` | var | no | Default 30 min. A backstop: the agent holds keepAlive for the whole run |
 | `CONTAINER_START_TIMEOUT_MS` | var | no | Default 5 min, for `ctx.container.running` after `start()` |
-| `CONTAINER_INSTANCE_TYPE` | var | no | Copy of `containers[0].instance_type`, for the run report (a test keeps them equal) |
+| `CONTAINER_INSTANCE_TYPE`, `CONTAINER_INSTANCE_TYPE_LARGE` | var | no | Copies of the standard and large classes' `instance_type`, for the run report (a test keeps them equal) |
 | `RUNNER_GROUP` | var | no | The Worker name (`wrangler.jsonc`; `deploy.ts --name` rewrites it). Every container reports it as `BUILDD_RUNNER_GROUP`, so the dashboard fleet shows this deployment as one elastic group, not one runner per run. Default `buildd-cloud-runner`. Takes effect on redeploy |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
 | `WARM_REPOS` | var | no | `1` turns on warm repos (below). Default off. Needs the `SNAPSHOTS` R2 binding |
+| `WARM_MAX_BUNDLE_BYTES` | var | no | Largest warm bundle or (compressed) cache tarball, in bytes, for workspaces that set no cap of their own. Default 1 GiB. A workspace's `gitConfig.warmSnapshot.maxBytes` (bounded at 8 GiB by buildd, delivered with the GitHub grant) overrides it for that workspace. Passed to the container (which skips the upload past it) and enforced by the snapshot route |
 | `ALLOW_DEBUG_KILL` | var / secret | no | `1` enables `POST /tasks/:taskId/kill` (dispatch token required): destroys that task's container as an OOM kill or platform stop would, for recovery testing. Default off (the route is 404) |
 | `RESUMABLE_RUNS` | var | no | `1` turns on resumable runs (below). Default off. Needs the `SNAPSHOTS` R2 binding and a webhook that lists `task.resume` |
 | `SNAPSHOTS` | R2 binding | for warm repos / resumable runs | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
 
 The container gets a placeholder `ANTHROPIC_API_KEY` and no GitHub token; the
 real credentials are added to its outbound requests (see Egress credentials).
+
+## Container sizes
+
+One Worker, two container classes. Cloudflare fixes the instance type per
+container class, and each class backs its own Durable Object class:
+
+| Size | Agent class | Instance type | Weight |
+|---|---|---|---|
+| `standard` | `WorkerAgent` | `standard-1` (½ vCPU, 4 GiB, 8 GB disk) | 1 |
+| `large` | `WorkerAgentLarge` | `standard-3` (2 vCPU, 8 GiB, 16 GB disk) | 2 |
+
+Each has its own `max_instances` in `wrangler.jsonc`, so the capacity retry
+(`start_deferred`, below) applies per class. `deploy.ts` lists both in its
+plan and refuses a generated config that lost one.
+
+**buildd picks the size, never the container.** On each `/dispatch` the
+Worker asks `POST <BUILDD_SERVER>/api/runner/runner-size` with the runner key
+and `X-Buildd-Dispatch-Token` (the same two credentials as the GitHub grant;
+the container holds neither) and sends the task to that class's agent. The
+answer is the workspace's `gitConfig.runnerSize` when set, otherwise derived
+from its recent run reports: `large` once any shows a working set within ~10%
+of the class memory, free disk under ~3 GB, the container stopping under the
+run (not a deploy, not a question), or a warm checkout plus cache over a few
+GB. A derivation is stored and sticks; an explicit `standard` overrides it.
+The rule is `apps/web/src/lib/runner-size.ts`; the workspace settings page
+shows the effective size and why.
+
+A `task.resume` goes to the class whose agent parked that worker (buildd's
+answer is a first guess; the other class is asked only if it does not hold
+it). `GET /tasks/:taskId` and the debug kill go to the class holding the
+task's latest run. No answer from buildd (an older server, a refusal, a
+timeout) is `standard`, reported as `runnerSize.source: fallback`.
 
 ## Measuring runs
 
@@ -138,8 +179,11 @@ any other status. The result is `report.delivery`: `sent`, `rejected`, `error`,
 | `durationsMs.*` | Derived; null when either end is missing |
 | `containerInstanceId` | The Durable Object ID (`ctx.id`). `ctx.container` exposes no instance ID; Cloudflare documents the Durable Object ID (the container's `CLOUDFLARE_DURABLE_OBJECT_ID`) as what identifies the instance on the dashboard. One agent reuses it across attempts |
 | `runLabel` | `<taskId>.<attempt>`, also set as the container label `bd_run`, so analytics can be joined per attempt |
-| `instanceType` | `CONTAINER_INSTANCE_TYPE` |
-| `egress.{model,github,passthrough}` | Per class: `requests`, `rejected` (refused by the handler), `responseBytes` (decoded body bytes the container read to the end; a lower bound). Only intercepted hosts are seen; other egress is not counted |
+| `instanceType` | The instance type of the class the attempt actually ran in (`CONTAINER_INSTANCE_TYPE` or `CONTAINER_INSTANCE_TYPE_LARGE`) |
+| `runnerSize` | `size` (the class used), `source` and `reason` (buildd's decision: `explicit`, `derived` with its reason, `default`, `pinned` for a resume, `fallback` when buildd did not answer), `weight` (standard 1, large 2), `runnerSeconds` (container running to exit, rounded up) and `weightedRunnerSeconds`, for hosted fair use later; nothing bills from it yet (report version 7) |
+| `resources` | `memoryPeakBytes` (working-set peak), `memoryLimitBytes`, `diskFreeMinBytes`, `diskTotalBytes`, from the runner's sampler (`apps/runner/src/resource-sampler.ts`, `BUILDD_METRIC=` lines re-printed as the extremes move). Null from an image without it |
+| `interruption` | Why the run did not end on its own exit: `container_stopped` (the container died under it), `agent_restart` (the agent restarted, a deploy, and found it orphaned), `question` (parked waiting for an answer), or null |
+| `egress.{model,github,passthrough}` | Per class: `requests`, `rejected` (refused by the handler), `responseBytes` (model: decoded body bytes the container read to the end; GitHub and passthrough: `content-length` when present, so chunked git packs are not counted — those bodies stream natively, never through JavaScript; a lower bound). Only intercepted hosts are seen; other egress is not counted |
 | `egressDetail.{model,github,passthrough}` | Why requests failed, as counts only: `rejectReasons` (`path`, `unconfigured`, `plain_http`, `port`, `unparseable`, `merge_blocked`, `other`) for refusals by the handler, `rejectedPaths` (where `path` refusals were going, as fixed labels: `api_hello`, `event_logging`, `oauth`, `claude_code_api`, `other_api`, `files`, `batches`, `other_v1`, `other`), and `errorStatuses` (upstream 4xx/5xx by code, e.g. a proxy's 403 for a model the key may not use). No URL or header is recorded |
 | `egressDetail.github.credentialed`, `.unauthenticated` | Forwarded GitHub requests that carried the injected installation token, and those that did not, by fixed reason: `no_grant` (the agent had no live run), `grant_fetch_failed` (buildd's `/api/runner/github-token` refused or failed, or the agent is backing off after that), `grant_expired`, `out_of_scope` (not the task's repo: another repo, `/user`, codeload) |
 | `egressDetail.github.unauthenticatedErrorStatuses` | Upstream 4xx/5xx on the unauthenticated forwards only, by code. A 429 here is an anonymous rate limit; a 429 only in `errorStatuses` was sent with the token |
@@ -155,11 +199,19 @@ the agent is evicted mid-run (the orphan report has what was persisted).
 
 The `repo` section (report version 2) says how the repo got onto the disk:
 `source` `warm` or `clone`, `fallbackReason` for a clone (`disabled`,
-`no_snapshot`, `unavailable`, `disk`, `restore_failed`), `snapshotAgeMs`, and
-`bytes.{clone,restore,fetch,cache,upload}`. `durationsMs.restoreWarm`,
-`durationsMs.fetch` and `durationsMs.warmUpload` time the warm path the way
-`durationsMs.clone` times a clone. All come from the runner's `BUILDD_PHASE=`,
-`BUILDD_METRIC=` and `BUILDD_REPO_SOURCE=` lines (`docs/runner-container.md`).
+`no_snapshot`, `unavailable`, `disk`, `restore_failed`), `snapshotAgeMs`,
+`warmUploadSkipReason` (`too_large` when a warm upload was due but the repo was
+over the cap, else null), `cacheSkipped` (version 6: `{ part, bytes, cap }`
+when the pnpm store, `part: 'pnpm-store'`, or the whole cache tarball,
+`part: 'cache'`, was left out of the upload for size, else null), and
+`bytes.{clone,restore,fetch,cache,cacheRaw,upload,warmRepo}` (`warmRepo`: the
+clone's size as measured against the cap; `cache`: the cache tarball as
+stored, zstd-compressed; `cacheRaw`: the same tarball before compression).
+`durationsMs.restoreWarm`, `durationsMs.restoreCache`, `durationsMs.fetch`
+and `durationsMs.warmUpload` time the warm path the way `durationsMs.clone`
+times a clone. All come from the runner's `BUILDD_PHASE=`, `BUILDD_METRIC=`,
+`BUILDD_REPO_SOURCE=`, `BUILDD_WARM_UPLOAD=` and `BUILDD_CACHE_SKIPPED=` lines
+(`docs/runner-container.md`).
 
 ### Eval report
 
@@ -391,9 +443,22 @@ SPEC.md` §4a). Before any credential is attached, `rewriteOutbound` refuses:
   the repo's own GitHub default branch — set by `/api/runner/github-token`)
 
 All three come back `403` with a message pointing at buildd's `merge_pr` MCP
-action. See `docs/specs/cloud-egress-merge-guard.md` for the full contract,
-including what is deliberately NOT covered (gzip-encoded push bodies,
-non-`refs/heads/*` refs, GitHub's own branch-protection rules API).
+action.
+
+GitHub cannot scope the token to a branch, so the grant also carries
+`pushableBranches`: the worker's own branch, plus the task's pinned shared
+working branch if it has one, never a protected branch. When it is present,
+the only refs an agent can move are `refs/heads/<b>` for those branches —
+by `git push`, by REST (`git/refs`, `contents`, `merges`, ...) or by a
+ref-moving GraphQL mutation (refused by name). Tags and every other ref are
+refused, and so is any push or ref write whose target cannot be read (a
+compressed or truncated push, an unparseable JSON body): `403`,
+`reason: 'push_not_allowed'`. An older buildd server that sends no
+`pushableBranches` gets the deny-list above only.
+
+See `docs/specs/cloud-egress-merge-guard.md` for the full contract,
+including what is deliberately NOT covered (GitHub's own branch-protection
+rules API, and what the deny-list alone does not inspect).
 
 ### Warm repos
 
@@ -412,6 +477,9 @@ binding, streaming bodies both ways.
   the query string is ignored. No grant (no GitHub App link, token refused):
   `503`, and the runner clones as usual.
 - **Layout.** `warm/<workspaceId>/<generation>/{repo.bundle,bun-cache.tar,manifest.json}`
+  (`bun-cache.tar` keeps its name but holds a zstd-compressed tarball when
+  the image has zstd; the restore's `zstd -d -f` passes an older plain
+  tarball through unchanged)
   plus `warm/<workspaceId>/lock`. The kind comes first so a prefix-only R2
   lifecycle rule can cover it.
 - **Refresh.** One in flight per workspace: `POST /warm/begin` takes the lock
@@ -422,9 +490,26 @@ binding, streaming bodies both ways.
 - **Retention.** The lifecycle rule `warm/` at 14 days is the backstop
   (`deploy.ts` adds it; by hand: `wrangler r2 bucket lifecycle add
   buildd-cloud-runner-snapshots warm-expiry warm/ --expire-days 14`).
-- **Limits.** `content-length` is required on uploads, at most 5 GB (single
-  part). The runner skips the warm path when the snapshot is over a quarter of
-  free disk.
+- **Streamed uploads.** The runner streams `git bundle create -` and
+  `tar -cf -` straight up, with no file staged and at most one 32 MiB part in
+  memory, as an R2 multipart upload: `POST /warm/<gen>/repo|cache/multipart`
+  (201 `{uploadId}`), `PUT .../multipart/<n>` per part, `POST
+  .../multipart/complete` with `{parts}`, `DELETE .../multipart` to abort; the
+  upload id travels in `x-buildd-upload-id`, the key is still the Worker's.
+  Every body, single or part, is piped into R2 through a `FixedLengthStream`,
+  never read into Worker memory.
+- **Limits.** `content-length` is required on every PUT (a single PUT at most
+  5 GB, a part at most 512 MiB). The workspace's `gitConfig.warmSnapshot.maxBytes`
+  (from the grant, at most 8 GiB), else `WARM_MAX_BUNDLE_BYTES` (default
+  1 GiB), caps a warm part, and `GET /warm/limits` tells the runner which: a single PUT past it is refused, a completed multipart object
+  past it is deleted (413). The runner measures the clone before bundling and
+  skips the upload past the same cap (`warmUploadSkipReason: too_large` in
+  the run report), so a repo too big to snapshot clones every time instead of
+  spending minutes and memory on a bundle. It also skips the warm restore when
+  the snapshot is over a quarter of free disk.
+- **Narrow restore.** A restored clone fetches the default branch only, like
+  the cloud clone itself (depth 1, one branch); other branches come in on
+  demand (`docs/runner-container.md`, "Clone shape").
 
 What goes in a snapshot and what the runner refuses to upload:
 `docs/runner-container.md`, "Warm repos".

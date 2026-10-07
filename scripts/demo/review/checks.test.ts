@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   clipMeta, collisions, confidenceCollapse, contrastFloor, displayWidth, exitCode, legibility, lumaStats,
-  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, inFadeOut, applyAccepted, emptyGap, type Word,
+  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, inFadeOut, applyAccepted, emptyGap, isTypeCard, flicker, sparseFrame, type Word,
 } from './checks';
 
 const W = (text: string, x: number, y: number, w: number, h: number, conf = 90, line = 1): Word => ({ text, x, y, w, h, conf, line });
@@ -15,6 +15,7 @@ describe('displayWidth: the width the site shows each clip at', () => {
     expect(displayWidth('hero')).toBe(1280);
     expect(displayWidth('hero-light-mobile')).toBe(360);
     expect(displayWidth('full')).toBe(1280);
+    expect(displayWidth('captioned')).toBe(1280);
   });
 });
 
@@ -32,6 +33,11 @@ describe('clipMeta: crossfade midpoints in the clip\'s own time', () => {
     expect(m.folded).toBe(false);
     expect(m.loop).toBe(true);
     expect(m.crossfades).toEqual([]);
+  });
+  test('the captioned film is a film too: not folded, not a loop', () => {
+    const m = clipMeta('captioned', { loop: false, shots }, 0.8);
+    expect(m.folded).toBe(false);
+    expect(m.loop).toBe(false);
   });
   test('the film is not a loop', () => {
     const m = clipMeta('full', { loop: false, shots }, 0.8);
@@ -119,6 +125,61 @@ describe('emptyGap: a big flat hole between content (the spec list before its ro
   });
   test('a small flat area between content passes', () => {
     expect(emptyGap(frame((x, y) => (y < 40 || y > 50 ? text(x, y) : 20)), W0, H0)).toBeNull();
+  });
+});
+
+test('isTypeCard: a frame with display-size type is a title card, not a dark rectangle', () => {
+  expect(isTypeCard([W('buildd', 100, 100, 300, 70, 92)], 1920, 1280)).toBe(true);
+  expect(isTypeCard([W('subtitle', 100, 100, 120, 14, 92)], 1920, 1280)).toBe(false);
+  expect(isTypeCard([W('blur', 100, 100, 300, 70, 40)], 1920, 1280)).toBe(false);
+});
+
+describe('flicker: an element that re-appears (on, off, on) within 2s', () => {
+  const fps = 10, blocks = 20;
+  const series = (fn: (f: number, b: number) => number, n = 60) => Array.from({ length: n }, (_, f) => Uint8Array.from({ length: blocks }, (_, b) => fn(f, b)));
+  test('a block that lights, dims and lights again within 2s is flagged', () => {
+    const lit = (f: number) => (f >= 5 && f < 10) || (f >= 15 && f < 20);
+    const f = flicker(series((fr, b) => (b === 3 && lit(fr) ? 200 : 30)), fps);
+    expect(f).toHaveLength(1);
+    expect(f[0].severity).toBe('high');
+    expect(f[0].t).toBeCloseTo(0.5, 1);
+  });
+  test('a reveal that stays, or a tap that pulses once (on then off), is not flicker', () => {
+    expect(flicker(series((fr, b) => (b === 3 && fr >= 5 ? 200 : 30)), fps)).toEqual([]);
+    expect(flicker(series((fr, b) => (b === 3 && fr >= 5 && fr < 9 ? 200 : 30)), fps)).toEqual([]);
+  });
+  test('a moving edge passing over (one frame dark, then the new content) is motion, not flicker', () => {
+    // light, a 1-frame dark edge, light again, then a real change that stays.
+    const v = (f: number) => (f === 10 ? 30 : 200);
+    expect(flicker(series((fr, b) => (b === 3 ? v(fr) : 120)), fps)).toEqual([]);
+  });
+  test('the same toggles 3s apart are not flicker', () => {
+    const lit = (f: number) => (f >= 5 && f < 10) || (f >= 40 && f < 45);
+    expect(flicker(series((fr, b) => (b === 3 && lit(fr) ? 200 : 30)), fps)).toEqual([]);
+  });
+  test('a whole-frame change (a dip or a cut) is not an element flickering', () => {
+    const dip = (f: number) => (f >= 5 && f < 8) || (f >= 12 && f < 15);
+    expect(flicker(series((fr) => (dip(fr) ? 10 : 150)), fps)).toEqual([]);
+  });
+});
+
+describe('sparseFrame: one small thing in a big empty frame', () => {
+  const W0 = 160, H0 = 90;
+  const frame = (fill: (x: number, y: number) => number) => { const g = new Uint8Array(W0 * H0); for (let y = 0; y < H0; y++) for (let x = 0; x < W0; x++) g[y * W0 + x] = fill(x, y); return g; };
+  const text = (x: number, y: number) => ((x * 7 + y * 3) % 5 === 0 ? 220 : 20);
+  test('a small row in the middle of an empty frame is flagged', () => {
+    const f = sparseFrame(frame((x, y) => (x > 60 && x < 100 && y > 40 && y < 50 ? text(x, y) : 20)), W0, H0);
+    expect(f?.severity).toBe('high');
+  });
+  test('a thin band across three quarters of the width (the old hero) is flagged too', () => {
+    expect(sparseFrame(frame((x, y) => (x > 20 && x < 140 && y > 32 && y < 58 ? text(x, y) : 20)), W0, H0)?.severity).toBe('high');
+  });
+  test('content spanning most of the width, or a good part of the height, passes', () => {
+    expect(sparseFrame(frame((x, y) => (x > 8 && x < 152 && y > 35 && y < 55 ? text(x, y) : 20)), W0, H0)).toBeNull();
+    expect(sparseFrame(frame((x, y) => (x > 30 && x < 130 && y > 25 && y < 68 ? text(x, y) : 20)), W0, H0)).toBeNull();
+  });
+  test('a full UI frame passes', () => {
+    expect(sparseFrame(frame(text), W0, H0)).toBeNull();
   });
 });
 
@@ -276,6 +337,9 @@ describe('numberContradictions', () => {
   test('legibility: the lit target is high, from the renderer\'s regions', () => {
     const w = W('tiny', 10, 40, 30, 9);
     expect(legibility([w], { sourceWidth: 1280, displayWidth: 700, lit: new Set([w]), target: [{ x: 0, y: 0, w: 100, h: 100 }] })[0].severity).toBe('high');
+  });
+  test('a capitalized label after a number is not a count: "Iteration 1 Condition unmet" beside "Iteration 2 Condition met"', () => {
+    expect(numberContradictions([{ t: 0, text: 'Iteration 1 Condition unmet COMMAND · Iteration 2 Condition met COMMAND' }])).toEqual([]);
   });
   test('consistent numbers pass', () => {
     expect(numberContradictions([{ t: 1, text: 'LANDED 13 of 13 · 4/4 criteria' }])).toEqual([]);

@@ -10,9 +10,12 @@
   // (`bunx wrangler auth activate <profile> apps/dispatch`), so a deploy can
   // never land on whichever account the shell happens to be logged in to.
   //
-  // No routes yet. A custom domain is an owner setup step (README). The
-  // workers.dev hostname is blocked on the owner's network, so do not rely on
-  // it for anything but a quick check from elsewhere.
+  // Served on a Custom Domain in the same account's zone. Cloudflare creates
+  // the DNS record and certificate; that specific record overrides the zone's
+  // wildcard. workers.dev stays off: it is blocked on the owner's network and
+  // a second public hostname is one more thing to sign-gate.
+  "routes": [{ "pattern": "dispatch.buildd.dev", "custom_domain": true }],
+  "workers_dev": false,
 
   // One SQLite Durable Object per (source.system, source.scope): the durable
   // queue, its alarm, attempts, pending receipts and the target registry.
@@ -33,8 +36,13 @@
     // so a dashboard value is wiped on the next deploy. Local `wrangler dev`
     // overrides it via `.dev.vars` or `--var`.
     "BUILDD_SERVER": "https://buildd.dev",
-    // P1 shadow: these adapter types call resolve and record the decision
-    // (`dry-run:<type>:<decision>`) but never POST. Set to "" for real delivery.
-    "DRY_RUN_TYPES": "http,github-repository-dispatch"
+    // Adapter types that call resolve and record the decision
+    // (`dry-run:<type>:<decision>`) but never POST. Empty: nothing is dry.
+    // Webhooks (`http`) are live since the scratch cutover; this is global,
+    // so a `shadow` workspace WITH a webhook gets that webhook twice
+    // (Dispatch and in-app). Only put webhook-less workspaces on shadow, or
+    // move them to `dispatch`. Keep the var: absent means the `http` dry-run
+    // default (src/config.ts), which would silence every webhook.
+    "DRY_RUN_TYPES": ""
   }
 }

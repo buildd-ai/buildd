@@ -1,18 +1,21 @@
 {
   "name": "@buildd/web",
-  "version": "0.268.1",
+  "version": "0.284.0",
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",
-    "build": "bun run db:migrate && next build",
+    "build": "bun run db:migrate && bun run prompts:seed && next build",
     "build:only": "next build",
     "chat-eval": "bun --preload ../../scripts/stub-server-only.ts scripts/chat-eval/cli.ts",
     "db:migrate": "bun run ../../packages/core/db/migrate.ts",
+    "prompts:seed": "bun --preload ../../scripts/stub-server-only.ts scripts/seed-prompts.ts",
+    "prompts:export": "bun scripts/export-prompt-defaults.ts",
     "start": "node node_modules/next/dist/bin/next start",
     "lint": "next lint",
     "doctor": "bun run scripts/doctor.ts",
     "doctor:vercel": "bun run scripts/doctor.ts --vercel",
-    "reconcile:pr-state": "bun run scripts/reconcile-pr-merge-state.ts"
+    "reconcile:pr-state": "bun run scripts/reconcile-pr-merge-state.ts",
+    "chat-retro:visible-fixture": "bun --preload ../../scripts/stub-server-only.ts scripts/chat-retro-visible-fixture.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.65",
@@ -21,10 +24,10 @@
     "@aws-sdk/client-s3": "^3.985.0",
     "@aws-sdk/s3-request-presigner": "^3.985.0",
     "@axiomhq/js": "^2.0.0",
-    "@builddai/ai-kit": "workspace:*",
     "@buildd/core": "workspace:*",
     "@buildd/dispatch-contract": "workspace:*",
     "@buildd/shared": "workspace:*",
+    "@builddai/ai-kit": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@neondatabase/serverless": "^1.0.0",
     "@openrouter/ai-sdk-provider": "^3.1.0",
@@ -46,6 +49,7 @@
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "stripe": "^23.0.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

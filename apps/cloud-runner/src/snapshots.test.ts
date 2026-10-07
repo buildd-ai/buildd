@@ -4,6 +4,7 @@ import {
   WARM_GENERATIONS_KEPT,
   WARM_LOCK_TTL_MS,
   MAX_SNAPSHOT_BYTES,
+  MAX_PART_BYTES,
   SnapshotStore,
   handleSnapshotRequest,
   parseSnapshotRoute,
@@ -13,6 +14,7 @@ import {
   type BucketObjectLike,
   type BucketPort,
   type SnapshotScope,
+  WARM_HARD_MAX_BYTES,
 } from './snapshots';
 
 /** In-memory R2 with the conditional-put semantics the store relies on. */
@@ -49,6 +51,49 @@ class FakeBucket implements BucketPort {
   }
   async delete(keys: string | string[]) {
     for (const k of Array.isArray(keys) ? keys : [keys]) this.objects.delete(k);
+  }
+  /** Open multipart uploads: id → key and parts. R2's rules: equal non-final parts, completed in order. */
+  uploads = new Map<string, { key: string; parts: Map<number, { data: Uint8Array; etag: string }> }>();
+  aborted: string[] = [];
+  async createMultipartUpload(key: string) {
+    const uploadId = `mp-${++this.n}`;
+    this.uploads.set(uploadId, { key, parts: new Map() });
+    return { key, uploadId };
+  }
+  resumeMultipartUpload(key: string, uploadId: string) {
+    const b = this;
+    const up = () => {
+      const u = b.uploads.get(uploadId);
+      if (!u || u.key !== key) throw new Error('NoSuchUpload');
+      return u;
+    };
+    return {
+      key, uploadId,
+      async uploadPart(partNumber: number, value: ReadableStream | string) {
+        const u = up();
+        const data = typeof value === 'string' ? new TextEncoder().encode(value) : new Uint8Array(await new Response(value).arrayBuffer());
+        const etag = `p${partNumber}-${++b.n}`;
+        u.parts.set(partNumber, { data, etag });
+        return { partNumber, etag };
+      },
+      async complete(parts: Array<{ partNumber: number; etag: string }>) {
+        const u = up();
+        const sizes = parts.map(p => u.parts.get(p.partNumber)?.data.byteLength ?? -1);
+        if (parts.some(p => u.parts.get(p.partNumber)?.etag !== p.etag)) throw new Error('InvalidPart');
+        if (sizes.slice(0, -1).some(s => s !== sizes[0])) throw new Error('parts differ in size');
+        const total = sizes.reduce((a, b2) => a + b2, 0);
+        const data = new Uint8Array(total);
+        let at = 0;
+        for (const p of parts) { data.set(u.parts.get(p.partNumber)!.data, at); at += u.parts.get(p.partNumber)!.data.byteLength; }
+        b.objects.set(key, { data, etag: `e${++b.n}`, uploaded: new Date(b.clock) });
+        b.uploads.delete(uploadId);
+        return b.meta(key)!;
+      },
+      async abort() {
+        b.aborted.push(uploadId);
+        b.uploads.delete(uploadId);
+      },
+    };
   }
   async list(opts: { prefix: string; cursor?: string }) {
     const all = [...this.objects.keys()].filter(k => k.startsWith(opts.prefix)).sort();
@@ -242,6 +287,141 @@ describe('warm generations', () => {
     now -= 60_000;
     const g2 = await seedGeneration();
     expect(g2 > g1).toBe(true);
+  });
+});
+
+describe('streamed multipart uploads (a bundle of unknown length)', () => {
+  const ID = 'x-buildd-upload-id';
+  async function begin(): Promise<string> {
+    return ((await (await call('POST', '/warm/begin', '{}')).json()) as { generation: string }).generation;
+  }
+  async function create(gen: string, part = 'repo'): Promise<string> {
+    const r = await call('POST', `/warm/${gen}/${part}/multipart`, '{}');
+    expect(r.status).toBe(201);
+    return ((await r.json()) as { uploadId: string }).uploadId;
+  }
+  const putPart = (gen: string, n: number, body: string, uploadId: string, part = 'repo') =>
+    call('PUT', `/warm/${gen}/${part}/multipart/${n}`, body, scope, { [ID]: uploadId });
+
+  test('routes', () => {
+    const g = '0001700000000000';
+    expect(parseSnapshotRoute('POST', `/warm/${g}/repo/multipart`)).toEqual({ op: 'warm_mp_create', generation: g, part: 'repo' });
+    expect(parseSnapshotRoute('PUT', `/warm/${g}/cache/multipart/7`)).toEqual({ op: 'warm_mp_part', generation: g, part: 'cache', partNumber: 7 });
+    expect(parseSnapshotRoute('POST', `/warm/${g}/repo/multipart/complete`)).toEqual({ op: 'warm_mp_complete', generation: g, part: 'repo' });
+    expect(parseSnapshotRoute('DELETE', `/warm/${g}/repo/multipart`)).toEqual({ op: 'warm_mp_abort', generation: g, part: 'repo' });
+    for (const [m, p] of [
+      ['PUT', `/warm/${g}/repo/multipart/0`],
+      ['PUT', `/warm/${g}/repo/multipart/10001`],
+      ['PUT', `/warm/${g}/repo/multipart/01`],
+      ['PUT', `/warm/${g}/manifest/multipart/1`],
+      ['GET', `/warm/${g}/repo/multipart`],
+    ] as const) expect(parseSnapshotRoute(m, p)).toBeNull();
+  });
+
+  test('create → parts → complete writes the part at the generation key; the commit sees it', async () => {
+    const gen = await begin();
+    const id = await create(gen);
+    const p1 = await putPart(gen, 1, 'aaaa', id);
+    expect(p1.status).toBe(201);
+    const p2 = await putPart(gen, 2, 'bb', id);
+    const parts = [await p1.json(), await p2.json()];
+    const done = await call('POST', `/warm/${gen}/repo/multipart/complete`, JSON.stringify({ parts }), scope, { [ID]: id });
+    expect(done.status).toBe(201);
+    expect(await done.json()).toEqual({ bytes: 6 });
+    expect(new TextDecoder().decode(bucket.objects.get(warmKey(WS, gen, 'repo'))!.data)).toBe('aaaabb');
+    const commit = await call('POST', `/warm/${gen}/commit`, JSON.stringify({ defaultBranch: 'dev' }));
+    expect(commit.status).toBe(201);
+    expect(((await commit.json()) as { repoBytes: number }).repoBytes).toBe(6);
+  });
+
+  test('every part is streamed to the bucket with its known length', async () => {
+    const lengths: number[] = [];
+    const gen = await begin();
+    const id = await create(gen);
+    const r = await handleSnapshotRequest(
+      req('PUT', `/warm/${gen}/repo/multipart/1`, 'abc', { 'content-length': '3', [ID]: id }), scope, store,
+      { fixedLength: (body, n) => { lengths.push(n); return body; } },
+    );
+    expect(r.status).toBe(201);
+    expect(lengths).toEqual([3]);
+  });
+
+  test('only the lock holder; a part needs the upload id and a content-length within the part limit', async () => {
+    const gen = await begin();
+    const id = await create(gen);
+    expect((await call('POST', `/warm/0000000000000009/repo/multipart`, '{}')).status).toBe(409);
+    expect((await call('PUT', `/warm/${gen}/repo/multipart/1`, 'x')).status).toBe(400);
+    const noLen = await handleSnapshotRequest(
+      req('PUT', `/warm/${gen}/repo/multipart/1`, new ReadableStream({ start(c) { c.enqueue(new Uint8Array([1])); c.close(); } }), { [ID]: id }),
+      scope, store);
+    expect(noLen.status).toBe(411);
+    expect((await call('PUT', `/warm/${gen}/repo/multipart/1`, 'x', scope, { [ID]: id, 'content-length': String(MAX_PART_BYTES + 1) })).status).toBe(413);
+    expect((await putPart(gen, 1, 'x', 'mp-not-mine')).status).toBe(400);
+  });
+
+  test('a completed part over the cap is refused and deleted, so it can never be committed', async () => {
+    const gen = await begin();
+    const id = await create(gen);
+    const p1 = await (await putPart(gen, 1, 'aaaa', id)).json();
+    const p2 = await (await putPart(gen, 2, 'aaaa', id)).json();
+    const r = await handleSnapshotRequest(
+      req('POST', `/warm/${gen}/repo/multipart/complete`, JSON.stringify({ parts: [p1, p2] }), { [ID]: id }), scope, store,
+      { maxPartBytes: 5 },
+    );
+    expect(r.status).toBe(413);
+    expect(bucket.objects.has(warmKey(WS, gen, 'repo'))).toBe(false);
+    expect((await call('POST', `/warm/${gen}/commit`, JSON.stringify({ defaultBranch: 'dev' }))).status).toBe(409);
+  });
+
+  test('a single PUT over the cap is refused up front', async () => {
+    const gen = await begin();
+    const r = await handleSnapshotRequest(req('PUT', `/warm/${gen}/repo`, 'abcdef', { 'content-length': '6' }), scope, store, { maxPartBytes: 5 });
+    expect(r.status).toBe(413);
+  });
+
+  test('abort drops the upload', async () => {
+    const gen = await begin();
+    const id = await create(gen);
+    await putPart(gen, 1, 'aaaa', id);
+    expect((await call('DELETE', `/warm/${gen}/repo/multipart`, undefined, scope, { [ID]: id })).status).toBe(200);
+    expect(bucket.aborted).toEqual([id]);
+    expect(bucket.uploads.size).toBe(0);
+  });
+
+  test('a malformed parts list is a 400, not a bucket call', async () => {
+    const gen = await begin();
+    const id = await create(gen);
+    for (const body of ['nope', '{}', JSON.stringify({ parts: [{ partNumber: 'x', etag: 1 }] }), JSON.stringify({ parts: [] })]) {
+      expect((await call('POST', `/warm/${gen}/repo/multipart/complete`, body, scope, { [ID]: id })).status).toBe(400);
+    }
+  });
+});
+
+describe('the per-workspace cap (scope.maxBytes, from buildd with the GitHub grant)', () => {
+  const ID = 'x-buildd-upload-id';
+  test('GET /warm/limits answers the cap this run is held to: the workspace cap, else the Worker default', async () => {
+    expect(parseSnapshotRoute('GET', '/warm/limits')).toEqual({ op: 'warm_limits' });
+    expect(parseSnapshotRoute('POST', '/warm/limits')).toBeNull();
+    const withWs = await handleSnapshotRequest(req('GET', '/warm/limits'), { workspaceId: WS, maxBytes: 3 * 1024 ** 3 }, store, { maxPartBytes: 1024 ** 3 });
+    expect(withWs.status).toBe(200);
+    expect(await withWs.json()).toEqual({ maxBytes: 3 * 1024 ** 3 });
+    const fallback = await handleSnapshotRequest(req('GET', '/warm/limits'), scope, store, { maxPartBytes: 1024 ** 3 });
+    expect(await fallback.json()).toEqual({ maxBytes: 1024 ** 3 });
+    // Bounded by the Worker too, whatever the scope says.
+    const huge = await handleSnapshotRequest(req('GET', '/warm/limits'), { workspaceId: WS, maxBytes: 1024 ** 4 }, store, { maxPartBytes: 1024 ** 3 });
+    expect(await huge.json()).toEqual({ maxBytes: WARM_HARD_MAX_BYTES });
+    expect(WARM_HARD_MAX_BYTES).toBe(8 * 1024 ** 3);
+  });
+
+  test('a completed upload is held to the workspace cap, not the Worker default', async () => {
+    const s: SnapshotScope = { workspaceId: WS, maxBytes: 5 };
+    const begin = await handleSnapshotRequest(req('POST', '/warm/begin', '{}'), s, store, { maxPartBytes: 1024 ** 3 });
+    const gen = ((await begin.json()) as { generation: string }).generation;
+    const created = await handleSnapshotRequest(req('POST', `/warm/${gen}/cache/multipart`, '{}'), s, store, { maxPartBytes: 1024 ** 3 });
+    const id = ((await created.json()) as { uploadId: string }).uploadId;
+    const part = await handleSnapshotRequest(req('PUT', `/warm/${gen}/cache/multipart/1`, 'abcdef', { 'content-length': '6', [ID]: id }), s, store, { maxPartBytes: 1024 ** 3 });
+    // A part over the cap is refused up front.
+    expect(part.status).toBe(413);
   });
 });
 

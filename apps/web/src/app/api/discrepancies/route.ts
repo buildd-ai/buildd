@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { specDiscrepancies } from '@buildd/core/db/schema';
 import { and, asc, eq, type SQL } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 
 const DIRECTIONS = ['spec_ahead', 'code_ahead', 'contradicted'] as const;
@@ -14,7 +14,8 @@ export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token reads discrepancies only in its own task's workspace.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -30,6 +31,7 @@ export async function GET(req: NextRequest) {
     const access = await verifyWorkspaceAccess(user.id, workspaceId);
     if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   } else if (apiAccount) {
+    if (!taskScopeAllowsWorkspace(apiAccount, workspaceId)) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId);
     if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }

@@ -88,7 +88,7 @@ export default function MissionVisualReviewSetting({
         {model && model.phase !== 'off' ? (
           <VisualReviewLine model={model} variant="full" />
         ) : (
-          <p className="font-mono text-[12px] text-text-muted">No visual audit on this mission yet.</p>
+          <p className="font-mono text-[12px] text-text-muted">No visual audit.</p>
         )}
       </div>
     </section>

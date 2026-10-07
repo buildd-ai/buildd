@@ -156,6 +156,14 @@ describe('visual-qa.yml scrub + guard', () => {
     expect(scrub.run).toMatch(/psql\s+"\$DATABASE_URL"\s+-q\s/);
   });
 
+  test('scrub is told which columns this checkout knows, so prod-ahead columns are overwritten', () => {
+    // A mission branch behind prod has no decision for prod's newer columns;
+    // the guard caught post_session_runs.facts that way.
+    const run: string = step(/^Scrub/).run;
+    expect(run).toContain('KNOWN=$(bun scripts/qa/known-columns.ts)');
+    expect(run).toContain('-v known="$KNOWN"');
+  });
+
   test('the guard runs right after the scrub, before the app boots or anything is captured', () => {
     const guard = step(/^Guard/);
     expect(guard.id).toBe('guard');

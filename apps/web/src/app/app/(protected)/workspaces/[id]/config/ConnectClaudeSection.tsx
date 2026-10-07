@@ -1,15 +1,22 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useSyncExternalStore } from 'react';
 import CopyBlock from '@/components/CopyBlock';
 
 interface Props {
   workspaceId: string;
   workspaceName: string;
+  /** The app's public URL as the server knows it (lib/app-url). */
+  serverOrigin?: string;
 }
 
-export default function ConnectClaudeSection({ workspaceId, workspaceName }: Props) {
-  const origin = typeof window !== 'undefined' ? window.location.origin : 'https://buildd.dev';
+const noSubscribe = () => () => {};
+
+export default function ConnectClaudeSection({ workspaceId, workspaceName, serverOrigin = 'https://buildd.dev' }: Props) {
+  // The server render and the hydrating render must print the same URL, or
+  // React throws #418. useSyncExternalStore hydrates with the server snapshot
+  // and only then switches to the address this page was actually opened on.
+  const origin = useSyncExternalStore(noSubscribe, () => window.location.origin, () => serverOrigin);
 
   const oauthUrl = useMemo(
     () => `${origin}/api/mcp-oauth/${workspaceId}`,

@@ -9,6 +9,7 @@ import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type W
 import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, type LoopConfig } from '@buildd/shared';
 import { interactiveAbandonedScope, runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { detachInteractiveWorkersOfEndedTasks, releaseConcurrencySeats } from '@/lib/interactive-detach';
 import { withoutForceClaim } from '@/lib/force-claim';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
@@ -606,6 +607,11 @@ export function staleWorkerScope(accountId: string, now: Date = new Date()) {
 }
 
 export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbeatOrphans: number }> {
+  // 0. An interactive worker whose task already ended holds a seat nothing
+  //    else frees while its local session keeps calling buildd. Team-scoped:
+  //    this runs on the claim path, right before the seats are counted.
+  await detachInteractiveWorkersOfEndedTasks({ accountId });
+
   // 1. Auto-expire stale workers. The rules live in staleWorkerScope.
   const staleWorkers = await db.query.workers.findMany({
     where: staleWorkerScope(accountId),
@@ -724,18 +730,7 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
     // never gets it back. Same grouping as cleanupStuckWaitingInput below.
     // Rows with a null accountId (the FK is ON DELETE SET NULL) hold no seat on
     // any account and are skipped rather than charged to whoever is cleaning.
-    const staleCountByAccount = new Map<string, number>();
-    for (const w of staleWorkers) {
-      if (w.accountId) {
-        staleCountByAccount.set(w.accountId, (staleCountByAccount.get(w.accountId) ?? 0) + 1);
-      }
-    }
-    for (const [accId, count] of staleCountByAccount) {
-      await db
-        .update(accounts)
-        .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - ${count}, 0)` })
-        .where(and(eq(accounts.id, accId), eq(accounts.authType, 'oauth')));
-    }
+    await releaseConcurrencySeats(staleWorkers.map(w => w.accountId));
 
     if (staleTaskIds.length > 0) {
       // Fetch workspace IDs before updating, for dependency resolution

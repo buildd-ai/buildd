@@ -588,20 +588,17 @@ describe('deriveTaskPhase', () => {
     expect(deriveTaskPhase({ taskStatus: 'failed', workerStatus: 'running' })).toBe('failed');
   });
 
-  // Regression for the needs_input taxonomy bug: the waiting_input timeout
-  // (cleanupStuckWaitingInput) flips taskStatus to 'failed' while building its
-  // retry, and any other path reporting needs_input as a failure does the
-  // same — but the pending question is still the thing a human needs to see.
-  // Before this fix, taskStatus === 'failed' was checked first, so the
-  // waiting_input phase (and the respond-affordance rendered from it) could
-  // never appear once the task flipped to failed.
-  it('unanswered question outranks a failed task status → waiting_input', () => {
-    expect(deriveTaskPhase({ taskStatus: 'failed', workerWaitingFor: { prompt: 'q' } })).toBe('waiting_input');
-    expect(deriveTaskPhase({ taskStatus: 'failed', workerStatus: 'waiting_input' })).toBe('waiting_input');
+  it('terminal failure wins over a retained question or waiting worker', () => {
+    expect(deriveTaskPhase({ taskStatus: 'failed', workerWaitingFor: { prompt: 'q' } })).toBe('failed');
+    expect(deriveTaskPhase({ taskStatus: 'failed', workerStatus: 'waiting_input' })).toBe('failed');
   });
 
-  it('unanswered question outranks running → waiting_input', () => {
-    expect(deriveTaskPhase({ taskStatus: 'assigned', workerStatus: 'running', workerWaitingFor: { prompt: 'q' } })).toBe('waiting_input');
+  it('retained question does not turn a running worker into needs input', () => {
+    expect(deriveTaskPhase({ taskStatus: 'assigned', workerStatus: 'running', workerWaitingFor: { prompt: 'q' } })).toBe('running');
+  });
+
+  it('cancelled task with a retained question does not need input', () => {
+    expect(deriveTaskPhase({ taskStatus: 'cancelled', workerStatus: 'waiting_input' })).not.toBe('waiting_input');
   });
 
   it('worker waiting_input status → waiting_input', () => {

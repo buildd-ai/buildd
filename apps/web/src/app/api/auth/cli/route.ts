@@ -6,6 +6,8 @@ import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { getUserTeamIds, getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
 import { clampKeyLevel, parseKeyLevel } from '@/lib/key-level-policy';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { linkAccountToPersonalWorkspaces } from '@/lib/personal-workspace-links';
 
 // Generalized CLI OAuth flow:
 // 1. CLI redirects here with ?callback=http://localhost:PORT/callback&client=cli&level=admin
@@ -111,12 +113,12 @@ export async function GET(req: NextRequest) {
       errorUrl.searchParams.set('error', 'Not a member of the target team');
       return NextResponse.redirect(errorUrl.toString());
     }
-    const grantedLevel = clampKeyLevel(role, requestedLevel);
+    const grantedLevel = clampKeyLevel(role, requestedLevel, await getTeamPermissionOverrides(teamId));
 
     // Generate a fresh plaintext key for this auth flow
     const plaintextKey = generateApiKey();
 
-    await db
+    const [created] = await db
       .insert(accounts)
       .values({
         name: resolvedName,
@@ -128,6 +130,10 @@ export async function GET(req: NextRequest) {
         teamId,
       })
       .returning();
+
+    // A personal team's workspace starts restricted; without a link this
+    // login's runner could never claim the user's own tasks.
+    if (created?.id) await linkAccountToPersonalWorkspaces({ accountId: created.id, userId: session.user.id });
 
     // Redirect back to CLI with the plaintext token (shown once)
     const successUrl = new URL(callback);

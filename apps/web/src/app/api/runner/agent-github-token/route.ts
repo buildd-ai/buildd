@@ -19,19 +19,13 @@
  * requires the dispatch token because the container holds the API key.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@buildd/core/db';
-import { workers } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
-import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
-import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import { isOpenWithinTeams } from '@/lib/open-workspaces';
-import { mintRepoScopedInstallationToken } from '@/lib/github-scoped-token';
+import { resolveWorkerPrincipal } from '@/lib/agent-capabilities/worker-principal';
+import { authorizeGithubRepoGrant, mintGithubRepoGrant } from '@/lib/agent-capabilities/github';
+import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const NO_STORE = { 'Cache-Control': 'no-store' };
-const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 
 /** `code` lets the runner tell the operator what to fix without parsing prose. */
 function fail(status: number, error: string, code?: string) {
@@ -53,59 +47,32 @@ export async function POST(req: NextRequest) {
   const workerId = body?.workerId;
   if (typeof workerId !== 'string' || !ID_RE.test(workerId)) return fail(400, 'workerId is required');
 
-  const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, workerId),
-    columns: { id: true, taskId: true, workspaceId: true, accountId: true, status: true },
-    with: {
-      workspace: {
-        columns: { id: true, teamId: true, accessMode: true, githubRepoId: true },
-        with: {
-          githubRepo: {
-            columns: { id: true, repoId: true, owner: true, name: true, fullName: true },
-            with: {
-              installation: { columns: { installationId: true, suspendedAt: true, permissions: true } },
-            },
-          },
-        },
-      },
-    },
-  });
-  const ws = worker?.workspace;
-  // Every "not yours" answer is the same 404, so the route does not confirm
-  // which worker ids exist for other accounts.
-  if (!worker || !ws || worker.workspaceId !== ws.id || worker.accountId !== account.id) {
-    return fail(404, 'Worker not found');
-  }
-
   // Claim authority is re-checked, not assumed from the claim: access revoked
   // mid-session stops the next refresh.
-  if (!tokenWorkspaceAllowed(account.workspaceIds, ws.id)) return fail(404, 'Worker not found');
-  const ownOpen = !!account.teamId && isOpenWithinTeams(ws, [account.teamId]);
-  if (!ownOpen) {
-    const perms = await getAccountWorkspacePermissions(account.id);
-    if (!perms.some(p => p.workspaceId === ws.id && p.canClaim)) return fail(404, 'Worker not found');
+  const resolved = await resolveWorkerPrincipal(account, { workerId });
+  if (!resolved.ok) {
+    void recordCapabilityDecision({ capability: 'github.repo_grant', decision: 'refused', accountId: account.id, principalVia: 'runner_key', resource: `worker:${workerId}`, reasonCode: resolved.reasonCode });
+    return fail(resolved.status, resolved.error, resolved.status === 409 ? resolved.reasonCode : undefined);
   }
+  const p = resolved.principal;
+  const audit = { capability: 'github.repo_grant' as const, workspaceId: p.workspaceId, taskId: p.taskId, workerId: p.workerId, accountId: p.accountId, principalVia: p.via };
 
-  if (!worker.taskId || !LIVE.has(worker.status)) return fail(409, 'Worker is not live', 'worker_not_live');
-
-  const repo = ws.githubRepo;
-  if (!ws.githubRepoId || !repo || repo.id !== ws.githubRepoId || !repo.installation) {
-    return fail(409, 'Workspace has no linked GitHub repository', 'no_linked_repo');
+  const decision = authorizeGithubRepoGrant(resolved.principal, resolved.workspace);
+  if (!decision.allowed) {
+    void recordCapabilityDecision({ ...audit, decision: 'refused', reasonCode: decision.reasonCode });
+    return fail(decision.status, decision.error, decision.reasonCode);
   }
-  if (repo.installation.suspendedAt) return fail(409, 'GitHub App installation is suspended', 'installation_suspended');
 
   try {
-    const minted = await mintRepoScopedInstallationToken({
-      installationId: repo.installation.installationId,
-      repoId: repo.repoId,
-      installedPermissions: repo.installation.permissions,
-    });
+    const minted = await mintGithubRepoGrant(decision);
+    void recordCapabilityDecision({ ...audit, decision: 'allowed', resource: `github_repo:${decision.resource.id}`, expiresAt: minted.expiresAt });
     return NextResponse.json({
       token: minted.token,
       expiresAt: minted.expiresAt.toISOString(),
-      repository: { owner: repo.owner, name: repo.name, fullName: repo.fullName },
+      repository: { owner: decision.repo.owner, name: decision.repo.name, fullName: decision.repo.fullName },
     }, { headers: NO_STORE });
   } catch (err) {
+    void recordCapabilityDecision({ ...audit, decision: 'refused', resource: `github_repo:${decision.resource.id}`, reasonCode: 'mint_failed' });
     console.error(`[agent-github-token] mint failed for worker ${workerId}:`, err instanceof Error ? err.message : String(err));
     return fail(502, 'Could not mint a GitHub token', 'mint_failed');
   }

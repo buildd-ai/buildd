@@ -25,6 +25,7 @@
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
+import { branchOfRemoteRef, remoteBranchFetchArgs } from './git-clone';
 import {
   resolveTaskPrBase,
   missionIntegrationBase,
@@ -237,6 +238,13 @@ export interface WorktreeSweep {
 
 const GIT_TIMEOUT_MS = 5000;
 
+// This sweep runs every sync tick against the WORKER'S OWN LIVE worktree,
+// concurrently with whatever the agent itself is doing there (staging,
+// committing). `status`/`diff` opportunistically refresh and rewrite the
+// on-disk index to cache fresh stat info, which takes index.lock — racing an
+// agent `git add`/`git commit` in the same worktree. GIT_OPTIONAL_LOCKS=0
+// makes git skip that write-back; the read output this sweep actually uses
+// is identical either way.
 function git(cwd: string, args: string, timeout = GIT_TIMEOUT_MS): string {
   return childProcess.execSync(`git ${args}`, {
     cwd,
@@ -244,6 +252,7 @@ function git(cwd: string, args: string, timeout = GIT_TIMEOUT_MS): string {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: 16 * 1024 * 1024,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
   }) as unknown as string;
 }
 
@@ -376,13 +385,16 @@ export function resolvePrBaseRef(opts: {
  */
 export function refreshBaseRef(worktreePath: string, baseRef: string | null | undefined, timeoutMs = 15_000): Promise<boolean> {
   if (!baseRef || !baseRef.startsWith('origin/')) return Promise.resolve(false);
-  const branch = baseRef.slice('origin/'.length);
+  const branch = branchOfRemoteRef(baseRef);
+  if (!branch) return Promise.resolve(false);
   if (typeof childProcess.execFile !== 'function') return Promise.resolve(false);
   return new Promise(resolvePromise => {
     try {
       childProcess.execFile(
         'git',
-        ['fetch', '--no-tags', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+        // A depth when a shallow (cloud) clone does not have the branch yet:
+        // an undeepened fetch of a new ref there downloads its whole history.
+        remoteBranchFetchArgs(worktreePath, branch),
         { cwd: worktreePath, timeout: timeoutMs },
         (err) => resolvePromise(!err),
       );

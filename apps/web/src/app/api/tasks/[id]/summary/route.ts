@@ -11,6 +11,9 @@ import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
 import type { VisualReviewModel } from '@buildd/shared';
+import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
+import { describeBackendRouting } from '@buildd/core/backend-policy';
+import { loadTaskFailureKind } from '@/lib/task-failure-kind-load';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -124,13 +127,11 @@ export async function GET(
     // Failover metadata lives on task.context (stamped when a Claude task is
     // flipped to Codex on budget exhaustion). Surface just the display bits so
     // the panel can show "ran on Codex after Claude budget hit".
-    const ctx = task.context as {
-      failedOverFrom?: string;
-      failoverReason?: string;
-      budgetExhausted?: boolean;
-    } | null;
-    const failover = ctx?.failedOverFrom
-      ? { from: ctx.failedOverFrom, reason: ctx.failoverReason ?? null }
+    // A claim-time flip (context.backendRouting) is read too: it leaves
+    // tasks.backend alone, so the stamp is its only record.
+    const routing = describeBackendRouting(task.context, task.backend);
+    const failover = routing
+      ? { from: routing.from, reason: routing.reason, summary: routing.summary }
       : null;
 
     // Latest error excerpt across all workers on this task — powers the panel's
@@ -220,6 +221,13 @@ export async function GET(
       ).length;
     }
 
+    let failureKind: Awaited<ReturnType<typeof loadTaskFailureKind>> = null;
+    try {
+      failureKind = await loadTaskFailureKind(task);
+    } catch (err) {
+      console.error('Task summary: failure kind load failed', err);
+    }
+
     return NextResponse.json({
       id: task.id,
       title: task.title,
@@ -233,6 +241,10 @@ export async function GET(
       missionId: task.missionId,
       // A local mission's task is claimed from a session: the sheet shows claim_task.
       missionExecutor: task.mission?.executor ?? null,
+      // Queued on a plan limit by a managed runner: the sheet shows the entitlement state.
+      entitlementBlock: task.status === 'pending'
+        ? parseEntitlementBlock((task.context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY])
+        : null,
       backend: task.backend,
       failover,
       worker: worker
@@ -272,6 +284,7 @@ export async function GET(
           }
         : null,
       blockedByCount,
+      failureKind,
       records,
       origin,
       visual,

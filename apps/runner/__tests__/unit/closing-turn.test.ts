@@ -15,7 +15,9 @@
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import type { LocalUIConfig } from '../../src/types';
-import { createPr, builddAction } from '../fixtures/task-shape-stream';
+import { createPr, builddAction, toolCall } from '../fixtures/task-shape-stream';
+import { RUNNER_DENIAL_MARKER } from '../../src/runner-denial';
+import { GENUINELY_BLOCKED_FAIL_OPTION, GENUINELY_BLOCKED_RETRY_OPTION } from '../../src/session-end-classification';
 
 // ─── Mocks ─────────────────────────────────────────────────────────────────
 
@@ -90,6 +92,11 @@ const mockClaimTask = mock(async () => ({ workers: [] as any[] }));
 let remoteStatus: string | null = null;
 const mockGetWorkerRemote = mock(async () => (remoteStatus ? { status: remoteStatus } : null));
 
+// Defaults to a transport failure — the realistic "gate unreachable" shape —
+// so any test that doesn't configure it explicitly exercises the
+// genuinely_blocked fail-open-to-ask path, same as production.
+const mockCheckQuestion = mock(async () => { throw new Error('question-check unreachable'); });
+
 mock.module('../../src/buildd', () => ({
   BuilddClient: class {
     updateWorker = mockUpdateWorker;
@@ -106,6 +113,7 @@ mock.module('../../src/buildd', () => ({
     searchFeedbackMemories = async () => [];
     getWorkerRemote = mockGetWorkerRemote;
     writeBackCodexAuth = async () => ({});
+    checkQuestion = mockCheckQuestion;
   },
 }));
 
@@ -232,6 +240,8 @@ function resetAll() {
   mockClaimTask.mockImplementation(async () => ({ workers: [] }));
   mockGetWorkerRemote.mockClear();
   mockGetWorkerRemote.mockImplementation(async () => (remoteStatus ? { status: remoteStatus } : null));
+  mockCheckQuestion.mockClear();
+  mockCheckQuestion.mockImplementation(async () => { throw new Error('question-check unreachable'); });
 }
 
 describe('closing turn', () => {
@@ -550,13 +560,21 @@ describe('closing turn', () => {
   });
 });
 
-// ─── One last nudge: pr_required session ending with nothing delivered ───────
+// ─── Session-end classification: pr_required session ending with nothing
+// delivered ───────────────────────────────────────────────────────────────
 //
-// The session ended by its own choice with no PR and no commits. Before the
-// runner fails it (losing whatever the agent could still hand over), it gets
-// exactly one more turn that names both ways out: deliver, or AskUserQuestion.
+// The session ended by its own choice with no confirmed PR. Before the
+// runner fails it (losing whatever the agent could still hand over), it
+// classifies why from structured signals and gives one more turn with
+// label-specific text (session-end-classification.ts), replacing PR #3143's
+// one generic nudge. `genuinely_blocked` instead routes through the Jev
+// decide/hold/ask question gate.
 
-const NUDGE_PREFIX = 'Your session is about to end with nothing delivered.';
+const ALL_PUSH_TEXTS = [
+  "Don't wait for that to finish on its own. Push the branch now, run the checks yourself in the foreground, and open the PR.",
+  'You already have permission to do this. Proceed.',
+  "This isn't done until there's a PR or artifact. Open the PR (or create the artifact) now.",
+];
 
 function askUserQuestionToolUse() {
   return {
@@ -565,55 +583,251 @@ function askUserQuestionToolUse() {
   };
 }
 
-describe('no-deliverable nudge', () => {
+/** A Bash call backgrounded with run_in_background, left outstanding. */
+function backgroundBashToolCall() {
+  return toolCall('Bash', { command: 'bun run test:integration', run_in_background: true }, 'Running in background with ID: shell_1');
+}
+
+/** A `git commit` Bash call — this is how workers.ts records a commit. */
+function gitCommitToolCall(message = 'wip') {
+  return toolCall('Bash', { command: `git commit -m "${message}"` }, 'ok');
+}
+
+/** A tool call the runner's own PreToolUse hook denied (PR #3146's runnerDenial), not a person. */
+function runnerDeniedToolCall(name: string, input: Record<string, unknown>) {
+  const id = 'toolu_denied_1';
+  return [
+    { type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } },
+    {
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: id,
+          content: 'denied',
+          tool_result_meta: { non_execution_kind: 'permission-rule', user_feedback: `${RUNNER_DENIAL_MARKER}: that write is blocked. Instead: use git mv. Carry on.` },
+        }],
+      },
+    },
+  ];
+}
+
+function decideReply(optionLabel: string, reason?: string) {
+  return {
+    verdict: 'decide', outcome: 'decided', disposition: 'decide',
+    decision: { optionIndex: optionLabel === GENUINELY_BLOCKED_RETRY_OPTION ? 0 : 1, label: optionLabel, confidence: 0.9 },
+    reason: reason ?? `Jev decided: ${optionLabel}.`,
+    version: 'qd1', latencyMs: 5,
+  };
+}
+
+function askGateReply() {
+  return { verdict: 'send', outcome: 'asked', disposition: 'ask', version: 'qd1', latencyMs: 5 };
+}
+
+function holdGateReply() {
+  return {
+    verdict: 'send', outcome: 'held', disposition: 'hold',
+    holdReason: 'Held — it did not look urgent enough to interrupt someone right now.',
+    resurfaceAt: new Date().toISOString(),
+    version: 'qd1', latencyMs: 5,
+  };
+}
+
+describe('session-end classification', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
   beforeEach(resetAll);
   afterEach(() => { manager?.destroy(); });
 
-  test('voluntary end with no deliverable gets exactly one nudge turn, then a normal failure', async () => {
+  test('an outstanding background job gets pushed to stop waiting and open the PR', async () => {
     scriptQueue = [
-      [initMsg('sess-1'), assistantText('I will pause here and wait.'), successResult('sess-1')],
-      [assistantText('Still nothing to deliver.'), successResult('sess-1')],
-      // Consumed only if a second nudge were (wrongly) attempted.
-      [assistantText('unexpected third session'), successResult('sess-1')],
-    ];
-    manager = new WorkerManager(makeConfig());
-    await runSession(manager, 'w-nudge-declined', { outputRequirement: 'pr_required' });
-
-    expect(createBackendCalls.length).toBe(2);
-    expect(createBackendCalls[1].config.options?.resume).toBe('sess-1');
-    expect(runStreamedCalls[1].prompt).toBe(
-      'Your session is about to end with nothing delivered. Write your deliverable (PR or artifact) now, '
-      + 'or call complete_task. If you are genuinely blocked, use AskUserQuestion.',
-    );
-    // Bounded to the same small fixed budget as any closing turn.
-    expect(runStreamedCalls[1].maxTurns).toBe(3);
-
-    expect(completionCall()).toBeUndefined();
-    const call = failedCall();
-    expect(call).toBeDefined();
-    expect(call!.payload.error).toContain('No PR was created and no commits were made.');
-    expect(call!.payload.error).toContain('Still nothing to deliver.');
-    expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('declined');
-    expect(updateCalls.filter(c => c.payload?.status === 'failed').length).toBe(1);
-    expect(manager.getWorker('w-nudge-declined')?.status).toBe('error');
-  });
-
-  test('a nudge turn that opens the PR completes instead of failing', async () => {
-    scriptQueue = [
-      [initMsg('sess-1'), assistantText('Pausing to wait for the tests.'), successResult('sess-1')],
+      [initMsg('sess-1'), assistantText('Kicking off the test run.'), ...backgroundBashToolCall(), successResult('sess-1')],
       [...createPr(), assistantText('Opened the PR.'), successResult('sess-1')],
     ];
     manager = new WorkerManager(makeConfig());
-    await runSession(manager, 'w-nudge-delivers', { outputRequirement: 'pr_required' });
+    await runSession(manager, 'w-background', { outputRequirement: 'pr_required' });
 
     expect(createBackendCalls.length).toBe(2);
+    expect(createBackendCalls[1].config.options?.resume).toBe('sess-1');
+    expect(runStreamedCalls[1].prompt).toBe(ALL_PUSH_TEXTS[0]);
+    expect(runStreamedCalls[1].maxTurns).toBe(3);
+    expect(failedCall()).toBeUndefined();
+    const call = completionCall();
+    expect(call).toBeDefined();
+    // A push that led to delivery must still be recorded on the SUCCESS
+    // payload — "how often a push led to delivery" is unanswerable from the
+    // failure path alone.
+    expect(call!.payload.resultMeta?.sessionEndPushes).toEqual([
+      { label: 'waiting_on_background_job', at: expect.any(Number), text: ALL_PUSH_TEXTS[0] },
+    ]);
+  });
+
+  test('a runner-attributed tool denial gets pushed to proceed, not fail', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), ...runnerDeniedToolCall('Bash', { command: 'echo blocked' }), successResult('sess-1')],
+      [...createPr(), assistantText('Opened the PR.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-denied', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(runStreamedCalls[1].prompt).toBe(ALL_PUSH_TEXTS[1]);
     expect(failedCall()).toBeUndefined();
     expect(completionCall()).toBeDefined();
   });
 
-  test('a session that delivered a PR gets the ordinary closing turn, never the nudge', async () => {
+  test('commits with no PR get pushed to open the PR', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), ...gitCommitToolCall('wip'), assistantText('That should be most of it.'), successResult('sess-1')],
+      [...createPr(), assistantText('Opened the PR.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-progress', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(runStreamedCalls[1].prompt).toBe(ALL_PUSH_TEXTS[2]);
+    expect(failedCall()).toBeUndefined();
+    expect(completionCall()).toBeDefined();
+  });
+
+  // Commit count only still matters for the eventual TRUTHFUL failure
+  // message, on the rare edge where nothing can be pushed at all (here:
+  // not resumable) — it must not falsely claim no commits were made.
+  test('commits with no PR that cannot be resumed fail without a false "no commits" claim', async () => {
+    scriptQueue = [
+      [...gitCommitToolCall('wip'), assistantText('That should be most of it.'), successResult('')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-progress-no-resume', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(1);
+    const call = failedCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.error).not.toContain('no commits were made');
+    expect(call!.payload.error).toContain('No PR was created');
+  });
+
+  test('genuinely_blocked calls the Jev gate with the synthesized question', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('I am stuck.'), successResult('sess-1')],
+    ];
+    mockCheckQuestion.mockImplementation(async () => askGateReply());
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-gate-called', { outputRequirement: 'pr_required' });
+
+    expect(mockCheckQuestion.mock.calls.length).toBe(1);
+    const body = mockCheckQuestion.mock.calls[0][1] as { question: { options: Array<{ label: string }> } };
+    expect(body.question.options.map(o => o.label)).toEqual([GENUINELY_BLOCKED_RETRY_OPTION, GENUINELY_BLOCKED_FAIL_OPTION]);
+  });
+
+  test('genuinely_blocked + Jev decides retry: pushed with the decision text, no park', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('I am stuck.'), successResult('sess-1')],
+      [...createPr(), assistantText('Opened the PR.'), successResult('sess-1')],
+    ];
+    mockCheckQuestion.mockImplementation(async () => decideReply(GENUINELY_BLOCKED_RETRY_OPTION, 'Jev says: try again.'));
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-decide-retry', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(runStreamedCalls[1].prompt).toBe('Jev says: try again.');
+    expect(manager.getWorker('w-decide-retry')?.status).toBe('done');
+    expect(failedCall()).toBeUndefined();
+  });
+
+  test('genuinely_blocked + Jev decides fail: fails without a park or a second session', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('I am stuck.'), successResult('sess-1')],
+    ];
+    mockCheckQuestion.mockImplementation(async () => decideReply(GENUINELY_BLOCKED_FAIL_OPTION));
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-decide-fail', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(1);
+    expect(failedCall()).toBeDefined();
+    expect(manager.getWorker('w-decide-fail')?.status).toBe('error');
+  });
+
+  test('genuinely_blocked + Jev says ask: parks for a person, not a push', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('I am stuck.'), successResult('sess-1')],
+    ];
+    mockCheckQuestion.mockImplementation(async () => askGateReply());
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-ask-park', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(1);
+    expect(failedCall()).toBeUndefined();
+    const worker = manager.getWorker('w-ask-park');
+    expect(worker?.status).toBe('waiting');
+    expect((worker?.waitingFor as any)?.context).toContain('genuinely_blocked');
+    expect((worker?.waitingFor as any)?.disposition).toBeUndefined();
+  });
+
+  test('genuinely_blocked + Jev holds: parks tagged hold, not a push', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('I am stuck.'), successResult('sess-1')],
+    ];
+    mockCheckQuestion.mockImplementation(async () => holdGateReply());
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-hold-park', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(1);
+    const worker = manager.getWorker('w-hold-park');
+    expect(worker?.status).toBe('waiting');
+    expect((worker?.waitingFor as any)?.disposition).toBe('hold');
+  });
+
+  test('genuinely_blocked fails open to a human-facing park when the gate itself is unreachable', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('I am stuck.'), successResult('sess-1')],
+    ];
+    // mockCheckQuestion keeps its default (throws) — no override here.
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-gate-unreachable', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(1);
+    expect(failedCall()).toBeUndefined();
+    expect(manager.getWorker('w-gate-unreachable')?.status).toBe('waiting');
+  });
+
+  test('done label: a race where complete_task already landed leaves this mechanism untouched', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('I am stuck.'), successResult('sess-1')],
+    ];
+    remoteStatus = 'completed';
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-race-done', { outputRequirement: 'pr_required' });
+
+    // remoteSessionState sees the worker as already terminal, so neither a
+    // push nor the Jev gate is ever attempted — the existing already-terminal
+    // short-circuit (shared with the ordinary closing turn) applies first.
+    expect(mockCheckQuestion.mock.calls.length).toBe(0);
+    expect(createBackendCalls.length).toBe(1);
+  });
+
+  test('the cap: two pushes, then parks with both reasons recorded and visible', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), ...gitCommitToolCall('wip'), assistantText('Working on it.'), successResult('sess-1')],
+      [assistantText('Still not there.'), successResult('sess-1')],
+      [assistantText('Still not there, again.'), successResult('sess-1')],
+      // Consumed only if a wrongly-unbounded third push were attempted.
+      [assistantText('unexpected fourth session'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-cap', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(3);
+    expect(failedCall()).toBeUndefined();
+    const worker = manager.getWorker('w-cap');
+    expect(worker?.status).toBe('waiting');
+    expect(worker?.sessionEndPushCount).toBe(2);
+    expect(worker?.sessionEndPushes?.map(p => p.label)).toEqual(['believes_done_no_deliverable', 'believes_done_no_deliverable']);
+    expect((worker?.waitingFor as any)?.context).toContain('believes_done_no_deliverable');
+  });
+
+  test('a session that delivered a PR gets the ordinary closing turn, never a push', async () => {
     scriptQueue = [
       [initMsg('sess-1'), ...createPr(), assistantText('Opened the PR.'), successResult('sess-1')],
       [assistantText('Calling complete_task now.'), successResult('sess-1')],
@@ -623,11 +837,11 @@ describe('no-deliverable nudge', () => {
 
     expect(createBackendCalls.length).toBe(2);
     expect(runStreamedCalls[1].prompt.startsWith('Your last session ended without calling `complete_task`.')).toBe(true);
-    expect(runStreamedCalls.map(c => String(c.prompt)).some(p => p.startsWith(NUDGE_PREFIX))).toBe(false);
+    expect(runStreamedCalls.map(c => String(c.prompt))).not.toContain(expect.stringMatching(new RegExp(ALL_PUSH_TEXTS.join('|'))));
     expect(failedCall()).toBeUndefined();
   });
 
-  test('a session parked on AskUserQuestion is not nudged', async () => {
+  test('a session parked on AskUserQuestion is not pushed', async () => {
     scriptQueue = [
       [initMsg('sess-1'), askUserQuestionToolUse(), successResult('sess-1')],
       [assistantText('unexpected second session'), successResult('sess-1')],
@@ -640,20 +854,20 @@ describe('no-deliverable nudge', () => {
     expect(manager.getWorker('w-parked')?.status).toBe('waiting');
   });
 
-  test('a nudge turn that asks AskUserQuestion parks instead of failing', async () => {
+  test('a pushed turn that asks AskUserQuestion parks instead of failing', async () => {
     scriptQueue = [
-      [initMsg('sess-1'), assistantText('I cannot run the shell here.'), successResult('sess-1')],
+      [initMsg('sess-1'), ...gitCommitToolCall('wip'), assistantText('Hit something I cannot resolve.'), successResult('sess-1')],
       [askUserQuestionToolUse(), successResult('sess-1')],
     ];
     manager = new WorkerManager(makeConfig());
-    await runSession(manager, 'w-nudge-parks', { outputRequirement: 'pr_required' });
+    await runSession(manager, 'w-push-parks', { outputRequirement: 'pr_required' });
 
     expect(createBackendCalls.length).toBe(2);
     expect(failedCall()).toBeUndefined();
-    expect(manager.getWorker('w-nudge-parks')?.status).toBe('waiting');
+    expect(manager.getWorker('w-push-parks')?.status).toBe('waiting');
   });
 
-  test('a session-budget exit is not nudged', async () => {
+  test('a session-budget exit is not pushed', async () => {
     scriptQueue = [
       [initMsg('sess-1'), { type: 'result', subtype: 'error_max_budget_usd', is_error: true, session_id: 'sess-1', result: 'Reached maximum budget' }],
       [assistantText('unexpected second session'), successResult('sess-1')],
@@ -665,7 +879,7 @@ describe('no-deliverable nudge', () => {
     expect(failedCall()!.payload.resultMeta?.closingTurnOutcome).toMatch(/^skipped:(?!no_deliverable)/);
   });
 
-  test('a session that cannot be resumed is failed without a nudge', async () => {
+  test('a session that cannot be resumed is failed without a push', async () => {
     scriptQueue = [
       [assistantText('Nothing to deliver.'), successResult('')],
       [assistantText('unexpected second session'), successResult('')],
@@ -677,7 +891,7 @@ describe('no-deliverable nudge', () => {
     expect(failedCall()!.payload.resultMeta?.closingTurnOutcome).toBe('skipped:no_deliverable');
   });
 
-  test('outputRequirement auto is unaffected: closing turn only, no nudge', async () => {
+  test('outputRequirement auto is unaffected: closing turn only, no push', async () => {
     scriptQueue = [
       [initMsg('sess-1'), assistantText('Nothing to ship.'), successResult('sess-1')],
       [assistantText('Calling complete_task now.'), successResult('sess-1')],
@@ -686,19 +900,73 @@ describe('no-deliverable nudge', () => {
     await runSession(manager, 'w-auto', { outputRequirement: 'auto' });
 
     expect(createBackendCalls.length).toBe(2);
-    expect(runStreamedCalls.map(c => String(c.prompt)).some(p => p.startsWith(NUDGE_PREFIX))).toBe(false);
+    expect(mockCheckQuestion.mock.calls.length).toBe(0);
   });
 
-  test('the in-session PR nudge does not stretch the nudge turn into more turns', async () => {
-    // Would re-nudge inside the nudge turn if maxOutputReqNudges were not zeroed.
+  test('the in-session PR nudge does not stretch a pushed turn into more turns', async () => {
+    // Would re-nudge inside the pushed turn if maxOutputReqNudges were not
+    // zeroed. A fresh tool call (Read) clears the background-job signal
+    // session 1 left behind, so the turn ending without delivering
+    // classifies as genuinely_blocked on its own terms rather than
+    // re-triggering a second push for the same stale signal.
     scriptQueue = [
-      [initMsg('sess-1'), assistantText('Waiting.'), successResult('sess-1')],
-      [assistantText('Still waiting.'), successResult('sess-1'), assistantText('Second wind.'), successResult('sess-1')],
+      [initMsg('sess-1'), ...backgroundBashToolCall(), successResult('sess-1')],
+      [assistantText('Still waiting.'), ...toolCall('Read', { file_path: '/tmp/x' }, 'contents'), successResult('sess-1')],
     ];
     manager = new WorkerManager(makeConfig());
     await runSession(manager, 'w-no-stretch', { outputRequirement: 'pr_required' });
 
     expect(createBackendCalls.length).toBe(2);
-    expect(failedCall()).toBeDefined();
+    expect(failedCall()).toBeUndefined();
+    expect(manager.getWorker('w-no-stretch')?.status).toBe('waiting');
+  });
+
+  // ─── PR #3146 regression ────────────────────────────────────────────────
+  // A push is a RESUMED turn on the same session id — the single open-stream
+  // mechanism PR #3146 fixed. A fresh, disconnected `query()` call (a string
+  // prompt with no follow-up stream) would close stdin after its first
+  // result; any later enqueue — a push behind a background-job notification,
+  // a second push, a closing turn — would then be silently dropped. Asserting
+  // the resume id directly is the regression guard for that.
+  test('a push resumes the SAME session id, never a fresh disconnected one', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), ...backgroundBashToolCall(), successResult('sess-1')],
+      [...createPr(), assistantText('Opened the PR.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-push-resumes', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(createBackendCalls[0].config.options?.resume).toBeUndefined();
+    expect(createBackendCalls[1].config.options?.resume).toBe('sess-1');
+    expect(completionCall()).toBeDefined();
+  });
+});
+
+// A session that started a background job (or scheduled a wakeup) and ended
+// its turn to wait for it is never re-invoked here: the runner sees a natural
+// end, the closing turn cannot recover it and the work is lost. Background
+// tasks are switched off in the CLI and the wakeup tools are denied on every
+// session, closing turns included. See headless-session.ts.
+describe('headless session switches', () => {
+  let manager: InstanceType<typeof WorkerManager>;
+
+  beforeEach(resetAll);
+  afterEach(() => { manager?.destroy(); });
+
+  test('every session gets background tasks off and the wakeup tools denied', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Done.'), successResult('sess-1')],
+      [assistantText('Calling complete_task now.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-headless');
+
+    expect(createBackendCalls.length).toBe(2);
+    for (const call of createBackendCalls) {
+      expect(call.config.options?.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1');
+      expect(call.config.options?.env?.CLAUDE_CODE_DISABLE_CRON).toBe('1');
+      expect(call.config.options?.disallowedTools).toEqual(expect.arrayContaining(['ScheduleWakeup', 'CronCreate']));
+    }
   });
 });

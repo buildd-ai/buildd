@@ -20,6 +20,9 @@
 export const MODEL_MIN_CLI_VERSION: Readonly<Record<string, string>> = {
   'claude-fable-5-1': '2.1.251',
   'claude-opus-5-5': '2.1.280',
+  // Sonnet 5.5 support first shipped in Claude Code 2.1.284:
+  // https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21284
+  'claude-sonnet-5-5': '2.1.284',
 };
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { extractPrUrl, isCreatePrCall, detectCreatedPr, shouldFailForMissingPr } from '../../src/pr-detection';
+import { extractPrUrl, isCreatePrCall, detectCreatedPr, prRequiredUnmet } from '../../src/pr-detection';
 
 // Exact success text produced by mcp-tools.ts create_pr handler.
 const SUCCESS_RESULT =
@@ -80,23 +80,26 @@ describe('detectCreatedPr', () => {
   });
 });
 
-describe('shouldFailForMissingPr', () => {
+describe('prRequiredUnmet', () => {
   // The observed failure: pr_required, blocked environment, no PR, no commits.
-  test('fails when pr_required with no PR and no commits', () => {
-    expect(shouldFailForMissingPr({ outputRequirement: 'pr_required', prCreated: false, commitCount: 0 })).toBe(true);
+  test('true when pr_required with no confirmed PR and no commits', () => {
+    expect(prRequiredUnmet({ outputRequirement: 'pr_required', prCreated: false })).toBe(true);
   });
 
-  test('does not fail locally when commits exist (server can auto-detect a gh-CLI PR)', () => {
-    expect(shouldFailForMissingPr({ outputRequirement: 'pr_required', prCreated: false, commitCount: 3 })).toBe(false);
+  // The mission's own motivating case: dozens of commits, still no confirmed
+  // PR. Commit count must NOT gate this — session-end-classification.ts is
+  // what decides what to do about the commits, not this check.
+  test('true when pr_required with commits but still no confirmed PR', () => {
+    expect(prRequiredUnmet({ outputRequirement: 'pr_required', prCreated: false })).toBe(true);
   });
 
-  test('does not fail when a PR was confirmed', () => {
-    expect(shouldFailForMissingPr({ outputRequirement: 'pr_required', prCreated: true, commitCount: 0 })).toBe(false);
+  test('false when a PR was confirmed', () => {
+    expect(prRequiredUnmet({ outputRequirement: 'pr_required', prCreated: true })).toBe(false);
   });
 
   test('only applies to pr_required', () => {
-    expect(shouldFailForMissingPr({ outputRequirement: 'auto', prCreated: false, commitCount: 0 })).toBe(false);
-    expect(shouldFailForMissingPr({ outputRequirement: 'artifact_required', prCreated: false, commitCount: 0 })).toBe(false);
-    expect(shouldFailForMissingPr({ outputRequirement: undefined, prCreated: false, commitCount: 0 })).toBe(false);
+    expect(prRequiredUnmet({ outputRequirement: 'auto', prCreated: false })).toBe(false);
+    expect(prRequiredUnmet({ outputRequirement: 'artifact_required', prCreated: false })).toBe(false);
+    expect(prRequiredUnmet({ outputRequirement: undefined, prCreated: false })).toBe(false);
   });
 });

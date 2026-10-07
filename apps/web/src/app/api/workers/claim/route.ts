@@ -6,7 +6,8 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
-import { CLOUD_EXECUTOR, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
+import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
+import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
@@ -34,7 +35,8 @@ import {
 } from '@buildd/core/oauth-budget';
 import { countLiveSeatWorkers, loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
-import { readModelPin } from '@buildd/core/model-pin';
+import { readModelPin, shorthandPinTier } from '@buildd/core/model-pin';
+import type { TierPolicyMeta } from '@buildd/core/model-policy';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
 import { getCachedOpenRouterCatalog } from '@buildd/core/model-catalog-cache';
 import {
@@ -44,7 +46,7 @@ import {
 } from '@buildd/core/dispatch-model-guard';
 import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment } from '@buildd/core/model-routing-experiment-source';
 import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type AgentPoolDraw } from '@buildd/core/tier-pool-source';
-import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
+import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
 import { findBlockingPr, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -52,7 +54,6 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
   BYPASS_MISSION_BUDGET_KEY,
   CAP_EXEMPT_KEY,
-  bypassFlagCondition,
   hasBypassFlag,
 } from '@/lib/bypass-flags';
 import { getActiveClaimsByWorkspace, registerClaimDeferralWaiters, type ClaimDeferralWaiter } from '@buildd/core/path-claim';
@@ -65,8 +66,13 @@ import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { describeExplicitDeferral } from './explicit-deferral';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { missionNotHeld, missionNotLocal, taskNotHeld, checkTaskMissionLocal } from './held-gate';
-import { diagnoseExplicitTaskExclusion, evaluateForcedGates, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
+import { diagnoseExplicitTaskExclusion, evaluateForcedGates, explicitExclusionGateEvent, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
+// The workspace concurrency cap as a claim predicate (see the call site for the
+// rules). A function so a force claim can evaluate it for the audit without
+// applying it.
+import { workspaceCapGate } from './workspace-cap-gate';
+import { workspaceExecutorGate } from './workspace-executor-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { notifyConnectorBlocked } from './connector-block-notify';
@@ -74,7 +80,6 @@ import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
-import { attachCbmExperimentArm } from './cbm-experiment';
 import { attachQuestionGate } from './question-gate';
 import { attachRoleEnvSecrets, runRoleEnvPreFilter } from './role-env-injection';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
@@ -92,10 +97,11 @@ import {
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
 import { attachAgentEndpoints, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
+import { resolveClaudeModelRoute, routeUsesOauthSeat, type ClaudeModelRoute } from './claude-model-route';
 import { attachGitHubCredentialModes } from './github-credential-injection';
 import { AGENT_GITHUB_TOKEN_ROLLOUT_ENV, parseAgentGitHubRollout } from '@buildd/core/agent-github-credentials';
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
-import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
+import { announceFixClaimed, announceReviewClaimed } from '@/lib/pr-activity-fix-claimed';
 import { isDispatchedReview } from '@/lib/read-only-review';
 import { planClaimBatch, type ClaimPlan, type PlannerThresholds } from '@buildd/core/claim-planner';
 import {
@@ -134,36 +140,6 @@ const CLAIM_COOLDOWN_MS = 60_000;
  */
 function producesNoFileEdits(outputRequirement: unknown): boolean {
   return outputRequirement === 'artifact_required' || outputRequirement === 'none';
-}
-
-/**
- * The workspace concurrency cap as a claim predicate (see the call site for the
- * rules). A function so a force claim can evaluate it for the audit without
- * applying it.
- */
-function workspaceCapGate() {
-  return or(
-      bypassFlagCondition(tasks.context, CAP_EXEMPT_KEY),
-      sql`(
-      SELECT COUNT(*) FROM ${workers} w2
-      JOIN ${tasks} t3 ON t3.id = w2.task_id
-      WHERE t3.workspace_id = ${tasks.workspaceId}
-      AND w2.status IN ('running', 'starting', 'idle')
-      AND t3.id != ${tasks.id}
-      AND EXISTS (
-        SELECT 1 FROM ${workspaces} ws
-        WHERE ws.id = t3.workspace_id
-        AND ws.repo IS NOT NULL
-      )
-    ) < GREATEST(
-      (SELECT COALESCE(ws2.max_concurrent_tasks, 3) FROM ${workspaces} ws2
-       WHERE ws2.id = ${tasks.workspaceId}),
-      COALESCE(
-        (SELECT m.max_concurrent_tasks FROM ${missions} m WHERE m.id = ${tasks.missionId}),
-        0
-      )
-    )`,
-    )!;
 }
 
 export async function POST(req: NextRequest) {
@@ -358,14 +334,25 @@ export async function POST(req: NextRequest) {
     if (taskId && payload.diagnostics.reason !== 'race_lost') {
       const stampTaskId = taskId;
       const deferrals = payload.diagnostics.deferrals as Record<string, number> | undefined;
+      const exclusion = payload.diagnostics.taskExclusion;
       resolveClaimableWorkspaceIds()
-        .then((ids) => stampLastClaimAttempt({
-          taskId: stampTaskId,
-          workspaceIds: ids,
-          reason: payload.diagnostics.reason,
-          ...(deferrals ? { deferrals } : {}),
-          now: new Date(),
-        }))
+        .then((ids) => {
+          // A WHERE-clause gate that dropped the named task (a runner's wake
+          // claim) otherwise leaves no gate-ledger row — the task's gate
+          // history stays empty and explain can only call it a wait.
+          const event = exclusion
+            ? explicitExclusionGateEvent({ taskId: stampTaskId, exclusion, workspaceId: ids.length === 1 ? ids[0] : null })
+            : null;
+          if (event) fireDeferralEvent(event);
+          return stampLastClaimAttempt({
+            taskId: stampTaskId,
+            workspaceIds: ids,
+            reason: payload.diagnostics.reason,
+            ...(deferrals ? { deferrals } : {}),
+            ...(exclusion ? { exclusion } : {}),
+            now: new Date(),
+          });
+        })
         .catch((err) => console.warn(`[claim] failed to stamp lastClaimAttempt for task ${stampTaskId}:`, err));
     }
     // A cloud container has no credential broker and must not learn secret ids.
@@ -683,6 +670,17 @@ export async function POST(req: NextRequest) {
   if (!forceClaim) explicitTaskGates.workspaceCap = workspaceCapGate();
   if (explicitTaskGates.workspaceCap) claimableConditions.push(explicitTaskGates.workspaceCap);
 
+  // Workspace executor (gitConfig.executor, packages/shared/src/executor.ts):
+  // a host claim skips workspaces whose work runs in the cloud, so a runner's
+  // cross-workspace poll cannot beat the cold-starting container to the task;
+  // a cloud claim skips host-only workspaces. Applies to a person's explicit
+  // interactive claim_task {taskId} too (the container is already on its way
+  // for that task); only an admin force claim lifts it.
+  if (!forceClaim) {
+    explicitTaskGates.workspaceExecutor = workspaceExecutorGate(cloudExecutor ? 'cloud' : 'host');
+    claimableConditions.push(explicitTaskGates.workspaceExecutor);
+  }
+
   // Per-runner cooldown: skip tasks where this runner recently had a worker
   // error. Prevents Pusher-driven burn loops (2026-04-16 incident: one runner
   // re-claimed the same task ~12x in 52s after OAuth budget exhaustion).
@@ -753,6 +751,7 @@ export async function POST(req: NextRequest) {
         missionLocal: missionNotLocal(),
         subject: subjectLivenessCondition(),
         workspaceCap: workspaceCapGate(),
+        workspaceExecutor: workspaceExecutorGate(cloudExecutor ? 'cloud' : 'host'),
         startAt: or(isNull(tasks.startAt), lte(tasks.startAt, now))!,
       },
     });
@@ -824,6 +823,14 @@ export async function POST(req: NextRequest) {
     return future.length > 0 ? future[0].toISOString() : null;
   };
 
+  // Why THIS claim runs a task on a backend other than the one stored on it
+  // (every flip below is in-memory). Stamped on the claim's context write as
+  // BACKEND_ROUTING_KEY so explain / get_task can say why the backend changed.
+  const backendRouting = new Map<string, ClaimBackendRouting>();
+  const noteRouting = (task: { id: string }, from: AgentBackend, backend: AgentBackend, reason: ClaimRoutingReason) => {
+    backendRouting.set(task.id, { backend, from, reason, at: now.toISOString() });
+  };
+
   // Apply the team toggle's SAFE direction up front: if a task's backend is
   // disabled team-wide and the fallback is Claude, rewrite it to Claude now —
   // before the capability filter — so a Codex task with Codex disabled isn't
@@ -833,9 +840,13 @@ export async function POST(req: NextRequest) {
     const taskTeam = (task as any).workspace?.teamId as string | undefined;
     const enabled = await teamEnabledBackends(taskTeam);
     if (maskBackend((task as any).backend as AgentBackend, enabled) === 'claude' && (task as any).backend !== 'claude') {
+      noteRouting(task, (task as any).backend, 'claude', 'codex_disabled');
       (task as any).backend = 'claude';
       continue;
     }
+    // A pinned backend is never failed over (provider-failover spec): a pinned
+    // Codex task waits out its own wall — the dispatch loop defers it.
+    if (isBackendPinned((task as any).context)) continue;
     // Same reasoning for a provider that is rate-limited rather than disabled: a
     // Codex task whose pool is walled runs on Claude instead. Rewriting here (not
     // in the dispatch loop) matters because the capability filter below drops
@@ -844,6 +855,7 @@ export async function POST(req: NextRequest) {
     if ((task as any).backend === 'codex' && (!enabled || enabled.includes('claude'))) {
       const pauses = await teamPauses(taskTeam);
       if (pauses.has('codex') && !pauses.has('claude')) {
+        noteRouting(task, 'codex', 'claude', 'codex_rate_limited');
         (task as any).backend = 'claude';
         console.log(`[claim] Provider pause: task ${task.id} → Claude (Codex rate-limited until ${pauses.get('codex')!.resetsAt.toISOString()})`);
       }
@@ -856,32 +868,59 @@ export async function POST(req: NextRequest) {
   // kinds only), but only for a runner that will actually apply it — one that
   // declares AGENT_ENDPOINT_RUNNER_FEATURE, same as the Claude path.
   const runnerSupportsEndpointForCapabilityCheck = runnerSupportsAgentEndpoint(body.runnerFeatures);
-  const serverCredentialTaskIds = new Set<string>();
-  if (runnerHasCodexBackend && !runnerHasLocalCodexAuth && process.env.ENCRYPTION_KEY) {
-    await Promise.all(claimableTasks.map(async (task) => {
-      if ((task as any).backend !== 'codex') return;
-      const teamId = (task as any).workspace?.teamId;
-      if (!teamId) return;
-      try {
-        const credScope = { teamId, accountId: account.id, workspaceId: task.workspaceId };
-        const hasEndpoint = runnerSupportsEndpointForCapabilityCheck && await hasOpenAiCompatibleAgentEndpoint(credScope);
-        if ((await hasCodexCredential(credScope)) || (await hasOpenAiApiKey(credScope)) || hasEndpoint) {
-          serverCredentialTaskIds.add(task.id);
-        }
-      } catch (err) {
-        console.warn(`[claim] Failed to check Codex credential for task ${task.id}:`, err);
-      }
-    }));
-  }
 
-  // Filter by backend: codex tasks require backend:codex capability or local auth.
-  const filteredTasks = claimableTasks.filter((task) => {
-    if ((task as any).backend === 'codex') {
-      if (!runnerHasCodexBackend) return false;
-      if (!runnerHasLocalCodexAuth && !serverCredentialTaskIds.has(task.id)) return false;
+  // Memoized per-workspace server-side Codex auth (scope-aware: team-wide,
+  // account, or workspace): a ChatGPT/OAuth connect, an OpenAI API key, or an
+  // OpenAI-compatible team endpoint this runner will apply. Exactly what
+  // attachCodexCredentials / attachAgentEndpoints can deliver below.
+  const codexAvailability = new Map<string, boolean>();
+  const workspaceHasCodex = async (scope: { teamId: string; accountId?: string | null; workspaceId: string }): Promise<boolean> => {
+    const wsId = scope.workspaceId;
+    if (codexAvailability.has(wsId)) return codexAvailability.get(wsId)!;
+    let available = false;
+    try {
+      available = (await hasCodexCredential(scope)) || (await hasOpenAiApiKey(scope)) ||
+        (runnerSupportsEndpointForCapabilityCheck && await hasOpenAiCompatibleAgentEndpoint(scope));
+    } catch (err) {
+      console.warn(`[claim] Codex credential check failed for workspace ${wsId}:`, err);
     }
-    return true;
-  });
+    codexAvailability.set(wsId, available);
+    return available;
+  };
+
+  /**
+   * Will this caller's worker actually have Codex auth? The one predicate for
+   * both the capability filter (a task stored as Codex) and a flip to Codex
+   * (`tryFlipToCodex`), mirroring the runner's own preflight (workers.ts,
+   * "No Codex credential configured"): a delivered `codexCredential`, its own
+   * OPENAI_API_KEY, or its own CODEX_HOME.
+   *  - no `backend:codex`: the caller cannot run Codex at all (an MCP session,
+   *    an old runner).
+   *  - cloud executor: credentials are stripped from the claim and the egress
+   *    proxy only credentials Anthropic and GitHub traffic, so nothing can
+   *    authenticate Codex in the container.
+   *  - local auth: enough on its own.
+   *  - server credential: only deliverable with ENCRYPTION_KEY (every attach
+   *    step is a no-op without it).
+   */
+  const codexAuthReachesRunner = async (scope: { teamId?: string | null; workspaceId: string }): Promise<boolean> => {
+    if (!runnerHasCodexBackend || cloudExecutor) return false;
+    if (runnerHasLocalCodexAuth) return true;
+    if (!process.env.ENCRYPTION_KEY || !scope.teamId) return false;
+    return workspaceHasCodex({ teamId: scope.teamId, accountId: account.id, workspaceId: scope.workspaceId });
+  };
+
+  const codexAuthTaskIds = new Set<string>();
+  await Promise.all(claimableTasks.map(async (task) => {
+    if ((task as any).backend !== 'codex') return;
+    if (await codexAuthReachesRunner({ teamId: (task as any).workspace?.teamId, workspaceId: task.workspaceId })) {
+      codexAuthTaskIds.add(task.id);
+    }
+  }));
+
+  // Filter by backend: a Codex task needs a caller whose worker will have Codex auth.
+  const filteredTasks = claimableTasks.filter((task) =>
+    (task as any).backend !== 'codex' || codexAuthTaskIds.has(task.id));
 
   if (filteredTasks.length === 0) {
     return emptyClaim({
@@ -1116,6 +1155,8 @@ export async function POST(req: NextRequest) {
     oauth_parallelism: 0,
     role_env_unsatisfied: 0,
     ordered_behind: 0,
+    managed_concurrency: 0,
+    managed_runner_hours: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
@@ -1184,6 +1225,9 @@ export async function POST(req: NextRequest) {
   // workers per workspace and stop claiming once a repo workspace reaches its cap.
   const DEFAULT_MAX_CONCURRENT_TASKS = 3;
   const activeByWorkspace = new Map<string, number>();
+  // Managed runs this batch started, per team: not yet visible to the
+  // entitlement's live-worker count.
+  const managedClaimedByTeam = new Map<string, number>();
   for (const w of activeWorkers) {
     if (!['running', 'starting', 'idle'].includes(w.status)) continue;
     activeByWorkspace.set(w.workspaceId, (activeByWorkspace.get(w.workspaceId) || 0) + 1);
@@ -1196,44 +1240,55 @@ export async function POST(req: NextRequest) {
   // flips made within this claim so a single claim can't over-funnel either.
   const codexBusyWorkspaces = new Set<string>();
   const codexFlippedWorkspaces = new Set<string>();
-  const codexAvailability = new Map<string, boolean>();
   const activeTaskIds = activeWorkers.map(w => w.taskId).filter(Boolean) as string[];
   if (activeTaskIds.length > 0) {
-    const activeCodexTasks = await db.query.tasks.findMany({
-      where: and(inArray(tasks.id, activeTaskIds), eq(tasks.backend, 'codex')),
-      columns: { workspaceId: true },
+    // Not filtered on the stored column: a budget-failover flip leaves the row
+    // on 'claude' and records the Codex run only in the claim stamp, so a
+    // `backend = 'codex'` WHERE missed every failover-started Codex worker and
+    // the next claim request flipped another task onto the same window.
+    const activeTasks = await db.query.tasks.findMany({
+      where: inArray(tasks.id, activeTaskIds),
+      columns: { workspaceId: true, backend: true, context: true },
     });
-    for (const t of activeCodexTasks) {
-      if (t.workspaceId) codexBusyWorkspaces.add(t.workspaceId);
+    for (const t of activeTasks) {
+      if (t.workspaceId && claimedBackendOf(t.backend, t.context) === 'codex') codexBusyWorkspaces.add(t.workspaceId);
     }
   }
-  // Memoized per-workspace Codex-credential check (scope-aware: team-wide, account, or workspace).
-  const workspaceHasCodex = async (scope: { teamId: string; accountId?: string | null; workspaceId: string }): Promise<boolean> => {
-    const wsId = scope.workspaceId;
-    if (codexAvailability.has(wsId)) return codexAvailability.get(wsId)!;
-    let available = false;
-    try {
-      available = (await hasCodexCredential(scope)) || (await hasOpenAiApiKey(scope)) ||
-        (runnerSupportsEndpointForCapabilityCheck && await hasOpenAiCompatibleAgentEndpoint(scope));
-    } catch (err) {
-      console.warn(`[claim] Codex credential check failed for workspace ${wsId}:`, err);
-    }
-    codexAvailability.set(wsId, available);
-    return available;
-  };
-
-  // Flip a task to Codex in-memory, respecting credential availability, the
+  // Flip a task to Codex in-memory, respecting runner-side Codex auth
+  // (codexAuthReachesRunner — the same predicate as the capability filter), the
   // ≤1-Codex-per-workspace throttle, and an active Codex rate-limit. Shared by
   // the provider toggle and budget failover. Returns true if the flip happened.
-  const tryFlipToCodex = async (task: any, teamId?: string, wsId?: string): Promise<boolean> => {
+  const tryFlipToCodex = async (task: any, teamId: string | undefined, wsId: string | undefined, reason: ClaimRoutingReason): Promise<boolean> => {
     const codexFree = !!wsId && !codexBusyWorkspaces.has(wsId) && !codexFlippedWorkspaces.has(wsId);
     if (teamId && (await teamPauses(teamId)).has('codex')) return false;
-    if (wsId && teamId && codexFree && await workspaceHasCodex({ teamId, accountId: account.id, workspaceId: wsId })) {
+    if (wsId && teamId && codexFree && await codexAuthReachesRunner({ teamId, workspaceId: wsId })) {
+      noteRouting(task, (task.backend || 'claude') as AgentBackend, 'codex', reason);
       task.backend = 'codex';
       codexFlippedWorkspaces.add(wsId);
       return true;
     }
     return false;
+  };
+
+  // The Claude model route per workspace (./claude-model-route), memoized: the
+  // seat predicate the budget failover and OAuth pacing both read.
+  const claudeRouteCache = new Map<string, Promise<ClaudeModelRoute>>();
+  const claudeRouteFor = (teamId: string | undefined, workspaceId: string): Promise<ClaudeModelRoute> => {
+    const key = `${teamId ?? ''}:${workspaceId}`;
+    let route = claudeRouteCache.get(key);
+    if (!route) {
+      route = resolveClaudeModelRoute({
+        teamId,
+        workspaceId,
+        accountId: account.id,
+        cloudExecutor,
+        llmProviderOverride: body.llmProviderOverride === true,
+        runnerSupportsEndpoint: runnerSupportsEndpointForCapabilityCheck,
+        encryptionKeySet: !!process.env.ENCRYPTION_KEY,
+      });
+      claudeRouteCache.set(key, route);
+    }
+    return route;
   };
 
   // Pre-fetch tasks with open PRs per workspace, keyed by workspaceId.
@@ -1465,9 +1520,9 @@ export async function POST(req: NextRequest) {
   };
 
   // ── Claim-time batch planner (./claim-plan-input, knowledge-base: buildd/design/jev-scheduling.md §5) ──
-  // Per workspace, gitConfig.claimPlanner: 'off' (default) leaves everything
-  // below exactly as it was — no extra read, no extra write, same walk.
-  // 'record' plans beside the legacy walk and records both. 'apply' claims in
+  // Per workspace, gitConfig.claimPlanner: 'off' leaves everything below
+  // exactly as it was — no extra read, no extra write, same walk. 'record'
+  // (the default when unset) plans beside the legacy walk and records both. 'apply' claims in
   // plan order: every gate in the loop still runs on each pick, and a pick
   // that is refused or loses its race is dropped and the rest re-planned.
   // Never for an explicit taskId claim (which includes every force claim), and
@@ -1599,6 +1654,8 @@ export async function POST(req: NextRequest) {
 
     // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
     const taskContext = task.context as Record<string, unknown> | null;
+    // Backend is pinned by the task creator — must not flip it for any reason.
+    const backendPinned = isBackendPinned(taskContext);
 
     // Path-overlap backstop (layer 1): if this task declares a pathManifest and
     // any open PR in the same workspace comes from a task with an overlapping
@@ -1814,8 +1871,18 @@ export async function POST(req: NextRequest) {
         //    Under the planner's 'apply', a task with a confident predicted
         //    scope (plannerReplacesMutex) was already ordered by real edges
         //    against that scope, so the mutex no longer applies to it.
+        //    `localMissionClaim` (verified interactive session, explicit
+        //    taskId, mission.executor='local' — same predicate as the role
+        //    gate exemption above) also skips it: a person running a local
+        //    mission's tasks from their own session is the one choosing what
+        //    to claim next, in an isolated worktree per task, same as the
+        //    LX-2/LX-4 exemptions already granted to the mission-local and
+        //    role gates. This is narrower than an admin force claim — which
+        //    still does NOT lift this gate (see the force-claim comment
+        //    block and its regression test) — because force alone carries no
+        //    guarantee a human is actually supervising concurrent work.
         if ((task as any).category !== 'review' && !producesNoFileEdits((task as any).outputRequirement)
-          && declaresNoScope(taskManifest) && !plannerReplacesMutex.has(task.id)) {
+          && declaresNoScope(taskManifest) && !plannerReplacesMutex.has(task.id) && !localMissionClaim) {
           const advisoryPeers = missionAdvisoryInFlight.get(taskMissionId);
           const blockingPeer = advisoryPeers
             ? [...advisoryPeers].find(id => id !== task.id)
@@ -1856,25 +1923,52 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Commercial entitlement: Buildd-managed runner keys only (packages/shared/
+    // src/entitlements.ts). A self-hosted runner never gets here, and the
+    // operational caps above stay as they are. Not forceable and not an error:
+    // the task stays pending with the block stamped on it for the dashboard,
+    // and a managed run ending (or the hourly sweep) wakes it.
+    if (account.managedRunner) {
+      const entitlementTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (entitlementTeamId) {
+        const block = await checkManagedRunnerEntitlement(entitlementTeamId, {
+          claimedInBatch: managedClaimedByTeam.get(entitlementTeamId) ?? 0,
+          now,
+        });
+        if (block) {
+          deferTask(task, entitlementDeferralKey(block), { ...block });
+          await stampEntitlementBlock(task.id, block, now);
+          continue;
+        }
+      }
+    }
+
     // Team provider toggle (reversible mask) — applied BEFORE budget logic so the
     // rest sees the effective backend. Disabling a provider here redirects matching
     // jobs to an enabled one at dispatch time, without touching stored settings;
     // re-enabling restores them automatically. See packages/core/backend-policy.ts.
+    // A task whose creator named its backend is never moved (backendPinned).
     const taskTeamId = (task as any).workspace?.teamId as string | undefined;
     const enabledBackends = await teamEnabledBackends(taskTeamId);
     const codexEnabledForTeam = !enabledBackends || enabledBackends.includes('codex');
     const maskedBackend = maskBackend((task as any).backend as AgentBackend, enabledBackends);
-    if (maskedBackend !== (task as any).backend) {
+    if (!backendPinned && maskedBackend !== (task as any).backend) {
       if (maskedBackend === 'codex') {
         // Claude disabled team-wide → must run on Codex. Skip (leave pending) if
         // Codex has no credential or its single per-workspace slot is taken.
-        if (!(await tryFlipToCodex(task, taskTeamId, task.workspaceId))) { deferTask(task, 'provider_unavailable', { attemptedBackend: 'codex' }); continue; }
+        if (!(await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'claude_disabled'))) { deferTask(task, 'provider_unavailable', { attemptedBackend: 'codex' }); continue; }
         console.log(`[claim] Provider toggle: task ${task.id} → Codex (Claude disabled for team ${taskTeamId})`);
       } else {
         // Codex disabled team-wide → run on Claude.
+        noteRouting(task, (task as any).backend, 'claude', 'codex_disabled');
         (task as any).backend = 'claude';
         console.log(`[claim] Provider toggle: task ${task.id} → Claude (Codex disabled for team ${taskTeamId})`);
       }
+    } else if (backendPinned && maskedBackend !== (task as any).backend) {
+      // Backend is pinned by task creator. Team provider toggle is not applied to pinned backends.
+      // The backend is deferred to let it wait for its intended provider to become available.
+      deferTask(task, 'provider_unavailable', { backend: (task as any).backend, reason: 'pinned' });
+      continue;
     }
 
     // Is the CLAUDE pool walled right now? Computed for every task, not just
@@ -1884,8 +1978,9 @@ export async function POST(req: NextRequest) {
     const claudeEnabledForTeam = !enabledBackends || enabledBackends.includes('claude');
     let claudePoolBlocked = false;
 
-    if (accountBudgetExhausted && !tenantCtx?.tenantId) {
-      // Account's own OAuth session/budget is exhausted.
+    if (accountBudgetExhausted && !tenantCtx?.tenantId && !interactiveSession) {
+      // Account's own OAuth session/budget is exhausted. Interactive sessions
+      // have their own credentials and do not consume this account budget.
       claudePoolBlocked = true;
     } else if (tenantCtx?.tenantId) {
       const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
@@ -1911,14 +2006,29 @@ export async function POST(req: NextRequest) {
     const pauses = await teamPauses(taskTeamId);
     if (pauses.has('claude')) claudePoolBlocked = true;
 
+    // Does a Claude run of THIS task draw on that walled pool? Only when its
+    // model route is the OAuth seat (./claude-model-route): a task the team
+    // agent endpoint, a metered Anthropic key, the runner's own provider or
+    // cloud egress carries spends that budget, not the seat's. A tenant task
+    // runs on its tenant's own seat, whose wall is the tenant budget above.
+    // Resolved lazily — only a walled pool or an active seat cap needs it.
+    const isTenantTask = !!tenantCtx?.tenantId;
+    const claudeRunUsesSeat = async (): Promise<boolean> =>
+      isTenantTask || routeUsesOauthSeat(await claudeRouteFor(taskTeamId, task.workspaceId));
+
     // Codex wall → escape to Claude while its pool is open, rather than claiming
-    // onto a provider that will immediately report a rate-limit.
+    // onto a provider that will immediately report a rate-limit. A task pinned
+    // to Codex is never moved: it waits for its own reset.
     if ((task as any).backend === 'codex' && pauses.has('codex')) {
-      if (claudeEnabledForTeam && !claudePoolBlocked) {
+      if (!backendPinned && claudeEnabledForTeam && (!claudePoolBlocked || !(await claudeRunUsesSeat()))) {
+        noteRouting(task, 'codex', 'claude', 'codex_rate_limited');
         (task as any).backend = 'claude';
         console.log(`[claim] Budget failover: routing task ${task.id} to Claude (Codex rate-limited until ${pauses.get('codex')!.resetsAt.toISOString()})`);
       } else {
-        deferTask(task, 'budget_paused', { backend: 'codex', resetsAt: pauses.get('codex')!.resetsAt.toISOString() });
+        deferTask(task, 'budget_paused', {
+          backend: 'codex', resetsAt: pauses.get('codex')!.resetsAt.toISOString(),
+          ...(backendPinned ? { pinned: true } : {}),
+        });
         continue;
       }
     }
@@ -1947,29 +2057,32 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    const claudeBudgetBlocked = !isCodexTask && claudePoolBlocked;
+    // Seat-bound: this Claude run spends the walled pool. Computed BEFORE the
+    // failover so a task on another route is never blocked, flipped or deferred.
+    const claudeBudgetBlocked = !isCodexTask && claudePoolBlocked && await claudeRunUsesSeat();
 
     // Proactive budget failover: rather than skip a Claude task until the session/
-    // budget resets, route it to Codex *now* when (a) the workspace has a Codex
-    // credential and (b) no Codex worker is already active there (≤1 per workspace).
+    // budget resets, route it to Codex *now* when (a) the runner will have Codex
+    // auth and (b) no Codex worker is already active there (≤1 per workspace).
     // The flip is in-memory only — scoped to this run, not a permanent backend change.
     // Tasks we can't fail over are left pending and retried on reset / when Codex frees.
     if (claudeBudgetBlocked) {
-      // Only fail over to Codex if the team toggle allows it; otherwise leave the
-      // task pending until the Claude budget resets.
-      if (codexEnabledForTeam && await tryFlipToCodex(task, taskTeamId, task.workspaceId)) {
+      // Only fail over to Codex if the task did not ask for Claude explicitly and
+      // the team toggle allows it; otherwise leave it pending until the reset.
+      if (!backendPinned && codexEnabledForTeam && await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'claude_seat_exhausted')) {
         console.log(`[claim] Budget failover: routing task ${task.id} to Codex (workspace ${task.workspaceId} Claude budget exhausted)`);
       } else {
-        deferTask(task, 'budget_paused', { backend: 'claude' });
+        deferTask(task, 'budget_paused', { backend: 'claude', ...(backendPinned ? { pinned: true } : {}) });
         continue;
       }
     }
 
     // Learned OAuth pressure narrows the seat's Claude parallelism (see above).
-    // Codex and tenant work draw on other pools, so they are never held by it.
-    // Read the backend fresh: `isCodexTask` was captured before the budget
-    // failover above, which may just have flipped this task to Codex.
-    const usesOauthSeat = (task as any).backend !== 'codex' && !tenantCtx?.tenantId;
+    // Codex, tenant work and non-seat Claude routes draw on other pools, so they
+    // are never held by it. Read the backend fresh: `isCodexTask` was captured
+    // before the budget failover above, which may just have flipped this task to Codex.
+    const usesOauthSeat = (task as any).backend !== 'codex' && !isTenantTask
+      && (oauthSeatSlotsLeft === null || await claudeRunUsesSeat());
     if (usesOauthSeat && oauthSeatSlotsLeft !== null && oauthSeatSlotsLeft <= 0) {
       deferTask(task, 'oauth_parallelism', { pct: oauthPressure?.pct ?? null });
       continue;
@@ -2073,12 +2186,17 @@ export async function POST(req: NextRequest) {
       routerModel: routingDecision.model, roleModel, budgetPressure: dailyBudgetPct,
     });
 
-    // Resolve the concrete model ID via the tier registry.
-    // - explicit override: bypass registry, pass full ID to runner as-is.
-    // - tier path: task.tier → router alias → registry → full model ID.
+    // Resolve the concrete model ID through the model policy (the team's tier
+    // registry is its document — packages/core/model-policy.ts).
+    // - exact-id pin: the escape hatch; bypass tier resolution, pass the full
+    //   ID to the runner as-is.
+    // - shorthand pin (`opus`/`sonnet`/`haiku`): a tier request, resolved like
+    //   any tier so the policy decides which model that is.
+    // - tier path: task.tier → router alias → policy → full model ID.
     // taskTeamId already defined above (line ~619)
+    const pinTier = shorthandPinTier(explicitModel);
     let resolvedModel: string;
-    let resolvedTierMeta: { tier: string; provider: string; source?: string } | undefined;
+    let resolvedTierMeta: { tier: string; provider: string; source?: string; policy?: TierPolicyMeta } | undefined;
     let poolDraw: AgentPoolDraw | null = null;
     // Where `resolvedModel` came from, and the tier entry a rejected model falls
     // back to. The catalog is read once per claim (cached in-process and in
@@ -2101,13 +2219,13 @@ export async function POST(req: NextRequest) {
     const tierModelSource = (s: string | undefined): DispatchModelSource =>
       s === 'catalog' ? 'tier_catalog' : s === 'default' ? 'tier_default' : 'tier_row';
 
-    if (routingDecision.reason === 'explicit_override') {
+    if (routingDecision.reason === 'explicit_override' && !pinTier) {
       resolvedModel = routingDecision.model;
     } else {
-      // Determine the tier to look up: task.tier takes precedence, then a
+      // Determine the tier to look up: a shorthand pin, then task.tier, then a
       // premium-plus role floor (above the router's opus ceiling), then the
       // router alias.
-      const derivedTier = taskTier ?? roleTierOverride ?? mapRouterAlias(routingDecision.model);
+      const derivedTier = pinTier ?? taskTier ?? roleTierOverride ?? mapRouterAlias(routingDecision.model);
       guardTier = derivedTier;
 
       if (taskTeamId) {
@@ -2119,9 +2237,11 @@ export async function POST(req: NextRequest) {
           runnerCliVersion,
         );
         resolvedModel = entry.model;
-        resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source };
+        resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source, ...(entry.policy ? { policy: entry.policy } : {}) };
         modelSource = tierModelSource(entry.source);
         tierEntryModel = { model: entry.model, source: modelSource };
+        // A treatment or pool arm below replaces resolvedTierMeta without the
+        // policy decision: that route is the experiment's, not the policy's.
         if (experimentDraw) {
           const treatment = await applyModelRoutingTreatment(experimentDraw, {
             controlModel: entry.model, routerReason: routingDecision.reason, taskTier, backend: task.backend,
@@ -2156,9 +2276,13 @@ export async function POST(req: NextRequest) {
           }
         }
       } else {
-        // No team — fall back to router alias (resolver would fail without teamId)
-        resolvedModel = routingDecision.model;
-        modelSource = 'router_alias';
+        // No team, so no registry: the policy's default layer still answers,
+        // rather than handing the runner a bare router alias to interpret.
+        const entry = await resolveTierEntry(derivedTier, null, task.workspaceId, 'agent', runnerCliVersion);
+        resolvedModel = entry.model;
+        resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source, ...(entry.policy ? { policy: entry.policy } : {}) };
+        modelSource = tierModelSource(entry.source);
+        tierEntryModel = { model: entry.model, source: modelSource };
       }
     }
 
@@ -2175,7 +2299,7 @@ export async function POST(req: NextRequest) {
         // A rejected pin: fall back to the workspace default for its family.
         const entry = await resolveTierEntry(guardTier, taskTeamId, task.workspaceId, 'agent', runnerCliVersion);
         fallbacks = [{ model: entry.model, source: tierModelSource(entry.source) }];
-        resolvedTierMeta = { tier: guardTier, provider: entry.provider, source: entry.source };
+        resolvedTierMeta = { tier: guardTier, provider: entry.provider, source: entry.source, ...(entry.policy ? { policy: entry.policy } : {}) };
       }
       const guarded = guardDispatchModel({
         resolved: resolvedModel,
@@ -2196,7 +2320,10 @@ export async function POST(req: NextRequest) {
         resolvedModel = guarded.model;
         modelSource = guarded.source;
         if (resolvedTierMeta) {
-          resolvedTierMeta = { ...resolvedTierMeta, source: guarded.source === 'tier_default' ? 'default' : resolvedTierMeta.source };
+          // The policy's pick did not run, so its decision no longer describes
+          // this claim: drop it, and no outcome is reported against it.
+          const { policy: _notServed, ...rest } = resolvedTierMeta;
+          resolvedTierMeta = { ...rest, source: guarded.source === 'tier_default' ? 'default' : resolvedTierMeta.source };
         }
       }
     }
@@ -2255,6 +2382,15 @@ export async function POST(req: NextRequest) {
       routingReason: routingDecision.reason,
       ...(resolvedTierMeta ? { resolvedTier: resolvedTierMeta } : {}),
     };
+    // Why this claim's backend differs from the stored one — or nothing, so a
+    // previous attempt's flip never reads as this one's.
+    delete (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY];
+    // Claimed: it no longer waits on an entitlement.
+    delete (patchedContext as Record<string, unknown>)[ENTITLEMENT_BLOCK_CONTEXT_KEY];
+    const routing = backendRouting.get(task.id);
+    if (routing && routing.backend === (task as any).backend) {
+      (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY] = routing;
+    }
     // Who holds an interactive claim: the MCP liveness touch is scoped to the
     // session user that made it (lib/interactive-worker-liveness.ts). Rewritten
     // on every claim so a stamp never outlives the claim it described.
@@ -2318,6 +2454,10 @@ export async function POST(req: NextRequest) {
 
     // Count this claim toward the per-workspace cap for the rest of the batch.
     activeByWorkspace.set(task.workspaceId, (activeByWorkspace.get(task.workspaceId) || 0) + 1);
+    if (account.managedRunner) {
+      const entitlementTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (entitlementTeamId) managedClaimedByTeam.set(entitlementTeamId, (managedClaimedByTeam.get(entitlementTeamId) ?? 0) + 1);
+    }
 
     // Mirror into the Codex single-flight tracker so a second originally-Codex
     // task for this workspace, later in the same batch, hits the defer above
@@ -2407,30 +2547,45 @@ export async function POST(req: NextRequest) {
     // Lock the claimed task in this statement. Cancellation either wins first
     // (the status check refuses insertion), or waits for this insert to commit
     // and then sees the live worker in its post-cancellation read.
-    const insertResult = await db.execute(sql`
-      INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status)
-      SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle'
-      WHERE EXISTS (
-        SELECT 1 FROM ${tasks} t_claim
-        WHERE t_claim.id = ${task.id}
-        AND t_claim.status = 'assigned'
-        AND t_claim.claimed_by = ${account.id}
-        FOR UPDATE
-      )
-      AND (
-        SELECT count(*) FROM ${workers}
-        WHERE account_id = ${account.id}
-        AND status IN ('idle', 'running', 'starting', 'waiting_input')
-      ) < ${account.maxConcurrentWorkers}
-      AND NOT EXISTS (
-        SELECT 1 FROM ${workers} w_dup
-        WHERE w_dup.task_id = ${task.id}
-        AND w_dup.status IN ('idle', 'running', 'starting', 'waiting_input')
-      )
-      RETURNING *
-    `);
+    //
+    // Race 1's single-statement guard above is real for the per-task dup check
+    // (FOR UPDATE + NOT EXISTS), but the account-wide `count(*) < max` predicate
+    // is a plain snapshot read under READ COMMITTED: two concurrent claims can
+    // each evaluate it before the other's insert is visible and both pass,
+    // pushing the live total over maxConcurrentWorkers (observed live — see
+    // apps/web/tests/integration/concurrency.test.ts). Serialize per-account
+    // with a transaction-scoped advisory lock taken in a batch alongside the
+    // insert, same protocol as packages/core/path-claim.ts's workspaceLock: on
+    // neon-http, db.batch runs as one non-interactive transaction, so the lock
+    // is held exactly for this insert's duration and is safe without
+    // db.transaction()'s interactive-session requirement.
+    const [, insertResult] = await db.batch([
+      db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('workers_claim_concurrency'), hashtext(${account.id}::text))`),
+      db.execute(sql`
+        INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status)
+        SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle'
+        WHERE EXISTS (
+          SELECT 1 FROM ${tasks} t_claim
+          WHERE t_claim.id = ${task.id}
+          AND t_claim.status = 'assigned'
+          AND t_claim.claimed_by = ${account.id}
+          FOR UPDATE
+        )
+        AND (
+          SELECT count(*) FROM ${workers}
+          WHERE account_id = ${account.id}
+          AND status IN ('idle', 'running', 'starting', 'waiting_input')
+        ) < ${account.maxConcurrentWorkers}
+        AND NOT EXISTS (
+          SELECT 1 FROM ${workers} w_dup
+          WHERE w_dup.task_id = ${task.id}
+          AND w_dup.status IN ('idle', 'running', 'starting', 'waiting_input')
+        )
+        RETURNING *
+      `),
+    ]);
 
-    const worker = insertResult.rows?.[0] as any;
+    const worker = (insertResult as { rows?: any[] })?.rows?.[0] as any;
 
     if (!worker) {
       // The conditional insert can no-op for two reasons. Only one of them
@@ -2587,7 +2742,10 @@ export async function POST(req: NextRequest) {
     // Same signal for a wall on any OTHER provider: every candidate was deferred
     // by `budget_paused`, so the runner needs the earliest reset across the pauses
     // this batch actually saw — `account.budgetResetsAt` only tracks Claude.
-    if (accountBudgetExhausted || deferrals.budget_paused > 0) {
+    // Exception: interactive sessions have their own credentials and do not consume
+    // the account's provider budget, so they should not be blocked by accountBudgetExhausted.
+    const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !interactiveSession;
+    if (accountBudgetBlocksBackgroundRunner || deferrals.budget_paused > 0) {
       return emptyClaim({
         budgetResetsAt: earliestFutureReset(),
         diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
@@ -2661,9 +2819,10 @@ export async function POST(req: NextRequest) {
           worker: { id: cw.id, name: account.name, status: 'idle' },
         }
       );
-      // A fix attempt just got a worker: the PR's activity comment may now say
-      // "Fixing" instead of "fix queued". No-op for any other task.
+      // A fix attempt or reviewer just got a worker: the PR's activity comment
+      // may now say "Fixing" / "Reviewing" instead of queued. No-op otherwise.
       await announceFixClaimed(claimedTask);
+      await announceReviewClaimed(claimedTask);
     }
   }
 
@@ -2700,16 +2859,9 @@ export async function POST(req: NextRequest) {
   await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
   await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
   if (!cloudExecutor) await attachRoleEnvSecrets(claimedWorkers, filteredTasks, account.id);
-  // CBM-access experiment: after role config (eligibility reads the role's CBM
-  // opt-out) and before the prompt-context blocks (the task-area hint drops its
-  // graph mention for a withheld task). No-op without a running experiment.
-  await attachCbmExperimentArm(claimedWorkers, {
-    cliVersion: body.environment?.claudeCliVersion,
-    features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
-  });
-  // Question-gate experiment: marks workers whose questions go through
-  // /api/workers/[id]/question-check. No-op without a running experiment.
-  await attachQuestionGate(claimedWorkers, {
+  // Question gate: marks workers whose questions go through
+  // /api/workers/[id]/question-check. No-op for a runner that never sent the feature.
+  attachQuestionGate(claimedWorkers, {
     features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
   });
 
@@ -2882,7 +3034,9 @@ export async function POST(req: NextRequest) {
       ? { ...cw, task: { ...(cw.task as any), workspace: withoutDispatchToken((cw.task as any).workspace) } }
       : cw)),
     ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
-    ...(accountBudgetExhausted && {
+    // Only report partial budget exhaustion for background runners. Interactive sessions
+    // have their own credentials and should not be told about account budget state.
+    ...(accountBudgetExhausted && !interactiveSession && {
       budgetResetsAt: earliestFutureReset(),
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),

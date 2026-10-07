@@ -21,6 +21,7 @@ import {
   parseBashTraceExcerpt,
   verifyFamilyOf,
 } from '@buildd/core/bash-failure-trace';
+import { DISPATCH_MODEL_REJECTED_PATTERN } from '@buildd/core/dispatch-model-guard';
 import { cleanLogText, redactLogText } from '@/lib/ci-failure-excerpts';
 
 export const EVIDENCE_MAX_KEY_LINES = 40;
@@ -77,7 +78,7 @@ const CLASS_RULES: Array<[TaskEvidenceErrorClass, RegExp]> = [
   ['lint_ratchet', /\bratchet\b|\beslint\b|\bbiome\b|\bprettier\b|\blint(?:ing)? (?:error|failed)/i],
   ['test_failure', /\(fail\)|\bAssertionError\b|expect\(|\b\d+ (?:tests? )?(?:fail|failed|failing)\b|\btests? failed\b|unit test files? failed|\bFAIL\b|[✗✘]/i],
   ['timeout', /\btime[ds]?[ -]?out\b|\bETIMEDOUT\b|\bdeadline exceeded\b/i],
-  ['auth', /\b401\b|\b403\b|\bunauthori[sz]ed\b|\bBad credentials\b|invalid (?:api key|token)|authentication failed|permission denied \(publickey\)|\boauth\b.*\b(?:expired|invalid)\b/i],
+  ['auth', /\b401\b|\b403\b|\bunauthori[sz]ed\b|\bBad credentials\b|invalid (?:api key|token)|authentication failed|permission denied \(publickey\)|\boauth\b.*\b(?:expired|invalid)\b|\bnot logged in\b|please run \/login/i],
   ['infra', /\bENOENT\b|\bECONNREFUSED\b|\bECONNRESET\b|\bEAI_AGAIN\b|No space left|\bOOM\b|Killed$|\bbwrap\b|rate.?limit|\b50[234]\b|No such file or directory|command not found|^fatal: /im],
 ];
 
@@ -217,8 +218,12 @@ export function buildTaskEvidence(
 
   const failures = bashFailures(input.traces);
   const recent = failures.slice(-RECENT_FAILURES_FOR_KEY_LINES);
+  // A claim-time model substitution is background, not a cause: the run went
+  // ahead on the fallback model. Left in, it led keyLines and pushed the
+  // task's own error out.
   const otherTraces = input.traces.filter(
-    t => t.pattern !== BASH_FAILURE_PATTERN && t.pattern !== BASH_RECOVERED_PATTERN,
+    t => t.pattern !== BASH_FAILURE_PATTERN && t.pattern !== BASH_RECOVERED_PATTERN &&
+      t.pattern !== DISPATCH_MODEL_REJECTED_PATTERN,
   );
 
   const traceText = [

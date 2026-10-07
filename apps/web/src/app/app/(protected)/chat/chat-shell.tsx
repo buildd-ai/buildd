@@ -23,6 +23,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missions, tasks } from '@buildd/core/db/schema';
 import type { ChatAbout } from '@/lib/chat/entry-points';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 export interface ChatShellData {
   user: { id: string; name: string | null; email: string | null };
@@ -61,7 +62,7 @@ export async function loadChatShell(): Promise<ChatShellData | { unavailable: tr
     available: true,
     reason: null,
     canManageTeamKeys: avail.canManageTeamKeys,
-    audience: homeAudience(role),
+    audience: homeAudience(role, await getTeamPermissionOverrides(teamId)),
     context,
     conversations,
   };
@@ -143,6 +144,6 @@ export async function loadAboutRef(
  */
 export function focusRefFrom(q: { focus?: string; worker?: string; task?: string }, workspaceId: string | null): BuilddObjectRef | null {
   if (q.focus !== 'question' || !q.worker || !q.task || !isUuid(q.worker) || !isUuid(q.task)) return null;
-  return { kind: 'question', id: q.worker, taskId: q.task, workspaceId, fallbackText: 'A question is waiting on you' };
+  return { kind: 'question', id: q.worker, taskId: q.task, workspaceId, fallbackText: 'Question open' };
 }
 

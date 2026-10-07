@@ -11,6 +11,7 @@ import { workspaceSkills } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { resolveClaudeAiArtifactAccess, type ClaimTasksResponse, type SkillBundle } from '@buildd/shared';
 import { generateDownloadUrl, isStorageConfigured } from '@/lib/storage';
+import { noteBodyReads } from '@/lib/body-read-monitor';
 
 /** The claim-candidate rows these blocks look tasks up in. */
 type ClaimedTask = { id: string; workspaceId: string };
@@ -71,8 +72,10 @@ export async function attachSkillBundles(
     });
 
     const foundSlugs = new Set<string>();
+    const bodyIds: string[] = [];
     for (const ws of wsSkills) {
       foundSlugs.add(ws.slug);
+      bodyIds.push(ws.id);
       bundles.push(toSkillBundle(ws));
     }
 
@@ -87,12 +90,15 @@ export async function attachSkillBundles(
         ),
       });
       for (const ws of acctSkills) {
+        bodyIds.push(ws.id);
         bundles.push(toSkillBundle(ws));
       }
     }
 
     if (bundles.length > 0) {
       (cw as any).skillBundles = bundles;
+      // Counted for the bulk-read alert; a claim is never refused for it.
+      await noteBodyReads(accountId, bodyIds, 'claim_skills', { enforce: false });
     }
   }
 }
@@ -100,7 +106,7 @@ export async function attachSkillBundles(
 /**
  * Resolve a role row by slug: workspace override > team default (§C.2
  * precedence), falling back to the legacy account-level row when no team
- * scope resolves anything. Shared by `attachRoleConfig` (persona/bundle/CBM)
+ * scope resolves anything. Shared by `attachRoleConfig` (persona/bundle)
  * and `attachRoleEnvSecrets` (role-env-injection.ts) so the precedence rule
  * lives in exactly one place — a second, divergent copy is how the two ends
  * up disagreeing about which role a task actually runs under.
@@ -176,8 +182,6 @@ function attachClaudeAiArtifacts(
  * - `roleConfig` — the packaged bundle (skills, .mcp.json, env mapping) — needs
  *   a presigned download URL, so it is attached only when storage is configured
  *   AND the row carries both a key and a hash.
- *
- * The CBM opt-out is likewise a property of the row, not the bundle.
  */
 export async function attachRoleConfig(
   claimedWorkers: ClaimTasksResponse['workers'],
@@ -202,18 +206,26 @@ export async function attachRoleConfig(
     attachClaudeAiArtifacts(cw, (role?.metadata ?? null) as Record<string, unknown> | null, taskContext);
 
     // Persona first — independent of packaging. A blank body attaches nothing
-    // rather than an empty "## Role: X" section.
-    const personaContent = role?.content?.trim();
-    if (role && personaContent) {
+    // rather than an empty "## Role: X" section. An unedited seeded default
+    // role is delivered as the deployment currently resolves it (prompts
+    // table, then overrides, then public text), not as last written.
+    const delivered = (!role
+      ? ''
+      : role.source === 'system' && role.content
+        ? await (await import('@/lib/default-roles')).deliverSeededRoleContent(role)
+        : role.content) ?? '';
+    if (role && delivered.trim()) {
       (cw as any).roleInstructions = {
         slug: role.slug,
         name: role.name?.trim() || role.slug,
-        content: role.content,
+        content: delivered,
       };
+      await noteBodyReads(accountId, [role.id], 'claim_role', { enforce: false });
     }
 
     if (storageConfigured && role?.configStorageKey && role?.configHash) {
       const configUrl = await generateDownloadUrl(role.configStorageKey);
+      await noteBodyReads(accountId, [role.id], 'claim_role_bundle', { enforce: false });
       (cw as any).roleConfig = {
         slug: role.slug,
         configHash: role.configHash,
@@ -226,14 +238,6 @@ export async function attachRoleConfig(
         background: role.background ?? false,
         maxTurns: role.maxTurns ?? null,
       };
-    }
-
-    // CBM escape hatch: a role opts out of CBM enforcement by setting
-    // mcpServers['codebase-memory'] = false in its skill record (DB).
-    // Checked independently of configStorageKey so opt-out works without R2.
-    const roleMcpServers = role?.mcpServers as Record<string, unknown> | null | undefined;
-    if (roleMcpServers?.['codebase-memory'] === false) {
-      (cw as any).cbmDisabled = true;
     }
   }
 }

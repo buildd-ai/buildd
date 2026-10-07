@@ -735,6 +735,11 @@ describe('parseGithubGrant', () => {
   test('keeps protectedBranches when it is a non-empty array of strings', () => {
     const base = { token: 'ghs_x', expiresAt: new Date(NOW).toISOString(), repository: { owner: 'acme', name: 'widget' } };
     expect(parseGithubGrant({ ...base, protectedBranches: ['main', 'dev'] }).protectedBranches).toEqual(['main', 'dev']);
+    // The workspace warm snapshot cap, when buildd sends one (a positive integer only).
+    expect(parseGithubGrant({ ...base, warmSnapshotMaxBytes: 3 * 1024 ** 3 }).warmSnapshotMaxBytes).toBe(3 * 1024 ** 3);
+    for (const bad of [0, -1, 1.5, '3000', null]) {
+      expect('warmSnapshotMaxBytes' in parseGithubGrant({ ...base, warmSnapshotMaxBytes: bad })).toBe(false);
+    }
     expect(parseGithubGrant({ ...base, protectedBranches: [] }).protectedBranches).toBeUndefined();
     expect(parseGithubGrant({ ...base, protectedBranches: 'main' }).protectedBranches).toBeUndefined();
     expect(parseGithubGrant({ ...base, protectedBranches: ['main', 7, ''] }).protectedBranches).toEqual(['main']);

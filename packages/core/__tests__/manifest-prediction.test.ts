@@ -31,7 +31,6 @@ import type { OrchestrationDecisionOutcome } from '../orchestration-decision';
 const CUTOFF = new Date('2026-09-10T00:00:00Z');
 const BEFORE = new Date('2026-09-09T00:00:00Z');
 const AFTER = new Date('2026-09-11T00:00:00Z');
-const UNAVAILABLE = { status: 'unavailable' as const, reason: 'no server-side index' };
 
 const outcome = (o: Partial<OrchestrationDecisionOutcome>): OrchestrationDecisionOutcome => ({
   effective: DONE_LABEL,
@@ -76,22 +75,20 @@ describe('isConcreteCandidatePath', () => {
 });
 
 describe('buildManifestCandidates', () => {
-  it('ranks diff paths by summed neighbour score, dedupes, and records neighbour-only coverage when CBM is unavailable', () => {
+  it('ranks diff paths by summed neighbour score, dedupes, and records neighbour-only coverage', () => {
     const set = buildManifestCandidates({
       cutoff: CUTOFF,
       neighbours: [
         { taskId: 't1', score: 0.9, completedAt: BEFORE, paths: ['a.ts', 'b.ts'] },
         { taskId: 't2', score: 0.5, completedAt: BEFORE, paths: ['b.ts', 'c.ts', '**'] },
       ],
-      cbm: UNAVAILABLE,
     });
     expect(set.candidates).toEqual(['b.ts', 'a.ts', 'c.ts']);
     expect(set.sources).toEqual(['diff', 'diff', 'diff']);
     expect(set.truncated).toBe(false);
-    expect(set.coverage.cbm).toBe('unavailable');
     expect(set.coverage.source).toBe('neighbour_diff_only');
     expect(set.coverage.revisionPinned).toBe(false);
-    // CBM could not enumerate files the neighbours never touched: omissions are unknown.
+    // Neighbour diffs cannot enumerate files nobody touched: omissions are unknown.
     expect(set.unknownScope).toBe(true);
   });
 
@@ -104,7 +101,6 @@ describe('buildManifestCandidates', () => {
         { taskId: 'same', score: 0.99, completedAt: CUTOFF, paths: ['same.ts'] },
         { taskId: 'undated', score: 0.99, completedAt: null, paths: ['undated.ts'] },
       ],
-      cbm: UNAVAILABLE,
     });
     expect(set.candidates).toEqual(['past.ts']);
     expect(set.coverage.excludedFuture).toBe(2);
@@ -117,7 +113,6 @@ describe('buildManifestCandidates', () => {
     const set = buildManifestCandidates({
       cutoff: CUTOFF,
       neighbours: [{ taskId: 't', score: 1, completedAt: BEFORE, paths }],
-      cbm: UNAVAILABLE,
     });
     expect(set.candidates).toHaveLength(MANIFEST_MAX_CANDIDATES);
     expect(set.truncated).toBe(true);
@@ -137,7 +132,6 @@ describe('buildManifestCandidates', () => {
       const set = buildManifestCandidates({
         cutoff: CUTOFF,
         neighbours: [{ taskId: 't', score: 0.8, completedAt: BEFORE, paths: ['src/a.ts', 'src/deleted.ts'] }],
-        cbm: UNAVAILABLE,
         tree: TREE,
       });
       // Diff first, then corpus-ranked, then siblings of diff files (same directory only).
@@ -158,7 +152,6 @@ describe('buildManifestCandidates', () => {
       const set = buildManifestCandidates({
         cutoff: CUTOFF,
         neighbours: [{ taskId: 't', score: 0.8, completedAt: BEFORE, paths: ['src/a.ts'] }],
-        cbm: UNAVAILABLE,
         tree: TREE,
         namedPaths: ['src/a.ts', 'src/sub', 'src/brand-new.ts'],
       });
@@ -168,7 +161,7 @@ describe('buildManifestCandidates', () => {
 
     it('a described directory present in the tree is not a new file', () => {
       const set = buildManifestCandidates({
-        cutoff: CUTOFF, neighbours: [], cbm: UNAVAILABLE, tree: TREE, namedPaths: ['src/sub', 'src', 'README.md'],
+        cutoff: CUTOFF, neighbours: [], tree: TREE, namedPaths: ['src/sub', 'src', 'README.md'],
       });
       expect(set.coverage.namedMissing).toEqual([]);
       expect(set.unknownScope).toBe(false);
@@ -179,7 +172,6 @@ describe('buildManifestCandidates', () => {
       const set = buildManifestCandidates({
         cutoff: CUTOFF,
         neighbours: [{ taskId: 't', score: 1, completedAt: BEFORE, paths: many }],
-        cbm: UNAVAILABLE,
         tree: { status: 'ok', revision: 'r', paths: many, ranked: [] },
       });
       expect(set.candidates).toHaveLength(MANIFEST_MAX_CANDIDATES);
@@ -191,7 +183,6 @@ describe('buildManifestCandidates', () => {
       const set = buildManifestCandidates({
         cutoff: CUTOFF,
         neighbours: [{ taskId: 't', score: 0.8, completedAt: BEFORE, paths: ['src/a.ts', 'src/deleted.ts'] }],
-        cbm: UNAVAILABLE,
         tree: { status: 'unavailable', reason: 'no installation' },
       });
       expect(set.candidates).toEqual(['src/a.ts', 'src/deleted.ts']);
@@ -202,31 +193,8 @@ describe('buildManifestCandidates', () => {
     });
   });
 
-  it('prefers diff evidence over CBM-only paths and marks paths found by both', () => {
-    const set = buildManifestCandidates({
-      cutoff: CUTOFF,
-      neighbours: [{ taskId: 't', score: 0.3, completedAt: BEFORE, paths: ['d.ts', 'both.ts'] }],
-      cbm: { status: 'ok', revision: 'abc123', paths: ['cbm-only.ts', 'both.ts'], complete: true },
-    });
-    expect(set.candidates).toEqual(['both.ts', 'd.ts', 'cbm-only.ts']);
-    expect(set.sources).toEqual(['diff+cbm', 'diff', 'cbm']);
-    expect(set.coverage.source).toBe('neighbour_diff_and_cbm');
-    expect(set.coverage.revision).toBe('abc123');
-    expect(set.coverage.revisionPinned).toBe(true);
-    expect(set.unknownScope).toBe(false);
-  });
-
-  it('an incomplete CBM answer still leaves scope unknown', () => {
-    const set = buildManifestCandidates({
-      cutoff: CUTOFF,
-      neighbours: [],
-      cbm: { status: 'ok', revision: 'abc', paths: ['x.ts'], complete: false },
-    });
-    expect(set.unknownScope).toBe(true);
-  });
-
-  it('no neighbours and no CBM is an empty, unknown-scope set', () => {
-    const set = buildManifestCandidates({ cutoff: CUTOFF, neighbours: [], cbm: UNAVAILABLE });
+  it('no neighbours is an empty, unknown-scope set', () => {
+    const set = buildManifestCandidates({ cutoff: CUTOFF, neighbours: [] });
     expect(set.candidates).toEqual([]);
     expect(set.unknownScope).toBe(true);
   });
@@ -236,8 +204,8 @@ describe('buildManifestCandidates', () => {
       { taskId: 'a', score: 0.5, completedAt: BEFORE, paths: ['x.ts', 'y.ts'] },
       { taskId: 'b', score: 0.5, completedAt: BEFORE, paths: ['z.ts', 'x.ts'] },
     ];
-    const one = buildManifestCandidates({ cutoff: CUTOFF, neighbours: n, cbm: UNAVAILABLE });
-    const two = buildManifestCandidates({ cutoff: CUTOFF, neighbours: [...n].reverse(), cbm: UNAVAILABLE });
+    const one = buildManifestCandidates({ cutoff: CUTOFF, neighbours: n });
+    const two = buildManifestCandidates({ cutoff: CUTOFF, neighbours: [...n].reverse() });
     expect(one.candidates).toEqual(two.candidates);
   });
 });

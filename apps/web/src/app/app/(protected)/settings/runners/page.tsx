@@ -8,6 +8,8 @@ import { loadFleetSnapshot } from '@/lib/home-fleet';
 import type { FleetSnapshot } from '@buildd/shared';
 import FleetOverview from './FleetOverview';
 import CloudRunnerRow from './CloudRunnerRow';
+import { roleHas } from '@/lib/permission-registry';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,8 +34,11 @@ export default async function RunnersSettingsPage() {
   const lastSeen = await loadAccountLastSeen(accounts.map((a) => a.id as string)).catch(() => ({} as Record<string, string>));
   // Owners/admins of a token's team may change its host-runner flag (the PUT
   // route enforces the same rule); a personal team counts as owned.
+  const teamOverrides = await Promise.all(teams.map((t) => getTeamPermissionOverrides(t.id)));
   const adminTeamIds = new Set(
-    teams.filter((t) => t.role === 'owner' || t.role === 'admin' || t.slug === `personal-${user.id}`).map((t) => t.id),
+    teams
+      .filter((t, i) => roleHas(t.role, 'manage_team_keys', teamOverrides[i]) || t.slug === `personal-${user.id}`)
+      .map((t) => t.id),
   );
   const tokens = accounts.map((a) => ({
     ...a,
@@ -45,7 +50,6 @@ export default async function RunnersSettingsPage() {
   return (
     <SettingsPage
       title="Runners"
-      description="What runs your tasks, what it signs in with, and the tokens that connect it to buildd."
     >
       <FleetOverview
         fleet={fleet}

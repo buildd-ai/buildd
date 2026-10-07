@@ -55,11 +55,11 @@ let host: HTMLElement;
 let root: ReturnType<typeof createRoot>;
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 
-async function mount(canManage = true) {
+async function mount(canManage = true, workspaces = [{ id: 'ws-1', name: 'Widgets' }]) {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => { root.render(<AgentEndpointSection teamId="t" canManage={canManage} workspaces={[{ id: 'ws-1', name: 'Widgets' }]} />); });
+  await act(async () => { root.render(<AgentEndpointSection teamId="t" canManage={canManage} workspaces={workspaces} />); });
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 }
 const text = (id: string) => host.querySelector(`[data-testid="${id}"]`)?.textContent ?? '';
@@ -104,12 +104,18 @@ describe('AgentEndpointSection', () => {
     expect(host.querySelector('[data-testid="agent-endpoint-metered"]')).toBeNull();
   });
 
-  it('saved view: the heading names the route and its scope, a status chip, the mapping read-only, metering as plain text', async () => {
+  it('saved view: the heading names the route, a status chip, the mapping as one line with the table behind it, metering as plain text', async () => {
     endpoints = [teamEndpoint];
     await mount();
-    expect(text('agent-endpoint-heading')).toBe('Anthropic-compatible URL · All workspaces');
+    expect(text('agent-endpoint-heading')).toBe('Anthropic-compatible URL');
+    expect(text('agent-endpoint-applies-to')).toBe('Applies to: All workspaces');
     expect(text('agent-endpoint-detail')).toBe('https://litellm.example.com · key …1234');
     expect(host.querySelector('[data-testid="agent-endpoint-health"]')?.textContent).toMatch(/working/i);
+    // The last check reads relative, like the provider key cards.
+    expect(text('agent-endpoint-checked')).toMatch(/^checked \d+(m|h|d) ago$/);
+    expect(text('agent-endpoint-mapping-summary')).toBe('1 model sent as is, 1 → claude-haiku-4-5');
+    expect(host.querySelector('[data-testid="endpoint-mapping-row"]')).toBeNull();
+    await click(host.querySelector('[data-testid="agent-endpoint-mapping-summary"]')!.closest('button'));
     expect(text('agent-endpoint-metered')).toMatch(/metered/);
     expect(text('agent-endpoint-metered')).toMatch(/not a Claude seat/);
     expect(host.querySelector('[data-testid="agent-endpoint-metered"]')!.className).not.toMatch(/notice/);
@@ -125,11 +131,11 @@ describe('AgentEndpointSection', () => {
     expect(host.textContent).not.toContain('Anthropic (default)');
   });
 
-  it('a workspace-only endpoint: its heading names the workspace and says it overrides the team; the rest stay on Anthropic', async () => {
+  it('a workspace-only endpoint: a compact row named for the workspace; the rest stay on Anthropic', async () => {
     endpoints = [{ ...teamEndpoint, id: 's-2', scope: 'workspace', workspaceId: 'ws-1', workspaceName: 'Widgets', health: 'unknown', lastVerificationError: 'endpoint returned 502' }];
     await mount();
-    expect(text('agent-endpoint-heading')).toBe('Anthropic-compatible URL · Widgets');
-    expect(host.querySelector('[data-testid="agent-endpoint-route"]')!.textContent).toMatch(/overrides/i);
+    expect(text('agent-endpoint-heading')).toBe('Widgets');
+    expect(text('agent-endpoint-overrides')).toMatch(/Workspace endpoints/);
     expect(text('agent-endpoint-health')).toMatch(/not confirmed/i);
     expect(host.querySelector('[data-testid="agent-endpoint-route"]')!.textContent).toContain('endpoint returned 502');
     expect(text('agent-endpoint-default')).toMatch(/Anthropic \(default\)/);
@@ -175,12 +181,17 @@ describe('AgentEndpointSection', () => {
     gateway = { baseURL: 'https://litellm.example.com/v1', last4: 'abcd' };
     await mount();
     await click(button('Set up an endpoint'));
-    await act(async () => { host.querySelector<HTMLElement>('#agent-endpoint-scope')!.click(); });
-    const ws = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) => o.textContent?.includes('Widgets'));
-    await act(async () => { ws!.click(); });
     await click(kindRadio(1));
     await click(button('Save'));
-    expect(writes[0]).toEqual({ url: '/api/teams/t/agent-endpoint', method: 'PUT', body: { kind: 'gateway', workspaceId: 'ws-1' } });
+    expect(writes[0]).toEqual({ url: '/api/teams/t/agent-endpoint', method: 'PUT', body: { kind: 'gateway' } });
+  });
+
+  it('a gateway endpoint names the gateway instead of repeating its URL and key', async () => {
+    endpoints = [{ ...teamEndpoint, kind: 'gateway', baseUrl: 'https://litellm.example.com/v1', last4: 'abcd' }];
+    await mount();
+    expect(text('agent-endpoint-heading')).toBe('LiteLLM gateway');
+    expect(text('agent-endpoint-detail')).toBe('Through the LiteLLM gateway in Team keys');
+    expect(host.querySelector('[data-testid="agent-endpoint-route"]')!.textContent).not.toContain('litellm.example.com');
   });
 
   it('Verify posts to the secret verify route; Remove deletes the scope', async () => {
@@ -216,6 +227,25 @@ describe('AgentEndpointSection', () => {
       kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', apiKey: KEY, authHeader: 'authorization',
       models: { 'claude-haiku-4-5-20251001': 'claude-haiku-4-5', 'claude-fable-5-1': 'gpt-4o-mini' },
     });
+  });
+
+  it('the model picker shows whole ids and ranks the exact one first when searching', async () => {
+    const listed = ['fireworks_ai/deepseek-v4p1-flash-long-name', 'bedrock/deepseek.r1-v1:0', 'deepseek-v4p1'];
+    modelsReply = { available: true, listed, rows: ROWS };
+    await openCustom();
+    await act(async () => { row('claude-opus-5').querySelector('button')!.click(); });
+    const search = document.querySelector<HTMLInputElement>('input[role="searchbox"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'deepseek');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(options[0].dataset.value).toBe('deepseek-v4p1');
+    expect(options.map((o) => o.dataset.value).sort()).toEqual([...listed].sort());
+    // Wrapped, not cut off with an ellipsis.
+    const label = options.find((o) => o.dataset.value === listed[0])!.querySelector('span > span')!;
+    expect(label.className).toContain('break-all');
+    expect(label.className).not.toContain('truncate');
   });
 
   it('asks the decision model only about unmatched rows, shows its pick flagged with the confidence, and never saves on its own', async () => {
@@ -281,6 +311,171 @@ describe('AgentEndpointSection', () => {
     expect(button('Set up an endpoint')).toBeUndefined();
     expect(button('Verify')).toBeUndefined();
     expect(button('Remove')).toBeUndefined();
+  });
+});
+
+describe('Applies to: which workspaces the team endpoint covers', () => {
+  const WORKSPACES = [{ id: 'ws-1', name: 'Widgets' }, { id: 'ws-2', name: 'Gadgets' }, { id: 'ws-3', name: 'Sprockets' }];
+  const checkbox = (id: string) => host.querySelector<HTMLInputElement>(`[data-testid="agent-endpoint-applies-workspace"][data-workspace="${id}"]`)!;
+  const editor = () => host.querySelector('[data-testid="agent-endpoint-applies-editor"]');
+  const appliesRadio = (i: number) => host.querySelectorAll('input[name="agent-endpoint-applies"]')[i];
+  const editorButton = (label: string) => [...(editor()?.querySelectorAll('button') ?? [])].find((b) => b.textContent === label);
+
+  it('shows the current scope: all workspaces, or the count and names', async () => {
+    endpoints = [{ ...teamEndpoint, appliesTo: null }];
+    await mount(true, WORKSPACES);
+    expect(text('agent-endpoint-applies-to')).toBe('Applies to: All workspaces');
+    act(() => root.unmount()); host.remove();
+
+    endpoints = [{ ...teamEndpoint, appliesTo: [{ id: 'ws-1', name: 'Widgets' }, { id: 'ws-2', name: 'Gadgets' }] }];
+    await mount(true, WORKSPACES);
+    expect(text('agent-endpoint-applies-to')).toBe('Applies to: 2 workspaces: Widgets, Gadgets');
+    expect(text('agent-endpoint-heading')).toBe('Anthropic-compatible URL');
+    expect(text('agent-endpoint-default')).toMatch(/Anthropic \(default\)/);
+  });
+
+  it('editing the list sends only the list, never a key, and needs no key typed', async () => {
+    endpoints = [{ ...teamEndpoint, appliesTo: null }];
+    await mount(true, WORKSPACES);
+    await click(host.querySelector('[data-testid="agent-endpoint-applies-edit"]'));
+    expect(editor()).not.toBeNull();
+    // Uses the shared controls: radios and checkboxes, no native select.
+    expect(editor()!.querySelector('select')).toBeNull();
+    expect(editor()!.querySelector('input[type="password"]')).toBeNull();
+    await click(appliesRadio(1));
+    expect(editorButton('Save')!.hasAttribute('disabled')).toBe(true);
+    await click(checkbox('ws-1'));
+    await click(checkbox('ws-3'));
+    await click(editorButton('Save'));
+    expect(writes).toEqual([{ url: '/api/teams/t/agent-endpoint', method: 'PATCH', body: { appliesTo: ['ws-1', 'ws-3'], consolidate: false } }]);
+    expect(JSON.stringify(writes)).not.toContain(KEY);
+  });
+
+  it('back to all workspaces sends null', async () => {
+    endpoints = [{ ...teamEndpoint, appliesTo: [{ id: 'ws-2', name: 'Gadgets' }] }];
+    await mount(true, WORKSPACES);
+    await click(host.querySelector('[data-testid="agent-endpoint-applies-edit"]'));
+    expect(checkbox('ws-2').checked).toBe(true);
+    await click(appliesRadio(0));
+    await click(editorButton('Save'));
+    expect(writes[0]).toMatchObject({ method: 'PATCH', body: { appliesTo: null, consolidate: false } });
+  });
+
+  it('offers to remove a selected workspace\'s matching copy, and says a different one is kept', async () => {
+    endpoints = [
+      { ...teamEndpoint, appliesTo: null },
+      { ...teamEndpoint, id: 'c-1', scope: 'workspace', workspaceId: 'ws-1', workspaceName: 'Widgets', matchesTeam: true },
+      { ...teamEndpoint, id: 'c-2', scope: 'workspace', workspaceId: 'ws-2', workspaceName: 'Gadgets', matchesTeam: false },
+    ];
+    await mount(true, WORKSPACES);
+    await click(host.querySelector('[data-testid="agent-endpoint-applies-edit"]'));
+    await click(appliesRadio(1));
+    expect(host.querySelector('[data-testid="agent-endpoint-consolidate"]')).toBeNull();
+    await click(checkbox('ws-1'));
+    await click(checkbox('ws-2'));
+    expect(editor()!.textContent).toMatch(/own copy of this endpoint/);
+    expect(editor()!.textContent).toMatch(/Keeps its own endpoint/);
+    const consolidate = host.querySelector<HTMLInputElement>('[data-testid="agent-endpoint-consolidate"]')!;
+    expect(consolidate.checked).toBe(true);
+    expect(consolidate.parentElement!.textContent).toMatch(/matching copy/);
+    await click(editorButton('Save'));
+    expect(writes[0].body).toEqual({ appliesTo: ['ws-1', 'ws-2'], consolidate: true });
+  });
+
+  it('the owner can keep the copies', async () => {
+    endpoints = [
+      { ...teamEndpoint, appliesTo: null },
+      { ...teamEndpoint, id: 'c-1', scope: 'workspace', workspaceId: 'ws-1', workspaceName: 'Widgets', matchesTeam: true },
+    ];
+    await mount(true, WORKSPACES);
+    await click(host.querySelector('[data-testid="agent-endpoint-applies-edit"]'));
+    await click(host.querySelector('[data-testid="agent-endpoint-consolidate"]'));
+    await click(editorButton('Save'));
+    expect(writes[0].body).toEqual({ appliesTo: null, consolidate: false });
+  });
+
+  it('the endpoint editor picks workspaces from the same checklist, never a single-select', async () => {
+    endpoints = [{ ...teamEndpoint, appliesTo: null }];
+    await mount(true, WORKSPACES);
+    await click(button('Edit'));
+    const ed = host.querySelector('[data-testid="agent-endpoint-editor"]')!;
+    expect(ed.querySelector('#agent-endpoint-scope')).toBeNull();
+    expect(ed.querySelectorAll('input[name="agent-endpoint-applies"]')).toHaveLength(2);
+    await click(appliesRadio(1));
+    expect((button('Save') as HTMLButtonElement).disabled).toBe(true);
+    await click(checkbox('ws-2'));
+    await settle();
+    await click(button('Save'));
+    expect(writes.find((w) => w.method === 'PUT')!.body).toMatchObject({ kind: 'anthropic-compatible', appliesTo: ['ws-2'] });
+  });
+
+  it('saving the endpoint without touching its workspaces leaves the list alone', async () => {
+    endpoints = [{ ...teamEndpoint, appliesTo: [{ id: 'ws-1', name: 'Widgets' }] }];
+    await mount(true, WORKSPACES);
+    await click(button('Edit'));
+    expect(checkbox('ws-1').checked).toBe(true);
+    await settle();
+    await click(button('Save'));
+    expect(writes.find((w) => w.method === 'PUT')!.body).not.toHaveProperty('appliesTo');
+  });
+
+  it('a workspace override is a compact row; a copy of the team endpoint says so instead of repeating it', async () => {
+    endpoints = [
+      { ...teamEndpoint, appliesTo: null },
+      { ...teamEndpoint, id: 'c-1', scope: 'workspace', workspaceId: 'ws-1', workspaceName: 'Widgets', matchesTeam: true },
+      { ...teamEndpoint, id: 'c-2', scope: 'workspace', workspaceId: 'ws-2', workspaceName: 'Gadgets', matchesTeam: false },
+    ];
+    await mount(true, WORKSPACES);
+    const overrides = [...host.querySelectorAll<HTMLElement>('[data-testid="agent-endpoint-route"][data-scope="workspace"]')];
+    expect(overrides.map((o) => o.querySelector('[data-testid="agent-endpoint-heading"]')!.textContent)).toEqual(['Widgets', 'Gadgets']);
+    expect(overrides[0].textContent).toContain('Same as the team endpoint');
+    expect(overrides[0].querySelector('[data-testid="agent-endpoint-mapping-summary"]')).toBeNull();
+    expect(overrides[1].querySelector('[data-testid="agent-endpoint-mapping-summary"]')).not.toBeNull();
+    expect(text('agent-endpoint-overrides')).toMatch(/Workspace overrides/);
+  });
+
+  it('a new override starts from the team endpoint\'s kind and aliases, not empty rows', async () => {
+    gateway = { baseURL: 'https://litellm.example.com/v1', last4: 'abcd' };
+    const models = { 'claude-opus-5': 'fireworks_ai/deepseek-v4p1-flash' };
+    endpoints = [{ ...teamEndpoint, kind: 'gateway', baseUrl: '', last4: '', models, appliesTo: [{ id: 'ws-1', name: 'Widgets' }] }];
+    modelsReply = { available: true, listed: ['fireworks_ai/deepseek-v4p1-flash'], rows: [{ model: 'claude-opus-5', tiers: ['premium'], value: 'fireworks_ai/deepseek-v4p1-flash', source: 'alias', served: true }] };
+    await mount(true, WORKSPACES);
+    await click(button('Add a workspace override'));
+    expect(host.querySelector('#agent-endpoint-scope')!.textContent).toContain('Widgets');
+    expect(text('agent-endpoint-prefill')).toBe('Starts from the team endpoint.');
+    expect((kindRadio(1) as HTMLInputElement).checked).toBe(true);
+    await settle();
+    expect(previews.at(-1)).toEqual({ kind: 'gateway', models, workspaceId: 'ws-1' });
+    expect(row('claude-opus-5').textContent).toContain('fireworks_ai/deepseek-v4p1-flash');
+    await click(button('Save'));
+    expect(writes.find((w) => w.method === 'PUT')!.body).toEqual({ kind: 'gateway', workspaceId: 'ws-1', models });
+  });
+
+  it('without a team endpoint, a new override starts from the latest sibling; its key is never reused', async () => {
+    endpoints = [
+      { ...teamEndpoint, id: 'c-1', scope: 'workspace', workspaceId: 'ws-1', workspaceName: 'Widgets', lastVerifiedAt: '2026-01-01T00:00:00.000Z' },
+      { ...teamEndpoint, id: 'c-2', scope: 'workspace', workspaceId: 'ws-2', workspaceName: 'Gadgets', baseUrl: 'https://proxy.example.com', lastVerifiedAt: '2026-01-05T00:00:00.000Z' },
+    ];
+    await mount(true, WORKSPACES);
+    await click(button('Add a workspace override'));
+    expect(host.querySelector('#agent-endpoint-scope')!.textContent).toContain('Sprockets');
+    expect(text('agent-endpoint-prefill')).toBe('Starts from Gadgets.');
+    expect((host.querySelector('#agent-endpoint-url') as HTMLInputElement).value).toBe('https://proxy.example.com');
+    const key = host.querySelector('#agent-endpoint-key') as HTMLInputElement;
+    expect(key.placeholder).toBe('sk-…');
+    expect((button('Save') as HTMLButtonElement).disabled).toBe(true);
+    await setValue(key, KEY);
+    await settle();
+    expect(previews.at(-1)).toMatchObject({ baseUrl: 'https://proxy.example.com', models: teamEndpoint.models, workspaceId: 'ws-3' });
+    await click(button('Save'));
+    expect(writes.find((w) => w.method === 'PUT')!.body).toMatchObject({ workspaceId: 'ws-3', apiKey: KEY, models: teamEndpoint.models });
+  });
+
+  it('a member sees the scope but cannot edit it', async () => {
+    endpoints = [{ ...teamEndpoint, appliesTo: [{ id: 'ws-1', name: 'Widgets' }] }];
+    await mount(false, WORKSPACES);
+    expect(text('agent-endpoint-applies-to')).toBe('Applies to: 1 workspace: Widgets');
+    expect(host.querySelector('[data-testid="agent-endpoint-applies-edit"]')).toBeNull();
   });
 });
 

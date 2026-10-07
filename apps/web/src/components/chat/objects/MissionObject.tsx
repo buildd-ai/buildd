@@ -50,7 +50,7 @@ export function missionCardRows(model: MissionBoardModel, max = 6): { rows: Boar
 export function missionCountsLine(model: MissionBoardModel): string {
   const running = Object.values(model.tasks).filter(t => t.status === 'running').length;
   const bits = [`${model.landed.done} of ${model.landed.total} landed`];
-  if (model.landed.total === 0) bits[0] = model.planning ? 'planning' : 'no tasks yet';
+  if (model.landed.total === 0) bits[0] = model.planning ? 'planning' : 'no tasks';
   if (running > 0) bits.push(`${running} running`);
   if (model.needsYou.length > 0) bits.push(`${model.needsYou.length} need${model.needsYou.length === 1 ? 's' : ''} you`);
   return bits.join(' · ');
@@ -106,14 +106,14 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
         data-testid="object-card"
         data-kind="mission"
         data-in-pane={inPane ? 'true' : undefined}
-        className={`border-2 bg-card ${inPane ? 'border-accent shadow-[var(--accent-shadow)]' : 'border-border-strong shadow-[var(--card-shadow)]'}`}
+        className="border-2 border-border-strong bg-card shadow-[var(--card-shadow)]"
       >
         {compact}
         {!inPane && (
           <div className="hidden md:block">
             <header className="flex items-center gap-3 border-b border-border-default px-5 py-3">
-              <Eyebrow className="text-accent-text">Mission</Eyebrow>
-              <StateChip label={view.stateLabel} tone={tone} pulse={tone === 'live'} />
+              <Eyebrow className="text-text-primary">Mission</Eyebrow>
+              <StateChip label={view.stateLabel} tone={tone} pulse={tone === 'neutral'} />
               {view.workspaceName && <span className="ml-auto font-mono text-[12px] text-text-muted">{view.workspaceName}</span>}
             </header>
             <div className="px-5 pb-3 pt-4">
@@ -194,7 +194,7 @@ export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: Buildd
           <h2 className="min-w-0 truncate font-mono text-[20px] font-semibold text-text-primary md:text-[22px]">
             <Link href={`/app/missions/${view.id}`} className="hover:underline">{view.title}</Link>
           </h2>
-          <StateChip label={view.stateLabel} tone={tone} pulse={tone === 'live'} />
+          <StateChip label={view.stateLabel} tone={tone} pulse={tone === 'neutral'} />
           <span className="flex-1" />
           {variant === 'pane' && (
             <div role="tablist" aria-label="Mission layout" className="flex shrink-0 border-[1.5px] border-border-strong">

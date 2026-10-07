@@ -43,7 +43,7 @@ import {
 import { channels, events, triggerEvent } from '@/lib/pusher';
 import { clearDue, markDue, reseedDue } from '@/lib/redis';
 import { SCHEDULED_DISPATCH_MAX_AHEAD_MS, buildTaskPayload, type DispatchTask, type DispatchWorkspace } from '@/lib/task-dispatch-delivery';
-import { publishPendingDispatches } from '@/lib/dispatch-transport';
+import { dispatchTransportConfig, publishPendingDispatches } from '@/lib/dispatch-transport';
 import { ADAPTER_CHAINS, offerScheduledNotice, type DispatchAdapter, type DispatchContext } from '@/lib/dispatch-adapters';
 
 /** The Redis due-queue (lib/cron-due-queue.ts) the dispatch-drain tick gates on. */
@@ -228,7 +228,8 @@ export interface DrainResult {
  * delivered again — harmless, because the claim route is the exactly-once step.
  */
 export async function drainDispatchOutbox(opts: { limit?: number } = {}): Promise<DrainResult> {
-  const claimed = await claimDueDispatches(opts.limit ?? DRAIN_BATCH);
+  // No Worker configured: nothing acks `dispatch` rows, so take them at once.
+  const claimed = await claimDueDispatches(opts.limit ?? DRAIN_BATCH, dispatchTransportConfig() ? {} : { graceMs: 0 });
   const result: DrainResult = { claimed: claimed.length, delivered: 0, skipped: 0, failed: 0 };
   await Promise.all(claimed.map(async row => {
     try {
@@ -263,7 +264,7 @@ export async function loadForDelivery(taskId: string): Promise<{ task: DispatchC
     },
     with: {
       workspace: {
-        columns: { id: true, name: true, repo: true, webhookConfig: true, githubInstallationId: true, githubRepoId: true },
+        columns: { id: true, name: true, repo: true, webhookConfig: true },
       },
     },
   });

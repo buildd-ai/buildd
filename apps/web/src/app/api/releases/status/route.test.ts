@@ -52,8 +52,10 @@ const mockDeploymentOnlyPreflight = mock(() => ({
 // Mirrors the real helper's contract: admin key → its own team; worker key →
 // none; session user → the teams listed in adminTeamsByUser.
 const adminTeamsByUser: Record<string, string[]> = { 'user-1': ['team-1'] };
-mock.module('@/lib/team-access', () => ({
-  getCallerAdminTeamIds: async (caller: any) => {
+// manage_releases: owner/admin role, or an admin-level key of the team.
+mock.module('@/lib/permissions', () => ({
+  teamIdsWhere: async (caller: any, permission: string) => {
+    if (permission !== 'manage_releases') throw new Error(`unexpected permission ${permission}`);
     if (caller.kind === 'account') return caller.level === 'admin' ? [caller.teamId] : [];
     return adminTeamsByUser[caller.userId] ?? [];
   },

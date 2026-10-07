@@ -22,6 +22,8 @@ export interface WorkspaceSwitcherProps {
    * `→ billing-web` when the turn was routed there).
    */
   variant?: 'header' | 'chip';
+  /** Home's phone header shows the selected workspace name instead of only a glyph. */
+  showMobileLabel?: boolean;
   /** Chip only: the workspace this turn was routed to, shown while nothing is pinned. */
   routed?: { id: string; name: string } | null;
   /** Shown above the list, so the menu says whose workspaces these are. */
@@ -83,7 +85,7 @@ function useIsMobile() {
  * (header only).
  */
 export function WorkspaceSwitcher({
-  workspaces, selectedId: selectedIdProp, onSelect, variant = 'header', routed = null, teamName = null,
+  workspaces, selectedId: selectedIdProp, onSelect, variant = 'header', showMobileLabel = false, routed = null, teamName = null,
 }: WorkspaceSwitcherProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -374,7 +376,7 @@ export function WorkspaceSwitcher({
       <div className="flex items-center gap-1.5">
         {/* Grid glyph: mobile-only, always shown on mobile. Filled when workspace is selected to indicate active filter. */}
         <svg
-          className={`w-3.5 h-3.5 shrink-0 md:hidden transition-colors ${
+          className={`w-3.5 h-3.5 shrink-0 md:hidden transition-colors ${showMobileLabel ? 'hidden' : ''} ${
             selectedId ? 'text-accent' : ''
           }`}
           fill={selectedId ? 'currentColor' : 'none'}
@@ -388,7 +390,7 @@ export function WorkspaceSwitcher({
           <rect x="1" y="7" width="4" height="4" />
           <rect x="7" y="7" width="4" height="4" />
         </svg>
-        <span className="truncate max-w-[160px] text-xs hidden md:inline">{selectedLabel}</span>
+        <span className={`truncate max-w-[160px] ${showMobileLabel ? 'text-body inline' : 'text-xs hidden md:inline'}`}>{selectedLabel}</span>
         <svg
           className={`w-3 h-3 shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
           fill="none"

@@ -50,11 +50,11 @@ const WAIT_LABELS: Record<string, { label: string; tone: LastCheckTone }> = {
   heartbeat_waiting: { label: 'waiting on a pause or retry', tone: 'muted' },
   heartbeat_blocked: { label: 'waiting on the mission it depends on', tone: 'muted' },
   heartbeat_criteria_blocked: { label: 'waiting on the goal criteria', tone: 'warning' },
-  criteria_escalated: { label: 'waiting on your decision', tone: 'warning' },
+  criteria_escalated: { label: 'decision needed', tone: 'warning' },
   budget_exhausted: { label: 'waiting on budget', tone: 'warning' },
   active_hours: { label: 'waiting for quiet hours to end', tone: 'muted' },
   concurrent_cap: { label: 'waiting on a free slot', tone: 'muted' },
-  orchestration_manual: { label: 'waiting on you (manual mission)', tone: 'muted' },
+  orchestration_manual: { label: 'manual mission', tone: 'muted' },
   heartbeat_planning_backoff: { label: 'waiting to retry planning', tone: 'warning' },
   heartbeat_circuit_breaker: { label: 'paused after repeated failures', tone: 'error' },
 };

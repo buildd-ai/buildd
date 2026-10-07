@@ -141,8 +141,8 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
     expect(pageSource).toContain('excludeNoteId={questionNote?.id ?? null}');
   });
 
-  it('passes the failed phase a truncated error excerpt, not the full worker error', () => {
-    expect(pageSource).toContain('lastError={failedExcerpt ? { excerpt: failedExcerpt } : null}');
+  it('passes the failed phase a truncated error excerpt to show, and the full error only to classify (and fold)', () => {
+    expect(pageSource).toContain('lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}');
     expect(pageSource).toContain('truncateExcerpt(taskWorkers[0]?.error');
   });
 
@@ -212,5 +212,22 @@ describe('Worker history branch — tasks/[id]/page.tsx (demo polish)', () => {
   it('shows the branch through displayBranchName with the full name in title', () => {
     expect(pageSource).toContain('title={worker.branch}');
     expect(pageSource).toContain('{displayBranchName(worker.branch)}');
+  });
+});
+
+describe('a sign-in failure reads in plain words — tasks/[id]/page.tsx', () => {
+  it('Worker history shows a worker error through plainWorkerError, raw text on hover', () => {
+    expect(pageSource).toContain("import { explainProviderAuthFailure, plainWorkerError } from '@/lib/provider-auth-failure'");
+    expect(pageSource).toContain('plainWorkerError(worker.error');
+    expect(pageSource).not.toMatch(/>\{worker\.error\}</);
+  });
+
+  it('the header error count and the red Agent errors card step back once the cause is explained', () => {
+    expect(pageSource).toMatch(/errorTraces\.length > 0 && !shippedView && !authFailure &&/);
+    expect(pageSource).toContain("authFailure ? 'Matched errors'");
+  });
+
+  it('the evidence card gets the worker error, so it can tell the cause is already explained', () => {
+    expect(pageSource).toContain('<TaskEvidenceCard status={task.status} result={task.result} workerError={taskWorkers[0]?.error ?? null} backend={taskBackend} />');
   });
 });

@@ -104,7 +104,15 @@ function computeTouchedPaths(worktreePath: string, baseRef: string | undefined):
  */
 function computeDirtyWorktree(worktreePath: string): boolean {
   try {
-    const output = execSync('git status --porcelain', { cwd: worktreePath, timeout: 5000 }).toString();
+    // Runs every sync tick against the worker's own live worktree, so it can
+    // race an agent `git add`/`git commit` there for the same index.lock —
+    // GIT_OPTIONAL_LOCKS=0 skips the opportunistic index write-back `status`
+    // would otherwise do, without changing the porcelain output read below.
+    const output = execSync('git status --porcelain', {
+      cwd: worktreePath,
+      timeout: 5000,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    }).toString();
     return output.split('\n').some(line => line.length > 0 && !line.startsWith('??'));
   } catch {
     return false;
@@ -743,7 +751,7 @@ export class WorkerSync {
       if (worker.status === 'done' || worker.status === 'error') {
         //
         // Two stages. First abort and leave the map entry: the session's own
-        // finally block needs it to clean up credentials/config/CBM dirs, and
+        // finally block needs it to clean up credentials/config dirs, and
         // `reapedAt` tells its catch path not to report a failure. Only if the
         // entry is STILL there a full grace period later (the process ignored
         // the abort, so finally never ran) is it dropped outright.

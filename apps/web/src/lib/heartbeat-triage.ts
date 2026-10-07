@@ -30,7 +30,9 @@
  * feature set to `runner`, keeps the organizer on every cycle.
  */
 import { createHash } from 'node:crypto';
+import { promptedQuestions } from '@buildd/core/prompted-decision';
 import type { ChoiceQuestion, DecisionResult, decisionCall } from '@buildd/core/decision-client';
+import { registerPromptedQuestions } from '@buildd/core/prompted-decision';
 
 export const TRIAGE_TIMEOUT_MS = 4_000;
 export const TRIAGE_LOG_PREFIX = '[heartbeat-triage]';
@@ -40,6 +42,8 @@ export const WAIT_MIN_CONFIDENCE = 0.9;
 export const TRIAGE_MAX_WAIT_MS = 3 * 60 * 60_000;
 /** Bump when the question, a definition or the state shape changes; re-run the benchmark. */
 export const HEARTBEAT_TRIAGE_PROMPT_VERSION = 'ht1';
+/** The prompts-table id whose active row may replace `HEARTBEAT_TRIAGE_QUESTIONS`. */
+export const HEARTBEAT_TRIAGE_PROMPT_ID = 'buildd.heartbeat_triage';
 
 export type TriageLabel = 'wait' | 'act';
 
@@ -172,7 +176,9 @@ export async function triageHeartbeat(
   deps: { decide?: DecideFn; now?: () => Date } = {},
 ): Promise<HeartbeatTriageRecord> {
   const now = (deps.now ?? (() => new Date()))();
-  const base = { v: HEARTBEAT_TRIAGE_PROMPT_VERSION, at: now.toISOString() };
+  // The questions in effect: an active prompts row, else the public ones (@buildd/core/prompted-decision).
+  const prompt = promptedQuestions(HEARTBEAT_TRIAGE_PROMPT_ID, HEARTBEAT_TRIAGE_QUESTIONS, HEARTBEAT_TRIAGE_PROMPT_VERSION);
+  const base = { v: prompt.promptVersion, at: now.toISOString() };
   if (input.dataClass === 'sensitive') {
     return { ...base, pick: null, confidence: null, skipped: false, reason: 'sensitive' };
   }
@@ -184,7 +190,7 @@ export async function triageHeartbeat(
       teamId: input.teamId,
       workspaceId: input.workspaceId,
       state: buildHeartbeatTriageState(input.description),
-      questions: HEARTBEAT_TRIAGE_QUESTIONS,
+      questions: prompt.questions,
       timeoutMs: TRIAGE_TIMEOUT_MS,
     });
   } catch (e) {
@@ -229,3 +235,6 @@ export async function loadHeartbeatTriageFacts(scheduleId: string, workspaceId: 
   ]);
   return { lastOrganizerAt: last?.createdAt ?? null, dataClass: (ws?.dataClass as string | null | undefined) ?? null };
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerPromptedQuestions(HEARTBEAT_TRIAGE_PROMPT_ID, HEARTBEAT_TRIAGE_QUESTIONS);

@@ -1,3 +1,4 @@
+import { isOpenAsk } from './open-ask';
 /**
  * Home's fleet queries: the runner snapshot (heartbeats × live workers), each
  * slot's day history, the ticker's events and the stat strip's counts.
@@ -12,8 +13,8 @@
 import { db } from '@buildd/core/db';
 import { accounts, missions, tasks, workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
-import { RUNNER_ONLINE_THRESHOLD_MS, RUNNER_STALE_CUTOFF_MS, type FleetSnapshot } from '@buildd/shared';
-import { buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
+import { RUNNER_STALE_CUTOFF_MS, type FleetSnapshot } from '@buildd/shared';
+import { FLEET_ONLINE_WINDOW_MS, buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
 import { buildTickerEvents, type TickerEvent } from './home-ticker';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
@@ -96,7 +97,7 @@ export async function loadFleetHeartbeats(input: { teamId: string | null; wsIds:
 
 /** `fleetCapacity` over `loadFleetHeartbeats`, with Home's online threshold. */
 export async function loadFleetCapacity(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<number> {
-  return fleetCapacity(await loadFleetHeartbeats(input), { now: input.now, onlineThresholdMs: RUNNER_ONLINE_THRESHOLD_MS });
+  return fleetCapacity(await loadFleetHeartbeats(input), { now: input.now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS });
 }
 
 /**
@@ -131,7 +132,7 @@ export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: s
       roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,
     } : null,
   }));
-  return buildFleetSnapshot(heartbeatRows, rows, { now, onlineThresholdMs: RUNNER_ONLINE_THRESHOLD_MS, maxWindowMs: FLEET_WINDOW_MS });
+  return buildFleetSnapshot(heartbeatRows, rows, { now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS });
 }
 
 export async function loadHomeFleet(input: {
@@ -156,7 +157,7 @@ export async function loadHomeFleet(input: {
         mergedAt: workers.mergedAt, prNumber: workers.prNumber, waitingFor: workers.waitingFor,
         linesAdded: workers.linesAdded, linesRemoved: workers.linesRemoved,
         progress: workerProgressSql,
-        taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
+        taskStatus: tasks.status, taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
         roleSlug: tasks.roleSlug, missionId: tasks.missionId, taskClass: tasks.taskClass,
       })
       .from(workers)
@@ -217,7 +218,7 @@ export async function loadHomeFleet(input: {
   // from an older run feeds the counts, not the lanes.
   const laneRows = rows.filter(r => r.startedAt && new Date(r.startedAt).getTime() >= windowStart.getTime() || (LIVE_WORKER_STATUSES as readonly string[]).includes(r.status));
   const fleet = buildFleetSnapshot(heartbeatRows as FleetHeartbeatRow[], laneRows, {
-    now, roles, onlineThresholdMs: RUNNER_ONLINE_THRESHOLD_MS, maxWindowMs: FLEET_WINDOW_MS,
+    now, roles, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS,
   });
 
   const runnerNameById = new Map<string, string>();
@@ -236,7 +237,7 @@ export async function loadHomeFleet(input: {
   const merged = workerRows.filter(r => r.mergedAt && new Date(r.mergedAt).getTime() >= dayStart && r.prNumber);
   const mergedPrNumbers = [...new Set(merged.map(r => r.prNumber!))].sort((a, b) => b - a);
   const questions: HomeFleetQuestion[] = workerRows
-    .filter(r => r.status === 'waiting_input' && (r.waitingFor as any)?.prompt)
+    .filter(r => isOpenAsk(r.taskStatus, r.status) && (r.waitingFor as any)?.prompt)
     .sort((a, b) => new Date(a.updatedAt ?? 0).getTime() - new Date(b.updatedAt ?? 0).getTime())
     .map(r => {
       const wf = r.waitingFor as { prompt: string; options?: string[] };
