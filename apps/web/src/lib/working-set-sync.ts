@@ -25,7 +25,7 @@ import {
   promoteLeasesToPrScope,
   activeLeasePaths,
 } from '@buildd/core/path-claim';
-import { PATH_SIGNAL_REASONS } from '@buildd/core/gate-analytics';
+import { PATH_SIGNAL_REASONS } from '@buildd/core/path-coordination-signal';
 import { deliverPathReleased } from '@/lib/path-claim-release';
 import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { fireGateEvent, fireRepeatGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';

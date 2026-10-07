@@ -8,7 +8,7 @@
  */
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import type { GateCallerOrigin } from '@buildd/core/gate-events';
-import { PATH_SIGNAL_REASONS } from '@buildd/core/gate-analytics';
+import { PATH_SIGNAL_REASONS } from '@buildd/core/path-coordination-signal';
 
 export type DeclarationResult = 'succeeded' | 'denied' | 'degraded';
 export type DeclarationProvenance = 'creation' | 'plan_step' | 'doc_fix' | 'check_path_claim' | 'observed' | 'hook';

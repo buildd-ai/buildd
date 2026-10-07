@@ -103,6 +103,8 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   pathCollisionDeferring: true,
   pathClaimDegraded: true,
   pathClaimDegradedReported: true,
+  pathClaimDegradedByCause: true,
+  pathClaimDegradedByCauseReported: true,
   pathSweepBaseFetchedAt: true,
   lastAssistantMessage: true,
   tokenTally: true,

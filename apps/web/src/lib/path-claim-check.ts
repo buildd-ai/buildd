@@ -27,7 +27,7 @@ import {
   registerWaiter,
 } from '@buildd/core/path-claim';
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
-import { PATH_SIGNAL_REASONS } from '@buildd/core/gate-analytics';
+import { PATH_SIGNAL_REASONS } from '@buildd/core/path-coordination-signal';
 import { GATE_SLUGS, fireGateEvent, type GateCallerOrigin } from '@/lib/gate-ledger';
 import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { deliverPathReleased } from '@/lib/path-claim-release';
