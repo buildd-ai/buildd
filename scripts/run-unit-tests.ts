@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync, statSync } from 'fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 
@@ -158,7 +158,212 @@ type TestResult = {
   file: string;
   exitCode: number;
   output: string;
+  /** Wall time of the file's own process, spawn to exit. */
+  durationMs: number;
 };
+
+/**
+ * Per-file duration hints, committed so CI and a fresh checkout both schedule
+ * by them. Refresh with `bun run scripts/run-unit-tests.ts --update-durations`.
+ */
+export const DURATIONS_PATH = join(import.meta.dir, 'test-durations.json');
+
+/** Flag that writes this run's measured durations back to DURATIONS_PATH. */
+export const UPDATE_DURATIONS_FLAG = '--update-durations';
+
+/**
+ * Only files at least this slow are recorded. Scheduling only matters for the
+ * long tail, and leaving the ~2,000 sub-second files out keeps the hint file
+ * small and its diffs readable when it is refreshed.
+ */
+export const DURATION_HINT_MIN_MS = 2_000;
+
+export type DurationHints = Record<string, number>;
+
+/** `--shard i/n` (or `--shard=i/n`): run only the i-th of n slices of the selection. */
+export const SHARD_FLAG = '--shard';
+
+export type Shard = { index: number; count: number };
+
+export function parseShard(value: string): Shard {
+  const m = /^(\d+)\/(\d+)$/.exec(value.trim());
+  const index = m ? Number(m[1]) : NaN;
+  const count = m ? Number(m[2]) : NaN;
+  if (!m || count < 1 || index < 1 || index > count) {
+    throw new Error(`${SHARD_FLAG} expects i/n with 1 <= i <= n, got '${value}'`);
+  }
+  return { index, count };
+}
+
+export function parseRunnerArgs(argv: readonly string[]): { named: string[]; updateDurations: boolean; shard: Shard | null } {
+  const named: string[] = [];
+  let shard: Shard | null = null;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === UPDATE_DURATIONS_FLAG) continue;
+    if (arg === SHARD_FLAG) {
+      const value = argv[++i];
+      if (value === undefined) throw new Error(`${SHARD_FLAG} needs a value (i/n)`);
+      shard = parseShard(value);
+      continue;
+    }
+    if (arg.startsWith(`${SHARD_FLAG}=`)) {
+      shard = parseShard(arg.slice(SHARD_FLAG.length + 1));
+      continue;
+    }
+    named.push(arg);
+  }
+  return { named, updateDurations: argv.includes(UPDATE_DURATIONS_FLAG), shard };
+}
+
+/**
+ * CI's shard count. Derived, not tuned: the full suite measured ~130s wall in
+ * one job at concurrency 8, and a shard should take about 40-50s, so 3. If the
+ * suite grows until a shard's `Run tests` step passes ~60s, raise this and the
+ * matrix in build.yml together (run-unit-tests-shard.test.ts keeps them equal).
+ */
+export const SHARD_COUNT = 3;
+
+/**
+ * Estimated cost of a file with no duration hint. Hints only list files over
+ * DURATION_HINT_MIN_MS, so the ~2,000 unlisted files are all fast; a flat
+ * estimate is enough for them to fill gaps between the slow ones evenly.
+ */
+export const UNHINTED_ESTIMATE_MS = 300;
+
+/**
+ * Below this much estimated work (summed per-file time, i.e. ~30s of wall at
+ * concurrency 8) a selection is not split: shard 1 runs all of it and the other
+ * shards run nothing. Splitting a small run only adds a job's setup overhead to
+ * every slice without shortening the slowest one.
+ */
+export const SHARD_MIN_TOTAL_MS = 240_000;
+
+const estimateMs = (file: string, hints: DurationHints): number => {
+  const ms = hints[file];
+  return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? ms : UNHINTED_ESTIMATE_MS;
+};
+
+/**
+ * Greedy longest-processing-time-first: slowest file to the least-loaded shard,
+ * ties to the lowest index. Input order does not matter (files are sorted by
+ * estimate then path first), so every CI shard computes the same split.
+ * Each shard comes back sorted by path; run order is orderByDuration's job.
+ */
+export function assignShards(files: readonly string[], hints: DurationHints, count: number): string[][] {
+  const shards: string[][] = Array.from({ length: count }, () => []);
+  const loads = new Array<number>(count).fill(0);
+  const ordered = [...new Set(files)].sort((a, b) => estimateMs(b, hints) - estimateMs(a, hints) || (a < b ? -1 : a > b ? 1 : 0));
+  for (const file of ordered) {
+    let target = 0;
+    for (let i = 1; i < count; i++) if (loads[i]! < loads[target]!) target = i;
+    shards[target]!.push(file);
+    loads[target]! += estimateMs(file, hints);
+  }
+  return shards.map(shard => shard.sort());
+}
+
+/** The files shard `index` (1-based) of `count` runs. */
+export function shardFiles(files: readonly string[], hints: DurationHints, index: number, count: number): string[] {
+  const total = files.reduce((sum, file) => sum + estimateMs(file, hints), 0);
+  if (count === 1 || total < SHARD_MIN_TOTAL_MS) return index === 1 ? [...files] : [];
+  return assignShards(files, hints, count)[index - 1] ?? [];
+}
+
+/**
+ * Slowest files first, so the long tail starts at the beginning of the run
+ * instead of whenever its name comes up alphabetically. Under a fixed pool of
+ * workers the run cannot end before its slowest file does, so a 60s file that
+ * starts 15% of the way in can set the end time on its own.
+ *
+ * Files with no hint keep alphabetical order and follow the hinted ones: no
+ * hint means it measured under DURATION_HINT_MIN_MS last time, or is new.
+ * Equal hints break alphabetically, so the order is deterministic.
+ */
+export function orderByDuration(files: readonly string[], hints: DurationHints): string[] {
+  const hint = (file: string): number | undefined => {
+    const ms = hints[file];
+    return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? ms : undefined;
+  };
+  return [...files].sort((a, b) => {
+    const ha = hint(a);
+    const hb = hint(b);
+    if (ha !== undefined && hb !== undefined && ha !== hb) return hb - ha;
+    if (ha !== undefined && hb === undefined) return -1;
+    if (ha === undefined && hb !== undefined) return 1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+}
+
+/**
+ * The committed hints. A missing or malformed file is not an error: the run
+ * falls back to alphabetical order, which is what it did before hints existed.
+ */
+export function readDurationHints(path: string = DURATIONS_PATH): DurationHints {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { files?: unknown };
+    const files = parsed?.files;
+    if (!files || typeof files !== 'object' || Array.isArray(files)) return {};
+    const hints: DurationHints = {};
+    for (const [file, ms] of Object.entries(files as Record<string, unknown>)) {
+      if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) hints[file] = ms;
+    }
+    return hints;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The hint file after this run: every measured file replaces its old entry
+ * (and drops out when it is now under the threshold), files this run did not
+ * measure keep theirs, and files that no longer exist are removed. A subset
+ * run therefore refreshes only what it ran.
+ */
+export function mergeDurationHints(
+  previous: DurationHints,
+  measured: ReadonlyArray<{ file: string; durationMs: number }>,
+  existing: readonly string[],
+  minMs: number = DURATION_HINT_MIN_MS,
+): DurationHints {
+  const present = new Set(existing);
+  const next: DurationHints = {};
+  for (const [file, ms] of Object.entries(previous)) {
+    if (present.has(file)) next[file] = ms;
+  }
+  for (const { file, durationMs } of measured) {
+    if (durationMs >= minMs) next[file] = Math.round(durationMs / 100) * 100;
+    else delete next[file];
+  }
+  const sorted: DurationHints = {};
+  for (const file of Object.keys(next).sort()) sorted[file] = next[file]!;
+  return sorted;
+}
+
+export function formatDurationHintsFile(hints: DurationHints): string {
+  return `${JSON.stringify({
+    note: `Per-file unit test durations (ms) used to schedule slowest files first. Only files over ${DURATION_HINT_MIN_MS}ms are listed. Refresh: bun run scripts/run-unit-tests.ts ${UPDATE_DURATIONS_FLAG}`,
+    files: hints,
+  }, null, 2)}\n`;
+}
+
+/**
+ * Printed to the console as well as the log because CI keeps no copy of
+ * `.test-report.log`: the job log is the only record of CI's own timings, and
+ * the top 25 is roughly what it takes to refresh the hints from it.
+ */
+const SLOWEST_IN_SUMMARY = 25;
+
+/** Slowest files first, one per line: `  12.3s  path`. */
+export function formatDurations(
+  results: ReadonlyArray<{ file: string; durationMs: number }>,
+  limit: number = results.length,
+): string[] {
+  return [...results]
+    .sort((a, b) => b.durationMs - a.durationMs || a.file.localeCompare(b.file))
+    .slice(0, limit)
+    .map(r => `${(r.durationMs / 1000).toFixed(1).padStart(7)}s  ${r.file}`);
+}
 
 const DEFAULT_CONCURRENCY = 4;
 const MAX_CONCURRENCY = 16;
@@ -268,6 +473,8 @@ export async function runTestFile(
   // suite wrote fixture records into the operator's real ~/.buildd/workers,
   // where they were counted as fleet data.
   const testHome = mkdtempSync(join(tmpdir(), 'buildd-test-home-'));
+  const startedAt = performance.now();
+  const elapsed = (): number => Math.round(performance.now() - startedAt);
   try {
     const timeoutMs = getTestTimeoutMs(process.env.BUILDD_TEST_TIMEOUT_MS);
     const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), '--timeout', String(timeoutMs), file], {
@@ -280,13 +487,14 @@ export async function runTestFile(
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
-    return { file, exitCode, output: `${stdout}${stderr}` };
+    return { file, exitCode, output: `${stdout}${stderr}`, durationMs: elapsed() };
   } catch (error) {
     const detail = error instanceof Error ? error.stack ?? error.message : String(error);
     return {
       file,
       exitCode: 1,
       output: `Failed to launch Bun for ${file}:\n${detail}`,
+      durationMs: elapsed(),
     };
   } finally {
     discardTestHome(testHome);
@@ -557,9 +765,19 @@ async function main(): Promise<void> {
     process.exitCode = 1;
   };
 
-  const files = selectTestFiles(Bun.argv.slice(2), await discoverUnitTests());
+  const { named, updateDurations, shard } = parseRunnerArgs(Bun.argv.slice(2));
+  const discovered = await discoverUnitTests();
+  const hints = readDurationHints();
+  const selected = selectTestFiles(named, discovered);
+  const sliced = shard ? shardFiles(selected, hints, shard.index, shard.count) : selected;
+  if (shard) {
+    console.log(`Shard ${shard.index}/${shard.count}: ${sliced.length} of ${selected.length} selected files.`);
+  }
+  // Order only: which files run, and that each runs alone in its own process,
+  // is unchanged.
+  const files = orderByDuration(sliced, hints);
   if (files.length === 0) {
-    console.log('No unit test files selected.');
+    console.log(shard ? `No unit test files in shard ${shard.index}/${shard.count}.` : 'No unit test files selected.');
     reportHiddenDirTests();
     return;
   }
@@ -586,9 +804,12 @@ async function main(): Promise<void> {
   // swallow the guard's throw), so the marker has to be checked for all of
   // them — but holding 800+ outputs in memory to do it is not worth it.
   const storeReaches: string[] = [];
+  const timings: Array<{ file: string; durationMs: number }> = [];
+  const runStartedAt = performance.now();
 
   await runWithConcurrency(files, concurrency, async file => {
     const result = await runTestFile(file);
+    timings.push({ file, durationMs: result.durationMs });
     if (result.output.includes(STORE_REACH_MARKER)) storeReaches.push(file);
     if (result.exitCode === 0) {
       passed++;
@@ -602,22 +823,43 @@ async function main(): Promise<void> {
     }
   });
   if (process.stdout.isTTY) process.stdout.write('\n');
+  const wallMs = performance.now() - runStartedAt;
 
-  // Files finish out of order under concurrency; sort so the log and digest are
-  // byte-stable across runs.
+  // Files finish out of order under concurrency; sort so the failure section of
+  // the log and the digest are byte-stable across runs. (The duration section
+  // below is measured, so it is not.)
   failures.sort((a, b) => a.file.localeCompare(b.file));
 
   const logPath = process.env.BUILDD_TEST_LOG ?? '.test-report.log';
   const report = failures
     .map(failure => `--- ${failure.file} ---\n${failure.output.trim()}\n`)
     .join('\n');
-  await Bun.write(logPath, report || `All ${files.length} unit test files passed.\n`);
+  const durationSection = [
+    '',
+    `--- per-file durations (slowest first; ${files.length} files, ${(wallMs / 1000).toFixed(1)}s wall, concurrency ${concurrency}) ---`,
+    ...formatDurations(timings),
+    '',
+  ].join('\n');
+  await Bun.write(logPath, `${report || `All ${files.length} unit test files passed.\n`}${durationSection}`);
+
+  if (updateDurations) {
+    const merged = mergeDurationHints(hints, timings, discovered);
+    await Bun.write(DURATIONS_PATH, formatDurationHintsFile(merged));
+    console.log(`Wrote ${Object.keys(merged).length} duration hints to ${DURATIONS_PATH}.`);
+  }
 
   // Full detail first, digest last: agents tail this output, so the actionable
   // summary has to be the final thing printed.
   for (const failure of failures) {
     console.error(`\n--- ${failure.file} ---\n${failure.output.trim()}`);
   }
+
+  // Before the pass/fail digest, which stays the last thing printed.
+  console.log([
+    '',
+    `Slowest ${Math.min(SLOWEST_IN_SUMMARY, timings.length)} of ${files.length} files (${(wallMs / 1000).toFixed(1)}s wall; all in ${logPath}):`,
+    ...formatDurations(timings, SLOWEST_IN_SUMMARY),
+  ].join('\n'));
 
   if (failures.length > 0) {
     const digests = failures.map(failure => extractFailureDigest(failure.file, failure.output));

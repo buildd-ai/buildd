@@ -28,6 +28,8 @@ import Disclosure from '@/components/ui/Disclosure';
 import type { TaskFailureKind } from '@/lib/task-failure-kind';
 import { verificationFailedCopy } from '@/lib/task-failure-kind';
 import { explainProviderAuthFailure } from '@/lib/provider-auth-failure';
+import EntitlementBlockedNotice from '@/components/entitlements/EntitlementBlockedNotice';
+import { parseEntitlementBlock, type EntitlementBlock } from '@buildd/shared';
 import { useTaskStart } from '@/components/tasks/useTaskStart';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import { formatInZone } from '@/lib/zoned-time';
@@ -80,6 +82,12 @@ export interface TaskActionZoneProps {
   runnerPicker?: boolean;
   /** The host already says why the task is waiting (the mission drawer's reason line). */
   hideQueuedNote?: boolean;
+  /**
+   * The plan limit a managed runner deferred this task on (task context
+   * `entitlementBlock`). A queued task with one shows the entitlement state in
+   * place of "Run now": it starts by itself when the limit lifts.
+   */
+  entitlementBlock?: EntitlementBlock | null;
   onChanged?: () => void | Promise<void>;
 }
 
@@ -102,6 +110,7 @@ export default function TaskActionZone({
   missionExecutor = null,
   runnerPicker = false,
   hideQueuedNote = false,
+  entitlementBlock = null,
   onChanged,
 }: TaskActionZoneProps) {
   const displayTz = useDisplayTimezone();
@@ -168,7 +177,10 @@ export default function TaskActionZone({
 
   const refusal = start.refusal;
   const starting = start.pending !== null;
-  const showRunNow = has('run_now') && (start.status === 'idle' || start.status === 'starting');
+  // A start refused on a plan limit is the same entitlement state, not a gate warning.
+  const refusalEntitlement = refusal?.gateReason === 'entitlement_blocked' ? parseEntitlementBlock(refusal.entitlement) : null;
+  const waitingOnPlan = has('run_now') && phase === 'pending' && !!entitlementBlock && start.status === 'idle';
+  const showRunNow = has('run_now') && !waitingOnPlan && (start.status === 'idle' || start.status === 'starting');
   const cap = refusal?.cap ?? 3;
   const [capTarget, setCapTarget] = useState<number | null>(null);
   const deferredLabel = refusal?.startAt
@@ -289,6 +301,9 @@ export default function TaskActionZone({
         </div>
       )}
 
+      {/* Queued on a plan limit → the entitlement state; it starts by itself */}
+      {waitingOnPlan && entitlementBlock && <EntitlementBlockedNotice block={entitlementBlock} />}
+
       {/* Queued → run now (a local mission's task: claim it from a session first) */}
       {showRunNow && (
         <div className="space-y-3 border border-border-default p-4">
@@ -342,7 +357,10 @@ export default function TaskActionZone({
       )}
 
       {/* A refused start: why, and what a person may do about it, in place. */}
-      {start.status === 'gated' && refusal && (
+      {start.status === 'gated' && refusalEntitlement && (
+        <EntitlementBlockedNotice block={refusalEntitlement} onLeaveQueued={start.dismiss} />
+      )}
+      {start.status === 'gated' && refusal && !refusalEntitlement && (
         <div data-testid="task-start-refusal" data-gate={refusal.gateReason} className="space-y-3 border border-status-warning p-4">
           <div>
             <p className="mb-1 font-mono text-meta font-medium text-status-warning">

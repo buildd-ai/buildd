@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, isOrchestrationTaskToken, taskScopeAllowsMissionTask } from '@/lib/task-token-auth';
 import { holdsInWorkspace } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { isInteractiveWorker } from '@/lib/interactive-worker-liveness';
 import {
   appendInstructionHistory,
   enqueuePendingInstruction,
@@ -125,7 +126,12 @@ export async function POST(
   // delivery (and can be trusted not to double-inject a message that arrived
   // both over Pusher and over the queue). Older runners get exactly the old
   // behaviour: Pusher only, optimistically recorded as delivered.
-  const ackCapable = (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true;
+  //
+  // An interactive worker (claim_task, runner = 'mcp') counts as one from the
+  // start: no runner listens on Pusher for it, its session reads only the
+  // queue (update_progress, which acknowledges), so the queue is its only path.
+  const ackCapable = (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true
+    || isInteractiveWorker((worker as { runner?: string | null }).runner);
 
   // Terminal-but-urgent: Pusher only — a queued copy could never be collected.
   const queueable = !isUnreachableWorkerStatus(worker.status) && (!isUrgent || ackCapable);

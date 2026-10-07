@@ -216,6 +216,10 @@ DELETE FROM secrets;             -- cascades credential_leases
 -- evidence objects hold real bucket paths; wiped like credentials.
 DELETE FROM evidence_objects;    -- cascades to anything referencing objects
 DELETE FROM evidence_backends;   -- cascades to anything referencing backends
+-- Team-private catalog entries name a team's own (often internal) MCP servers;
+-- platform rows (team_id NULL) are buildd's public presets and stay.
+DELETE FROM connector_catalog_entries WHERE team_id IS NOT NULL;
+DELETE FROM connector_catalog_team_policies;
 -- Agent chat: every message part is tenant-authored text or tool output over
 -- it. Chat renders from fixtures in QA; missions.conversation_id sets null.
 DELETE FROM conversation_approvals;
@@ -223,6 +227,7 @@ DELETE FROM conversation_messages;
 DELETE FROM conversations;
 -- Standing rules are text a person wrote about how they work; wiped like chat.
 DELETE FROM chat_directives;
+DELETE FROM local_sessions;         -- presence of people's local coding sessions (repo, client)
 DELETE FROM device_codes;
 DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;
@@ -260,6 +265,10 @@ DELETE FROM prompt_eval_runs;
 DELETE FROM decision_records;
 DELETE FROM review_feedback;
 DELETE FROM spec_discrepancies;
+-- Quality Scout ledger: refs, observed output and evidence refs are repo text.
+DELETE FROM quality_scout_findings;
+DELETE FROM quality_scout_probes;
+DELETE FROM quality_scout_runs;
 TRUNCATE knowledge_chunks, knowledge_entities, entity_aliases, chunk_entities,
   pending_entity_refs, knowledge_edges, knowledge_ingest_jobs, pr_reverts;
 
@@ -356,7 +365,8 @@ UPDATE connectors c SET
   client_id = NULL,
   encrypted_client_secret = NULL,
   assertion_audience = pg_temp.qa_url(c.assertion_audience),
-  assertion_token_endpoint = pg_temp.qa_url(c.assertion_token_endpoint)
+  assertion_token_endpoint = pg_temp.qa_url(c.assertion_token_endpoint),
+  icon_url = NULL -- derived from the (scrubbed) url's host
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM connectors) s WHERE c.id = s.id;
 
 -- Unique per (account_id, local_ui_url): one host per row, never a constant.

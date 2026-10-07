@@ -24,10 +24,15 @@ import AnswerStatesFixture from './AnswerStatesFixture';
 import FailureKindsFixture from './FailureKindsFixture';
 import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
+import EntitlementBlockedFixture from './EntitlementBlockedFixture';
 import RunnerSizeFixture from './RunnerSizeFixture';
+import WorkspacesListFixture from './WorkspacesListFixture';
+import InteractiveSessionsFixture from './InteractiveSessionsFixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
     RUNNER_SIZE_FIXTURE_STATE,
+    WORKSPACES_LIST_FIXTURE_STATE,
+    INTERACTIVE_SESSIONS_FIXTURE_STATE,
     MODEL_PROVIDERS_FIXTURE_STATE,
     TOOL_BREAKDOWN_FIXTURE_STATE,
     FIXTURE_VIEWS,
@@ -42,6 +47,7 @@ import {
     COMMIT_CHECKS_FIXTURE_STATE,
     ANSWER_STATES_FIXTURE_STATE,
     AGENT_ACCESS_FIXTURE_STATE,
+    ENTITLEMENT_BLOCKED_FIXTURE_STATE,
     FAILURE_KINDS_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     isFixtureView,
@@ -124,6 +130,9 @@ export default function DevFixturesPage() {
     if (state === ANSWER_STATES_FIXTURE_STATE) {
         return <AnswerStatesFixture />;
     }
+    if (state === ENTITLEMENT_BLOCKED_FIXTURE_STATE) {
+        return <EntitlementBlockedFixture />;
+    }
 
     if (state === TOOL_BREAKDOWN_FIXTURE_STATE) {
         return <ToolBreakdownFixture />;
@@ -131,8 +140,15 @@ export default function DevFixturesPage() {
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
     }
+    if (state === INTERACTIVE_SESSIONS_FIXTURE_STATE) {
+        return <InteractiveSessionsFixture />;
+    }
+
     if (state === RUNNER_SIZE_FIXTURE_STATE) {
         return <RunnerSizeFixture />;
+    }
+    if (state === WORKSPACES_LIST_FIXTURE_STATE) {
+        return <WorkspacesListFixture />;
     }
     if (state === MODEL_PROVIDERS_FIXTURE_STATE) {
         return <ModelProvidersFixture />;

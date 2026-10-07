@@ -9,6 +9,7 @@
 
 import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
+import { createTableColumns, loadMigrationSources } from '../db/migrate-drift';
 import { join } from 'node:path';
 import {
   evidenceBackends,
@@ -34,26 +35,28 @@ describe('evidence storage schema', () => {
     expect(schemaSrc).toContain("'evidence_storage_credential'");
   });
 
-  test('migration 0226 creates evidence_backends table', () => {
-    const migrationSrc = read('packages/core/drizzle/0226_daffy_colleen_wing.sql');
-    expect(migrationSrc).toContain('CREATE TABLE "evidence_backends"');
-    expect(migrationSrc).toContain('"id" uuid PRIMARY KEY');
-    expect(migrationSrc).toContain('"bucket" text NOT NULL');
-    expect(migrationSrc).toContain('"endpoint" text');
-    expect(migrationSrc).toContain('"region" text');
-    expect(migrationSrc).toContain('"prefix" text');
-    expect(migrationSrc).toContain('"kms_key_id" text');
-    expect(migrationSrc).toContain('"last_error" text');
+  // The creating migration (0226) was squashed into drizzle/0000_baseline.sql,
+  // a pg_dump; read columns through the drift gate's own CREATE TABLE parser so
+  // the assertion holds whichever migration creates them.
+  const createdColumns = () =>
+    new Set(
+      loadMigrationSources(join(REPO_ROOT, 'packages/core/drizzle')).flatMap((src) =>
+        src.statements.flatMap((stmt) => createTableColumns(stmt))
+      )
+    );
+
+  test('migrations create the evidence_backends table', () => {
+    const cols = createdColumns();
+    for (const c of ['id', 'bucket', 'endpoint', 'region', 'prefix', 'kms_key_id', 'last_error']) {
+      expect(cols.has(`evidence_backends.${c}`)).toBe(true);
+    }
   });
 
-  test('migration 0226 creates evidence_objects table', () => {
-    const migrationSrc = read('packages/core/drizzle/0226_daffy_colleen_wing.sql');
-    expect(migrationSrc).toContain('CREATE TABLE "evidence_objects"');
-    expect(migrationSrc).toContain('"id" uuid PRIMARY KEY');
-    expect(migrationSrc).toContain('"object_key" text NOT NULL');
-    expect(migrationSrc).toContain('"sha256" text');
-    expect(migrationSrc).toContain('"workspace_id" uuid NOT NULL');
-    expect(migrationSrc).toContain('"task_id" uuid NOT NULL');
+  test('migrations create the evidence_objects table', () => {
+    const cols = createdColumns();
+    for (const c of ['id', 'object_key', 'sha256', 'workspace_id', 'task_id']) {
+      expect(cols.has(`evidence_objects.${c}`)).toBe(true);
+    }
   });
 
   test('storage-keys exports buildEvidenceObjectKey', () => {

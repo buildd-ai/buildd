@@ -559,12 +559,14 @@ describe('never re-dispatches on its own', () => {
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/\/\/.*$/gm, '');
       expect(src).not.toMatch(/setInterval|setAlarm|scheduleEvery|cron/);
-      // The one alarm: the one-shot a `task.scheduled` dispatch asks for, at a
-      // fixed Date, into the scheduled-dispatch callback. Never recurring.
+      // The alarms: the one-shot a `task.scheduled` dispatch asks for, at a
+      // fixed Date, into the scheduled-dispatch callback; and on a lease the
+      // one-shot warm-container expiry, which only ever destroys. Never recurring.
       const schedules = src.match(/\.schedule\(/g) ?? [];
       if (file === 'worker-agent.ts') {
-        expect(schedules).toHaveLength(1);
+        expect(schedules).toHaveLength(2);
         expect(src).toMatch(/this\.schedule\(new Date\([^)]*\), 'runScheduledDispatch'/);
+        expect(src).toMatch(/this\.schedule\(new Date\(at\), 'expireWarmContainer', \{\}\)/);
       } else {
         expect(schedules).toHaveLength(0);
       }

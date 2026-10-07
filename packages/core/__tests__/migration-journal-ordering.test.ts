@@ -27,9 +27,11 @@ import { join } from 'node:path';
  * confirmed 0021 (DROP TABLE secret_refs) and 0022 (DROP COLUMN ... on the
  * objectives/missions table) were both silently skipped in production — the
  * exact same failure mode as 0067, just leaving prod BEHIND instead of missing a
- * new column. See 0074_reconcile_missions_secret_refs_drift.sql, which re-issues
- * the equivalent idempotent DDL under current table names rather than editing
+ * new column. 0074_reconcile_missions_secret_refs_drift.sql re-issued the
+ * equivalent idempotent DDL under current table names rather than editing
  * 0021/0022 in place (unsafe: 0022 targets the pre-rename "objectives" name).
+ * All of those files now live only in git history: they were squashed into
+ * drizzle/0000_baseline.sql.
  */
 
 interface JournalEntry {
@@ -69,19 +71,10 @@ interface Inversion {
  * generation-order artifact from two migrations created in one sitting.
  */
 const GRANDFATHERED_INVERSIONS: ReadonlyMap<string, string> = new Map([
-  // Confirmed NOT harmless: both were silently skipped in production and had to
-  // be reconciled by 0074_reconcile_missions_secret_refs_drift.sql.
-  ['0021_faithful_warbound', 'skipped in prod; reconciled by 0074 (see file header)'],
-  ['0022_mixed_mastermind', 'skipped in prod; reconciled by 0074 (see file header)'],
-  // Never independently re-verified against production. Treat "harmless" as
-  // unconfirmed, not disproven.
-  ['0033_red_toxin', 'legacy inversion behind 0032; not re-verified against prod'],
-  ['0034_spicy_tombstone', 'legacy inversion behind 0032; not re-verified against prod'],
-  ['0044_mighty_ricochet', 'legacy inversion behind 0043 (-365s); not re-verified against prod'],
-  // Landed in the same release as 0116, so the pair applied together and no
-  // high-water-mark skip was possible. Recorded here because the tail-only
-  // check never saw it: 0118 hid it the moment it landed.
-  ['0117_condemned_johnny_blaze', 'same-release pair with 0116 (-7.1s); applied together'],
+  // Empty since the migration squash: the six historical inversions (0021,
+  // 0022, 0033, 0034, 0044, 0117) were all absorbed into drizzle/0000_baseline.sql,
+  // whose `when` is the running maximum of everything it replaced. See git
+  // history before the squash for the entries and their reasons.
 ]);
 
 function findInversions(entries: readonly JournalEntry[]): Inversion[] {

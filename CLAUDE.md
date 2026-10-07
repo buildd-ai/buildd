@@ -274,7 +274,7 @@ This repo (`apps/web`) serves the dashboard and API at `buildd.dev`.
 
 Some workflows exist as GitHub Actions only and must NOT be registered as routable agent roles:
 
-- **Visual QA** (`.github/workflows/visual-qa.yml`): Playwright screenshot capture + Claude judgment on release PRs. CI-only by design (PR #1029). Any `visual-qa` row in `workspace_skills` is stray — migration `0064_remove_visual_qa_role.sql` removes it.
+- **Visual QA** (`.github/workflows/visual-qa.yml`): Playwright screenshot capture + Claude judgment on release PRs. CI-only by design (PR #1029). Any `visual-qa` row in `workspace_skills` is stray — migration 0064 removed it (now part of `packages/core/drizzle/0000_baseline.sql`).
 
 ## Skills
 

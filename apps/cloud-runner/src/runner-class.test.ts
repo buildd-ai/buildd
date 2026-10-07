@@ -48,6 +48,15 @@ describe('runner size request (the grant path)', () => {
     expect(parseRunnerSizeResponse({ taskId: TASK, runnerSize: 'xl' }, TASK)).toBeNull();
   });
 
+  test('carries the workspace buildd names (container reuse keys on it), never into stored state', () => {
+    const d = parseRunnerSizeResponse({ taskId: TASK, workspaceId: 'ws_1', runnerSize: 'large', source: 'derived', reason: null }, TASK);
+    expect(d).toEqual({ size: 'large', source: 'derived', reason: null, workspaceId: 'ws_1' });
+    expect(normalizeRunnerSizeDecision(d)).toEqual({ size: 'large', source: 'derived', reason: null });
+    // Not an id: dropped, the decision itself still stands.
+    expect(parseRunnerSizeResponse({ taskId: TASK, workspaceId: '../x', runnerSize: 'large', source: 'derived' }, TASK))
+      .toEqual({ size: 'large', source: 'derived', reason: null });
+  });
+
   test('normalize drops unknown sources and reasons', () => {
     expect(normalizeRunnerSizeDecision({ size: 'large', source: 'container', reason: 'because' })).toEqual({ size: 'large', source: 'fallback', reason: null });
     expect(normalizeRunnerSizeDecision({ size: 'standard-3' })).toBeNull();

@@ -446,6 +446,7 @@
       "packages/core/inference-policy.ts": "jev-decisions",
       "packages/core/mission-helpers.ts": "missions",
       "packages/core/post-session-quality.ts": "health-quality",
+      "packages/core/quality-scout/types.ts": "health-quality",
       "packages/core/subject-anchor-observe.ts": "missions",
       "packages/core/visual-qa-page-source.ts": "visual-qa"
     },
@@ -639,15 +640,6 @@
       "apps/web/src/lib/chat/limits.ts": "chat",
       "apps/web/src/lib/spend-summary.ts": "health-quality",
       "packages/core/inference-key-policy.ts": "jev-decisions"
-    },
-    "apps/web/src/app/app/(protected)/settings/models/ModelTiersClient.tsx": {
-      "apps/web/src/lib/tier-mapping.ts": "model-tiers",
-      "packages/core/model-tier-defaults.ts": "model-tiers"
-    },
-    "apps/web/src/app/app/(protected)/settings/models/TierPoolsSection.tsx": {
-      "apps/web/src/lib/tier-pools-view.ts": "model-tiers",
-      "packages/core/tier-pool.ts": "model-tiers",
-      "packages/core/tier-weights.ts": "model-tiers"
     },
     "apps/web/src/app/app/(protected)/settings/providers/page.tsx": {
       "apps/web/src/lib/chat-availability.ts": "chat"

@@ -74,6 +74,25 @@ describe('decidePromotion', () => {
   it('never promotes external content, whatever else is true', () => {
     expect(decidePromotion(e({ external: true, sourcePrMergedPastWindow: true, corroborated: true }))).toEqual({ promote: false, reason: 'external' });
   });
+
+  it('holds a candidate learn tagged not durable, even with a verified outcome or corroboration', () => {
+    expect(decidePromotion(e({ sourcePrMergedPastWindow: true, notDurable: true }))).toEqual({ promote: false, reason: 'not_durable' });
+    expect(decidePromotion(e({ corroborated: true, notDurable: true }))).toEqual({ promote: false, reason: 'not_durable' });
+  });
+
+  it('a pull clears the not-durable hold: the rule promotes as usual', () => {
+    expect(decidePromotion(e({ sourcePrMergedPastWindow: true, notDurable: true, pulled: true }))).toEqual({ promote: true, reason: 'verified_outcome' });
+  });
+
+  it('the not-durable hold never masks a stronger reason to hold', () => {
+    expect(decidePromotion(e({ notDurable: true }))).toEqual({ promote: false, reason: 'no_evidence' });
+    expect(decidePromotion(e({ external: true, corroborated: true, notDurable: true }))).toEqual({ promote: false, reason: 'external' });
+  });
+
+  it('rollback: with the keep reader off, the tag is ignored', () => {
+    expect(decidePromotion(e({ sourcePrMergedPastWindow: true, notDurable: true }), { keepDemotes: false }))
+      .toEqual({ promote: true, reason: 'verified_outcome' });
+  });
 });
 
 describe('extraction candidates', () => {

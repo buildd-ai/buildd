@@ -1,1 +1,0 @@
-ALTER TABLE "worker_prompt_composition_events" ADD COLUMN "sections" jsonb;

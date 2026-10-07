@@ -40,6 +40,38 @@ const EDGE = 8;
 const PREFERRED_HEIGHT = 320;
 
 /**
+ * Where the anchored panel goes for a trigger at `r` in a `vw` x `vh`
+ * viewport. Null while the anchor has no box (not laid out yet, or hidden):
+ * the panel stays hidden instead of landing in a corner.
+ *
+ * Horizontally the panel always touches the trigger. `align: 'end'` lines up
+ * right edges; when that would run off the left of the screen (a wide panel
+ * from a trigger near the left) it lines up left edges instead, and only then
+ * clamps to the viewport.
+ */
+export function placePopover(
+  r: Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom' | 'width' | 'height'>,
+  vw: number,
+  vh: number,
+  { minWidth = 0, align = 'start' }: { minWidth?: number; align?: 'start' | 'end' } = {},
+): Position | null {
+  if (r.width === 0 && r.height === 0) return null;
+  const width = Math.min(Math.max(r.width, minWidth), vw - EDGE * 2);
+  const fitsStart = r.left + width <= vw - EDGE;
+  const fitsEnd = r.right - width >= EDGE;
+  let left = align === 'end'
+    ? (fitsEnd || !fitsStart ? r.right - width : r.left)
+    : (fitsStart || !fitsEnd ? r.left : r.right - width);
+  left = Math.max(EDGE, Math.min(left, vw - width - EDGE));
+  const below = vh - r.bottom - GAP - EDGE;
+  const above = r.top - GAP - EDGE;
+  if (below >= Math.min(PREFERRED_HEIGHT, 200) || below >= above) {
+    return { top: r.bottom + GAP, left, width, maxHeight: Math.max(below, 120) };
+  }
+  return { bottom: vh - r.top + GAP, left, width, maxHeight: Math.max(above, 120) };
+}
+
+/**
  * The one surface a Select, Combobox or ModelPicker opens into.
  *
  * Desktop: portaled to <body> with fixed positioning, so an `overflow:hidden`
@@ -61,19 +93,7 @@ export function AnchoredPopover({
     function place() {
       const anchor = anchorRef.current;
       if (!anchor) return;
-      const r = anchor.getBoundingClientRect();
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      const width = Math.min(Math.max(r.width, minWidth), vw - EDGE * 2);
-      let left = align === 'end' ? r.right - width : r.left;
-      left = Math.max(EDGE, Math.min(left, vw - width - EDGE));
-      const below = vh - r.bottom - GAP - EDGE;
-      const above = r.top - GAP - EDGE;
-      if (below >= Math.min(PREFERRED_HEIGHT, 200) || below >= above) {
-        setPos({ top: r.bottom + GAP, left, width, maxHeight: Math.max(below, 120) });
-      } else {
-        setPos({ bottom: vh - r.top + GAP, left, width, maxHeight: Math.max(above, 120) });
-      }
+      setPos(placePopover(anchor.getBoundingClientRect(), window.innerWidth, window.innerHeight, { minWidth, align }));
     }
     place();
     window.addEventListener('resize', place);
@@ -91,6 +111,9 @@ export function AnchoredPopover({
       const t = e.target as Node | null;
       if (!t) return;
       if (anchorRef.current?.contains(t) || ref.current?.contains(t)) return;
+      // A picker opened from inside this panel portals its own panel to <body>;
+      // a press in there is not outside this one.
+      if (t instanceof Element && t.closest('[data-popover]')) return;
       onCloseRef.current();
     }
     document.addEventListener('mousedown', onDown);
