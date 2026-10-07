@@ -50,6 +50,10 @@ describe('observed run evidence', () => {
     expect(phase({ usesReviewer: false }, 'review').state).toBe('skipped');
     expect(phase({ usesReviewer: false, reviewState: 'queued' }, 'review').state).not.toBe('skipped');
   });
+  test('only the first pending phase is current, including overlapping CI and review', () => {
+    const phases = deriveRunEvidence({ status:'running', prLifecycleStatus:'ci_running', reviewState:'queued' }).phases;
+    expect(phases.filter(p => p.state === 'current').map(p => p.key)).toEqual(['ci']);
+  });
   test('first observation time is retained; narration is never evidence', () => {
     expect(phase({ milestones: [{ type:'checkpoint', event:'first_edit', ts:30 }, { type:'checkpoint', event:'first_edit', ts:20 }] }, 'changed').at).toBe(20);
     expect(phase({ milestones: [{ type:'status', label:'Commit: something', progress:90, ts:20 }] }, 'committed').state).toBe('unknown');

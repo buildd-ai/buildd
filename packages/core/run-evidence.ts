@@ -64,24 +64,25 @@ export function deriveRunEvidence(input: RunEvidenceInput): RunEvidence {
     review.subState = input.reviewState!;
     review.state = ['changes_requested','escalated','review_failed'].includes(input.reviewState!) ? 'failed' : input.reviewState === 'approved' ? 'done' : 'current';
   } else if (input.usesReviewer === false) review.state = 'skipped';
-  const pr = phase('pr_open', input.prIsDraft ? 'Draft PR' : 'PR', hasPr, input.prUrl !== undefined || input.prNumber !== undefined);
+  const pr = phase('pr_open', input.prIsDraft ? 'Draft PR' : 'PR', hasPr, input.prUrl != null || input.prNumber != null);
   if (lifecycle === 'closed' && !merged) pr.state = 'failed';
   const phases: RunEvidencePhase[] = [
     phase('claimed', 'Claimed', true, true, epoch(input.createdAt)),
-    phase('started', 'Started', started != null, input.startedAt !== undefined, started),
+    phase('started', 'Started', started != null, input.startedAt != null, started),
     phase('changed', 'Changes', observedChange || reportedChange, input.dirtyWorktree != null || input.observedTouches != null || input.filesChanged != null, changed, observedChange ? 'observed' : reportedChange ? 'reported' : 'observed'),
     phase('committed', 'Commit', observedCommit || committed != null, input.commitCount === 0 || (!!input.lastCommitSha && input.commitCount != null), committed, observedCommit ? 'observed' : committed != null ? 'inferred' : 'observed'),
     phase('pushed', 'Pushed', pushed != null || hasPr, false, pushed, pushed != null ? 'observed' : hasPr ? 'implied' : 'observed'),
     pr, ci, review,
-    phase('merged', 'Merged', merged, input.mergedAt !== undefined, epoch(input.mergedAt)),
+    phase('merged', 'Merged', merged, input.mergedAt != null, epoch(input.mergedAt)),
   ];
   const artifactPath = input.outputRequirement === 'artifact_required' || input.outputRequirement === 'none';
   const selected = artifactPath ? [phases[0], phases[1], ...(observedChange || reportedChange ? [phases[2]] : []), phase('delivered', 'Delivered', (input.deliverableArtifactCount ?? 0) > 0 || input.status === 'completed', input.deliverableArtifactCount != null || input.status != null, epoch(input.completedAt))] : phases;
   // Unknown means unavailable evidence, never a manufactured pending step.
   const live = ['running','starting','working','waiting_input','waiting'].includes(input.status ?? '');
-  if (live && !selected.some(p => p.state === 'current' || p.state === 'failed')) {
-    const next = selected.find(p => p.state === 'todo');
-    if (next) next.state = 'current';
+  const next = selected.find(p => p.state === 'todo' || p.state === 'current');
+  for (const p of selected) {
+    if (p.state === 'current') p.state = 'todo';
   }
+  if (live && next) next.state = 'current';
   return { phases: selected };
 }
