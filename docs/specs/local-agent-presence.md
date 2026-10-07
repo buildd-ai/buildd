@@ -74,6 +74,7 @@ agent loop it runs in.
 become tracked work only through that session's own verified `claim_task`.
 
 **Invariants**:
+- A `start` carries `interactive`: false for a session nobody is attending (Claude Code `claude -p` and SDK runs, read from `CLAUDE_CODE_SESSION_ATTENDED` then `CLAUDE_CODE_ENTRYPOINT`; Cursor background agents). Such a presence is neither listed nor counted as an interactive session until it binds a worker for a task.
 - `start`/`touch` write only `local_sessions`. They never insert a `workers` row, change `accounts.activeSessions`, or write a task. Presence is never counted as agent capacity; where it is counted it is labelled "Interactive sessions".
 - `bind` attaches a presence to an existing worker only when that worker belongs to the calling account, has `runner = 'mcp'` (written by the claim route only after the HMAC session marker verifies; `mcp-unverified` and runner workers are refused), and is live. Another account's worker and an unknown id get the same 404.
 - One worker is bound to at most one presence, ever (`local_sessions_bound_worker_idx` unique). A presence holding a live worker cannot bind another until that one ends.
