@@ -1591,6 +1591,7 @@ export default async function TaskDetailPage({
                 linesRemoved: activeWorker.linesRemoved,
                 lastCommitSha: activeWorker.lastCommitSha,
                 waitingFor: activeWorker.waitingFor as any,
+                error: activeWorker.error,
                 instructionHistory: (activeWorker.instructionHistory as any[]) || [],
                 pendingInstructions: activeWorker.pendingInstructions,
                 updatedAt: activeWorker.updatedAt?.toISOString() || null,

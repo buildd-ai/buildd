@@ -97,6 +97,8 @@ interface Worker {
   linesRemoved: number | null;
   lastCommitSha: string | null;
   waitingFor: WorkerWaitingFor | null;
+  /** The worker's own report beside a question (`needs_input: …`): the context fallback. */
+  error?: string | null;
   instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response'; deliveryState?: 'pending' | 'delivered' }>;
   pendingInstructions: string | null;
   updatedAt: string | null;
@@ -368,7 +370,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus =
 
   // Retained questions on ended workers or terminal tasks are history.
   if (worker.waitingFor && isOpenAsk(taskStatus, worker.status)) {
-    const question = unifyWorkerQuestion(worker.waitingFor, questionNote);
+    const question = unifyWorkerQuestion(worker.waitingFor, questionNote, { workerError: worker.error });
     const askedTs = questionNote?.createdAt ? new Date(questionNote.createdAt).getTime() : now.updatedTs;
     return (
       <div data-testid="worker-view" data-state="waiting" className="space-y-5">

@@ -32,6 +32,7 @@ export interface QuestionWorkerRow {
   id: string;
   waitingFor: unknown;
   status?: string | null;
+  error?: string | null;
   updatedAt?: Date | string | null;
 }
 
@@ -79,7 +80,7 @@ export function shapeQuestion(input: {
     return {
       open: true,
       workerId: pending.id,
-      question: unifyWorkerQuestion(pending.waitingFor as WorkerWaitingFor, note),
+      question: unifyWorkerQuestion(pending.waitingFor as WorkerWaitingFor, note, { workerError: pending.error }),
       askedAt: epoch(note?.createdAt) ?? epoch(pending.updatedAt),
       answer: null,
       awaitingAgent: false,
@@ -132,7 +133,7 @@ export async function loadQuestionContext(taskId: string, userId: string): Promi
     db.query.workers.findMany({
       where: eq(workers.taskId, taskId),
       orderBy: desc(workers.createdAt),
-      columns: { id: true, waitingFor: true, status: true, updatedAt: true },
+      columns: { id: true, waitingFor: true, status: true, updatedAt: true, error: true },
     }),
     db
       .select({

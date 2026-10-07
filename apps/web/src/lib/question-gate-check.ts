@@ -4,8 +4,12 @@
  * Called by the runner, through POST /api/workers/[id]/question-check, before
  * it parks an AskUserQuestion. Two stages, both unconditional (the workspace
  * kill switch — `scope.gateEnabled === false` — is the only thing that skips
- * both):
+ * both), behind one deterministic step:
  *
+ *  0. Recover (`@buildd/core/human-attention`): a question whose own text is a
+ *     recoverable platform blocker, with no hard rail, is never sent — a
+ *     repair task is filed or reused and the agent is told to carry on. A
+ *     filing failure falls through to the stages below.
  *  1. Brief check (`QUESTION_GATE_DECISION`): a confident `needs_context`
  *     pushes the question back to the agent, up to the pushback cap.
  *  2. Decide / hold / ask (`QUESTION_DECIDE_DECISION`): once the brief check
@@ -44,7 +48,8 @@ import {
   readQuestionDecideRun,
   readQuestionGateRun,
 } from '@buildd/core/question-gate-decision';
-import { briefedQuestionText, optionLabels, questionDecideAnswerText, questionPushbackText } from '@buildd/core/question-brief';
+import { briefedQuestionText, optionLabels, questionDecideAnswerText, questionPushbackText, recommendedOf } from '@buildd/core/question-brief';
+import { classifyRecoverableBlocker, recoveredAnswerText, repairTaskSpec, type RepairTaskSpec } from '@buildd/core/human-attention';
 import type { DecisionAccess, DecisionReceipt } from '@buildd/core/decision-client';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -103,7 +108,21 @@ export interface QuestionCheckDeps {
   runDecide?: typeof QUESTION_DECIDE_DECISION.run;
   record?: (input: DecisionLedgerInput) => Promise<string | null | void>;
   recordReceipts?: (receipts: DecisionReceipt[], scope: { teamId: string; accountId: string | null }) => Promise<void>;
+  /** File or reuse the repair task for a recoverable blocker; null when it could not. */
+  fileRepair?: (input: FileRepairInput) => Promise<{ id: string; reused: boolean } | null>;
   now?: () => number;
+}
+
+export interface FileRepairInput {
+  workspaceId: string;
+  missionId: string | null;
+  blockedTaskId: string;
+  spec: RepairTaskSpec;
+}
+
+async function defaultFileRepair(input: FileRepairInput): Promise<{ id: string; reused: boolean } | null> {
+  const { fileRecoverableBlockerRepair } = await import('./recoverable-blocker-repair');
+  return fileRecoverableBlockerRepair(input);
 }
 
 async function defaultResolveAccess(s: { teamId: string; workspaceId: string; accountId: string | null }): Promise<DecisionAccess> {
@@ -139,6 +158,42 @@ export async function checkQuestion(
 
   if (!scope.gateEnabled) {
     return { verdict: 'send', outcome: 'off', version: null, latencyMs: now() - started };
+  }
+
+  // ── Stage 0: recover instead of asking ──────────────────────────────────
+  // Deterministic and model-free, so it runs for sensitive workspaces too (no
+  // text leaves the workspace: the repair task is filed in it). A hard rail
+  // always wins — those questions go to a person whatever they describe.
+  const questionText = briefedQuestionText(req.question);
+  const rail = detectHardRail({ ...scope.hardRail, questionText });
+  const blocker = rail ? null : classifyRecoverableBlocker(questionText);
+  if (blocker) {
+    const spec = repairTaskSpec(blocker, {
+      scopeId: scope.missionId ?? scope.workspaceId,
+      blockedTaskId: scope.taskId,
+      blockedTaskTitle: scope.taskTitle,
+      evidence: [req.question.context, req.question.prompt].filter(Boolean).join(' '),
+    });
+    const repair = await (deps.fileRepair ?? defaultFileRepair)({
+      workspaceId: scope.workspaceId, missionId: scope.missionId, blockedTaskId: scope.taskId, spec,
+    }).catch(() => null);
+    if (repair) {
+      await record({
+        teamId: scope.teamId, workspaceId: scope.workspaceId, missionId: scope.missionId, taskId: scope.taskId,
+        capability: 'question_gate', fingerprint: fingerprintOf({ blocker: blocker.kind, taskId: scope.taskId }),
+        ruleAnswer: 'recover', appliedAnswer: 'recover', applied: true, status: 'applied',
+        reason: `recovered:${blocker.kind}`, latencyMs: now() - started,
+      }).catch(() => {});
+      return {
+        verdict: 'decide',
+        outcome: 'recovered',
+        disposition: 'decide',
+        reason: recoveredAnswerText(blocker, { repairTaskId: repair.id, reused: repair.reused, recommended: recommendedOf(req.question)?.label }),
+        repairTaskId: repair.id,
+        version: null,
+        latencyMs: now() - started,
+      };
+    }
   }
 
   // ── Stage 1: the brief check ────────────────────────────────────────────
@@ -212,7 +267,6 @@ export async function checkQuestion(
   }
 
   // ── Stage 2: decide / hold / ask ────────────────────────────────────────
-  const rail = detectHardRail({ ...scope.hardRail, questionText: briefedQuestionText(req.question) });
   if (rail) {
     await record({
       teamId: scope.teamId, workspaceId: scope.workspaceId, missionId: scope.missionId, taskId: scope.taskId,
