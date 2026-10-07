@@ -1012,7 +1012,12 @@ reviewer of the delivery's latest round at the live head, never `findReviewTaskF
 reviewer that ended without a verdict, including one that completed with a prose or
 malformed verdict: on a kernel round (`isKernelReviewRound`) the worker PATCH skips the
 prose fallback, the legacy same-task requeue and `escalateReviewContractFailure`, and T4
-sends `ReviewRoundFailed` with `prose_verdict`, `no_verdict` or (silent start) `infra`; the outbox floor drain on the `pr-reconcile`
+sends `ReviewRoundFailed` with `prose_verdict`, `no_verdict` or (silent start) `infra`;
+`POST /api/prs/[prNumber]/apply-recommendation` refuses a kernel-owned PR with 409
+`kernel_owned`, naming the delivery state (`kernelDeliveryOfPr`), instead of filing a
+legacy fix task with no delivery and no `review_fix` ledger row beside the kernel; T23
+`HumanResolve(apply_recommendation)` carrying the person's instruction is not wired to
+a route yet; the outbox floor drain on the `pr-reconcile`
 full pass plus an inline drain after every applied transition.
 
 Shipped live in part 2 (the CI family):
