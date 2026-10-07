@@ -37,6 +37,7 @@
     "./model-certification-store": "./model-certification-store.ts",
     "./model-upgrade-policy": "./model-upgrade-policy.ts",
     "./model-upgrade-policy-store": "./model-upgrade-policy-store.ts",
+    "./model-adoption-report": "./model-adoption-report.ts",
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
     "./entitlements": "./entitlements.ts",

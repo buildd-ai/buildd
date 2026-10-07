@@ -189,7 +189,7 @@ export function pickPolicyTierModel(
 }
 
 /** A runner version every certified floor clears: "what would the best runner be offered?" */
-const ANY_CURRENT_RUNNER = '999999.0.0';
+export const ANY_CURRENT_RUNNER = '999999.0.0';
 
 /** The newest certified in-band model for a tier, ignoring team policy and runner age. */
 export function latestCertifiedTierModel(
@@ -303,3 +303,21 @@ function isNewerRelease(candidate: CatalogEntry, model: string, catalog: readonl
 }
 
 export const CATALOG_TIERS = Object.keys(TIER_PRICE_BANDS) as CatalogTier[];
+
+/** One sentence per tier for an MCP/text reader. Names models, never internal ids. */
+export function describeAdoption(t: TierAdoption): string {
+  const parts = [`${t.tier}: ${t.model} — ${t.why}`];
+  if (t.deprecated) {
+    const when = t.deprecated.retiresAt ? ` (retires ${t.deprecated.retiresAt.slice(0, 10)})` : '';
+    parts.push(t.deprecated.retired ? `RETIRED${when}.` : `Deprecated${when}.`);
+  }
+  if (t.newer) {
+    const why =
+      t.withheld?.reason === 'pinned' ? 'withheld: the tier is pinned'
+      : t.withheld?.reason === 'manual' ? 'withheld: manual upgrade policy (adopt to move)'
+      : t.withheld?.reason === 'soak' ? `withheld: soaking until ${t.withheld.eligibleAt?.slice(0, 16).replace('T', ' ')} UTC`
+      : 'available to newer runners';
+    parts.push(`Newer certified: ${t.newer.model} (${why}).`);
+  }
+  return parts.join(' ');
+}
