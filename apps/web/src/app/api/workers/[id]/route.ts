@@ -102,6 +102,8 @@ import {
 import { recordPathCollisionDeferral } from '@/lib/path-collision-deferral';
 import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
+import { formatWorkerMessages, type WorkerMessage } from '@buildd/core/worker-message-format';
+import { queueSystemInstruction } from '@/lib/system-instruction-queue';
 import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsDelivered } from '@/lib/worker-instructions';
@@ -4414,6 +4416,7 @@ export async function PATCH(
           branch: true,
           lastCommitSha: true,
           observedTouches: true,
+          runner: true,
         },
         with: {
           task: { columns: { pathManifest: true } },
@@ -4482,8 +4485,20 @@ export async function PATCH(
         // One atomic append (capped in SQL): the sibling is checking in and
         // writing its own context, so a read-modify-write here loses whichever
         // of the two wrote second.
+        //
+        // That queue is read only by an interactive session (update_progress
+        // surfaces `workerMessages`); a runner-managed session never reads it,
+        // so every message to one was lost. For those the same text also goes
+        // on the instruct queue, which the runner injects at its next check-in.
+        const deliver = async (message: WorkerMessage) => {
+          await enqueueWorkerMessage(sibling.taskId!, message);
+          if (sibling.runner !== INTERACTIVE_WORKER_RUNNER) {
+            await queueSystemInstruction(sibling.id, formatWorkerMessages([message]))
+              .catch(err => console.error(`[Worker ${id}] overlap instruction to ${sibling.id} failed:`, err));
+          }
+        };
         if (contended.length > 0) {
-          await enqueueWorkerMessage(sibling.taskId!, buildWorkerMessage({
+          await deliver(buildWorkerMessage({
             type: 'path_blocked_on_you',
             fromTaskId: worker.taskId,
             toTaskId: sibling.taskId!,
@@ -4496,7 +4511,7 @@ export async function PATCH(
           }));
         }
         if (regenerable.length > 0) {
-          await enqueueWorkerMessage(sibling.taskId!, buildWorkerMessage({
+          await deliver(buildWorkerMessage({
             type: 'path_regenerable_overlap',
             fromTaskId: worker.taskId,
             toTaskId: sibling.taskId!,
