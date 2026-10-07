@@ -10,16 +10,20 @@
  * that fail discovery today (e.g. needing a pre-registered client) stay out
  * until the connect flow supports them.
  *
- * Client-safe: no server imports.
+ * These are the BUILT-IN entries. The live catalog a team sees is these merged
+ * with platform and team rows from `connector_catalog_entries` and the team's
+ * policies — see connector-catalog-store.ts (server) and GET
+ * /api/connectors/catalog. Client-safe: no server imports.
  */
 
-export type ConnectorCatalogCategory = 'deploy' | 'database' | 'observability' | 'project' | 'docs' | 'analytics';
+export type ConnectorCatalogCategory = 'deploy' | 'database' | 'observability' | 'project' | 'docs' | 'analytics' | 'other';
 
 export interface ConnectorCatalogEntry {
   slug: string;
   name: string;
   url: string;
-  authMode: 'oauth' | 'none';
+  authMode: 'oauth' | 'none' | 'header';
+  headerName?: string | null;
   description: string;
   category: ConnectorCatalogCategory;
   iconUrl: string;
@@ -45,6 +49,24 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
   { slug: 'context7', name: 'Context7', url: 'https://mcp.context7.com/mcp', authMode: 'none', category: 'docs',
     description: 'Up-to-date library docs and code examples. No sign-in.', iconUrl: 'https://context7.com/context7-icon-green.png' },
 ];
+
+export const CATALOG_POLICIES = ['blocked', 'available', 'preinstalled'] as const;
+export type CatalogPolicy = typeof CATALOG_POLICIES[number];
+export type CatalogSource = 'builtin' | 'platform' | 'team';
+
+/** One row of the merged catalog a team sees. */
+export interface ResolvedCatalogEntry extends ConnectorCatalogEntry {
+  /** Row id for platform/team entries; null for an un-overridden built-in. */
+  id: string | null;
+  source: CatalogSource;
+  policy: CatalogPolicy;
+}
+
+export const CATALOG_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,47}$/;
+
+export function normalizeConnectorUrl(url: string): string | null {
+  return normalize(url);
+}
 
 function normalize(url: string): string | null {
   try {

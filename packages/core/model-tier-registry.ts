@@ -220,10 +220,17 @@ async function loadTeamRows(teamId: string): Promise<RegistryRow[] | null> {
  * the team cell's dial does. Empty when the DB is unreachable.
  */
 export async function workspaceOverrideCounts(teamId: string): Promise<Map<string, number>> {
+  return (await workspaceOverrides(teamId)).byCell;
+}
+
+/** Per `tier:surface` override counts, plus how many distinct workspaces override anything. */
+export async function workspaceOverrides(teamId: string): Promise<{ byCell: Map<string, number>; workspaces: number }> {
   const rows = (await loadTeamRows(teamId)) ?? [];
   const seen = new Map<string, Set<string>>();
+  const all = new Set<string>();
   for (const r of rows) {
     if (!r.workspaceId) continue;
+    all.add(r.workspaceId);
     for (const surface of r.surface ? [r.surface] : TIER_SURFACES) {
       const key = `${r.tier}:${surface}`;
       const set = seen.get(key) ?? new Set<string>();
@@ -231,7 +238,7 @@ export async function workspaceOverrideCounts(teamId: string): Promise<Map<strin
       seen.set(key, set);
     }
   }
-  return new Map([...seen].map(([k, v]) => [k, v.size]));
+  return { byCell: new Map([...seen].map(([k, v]) => [k, v.size])), workspaces: all.size };
 }
 
 /**

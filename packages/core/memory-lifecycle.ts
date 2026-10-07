@@ -15,8 +15,14 @@
  *    at least 72h ago and was not reverted (inside that window by the
  *    heuristics, or at any time by a revert recorded in `pr_reverts`), or when a
  *    different task's near-duplicate `learn` in the same project was folded
- *    into it. External content never promotes. The `promote` Jev decision is
- *    asked in shadow over the same evidence and only logged.
+ *    into it. External content never promotes. A candidate learn's `keep`
+ *    decision tagged "not durable" is held until an agent pulls it (else it
+ *    expires below). The `promote` Jev decision is a veto only: when the rule
+ *    promotes and Jev confidently says not to, the candidate is deferred one
+ *    cycle (PROMOTE_DEFERRED_TAG) and the next cycle's rule decides alone.
+ *    When the rule holds, Jev is asked in shadow and only logged. Sensitive
+ *    workspaces' keys are excluded from the candidate read, so their rows are
+ *    neither promoted nor sent to Jev.
  * 3. **Expire**: a candidate older than 30 days with no pull and no `used`
  *    outcome in memory_uses becomes expired. Nothing is deleted.
  * 4. **Re-verify** (flagged workspaces only): a merged PR touching a memory's
@@ -48,7 +54,13 @@ import {
   type PromotionEvidence,
 } from './memory-candidates';
 import { memoryFilesOverlapSql } from './memory-file-scope-sql';
-import type { MemoryDecider, PromoteShadowItem } from './memory-decisions';
+import {
+  KEEP_NOT_DURABLE_TAG,
+  PROMOTE_DEFERRED_TAG,
+  PROMOTE_VETO_LIVE,
+  type MemoryDecider,
+  type PromoteItem,
+} from './memory-decisions';
 import type { KnowledgeStore } from './knowledge-store/types';
 import { excludedKeysSql, loadSensitiveMemoryKeys, type ExcludedKey } from './memory-index-reconcile';
 
@@ -105,6 +117,8 @@ export function memorySourceTaskSql(alias: 'm' | 'm2' | 'memories'): SQL {
  *   team and project that is a candidate or active, not external, a learn (or
  *   pre-provenance) row, from a different task. `superseded_by` is NOT
  *   evidence: an explicit or band supersede can set it from anywhere.
+ * - `not_durable` / `promote_deferred`: the keep tag and the veto's deferral tag.
+ * - `pulled`: an agent pulled it or a task used it, the test expiry uses.
  */
 export function promotionCandidatesQuery(limit: number, excluded: readonly ExcludedKey[] = []): SQL {
   const window = sql`make_interval(hours => ${PROMOTION_REVERT_WINDOW_HOURS})`;
@@ -162,7 +176,13 @@ export function promotionCandidatesQuery(limit: number, excluded: readonly Exclu
                AND (m2.source_kind IS NULL OR m2.source_kind = 'learn')
                AND ${memorySourceTaskSql('m2')} IS NOT NULL
                AND ${memorySourceTaskSql('m2')} <> src.task_id
-           )) AS corroborated
+           )) AS corroborated,
+           (${KEEP_NOT_DURABLE_TAG} = ANY(m.tags)) AS not_durable,
+           (${PROMOTE_DEFERRED_TAG} = ANY(m.tags)) AS promote_deferred,
+           EXISTS (
+             SELECT 1 FROM memory_uses u
+             WHERE u.team_id = m.team_id AND u.memory_id = m.id::text AND (u.via = 'pull' OR u.outcome = 'used')
+           ) AS pulled
     FROM memories m
     LEFT JOIN LATERAL (SELECT ${memorySourceTaskSql('m')} AS task_id) src ON true
     LEFT JOIN LATERAL (
@@ -183,17 +203,37 @@ export function promotionCandidatesQuery(limit: number, excluded: readonly Exclu
 
 /**
  * Promote these candidates. The hard floors are re-checked in the UPDATE
- * itself: only a current, non-external candidate of this team moves.
+ * itself: only a current, non-external candidate of this team moves. The
+ * veto's deferral tag goes with it.
  */
 export function promoteCandidatesSql(teamId: string, ids: readonly string[]): SQL {
   return sql`
     UPDATE memories
-    SET state = 'active', valid_from = now(), updated_at = now()
+    SET state = 'active', valid_from = now(), updated_at = now(), tags = array_remove(tags, ${PROMOTE_DEFERRED_TAG})
     WHERE team_id = ${teamId}
       AND id IN ${uuidList(ids)}
       AND state = 'candidate'
       AND external = false
       AND superseded_by IS NULL
+    RETURNING id
+  `;
+}
+
+/**
+ * The promote veto: tag these candidates as deferred. State is untouched, so
+ * the next cycle sees them again and the rule alone decides (the tag stops a
+ * second veto). Same floors as promotion; a row already tagged is skipped.
+ */
+export function deferPromotionSql(teamId: string, ids: readonly string[]): SQL {
+  return sql`
+    UPDATE memories
+    SET tags = array_append(tags, ${PROMOTE_DEFERRED_TAG}), updated_at = now()
+    WHERE team_id = ${teamId}
+      AND id IN ${uuidList(ids)}
+      AND state = 'candidate'
+      AND external = false
+      AND superseded_by IS NULL
+      AND NOT (${PROMOTE_DEFERRED_TAG} = ANY(tags))
     RETURNING id
   `;
 }
@@ -432,6 +472,8 @@ export interface PromotionCandidateRow {
   content: string;
   sourceKind: string | null;
   evidence: PromotionEvidence;
+  /** The promote veto deferred it once already: it is not vetoed again. */
+  promoteDeferred: boolean;
 }
 
 export type ExtractionOutcome = 'written' | 'duplicate' | 'failed';
@@ -447,6 +489,8 @@ export interface LifecycleDeps {
   flaggedWorkspaces(): Promise<FlaggedWorkspace[]>;
   findPromotionCandidates(limit: number): Promise<PromotionCandidateRow[]>;
   promote(teamId: string, ids: string[]): Promise<string[]>;
+  /** Tag vetoed candidates as deferred one cycle. Returns ids tagged. */
+  deferPromotion(teamId: string, ids: string[]): Promise<string[]>;
   /** Apply the promoted rows' deferred supersedes (rows + index). Returns rows superseded. */
   applyPendingSupersedes(teamId: string, promotedIds: string[]): Promise<number>;
   expire(days: number, limit: number): Promise<number>;
@@ -472,6 +516,11 @@ export interface LifecycleResult {
   /** Active memories superseded because the candidate that replaces them was promoted. */
   pendingSuperseded: number;
   held: number;
+  /** Rule-promoted candidates the promote veto deferred one cycle (also counted in `held`). */
+  deferred: number;
+  /** Rule-promoted candidates Jev was asked to veto. */
+  vetoAsked: number;
+  /** Candidates the rule held that Jev was asked about in shadow. */
   shadowed: number;
   expired: number;
   reverifyFlagged: number;
@@ -509,21 +558,30 @@ function dbDeps(knowledgeStore: KnowledgeStore | null): LifecycleDeps {
       const rows = await rowsOf<{
         id: string; team_id: string; project: string | null; type: string; title: string; content: string;
         external: boolean; source_kind: string | null; merged_past_window: boolean | null; reverted: boolean | null; corroborated: boolean | null;
+        not_durable: boolean | null; promote_deferred: boolean | null; pulled: boolean | null;
       }>(promotionCandidatesQuery(limit, await loadSensitiveMemoryKeys()));
       return rows.map(r => ({
         id: r.id, teamId: r.team_id, project: r.project, type: r.type, title: r.title, content: r.content,
         sourceKind: r.source_kind,
+        promoteDeferred: r.promote_deferred === true,
         evidence: {
           external: r.external === true,
           sourcePrMergedPastWindow: r.merged_past_window === true,
           sourcePrReverted: r.reverted === true,
           corroborated: r.corroborated === true,
+          notDurable: r.not_durable === true,
+          pulled: r.pulled === true,
         },
       }));
     },
     async promote(teamId, ids) {
       if (ids.length === 0) return [];
       const rows = await rowsOf<{ id: string }>(promoteCandidatesSql(teamId, ids));
+      return rows.map(r => r.id);
+    },
+    async deferPromotion(teamId, ids) {
+      if (ids.length === 0) return [];
+      const rows = await rowsOf<{ id: string }>(deferPromotionSql(teamId, ids));
       return rows.map(r => r.id);
     },
     async applyPendingSupersedes(teamId, promotedIds) {
@@ -616,13 +674,16 @@ export async function runMemoryLifecycle(opts: {
   deps?: LifecycleDeps;
   deadlineMs?: number;
   now?: () => number;
+  /** Rollback seam (tests); default PROMOTE_VETO_LIVE. */
+  promoteVetoLive?: boolean;
 } = {}): Promise<LifecycleResult> {
+  const vetoLive = opts.promoteVetoLive ?? PROMOTE_VETO_LIVE;
   const deps = opts.deps ?? dbDeps(opts.knowledgeStore ?? null);
   const now = opts.now ?? (() => Date.now());
   const deadline = now() + (opts.deadlineMs ?? MEMORY_LIFECYCLE_DEADLINE_MS);
   const result: LifecycleResult = {
     extracted: { failedTasks: 0, reviews: 0, duplicates: 0, skipped: 0, failed: 0 },
-    promoted: 0, pendingSuperseded: 0, held: 0, shadowed: 0, expired: 0, reverifyFlagged: 0, errors: 0, timedOut: false,
+    promoted: 0, pendingSuperseded: 0, held: 0, deferred: 0, vetoAsked: 0, shadowed: 0, expired: 0, reverifyFlagged: 0, errors: 0, timedOut: false,
   };
   const check = () => {
     if (result.timedOut || now() >= deadline) throw new DeadlineReached();
@@ -690,13 +751,11 @@ export async function runMemoryLifecycle(opts: {
       });
     }
 
-    // 2. Promote, deterministic rule; Jev in shadow.
+    // 2. Promote: the deterministic rule decides; Jev can only defer one cycle.
     await step('promotion', async () => {
       const candidates = await deps.findPromotionCandidates(MEMORY_PROMOTE_MAX_PER_RUN);
       const toPromote = new Map<string, string[]>();
-      const shadow = new Map<string, PromoteShadowItem[]>();
-      let shadowBudget = MEMORY_PROMOTE_SHADOW_MAX_PER_RUN;
-      for (const c of candidates) {
+      const judged = candidates.map(c => {
         const verdict = decidePromotion(c.evidence);
         if (verdict.promote) {
           const list = toPromote.get(c.teamId) ?? [];
@@ -705,31 +764,50 @@ export async function runMemoryLifecycle(opts: {
         } else {
           result.held++;
         }
-        // External content is never asked about: nothing Jev says could promote it.
-        if (!c.evidence.external && shadowBudget > 0) {
-          shadowBudget--;
-          const items = shadow.get(c.teamId) ?? [];
-          items.push({
-            memoryId: c.id, title: c.title, content: c.content, type: c.type,
-            evidence: { sourceKind: c.sourceKind, ...c.evidence },
-            rule: verdict.promote ? 'promote' : `hold:${verdict.reason}`,
-          });
-          shadow.set(c.teamId, items);
+        return { c, verdict, live: vetoLive && verdict.promote && !c.promoteDeferred };
+      });
+      // External content is never asked about: nothing Jev says could promote
+      // it. Veto items take the budget first: they are the ones that act.
+      const asked = [...judged.filter(j => j.live), ...judged.filter(j => !j.live)]
+        .filter(j => !j.c.evidence.external)
+        .slice(0, MEMORY_PROMOTE_SHADOW_MAX_PER_RUN);
+      const byTeam = new Map<string, PromoteItem[]>();
+      for (const { c, verdict, live } of asked) {
+        const items = byTeam.get(c.teamId) ?? [];
+        items.push({
+          memoryId: c.id, title: c.title, content: c.content, type: c.type,
+          evidence: { sourceKind: c.sourceKind, ...c.evidence },
+          rule: verdict.promote ? 'promote' : `hold:${verdict.reason}`,
+          live,
+        });
+        byTeam.set(c.teamId, items);
+      }
+      const vetoed = new Set<string>();
+      if (opts.decider?.judgePromote) {
+        for (const [teamId, items] of byTeam) {
+          check();
+          const verdicts = await opts.decider.judgePromote({ scope: { teamId }, items }).catch(() => []);
+          // Only a live item can veto, whatever the decider returns.
+          const live = new Set(items.filter(i => i.live).map(i => i.memoryId));
+          for (const v of verdicts) if (v.veto && live.has(v.memoryId)) vetoed.add(v.memoryId);
+          result.vetoAsked += live.size;
+          result.shadowed += items.length - live.size;
         }
       }
       for (const [teamId, ids] of toPromote) {
         check();
-        const promoted = await deps.promote(teamId, ids);
+        const deferIds = ids.filter(id => vetoed.has(id));
+        if (deferIds.length > 0) {
+          const deferred = await deps.deferPromotion(teamId, deferIds);
+          result.deferred += deferred.length;
+          result.held += deferIds.length;
+        }
+        const promoteIds = ids.filter(id => !vetoed.has(id));
+        if (promoteIds.length === 0) continue;
+        const promoted = await deps.promote(teamId, promoteIds);
         result.promoted += promoted.length;
         // A promoted row now replaces the active memories it deferred.
         if (promoted.length > 0) result.pendingSuperseded += await deps.applyPendingSupersedes(teamId, promoted);
-      }
-      if (opts.decider?.shadowPromote) {
-        for (const [teamId, items] of shadow) {
-          check();
-          await opts.decider.shadowPromote({ scope: { teamId }, items }).catch(() => {});
-          result.shadowed += items.length;
-        }
       }
     });
 

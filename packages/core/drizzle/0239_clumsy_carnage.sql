@@ -1,1 +1,0 @@
-ALTER TABLE "post_session_findings" ADD COLUMN "seen_run_ids" jsonb DEFAULT '[]'::jsonb NOT NULL;

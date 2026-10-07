@@ -38,6 +38,21 @@ const SIGNALS = {
   criticalPaths: [{ name: 'report', pattern: 'src/tool/report.py', severity: 'critical' as const }],
 };
 
+/** Changes across several areas: enough candidates that selection asks more than one decision. */
+const WIDE_SIGNALS = {
+  ...SIGNALS,
+  changedPaths: ['src/tool/cli.py', 'src/tool/report.py', 'src/tool/export.py', 'src/tool/parse.py', 'tests/test_cli.py', 'pyproject.toml'],
+};
+const wideProfile = discoverScoutCapabilities({
+  readiness: computeReadiness({
+    files: ['pyproject.toml', 'uv.lock', 'src/tool/__init__.py', 'src/tool/cli.py', 'tests/test_cli.py'],
+    manifests: { 'pyproject.toml': '[project]\nname = "tool"\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n' },
+  }),
+  extension: {
+    journeys: ['help', 'version', 'list', 'export', 'parse'].map((name) => ({ name, kind: 'cli' as const, command: `uv run tool ${name}`, mutates: false, expect: 'exit 0' })),
+  },
+});
+
 const runAll: ScoutProbeDecider = async () => ({ decision: 'run', reasonCode: 'test', source: 'rule' });
 
 function commandPort(out: Partial<ScoutCommandOutput> = {}) {
@@ -114,6 +129,15 @@ function memoryWorld() {
       return true;
     },
     taskStatus: async (id) => tasks.get(id)?.status ?? null,
+    cancelledByScout: async () => true,
+    releaseHold: async () => {},
+    async dismissFinding(_w, sig, fields) {
+      const f = findings.get(sig);
+      if (!f) return { dismissed: false, exists: false };
+      if (f.state === 'dismissed') return { dismissed: false, exists: true };
+      findings.set(sig, { ...f, state: 'dismissed', dismissedReason: fields.dismissedReason, dismissedBy: fields.dismissedBy, dismissedAt: fields.dismissedAt.toISOString() });
+      return { dismissed: true, actionTaskId: f.actionTaskId };
+    },
     async insertTask(input) {
       const id = `task-${++n}`;
       tasks.set(id, { status: 'pending', input });
@@ -365,5 +389,50 @@ describe('runQualityScout — readout metrics', () => {
     if (out.status !== 'completed') throw new Error(out.status);
     expect(out.metrics.stages.select.costUsd).toBeCloseTo(cost, 6);
     expect(out.metrics.costUsd).toBeCloseTo(cost, 6);
+  });
+
+  it('budget.maxCostUsd caps the selection model: no decision call is made that would pass it', async () => {
+    const w = memoryWorld();
+    let cost = 0;
+    let calls = 0;
+    const decide: ScoutProbeDecider = async () => {
+      calls++;
+      cost += 0.001;
+      return { decision: 'defer', reasonCode: 'test', source: 'model' };
+    };
+    // Uncapped, this world asks several decisions; capped, only the first fits.
+    const uncapped = await runQualityScout(request({ budget: { maxProbes: 10 }, dedupeKey: 'uncapped', trigger: 'manual' }), deps(memoryWorld(), { decide, gatherSignals: async () => WIDE_SIGNALS, loadProfile: async () => wideProfile, takeDecisionCost: () => cost }));
+    if (uncapped.status !== 'completed') throw new Error(uncapped.status);
+    expect(uncapped.metrics.decisionsAsked).toBeGreaterThan(1);
+    cost = 0;
+    calls = 0;
+    const out = await runQualityScout(request({ budget: { maxProbes: 10, maxCostUsd: 0.0015 } }), deps(w, { decide, gatherSignals: async () => WIDE_SIGNALS, loadProfile: async () => wideProfile, takeDecisionCost: () => cost }));
+    if (out.status !== 'completed') throw new Error(out.status);
+    expect(calls).toBe(1);
+    expect(out.metrics.costUsd).toBeLessThanOrEqual(0.0015);
+    expect(out.metrics.costCapHit).toBe(true);
+    expect(out.metrics.decisionsAsked).toBe(1);
+    expect(out.metrics.warnings.some((x) => x.includes('cost cap'))).toBe(true);
+  });
+
+  it('reaching the cost cap does not withhold probe execution, which has no model cost', async () => {
+    const w = memoryWorld();
+    let cost = 0;
+    const decide: ScoutProbeDecider = async () => {
+      cost += 0.001;
+      return { decision: 'run', reasonCode: 'test', source: 'model' };
+    };
+    const out = await runQualityScout(request({ budget: { maxCostUsd: 0.001 } }), deps(w, { decide, takeDecisionCost: () => cost }));
+    if (out.status !== 'completed') throw new Error(out.status);
+    expect(out.metrics.probesSelected).toBeGreaterThan(0);
+    expect(out.metrics.probesNotExecuted).toBe(0);
+    expect(out.metrics.deadlineHit).toBe(false);
+  });
+
+  it('an absent cap records costCapHit false and bounds selection by the decision limit alone', async () => {
+    const w = memoryWorld();
+    const out = await runQualityScout(request(), deps(w, { takeDecisionCost: () => 0 }));
+    if (out.status !== 'completed') throw new Error(out.status);
+    expect(out.metrics.costCapHit).toBe(false);
   });
 });

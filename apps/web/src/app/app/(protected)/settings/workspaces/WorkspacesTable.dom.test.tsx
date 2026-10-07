@@ -1,8 +1,8 @@
 /**
- * Settings → Workspaces as one table: a row per workspace with its team, git
- * workflow and merge policy links, an inline "Require green CI" switch that
- * PATCHes the workspace, and a row menu holding "Move to team…" only where a
- * move is possible. Fixtures are illustrative.
+ * Settings → Workspaces as a list: the defaults once, a row per workspace with
+ * only what differs (as chips linking to the editor), where work runs, last
+ * task, open tasks and health; team headings only across teams; inactive rows
+ * folded; no policy toggle in the list. Fixtures are illustrative.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals and
  * module mocks stay here.
@@ -24,22 +24,24 @@ const { createRoot } = await import('react-dom/client');
 const { default: WorkspacesTable } = await import('./WorkspacesTable');
 type Row = Parameters<typeof WorkspacesTable>[0]['rows'][number];
 
+const NOW = '2026-06-01T12:00:00.000Z';
+const daysAgo = (n: number) => new Date(Date.parse(NOW) - n * 86_400_000).toISOString();
+const DEFAULTS = { gitWorkflow: 'Mission branch', mergePolicy: 'Auto-threshold' };
+
+const base = (over: Partial<Row>): Row => ({
+  id: 'ws', name: 'ws', teamId: 'team-a', teamName: 'Team A', differs: [],
+  runsOn: { executor: 'any', size: null }, lastActivityAt: daysAgo(1), openTasks: 0,
+  health: { stuckTasks: 0, redPrs: 0 }, canEdit: true, canMove: true, ...over,
+});
+
 const ROWS: Row[] = [
-  {
-    id: 'ws-1', name: 'example-app', teamId: 'team-a', teamName: 'Team A',
-    gitWorkflow: 'Mission branch', mergePolicy: 'Auto-threshold', enforceGreenCI: false,
-    canEdit: true, canMove: true,
-  },
-  {
-    id: 'ws-2', name: 'example-api', teamId: 'team-b', teamName: 'Team B',
-    gitWorkflow: 'Direct', mergePolicy: 'Human gate', enforceGreenCI: true,
-    canEdit: true, canMove: true,
-  },
-  {
-    id: 'ws-3', name: 'example-docs', teamId: 'team-c', teamName: 'Team C',
-    gitWorkflow: 'Direct', mergePolicy: 'Agent review', enforceGreenCI: false,
-    canEdit: false, canMove: false,
-  },
+  base({ id: 'ws-1', name: 'example-app', lastActivityAt: daysAgo(2), openTasks: 3, runsOn: { executor: 'cloud', size: 'large' } }),
+  base({
+    id: 'ws-2', name: 'example-api', lastActivityAt: daysAgo(1),
+    differs: [{ key: 'mergePolicy', label: 'Agent review', href: '/app/settings/workspace/ws-2' }],
+    health: { stuckTasks: 2, redPrs: 1 },
+  }),
+  base({ id: 'ws-3', name: 'example-sandbox', lastActivityAt: daysAgo(90), canMove: false }),
 ];
 const TEAMS = [{ id: 'team-a', name: 'Team A' }, { id: 'team-b', name: 'Team B' }];
 
@@ -63,70 +65,87 @@ afterEach(() => {
 });
 
 function render(rows: Row[] = ROWS) {
-  act(() => root.render(<WorkspacesTable rows={rows} moveTeams={TEAMS} />));
+  act(() => root.render(<WorkspacesTable rows={rows} moveTeams={TEAMS} defaults={DEFAULTS} now={NOW} />));
 }
 
 function rows() {
   return [...host.querySelectorAll('[data-testid="workspace-row"]')] as HTMLElement[];
 }
 
-function ciSwitch(row: HTMLElement) {
-  return row.querySelector('[role="switch"]') as HTMLButtonElement;
-}
-
 describe('WorkspacesTable', () => {
-  it('renders one row per workspace with team, workflow and policy', () => {
+  it('states the defaults once and lists active rows by last activity', () => {
     render();
-    expect(rows()).toHaveLength(3);
-    const first = rows()[0];
-    expect(first.textContent).toContain('example-app');
-    expect(first.textContent).toContain('Team A');
-    const links = [...first.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')]);
-    expect(links).toContainEqual(['Mission branch', '/app/workspaces/ws-1/config']);
-    expect(links).toContainEqual(['Auto-threshold', '/app/settings/workspace/ws-1']);
+    expect(host.querySelector('[data-testid="workspace-defaults"]')?.textContent).toBe('Default: Mission branch · Auto-threshold');
+    expect(rows().map((r) => r.querySelector('a')?.textContent)).toEqual(['example-api', 'example-app']);
   });
 
-  it('shows each row\'s current CI requirement', () => {
+  it('a row on the defaults shows no settings chips; a differing value is a chip linking to its editor', () => {
     render();
-    expect(rows().map((r) => ciSwitch(r).getAttribute('aria-checked'))).toEqual(['false', 'true', 'false']);
+    const [api, app] = rows();
+    expect(app.querySelector('[data-testid^="workspace-differs-"]')).toBeNull();
+    const chip = api.querySelector('[data-testid="workspace-differs-mergePolicy"]') as HTMLAnchorElement;
+    expect(chip.textContent).toBe('Agent review');
+    expect(chip.getAttribute('href')).toBe('/app/settings/workspace/ws-2');
   });
 
-  it('the CI switch PATCHes that workspace\'s gitConfig', async () => {
+  it('the row name opens the workspace', () => {
     render();
-    await act(async () => { ciSwitch(rows()[0]).click(); });
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/api/workspaces/ws-1');
-    expect(init.method).toBe('PATCH');
-    expect(JSON.parse(String(init.body))).toEqual({ gitConfig: { enforceGreenCI: true } });
-    expect(ciSwitch(rows()[0]).getAttribute('aria-checked')).toBe('true');
+    expect(rows()[1].querySelector('a')?.getAttribute('href')).toBe('/app/workspaces/ws-1');
   });
 
-  it('rolls the switch back when the save fails', async () => {
-    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 }));
+  it('shows where work runs, the last task and open tasks', () => {
     render();
-    await act(async () => { ciSwitch(rows()[1]).click(); });
-    expect(ciSwitch(rows()[1]).getAttribute('aria-checked')).toBe('true');
-    expect(rows()[1].textContent).toContain('Forbidden');
+    const app = rows()[1];
+    expect(app.querySelector('[data-testid="workspace-runs-on"]')?.textContent).toBe('Runs on Cloud · large');
+    expect(app.textContent).toContain('2d ago');
+    expect(app.textContent).toContain('3 open');
   });
 
-  it('disables the switch where the user cannot edit', () => {
+  it('health chips link to explain', () => {
     render();
-    expect(ciSwitch(rows()[2]).disabled).toBe(true);
+    const api = rows()[0];
+    expect(api.querySelector('[data-testid="workspace-health-red"]')?.textContent).toBe('1 red PR');
+    expect(api.querySelector('[data-testid="workspace-health-stuck"]')?.getAttribute('href')).toBe('/app/tasks?workspace=ws-2');
+    expect(rows()[1].querySelector('[data-testid^="workspace-health-"]')).toBeNull();
   });
 
-  it('puts Move to team… in the row menu only where a move is possible', async () => {
+  it('has no policy toggle in the list', () => {
     render();
-    expect(rows()[2].querySelector('[data-testid="workspace-row-menu"]')).toBeNull();
+    expect(host.querySelector('[role="switch"]')).toBeNull();
+  });
 
-    const trigger = rows()[0].querySelector('[data-testid="workspace-row-menu"]') as HTMLButtonElement;
-    expect(trigger).not.toBeNull();
-    expect(trigger.getAttribute('aria-expanded')).toBe('false');
-    await act(async () => { trigger.click(); });
-    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+  it('folds workspaces with no task in 30 days under Inactive (N)', async () => {
+    render();
+    const toggle = [...host.querySelectorAll('button')].find((b) => b.textContent?.includes('Inactive (1)')) as HTMLButtonElement;
+    expect(toggle).toBeDefined();
+    expect(host.querySelector('[data-testid="workspace-inactive"]')).toBeNull();
+    await act(async () => { toggle.click(); });
+    const inactive = host.querySelector('[data-testid="workspace-inactive"]') as HTMLElement;
+    expect(inactive.textContent).toContain('example-sandbox');
+    // Not movable: its menu has Open but no Move to team….
+    await act(async () => { (inactive.querySelector('[data-testid="workspace-row-menu"]') as HTMLButtonElement).click(); });
+    expect([...inactive.querySelectorAll('a')].some((a) => a.textContent === 'Open')).toBe(true);
+    expect([...inactive.querySelectorAll('button')].some((b) => b.textContent?.includes('Move to team'))).toBe(false);
+  });
 
-    const move = [...rows()[0].querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Move to team…');
+  it('team headings appear only when the rows span more than one team', () => {
+    render();
+    expect(host.querySelector('h3')).toBeNull();
+    render([...ROWS, base({ id: 'ws-4', name: 'example-web', teamId: 'team-b', teamName: 'Team B' })]);
+    expect([...host.querySelectorAll('h3')].map((h) => h.textContent)).toEqual(['Team A', 'Team B']);
+  });
+
+  it('the row menu offers Open always, and Move to team… only where a move is possible', async () => {
+    render();
+    const open = async (row: HTMLElement) => {
+      const trigger = row.querySelector('[data-testid="workspace-row-menu"]') as HTMLButtonElement;
+      await act(async () => { trigger.click(); });
+      expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    };
+    const app = rows()[1];
+    await open(app);
+    expect([...app.querySelectorAll('a')].some((a) => a.textContent === 'Open')).toBe(true);
+    const move = [...app.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Move to team…');
     expect(move).toBeDefined();
     await act(async () => { move!.click(); });
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain('example-app');
@@ -151,9 +170,9 @@ describe('WorkspacesTable', () => {
       return new Response(JSON.stringify({ outcomes: [] }), { status: 200 });
     });
     render();
-    const trigger = rows()[0].querySelector('[data-testid="workspace-row-menu"]') as HTMLButtonElement;
+    const trigger = rows()[1].querySelector('[data-testid="workspace-row-menu"]') as HTMLButtonElement;
     await act(async () => { trigger.click(); });
-    const open = [...rows()[0].querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Move to team…')!;
+    const open = [...rows()[1].querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Move to team…')!;
     await act(async () => { open.click(); });
 
     expect(document.querySelector('[data-testid="move-consequences"]')?.textContent).toBe('1 connector needs reconnecting');

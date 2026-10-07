@@ -552,6 +552,12 @@ jobs:
       NEON_LOCAL_FETCH_ENDPOINT: http://127.0.0.1:4444/sql
     steps:
       - uses: actions/checkout@v7
+      # apps/web/tests/db/migration-baseline.test.ts replays the pre-squash
+      # migration tree from this tag (LAST_RELEASE_BEFORE_SQUASH in
+      # packages/core/db/migrate-plan.ts) to prove the baseline equivalent; a
+      # shallow checkout carries no tags.
+      - name: Fetch the pre-squash release tag
+        run: git fetch --no-tags --depth=1 origin +refs/tags/v0.284.0:refs/tags/v0.284.0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
