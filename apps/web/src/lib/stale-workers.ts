@@ -1099,6 +1099,26 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
       })
       .where(eq(tasks.id, originalTask.id));
 
+    // An attempt of a workflow-kernel delivery is not cloned here: a clone would
+    // run without the delivery link (its push would read as foreign) and the
+    // ledger row would stay `running`. The kernel hears AttemptEnded(lost) and
+    // decides whether to re-dispatch (docs/specs/workflow-state-kernel.md §9, §18.1).
+    const kernelDeliveryId = originalTask.deliveryId
+      ? await kernelDeliveryById(originalTask.deliveryId).catch(() => null)
+      : null;
+    if (kernelDeliveryId) {
+      const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');
+      await workflowAttemptEnded({
+        task: { id: originalTask.id, workspaceId: originalTask.workspaceId, deliveryId: originalTask.deliveryId ?? null, deliveryRole: originalTask.deliveryRole ?? null, context: originalTask.context },
+        workerId: worker.id,
+        status: 'lost',
+        localHeadSha: null,
+        commitCount: 0,
+        source: 'sweep:waiting-input',
+      }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${originalTask.id}:`, err));
+      continue;
+    }
+
     // Create retry task with enriched context for branch continuity
     const existingCtx = (originalTask.context || {}) as Record<string, unknown>;
     const retryContext = {
