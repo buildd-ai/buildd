@@ -48,6 +48,17 @@ export const teams = pgTable('teams', {
   // Read only through sanitizeOverrides; owners always hold everything, and
   // locked permissions ignore this. Written by PUT /api/teams/[id]/permissions.
   permissionOverrides: jsonb('permission_overrides').$type<Record<string, string[]>>().default({}).notNull(),
+  // Hosted plan assignment for Buildd-managed runners: { plan, ...overrides }.
+  // NULL = the deployment default (BUILDD_DEFAULT_MANAGED_PLAN), unlimited when
+  // that is unset, so a self-hosted install has no commercial limit. Written by
+  // hosted billing; read only through resolveManagedRunnerEntitlement
+  // (apps/web/src/lib/entitlements/plans.ts).
+  managedRunnerPlan: jsonb('managed_runner_plan').$type<{
+    plan: string;
+    concurrency?: number | null;
+    monthlyRunnerHours?: number | null;
+    overage?: 'block' | 'allow';
+  } | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 
@@ -265,6 +276,12 @@ export const accounts = pgTable('accounts', {
   // team's secrets (lib/credential-custody.ts); any other key gets team
   // credentials only as handed to it at claim time.
   hostRunner: boolean('host_runner').default(false).notNull(),
+
+  // A Buildd-managed runner key: hosted compute Buildd pays for. Its claims
+  // count against the team's managed-runner entitlement (teams.managedRunnerPlan,
+  // packages/shared/src/entitlements.ts). Set by hosted provisioning, never by a
+  // team: a self-hosted runner key is false and no commercial limit applies to it.
+  managedRunner: boolean('managed_runner').default(false).notNull(),
 
   // Common
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
@@ -4178,7 +4195,9 @@ export const tierPools = pgTable('tier_pools', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
   tier: text('tier').notNull().$type<'premium' | 'standard' | 'budget'>(),
   surface: text('surface').notNull().$type<'agent' | 'chat'>(),
-  mode: text('mode').notNull().default('pinned').$type<'pinned' | 'split' | 'explore'>(),
+  // `dial`: buildd moves traffic from the cell's one dial and its own outcome
+  // evidence (packages/core/tier-dial.ts); `allocation` follows `dial_state`.
+  mode: text('mode').notNull().default('pinned').$type<'pinned' | 'split' | 'explore' | 'dial'>(),
   // kind 'tier_pool'; its id and policy_version salt the draw.
   experimentId: uuid('experiment_id').references(() => experiments.id, { onDelete: 'set null' }),
   // Current applied allocation: { [tier_pool_arms.id]: share }.
@@ -4199,6 +4218,13 @@ export const tierPools = pgTable('tier_pools', {
   challengerDailyCap: decimal('challenger_daily_cap', { precision: 10, scale: 2 }),
   autoChallenger: boolean('auto_challenger').notNull().default(false),
   autoShift: boolean('auto_shift').notNull().default(false),
+  // The cell's dial, 1 (always the primary) .. 5 (cheapest that keeps up).
+  // Read in `dial` mode only; 3 is balanced.
+  dial: integer('dial').notNull().default(3),
+  // `dial` mode state machine: always | learning | shifted | reverted, with
+  // the shifted alternate and the last revert reason (DialStateRecord in
+  // packages/core/tier-dial.ts). NULL until the first dial evaluation.
+  dialState: jsonb('dial_state').$type<Record<string, unknown> | null>(),
   frozenAt: timestamp('frozen_at', { withTimezone: true }),
   frozenBy: uuid('frozen_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -4238,7 +4264,7 @@ export const tierPoolArms = pgTable('tier_pool_arms', {
 export const tierPoolChanges = pgTable('tier_pool_changes', {
   id: uuid('id').primaryKey().defaultRandom(),
   poolId: uuid('pool_id').references(() => tierPools.id, { onDelete: 'cascade' }).notNull(),
-  kind: text('kind').notNull().$type<'allocation' | 'arm_added' | 'arm_removed' | 'mode' | 'freeze' | 'unfreeze' | 'suggestion' | 'suggestion_dismissed' | 'promotion'>(),
+  kind: text('kind').notNull().$type<'allocation' | 'arm_added' | 'arm_removed' | 'mode' | 'freeze' | 'unfreeze' | 'suggestion' | 'suggestion_dismissed' | 'promotion' | 'revert' | 'dial'>(),
   before: jsonb('before').$type<Record<string, unknown>>(),
   after: jsonb('after').$type<Record<string, unknown>>(),
   evidence: jsonb('evidence').$type<Record<string, unknown>>(),

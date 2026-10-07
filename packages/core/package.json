@@ -98,6 +98,8 @@
     "./openrouter-rankings": "./openrouter-rankings.ts",
     "./openrouter-rankings-source": "./openrouter-rankings-source.ts",
     "./tier-weights": "./tier-weights.ts",
+    "./tier-dial": "./tier-dial.ts",
+    "./tier-dial-source": "./tier-dial-source.ts",
     "./model-quality": "./model-quality.ts",
     "./heartbeat-triage-experiment": "./heartbeat-triage-experiment.ts",
     "./heartbeat-triage-experiment-source": "./heartbeat-triage-experiment-source.ts",

@@ -179,6 +179,52 @@ describe('drawAgentPoolArm', () => {
   });
 });
 
+describe('drawAgentPoolArm — dial pools', () => {
+  it('learning (shadow) never changes the served model and records the would-be pick', async () => {
+    // Even a stale allocation that puts everything on the challenger.
+    fake.pools = [pool({ mode: 'dial', dial: 5, dialState: { state: 'learning', since: '2026-10-01T00:00:00Z' } })];
+    fake.arms = arms();
+    const d = await src.drawAgentPoolArm(agentArgs());
+    expect(d!.arm.id).toBe(INC);
+    expect(d!.eligibility).toMatchObject({ dial: 5, dialState: 'learning', shadowArmId: CH, shadowModel: 'claude-opus-5' });
+    const served = src.applyAgentPoolArm(d!, { incumbentModel: 'claude-sonnet-5', backend: 'claude', clientCanServe: () => true });
+    expect(served).toBeNull();
+    expect(d!.assignedModel).toBe('claude-sonnet-5');
+  });
+
+  it('learning ignores a sticky prior on the challenger', async () => {
+    fake.pools = [pool({ mode: 'dial', dialState: { state: 'learning', since: '' } })];
+    fake.arms = arms();
+    const task = agentArgs().task;
+    fake.priors = [{ taskId: 'other', unitType: 'task', unitId: task.id, armId: CH, propensity: 0.5, allocationVersion: 2 }];
+    const d = await src.drawAgentPoolArm(agentArgs());
+    expect(d!.arm.id).toBe(INC);
+  });
+
+  it('dial 1 serves the primary even when the state says shifted', async () => {
+    fake.pools = [pool({ mode: 'dial', dial: 1, dialState: { state: 'shifted', since: '', alternateArmId: CH } })];
+    fake.arms = arms();
+    const d = await src.drawAgentPoolArm(agentArgs());
+    expect(d!.arm.id).toBe(INC);
+  });
+
+  it('shifted serves the alternate at the dial share', async () => {
+    fake.pools = [pool({ mode: 'dial', dial: 5, dialState: { state: 'shifted', since: '', alternateArmId: CH } })];
+    fake.arms = arms();
+    const d = await src.drawAgentPoolArm(agentArgs());
+    // Dial 5 sends every eligible run to the alternate.
+    expect(d!.arm.id).toBe(CH);
+    expect(d!.propensity).toBe(1);
+    expect(d!.eligibility).toMatchObject({ dialState: 'shifted' });
+  });
+
+  it('a workspace override still wins over a dial pool', async () => {
+    fake.pools = [pool({ mode: 'dial', dial: 5, dialState: { state: 'shifted', since: '', alternateArmId: CH } })];
+    fake.arms = arms();
+    expect(await src.drawAgentPoolArm(agentArgs({ workspaceOverride: true }))).toBeNull();
+  });
+});
+
 describe('applyAgentPoolArm', () => {
   async function drawn() {
     fake.pools = [pool()];

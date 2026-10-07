@@ -1,6 +1,6 @@
 {
-  "id": "b3938f12-8498-456d-a2d1-861294b3a824",
-  "prevId": "a53361de-db5a-475b-9e9f-bc3c9429f4a0",
+  "id": "4c0b248c-c7c4-42fd-8927-5f3f8e5b666e",
+  "prevId": "b3938f12-8498-456d-a2d1-861294b3a824",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -17038,6 +17038,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "dial": {
+          "name": "dial",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 3
+        },
+        "dial_state": {
+          "name": "dial_state",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "frozen_at": {
           "name": "frozen_at",
