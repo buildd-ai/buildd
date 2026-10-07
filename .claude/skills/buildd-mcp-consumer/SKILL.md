@@ -80,7 +80,7 @@ session from the moment it starts, without holding a slot. Your
 `claim_task` binds the session to the worker it mints, and closing the session
 releases that worker (an unfinished task goes back to the queue; nothing is
 marked completed). Without the hooks everything here still works over MCP
-alone. See `docs/specs/local-agent-presence.md`.
+alone.
 
 Do **not** use `startMode: "held"` for this. Held is a pause: it blocks your
 own explicit claims too, reads as HELD / "arm to start" everywhere, and leaves

@@ -9,6 +9,34 @@ surfaces: [apps/web/src/lib/local-session.ts, apps/web/src/app/api/workers/local
 related: [runner-liveness, mission-task-lifecycle]
 keywords: [local_sessions, interactive session, presence, buildd plugin, agent plugin, hooks, SessionStart, SessionEnd, claude code, codex, cursor, buildd install, release slot]
 verified_by: [apps/web/src/lib/local-session.test.ts, apps/web/src/lib/local-session-view.test.ts, apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/app/app/(protected)/tasks/InteractiveSessions.test.tsx, apps/web/src/app/api/workers/[id]/instruct/route.test.ts]
+assertions:
+  - id: "session-event-handler"
+    type: "symbol"
+    name: "handleLocalSessionEvent"
+    path: "apps/web/src/lib/local-session.ts"
+  - id: "strict-event-contract"
+    type: "symbol"
+    name: "parseLocalSessionEvent"
+    path: "packages/shared/src/local-session.ts"
+  - id: "local-sessions-route"
+    type: "route"
+    method: "POST"
+    path: "/api/workers/local-sessions"
+    file: "apps/web/src/app/api/workers/local-sessions/route.ts"
+  - id: "route-uses-strict-contract"
+    type: "symbol_reachable"
+    symbol: "parseLocalSessionEvent"
+    entry: "apps/web/src/app/api/workers/local-sessions/route.ts"
+  - id: "local-sessions-migration"
+    type: "migration"
+    number: "0253"
+    contains: "local_sessions"
+  - id: "presence-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/local-session.test.ts"
+  - id: "plugin-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/agent-plugin.test.ts"
 ---
 
 # Local Agent Presence
