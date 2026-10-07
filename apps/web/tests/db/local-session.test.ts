@@ -11,7 +11,7 @@
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import type { LocalSessionEvent } from '@buildd/shared';
-import { handleLocalSessionEvent, LocalSessionError, type LocalSessionAccount, type LocalSessionPerson } from '@/lib/local-session';
+import { handleLocalSessionEvent, hashClientSessionId, LocalSessionError, type LocalSessionAccount, type LocalSessionPerson } from '@/lib/local-session';
 import { authenticatePresenceToken, issuePresenceToken, revokePresenceToken } from '@/lib/presence-token';
 import { listLocalSessions } from '@/lib/local-session-view';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
@@ -100,10 +100,10 @@ describe('bind', () => {
     await send(account, { event: 'start', client: 'claude', clientSessionId: s });
     expect((await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId })).outcome).toBe('bound');
     expect((await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId })).outcome).toBe('already_bound');
-    const [row] = await q<{ bound_worker_id: string }>(sql`SELECT bound_worker_id FROM local_sessions WHERE bound_worker_id = ${workerId}::uuid`);
-    expect(row.bound_worker_id).toBe(workerId);
+    const rows = await q<{ local_session_id: string }>(sql`SELECT local_session_id FROM local_session_workers WHERE worker_id = ${workerId}::uuid`);
+    expect(rows).toHaveLength(1);
 
-    // A second session cannot take it: the unique index holds, not just the code path.
+    // A second session cannot take it: the primary key holds, not just the code path.
     const err = await send(account, { event: 'bind', client: 'claude', clientSessionId: sid(), workerId }).catch(e => e);
     expect(err).toBeInstanceOf(LocalSessionError);
     expect((err as LocalSessionError).code).toBe('bound_elsewhere');
@@ -117,6 +117,69 @@ describe('bind', () => {
     const theirs = await seedClaim(other);
     const e2 = await send(account, { event: 'bind', client: 'claude', clientSessionId: sid(), workerId: theirs.workerId }).catch(e => e);
     expect((e2 as LocalSessionError).status).toBe(404);
+  });
+});
+
+describe('a session holding several claims (its subagents each claimed one)', () => {
+  test('both binds stick; exit releases both, each seat exactly once; a replay changes nothing', async () => {
+    const s = sid();
+    const one = await seedClaim(account);
+    const two = await seedClaim(account);
+    await send(account, { event: 'start', client: 'claude', clientSessionId: s, repo: 'acme/widget' });
+    expect((await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId: one.workerId })).outcome).toBe('bound');
+    expect((await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId: two.workerId })).outcome).toBe('bound');
+    const held = await q<{ worker_id: string }>(sql`
+      SELECT lsw.worker_id FROM local_session_workers lsw JOIN local_sessions ls ON ls.id = lsw.local_session_id
+      WHERE ls.client_session_hash = ${hashClientSessionId('claude', s)}`);
+    expect(held.map(r => r.worker_id).sort()).toEqual([one.workerId, two.workerId].sort());
+
+    // Another session still cannot take either.
+    const err = await send(account, { event: 'bind', client: 'claude', clientSessionId: sid(), workerId: two.workerId }).catch(e => e);
+    expect((err as LocalSessionError).code).toBe('bound_elsewhere');
+
+    // Activity lists both tasks under the one session.
+    const view = (await listLocalSessions({ workspaceIds: [workspaceId] })).find(v => v.tasks.some(t => t.id === one.taskId));
+    expect(view?.tasks.map(t => t.id).sort()).toEqual([one.taskId, two.taskId].sort());
+    expect(view?.state).toBe('bound');
+
+    const before = await seats(account);
+    expect((await send(account, { event: 'end', client: 'claude', clientSessionId: s, reason: 'exit' })).outcome).toBe('ended_released');
+    expect(await taskStatus(one.taskId)).toBe('pending');
+    expect(await taskStatus(two.taskId)).toBe('pending');
+    expect(await workerStatus(one.workerId)).toBe('failed');
+    expect(await workerStatus(two.workerId)).toBe('failed');
+    expect(await seats(account)).toBe(before - 2);
+    expect((await send(account, { event: 'end', client: 'claude', clientSessionId: s, reason: 'exit' })).outcome).toBe('already_ended');
+    expect(await seats(account)).toBe(before - 2);
+  });
+
+  test('one finished, one open: the finished task stays finished, the open one goes back', async () => {
+    const s = sid();
+    const done = await seedClaim(account);
+    const open = await seedClaim(account);
+    await send(account, { event: 'start', client: 'claude', clientSessionId: s });
+    await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId: done.workerId });
+    await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId: open.workerId });
+    await q(sql`UPDATE tasks SET status = 'completed' WHERE id = ${done.taskId}::uuid`);
+    await send(account, { event: 'end', client: 'claude', clientSessionId: s, reason: 'exit' });
+    expect(await taskStatus(done.taskId)).toBe('completed');
+    expect(await taskStatus(open.taskId)).toBe('pending');
+  });
+
+  test('a session bound before multi-claim (legacy column) still releases its worker, and keeps it from other sessions', async () => {
+    const s = sid();
+    const old = await seedClaim(account);
+    const r = await send(account, { event: 'start', client: 'claude', clientSessionId: s });
+    // How a pre-migration bind left the row: the single legacy column, no join row.
+    await q(sql`UPDATE local_sessions SET bound_worker_id = ${old.workerId}::uuid, bound_at = now() WHERE id = ${r.sessionId}::uuid`);
+    const err = await send(account, { event: 'bind', client: 'claude', clientSessionId: sid(), workerId: old.workerId }).catch(e => e);
+    expect((err as LocalSessionError).code).toBe('bound_elsewhere');
+    // The same session can add a new claim next to it.
+    const fresh = await seedClaim(account);
+    expect((await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId: fresh.workerId })).outcome).toBe('bound');
+    expect((await send(account, { event: 'end', client: 'claude', clientSessionId: s, reason: 'exit' })).outcome).toBe('ended_released');
+    expect(await taskStatus(old.taskId)).toBe('pending');
+    expect(await taskStatus(fresh.taskId)).toBe('pending');
   });
 });
 

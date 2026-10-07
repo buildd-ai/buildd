@@ -16,6 +16,7 @@ import {
   isWorkspaceRepo,
   WORKSPACE_REFRESH_MS,
   resolveAuth,
+  readSessionState,
 } from '../../plugin/scripts/buildd-hook.mjs';
 import {
   claudeLikeHookEntries,
@@ -245,6 +246,26 @@ describe('workspace scope', () => {
     expect(bind.body).toMatchObject({ event: 'bind', workerId: W });
     expect((await run({ client: 'claude', stdin: ev('SessionEnd', { reason: 'prompt_input_exit' }), env: env(), fetchImpl })).body)
       .toMatchObject({ event: 'end', reason: 'exit' });
+  });
+
+  it('a subagent claim binds to the same session, and which subagent claimed which task stays on this machine', async () => {
+    workspaceCheckout(dir, 'acme/widget', ['acme/widget']);
+    const fetchImpl = server([]);
+    await run({ client: 'claude', stdin: ev('SessionStart'), env: env(), fetchImpl });
+    const claim = (w: string) => [{ type: 'text', text: `Claimed 1 task(s):\n\n**Worker ID:** ${w}\n**Task:** x` }];
+    const W1 = '11111111-2222-4333-8444-000000000001';
+    const W2 = '11111111-2222-4333-8444-000000000002';
+    const parent = await run({ client: 'claude', env: env(), fetchImpl, stdin: ev('PostToolUse', {
+      tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task', params: {} }, tool_response: claim(W1),
+    }) });
+    // Claude Code tags a subagent's tool call with agent_id / agent_type and the parent's session_id.
+    const sub = await run({ client: 'claude', env: env(), fetchImpl, stdin: ev('PostToolUse', {
+      agent_id: 'a0123456789abcdef', agent_type: 'general-purpose',
+      tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task', params: {} }, tool_response: claim(W2),
+    }) });
+    expect(parent.body).toEqual({ event: 'bind', client: 'claude', clientSessionId: 'scope-1', workerId: W1 });
+    expect(sub.body).toEqual({ event: 'bind', client: 'claude', clientSessionId: 'scope-1', workerId: W2 });
+    expect(readSessionState({ BUILDD_HOME: dir }, 'claude', 'scope-1').claims).toEqual({ [W1]: null, [W2]: 'a0123456789abcdef' });
   });
 
   it('fails closed: no list and buildd unreachable means nothing is sent', async () => {

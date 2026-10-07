@@ -109,7 +109,12 @@ function normalizeClaudeLike(client, p, env) {
     case 'PostToolUse': {
       if (!isBuilddTool(p.tool_name)) return null;
       const workerId = claimedWorkerId(p.tool_input, p.tool_response);
-      return workerId ? { ...base, event: 'bind', workerId } : null;
+      if (!workerId) return null;
+      // A subagent's tool call carries its agent_id (and the parent's session_id):
+      // kept in this machine's session state to know which subagent holds which
+      // claim. Never sent.
+      const agentId = typeof p.agent_id === 'string' && /^[\w-]{1,64}$/.test(p.agent_id) ? p.agent_id : null;
+      return { ...base, event: 'bind', workerId, ...(agentId ? { agentId } : {}) };
     }
     case 'SessionEnd': {
       // Claude: clear | resume | logout | prompt_input_exit | other. Codex: always other.
@@ -297,6 +302,11 @@ function statePath(dir, client, clientSessionId) {
   return join(dir, `${createHash('sha256').update(`${client}:${clientSessionId}`).digest('hex').slice(0, 32)}.json`);
 }
 
+/** This session's local hook state (which claims it holds, and which subagent made each). */
+export function readSessionState(env, client, clientSessionId) {
+  return readState(statePath(stateDir(env), client, clientSessionId));
+}
+
 function readState(file) {
   try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return {}; }
 }
@@ -401,7 +411,9 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
   } catch (err) {
     debug('request failed', err?.message ?? err);
   }
-  writeState(file, { ...state, scope, lastSentAt: now, lastEvent: n.event });
+  // claims: worker id -> the subagent that claimed it (null: the session itself).
+  const claims = n.event === 'bind' ? { ...(state.claims ?? {}), [n.workerId]: n.agentId ?? null } : state.claims;
+  writeState(file, { ...state, scope, lastSentAt: now, lastEvent: n.event, ...(claims ? { claims } : {}) });
   return { sent: true, ok: !!result, body, output: hookOutput(client, hookEventName, result) };
 }
 
