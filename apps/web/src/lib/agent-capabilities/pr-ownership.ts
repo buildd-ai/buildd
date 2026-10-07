@@ -19,6 +19,11 @@
  *                   branch (workers.runner === INTERACTIVE_RUNNER, see
  *                   interactive-session.ts), when no OTHER worker already
  *                   holds that exact name live or with a PR of its own
+ *   cut_from_assigned_base the worker was assigned the mission integration
+ *                   branch (context.baseBranch) itself, so it pushed to a task
+ *                   branch cut from it; owned when that head carries no other
+ *                   task's short id and no other worker holds it (same holder
+ *                   rule as interactive_head)
  *
  * A protected head (trunk, release branches, the repo's default branch) is
  * owned only as the worker's own branch: naming a release PR in a task does
@@ -96,11 +101,22 @@ export interface PrOwnershipInput {
    */
   interactiveWorker?: boolean;
   /**
-   * Other workers already recorded on `head` — only consulted when
-   * `interactiveWorker` is true and no cheaper basis matched. Fetch with one
+   * Other workers already recorded on `head` — only consulted for
+   * `interactive_head` and `cut_from_assigned_base`, when no cheaper basis
+   * matched (see `needsHeadHolders`). Fetch with one
    * branch-equality query in the same workspace; omit otherwise.
    */
   otherHeadHolders?: readonly InteractiveHeadHolder[];
+}
+
+/**
+ * Whether the caller must fetch `otherHeadHolders` for this worker: an
+ * interactive session, or a worker assigned its task's mission base itself.
+ */
+export function needsHeadHolders(interactiveWorker: boolean, workerBranch: string | null, task: PrOwnershipTask | null): boolean {
+  if (interactiveWorker) return true;
+  const ctx = task?.context && typeof task.context === 'object' ? task.context as Record<string, unknown> : {};
+  return !!workerBranch && ctx.baseBranch === workerBranch;
 }
 
 /** Ids of this task and its retry ancestors, nearest first. Injected so the pure part stays pure. */
@@ -138,6 +154,19 @@ function claimingHolder(
   return holders.find(h => isLiveWorkerStatus(h.status) || (h.hasPr && h.taskId !== selfTaskId)) ?? null;
 }
 
+/** True when `branch` carries any 8-hex token, the short-id shape every naming strategy embeds. */
+function carriesAnyTaskId(branch: string): boolean {
+  return /(?:^|[/_-])[0-9a-f]{8}(?:[/_-]|$)/.test(branch.toLowerCase());
+}
+
+function headClaimed(head: string, holder: InteractiveHeadHolder): PrOwnershipVerdict {
+  return {
+    owned: false,
+    reasonCode: 'head_claimed',
+    error: `Refusing to record a PR whose head '${head}' is already in use by another worker${holder.taskId ? ` (task ${holder.taskId.slice(0, 8)})` : ''}. Push to a branch name nobody else is using, or use the branch claim_task assigned this worker.`,
+  };
+}
+
 function refuse(reasonCode: 'protected_head' | 'head_not_owned', head: string): PrOwnershipVerdict {
   return {
     owned: false,
@@ -163,26 +192,28 @@ export async function verifyPrOwnership(input: PrOwnershipInput, loadLineage: Lo
   const ctx = (task.context && typeof task.context === 'object') ? task.context as Record<string, unknown> : {};
   if (ctx.baseBranch === head || ctx.headBranch === head) return { owned: true, basis: 'stacked_base' };
 
-  // The worker was assigned the mission integration branch as its own branch
-  // (workers.branch === context.baseBranch). Its real work lives on a task
-  // branch cut from it, so that branch is the deliverable. Protected heads were
-  // refused above; the integration branch itself is the `own_branch` case.
-  if (workerBranch && ctx.baseBranch === workerBranch) return { owned: true, basis: 'cut_from_assigned_base' };
-
   const deps = Array.isArray(task.dependsOn) ? task.dependsOn.filter((d): d is string => typeof d === 'string') : [];
   if (deps.some(d => branchCarriesTaskId(head, d))) return { owned: true, basis: 'depends_on' };
 
   const lineage = await loadLineage(task.id);
   if ([task.id, ...lineage].some(id => branchCarriesTaskId(head, id))) return { owned: true, basis: 'task_lineage' };
 
+  // The worker was assigned the mission integration branch itself as its own
+  // branch (workers.branch === context.baseBranch), so its real work lives on a
+  // task branch cut from it. That head is owned only when it is not visibly
+  // someone else's: it carries no other task's short id (this task's own ids
+  // matched above) and no other worker holds it live or with a PR of its own.
+  if (workerBranch && ctx.baseBranch === workerBranch) {
+    const holder = claimingHolder(input.otherHeadHolders ?? [], task.id);
+    if (!holder && !carriesAnyTaskId(head)) return { owned: true, basis: 'cut_from_assigned_base' };
+    if (holder) return headClaimed(head, holder);
+    return refuse('head_not_owned', head);
+  }
+
   if (input.interactiveWorker) {
     const holder = claimingHolder(input.otherHeadHolders ?? [], task.id);
     if (!holder) return { owned: true, basis: 'interactive_head' };
-    return {
-      owned: false,
-      reasonCode: 'head_claimed',
-      error: `Refusing to record a PR whose head '${head}' is already in use by another worker${holder.taskId ? ` (task ${holder.taskId.slice(0, 8)})` : ''}. Push to a branch name nobody else is using, or use the branch claim_task assigned this worker.`,
-    };
+    return headClaimed(head, holder);
   }
 
   return refuse('head_not_owned', head);

@@ -18,7 +18,7 @@ import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { agentRunMayActOnPr, authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
-import { ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict, type InteractiveHeadHolder } from '@/lib/agent-capabilities/pr-ownership';
+import { needsHeadHolders, ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict, type InteractiveHeadHolder } from '@/lib/agent-capabilities/pr-ownership';
 import { INTERACTIVE_RUNNER } from '@/lib/interactive-session';
 import { repoProtectedBranches } from '@/lib/agent-capabilities/github';
 import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
@@ -420,13 +420,13 @@ export async function POST(req: NextRequest) {
           task: worker.task,
           protectedBranches: repoProtectedBranches(worker.workspace ?? {}, ownRepo?.defaultBranch),
           interactiveWorker: isInteractiveWorker,
-          otherHeadHolders: isInteractiveWorker ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, observedHead) : undefined,
+          otherHeadHolders: needsHeadHolders(isInteractiveWorker, worker.branch, worker.task) ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, observedHead) : undefined,
         }, collectRetryLineage);
         if (!ownership.owned) return refusePrOwnership(worker, ownership, 'pr.adopt');
         // Record what was actually adopted: later lookups (get_pr, merge_pr,
         // CI attribution) key off workers.branch, and the generated name
         // claim_task handed this worker was never the real one.
-        if (ownership.basis === 'interactive_head' && worker.branch !== observedHead) {
+        if ((ownership.basis === 'interactive_head' || ownership.basis === 'cut_from_assigned_base') && worker.branch !== observedHead) {
           await db.update(workers).set({ branch: observedHead, updatedAt: new Date() }).where(eq(workers.id, workerId));
           worker.branch = observedHead;
         }
@@ -657,7 +657,7 @@ export async function POST(req: NextRequest) {
           task: worker.task,
           protectedBranches: repoProtectedBranches(workspace, repo.defaultBranch),
           interactiveWorker: isInteractiveWorker,
-          otherHeadHolders: isInteractiveWorker ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, head) : undefined,
+          otherHeadHolders: needsHeadHolders(isInteractiveWorker, worker.branch, worker.task) ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, head) : undefined,
         }
       : null;
     const headOwnership = ownershipInput
