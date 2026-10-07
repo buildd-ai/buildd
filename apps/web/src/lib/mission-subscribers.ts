@@ -25,6 +25,7 @@
  * turning green completes the mission in the same request; the subject sweep
  * runs after. Each step is isolated by the emitter, and pages under its label.
  */
+import { missionBranchRefreshSubscribers } from '@/lib/mission-branch-refresh-subscribers';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
@@ -51,6 +52,7 @@ async function taskContext(taskId: string): Promise<unknown> {
 }
 
 export const missionSubscribers: readonly AnySubscriber[] = [
+  ...missionBranchRefreshSubscribers,
   subscriber('missions', 'task.created', 'task-created-mission-feed', e => {
     if (!e.missionId) return;
     const missionId = e.missionId;
