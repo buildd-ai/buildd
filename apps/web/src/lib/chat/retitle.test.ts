@@ -54,7 +54,7 @@ describe('titleToCheck', () => {
 describe('handleTopicVerdict', () => {
   it('ships in live mode', () => {
     expect(RETITLE_MODE).toBe('live');
-    expect(RETITLE_PROMPT_VERSION).toBeDefined();
+    expect(RETITLE_PROMPT_VERSION).toBe('rt1');
   });
 
   it('live: records verdicts to the decision ledger', async () => {
@@ -68,14 +68,17 @@ describe('handleTopicVerdict', () => {
 
     expect(recorded).toHaveLength(1);
     const decision = recorded[0] as any;
-    expect(decision.capability).toBe('chat_retitle');
+    expect(decision.capability).toBe('chat');
     expect(decision.verdict).toBe('new_topic');
     expect(decision.confidence).toBe(0.95);
     expect(decision.applied).toBe(true);
     expect(decision.status).toBe('applied');
-    expect(decision.promptVersion).toBe(RETITLE_PROMPT_VERSION);
+    expect(decision.promptVersion).toBe('rt1');
     expect(decision.teamId).toBe('t-1');
     expect(decision.workspaceId).toBeNull();
+    expect(decision.subjectType).toBe('conversation');
+    expect(decision.subjectId).toBe('c-1');
+    expect(decision.appliedAnswer).toBeUndefined();
     expect(generated()).toBe(1);
     expect(replaced).toHaveLength(1);
   });
@@ -95,6 +98,10 @@ describe('handleTopicVerdict', () => {
     expect(decision.confidence).toBe(0.6);
     expect(decision.applied).toBe(false);
     expect(decision.status).toBe('suggested');
+    expect(decision.reason).toBe('below_threshold');
+    expect(decision.subjectType).toBe('conversation');
+    expect(decision.subjectId).toBe('c-1');
+    expect(decision.appliedAnswer).toBeUndefined();
     expect(replaced).toEqual([]);
   });
 
@@ -108,6 +115,64 @@ describe('handleTopicVerdict', () => {
     const { generated, d } = deps();
     await handleTopicVerdict(conv, msgs, { label: 'new_topic', confidence: 0.95 }, 'u-1', { ...d, mode: 'live' });
     expect(generated()).toBe(1);
+  });
+
+  it('live: same_topic records verdict with reason same_topic', async () => {
+    const recorded: unknown[] = [];
+    const recordDecisionMock = mock(async (input: unknown) => { recorded.push(input); return 'rec-127'; });
+    const { d } = deps();
+
+    await handleTopicVerdict(conv, msgs, { label: 'same_topic', confidence: 0.99 }, 'u-1', {
+      ...d, mode: 'live', record: recordDecisionMock,
+    });
+
+    expect(recorded).toHaveLength(1);
+    const decision = recorded[0] as any;
+    expect(decision.verdict).toBe('same_topic');
+    expect(decision.applied).toBe(false);
+    expect(decision.status).toBe('suggested');
+    expect(decision.reason).toBe('same_topic');
+    expect(decision.subjectType).toBe('conversation');
+    expect(decision.subjectId).toBe('c-1');
+  });
+
+  it('live: when replace returns null (CAS lost), records suggested with reason cas_lost', async () => {
+    const recorded: unknown[] = [];
+    const recordDecisionMock = mock(async (input: unknown) => { recorded.push(input); return 'rec-128'; });
+    const { d } = deps();
+
+    await handleTopicVerdict(conv, msgs, { label: 'new_topic', confidence: 0.95 }, 'u-1', {
+      ...d,
+      mode: 'live',
+      record: recordDecisionMock,
+      replace: async () => null, // CAS lost
+    });
+
+    expect(recorded).toHaveLength(1);
+    const decision = recorded[0] as any;
+    expect(decision.applied).toBe(false);
+    expect(decision.status).toBe('suggested');
+    expect(decision.reason).toBe('cas_lost');
+    expect(decision.subjectType).toBe('conversation');
+    expect(decision.subjectId).toBe('c-1');
+  });
+
+  it('live: when no title change occurs, records suggested with reason no_change', async () => {
+    const recorded: unknown[] = [];
+    const recordDecisionMock = mock(async (input: unknown) => { recorded.push(input); return 'rec-129'; });
+    const { d } = deps('Release status');
+
+    await handleTopicVerdict(conv, msgs, { label: 'new_topic', confidence: 0.95 }, 'u-1', {
+      ...d, mode: 'live', record: recordDecisionMock,
+    });
+
+    expect(recorded).toHaveLength(1);
+    const decision = recorded[0] as any;
+    expect(decision.applied).toBe(false);
+    expect(decision.status).toBe('suggested');
+    expect(decision.reason).toBe('no_change');
+    expect(decision.subjectType).toBe('conversation');
+    expect(decision.subjectId).toBe('c-1');
   });
 
   it('live: low confidence, same_topic, an unchanged title or a user title do nothing', async () => {

@@ -7,12 +7,12 @@
  * never a request or a hop.
  *
  * `RETITLE_MODE`:
- *  - `live` (now): a confident `new_topic` re-runs the title on the recent messages
+ *  - `live`: a confident `new_topic` re-runs the title on the recent messages
  *    (budget tier) and replaces the title only if it is still the auto title
  *    it was when the turn started. Records every verdict durably to the decision
  *    ledger with label, confidence, status (applied/suggested/fallback), and prompt version.
- *  - `shadow`: log the verdict as `[chat-retitle-shadow]`, rename nothing.
- *    For fallback use only; not recommended for continued use.
+ *  - `shadow`: log the verdict as `[chat-retitle-shadow]`, rename nothing;
+ *    decision ledger writes are suppressed. For fallback use only.
  *  - `off`: never asks.
  *
  * A title the person set is never asked about and never replaced.
@@ -31,6 +31,18 @@ export { RETITLE_EVERY_USER_TURNS, RETITLE_LOG_PREFIX, RETITLE_MIN_CONFIDENCE, R
 
 function fingerprintOf(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);
+}
+
+/** Wrap recording to prevent throwing from cascading out of handleTopicVerdict. */
+async function recordSafely(
+  input: DecisionLedgerInput,
+  record: (input: DecisionLedgerInput) => Promise<string | null>,
+): Promise<void> {
+  try {
+    await record(input);
+  } catch (e) {
+    console.warn('[chat] decision ledger insert failed:', e);
+  }
 }
 
 export async function handleTopicVerdict(
@@ -65,22 +77,26 @@ export async function handleTopicVerdict(
 
   if (!renames) {
     // Low confidence or same_topic: record as suggested (not applied)
-    await record({
+    const reason = topic.confidence < RETITLE_MIN_CONFIDENCE ? 'below_threshold' : 'same_topic';
+    await recordSafely({
       teamId: conversation.teamId,
       workspaceId: conversation.workspaceId ?? null,
-      capability: 'chat_retitle',
+      capability: 'chat',
       fingerprint,
       promptVersion: RETITLE_PROMPT_VERSION,
       verdict: topic.label,
       confidence: topic.confidence,
       applied: false,
       status: 'suggested',
-      reason: topic.confidence < RETITLE_MIN_CONFIDENCE ? 'below_threshold' : undefined,
-    });
+      reason,
+      subjectType: 'conversation',
+      subjectId: conversation.id,
+    }, record);
     return;
   }
 
   const warn = (e: unknown) => console.warn(`[chat] re-title failed for conversation ${conversation.id}:`, e);
+  let titleResult: string | null = null;
   try {
     const result = await titleConversation({
       messages,
@@ -98,51 +114,82 @@ export async function handleTopicVerdict(
       },
     });
     if (!result || result.title === oldTitle) {
-      // Title generation succeeded but no change, record as applied (no-op)
-      await record({
+      // Title generation succeeded but no change, record as suggested (no-op)
+      await recordSafely({
         teamId: conversation.teamId,
         workspaceId: conversation.workspaceId ?? null,
-        capability: 'chat_retitle',
+        capability: 'chat',
         fingerprint,
         promptVersion: RETITLE_PROMPT_VERSION,
         verdict: topic.label,
         confidence: topic.confidence,
-        appliedAnswer: oldTitle,
         applied: false,
         status: 'suggested',
         reason: 'no_change',
-      });
+        subjectType: 'conversation',
+        subjectId: conversation.id,
+      }, record);
       return;
     }
-    const titleResult = await (deps.replace ?? replaceAutoTitle)(conversation.id, oldTitle, result.title);
-    if (titleResult) await (deps.ping ?? pingConversation)(conversation.id, 'title');
+    titleResult = await (deps.replace ?? replaceAutoTitle)(conversation.id, oldTitle, result.title);
+    if (!titleResult) {
+      // CAS lost: title was changed by user or another process since we read it
+      await recordSafely({
+        teamId: conversation.teamId,
+        workspaceId: conversation.workspaceId ?? null,
+        capability: 'chat',
+        fingerprint,
+        promptVersion: RETITLE_PROMPT_VERSION,
+        verdict: topic.label,
+        confidence: topic.confidence,
+        applied: false,
+        status: 'suggested',
+        reason: 'cas_lost',
+        subjectType: 'conversation',
+        subjectId: conversation.id,
+      }, record);
+      return;
+    }
+    await (deps.ping ?? pingConversation)(conversation.id, 'title');
     // Record successful rename
-    await record({
+    await recordSafely({
       teamId: conversation.teamId,
       workspaceId: conversation.workspaceId ?? null,
-      capability: 'chat_retitle',
+      capability: 'chat',
       fingerprint,
       promptVersion: RETITLE_PROMPT_VERSION,
       verdict: topic.label,
       confidence: topic.confidence,
-      appliedAnswer: result.title,
       applied: true,
       status: 'applied',
-    });
+      subjectType: 'conversation',
+      subjectId: conversation.id,
+    }, record);
   } catch (e) {
     warn(e);
-    // Record failure to apply: routing had decided to rename, but title generation failed
-    await record({
+    // Record failure: routing had decided to rename, but title generation failed
+    const reason = e instanceof Error && e.name === 'TimeoutError' ? 'timeout' : 'error';
+    await recordSafely({
       teamId: conversation.teamId,
       workspaceId: conversation.workspaceId ?? null,
-      capability: 'chat_retitle',
+      capability: 'chat',
       fingerprint,
       promptVersion: RETITLE_PROMPT_VERSION,
       verdict: topic.label,
       confidence: topic.confidence,
       applied: false,
       status: 'fallback',
-      reason: 'timeout',
-    });
+      reason,
+      subjectType: 'conversation',
+      subjectId: conversation.id,
+    }, record);
   }
 }
+
+// TODO: Outcome linkage on manual rename — when a user later renames a conversation
+// that was auto-renamed by retitle, that is an observational label against the
+// latest retitle decision (subjectId = conversation.id, capability = 'chat',
+// verdict already recorded). Wire this where manual rename lands (currently on
+// a route outside retitle.ts); update decision_records.appliedAnswer or
+// create a decision_outcomes row linking the verdict to the user's choice.
+// See task f5e876dc-7b2d-49c7-9064-7698ba2d5907 for context.
