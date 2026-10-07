@@ -3611,6 +3611,24 @@ export const prReverts = pgTable('pr_reverts', {
   workspacePrIdx: index('pr_reverts_workspace_pr_idx').on(t.workspaceId, t.revertedPrNumber),
 }));
 
+/**
+ * Every PR a task has ever registered. `workers.prUrl` holds ONE PR and is
+ * overwritten by each report, so a stacked series from one worker leaves only
+ * its latest PR on the row; this is the record that survives that.
+ */
+export const taskPullRequests = pgTable('task_pull_requests', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  prUrl: text('pr_url').notNull(),
+  prNumber: integer('pr_number'),
+  state: text('state').$type<'open' | 'merged' | 'closed'>().notNull().default('open'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskUrlIdx: uniqueIndex('task_pull_requests_task_url_idx').on(t.taskId, t.prUrl),
+  prUrlIdx: index('task_pull_requests_pr_url_idx').on(t.prUrl),
+}));
+
 // Relations
 export const teamsRelations = relations(teams, ({ many }) => ({
   members: many(teamMembers),

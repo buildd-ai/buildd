@@ -14,7 +14,7 @@ import { isMissionPrTask, looksLikeMissionIntegrationBranch, resolveTaskPrBase }
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { checkDependsOnResolved, resolveCompletedTask } from '@/lib/task-dependencies';
 import { detachInteractiveWorkersOfEndedTasks } from '@/lib/interactive-detach';
-import { otherOpenPrsOfTask } from '@/lib/task-open-prs';
+import { otherOpenPrsOfTask, markTaskPrState, lastPrSettledWithMerge } from '@/lib/task-open-prs';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, enqueuePushIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
@@ -641,6 +641,7 @@ async function handlePullRequestEvent(event: {
 }) {
   const { action, pull_request: pr, repository } = event;
   if (action === 'opened' || action === 'reopened' || action === 'synchronize' || action === 'ready_for_review') {
+    if (action === 'reopened') await markTaskPrState(prUrlFor(repository.full_name, pr.number), 'open');
     await registerLocalPr({ branch: pr.head.ref, repo: repository.full_name, headRepo: pr.head.repo?.full_name ?? null, number: pr.number,
       url: pr.html_url, headSha: pr.head.sha, baseRef: pr.base?.ref ?? null, draft: pr.draft ?? false });
   }
@@ -1024,6 +1025,29 @@ async function handlePullRequestEvent(event: {
     installationId: event.installation?.id ?? null,
     workspaceId: worker?.workspaceId ?? null,
   });
+
+  // Keep the task's PR registry in step with GitHub, before anything asks it
+  // whether a sibling is still open.
+  await markTaskPrState(prUrlFor(repository.full_name, pr.number), pr.merged ? 'merged' : 'closed');
+
+  // A PR closed UNMERGED is the other way a stacked series ends: if the others
+  // already merged and held the task open, nothing else would ever complete it.
+  if (worker?.task && action === 'closed' && !pr.merged && worker.task.status !== 'completed'
+      && await lastPrSettledWithMerge(worker.task.id, { prUrl: prUrlFor(repository.full_name, pr.number) })) {
+    const [flipped] = await db
+      .update(tasks)
+      .set({ status: 'completed', updatedAt: new Date() })
+      .where(and(eq(tasks.id, worker.task.id), ne(tasks.status, 'completed')))
+      .returning({ id: tasks.id });
+    if (flipped) {
+      console.log(`Auto-completed task ${worker.task.id}: last open PR #${pr.number} closed unmerged after the rest merged`);
+      await emit({ type: 'task.completed', via: 'merge', taskId: worker.task.id, workerId: worker.id, workspaceId: worker.workspaceId });
+      await resolveCompletedTask(worker.task.id, worker.task.workspaceId).catch(e =>
+        console.error(`[webhook] resolveCompletedTask failed for task ${worker.task!.id}:`, e),
+      );
+      await detachInteractiveWorkersOfEndedTasks({ taskId: worker.task.id, graceMs: 0 });
+    }
+  }
 
   if (worker) {
     if (pr.merged) {

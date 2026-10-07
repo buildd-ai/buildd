@@ -265,6 +265,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 const schemaMock = {
+  taskPullRequests: { id: 'id', taskId: 'task_id', prUrl: 'pr_url', state: 'state' },
   githubInstallations: { id: 'id', installationId: 'installationId' },
   githubRepos: { id: 'id', repoId: 'repoId', installationId: 'installationId', fullName: 'fullName' },
   tasks: {
@@ -6133,47 +6134,72 @@ describe('subscriptions ledger: the webhook records the right event', () => {
     expect(recorded()).toContainEqual({ type: 'task.completed', taskId: 't1', workerId: 'w1', workspaceId: 'ws1' });
   });
 
-  describe('stacked PRs on one task', () => {
-    const mergePayload = (n: number) => createWebhookRequest('pull_request', {
+  describe('stacked PRs on one task (one worker, PR column overwritten per report)', () => {
+    const url = (n: number) => `https://github.com/test-org/test-repo/pull/${n}`;
+    const prPayload = (n: number, merged: boolean) => createWebhookRequest('pull_request', {
       action: 'closed',
       pull_request: {
-        number: n, merged: true, draft: false,
+        number: n, merged, draft: false,
         head: { ref: `buildd/abc-x${n}`, sha: `sha-${n}` }, base: { ref: 'main' },
-        html_url: `https://github.com/test-org/test-repo/pull/${n}`,
+        html_url: url(n),
       },
       repository: { full_name: 'test-org/test-repo' },
       installation: { id: 5000 },
     });
+    // The worker row only ever holds the LATEST registered PR (3); the
+    // registry is what remembers 1 and 2.
     const worker = (n: number) => ({
-      id: 'w1', workspaceId: 'ws1', taskId: 't1', prNumber: n, mergedAt: null,
+      id: 'w1', workspaceId: 'ws1', taskId: 't1', prNumber: 3, prUrl: url(3), mergedAt: null,
       task: { id: 't1', status: 'in_progress', workspaceId: 'ws1', release: 'false', title: 'T', missionId: null },
     });
-    const row = (n: number, extra: any = {}) => ({
-      prUrl: `https://github.com/test-org/test-repo/pull/${n}`, prNumber: n, mergedAt: null, prLifecycleStatus: 'pr_open', ...extra,
-    });
+    const reg = (states: Array<'open' | 'merged' | 'closed'>) =>
+      states.map((state, i) => ({ prUrl: url(i + 1), state }));
+    const completes = () => updateCalls.some((c) => (c.setValues as any).status === 'completed');
+    const withRegistry = (rows: any[]) => {
+      selectTableResults = (t: any) => (
+        t === schemaMock.taskPullRequests ? rows
+          : t === schemaMock.workers ? [{ prUrl: url(3), prNumber: 3, mergedAt: null, prLifecycleStatus: 'pr_open' }]
+          : null
+      );
+    };
 
-    it('first merge keeps the task in progress while another PR is open', async () => {
+    it('first merge keeps the task in progress while two more PRs are open', async () => {
       mockWorkersFindFirst.mockReturnValue(worker(1));
-      selectTableResults = (t: any) => (t === schemaMock.workers ? [row(1), row(2)] : null);
-      await POST(mergePayload(1));
-      expect(updateCalls.some((c) => (c.setValues as any).status === 'completed')).toBe(false);
+      withRegistry(reg(['merged', 'open', 'open']));
+      await POST(prPayload(1, true));
+      expect(completes()).toBe(false);
       expect(recorded().filter((e: any) => e.type === 'task.completed')).toEqual([]);
       expect(mockResolveCompletedTask).not.toHaveBeenCalled();
     });
 
-    it('last merge completes the task and wakes dependents', async () => {
-      mockWorkersFindFirst.mockReturnValue(worker(2));
-      selectTableResults = (t: any) => (t === schemaMock.workers ? [row(1, { mergedAt: new Date(), prLifecycleStatus: 'merged' }), row(2)] : null);
-      await POST(mergePayload(2));
-      expect(updateCalls.some((c) => (c.setValues as any).status === 'completed')).toBe(true);
+    it('the last merge completes the task and wakes dependents', async () => {
+      mockWorkersFindFirst.mockReturnValue(worker(3));
+      withRegistry(reg(['merged', 'merged', 'merged']));
+      await POST(prPayload(3, true));
+      expect(completes()).toBe(true);
       expect(mockResolveCompletedTask).toHaveBeenCalledWith('t1', 'ws1');
     });
 
-    it('a sibling PR closed unmerged (superseded) does not hold the task open', async () => {
-      mockWorkersFindFirst.mockReturnValue(worker(2));
-      selectTableResults = (t: any) => (t === schemaMock.workers ? [row(1, { prLifecycleStatus: 'closed' }), row(2)] : null);
-      await POST(mergePayload(2));
+    it('a sibling closed unmerged (superseded) does not hold the task open', async () => {
+      mockWorkersFindFirst.mockReturnValue(worker(3));
+      withRegistry(reg(['merged', 'closed', 'merged']));
+      await POST(prPayload(3, true));
       expect(mockResolveCompletedTask).toHaveBeenCalledWith('t1', 'ws1');
+    });
+
+    it('the last open PR closing unmerged after the others merged completes the task', async () => {
+      mockWorkersFindFirst.mockReturnValue(worker(3));
+      withRegistry(reg(['merged', 'merged', 'closed']));
+      await POST(prPayload(3, false));
+      expect(completes()).toBe(true);
+      expect(mockResolveCompletedTask).toHaveBeenCalledWith('t1', 'ws1');
+    });
+
+    it('a PR closing unmerged while another is still open completes nothing', async () => {
+      mockWorkersFindFirst.mockReturnValue(worker(3));
+      withRegistry(reg(['merged', 'open', 'closed']));
+      await POST(prPayload(3, false));
+      expect(completes()).toBe(false);
     });
   });
 

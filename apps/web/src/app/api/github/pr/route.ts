@@ -27,6 +27,7 @@ import { getTeamWorkspaceIds, verifyAccountWorkspaceAccess, verifyWorkspaceAcces
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
 import { resolveWorkerByPrNumberInWorkspaces } from '@/lib/pr-resolve';
+import { recordTaskPr } from '@/lib/task-open-prs';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import {
   recordChangeIntents,
@@ -496,6 +497,7 @@ export async function POST(req: NextRequest) {
         prNumber,
         updatedAt: new Date(),
       }).where(eq(workers.id, workerId));
+      await recordTaskPr({ taskId: worker.taskId, workerId, prUrl: existingPrUrl, prNumber });
       await stampTaskKindIfAbsent(worker.taskId, 'engineering');
       if (prNumber) {
         await claimMissionPrimaryPr(worker.task?.missionId, prNumber, existingPrUrl, {
@@ -1151,6 +1153,7 @@ export async function POST(req: NextRequest) {
     // itself research stays research.
     await stampTaskKindIfAbsent(worker.taskId, 'engineering');
 
+    await recordTaskPr({ taskId: worker.taskId, workerId, prUrl: prData.html_url, prNumber: prData.number });
     await claimMissionPrimaryPr(worker.task?.missionId, prData.number, prData.html_url, {
       baseRef: prData.base?.ref ?? null,
       trunk: trunkBranches(workspace.gitConfig, repo.defaultBranch),

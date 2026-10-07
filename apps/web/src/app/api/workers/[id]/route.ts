@@ -2,6 +2,7 @@ import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-c
 import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
+import { recordTaskPr } from '@/lib/task-open-prs';
 import { db } from '@buildd/core/db';
 import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
@@ -4069,6 +4070,11 @@ export async function PATCH(
 
   if (!updated) {
     return workerConflictResponse(id);
+  }
+
+  // The worker row keeps only its latest PR; the registry keeps all of them.
+  if (updates.prUrl) {
+    await recordTaskPr({ taskId: updated.taskId, workerId: id, prUrl: updates.prUrl as string, prNumber: (updates.prNumber as number | undefined) ?? null });
   }
 
   // Subscriptions ledger: "tell me when this task needs input". Only after the
