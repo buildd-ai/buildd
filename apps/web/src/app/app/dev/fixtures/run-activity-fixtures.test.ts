@@ -44,7 +44,7 @@ describe('run-activity fixture scenarios', () => {
     expect(now.headline).toBe(LEGACY_LATEST_HEADLINE);
     expect(now.detail?.target).toBe('http.ts');
     // Observed lifecycle from checkpoints, not from the number.
-    expect(now.steps.filter(s => s.state === 'done').map(s => s.key)).toEqual(['started', 'read', 'edit', 'commit']);
+    expect(now.evidence.phases.filter(s => s.state === 'done').map(s => s.key)).toEqual(['claimed', 'started', 'changed', 'committed']);
   });
 
   test('research task carries no edit, commit or PR fact', () => {
