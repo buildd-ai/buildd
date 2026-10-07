@@ -92,16 +92,18 @@ become tracked work only through that session's own verified `claim_task`.
 - A `start` carries `interactive`: false for a session nobody is attending (Claude Code `claude -p` and SDK runs, read from `CLAUDE_CODE_SESSION_ATTENDED` then `CLAUDE_CODE_ENTRYPOINT`; Cursor background agents). Such a presence is neither listed nor counted as an interactive session until it binds a worker for a task.
 - `start`/`touch` write only `local_sessions`. They never insert a `workers` row, change `accounts.activeSessions`, or write a task. Presence is never counted as agent capacity; where it is counted it is labelled "Interactive sessions".
 - `bind` attaches a presence to an existing worker only when that worker belongs to the calling account (API key), or, for a presence token, was claimed by an account of a team the person is in and, when the claim recorded who made it (`interactiveClaimUserId`, an OAuth session), by that person; it must have `runner = 'mcp'` (written by the claim route only after the HMAC session marker verifies; `mcp-unverified` and runner workers are refused), and is live. Another account's worker and an unknown id get the same 404.
-- One worker is bound to at most one presence, ever (`local_sessions_bound_worker_idx` unique). A presence holding a live worker cannot bind another until that one ends.
-- A hook `touch` refreshes `workers.updated_at` only for the presence's own bound worker, under the same once-a-minute guard as the MCP touch. Another session's hooks never touch it.
+- A presence may hold several workers: Claude Code subagents share the parent's `session_id` and their tool calls fire the parent's hooks, so each subagent's `claim_task` binds to the same presence (`local_session_workers`, one row per worker). One worker is bound to at most one presence, ever (primary key on `local_session_workers.worker_id`). A presence bound before multi-claim keeps its single worker through the legacy `local_sessions.bound_worker_id` column, which is read (never written) and also guards that worker against other sessions.
+- The hook keeps, on the person's machine only, which subagent made which claim (`agent_id` from the subagent's PostToolUse payload); it is never sent.
+- A hook `touch` refreshes `workers.updated_at` only for the presence's own held workers, each under the same once-a-minute guard as the MCP touch. Another session's hooks never touch them.
 - The hook binds deterministically: its post-tool hook reads the worker id from buildd's own `claim_task` reply. It reads no other tool output.
 
 **Acceptance criteria**:
 - AC-4: WHEN `start` is posted THEN one presence row exists and no worker or seat was created.
-- AC-5: GIVEN a verified interactive claim WHEN its session posts `bind` THEN that presence references exactly that worker; a second session's `bind` of the same worker answers 409 `bound_elsewhere`.
+- AC-5: GIVEN a verified interactive claim WHEN its session posts `bind` THEN that presence holds that worker; a second session's `bind` of the same worker answers 409 `bound_elsewhere`.
+- AC-5b: GIVEN two verified claims from one session (e.g. two subagents) WHEN both bind THEN the presence holds both.
 - AC-6: WHEN `bind` names a runner worker or an `mcp-unverified` one THEN 409 `not_interactive`.
 
-**Code surface**: `local_sessions` table (`packages/core/db/schema.ts`), `bindWhere`, `boundWorkerTouchWhere`, `presenceTouchWhere` (`apps/web/src/lib/local-session.ts`).
+**Code surface**: `local_sessions` and `local_session_workers` tables (`packages/core/db/schema.ts`), `bindInsertSql`, `boundWorkerTouchWhere`, `presenceTouchWhere` (`apps/web/src/lib/local-session.ts`).
 
 ## Session end
 
@@ -110,14 +112,15 @@ and exactly once, and MUST never complete unfinished work or rewrite a finished 
 
 **Invariants**:
 - `end` is a compare-and-swap on `ended_at IS NULL`; only the first end acts.
-- With a bound live worker and reason `exit` or `other`, the worker is detached through `detachInteractiveWorker` (the "Release slot" primitive): a terminal task keeps its status and PR and its worker is recorded completed; an open task goes back to `pending` and its worker is recorded failed with the released-slot error. The seat, path claims and capacity wake are released once.
-- Reason `clear` ends the presence but keeps the claim: the conversation's process and the MCP connection that made the claim keep running.
+- With reason `exit` or `other`, each held live worker is detached through `detachInteractiveWorker` (the "Release slot" primitive): a terminal task keeps its status and PR and its worker is recorded completed; an open task goes back to `pending` and its worker is recorded failed with the released-slot error. The seat, path claims and capacity wake are released once.
+- Reason `clear` ends the presence but keeps every claim: the conversation's process and the MCP connection that made the claims keep running.
 - A `start` for an ended session (resume) re-opens it.
 - Without any end event (crash), the bound worker falls to the existing 2 h interactive idle reaper and presence reads offline after 10 minutes.
 
 **Acceptance criteria**:
 - AC-7: GIVEN a bound worker on an `in_progress` task WHEN `end` (exit) arrives THEN the task is `pending`, not `completed`.
 - AC-8: GIVEN a bound worker whose task is `completed` WHEN `end` arrives three times THEN the task stays `completed` and the seat is released once.
+- AC-8b: GIVEN a presence holding two live workers WHEN `end` (exit) arrives THEN both tasks go back to `pending` and each seat is released exactly once; a replayed `end` changes nothing.
 
 **Code surface**: `handleLocalSessionEvent` `end` branch, `detachInteractiveWorker` (`apps/web/src/lib/interactive-detach.ts`).
 

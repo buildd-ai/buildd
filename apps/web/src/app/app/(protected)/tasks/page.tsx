@@ -116,7 +116,7 @@ export default async function TasksPage({
           }
           // A task a local session is working on names that client, not a runner.
           const localClientByTaskId = new Map(
-            localSessions.filter(s => s.workerLive && s.task).map(s => [s.task!.id, `${s.clientLabel} · local`]),
+            localSessions.flatMap(s => s.tasks.filter(t => t.live).map(t => [t.id, `${s.clientLabel} · local`] as const)),
           );
           const bandIds = taskListFilter?.ids ?? null;
           // Band membership is historical, so it must not use current task status.

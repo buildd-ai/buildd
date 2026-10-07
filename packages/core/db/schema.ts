@@ -2053,7 +2053,11 @@ export const localSessions = pgTable('local_sessions', {
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
   endedAt: timestamp('ended_at', { withTimezone: true }),
   endReason: text('end_reason'),
-  /** The interactive worker this session's own claim_task minted. One session per worker, ever. */
+  /**
+   * Legacy: the single worker a session could hold before multi-claim. Read
+   * (never written) so a session bound before localSessionWorkers existed still
+   * releases its worker; the bindings live in localSessionWorkers now.
+   */
   boundWorkerId: uuid('bound_worker_id').references(() => workers.id, { onDelete: 'set null' }),
   boundAt: timestamp('bound_at', { withTimezone: true }),
 }, (t) => ({
@@ -2062,6 +2066,19 @@ export const localSessions = pgTable('local_sessions', {
   oneOwner: check('local_sessions_one_owner', sql`num_nonnulls(${t.accountId}, ${t.userId}) = 1`),
   boundWorkerIdx: uniqueIndex('local_sessions_bound_worker_idx').on(t.boundWorkerId),
   workspaceSeenIdx: index('local_sessions_workspace_seen_idx').on(t.workspaceId, t.lastSeenAt),
+}));
+
+/**
+ * The interactive workers a local session holds: one row per claim its own
+ * claim_task (or a subagent's) minted. The worker is the primary key, so a
+ * worker belongs to at most one session, ever; a session may hold several.
+ */
+export const localSessionWorkers = pgTable('local_session_workers', {
+  workerId: uuid('worker_id').primaryKey().references(() => workers.id, { onDelete: 'cascade' }),
+  localSessionId: uuid('local_session_id').references(() => localSessions.id, { onDelete: 'cascade' }).notNull(),
+  boundAt: timestamp('bound_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  sessionIdx: index('local_session_workers_session_idx').on(t.localSessionId),
 }));
 
 /**
