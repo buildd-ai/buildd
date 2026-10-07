@@ -22,7 +22,7 @@ import {
   resolveReuseSlots,
   resolveReuseWindowMs,
   routeToLease,
-  savedRestoreMsOf,
+  prepMsOf,
   taskStateOnLease,
   type LeaseHandle,
   type LeaseKey,
@@ -30,7 +30,7 @@ import {
   type LeasedDispatchResult,
   type WarmContainer,
 } from './container-lease';
-import { INITIAL_STATE, RESET_OK_LINE, type RunState } from './lifecycle';
+import { INITIAL_STATE, RESET_OK_LINE, WORKER_ID_LINE_PREFIX, type RunState } from './lifecycle';
 import { assembleRunReport } from './run-report';
 import { TaskSupervisor, type ContainerPort, type ProcessPort, type SupervisorDeps } from './supervisor';
 
@@ -80,7 +80,7 @@ describe('config', () => {
 
 describe('decideLeaseClaim', () => {
   const now = 1_000_000;
-  const warm: WarmContainer = { workspaceId: WS, size: 'standard', fromTaskId: TASK_A, since: now - 60_000, savedRestoreMs: 60_000 };
+  const warm: WarmContainer = { workspaceId: WS, size: 'standard', fromTaskId: TASK_A, since: now - 60_000, baselinePrepMs: 60_000 };
   const exited: RunState = { taskId: TASK_A, attempt: 1, status: 'exited', outcome: 'done', warm };
   const args = { key: KEY, workspaceId: WS, size: 'standard' as const, now, windowMs: WINDOW, containerRunning: true };
 
@@ -114,10 +114,15 @@ describe('decideLeaseClaim', () => {
     for (const o of ['parked', 'crashed', 'usage', 'refused', 'deferred', 'start_deferred'] as const) expect(keepsContainerWarm(o)).toBe(false);
   });
 
-  test('saved restore time sums what the previous run spent getting ready', () => {
-    expect(savedRestoreMsOf({ durationsMs: { containerStart: 5_000, restoreWarm: 8_000, restoreCache: 52_000, clone: null } })).toBe(65_000);
-    expect(savedRestoreMsOf({ durationsMs: { containerStart: null } })).toBeNull();
-    expect(savedRestoreMsOf(undefined)).toBeNull();
+  test('prep time: dispatch to claim, then however the repo got ready', () => {
+    // A fresh container with a warm restore.
+    expect(prepMsOf({ containerStart: 30_000, toClaim: 10_000, restoreWarm: 6_000, restoreCache: 20_000, fetch: 2_000, clone: null, install: 90_000 })).toBe(68_000);
+    // A reused one: the reset is inside containerStart, the seed is restoreReuse.
+    expect(prepMsOf({ containerStart: 40_000, toClaim: 8_000, restoreReuse: 9_000 })).toBe(57_000);
+    // Dispatch to claim unmeasured: not comparable.
+    expect(prepMsOf({ containerStart: null, toClaim: 8_000, clone: 5_000 })).toBeNull();
+    expect(prepMsOf({ containerStart: 1_000, toClaim: null })).toBeNull();
+    expect(prepMsOf(undefined)).toBeNull();
   });
 });
 
@@ -180,7 +185,16 @@ function streamOf(lines: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({ start(c) { for (const l of lines) c.enqueue(enc.encode(`${l}\n`)); c.close(); } });
 }
 
-function leaseHarness(opts: { reset?: { code: number; lines: string[] } | 'throws' } = {}) {
+/**
+ * `resetMs`: how long the reset exec takes (agent clock). `runner(taskId)`:
+ * how long until the runner claims, and the lines it prints after the claim
+ * (phase lines carry their own times).
+ */
+function leaseHarness(opts: {
+  reset?: { code: number; lines: string[] } | 'throws';
+  resetMs?: number;
+  runner?: (taskId: string, now: number) => { toClaimMs: number; lines: string[] };
+} = {}) {
   let state: RunState = INITIAL_STATE;
   let clock = 1_000_000;
   let running = false;
@@ -199,6 +213,7 @@ function leaseHarness(opts: { reset?: { code: number; lines: string[] } | 'throw
       if (cmd[1] === '--reset-container') {
         calls.push('reset');
         const r = opts.reset ?? { code: 0, lines: ['[reset] killed 3 process(es)', RESET_OK_LINE] };
+        clock += opts.resetMs ?? 0;
         if (r === 'throws') throw new Error('exec failed');
         const p: ProcessPort = { stdout: streamOf(r.lines), stderr: streamOf([]), exitCode: Promise.resolve(r.code) };
         return p;
@@ -206,7 +221,10 @@ function leaseHarness(opts: { reset?: { code: number; lines: string[] } | 'throw
       calls.push('exec');
       const exit = deferred<number>();
       exits.push(exit);
-      return { stdout: streamOf([]), stderr: streamOf([]), exitCode: exit.promise };
+      const run = opts.runner?.(cmd[2] ?? '', clock);
+      if (run) clock += run.toClaimMs;
+      const out = run ? [`${WORKER_ID_LINE_PREFIX}w-${cmd[2]}`, ...run.lines] : [];
+      return { stdout: streamOf(out), stderr: streamOf([]), exitCode: exit.promise };
     },
     monitor() { return died.promise; },
     async destroy() { calls.push('destroy'); running = false; died.resolve(); },
@@ -299,7 +317,7 @@ describe('supervisor: a lease hands its warm container to the next task', () => 
     expect(h.state.taskId).toBe(TASK_B);
     expect(h.state.report?.taskId).toBe(TASK_B);
     expect(h.state.report?.attempt).toBe(1);
-    expect(h.state.report?.reusedContainer).toEqual({ fromTaskId: TASK_A, idleMs: 45_000, savedRestoreMs: expect.any(Number) });
+    expect(h.state.report?.reusedContainer).toMatchObject({ fromTaskId: TASK_A, idleMs: 45_000, resetMs: 0 });
     // A's report is kept, under A.
     expect(h.state.reportHistory?.map(rep => rep.taskId)).toEqual([TASK_A]);
   });
@@ -319,7 +337,8 @@ describe('supervisor: a lease hands its warm container to the next task', () => 
       expect(b.indexOf('destroy')).toBeGreaterThan(-1);
       expect(b.indexOf('destroy')).toBeLessThan(b.indexOf('start'));
       expect(b.indexOf('start')).toBeLessThan(b.indexOf('exec'));
-      expect(h.state.report?.reusedContainer).toMatchObject({ fromTaskId: TASK_A, fallback: 'reset_failed', savedRestoreMs: null });
+      expect(h.state.report?.reusedContainer).toMatchObject({ fromTaskId: TASK_A, fallback: 'reset_failed' });
+      expect(h.state.report?.reusedContainer).not.toHaveProperty('savedMs');
     });
   }
 
@@ -404,6 +423,57 @@ describe('supervisor: a lease hands its warm container to the next task', () => 
   });
 });
 
+describe('supervisor: what reuse saved is measured against a fresh container', () => {
+  const phases = (at: number, steps: Array<[string, number]>) => {
+    const out: string[] = [];
+    let t = at;
+    for (const [step, ms] of steps) { out.push(`BUILDD_PHASE=${step}_start ${t}`); t += ms; out.push(`BUILDD_PHASE=${step}_end ${t}`); }
+    return out;
+  };
+  // Fresh: 40 s to claim, then warm restore 6 s, cache 20 s, fetch 2 s: 68 s.
+  // Reused: the seed from kept packs, 9 s, and no cache restore.
+  const runner = (taskId: string, now: number) => taskId === TASK_A
+    ? { toClaimMs: 40_000, lines: phases(now + 40_000, [['restore_warm', 6_000], ['restore_cache', 20_000], ['fetch', 2_000]]) }
+    : { toClaimMs: 8_000, lines: [...phases(now + 8_000, [['restore_reuse', 9_000]]), 'BUILDD_REPO_SOURCE=reuse'] };
+
+  test('a fast reset: saved = the fresh run\'s prep minus the reused run\'s, both measured', async () => {
+    const h = leaseHarness({ runner, resetMs: 20_000 });
+    await h.runTask(TASK_A, 0);
+    expect(h.state.warm?.baselinePrepMs).toBe(68_000);
+    await h.runTask(TASK_B, 0);
+    const reused = h.state.report?.reusedContainer;
+    // 20 s reset + 8 s to claim + 9 s seed.
+    expect(reused).toEqual({ fromTaskId: TASK_A, idleMs: 0, resetMs: 20_000, prepMs: 37_000, baselinePrepMs: 68_000, savedMs: 31_000 });
+    expect(h.state.report?.durationsMs.restoreReuse).toBe(9_000);
+    expect(h.state.report?.durationsMs.restoreCache).toBeNull();
+    expect(h.state.report?.repo.source).toBe('reuse');
+  });
+
+  test('a reuse slower than a fresh container reports a negative saving, not an estimate', async () => {
+    const h = leaseHarness({ runner, resetMs: 100_000 });
+    await h.runTask(TASK_A, 0);
+    await h.runTask(TASK_B, 0);
+    expect(h.state.report?.reusedContainer).toMatchObject({ resetMs: 100_000, prepMs: 117_000, baselinePrepMs: 68_000, savedMs: -49_000 });
+  });
+
+  test('a chain keeps the fresh baseline: the third task is compared with the first, not the second', async () => {
+    const h = leaseHarness({ runner, resetMs: 20_000 });
+    await h.runTask(TASK_A, 0);
+    await h.runTask(TASK_B, 0);
+    expect(h.state.warm?.baselinePrepMs).toBe(68_000);
+    await h.runTask('task-cccc', 0);
+    expect(h.state.report?.reusedContainer).toMatchObject({ fromTaskId: TASK_B, baselinePrepMs: 68_000, savedMs: 31_000 });
+  });
+
+  test('after a failed reset the fresh container is the new baseline', async () => {
+    const h = leaseHarness({ runner: (t, now) => ({ toClaimMs: 50_000, lines: phases(now + 50_000, [['clone', 10_000]]) }), reset: { code: 1, lines: [] } });
+    await h.runTask(TASK_A, 0);
+    await h.runTask(TASK_B, 0);
+    expect(h.state.report?.reusedContainer).toMatchObject({ fallback: 'reset_failed' });
+    expect(h.state.warm?.baselinePrepMs).toBe(60_000);
+  });
+});
+
 describe('taskStateOnLease (GET /tasks/:id for a task on a lease)', () => {
   const LEASE = leaseName(WS, 'standard', 0);
   const rep = (taskId: string, attempt: number) => assembleRunReport({ taskId, attempt, workerId: `w-${taskId}`, outcome: 'done' });
@@ -412,7 +482,7 @@ describe('taskStateOnLease (GET /tasks/:id for a task on a lease)', () => {
   test('the lease still has the task: its state, without the warm container or other tasks\' reports', () => {
     const lease: RunState = {
       taskId: TASK_A, attempt: 1, status: 'running',
-      warm: { workspaceId: WS, size: 'standard', fromTaskId: 'task-zzzz', since: 1, savedRestoreMs: null },
+      warm: { workspaceId: WS, size: 'standard', fromTaskId: 'task-zzzz', since: 1, baselinePrepMs: null },
       reportHistory: [{ ...rep('task-zzzz', 1), delivery: 'sent' }],
     };
     const v = taskStateOnLease(TASK_A, LEASE, lease, own);
@@ -432,10 +502,10 @@ describe('run report: reusedContainer', () => {
   test('sanitized: an id that is not one (or looks like a credential) drops the section', () => {
     const base = { taskId: TASK_B, attempt: 1 };
     expect(assembleRunReport(base).reusedContainer).toBeNull();
-    expect(assembleRunReport({ ...base, reusedContainer: { fromTaskId: TASK_A, idleMs: 1.7, savedRestoreMs: 65_000.4 } }).reusedContainer)
-      .toEqual({ fromTaskId: TASK_A, idleMs: 1, savedRestoreMs: 65_000 });
-    expect(assembleRunReport({ ...base, reusedContainer: { fromTaskId: TASK_A, idleMs: 5, savedRestoreMs: null, fallback: 'reset_failed' } }).reusedContainer)
-      .toEqual({ fromTaskId: TASK_A, idleMs: 5, savedRestoreMs: null, fallback: 'reset_failed' });
-    expect(assembleRunReport({ ...base, reusedContainer: { fromTaskId: 'bldt_secret', idleMs: 5, savedRestoreMs: null } }).reusedContainer).toBeNull();
+    expect(assembleRunReport({ ...base, reusedContainer: { fromTaskId: TASK_A, idleMs: 1.7, baselinePrepMs: 65_000.4, resetMs: 3_000.9 } }).reusedContainer)
+      .toEqual({ fromTaskId: TASK_A, idleMs: 1, resetMs: 3_000, prepMs: null, baselinePrepMs: 65_000, savedMs: null });
+    expect(assembleRunReport({ ...base, reusedContainer: { fromTaskId: TASK_A, idleMs: 5, fallback: 'reset_failed' } }).reusedContainer)
+      .toEqual({ fromTaskId: TASK_A, idleMs: 5, fallback: 'reset_failed', resetMs: null });
+    expect(assembleRunReport({ ...base, reusedContainer: { fromTaskId: 'bldt_secret', idleMs: 5, baselinePrepMs: null } }).reusedContainer).toBeNull();
   });
 });

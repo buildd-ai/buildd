@@ -1223,3 +1223,85 @@ describe('rejectedPathLabel: a fixed vocabulary, never the raw path', () => {
     expect(l('not a url')).toBe('other');
   });
 });
+
+// ── Owner seat: the deployer's own Claude token ──────────────────────────────
+
+describe('owner seat route', () => {
+  const SEAT = 'sk-ant-oat01-owner-seat-secret';
+  const seatEnv = { ...GATEWAY_ENV, CLAUDE_CODE_OAUTH_TOKEN: SEAT };
+  const modelReq = (headers: Record<string, string> = hostileHeaders()) => ({
+    url: 'https://api.anthropic.com/v1/messages', method: 'POST', headers,
+  });
+
+  test('off when the secret is absent: the gateway route, exactly as before', () => {
+    expect(resolveModelRoute(GATEWAY_ENV, null).kind).toBe('gateway');
+    expect(resolveModelRoute({ ...GATEWAY_ENV, CLAUDE_CODE_OAUTH_TOKEN: '' }, null).kind).toBe('gateway');
+  });
+
+  test('off on a managed runner even with the secret', () => {
+    expect(resolveModelRoute({ ...seatEnv, MANAGED_CLOUD_RUNNER: '1' }, null).kind).toBe('gateway');
+  });
+
+  test('applies when the effective route is the default Anthropic one', () => {
+    expect(resolveModelRoute(seatEnv, null)).toEqual({ kind: 'owner_seat', token: SEAT });
+    expect(resolveModelRoute(seatEnv)).toEqual({ kind: 'owner_seat', token: SEAT });
+  });
+
+  test('a team agent endpoint wins over the seat', () => {
+    const server: ServerModelEndpoint = { baseUrl: 'https://ep.example', key: 'ep-key', authHeader: 'x-api-key' };
+    expect(resolveModelRoute(seatEnv, server).kind).toBe('proxy');
+  });
+
+  test("a team's own Anthropic key wins over the seat", () => {
+    const server: ServerModelEndpoint = { baseUrl: 'https://api.anthropic.com', key: 'sk-ant-api03-team', authHeader: 'x-api-key', source: 'anthropic_api_key' };
+    const route = resolveModelRoute(seatEnv, server);
+    expect(route.kind).toBe('proxy');
+    expect(JSON.stringify(route)).not.toContain(SEAT);
+  });
+
+  test('an operator MODEL_PROXY_URL wins over the seat', () => {
+    const route = resolveModelRoute({ ...seatEnv, MODEL_PROXY_URL: 'https://litellm.example.com', MODEL_PROXY_KEY: 'px' }, null);
+    expect(route.kind).toBe('proxy');
+  });
+
+  test('a failed endpoint lookup still refuses rather than spending the seat', () => {
+    expect(resolveModelRoute(seatEnv, 'unavailable').kind).toBe('unconfigured');
+  });
+
+  test('strip-then-inject: container auth is removed and only the seat is added', () => {
+    const d = rewriteOutbound(modelReq(), { model: resolveModelRoute(seatEnv, null), github: null });
+    if (d.action !== 'forward') throw new Error('expected forward');
+    expect(d.injected).toBe('owner_seat');
+    expect(d.url).toBe('https://api.anthropic.com/v1/messages');
+    expect(d.headers.get('authorization')).toBe(`Bearer ${SEAT}`);
+    for (const name of CONTAINER_CREDENTIAL_HEADERS) {
+      if (name !== 'authorization') expect(d.headers.get(name)).toBeNull();
+    }
+    expect(d.headers.get('anthropic-beta')).toContain('oauth-2025-04-20');
+    expect(JSON.stringify([...d.headers])).not.toContain('container-supplied');
+  });
+
+  test('keeps the container betas next to the oauth flag', () => {
+    const d = rewriteOutbound(modelReq({ ...hostileHeaders(), 'anthropic-beta': 'interleaved-thinking-2025-05-14' }), { model: resolveModelRoute(seatEnv, null), github: null });
+    if (d.action !== 'forward') throw new Error('expected forward');
+    expect(d.headers.get('anthropic-beta')).toBe('interleaved-thinking-2025-05-14,oauth-2025-04-20');
+  });
+
+  test('the seat is never sent to GitHub or another host', () => {
+    const ctx = { model: resolveModelRoute(seatEnv, null), github: GRANT };
+    const d = rewriteOutbound({ url: 'https://api.github.com/repos/acme/widget', method: 'GET', headers: hostileHeaders() }, ctx);
+    if (d.action !== 'forward') throw new Error('expected forward');
+    expect(JSON.stringify([...d.headers])).not.toContain(SEAT);
+  });
+
+  test('the debug echo fingerprints the seat, never prints it', async () => {
+    const d = rewriteOutbound(modelReq(), { model: resolveModelRoute(seatEnv, null), github: null });
+    if (d.action !== 'forward') throw new Error('expected forward');
+    expect(JSON.stringify(await describeForwardForDebug(d))).not.toContain(SEAT);
+  });
+
+  test('model paths still apply: a non-model path is refused before the seat is touched', () => {
+    const d = rewriteOutbound({ url: 'https://api.anthropic.com/api/oauth/profile', method: 'GET', headers: hostileHeaders() }, { model: resolveModelRoute(seatEnv, null), github: null });
+    expect(d.action).toBe('reject');
+  });
+});

@@ -410,3 +410,25 @@ describe('IMAGE_ENV: the image ENV, passed explicitly (a Cloudflare exec does no
     expect(env.BUILDD_API_KEY).toBe('bldt_x');
   });
 });
+
+describe('deferredRetryBackoffMs for the owner seat', () => {
+  test('cap and wall reasons use the longer seat schedule, then give up', () => {
+    for (const reason of ['owner_seat_cap', 'owner_seat_wall']) {
+      expect(deferredRetryBackoffMs(1, reason)).toBe(60_000);
+      expect(deferredRetryBackoffMs(8, reason)).toBe(1_800_000);
+      expect(deferredRetryBackoffMs(9, reason)).toBeNull();
+    }
+  });
+});
+
+describe('buildContainerEnv never carries the owner seat', () => {
+  test('a Worker with CLAUDE_CODE_OAUTH_TOKEN hands the container neither it nor any OAuth variable', () => {
+    const env = buildContainerEnv(
+      { BUILDD_SERVER: 'https://buildd.example', BUILDD_API_KEY: 'bld_runner', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-owner-seat-secret' } as Parameters<typeof buildContainerEnv>[0],
+      'bldt_task_token',
+    );
+    expect(JSON.stringify(env)).not.toContain('sk-ant-oat01');
+    expect(Object.keys(env).filter(k => /OAUTH/i.test(k))).toEqual([]);
+    expect(env.ANTHROPIC_API_KEY).toBeDefined();
+  });
+});

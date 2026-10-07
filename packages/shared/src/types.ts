@@ -1191,6 +1191,13 @@ export interface WorkerEnvironment {
    * server then derives it from the heartbeat URL.
    */
   fleet?: RunnerFleetIdentity;
+  /**
+   * Quality Scout host advert (apps/runner/src/scout-host.ts): the repos this
+   * runner can host Scout probes for and which ports. Present only when the
+   * runner can sandbox a probe command (bwrap) or the operator set
+   * BUILDD_SCOUT_UNSANDBOXED=1; absent with BUILDD_SCOUT_HOST=0.
+   */
+  scoutHost?: { repos: string[]; command?: boolean; capture?: boolean; appBoot?: boolean };
 }
 
 export interface RunnerUpdateCanaryReport {
@@ -1534,12 +1541,6 @@ export interface ClaimDiagnostics {
      * retry family is already open (one open retry per subject).
      */
     sibling_retry_open?: number;
-    /**
-     * Workflow-kernel review fix skipped at claim: its target was resolved
-     * while it queued (approved, merged, head moved, round superseded), or the
-     * live revalidation could not run and the claim was rolled back.
-     */
-    fix_not_needed?: number;
     /**
      * Claim planner in `apply` mode ordered this task behind a picked, in-flight
      * or open-PR node it would collide with. Replaces the per-poll
@@ -3635,6 +3636,139 @@ export interface WorkspaceQualityScoutConfig {
   host?: 'auto' | 'server';
   /** Per-run bounds. `runnerMaxDurationMs` bounds a runner's execution of a parked run (default 20 min, max 60). */
   budget?: { maxProbes?: number; maxCostUsd?: number; maxDurationMs?: number; runnerMaxDurationMs?: number };
+}
+
+// ── Quality Scout runner host API (/api/quality-scout/runs/*) ──────────────
+//
+// A runner hosts the probes of a parked (`awaiting_host`) Scout run that only
+// a runner can run. Wire shapes only: the probe, profile and result payloads
+// are the core Quality Scout types (packages/core/quality-scout/types.ts,
+// verification-check.ts), carried here structurally because this package
+// depends on nothing.
+
+/** What the runner can host right now. A probe goes only to a runner whose ports serve its need. */
+export interface ScoutHostPortsAdvert {
+  command: boolean;
+  capture: boolean;
+  /** A launch-tested local browser. Not used to route anything yet (preview capture is a later slice). */
+  browser: boolean;
+  /** Can boot the app for `app-boot` API journeys. Optional; absent is false. */
+  appBoot?: boolean;
+}
+
+/** POST /api/quality-scout/runs/claim */
+export interface ScoutRunClaimRequest {
+  /** `owner/name` of the clones this runner can check a SHA out of. */
+  repos: string[];
+  ports: ScoutHostPortsAdvert;
+  /** Self-reported runner id, for diagnostics only. The lease is bound to the API key, not to this. */
+  runnerId?: string;
+}
+
+/** The run a runner claimed: the core `ScoutRun` without its server-side parking state. */
+export interface ScoutHostedRun {
+  id: string;
+  workspaceId: string;
+  missionId: string | null;
+  trigger: string;
+  mode: string;
+  status: 'awaiting_host';
+  candidate: { ref: string; sha: string };
+  prior: { runId: string; sha: string } | null;
+  budget: { maxProbes: number; maxCostUsd: number | null };
+  policyVersion: string;
+  startedAt: string;
+  completedAt: null;
+  error: null;
+}
+
+/**
+ * The lease a claim grants. Every later call for this run must send `leaseId`
+ * with the same API key; past `expiresAt` the run is someone else's to claim.
+ */
+export interface ScoutRunLease {
+  leaseId: string;
+  expiresAt: string;
+  /** Wall-clock bound for executing this run's probes. */
+  runnerMaxDurationMs: number;
+  /** The run is finalized at this time whatever the runner has reported. */
+  hostDeadline: string;
+}
+
+export type ScoutRunClaimResponse =
+  | {
+      run: ScoutHostedRun;
+      /** The runner-assigned probes still waiting for a result: frozen core `ScoutProbeRecord`s. */
+      probes: Array<Record<string, unknown> & { candidateId: string; host: 'runner' }>;
+      /** The capability profile the server planned against (core `ScoutCapabilityProfile`). Judge against this, never a local one. */
+      profile: Record<string, unknown>;
+      lease: ScoutRunLease;
+      /** `owner/name` of the run's workspace repo: which of the offered clones to check the SHA out of. */
+      repo?: string;
+      /** Parked runs of these workspaces that the pre-claim sweep finalized. */
+      expired?: string[];
+    }
+  | {
+      run: null;
+      /** `disabled`: the fleet kill switch is on. `none`: nothing this runner can host is waiting. */
+      reason: 'disabled' | 'none';
+      expired?: string[];
+    };
+
+/**
+ * One runner-hosted probe's substrate result (core `VerificationResult` shape).
+ * The server derives `signature` as `verificationSignature([checkId, ...signatureParts])`
+ * and the recurrence key as `checkId`; it caps `severity` at the probe's risk and
+ * `confidence` below the filing threshold. Send the core result as-is: its
+ * `signatureParts` are what count.
+ */
+export interface ScoutHostedProbeResult {
+  candidateId: string;
+  result: {
+    checkId: string;
+    verdict: 'pass' | 'fail' | 'inconclusive' | 'unsupported';
+    severity?: 'critical' | 'high' | 'medium' | 'low' | null;
+    confidence?: number | null;
+    observed?: string | null;
+    evidenceRefs?: Array<{ kind: string; ref: string }>;
+    reason?: string | null;
+    evidenceShortfall?: Array<{ key: string; need: 'complete' | 'partial'; have: 'complete' | 'partial' | 'absent' }>;
+    /** Executor dedupe parts (at most 20 strings, each clipped to 120 chars). Absent: none. */
+    signatureParts?: string[];
+    /** @deprecated Ignored: the server derives the signature from `checkId` and `signatureParts`. */
+    signature?: string;
+    /** @deprecated Ignored: the recurrence key is the check id. */
+    recurrenceKey?: string;
+    subject?: { kind: string; ref: string };
+    provenance?: { executor?: string; ranAt?: string };
+  };
+  reproducibility?: 'deterministic' | 'intermittent' | 'unknown';
+}
+
+/** POST /api/quality-scout/runs/[id]/probes */
+export interface ScoutProbeResultsRequest {
+  leaseId: string;
+  results: ScoutHostedProbeResult[];
+}
+
+export interface ScoutProbeResultsResponse {
+  accepted: string[];
+  /** Runner probes of this run still waiting for a result. */
+  remaining: number;
+  /** True when this call delivered the last result and the server finalized the run. */
+  finalized: boolean;
+  /** The finalized run's status (`completed`, or `failed` if finalize itself failed). */
+  runStatus?: 'completed' | 'failed';
+}
+
+/** POST /api/quality-scout/runs/[id]/release: the checkout cannot serve the run's SHA. */
+export interface ScoutRunReleaseRequest {
+  leaseId: string;
+  reason: string;
+}
+
+export interface ScoutRunReleaseResponse {
+  released: true;
 }
 
 export interface WorkspaceReadinessItem {
