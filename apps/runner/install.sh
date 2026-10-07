@@ -331,66 +331,11 @@ MCPEOF
         exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$AGENT_PLUGIN_INSTALL" "$@"
         ;;
     esac
-    if [ "${2:-}" != "--global" ]; then
-      # Project scope: hooks for this repo only (MCP entry: `buildd init`).
-      shift
-      exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$AGENT_PLUGIN_INSTALL" "$@"
-    fi
-    if [ "${2:-}" = "--global" ]; then
-      # Global MCP registration: writes to ~/.claude.json
-      CLAUDE_JSON="$HOME/.claude.json"
-
-      # Read API key from config
-      CONFIG_FILE="$HOME/.buildd/config.json"
-      BUILDD_KEY=""
-      BUILDD_SERVER="https://buildd.dev"
-      if [ -f "$CONFIG_FILE" ]; then
-        BUILDD_KEY=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.apiKey||'')" 2>/dev/null)
-        BUILDD_SERVER=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.builddServer||'https://buildd.dev')" 2>/dev/null)
-      fi
-      if [ -z "$BUILDD_KEY" ]; then
-        echo "Error: not logged in. Run 'buildd login' first." >&2
-        exit 1
-      fi
-
-      if [ -f "$CLAUDE_JSON" ]; then
-        # Merge into existing config
-        bun --no-env-file -e "
-          const fs = require('fs');
-          const config = JSON.parse(fs.readFileSync('$CLAUDE_JSON', 'utf-8'));
-          if (!config.mcpServers) config.mcpServers = {};
-          config.mcpServers.buildd = {
-            type: 'http',
-            url: '${BUILDD_SERVER}/api/mcp',
-            headers: { Authorization: 'Bearer ${BUILDD_KEY}' }
-          };
-          fs.writeFileSync('$CLAUDE_JSON', JSON.stringify(config, null, 2) + '\n');
-        "
-      else
-        cat > "$CLAUDE_JSON" << GLOBALEOF
-{
-  "mcpServers": {
-    "buildd": {
-      "type": "http",
-      "url": "${BUILDD_SERVER}/api/mcp",
-      "headers": {
-        "Authorization": "Bearer ${BUILDD_KEY}"
-      }
-    }
-  }
-}
-GLOBALEOF
-      fi
-      # The entry holds the key: owner-only, like ~/.buildd/config.json.
-      chmod 600 "$CLAUDE_JSON"
-
-      echo "Registered buildd MCP server globally in ~/.claude.json"
-      echo "Buildd will be available in every Claude Code session."
-      echo ""
-      echo "Session presence hooks:"
-      shift
-      exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$AGENT_PLUGIN_INSTALL" "$@"
-    fi
+    # Everything else (--global, --here, --everywhere, project scope) is the
+    # installer's: it registers the MCP server for your workspace folders and
+    # installs the presence hooks, and prints exactly what it did.
+    shift
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$AGENT_PLUGIN_INSTALL" "$@"
     ;;
 
   login)
@@ -401,13 +346,24 @@ GLOBALEOF
   logout)
     CONFIG_FILE="$HOME/.buildd/config.json"
     if [ -f "$CONFIG_FILE" ]; then
+      # Revoke the session presence token server-side (best effort), then drop
+      # both credentials from the file.
       bun --no-env-file -e "
         const fs = require('fs');
         const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf-8'));
-        delete config.apiKey;
-        fs.writeFileSync('$CONFIG_FILE', JSON.stringify(config, null, 2));
+        const token = config.presenceToken;
+        const server = (config.builddServer || 'https://buildd.dev').replace(/\/+$/, '');
+        const done = () => {
+          delete config.apiKey;
+          delete config.presenceToken;
+          fs.writeFileSync('$CONFIG_FILE', JSON.stringify(config, null, 2), { mode: 0o600 });
+        };
+        if (typeof token === 'string' && token.startsWith('bldp_')) {
+          fetch(server + '/api/auth/presence-token', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(5000) })
+            .catch(() => {}).finally(done);
+        } else done();
       "
-      echo "Logged out. API key removed from $CONFIG_FILE"
+      echo "Logged out. API key and session presence token removed from $CONFIG_FILE"
     else
       echo "Not logged in (no config file found)"
     fi
@@ -550,6 +506,51 @@ zstd_provision() {
 if ! zstd_provision; then
   echo -e "${YELLOW}Warning: zstd not installed — warm-repo compression tests will fail without it.${NC}"
   echo -e "${YELLOW}  Install manually: apt-get install zstd (Linux) or brew install zstd (macOS)${NC}"
+fi
+
+# Install mergiraf: structural merge driver for language-aware conflict resolution.
+# Pinned release with SHA256 verification. Best-effort: missing binary just means
+# the merge-drivers.test.ts mergiraf tests will skip, same as today.
+mergiraf_provision() {
+  if command -v mergiraf >/dev/null 2>&1; then
+    return 0
+  fi
+  MERGIRAF_VERSION="0.20.0"
+  case "$(uname -s)" in
+    Linux)
+      # x86_64 only; other architectures are not provisioned here (tested on container or CI)
+      if [ "$(uname -m)" != "x86_64" ]; then
+        return 1
+      fi
+      MERGIRAF_SHA256="4341127da8d1da29eced669fbacc1e5d6e530115098de0b82cc9dc551a1acf37"
+      TMPDIR_MERGIRAF="$(mktemp -d)"
+      if curl -fsSL "https://codeberg.org/mergiraf/mergiraf/releases/download/v${MERGIRAF_VERSION}/mergiraf_x86_64-unknown-linux-gnu.tar.gz" -o "${TMPDIR_MERGIRAF}/mergiraf.tar.gz" 2>/dev/null; then
+        if echo "${MERGIRAF_SHA256}  ${TMPDIR_MERGIRAF}/mergiraf.tar.gz" | sha256sum -c 2>/dev/null >/dev/null; then
+          if tar -xzf "${TMPDIR_MERGIRAF}/mergiraf.tar.gz" -C "${TMPDIR_MERGIRAF}" 2>/dev/null; then
+            if [ -f "${TMPDIR_MERGIRAF}/mergiraf" ]; then
+              mkdir -p "$HOME/.local/bin"
+              install -m 0755 "${TMPDIR_MERGIRAF}/mergiraf" "$HOME/.local/bin/mergiraf"
+              rm -rf "$TMPDIR_MERGIRAF"
+              return 0
+            fi
+          fi
+        fi
+      fi
+      rm -rf "$TMPDIR_MERGIRAF"
+      ;;
+    Darwin)
+      if command -v brew >/dev/null 2>&1; then
+        brew install -q mergiraf
+        return $?
+      fi
+      ;;
+  esac
+  return 1
+}
+
+if ! mergiraf_provision; then
+  echo -e "${YELLOW}Warning: mergiraf not installed — merge-drivers.test.ts mergiraf tests will skip without it.${NC}"
+  echo -e "${YELLOW}  Install manually: https://mergiraf.org/installation.html${NC}"
 fi
 
 echo ""

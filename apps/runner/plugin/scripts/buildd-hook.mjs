@@ -13,6 +13,12 @@
 // bad payload, timeout) is swallowed and the script exits 0. MCP stays the
 // control plane; without this hook buildd still works exactly as before.
 //
+// Scope: presence is reported only for a session opened in a git repo that is
+// one of the account's buildd workspaces (checked here, against a cached list of
+// workspace repos), in a repo whose own .mcp.json names a buildd server, or for
+// a session that claimed a buildd task. Anywhere else
+// the hook sends nothing at all, not even the folder's name.
+//
 // Auth: BUILDD_API_KEY / BUILDD_SERVER from the environment, else
 // ~/.buildd/config.json (written by `buildd login`). No key is stored in hook
 // config. Set BUILDD_HOOKS_DISABLED=1 to turn it off. BUILDD_HOOK_DEBUG=1 logs
@@ -28,9 +34,13 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const HOOK_VERSION = '1';
+export const PRESENCE_TOKEN_PREFIX = 'bldp_';
 /** Client-side coalescing: at most one touch a minute per session. */
 export const TOUCH_INTERVAL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 3_000;
+/** A start in a repo missing from the cached workspace list refetches it at most this often. */
+export const WORKSPACE_REFRESH_MS = 10 * 60_000;
+const LIST_TIMEOUT_MS = 2_000;
 const STDIN_TIMEOUT_MS = 2_000;
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const WORKER_ID_RE = /Worker ID:\**\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
@@ -160,7 +170,7 @@ export function repoSlug(remote) {
   return /^[\w.-]+$/.test(owner) && /^[\w.-]+$/.test(name) ? `${owner}/${name}` : null;
 }
 
-function gitRepo(cwd) {
+export function gitRepo(cwd) {
   try {
     const url = execFileSync('git', ['-C', cwd, 'config', '--get', 'remote.origin.url'], { timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
     return repoSlug(url);
@@ -169,17 +179,114 @@ function gitRepo(cwd) {
   }
 }
 
+/**
+ * The credential the hook sends. The person's presence token (written by
+ * `buildd login`, BUILDD_PRESENCE_TOKEN overrides) wins: it reaches every team
+ * the person is in and can do nothing but report presence. Else the account
+ * API key. `apiKey` is the bearer either way; `kind` says which.
+ */
 export function resolveAuth(env = process.env, home = homedir()) {
-  let apiKey = env.BUILDD_API_KEY || null;
-  let server = env.BUILDD_SERVER || null;
-  if (!apiKey || !server) {
-    try {
-      const cfg = JSON.parse(readFileSync(join(env.BUILDD_HOME || join(home, '.buildd'), 'config.json'), 'utf8'));
-      apiKey = apiKey || cfg.apiKey || null;
-      server = server || cfg.builddServer || null;
-    } catch { /* not logged in */ }
+  let cfg = {};
+  try {
+    cfg = JSON.parse(readFileSync(join(env.BUILDD_HOME || join(home, '.buildd'), 'config.json'), 'utf8')) ?? {};
+  } catch { /* not logged in */ }
+  const server = (env.BUILDD_SERVER || cfg.builddServer || 'https://buildd.dev').replace(/\/+$/, '');
+  const presence = env.BUILDD_PRESENCE_TOKEN || cfg.presenceToken || null;
+  if (typeof presence === 'string' && presence.startsWith(PRESENCE_TOKEN_PREFIX)) return { apiKey: presence, server, kind: 'presence' };
+  const apiKey = env.BUILDD_API_KEY || cfg.apiKey || null;
+  return apiKey ? { apiKey, server, kind: 'key' } : null;
+}
+
+/** One list per credential: two teams' keys, or a key and a presence token, never share a workspace list. */
+export function workspaceCachePath(env = process.env, apiKey = '', home = homedir()) {
+  const id = createHash('sha256').update(apiKey).digest('hex').slice(0, 16);
+  return join(env.BUILDD_HOME || join(home, '.buildd'), `workspace-repos-${id}.json`);
+}
+
+export function readWorkspaceCache(env = process.env, apiKey = '') {
+  try {
+    const c = JSON.parse(readFileSync(workspaceCachePath(env, apiKey), 'utf8'));
+    if (!Array.isArray(c.repos)) return null;
+    return { repos: c.repos.filter(r => typeof r === 'string'), fetchedAt: Number(c.fetchedAt) || 0 };
+  } catch {
+    return null;
   }
-  return apiKey ? { apiKey, server: (server || 'https://buildd.dev').replace(/\/+$/, '') } : null;
+}
+
+export function writeWorkspaceCache(env, apiKey, repos, now = Date.now()) {
+  try {
+    const file = workspaceCachePath(env, apiKey);
+    mkdirSync(join(file, '..'), { recursive: true, mode: 0o700 });
+    writeFileSync(file, JSON.stringify({ repos, fetchedAt: now }), { mode: 0o600 });
+  } catch { /* the next start refetches */ }
+}
+
+/**
+ * owner/name (lowercased) of every workspace repo this key reaches, or null on
+ * any failure. A plain list call: it says nothing about the caller's folder.
+ */
+export async function fetchWorkspaceRepos(auth, fetchImpl = globalThis.fetch) {
+  const list = await fetchWorkspaces(auth, fetchImpl);
+  return list ? [...new Set(list.map(w => w.repo))].sort() : null;
+}
+
+/**
+ * `{ id, repo }` (repo as lowercased owner/name) of every workspace with a repo
+ * that this key reaches, in the server's order, or null on any failure. The
+ * installer needs the id for the per-workspace OAuth MCP endpoint; the hook's
+ * cached list keeps only the repos.
+ */
+export async function fetchWorkspaces(auth, fetchImpl = globalThis.fetch) {
+  try {
+    // A presence token reads the person's workspace repos across all their
+    // teams; it is refused by /api/workspaces like by every non-presence route.
+    const path = auth.kind === 'presence' ? '/api/workers/local-sessions/workspaces' : '/api/workspaces';
+    const res = await fetchImpl(`${auth.server}${path}`, {
+      headers: { Authorization: `Bearer ${auth.apiKey}`, 'X-Buildd-Hook': HOOK_VERSION },
+      signal: AbortSignal.timeout(LIST_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    if (!Array.isArray(body?.workspaces)) return null;
+    return body.workspaces
+      .map(w => ({ id: typeof w?.id === 'string' ? w.id : null, repo: repoSlug(w?.repo)?.toLowerCase() ?? null }))
+      .filter(w => w.repo);
+  } catch {
+    return null;
+  }
+}
+
+/** Whether repo is a workspace repo. Unknown (no list, buildd down) answers false: nothing is sent. */
+export async function isWorkspaceRepo(repo, { env = process.env, auth, fetchImpl = globalThis.fetch, now = Date.now() }) {
+  if (!repo) return false;
+  const want = repo.toLowerCase();
+  const cache = readWorkspaceCache(env, auth.apiKey);
+  if (cache?.repos.includes(want)) return true;
+  if (cache && now - cache.fetchedAt < WORKSPACE_REFRESH_MS) return false;
+  const fresh = await fetchWorkspaceRepos(auth, fetchImpl);
+  if (!fresh) return false;
+  writeWorkspaceCache(env, auth.apiKey, fresh, now);
+  return fresh.includes(want);
+}
+
+/** Git root of cwd, or null. */
+export function gitRoot(cwd) {
+  try {
+    return execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The folder's own .mcp.json names a buildd MCP server: someone set it up for buildd on purpose. */
+export function hasProjectBuilddMcp(dir) {
+  if (!dir) return false;
+  try {
+    const servers = JSON.parse(readFileSync(join(dir, '.mcp.json'), 'utf8'))?.mcpServers ?? {};
+    return Object.values(servers).some(s => typeof s?.url === 'string' && /\/api\/mcp\/?(\?.*)?$/.test(s.url));
+  } catch {
+    return false;
+  }
 }
 
 function stateDir(env = process.env) {
@@ -258,7 +365,28 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
   const state = readState(file);
   if (shouldSkip(n.event, state, now)) return { sent: false, why: 'throttled', output: hookOutput(client, hookEventName, null) };
 
-  const repo = n.event === 'start' ? gitRepo(n.cwd) : null;
+  // Scope. A claim is explicit buildd work, so bind always goes and the session
+  // is in scope from then on. Otherwise the folder decides, once per session
+  // (again on a resumed start); an out-of-scope session costs no git call later.
+  let scope = state.scope;
+  let repo = null;
+  if (n.event === 'bind') {
+    scope = 'in';
+  } else if (scope !== 'in') {
+    if (scope === 'out' && n.event !== 'start') {
+      return { sent: false, why: 'outside_workspace', output: hookOutput(client, hookEventName, null) };
+    }
+    repo = gitRepo(n.cwd);
+    const inScope = hasProjectBuilddMcp(gitRoot(n.cwd) ?? n.cwd) || await isWorkspaceRepo(repo, { env, auth, fetchImpl, now });
+    if (!inScope) {
+      writeState(file, { ...state, scope: 'out' });
+      return { sent: false, why: 'outside_workspace', output: hookOutput(client, hookEventName, null) };
+    }
+    scope = 'in';
+  } else if (n.event === 'start') {
+    repo = gitRepo(n.cwd);
+  }
+
   const body = buildBody(client, n, repo);
   let result = null;
   try {
@@ -273,7 +401,7 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
   } catch (err) {
     debug('request failed', err?.message ?? err);
   }
-  writeState(file, { ...state, lastSentAt: now, lastEvent: n.event });
+  writeState(file, { ...state, scope, lastSentAt: now, lastEvent: n.event });
   return { sent: true, ok: !!result, body, output: hookOutput(client, hookEventName, result) };
 }
 

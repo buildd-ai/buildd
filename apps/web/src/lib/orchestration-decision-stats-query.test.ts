@@ -1,4 +1,5 @@
 import { expect, it, mock } from 'bun:test';
+import { OPT_IN_CAPABILITIES } from '@buildd/core/inference-policy';
 const decisionRows = [
  { capability: 'orchestration_claim', decisionId: 'claim.hold', fingerprint: 'aaa', candidatePolicyVersion: 'p1', experimentArm: 'observe', mode: 'shadow',
    day: '2026-10-01', total: 3, applied: 0, suggested: 2, fallback: 1, labelled: 1, firstAt: '2026-10-01 01:00:00+00', lastAt: '2026-10-01 05:00:00+00' },
@@ -50,11 +51,7 @@ it('rolls manifest predictions up by day and stop reason', async () => {
 it('reports opt-in state so zero rows are distinguishable from a disabled capability', async () => {
  reads = 0;
  const stats = await fetchOrchestrationDecisionStats({ workspaceIds: ['ws'], window: '24h' });
- expect(stats.decisionCapabilities).toEqual([
-  { workspaceId: 'ws', capability: 'orchestration_manifest', status: 'capability_disabled' },
-  { workspaceId: 'ws', capability: 'orchestration_claim', status: 'capability_disabled' },
-  { workspaceId: 'ws', capability: 'orchestration_ordering', status: 'capability_disabled' },
- ]);
+ expect(stats.decisionCapabilities).toEqual(OPT_IN_CAPABILITIES.map(capability => ({ workspaceId: 'ws', capability, status: 'capability_disabled' })));
  expect(stats.coverage.note).toContain('enabledDecisionShadows');
 });
 

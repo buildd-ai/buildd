@@ -10,7 +10,7 @@ import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig } from '@buildd/cor
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { notifyOperator } from '@/lib/pushover';
 import { notifyTeamOf } from '@/lib/notify';
-import { isMissionPrTask } from '@buildd/core/mission-integration';
+import { isMissionPrTask, looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { checkDependsOnResolved, resolveCompletedTask } from '@/lib/task-dependencies';
 import { detachInteractiveWorkersOfEndedTasks } from '@/lib/interactive-detach';
@@ -38,6 +38,8 @@ import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { recordPrReverts } from '@/lib/pr-reverts';
+import { authorsFromPushCommits, changedFilesFromPush, isPossibleBaseRef, type BaseAdvanceInput, type BaseResolver } from '@/lib/base-advance-notice';
+import { changedFilesForCompare, changedFilesForPr, runBaseAdvanceNotice } from '@/lib/base-advance-notice-store';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
@@ -475,6 +477,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           // Model policy: every check suite passed on the run's PR.
           if (worker.prLifecycleStatus !== 'ci_green') {
             await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: true }]);
+            await emit({ type: 'pr.ci_passed', repoFullName: repository.full_name, prNumber: pr.number, headSha, installationId: installation.id });
           }
         }
 
@@ -632,7 +635,7 @@ async function handlePullRequestEvent(event: {
     mergeable?: boolean | null;
   };
   installation?: { id: number };
-  repository: { full_name: string };
+  repository: { full_name: string; default_branch?: string };
   changes?: { base?: { ref?: { from?: string } } };
 }) {
   const { action, pull_request: pr, repository } = event;
@@ -984,6 +987,17 @@ async function handlePullRequestEvent(event: {
   // the dedupe key, so a redelivery or the reconcile sweep writes nothing new.
   // The releases module also records a merge into a prod branch here, whether
   // or not a worker owns the PR, on every delivery (idempotent on headSha).
+  if (pr.merged && pr.base?.ref && event.installation) {
+    const installationId = event.installation.id;
+    const baseRef = pr.base.ref;
+    scheduleBaseAdvanceNotice(`PR #${pr.number} ${repository.full_name}`, async () => ({
+      repoFullName: repository.full_name, baseRef, defaultBranch: repository.default_branch ?? null,
+      files: await changedFilesForPr(installationId, repository.full_name, pr.number),
+      source: 'pull_request',
+      change: { prNumber: pr.number, title: pr.title ?? null, sha: pr.merge_commit_sha ?? pr.head.sha, authorBranch: pr.head.ref },
+    }));
+  }
+
   if (pr.merged) {
     await emit({
       type: 'pr.merged', repoFullName: repository.full_name, prNumber: pr.number, url: pr.html_url,
@@ -1592,6 +1606,31 @@ function isDefaultBranch(branch: string | null | undefined, defaultBranch: strin
 }
 
 /**
+ * Tell live workers whose base just moved under files they are editing
+ * (lib/base-advance-notice.ts). File listing can need a GitHub call, so the
+ * whole thing runs in after(); it never fails the webhook.
+ */
+const BASE_RESOLVER: BaseResolver = {
+  taskPrBase: args => resolveTaskPrBase(args).base,
+  looksLikeIntegrationBranch: looksLikeMissionIntegrationBranch,
+};
+
+function scheduleBaseAdvanceNotice(
+  label: string,
+  build: () => Promise<BaseAdvanceInput | null>,
+): void {
+  const run = () => build()
+    .then(input => (input ? runBaseAdvanceNotice(input, BASE_RESOLVER) : null))
+    .catch(err => console.error(`[base-advance] ${label} failed:`, err));
+  try {
+    after(run);
+  } catch {
+    // after() is unavailable outside a request scope (tests) — run inline, unawaited.
+    void run();
+  }
+}
+
+/**
  * `push` to the default branch does two things:
  *  - commit messages go to the revert ledger (a `git revert` of a merge commit
  *    names its sha);
@@ -1604,10 +1643,12 @@ function isDefaultBranch(branch: string | null | undefined, defaultBranch: strin
  */
 async function handlePushEvent(event: {
   ref?: string;
+  before?: string;
   after?: string;
   deleted?: boolean;
   size?: number;
   repository?: { full_name?: string; default_branch?: string };
+  installation?: { id: number };
   commits?: Array<{ id?: string; message?: string; added?: string[]; modified?: string[]; removed?: string[] }>;
   head_commit?: { message?: string } | null;
 }): Promise<void> {
@@ -1628,6 +1669,36 @@ async function handlePushEvent(event: {
 
   const repo = event.repository?.full_name;
   const branch = event.ref?.startsWith('refs/heads/') ? event.ref.slice('refs/heads/'.length) : null;
+
+  // Base-advance notice: any branch a live worker could be based on — trunk
+  // AND mission integration branches, so this runs before the default-branch
+  // return below. A merged PR also arrives as pull_request.closed; the
+  // per-worker debounce folds the pair into one message.
+  if (repo && isPossibleBaseRef(branch) && !event.deleted) {
+    const commits = event.commits ?? [];
+    const authors = authorsFromPushCommits(commits);
+    const installationId = event.installation?.id;
+    scheduleBaseAdvanceNotice(`push ${repo}@${branch}`, async () => {
+      let files = changedFilesFromPush(commits);
+      // GitHub lists at most 20 commits in a push payload; past that, compare.
+      const truncated = (event.size ?? commits.length) > commits.length;
+      if ((truncated || files.length === 0) && installationId && event.before && event.after
+        && !/^0+$/.test(event.before)) {
+        files = await changedFilesForCompare(installationId, repo, event.before, event.after).catch(() => files);
+      }
+      return {
+        repoFullName: repo, baseRef: branch, defaultBranch: event.repository?.default_branch ?? null,
+        files, source: 'push',
+        change: {
+          sha: event.after ?? null,
+          authorPrNumbers: authors.prNumbers,
+          authorBranches: authors.branches,
+          ...(authors.prNumbers.length === 1 ? { prNumber: authors.prNumbers[0] } : {}),
+        },
+      };
+    });
+  }
+
   if (!repo || !isDefaultBranch(branch, event.repository?.default_branch)) return;
   for (const c of event.commits ?? []) {
     if (!c.id || !c.message) continue;

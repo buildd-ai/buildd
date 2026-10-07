@@ -9,11 +9,14 @@
  *   the provider is also an `ai_usage` receipt (surface 'decision'), on the
  *   acting account when there is one and on the team alone otherwise. Both
  *   are written after the response (`after()`), never on the request path.
- * - Relevance shadow: installed into retrieveMemory by
- *   `installMemoryRelevanceShadow` (called from ./memory-ledger, which every
- *   web read path loads). Sampled (`MEMORY_RELEVANCE_SHADOW_SAMPLE`, default
- *   0.25), re-checks the workspace is standard and the task attribution holds,
- *   and runs after the response, so it adds no claim latency.
+ * - Relevance: installed into retrieveMemory by `installMemoryRelevanceShadow`
+ *   (called from ./memory-ledger, which every web read path loads), as two
+ *   hooks. The live judge serves claim_context only, on the request path,
+ *   inside RELEVANCE_LIVE_BUDGET_MS; `MEMORY_RELEVANCE_LIVE=0` turns it off and
+ *   claim_context goes back to the shadow. The shadow serves every other push:
+ *   sampled (`MEMORY_RELEVANCE_SHADOW_SAMPLE`, default 0.25) and run after the
+ *   response, so it adds no latency. Both re-check that the workspace is
+ *   standard and the task attribution holds.
  * - Use labels: `scheduleMemoryUseLabels`, from the worker completion route,
  *   gated by `shouldLabelMemoryUses`.
  *
@@ -31,7 +34,13 @@ import {
   type MemoryDecisionScope,
   type UseLabelDeps,
 } from '@buildd/core/memory-decisions';
-import { setMemoryRelevanceShadow, type MemoryRelevanceShadow, type MemoryRelevanceShadowInput } from '@buildd/core/memory-retrieval';
+import {
+  setMemoryRelevanceJudge,
+  setMemoryRelevanceShadow,
+  type MemoryRelevanceJudge,
+  type MemoryRelevanceShadow,
+  type MemoryRelevanceShadowInput,
+} from '@buildd/core/memory-retrieval';
 import type { DecisionReceipt } from '@builddai/ai-kit/decide';
 import { isStandardWorkspace } from './workspace-data-class';
 
@@ -43,6 +52,16 @@ const inert = () => process.env.NODE_ENV === 'test';
 export function memoryDecisionsDisabled(env: Record<string, string | undefined> = process.env): boolean {
   const v = (env.MEMORY_DECISIONS_DISABLED ?? '').trim().toLowerCase();
   return v === '1' || v === 'true' || v === 'yes';
+}
+
+/**
+ * Rollback for the live relevance demotion: `MEMORY_RELEVANCE_LIVE=0` (or
+ * false/off/no) leaves claim_context on the rule order with the sampled
+ * shadow, exactly as before. Read per call.
+ */
+export function memoryRelevanceLiveEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  const v = (env.MEMORY_RELEVANCE_LIVE ?? '').trim().toLowerCase();
+  return !(v === '0' || v === 'false' || v === 'off' || v === 'no');
 }
 
 export const DEFAULT_RELEVANCE_SHADOW_SAMPLE = 0.25;
@@ -178,7 +197,10 @@ const dbRelevanceShadowDeps: RelevanceShadowDeps = {
 };
 
 /** Standard workspace and a task that checks out; any doubt (or failure) is a skip. */
-async function shadowAllowed(input: MemoryRelevanceShadowInput, deps: RelevanceShadowDeps): Promise<boolean> {
+async function shadowAllowed(
+  input: MemoryRelevanceShadowInput,
+  deps: Pick<RelevanceShadowDeps, 'loadWorkspace' | 'taskInWorkspace'>,
+): Promise<boolean> {
   if (!input.workspaceId) return false;
   try {
     const ws = await deps.loadWorkspace(input.workspaceId);
@@ -214,13 +236,58 @@ export function createRelevanceShadow(
   };
 }
 
+// ── Relevance live (claim_context) ───────────────────────────────────────────
+
+export interface RelevanceJudgeDeps {
+  /** A decider whose log rows are written after the response. */
+  liveDecider: () => MemoryDecider;
+  loadWorkspace: RelevanceShadowDeps['loadWorkspace'];
+  taskInWorkspace: RelevanceShadowDeps['taskInWorkspace'];
+  disabled: () => boolean;
+  liveEnabled: () => boolean;
+}
+
+const dbRelevanceJudgeDeps: RelevanceJudgeDeps = {
+  liveDecider: () => createMemoryDecider(webMemoryDecisionDeps()),
+  loadWorkspace: dbRelevanceShadowDeps.loadWorkspace,
+  taskInWorkspace: dbRelevanceShadowDeps.taskInWorkspace,
+  disabled: () => memoryDecisionsDisabled(),
+  liveEnabled: () => memoryRelevanceLiveEnabled(),
+};
+
+/**
+ * The live judge retrieveMemory awaits on the claim path. The workspace and
+ * attribution checks spend from the same budget as the Jev calls, and the
+ * retrieval races the whole thing against that budget, so a slow DB read or
+ * provider costs at most the budget and then the rule order. Null (did not
+ * judge) leaves the retrieval to the shadow.
+ */
+export function createRelevanceJudge(deps: Partial<RelevanceJudgeDeps> = {}): MemoryRelevanceJudge {
+  const d: RelevanceJudgeDeps = { ...dbRelevanceJudgeDeps, ...deps };
+  return async (input) => {
+    if (d.disabled() || !d.liveEnabled()) return null;
+    const started = Date.now();
+    if (!(await shadowAllowed(input, d))) return null;
+    const decider = d.liveDecider();
+    if (!decider.judgeRelevance) return null;
+    return decider.judgeRelevance({
+      scope: { teamId: input.teamId, workspaceId: input.workspaceId, taskId: input.taskId },
+      task: input.query,
+      caller: input.caller,
+      hits: input.hits.map(h => ({ memoryId: h.memoryId, content: h.content, gatedBy: h.gatedBy, mandatory: h.mandatory === true })),
+      budgetMs: Math.max(1, input.budgetMs - (Date.now() - started)),
+    });
+  };
+}
+
 let installed = false;
 
-/** Install the relevance shadow once per process. Inert under test. */
+/** Install the relevance hooks (live judge and shadow) once per process. Inert under test. */
 export function installMemoryRelevanceShadow(): void {
   if (installed || inert()) return;
   installed = true;
   setMemoryRelevanceShadow(createRelevanceShadow());
+  setMemoryRelevanceJudge(createRelevanceJudge());
 }
 
 // ── Use labels on completion ─────────────────────────────────────────────────

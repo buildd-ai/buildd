@@ -11,7 +11,8 @@
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import type { LocalSessionEvent } from '@buildd/shared';
-import { handleLocalSessionEvent, LocalSessionError, type LocalSessionAccount } from '@/lib/local-session';
+import { handleLocalSessionEvent, LocalSessionError, type LocalSessionAccount, type LocalSessionPerson } from '@/lib/local-session';
+import { authenticatePresenceToken, issuePresenceToken, revokePresenceToken } from '@/lib/presence-token';
 import { listLocalSessions } from '@/lib/local-session-view';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
 
@@ -175,5 +176,116 @@ describe('the Activity list', () => {
     expect(ids).toContain(a.sessionId!);
     expect(ids).not.toContain(b.sessionId!);
     expect(ids).toContain(c.sessionId!);
+  });
+});
+
+describe("a person's presence token, across teams", () => {
+  // Team B's key made the claim (or OAuth did); the hooks hold the person's
+  // presence token. The bind is decided by team membership and, when the claim
+  // recorded one, by who made it, never by which account the hooks hold.
+  let teamB: { teamId: string; workspaceId: string };
+  let teamC: { teamId: string; workspaceId: string };
+  let userId: string;
+  let otherUserId: string;
+  let token: string;
+  let person: LocalSessionPerson;
+
+  const seedUser = async () => {
+    const email = `p-${Date.now().toString(36)}-${n++}@example.test`;
+    const [u] = await q<{ id: string }>(sql`INSERT INTO users (email) VALUES (${email}) RETURNING id`);
+    return u.id;
+  };
+  /** A live interactive worker in `ws`, claimed with that team's key. */
+  const claimIn = async (ws: { teamId: string; workspaceId: string }, claimUser: string | null = null) => {
+    const acct = await seedAccount(ws.teamId);
+    const taskId = await seedTask(ws.workspaceId, { status: 'in_progress' });
+    await q(sql`UPDATE tasks SET claimed_by = ${acct.id}::uuid, claimed_at = now(),
+      context = ${JSON.stringify(claimUser ? { interactiveClaimUserId: claimUser } : {})}::jsonb WHERE id = ${taskId}::uuid`);
+    const [w] = await q<{ id: string }>(sql`
+      INSERT INTO workers (workspace_id, account_id, task_id, name, runner, branch, status)
+      VALUES (${ws.workspaceId}::uuid, ${acct.id}::uuid, ${taskId}::uuid, 'w', 'mcp', 'buildd/test', 'running') RETURNING id`);
+    return { taskId, workerId: w.id };
+  };
+  const as = (e: LocalSessionEvent) => handleLocalSessionEvent(person, e);
+
+  beforeAll(async () => {
+    process.env.AUTH_SECRET ||= 'db-test-presence-token-secret';
+    teamB = await seedWorkspace();
+    teamC = await seedWorkspace();
+    await q(sql`UPDATE workspaces SET repo = 'https://github.com/acme/team-b-repo' WHERE id = ${teamB.workspaceId}::uuid`);
+    userId = await seedUser();
+    otherUserId = await seedUser();
+    await q(sql`INSERT INTO team_members (team_id, user_id, role) VALUES (${teamB.teamId}::uuid, ${userId}::uuid, 'member')`);
+    await q(sql`INSERT INTO team_members (team_id, user_id, role) VALUES (${teamB.teamId}::uuid, ${otherUserId}::uuid, 'member')`);
+    token = (await issuePresenceToken(userId, 'db-test-machine'))!;
+    const p = await authenticatePresenceToken(token);
+    person = { kind: 'user', userId: p!.userId, teamIds: p!.teamIds };
+  });
+
+  test('the token stores no secret and authenticates as the person, in the teams they are in', async () => {
+    expect(token.startsWith('bldp_')).toBe(true);
+    expect(person.teamIds).toContain(teamB.teamId);
+    expect(person.teamIds).not.toContain(teamC.teamId);
+    const [row] = await q<Record<string, unknown>>(sql`SELECT * FROM presence_tokens WHERE user_id = ${userId}::uuid`);
+    expect(JSON.stringify(row)).not.toContain(token.split('.')[1]);
+    expect(row.label).toBe('db-test-machine');
+  });
+
+  test("start is owned by the person, resolved to a workspace through any of their teams", async () => {
+    const r = await as({ event: 'start', client: 'claude', clientSessionId: sid(), repo: 'acme/team-b-repo' });
+    const [row] = await q<{ user_id: string; account_id: string | null; workspace_id: string }>(sql`
+      SELECT user_id, account_id, workspace_id FROM local_sessions WHERE id = ${r.sessionId}::uuid`);
+    expect(row).toEqual({ user_id: userId, account_id: null, workspace_id: teamB.workspaceId });
+  });
+
+  test("binds a worker claimed with team B's key, and its exit releases it", async () => {
+    const s = sid();
+    const { taskId, workerId } = await claimIn(teamB);
+    await as({ event: 'start', client: 'claude', clientSessionId: s });
+    expect((await as({ event: 'bind', client: 'claude', clientSessionId: s, workerId })).outcome).toBe('bound');
+    expect((await as({ event: 'end', client: 'claude', clientSessionId: s, reason: 'exit' })).outcome).toBe('ended_released');
+    expect(await taskStatus(taskId)).toBe('pending');
+    expect(await workerStatus(workerId)).toBe('failed');
+  });
+
+  test('a claim the person made over OAuth (recorded on the task) binds', async () => {
+    const s = sid();
+    const { workerId } = await claimIn(teamB, userId);
+    expect((await as({ event: 'bind', client: 'claude', clientSessionId: s, workerId })).outcome).toBe('bound');
+  });
+
+  test("refused as not found: a team they are not in, or a teammate's recorded claim", async () => {
+    const elsewhere = await claimIn(teamC);
+    const e1 = await as({ event: 'bind', client: 'claude', clientSessionId: sid(), workerId: elsewhere.workerId }).catch(e => e);
+    expect(e1).toBeInstanceOf(LocalSessionError);
+    expect((e1 as LocalSessionError).status).toBe(404);
+
+    const teammates = await claimIn(teamB, otherUserId);
+    const e2 = await as({ event: 'bind', client: 'claude', clientSessionId: sid(), workerId: teammates.workerId }).catch(e => e);
+    expect((e2 as LocalSessionError).status).toBe(404);
+  });
+
+  test('a presence row must have exactly one owner', async () => {
+    const err = await q(sql`INSERT INTO local_sessions (client_kind, client_session_hash) VALUES ('claude', 'no-owner')`).catch(e => e);
+    // drizzle wraps the driver error; the constraint is named on its cause.
+    const e = err as { message?: string; cause?: { message?: string; constraint?: string } };
+    expect(`${e?.message} ${e?.cause?.message} ${e?.cause?.constraint}`).toMatch(/local_sessions_one_owner|check constraint/i);
+  });
+
+  test('a revoked token, or one whose person left every team, no longer authenticates', async () => {
+    const t2 = (await issuePresenceToken(userId, 'second-machine'))!;
+    expect(await authenticatePresenceToken(t2)).not.toBeNull();
+    expect(await revokePresenceToken(t2)).toBe(true);
+    expect(await authenticatePresenceToken(t2)).toBeNull();
+
+    const loner = await seedUser();
+    const t3 = (await issuePresenceToken(loner, 'laptop'))!;
+    expect(await authenticatePresenceToken(t3)).toBeNull();
+  });
+
+  test('logging in again on the same machine revokes the previous token', async () => {
+    const again = (await issuePresenceToken(userId, 'db-test-machine'))!;
+    expect(await authenticatePresenceToken(token)).toBeNull();
+    expect(await authenticatePresenceToken(again)).not.toBeNull();
   });
 });

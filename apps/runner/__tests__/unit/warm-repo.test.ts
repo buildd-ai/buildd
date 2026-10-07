@@ -251,6 +251,37 @@ describe('warmRepoEnabled', () => {
 });
 
 describe('restore before clone', () => {
+  test('an in-clone task uploads only remote refs and restores the remote default branch', async () => {
+    const s = session({ zstd: false });
+    const path = cloneThrough(s);
+    const defaultTip = git(path, 'rev-parse', 'origin/main');
+    git(path, 'checkout', '-q', '-B', 'buildd/task-example', 'origin/main');
+    writeFileSync(join(path, 'task-only.txt'), 'task work\n');
+    git(path, 'add', 'task-only.txt');
+    git(path, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-qm', 'task work');
+    await s.refresh('completed');
+    expect(store.manifests[0]!.defaultBranch).toBe('main');
+    const bundle = join(dir, 'uploaded.bundle');
+    writeFileSync(bundle, store.files.get(`/warm/${store.manifests[0]!.generation}/repo`)!);
+    const refs = git(path, 'bundle', 'list-heads', bundle);
+    expect(refs).toContain(`${defaultTip} refs/remotes/origin/main`);
+    expect(refs).not.toContain('refs/heads/buildd/');
+    const restored = cloneThrough(session({ zstd: false }), 'next-task');
+    expect(git(restored, 'branch', '--show-current')).toBe('main');
+    expect(git(restored, 'rev-parse', 'HEAD')).toBe(defaultTip);
+    expect(existsSync(join(restored, 'task-only.txt'))).toBe(false);
+  });
+
+  test('missing origin HEAD never records the in-clone task branch as the warm default', async () => {
+    const s = session({ zstd: false });
+    const path = cloneThrough(s);
+    git(path, 'checkout', '-q', '-B', 'buildd/task-example', 'origin/main');
+    git(path, 'symbolic-ref', '--delete', 'refs/remotes/origin/HEAD');
+    await s.refresh('completed');
+    expect(store.manifests).toHaveLength(0);
+    expect(store.calls).not.toContain('POST /warm/begin');
+  });
+
   test('no snapshot: falls back to a normal clone, then seeds a generation even when the task failed', async () => {
     const s = session();
     const path = cloneThrough(s);

@@ -77,6 +77,36 @@ export function classifyAutoMergeRefusal(reason: string): AutoMergeRefusalClass 
 /** Refusal classes a later webhook re-evaluates on its own: a wait, not a no. */
 const TRANSIENT_REFUSALS: ReadonlySet<AutoMergeRefusalClass> = new Set(['ci', 'stale_head', 'github_read']);
 
+
+/**
+ * `pulls/{n}/files` is GitHub's cached PR diff: after the head is refreshed
+ * onto a newer base it can keep the older merge base and an expanded file
+ * list (files that only differ because the base moved). A live compare of the
+ * current base tip against the head is the diff a merge would produce. Returns
+ * null when it cannot be read, so callers keep the snapshot verdict.
+ */
+async function fetchLiveChangedFilenames(
+  installationId: number,
+  repoFullName: string,
+  prNumber: number,
+  headSha: string,
+): Promise<Set<string> | null> {
+  try {
+    const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+    const baseRef = pr?.base?.ref;
+    if (!baseRef) return null;
+    const cmp = await githubApi(
+      installationId,
+      `/repos/${repoFullName}/compare/${encodeURIComponent(baseRef)}...${headSha}?per_page=300`,
+    );
+    if (!Array.isArray(cmp?.files) || cmp.files.length >= 300) return null;
+    return new Set(cmp.files.map((f: { filename: string }) => f.filename));
+  } catch (err) {
+    console.warn(`[auto-merge] live compare failed for ${repoFullName}#${prNumber}:`, err);
+    return null;
+  }
+}
+
 /**
  * Check CI status, deny paths, and diff size for a PR before merging.
  * Returns `{ ok: true }` when all safety rails pass, `{ ok: false, reason }` otherwise.
@@ -271,7 +301,16 @@ export async function evaluateAutoMergeSafety(
     // not by an unconditional path block. Ordinary paths still block hard.
     const schemaSpecific = (path: string) =>
       path.includes('drizzle/') || path === 'packages/core/db/schema.ts';
-    const ordinaryHit = hits.find((hit) => !schemaSpecific(hit.path));
+    let ordinaryHit = hits.find((hit) => !schemaSpecific(hit.path));
+    if (ordinaryHit) {
+      // Re-check against the live diff before refusing: a stale PR snapshot
+      // must not flag a protected path the head no longer differs on.
+      const live = await fetchLiveChangedFilenames(installationId, repoFullName, prNumber, headSha);
+      if (live) {
+        files = files.filter((f) => live.has(f.filename));
+        ordinaryHit = hits.find((hit) => !schemaSpecific(hit.path) && live.has(hit.file.filename));
+      }
+    }
     if (ordinaryHit) {
       return { ok: false, reason: `touches protected path (${ordinaryHit.file.filename})` };
     }

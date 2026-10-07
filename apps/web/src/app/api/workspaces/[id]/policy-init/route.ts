@@ -22,6 +22,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { githubApi } from '@/lib/github';
 import { detectAllRiskClasses } from '@/lib/workspace-policy';
+import { detectDerivedFiles } from '@buildd/core/derived-files-detect';
 import type { WorkspacePolicyPreset, WorkspacePolicyConfig } from '@/lib/workspace-policy';
 import { detectSpecConformanceRoots } from '@buildd/core/spec-conformance-detect';
 import { buildTier3ScheduleParams } from '@buildd/core/spec-conformance-schedule';
@@ -176,6 +177,12 @@ export async function POST(
     fileCount: files.length,
     detectedClassCount: riskClasses.filter((c) => c.detectedPaths.length > 0).length,
     hint: `Apply with: PATCH /api/workspaces/${id}/config body: { policyConfig: <proposed> } (also marks the config admin_confirmed)`,
+    // Lockfiles a runner regenerates instead of merging (runner merge-drivers.ts).
+    derivedFiles: {
+      proposed: detectDerivedFiles(files),
+      current: workspace.gitConfig?.derivedFiles ?? null,
+      hint: `Apply with: PATCH /api/workspaces/${id} body: { gitConfig: { derivedFiles: <proposed> } }`,
+    },
     specConformance: {
       detected: detectedRoots,
       proposed: proposedSpecConformance,

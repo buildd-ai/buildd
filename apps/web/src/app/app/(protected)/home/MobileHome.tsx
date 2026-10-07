@@ -1,9 +1,13 @@
 'use client';
 import Link from 'next/link';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { homeAttentionCopy, type HomeAttentionItem } from '@/lib/home-needs-you';
+import { admitWaitingTasks } from '@/lib/home-attention';
 import { publishHomeAttentionCount } from '@/lib/home-attention-store';
+import { useHideNeedsInputBannerOnPhone } from '@/lib/needs-input-hidden';
+import { useNeedsInput } from '@/components/needs-input-context';
+import { needsInputTaskHref } from '@/components/NeedsInputBanner';
 import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import type { HomeShippedMission } from './NeedsYouStack';
 import { shippedDurationFacts, shippedSummaryHref } from './NeedsYouStack';
@@ -66,7 +70,7 @@ function AttentionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key
   else if (ci) actions = <><button className={primary} disabled={busy} onClick={() => void act(`/api/prs/${q!.prNumber}/retry-ci`, { workspaceId: q!.workspaceId }, 'fix started')}>{busy ? 'Starting…' : 'Start fix'}</button><Link className={secondary} href={q?.prUrl ? `${q.prUrl}/checks` : item.href}>Logs</Link></>;
   else if (item.strand) actions = <><button className={primary} disabled={busy || !!blocked} onClick={() => { recordStrand('continue-on-runner'); void act(`/api/missions/${encodeURIComponent(item.strand!.missionId)}`, { executor: 'runner' }, 'moved to runner', 'PATCH'); }}>{busy ? 'Moving…' : 'Move to runner'}</button><button className={secondary} disabled={busy} onClick={() => { recordStrand('wait-for-local'); onDone(item.key, 'kept local'); }}>Keep local</button></>;
   else if (item.held) actions = <><button className={primary} disabled={busy} onClick={() => void act(`/api/missions/${encodeURIComponent(item.held!.id)}`, { arm: true }, 'started', 'PATCH')}>{busy ? 'Starting…' : 'Start'}</button><Link href={item.href} className={secondary}>Open</Link></>;
-  else if (item.question) actions = <><form className="flex w-full flex-wrap gap-2" onSubmit={e => { e.preventDefault(); if (reply.trim()) void act(`/api/workers/${encodeURIComponent(item.question!.workerId)}/respond`, { message: reply.trim() }, 'answered'); }}><input aria-label="Your answer" value={reply} onChange={e => setReply(e.target.value)} className="min-h-11 min-w-0 flex-1 border border-border-strong bg-transparent px-2 text-lede" placeholder="Your answer…" /><button className={primary} disabled={busy || !reply.trim()}>Reply</button></form>{item.question.options.slice(0, 4).map(option => <button key={option} className={secondary} disabled={busy} onClick={() => void act(`/api/workers/${encodeURIComponent(item.question!.workerId)}/respond`, { message: option }, 'answered')}>{option}</button>)}</>;
+  else if (item.question) actions = <><form className="flex w-full flex-wrap gap-2" onSubmit={e => { e.preventDefault(); if (reply.trim()) void act(`/api/workers/${encodeURIComponent(item.question!.workerId)}/respond`, { message: reply.trim() }, 'answered'); }}><input aria-label="Your answer" value={reply} onChange={e => setReply(e.target.value)} className="min-h-11 min-w-0 flex-1 border border-border-strong bg-transparent px-2 text-lede" placeholder="Your answer…" /><button className={primary} disabled={busy || !reply.trim()}>Reply</button></form>{item.question.question.options.slice(0, 4).map(({ label }) => <button key={label} className={secondary} disabled={busy} onClick={() => void act(`/api/workers/${encodeURIComponent(item.question!.workerId)}/respond`, { message: label }, 'answered')}>{label}</button>)}</>;
   else actions = <><Link className={primary} href={item.primary?.href ?? item.href}>{item.primary?.label ?? 'View'}</Link>{item.details && <Link className={secondary} href={item.details.href}>{item.details.label}</Link>}</>;
   return <article data-testid="phone-needs-you-card" data-kind={item.kind} className="border-2 border-border-strong bg-[var(--chat-surface)] p-4 shadow-[4px_4px_0_var(--border-strong)]">
     <div className="flex items-center justify-between gap-3 text-meta"><span className="flex items-center gap-2"><i aria-hidden="true" className={`h-2 w-2 shrink-0 ${square[item.tone]}`} />{item.label}</span><span className="shrink-0 text-text-muted">{item.meta}</span></div>
@@ -80,16 +84,21 @@ function AttentionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key
 
 export interface HomeFlightRow { key: string; title: string; agent: string; href: string; age: string; fixing: boolean }
 
-export function MobileHome({ items, ask, live, capacity, mergedToday, inCi, shipped, flight, timeZone }: {
+export function MobileHome({ items: serverItems, ask, live, capacity, mergedToday, inCi, shipped, flight, timeZone }: {
   items: HomeAttentionItem[]; ask: ReactNode; live: number; capacity: number; mergedToday: number; inCi: number;
   shipped: HomeShippedMission[]; flight: HomeFlightRow[]; timeZone?: string | null;
 }) {
   const [done, setDone] = useState<Record<string, string>>({});
   // Optimism covers only this snapshot. Fresh server truth wins after every refresh.
-  useEffect(() => { setDone({}); }, [items]);
+  useEffect(() => { setDone({}); }, [serverItems]);
+  // One list of what needs you: every task the global banner would name is in
+  // it, so the banner steps aside on a phone instead of naming a second list.
+  const { tasks: waiting } = useNeedsInput();
+  const items = useMemo(() => admitWaitingTasks(serverItems, waiting, needsInputTaskHref), [serverItems, waiting]);
+  useHideNeedsInputBannerOnPhone(true);
   const open = items.filter(i => !done[i.key]);
   const copy = homeAttentionCopy(open);
-  useEffect(() => { publishHomeAttentionCount(copy.count); return () => publishHomeAttentionCount(null); }, [copy.count]);
+  useEffect(() => { publishHomeAttentionCount(copy.count); }, [copy.count]);
   const m = shipped[0];
   return <div data-testid="phone-home" className="md:hidden text-text-primary">
     <p className="mb-5 text-body text-text-muted">{live}/{capacity} working · {mergedToday} merged today · {inCi} in tests</p>

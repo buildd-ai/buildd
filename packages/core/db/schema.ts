@@ -28,7 +28,7 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { relations, sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation } from '../token-delegation';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -59,6 +59,11 @@ export const teams = pgTable('teams', {
     monthlyRunnerHours?: number | null;
     overage?: 'block' | 'allow';
   } | null>(),
+  // Monthly hosted (cloud) runner allowance, in counted hours: wall time on the
+  // hosted runner weighted by container size (standard 1x, large 2x), summed
+  // from `runner_usage`. NULL = no cap. Written by hosted billing; read only
+  // through apps/web/src/lib/hosted-runner-usage-store.ts.
+  hostedRunnerHours: integer('hosted_runner_hours'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 
@@ -464,6 +469,13 @@ export interface WorkspaceGitConfig {
   // Edit/Write/MultiEdit before the write, and a checkpoint sweep that finds a
   // collision (Bash/untracked/Codex writes) stops push/completion and defers the task.
   pathClaimEnforcement?: 'advisory' | 'enforce' | null;
+
+  // Files a runner regenerates instead of merging (see DerivedFileRule). Absent
+  // or empty: runners register no merge driver and conflicts go to the agent.
+  derivedFiles?: DerivedFileRule[];
+  // Register mergiraf (structural merge) as a driver in runner clones for the
+  // languages it parses. Off by default; skipped quietly if the binary is absent.
+  mergiraf?: boolean;
 
   // Block config file changes during worker sessions (SDK v0.2.49+ ConfigChange hook)
   // When true, returns { continue: false } to prevent agents from modifying config files.
@@ -1358,6 +1370,12 @@ export const tasks = pgTable('tasks', {
     skipped?: 'sensitive' | 'unconfigured';
     at: string;
   }>(),
+  // The task verdict's cached decision (apps/web/src/lib/task-verdict-decision.ts):
+  // the wording/actions the decision model picked for the state the rules
+  // derived, its error-class calls and the orchestration_decisions ids behind
+  // them. Written on a state change only; the page reads it, never computes it.
+  // Shape: StoredVerdictDecision in apps/web/src/lib/task-verdict.ts.
+  verdictDecision: jsonb('verdict_decision').$type<Record<string, unknown>>(),
   project: text('project'),
   // Output requirement — controls what deliverables are enforced on completion
   outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
@@ -2016,7 +2034,10 @@ export const workers = pgTable('workers', {
  */
 export const localSessions = pgTable('local_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  /** Owner when the hook authenticated with an account API key. Exactly one of accountId / userId. */
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
+  /** Owner when the hook authenticated with the person's presence token (presenceTokens). */
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
   /** Resolved from the session's git remote among the workspaces the account reaches; null if none matched. */
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
   /** 'claude' | 'codex' | 'cursor' | 'other' */
@@ -2037,8 +2058,29 @@ export const localSessions = pgTable('local_sessions', {
   boundAt: timestamp('bound_at', { withTimezone: true }),
 }, (t) => ({
   clientIdx: uniqueIndex('local_sessions_client_idx').on(t.accountId, t.clientKind, t.clientSessionHash),
+  userClientIdx: uniqueIndex('local_sessions_user_client_idx').on(t.userId, t.clientKind, t.clientSessionHash),
+  oneOwner: check('local_sessions_one_owner', sql`num_nonnulls(${t.accountId}, ${t.userId}) = 1`),
   boundWorkerIdx: uniqueIndex('local_sessions_bound_worker_idx').on(t.boundWorkerId),
   workspaceSeenIdx: index('local_sessions_workspace_seen_idx').on(t.workspaceId, t.lastSeenAt),
+}));
+
+/**
+ * A person's presence token (apps/web/src/lib/presence-token.ts): what the
+ * agent plugin's hooks authenticate with, one per machine. The token itself is
+ * signed, never stored; this row is what makes it revocable and lists it in
+ * settings. It can only report presence and bind/release that person's own
+ * interactive workers.
+ */
+export const presenceTokens = pgTable('presence_tokens', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  /** The machine it was issued to (hostname at `buildd login`). */
+  label: text('label').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+}, (t) => ({
+  userIdx: index('presence_tokens_user_idx').on(t.userId),
 }));
 
 /**
@@ -2297,6 +2339,34 @@ export const artifacts = pgTable('artifacts', {
  * The partial unique index keeps at most one active review per artifact, so a
  * double tap cannot leave two (no db.transaction on neon-http).
  */
+/**
+ * Hosted (cloud) runner time, one row per attempt, written when the attempt's
+ * run report arrives (POST /api/workers/[id]/artifacts with a
+ * `cloud-run-report:*` key). The report artifact itself is one per worker and
+ * a resumed attempt overwrites it, so the per-attempt seconds are kept here.
+ * Read by the monthly roll-up (apps/web/src/lib/hosted-runner-usage-store.ts).
+ * `startedAt`/`endedAt`: container running to exit, so a month boundary can
+ * split an attempt between two months.
+ */
+export const runnerUsage = pgTable('runner_usage', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  attempt: integer('attempt').notNull(),
+  // packages/shared/src/runner-size.ts RUNNER_SIZES
+  size: text('size').$type<'standard' | 'large'>().notNull(),
+  runnerSeconds: integer('runner_seconds').notNull(),
+  weightedRunnerSeconds: integer('weighted_runner_seconds').notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+  endedAt: timestamp('ended_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workerAttemptIdx: uniqueIndex('runner_usage_worker_attempt_idx').on(t.workerId, t.attempt),
+  workspaceEndedIdx: index('runner_usage_workspace_ended_idx').on(t.workspaceId, t.endedAt),
+  taskIdx: index('runner_usage_task_idx').on(t.taskId),
+}));
+
 export const visualShotReviews = pgTable('visual_shot_reviews', {
   id: uuid('id').primaryKey().defaultRandom(),
   missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),

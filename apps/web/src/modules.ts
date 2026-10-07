@@ -21,12 +21,15 @@ import { missionSubscribers } from '@/lib/mission-subscribers';
 import { reviewSubscribers } from '@/lib/review-subscribers';
 import { reviewerSubscribers, reviewerDispatchOnOpen } from '@/lib/reviewer-subscribers';
 import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
+import type { QuestionCheckDeps } from '@/lib/question-gate-check';
+import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
 import { notificationSubscribers } from '@/lib/notification-subscribers';
 import { roleSubscribers } from '@/lib/default-roles-subscribers';
 import { connectorCatalogSubscribers } from '@/lib/connector-catalog-subscribers';
 import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers';
+import { verdictSubscribers } from '@/lib/verdict-decision-subscribers';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -46,6 +49,9 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...connectorCatalogSubscribers,
   // A held release's outcome-analytics row, recorded when its CI resolves it.
   ...routingAnalyticsSubscribers,
+  // Last: the verdict recompute reads the evidence record the knowledge
+  // module wrote and the CI/PR state the reviews module settled.
+  ...verdictSubscribers,
 ];
 
 /**
@@ -65,3 +71,9 @@ export const COMPLETION_POLICIES: CompletionPolicies = {
  * freshly opened worker PR, and a PR it holds skips core's no-CI auto-merge.
  */
 export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
+
+/**
+ * The question gate's recover slot (lib/question-gate-check.ts): a recoverable
+ * blocker an agent tried to ask about is filed as a repair task instead.
+ */
+export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepair']> = fileRecoverableBlockerRepair;

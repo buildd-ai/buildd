@@ -22,6 +22,7 @@ import { intersectPaths } from '@buildd/core/path-overlap';
 import type { MissionStateView, WaitingOnDescriptor } from './mission-state-view';
 import { suggestionRef } from './mission-state-view';
 import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
+import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 
 const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 
@@ -57,6 +58,7 @@ export interface StateBecauseExtras {
     title: string | null;
     status: string;
     live?: boolean;
+    missingBrowser?: boolean;
     /**
      * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
      * is described as waiting on them (and ref'd to the first), never as
@@ -193,6 +195,13 @@ function openTaskLinks(
           ? `Task "${t.title ?? t.id}" is pending, waiting for a local session to claim it (runners never pick up this mission's tasks).`
           : `Task "${t.title ?? t.id}" is ${t.status} in a local session.`,
         'mission.executor',
+        { ...base, taskId: t.id },
+      );
+    }
+    if (t.missingBrowser && orphaned(t)) {
+      return link(
+        `Task "${t.title ?? t.id}" is waiting for a runner with the missing browser capability. No eligible runner advertises a working browser provider for this workspace.`,
+        'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor',
         { ...base, taskId: t.id },
       );
     }
@@ -566,6 +575,29 @@ export function dispatchWakeLink(row: LatestDispatchRow | null | undefined, subj
       return link(`Latest wake (${cause}) failed after ${attempts} attempt${attempts === 1 ? '' : 's'}${err}. It is parked; the next state change writes a new wake.`, 'task_dispatch_outbox.status', refs);
     default:
       return null;
+  }
+}
+
+/**
+ * Why a pending task waits on a plan limit: the hold the claim stamped on it
+ * (`tasks.context.entitlementBlock`). Null when there is none.
+ */
+export function entitlementHoldLink(context: unknown, subject: BecauseSubjectRefs): Link | null {
+  const block = parseEntitlementBlock((context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY]);
+  if (!block) return null;
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+  };
+  switch (block.kind) {
+    case 'hosted_runner':
+      return link(
+        `Hosted runner allowance used: ${block.used} of ${block.limit} counted hours this month. New cloud runs wait until it refills (${block.resetsAt}) or grows; a runner of your own can take the task now.`,
+        'tasks.context.entitlementBlock', refs);
+    case 'usage':
+      return link(`Monthly managed runner-hours used: ${block.used} of ${block.limit}. It starts when the allowance refills (${block.resetsAt}) or grows.`, 'tasks.context.entitlementBlock', refs);
+    case 'concurrency':
+      return link(`${block.active} of ${block.limit} managed runs are active. It starts when one finishes.`, 'tasks.context.entitlementBlock', refs);
   }
 }
 

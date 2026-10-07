@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import {
@@ -11,6 +11,11 @@ import {
   shouldSkip,
   isBuilddTool,
   repoSlug,
+  writeWorkspaceCache,
+  readWorkspaceCache,
+  isWorkspaceRepo,
+  WORKSPACE_REFRESH_MS,
+  resolveAuth,
 } from '../../plugin/scripts/buildd-hook.mjs';
 import {
   claudeLikeHookEntries,
@@ -36,6 +41,13 @@ const WORKER = '6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b';
 
 // The claim_task reply as packages/core/mcp-tools.ts formats it, in each client's envelope.
 const CLAIM_TEXT = `Claimed 1 task(s):\n\n**Worker ID:** ${WORKER}\n**Task:** Fix it\n**Branch:** buildd/abc`;
+
+/** Make dir a checkout of `repo` and seed the hook's workspace list with it, as `buildd install` does. */
+function workspaceCheckout(dir: string, repo = 'acme/widget', workspaces: string[] = [repo]) {
+  Bun.spawnSync(['git', 'init', '-q', dir]);
+  Bun.spawnSync(['git', '-C', dir, 'remote', 'add', 'origin', `https://github.com/${repo}.git`]);
+  writeWorkspaceCache({ BUILDD_HOME: dir }, 'bld_test', workspaces, Date.now());
+}
 
 describe('client adapters', () => {
   it('Claude Code: start, touch, bind, end', () => {
@@ -168,6 +180,7 @@ describe('Claude Code: attended vs headless', () => {
 
   it('run() reads the hook environment, so the POSTed start says interactive: false', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'buildd-hook-'));
+    workspaceCheckout(dir);
     try {
       let body: any = null;
       const fetchImpl = async (_url: string, init: any) => { body = JSON.parse(init.body); return Response.json({ ok: true }); };
@@ -180,12 +193,153 @@ describe('Claude Code: attended vs headless', () => {
   });
 });
 
-describe('fail open', () => {
+describe('workspace scope', () => {
+  let dir: string;
+  let calls: string[];
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'buildd-hook-')); calls = []; });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const env = () => ({ BUILDD_API_KEY: 'bld_test', BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_HOME: dir });
+  const ev = (hook_event_name: string, extra: object = {}) =>
+    JSON.stringify({ session_id: 'scope-1', cwd: dir, hook_event_name, ...extra });
+  /** Records every URL; answers the workspace list with `workspaces`, presence with ok. */
+  const server = (workspaces: Array<{ repo: string | null }>) => (async (url: string) => {
+    calls.push(url);
+    return url.endsWith('/api/workspaces') ? Response.json({ workspaces }) : Response.json({ ok: true });
+  }) as any;
+  const presenceCalls = () => calls.filter(u => u.endsWith('/local-sessions'));
+
+  it('a session outside every workspace repo sends nothing, for its whole life', async () => {
+    workspaceCheckout(dir, 'someone/else', ['acme/widget']);
+    const fetchImpl = server([{ repo: 'https://github.com/acme/widget' }]);
+    for (const e of ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd']) {
+      expect((await run({ client: 'claude', stdin: ev(e), env: env(), fetchImpl })).why).toBe('outside_workspace');
+    }
+    expect(presenceCalls()).toEqual([]);
+  });
+
+  it('a folder that is not a git repo sends nothing', async () => {
+    writeWorkspaceCache({ BUILDD_HOME: dir }, 'bld_test', ['acme/widget']);
+    expect((await run({ client: 'claude', stdin: ev('SessionStart'), env: env(), fetchImpl: server([]) })).why).toBe('outside_workspace');
+    expect(presenceCalls()).toEqual([]);
+  });
+
+  it('a session in a workspace repo is reported, with its repo', async () => {
+    workspaceCheckout(dir, 'Acme/Widget', ['acme/widget']);
+    const r = await run({ client: 'claude', stdin: ev('SessionStart'), env: env(), fetchImpl: server([]) });
+    expect(r.sent).toBe(true);
+    expect(r.body).toMatchObject({ event: 'start', repo: 'Acme/Widget' });
+  });
+
+  it('claiming a task outside a workspace still binds, and the session is tracked from then on', async () => {
+    workspaceCheckout(dir, 'someone/else', ['acme/widget']);
+    const fetchImpl = server([]);
+    await run({ client: 'claude', stdin: ev('SessionStart'), env: env(), fetchImpl });
+    const W = '11111111-2222-4333-8444-555555555555';
+    const bind = await run({
+      client: 'claude', env: env(), fetchImpl,
+      stdin: ev('PostToolUse', {
+        tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task', params: {} },
+        tool_response: [{ type: 'text', text: `Claimed 1 task(s):\n\n**Worker ID:** ${W}\n**Task:** x` }],
+      }),
+    });
+    expect(bind.body).toMatchObject({ event: 'bind', workerId: W });
+    expect((await run({ client: 'claude', stdin: ev('SessionEnd', { reason: 'prompt_input_exit' }), env: env(), fetchImpl })).body)
+      .toMatchObject({ event: 'end', reason: 'exit' });
+  });
+
+  it('fails closed: no list and buildd unreachable means nothing is sent', async () => {
+    Bun.spawnSync(['git', 'init', '-q', dir]);
+    Bun.spawnSync(['git', '-C', dir, 'remote', 'add', 'origin', 'https://github.com/acme/widget.git']);
+    const down = (async (url: string) => { calls.push(url); throw new Error('ECONNREFUSED'); }) as any;
+    expect((await run({ client: 'claude', stdin: ev('SessionStart'), env: env(), fetchImpl: down })).why).toBe('outside_workspace');
+    expect(presenceCalls()).toEqual([]);
+  });
+
+  it('a new workspace is picked up: an unknown repo refetches a stale list, at most every 10 minutes', async () => {
+    const now = Date.now();
+    writeWorkspaceCache({ BUILDD_HOME: dir }, 'k', ['acme/widget'], now - WORKSPACE_REFRESH_MS - 1);
+    const fetchImpl = server([{ repo: 'https://github.com/acme/widget' }, { repo: 'git@github.com:acme/new-thing.git' }]);
+    const opts = { env: { BUILDD_HOME: dir }, auth: { server: 'http://x', apiKey: 'k' }, fetchImpl, now };
+    expect(await isWorkspaceRepo('acme/new-thing', opts)).toBe(true);
+    expect(readWorkspaceCache({ BUILDD_HOME: dir }, 'k')?.repos).toEqual(['acme/new-thing', 'acme/widget']);
+    expect(await isWorkspaceRepo('nobody/nothing', opts)).toBe(false);
+    expect(calls.filter(u => u.endsWith('/api/workspaces'))).toHaveLength(1);
+  });
+
+  it("each key has its own list: another team's key never reads this one", async () => {
+    workspaceCheckout(dir, 'acme/widget', ['acme/widget']);
+    expect(readWorkspaceCache({ BUILDD_HOME: dir }, 'bld_test')?.repos).toEqual(['acme/widget']);
+    expect(readWorkspaceCache({ BUILDD_HOME: dir }, 'bld_other_team')).toBeNull();
+  });
+
+  it("a repo whose own .mcp.json names buildd is in scope even if this key's list lacks it", async () => {
+    workspaceCheckout(dir, 'someone/else', ['acme/widget']);
+    writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp?repo=someone/else' } } }));
+    const r = await run({ client: 'claude', stdin: ev('SessionStart'), env: env(), fetchImpl: server([]) });
+    expect(r.sent).toBe(true);
+    // Any other MCP server in .mcp.json does not count.
+    writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { other: { url: 'https://x.test/mcp' } } }));
+    expect((await run({ client: 'claude', stdin: ev('SessionStart', { session_id: 'scope-2' }), env: env(), fetchImpl: server([]) })).why).toBe('outside_workspace');
+  });
+
+  it('the list call carries no folder information', async () => {
+    workspaceCheckout(dir, 'someone/else', []);
+    writeWorkspaceCache({ BUILDD_HOME: dir }, 'bld_test', [], 0);
+    let init: any = null;
+    const fetchImpl = (async (url: string, i: any) => { calls.push(url); init = i; return Response.json({ workspaces: [] }); }) as any;
+    await run({ client: 'claude', stdin: ev('SessionStart'), env: env(), fetchImpl });
+    expect(calls).toEqual(['http://127.0.0.1:9/api/workspaces']);
+    expect(init.body).toBeUndefined();
+  });
+});
+
+describe('presence token', () => {
   let dir: string;
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'buildd-hook-')); });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const TOKEN = 'bldp_eyJ0IjoieCIsInUiOiJ5In0.sig';
+  const login = (cfg: Record<string, string>) => writeFileSync(join(dir, 'config.json'), JSON.stringify(cfg));
+
+  it("the person's presence token wins over the account key, from config or the environment", () => {
+    login({ apiKey: 'bld_team_key', presenceToken: TOKEN, builddServer: 'https://b.test/' });
+    expect(resolveAuth({ BUILDD_HOME: dir })).toEqual({ apiKey: TOKEN, server: 'https://b.test', kind: 'presence' });
+    expect(resolveAuth({ BUILDD_HOME: dir, BUILDD_API_KEY: 'bld_env_key' })?.kind).toBe('presence');
+    login({ apiKey: 'bld_team_key' });
+    expect(resolveAuth({ BUILDD_HOME: dir })).toEqual({ apiKey: 'bld_team_key', server: 'https://buildd.dev', kind: 'key' });
+    expect(resolveAuth({ BUILDD_HOME: dir, BUILDD_PRESENCE_TOKEN: TOKEN })?.kind).toBe('presence');
+  });
+
+  it('a value that is not a presence token is ignored, not sent', () => {
+    login({ apiKey: 'bld_team_key', presenceToken: 'bld_wrong_slot' });
+    expect(resolveAuth({ BUILDD_HOME: dir })?.apiKey).toBe('bld_team_key');
+  });
+
+  it('with a presence token the scope list comes from the presence endpoint, cached under the token', async () => {
+    workspaceCheckout(dir, 'acme/widget', []);
+    writeWorkspaceCache({ BUILDD_HOME: dir }, TOKEN, [], 0);
+    login({ apiKey: 'bld_team_key', presenceToken: TOKEN, builddServer: 'https://b.test' });
+    const urls: string[] = [];
+    let auth: string | null = null;
+    const fetchImpl = (async (url: string, init: any) => {
+      urls.push(url);
+      auth = init?.headers?.Authorization ?? null;
+      return url.endsWith('/workspaces') ? Response.json({ workspaces: [{ repo: 'acme/widget' }] }) : Response.json({ ok: true });
+    }) as any;
+    const r = await run({ client: 'claude', stdin: JSON.stringify({ session_id: 'pt-1', cwd: dir, hook_event_name: 'SessionStart' }), env: { BUILDD_HOME: dir }, fetchImpl });
+    expect(r.sent).toBe(true);
+    expect(urls).toEqual(['https://b.test/api/workers/local-sessions/workspaces', 'https://b.test/api/workers/local-sessions']);
+    expect(auth).toBe(`Bearer ${TOKEN}`);
+    expect(readWorkspaceCache({ BUILDD_HOME: dir }, TOKEN)?.repos).toEqual(['acme/widget']);
+  });
+});
+
+describe('fail open', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'buildd-hook-')); workspaceCheckout(dir); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
   const env = () => ({ BUILDD_API_KEY: 'bld_test', BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_HOME: dir });
-  const start = JSON.stringify({ session_id: 's', cwd: dir, hook_event_name: 'SessionStart' });
+  // Built per test: `dir` is only assigned in beforeEach.
+  const startEv = () => JSON.stringify({ session_id: 's', cwd: dir, hook_event_name: 'SessionStart' });
 
   it('a thrown fetch, a 500 and a timeout all resolve without throwing', async () => {
     for (const fetchImpl of [
@@ -193,7 +347,7 @@ describe('fail open', () => {
       async () => new Response('boom', { status: 500 }),
       async () => { throw new DOMException('timed out', 'TimeoutError'); },
     ]) {
-      const r = await run({ client: 'claude', stdin: start, env: env(), fetchImpl: fetchImpl as any });
+      const r = await run({ client: 'claude', stdin: startEv(), env: env(), fetchImpl: fetchImpl as any });
       expect(r.sent).toBe(true);
       expect(r.ok).toBe(false);
     }
@@ -202,16 +356,16 @@ describe('fail open', () => {
   it('no key, bad JSON or disabled: nothing is sent', async () => {
     let called = 0;
     const fetchImpl = (async () => { called++; return new Response('{}'); }) as any;
-    expect((await run({ client: 'claude', stdin: start, env: { BUILDD_HOME: dir }, fetchImpl })).why).toBe('no_key');
+    expect((await run({ client: 'claude', stdin: startEv(), env: { BUILDD_HOME: dir }, fetchImpl })).why).toBe('no_key');
     expect((await run({ client: 'claude', stdin: '{not json', env: env(), fetchImpl })).why).toBe('bad_payload');
-    expect((await run({ client: 'claude', stdin: start, env: { ...env(), BUILDD_HOOKS_DISABLED: '1' }, fetchImpl })).why).toBe('disabled');
+    expect((await run({ client: 'claude', stdin: startEv(), env: { ...env(), BUILDD_HOOKS_DISABLED: '1' }, fetchImpl })).why).toBe('disabled');
     expect(called).toBe(0);
   });
 
   it('sends the contract body with the bearer key to the presence endpoint', async () => {
     let seen: { url: string; init: any } | null = null;
     const fetchImpl = (async (url: string, init: any) => { seen = { url, init }; return new Response(JSON.stringify({ ok: true, pendingInstructions: false })); }) as any;
-    const r = await run({ client: 'claude', stdin: start, env: env(), fetchImpl });
+    const r = await run({ client: 'claude', stdin: startEv(), env: env(), fetchImpl });
     expect(r.ok).toBe(true);
     expect(seen!.url).toBe('http://127.0.0.1:9/api/workers/local-sessions');
     expect(seen!.init.headers.Authorization).toBe('Bearer bld_test');
@@ -221,7 +375,7 @@ describe('fail open', () => {
   it('the real script exits 0 with buildd unreachable, fast, printing nothing', () => {
     const t0 = Date.now();
     const p = Bun.spawnSync(['node', SCRIPT, 'claude'], {
-      stdin: Buffer.from(start),
+      stdin: Buffer.from(startEv()),
       env: { PATH: process.env.PATH ?? '', HOME: dir, ...env() },
     });
     expect(p.exitCode).toBe(0);
@@ -230,7 +384,7 @@ describe('fail open', () => {
   });
 
   it('the real script exits 0 on garbage input and an unknown client', () => {
-    for (const [args, input] of [[['claude'], 'garbage'], [['vim'], start], [[], start]] as const) {
+    for (const [args, input] of [[['claude'], 'garbage'], [['vim'], startEv()], [[], startEv()]] as const) {
       const p = Bun.spawnSync(['node', SCRIPT, ...args], { stdin: Buffer.from(input), env: { PATH: process.env.PATH ?? '', HOME: dir, ...env() } });
       expect(p.exitCode).toBe(0);
     }
@@ -337,19 +491,192 @@ describe('installer', () => {
     expect(hookCommand({ runtime: '/usr/bin/node', scriptPath: '/p/buildd-hook.mjs' }, 'cursor')).toBe('"/usr/bin/node" "/p/buildd-hook.mjs" cursor');
   });
 
-  it('CLI: detects clients, refuses unknown options, needs a repo for project scope', () => {
+  /** Logged in as `buildd login` leaves it, against a fake server listing `repos` as workspaces. */
+  const login = (repos: string[] = ['acme/widget']) => {
+    mkdirSync(join(home, '.buildd'), { recursive: true });
+    writeFileSync(join(home, '.buildd', 'config.json'), JSON.stringify({ apiKey: 'bld_test', builddServer: 'https://b.test' }));
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      urls.push(url);
+      return Response.json({ workspaces: repos.map((r, i) => ({ id: `ws-${i + 1}-${r.replace('/', '-')}`, repo: `https://github.com/${r}` })) });
+    }) as any;
+    // The runner home is the test's own temp dir, never ~/.buildd (buildd-home.ts refuses that in tests).
+    return { fetchImpl, urls, env: { BUILDD_HOME: join(home, '.buildd') } as Record<string, string | undefined> };
+  };
+  const checkout = (path: string, repo: string) => {
+    mkdirSync(path, { recursive: true });
+    Bun.spawnSync(['git', 'init', '-q', path]);
+    Bun.spawnSync(['git', '-C', path, 'remote', 'add', 'origin', `git@github.com:${repo}.git`]);
+  };
+
+  it('CLI: detects clients, refuses unknown options, needs a repo for project scope', async () => {
     expect('error' in parseCliArgs(['--client=vim'])).toBe(true);
     expect('error' in parseCliArgs(['--force'])).toBe(true);
-    expect(parseCliArgs(['--uninstall', '--global', '--client=claude'])).toEqual({ mode: 'uninstall', scope: 'global', clients: ['claude'] });
-    expect(runCli([], { home, cwd: project }).code).toBe(1);
-    const none = runCli(['--global'], { home, cwd: project, runtime: '/usr/bin/node' });
-    expect(none.lines[0]).toContain('No supported coding client');
+    expect('error' in parseCliArgs(['--everywhere'])).toBe(true);
+    expect('error' in parseCliArgs(['--global', '--here'])).toBe(true);
+    expect(parseCliArgs(['--uninstall', '--global', '--client=claude'])).toEqual({ mode: 'uninstall', scope: 'global', clients: ['claude'], mcp: null, oauth: false });
+    expect(parseCliArgs(['--global'])).toMatchObject({ mcp: 'workspaces' });
+    expect(parseCliArgs(['--global', '--everywhere'])).toMatchObject({ mcp: 'everywhere' });
+    expect((await runCli([], { home, cwd: project })).code).toBe(1);
+    const l = login();
+    const none = await runCli(['--global'], { home, cwd: project, runtime: '/usr/bin/node', ...l });
+    expect(none.lines.join('\n')).toContain('No supported coding client');
     mkdirSync(join(home, '.codex'));
-    const one = runCli(['--global'], { home, cwd: project, runtime: '/usr/bin/node' });
+    const one = await runCli(['--global'], { home, cwd: project, runtime: '/usr/bin/node', ...l });
     expect(one.code).toBe(0);
     expect(one.lines.join('\n')).toContain('/hooks');
     expect(existsSync(join(home, '.codex', 'hooks.json'))).toBe(true);
     expect(existsSync(join(home, '.claude'))).toBe(false);
+  });
+
+  it('--global registers the MCP server only for workspace folders, and says so', async () => {
+    const ws = join(home, 'code', 'widget');
+    const wt = join(home, 'code', 'widget-wt');
+    const other = join(home, 'code', 'side-project');
+    checkout(ws, 'acme/widget');
+    checkout(wt, 'acme/widget');
+    checkout(other, 'me/side-project');
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({
+      theme: 'dark',
+      mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: {} }, other: { command: 'x' } },
+      projects: { [ws]: { allowedTools: ['Bash'] }, [wt]: {}, [other]: { mcpServers: { mine: { command: 'y' } } }, [join(home, 'gone')]: {} },
+    }));
+    const l = login(['acme/widget']);
+    const r = await runCli(['--global'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(r.code).toBe(0);
+
+    const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+    const entry = { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_test' } };
+    expect(cfg.projects[ws]).toEqual({ allowedTools: ['Bash'], mcpServers: { buildd: entry } });
+    expect(cfg.projects[wt].mcpServers.buildd).toEqual(entry);
+    expect(cfg.projects[other].mcpServers).toEqual({ mine: { command: 'y' } });
+    // The old every-session entry is gone; anything else the user had stays.
+    expect(cfg.mcpServers).toEqual({ other: { command: 'x' } });
+    expect(cfg.theme).toBe('dark');
+    expect(statSync(join(home, '.claude.json')).mode & 0o777).toBe(0o600);
+
+    const out = r.lines.join('\n');
+    expect(out).toContain('registered for your workspace folders only (2)');
+    expect(out).toContain('~/code/widget  ');
+    expect(out).toContain('Removed the old every-session entry');
+    expect(out).toContain('buildd install --here');
+    expect(out).toContain('only for sessions in your workspace repos (1): acme/widget, and in repos');
+    expect(out).not.toContain('bld_test');
+    // The hooks read the same list.
+    expect(readWorkspaceCache({ BUILDD_HOME: join(home, '.buildd') }, 'bld_test')?.repos).toEqual(['acme/widget']);
+    expect(l.urls).toEqual(['https://b.test/api/workspaces']);
+  });
+
+  it('a folder whose own .mcp.json already names buildd is listed and left alone, so it keeps working', async () => {
+    const own = join(home, 'code', 'self-configured');
+    checkout(own, 'other-team/repo');
+    writeFileSync(join(own, '.mcp.json'), JSON.stringify({ mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' } } } }));
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [own]: {} } }));
+    const l = login(['acme/widget']);
+    const r = await runCli(['--global', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(r.lines.join('\n')).toContain('(its own .mcp.json)');
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[own]).toEqual({});
+  });
+
+  it('--here registers this folder even when it is not a workspace yet; --everywhere keeps the user-wide entry', async () => {
+    const fresh = join(home, 'new-idea');
+    mkdirSync(fresh, { recursive: true });
+    const l = login([]);
+    const here = await runCli(['--here'], { home, cwd: fresh, ...l });
+    expect(here.code).toBe(0);
+    expect(here.lines.join('\n')).toContain('registered for this folder, ~/new-idea');
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[fresh].mcpServers.buildd.url).toBe('https://b.test/api/mcp');
+    expect(existsSync(join(fresh, '.claude'))).toBe(false); // --here touches the MCP entry only
+
+    const all = await runCli(['--global', '--everywhere'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(all.lines.join('\n')).toContain('registered for every Claude Code session');
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers.buildd.url).toBe('https://b.test/api/mcp');
+  });
+
+  it('--oauth points each workspace folder at its own OAuth endpoint and writes no key anywhere', async () => {
+    const ws = join(home, 'code', 'widget');
+    const api = join(home, 'code', 'api');
+    const own = join(home, 'code', 'self-configured');
+    checkout(ws, 'acme/widget');
+    checkout(api, 'acme/api');
+    checkout(own, 'acme/own');
+    writeFileSync(join(own, '.mcp.json'), JSON.stringify({ mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' } } } }));
+    // A key entry an earlier install wrote, and a user-wide one: both go.
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({
+      mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_old' } } },
+      projects: { [ws]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_old' } } } }, [api]: {}, [own]: {} },
+    }));
+    const l = login(['acme/widget', 'acme/api', 'acme/own']);
+    const r = await runCli(['--global', '--oauth', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(r.code).toBe(0);
+
+    const raw = readFileSync(join(home, '.claude.json'), 'utf8');
+    expect(raw).not.toContain('bld_');
+    expect(raw).not.toContain('Authorization');
+    const cfg = JSON.parse(raw);
+    // The workspace id comes from the list, matched by repo.
+    expect(cfg.projects[ws].mcpServers.buildd).toEqual({ type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1-acme-widget' });
+    expect(cfg.projects[api].mcpServers.buildd).toEqual({ type: 'http', url: 'https://b.test/api/mcp-oauth/ws-2-acme-api' });
+    expect(cfg.projects[own]).toEqual({});
+    expect(cfg.mcpServers.buildd).toBeUndefined();
+
+    const out = r.lines.join('\n');
+    expect(out).toContain('signing in with OAuth');
+    expect(out).toMatch(/~\/code\/widget\s+acme\/widget\s+browser sign-in on first use/);
+    expect(out).toMatch(/~\/code\/api\s+acme\/api\s+browser sign-in on first use/);
+    expect(out).toContain('(its own .mcp.json)');
+  });
+
+  it('--here --oauth uses OAuth for a workspace folder, and the key for a folder that is not one yet', async () => {
+    const ws = join(home, 'code', 'widget');
+    const fresh = join(home, 'new-idea');
+    checkout(ws, 'acme/widget');
+    mkdirSync(fresh, { recursive: true });
+    const l = login(['acme/widget']);
+    const a = await runCli(['--here', '--oauth'], { home, cwd: ws, ...l });
+    expect(a.lines.join('\n')).toContain('browser sign-in on first use');
+    const b = await runCli(['--here', '--oauth'], { home, cwd: fresh, ...l });
+    expect(b.code).toBe(0);
+    expect(b.lines.join('\n')).toContain('not a workspace yet');
+    const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+    expect(cfg.projects[ws].mcpServers.buildd.url).toBe('https://b.test/api/mcp-oauth/ws-1-acme-widget');
+    expect(cfg.projects[fresh].mcpServers.buildd.headers.Authorization).toBe('Bearer bld_test');
+    expect('error' in parseCliArgs(['--global', '--everywhere', '--oauth'])).toBe(true);
+    expect('error' in parseCliArgs(['--oauth'])).toBe(true);
+  });
+
+  it("--status --global lists each folder's buildd MCP entry as key or OAuth, without the network", async () => {
+    const ws = join(home, 'code', 'widget');
+    const api = join(home, 'code', 'api');
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({
+      mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_x' } } },
+      projects: {
+        [ws]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1' } } },
+        [api]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_x' } } } },
+        [join(home, 'other')]: { mcpServers: { mine: { command: 'y' } } },
+      },
+    }));
+    const offline = (async () => { throw new Error('status must not call the network'); }) as any;
+    const r = await runCli(['--status', '--global', '--client=claude'], { home, cwd: home, fetchImpl: offline, env: { BUILDD_HOME: join(home, '.buildd') } });
+    const out = r.lines.join('\n');
+    expect(out).toMatch(/~\/code\/widget\s+OAuth/);
+    expect(out).toMatch(/~\/code\/api\s+key/);
+    expect(out).toMatch(/every session\s+key/);
+    expect(out).not.toContain('~/other');
+    expect(out).not.toContain('bld_x');
+  });
+
+  it('changes nothing when not logged in or when the workspace list cannot be loaded', async () => {
+    writeFileSync(join(home, '.claude.json'), '{"mcpServers":{}}');
+    const notIn = await runCli(['--global'], { home, cwd: home, env: { BUILDD_HOME: join(home, '.buildd') } });
+    expect(notIn.code).toBe(1);
+    expect(notIn.lines[0]).toContain('buildd login');
+    login();
+    const down = await runCli(['--global'], { home, cwd: home, env: { BUILDD_HOME: join(home, '.buildd') }, fetchImpl: (async () => { throw new Error('offline'); }) as any });
+    expect(down.code).toBe(1);
+    expect(down.lines[0]).toContain('Nothing was changed');
+    expect(readFileSync(join(home, '.claude.json'), 'utf8')).toBe('{"mcpServers":{}}');
   });
 });
 

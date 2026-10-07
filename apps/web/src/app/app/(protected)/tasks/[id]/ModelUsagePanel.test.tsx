@@ -73,4 +73,21 @@ describe('ModelUsagePanel', () => {
     expect(html).toContain('API: 9s');
     expect(html).toContain('max turns');
   });
+
+  test('hides a model row\'s token figures when it reports 0 tokens after real turns', () => {
+    const html = renderToStaticMarkup(
+      <ModelUsagePanel modelUsage={{ 'claude-opus-5': usage(0, 0) }} turns={12} />,
+    );
+    expect(html).toContain('Model Usage');
+    expect(html).not.toContain('0k in');
+    expect(html).not.toContain('0k out');
+  });
+
+  test('keeps token figures when they were reported', () => {
+    const html = renderToStaticMarkup(
+      <ModelUsagePanel modelUsage={{ 'claude-opus-5': usage(4000, 2000) }} turns={12} />,
+    );
+    expect(html).toContain('4k in');
+    expect(html).toContain('2k out');
+  });
 });

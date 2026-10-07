@@ -985,8 +985,10 @@ export class WarmRepoSession {
     if (reason) emitWarmRefresh(reason, this.d.lineOpts);
     assertSnapshotSafe(clonePath);
 
-    const defaultBranch = gitOut(clonePath, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).replace(/^origin\//, '')
-      || gitOut(clonePath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    // The cloud session may have checked out its task branch in this clone.
+    // Only origin's default is safe to record; absent origin/HEAD, skip upload
+    // rather than teaching the next restore to start from the task branch.
+    const defaultBranch = gitOut(clonePath, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).replace(/^origin\//, '');
     if (!BRANCH_RE.test(defaultBranch) || defaultBranch === 'HEAD') throw new Error('no default branch to record');
 
     // Measure before bundling: on a repo of gigabytes the bundle itself is

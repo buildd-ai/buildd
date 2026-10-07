@@ -704,7 +704,11 @@ export interface TaskEvidence {
   capturedAt: string;
 }
 
-export type TaskMismatchKind = 'pushed_without_diff' | 'success_with_red_check' | 'last_command_failed';
+/**
+ * `fix_check_still_red`: a CI-fix attempt reported success while the check it
+ * was sent to fix was still red (or not yet green) on the PR head.
+ */
+export type TaskMismatchKind = 'pushed_without_diff' | 'success_with_red_check' | 'last_command_failed' | 'fix_check_still_red';
 
 /** One claim the task made that its own record contradicts. */
 export interface TaskMismatch {
@@ -1162,6 +1166,17 @@ export interface McpServerInfo {
 }
 
 export interface WorkerEnvironment {
+  /** Latest real launch/CDP round trip; configuration alone is not capability. */
+  browserProvider?: {
+    provider: 'local' | 'cloudflare';
+    ok: boolean;
+    checkedAt: string;
+    code?: string;
+    detail?: string;
+    handle?: string;
+    browserVersion?: string;
+    latencyMs?: number;
+  };
   tools: WorkerTool[];
   envKeys: string[];
   mcp: string[] | McpServerInfo[];
@@ -1573,6 +1588,11 @@ export interface ClaimDiagnostics {
     managed_concurrency?: number;
     /** Same, for the plan's monthly managed runner-hours allowance. */
     managed_runner_hours?: number;
+    /**
+     * A cloud claim held because the team's monthly hosted runner allowance
+     * (counted hours) is used. Only when an allowance is set.
+     */
+    hosted_runner_hours?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).
@@ -1936,6 +1956,109 @@ export interface PathDeclaration {
    * manifest so the claim route holds the task until the holder releases.
    */
   collision?: PathCollisionRecord;
+  /**
+   * The last authoritative working-set reconciliation this task's runner ran
+   * (lib/working-set-sync.ts): the proof a ship checkpoint rests on. Bounded —
+   * the set itself lives in `path_claims`, never here.
+   */
+  workingSet?: WorkingSetRecord;
+  /**
+   * Written when the task's worker ended with its PR still open: the leases it
+   * held were promoted into the effective manifest so the open-PR overlap
+   * surface (claim route layer 1) covers the PR's actual changed files, not
+   * what the author declared. Merge or close releases it with the PR.
+   */
+  prHandoff?: PrHandoffRecord;
+}
+
+// ── Authoritative working set (path-claim-ownership.md) ─────────────────────
+//
+// The runner tracks the task-owned file set from git (branch-owned diff from
+// the PR base plus uncommitted changes) and sends only what changed since the
+// server's last ACK. `path_claims` rows are the authoritative current set;
+// `workers.observedTouches` is a bounded diagnostic sample and is never what
+// coordination is decided on.
+
+/** Chunk bound for one delta: no PATCH carries more paths than this per side. */
+export const WORKING_SET_CHUNK = 500;
+
+export type WorkingSetCheckpoint = 'pre_push' | 'completion';
+
+/** Runner → server, on `PATCH /api/workers/[id]`. */
+export interface WorkingSetDelta {
+  /** Runner-local generation of the set this delta was computed from; monotonic per worker session. */
+  generation: number;
+  /** Paths now in the task-owned set the server has not acknowledged for this session. */
+  add: string[];
+  /** Paths the server acknowledged earlier that have left the set (reverted / no longer differ from base). */
+  remove: string[];
+  /** After this delta is applied, every path in the current set has been offered. */
+  complete: boolean;
+  /** Set when this delta is the full reconciliation before a ship. */
+  checkpoint?: WorkingSetCheckpoint;
+  /** Ask for the server's current held paths for this task (a restart seeds its local state from them). */
+  includeHeld?: boolean;
+}
+
+/** Server → runner, on the same PATCH response as `workingSetAck`. */
+export interface WorkingSetAck {
+  generation: number;
+  /** Paths newly leased by this delta. */
+  acquired: string[];
+  /** Paths of `add` another live task holds, with the holder. Not leased. */
+  blocked: PathCollisionNotice[];
+  /** Paths of `remove` whose lease this delta gave back. */
+  released: string[];
+  /** Active leases this task holds after the delta. */
+  heldCount: number;
+  /** Only with `includeHeld`; capped at WORKING_SET_HELD_CAP. */
+  heldPaths?: string[];
+  /** Whether the server could apply the delta at all (a closed task leases nothing). */
+  applied: boolean;
+  /** `complete`: nothing blocked and the runner said the set was fully offered. `blocked`: a holder stands in the way. `partial`: more chunks to come. */
+  coverage: 'complete' | 'blocked' | 'partial';
+}
+
+/** Cap on `heldPaths` in an ACK; above it the runner re-offers from its own sweep instead. */
+export const WORKING_SET_HELD_CAP = 5000;
+
+/** Bounded proof kept on `tasks.path_declaration.workingSet`. */
+export interface WorkingSetRecord {
+  generation: number;
+  coverage: WorkingSetAck['coverage'];
+  heldCount: number;
+  blockedCount: number;
+  /** First few blocked paths with their holders, for explain/UI. */
+  blockedSample: Array<{ path: string; blockingTaskId: string }>;
+  checkpoint: WorkingSetCheckpoint | null;
+  workerId: string | null;
+  at: string;
+}
+
+/**
+ * Runner → server: the outcome of a ship checkpoint the runner could not
+ * prove, reported on the next sync that reaches the server. The server records
+ * it on the gate ledger as `coverage_unknown_at_ship`.
+ */
+export interface ShipCheckpointReport {
+  source: WorkingSetCheckpoint;
+  result: 'unknown';
+  /** Why coverage could not be established. */
+  cause: 'timeout' | 'error' | 'sweep_incomplete' | 'server_rejected';
+  /** Whether the ship was refused (enforce mode) or let through advisory. */
+  refused: boolean;
+  attempts: number;
+  at: number;
+}
+
+export interface PrHandoffRecord {
+  at: string;
+  workerId: string | null;
+  prNumber: number | null;
+  /** How many lease paths were promoted into the effective manifest. */
+  promoted: number;
+  /** The manifest was the repo-wide sentinel or absent and is now concrete. */
+  replacedSentinel: boolean;
 }
 
 /** Enforce-mode path claims: why a task was deferred at a checkpoint. */
@@ -3061,6 +3184,38 @@ export interface GateAnalytics {
   gates: GateRow[];
   /** How many gates ranked out of `gates`. Zero means the list is exhaustive. */
   truncatedGates: number;
+  /**
+   * Path-coordination events (`path_claim` / `path_declaration`) sorted into
+   * the signals a sentinel must keep apart: history truncation and healthy
+   * contention are not an outage. See packages/core/path-coordination-signal.ts.
+   */
+  pathCoordination: PathCoordinationSummary;
+}
+
+export type PathCoordinationSignal =
+  /** The bounded observed-touch sample hit its cap. Advisory: coverage is unaffected. */
+  | 'observation_truncated'
+  /** A live holder blocked a claim. Healthy coordination, not an incident. */
+  | 'claim_blocked'
+  /** A circular wait was detected. A conflict to resolve, tracked on its own. */
+  | 'deadlock_detected'
+  /** Timeout, network, 5xx or DB failure reaching the coordinator. Real degradation. */
+  | 'coordination_unavailable'
+  /** A ship checkpoint could not prove coverage, so the ship was refused (or, advisory, let through). */
+  | 'coverage_unknown_at_ship';
+
+export type PathCoordinationSeverity = 'advisory' | 'healthy' | 'conflict' | 'degraded' | 'critical';
+
+export interface PathCoordinationSummary {
+  counts: Record<PathCoordinationSignal, number>;
+  /** Path events in the window the classifier could not place. */
+  unclassified: number;
+  /** True only on `coordination_unavailable` or `coverage_unknown_at_ship` events. */
+  incident: boolean;
+  /** Highest severity present, or null with no path events. */
+  severity: PathCoordinationSeverity | null;
+  /** One line a sentinel can quote. */
+  verdict: string;
 }
 
 /** One full knowledge-ingest job no runner has taken (GET /api/health/failures `stalledIngest`). */
@@ -3915,4 +4070,21 @@ export interface PromptEvalRunSummary {
   startedAt: string;
   finishedAt: string | null;
   results: PromptEvalResultSummary[];
+}
+
+/**
+ * A file the workspace regenerates rather than merges (`gitConfig.derivedFiles`).
+ *
+ * Runners register a merge driver for `glob` in their own clone (never the
+ * repo): on a conflict it takes one side whole, then `regenerate` runs from the
+ * repo root once the merge has no other conflicts. Lockfiles, generated indexes.
+ * Never a migration chain: renumbering reorders schema changes.
+ */
+export interface DerivedFileRule {
+  /** A gitattributes pattern, e.g. `bun.lock` or `docs/specs/INDEX.md`. */
+  glob: string;
+  /** Shell command run from the repo root, e.g. `bun install`. */
+  regenerate: string;
+  /** Which side the driver keeps before regenerating. Default `theirs` (the incoming base). */
+  strategy?: 'ours' | 'theirs';
 }

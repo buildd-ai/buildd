@@ -511,6 +511,17 @@ describe('authenticateApiKey — per-task tokens', () => {
     expect(mockAccountsFindFirst).not.toHaveBeenCalled();
     expect(mockGetCachedApiKey).not.toHaveBeenCalled();
   });
+
+  it('never resolves a person presence token to an account: only the presence routes accept one', async () => {
+    clearAccountCache();
+    mockAccountsFindFirst.mockReset();
+    mockGetCachedApiKey.mockReset();
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'admin', hostRunner: true });
+    mockGetCachedApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'admin', hostRunner: true });
+    expect(await authenticateApiKey('bldp_payload.sig')).toBeNull();
+    expect(mockAccountsFindFirst).not.toHaveBeenCalled();
+    expect(mockGetCachedApiKey).not.toHaveBeenCalled();
+  });
 });
 
 describe('authenticateApiKey — cached records from before accounts.hostRunner', () => {

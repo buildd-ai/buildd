@@ -31,6 +31,7 @@ import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, co
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
 import * as gitOperations from './git-operations';
+import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
@@ -105,7 +106,14 @@ import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
-import { runCheckpointSweep, deferOnPathCollision, CHECKPOINT_FETCH_DEADLINE_MS, CHECKPOINT_SYNC_DEADLINE_MS } from './path-collision-defer';
+import { deferOnPathCollision } from './path-collision-defer';
+import {
+  runShipCheckpoint,
+  CHECKPOINT_FETCH_DEADLINE_MS,
+  CHECKPOINT_SYNC_DEADLINE_MS,
+  SHIP_CHECKPOINT_ATTEMPTS,
+  SHIP_CHECKPOINT_BACKOFF_MS,
+} from './ship-checkpoint';
 import { HUMAN_UI_DENIAL, RUNNER_DENIAL_MARKER } from './runner-denial';
 import { scanToolResult, scanBashResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, prRequiredUnmet } from './pr-detection';
@@ -2262,6 +2270,36 @@ export class WorkerManager {
         // (see startWithPersistedBranch below), since create_pr derives its head
         // from workers.branch rather than the claim-time prediction.
         worker.branch = setupResult.branch;
+        // Derived files (gitConfig.derivedFiles): drivers in this clone resolve
+        // lockfiles and generated indexes by regenerating them, for the runner's
+        // merges and the agent's alike. A conflict retry merges its base here,
+        // before the agent starts, so a derived-only conflict needs no agent work
+        // and a mixed one hands it only the real files. Best-effort throughout:
+        // any failure leaves the branch as it was and the agent merges as before.
+        const derivedRules = normalizeDerivedFiles(gitConfig?.derivedFiles);
+        if (derivedRules.length > 0 || gitConfig?.mergiraf === true) {
+          try {
+            registerMergeDrivers(setupResult.path, derivedRules, { mergiraf: gitConfig?.mergiraf === true });
+            if (derivedRules.length > 0 && worker.prBaseRef && isConflictRetryContext(fullTask.context)) {
+              const merged = mergeBaseWithDerivedFiles(setupResult.path, worker.prBaseRef, derivedRules);
+              console.log(`[Worker ${worker.id}] Pre-merged ${worker.prBaseRef}: ${merged.status}` +
+                (merged.conflicted.length ? ` (${merged.conflicted.length} real conflict(s))` : '') +
+                (merged.error ? ` — ${merged.error}` : ''));
+              worker.derivedMergeNote = formatDerivedMergeNote(merged, worker.prBaseRef) ?? undefined;
+              if (merged.status === 'merged' || merged.status === 'conflicts') {
+                this.addMilestone(worker, {
+                  type: 'status',
+                  label: merged.status === 'merged'
+                    ? `Base merged by the runner${merged.regenerated.length ? `; regenerated ${merged.regenerated.length} derived file command(s)` : ''}`
+                    : `Base merge started; ${merged.conflicted.length} file(s) left for the agent`,
+                  ts: Date.now(),
+                });
+              }
+            }
+          } catch (err) {
+            console.warn(`[Worker ${worker.id}] Derived-file merge drivers skipped: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
         // Fallback warning: the resume branch or the declared base was
         // missing/diverged — make it visible rather than silently starting
         // fresh. A missing MISSION INTEGRATION branch gets its own signature
@@ -3927,6 +3965,13 @@ export class WorkerManager {
       if (retryContinuitySection) {
         systemPrompt.append = (systemPrompt.append ?? '') + retryContinuitySection;
       }
+      if (worker.derivedMergeNote) {
+        systemPrompt.append = (systemPrompt.append ?? '') + worker.derivedMergeNote;
+      }
+      const derivedFilesGuidance = formatDerivedFilesGuidance(normalizeDerivedFiles(gitConfig?.derivedFiles));
+      if (derivedFilesGuidance && worker.worktreePath) {
+        systemPrompt.append = (systemPrompt.append ?? '') + derivedFilesGuidance;
+      }
 
       // Degraded connectors (advisory mode): inform the agent which connector tools
       // are unavailable so it can work around them or note the gap in its output.
@@ -4390,15 +4435,20 @@ export class WorkerManager {
           ...(!isCodexTask
             ? [{ hooks: [this.hookFactory.createPathClaimHook(worker)] }]
             : []),
-          // Enforce mode only: sweep the worktree before a push, create_pr or
-          // completion. Checkpoint enforcement (a Bash write is found here
-          // after it happened), not a pre-edit guarantee. Codex has no seam
-          // for this either; its writes are swept on the sync tick.
-          ...(!isCodexTask && worker.pathClaimMode === 'enforce'
+          // Ship checkpoint (both modes): before a push, create_pr or
+          // completion, recompute the task's owned file set and reconcile it
+          // with the server; enforce mode refuses the ship on a blocked path
+          // or on coverage the server could not confirm (ship-checkpoint.ts).
+          // Checkpoint enforcement (a Bash write is found here after it
+          // happened), not a pre-edit guarantee. Codex has no seam for this;
+          // its writes reach the server through the sync tick's deltas.
+          // Timeout covers the base fetch plus every retried round trip.
+          ...(!isCodexTask
             ? [{
-                timeout: Math.ceil((CHECKPOINT_FETCH_DEADLINE_MS + CHECKPOINT_SYNC_DEADLINE_MS) / 1000) + 15,
+                timeout: Math.ceil((CHECKPOINT_FETCH_DEADLINE_MS + SHIP_CHECKPOINT_ATTEMPTS * CHECKPOINT_SYNC_DEADLINE_MS
+                  + SHIP_CHECKPOINT_BACKOFF_MS.reduce((a, b) => a + b, 0)) / 1000) + 15,
                 hooks: [this.hookFactory.createPathCheckpointGuardHook(worker, (w, source) =>
-                  runCheckpointSweep(w, source, {
+                  runShipCheckpoint(w, source, {
                     buildd: this.buildd,
                     addMilestone: (wk, m) => this.addMilestone(wk, m),
                     refreshBase: true,

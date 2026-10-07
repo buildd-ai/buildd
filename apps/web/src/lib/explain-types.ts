@@ -76,7 +76,9 @@ export type CausalLinkSource =
   | 'tasks.subjectPrNumber + workers.mergedAt'
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber'
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
-  | 'task_dispatch_outbox.status';
+  | 'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor'
+  | 'task_dispatch_outbox.status'
+  | 'tasks.context.entitlementBlock';
 
 export interface CausalLink {
   /** 1-based position. The chain reads cause → effect, in order. */
@@ -198,6 +200,12 @@ export interface ExplainAnswer {
    * nothing was recorded. From agent_capability_decisions.
    */
   access?: import('./agent-capabilities/access-log').AccessItem[];
+  /**
+   * Task scope only: the task verdict (lib/task-verdict.ts), the same one the
+   * task page leads with: state, one-sentence headline, the fact behind it
+   * and up to three actions, with any cached decision-model wording applied.
+   */
+  verdict?: Pick<import('./task-verdict').TaskVerdict, 'state' | 'headline' | 'cause' | 'actions' | 'wordedBy'>;
   /**
    * Why the task runs (or last ran) on a backend other than the one it was
    * filed with: a claim-time flip (budget failover, provider toggle) or a

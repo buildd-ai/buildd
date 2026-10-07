@@ -76,7 +76,7 @@ import TaskOverflowMenu from './TaskOverflowMenu';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
 import { missionContextBarFor, type MissionContextBarData } from './mission-context-bar';
 import { truncateExcerpt } from './error-excerpt';
-import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, partitionChildTasks, selectExecutionPlan } from './execution-plan';
+import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, isMeaningfulPlan, partitionChildTasks, selectExecutionPlan } from './execution-plan';
 import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
@@ -95,7 +95,18 @@ import { toVisualShots } from '@/lib/mission-visual-review';
 import { parseTaskShippedRecord } from '@/lib/task-shipped';
 import { buildTaskShippedView } from './task-shipped-header';
 import { TaskShippedBody, TaskShippedTitle, type RunDetail } from './TaskShippedHeader';
+import { taskHostedRunnerUsage } from '@/lib/hosted-runner-usage-store';
+import { taskRunnerLine } from '@/lib/hosted-runner-usage';
+import { TaskShippedDetails } from './TaskShippedHeader';
 import { formatElapsed } from './format-elapsed';
+import TaskVerdictBlock from './TaskVerdictBlock';
+import TaskErrorEvidence from './TaskErrorEvidence';
+import { buildErrorEvidenceItems } from './error-evidence';
+import { nonDiffActions } from './attempt-actions';
+import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision } from '@/lib/task-verdict';
+import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
+import { attentionCount, resolveTraceConsequences } from '@/lib/trace-consequence';
+import type { WorkerMilestone } from '@buildd/core/db/schema';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -326,6 +337,9 @@ export default async function TaskDetailPage({
         .then(([diagnosis, overrides]) => diagnosis ? { diagnosis, canFix: canAdministerTeamKeys(access.role, overrides) } : null)
         .catch(() => null)
     : Promise.resolve(null);
+  // Cloud runs only: its time on the hosted runner, all attempts. Started
+  // here, awaited below, so it adds no round trip of its own.
+  const hostedRunnerUsagePromise = taskHostedRunnerUsage(id).catch(() => null);
   const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
     // Artifacts for all workers on this task
     workerIds.length > 0
@@ -568,8 +582,9 @@ export default async function TaskDetailPage({
         };
       });
 
-      // Filter out chains that only contain the current task (self-loop)
-      if (planChain.length === 1 && planChain[0].id === id) {
+      // A chain of one is no plan: only this task (a self-loop), or only some
+      // other task (a friction report this run filed) shown as if it were.
+      if (!isMeaningfulPlan(planChain)) {
         planChain = [];
       }
 
@@ -802,6 +817,7 @@ export default async function TaskDetailPage({
       startedAt: prWorker.startedAt?.getTime() ?? null,
       completedAt: prWorker.completedAt?.getTime() ?? null,
       headSha: prWorker.lastCommitSha ?? null,
+      actions: nonDiffActions(prWorker.milestones as WorkerMilestone[] | null),
     };
     const retried = ciAttemptTasks.filter(t => t.workers.length > 0);
     const retryAttempts = retried.map(t => {
@@ -817,6 +833,7 @@ export default async function TaskDetailPage({
         startedAt: w.startedAt?.getTime() ?? null,
         completedAt: w.completedAt?.getTime() ?? null,
         headSha: w.lastCommitSha ?? null,
+        actions: nonDiffActions(w.milestones as WorkerMilestone[] | null),
       };
     });
     const attempts = [firstAttempt, ...retryAttempts];
@@ -833,7 +850,7 @@ export default async function TaskDetailPage({
       repoLabel: task.workspace?.repo ? normalizeRepoFullName(task.workspace.repo) : null,
       summary: ((task.result as { summary?: string } | null)?.summary) ?? null,
       totals: lineage.totals,
-      attempts: attempts.map((a, i) => ({ add: a.add, rem: a.rem, files: a.files, running: i > 0 && a.completedAt == null })),
+      attempts: attempts.map((a, i) => ({ add: a.add, rem: a.rem, files: a.files, running: i > 0 && a.completedAt == null, actions: a.actions })),
       lineage: lineage.steps,
       // The retry's own summary is what it did about the failure.
       commits: lineage.commits.map(c => ({
@@ -843,6 +860,41 @@ export default async function TaskDetailPage({
       })),
     };
   }
+
+  // --- The verdict (lib/task-verdict.ts) ---
+  // One answer to "where does this stand?", from the record. The rules decide
+  // the state; a decision cached on the task by the last state change may only
+  // reword it (and only for the same state and cause). Nothing here calls the
+  // decision model: a page load never does.
+  const storedVerdictDecision = parseStoredVerdictDecision((task as { verdictDecision?: unknown }).verdictDecision);
+  const rulesVerdict = deriveTaskVerdict(buildVerdictInput({
+    task: { status: task.status, mode: task.mode, result: task.result },
+    workers: taskWorkers,
+    ciAttempts: ciAttemptTasks,
+    openAttempt,
+    openQuestion: openQuestionCount > 0,
+    inRelease: !!shippedRelease,
+  }));
+  const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;
+  // What each agent error means for the outcome. Every trace stays inspectable;
+  // only the ones the record says still matter are counted or shown in red.
+  const traceConsequences = resolveTraceConsequences(
+    errorTraces,
+    traceOutcomeOf(rulesVerdict, task.status),
+    storedVerdictDecision?.traceClasses,
+  );
+  const attentionErrorCount = attentionCount(traceConsequences);
+  const traceWorkers = [...taskWorkers, ...ciAttemptTasks.flatMap(t => t.workers)];
+  const attemptLabelByWorker = new Map<string, string>(
+    lineageWorkerHistory(taskWorkers, ciAttemptTasks).map(({ worker, attemptLabel }, i, all) => [worker.id, attemptLabel ?? (all.length > 1 ? `Attempt ${all.length - i}` : 'This run')]),
+  );
+  const errorEvidenceItems = buildErrorEvidenceItems({
+    traces: errorTraces,
+    consequences: traceConsequences,
+    attemptLabelByWorker,
+    milestonesByWorker: new Map(traceWorkers.map(w => [w.id, (w.milestones as WorkerMilestone[] | null) ?? []])),
+  });
+  const terminalSucceeded = verdict?.state === 'shipped' || verdict?.state === 'done';
 
   // --- Helpers ---
 
@@ -870,6 +922,10 @@ export default async function TaskDetailPage({
   };
   const DEFAULT_ICON = TASK_ICONS.pending;
 
+  // The completed header applies (same predicate buildTaskShippedView uses);
+  // known here because the fact sheet is built before the view.
+  const shippedViewShown = task.status === 'completed' && task.mode !== 'planning';
+
   // The side panel's fact sheet. Each row only when there's something to say.
   const factWorker = activeWorker ?? taskWorkers[0] ?? null;
   const unresolvedDepIds = new Set(unresolvedDeps.map(d => d.id));
@@ -896,7 +952,8 @@ export default async function TaskDetailPage({
           ),
         }]
       : []),
-    ...(prOutcome && ciAttemptWorkers.length > 0 && prWorker
+    // Completed: workers and scope live in Run details, not here as well.
+    ...(prOutcome && ciAttemptWorkers.length > 0 && prWorker && !shippedViewShown
       ? [{
           key: 'workers',
           label: 'Workers',
@@ -913,7 +970,7 @@ export default async function TaskDetailPage({
             </ul>
           ),
         }]
-      : factWorker
+      : factWorker && !shippedViewShown
         ? [{ key: 'runner', label: 'Runner', value: runnerLabel(factWorker) }]
         : []),
     ...(factWorker?.branch && !(prOutcome && isTerminal)
@@ -943,7 +1000,7 @@ export default async function TaskDetailPage({
           ),
         }]
       : []),
-    ...(pathManifest.length > 0
+    ...(pathManifest.length > 0 && !shippedViewShown
       ? [{
           key: 'scope',
           label: 'Scope',
@@ -1004,14 +1061,9 @@ export default async function TaskDetailPage({
     record: parseTaskShippedRecord(shippedResult?.shipped),
     summary: shippedResult?.summary ?? null,
     summarySource: shippedResult?.summarySource ?? null,
-    pr: prWorker?.prUrl && prWorker.prNumber
-      ? { url: prWorker.prUrl, number: prWorker.prNumber, lifecycle: prWorker.prLifecycleStatus ?? null, merged: !!prWorker.mergedAt }
-      : null,
-    openAttempt,
     heroShots: pickHeroShots(undefined, buildHeroPool(toVisualShots(taskArtifacts))),
-    errorTraceCount: errorTraces.length,
-    inRelease: !!shippedRelease,
   });
+  const hostedRunnerUsage = await hostedRunnerUsagePromise;
   const runDetails: RunDetail[] = [];
   if (shippedView) {
     const runWorkers = workerHistory.map(h => h.worker);
@@ -1032,755 +1084,12 @@ export default async function TaskDetailPage({
     if (modelSummary.tierLabel) runDetails.push({ label: 'Tier', value: modelSummary.tierLabel });
     const branch = prWorker?.branch ?? taskWorkers[0]?.branch;
     if (branch) runDetails.push({ label: 'Branch', value: <span className="font-mono text-meta" title={branch}>{displayBranchName(branch)}</span> });
+    if (pathManifest.length > 0) {
+      runDetails.push({ label: 'Scope', value: <ul className="font-mono text-meta">{pathManifest.map(p => <li key={p} className="[overflow-wrap:anywhere]">{p}</li>)}</ul> });
+    }
   }
 
-  return (
-    <DisplayTimezoneProvider teamTimezone={teamTimezone}>
-    <div className="p-4 md:p-8 overflow-x-hidden overflow-y-auto h-full">
-      <div className="max-w-[1384px] w-full">
-        {/* Auto-refresh when worker claims this task or deps resolve */}
-        <TaskAutoRefresh
-          taskId={task.id}
-          workspaceId={task.workspaceId}
-          taskStatus={task.status}
-          taskMode={task.mode}
-          depTaskIds={depTaskIds}
-          hasSubTasks={!!(task.subTasks && task.subTasks.length > 0)}
-          workerHasOpenPr={workerHasOpenPr}
-        />
-
-        {/* Mission context (W6): for a mission task, the sticky micro masthead
-            replaces the breadcrumb — up to the task's row (#t-), the pulse
-            ringed on this task, n / N · PHASE and ‹ › to its siblings. */}
-        {missionContextBar ? (
-          <MissionContextBar bar={missionContextBar} />
-        ) : (
-          <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-4">
-            {task.mission ? (
-              <Link
-                href={missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' })}
-                className="hover:text-text-primary inline-flex items-center gap-1"
-              >
-                <svg className="w-4 h-4 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-                {task.mission.title}
-              </Link>
-            ) : (
-              <Link href="/app/tasks" className="hover:text-text-primary inline-flex items-center gap-1">
-                <svg className="w-4 h-4 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-                Tasks
-              </Link>
-            )}
-            {/* Mobile shows only the back link — the title is the h1 right below. */}
-            <span className="mx-2 hidden md:inline" aria-hidden="true">/</span>
-            <span className="text-text-primary hidden md:inline">{task.title}</span>
-          </nav>
-        )}
-
-        <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_336px] lg:gap-9 lg:items-start">
-        <div className="min-w-0" data-testid="task-main">
-        {/* Header — eyebrow (type · scope · role), the subject as the title, and
-            one status pill with the admin actions behind ⋯ (D9). Chips that
-            used to crowd the title line sit on the quiet meta line below. */}
-        <div className="mb-5 md:mb-6" data-testid="task-header">
-          <div className="flex flex-col-reverse md:flex-row md:items-start md:justify-between gap-3 md:gap-4">
-            {shippedView ? (
-              <div className="min-w-0 flex-1">
-                <TaskShippedTitle view={shippedView} title={heading.heading} status={displayStatus} />
-              </div>
-            ) : (
-            <div className="min-w-0 flex-1">
-              {heading.eyebrow.length > 0 && (
-                <p data-testid="task-eyebrow" className="font-mono text-[11px] uppercase tracking-[2px] text-text-muted font-medium">
-                  {heading.eyebrow.join(' · ')}
-                </p>
-              )}
-              <h1 className="mt-1.5 text-[22px] md:text-[24px] font-semibold leading-snug tracking-[-0.2px] break-words max-w-[760px]">{heading.heading}</h1>
-            </div>
-            )}
-            <div className={`flex items-center gap-2 shrink-0 md:mt-0.5 ${shippedView ? 'justify-end' : 'justify-between md:justify-start'}`}>
-              {!shippedView && (
-                <span data-testid="task-header-status" data-status={displayStatus}>
-                  <HeaderStatusPill
-                    status={displayStatus}
-                    merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
-                  />
-                </span>
-              )}
-              <AskAboutLink kind="task" id={task.id} teamId={(task.workspace as { teamId?: string } | null)?.teamId ?? null} workspaceId={task.workspaceId} />
-              <TaskOverflowMenu>
-                <EditTaskButton
-                  task={{
-                    id: task.id,
-                    title: task.title,
-                    description: task.description,
-                    priority: task.priority,
-                    project: task.project,
-                    workspaceId: task.workspaceId,
-                    dependsOn: (task.dependsOn as string[]) || [],
-                    mode: task.mode,
-                    status: task.status,
-                    backend: (task.backend as 'claude' | 'codex' | null) ?? null,
-                  }}
-                />
-                {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} currentBackend={(task.backend as 'claude' | 'codex' | null) ?? null} />}
-                {task.externalUrl && (
-                  <a
-                    href={task.externalUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex min-h-11 items-center justify-center px-4 py-2 text-sm border border-border-default hover:bg-surface-3"
-                  >
-                    View Source ↗
-                  </a>
-                )}
-                <DeleteTaskButton taskId={task.id} taskStatus={task.status} />
-              </TaskOverflowMenu>
-            </div>
-          </div>
-          <div className="mt-2 flex items-center gap-x-2 gap-y-1.5 flex-wrap text-[12px] text-text-muted font-mono">
-            <span>
-              {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created <ZonedTime value={task.createdAt} format="date" />
-            </span>
-            {task.loopConfig && (
-              <LoopStatusChip
-                loopIteration={task.loopIteration}
-                maxLoops={task.loopConfig.maxLoops ?? 5}
-                loopState={task.loopState}
-                startAt={task.startAt?.toISOString() ?? null}
-              />
-            )}
-            {/* On a completed task, matched errors are a hiccup the run got
-                past (the quiet row under "Your move"), not a red chip. */}
-            {errorTraces.length > 0 && !shippedView && !authFailure && (
-              <a
-                href="#agent-error-traces"
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-status-error/30 text-status-error hover:bg-status-error/10 transition-colors"
-                title="Pattern-matched errors from agent tool output"
-                data-testid="task-error-count"
-              >
-                {errorTraces.length} {errorTraces.length === 1 ? 'error' : 'errors'}
-              </a>
-            )}
-            {task.mode === 'planning' && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-border-default text-text-secondary">
-                Planning
-              </span>
-            )}
-            {task.category && (
-              <span className={`px-2 py-0.5 text-xs font-medium ${CATEGORY_COLORS[task.category] || 'bg-cat-chore/15 text-cat-chore'}`}>
-                {task.category}
-              </span>
-            )}
-            {task.project && (
-              <span className="px-2 py-0.5 text-xs font-medium bg-primary/10 text-accent-text">
-                {task.project}
-              </span>
-            )}
-            <TaskShipBadge release={task.release} shippedReleaseId={shippedRelease?.releaseId ?? null} />
-            {workerWithPr && !prOutcome && (
-              <a
-                href={workerWithPr.prUrl!}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-accent-text hover:underline font-medium"
-              >
-                PR #{workerWithPr.prNumber} ↗
-              </a>
-            )}
-          </div>
-        </div>
-
-        {/* Action first (W6): the phase's one decision, before anything to read.
-            The task sheet's own TaskActionZone, for a start and a failure alike,
-            so the sheet, this page and the mission drawer cannot offer
-            different things. The page alone adds runner targeting. An open
-            question is answered in the live worker view below
-            (worker-needs-input-banner), which leads the list on mobile. */}
-        {runnerReach && (
-          <RunnerReachBanner workspaceId={task.workspaceId} diagnosis={runnerReach.diagnosis} canFix={runnerReach.canFix} />
-        )}
-        {(phase === 'failed' || canStart || isBlocked) && (
-          <div className="mb-6" data-testid="task-page-action-zone">
-            <TaskPageActionZone
-              taskId={task.id}
-              workspaceId={task.workspaceId}
-              phase={phase}
-              isBlocked={isBlocked}
-              blockedByCount={unresolvedDeps.length}
-              backend={(task.backend as 'claude' | 'codex' | null) ?? null}
-              failureKind={failureKind}
-              auditTaskId={auditTaskIdFor(task, failureKind)}
-              lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}
-              worker={null}
-              roleSlug={task.roleSlug}
-              missionExecutor={missionExecutorOf(missionContextRow)}
-              entitlementBlock={task.status === 'pending' ? parseEntitlementBlock((task.context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY]) : null}
-              runnerPicker
-            />
-          </div>
-        )}
-
-        {/* Agent Questions — every question note scoped to this task, a mission
-            task's included (S6: no mission gate). An open question is the
-            decision, so it sits with the action, above anything to read. */}
-        <TaskQuestionFeed
-          taskStatus={task.status}
-          taskId={task.id}
-          missionId={task.missionId ?? null}
-          activeWorkerId={activeWorker?.id ?? null}
-          activeWorkerStatus={activeWorker?.status ?? null}
-          excludeNoteId={questionNote?.id ?? null}
-          roleName={roleName}
-        />
-
-        {shippedView && (
-          <TaskShippedBody
-            view={shippedView}
-            runDetails={runDetails}
-            structuredOutput={shippedResult?.structuredOutput ?? null}
-          />
-        )}
-
-        <div className="flex flex-col">
-        {/* Triage metadata — only foregrounded in the pending family, where runner / backend
-            drive the "should this run, and how?" decision. Priority is omitted here — it
-            rarely drives operator decisions and is still accessible in Details below. */}
-        {/* Each part earns its slot: the role only when there is one (the pending
-            eyebrow rule, lib/task-eyebrow.ts), the runner preference only when it
-            narrows — the default 'any' used to lead this line and read as a role.
-            Tier word only at this altitude — the concrete id belongs in Details.
-            Pre-flight is the one moment the tier is still changeable. */}
-        {isPendingFamily && (() => {
-          const eyebrow = deriveTaskEyebrow({
-            status: 'pending',
-            role: task.roleSlug ? { slug: task.roleSlug, name: roleName } : null,
-            roleInferred: (task.context as Record<string, unknown> | null)?.roleInferred != null,
-          });
-          const parts = [
-            taskEyebrowText(eyebrow) || null,
-            task.runnerPreference && task.runnerPreference !== 'any' ? `${task.runnerPreference} runner` : null,
-            task.backend ? task.backend.charAt(0).toUpperCase() + task.backend.slice(1) : null,
-            modelSummary.tierLabel || null,
-          ].filter((p): p is string => !!p);
-          if (parts.length === 0) return null;
-          return (
-            <div data-testid="task-triage-line" className="mb-6 px-1 flex items-center gap-1.5 text-[13px] text-text-secondary font-medium flex-wrap">
-              {parts.map((p, i) => (
-                <span key={p} className="contents">
-                  {i > 0 && <span className="text-text-muted">&middot;</span>}
-                  <span>{p}</span>
-                </span>
-              ))}
-            </div>
-          );
-        })()}
-
-        {/* Blocked Banner — shown when task has unresolved dependencies */}
-        {isBlocked && (() => {
-          // Same predicate as the gate: the worker holding the PR open, which
-          // need not be the newest one.
-          const prBlockers = unresolvedDeps.flatMap(dep => {
-            const w = dep.status === 'completed' ? findBlockingPrWorker(dep.workers ?? []) : undefined;
-            // prUrl alone blocks (the gate's rule); prNumber only shapes the label.
-            return w?.prUrl ? [{ dep, w }] : [];
-          });
-          const inProgressBlockers = unresolvedDeps.filter(d => d.status !== 'completed');
-          return (
-            <div className="bg-status-warning/10 border border-status-warning/20 p-4 mb-6">
-              <div className="flex items-center gap-2 text-status-warning font-medium text-sm mb-2">
-                <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                Blocked by {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'}
-              </div>
-              <div className="space-y-1.5 ml-6">
-                {prBlockers.map(({ dep, w }) => {
-                  return (
-                    <div key={dep.id} className="flex items-center gap-2 flex-wrap">
-                      <a
-                        href={w.prUrl!}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm font-medium text-accent-text hover:underline"
-                      >
-                        {w.prNumber ? `Merge PR #${w.prNumber}` : 'PR open'} ↗
-                      </a>
-                      <span className="text-[12px] text-text-muted">
-                        {dep.title}
-                      </span>
-                    </div>
-                  );
-                })}
-                {inProgressBlockers.map((dep) => (
-                  <div key={dep.id} className="flex items-center gap-2">
-                    <Link
-                      href={taskPageHref({ taskId: dep.id })}
-                      className="text-sm text-text-secondary hover:underline"
-                    >
-                      {dep.title}
-                    </Link>
-                    <span className={`px-2 py-0.5 text-xs ${STATUS_COLORS[dep.status] || STATUS_COLORS.pending}`}>
-                      {dep.status}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })()}
-
-        {/* Mission Budget Banner — the parent mission is out of budget, so the
-            claim loop skips this task and every sibling. Only raising the
-            mission budget (or force-starting this one task) clears it. */}
-        {missionBudgetExhausted && (
-          <div className="bg-status-error/10 border border-status-error/20 p-4 mb-6">
-            <div className="flex items-center gap-2 text-status-error font-medium text-sm mb-1">
-              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-              </svg>
-              Mission budget spent. No worker can claim this task.
-            </div>
-            <p className="text-[12px] text-text-secondary ml-6">
-              Every task in{' '}
-              {task.mission ? (
-                <Link href={missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' })} className="text-accent-text hover:underline">
-                  {task.mission.title}
-                </Link>
-              ) : 'this mission'}{' '}
-              is on hold. Raise the mission budget to release them, or force-start this task.
-            </p>
-          </div>
-        )}
-
-        {/* Budget Exhausted Banner — shown when task was reset to pending due to budget exhaustion */}
-        {isBudgetPaused && !isBlocked && (
-          <div className="bg-status-warning/10 border border-status-warning/20 p-4 mb-6">
-            <div className="flex items-center gap-2 text-status-warning font-medium text-sm">
-              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              Recorded {budgetBackendLabel} budget/rate-limit.{' '}
-              {budgetResetsAtIso
-                ? <>Recorded reset: <LocalTime iso={budgetResetsAtIso} suffix="." /></>
-                : 'No reset time recorded.'}
-            </div>
-            {switchOptions.length > 0 && (
-              <SwitchBackendButton taskId={id} options={switchOptions} />
-            )}
-          </div>
-        )}
-
-        {/* Loop history */}
-        {task.loopConfig && (
-          <LoopHistory
-            entries={Array.isArray((task.result as Record<string, unknown> | null)?.loopHistory)
-              ? (task.result as Record<string, unknown>).loopHistory as LoopHistoryEntry[]
-              : Array.isArray((task.context as Record<string, unknown> | null)?.loopHistory)
-                ? (task.context as Record<string, unknown>).loopHistory as LoopHistoryEntry[]
-                : []}
-            loopState={task.loopState}
-            maxLoops={task.loopConfig.maxLoops ?? 5}
-          />
-        )}
-
-        <TaskEvidenceCard status={task.status} result={task.result} workerError={taskWorkers[0]?.error ?? null} backend={taskBackend} />
-
-        <TaskEvidenceFiles
-          taskId={task.id}
-          objects={evidenceFiles}
-          sensitive={(task.workspace as { dataClass?: string } | null)?.dataClass === 'sensitive'}
-          defaultOpen={task.status === 'failed' && evidenceFiles.length > 0}
-        />
-
-        {/* Agent error traces */}
-        {errorTraces.length > 0 && (
-          <div className="mb-6" id="agent-error-traces">
-            <details className="card">
-              {/* Red only where the errors may have cost the result; a done
-                  task got past them. */}
-              {/* Muted, too, once the failure is explained above: the same
-                  sign-in error matched six times is not six problems. */}
-              <summary className={`cursor-pointer p-4 font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] select-none ${shippedView || authFailure ? 'text-text-muted hover:text-text-secondary' : 'text-red-400 hover:text-red-300'}`}>
-                {shippedView ? 'Handled errors' : authFailure ? 'Matched errors' : 'Agent errors'} · {errorTraces.length}
-              </summary>
-              <div className="px-4 pb-4 space-y-2 border-t border-border-default pt-3">
-                <p className="text-xs text-text-muted mb-2">
-                  The runner matched these errors in agent tool output. At most 1 per pattern per 60s.
-                </p>
-                {errorTraces.map((t) => (
-                  <div key={t.id} className="flex items-start gap-2 text-sm">
-                    <span className="font-mono text-xs text-red-400 shrink-0 w-24 md:w-36 truncate" title={t.pattern}>
-                      {t.pattern}
-                    </span>
-                    {t.source && (
-                      <span className="hidden md:inline text-xs text-text-muted shrink-0 w-16 truncate" title={t.source}>
-                        {t.source}
-                      </span>
-                    )}
-                    <span className="flex-1 min-w-0 font-mono text-xs text-text-primary truncate" title={t.excerpt}>
-                      {t.excerpt}
-                    </span>
-                    <span className="hidden sm:inline text-xs text-text-muted shrink-0">
-                      <ZonedTime value={t.ts} format="time-seconds" />
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </details>
-          </div>
-        )}
-
-        {/* Execution Plan Chain (replaces Related Tasks when chain data available) */}
-        {planChain.length > 0 ? (
-          <PlanChainView
-            currentTaskId={id}
-            tasks={planChain}
-            roleMap={Object.fromEntries(roleMap)}
-            onlineRunners={planOnlineRunners}
-          />
-        ) : hasRelatedTasks && (
-          <div className="mb-6">
-            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-              Related Tasks
-            </div>
-            <div className="card p-4 space-y-3">
-              {task.parentTask && (
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span className="w-full md:w-auto font-mono text-[11px] md:text-[10px] text-text-muted uppercase tracking-[1px]">{isAttempt ? 'Attempt at:' : 'Parent:'}</span>
-                  <Link
-                    href={taskPageHref({ taskId: task.parentTask.id, missionId: task.missionId })}
-                    className="min-w-0 text-sm text-primary-400 hover:underline [overflow-wrap:anywhere]"
-                  >
-                    {task.parentTask.title}
-                  </Link>
-                  <StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />
-                </div>
-              )}
-              {([
-                ['Subtasks', childTasks.subtasks],
-                ['Attempts', relatedAttempts],
-              ] as const).map(([label, list]) => list.length > 0 && (
-                <div key={label} data-testid={`task-related-${label.toLowerCase()}`}>
-                  <span className="font-mono text-[11px] md:text-[10px] text-text-muted uppercase tracking-[1px]">{label} ({list.length}):</span>
-                  <div className="mt-2 space-y-1 ml-2 md:ml-4">
-                    {list.map((sub) => (
-                      <div key={sub.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <Link
-                          href={taskPageHref({ taskId: sub.id, missionId: task.missionId })}
-                          className="min-w-0 text-sm text-primary-400 hover:underline [overflow-wrap:anywhere]"
-                        >
-                          {sub.title}
-                        </Link>
-                        <StatusBadge status={deriveDisplayStatus(sub.status)} />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Attachments */}
-        {attachments && attachments.length > 0 && (
-          <div className="mb-6">
-            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-              Attachments
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {attachments.map((att, i) => (
-                <div key={i} className="relative">
-                  {att.mimeType.startsWith('image/') ? (
-                    <img
-                      src={att.src}
-                      alt={att.filename}
-                      className="max-h-32 border border-border-default"
-                    />
-                  ) : (
-                    <div className="p-3 bg-surface-3">
-                      <span className="text-sm">{att.filename}</span>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Planning Mode Lifecycle */}
-        {task.mode === 'planning' && (() => {
-          const hasSubTasks = task.subTasks && task.subTasks.length > 0;
-
-          if (hasSubTasks) {
-            // Plan was approved and child tasks created
-            return (
-              <div className="bg-status-success/10 border border-status-success/20 p-4 mb-6">
-                <div className="flex items-center gap-2 text-status-success font-medium text-sm">
-                  <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  Plan approved · {task.subTasks.length} child task{task.subTasks.length !== 1 ? 's' : ''} created
-                </div>
-              </div>
-            );
-          }
-
-          // task.status is never 'running' — liveness is the worker's.
-          if (baseDisplayStatus === 'running') {
-            return (
-              <div className="bg-status-running/10 border border-status-running/20 p-4 mb-6">
-                <div className="flex items-center gap-2 text-status-running font-medium text-sm">
-                  <Spinner size="sm" className="text-status-running flex-shrink-0" aria-label="Generating plan" />
-                  The agent is writing a plan…
-                </div>
-              </div>
-            );
-          }
-
-          if (task.status === 'pending' || task.status === 'assigned') {
-            return (
-              <div className="bg-status-info/10 border border-status-info/20 p-4 mb-6">
-                <div className="flex items-center gap-2 text-status-info font-medium text-sm">
-                  <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                  </svg>
-                  A planning agent will write a plan for your review
-                </div>
-              </div>
-            );
-          }
-
-          // completed state with plan is handled by PlanReviewPanel
-          return null;
-        })()}
-
-        {/* Plan Review — shown for completed planning tasks */}
-        <PlanReviewPanel
-          taskId={task.id}
-          mode={task.mode}
-          status={task.status}
-          result={task.result as Record<string, unknown> | null}
-        />
-
-        {/* Active Worker — the hero: the Now strip while it runs, the question
-            while it waits. First in the column at every width. */}
-        {activeWorker && (
-          <div className="mb-8 order-first" data-testid="task-active-worker">
-            <RealTimeWorkerView
-              taskStatus={task.status}
-              taskId={task.id}
-              initialWorker={{
-                id: activeWorker.id,
-                name: activeWorker.name,
-                branch: activeWorker.branch,
-                status: activeWorker.status,
-                currentAction: activeWorker.currentAction,
-                milestones: (activeWorker.milestones as any[]) || [],
-                turns: activeWorker.turns,
-                costUsd: activeWorker.costUsd?.toString() || null,
-                inputTokens: activeWorker.inputTokens,
-                outputTokens: activeWorker.outputTokens,
-                startedAt: activeWorker.startedAt?.toISOString() || null,
-                prUrl: activeWorker.prUrl,
-                prNumber: activeWorker.prNumber,
-                prLifecycleStatus: activeWorker.prLifecycleStatus,
-                localUiUrl: null,
-                commitCount: activeWorker.commitCount,
-                filesChanged: activeWorker.filesChanged,
-                linesAdded: activeWorker.linesAdded,
-                linesRemoved: activeWorker.linesRemoved,
-                lastCommitSha: activeWorker.lastCommitSha,
-                waitingFor: activeWorker.waitingFor as any,
-                instructionHistory: (activeWorker.instructionHistory as any[]) || [],
-                pendingInstructions: activeWorker.pendingInstructions,
-                updatedAt: activeWorker.updatedAt?.toISOString() || null,
-                account: activeWorker.account ? { authType: activeWorker.account.authType } : null,
-                resultMeta: activeWorker.resultMeta as any,
-              }}
-              modelTier={modelSummary.tierLabel}
-              questionNote={questionNote}
-              roleName={roleName}
-            />
-            <AlsoRunningCompact count={peers.length} href="/app/home" />
-          </div>
-        )}
-
-        {/* PR outcome — the diff split by attempt, "How it landed" (attempt →
-            CI → retry → merge) and checks per commit (AC-4). Shown for an open
-            PR and for one that landed. */}
-        {(() => {
-          if (!prWorker?.prUrl || !prWorker.prNumber || prWorker.prLifecycleStatus === 'closed') return null;
-          const storedPrFacts = {
-            prUrl: prWorker.prUrl,
-            prNumber: prWorker.prNumber,
-            prLifecycleStatus: prWorker.mergedAt ? 'merged' : prWorker.prLifecycleStatus,
-            linesAdded: prWorker.linesAdded,
-            linesRemoved: prWorker.linesRemoved,
-            filesChanged: prWorker.filesChanged,
-            // The header carries the summary and the one action.
-            outcome: prOutcome && shippedView ? { ...prOutcome, summary: null } : prOutcome,
-            hideAction: !!shippedView,
-            openAttempt,
-          };
-          return (
-            <div className={`mb-10 ${activeWorker ? '' : 'order-first'}`} data-testid="task-pr-section">
-              {/* The GitHub-derived half of this card (CI runs, reviews,
-                  mergeability) is several REST calls, so it streams in behind
-                  a boundary instead of holding the whole page. The fallback is
-                  the same card rendered from stored state, so the PR is
-                  readable and linkable on first paint. */}
-              <Suspense fallback={<StoredPrCard {...storedPrFacts} />}>
-                <PrDetailsCard workspaceId={task.workspaceId} {...storedPrFacts} />
-              </Suspense>
-            </div>
-          );
-        })()}
-
-        </div>{/* end flex container */}
-
-        {/* Next step — where the plan goes after this task. Shown on completion so the
-            operator can follow the thread forward instead of hunting the chain. */}
-        {phase === 'completed' && nextChainTask && !missionContextBar && (
-          <Link
-            href={taskPageHref({ taskId: nextChainTask.id })}
-            className="group mb-8 flex items-center gap-3 p-4 border border-border-default bg-surface-2 hover:bg-surface-3 transition-colors"
-          >
-            <span className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted shrink-0">Next</span>
-            <span className="text-sm font-medium text-text-primary truncate flex-1">{nextChainTask.title}</span>
-            <span className={`px-2 py-0.5 text-xs ${STATUS_COLORS[nextChainTask.status] || STATUS_COLORS.pending}`}>
-              {nextChainTask.status}
-            </span>
-            <span className="text-accent-text group-hover:translate-x-0.5 transition-transform" aria-hidden="true">&rarr;</span>
-          </Link>
-        )}
-
-        {/* Deliverables */}
-        {(task.result as any) && !shippedView && (
-          (() => {
-            const result = task.result as { summary?: string; summarySource?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown> };
-            const hasCodeDeliverables = hasTaskCodeDeliverables(result);
-            const isFallbackSummary = result.summarySource === 'fallback';
-            // The PR outcome card already carries the code deliverables and summary.
-            if (prOutcome && hasCodeDeliverables && !result.structuredOutput) return null;
-            const fallbackChip = (
-              <span className="font-mono text-[11px] md:text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
-                unauthored · last message
-              </span>
-            );
-
-            return (
-              <div className="mb-8">
-                <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-                  Deliverables
-                </div>
-
-                {/* Non-code summary — shown prominently when no code deliverables */}
-                {!hasCodeDeliverables && result.summary && (
-                  <div className="p-5 bg-surface-2 border border-border-default mb-4">
-                    {isFallbackSummary && <div className="mb-2">{fallbackChip}</div>}
-                    <MarkdownContent content={result.summary} />
-                    <div className="mt-3 pt-2 border-t border-border-default/50 flex items-center justify-between gap-3">
-                      <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} />
-                      {suppressedSummaryArtifact && (
-                        <div className="flex items-center gap-2">
-                          <ArtifactShareControl
-                            artifactId={suppressedSummaryArtifact.id}
-                            baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
-                            initialVisibility={(suppressedSummaryArtifact.visibility as 'private' | 'public') ?? 'private'}
-                            initialShareToken={suppressedSummaryArtifact.shareToken}
-                          />
-                          <a
-                            href={`/app/artifacts/${suppressedSummaryArtifact.id}`}
-                            className="text-[11px] text-text-muted hover:text-text-secondary"
-                          >
-                            Open ↗
-                          </a>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Code deliverables bar — the PR outcome card above carries these */}
-                {hasCodeDeliverables && !prOutcome && (
-                  <div className="p-4 bg-status-success/10 border border-status-success/20">
-                    <div className="flex items-center gap-3 text-sm flex-wrap">
-                      {result.branch && (
-                        <code className="px-2 py-0.5 bg-status-success/15 text-status-success rounded text-xs">
-                          {result.branch}
-                        </code>
-                      )}
-                      {(result.commits ?? 0) > 0 && (
-                        <span className="text-text-secondary text-xs">
-                          {result.commits} commit{result.commits !== 1 ? 's' : ''}
-                        </span>
-                      )}
-                      {((result.added ?? 0) > 0 || (result.removed ?? 0) > 0) && (
-                        <span className="text-xs">
-                          <span className="text-status-success">+{result.added}</span>
-                          <span className="text-status-error">/{'-'}{result.removed}</span>
-                        </span>
-                      )}
-                      {(result.files ?? 0) > 0 && (
-                        <span className="text-xs text-text-secondary">{result.files} files</span>
-                      )}
-                      {result.sha && (
-                        <code className="font-mono text-xs text-text-muted">{result.sha.slice(0, 7)}</code>
-                      )}
-                      {result.prUrl && (
-                        <a
-                          href={result.prUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success hover:bg-status-success/20"
-                        >
-                          PR #{result.prNumber}
-                        </a>
-                      )}
-                    </div>
-                    {result.summary && (
-                      <div className="text-sm text-text-secondary mt-2">
-                        {isFallbackSummary && <div className="mb-2">{fallbackChip}</div>}
-                        <MarkdownContent content={result.summary} />
-                        <div className="mt-2 flex justify-end">
-                          <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} compact />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Structured Output */}
-                {result.structuredOutput && (
-                  <div className="mt-4">
-                    <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">
-                      Structured Output
-                    </div>
-                    <pre className="p-4 bg-surface-2 border border-border-default overflow-x-auto text-sm font-mono text-text-primary">
-                      {JSON.stringify(result.structuredOutput, null, 2)}
-                    </pre>
-                  </div>
-                )}
-              </div>
-            );
-          })()
-        )}
-
-        {/* Artifacts; an audit task's Tray shows even before its first screen
-            (queued, no browser runner, boot failed, stalled), with its actions. */}
-        {(visibleArtifacts.length > 0 || auditVisual) && (
-          <TaskArtifactsSection
-            artifacts={visibleArtifacts.map(toTaskArtifactItem)}
-            taskId={task.id}
-            baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
-            initialOpenArtifactId={initialOpenArtifactId}
-            missionId={task.missionId ?? null}
-            visual={auditVisual}
-          />
-        )}
-
-        {/* Worker History */}
-        {workerHistory.length > 0 && (
+  const workerHistorySection = workerHistory.length > 0 ? (
           <div data-testid="task-worker-history">
             <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
               Worker History
@@ -1940,7 +1249,751 @@ export default async function TaskDetailPage({
               })}
             </div>
           </div>
+  ) : null;
+
+  const evidenceFilesSection = (
+    <TaskEvidenceFiles
+      taskId={task.id}
+      objects={evidenceFiles}
+      sensitive={(task.workspace as { dataClass?: string } | null)?.dataClass === 'sensitive'}
+      defaultOpen={task.status === 'failed' && evidenceFiles.length > 0}
+    />
+  );
+  const planChainView = planChain.length > 0 ? (
+    <PlanChainView
+      currentTaskId={id}
+      tasks={planChain}
+      roleMap={Object.fromEntries(roleMap)}
+      onlineRunners={planOnlineRunners}
+    />
+  ) : null;
+
+  return (
+    <DisplayTimezoneProvider teamTimezone={teamTimezone}>
+    <div className="p-4 md:p-8 overflow-x-hidden overflow-y-auto h-full">
+      <div className="max-w-[1384px] w-full">
+        {/* Auto-refresh when worker claims this task or deps resolve */}
+        <TaskAutoRefresh
+          taskId={task.id}
+          workspaceId={task.workspaceId}
+          taskStatus={task.status}
+          taskMode={task.mode}
+          depTaskIds={depTaskIds}
+          hasSubTasks={!!(task.subTasks && task.subTasks.length > 0)}
+          workerHasOpenPr={workerHasOpenPr}
+        />
+
+        {/* Mission context (W6): for a mission task, the sticky micro masthead
+            replaces the breadcrumb — up to the task's row (#t-), the pulse
+            ringed on this task, n / N · PHASE and ‹ › to its siblings. */}
+        {missionContextBar ? (
+          <MissionContextBar bar={missionContextBar} />
+        ) : (
+          <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-4">
+            {task.mission ? (
+              <Link
+                href={missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' })}
+                className="hover:text-text-primary inline-flex items-center gap-1"
+              >
+                <svg className="w-4 h-4 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+                {task.mission.title}
+              </Link>
+            ) : (
+              <Link href="/app/tasks" className="hover:text-text-primary inline-flex items-center gap-1">
+                <svg className="w-4 h-4 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+                Tasks
+              </Link>
+            )}
+            {/* Mobile shows only the back link — the title is the h1 right below. */}
+            <span className="mx-2 hidden md:inline" aria-hidden="true">/</span>
+            <span className="text-text-primary hidden md:inline">{task.title}</span>
+          </nav>
         )}
+
+        <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_336px] lg:gap-9 lg:items-start">
+        <div className="min-w-0" data-testid="task-main">
+        {/* Header — eyebrow (type · scope · role), the subject as the title, and
+            one status pill with the admin actions behind ⋯ (D9). Chips that
+            used to crowd the title line sit on the quiet meta line below. */}
+        <div className="mb-5 md:mb-6" data-testid="task-header">
+          <div className="flex flex-col-reverse md:flex-row md:items-start md:justify-between gap-3 md:gap-4">
+            {shippedView ? (
+              <div className="min-w-0 flex-1">
+                <TaskShippedTitle view={shippedView} title={heading.heading} />
+              </div>
+            ) : (
+            <div className="min-w-0 flex-1">
+              {heading.eyebrow.length > 0 && (
+                <p data-testid="task-eyebrow" className="font-mono text-[11px] uppercase tracking-[2px] text-text-muted font-medium">
+                  {heading.eyebrow.join(' · ')}
+                </p>
+              )}
+              <h1 className="mt-1.5 text-[22px] md:text-[24px] font-semibold leading-snug tracking-[-0.2px] break-words max-w-[760px]">{heading.heading}</h1>
+            </div>
+            )}
+            <div className={`flex items-center gap-2 shrink-0 md:mt-0.5 ${shippedView ? 'justify-end' : 'justify-between md:justify-start'}`}>
+              {/* With a verdict, the verdict block carries the state (and this hook). */}
+              {!shippedView && !verdict && (
+                <span data-testid="task-header-status" data-status={displayStatus}>
+                  <HeaderStatusPill
+                    status={displayStatus}
+                    merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
+                  />
+                </span>
+              )}
+              <AskAboutLink kind="task" id={task.id} teamId={(task.workspace as { teamId?: string } | null)?.teamId ?? null} workspaceId={task.workspaceId} />
+              <TaskOverflowMenu>
+                <EditTaskButton
+                  task={{
+                    id: task.id,
+                    title: task.title,
+                    description: task.description,
+                    priority: task.priority,
+                    project: task.project,
+                    workspaceId: task.workspaceId,
+                    dependsOn: (task.dependsOn as string[]) || [],
+                    mode: task.mode,
+                    status: task.status,
+                    backend: (task.backend as 'claude' | 'codex' | null) ?? null,
+                  }}
+                />
+                {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} currentBackend={(task.backend as 'claude' | 'codex' | null) ?? null} />}
+                {task.externalUrl && (
+                  <a
+                    href={task.externalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex min-h-11 items-center justify-center px-4 py-2 text-sm border border-border-default hover:bg-surface-3"
+                  >
+                    View Source ↗
+                  </a>
+                )}
+                <DeleteTaskButton taskId={task.id} taskStatus={task.status} />
+              </TaskOverflowMenu>
+            </div>
+          </div>
+          <div className="mt-2 flex items-center gap-x-2 gap-y-1.5 flex-wrap text-[12px] text-text-muted font-mono">
+            <span>
+              {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created <ZonedTime value={task.createdAt} format="date" />
+            </span>
+            {task.loopConfig && (
+              <LoopStatusChip
+                loopIteration={task.loopIteration}
+                maxLoops={task.loopConfig.maxLoops ?? 5}
+                loopState={task.loopState}
+                startAt={task.startAt?.toISOString() ?? null}
+              />
+            )}
+            {/* Only errors the record says still matter are counted. Exploration
+                noise and recovered failures stay inspectable below, never red. */}
+            {attentionErrorCount > 0 && !terminalSucceeded && !authFailure && (
+              <a
+                href="#agent-error-traces"
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-status-error/30 text-status-error hover:bg-status-error/10 transition-colors"
+                title="Agent errors that affected the outcome"
+                data-testid="task-error-count"
+              >
+                {attentionErrorCount} {attentionErrorCount === 1 ? 'error' : 'errors'}
+              </a>
+            )}
+            {task.mode === 'planning' && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-border-default text-text-secondary">
+                Planning
+              </span>
+            )}
+            {task.category && (
+              <span className={`px-2 py-0.5 text-xs font-medium ${CATEGORY_COLORS[task.category] || 'bg-cat-chore/15 text-cat-chore'}`}>
+                {task.category}
+              </span>
+            )}
+            {task.project && (
+              <span className="px-2 py-0.5 text-xs font-medium bg-primary/10 text-accent-text">
+                {task.project}
+              </span>
+            )}
+            <TaskShipBadge release={task.release} shippedReleaseId={shippedRelease?.releaseId ?? null} />
+            {workerWithPr && !prOutcome && (
+              <a
+                href={workerWithPr.prUrl!}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-accent-text hover:underline font-medium"
+              >
+                PR #{workerWithPr.prNumber} ↗
+              </a>
+            )}
+          </div>
+        </div>
+
+        {/* Action first (W6): the phase's one decision, before anything to read.
+            The task sheet's own TaskActionZone, for a start and a failure alike,
+            so the sheet, this page and the mission drawer cannot offer
+            different things. The page alone adds runner targeting. An open
+            question is answered in the live worker view below
+            (worker-needs-input-banner), which leads the list on mobile. */}
+        {verdict && (
+          <TaskVerdictBlock verdict={verdict} decision={storedVerdictDecision} displayStatus={displayStatus} />
+        )}
+
+        {runnerReach && (
+          <RunnerReachBanner workspaceId={task.workspaceId} diagnosis={runnerReach.diagnosis} canFix={runnerReach.canFix} />
+        )}
+        {(phase === 'failed' || canStart || isBlocked) && (
+          <div className="mb-6" data-testid="task-page-action-zone">
+            <TaskPageActionZone
+              taskId={task.id}
+              workspaceId={task.workspaceId}
+              phase={phase}
+              isBlocked={isBlocked}
+              blockedByCount={unresolvedDeps.length}
+              backend={(task.backend as 'claude' | 'codex' | null) ?? null}
+              failureKind={failureKind}
+              auditTaskId={auditTaskIdFor(task, failureKind)}
+              lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}
+              worker={null}
+              roleSlug={task.roleSlug}
+              missionExecutor={missionExecutorOf(missionContextRow)}
+              entitlementBlock={task.status === 'pending' ? parseEntitlementBlock((task.context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY]) : null}
+              runnerPicker
+            />
+          </div>
+        )}
+
+        {/* Agent Questions — every question note scoped to this task, a mission
+            task's included (S6: no mission gate). An open question is the
+            decision, so it sits with the action, above anything to read. */}
+        <TaskQuestionFeed
+          taskStatus={task.status}
+          taskId={task.id}
+          missionId={task.missionId ?? null}
+          activeWorkerId={activeWorker?.id ?? null}
+          activeWorkerStatus={activeWorker?.status ?? null}
+          excludeNoteId={questionNote?.id ?? null}
+          roleName={roleName}
+        />
+
+        {shippedView && <TaskShippedBody view={shippedView} />}
+
+        {hostedRunnerUsage && (
+          <p data-testid="task-hosted-runner" className="mb-4 text-meta text-text-secondary tabular-nums">
+            {taskRunnerLine(hostedRunnerUsage)}
+          </p>
+        )}
+
+        <div className="flex flex-col">
+        {/* Triage metadata — only foregrounded in the pending family, where runner / backend
+            drive the "should this run, and how?" decision. Priority is omitted here — it
+            rarely drives operator decisions and is still accessible in Details below. */}
+        {/* Each part earns its slot: the role only when there is one (the pending
+            eyebrow rule, lib/task-eyebrow.ts), the runner preference only when it
+            narrows — the default 'any' used to lead this line and read as a role.
+            Tier word only at this altitude — the concrete id belongs in Details.
+            Pre-flight is the one moment the tier is still changeable. */}
+        {isPendingFamily && (() => {
+          const eyebrow = deriveTaskEyebrow({
+            status: 'pending',
+            role: task.roleSlug ? { slug: task.roleSlug, name: roleName } : null,
+            roleInferred: (task.context as Record<string, unknown> | null)?.roleInferred != null,
+          });
+          const parts = [
+            taskEyebrowText(eyebrow) || null,
+            task.runnerPreference && task.runnerPreference !== 'any' ? `${task.runnerPreference} runner` : null,
+            task.backend ? task.backend.charAt(0).toUpperCase() + task.backend.slice(1) : null,
+            modelSummary.tierLabel || null,
+          ].filter((p): p is string => !!p);
+          if (parts.length === 0) return null;
+          return (
+            <div data-testid="task-triage-line" className="mb-6 px-1 flex items-center gap-1.5 text-[13px] text-text-secondary font-medium flex-wrap">
+              {parts.map((p, i) => (
+                <span key={p} className="contents">
+                  {i > 0 && <span className="text-text-muted">&middot;</span>}
+                  <span>{p}</span>
+                </span>
+              ))}
+            </div>
+          );
+        })()}
+
+        {/* Blocked Banner — shown when task has unresolved dependencies */}
+        {isBlocked && (() => {
+          // Same predicate as the gate: the worker holding the PR open, which
+          // need not be the newest one.
+          const prBlockers = unresolvedDeps.flatMap(dep => {
+            const w = dep.status === 'completed' ? findBlockingPrWorker(dep.workers ?? []) : undefined;
+            // prUrl alone blocks (the gate's rule); prNumber only shapes the label.
+            return w?.prUrl ? [{ dep, w }] : [];
+          });
+          const inProgressBlockers = unresolvedDeps.filter(d => d.status !== 'completed');
+          return (
+            <div className="bg-status-warning/10 border border-status-warning/20 p-4 mb-6">
+              <div className="flex items-center gap-2 text-status-warning font-medium text-sm mb-2">
+                <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Blocked by {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'}
+              </div>
+              <div className="space-y-1.5 ml-6">
+                {prBlockers.map(({ dep, w }) => {
+                  return (
+                    <div key={dep.id} className="flex items-center gap-2 flex-wrap">
+                      <a
+                        href={w.prUrl!}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm font-medium text-accent-text hover:underline"
+                      >
+                        {w.prNumber ? `Merge PR #${w.prNumber}` : 'PR open'} ↗
+                      </a>
+                      <span className="text-[12px] text-text-muted">
+                        {dep.title}
+                      </span>
+                    </div>
+                  );
+                })}
+                {inProgressBlockers.map((dep) => (
+                  <div key={dep.id} className="flex items-center gap-2">
+                    <Link
+                      href={taskPageHref({ taskId: dep.id })}
+                      className="text-sm text-text-secondary hover:underline"
+                    >
+                      {dep.title}
+                    </Link>
+                    <span className={`px-2 py-0.5 text-xs ${STATUS_COLORS[dep.status] || STATUS_COLORS.pending}`}>
+                      {dep.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Mission Budget Banner — the parent mission is out of budget, so the
+            claim loop skips this task and every sibling. Only raising the
+            mission budget (or force-starting this one task) clears it. */}
+        {missionBudgetExhausted && (
+          <div className="bg-status-error/10 border border-status-error/20 p-4 mb-6">
+            <div className="flex items-center gap-2 text-status-error font-medium text-sm mb-1">
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+              Mission budget spent. No worker can claim this task.
+            </div>
+            <p className="text-[12px] text-text-secondary ml-6">
+              Every task in{' '}
+              {task.mission ? (
+                <Link href={missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' })} className="text-accent-text hover:underline">
+                  {task.mission.title}
+                </Link>
+              ) : 'this mission'}{' '}
+              is on hold. Raise the mission budget to release them, or force-start this task.
+            </p>
+          </div>
+        )}
+
+        {/* Budget Exhausted Banner — shown when task was reset to pending due to budget exhaustion */}
+        {isBudgetPaused && !isBlocked && (
+          <div className="bg-status-warning/10 border border-status-warning/20 p-4 mb-6">
+            <div className="flex items-center gap-2 text-status-warning font-medium text-sm">
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Recorded {budgetBackendLabel} budget/rate-limit.{' '}
+              {budgetResetsAtIso
+                ? <>Recorded reset: <LocalTime iso={budgetResetsAtIso} suffix="." /></>
+                : 'No reset time recorded.'}
+            </div>
+            {switchOptions.length > 0 && (
+              <SwitchBackendButton taskId={id} options={switchOptions} />
+            )}
+          </div>
+        )}
+
+        {/* Loop history */}
+        {task.loopConfig && (
+          <LoopHistory
+            entries={Array.isArray((task.result as Record<string, unknown> | null)?.loopHistory)
+              ? (task.result as Record<string, unknown>).loopHistory as LoopHistoryEntry[]
+              : Array.isArray((task.context as Record<string, unknown> | null)?.loopHistory)
+                ? (task.context as Record<string, unknown>).loopHistory as LoopHistoryEntry[]
+                : []}
+            loopState={task.loopState}
+            maxLoops={task.loopConfig.maxLoops ?? 5}
+          />
+        )}
+
+        <TaskEvidenceCard status={task.status} result={task.result} workerError={taskWorkers[0]?.error ?? null} backend={taskBackend} failingChecks={verdict?.failingChecks ?? []} />
+
+        {/* A completed task keeps its evidence files in Run details. */}
+        {!shippedView && evidenceFilesSection}
+
+        {/* Agent errors: every captured trace, sorted by what it means for the
+            outcome (needs attention / unclear / recovered / exploration noise).
+            Any row opens the complete redacted evidence. */}
+        <TaskErrorEvidence items={errorEvidenceItems} taskTitle={task.title} terminalSucceeded={terminalSucceeded} />
+
+        {/* Execution Plan Chain (replaces Related Tasks when chain data available) */}
+        {planChain.length > 0 ? (
+          !shippedView && planChainView
+        ) : hasRelatedTasks && (
+          <div className="mb-6">
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+              Related Tasks
+            </div>
+            <div className="card p-4 space-y-3">
+              {task.parentTask && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="w-full md:w-auto font-mono text-[11px] md:text-[10px] text-text-muted uppercase tracking-[1px]">{isAttempt ? 'Attempt at:' : 'Parent:'}</span>
+                  <Link
+                    href={taskPageHref({ taskId: task.parentTask.id, missionId: task.missionId })}
+                    className="min-w-0 text-sm text-primary-400 hover:underline [overflow-wrap:anywhere]"
+                  >
+                    {task.parentTask.title}
+                  </Link>
+                  <StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />
+                </div>
+              )}
+              {([
+                ['Subtasks', childTasks.subtasks],
+                ['Attempts', relatedAttempts],
+              ] as const).map(([label, list]) => list.length > 0 && (
+                <div key={label} data-testid={`task-related-${label.toLowerCase()}`}>
+                  <span className="font-mono text-[11px] md:text-[10px] text-text-muted uppercase tracking-[1px]">{label} ({list.length}):</span>
+                  <div className="mt-2 space-y-1 ml-2 md:ml-4">
+                    {list.map((sub) => (
+                      <div key={sub.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <Link
+                          href={taskPageHref({ taskId: sub.id, missionId: task.missionId })}
+                          className="min-w-0 text-sm text-primary-400 hover:underline [overflow-wrap:anywhere]"
+                        >
+                          {sub.title}
+                        </Link>
+                        <StatusBadge status={deriveDisplayStatus(sub.status)} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Attachments */}
+        {attachments && attachments.length > 0 && (
+          <div className="mb-6">
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+              Attachments
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {attachments.map((att, i) => (
+                <div key={i} className="relative">
+                  {att.mimeType.startsWith('image/') ? (
+                    <img
+                      src={att.src}
+                      alt={att.filename}
+                      className="max-h-32 border border-border-default"
+                    />
+                  ) : (
+                    <div className="p-3 bg-surface-3">
+                      <span className="text-sm">{att.filename}</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Planning Mode Lifecycle */}
+        {task.mode === 'planning' && (() => {
+          const hasSubTasks = task.subTasks && task.subTasks.length > 0;
+
+          if (hasSubTasks) {
+            // Plan was approved and child tasks created
+            return (
+              <div className="bg-status-success/10 border border-status-success/20 p-4 mb-6">
+                <div className="flex items-center gap-2 text-status-success font-medium text-sm">
+                  <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Plan approved · {task.subTasks.length} child task{task.subTasks.length !== 1 ? 's' : ''} created
+                </div>
+              </div>
+            );
+          }
+
+          // task.status is never 'running' — liveness is the worker's.
+          if (baseDisplayStatus === 'running') {
+            return (
+              <div className="bg-status-running/10 border border-status-running/20 p-4 mb-6">
+                <div className="flex items-center gap-2 text-status-running font-medium text-sm">
+                  <Spinner size="sm" className="text-status-running flex-shrink-0" aria-label="Generating plan" />
+                  The agent is writing a plan…
+                </div>
+              </div>
+            );
+          }
+
+          if (task.status === 'pending' || task.status === 'assigned') {
+            return (
+              <div className="bg-status-info/10 border border-status-info/20 p-4 mb-6">
+                <div className="flex items-center gap-2 text-status-info font-medium text-sm">
+                  <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                  A planning agent will write a plan for your review
+                </div>
+              </div>
+            );
+          }
+
+          // completed state with plan is handled by PlanReviewPanel
+          return null;
+        })()}
+
+        {/* Plan Review — shown for completed planning tasks */}
+        <PlanReviewPanel
+          taskId={task.id}
+          mode={task.mode}
+          status={task.status}
+          result={task.result as Record<string, unknown> | null}
+        />
+
+        {/* Active Worker — the hero: the Now strip while it runs, the question
+            while it waits. First in the column at every width. */}
+        {activeWorker && (
+          <div className="mb-8 order-first" data-testid="task-active-worker">
+            <RealTimeWorkerView
+              taskStatus={task.status}
+              taskId={task.id}
+              initialWorker={{
+                id: activeWorker.id,
+                name: activeWorker.name,
+                branch: activeWorker.branch,
+                status: activeWorker.status,
+                currentAction: activeWorker.currentAction,
+                milestones: (activeWorker.milestones as any[]) || [],
+                turns: activeWorker.turns,
+                costUsd: activeWorker.costUsd?.toString() || null,
+                inputTokens: activeWorker.inputTokens,
+                outputTokens: activeWorker.outputTokens,
+                startedAt: activeWorker.startedAt?.toISOString() || null,
+                prUrl: activeWorker.prUrl,
+                prNumber: activeWorker.prNumber,
+                prLifecycleStatus: activeWorker.prLifecycleStatus,
+                localUiUrl: null,
+                commitCount: activeWorker.commitCount,
+                filesChanged: activeWorker.filesChanged,
+                linesAdded: activeWorker.linesAdded,
+                linesRemoved: activeWorker.linesRemoved,
+                lastCommitSha: activeWorker.lastCommitSha,
+                waitingFor: activeWorker.waitingFor as any,
+                error: activeWorker.error,
+                instructionHistory: (activeWorker.instructionHistory as any[]) || [],
+                pendingInstructions: activeWorker.pendingInstructions,
+                updatedAt: activeWorker.updatedAt?.toISOString() || null,
+                account: activeWorker.account ? { authType: activeWorker.account.authType } : null,
+                resultMeta: activeWorker.resultMeta as any,
+              }}
+              modelTier={modelSummary.tierLabel}
+              questionNote={questionNote}
+              roleName={roleName}
+            />
+            <AlsoRunningCompact count={peers.length} href="/app/home" />
+          </div>
+        )}
+
+        {/* PR outcome — the diff split by attempt, "How it landed" (attempt →
+            CI → retry → merge) and checks per commit (AC-4). Shown for an open
+            PR and for one that landed. */}
+        {(() => {
+          if (!prWorker?.prUrl || !prWorker.prNumber || prWorker.prLifecycleStatus === 'closed') return null;
+          const storedPrFacts = {
+            prUrl: prWorker.prUrl,
+            prNumber: prWorker.prNumber,
+            prLifecycleStatus: prWorker.mergedAt ? 'merged' : prWorker.prLifecycleStatus,
+            linesAdded: prWorker.linesAdded,
+            linesRemoved: prWorker.linesRemoved,
+            filesChanged: prWorker.filesChanged,
+            // The header carries the summary and the one action.
+            outcome: prOutcome && shippedView ? { ...prOutcome, summary: null } : prOutcome,
+            hideAction: !!shippedView,
+            openAttempt,
+          };
+          return (
+            <div className={`mb-10 ${activeWorker ? '' : 'order-first'}`} data-testid="task-pr-section">
+              {/* The GitHub-derived half of this card (CI runs, reviews,
+                  mergeability) is several REST calls, so it streams in behind
+                  a boundary instead of holding the whole page. The fallback is
+                  the same card rendered from stored state, so the PR is
+                  readable and linkable on first paint. */}
+              <Suspense fallback={<StoredPrCard {...storedPrFacts} />}>
+                <PrDetailsCard workspaceId={task.workspaceId} {...storedPrFacts} />
+              </Suspense>
+            </div>
+          );
+        })()}
+
+        </div>{/* end flex container */}
+
+        {/* Completed: the raw handoff and everything about the run (workers,
+            scope, evidence files, plan), each collapsed, after the outcome. */}
+        {shippedView && (
+          <div className="mb-8">
+            <TaskShippedDetails
+              view={shippedView}
+              runDetails={runDetails}
+              structuredOutput={shippedResult?.structuredOutput ?? null}
+            >
+              {workerHistorySection}
+              {evidenceFiles.length > 0 && evidenceFilesSection}
+              {planChainView}
+            </TaskShippedDetails>
+          </div>
+        )}
+
+        {/* Next step — where the plan goes after this task. Shown on completion so the
+            operator can follow the thread forward instead of hunting the chain. */}
+        {phase === 'completed' && nextChainTask && !missionContextBar && (
+          <Link
+            href={taskPageHref({ taskId: nextChainTask.id })}
+            className="group mb-8 flex items-center gap-3 p-4 border border-border-default bg-surface-2 hover:bg-surface-3 transition-colors"
+          >
+            <span className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted shrink-0">Next</span>
+            <span className="text-sm font-medium text-text-primary truncate flex-1">{nextChainTask.title}</span>
+            <span className={`px-2 py-0.5 text-xs ${STATUS_COLORS[nextChainTask.status] || STATUS_COLORS.pending}`}>
+              {nextChainTask.status}
+            </span>
+            <span className="text-accent-text group-hover:translate-x-0.5 transition-transform" aria-hidden="true">&rarr;</span>
+          </Link>
+        )}
+
+        {/* Deliverables */}
+        {(task.result as any) && !shippedView && (
+          (() => {
+            const result = task.result as { summary?: string; summarySource?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown> };
+            const hasCodeDeliverables = hasTaskCodeDeliverables(result);
+            const isFallbackSummary = result.summarySource === 'fallback';
+            // The PR outcome card already carries the code deliverables and summary.
+            if (prOutcome && hasCodeDeliverables && !result.structuredOutput) return null;
+            const fallbackChip = (
+              <span className="font-mono text-[11px] md:text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
+                unauthored · last message
+              </span>
+            );
+
+            return (
+              <div className="mb-8">
+                <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+                  Deliverables
+                </div>
+
+                {/* Non-code summary — shown prominently when no code deliverables */}
+                {!hasCodeDeliverables && result.summary && (
+                  <div className="p-5 bg-surface-2 border border-border-default mb-4">
+                    {isFallbackSummary && <div className="mb-2">{fallbackChip}</div>}
+                    <MarkdownContent content={result.summary} />
+                    <div className="mt-3 pt-2 border-t border-border-default/50 flex items-center justify-between gap-3">
+                      <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} />
+                      {suppressedSummaryArtifact && (
+                        <div className="flex items-center gap-2">
+                          <ArtifactShareControl
+                            artifactId={suppressedSummaryArtifact.id}
+                            baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
+                            initialVisibility={(suppressedSummaryArtifact.visibility as 'private' | 'public') ?? 'private'}
+                            initialShareToken={suppressedSummaryArtifact.shareToken}
+                          />
+                          <a
+                            href={`/app/artifacts/${suppressedSummaryArtifact.id}`}
+                            className="text-[11px] text-text-muted hover:text-text-secondary"
+                          >
+                            Open ↗
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Code deliverables bar — the PR outcome card above carries these */}
+                {hasCodeDeliverables && !prOutcome && (
+                  <div className="p-4 bg-status-success/10 border border-status-success/20">
+                    <div className="flex items-center gap-3 text-sm flex-wrap">
+                      {result.branch && (
+                        <code className="px-2 py-0.5 bg-status-success/15 text-status-success rounded text-xs">
+                          {result.branch}
+                        </code>
+                      )}
+                      {(result.commits ?? 0) > 0 && (
+                        <span className="text-text-secondary text-xs">
+                          {result.commits} commit{result.commits !== 1 ? 's' : ''}
+                        </span>
+                      )}
+                      {((result.added ?? 0) > 0 || (result.removed ?? 0) > 0) && (
+                        <span className="text-xs">
+                          <span className="text-status-success">+{result.added}</span>
+                          <span className="text-status-error">/{'-'}{result.removed}</span>
+                        </span>
+                      )}
+                      {(result.files ?? 0) > 0 && (
+                        <span className="text-xs text-text-secondary">{result.files} files</span>
+                      )}
+                      {result.sha && (
+                        <code className="font-mono text-xs text-text-muted">{result.sha.slice(0, 7)}</code>
+                      )}
+                      {result.prUrl && (
+                        <a
+                          href={result.prUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success hover:bg-status-success/20"
+                        >
+                          PR #{result.prNumber}
+                        </a>
+                      )}
+                    </div>
+                    {result.summary && (
+                      <div className="text-sm text-text-secondary mt-2">
+                        {isFallbackSummary && <div className="mb-2">{fallbackChip}</div>}
+                        <MarkdownContent content={result.summary} />
+                        <div className="mt-2 flex justify-end">
+                          <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} compact />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Structured Output */}
+                {result.structuredOutput && (
+                  <div className="mt-4">
+                    <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">
+                      Structured Output
+                    </div>
+                    <pre className="p-4 bg-surface-2 border border-border-default overflow-x-auto text-sm font-mono text-text-primary">
+                      {JSON.stringify(result.structuredOutput, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            );
+          })()
+        )}
+
+        {/* Artifacts; an audit task's Tray shows even before its first screen
+            (queued, no browser runner, boot failed, stalled), with its actions. */}
+        {(visibleArtifacts.length > 0 || auditVisual) && (
+          <TaskArtifactsSection
+            artifacts={visibleArtifacts.map(toTaskArtifactItem)}
+            taskId={task.id}
+            baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
+            initialOpenArtifactId={initialOpenArtifactId}
+            missionId={task.missionId ?? null}
+            visual={auditVisual}
+          />
+        )}
+
+        {!shippedView && workerHistorySection}
 
         <TaskAccessSection items={accessItems} />
 
