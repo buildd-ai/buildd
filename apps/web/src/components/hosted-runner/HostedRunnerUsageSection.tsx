@@ -48,21 +48,23 @@ export function HostedRunnerUsageSection({ meter, rows }: { meter: HostedRunnerM
           <div className="mt-4 overflow-x-auto">
             <table data-testid="hosted-runner-table" className="w-full text-body tabular-nums">
               <thead>
-                <tr className="text-meta text-text-muted">
+                <tr className="whitespace-nowrap text-meta text-text-muted">
                   <th scope="col" className="py-2 pr-3 text-left font-normal">Workspace</th>
                   <th scope="col" className="py-2 px-2 text-right font-normal">Tasks</th>
                   <th scope="col" className="py-2 px-2 text-right font-normal">Wall h</th>
-                  <th scope="col" className="py-2 px-2 text-left font-normal">Size</th>
+                  <th scope="col" className="hidden py-2 px-2 text-left font-normal md:table-cell">Size</th>
                   <th scope="col" className="py-2 pl-2 text-right font-normal">Counted h</th>
                 </tr>
               </thead>
+              {/* Phone: Size drops out (Counted h already carries the 2x), so the
+                  number that matters never scrolls off. */}
               <tbody>
                 {rows.map(r => (
                   <tr key={r.workspaceId} className="border-t border-border-default">
-                    <td className="max-w-[10rem] truncate py-2 pr-3 text-text-primary">{r.name}</td>
+                    <td className="max-w-[9rem] truncate py-2 pr-3 text-text-primary md:max-w-[16rem]">{r.name}</td>
                     <td className="py-2 px-2 text-right text-text-secondary">{r.tasks}</td>
                     <td className="py-2 px-2 text-right text-text-secondary">{formatRunnerHours(r.wallSeconds)}</td>
-                    <td className="py-2 px-2 text-text-secondary">{SIZE_LABEL[r.size]}</td>
+                    <td className="hidden py-2 px-2 text-text-secondary md:table-cell">{SIZE_LABEL[r.size]}</td>
                     <td className="py-2 pl-2 text-right font-medium text-text-primary">{formatRunnerHours(r.countedSeconds)}</td>
                   </tr>
                 ))}

@@ -4,7 +4,7 @@
  * `?state=hosted-runner`: every surface of the hosted runner allowance, with
  * made-up numbers. The real pages need a team with cloud run reports (and an
  * allowance) in the database. Top to bottom: the Home banner at 80% and at
- * 100%, the Usage page section with an allowance and without one, the
+ * 100%, the Usage page section with an allowance, without one, and with no runs yet, the
  * workspace settings line, the task detail line, and a task held because the
  * allowance is used.
  */
@@ -54,6 +54,10 @@ export default function HostedRunnerFixture() {
         />
         <HostedRunnerUsageSection
           meter={hostedRunnerMeterView({ allowanceHours: null, countedSeconds: 3 * H, forecast: forecastMonthEnd(3 * H, NOW) }, NOW)}
+          rows={[{ workspaceId: 'd', name: 'cli', tasks: 4, wallSeconds: 3 * H, size: 'standard', countedSeconds: 3 * H }]}
+        />
+        <HostedRunnerUsageSection
+          meter={hostedRunnerMeterView({ allowanceHours: 50, countedSeconds: 0, forecast: forecastMonthEnd(0, NOW) }, NOW)}
           rows={[]}
         />
 
