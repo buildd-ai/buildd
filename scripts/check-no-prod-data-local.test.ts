@@ -59,3 +59,60 @@ describe('check-no-prod-data-local.sh base resolution', () => {
     expect(resolveBase('origin/dev')).toBe('origin/dev');
   });
 });
+
+describe('--staged / --message-file', () => {
+  // Built at run time so this file carries no UUID literal itself.
+  const uuid = ['0a1b2c3d', '4e5f', '4a6b', '8c7d', '9e0f1a2b3c4d'].join('-');
+  let repo: string;
+
+  function run(...args: string[]) {
+    return spawnSync('bash', [join(repo, 'scripts/check-no-prod-data-local.sh'), 'origin/dev', ...args], {
+      cwd: repo,
+      encoding: 'utf8',
+    });
+  }
+  function g(...args: string[]) {
+    const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: repo, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+  }
+
+  beforeAll(() => {
+    repo = mkdtempSync(join(tmpdir(), 'npd-staged-'));
+    g('init', '-q', '-b', 'dev');
+    mkdirSync(join(repo, 'scripts'));
+    for (const f of ['check-no-prod-data-local.sh', 'check_no_prod_data.py']) {
+      copyFileSync(resolve(import.meta.dir, f), join(repo, 'scripts', f));
+    }
+    writeFileSync(join(repo, 'a.ts'), '// base\n');
+    g('add', '.');
+    g('commit', '-q', '-m', 'base');
+    g('update-ref', 'refs/remotes/origin/dev', 'HEAD');
+    g('checkout', '-q', '-b', 'task');
+    writeFileSync(join(repo, 'a.ts'), `// ref ${uuid}\n`);
+    g('commit', '-qam', 'add ref');
+  });
+  afterAll(() => rmSync(repo, { recursive: true, force: true }));
+
+  test('committed HEAD still fails; staged removal of the UUID passes', () => {
+    expect(run().status).not.toBe(0);
+    writeFileSync(join(repo, 'a.ts'), '// fixed\n');
+    g('add', 'a.ts');
+    expect(run('--staged').status).toBe(0);
+  });
+
+  test('staged addition is caught', () => {
+    writeFileSync(join(repo, 'a.ts'), `// new ${uuid}\n`);
+    g('add', 'a.ts');
+    expect(run('--staged').status).not.toBe(0);
+    writeFileSync(join(repo, 'a.ts'), '// fixed\n');
+    g('add', 'a.ts');
+  });
+
+  test('candidate commit message is scanned', () => {
+    const f = join(repo, 'msg.txt');
+    writeFileSync(f, `fix: task ${uuid}\n`);
+    expect(run('--staged', '--message-file', f).status).not.toBe(0);
+    writeFileSync(f, 'fix: task 8237cfa9\n# comment\n');
+    expect(run('--staged', '--message-file', f).status).toBe(0);
+  });
+});
