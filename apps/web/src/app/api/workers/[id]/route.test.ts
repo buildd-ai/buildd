@@ -693,6 +693,7 @@ const mockWorkflowAttemptEnded = mock(async (_p: any) => ({ handled: false }));
 const mockFixCompletionGate = mock(async (_p: any): Promise<any> => null);
 const mockRecordLocalHead = mock(async (_taskId: string, _sha: string) => undefined);
 const mockRecordReviewVerdict = mock(async (_p: any): Promise<any> => ({ handled: false }));
+const mockIsKernelReviewRound = mock(async (_t: any): Promise<boolean> => false);
 const realHandOff = await import('@/lib/workflow/hand-off');
 mock.module('@/lib/workflow/seam', () => ({
   attemptEnded: mockWorkflowAttemptEnded,
@@ -700,6 +701,7 @@ mock.module('@/lib/workflow/seam', () => ({
   taskRetryCoversAttemptEnd: realHandOff.taskRetryCoversAttemptEnd,
   fixCompletionGate: mockFixCompletionGate,
   recordReviewVerdict: mockRecordReviewVerdict,
+  isKernelReviewRound: mockIsKernelReviewRound,
   isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
   recordLocalHead: mockRecordLocalHead,
   openKernelDelivery: mock(async () => ({ owned: false })),
@@ -8265,6 +8267,79 @@ describe('PATCH /api/workers/[id]', () => {
         mockRecordReviewVerdict.mockResolvedValue({ handled: false });
         await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
         expect(mockPostPrReview).toHaveBeenCalledTimes(1);
+      });
+
+      // Task 7313de90: a reviewer contract failure on a kernel round is T27, never the
+      // prose fallback, the legacy same-task requeue, or the legacy escalation.
+      describe('contract failure on a kernel round', () => {
+        const proseRequest = (summary: string) => createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed', summary },
+        });
+        function setupKernelContractFailure(extraCtx: Record<string, unknown> = {}) {
+          setupReviewerTaskCompletion('approve', { kernel: true });
+          mockTasksFindFirst.mockImplementation((opts_?: any) => {
+            if (opts_?.columns?.status && Object.keys(opts_.columns).length === 1) return Promise.resolve({ status: 'pending' });
+            return Promise.resolve({
+              id: 'reviewer-task-1', category: 'review',
+              context: {
+                reviewerFor: 'original-task-1', prNumber: 42, prUrl: 'https://github.com/org/repo/pull/42', headSha: 'abc123',
+                repoFullName: 'org/repo', installationId: 5000, workerBranch: 'buildd/original-branch', iteration: 0, maxIterations: 3,
+                workflowRoundId: 'round-1', ...extraCtx,
+              },
+              deliveryId: 'delivery-1', deliveryRole: 'review',
+              missionId: 'mission-1', title: '[reviewer] PR #42: Original task', outputRequirement: 'none',
+            });
+          });
+          mockIsKernelReviewRound.mockReset();
+          mockIsKernelReviewRound.mockResolvedValue(true);
+          mockWorkflowAttemptEnded.mockReset();
+          mockWorkflowAttemptEnded.mockResolvedValue({ handled: true });
+          const taskSetCalls: any[] = [];
+          mockTasksUpdate.mockReturnValue({
+            set: mock((updates: any) => { taskSetCalls.push(updates); return { where: mock(() => Promise.resolve()) }; }),
+          });
+          return taskSetCalls;
+        }
+        afterEach(() => { mockIsKernelReviewRound.mockReset(); mockIsKernelReviewRound.mockResolvedValue(false); });
+
+        it('a prose approve is ReviewRoundFailed(prose_verdict): no T6, no legacy requeue, no legacy escalation', async () => {
+          const taskSetCalls = setupKernelContractFailure();
+          const res = await PATCH(proseRequest('LGTM, approve. The change is correct and well tested.'), { params: mockParams });
+          expect(res.status).toBe(200);
+          expect(mockRecordReviewVerdict).not.toHaveBeenCalled();
+          expect(mockEscalateReviewContractFailure).not.toHaveBeenCalled();
+          expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+          const failing = taskSetCalls.find((u: any) => u.status === 'failed');
+          expect((failing?.result as any)?.errorType).toBe('review_contract_violation');
+          expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+          expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ status: 'failed', reviewFailure: 'prose_verdict', task: { deliveryId: 'delivery-1', deliveryRole: 'review' } });
+          expect(missionNoteInserts.some((n) => n.type === 'reviewer_escalated')).toBe(false);
+        });
+
+        it('a prose request-changes dispatches no fix: the verdict is never synthesized', async () => {
+          setupKernelContractFailure();
+          mockGenericInsert.mockClear();
+          await PATCH(proseRequest('Request changes: the handler is missing error handling.'), { params: mockParams });
+          expect(mockRecordReviewVerdict).not.toHaveBeenCalled();
+          expect(mockGenericInsert.mock.calls.some((c) => c[0] === 'tasks')).toBe(false);
+          expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ reviewFailure: 'prose_verdict' });
+        });
+
+        it('no verdict at all, with the legacy contract retry already spent, is still T27 (no_verdict), never the legacy escalation', async () => {
+          const taskSetCalls = setupKernelContractFailure({ reviewContractRetryCount: 1 });
+          await PATCH(proseRequest("I'll pause here."), { params: mockParams });
+          expect(mockEscalateReviewContractFailure).not.toHaveBeenCalled();
+          expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+          expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+          expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ status: 'failed', reviewFailure: 'no_verdict' });
+        });
+
+        it('a delivery released to legacy keeps the legacy contract handling', async () => {
+          const taskSetCalls = setupKernelContractFailure();
+          mockIsKernelReviewRound.mockResolvedValue(false);
+          await PATCH(proseRequest("I'll pause here."), { params: mockParams });
+          expect(taskSetCalls.find((u: any) => u.status === 'pending')?.context?.reviewContractRetryCount).toBe(1);
+        });
       });
 
       it('a legacy reviewer task (no delivery: open at cutover) never reaches the kernel', async () => {

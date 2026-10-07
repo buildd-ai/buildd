@@ -209,6 +209,17 @@ export interface AttemptTask {
   context: unknown;
 }
 
+/**
+ * Whether a reviewer task is a review round of a kernel-owned delivery (§6.3
+ * T27): its contract failures are the kernel's to decide, never the legacy
+ * prose fallback, same-task requeue or escalation. A delivery the kill switch
+ * released is legacy again.
+ */
+export async function isKernelReviewRound(task: { deliveryId?: string | null; context?: unknown }, deps: SeamDeps = {}): Promise<boolean> {
+  if (!task.deliveryId || !ctxOf(task).workflowRoundId) return false;
+  return !!(await kernelDeliveryById(task.deliveryId, deps.exec));
+}
+
 export async function attemptEnded(p: {
   task: AttemptTask;
   workerId: string;
@@ -223,6 +234,11 @@ export async function attemptEnded(p: {
   source: string;
   /** The task's own retry is queued (its retry count, not a ledger): an owner end with nothing local stays WORKING. */
   taskRetryBudgetLeft?: boolean;
+  /**
+   * A reviewer that completed but broke its output contract (§6.6): `prose_verdict`
+   * (a verdict written as prose, never applied) or `no_verdict`. Absent = infra.
+   */
+  reviewFailure?: 'prose_verdict' | 'no_verdict' | 'infra';
 }, deps: SeamDeps = {}): Promise<{ handled: boolean; result?: CommandResult }> {
   const attemptKind = p.task.deliveryRole;
   if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind) && attemptKind !== 'review')) return { handled: false };
@@ -237,7 +253,7 @@ export async function attemptEnded(p: {
     const roundId = ctxOf(p.task).workflowRoundId as string | undefined;
     if (!roundId) return { handled: true };
     const result = await applyCommand(
-      { type: 'ReviewRoundFailed', actor: p.source, roundId, reason: 'infra', maxContractRetries: REVIEW_CONTRACT_RETRIES },
+      { type: 'ReviewRoundFailed', actor: p.source, roundId, reason: p.reviewFailure ?? 'infra', maxContractRetries: REVIEW_CONTRACT_RETRIES },
       { ref: { deliveryId }, exec: deps.exec },
     );
     await drainDelivery(deliveryId, deps);
