@@ -54,6 +54,7 @@ describe('phase line contract with apps/runner', () => {
       expect(parseMetricLine(runnerPhases.formatMetricLine(m, 4096))).toEqual({ metric: m, value: 4096 });
     }
     expect(parseRepoSourceLine(runnerPhases.formatRepoSourceLine('warm'))).toEqual({ source: 'warm' });
+    expect(parseRepoSourceLine(runnerPhases.formatRepoSourceLine('reuse'))).toEqual({ source: 'reuse' });
     for (const r of runnerPhases.REPO_FALLBACK_REASONS) {
       expect(parseRepoSourceLine(runnerPhases.formatRepoSourceLine('clone', r))).toEqual({ source: 'clone', reason: r });
     }
@@ -340,7 +341,7 @@ describe('assembleRunReport', () => {
     const r = assembleRunReport(FULL);
     expect(r).toMatchObject({
       kind: 'cloud-run-report',
-      version: 10,
+      version: 11,
       taskId: 'task-1',
       attempt: 2,
       workerId: 'worker-9',
@@ -348,7 +349,7 @@ describe('assembleRunReport', () => {
       runLabel: 'task-1.2',
       instanceType: 'standard-1',
       timestamps: { dispatchReceivedAt: 1_000, containerRunningAt: 4_000, claimedAt: 6_000, firstModelRequestAt: 9_000, exitedAt: 60_000 },
-      durationsMs: { containerStart: 3_000, toClaim: 2_000, clone: 500, install: 1_000, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, restoreCache: null, toFirstModelRequest: 3_000, total: 59_000 },
+      durationsMs: { containerStart: 3_000, toClaim: 2_000, clone: 500, install: 1_000, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, restoreCache: null, restoreReuse: null, toFirstModelRequest: 3_000, total: 59_000 },
       exitCode: 0,
       outcome: 'done',
       crashReport: null,
@@ -368,7 +369,7 @@ describe('assembleRunReport', () => {
   test('missing pieces are null, never guessed', () => {
     const r = assembleRunReport({ taskId: 'task-1', attempt: 1, dispatchReceivedAt: 1_000, timings: { exitedAt: 2_000, runnerPhases: { clone_start: 5 } }, exitCode: null, outcome: 'crashed', crashReport: 'no_worker_id' });
     expect(r.workerId).toBeNull();
-    expect(r.durationsMs).toEqual({ containerStart: null, toClaim: null, clone: null, install: null, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, restoreCache: null, toFirstModelRequest: null, total: 1_000 });
+    expect(r.durationsMs).toEqual({ containerStart: null, toClaim: null, clone: null, install: null, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, restoreCache: null, restoreReuse: null, toFirstModelRequest: null, total: 1_000 });
     expect(r.resume).toEqual({ resumed: false, gapMs: null, layer: null, parkBytes: null });
     expect(r.repo).toEqual({ source: null, fallbackReason: null, snapshotAgeMs: null, warmUploadSkipReason: null, cacheSkipped: null, bytes: { clone: null, restore: null, fetch: null, cache: null, cacheRaw: null, upload: null, warmRepo: null } });
     expect(r.exitCode).toBeNull();

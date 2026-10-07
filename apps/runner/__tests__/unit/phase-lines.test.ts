@@ -29,6 +29,7 @@ describe('phase lines', () => {
       'warm_upload_start', 'warm_upload_end',
       'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
       'restore_cache_start', 'restore_cache_end',
+      'restore_reuse_start', 'restore_reuse_end',
     ]);
   });
 

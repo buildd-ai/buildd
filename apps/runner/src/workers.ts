@@ -28,6 +28,9 @@ import {
 // file goes through removeWorktreeIfUnowned so no site can force-remove a
 // directory a live worker is sitting in. See git-operations.ts.
 import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
+// Namespace, not named: many tests mock.module('./git-operations') with a fixed
+// export list, and a named import missing from it fails the whole file.
+import * as gitOperations from './git-operations';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
@@ -2152,6 +2155,8 @@ export class WorkerManager {
     let worktreeCreated = false;
     /** True when a worktree was required and `setupWorktree` returned null. */
     let worktreeSetupFailed = false;
+    /** git's reason, when setupWorktree recorded one. */
+    let worktreeSetupError: string | undefined;
     /** Set when a structural install fault must kill the session pre-budget. */
     let installBlock: string | undefined;
     /** Set when the resolved session cwd cannot host the task at all. */
@@ -2311,6 +2316,7 @@ export class WorkerManager {
         // checked out. Fail the worker instead
         // — the claim is retryable, a silently shared clone is not recoverable.
         worktreeSetupFailed = true;
+        worktreeSetupError = gitOperations.takeSetupWorktreeError?.(worker.id);
         console.warn(`[Worker ${worker.id}] Worktree setup failed for ${claimedWorker.branch} — failing the worker rather than running in the shared clone at ${workspacePath}`);
         this.addMilestone(worker, { type: 'status', label: 'Worktree setup failed — not running in the shared clone', ts: Date.now() });
       }
@@ -2331,7 +2337,8 @@ export class WorkerManager {
     if (hasRepo && !worktreeCreated && !existsSync(join(sessionCwd, '.git'))) {
       startBlock = `Session cwd is not a git checkout: ${sessionCwd} (workspace ${fullTask.workspace?.repo})`;
     } else if (worktreeSetupFailed) {
-      startBlock = `Worktree setup failed for branch ${claimedWorker.branch} in ${workspacePath}; refusing to run in the shared clone`;
+      startBlock = `Worktree setup failed for branch ${claimedWorker.branch} in ${workspacePath}; refusing to run in the shared clone` +
+        (worktreeSetupError ? `: ${worktreeSetupError}` : '');
     }
 
     // Role overlay — AFTER worktree setup, against the session cwd.

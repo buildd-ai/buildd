@@ -567,15 +567,25 @@ restore and dependency cache. One task at a time per container, always.
   container's own, deletes all of HOME, `/tmp`, `/var/tmp` and `/dev/shm`
   (agent settings, git config and hooks, shell rc files and history, worktrees,
   worker records), and keeps only git pack files and the dependency cache
-  (registry config and env files scrubbed). The next task's clone re-indexes
-  the packs (`git index-pack --strict`), fetches its refs from origin and runs
-  `git fsck --connectivity-only`, else restores or clones as usual. Then a new
-  task token is minted and egress re-installed for the new task. A reset that
-  does not verify clean destroys the container and the task starts in a fresh
-  one: it never runs dirty.
-- **Report.** `reusedContainer: { fromTaskId, idleMs, savedRestoreMs }`, or
-  `fallback: 'reset_failed'`. `savedRestoreMs` is the previous run's container
-  start, warm restore, cache restore and clone time.
+  (registry config and env files scrubbed). The next task's clone grows from
+  the kept packs: shallow boundary first, then `git index-pack` (re-hashes
+  every object, so an index the previous task wrote is never trusted; the same
+  work a warm restore does on its bundle, without the download), a fetch of
+  its refs from origin and `git fsck --connectivity-only`. No snapshot
+  restore and no cache restore: the kept cache is the cache (bun and pnpm
+  check what they take from it). If the kept packs cannot be used it restores
+  or clones as usual, still without downloading the cache over the kept one.
+  Then a new task token is minted and egress re-installed for the new task. A
+  reset that does not verify clean destroys the container and the task starts
+  in a fresh one: it never runs dirty.
+- **Report.** `reusedContainer: { fromTaskId, idleMs, resetMs, prepMs,
+  baselinePrepMs, savedMs }`, or `{ fromTaskId, idleMs, fallback:
+  'reset_failed', resetMs }`. Measured, not estimated: `prepMs` is this run's
+  dispatch to claim plus getting the repo ready (clone, warm restore with its
+  cache restore and fetch, or `restoreReuse`, the seed from kept packs);
+  `baselinePrepMs` is the same measure for the fresh run that started the
+  container; `savedMs = baselinePrepMs - prepMs`, negative when reuse was
+  slower. `repo.source` is `reuse` when the clone came from the kept packs.
 
 ### Resumable runs
 

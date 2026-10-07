@@ -78,7 +78,7 @@ import { otelContainerEnv, type OtelEnv } from './otel';
 import {
   decideLeaseClaim,
   keepsContainerWarm,
-  savedRestoreMsOf,
+  prepMsOf,
   type LeaseKey,
   type LeasedDispatchRequest,
   type LeasedDispatchResult,
@@ -339,7 +339,7 @@ export class TaskSupervisor {
     if (decision.claim === 'busy') return refuse('busy');
     if (request.warmOnly && decision.claim !== 'warm') return refuse('not_warm');
     const reuse: ReusedContainer | undefined = decision.claim === 'warm'
-      ? { fromTaskId: decision.warm.fromTaskId, idleMs: Math.max(0, this.d.now() - decision.warm.since), savedRestoreMs: decision.warm.savedRestoreMs }
+      ? { fromTaskId: decision.warm.fromTaskId, idleMs: Math.max(0, this.d.now() - decision.warm.since), baselinePrepMs: decision.warm.baselinePrepMs }
       : undefined;
     if (!sameTask) {
       // A different task: its attempts count from 1. Earlier tasks' reports
@@ -736,8 +736,9 @@ export class TaskSupervisor {
           size: lease.size,
           fromTaskId: this.d.taskId,
           since: this.d.now(),
-          // A reused run skipped its own restore: what it saved, the next one saves too.
-          savedRestoreMs: reusedOk?.savedRestoreMs ?? savedRestoreMsOf(report),
+          // The baseline is a fresh container's prep: measured by the run that
+          // started this container, carried through every reuse after it.
+          baselinePrepMs: reusedOk ? reusedOk.baselinePrepMs : prepMsOf(report.durationsMs),
         }
       : undefined;
     this.patch({
@@ -825,6 +826,7 @@ export class TaskSupervisor {
     }
     let ok = false;
     let detail = '';
+    const resetStart = this.d.now();
     try {
       const proc = await c.exec([...RESET_COMMAND], { stdout: 'pipe', stderr: 'pipe', env: { ...IMAGE_ENV, BUILDD_EXECUTOR: 'cloud' } });
       const lines: string[] = [];
@@ -842,12 +844,14 @@ export class TaskSupervisor {
     } catch (err) {
       detail = describe(err);
     }
+    const resetMs = Math.max(0, this.d.now() - resetStart);
     if (ok) {
-      this.d.log(`[cloud-runner] task ${this.d.taskId}: reusing the container of task ${reuse.fromTaskId} (idle ${Math.round(reuse.idleMs / 1000)}s); reset verified`);
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: reusing the container of task ${reuse.fromTaskId} (idle ${Math.round(reuse.idleMs / 1000)}s); reset verified in ${Math.round(resetMs / 1000)}s`);
+      this.patch({ reusedContainer: { ...reuse, resetMs } });
       return true;
     }
     this.d.log(`[cloud-runner] task ${this.d.taskId}: container reset failed (${detail}); starting a fresh container instead`);
-    this.patch({ reusedContainer: { fromTaskId: reuse.fromTaskId, idleMs: reuse.idleMs, savedRestoreMs: null, fallback: 'reset_failed' } });
+    this.patch({ reusedContainer: { fromTaskId: reuse.fromTaskId, idleMs: reuse.idleMs, fallback: 'reset_failed', resetMs } });
     await this.stopContainer('container reset failed');
     return false;
   }
