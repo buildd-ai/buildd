@@ -42,7 +42,7 @@ function expectValidModel(m: VisualReviewModel) {
 
 describe('visual review fixture', () => {
   it('is a fixture view alongside the worker states, without joining mockWorkers', () => {
-    expect(FIXTURE_VIEWS).toEqual([...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, 'mission-board-visual', 'mission-list-executor', 'mission-check-ins', 'goal-criteria', 'task-evidence', 'evidence-storage', 'model-providers', 'task-shipped', 'commit-checks', 'answer-states', 'agent-access', 'failure-kinds', 'entitlement-blocked', 'onboarding', 'mission-task-strip', 'tool-breakdown', 'runner-size', 'workspaces-list']);
+    expect(FIXTURE_VIEWS).toEqual([...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, 'mission-board-visual', 'mission-list-executor', 'mission-check-ins', 'goal-criteria', 'task-evidence', 'evidence-storage', 'model-providers', 'task-shipped', 'commit-checks', 'answer-states', 'agent-access', 'failure-kinds', 'entitlement-blocked', 'onboarding', 'mission-task-strip', 'tool-breakdown', 'runner-size', 'interactive-sessions', 'workspaces-list']);
     expect(VISUAL_REVIEW_FIXTURE_STATE in mockWorkers).toBe(false);
     expect(isFixtureView('visual-review')).toBe(true);
     expect(isFixtureView('waiting-input')).toBe(true);

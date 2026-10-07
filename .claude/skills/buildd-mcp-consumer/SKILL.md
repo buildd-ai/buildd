@@ -74,6 +74,14 @@ gets a normal tracked worker, so the PR link and cost are recorded), do the
 work, `create_pr`, and finish with `complete_task`. Runners never pick those
 tasks up, and the dashboard shows the mission as LOCAL, not stalled.
 
+With the buildd agent plugin's hooks installed (`buildd install --global`, or
+the Claude Code plugin), your session shows in buildd as an interactive
+session from the moment it starts, without holding a slot. Your
+`claim_task` binds the session to the worker it mints, and closing the session
+releases that worker (an unfinished task goes back to the queue; nothing is
+marked completed). Without the hooks everything here still works over MCP
+alone.
+
 Do **not** use `startMode: "held"` for this. Held is a pause: it blocks your
 own explicit claims too, reads as HELD / "arm to start" everywhere, and leaves
 tasks with no worker to close by hand. Held still wins over `executor` if you
