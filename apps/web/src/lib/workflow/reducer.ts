@@ -962,7 +962,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const n = round.failureCount + 1;
       const key = `roundfail:${round.id}:${n}`;
       const gate: EffectSpec = { kind: 'gate_event', dedupeKey: `gate_event:${round.id}:${n}`, payload: { slug: 'review_round_failed', reason: cmd.reason, failure: n } };
-      if (n <= cmd.maxContractRetries) {
+      // A person's takeover is not a contract failure to retry: it escalates now.
+      if (n <= cmd.maxContractRetries && cmd.reason !== 'human_takeover') {
         // Re-queued at the same head with the same round number — never a new round.
         return c.apply(key, 'AWAITING_REVIEW', {
           guardRound: true,

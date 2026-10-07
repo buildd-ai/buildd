@@ -469,7 +469,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | T24 | `DeliveryFailed(reason)` (owner task terminal, no PR) | `WORKING`, `AWAITING_PUSH` | task `failed`/`cancelled`, retry budget spent, no PR bound | `FAILED` | none | `fail:{task}` | with a PR bound, T18/T22 apply instead |
 | T25 | `TrunkRedObserved(signature)` (circuit breaker, §6.10) | `AWAITING_REVIEW`, `APPROVED`, `LANDING`, `REPAIRING(ci)` | the same `signature` is failing on the base branch's own head, **or** ≥ the configured count of deliveries in the workspace hit it inside the configured window; open or join the `trunk_incidents` row | `BLOCKED_ON_TRUNK` with `resume_state` = the source | one `dispatch_trunk_fix` per incident (never per PR); cancel queued per-PR `ci` attempts for affected deliveries as `skipped`; `render_activity` ("blocked on trunk") | `trunk:{incident}:{delivery}` | a fact for a head that is no longer current is recorded only |
 | T26 | `TrunkRecovered(incident)` (base head green for the signature, or incident resolved by the trunk-fix PR merging) | `BLOCKED_ON_TRUNK` | live read: base branch's CI no longer fails the signature | `resume_state` re-entered at the current head; if that head predates the trunk fix, effect `refresh_branch` then re-run CI is the mechanical repair | none | `trunkok:{incident}:{delivery}` | a still-red re-read keeps the state; the budget of the `ci` family is **not** consumed while blocked |
-| T27 | `ReviewRoundFailed(round, reason)` (no valid structured verdict, reviewer died, contract retry spent) | `AWAITING_REVIEW` | round exists and is `queued`/`reviewing`; `reason` ∈ `no_verdict`, `prose_verdict`, `infra` | stay `AWAITING_REVIEW` while the contract/infra retry budget allows (round re-queued at the same head, **not** a new round number), then `ESCALATED(review_unavailable)` | `dispatch_review` retry; `gate_events` row | `roundfail:{round}:{n}` | a prose verdict is a failure, never an approve; the existing prose fallback can only *propose* a verdict that a person confirms, it cannot apply T6 |
+| T27 | `ReviewRoundFailed(round, reason)` (no valid structured verdict, reviewer died, contract retry spent, a person interrupted the reviewer) | `AWAITING_REVIEW` | round exists and is `queued`/`reviewing`; `reason` ∈ `no_verdict`, `prose_verdict`, `infra`, `human_takeover` | stay `AWAITING_REVIEW` while the contract/infra retry budget allows (round re-queued at the same head, **not** a new round number), then `ESCALATED(review_unavailable)`; `human_takeover` (`POST /api/workers/[id]/interrupt`) is never re-queued and escalates at once | `dispatch_review` retry; `gate_events` row | `roundfail:{round}:{n}` | a prose verdict is a failure, never an approve; the existing prose fallback can only *propose* a verdict that a person confirms, it cannot apply T6 |
 
 ### 6.4 `HeadObserved(H')` by state
 
@@ -1592,6 +1592,14 @@ direct column writes exactly as they were:
   a legacy PR.
 - **T21 is the only write of an abandonment** for a kernel-owned PR
   (`recordPrAbandonment` → `abandonDelivery`), with the person as `human:<who>`.
+- **The close reconciler leaves kernel PRs alone** (`review-subscribers.ts`,
+  final-audit fix 708a55c0). Like its detect sibling, `supersession-reconcile-on-close`
+  asks `kernelDeliveryForPr` first. For a kernel-owned PR it does not run
+  `reconcileSubjectEvent`: T17 and T18 carry `cancel_open_attempts`, which ends each
+  attempt in the ledger. The reconciler's `casCancel` would have cancelled the same
+  tasks with no AttemptEnded, so a reopen (T19) could find a ledger row still
+  `queued`. A failed ownership read falls back to the reconciler. A task that is only
+  anchored to the PR is left to the hourly `subject_check` sweep.
 - **A lost close is caught up first.** Both resolutions read GitHub and record
   `PrClosedUnmerged` before deciding when the delivery has not heard of the close
   (R2), so an edge is never refused for a webhook the platform missed, and the
@@ -1649,6 +1657,11 @@ Deviations, each deliberate:
 6. **The reaper needed no change in this slice.** Slice A part 2 already stopped
    `resolveStaleTask` and `tasks/cleanup` promoting a kernel attempt to `completed`
    from local commits; they send `AttemptEnded(lost)` instead, and S9 stays green.
+   The waiting-input sweep (`cleanupStuckWaitingInput`) now sends the worker's own
+   `lastCommitSha` and `commitCount` (final-audit fix 708a55c0). Before, it sent
+   `null` and `0`, which the reducer reads as nothing local to lose, so an owner
+   attempt with unpushed commits handed the old remote head on to review instead of
+   going to `AWAITING_PUSH`.
 7. **The owner-attempt completion gates G1–G3 (§17.4) are not closed here.** They
    change what plain builders see and are left to their own slice; the kernel still
    only records the mismatch.
@@ -1968,7 +1981,7 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S26 | Comment as projection: concurrent renders, lost-update race (a `reviewing` write racing the merge), entries after merge, duplicate sticky comments, PR with no comment, CI red while approved | final comment equals a fresh render of canonical state; `Merged` stays the headline; one comment; created for every bound PR; "Approved" never heads a `REPAIRING` delivery | `apps/web/src/lib/pr-activity-comment.test.ts`, `apps/web/src/lib/workflow/pr-activity-render.test.ts`, `apps/web/src/lib/workflow/pr-activity-effects.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S27 | Mechanical versus agent repair | behind-only conflict and byte-identical renumber complete with no task; textual conflict and non-identical renumber escalate to an agent attempt; false collision from a lagging mission branch is not a collision; dependency-bot PRs are never pushed to | `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/migration-collision-retry.test.ts`, `apps/web/src/lib/base-refresh.test.ts` |
 | S28 | Ledger separation | CI, review, conflict, migration, trunk families count independently; a reviewer spawned on a CI-fix task does not inherit the CI count; infra requeues change no ledger; `attemptView` is 1-based and identical in comment, title and `explain` | reducer test; `apps/web/src/lib/pr-activity-comment.test.ts`, `apps/web/src/lib/explain.test.ts` |
-| S29 | Reviewer prose or no verdict | round fails (T27, reason `prose_verdict` / `no_verdict` / `infra`), re-queued at the same head without a new round number, then `ESCALATED(review_unavailable)`; prose is never applied as approve or request-changes; no legacy requeue and no legacy `reviewer_escalated` note beside it | `apps/web/src/lib/reviewer-output.test.ts`, `apps/web/src/app/api/workers/[id]/route.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S29 | Reviewer prose or no verdict | round fails (T27, reason `prose_verdict` / `no_verdict` / `infra`; a reviewer interrupt is `human_takeover` and escalates at once), re-queued at the same head without a new round number, then `ESCALATED(review_unavailable)`; prose is never applied as approve or request-changes; no legacy requeue and no legacy `reviewer_escalated` note beside it | `apps/web/src/lib/reviewer-output.test.ts`, `apps/web/src/app/api/workers/[id]/route.test.ts`, `apps/web/src/app/api/workers/[id]/interrupt/route.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S30 | Runner hand-off failures (no confirmed outcome, commits but no PR, uncommitted changes) | `AttemptEnded(unproven)` → `AWAITING_PUSH` or requeue; never `completed` delivery | `apps/runner/__tests__/unit/` (new case beside the existing completion tests), `apps/web/src/app/api/workers/[id]/route.test.ts` |
 | S35 | Replacement chains read current, not FAILED | a superseded predecessor attempt stays auditable but the delivery and mission situation project the current attempt; owner of next move is canonical | `apps/web/src/lib/workflow/projections.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S37 | Conflict remediation already exists | a conflicted PR with a valid pending/stalled conflict-fix task re-dispatches or repairs it instead of filing a second; the recovery effect is keyed by delivery + remediation family; UI says "Conflict fix stalled" vs "Resolve conflicts" | `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/workflow/projections.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
@@ -2173,13 +2186,13 @@ numbers are the `.update(` or call line then; they drift. `W/` = `apps/web/src/`
 | `WID:5290-5330` | INSERT fix task with `reviewerRetryPrNumber/HeadSha`, `iteration` | request-changes outcome | iteration cap, unique index | migrate (→ `dispatch_fix` effect) |
 | `WID:5392`, `:5195` / `lib/auto-merge.ts:1055` | notify, `reviewerExhaustedHeadSha` | escalate / exhaustion | CAS on context key | migrate (→ T7 effect) |
 | `W/app/api/workers/claim/route.ts:2396`, `:2587`, `:2075` | `tasks.status` assigned/pending/failed, `claimedBy` | claim, rollback | CAS on `pending`/`assigned` | execution fact; stays; adds `FixClaimed` |
-| `W/lib/stale-workers.ts:695`, `:853`, `:1034`, `:1068` | `workers.status='failed'`, `tasks.status='failed'` | stale, offline, stuck input | none; not CAS (`inArray(id)`) | execution fact; stays; add CAS; emit `AttemptEnded(lost)` |
+| `W/lib/stale-workers.ts:695`, `:853`, `:1034`, `:1068` | `workers.status='failed'`, `tasks.status='failed'` | stale, offline, stuck input | none; not CAS (`inArray(id)`) | execution fact; stays; add CAS; emit `AttemptEnded(lost)` with the worker's `lastCommitSha` / `commitCount` (the stuck-input sweep, final-audit fix 708a55c0) |
 | `W/lib/stale-workers.ts:251` | `tasks.status='completed'`, `result.sha` | reaper auto-complete | `checkWorkerDeliverables`: bare `commitCount>0` | **migrate** (G8) |
 | `W/lib/stale-workers.ts:109`, `:155`, `:171`, `:200`, `:288`-`:336`, `:1203`-`:1281` | task failed/pending, `infraRetryCount`, answers | reaper retry budget, loop wait, unresumed answers | `exitCause`, counts | execution fact; stays |
 | `W/app/api/tasks/cleanup/route.ts:48`, `:82`, `:190`, `:266` | task/worker status; `:266` completes an assigned task with `result.sha` | cleanup | `:266` bare `commitCount>0` | `:190`/`:48`/`:82` execution fact; **`:266` migrate** (G9) |
 | `W/lib/interactive-detach.ts:116`, `:200` | worker status; `tasks.status='pending'` | TTL / task ended | CAS | execution fact; stays |
-| `W/lib/task-cancel.ts`, `tasks/[id]/route.ts:528`, `tasks/bulk/route.ts:153`, `workers/[id]/interrupt/route.ts:96,127`, `tasks/[id]/reassign/route.ts:102-171`, `workers/[id]/recover/route.ts:111`, `workers/[id]/respond/route.ts:240-395` | task/worker status | human and API actions | mixed CAS | execution fact; stays; cancel emits `AttemptEnded`/`DeliveryFailed` |
-| `W/lib/supersession-store.ts:275`, `:290` | `tasks.status='cancelled'`, `workers.status='failed'` | supersession rules | CAS on both | migrate (rules become part of T5/T6/T17/T18 effects) |
+| `W/lib/task-cancel.ts`, `tasks/[id]/route.ts:528`, `tasks/bulk/route.ts:153`, `workers/[id]/interrupt/route.ts:96,127`, `tasks/[id]/reassign/route.ts:102-171`, `workers/[id]/recover/route.ts:111`, `workers/[id]/respond/route.ts:240-395` | task/worker status | human and API actions | mixed CAS | execution fact; stays; cancel emits `AttemptEnded`/`DeliveryFailed`; the reviewer interrupt on a kernel round sends T27 `human_takeover` and writes no legacy `reviewer_escalated` note (final-audit fix 708a55c0) |
+| `W/lib/supersession-store.ts:275`, `:290` | `tasks.status='cancelled'`, `workers.status='failed'` | supersession rules | CAS on both | migrate (rules become part of T5/T6/T17/T18 effects); the `pr.closed` reconcile no longer runs for a kernel-owned PR (§13.8, final-audit fix 708a55c0) |
 | `W/lib/task-dependencies.ts:438`, `:781` | task cancelled/failed | dependency resolution | none (`inArray(id)`) | execution fact; stays (reads delivery) |
 | `W/lib/loop-webhook.ts:72-104` | `tasks.status='completed'`, `prLifecycleStatus='merged'` | `pr_merged` loop exit | `loopState` | migrate (consumer of `PrMerged`) |
 | `W/lib/credential-recovery.ts:82`, `mission-surface-audit.ts:453`, `visual-review-decisions.ts:283,824` | task status | recovery, audits | CAS | intentionally out of scope |
@@ -2304,7 +2317,7 @@ is a site to tick off in the Phase 2 PR that moves it.
 - [ ] `lib/reviewer-subscribers.ts` `maybeDispatchReviewer`, `maybeReDispatchReviewer`
 - [ ] `lib/stale-approval-re-review.ts`, `lib/pr-re-review.ts`, `app/api/prs/[prNumber]/re-review/route.ts`, `app/api/github/pr/review/route.ts`, `app/api/github/pr/route.ts` (`requestIntegrationBranchReview`)
 - [ ] `lib/pr-review-request.ts` `findReviewTaskForPr` / owner lookup / `insertPrOwnerWorker`
-- [ ] `lib/supersession-store.ts:275,290` and rules in `lib/supersession.ts`
+- [ ] `lib/supersession-store.ts:275,290` and rules in `lib/supersession.ts` (the `pr.closed` reconcile is skipped for a kernel-owned PR, §13.8; other events still reach it)
 - [ ] `lib/ci-failure-retry.ts` (`:180,487,612,636`), `app/api/prs/[prNumber]/retry-ci/route.ts`
 - [x] `lib/conflict-retry.ts` (`:241,422,812,893,974`), `lib/migration-collision-retry.ts`, `lib/dead-zone-sweep.ts` retry insert (kernel-owned PRs, §13.4; the sweep asks `kernelDeliveryForPr` and routes a kernel PR through `dispatchConflictRetry`, final-audit fix b6a62a4e; it was ticked before the sweep was migrated)
 - [x] `lib/auto-merge.ts` `:777` merge door (Slice C: an adapter calling `LandingRequested` for a kernel-owned PR)
