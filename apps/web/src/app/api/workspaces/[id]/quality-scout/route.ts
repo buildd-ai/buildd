@@ -10,6 +10,9 @@
  *        is reported, not an error. A double tap inside a few minutes is the
  *        same run (`skipped: duplicate`); beyond that, a workspace gets at most
  *        MANUAL_SCOUT_RUNS_PER_HOUR manual runs an hour (429 + Retry-After).
+ * PATCH — dismiss a finding: `{ signature, reason }`. A person says it is not
+ *        a defect; it is recorded with the reason and who, never acted on
+ *        again, and its follow-up is cancelled if nobody has started it.
  *
  * Advisory only: nothing here blocks a merge or release.
  */
@@ -29,13 +32,14 @@ import {
   serverHeadSha,
   triggerQualityScout,
 } from '@/lib/quality-scout-trigger';
+import { dismissQualityScoutFinding } from '@/lib/quality-scout-actions';
 
 // A server-hosted run is capped below this (SERVER_SCOUT_MAX_DURATION_MS).
 export const maxDuration = 300;
 
 const SHA_RE = /^[0-9a-f]{40}$/i;
 
-async function authorize(req: NextRequest, id: string): Promise<NextResponse | null> {
+async function authorize(req: NextRequest, id: string, onCaller?: (by: string) => void): Promise<NextResponse | null> {
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
   const apiAccount = await authenticateApiKey(apiKey, req);
   const user = await getCurrentUser();
@@ -48,6 +52,7 @@ async function authorize(req: NextRequest, id: string): Promise<NextResponse | n
   } else if (user && !(await verifyWorkspaceAccess(user.id, id))) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
+  onCaller?.(apiAccount ? `account:${(apiAccount as { id?: string }).id ?? apiAccount.teamId}` : `user:${user!.id}`);
   return null;
 }
 
@@ -96,4 +101,30 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const outcome = await triggerQualityScout({ workspaceId: id, trigger: 'manual', ref, sha });
   return NextResponse.json(outcome, { status: outcome.status === 'failed' ? 502 : 200 });
+}
+
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  let by = '';
+  const denied = await authorize(req, id, (caller) => { by = caller; });
+  if (denied) return denied;
+
+  let body: { signature?: unknown; reason?: unknown } = {};
+  try {
+    body = (await req.json()) ?? {};
+  } catch {
+    // Falls through to the 400 below.
+  }
+  const signature = typeof body.signature === 'string' ? body.signature.trim() : '';
+  if (!signature) return NextResponse.json({ error: 'signature is required' }, { status: 400 });
+
+  try {
+    const result = await dismissQualityScoutFinding({ workspaceId: id, signature, reason: body.reason, by });
+    if (result.status === 'invalid') return NextResponse.json({ error: 'reason is required' }, { status: 400 });
+    if (result.status === 'not_found') return NextResponse.json({ error: 'Finding not found' }, { status: 404 });
+    return NextResponse.json(result);
+  } catch (err) {
+    console.error('[quality-scout] dismiss failed:', err);
+    return NextResponse.json({ error: 'Failed to dismiss the finding' }, { status: 500 });
+  }
 }

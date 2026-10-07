@@ -7,6 +7,8 @@ let access = true;
 let ownerTeam = 'team-1';
 const triggerCalls: unknown[] = [];
 let rate: { allowed: boolean; retryAfterSec?: number } = { allowed: true };
+const dismissCalls: unknown[] = [];
+let dismissResult: Record<string, unknown> = { status: 'dismissed', followUp: null, taskId: null };
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => user }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => apiAccount }));
@@ -28,7 +30,14 @@ mock.module('@/lib/quality-scout-trigger', () => ({
   },
 }));
 
-const { GET, POST } = await import('./route');
+mock.module('@/lib/quality-scout-actions', () => ({
+  dismissQualityScoutFinding: async (input: unknown) => {
+    dismissCalls.push(input);
+    return dismissResult;
+  },
+}));
+
+const { GET, PATCH, POST } = await import('./route');
 const params = { params: Promise.resolve({ id: 'ws-1' }) };
 const req = (method: string, body?: unknown) =>
   new NextRequest('http://localhost/api/workspaces/ws-1/quality-scout', {
@@ -43,6 +52,8 @@ beforeEach(() => {
   ownerTeam = 'team-1';
   triggerCalls.length = 0;
   rate = { allowed: true };
+  dismissCalls.length = 0;
+  dismissResult = { status: 'dismissed', followUp: null, taskId: null };
 });
 
 describe('/api/workspaces/[id]/quality-scout', () => {
@@ -90,5 +101,50 @@ describe('/api/workspaces/[id]/quality-scout', () => {
   it('POST refuses a short SHA', async () => {
     expect((await POST(req('POST', { sha: 'abc123' }), params)).status).toBe(400);
     expect(triggerCalls).toHaveLength(0);
+  });
+
+  describe('PATCH — dismiss a finding', () => {
+    const body = { signature: 'sig-1', reason: 'expected in staging' };
+
+    it('401 without auth, 404 for a workspace the caller cannot reach; nothing is dismissed', async () => {
+      user = null;
+      expect((await PATCH(req('PATCH', body), params)).status).toBe(401);
+      user = { id: 'u-1' };
+      access = false;
+      expect((await PATCH(req('PATCH', body), params)).status).toBe(404);
+      user = null;
+      apiAccount = { teamId: 'other-team' };
+      expect((await PATCH(req('PATCH', body), params)).status).toBe(404);
+      expect(dismissCalls).toHaveLength(0);
+    });
+
+    it('dismisses, scoped to the workspace, recording the signed-in person', async () => {
+      const res = await PATCH(req('PATCH', body), params);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ status: 'dismissed' });
+      expect(dismissCalls).toEqual([{ workspaceId: 'ws-1', signature: 'sig-1', reason: 'expected in staging', by: 'user:u-1' }]);
+    });
+
+    it('an API key is recorded as its account', async () => {
+      user = null;
+      apiAccount = { teamId: 'team-1', id: 'acct-1' } as { teamId: string };
+      await PATCH(req('PATCH', body), params);
+      expect(dismissCalls[0]).toMatchObject({ by: 'account:acct-1' });
+    });
+
+    it('400 without a signature or a reason', async () => {
+      expect((await PATCH(req('PATCH', { reason: 'x' }), params)).status).toBe(400);
+      dismissResult = { status: 'invalid', error: 'reason_required' };
+      expect((await PATCH(req('PATCH', { signature: 'sig-1' }), params)).status).toBe(400);
+    });
+
+    it('404 for an unknown finding; an already-dismissed one is answered as-is', async () => {
+      dismissResult = { status: 'not_found' };
+      expect((await PATCH(req('PATCH', body), params)).status).toBe(404);
+      dismissResult = { status: 'already_dismissed' };
+      const res = await PATCH(req('PATCH', body), params);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'already_dismissed' });
+    });
   });
 });
