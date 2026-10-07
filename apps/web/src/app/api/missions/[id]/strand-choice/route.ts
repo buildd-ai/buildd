@@ -69,20 +69,21 @@ export async function POST(
     // Record the human choice as an outcome on the most recent decision record for this mission
     try {
       const mostRecentDecision = await db.query.decisionRecords.findFirst({
-        where: eq(decisionRecords.missionId, id),
-        columns: { id: true, teamId: true, capability: true },
+        where: (c) => c.and(
+          c.eq(decisionRecords.missionId, id),
+          c.eq(decisionRecords.capability, STRAND_CHOICE_CAPABILITY),
+        ),
         orderBy: desc(decisionRecords.createdAt),
       });
 
-      if (mostRecentDecision?.capability === STRAND_CHOICE_CAPABILITY) {
+      if (mostRecentDecision) {
         await db.insert(decisionOutcomes).values({
-          id: undefined,
           decisionRecordId: mostRecentDecision.id,
           teamId: mostRecentDecision.teamId,
           capability: STRAND_CHOICE_CAPABILITY,
           source: 'human',
           label: 'human_choice',
-          value: label === 'wait-for-local' ? 1.0 : 0.0,
+          metadata: { button: label },
           observedAt: new Date(),
         }).catch(() => {});
       }

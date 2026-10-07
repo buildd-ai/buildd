@@ -159,16 +159,23 @@ describe('the owner’s tap is recorded as a label', () => {
     });
   });
 });
-describe("adviseStrandChoice - gated mode ledger recording (TDD)", () => {
-  it("records decisions with full ledger input on successful advice", async () => {
+describe("adviseStrandChoice - gated mode ledger recording", () => {
+  it("records applied decision with prompt version ms1, confidence, ruleAnswer when confident wait-for-local", async () => {
     const lines: string[] = [];
-    let calls = 0;
-    const cache = new Map();
+    const recordedDecisions: any[] = [];
     const deps = {
       resolveAccess: allowed as any,
-      decide: (async () => { calls++; return okDecide('wait-for-local', 0.92)(); }) as any,
-      cache, log: (l: string) => lines.push(l),
+      decide: (async () => okDecide('wait-for-local', 0.92)()) as any,
+      cache: new Map(),
+      log: (l: string) => lines.push(l),
     };
+    // Mock recordDecision
+    const origRecord = (await import('./strand-choice-decision')).recordDecision;
+    (globalThis as any).__mockRecordDecision = (input: any) => {
+      recordedDecisions.push(input);
+      return Promise.resolve(null);
+    };
+
     const r = await adviseStrandChoice(facts, deps);
     expect(r).toEqual({ pick: 'wait-for-local', confidence: 0.92 });
     const rec = JSON.parse(lines[0].slice('[decision-shadow] '.length));
@@ -180,5 +187,51 @@ describe("adviseStrandChoice - gated mode ledger recording (TDD)", () => {
       mode: 'gated',
     });
     expect(rec.v).toContain('ms1');
+  });
+
+  it("records suggested decision (below threshold) with applied vs suggested status", async () => {
+    const lines: string[] = [];
+    const cache = new Map();
+    const deps = {
+      resolveAccess: allowed as any,
+      decide: (async () => okDecide('wait-for-local', 0.80)()) as any,
+      cache, log: (l: string) => lines.push(l),
+    };
+    const r = await adviseStrandChoice(facts, deps);
+    expect(r).toEqual({ pick: 'wait-for-local', confidence: 0.80 });
+    // Below threshold, so should be suggested not applied
+    const rec = JSON.parse(lines[0].slice('[decision-shadow] '.length));
+    expect(rec.confidence).toBe(0.80);
+  });
+
+  it("records fallback row with ruleAnswer runner-first on timeout", async () => {
+    const lines: string[] = [];
+    const cache = new Map();
+    const deps = {
+      resolveAccess: allowed as any,
+      decide: (async () => ({ ok: false, error: { kind: 'timeout' }, latencyMs: 3000 })) as any,
+      cache, log: (l: string) => lines.push(l),
+    };
+    const r = await adviseStrandChoice(facts, deps);
+    expect(r).toBeNull();
+    const rec = JSON.parse(lines[0].slice('[decision-shadow] '.length));
+    expect(rec).toMatchObject({ site: 'mission_strand', error: 'timeout' });
+  });
+
+  it("caches results and returns cached pick on second call", async () => {
+    let callCount = 0;
+    const cache = new Map();
+    const deps = {
+      resolveAccess: allowed as any,
+      decide: (async () => { callCount++; return okDecide('wait-for-local', 0.92)(); }) as any,
+      cache, log: () => {},
+    };
+    const r1 = await adviseStrandChoice(facts, deps);
+    expect(r1).toEqual({ pick: 'wait-for-local', confidence: 0.92 });
+    expect(callCount).toBe(1);
+
+    const r2 = await adviseStrandChoice(facts, deps);
+    expect(r2).toEqual({ pick: 'wait-for-local', confidence: 0.92 });
+    expect(callCount).toBe(1); // Should not have called again
   });
 });

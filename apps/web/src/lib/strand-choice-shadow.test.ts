@@ -28,15 +28,7 @@ describe('applyStrandChoice', () => {
     expect(card.strand.order).toBe('runner-first');
   });
 
-  it('gated: a confident wait-for-local orders Keep local first; never flips anything', async () => {
-    const calls = { n: 0 };
-    const card = { row: strandedRow() as any, strand: cta() };
-    await applyStrandChoice([card], { now: NOW, mode: 'gated', deps: deps('wait-for-local', 0.99, calls) });
-    expect(card.strand.order).toBe('local-first');
-    expect(card.row.executor).toBe('local');
-  });
-
-  it('gated, decision fails: today’s order (fail open)', async () => {
+  it('gated, decision fails: fallback order on error (fail open)', async () => {
     const card = { row: strandedRow() as any, strand: cta() };
     await applyStrandChoice([card], {
       now: NOW, mode: 'gated',
@@ -50,5 +42,27 @@ describe('applyStrandChoice', () => {
     const row = { ...strandedRow(), executor: 'runner' };
     await applyStrandChoice([{ row: row as any, strand: cta() }], { now: NOW, mode: 'gated', deps: deps('wait-for-local', 0.99, calls) });
     expect(calls.n).toBe(0);
+  });
+
+  it('gated cache miss: renders fallback order immediately, schedules background call', async () => {
+    const calls = { n: 0 };
+    const scheduled: Array<() => Promise<unknown>> = [];
+    const card = { row: strandedRow() as any, strand: cta() };
+    const cache = new Map();
+    const deps_obj = {
+      resolveAccess: (async () => ({ ok: true, apiKey: 'k', model: 'jev' })) as any,
+      decide: (async () => { calls.n++; return { ok: true, answers: { pick: { choice: 'wait-for-local', confidence: 0.99 } }, model: 'jev', latencyMs: 1 }; }) as any,
+      cache, log: () => {},
+    };
+    await applyStrandChoice([card], {
+      now: NOW,
+      mode: 'gated',
+      schedule: (fn: () => Promise<unknown>) => { scheduled.push(fn); },
+      deps: deps_obj,
+    });
+    // Cache miss: should render fallback order immediately (non-blocking)
+    expect(card.strand.order).toBe('runner-first');
+    // Call should be scheduled for later
+    expect(scheduled.length).toBeGreaterThan(0);
   });
 });

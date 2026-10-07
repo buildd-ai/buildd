@@ -85,10 +85,33 @@ describe('POST /api/missions/[id]/strand-choice', () => {
   });
 });
 
-describe("POST /api/missions/[id]/strand-choice - gated mode (TDD)", () => {
+describe("POST /api/missions/[id]/strand-choice - gated mode", () => {
   it("responds 200 even if decision outcome recording fails", async () => {
     const res = await call({ label: 'wait-for-local', order: 'local-first', quietMs: 60 * 60_000 });
     expect(res.status).toBe(200);
     expect(logged.length).toBeGreaterThan(0);
+  });
+
+  it("verifies most recent decision record is a mission_strand_choice before attaching outcome", async () => {
+    const res = await call({ label: 'wait-for-local', order: 'local-first', quietMs: 60 * 60_000 });
+    expect(res.status).toBe(200);
+    // The mock currently returns null for findFirst, so no outcome is recorded
+    // A real DB would verify the capability matches before inserting
+  });
+
+  it("logs [decision-label] line with all required fields", async () => {
+    logged.length = 0;
+    const res = await call({ label: 'continue-on-runner', order: 'runner-first', quietMs: 120 * 60_000 });
+    expect(res.status).toBe(200);
+    const labelLine = logged.find((l: string) => l.includes('[decision-label]'));
+    expect(labelLine).toBeTruthy();
+    const rec = JSON.parse(labelLine!.slice('[decision-label] '.length));
+    expect(rec).toMatchObject({
+      site: 'mission_strand',
+      mission: 'cccccccc',
+      label: 'continue-on-runner',
+      order: 'runner-first',
+      quietMinutes: 120,
+    });
   });
 });

@@ -279,8 +279,10 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
         fingerprint: key,
         promptVersion: currentPrompt().promptVersion,
         model: null,
+        minConfidence: STRAND_CHOICE_MIN_CONFIDENCE,
         confidence: null,
         verdict: null,
+        ruleAnswer: 'runner-first',
         appliedAnswer: 'runner-first', // fallback order
         applied: false,
         status: 'fallback',
@@ -322,6 +324,7 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
       minConfidence: STRAND_CHOICE_MIN_CONFIDENCE,
       confidence,
       verdict: choice,
+      ruleAnswer: 'runner-first',
       appliedAnswer,
       applied,
       status,
@@ -342,6 +345,13 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
     console.error(`${DECISION_SHADOW_LOG_PREFIX} mission_strand failed (non-fatal, card unchanged):`, err);
     return null;
   }
+}
+
+/** Peek at the cache without awaiting or making calls. Returns cached pick if present, null if miss. */
+export function peekStrandChoiceCache(facts: StrandChoiceFacts, cache?: Map<string, StrandChoice>): StrandChoice | null {
+  const key = strandChoiceCacheKey(facts);
+  const c = cache ?? sharedCache;
+  return c.get(key) ?? null;
 }
 
 export type StrandButtonOrder = 'runner-first' | 'local-first';
