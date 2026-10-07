@@ -85,6 +85,7 @@ import {
   type ReusedContainer,
 } from './container-lease';
 import type { RunInterruption } from './run-report';
+import type { ModelAuth, SeatAcquire } from './owner-seat';
 import type { RunnerSize, RunnerSizeDecision } from './runner-class';
 
 /** The slice of `ctx.container` (workers-types `Container`) the supervisor uses. */
@@ -148,12 +149,35 @@ export interface SupervisorDeps {
   mintTaskToken(): Promise<string>;
   /** The Agents SDK schedule API (Agent#schedule / #cancelSchedule), one-shot only. */
   scheduler: SchedulerPort;
+  /**
+   * The per-Worker owner-seat gate (owner-seat.ts), present only when the
+   * deployer set the seat secret. Absent: runs start exactly as before.
+   */
+  ownerSeat?: OwnerSeatPort;
   /** Lease agents: a one-shot that calls expireWarmContainer() at `at` (epoch ms). */
   scheduleWarmExpiry?(at: number): Promise<void>;
   fetch: typeof fetch;
   now(): number;
   sleep(ms: number): Promise<void>;
   log(message: string): void;
+}
+
+/**
+ * What the supervisor needs from the owner-seat gate. It never sees the
+ * token: only whether a slot was granted, and a label for the run report.
+ */
+export interface OwnerSeatPort {
+  /** Take a slot before the run starts; denied when the cap is full or a usage wall is up. */
+  acquire(): Promise<SeatAcquire>;
+  /** Give the slot back when the run ends (done, failed, parked, crashed). */
+  release(): Promise<void>;
+  /** Which kind of credential paid for this run's model calls, once known. */
+  modelAuth(): ModelAuth | null;
+}
+
+/** Thrown inside run() when the gate says wait; ends the run as `deferred`. */
+class SeatDeferral extends Error {
+  constructor(readonly reason: string) { super(`owner seat unavailable: ${reason}`); }
 }
 
 /** What a scheduled-dispatch alarm is created with and fires with. */
@@ -575,6 +599,7 @@ export class TaskSupervisor {
     let error: string | undefined;
     let configError = false;
     let interruption: RunInterruption | undefined;
+    let seatDeferral: string | undefined;
     let otelEnv: Record<string, string>;
     try {
       try {
@@ -583,6 +608,12 @@ export class TaskSupervisor {
       } catch (err) {
         configError = true;
         throw err;
+      }
+      // The owner seat's per-Worker cap and usage wall: wait (deferred, with
+      // the reason) rather than start a run that would only hit the limit.
+      if (this.d.ownerSeat) {
+        const grant = await this.d.ownerSeat.acquire();
+        if (!grant.granted) throw new SeatDeferral(grant.reason);
       }
       // Container reuse: a warm container is reset for this task first (no
       // token or egress of this task exists yet), and replaced if the reset
@@ -625,7 +656,8 @@ export class TaskSupervisor {
       // stop): what buildd's size rule counts as a restart.
       if (settled.kind === 'container_exited' || settled.kind === 'container_error') interruption = 'container_stopped';
     } catch (err) {
-      error = describe(err);
+      if (err instanceof SeatDeferral) seatDeferral = err.reason;
+      else error = describe(err);
     }
 
     // A container-capacity refusal (the platform's own instance ceiling, not
@@ -635,8 +667,11 @@ export class TaskSupervisor {
     // exists; this one never got that far, so there is nothing to mark and
     // retrying the exact same container is pointless. finish() backs off and
     // self-schedules instead of reporting a crash.
+    if (seatDeferral) this.patch({ claimDeferredReason: seatDeferral });
     const outcome: RunOutcome = configError
       ? 'usage'
+      : seatDeferral
+        ? 'deferred'
       : (code === null && isContainerStartCapacityError(error))
         ? 'start_deferred'
         : outcomeForExitCode(code);
@@ -651,6 +686,9 @@ export class TaskSupervisor {
    * attempt whose state this cleanup would then overwrite.
    */
   private async finish(r: { code: number | null; outcome: RunOutcome; error?: string; interruption?: RunInterruption }): Promise<void> {
+    // The run no longer uses the seat, whatever way it ended. Best effort: a
+    // slot that is never released lapses on its own (owner-seat.ts SEAT_HOLD_TTL_MS).
+    await this.d.ownerSeat?.release().catch(err => this.d.log(`[cloud-runner] task ${this.d.taskId}: releasing the owner seat failed: ${describe(err)}`));
     if (this.d.getState().timings?.exitedAt === undefined) this.patchTimings({ exitedAt: this.d.now() });
     // A lease keeps the container of a run that ended done or failed for the
     // next task of its workspace (container-lease.ts); everything else stops.
@@ -688,6 +726,7 @@ export class TaskSupervisor {
       parkedAt: state.parkedAt,
       deferredRetry,
       reusedContainer: state.reusedContainer,
+      modelAuth: this.d.ownerSeat?.modelAuth() ?? null,
     });
     const lease = this.d.config.lease;
     const reusedOk = state.reusedContainer && !('fallback' in state.reusedContainer) ? state.reusedContainer : null;

@@ -340,7 +340,7 @@ describe('assembleRunReport', () => {
     const r = assembleRunReport(FULL);
     expect(r).toMatchObject({
       kind: 'cloud-run-report',
-      version: 9,
+      version: 10,
       taskId: 'task-1',
       attempt: 2,
       workerId: 'worker-9',
@@ -425,8 +425,17 @@ describe('assembleRunReport', () => {
   test('only allowlisted top-level keys', () => {
     expect(Object.keys(assembleRunReport({ ...FULL, extra: 'x' } as RunReportInput)).sort()).toEqual([
       'agentRestarts', 'attempt', 'containerInstanceId', 'crashReport', 'deferredRetry', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'interruption', 'kind',
-      'outcome', 'repo', 'resources', 'resume', 'reusedContainer', 'runLabel', 'runnerPhases', 'runnerSize', 'schedule', 'taskId', 'timestamps', 'version', 'workerId',
+      'modelAuth', 'outcome', 'repo', 'resources', 'resume', 'reusedContainer', 'runLabel', 'runnerPhases', 'runnerSize', 'schedule', 'taskId', 'timestamps', 'version', 'workerId',
     ]);
+  });
+
+  test('modelAuth: a label only, null when unknown, and no token shape can get in', () => {
+    expect(assembleRunReport(FULL).modelAuth).toBeNull();
+    expect(assembleRunReport({ ...FULL, modelAuth: 'owner_seat' }).modelAuth).toBe('owner_seat');
+    expect(assembleRunReport({ ...FULL, modelAuth: 'metered' }).modelAuth).toBe('metered');
+    const hostile = assembleRunReport({ ...FULL, modelAuth: 'sk-ant-oat01-owner-seat-secret' } as unknown as RunReportInput);
+    expect(hostile.modelAuth).toBeNull();
+    expect(JSON.stringify(hostile)).not.toContain('sk-ant-oat01');
   });
 
   test('agentRestarts: sanitized, capped, empty by default', () => {
