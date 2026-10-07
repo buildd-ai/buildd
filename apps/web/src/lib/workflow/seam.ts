@@ -422,14 +422,13 @@ export async function observeHead(p: {
   installationId: number;
   hintedHeadSha: string | null;
   source: string;
-  carryForward?: (live: LivePr) => Promise<'content_equivalent' | 'own_refresh' | null>;
 }, deps: SeamDeps = {}): Promise<boolean> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return false;
   try {
     const res = await ingestFact({
       kind: 'head_observed', workspaceId: p.workspaceId, source: p.source, repoFullName: p.repoFullName, prNumber: p.prNumber,
-      hintedHeadSha: p.hintedHeadSha, carryForward: p.carryForward,
+      hintedHeadSha: p.hintedHeadSha,
     }, { exec: deps.exec, github: readerFor(deps, p.installationId) });
     if (res.result === 'rejected' || res.result === 'stale') {
       console.log(`[workflow] HeadObserved ${p.repoFullName}#${p.prNumber}: ${res.result} (${res.reason})`);
@@ -518,23 +517,35 @@ export async function abandonDelivery(p: {
  */
 export async function requestReview(p: {
   workspaceId: string; repoFullName: string; prNumber: number; installationId: number; forced: boolean; actor: string;
-}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult }> {
+}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; reviewTaskId: string | null }> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return { handled: false };
   const reader = readerFor(deps, p.installationId);
   const live = await reader.readPr(p.repoFullName, p.prNumber);
   if (!live) {
-    return { handled: true, result: { result: 'rejected', reason: 'live_read_failed', current: { state: null, version: 0, head: null, round: 0 } } };
+    return { handled: true, result: { result: 'rejected', reason: 'live_read_failed', current: { state: null, version: 0, head: null, round: 0 } }, reviewTaskId: null };
   }
-  // Record a head the webhook has not delivered yet, so the request names the current head.
+  // Record a head the webhook has not delivered yet, so the request names the current head
+  // (with the reader's §8.3 evidence, so an approval that still holds is carried, not re-reviewed).
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:review_request`, repoFullName: p.repoFullName, prNumber: p.prNumber },
-    { exec: deps.exec, github: { readPr: async () => live, contains: reader.contains } });
+    { exec: deps.exec, github: { ...reader, readPr: async () => live } });
   const result = await applyCommand(
     { type: 'ReviewRequested', actor: p.actor, headSha: live.headSha, live, forced: p.forced },
     { ref: { deliveryId }, exec: deps.exec },
   );
   await drainDelivery(deliveryId, deps);
-  return { handled: true, result };
+  return { handled: true, result, reviewTaskId: await roundReviewerAt(deliveryId, live.headSha, deps.exec) };
+}
+
+/**
+ * §8.1: the reviewer that answers for the live head is the one on this
+ * delivery's latest round at that head, never the newest reviewer row of the
+ * PR number (that row may be another head's, or another delivery's).
+ */
+async function roundReviewerAt(deliveryId: string, headSha: string, exec?: Exec): Promise<string | null> {
+  const view = await loadView({ deliveryId }, exec).catch(() => null);
+  const atHead = (view?.rounds ?? []).filter((r) => r.headSha === headSha && r.reviewerTaskId);
+  return atHead.sort((a, b) => b.round - a.round)[0]?.reviewerTaskId ?? null;
 }
 
 // ── §6.9: a repair attempt's own commits (provenance by SHA set) ───────────

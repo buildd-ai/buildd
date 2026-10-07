@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import type { LivePr } from './commands';
-import { constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, lastAppliedHeadFactSql, type GithubFactReader } from './facts';
+import { constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, lastAppliedHeadFactSql, ownRefreshSql, projectEquivalentHeadSql, type GithubFactReader } from './facts';
 import type { Exec } from './kernel';
 
 const dialect = new PgDialect();
@@ -52,6 +52,16 @@ describe('fact keys', () => {
     const ev = render(constituentEvidenceSql('w', ['r1', 'r2']));
     expect(ev.sql).toContain('JOIN workflow_deliveries d ON d.id = r.delivery_id');
     expect(ev.params).toEqual(['w', '["r1","r2"]']);
+  });
+  test('T13 SQL: own refresh is a refresh_branch pinned to the previous head; the projection appends once, after the transition', () => {
+    const own = render(ownRefreshSql('d1', 'H1'));
+    expect(own.sql).toContain("kind = 'refresh_branch'");
+    expect(own.sql).toContain("payload->>'headSha' = $2::text");
+    expect(own.params).toEqual(['d1', 'H1']);
+    const proj = render(projectEquivalentHeadSql('d1', 'H1', 'H2'));
+    expect(proj.sql).toContain("r.effective_verdict = 'approve'");
+    expect(proj.sql).toContain('NOT (COALESCE(t.context->');
+    expect(proj.params).toEqual(['d1', 'H1', 'H1', 'H2', 'H2']);
   });
 });
 

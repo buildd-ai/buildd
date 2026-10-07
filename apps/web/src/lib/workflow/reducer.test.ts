@@ -420,6 +420,23 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(ex.toState).toBe('ESCALATED');
     expect(ex.patch.stateReason).toBe('review_exhausted');
   });
+  test('S19 variant (ea38b3d5): a fix that pushed mid-attempt and then died starts round r+1 at the pushed head', () => {
+    // FIXING bound to (H1, r1, a1); a mid-fix push H2 was recorded (current head H2), then the attempt was lost.
+    const pushed = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running', reportedShas: ['H2'] })]);
+    for (const outcome of ['lost', 'failed'] as const) {
+      const dec = applied(end(pushed, { attemptId: 'a1', outcome, live: live('H2') }));
+      expect(dec.toState).toBe('AWAITING_REVIEW');
+      expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H2', kind: 'delta', priorRound: 1 }));
+      expect(dec.patch).toMatchObject({ currentRound: 2, boundAttemptId: null });
+      expect(effectKinds(dec)).toContain('dispatch_review');
+      // The stale round's fix is never re-dispatched: T8 would refuse it (newer_verdict_supersedes_fix).
+      expect(effectKinds(dec)).not.toContain('dispatch_fix');
+      expect(dec.attempts[0]).toMatchObject({ attemptId: 'a1', set: { status: 'ended', outcome: 'failed' } });
+    }
+    // The fix budget being spent does not hide the pushed head: it is reviewed, not escalated.
+    const last = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running', attemptNo: 3 })]);
+    expect(applied(end(last, { attemptId: 'a1', outcome: 'lost', live: live('H2') })).toState).toBe('AWAITING_REVIEW');
+  });
   const repairing = (o: Partial<AttemptSnapshot> = {}, d: Partial<DeliverySnapshot> = {}) =>
     V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', ...d }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'running', ...o })]);
   test('REPAIRING: CI fix delivered → round; carry-forward → APPROVED; failed → next ledger row; exhausted', () => {

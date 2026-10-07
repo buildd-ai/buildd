@@ -1107,7 +1107,7 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
       }
       if (headCoverage(d, d.currentHeadSha) !== 'none') {
         const cf = carry();
-        if (cf && cf.result === 'apply') return { ...cf, patch: { ...cf.patch, boundAttemptId: null }, attempts, effects: [...cf.effects, ...effects], evidence: ev };
+        if (cf && cf.result === 'apply') return { ...cf, patch: { ...cf.patch, boundAttemptId: null }, attempts, effects: [...cf.effects, ...effects], evidence: { ...ev, carryForward: cf.evidence.carryForward } };
       }
       return toReview({ attempts, effects, evidence: ev });
     }
@@ -1259,6 +1259,26 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
   // failed / lost / unproven-with-nothing: back to the owing state, or exhaust.
   const exhausted = a.attemptNo >= a.maxAttempts;
   if (d.state === 'FIXING') {
+    const round = c.currentRound();
+    const roundHead = round?.headSha ?? a.boundHeadSha;
+    if (d.currentHeadSha && d.currentHeadSha !== roundHead) {
+      // §6.4: the head moved while the fix ran (a mid-fix push, recorded in FIXING). The round
+      // advances now: r+1 at the current head, delta from the last decided one. Re-dispatching the
+      // stale round's fix would be refused by T8 (newer_verdict_supersedes_fix) and strand the PR.
+      const h = d.currentHeadSha;
+      const ev = { ...evidence, headMovedDuringFix: { from: roundHead, to: h } };
+      if (c.openRoundAt(h)) return c.apply(key, 'AWAITING_REVIEW', { patch: { boundAttemptId: null, stateReason: null }, attempts: [end('failed')], evidence: ev });
+      const decided = c.decidedAt(h);
+      if (decided) {
+        const re = reenterVerdict(c, key, decided, h, ev);
+        return re.result === 'apply' ? { ...re, patch: { ...re.patch, boundAttemptId: null }, attempts: [end('failed')] } : re;
+      }
+      const r = c.startRound(h);
+      return c.apply(key, 'AWAITING_REVIEW', {
+        patch: { ...r.patch, boundAttemptId: null, stateReason: null },
+        rounds: r.rounds, attempts: [end('failed')], effects: r.effects, evidence: ev,
+      });
+    }
     if (exhausted) {
       return c.apply(key, 'ESCALATED', {
         patch: { stateReason: 'review_exhausted', boundAttemptId: null }, attempts: [end('failed')],
@@ -1266,7 +1286,6 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
         evidence,
       });
     }
-    const round = c.currentRound();
     return c.apply(key, 'CHANGES_REQUESTED', {
       patch: { boundAttemptId: null }, attempts: [end('failed')],
       effects: [{

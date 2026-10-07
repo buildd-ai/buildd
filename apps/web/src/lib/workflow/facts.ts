@@ -16,8 +16,8 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { Command, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type DeliveryRef, type Exec } from './kernel';
-import { headObservationKey } from './reducer';
-import type { CloseCause, CompositionAttestation, ConstituentEvidence, DeliverySnapshot } from './types';
+import { headCoverage, headObservationKey } from './reducer';
+import type { CloseCause, CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from './types';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -45,6 +45,12 @@ export interface GithubFactReader {
    */
   failingChecks?(repoFullName: string, headSha: string): Promise<string[] | null>;
   /**
+   * §8.3 content-equivalence: does the PR carry the same change at `toSha` as
+   * at `fromSha`, each compared against `baseRef`? null = could not tell;
+   * never read as equivalent.
+   */
+  contentEquivalent?(repoFullName: string, baseRef: string, fromSha: string, toSha: string): Promise<boolean | null>;
+  /**
    * Does branch `ref` exist in `repoFullName` now? A PR GitHub closed because
    * its base branch was deleted is `CLOSED_UNMERGED(base_deleted)` (§4).
    * null = unreadable; never read as "deleted".
@@ -66,8 +72,6 @@ export type FactInput =
     }
   | {
       kind: 'head_observed'; workspaceId: string; source: string; repoFullName: string; prNumber: number; hintedHeadSha?: string | null;
-      /** §8.3 carry-forward evidence the caller established for the live head (APPROVED/LANDING only). */
-      carryForward?: (live: LivePr) => Promise<'content_equivalent' | 'own_refresh' | null>;
     }
   | { kind: 'pr_closed'; workspaceId: string; source: string; repoFullName: string; prNumber: number }
   | { kind: 'composition_attested'; workspaceId: string; source: string; attestation: CompositionAttestation };
@@ -204,7 +208,72 @@ export async function ingestFact(fact: FactInput, deps: IngestDeps = {}): Promis
 
   const cmd: Command = command.type === 'CompositionAttested' ? { ...command, factId } : command;
   const result = await applyCommand(cmd, { ref, factId, exec, newId: deps.newId });
+  if (result.result === 'applied' && command.type === 'HeadObserved' && result.decision.toState === 'APPROVED' && result.decision.evidence.carryForward) {
+    // §8.3: the legacy merge gate's `equivalentHeadShas` is a projection of the
+    // committed T13, written after it and never ahead of it.
+    await exec(projectEquivalentHeadSql(result.deliveryId, String(result.decision.evidence.previousHead ?? ''), command.live.headSha))
+      .catch((err) => console.warn(`[workflow] equivalentHeadShas projection failed for ${result.deliveryId}:`, err));
+  }
   return { factId, factKey, firstSeen, ...result };
+}
+
+/**
+ * §8.3 / T13 evidence for a head that moved under an approval, decided from
+ * the delivery itself: the previous head must be one the delivery's approval
+ * covers (`approved_heads` or `composition_heads`, whatever the basis), and
+ * the PR's diff must be unchanged between it and the live head. When the
+ * previous head is also the one the platform's own `refresh_branch` effect was
+ * pinned to, the evidence is `own_refresh`. Never the newest reviewer row: a
+ * row at another head says nothing about this delivery's approval.
+ */
+export async function carryForwardEvidence(
+  view: KernelView, repoFullName: string, live: LivePr, exec: Exec, github?: GithubFactReader,
+): Promise<'content_equivalent' | 'own_refresh' | null> {
+  const d = view.delivery;
+  if (!d || !d.currentHeadSha || live.headSha === d.currentHeadSha) return null;
+  if (d.state !== 'APPROVED' && d.state !== 'LANDING' && d.state !== 'REPAIRING') return null;
+  // A policy approval is not a review; the reducer keeps it on any head without evidence.
+  if (d.approvalBasis === 'policy') return null;
+  const previous = d.currentHeadSha;
+  if (headCoverage(d as DeliverySnapshot, previous) === 'none') return null;
+  if (!live.baseRef || !github?.contentEquivalent) return null;
+  const same = await github.contentEquivalent(repoFullName, live.baseRef, previous, live.headSha).catch(() => null);
+  if (same !== true) return null;
+  const own = ((await exec(ownRefreshSql(d.id, previous))).rows ?? []).length > 0;
+  return own ? 'own_refresh' : 'content_equivalent';
+}
+
+/** A `refresh_branch` effect of this delivery, pinned to `headSha`, that updated (or is updating) the branch. */
+export function ownRefreshSql(deliveryId: string, headSha: string): SQL {
+  return sql`-- workflow:own_refresh
+SELECT 1 FROM workflow_effects
+WHERE delivery_id = ${deliveryId}::uuid AND kind = 'refresh_branch'
+  AND payload->>'headSha' = ${headSha}::text
+  AND (outcome = 'ok:updated' OR (status = 'delivering' AND outcome IS NULL))
+LIMIT 1`;
+}
+
+/**
+ * Append `headSha` to `equivalentHeadShas` on the reviewer task of the round
+ * whose approval covered `previousHead` (the latest decided approve at it), once.
+ * A composition or human approval has no such round: nothing is projected.
+ */
+export function projectEquivalentHeadSql(deliveryId: string, previousHead: string, headSha: string): SQL {
+  return sql`-- workflow:project_equivalent_head
+WITH src AS (
+  SELECT r.reviewer_task_id AS id FROM workflow_review_rounds r
+  JOIN tasks rt ON rt.id = r.reviewer_task_id
+  WHERE r.delivery_id = ${deliveryId}::uuid AND r.reviewer_task_id IS NOT NULL
+    AND r.effective_verdict = 'approve'
+    AND (r.head_sha = ${previousHead}::text OR COALESCE(rt.context->'equivalentHeadShas', '[]'::jsonb) @> jsonb_build_array(${previousHead}::text))
+  ORDER BY r.round DESC LIMIT 1
+)
+UPDATE tasks t
+SET context = jsonb_set(COALESCE(t.context, '{}'::jsonb), '{equivalentHeadShas}',
+      COALESCE(t.context->'equivalentHeadShas', '[]'::jsonb) || to_jsonb(${headSha}::text)),
+    updated_at = now()
+FROM src
+WHERE t.id = src.id AND NOT (COALESCE(t.context->'equivalentHeadShas', '[]'::jsonb) @> jsonb_build_array(${headSha}::text))`;
 }
 
 async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, github?: GithubFactReader): Promise<{
@@ -253,9 +322,7 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
         attribution = { descendsFromBound: await github.contains(fact.repoFullName, bound.boundHeadSha, live.headSha) };
       }
       const d = view.delivery;
-      const carryForward = d && live && live.headSha !== d.currentHeadSha && (d.state === 'APPROVED' || d.state === 'LANDING' || d.state === 'REPAIRING') && fact.carryForward
-        ? await fact.carryForward(live)
-        : null;
+      const carryForward = live ? await carryForwardEvidence(view, fact.repoFullName, live, exec, github) : null;
       return {
         command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(attribution ? { attribution } : {}) },
         ref,

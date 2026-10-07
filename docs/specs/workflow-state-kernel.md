@@ -455,7 +455,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | T10 | `CiFailedObserved(H', signature)` fact | `AWAITING_REVIEW`, `APPROVED`, `LANDING`, `CHANGES_REQUESTED` | `H' == current_head_sha`; live check-suite read; no open trunk incident matches `signature` (else T25); no `ci` attempt already `queued`/`running` for `H'` (a deferral is recorded with its reason, §12.1 `ci_failed`) | `REPAIRING(ci)` (from `CHANGES_REQUESTED` stays, ci attribute only) | `dispatch_ci_fix(head)` allocating a `ci` ledger row (§5.7) under budget, else `ESCALATED(ci_exhausted)`; always `render_activity` with the failure reason, whether or not a retry was dispatched | `ci:{delivery}:{H'}` | `H' != current` → recorded fact only; this is what stops an old-SHA failure overwriting a newer head |
 | T11 | `RepairDelivered` = T3 from `REPAIRING` | `REPAIRING`, `AWAITING_PUSH` | §9 proof | `AWAITING_REVIEW` (new round) or `APPROVED` if §8.3 carry-forward holds | as T5 / T13 | via T3 key | as T3 |
 | T12 | `ConflictObserved(H')` fact | as T10 | `H' == current`; `mergeable=dirty` or behind-base from a live read taken **now**, not a stored snapshot | `REPAIRING(conflict)` or `REPAIRING(behind)` with `repair_mode` per §6.7 | mechanical attempt first (`refresh_branch`, or `renumber_migration` for a collision); only on a mechanical refusal an `agent` ledger row and `dispatch_conflict_fix` | `conflict:{delivery}:{H'}` | as T10 |
-| T13 | `CarryForwardEvaluated(H')` (inside T3 from `APPROVED`/`LANDING`) | `APPROVED`, `LANDING` | content-equivalence of `H'` against the approved head, or the head moved only by the platform's own refresh effect (matched by effect payload `expected_head`) | `APPROVED`, `approved_heads += H'` | none | `carry:{delivery}:{H'}` | not equivalent → T5 (round `r+1`, delta) from `APPROVED` |
+| T13 | `CarryForwardEvaluated(H')` (inside T3 from `APPROVED`/`LANDING`) | `APPROVED`, `LANDING` | the previous head is covered by the delivery's own approval (`headCoverage`: `approved_heads` or `composition_heads`, any basis) **and** the PR diff is unchanged from it to `H'`; recorded as `own_refresh` when the previous head is the one a `refresh_branch` effect of this delivery was pinned to (payload `headSha`), else `content_equivalent`. Never decided from a reviewer task row | `APPROVED`, `approved_heads += H'` (`composition_heads += H'` for a composition basis) | `equivalentHeadShas` projected onto the approving round's reviewer after the transition commits | `carry:{delivery}:{H'}` | not equivalent → T5 (round `r+1`, delta) from `APPROVED` |
 | T14 | `HumanApproved(H')` (GitHub human review or dashboard approve on current head) | `ESCALATED`, `CHANGES_REQUESTED`, `AWAITING_REVIEW` | review `commit_id == current_head_sha`; actor holds merge permission | `APPROVED` with `approver=human` | notify; never enables unattended merge (§17.2) | `approve:{repo}#{pr}:{review}` | review on an older commit: recorded, `stale` |
 | T15 | `LandingRequested(door)` (the five merge doors, sweep) | `APPROVED`; `AWAITING_REVIEW`/`CHANGES_REQUESTED`/`ESCALATED` only for a person's verdict override (§13.7 deviation 3) | live read: open, head == `current_head_sha`; `landPr` rails pass (CI, deny paths, size, migration inspector, freshness, surface order, review gate, mission-PR gate); override recorded in `bypass` and never covers red CI or deny paths | `LANDING` | `merge_call(head)` | `merge:{repo}#{pr}:{head}:v{version}` (§13.7 deviation 1) | head moved → `stale` and T3 path; a second door while `LANDING` at the head → `duplicate(landing_in_flight)` |
 | T16 | `MergeCallResult` | `LANDING` | GitHub response | merged → T17 (not asserted here: the merged fact comes from a live read); `indeterminate` → stay, `verify_merge` effect; `not_merged` (the verify read shows the PR open and unmerged) → `APPROVED`; behind/out-of-date → `REPAIRING(behind)`; conflict → `REPAIRING(conflict)`; policy/other refusal → `ESCALATED(landing_needs_human)` | `refresh_branch` or alert | `mergeresult:{repo}#{pr}:{head}:{landing_version}:{outcome}` | result for a head that is no longer current: ignored (`stale`) |
@@ -501,6 +501,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | `FIXING`/`REPAIRING`, success, proof holds | T3 path to `AWAITING_REVIEW` (new round) |
 | `FIXING`/`REPAIRING`, success, no proof | `AWAITING_PUSH`; the attempt row stays `completed` as an execution fact; effect `push_recovery` |
 | `FIXING`/`REPAIRING`, `failed`/`lost` | back to `CHANGES_REQUESTED`/`REPAIRING` with `fix_attempts+1`; re-dispatch, or T7/`ESCALATED` when the budget is spent |
+| `FIXING`, `failed`/`lost`, the head moved during the fix (a mid-fix push recorded in `FIXING`, §6.4) | the round advances as §6.4 says: round `r+1` at the current head (delta from the last decided head), `AWAITING_REVIEW`, ledger row `failed`; or the verdict a decided round at that head maps to. The stale round's fix is not re-dispatched (T8 would refuse it, `newer_verdict_supersedes_fix`), whatever the fix budget |
 
 ### 6.6 Completion is a fact, not a transition
 
@@ -681,13 +682,22 @@ head instead of the live one. Round is today "newest `createdAt`".
 ### 8.3 Carry-forward is a transition
 
 When the head moves under an `APPROVED` delivery, the kernel decides (T13) whether the
-approval still describes what would merge. Evidence is either content-equivalence
-(`isContentEquivalentHead`, `approval-carry-forward.ts`) or "the move was our own
-`refresh_branch` effect" (head equals the `expected_head` stored in that effect's
-payload and the content diff of the PR is unchanged). Both append to `approved_heads`
-with the evidence recorded in `workflow_transitions.evidence`; the append is a CAS
-write, which removes today's possible double append. When neither holds, a delta
-round starts at once, on the push, not at the next merge attempt.
+approval still describes what would merge. The evidence is computed by the fact funnel
+(`carryForwardEvidence` in `facts.ts`) from the delivery itself, never from the newest
+reviewer task row: the previous head must be one the delivery's approval covers
+(`headCoverage` over `approved_heads` and `composition_heads`, so a composition
+approval carries like a verdict), and the PR diff must be unchanged from it to the live
+head (`isContentEquivalentHead` through the GitHub reader's `contentEquivalent`). When
+the previous head is also the one this delivery's `refresh_branch` effect was pinned to
+(payload `headSha`, the `expected_head_sha` it sent), the evidence is `own_refresh`;
+otherwise `content_equivalent`. Either appends to `approved_heads` (or
+`composition_heads`) with the evidence recorded in `workflow_transitions.evidence`; the
+append is a CAS write, which removes today's possible double append. Only after that
+transition commits is `context.equivalentHeadShas` projected onto the reviewer task of
+the approving round, for the legacy merge gate; a refused carry writes nothing. When
+neither holds, a delta round starts at once, on the push, not at the next merge
+attempt. A `refresh_branch` that GitHub answered on an approved head under `REPAIRING`
+keeps its implied `own_refresh` (the attempt row is the evidence).
 
 ### 8.4 GitHub reviews
 
@@ -994,9 +1004,11 @@ Shipped live (part 1, the review family): schema linkage (§5.6, `authority`);
 first-review points (the PR `opened` policy after pre-flight and role resolution, and
 create_pr's integration-branch review); T4 at the terminal worker PATCH; the
 `delivery_not_advanced` gate; T6 in `handleReviewerOutcomeIfNeeded`; T9 at claim;
-T3 on `synchronize` (with §8.3 carry-forward through `carryForwardApprovalIfUnchanged`,
-which also projects `equivalentHeadShas` for the legacy landing gate); T17–T19 on
-close/reopen; T5 for `request_pr_review` and the dashboard re-review; T27 for a
+T3 on `synchronize` (with §8.3 carry-forward decided in the fact funnel from the
+delivery's approved heads, then `equivalentHeadShas` projected for the legacy landing
+gate after the transition commits); T17–T19 on
+close/reopen; T5 for `request_pr_review` and the dashboard re-review (`request_pr_review` names the
+reviewer of the delivery's latest round at the live head, never `findReviewTaskForPr`); T27 for a
 reviewer that ended without a verdict; the outbox floor drain on the `pr-reconcile`
 full pass plus an inline drain after every applied transition.
 
@@ -1874,7 +1886,7 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 |---|---|---|---|
 | S1 | Fix ends with a local commit, GitHub head unchanged (#3754) | completion gate 400 `delivery_not_advanced`; with worker gone → `AWAITING_PUSH` + `push_recovery`; no round 2; no `fix_ended`-then-review | `apps/web/src/lib/workflow/reducer.test.ts` (new), `apps/web/src/app/api/workers/[id]/route.test.ts` |
 | S2 | Approve at `H0`, non-equivalent push to `H1` | `APPROVED → AWAITING_REVIEW`, delta round 2 dispatched **on the push**, not at merge time | `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/src/lib/reviewer-subscribers.test.ts` (new: the module has no test file today; its re-dispatch cases live in the webhook route test), `apps/web/src/lib/review-verdict-gate.test.ts` |
-| S3 | Approve at `H0`, head moves by platform refresh (content-equivalent) | `approved_heads` appended once; concurrent double call appends once | `apps/web/src/lib/approval-carry-forward.test.ts`, reducer test |
+| S3 | Approve at `H0`, head moves by platform refresh (content-equivalent) | `approved_heads` appended once; concurrent double call appends once; a composition approval carries the same way (`composition_heads`); a newer reviewer row at another head does not decide it; `own_refresh` when the previous head is a `refresh_branch` pin; `equivalentHeadShas` projected only after the transition | `apps/web/src/lib/approval-carry-forward.test.ts`, reducer test, `apps/web/tests/db/workflow-matrix.test.ts` (T13 describe, S32/T13), `apps/web/tests/db/workflow-seam.test.ts` |
 | S4 | Late verdict for a superseded head | stored on its round, no state change, no `post_review`, no merge | reducer test; `apps/web/src/app/api/workers/[id]/route.test.ts` |
 | S5 | Duplicate webhook delivery and duplicate reviewer PATCH | `duplicate`; effects not doubled | reducer test; `apps/web/src/app/api/github/webhook/route.test.ts` |
 | S6 | Out-of-order: `closed(merged)` then late `synchronize`/`opened`/`check_suite` | terminal wins; `workers` columns unchanged; old-SHA CI failure does not overwrite | `apps/web/src/app/api/github/webhook/route.test.ts`, `apps/web/src/lib/pr-state-refresh.test.ts`, `apps/web/tests/db/pr-facts.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts`, `packages/core/__tests__/pr-fact-write-sites.test.ts` |
