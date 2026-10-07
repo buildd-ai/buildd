@@ -144,17 +144,22 @@ export interface ResolvedPrompt {
   source: 'active' | 'default';
   /** The active row's version; null for the default. */
   version: number | null;
+  /**
+   * The active row's content hash (sha256 hex of `body`); null for the
+   * default. Lets a caller name the private text it ran without the text.
+   */
+  contentHash: string | null;
 }
 
 /** THE read path for prompt text: the active row's body, else the public default. */
 export function resolvePromptEntry(id: string, publicDefault: string): ResolvedPrompt {
   const row = activePrompt(id);
-  if (!row) return { body: publicDefault, source: 'default', version: null };
+  if (!row) return { body: publicDefault, source: 'default', version: null, contentHash: null };
   if (row.body.trim() === '') {
     notePromptRejected(row, 'empty body');
-    return { body: publicDefault, source: 'default', version: null };
+    return { body: publicDefault, source: 'default', version: null, contentHash: null };
   }
-  return { body: row.body, source: 'active', version: row.version };
+  return { body: row.body, source: 'active', version: row.version, contentHash: row.contentHash };
 }
 
 /** The active body for `id`, else `publicDefault`. Never throws, never reads the DB. */
@@ -269,7 +274,7 @@ export function resolvePromptTemplateEntry(id: string, publicTemplate: string): 
   const mismatch = templateMismatch(publicTemplate, entry.body);
   if (mismatch) {
     notePromptRejected({ id, version: entry.version! }, mismatch);
-    return { body: publicTemplate, source: 'default', version: null };
+    return { body: publicTemplate, source: 'default', version: null, contentHash: null };
   }
   return entry;
 }

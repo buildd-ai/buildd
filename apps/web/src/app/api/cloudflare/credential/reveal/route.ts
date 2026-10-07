@@ -2,16 +2,21 @@ import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { decodeCloudflareValue, findCloudflareSecret } from '@/lib/cloudflare-credential';
+import { credentialRefOf, recordDeploymentAudit } from '@/lib/deployments/store';
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
 
 /**
  * POST /api/cloudflare/credential/reveal
  *
- * Returns the team's decrypted Cloudflare token to `apps/cloud-runner/scripts/deploy.ts`,
- * so an operator who pasted the token into Settings does not also need it in
- * their shell. The only route that hands a stored credential back, so it is
- * narrow on purpose:
+ * Returns the team's decrypted Cloudflare token. This is the `secrets:reveal`
+ * escape hatch, for the one step that still needs the token on a person's
+ * machine: `wrangler deploy` of the cloud runner's container image
+ * (apps/cloud-runner/scripts/deploy.ts). Everything else a deploy does runs
+ * server-side through POST /api/deployments or, for an agent, the Operator's
+ * POST /api/workers/[id]/deployments, neither of which returns the token.
+ * The only route that hands a stored credential back, so it is narrow on
+ * purpose:
  *
  * - `bld_` API keys only. No session cookie (a browser never needs the token
  *   back, and a cookie-authenticated read would be one XSS away from leaking
@@ -24,6 +29,8 @@ const NO_STORE = { 'Cache-Control': 'no-store' };
  *   and flagging a deploy key would also grant it lease/refresh (INV-7a in
  *   docs/specs/credential-refresh-lifecycle.md). A per-task token is refused
  *   by the `bld_` check.
+ * - Audited as an elevated `secrets:reveal` (deployment_audit_events) BEFORE
+ *   the value is decrypted; a reveal whose audit row cannot be written is refused.
  */
 export async function POST(req: NextRequest) {
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
@@ -40,6 +47,18 @@ export async function POST(req: NextRequest) {
   if (!row) {
     return NextResponse.json({ error: 'No Cloudflare token stored for this team (Settings → Runners)' }, { status: 404, headers: NO_STORE });
   }
+  try {
+    await recordDeploymentAudit({
+      teamId: account.teamId, workspaceId: null, taskId: null, workerId: null, accountId: account.id,
+      principal: 'admin', roleSlug: null, operation: 'reveal', capabilities: ['secrets:reveal'], elevated: true,
+      provider: 'cloudflare', project: null, environment: null, credentialRef: credentialRefOf(row.label, 'cloudflare'),
+      outcome: 'succeeded', reason: null, result: null,
+    });
+  } catch (err) {
+    console.error('[cloudflare-credential] reveal audit write failed; refusing:', err instanceof Error ? err.message : err);
+    return NextResponse.json({ error: 'The audit trail is unavailable, so the token was not revealed. Try again.' }, { status: 503, headers: NO_STORE });
+  }
+
   const cred = decodeCloudflareValue(row.encryptedValue);
   if (!cred) return NextResponse.json({ error: 'Stored Cloudflare token could not be read' }, { status: 500, headers: NO_STORE });
 

@@ -65,6 +65,13 @@
       "when": 1791354149856,
       "tag": "0258_strange_nightcrawler",
       "breakpoints": true
+    },
+    {
+      "idx": 259,
+      "version": "7",
+      "when": 1791354150856,
+      "tag": "0259_deployment_audit_events",
+      "breakpoints": true
     }
   ]
 }
