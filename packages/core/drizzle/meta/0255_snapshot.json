@@ -1,6 +1,6 @@
 {
-  "id": "91d3eda8-a92f-4a6c-84d3-a585a8645c64",
-  "prevId": "88d8647d-692b-4928-996c-4ed5f1434308",
+  "id": "aaf9a31f-b632-483b-91e0-f7b36acf6c78",
+  "prevId": "91d3eda8-a92f-4a6c-84d3-a585a8645c64",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -12601,6 +12601,24 @@
         "resolved_at": {
           "name": "resolved_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dismissed_reason": {
+          "name": "dismissed_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dismissed_at": {
+          "name": "dismissed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dismissed_by": {
+          "name": "dismissed_by",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
