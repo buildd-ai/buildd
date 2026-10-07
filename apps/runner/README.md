@@ -190,6 +190,8 @@ Codex task per login, or give Codex a team OpenAI API key.
 | `buildd install --global` | Register the buildd MCP server for your workspace folders only (per folder in `~/.claude.json`; a repo with its own buildd `.mcp.json` is left alone), and install the session presence hooks + skill for every detected client (Claude Code, Codex, Cursor) — see `plugin/README.md` |
 | `buildd install --here` | Register the buildd MCP server for the current folder, workspace or not (e.g. to set up a new workspace) |
 | `buildd install --global --everywhere` | Register it for every Claude Code session instead |
+| `buildd install --global --oauth` (or `--here --oauth`) | Same folders, but each points at that workspace's OAuth MCP endpoint with no key on disk; Claude Code signs you in in the browser the first time each folder uses buildd. Opt-in for now |
+| `buildd install --global --status` | List every buildd MCP entry in `~/.claude.json` and whether it uses the key or OAuth (no network) |
 | `buildd install [--global] --status` / `--uninstall` | Show or remove only buildd's own hook entries; every other hook is preserved |
 
 ## Agent identity on buildd

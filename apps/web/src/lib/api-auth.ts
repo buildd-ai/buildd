@@ -8,6 +8,7 @@ import * as tokensModule from './oauth/tokens';
 import { levelForTeamRole } from './oauth/session-level';
 import { getCachedApiKey, setCachedApiKey, invalidateCachedApiKey } from './redis';
 import { isTaskToken } from './task-token';
+import { isPresenceToken } from './presence-token';
 
 /**
  * Cache API key hash → account record.
@@ -149,6 +150,9 @@ async function resolveApiKey(apiKey: string | null) {
   // A per-task token is never an account key. Only the routes that opt in
   // through lib/task-token-auth.ts accept one, confined to its own task.
   if (isTaskToken(apiKey)) return null;
+  // Nor is a person's presence token: only the presence routes accept one
+  // (lib/presence-token.ts).
+  if (isPresenceToken(apiKey)) return null;
 
   // OAuth bearer path — verify the JWT before any DB work.
   if (tokensModule.looksLikeJwt(apiKey)) {

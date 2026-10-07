@@ -401,28 +401,41 @@ describe('createPathClaimHook — per-path pending queue', () => {
 
 // ─── Checkpoint guard: Bash push, create_pr, completion ──────────────────────
 
-describe('createPathCheckpointGuardHook — checkpoint enforcement for ships', () => {
+describe('createPathCheckpointGuardHook — ship checkpoint, fail closed', () => {
   const held = { path: 'src/from-bash.ts', blockingTaskId: BLOCKER, blockingTaskTitle: 'Other task', blockingPath: 'src', source: 'pre_push' as const, detectedAt: 1 };
+  const COMPLETE = { kind: 'complete' as const, generation: 1, heldCount: 1 };
+  const BLOCKED = { kind: 'blocked' as const, collision: held, blocked: [held] };
+  const UNKNOWN = { kind: 'unknown' as const, cause: 'timeout' as const, attempts: 3 };
 
   function guard(worker: LocalWorker, result: any) {
-    const { factory, collisions } = makeFactory(() => CLAIMED);
-    const sweep = mock(async () => (typeof result === 'function' ? result() : result));
-    return { hook: factory.createPathCheckpointGuardHook(worker, sweep as any), sweep, collisions };
+    const { factory, collisions, milestones } = makeFactory(() => CLAIMED);
+    const checkpoint = mock(async () => (typeof result === 'function' ? result() : result));
+    return { hook: factory.createPathCheckpointGuardHook(worker, checkpoint as any), checkpoint, collisions, milestones };
   }
 
-  test('advisory: never sweeps, never blocks', async () => {
-    const { hook, sweep } = guard(makeWorker(), held);
+  test('advisory: the checkpoint still runs (its leases protect siblings) but never blocks', async () => {
+    const worker = makeWorker();
+    const { hook, checkpoint } = guard(worker, BLOCKED);
     expect(await hook(makeInput('Bash', { command: 'git push origin HEAD' }) as any)).toEqual({});
-    expect(sweep).not.toHaveBeenCalled();
+    expect(checkpoint).toHaveBeenCalledWith(worker, 'pre_push');
+    expect((worker as any).pathCollision).toBeUndefined();
+  });
+
+  test('advisory: unknown coverage is recorded for the server and let through', async () => {
+    const worker = makeWorker();
+    const { hook, milestones } = guard(worker, UNKNOWN);
+    expect(await hook(makeInput('Bash', { command: 'git push' }) as any)).toEqual({});
+    expect((worker as any).pendingShipReports).toEqual([expect.objectContaining({ source: 'pre_push', result: 'unknown', cause: 'timeout', refused: false, attempts: 3 })]);
+    expect(milestones.some(m => String(m.label).includes('coverage unknown'))).toBe(true);
   });
 
   test('enforce: a Bash write found at pre-push refuses the push and starts the deferral', async () => {
     const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
-    const { hook, sweep, collisions } = guard(worker, held);
+    const { hook, checkpoint, collisions } = guard(worker, BLOCKED);
 
     const result = await hook(makeInput('Bash', { command: 'git push -u origin HEAD' }) as any);
 
-    expect(sweep).toHaveBeenCalledWith(worker, 'pre_push');
+    expect(checkpoint).toHaveBeenCalledWith(worker, 'pre_push');
     expect(isDeny(result)).toBe(true);
     expect(reasonOf(result)).toContain('src/from-bash.ts');
     expect(reasonOf(result)).toContain('bbbbbbbb');
@@ -432,35 +445,54 @@ describe('createPathCheckpointGuardHook — checkpoint enforcement for ships', (
 
   test('enforce: create_pr and a non-error complete_task are checkpoints too', async () => {
     const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
-    const { hook, sweep } = guard(worker, null);
+    const { hook, checkpoint } = guard(worker, COMPLETE);
     await hook(makeInput('mcp__buildd__buildd', { action: 'create_pr', params: {} }) as any);
     await hook(makeInput('mcp__buildd__buildd', { action: 'complete_task', params: { summary: 'x' } }) as any);
-    expect(sweep.mock.calls.map((c: any[]) => c[1])).toEqual(['pre_push', 'completion']);
+    expect(checkpoint.mock.calls.map((c: any[]) => c[1])).toEqual(['pre_push', 'completion']);
   });
 
-  test('enforce: a failure report (complete_task with error) and ordinary Bash are not gated', async () => {
+  test('a failure report (complete_task with error) and ordinary Bash are not gated', async () => {
     const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
-    const { hook, sweep } = guard(worker, held);
+    const { hook, checkpoint } = guard(worker, BLOCKED);
     expect(await hook(makeInput('mcp__buildd__buildd', { action: 'complete_task', params: { error: 'gave up' } }) as any)).toEqual({});
     expect(await hook(makeInput('Bash', { command: 'bun run test' }) as any)).toEqual({});
-    expect(sweep).not.toHaveBeenCalled();
+    expect(checkpoint).not.toHaveBeenCalled();
   });
 
-  test('enforce: a clean sweep lets the push through', async () => {
-    const { hook } = guard(makeWorker({ pathClaimMode: 'enforce' } as any), null);
+  test('enforce: proven coverage lets the push through', async () => {
+    const { hook } = guard(makeWorker({ pathClaimMode: 'enforce' } as any), COMPLETE);
     expect(await hook(makeInput('Bash', { command: 'git push' }) as any)).toEqual({});
   });
 
-  test('enforce: a sweep that throws is fail-open', async () => {
+  test('enforce: coverage the coordinator could not confirm REFUSES the ship — fail closed, no deferral, retryable', async () => {
+    const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
+    const { hook, collisions, milestones } = guard(worker, UNKNOWN);
+    const result = await hook(makeInput('mcp__buildd__buildd', { action: 'create_pr', params: {} }) as any);
+    expect(isDeny(result)).toBe(true);
+    expect(reasonOf(result)).toMatch(/could not confirm/);
+    expect(reasonOf(result)).toMatch(/retry/);
+    // Not a collision: nothing to defer behind, the agent simply tries again.
+    expect(collisions).toHaveLength(0);
+    expect((worker as any).pathCollision).toBeUndefined();
+    expect((worker as any).pendingShipReports).toEqual([expect.objectContaining({ source: 'pre_push', refused: true, cause: 'timeout' })]);
+    // The milestone is coalesced per cause.
+    await hook(makeInput('mcp__buildd__buildd', { action: 'create_pr', params: {} }) as any);
+    expect(milestones.filter(m => String(m.label).includes('coverage unknown'))).toHaveLength(1);
+    expect((worker as any).pendingShipReports).toHaveLength(2);
+  });
+
+  test('enforce: a checkpoint that throws proved nothing and refuses the ship', async () => {
     const { hook } = guard(makeWorker({ pathClaimMode: 'enforce' } as any), () => { throw new Error('git broke'); });
-    expect(await hook(makeInput('Bash', { command: 'git push' }) as any)).toEqual({});
+    const result = await hook(makeInput('Bash', { command: 'git push' }) as any);
+    expect(isDeny(result)).toBe(true);
+    expect(reasonOf(result)).toContain('git broke');
   });
 
-  test('enforce: once a collision is recorded, push and completion are refused without another sweep', async () => {
+  test('enforce: once a collision is recorded, push and completion are refused without another checkpoint', async () => {
     const worker = makeWorker({ pathClaimMode: 'enforce', pathCollision: held } as any);
-    const { hook, sweep } = guard(worker, null);
+    const { hook, checkpoint } = guard(worker, COMPLETE);
     expect(isDeny(await hook(makeInput('Bash', { command: 'git push' }) as any))).toBe(true);
     expect(isDeny(await hook(makeInput('mcp__buildd__buildd', { action: 'complete_task', params: {} }) as any))).toBe(true);
-    expect(sweep).not.toHaveBeenCalled();
+    expect(checkpoint).not.toHaveBeenCalled();
   });
 });

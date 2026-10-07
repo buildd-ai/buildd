@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
-import { localSessions, workers, workspaces } from '@buildd/core/db/schema';
+import { accounts, localSessions, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
 import {
   INTERACTIVE_WORKER_RUNNER,
@@ -9,7 +9,7 @@ import {
   type LocalSessionEvent,
   type LocalSessionEventResult,
 } from '@buildd/shared';
-import { INTERACTIVE_LIVE_STATUSES } from '@/lib/interactive-worker-liveness';
+import { INTERACTIVE_CLAIM_USER_KEY, INTERACTIVE_LIVE_STATUSES } from '@/lib/interactive-worker-liveness';
 
 /**
  * Presence for a person's interactive coding session, fed by the buildd agent
@@ -28,7 +28,10 @@ import { INTERACTIVE_LIVE_STATUSES } from '@/lib/interactive-worker-liveness';
  *     (lib/interactive-session.ts). The hook can name a worker; it cannot make
  *     one, and it cannot make a runner's worker look interactive. One worker is
  *     bound to at most one presence, ever (unique index), and only to a
- *     presence of the account that claimed it.
+ *     presence of the account that claimed it, or of the person that account's
+ *     team belongs to (a presence token, lib/presence-token.ts): their claim
+ *     may have used any of their teams' keys or OAuth. When the claim recorded
+ *     who made it, only that person.
  *  3. Ending a session never completes anything. A bound worker is detached
  *     through the same exactly-once primitive "Release slot" uses
  *     (lib/interactive-detach.ts): a terminal task keeps its status and PR, an
@@ -46,6 +49,28 @@ export interface LocalSessionAccount {
   workspaceIds?: string[] | null;
 }
 
+/**
+ * The person behind a presence token (lib/presence-token.ts). Their presences
+ * are their own, not a team account's, and they may bind an interactive worker
+ * of any team they belong to.
+ */
+export interface LocalSessionPerson {
+  kind: 'user';
+  userId: string;
+  teamIds: string[];
+}
+
+export type LocalSessionPrincipal = LocalSessionAccount | LocalSessionPerson;
+
+/** Who owns a presence row: an account (API key) or a person (presence token). */
+export type PresenceOwner = { accountId: string } | { userId: string };
+
+export function isLocalSessionPerson(p: LocalSessionPrincipal): p is LocalSessionPerson {
+  return (p as LocalSessionPerson).kind === 'user';
+}
+
+const ownerOf = (p: LocalSessionPrincipal): PresenceOwner => (isLocalSessionPerson(p) ? { userId: p.userId } : { accountId: p.id });
+
 /** The presence row fields the handler reads. */
 export interface PresenceRow {
   id: string;
@@ -60,13 +85,17 @@ export interface BindableWorker {
   status: string;
   taskId: string | null;
   workspaceId: string;
+  /** Team of the account that claimed it. */
+  ownerTeamId: string | null;
+  /** The person the claim route recorded on the task, when the session had one (OAuth). */
+  claimUserId: string | null;
 }
 
 /** Storage seam. The default is Drizzle; tests use an in-memory stand-in. */
 export interface LocalSessionStore {
   /** Insert or refresh the presence (re-opening an ended one). */
   upsertStart(input: {
-    accountId: string;
+    owner: PresenceOwner;
     clientKind: string;
     clientSessionHash: string;
     clientVersion: string | null;
@@ -75,11 +104,15 @@ export interface LocalSessionStore {
     interactive: boolean;
     now: Date;
   }): Promise<PresenceRow>;
-  find(accountId: string, clientKind: string, clientSessionHash: string): Promise<PresenceRow | null>;
+  find(owner: PresenceOwner, clientKind: string, clientSessionHash: string): Promise<PresenceRow | null>;
   /** Bump last_seen_at if older than the throttle window. True if written. */
   touchPresence(id: string, now: Date): Promise<boolean>;
-  /** Keep the bound interactive worker alive, same guard as the MCP touch. True if written. */
-  touchBoundWorker(workerId: string, accountId: string, now: Date): Promise<boolean>;
+  /**
+   * Keep the bound interactive worker alive, same guard as the MCP touch. True
+   * if written. `accountId` null: a person's presence, whose bound worker may
+   * belong to any of their teams' accounts (bind checked that).
+   */
+  touchBoundWorker(workerId: string, accountId: string | null, now: Date): Promise<boolean>;
   findWorker(workerId: string): Promise<BindableWorker | null>;
   /**
    * CAS: bind when the presence is open and holds no OTHER live worker.
@@ -95,7 +128,7 @@ export interface LocalSessionStore {
 
 export interface LocalSessionDeps {
   store?: LocalSessionStore;
-  resolveWorkspace?: (account: LocalSessionAccount, repo: string) => Promise<string | null>;
+  resolveWorkspace?: (principal: LocalSessionPrincipal, repo: string) => Promise<string | null>;
   detach?: (workerId: string, reason: string) => Promise<{ detached: boolean }>;
   now?: Date;
 }
@@ -124,27 +157,28 @@ export class LocalSessionError extends Error {
 }
 
 /**
- * Apply one session event for the authenticated account. Throws
+ * Apply one session event for the authenticated account or person. Throws
  * LocalSessionError for a refusal the route answers as non-2xx; the hook
  * ignores it either way (fail open).
  */
 export async function handleLocalSessionEvent(
-  account: LocalSessionAccount,
+  principal: LocalSessionPrincipal,
   event: LocalSessionEvent,
   deps: LocalSessionDeps = {},
 ): Promise<LocalSessionEventResult> {
   const store = deps.store ?? drizzleLocalSessionStore;
   const now = deps.now ?? new Date();
   const hash = hashClientSessionId(event.client, event.clientSessionId);
+  const owner = ownerOf(principal);
 
   const ensurePresence = async (): Promise<PresenceRow> => {
     const workspaceId = event.repo && deps.resolveWorkspace !== undefined
-      ? await deps.resolveWorkspace(account, event.repo)
+      ? await deps.resolveWorkspace(principal, event.repo)
       : event.repo
-        ? await resolveWorkspaceForRepo(account, event.repo)
+        ? await resolveWorkspaceForRepo(principal, event.repo)
         : null;
     return store.upsertStart({
-      accountId: account.id,
+      owner,
       clientKind: event.client,
       clientSessionHash: hash,
       clientVersion: event.clientVersion ?? null,
@@ -165,14 +199,16 @@ export async function handleLocalSessionEvent(
     }
 
     case 'touch': {
-      let presence = await store.find(account.id, event.client, hash);
+      let presence = await store.find(owner, event.client, hash);
       // A missed or failed start heals here, so presence never depends on one hook firing.
       if (!presence || presence.endedAt) {
         presence = await ensurePresence();
         return result('started', presence, await boundState(presence));
       }
       const wrote = await store.touchPresence(presence.id, now);
-      if (presence.boundWorkerId) await store.touchBoundWorker(presence.boundWorkerId, account.id, now);
+      if (presence.boundWorkerId) {
+        await store.touchBoundWorker(presence.boundWorkerId, isLocalSessionPerson(principal) ? null : principal.id, now);
+      }
       return result(wrote ? 'touched' : 'coalesced', presence, await boundState(presence));
     }
 
@@ -180,7 +216,7 @@ export async function handleLocalSessionEvent(
       const workerId = event.workerId!;
       const worker = await store.findWorker(workerId);
       // Same answer for "no such worker" and "someone else's", so this cannot probe ids.
-      if (!worker || worker.accountId !== account.id) {
+      if (!worker || !ownsWorker(principal, worker)) {
         throw new LocalSessionError(404, 'worker_not_found', 'No worker with that id for this account');
       }
       if (worker.runner !== INTERACTIVE_WORKER_RUNNER) {
@@ -189,7 +225,7 @@ export async function handleLocalSessionEvent(
       if (!(LIVE_WORKER_STATUSES as readonly string[]).includes(worker.status)) {
         throw new LocalSessionError(409, 'worker_not_live', 'That worker has already ended');
       }
-      let presence = await store.find(account.id, event.client, hash);
+      let presence = await store.find(owner, event.client, hash);
       if (!presence || presence.endedAt) presence = await ensurePresence();
       if (presence.boundWorkerId === workerId) {
         return result('already_bound', presence, await store.workerState(workerId));
@@ -203,7 +239,7 @@ export async function handleLocalSessionEvent(
     }
 
     case 'end': {
-      const presence = await store.find(account.id, event.client, hash);
+      const presence = await store.find(owner, event.client, hash);
       if (!presence) return result('unknown_session', null);
       const ended = await store.end(presence.id, event.reason ?? 'other', now);
       // Already ended: the release (if any) happened on the first end. Exactly once.
@@ -219,18 +255,31 @@ export async function handleLocalSessionEvent(
   }
 }
 
+/**
+ * Whose interactive worker this is. An account: its own. A person: one claimed
+ * by an account of a team they are in and, when the claim recorded who made
+ * it, by them; a teammate's recorded claim is not theirs to bind or release.
+ */
+function ownsWorker(principal: LocalSessionPrincipal, worker: BindableWorker): boolean {
+  if (!isLocalSessionPerson(principal)) return worker.accountId === principal.id;
+  if (!worker.accountId || !worker.ownerTeamId || !principal.teamIds.includes(worker.ownerTeamId)) return false;
+  return worker.claimUserId === null || worker.claimUserId === principal.userId;
+}
+
 async function defaultDetach(workerId: string, reason: string): Promise<{ detached: boolean }> {
   const { detachInteractiveWorker } = await import('@/lib/interactive-detach');
   return detachInteractiveWorker({ workerId, actor: { kind: 'system' }, reason });
 }
 
-/** Workspace for a repo among those the account reaches; null when none. */
-export async function resolveWorkspaceForRepo(account: LocalSessionAccount, repo: string): Promise<string | null> {
+/** Workspace for a repo among those the account (or person) reaches; null when none. */
+export async function resolveWorkspaceForRepo(principal: LocalSessionPrincipal, repo: string): Promise<string | null> {
   try {
     const { listReachableWorkspaceIds } = await import('@/lib/workspace-access');
     const { workspaceRepoMatches } = await import('@/lib/repo-scope');
-    const reachable = (await listReachableWorkspaceIds({ account: { id: account.id, teamId: account.teamId } }))
-      .filter(id => account.workspaceIds == null || account.workspaceIds.includes(id));
+    const reachable = isLocalSessionPerson(principal)
+      ? await listReachableWorkspaceIds({ userId: principal.userId })
+      : (await listReachableWorkspaceIds({ account: { id: principal.id, teamId: principal.teamId } }))
+        .filter(id => principal.workspaceIds == null || principal.workspaceIds.includes(id));
     if (reachable.length === 0) return null;
     const ws = await db.query.workspaces.findFirst({
       where: and(workspaceRepoMatches(repo), inArray(workspaces.id, reachable)),
@@ -257,10 +306,10 @@ export function presenceTouchWhere(id: string, now: Date): SQL {
  * (interactiveTouchScope): this account's own live interactive row, skipped
  * when anything (hook or MCP) already touched it this minute.
  */
-export function boundWorkerTouchWhere(workerId: string, accountId: string, now: Date): SQL {
+export function boundWorkerTouchWhere(workerId: string, accountId: string | null, now: Date): SQL {
   return and(
     eq(workers.id, workerId),
-    eq(workers.accountId, accountId),
+    accountId === null ? undefined : eq(workers.accountId, accountId),
     eq(workers.runner, INTERACTIVE_WORKER_RUNNER),
     inArray(workers.status, [...INTERACTIVE_LIVE_STATUSES]),
     lt(workers.updatedAt, throttleCutoff(now)),
@@ -296,7 +345,7 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
     const [row] = await db
       .insert(localSessions)
       .values({
-        accountId: i.accountId,
+        ...('userId' in i.owner ? { userId: i.owner.userId } : { accountId: i.owner.accountId }),
         clientKind: i.clientKind,
         clientSessionHash: i.clientSessionHash,
         clientVersion: i.clientVersion,
@@ -307,7 +356,9 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
         lastSeenAt: i.now,
       })
       .onConflictDoUpdate({
-        target: [localSessions.accountId, localSessions.clientKind, localSessions.clientSessionHash],
+        target: 'userId' in i.owner
+          ? [localSessions.userId, localSessions.clientKind, localSessions.clientSessionHash]
+          : [localSessions.accountId, localSessions.clientKind, localSessions.clientSessionHash],
         set: {
           lastSeenAt: i.now,
           endedAt: null,
@@ -321,12 +372,12 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
       .returning(presenceColumns);
     return row;
   },
-  async find(accountId, clientKind, clientSessionHash) {
+  async find(owner, clientKind, clientSessionHash) {
     const [row] = await db
       .select(presenceColumns)
       .from(localSessions)
       .where(and(
-        eq(localSessions.accountId, accountId),
+        'userId' in owner ? eq(localSessions.userId, owner.userId) : eq(localSessions.accountId, owner.accountId),
         eq(localSessions.clientKind, clientKind),
         eq(localSessions.clientSessionHash, clientSessionHash),
       ))
@@ -347,11 +398,26 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
     }
   },
   async findWorker(workerId) {
-    const w = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
-      columns: { id: true, accountId: true, runner: true, status: true, taskId: true, workspaceId: true },
-    });
-    return w ?? null;
+    const [w] = await db
+      .select({
+        id: workers.id,
+        accountId: workers.accountId,
+        runner: workers.runner,
+        status: workers.status,
+        taskId: workers.taskId,
+        workspaceId: workers.workspaceId,
+        ownerTeamId: accounts.teamId,
+        taskContext: tasks.context,
+      })
+      .from(workers)
+      .leftJoin(accounts, eq(accounts.id, workers.accountId))
+      .leftJoin(tasks, eq(tasks.id, workers.taskId))
+      .where(eq(workers.id, workerId))
+      .limit(1);
+    if (!w) return null;
+    const { taskContext, ...rest } = w;
+    const claimUser = (taskContext as Record<string, unknown> | null)?.[INTERACTIVE_CLAIM_USER_KEY];
+    return { ...rest, ownerTeamId: rest.ownerTeamId ?? null, claimUserId: typeof claimUser === 'string' ? claimUser : null };
   },
   async bind(presenceId, workerId, workspaceId, now) {
     try {
