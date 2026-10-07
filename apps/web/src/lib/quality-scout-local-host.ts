@@ -186,19 +186,19 @@ export interface LocalScoutState {
   runs: Array<{ run: ScoutRun; totals?: ScoutRunTotals; metrics?: ScoutRunMetrics }>;
   probes: Record<string, ScoutProbeRecord[]>;
   findings: ScoutFinding[];
-  tasks: Array<{ id: string; status: string; input: ScoutFollowUpTaskInput; refreshes: number }>;
+  tasks: Array<{ id: string; status: string; input: ScoutFollowUpTaskInput; refreshes: number; held?: boolean; retiredByScout?: boolean }>;
 }
 
 /** Every write the action policy made. Shadow must leave this empty. */
 export interface ScoutWriteAudit {
-  op: 'raiseActionState' | 'insertTask' | 'claimFollowUp' | 'deleteTask' | 'refreshTask' | 'announce' | 'retireFollowUp';
+  op: 'raiseActionState' | 'insertTask' | 'claimFollowUp' | 'releaseHold' | 'deleteTask' | 'refreshTask' | 'announce' | 'retireFollowUp' | 'dismissFinding';
   detail: string;
 }
 
 const RANK: Record<ScoutActionState, number> = { none: 0, retained: 1, aggregated: 2, proposed: 3, filed: 4 };
 
 /** Product-side writes: the ones a shadow run must never make. Raising a finding's action state is ledger bookkeeping. */
-export const PRODUCT_WRITE_OPS: ReadonlySet<ScoutWriteAudit['op']> = new Set(['insertTask', 'claimFollowUp', 'deleteTask', 'refreshTask', 'announce', 'retireFollowUp']);
+export const PRODUCT_WRITE_OPS: ReadonlySet<ScoutWriteAudit['op']> = new Set(['insertTask', 'claimFollowUp', 'releaseHold', 'deleteTask', 'refreshTask', 'announce', 'retireFollowUp', 'dismissFinding']);
 
 export function localScoutStore(path?: string) {
   const state: LocalScoutState =
@@ -219,8 +219,17 @@ export function localScoutStore(path?: string) {
     update: async (f, expected) => {
       const cur = findingOf(f.signature);
       if (cur?.occurrenceCount !== expected) return false;
-      // The ledger never writes the action columns.
-      setFinding({ ...f, actionState: cur.actionState, actionTaskId: cur.actionTaskId });
+      // Same as the DB compare-and-set: a stale open read cannot un-dismiss.
+      if (cur.state === 'dismissed' && f.state !== 'dismissed') return false;
+      // The ledger never writes the action or dismissal columns.
+      setFinding({
+        ...f,
+        actionState: cur.actionState,
+        actionTaskId: cur.actionTaskId,
+        dismissedReason: cur.dismissedReason ?? null,
+        dismissedAt: cur.dismissedAt ?? null,
+        dismissedBy: cur.dismissedBy ?? null,
+      });
       return true;
     },
   };
@@ -269,25 +278,32 @@ export function localScoutStore(path?: string) {
   const actions: ScoutActionStore = {
     async raiseActionState(_w, sig, to) {
       const f = findingOf(sig);
-      if (!f || RANK[f.actionState] >= RANK[to]) return false;
+      if (!f || f.state !== 'open' || RANK[f.actionState] >= RANK[to]) return false;
       audit.push({ op: 'raiseActionState', detail: `${sig.slice(0, 12)} → ${to}` });
       setFinding({ ...f, actionState: to });
       return true;
     },
     taskStatus: async (id) => state.tasks.find((t) => t.id === id)?.status ?? null,
+    cancelledByScout: async (id) => state.tasks.find((t) => t.id === id)?.retiredByScout === true,
     async insertTask(input) {
       const id = `local-task-${++n}`;
       audit.push({ op: 'insertTask', detail: `${id} ${input.title}` });
-      state.tasks.push({ id, status: 'pending', input, refreshes: 0 });
+      state.tasks.push({ id, status: 'pending', input, refreshes: 0, held: true });
       persist();
       return { id };
     },
     async claimFollowUp(_w, sig, id, takeover) {
       const f = findingOf(sig);
       audit.push({ op: 'claimFollowUp', detail: `${sig.slice(0, 12)} → ${id}` });
-      if (!f || (f.actionTaskId && !takeover.includes(f.actionTaskId))) return false;
+      if (!f || f.state !== 'open' || (f.actionTaskId && !takeover.includes(f.actionTaskId))) return false;
       setFinding({ ...f, actionState: 'filed', actionTaskId: id });
       return true;
+    },
+    async releaseHold(id) {
+      audit.push({ op: 'releaseHold', detail: id });
+      const t = state.tasks.find((x) => x.id === id);
+      if (t) t.held = false;
+      persist();
     },
     currentTaskId: async (_w, sig) => findingOf(sig)?.actionTaskId ?? null,
     async deleteTask(id) {
@@ -298,7 +314,10 @@ export function localScoutStore(path?: string) {
     async refreshTask(id) {
       audit.push({ op: 'refreshTask', detail: id });
       const t = state.tasks.find((x) => x.id === id);
-      if (t) t.refreshes++;
+      if (t) {
+        t.refreshes++;
+        t.held = false;
+      }
       persist();
       return !!t;
     },
@@ -310,9 +329,20 @@ export function localScoutStore(path?: string) {
       if (!t || isTerminalTaskStatus(t.status)) return null;
       const outcome = t.status === 'pending' ? 'cancelled' : 'annotated';
       audit.push({ op: 'retireFollowUp', detail: `${id} ${outcome}` });
-      if (outcome === 'cancelled') t.status = 'cancelled';
+      if (outcome === 'cancelled') {
+        t.status = 'cancelled';
+        t.retiredByScout = true;
+      }
       persist();
       return outcome;
+    },
+    async dismissFinding(_w, sig, fields) {
+      const f = findingOf(sig);
+      if (!f) return { dismissed: false, exists: false };
+      if (f.state === 'dismissed') return { dismissed: false, exists: true };
+      audit.push({ op: 'dismissFinding', detail: `${sig.slice(0, 12)} by ${fields.dismissedBy}` });
+      setFinding({ ...f, state: 'dismissed', dismissedReason: fields.dismissedReason, dismissedBy: fields.dismissedBy, dismissedAt: fields.dismissedAt.toISOString() });
+      return { dismissed: true, actionTaskId: f.actionTaskId };
     },
   };
 

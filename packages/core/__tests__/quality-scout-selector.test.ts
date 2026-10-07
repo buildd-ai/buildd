@@ -257,6 +257,77 @@ describe('selectScoutProbes — independence', () => {
   });
 });
 
+/** A decider that charges a fixed cost per call, reported through `spent()` like the server's receipt sink. */
+function charging(perCall: number, answer: () => 'run' | 'defer' = () => 'defer') {
+  let spent = 0;
+  let calls = 0;
+  const decide: ScoutProbeDecider = async () => {
+    calls++;
+    spent += perCall;
+    return { decision: answer(), reasonCode: 'model_x', source: 'model' };
+  };
+  return { decide, spent: () => spent, calls: () => calls };
+}
+
+const spread = (k: number, over: Partial<ScoutProbeCandidate> = {}) =>
+  Array.from({ length: k }, (_, i) => cand({ family: (['contract', 'surface', 'persistence', 'release', 'state-transition'] as const)[i % 5], ...over }));
+
+describe('selectScoutProbes — cost cap', () => {
+  it('makes no decision call that would take spend past the cap', async () => {
+    const c = charging(0.01);
+    const r = await selectScoutProbes(set(spread(10)), c.decide, { budget: 4, cost: { maxUsd: 0.025, spent: c.spent } });
+    // 0.01 + 0.01 = 0.02; a third call would reach 0.03 > 0.025.
+    expect(c.calls()).toBe(2);
+    expect(c.spent()).toBeLessThanOrEqual(0.025);
+    expect(r.decisionsAsked).toBe(2);
+    expect(r.costCapHit).toBe(true);
+  });
+
+  it('never calls the decider when spend is already at the cap', async () => {
+    const c = charging(0.01);
+    const r = await selectScoutProbes(set(spread(6)), c.decide, { cost: { maxUsd: 0.01, spent: () => 0.01 } });
+    expect(c.calls()).toBe(0);
+    expect(r.decisionsAsked).toBe(0);
+    expect(r.costCapHit).toBe(true);
+  });
+
+  it('fills the remaining slots with the deterministic fallback instead of dropping them', async () => {
+    const c = charging(0.01);
+    const r = await selectScoutProbes(set(spread(8)), c.decide, { budget: 4, cost: { maxUsd: 0.015, spent: c.spent } });
+    expect(c.calls()).toBe(1);
+    // Every candidate touches the changed paths, so the fallback runs them.
+    expect(r.selected).toHaveLength(4);
+    const capped = r.selected.filter((s) => s.reasonCode.endsWith('cost_cap'));
+    expect(capped.length).toBe(4);
+    for (const s of capped) expect(s.decisionSource).toBe('fallback');
+    expect(r.decisionsCapped).toBeGreaterThanOrEqual(4);
+    // A capped decision is not a failed one.
+    expect(r.decisionFailures).toBe(0);
+    for (const s of r.skipped) expect(s.reason).not.toBe('not_considered');
+  });
+
+  it('the fallback defers a capped candidate that does not touch the change', async () => {
+    const c = charging(0.01);
+    const r = await selectScoutProbes(set(spread(3, { touchesChangedPaths: false })), c.decide, { cost: { maxUsd: 0, spent: c.spent } });
+    expect(c.calls()).toBe(0);
+    expect(r.selected).toHaveLength(0);
+    for (const s of r.skipped) expect(s).toMatchObject({ reason: 'deferred', reasonCode: 'heuristic_defer_cost_cap' });
+  });
+
+  it('without a cap, or when the decider cannot report spend, selection is bounded only by the decision limit', async () => {
+    const a = charging(1);
+    const ra = await selectScoutProbes(set(spread(6)), a.decide, { budget: 2 });
+    expect(ra.costCapHit).toBe(false);
+    expect(ra.decisionsCapped).toBe(0);
+    expect(a.calls()).toBe(6);
+
+    const b = charging(1);
+    const rb = await selectScoutProbes(set(spread(6)), b.decide, { budget: 2, cost: { maxUsd: 0.5, spent: () => null } });
+    expect(rb.costCapHit).toBe(false);
+    expect(b.calls()).toBe(6);
+  });
+});
+
 describe('createScoutProbeDecider', () => {
   it('runs the shared kind; with the capability off it returns the kind\'s fallback, never a provider name', async () => {
     const decide = createScoutProbeDecider(
@@ -285,5 +356,34 @@ describe('createScoutProbeDecider', () => {
     const r = await selectScoutProbes(set(cs), decide, { budget: 3 });
     expect(r.selected).toHaveLength(3);
     for (const s of r.selected) expect(s.decisionSource).toBe('fallback');
+  });
+});
+
+describe('selectScoutProbes — hosts', () => {
+  it('a candidate no available host can run is skipped no_host, costing no decision and no slot', async () => {
+    const cmd = cand({ executor: 'cli-journey:only-a-runner' });
+    const ok = (['contract', 'surface', 'persistence', 'release'] as const).map((family) => cand({ family }));
+    const r = recorder();
+    const out = await selectScoutProbes(set([cmd, ...ok]), r.decide, {
+      budget: 4,
+      hostable: (c) => (c.id === cmd.id ? 'no_runner_host' : null),
+    });
+    expect(ids(out.selected)).toEqual(ok.map((c) => c.id));
+    expect(out.skipped).toEqual([expect.objectContaining({ reason: 'no_host', reasonCode: 'no_runner_host' })]);
+    expect(r.asked.some((q) => q.subjectRef?.id === cmd.id)).toBe(false);
+  });
+
+  it('applies to must-run candidates too: nothing is promised that no host can run', async () => {
+    const severe = cand({ severity: 'critical' });
+    const out = await selectScoutProbes(set([severe]), recorder().decide, { hostable: () => 'no_runner_host' });
+    expect(out.selected).toEqual([]);
+    expect(out.skipped[0].reason).toBe('no_host');
+  });
+
+  it('without hostable, selection is unchanged', async () => {
+    const cs = Array.from({ length: 3 }, () => cand());
+    const a = await selectScoutProbes(set(cs), recorder().decide);
+    const b = await selectScoutProbes(set(cs), recorder().decide, { hostable: () => null });
+    expect(ids(b.selected)).toEqual(ids(a.selected));
   });
 });

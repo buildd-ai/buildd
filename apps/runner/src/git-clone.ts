@@ -144,6 +144,8 @@ export function gitRetryDelayMs(o: {
 
 /** A clone failure that another try may fix: throttling, a 5xx/408, or the network dropping. */
 function transientCloneFailure(stderr: string): boolean {
+  // A missing local path is permanent; its name must not trip the keyword matches below.
+  if (/^fatal: repository '.*' does not exist$/m.test(stderr)) return false;
   if (isGithubThrottle(stderr)) return true;
   const code = /returned error: (\d{3})/.exec(stderr)?.[1] ?? /\bHTTP (\d{3})\b/.exec(stderr)?.[1];
   if (code) return code.startsWith('5') || code === '408';

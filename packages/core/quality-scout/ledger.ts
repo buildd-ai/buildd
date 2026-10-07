@@ -21,7 +21,7 @@
  * is injectable, the way `decision-ledger.ts` is.
  */
 
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, ne, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '../db/client';
 import { qualityScoutFindings, qualityScoutProbes, qualityScoutRuns } from '../db/schema';
@@ -40,6 +40,7 @@ import {
 } from '../verification-check';
 import {
   DEFAULT_SCOUT_MAX_PROBES,
+  MAX_SCOUT_DISMISS_REASON,
   MAX_SCOUT_MAX_PROBES,
   SCOUT_COSTS,
   SCOUT_FLAVOR,
@@ -50,12 +51,14 @@ import {
   type ScoutBudget,
   type ScoutCost,
   type ScoutFinding,
+  type ScoutHostExpiryReason,
   type ScoutMode,
   type ScoutProbeFamily,
   type ScoutProbeRecord,
   type ScoutProbeSelection,
   type ScoutReproducibility,
   type ScoutRun,
+  type ScoutRunParking,
   type ScoutRunMetrics,
   type ScoutRunTotals,
   type ScoutRunTrigger,
@@ -287,6 +290,44 @@ function notExecutedResult(run: ScoutRun, probe: ScoutProbeRecord, now: Date): V
   };
 }
 
+/**
+ * A runner-assigned probe no runner reported for. `unsupported`, never `pass`:
+ * nothing exercised it, and no host that could is reachable.
+ */
+export function hostExpiredResult(run: ScoutRun, probe: ScoutProbeRecord, reason: ScoutHostExpiryReason, now: Date): VerificationResult {
+  return { ...notExecutedResult(run, probe, now), verdict: 'unsupported', reason };
+}
+
+/**
+ * Has a parked run waited long enough? Past its host deadline, or its lease
+ * lapsed a second time (the claim route re-queues after the first lapse).
+ * `runner_host_lost` when a runner ever held it, else `no_runner_claimed`.
+ */
+export function scoutParkingExpiry(parking: ScoutRunParking, now: Date): ScoutHostExpiryReason | null {
+  const t = now.getTime();
+  const leaseLapsedNow = !!parking.lease && Date.parse(parking.lease.expiresAt) <= t;
+  const lapses = parking.leaseLapses + (leaseLapsedNow ? 1 : 0);
+  const expired = Date.parse(parking.hostDeadline) <= t || lapses >= 2;
+  if (!expired) return null;
+  return parking.lease || parking.leaseLapses > 0 ? 'runner_host_lost' : 'no_runner_claimed';
+}
+
+/** Finalize every runner probe that has no result yet as `unsupported` with `reason`. Server results are kept. */
+export function expireRunnerProbes(
+  run: ScoutRun,
+  probes: readonly ScoutProbeRecord[],
+  reason: ScoutHostExpiryReason,
+  now: Date,
+): { probes: ScoutProbeRecord[]; expired: number } {
+  let expired = 0;
+  const out = probes.map(p => {
+    if (p.selection.status !== 'selected' || p.host !== 'runner' || p.result) return p;
+    expired++;
+    return Object.freeze({ ...p, result: hostExpiredResult(run, p, reason, now) });
+  });
+  return { probes: out, expired };
+}
+
 /** Every selected probe ends with a result: one that never ran is `inconclusive`/`not_executed`. */
 export function finalizeScoutProbes(run: ScoutRun, probes: readonly ScoutProbeRecord[], now: Date): ScoutProbeRecord[] {
   return probes.map(p => (p.selection.status === 'selected' && !p.result
@@ -373,6 +414,9 @@ export function applyScoutFailure(
         resolvedRunId: null,
         resolvedSha: null,
         resolvedAt: null,
+        dismissedReason: null,
+        dismissedAt: null,
+        dismissedBy: null,
       },
     };
   }
@@ -405,6 +449,22 @@ export function resolveScoutFinding(existing: ScoutFinding, run: ScoutRun, now: 
   return {
     change: 'resolved',
     finding: { ...existing, state: 'resolved', resolvedRunId: run.id, resolvedSha: run.candidate.sha, resolvedAt: now.toISOString() },
+  };
+}
+
+/** The columns a dismissal writes, or why it cannot. Pure: the write is `dismissScoutFindingRow`. */
+export type ScoutDismissal =
+  | { ok: true; fields: { state: 'dismissed'; dismissedReason: string; dismissedBy: string; dismissedAt: Date } }
+  | { ok: false; error: 'reason_required' | 'by_required' };
+
+export function scoutDismissal(input: { reason: unknown; by: unknown; now: Date }): ScoutDismissal {
+  const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+  if (!reason) return { ok: false, error: 'reason_required' };
+  const by = typeof input.by === 'string' ? input.by.trim() : '';
+  if (!by) return { ok: false, error: 'by_required' };
+  return {
+    ok: true,
+    fields: { state: 'dismissed', dismissedReason: clip(reason, MAX_SCOUT_DISMISS_REASON), dismissedBy: clip(by, MAX_REF_CHARS), dismissedAt: input.now },
   };
 }
 
@@ -480,6 +540,9 @@ export function scoutFindingRow(f: ScoutFinding) {
     resolvedRunId: f.resolvedRunId,
     resolvedSha: f.resolvedSha,
     resolvedAt: f.resolvedAt ? new Date(f.resolvedAt) : null,
+    dismissedReason: f.dismissedReason,
+    dismissedAt: f.dismissedAt ? new Date(f.dismissedAt) : null,
+    dismissedBy: f.dismissedBy,
   };
 }
 
@@ -491,8 +554,32 @@ export function scoutFindingRow(f: ScoutFinding) {
  * next run would file a second task for the same defect.
  */
 export function scoutFindingLedgerSet(f: ScoutFinding) {
-  const { actionState: _state, actionTaskId: _task, ...rest } = scoutFindingRow(f);
+  const {
+    actionState: _state,
+    actionTaskId: _task,
+    // The dismissal belongs to whoever dismissed it, same as the action columns.
+    dismissedReason: _reason,
+    dismissedAt: _at,
+    dismissedBy: _by,
+    ...rest
+  } = scoutFindingRow(f);
   return rest;
+}
+
+/**
+ * The recurrence compare-and-set. A dismissal does not bump
+ * `occurrence_count`, so a run that read the row before it was dismissed would
+ * pass the count check and write `state = 'open'` back. Unless the merged
+ * finding is itself dismissed, the write also requires the row is not: a lost
+ * check re-reads, and the re-merge keeps the dismissal.
+ */
+export function scoutFindingCasWhere(finding: ScoutFinding, expectedCount: number): SQL | undefined {
+  return and(
+    eq(qualityScoutFindings.workspaceId, finding.workspaceId),
+    eq(qualityScoutFindings.signature, finding.signature),
+    eq(qualityScoutFindings.occurrenceCount, expectedCount),
+    ...(finding.state === 'dismissed' ? [] : [ne(qualityScoutFindings.state, 'dismissed')]),
+  );
 }
 
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
@@ -524,6 +611,9 @@ export function scoutFindingFromRow(row: FindingRow): ScoutFinding {
     resolvedRunId: row.resolvedRunId,
     resolvedSha: row.resolvedSha,
     resolvedAt: iso(row.resolvedAt),
+    dismissedReason: row.dismissedReason ?? null,
+    dismissedAt: iso(row.dismissedAt ?? null),
+    dismissedBy: row.dismissedBy ?? null,
   };
 }
 
@@ -543,15 +633,32 @@ export const dbScoutFindingStore: ScoutFindingStore = {
   async update(finding, expectedCount) {
     const rows = await db.update(qualityScoutFindings)
       .set({ ...scoutFindingLedgerSet(finding), updatedAt: new Date() })
-      .where(and(
-        eq(qualityScoutFindings.workspaceId, finding.workspaceId),
-        eq(qualityScoutFindings.signature, finding.signature),
-        eq(qualityScoutFindings.occurrenceCount, expectedCount),
-      ))
+      .where(scoutFindingCasWhere(finding, expectedCount))
       .returning({ id: qualityScoutFindings.id });
     return rows.length > 0;
   },
 };
+
+/**
+ * Dismiss one finding: a single conditional UPDATE, so two people dismissing
+ * at once record one reason. `dismissed: false` with `exists` tells an
+ * already-dismissed finding apart from one that is not there. The follow-up
+ * task, if any, is the caller's to retire.
+ */
+export async function dismissScoutFindingRow(
+  workspaceId: string,
+  signature: string,
+  fields: Extract<ScoutDismissal, { ok: true }>['fields'],
+): Promise<{ dismissed: true; actionTaskId: string | null } | { dismissed: false; exists: boolean }> {
+  const where = and(eq(qualityScoutFindings.workspaceId, workspaceId), eq(qualityScoutFindings.signature, signature));
+  const [row] = await db.update(qualityScoutFindings)
+    .set({ ...fields, updatedAt: fields.dismissedAt })
+    .where(and(where, ne(qualityScoutFindings.state, 'dismissed')))
+    .returning({ actionTaskId: qualityScoutFindings.actionTaskId });
+  if (row) return { dismissed: true, actionTaskId: row.actionTaskId };
+  const [existing] = await db.select({ id: qualityScoutFindings.id }).from(qualityScoutFindings).where(where).limit(1);
+  return { dismissed: false, exists: !!existing };
+}
 
 export function scoutRunRow(run: ScoutRun, totals?: ScoutRunTotals, metrics?: ScoutRunMetrics) {
   return {
@@ -574,9 +681,74 @@ export function scoutRunRow(run: ScoutRun, totals?: ScoutRunTotals, metrics?: Sc
     costUsd: totals?.costUsd == null ? null : totals.costUsd.toFixed(4),
     metrics: metrics ?? null,
     error: run.error,
+    hostState: run.parking
+      ? { parkedAt: run.parking.parkedAt, runnerMaxDurationMs: run.parking.runnerMaxDurationMs, profile: run.parking.profile, plan: run.parking.plan }
+      : null,
+    hostDeadline: run.parking ? new Date(run.parking.hostDeadline) : null,
+    hostLeaseHolder: run.parking?.lease?.holder ?? null,
+    hostLeaseExpiresAt: run.parking?.lease ? new Date(run.parking.lease.expiresAt) : null,
+    hostLeaseLapses: run.parking?.leaseLapses ?? 0,
     startedAt: new Date(run.startedAt),
     completedAt: run.completedAt ? new Date(run.completedAt) : null,
   };
+}
+
+type RunRow = typeof qualityScoutRuns.$inferSelect;
+type ProbeRow = typeof qualityScoutProbes.$inferSelect;
+
+/** The inverse of `scoutRunRow`, for a run finalized after it parked. */
+export function scoutRunFromRow(row: RunRow): ScoutRun {
+  const hs = row.hostState;
+  return {
+    id: row.id,
+    workspaceId: row.workspaceId,
+    missionId: row.missionId,
+    trigger: row.trigger,
+    mode: row.mode,
+    status: row.status,
+    candidate: { ref: row.candidateRef, sha: row.candidateSha },
+    prior: row.priorRunId && row.priorSha ? { runId: row.priorRunId, sha: row.priorSha } : null,
+    budget: row.budget,
+    policyVersion: row.policyVersion,
+    startedAt: row.startedAt.toISOString(),
+    completedAt: iso(row.completedAt),
+    error: row.error,
+    parking: hs && row.hostDeadline
+      ? {
+          parkedAt: hs.parkedAt,
+          hostDeadline: row.hostDeadline.toISOString(),
+          runnerMaxDurationMs: hs.runnerMaxDurationMs,
+          profile: hs.profile,
+          plan: hs.plan,
+          lease: row.hostLeaseHolder && row.hostLeaseExpiresAt
+            ? { holder: row.hostLeaseHolder, expiresAt: row.hostLeaseExpiresAt.toISOString() }
+            : null,
+          leaseLapses: row.hostLeaseLapses ?? 0,
+        }
+      : null,
+  };
+}
+
+/** The inverse of `scoutProbeRow`. */
+export function scoutProbeFromRow(row: ProbeRow): ScoutProbeRecord {
+  return Object.freeze({
+    candidateId: row.candidateId,
+    family: row.family,
+    probeKind: row.probeKind,
+    title: row.title,
+    invariant: row.invariant,
+    sourceSignals: row.sourceSignals,
+    preconditions: row.preconditions,
+    executor: row.executor,
+    estimatedCost: row.estimatedCost,
+    risk: row.risk,
+    mutates: row.mutates,
+    evidenceRequirements: row.evidenceRequirements,
+    unsupportedReason: row.unsupportedReason,
+    selection: row.selection,
+    ...(row.host ? { host: row.host } : {}),
+    result: row.result ?? null,
+  });
 }
 
 export function scoutProbeRow(run: ScoutRun, p: ScoutProbeRecord) {
@@ -597,6 +769,7 @@ export function scoutProbeRow(run: ScoutRun, p: ScoutProbeRecord) {
     evidenceRequirements: p.evidenceRequirements,
     unsupportedReason: p.unsupportedReason,
     selection: p.selection,
+    host: p.host ?? null,
     verdict: p.result?.verdict ?? null,
     signature: p.result?.signature ?? null,
     result: p.result,
@@ -618,6 +791,7 @@ export async function saveScoutProbes(run: ScoutRun, probes: readonly ScoutProbe
       target: [qualityScoutProbes.runId, qualityScoutProbes.candidateId],
       set: {
         selection: sql`excluded.selection`,
+        host: sql`excluded.host`,
         verdict: sql`excluded.verdict`,
         signature: sql`excluded.signature`,
         result: sql`excluded.result`,

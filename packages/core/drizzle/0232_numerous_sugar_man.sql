@@ -1,1 +1,0 @@
-ALTER TABLE "task_dispatch_outbox" ADD COLUMN "intent" text DEFAULT 'work_execution' NOT NULL;

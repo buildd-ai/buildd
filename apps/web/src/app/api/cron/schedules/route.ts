@@ -1081,6 +1081,18 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       console.warn('[Cron] quality scout periodic check failed:', qualityScout.error);
     }
 
+    // Quality Scout runs parked for a runner host that no runner finished:
+    // past their deadline (or a twice-lapsed lease), their unexecuted runner
+    // probes are finalized `unsupported` — never pass — and the run completes.
+    let qualityScoutExpiry: { expired: number; finalized: string[]; raced: number; errors: number } | { error: string };
+    try {
+      const { finalizeExpiredQualityScoutRuns } = await import('@/lib/quality-scout-trigger');
+      qualityScoutExpiry = await finalizeExpiredQualityScoutRuns();
+    } catch (scoutErr) {
+      qualityScoutExpiry = { error: scoutErr instanceof Error ? scoutErr.message : String(scoutErr) };
+      console.warn('[Cron] quality scout expiry sweep failed:', qualityScoutExpiry.error);
+    }
+
     // The watcher and overdue-heartbeat sweeps ride this tick, so their results
     // belong in its run row — otherwise a watcher that throws every hour looks
     // exactly like a quiet one. A watcher error counts in `errors`. Neither is
@@ -1092,7 +1104,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       processed,
       changed: created,
       errors: errors + healthWatcherErrors,
-      result: { created, skipped, deferred, errors, triggerChecks, archivedMissions, taskCategories, healthWatcher, overdueHeartbeatAlerts, qualityScout },
+      result: { created, skipped, deferred, errors, triggerChecks, archivedMissions, taskCategories, healthWatcher, overdueHeartbeatAlerts, qualityScout, qualityScoutExpiry },
     });
 
     return NextResponse.json({
@@ -1112,6 +1124,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       overdueHeartbeatAlerts,
       taskCategories,
       qualityScout,
+      qualityScoutExpiry,
     });
   } catch (error) {
     console.error('Cron schedules error:', error);

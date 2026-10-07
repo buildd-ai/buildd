@@ -1,26 +1,33 @@
 import { describe, expect, it } from 'bun:test';
-import { getTableConfig } from 'drizzle-orm/pg-core';
+import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core';
 import {
   applyScoutFailure,
   buildScoutProbeCheck,
   completeScoutRun,
   executeScoutProbe,
+  expireRunnerProbes,
   failScoutRun,
   finalizeScoutProbes,
   recordScoutFailure,
   resolveScoutFinding,
   resolveScoutMode,
+  scoutDismissal,
+  scoutFindingCasWhere,
   scoutCheckId,
   scoutFindingLedgerSet,
   scoutFindingRow,
+  scoutParkingExpiry,
+  scoutProbeFromRow,
   scoutProbeRecord,
+  scoutProbeRow,
+  scoutRunFromRow,
   scoutRunRow,
   scoutRunStaleness,
   startScoutRun,
   type ScoutCandidateLike,
   type ScoutFindingStore,
 } from '../quality-scout/ledger';
-import { SCOUT_ACTION_STATES, SCOUT_AUTHORITY, SCOUT_MODES, type ScoutFinding, type ScoutProbeRecord, type ScoutRun } from '../quality-scout/types';
+import { SCOUT_ACTION_STATES, SCOUT_AUTHORITY, SCOUT_MODES, SCOUT_RUN_STATUSES, type ScoutFinding, type ScoutProbeRecord, type ScoutRun, type ScoutRunParking } from '../quality-scout/types';
 import { verificationSignature, type VerificationExecutor } from '../verification-check';
 import { qualityScoutFindings, qualityScoutProbes, qualityScoutRuns } from '../db/schema';
 
@@ -388,6 +395,57 @@ describe('ledger writes never touch the action columns', () => {
   });
 });
 
+describe('dismissal', () => {
+  it('a new finding starts undismissed', () => {
+    const r = run();
+    expect(applyScoutFailure(null, r, executed(r, { exit: 0 }), T0).finding).toMatchObject({
+      dismissedReason: null,
+      dismissedAt: null,
+      dismissedBy: null,
+    });
+  });
+
+  it('scoutDismissal needs a reason and who; trims and clips the reason', () => {
+    expect(scoutDismissal({ reason: '  ', by: 'user:u-1', now: T0 })).toEqual({ ok: false, error: 'reason_required' });
+    expect(scoutDismissal({ reason: 'not a defect', by: '', now: T0 })).toEqual({ ok: false, error: 'by_required' });
+    expect(scoutDismissal({ reason: '  flaky env  ', by: 'user:u-1', now: T0 })).toEqual({
+      ok: true,
+      fields: { state: 'dismissed', dismissedReason: 'flaky env', dismissedBy: 'user:u-1', dismissedAt: T0 },
+    });
+    const long = scoutDismissal({ reason: 'x'.repeat(2000), by: 'user:u-1', now: T0 });
+    expect(long.ok && long.fields.dismissedReason.length).toBe(500);
+  });
+
+  it('a recurrence keeps a dismissal and its reason', () => {
+    const r1 = run();
+    const first = applyScoutFailure(null, r1, executed(r1, { exit: 0 }), T0).finding!;
+    const dismissed = { ...first, state: 'dismissed' as const, dismissedReason: 'expected', dismissedBy: 'user:u-1', dismissedAt: T0.toISOString() };
+    const r2 = run({ id: 'run-2' });
+    expect(applyScoutFailure(dismissed, r2, executed(r2, { exit: 0 }), T1).finding).toMatchObject({
+      state: 'dismissed',
+      dismissedReason: 'expected',
+      occurrenceCount: 2,
+    });
+  });
+
+  it('the recurrence write never carries the dismissal columns', () => {
+    const r = run();
+    const set = scoutFindingLedgerSet(applyScoutFailure(null, r, executed(r, { exit: 0 }), T0).finding!);
+    for (const k of ['dismissedReason', 'dismissedAt', 'dismissedBy']) expect(set).not.toHaveProperty(k);
+  });
+
+  it('a recurrence read before a dismissal cannot write over it: its compare-and-set also requires the row is not dismissed', () => {
+    const r = run();
+    const open = applyScoutFailure(null, r, executed(r, { exit: 0 }), T0).finding!;
+    const q = new PgDialect().sqlToQuery(scoutFindingCasWhere(open, 1)!);
+    expect(q.sql).toContain('"state" <> $');
+    expect(q.params).toContain('dismissed');
+    // Merging into an already-dismissed row needs no such guard: it keeps the state.
+    const q2 = new PgDialect().sqlToQuery(scoutFindingCasWhere({ ...open, state: 'dismissed' }, 1)!);
+    expect(q2.sql).not.toContain('"state" <>');
+  });
+});
+
 describe('recordScoutFailure — compare-and-set on occurrence count', () => {
   function memoryStore(initial: ScoutFinding | null, opts: { raceOnce?: boolean } = {}) {
     let row = initial;
@@ -469,7 +527,82 @@ describe('schema', () => {
     expect(uniques(qualityScoutProbes)).toContainEqual(['run_id', 'candidate_id']);
   });
 
+  it('findings carry a dismissal reason, time and actor', () => {
+    const cols = getTableConfig(qualityScoutFindings).columns.map(c => c.name);
+    for (const c of ['dismissed_reason', 'dismissed_at', 'dismissed_by']) expect(cols).toContain(c);
+  });
+
   it('one finding per workspace and signature', () => {
     expect(uniques(qualityScoutFindings)).toContainEqual(['workspace_id', 'signature']);
+  });
+});
+
+// ── Runner-host parking ─────────────────────────────────────────────────────
+
+describe('parked runs', () => {
+  const parking = (over: Partial<ScoutRunParking> = {}): ScoutRunParking => ({
+    parkedAt: T0.toISOString(),
+    hostDeadline: new Date(T0.getTime() + 30 * 60_000).toISOString(),
+    runnerMaxDurationMs: 20 * 60_000,
+    profile: { capabilities: [] } as unknown as ScoutRunParking['profile'],
+    plan: {
+      candidatesGenerated: 1, candidatesTruncated: 0, decisionsAsked: 1, decisionFailures: 0, costCapHit: false,
+      stages: { profile: { ms: 1, costUsd: null }, signals: { ms: 0, costUsd: null }, generate: { ms: 0, costUsd: null }, select: { ms: 2, costUsd: 0.001 }, execute: { ms: 3, costUsd: null }, act: { ms: 0, costUsd: null } },
+      warnings: ['w'], deadlineHit: false, reproducibility: { a: 'deterministic' },
+    },
+    lease: null,
+    leaseLapses: 0,
+    ...over,
+  });
+  const at = (min: number) => new Date(T0.getTime() + min * 60_000);
+
+  it('awaiting_host is a run status', () => {
+    expect(SCOUT_RUN_STATUSES).toContain('awaiting_host');
+  });
+
+  it('expires at its deadline as no_runner_claimed when nobody ever held it', () => {
+    expect(scoutParkingExpiry(parking(), at(29))).toBeNull();
+    expect(scoutParkingExpiry(parking(), at(30))).toBe('no_runner_claimed');
+  });
+
+  it('a lease that lapses once is not yet expiry; twice is runner_host_lost, deadline or not', () => {
+    const held = parking({ lease: { holder: 'r', expiresAt: at(5).toISOString() } });
+    expect(scoutParkingExpiry(held, at(4))).toBeNull();
+    expect(scoutParkingExpiry(held, at(6))).toBeNull();
+    expect(scoutParkingExpiry({ ...held, leaseLapses: 1 }, at(6))).toBe('runner_host_lost');
+    expect(scoutParkingExpiry({ ...held, leaseLapses: 1 }, at(4))).toBeNull();
+    expect(scoutParkingExpiry(held, at(31))).toBe('runner_host_lost');
+  });
+
+  it('expires only runner probes without a result, as unsupported — never pass', () => {
+    const r = run();
+    const runner = { ...probe({ id: 'runner' }), host: 'runner' as const };
+    const server = { ...probe({ id: 'server' }), host: 'server' as const };
+    const done = executed(r, { exit: 0 }, { ...probe({ id: 'done' }), host: 'runner' as const } as ScoutProbeRecord);
+    const skipped = { ...scoutProbeRecord({ ...CANDIDATE, id: 'skip' }, { status: 'skipped', reason: 'deferred', reasonCode: null }), host: undefined };
+    const out = expireRunnerProbes(r, [runner, server, done, skipped], 'no_runner_claimed', T1);
+    expect(out.expired).toBe(1);
+    expect(out.probes[0].result).toMatchObject({ verdict: 'unsupported', reason: 'no_runner_claimed' });
+    expect(out.probes[1].result).toBeNull();
+    expect(out.probes[2]).toBe(done);
+    expect(out.probes[3].result).toBeNull();
+  });
+
+  it('a parked run and its probe hosts round-trip through their rows', () => {
+    const r: ScoutRun = { ...run(), status: 'awaiting_host', parking: parking({ lease: { holder: 'runner-1', expiresAt: at(25).toISOString() }, leaseLapses: 1 }) };
+    const row = { ...scoutRunRow(r), createdAt: T0 } as Parameters<typeof scoutRunFromRow>[0];
+    expect(row.hostLeaseLapses).toBe(1);
+    expect(scoutRunFromRow(row)).toEqual(r);
+    const p = { ...probe(), host: 'runner' as const };
+    const prow = { ...scoutProbeRow(r, p), id: 'x', createdAt: T0, updatedAt: T0 } as Parameters<typeof scoutProbeFromRow>[0];
+    expect(prow.host).toBe('runner');
+    expect(scoutProbeFromRow(prow)).toEqual(p);
+  });
+
+  it('a run that never parked writes no host state and reads back without parking', () => {
+    const row = { ...scoutRunRow(run()), createdAt: T0 } as Parameters<typeof scoutRunFromRow>[0];
+    expect(row.hostState).toBeNull();
+    expect(row.hostDeadline).toBeNull();
+    expect(scoutRunFromRow(row).parking).toBeNull();
   });
 });

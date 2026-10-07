@@ -17,15 +17,25 @@
  * a mission trigger and a periodic tick never exercise one commit twice.
  *
  * The server host is deliberately thin. It has no sandbox, so it offers no
- * command port (those probes are `unsupported`, honestly); it sends read-only
- * HTTP to a declared test environment and reads readiness at the candidate
- * SHA. A browser capture takes longer than a server run may live, so surface
- * probes are left to a runner-hosted run that passes its own ports.
+ * command port; it sends read-only HTTP to a declared test environment and
+ * reads readiness at the candidate SHA. A browser capture takes longer than a
+ * server run may live. Probes only a runner can host (command, capture,
+ * app-boot) go to a runner of the team that advertised `environment.scoutHost`
+ * for the repo in the last 15 minutes (`gitConfig.qualityScout.host: auto`,
+ * the default): the run executes its server probes, parks `awaiting_host`, and
+ * the hourly sweep (`finalizeExpiredQualityScoutRuns`) finalizes whatever no
+ * runner reported as `unsupported`. With no such runner, those candidates are
+ * skipped `no_host` before selection and the run never parks. `host: server`
+ * is the opt-out: a single-host run, exactly as before.
+ *
+ * `QUALITY_SCOUT_DISABLED=1` is the fleet kill switch: every trigger above
+ * resolves to mode `off`, whatever a workspace configured.
  */
 
 import { db } from '@buildd/core/db';
-import { qualityScoutFindings, qualityScoutProbes, qualityScoutRuns, workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig } from '@buildd/core/db/schema';
-import { and, desc, eq, inArray, isNotNull, lt, or, sql } from 'drizzle-orm';
+import { accounts, qualityScoutFindings, qualityScoutProbes, qualityScoutRuns, workerHeartbeats, workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig } from '@buildd/core/db/schema';
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, lt, lte, or, sql } from 'drizzle-orm';
+import { checkPublicHost, localDevHostsAllowed, type LookupAll } from '@buildd/core/net/public-address';
 import type { DecisionReceipt } from '@builddai/ai-kit/decide';
 import { computeReadiness } from '@buildd/core/workspace-readiness';
 import { discoverScoutCapabilities } from '@buildd/core/scout-capabilities';
@@ -38,17 +48,31 @@ import {
   resolveScoutMode,
   saveScoutProbes,
   saveScoutRun,
+  scoutProbeFromRow,
+  scoutRunFromRow,
   scoutRunRow,
 } from '@buildd/core/quality-scout/ledger';
 import { createScoutProbeDecider } from '@buildd/core/quality-scout/selector';
-import type { ScoutMode, ScoutRunTrigger } from '@buildd/core/quality-scout/types';
+import {
+  SCOUT_HOST_MODES,
+  type ScoutHostMode,
+  type ScoutHostNeed,
+  type ScoutMode,
+  type ScoutProbeRecord,
+  type ScoutRun,
+  type ScoutRunnerHostAdvert,
+  type ScoutRunTrigger,
+} from '@buildd/core/quality-scout/types';
 import { githubApi } from '@/lib/github';
 import { scheduleAfter, insertDecisionReceipts } from '@/lib/memory-decisions';
 import { gatherReadinessInput } from '@/lib/workspace-readiness-io';
 import { dbScoutActionStore, resolveScoutActionPolicy, type ScoutActionPolicy } from './quality-scout-actions';
 import {
+  clampRunnerDuration,
   clampScoutDuration,
+  finalizeExpiredScoutRun,
   runQualityScout,
+  scoutRunId,
   type ScoutRunDeps,
   type ScoutRunLedger,
   type ScoutRunOutcome,
@@ -64,6 +88,20 @@ const MIN_PERIODIC_HOURS = 1;
 const MAX_PERIODIC_HOURS = 24 * 30;
 /** Manual double-taps inside one bucket are one run; a deliberate re-run later is another. */
 const MANUAL_BUCKET_MS = 10 * 60_000;
+/**
+ * Manual runs per workspace per rolling hour. The dedupe bucket only folds a
+ * double tap on one SHA; different SHAs (or a script) each start a run.
+ */
+export const MANUAL_SCOUT_RUNS_PER_HOUR = 6;
+const MANUAL_RATE_WINDOW_MS = 3_600_000;
+
+type Env = Record<string, string | undefined>;
+
+/** The fleet kill switch. Strict: only `1` / `true` turn it on. */
+export function isQualityScoutDisabled(env: Env = process.env): boolean {
+  const v = env.QUALITY_SCOUT_DISABLED?.trim().toLowerCase();
+  return v === '1' || v === 'true';
+}
 
 export interface ScoutTriggerConfig {
   mode: ScoutMode;
@@ -73,19 +111,26 @@ export interface ScoutTriggerConfig {
   budget: { maxProbes?: number; maxCostUsd?: number | null };
   maxDurationMs: number;
   policy: ScoutActionPolicy;
+  /** `auto` (default): runner-only probes go to a runner when one is available. `server`: never. */
+  host: ScoutHostMode;
+  /** A runner's execution bound for a parked run (`budget.runnerMaxDurationMs`, default 20 min, max 60). */
+  runnerMaxDurationMs: number;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
-/** The one place `gitConfig.qualityScout` trigger/budget fields are read. Never throws. */
-export function resolveScoutTriggerConfig(raw: unknown): ScoutTriggerConfig {
+/**
+ * The one place `gitConfig.qualityScout` trigger/budget fields are read, and
+ * where the kill switch applies. Never throws.
+ */
+export function resolveScoutTriggerConfig(raw: unknown, env: Env = process.env): ScoutTriggerConfig {
   const c = isRecord(raw) ? raw : {};
   const triggers = isRecord(c.triggers) ? c.triggers : {};
   const budget = isRecord(c.budget) ? c.budget : {};
   const hours = triggers.periodicHours;
   return {
-    mode: resolveScoutMode(raw),
+    mode: isQualityScoutDisabled(env) ? 'off' : resolveScoutMode(raw),
     missionCandidate: triggers.missionCandidate !== false,
     periodicHours: finite(hours) && hours >= MIN_PERIODIC_HOURS && hours <= MAX_PERIODIC_HOURS ? hours : null,
     budget: {
@@ -97,6 +142,8 @@ export function resolveScoutTriggerConfig(raw: unknown): ScoutTriggerConfig {
       SERVER_SCOUT_MAX_DURATION_MS,
     ),
     policy: resolveScoutActionPolicy(raw),
+    host: (SCOUT_HOST_MODES as readonly unknown[]).includes(c.host) ? (c.host as ScoutHostMode) : 'auto',
+    runnerMaxDurationMs: clampRunnerDuration(finite(budget.runnerMaxDurationMs) ? budget.runnerMaxDurationMs : undefined),
   };
 }
 
@@ -172,6 +219,7 @@ export async function triggerQualityScout(input: ScoutTriggerInput, deps: ScoutT
       budget: cfg.budget,
       maxDurationMs: cfg.maxDurationMs,
       policy: cfg.policy,
+      host: { runnerMaxDurationMs: cfg.runnerMaxDurationMs },
       ...(input.trigger === 'manual' ? { dedupeKey: manualDedupeKey(deps.now()) } : {}),
     };
     return await deps.run(req, deps.buildRunDeps(ws, req));
@@ -204,45 +252,154 @@ export function scheduleMissionCandidateScout(
 
 export interface PeriodicScoutSweep {
   configured: number;
+  /** Owed a run: the period elapsed and, when checked, the head is new work. */
   due: number;
   scheduled: string[];
+  /** Period elapsed, but the head already has its automatic run: nothing to do. */
+  unchanged: number;
+  /** Period elapsed, but no repo or no resolvable head: the run would only skip. */
+  unrunnable: number;
   errors: number;
+}
+
+export interface PeriodicScoutDeps {
+  listConfigured(): Promise<Array<{ id: string; gitConfig: WorkspaceGitConfig | null }>>;
+  lastRunStartedAt(workspaceId: string): Promise<Date | null>;
+  loadWorkspace(id: string): Promise<ScoutWorkspace | null>;
+  headSha(ws: ScoutWorkspace, ref: string): Promise<string | null>;
+  /** The run row an automatic trigger on this SHA would claim, if it exists. */
+  autoRunState(runId: string): Promise<{ status: string; startedAt: Date } | null>;
+}
+
+export const dbPeriodicScoutDeps: PeriodicScoutDeps = {
+  listConfigured: () =>
+    db.select({ id: workspaces.id, gitConfig: workspaces.gitConfig }).from(workspaces)
+      .where(isNotNull(sql`${workspaces.gitConfig} -> 'qualityScout' -> 'triggers' -> 'periodicHours'`)),
+  async lastRunStartedAt(workspaceId) {
+    const [last] = await db.select({ startedAt: qualityScoutRuns.startedAt }).from(qualityScoutRuns)
+      .where(eq(qualityScoutRuns.workspaceId, workspaceId))
+      .orderBy(desc(qualityScoutRuns.startedAt))
+      .limit(1);
+    return last?.startedAt ?? null;
+  },
+  loadWorkspace: (id) => loadScoutWorkspace(id),
+  headSha: (ws, ref) => serverHeadSha(ws, ref),
+  async autoRunState(runId) {
+    const [row] = await db.select({ status: qualityScoutRuns.status, startedAt: qualityScoutRuns.startedAt }).from(qualityScoutRuns)
+      .where(eq(qualityScoutRuns.id, runId))
+      .limit(1);
+    return row ?? null;
+  },
+};
+
+/**
+ * Would a run on this SHA be refused as a duplicate? Mirrors `claimRun`: an
+ * existing row is taken over only when it failed, or its host died mid-run.
+ * A run parked `awaiting_host` is live, so its head counts as exercised.
+ */
+function headAlreadyExercised(state: { status: string; startedAt: Date } | null, now: Date, maxDurationMs: number): boolean {
+  if (!state || state.status === 'failed') return false;
+  if (state.status === 'running' && state.startedAt.getTime() < now.getTime() - 2 * maxDurationMs) return false;
+  return true;
 }
 
 /**
  * The periodic hook, on the hourly schedules tick: find workspaces that asked
  * for a periodic run and are due, and start at most `maxWorkspaces` of them
  * after the tick responds. Cheap when nobody opted in: one indexed query.
+ *
+ * Automatic runs share one row per (workspace, SHA), so a workspace whose
+ * default branch has not moved would only produce a `duplicate` skip — and,
+ * since that writes nothing, stay due every tick and hold a slot forever. So
+ * before a slot is spent, the head is resolved and checked against its run
+ * row; an unchanged or unrunnable workspace is counted and passed over. The
+ * resolved head is handed to the run, so it is looked up once per tick.
  */
 export async function runPeriodicQualityScouts(
   now: Date,
-  opts: { maxWorkspaces?: number; schedule?: (task: () => Promise<unknown>) => void } = {},
+  opts: { maxWorkspaces?: number; schedule?: (task: () => Promise<unknown>) => void; deps?: PeriodicScoutDeps; env?: Env } = {},
 ): Promise<PeriodicScoutSweep> {
-  const out: PeriodicScoutSweep = { configured: 0, due: 0, scheduled: [], errors: 0 };
+  const out: PeriodicScoutSweep = { configured: 0, due: 0, scheduled: [], unchanged: 0, unrunnable: 0, errors: 0 };
+  const env = opts.env ?? process.env;
+  if (isQualityScoutDisabled(env)) return out;
   const schedule = opts.schedule ?? scheduleAfter;
+  const deps = opts.deps ?? dbPeriodicScoutDeps;
   const max = opts.maxWorkspaces ?? 3;
-  const rows = await db.select({ id: workspaces.id, gitConfig: workspaces.gitConfig }).from(workspaces)
-    .where(isNotNull(sql`${workspaces.gitConfig} -> 'qualityScout' -> 'triggers' -> 'periodicHours'`));
+  const rows = await deps.listConfigured();
   for (const row of rows) {
-    const cfg = resolveScoutTriggerConfig(row.gitConfig?.qualityScout);
+    const cfg = resolveScoutTriggerConfig(row.gitConfig?.qualityScout, env);
     if (cfg.mode === 'off' || cfg.periodicHours === null) continue;
     out.configured++;
     try {
-      const [last] = await db.select({ startedAt: qualityScoutRuns.startedAt }).from(qualityScoutRuns)
-        .where(eq(qualityScoutRuns.workspaceId, row.id))
-        .orderBy(desc(qualityScoutRuns.startedAt))
-        .limit(1);
-      if (!isPeriodicScoutDue(cfg, last?.startedAt ?? null, now)) continue;
+      if (!isPeriodicScoutDue(cfg, await deps.lastRunStartedAt(row.id), now)) continue;
+      // Slots are full: still owed, checked on a later tick. No GitHub call.
+      if (out.scheduled.length >= max) { out.due++; continue; }
+      const ws = await deps.loadWorkspace(row.id);
+      if (!ws?.githubRepo?.installation) { out.unrunnable++; continue; }
+      const ref = defaultBranchOf(ws);
+      const sha = await deps.headSha(ws, ref);
+      if (!sha) { out.unrunnable++; continue; }
+      if (headAlreadyExercised(await deps.autoRunState(scoutRunId(ws.id, 'periodic', sha)), now, cfg.maxDurationMs)) {
+        out.unchanged++;
+        continue;
+      }
       out.due++;
-      if (out.scheduled.length >= max) continue;
       out.scheduled.push(row.id);
-      schedule(() => triggerQualityScout({ workspaceId: row.id, trigger: 'periodic' }));
+      schedule(() => triggerQualityScout({ workspaceId: row.id, trigger: 'periodic', ref, sha }));
     } catch (err) {
       out.errors++;
       console.warn('[quality-scout] periodic check failed (non-fatal):', err instanceof Error ? err.message : err);
     }
   }
   return out;
+}
+
+// ── Manual rate limit ───────────────────────────────────────────────────────
+
+export interface ManualScoutRateDeps {
+  /** Start times of the workspace's manual runs since `since`, any order. */
+  recentManualStarts(workspaceId: string, since: Date): Promise<Date[]>;
+}
+
+const dbManualScoutRateDeps: ManualScoutRateDeps = {
+  async recentManualStarts(workspaceId, since) {
+    const rows = await db.select({ startedAt: qualityScoutRuns.startedAt }).from(qualityScoutRuns)
+      .where(and(
+        eq(qualityScoutRuns.workspaceId, workspaceId),
+        eq(qualityScoutRuns.trigger, 'manual'),
+        gte(qualityScoutRuns.startedAt, since),
+      ))
+      .orderBy(asc(qualityScoutRuns.startedAt))
+      .limit(MANUAL_SCOUT_RUNS_PER_HOUR + 1);
+    return rows.map(r => r.startedAt);
+  },
+};
+
+/**
+ * At most MANUAL_SCOUT_RUNS_PER_HOUR manual runs per workspace in a rolling
+ * hour, counted from the run rows themselves (no extra store, holds across
+ * instances). Concurrent requests at the edge can overshoot by a request or
+ * two; this bounds a loop, it is not a quota. Fails open: an unreadable count
+ * allows the run, which is still bounded by budget and the dedupe bucket.
+ */
+export async function checkManualScoutRateLimit(
+  workspaceId: string,
+  now: Date,
+  deps: ManualScoutRateDeps = dbManualScoutRateDeps,
+): Promise<{ allowed: true } | { allowed: false; retryAfterSec: number }> {
+  try {
+    const starts = (await deps.recentManualStarts(workspaceId, new Date(now.getTime() - MANUAL_RATE_WINDOW_MS)))
+      .map(d => d.getTime())
+      .filter(t => t > now.getTime() - MANUAL_RATE_WINDOW_MS)
+      .sort((a, b) => a - b);
+    if (starts.length < MANUAL_SCOUT_RUNS_PER_HOUR) return { allowed: true };
+    // The run that must age out for one more to fit.
+    const blocker = starts[starts.length - MANUAL_SCOUT_RUNS_PER_HOUR];
+    return { allowed: false, retryAfterSec: Math.max(1, Math.ceil((blocker + MANUAL_RATE_WINDOW_MS - now.getTime()) / 1000)) };
+  } catch (err) {
+    console.warn('[quality-scout] manual rate-limit read failed (allowing):', err instanceof Error ? err.message : err);
+    return { allowed: true };
+  }
 }
 
 // ── DB-backed run ledger ────────────────────────────────────────────────────
@@ -258,7 +415,8 @@ export const dbScoutRunLedger: ScoutRunLedger = {
       .returning({ id: qualityScoutRuns.id });
     if (inserted.length > 0) return 'claimed';
     // Take over a failed attempt, or one whose host died mid-run. Atomic: two
-    // takers race on this WHERE and one gets the row.
+    // takers race on this WHERE and one gets the row. A run parked
+    // `awaiting_host` is live — never taken over; the expiry sweep ends it.
     const { id: _id, workspaceId: _ws, ...rest } = row;
     const taken = await db.update(qualityScoutRuns).set({ ...rest, metrics: null, error: null })
       .where(and(
@@ -277,32 +435,198 @@ export const dbScoutRunLedger: ScoutRunLedger = {
   resolveForPass: (run, probe) => resolveScoutFindingsForPass(run, probe),
 };
 
+// ── Runner host availability ────────────────────────────────────────────────
+
+/** A runner counts as a Scout host only if it advertised one this recently. */
+export const SCOUT_RUNNER_HOST_WINDOW_MS = 15 * 60_000;
+
+const ADVERT_NEEDS: ReadonlyArray<[keyof ScoutRunnerHostAdvert, ScoutHostNeed]> = [
+  ['command', 'command'],
+  ['capture', 'capture'],
+  ['appBoot', 'app-boot'],
+];
+
+/**
+ * What the given heartbeat environments can host for `repoFullName`: the
+ * union of every advert naming that repo (case-insensitive). Pure; malformed
+ * adverts count for nothing.
+ */
+export function scoutRunnerNeeds(environments: readonly unknown[], repoFullName: string): Set<ScoutHostNeed> {
+  const out = new Set<ScoutHostNeed>();
+  const repo = repoFullName.toLowerCase();
+  for (const env of environments) {
+    const advert = isRecord(env) && isRecord(env.scoutHost) ? env.scoutHost : null;
+    if (!advert || !Array.isArray(advert.repos)) continue;
+    if (!advert.repos.some((r) => typeof r === 'string' && r.toLowerCase() === repo)) continue;
+    for (const [key, need] of ADVERT_NEEDS) if (advert[key] === true) out.add(need);
+  }
+  return out;
+}
+
+/** Recent heartbeats of the workspace's team that advertise a Scout host. */
+async function loadScoutRunnerNeeds(ws: ScoutWorkspace, now: Date): Promise<Set<ScoutHostNeed>> {
+  if (!ws.githubRepo) return new Set();
+  const rows = await db.select({ environment: workerHeartbeats.environment })
+    .from(workerHeartbeats)
+    .innerJoin(accounts, eq(accounts.id, workerHeartbeats.accountId))
+    .where(and(
+      eq(accounts.teamId, ws.teamId),
+      gt(workerHeartbeats.lastHeartbeatAt, new Date(now.getTime() - SCOUT_RUNNER_HOST_WINDOW_MS)),
+      isNotNull(sql`${workerHeartbeats.environment} -> 'scoutHost'`),
+    ))
+    .limit(50);
+  return scoutRunnerNeeds(rows.map((r) => r.environment), ws.githubRepo.fullName);
+}
+
+// ── Parked-run expiry ───────────────────────────────────────────────────────
+
+export interface ExpiredScoutSweep {
+  expired: number;
+  finalized: string[];
+  /** Another sweep (or a runner's last result) got there first. */
+  raced: number;
+  errors: number;
+}
+
+export interface ExpiredScoutDeps {
+  now(): Date;
+  /** Parked runs past their deadline, or whose lease lapsed a second time. Oldest deadline first. */
+  listExpired(now: Date, limit: number): Promise<ScoutRun[]>;
+  /** Atomic hand-off from `awaiting_host` to this sweep; false when someone else took it. */
+  take(runId: string): Promise<boolean>;
+  loadProbes(runId: string): Promise<ScoutProbeRecord[]>;
+  loadWorkspace(id: string): Promise<ScoutWorkspace | null>;
+  /** `ws` is null when the workspace is gone; staleness then reads `unknown`. */
+  finalizeDeps(ws: ScoutWorkspace | null, run: ScoutRun): Pick<ScoutRunDeps, 'now' | 'ledger' | 'actions' | 'headSha'>;
+}
+
+const dbExpiredScoutDeps: ExpiredScoutDeps = {
+  now: () => new Date(),
+  async listExpired(now, limit) {
+    const rows = await db.select().from(qualityScoutRuns)
+      .where(and(
+        eq(qualityScoutRuns.status, 'awaiting_host'),
+        or(
+          lte(qualityScoutRuns.hostDeadline, now),
+          and(lte(qualityScoutRuns.hostLeaseExpiresAt, now), gte(qualityScoutRuns.hostLeaseLapses, 1)),
+        ),
+      ))
+      .orderBy(asc(qualityScoutRuns.hostDeadline))
+      .limit(limit);
+    return rows.map(scoutRunFromRow);
+  },
+  async take(runId) {
+    // Flipping to `running` is the lock: only one sweep (or runner finalize)
+    // wins this WHERE. finalize then writes `completed`. If it dies between
+    // the two, the row reads as a dead `running` run, which a re-trigger takes
+    // over and re-plans — re-run, never silently passed.
+    const rows = await db.update(qualityScoutRuns).set({ status: 'running' })
+      .where(and(eq(qualityScoutRuns.id, runId), eq(qualityScoutRuns.status, 'awaiting_host')))
+      .returning({ id: qualityScoutRuns.id });
+    return rows.length > 0;
+  },
+  async loadProbes(runId) {
+    const rows = await db.select().from(qualityScoutProbes).where(eq(qualityScoutProbes.runId, runId));
+    return rows.map(scoutProbeFromRow);
+  },
+  loadWorkspace: (id) => loadScoutWorkspace(id),
+  finalizeDeps: (ws, run) => ({
+    now: () => new Date(),
+    ledger: dbScoutRunLedger,
+    actions: dbScoutActionStore,
+    headSha: async () => (ws ? serverHeadSha(ws, run.candidate.ref) : null),
+  }),
+};
+
+/**
+ * The hourly sweep for parked runs nobody finished: past `hostDeadline`, or a
+ * lease that lapsed twice. Their unexecuted runner probes are finalized
+ * `unsupported` (`no_runner_claimed` / `runner_host_lost`) — never `pass`,
+ * never dropped — and the run completes with the server's own results. Runs
+ * even with the kill switch on: a parked run must still end. Never throws per
+ * run; one bad run is counted and the sweep goes on.
+ */
+export async function finalizeExpiredQualityScoutRuns(
+  opts: { limit?: number; deps?: ExpiredScoutDeps } = {},
+): Promise<ExpiredScoutSweep> {
+  const deps = opts.deps ?? dbExpiredScoutDeps;
+  const out: ExpiredScoutSweep = { expired: 0, finalized: [], raced: 0, errors: 0 };
+  const now = deps.now();
+  const runs = await deps.listExpired(now, opts.limit ?? 20);
+  for (const run of runs) {
+    out.expired++;
+    try {
+      if (!(await deps.take(run.id))) { out.raced++; continue; }
+      const [records, ws] = await Promise.all([deps.loadProbes(run.id), deps.loadWorkspace(run.workspaceId)]);
+      const finalizeDeps = deps.finalizeDeps(ws, run);
+      const policy = resolveScoutTriggerConfig(ws?.gitConfig?.qualityScout).policy;
+      const result = await finalizeExpiredScoutRun(run, records, { ...finalizeDeps, now: () => now }, { policy });
+      if (result?.status === 'completed') out.finalized.push(run.id);
+      else out.errors++;
+    } catch (err) {
+      out.errors++;
+      console.warn('[quality-scout] expiry finalize failed (non-fatal):', err instanceof Error ? err.message : err);
+    }
+  }
+  return out;
+}
+
 // ── Server host ─────────────────────────────────────────────────────────────
 
 const MAX_BODY_EXCERPT = 2_000;
 const MAX_CHANGED_FILES = 300;
 const READ_ONLY = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+const MAX_REDIRECT_HOPS = 5;
+
 /**
  * Read-only HTTP to the declared test environment. A write method is refused
  * here as well as by the planner. The exchange is recorded on the run's probe
  * row (`result.observed`), which is what the evidence ref names.
+ *
+ * The URL comes from workspace config, so it is treated as untrusted: every
+ * hop's host must resolve only to public addresses (the shared
+ * `checkPublicHost` guard — no private, loopback, link-local or metadata
+ * targets; loopback only outside production), and redirects are walked by
+ * hand: a same-host hop is followed (up to MAX_REDIRECT_HOPS), a hop to any
+ * other host is not — that 3xx is what gets recorded. A refused target is no
+ * response (`status: null`), nothing sent.
  */
-export function serverHttpPort(fetchImpl: typeof fetch = fetch): NonNullable<ScoutProbePorts['http']> {
+export function serverHttpPort(
+  fetchImpl: typeof fetch = fetch,
+  opts: { lookup?: LookupAll; allowLocal?: boolean } = {},
+): NonNullable<ScoutProbePorts['http']> {
+  const allowLocal = opts.allowLocal ?? localDevHostsAllowed();
   return {
     appBaseUrl: null,
     async request(req: ScoutHttpRequest): Promise<ScoutHttpResponse> {
-      if (!READ_ONLY.has(req.method.toUpperCase())) return { status: null };
+      const method = req.method.toUpperCase();
+      if (!READ_ONLY.has(method)) return { status: null };
       const started = Date.now();
       try {
-        const res = await fetchImpl(req.url, { method: req.method, redirect: 'follow', signal: AbortSignal.timeout(req.timeoutMs) });
-        const body = req.method.toUpperCase() === 'HEAD' ? '' : await res.text();
+        const signal = AbortSignal.timeout(req.timeoutMs);
+        const origin = new URL(req.url);
+        let url = origin;
+        let res: Response;
+        for (let hop = 0; ; hop++) {
+          if (await checkPublicHost(url.hostname, { lookup: opts.lookup, allowLocal })) {
+            return { status: null, durationMs: Date.now() - started };
+          }
+          res = await fetchImpl(url.toString(), { method: req.method, redirect: 'manual', signal });
+          const location = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
+          if (!location || hop >= MAX_REDIRECT_HOPS) break;
+          const next = new URL(location, url);
+          if (next.host !== origin.host || next.protocol !== origin.protocol) break;
+          await res.body?.cancel().catch(() => {});
+          url = next;
+        }
+        const body = method === 'HEAD' ? '' : await res.text();
         return {
           status: res.status,
-          finalUrl: res.url || req.url,
+          finalUrl: url.toString(),
           bodyExcerpt: body.slice(0, MAX_BODY_EXCERPT),
           durationMs: Date.now() - started,
-          evidenceRef: `scout-probe-row:${req.method.toUpperCase()} ${new URL(req.url).pathname}`,
+          evidenceRef: `scout-probe-row:${method} ${origin.pathname}`,
         };
       } catch {
         return { status: null, durationMs: Date.now() - started };
@@ -381,6 +705,10 @@ export function buildServerScoutRunDeps(ws: ScoutWorkspace, req: ScoutRunRequest
     ledger: dbScoutRunLedger,
     actions: dbScoutActionStore,
     headSha: () => serverHeadSha(ws, req.candidate.ref),
+    // `host: server` leaves this out: a single-host run, exactly as before.
+    ...(resolveScoutTriggerConfig(ws.gitConfig?.qualityScout).host === 'auto'
+      ? { runnerHost: () => loadScoutRunnerNeeds(ws, new Date()) }
+      : {}),
   };
 }
 

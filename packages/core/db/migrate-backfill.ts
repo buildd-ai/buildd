@@ -60,14 +60,17 @@ export interface DerivedAssertions {
 }
 
 const ID = '"?([A-Za-z0-9_]+)"?';
+// A table reference. drizzle-kit writes `"tasks"`; the squashed baseline is a
+// pg_dump, which writes `public.tasks` and `ALTER TABLE ONLY public.tasks`.
+const TABLE = `(?:ONLY\\s+)?(?:"?public"?\\.)?${ID}`;
 
 const PATTERNS: Array<{ re: RegExp; build: (m: RegExpExecArray) => Assertion[] }> = [
   {
-    re: new RegExp(`^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${ID}`, 'i'),
+    re: new RegExp(`^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${TABLE}`, 'i'),
     build: (m) => [{ kind: 'table_exists', target: m[1]! }],
   },
   {
-    re: new RegExp(`^DROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?${ID}`, 'i'),
+    re: new RegExp(`^DROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?${TABLE}`, 'i'),
     build: (m) => [{ kind: 'table_absent', target: m[1]! }],
   },
   {
@@ -83,36 +86,36 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpExecArray) => Assertion[] }
   },
   {
     re: new RegExp(
-      `^ALTER\\s+TABLE\\s+${ID}\\s+ADD\\s+COLUMN\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${ID}`,
+      `^ALTER\\s+TABLE\\s+${TABLE}\\s+ADD\\s+COLUMN\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${ID}`,
       'i',
     ),
     build: (m) => [{ kind: 'column_exists', target: `${m[1]}.${m[2]}` }],
   },
   {
-    re: new RegExp(`^ALTER\\s+TABLE\\s+${ID}\\s+DROP\\s+COLUMN\\s+(?:IF\\s+EXISTS\\s+)?${ID}`, 'i'),
+    re: new RegExp(`^ALTER\\s+TABLE\\s+${TABLE}\\s+DROP\\s+COLUMN\\s+(?:IF\\s+EXISTS\\s+)?${ID}`, 'i'),
     build: (m) => [{ kind: 'column_absent', target: `${m[1]}.${m[2]}` }],
   },
   {
-    re: new RegExp(`^ALTER\\s+TABLE\\s+${ID}\\s+RENAME\\s+COLUMN\\s+${ID}\\s+TO\\s+${ID}`, 'i'),
+    re: new RegExp(`^ALTER\\s+TABLE\\s+${TABLE}\\s+RENAME\\s+COLUMN\\s+${ID}\\s+TO\\s+${ID}`, 'i'),
     build: (m) => [
       { kind: 'column_absent', target: `${m[1]}.${m[2]}` },
       { kind: 'column_exists', target: `${m[1]}.${m[3]}` },
     ],
   },
   {
-    re: new RegExp(`^ALTER\\s+TABLE\\s+${ID}\\s+RENAME\\s+TO\\s+${ID}`, 'i'),
+    re: new RegExp(`^ALTER\\s+TABLE\\s+${TABLE}\\s+RENAME\\s+TO\\s+${ID}`, 'i'),
     build: (m) => [
       { kind: 'table_absent', target: m[1]! },
       { kind: 'table_exists', target: m[2]! },
     ],
   },
   {
-    re: new RegExp(`^ALTER\\s+TABLE\\s+${ID}\\s+ADD\\s+CONSTRAINT\\s+${ID}`, 'i'),
+    re: new RegExp(`^ALTER\\s+TABLE\\s+${TABLE}\\s+ADD\\s+CONSTRAINT\\s+${ID}`, 'i'),
     build: (m) => [{ kind: 'constraint_exists', target: `${m[1]}.${m[2]}` }],
   },
   {
     re: new RegExp(
-      `^ALTER\\s+TABLE\\s+${ID}\\s+DROP\\s+CONSTRAINT\\s+(?:IF\\s+EXISTS\\s+)?${ID}`,
+      `^ALTER\\s+TABLE\\s+${TABLE}\\s+DROP\\s+CONSTRAINT\\s+(?:IF\\s+EXISTS\\s+)?${ID}`,
       'i',
     ),
     build: (m) => [{ kind: 'constraint_absent', target: `${m[1]}.${m[2]}` }],
@@ -294,8 +297,9 @@ export async function backfillTrackingRows(request: BackfillRequest): Promise<Ba
         `so they never ran. Recording a tracking row would make the skip permanent.\n` +
         `${contradicted.join('\n')}\n` +
         `Fix: write a reconciliation migration that re-issues the equivalent idempotent DDL under ` +
-        `current names (see packages/core/drizzle/0074_reconcile_missions_secret_refs_drift.sql) ` +
-        `and deploy that. Do NOT hand-insert tracking rows.`,
+        `current names ` +
+        `and deploy that (git history before the migration squash has worked examples, e.g. ` +
+        `0074_reconcile_missions_secret_refs_drift.sql). Do NOT hand-insert tracking rows.`,
     );
   }
 

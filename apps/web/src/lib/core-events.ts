@@ -161,6 +161,8 @@ export type CoreEvent =
     }
   /** A team row and its owner membership are written. */
   | { type: 'team.created'; teamId: string }
+  /** A workspace row is written (POST /api/workspaces). `origin` is the request origin, for OAuth callbacks. */
+  | { type: 'workspace.created'; workspaceId: string; teamId: string; origin: string }
   /**
    * A PR merged. `delivery` is present when the GitHub webhook delivered the
    * merge (every delivery, redeliveries included); reconciliation emits the
