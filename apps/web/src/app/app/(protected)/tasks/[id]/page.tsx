@@ -1,4 +1,5 @@
 import { Suspense } from 'react';
+import { after } from 'next/server';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
@@ -269,8 +270,10 @@ export default async function TaskDetailPage({
     task.id,
   );
 
-  // Read-through refresh: if the latest worker is completed with an open PR,
-  // check GitHub in case the merged webhook was missed.
+  // Read-through PR fact import: if the latest worker is completed with an
+  // open PR, check GitHub in case the merged webhook was missed. Enqueued after
+  // the response, never written during the render (spec workflow-state-kernel
+  // §11): this render shows what is stored, the next one what the import found.
   if (task.status === 'completed' && task.workspaceId) {
     const latestWorker = taskWorkers[0];
     if (latestWorker?.prNumber && !latestWorker?.mergedAt && latestWorker?.prUrl) {
@@ -281,19 +284,9 @@ export default async function TaskDetailPage({
       });
       const installId = wsWithInstall?.githubInstallation?.installationId;
       if (installId) {
-        const refreshed = await refreshWorkerMergeStateIfStale(
-          { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl },
-          installId,
-        );
-        if (refreshed) {
-          const updatedWorkers = await db.query.workers.findMany({
-            where: eq(workers.taskId, id),
-            orderBy: desc(workers.createdAt),
-            // Must match the shape above: these rows replace the ones there.
-            with: { account: { columns: { name: true, authType: true } } },
-          });
-          taskWorkers.splice(0, taskWorkers.length, ...updatedWorkers);
-        }
+        const stale = { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl };
+        after(() => refreshWorkerMergeStateIfStale(stale, installId).catch((err) =>
+          console.error('[task-page] PR fact import failed (non-fatal):', err)));
       }
     }
   }

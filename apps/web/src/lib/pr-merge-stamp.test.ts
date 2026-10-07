@@ -12,22 +12,18 @@ import { and, isNull } from 'drizzle-orm';
 // Predicates are rendered through PgDialect, not asserted against a mocked
 // `db`: a mocked db cannot see what a WHERE clause actually scopes to.
 
-let captured: { set?: Record<string, unknown>; where?: unknown } = {};
-const returned: Array<{ id: string; taskId: string | null }> = [];
-
-mock.module('@buildd/core/db', () => ({
-  db: {
-    update: () => ({
-      set: (set: Record<string, unknown>) => {
-        captured.set = set;
-        return {
-          where: (where: unknown) => {
-            captured.where = where;
-            return { returning: async () => returned };
-          },
-        };
-      },
-    }),
+// The write goes through the PR fact funnel (`recordPrFact`); its terminal-wins
+// SQL runs on real Postgres in tests/db/pr-facts.test.ts. Here we assert the
+// target and fact this wrapper hands over, and render the funnel's own
+// statement for that target to prove the scoping.
+const realPrFacts = await import('@buildd/core/pr-facts');
+const recordedFacts: Array<{ target: any; fact: any; opts?: any }> = [];
+let recordPrFactRows: Array<{ id: string; taskId: string | null; workspaceId: string | null; previousStatus: string | null }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  ...realPrFacts,
+  recordPrFact: async (target: unknown, fact: unknown, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return recordPrFactRows;
   },
 }));
 
@@ -39,49 +35,54 @@ const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
 const PR_URL = 'https://github.com/example-org/example-repo/pull/416';
 
 beforeEach(() => {
-  captured = {};
-  returned.length = 0;
+  recordedFacts.length = 0;
+  recordPrFactRows = [];
 });
 
 describe('stampPrMergedOnAllRows', () => {
-  it('scopes the update to every unmerged row carrying the PR, not to one worker id', async () => {
+  it('scopes the merge fact to every row carrying the PR, not to one worker id', async () => {
     const mergedAt = new Date('2026-09-01T12:00:00Z');
     await stampPrMergedOnAllRows({ prUrl: PR_URL, prNumber: 416, mergedAt });
 
-    const q = dialect.sqlToQuery(captured.where as any);
+    expect(recordedFacts).toHaveLength(1);
+    const { target, fact } = recordedFacts[0];
+    expect(target).toEqual({ prUrl: PR_URL, prNumber: 416 });
+    expect(fact).toEqual({ kind: 'merged', mergedAt });
+
+    // The funnel's statement for that target: keyed on the PR identity,
+    // guarded on merged_at, never keyed on a single row id.
+    const q = dialect.sqlToQuery(realPrFacts.recordPrFactSql(target, fact)!);
     const text = norm(q.sql);
-    expect(text).toContain('"workers"."pr_number" = $');
-    expect(text).toContain('"workers"."pr_url" = $');
-    expect(text).toContain('"workers"."merged_at" is null');
-    // Never keyed on a single row.
-    expect(text).not.toContain('"workers"."id"');
+    expect(text).toContain('w.pr_url = $');
+    expect(text).toContain('w.pr_number = $');
+    expect(text).toContain('w.merged_at IS NULL');
+    expect(text).not.toMatch(/w\.id = \$\d+/);
     expect(q.params).toContain(416);
     expect(q.params).toContain(PR_URL);
-
-    expect(captured.set?.mergedAt).toEqual(mergedAt);
-    expect(captured.set?.prLifecycleStatus).toBe('merged');
   });
 
-  it('carries extra columns (the heal paths stamp verification times too)', async () => {
+  it('carries bookkeeping (the heal paths stamp verification times too)', async () => {
     const now = new Date('2026-09-01T12:05:00Z');
     await stampPrMergedOnAllRows({
-      prUrl: PR_URL, prNumber: 416, mergedAt: now, extra: { prLastVerifiedAt: now, prCheckFailureCount: 0 },
+      prUrl: PR_URL, prNumber: 416, mergedAt: now, bookkeeping: { prLastVerifiedAt: now, prCheckFailureCount: 0 },
     });
-    expect(captured.set?.prLastVerifiedAt).toEqual(now);
-    expect(captured.set?.prCheckFailureCount).toBe(0);
-    expect(captured.set?.prLifecycleStatus).toBe('merged');
+    expect(recordedFacts[0].fact).toEqual({ kind: 'merged', mergedAt: now });
+    expect(recordedFacts[0].opts?.bookkeeping).toEqual({ prLastVerifiedAt: now, prCheckFailureCount: 0 });
   });
 
   it('returns the rows it stamped', async () => {
-    returned.push({ id: 'w-owner', taskId: 't-owner' }, { id: 'w-retry', taskId: 't-retry' });
+    recordPrFactRows = [
+      { id: 'w-owner', taskId: 't-owner', workspaceId: 'ws1', previousStatus: 'ci_green' },
+      { id: 'w-retry', taskId: 't-retry', workspaceId: 'ws1', previousStatus: null },
+    ];
     const rows = await stampPrMergedOnAllRows({ prUrl: PR_URL, prNumber: 416, mergedAt: new Date() });
-    expect(rows.map(r => r.id)).toEqual(['w-owner', 'w-retry']);
+    expect(rows).toEqual([{ id: 'w-owner', taskId: 't-owner' }, { id: 'w-retry', taskId: 't-retry' }]);
   });
 
   it('refuses a PR identity it cannot scope (never an unscoped UPDATE)', async () => {
     const rows = await stampPrMergedOnAllRows({ prUrl: '', prNumber: 416, mergedAt: new Date() });
     expect(rows).toEqual([]);
-    expect(captured.where).toBeUndefined();
+    expect(recordedFacts).toHaveLength(0);
   });
 });
 

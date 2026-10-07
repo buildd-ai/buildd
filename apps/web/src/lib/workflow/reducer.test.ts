@@ -241,6 +241,22 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     expect(foreign.toState).toBe('AWAITING_PUSH');
     expect(foreign.evidence.proof).toEqual({ holds: false, reason: 'live_head_missing_local' });
     expect(applied(h(v, 'X9', { proof: { liveContainsLocal: true } })).toState).toBe('AWAITING_REVIEW');
+    // A head that fails the proof re-arms push_recovery from that head.
+    expect(foreign.effects.find((e) => e.kind === 'push_recovery')?.dedupeKey).toBe(`push_recovery:d1:L2:head:X9`);
+  });
+  test('AWAITING_PUSH (owner, no ledger row): L is the pending local head; proof holds → round 1 at the pushed head', () => {
+    const v = V(D({ state: 'AWAITING_PUSH', currentRound: 0, currentHeadSha: 'H1', boundAttemptId: null, pushPendingLocalHead: 'L5' }));
+    const ok = applied(h(v, 'L5'));
+    expect(ok.toState).toBe('AWAITING_REVIEW');
+    expect(ok.patch).toMatchObject({ currentHeadSha: 'L5', currentRound: 1 });
+    expect(effectKinds(ok)).toContain('dispatch_review');
+    const other = applied(h(v, 'H7'));
+    expect(other.toState).toBe('AWAITING_PUSH');
+    expect(other.evidence.proof).toEqual({ holds: false, reason: 'live_head_missing_local' });
+    // Unknown L (reaped before reporting): moved off Hb plus a changed content diff.
+    const unknown = V(D({ state: 'AWAITING_PUSH', currentHeadSha: 'H1', pushPendingLocalHead: null }));
+    expect(applied(h(unknown, 'H2')).toState).toBe('AWAITING_PUSH');
+    expect(applied(h(unknown, 'H2', { proof: { liveContainsLocal: false, contentDiffChanged: true } })).toState).toBe('AWAITING_REVIEW');
   });
   test('REPAIRING: proof → new round, or APPROVED by carry-forward (T11/T13); no proof records only', () => {
     const v = V(D({ state: 'REPAIRING', stateReason: 'behind', approvedHeads: ['H1'], approvalBasis: 'verdict', boundAttemptId: 'm1' }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', status: 'running', triggerReason: 'behind' })]);

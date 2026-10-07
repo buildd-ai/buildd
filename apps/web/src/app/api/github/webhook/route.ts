@@ -38,7 +38,7 @@ import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { recordPrReverts } from '@/lib/pr-reverts';
-import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
+import { recordPrFact } from '@buildd/core/pr-facts';
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
@@ -236,8 +236,9 @@ async function backLinkInstallationRepos(installationId: number, source: string)
 }
 
 const DEFAULT_INBOUND_LABELS = ['buildd', 'ai'];
-// PR lifecycle statuses that must not be overwritten by any later CI event:
-// TERMINAL_PR_LIFECYCLE (merged, closed, unresolvable) via isTerminalPrLifecycle.
+// PR lifecycle statuses are written only through recordPrFact
+// (@buildd/core/pr-facts), which keeps merged/closed/unresolvable terminal and
+// drops a CI fact for a SHA that is no longer the PR's head.
 
 /**
  * Create a buildd task from a labeled GitHub issue (spec §3). Idempotent per
@@ -379,11 +380,13 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         where: workerOwnsPr(repository.full_name, pr.number),
         columns: { id: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
       });
-      if (worker && !isTerminalPrLifecycle(worker.prLifecycleStatus)) {
-        await db
-          .update(workers)
-          .set({ prLifecycleStatus: 'ci_running', updatedAt: new Date() })
-          .where(eq(workers.id, worker.id));
+      // A CI fact on the fact cache (recordPrFact): a merged or closed PR keeps
+      // its terminal status, and a suite for a SHA that is no longer the PR's
+      // head is dropped (§16 S6).
+      const applied = worker
+        ? await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: 'ci_running', headSha: check_suite.head_sha, currentHeadSha: pr.head?.sha ?? null })
+        : [];
+      if (worker && applied.length > 0) {
         await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
           taskId: worker.taskId,
         });
@@ -408,11 +411,10 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         where: workerOwnsPr(repository.full_name, pr.number),
         columns: { id: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
       });
-      if (worker && !isTerminalPrLifecycle(worker.prLifecycleStatus)) {
-        await db
-          .update(workers)
-          .set({ prLifecycleStatus: 'ci_failed', updatedAt: new Date() })
-          .where(eq(workers.id, worker.id));
+      const applied = worker
+        ? await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: 'ci_failed', headSha, currentHeadSha: pr.head?.sha ?? null })
+        : [];
+      if (worker && (applied.length > 0 || (worker.prLifecycleStatus === 'ci_failed' && (!pr.head?.sha || pr.head.sha === headSha)))) {
         await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
           taskId: worker.taskId,
         });
@@ -468,15 +470,11 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
 
         // Mark CI as green — used by pr_checks_green loop exit condition evaluation.
         // Skip if the PR is already in a terminal state (merged/closed wins).
-        if (!isTerminalPrLifecycle(worker.prLifecycleStatus)) {
-          await db
-            .update(workers)
-            .set({ prLifecycleStatus: 'ci_green', updatedAt: new Date() })
-            .where(eq(workers.id, worker.id));
-          // Model policy: every check suite passed on the run's PR.
-          if (worker.prLifecycleStatus !== 'ci_green') {
-            await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: true }]);
-          }
+        // A merged or closed PR keeps its terminal status (recordPrFact).
+        const greened = await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: 'ci_green', headSha, currentHeadSha: pr.head?.sha ?? null });
+        // Model policy: every check suite passed on the run's PR (once per transition to green).
+        if (greened.length > 0) {
+          await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: true }]);
         }
 
         // Resolve merge policy via the single precedence chain:
@@ -625,6 +623,7 @@ async function handlePullRequestEvent(event: {
     title?: string;
     body?: string | null;
     merged: boolean;
+    merged_at?: string | null;
     draft?: boolean;
     merge_commit_sha?: string | null;
     head: { ref: string; sha: string; repo?: { full_name: string } | null };
@@ -803,38 +802,15 @@ async function handlePullRequestEvent(event: {
       orderBy: [desc(workers.createdAt)],
     });
     if (openWorker) {
-      // Detect merge conflicts: when GitHub explicitly reports mergeable=false, stamp
-      // the conflict status and record the first time it was observed for conflictDeadDays.
-      const isConflicted = pr.mergeable === false;
-      const lifecycleUpdate: Record<string, unknown> = { updatedAt: new Date() };
-      if (isConflicted) {
-        lifecycleUpdate.prLifecycleStatus = 'conflict';
-        // Only set conflictDetectedAt on the FIRST conflict observation (never overwrite).
-        // Check the existing row — Drizzle doesn't support conditional SET in one shot,
-        // so we use a second update with a WHERE guard.
-        lifecycleUpdate.conflictDetectedAt = new Date(); // provisional; guarded below
-      } else {
-        lifecycleUpdate.prLifecycleStatus = 'pr_open';
-      }
-      // Track PR draft status from webhook payload
-      lifecycleUpdate.prIsDraft = pr.draft ?? null;
-
-      await db
-        .update(workers)
-        .set(lifecycleUpdate)
-        .where(
-          isConflicted
-            ? and(eq(workers.id, openWorker.id), isNull(workers.conflictDetectedAt))
-            : eq(workers.id, openWorker.id),
-        );
-
-      // If conflict but conflictDetectedAt already set, still update prLifecycleStatus
-      if (isConflicted) {
-        await db
-          .update(workers)
-          .set({ prLifecycleStatus: 'conflict', updatedAt: new Date() })
-          .where(and(eq(workers.id, openWorker.id), not(isNull(workers.conflictDetectedAt))));
-      }
+      // A fact for the fact cache (recordPrFact): mergeable=false is a
+      // conflict (first-seen conflictDetectedAt), anything else is an open PR.
+      // A late open-state event for a PR that already merged or closed changes
+      // nothing (terminal wins, §16 S6); only `reopened` lifts a close.
+      await recordPrFact(
+        { workerId: openWorker.id },
+        pr.mergeable === false ? { kind: 'conflict' } : { kind: 'open', reopened: action === 'reopened' },
+        { bookkeeping: { prIsDraft: pr.draft ?? null } },
+      );
 
       await triggerEvent(channels.workspace(openWorker.workspaceId), events.WORKER_PROGRESS, {
         taskId: openWorker.taskId,
@@ -1039,7 +1015,8 @@ async function handlePullRequestEvent(event: {
       await stampPrMergedOnAllRows({
         prUrl: prUrlFor(repository.full_name, pr.number),
         prNumber: pr.number,
-        mergedAt: new Date(),
+        // GitHub's clock, not receipt time (§12).
+        mergedAt: pr.merged_at ?? new Date(),
       });
       // Model policy: the merge, once (a redelivery is not a second merge).
       // A close without merge is not reported: superseded and abandoned PRs
@@ -1062,11 +1039,9 @@ async function handlePullRequestEvent(event: {
         }
       }
     } else {
-      // PR closed without merge (abandoned/superseded)
-      await db
-        .update(workers)
-        .set({ prLifecycleStatus: 'closed', updatedAt: new Date() })
-        .where(eq(workers.id, worker.id));
+      // PR closed without merge (abandoned/superseded): every row carrying the
+      // PR, never over a merge (recordPrFact).
+      await recordPrFact({ prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number }, { kind: 'closed' });
     }
     await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
@@ -1492,7 +1467,7 @@ async function handleReleasePrCiSuccess(
       const releaseResult = {
         status: 'completed' as const,
         message: `Release: completed — PR #${prNumber} merged to ${repoFullName}`,
-        mergedAt: new Date().toISOString(),
+        mergedAt: new Date().toISOString(), // pr-fact-guard: not a workers write (release task result)
         releasePrNumber: prNumber,
         releasePrUrl: prUrl,
       };

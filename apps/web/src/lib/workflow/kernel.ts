@@ -268,7 +268,10 @@ export function loadViewSql(ref: DeliveryRef): SQL {
       ? sql`d.workspace_id = ${ref.workspaceId}::uuid AND d.owner_task_id = ${ref.ownerTaskId}::uuid`
       : sql`d.workspace_id = ${ref.workspaceId}::uuid AND d.repo_full_name = ${ref.repoFullName}::text AND d.pr_number = ${ref.prNumber}::int`;
   return sql`-- workflow:load_view
-SELECT to_jsonb(d.*) AS delivery,
+SELECT to_jsonb(d.*) || jsonb_build_object('push_pending_local_head', (
+    SELECT t.evidence->>'localHeadSha' FROM workflow_transitions t
+    WHERE t.delivery_id = d.id AND t.to_state = 'AWAITING_PUSH' AND t.from_state IS DISTINCT FROM 'AWAITING_PUSH'
+    ORDER BY t.to_version DESC LIMIT 1)) AS delivery,
   COALESCE((SELECT jsonb_agg(to_jsonb(r.*) ORDER BY r.round) FROM workflow_review_rounds r WHERE r.delivery_id = d.id), '[]'::jsonb) AS rounds,
   COALESCE((SELECT jsonb_agg(to_jsonb(a.*) ORDER BY a.family, a.mode, a.attempt_no) FROM workflow_attempts a WHERE a.delivery_id = d.id), '[]'::jsonb) AS attempts
 FROM workflow_deliveries d
@@ -317,6 +320,7 @@ export function toDeliverySnapshot(r: J): DeliverySnapshot {
     mergeCommitSha: s(r.merge_commit_sha),
     supersededByPr: r.superseded_by_pr == null ? null : Number(r.superseded_by_pr),
     authority: r.authority === 'legacy' ? 'legacy' : 'kernel',
+    pushPendingLocalHead: s(r.push_pending_local_head),
   };
 }
 
