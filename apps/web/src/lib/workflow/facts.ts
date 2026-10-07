@@ -30,6 +30,12 @@ export interface GithubFactReader {
    * null = unknown (still running, no suites, unreadable): never read as green.
    */
   ciGreen?(repoFullName: string, headSha: string): Promise<boolean | null>;
+  /**
+   * Names of the checks and workflows that failed on `headSha` (§6.10: a CI
+   * failure a preflight would have caught is tagged `preflight_miss`).
+   * null = unreadable; never read as "nothing failed".
+   */
+  failingChecks?(repoFullName: string, headSha: string): Promise<string[] | null>;
 }
 
 export type FactInput =

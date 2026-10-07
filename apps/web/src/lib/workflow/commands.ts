@@ -142,6 +142,8 @@ export type Command =
       maxAttempts: number;
       /** An open trunk incident whose signature matches (§6.10); routes to T25. */
       openTrunkIncidentId?: string | null;
+      /** §6.10 tier 3: the failing check a configured preflight covers, recorded as `preflightMiss` on the transition. */
+      preflightMiss?: string | null;
       trigger?: 'automatic' | 'human';
       triggerFactId?: string | null;
     })

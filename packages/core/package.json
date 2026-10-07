@@ -151,6 +151,7 @@
     "./mission-branch-trace": "./mission-branch-trace.ts",
     "./task-title": "./task-title.ts",
     "./pr-lede": "./pr-lede.ts",
+    "./no-prod-data-prose": "./no-prod-data-prose.ts",
     "./release-queue-scope": "./release-queue-scope.ts",
     "./mission-control-capabilities": "./mission-control-capabilities.ts",
     "./external-links": "./external-links.ts",

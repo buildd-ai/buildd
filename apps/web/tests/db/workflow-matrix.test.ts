@@ -18,6 +18,8 @@
  *     Postgres, with their route wiring a todo of the spec slice that moves those doors.
  *   - 7ab4916f: Slice A part 3 (DeliveryView / owner of next move, activity from
  *     transitions, release composition, S35–S37)
+ *   - 2583024f: S30 (runner hand-off failures → AttemptEnded(unproven)) and S31 (preflight,
+ *     preflight_miss) run live.
  *   - "spec Slice B/C/D": no task filed yet (§14).
  */
 import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
@@ -33,7 +35,7 @@ let prSeq = 9100;
 
 // ── Fake GitHub: one PR whose head, state and ancestry a test moves ─────────
 
-interface FakePr { head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]>; ciGreen?: boolean | null; mergeable?: string | null }
+interface FakePr { head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]>; ciGreen?: boolean | null; failing?: string[] | null; mergeable?: string | null }
 let gh: FakePr;
 const live = (): LivePr => ({
   state: gh.state, merged: gh.merged, headSha: gh.head, headRepoFullName: REPO, baseRef: 'dev', updatedAt: gh.updatedAt,
@@ -44,6 +46,7 @@ const reader: GithubFactReader = {
   readPr: async () => live(),
   contains: async (_repo, ancestor, head) => ancestor === head || (gh.ancestors[head] ?? []).includes(ancestor),
   ciGreen: async () => gh.ciGreen ?? null,
+  failingChecks: async () => gh.failing ?? null,
 };
 const repoFor = async () => ({ installationId: 1, repoFullName: REPO, gitConfig: null });
 
@@ -1396,18 +1399,94 @@ describe('S30 — runner hand-off failures', () => {
     expect((await effects(o.deliveryId, 'push_recovery')).length).toBe(1);
   });
 
-  // Intended: the runner's hand-off failures ("no confirmed outcome", "commits but no PR",
-  // "uncommitted changes", output requirement unmet) arrive as AttemptEnded(outcome=unproven):
-  // AWAITING_PUSH when commits exist, a WORKING requeue bounded by the task's retry count when
-  // nothing exists; never a completed delivery. Part 1's seam maps only completed/failed/lost.
-  test.todo('S30: runner hand-off failures arrive as AttemptEnded(unproven) (needs the runner completion payload — no task filed)');
+  // The runner's hand-off failures ("no confirmed outcome", "commits but no PR", "uncommitted
+  // changes", output requirement unmet) arrive as `failed` + outcome=unproven with the local head
+  // and commit count (apps/runner/src/hand-off-outcome.ts); the worker PATCH maps that onto
+  // AttemptEnded(unproven) (lib/workflow/hand-off.ts). Driven here through the seam it calls.
+  test('S30: an owner hand-off failure with local commits → AttemptEnded(unproven) → AWAITING_PUSH + push_recovery; replay is a duplicate', async () => {
+    const o = await open();
+    const w = await seedWorker(o.ownerTaskId, { status: 'failed', lastCommitSha: 'L5', prNumber: o.prNumber, commitCount: 2 });
+    const end = () => seam.attemptEnded({ task: ownerTask(o), workerId: w, status: 'unproven', localHeadSha: 'L5', commitCount: 2, source: 'runner' }, deps);
+    expect((await end()).result).toMatchObject({ result: 'applied', decision: { toState: 'AWAITING_PUSH' } });
+    expect((await end()).result).toMatchObject({ result: 'duplicate' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H1', currentRound: 0 });
+    expect(await rounds(o.deliveryId)).toEqual([]);
+    expect((await effects(o.deliveryId, 'push_recovery')).map((e) => e.dedupe_key)).toEqual([`push_recovery:${o.deliveryId}:L5:1`]);
+    const t = (await transitions(o.deliveryId)).at(-1)!;
+    expect(t).toMatchObject({ command: 'AttemptEnded', to_state: 'AWAITING_PUSH' });
+    expect(t.evidence).toMatchObject({ outcome: 'unproven', localHeadSha: 'L5', commitCount: 2 });
+    // Never a completed delivery, and the owner task is not settled as delivered.
+    expect((await taskRow(o.ownerTaskId)).status).not.toBe('completed');
+  });
+
+  test('S30: an owner hand-off failure with nothing local and the task\'s retry queued stays WORKING (a requeue, no round, no recovery)', async () => {
+    const o = await open();
+    const w = await seedWorker(o.ownerTaskId, { status: 'failed', prNumber: o.prNumber, commitCount: 0 });
+    const r = await seam.attemptEnded({ task: ownerTask(o), workerId: w, status: 'unproven', localHeadSha: null, commitCount: 0, source: 'runner', taskRetryBudgetLeft: true }, deps);
+    expect(r.result).toMatchObject({ result: 'applied', decision: { toState: 'WORKING' } });
+    expect((await transitions(o.deliveryId)).at(-1)!.evidence).toMatchObject({ outcome: 'unproven', requeue: true });
+    expect(await rounds(o.deliveryId)).toEqual([]);
+    expect(await effects(o.deliveryId, 'push_recovery')).toEqual([]);
+  });
+
+  test('S30: a fix attempt whose hand-off failed with a local commit → AWAITING_PUSH and the attempt ends unproven, never delivered; no fix re-dispatch', async () => {
+    const f = await fixing();
+    const w = await seedWorker(f.fix.id, { status: 'failed', lastCommitSha: 'L7', commitCount: 1 });
+    await seam.attemptEnded({ task: f.fix, workerId: w, status: 'unproven', localHeadSha: 'L7', commitCount: 1, source: 'runner' }, deps);
+    const view = await loadView({ deliveryId: f.deliveryId });
+    expect(view.delivery).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H1', currentRound: 1 });
+    expect(view.attempts.find((a) => a.family === 'review_fix')).toMatchObject({ status: 'ended', outcome: 'unproven', reportedShas: ['L7'] });
+    expect((await tasksOf(f.deliveryId, 'fix')).length).toBe(1);
+    expect((await effects(f.deliveryId, 'push_recovery')).length).toBe(1);
+  });
+
+  test('S30: an old runner omits the outcome — the same refusal reads as a plain failure, exactly today\'s behaviour (the fix is re-dispatched)', async () => {
+    const f = await fixing();
+    const w = await seedWorker(f.fix.id, { status: 'failed', lastCommitSha: 'L7', commitCount: 1 });
+    await seam.attemptEnded({ task: f.fix, workerId: w, status: 'failed', localHeadSha: 'L7', commitCount: 1, source: 'runner' }, deps);
+    const view = await loadView({ deliveryId: f.deliveryId });
+    expect(view.delivery!.state).toBe('CHANGES_REQUESTED');
+    expect(view.attempts.find((a) => a.family === 'review_fix' && a.attemptNo === 1)).toMatchObject({ status: 'ended', outcome: 'failed' });
+    expect(await effects(f.deliveryId, 'push_recovery')).toEqual([]);
+  });
 });
 
 describe('S31 — preflight', () => {
-  // Intended: create_pr refuses a body the no-prod-data CI scan would reject, with the reason, via
-  // the function the CI script shares; a runner preflight failure keeps the attempt open with the
-  // output as its next instruction; a CI miss of a preflight class is tagged preflight_miss.
-  test.todo('S31: create_pr and runner preflight; CI miss tagged preflight_miss (§6.10 — no task filed)');
+  // Tier 1 (create_pr refuses a body CI's prose scan would reject, via the TS port held to the
+  // Python script by packages/core/__tests__/no-prod-data-prose.test.ts) is covered in
+  // apps/web/src/app/api/github/pr/route.test.ts; tier 2 (the runner's preflight denies the push
+  // with the output as the next instruction, attempt open) in
+  // apps/runner/__tests__/unit/preflight-guard.test.ts. Tier 3 runs here, on the live CI door.
+  test('S31: a CI failure of a preflight class is tagged preflight_miss on its transition; the repair is exactly as without it', async () => {
+    const o = await openAndHandOn();
+    gh.failing = ['Build', 'No Production Data'];
+    const seen = await ciFail(o);
+    expect(seen).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+    const t = (await transitions(o.deliveryId)).at(-1)!;
+    expect(t).toMatchObject({ command: 'CiFailedObserved', to_state: 'REPAIRING' });
+    expect(t.evidence).toMatchObject({ preflightMiss: 'No Production Data', signature: 'ci_failed', attemptNo: 1 });
+    expect((await ciAttempts(o.deliveryId)).map((a) => [a.attemptNo, a.status])).toEqual([[1, 'queued']]);
+  });
+
+  test('S31: a product failure, or an unreadable check list, is not a miss', async () => {
+    const o = await openAndHandOn();
+    gh.failing = ['Unit tests'];
+    await ciFail(o);
+    expect((await transitions(o.deliveryId)).at(-1)!.evidence).not.toHaveProperty('preflightMiss');
+
+    const o2 = await openAndHandOn();
+    gh.failing = null;
+    await ciFail(o2);
+    expect((await transitions(o2.deliveryId)).at(-1)!.evidence).not.toHaveProperty('preflightMiss');
+  });
+
+  test('S31: a workspace names its own preflight classes (gitConfig.preflight.ciChecks)', async () => {
+    const o = await openAndHandOn();
+    gh.failing = ['Lint ratchet'];
+    const own = { ...deps, repoFor: async () => ({ installationId: 1, repoFullName: REPO, gitConfig: { preflight: { ciChecks: ['lint'] } } }) };
+    await ciFail(o, { d: own });
+    expect((await transitions(o.deliveryId)).at(-1)!.evidence).toMatchObject({ preflightMiss: 'Lint ratchet' });
+  });
 });
 
 // ══ S32–S34: release composition ═════════════════════════════════════════════

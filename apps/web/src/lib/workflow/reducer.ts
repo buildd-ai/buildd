@@ -517,10 +517,12 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         return reduce(view, { type: 'TrunkRedObserved', actor: cmd.actor, incidentId: cmd.openTrunkIncidentId, signature: cmd.signature, headSha: cmd.headSha, thresholdMet: true }, opts);
       }
       const key = `ci:${dd.id}:${cmd.headSha}`;
+      // §6.10 tier 3 (S31): a failure a preflight should have caught is tagged, never acted on.
+      const miss = cmd.preflightMiss ? { preflightMiss: cmd.preflightMiss } : {};
       const ciPatch: DeliveryPatch = { ci: 'red', ciHeadSha: cmd.headSha };
       if (dd.state === 'CHANGES_REQUESTED') {
         // The owed review fix will push a new head; record the CI fact only.
-        return c.apply(`${key}:review_fix_owed`, 'CHANGES_REQUESTED', { guardHead: true, patch: ciPatch, evidence: { signature: cmd.signature, deferral: 'fix_in_flight' } });
+        return c.apply(`${key}:review_fix_owed`, 'CHANGES_REQUESTED', { guardHead: true, patch: ciPatch, evidence: { signature: cmd.signature, deferral: 'fix_in_flight', ...miss } });
       }
       if (c.openAttempt(['ci'])) return c.rejected('fix_in_flight');
       const { spent, max } = c.budget('ci', cmd.maxAttempts);
@@ -530,7 +532,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         return c.apply(`${key}:exhausted`, 'ESCALATED', {
           guardHead: true, patch: { ...ciPatch, stateReason: 'ci_exhausted', boundAttemptId: null },
           effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:ci:${cmd.headSha}`, payload: { family: 'ci', attempts: spent, max, headSha: cmd.headSha, signature: cmd.signature } }],
-          evidence: { signature: cmd.signature, spent, max },
+          evidence: { signature: cmd.signature, spent, max, ...miss },
         });
       }
       const n = c.nextNo('ci', 'agent');
@@ -540,7 +542,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch: { ...ciPatch, stateReason: 'ci', boundAttemptId: id },
         attempts: [{ op: 'insert', id, family: 'ci', attemptNo: n, mode: 'agent', boundHeadSha: cmd.headSha, triggerReason: cmd.signature, triggerFactId: cmd.triggerFactId ?? null, taskId: null, trigger: human ? 'human' : 'automatic', status: 'queued', maxAttempts: max }],
         effects: [{ kind: 'dispatch_ci_fix', dedupeKey: `dispatch_ci_fix:${dd.id}:${cmd.headSha}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: cmd.headSha, signature: cmd.signature, trigger: human ? 'human' : 'automatic' } }],
-        evidence: { signature: cmd.signature, attemptNo: n, spent: spent + 1, max },
+        evidence: { signature: cmd.signature, attemptNo: n, spent: spent + 1, max, ...miss },
       });
     }
 
@@ -1097,6 +1099,11 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
       const r = c.startRound(h);
       return c.apply(key, 'AWAITING_REVIEW', { patch: { ...r.patch, currentHeadSha: h }, rounds: r.rounds, effects: r.effects, evidence });
     };
+    // §6.6 (S30): a hand-off failure with nothing local is a requeue while the task's own retry
+    // is queued — never a review round at a head the retry is about to move.
+    if (cmd.outcome === 'unproven' && cmd.commitCount === 0 && cmd.taskRetryBudgetLeft) {
+      return c.apply(key, 'WORKING', { evidence: { ...evidence, requeue: true } });
+    }
     if ((success || cmd.outcome === 'unproven') && contains) return handOn(live!.headSha);
     if (success || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
       // A local commit is never delivery (§9).
