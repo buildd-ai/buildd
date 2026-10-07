@@ -63,6 +63,26 @@ describe('resolveAgentEndpoint', () => {
     expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.secretId).toBe('new');
   });
 
+  it('toolSearch comes from the winning row: a workspace row carries its own value', async () => {
+    const withCaps = (kind: string, caps?: object) => JSON.stringify({
+      kind, baseUrl: 'https://litellm.example.com', apiKey: 'k', authHeader: 'authorization', ...(caps ? { capabilities: caps } : {}),
+    });
+    // Team row OpenRouter (on by default), workspace row custom URL with it off.
+    rows = [
+      endpointRow({ id: 'team', encryptedValue: withCaps('openrouter') }),
+      endpointRow({ id: 'ws', workspaceId: WS, encryptedValue: withCaps('anthropic-compatible') }),
+    ];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.toolSearch).toBe(false);
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: 'ws-2' }))?.toolSearch).toBe(true);
+    // And the reverse: a workspace opt-in under a team row that has it off.
+    rows = [
+      endpointRow({ id: 'team', encryptedValue: withCaps('openrouter', { toolSearch: false }) }),
+      endpointRow({ id: 'ws', workspaceId: WS, encryptedValue: withCaps('anthropic-compatible', { toolSearch: true }) }),
+    ];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.toolSearch).toBe(true);
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: 'ws-2' }))?.toolSearch).toBe(false);
+  });
+
   it('never resolves an account- or person-scoped row', async () => {
     rows = [endpointRow({ id: 'acct', accountId: ACC }), endpointRow({ id: 'person', userId: 'u-1' })];
     expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();

@@ -3525,6 +3525,12 @@ export class WorkerManager {
       const teamEndpointApplied = modelEnv.endpoint === 'team';
       if (teamEndpointApplied) {
         console.log(`[Worker ${worker.id}] Using the team agent model endpoint (${modelEnv.baseUrlOrigin}); no ${isCodexTask ? 'Codex' : 'Anthropic'} credential given to the agent`);
+        // Effective deferred tool loading per endpoint kind, so input-token
+        // savings and ToolSearch failures can be compared by kind. Kind and
+        // on/off only: no URL, no key.
+        if (!isCodexTask && worker.modelEndpoint) {
+          sessionLog(worker.id, 'info', 'tool_search', `endpoint_kind=${worker.modelEndpoint.kind} enabled=${modelEnv.toolSearch}`, task.id);
+        }
       }
       if (modelEnv.teamEndpointIgnored) {
         console.log(`[Worker ${worker.id}] Team agent model endpoint ignored: this runner's ${isCodexTask ? 'OPENAI_BASE_URL' : "LLM_PROVIDER"} (per-machine config) takes priority`);
