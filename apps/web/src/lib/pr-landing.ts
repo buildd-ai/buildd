@@ -73,7 +73,6 @@ import {
 } from '@/lib/escalation-revalidation';
 import { LANDING_CYCLE_COOLDOWN_MS } from '@/lib/pr-landing-sweep';
 import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
-import type { CurrentView } from '@/lib/workflow/commands';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -224,9 +223,9 @@ export interface LandPrDeps {
   /**
    * The kernel delivery that owns this PR and its current view; null = legacy-owned.
    * On a kernel PR the delivery, not the legacy reviewer row, is the review gate.
-   * Defaults to lib/workflow/landing.ts `kernelLandingView`.
+   * Defaults to the seam's `kernelLandingView`.
    */
-  kernelLandingView?: (workspaceId: string, repoFullName: string, prNumber: number) => Promise<{ deliveryId: string; current: CurrentView } | null>;
+  kernelLandingView?: typeof import('@/lib/workflow/seam').kernelLandingView;
 }
 
 // ── Constants and pure pieces ──────────────────────────────────────────────────
@@ -796,7 +795,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // row must not block, stall or re-review it: a composition- or human-approved
   // delivery has no reviewer row at all (incident #2574). A read error falls back to
   // the legacy gate, which can only hold a landing, never authorise one past T15.
-  const readKernelView = deps.kernelLandingView ?? (await import('@/lib/workflow/landing')).kernelLandingView;
+  const readKernelView = deps.kernelLandingView ?? (await import('@/lib/workflow/seam')).kernelLandingView;
   const kernelView = await readKernelView(workspaceId, repoFullName, prNumber).catch(() => null);
   if (kernelView) {
     const { state, head } = kernelView.current;

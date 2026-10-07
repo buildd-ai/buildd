@@ -15,7 +15,7 @@ import { githubApi } from '@/lib/github';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { readLandingMarker } from '@/lib/pr-landing-marker';
 import { readPrReviewStatus } from '@/lib/pr-review-request';
-import { kernelLandingView } from '@/lib/workflow/landing';
+import { kernelLandingView, listApprovedKernelPrs } from '@/lib/workflow/seam';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
@@ -81,22 +81,16 @@ async function listFloor(limit: number): Promise<PrRef[]> {
           SELECT 1 FROM ${workspaces} w
           WHERE w.id = ${workers.workspaceId} AND w.git_config->'landing'->>'mode' = 'enforce'
         )`,
-        // Legacy PRs by their newest reviewer row; kernel PRs by their delivery (APPROVED, T15).
-        // resolveTarget settles which authority owns each one, for the exact repo.
-        or(
-          sql`${newestReviewVerdict} IN ('approve', 'escalate', 'request-changes')`,
-          sql`EXISTS (
-            SELECT 1 FROM workflow_deliveries d
-            WHERE d.workspace_id = ${workers.workspaceId}
-              AND d.pr_number = ${workers.prNumber}
-              AND d.authority = 'kernel'
-              AND d.state = 'APPROVED'
-          )`,
-        ),
+        sql`${newestReviewVerdict} IN ('approve', 'escalate', 'request-changes')`,
       ),
     )
     .limit(limit);
-  return rows.flatMap((r) => (r.prNumber === null ? [] : [{ workspaceId: r.workspaceId, prNumber: r.prNumber }]));
+  const legacy = rows.flatMap((r) => (r.prNumber === null ? [] : [{ workspaceId: r.workspaceId, prNumber: r.prNumber }]));
+  // Kernel PRs by their delivery (APPROVED, T15), read through the kernel. resolveTarget
+  // settles which authority owns each candidate, for the exact repo.
+  const kernel = await listApprovedKernelPrs(limit);
+  const seen = new Set(legacy.map((r) => `${r.workspaceId}#${r.prNumber}`));
+  return [...legacy, ...kernel.filter((r) => !seen.has(`${r.workspaceId}#${r.prNumber}`))];
 }
 
 /** One run's bindings. Workspace rows are memoised for the run; nothing outlives it. */

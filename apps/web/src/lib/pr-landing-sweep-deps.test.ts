@@ -64,7 +64,8 @@ mock.module('@/lib/pr-review-request', () => ({ readPrReviewStatus }));
 // The kernel delivery that owns the PR (null = legacy-owned).
 let kernelView: any;
 const kernelLandingView = mock(async (..._a: any[]): Promise<any> => kernelView);
-mock.module('@/lib/workflow/landing', () => ({ kernelLandingView }));
+let kernelFloor: any[];
+mock.module('@/lib/workflow/seam', () => ({ kernelLandingView, listApprovedKernelPrs: async () => kernelFloor }));
 mock.module('@/lib/workspace-installation', () => ({
   WORKSPACE_INSTALLATION_WITH: {},
   pickWorkspaceRepoIdentity: (ws: any) => ({
@@ -95,6 +96,7 @@ beforeEach(() => {
   reviewState = 'approved';
   repoInstallation = null;
   kernelView = null;
+  kernelFloor = [];
   for (const m of [githubApi, landPr, readLandingMarker, readPrReviewStatus, kernelLandingView, ...Object.values(redis)]) m.mockClear();
 });
 
@@ -213,6 +215,12 @@ describe('bindings', () => {
     floorRows = [{ workspaceId: 'ws-1', prNumber: 5 }, { workspaceId: 'ws-2', prNumber: null }];
     expect(await createLandingSweepDeps().listFloor(11)).toEqual([{ workspaceId: 'ws-1', prNumber: 5 }]);
     expect(floorLimit).toBe(11);
+  });
+
+  it('adds APPROVED kernel deliveries to the floor, once each', async () => {
+    floorRows = [{ workspaceId: 'ws-1', prNumber: 5 }];
+    kernelFloor = [{ workspaceId: 'ws-1', prNumber: 5 }, { workspaceId: 'ws-1', prNumber: 9 }];
+    expect(await createLandingSweepDeps().listFloor(11)).toEqual([{ workspaceId: 'ws-1', prNumber: 5 }, { workspaceId: 'ws-1', prNumber: 9 }]);
   });
 
   it('reads the marker off the owning task, and none when no task owns the PR', async () => {
