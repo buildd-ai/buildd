@@ -11,22 +11,6 @@ export interface ExtraMount {
   mode: MountMode;
 }
 
-/**
- * A mount as planned by the builder.
- *
- * `required` marks a bind the session cannot function without. An absent
- * optional mount is dropped with a warning (the historical behaviour, which is
- * right for e.g. a missing ~/.npm); an absent required mount is an error,
- * because dropping it silently redirects the consumer somewhere harmless-looking
- * but wrong — a dropped CBM cache bind leaves the agent indexing into the
- * sandbox's own `--tmpfs /tmp`, which is discarded when the session ends.
- */
-interface PlannedMount extends ExtraMount {
-  required?: boolean;
-}
-
-export const CBM_BINARY_PATH = '/opt/buildd/bin/codebase-memory-mcp';
-
 export interface WorkerBwrapConfig {
   worktreePath: string;
   repoPath: string;
@@ -37,17 +21,6 @@ export interface WorkerBwrapConfig {
   isCodexTask: boolean;
   executablePath?: string;
   extraMounts?: string;
-  /** ro-bind the codebase-memory-mcp binary (pre-baked in the worker image). */
-  cbmBinaryPath?: string;
-  /** rw-bind the per-worker CBM cache dir (must be pre-created by the caller). */
-  cbmCacheDir?: string;
-  /**
-   * rw-bind the CBM daemon runtime dir when it is NOT nested inside cbmCacheDir.
-   * In shared-cache mode the cache is host-wide and the runtime dir is per-worker
-   * at /tmp/cbm-rt-<id>, so it needs its own mount or the daemon cannot bind its
-   * socket and CBM refuses to start.
-   */
-  cbmRuntimeDir?: string;
   pathExists?: (path: string) => boolean;
   warn?: (message: string) => void;
 }
@@ -130,7 +103,7 @@ export function buildWorkerBwrapArgv(config: WorkerBwrapConfig): string[] {
   // Built-in binds. These are decided by the runner, not by operator input, and
   // must be assembled in full before any operator entry is considered — see the
   // collision filter below.
-  const builtins: PlannedMount[] = [
+  const builtins: ExtraMount[] = [
     { path: resolve(config.worktreePath), mode: 'rw' },
     // Linked worktrees store refs, index state, and newly-created objects under
     // the parent clone's .git/worktrees/<id> and .git/objects directories.
@@ -153,13 +126,6 @@ export function buildWorkerBwrapArgv(config: WorkerBwrapConfig): string[] {
       { path: join(home, '.claude', 'settings.json'), mode: 'ro' },
     );
   }
-  // CBM cannot degrade gracefully around any of these: without the binary the
-  // MCP server never starts, and without the cache or runtime dir the index and
-  // the daemon state land in the throwaway tmpfs. All are required, so an absent
-  // one throws below.
-  if (config.cbmBinaryPath) builtins.push({ path: resolve(config.cbmBinaryPath), mode: 'ro', required: true });
-  if (config.cbmCacheDir) builtins.push({ path: resolve(config.cbmCacheDir), mode: 'rw', required: true });
-  if (config.cbmRuntimeDir) builtins.push({ path: resolve(config.cbmRuntimeDir), mode: 'rw', required: true });
 
   // Operator entries are additive only. Deduping by path with a Map keeps the
   // LAST value for a path, so appending operator input after the built-ins let a
@@ -174,16 +140,10 @@ export function buildWorkerBwrapArgv(config: WorkerBwrapConfig): string[] {
     );
     return false;
   });
-  const mounts: PlannedMount[] = [...builtins, ...operatorMounts];
+  const mounts: ExtraMount[] = [...builtins, ...operatorMounts];
 
   const present = mounts.filter(mount => {
     if (pathExists(mount.path)) return true;
-    if (mount.required) {
-      throw new Error(
-        `Required sandbox mount is missing: "${mount.path}". Refusing to build a bwrap argv that `
-        + 'silently drops it — the consumer would fall through to the sandbox tmpfs instead.',
-      );
-    }
     warn(`Skipping unavailable sandbox mount "${mount.path}"`);
     return false;
   });

@@ -28,6 +28,11 @@ describe('taskActionSet', () => {
     expect(taskActionSet({ ...base, phase: 'failed', backend: null, hasHistory: false })).toEqual(['retry']);
   });
 
+  it('the other backend is offered only when it is not known to be unconfigured', () => {
+    expect(taskActionSet({ ...base, phase: 'failed', otherBackendAvailable: false })).toEqual(['retry', 'history']);
+    expect(taskActionSet({ ...base, phase: 'failed', otherBackendAvailable: true })).toEqual(['retry', 'switch_backend', 'history']);
+  });
+
   it('a dependency-blocked task only says so', () => {
     expect(taskActionSet({ ...base, phase: 'blocked', isBlocked: true })).toEqual(['blocked']);
   });
@@ -52,8 +57,8 @@ describe('taskActionPhase', () => {
   it('pending with an unmet dependency is blocked', () => {
     expect(taskActionPhase({ taskStatus: 'pending', blockedByCount: 2 })).toEqual({ phase: 'blocked', isBlocked: true });
   });
-  it('a question outranks a failed status', () => {
-    expect(taskActionPhase({ taskStatus: 'failed', workerWaitingFor: { prompt: 'x' }, blockedByCount: 0 }).phase).toBe('waiting_input');
+  it('a retained question cannot offer an answer on a failed task', () => {
+    expect(taskActionPhase({ taskStatus: 'failed', workerStatus: 'waiting_input', workerWaitingFor: { prompt: 'x' }, blockedByCount: 0 }).phase).toBe('failed');
   });
 });
 

@@ -41,7 +41,7 @@ export interface EnvelopeRoute {
 
 // ── Target ids ────────────────────────────────────────────────────────────
 
-export const DISPATCH_TARGET_TYPES = ['webhook', 'github-actions', 'runner-wake'] as const;
+export const DISPATCH_TARGET_TYPES = ['webhook', 'runner-wake'] as const;
 export type DispatchTargetType = (typeof DISPATCH_TARGET_TYPES)[number];
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';

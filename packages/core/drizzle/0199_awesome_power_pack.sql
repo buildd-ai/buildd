@@ -1,1 +1,0 @@
-ALTER TABLE "worker_heartbeats" ADD COLUMN "update_available_since" timestamp with time zone;

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
-import SlotLanes, { type SlotLane } from './SlotLanes';
+import SlotLanes, { barCard, type SlotLane } from './SlotLanes';
 
 const T = Date.UTC(2026, 0, 1);
 const m = (n: number) => T + n * 60_000;
@@ -216,5 +216,29 @@ describe('SlotLanes', () => {
     const src = readFileSync(join(import.meta.dir, 'SlotLanes.tsx'), 'utf8');
     const imports = [...src.matchAll(/from '([^']+)'/g)].map(x => x[1]);
     expect(imports.filter(i => !['next/link', 'react', './slot-lanes-layout'].includes(i))).toEqual([]);
+  });
+});
+
+describe('SlotLanes — hover card', () => {
+  it('replaces the native tooltip: no title attribute on any bar, short bars keep their aria-label', () => {
+    const tiny: SlotLane[] = [{ id: 'x', label: 'x', bars: [{ id: 'tiny', start: m(0), end: m(0.2), tone: 'done', label: 'verify goal', title: 'Verify goal criterion' }] }];
+    const html = renderToStaticMarkup(<SlotLanes lanes={tiny} from={m(0)} to={m(20)} now={m(10)} hoverCard />);
+    const tag = html.slice(html.indexOf('data-bar-id="tiny"') - 200, html.indexOf('data-bar-id="tiny"') + 400);
+    expect(tag).not.toContain('title=');
+    expect(tag).toContain('aria-label="verify goal · Verify goal criterion"');
+  });
+  it('off by default: bars keep their title (the mission Lanes tab)', () => {
+    expect(render()).toContain('data-bar-id="a1"');
+    const tiny: SlotLane[] = [{ id: 'x', label: 'x', bars: [{ id: 'tiny', start: m(0), end: m(0.2), tone: 'done', label: 'verify goal', title: 'Verify goal criterion' }] }];
+    expect(renderToStaticMarkup(<SlotLanes lanes={tiny} from={m(0)} to={m(20)} now={m(10)} />)).toContain('title="verify goal · Verify goal criterion"');
+  });
+  it('says when, for how long, and the caller\'s details', () => {
+    const clock = (at: number) => `${Math.round((at - T) / 60_000)}m`;
+    expect(barCard({ label: 'schema', title: 'feat(db): schema', start: m(0), end: m(17), details: ['done · Builder · PR #12'] }, { now: m(30), clock }))
+      .toEqual({ title: 'feat(db): schema', when: '0m → 17m · 17m', details: ['done · Builder · PR #12'] });
+    expect(barCard({ label: 'api', start: m(5), end: null }, { now: m(95), clock }))
+      .toEqual({ title: null, when: '5m → now · 1h 30m so far', details: [] });
+    // A title equal to the label is not repeated; a sub-minute run reads <1m.
+    expect(barCard({ label: 'x', title: 'x', start: m(0), end: m(0.3) }, { now: null, clock }).when).toBe('0m → 0m · <1m');
   });
 });

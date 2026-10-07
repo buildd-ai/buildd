@@ -29,7 +29,7 @@
 import Link from 'next/link';
 import type { CausalLink } from '@/lib/explain-types';
 import { situationDetail, type MissionSituation, type WaitingOnDescriptor, type WaitingOnTone } from '@/lib/mission-state-view';
-import { missionTaskHref } from '@/lib/mission-task-href';
+import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 import { strandCtaFor } from '@/lib/mission-list-card';
 import ContinueOnRunnerCta from './ContinueOnRunnerCta';
 import ClosedPrResolution, { type ClosedPrItem } from './ClosedPrResolution';
@@ -175,10 +175,13 @@ function RefLink({ refs, missionId }: { refs: CausalLink['refs']; missionId: str
     );
   }
   if (refs.taskId) {
+    // A short id is opaque text, not a titled row — it must read as a real
+    // link to the task's own page, never a trigger for this page's drawer
+    // (no `data-task-id`: TaskPanelWrapper's capture handler only intercepts
+    // that attribute, so this click navigates for real).
     return (
       <Link
-        href={missionTaskHref({ missionId, taskId: refs.taskId, mode: 'sheet' })}
-        data-task-id={refs.taskId}
+        href={taskPageHref({ taskId: refs.taskId, missionId })}
         className="font-mono text-accent-text hover:underline"
       >
         task {refs.taskId.slice(0, 8)}

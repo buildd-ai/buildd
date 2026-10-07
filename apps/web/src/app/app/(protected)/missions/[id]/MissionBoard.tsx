@@ -243,7 +243,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
     : awaiting > 0
       ? `${awaiting} ${awaiting === 1 ? 'screen' : 'screens'} to review`
       : visual?.needsYou?.reason === 'round_cap'
-        ? 'visual issues: your call'
+        ? 'visual issues: decision needed'
         : visual && STUCK_PHASES.has(visual.phase)
           // Not counted (the number is what awaits an answer), but not
           // "nothing" either: only you can unstick it.
@@ -437,7 +437,7 @@ function Big({ n, small }: { n: number; small: string }) {
 // ── Needs you ────────────────────────────────────────────────────────────────
 
 export function AskBanner({ task, now }: { task: BoardTask; now: number }) {
-  const prompt = task.waitingFor?.prompt ?? 'Waiting on you.';
+  const prompt = task.waitingFor?.prompt ?? 'Needs input.';
   return (
     <section
       data-testid="needs-you-band"

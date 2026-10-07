@@ -1,6 +1,7 @@
 import SettingsPage from '../_components/SettingsPage';
 import ConnectorsSection from '../ConnectorsSection';
 import ConnectionsClient from './ConnectionsClient';
+import CatalogSection from './CatalogSection';
 import { loadSettingsContext } from '../_lib/settings-context';
 
 export const dynamic = 'force-dynamic';
@@ -31,6 +32,7 @@ export default async function ConnectorsSettingsPage({
         teams={teams.map((t) => ({ id: t.id, name: t.name }))}
         currentTeamId={currentTeamId}
       />
+      <CatalogSection />
     </SettingsPage>
   );
 }

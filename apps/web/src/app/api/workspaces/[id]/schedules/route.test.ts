@@ -128,6 +128,33 @@ describe('GET /schedules', () => {
 
     expect(res.status).toBe(200);
   });
+
+  describe('per-task token', () => {
+    const scoped = (workspaceId: string) => ({
+      id: 'account-1', level: 'worker', taskScope: { taskId: 't-1', workspaceId, expiresAt: Date.now() + 60_000 },
+    });
+
+    it('lists its own task’s workspace schedules', async () => {
+      (getCurrentUser as any).mockResolvedValue(null);
+      (authenticateApiKey as any).mockResolvedValue(scoped(WORKSPACE_ID));
+      (verifyAccountWorkspaceAccess as any).mockResolvedValue(true);
+      (db.query.taskSchedules.findMany as any).mockResolvedValue([{ id: 's1', workspaceId: WORKSPACE_ID }]);
+
+      const res = await GET(makeRequest('GET', undefined, 'Bearer bld_validkey'), { params });
+      expect(res.status).toBe(200);
+      expect((await res.json()).schedules).toHaveLength(1);
+    });
+
+    it('403s another workspace the account reaches, without reading it', async () => {
+      (getCurrentUser as any).mockResolvedValue(null);
+      (authenticateApiKey as any).mockResolvedValue(scoped('00000000-0000-0000-0000-000000000002'));
+      (verifyAccountWorkspaceAccess as any).mockResolvedValue(true);
+
+      const res = await GET(makeRequest('GET', undefined, 'Bearer bld_validkey'), { params });
+      expect(res.status).toBe(403);
+      expect(db.query.taskSchedules.findMany).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('POST /schedules', () => {

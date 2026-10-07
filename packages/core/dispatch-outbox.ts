@@ -71,6 +71,9 @@ export const DISPATCH_CAUSES = [
   'task.unblocked',
   'credential.restored',
   'mission.released',
+  // A worker going terminal freed a concurrency slot the claim route denied
+  // this task for; see apps/web/src/lib/capacity-freed-wake.ts.
+  'capacity.freed',
   // A non-work intent Buildd's policy raised (human_action, notification, …).
   'policy.requested',
 ] as const;
@@ -98,6 +101,7 @@ const CAUSE_PRECEDENCE: DispatchCause[] = [
   'budget.available',
   'credential.restored',
   'mission.released',
+  'capacity.freed',
   'task.unblocked',
   'start_at.reached',
   'task.requeued',

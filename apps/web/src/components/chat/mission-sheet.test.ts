@@ -36,8 +36,8 @@ describe('missionInsight', () => {
   });
 
   it('something waits on the viewer: disagrees (copper), counts it', () => {
-    expect(missionInsight(state({ needsYou: 2 }))).toEqual({ text: '2 tasks are waiting on you.', disagrees: true });
-    expect(missionInsight(state({ needsYou: 1 }))?.text).toBe('1 task is waiting on you.');
+    expect(missionInsight(state({ needsYou: 2 }))).toEqual({ text: '2 tasks need input.', disagrees: true });
+    expect(missionInsight(state({ needsYou: 1 }))?.text).toBe('1 task needs input.');
   });
 
   it('agreeing states: a plain line, no copper square', () => {
@@ -113,14 +113,14 @@ describe('objectSheetTitle', () => {
   // Regression (demo capture): the sheet kept saying a question was waiting
   // after the person had answered it.
   it('an open question keeps its words', () => {
-    expect(objectSheetTitle({ kind: 'question', fallbackText: 'A question is waiting on you' }, { kind: 'question', open: true })).toBe('A question is waiting on you');
+    expect(objectSheetTitle({ kind: 'question', fallbackText: 'Question open' }, { kind: 'question', open: true })).toBe('Question open');
   });
   it('an answered question the agent has not picked up says the answer went', () => {
-    expect(objectSheetTitle({ kind: 'question', fallbackText: 'A question is waiting on you' }, { kind: 'question', open: false, awaitingAgent: true }))
+    expect(objectSheetTitle({ kind: 'question', fallbackText: 'Question open' }, { kind: 'question', open: false, awaitingAgent: true }))
       .toBe('Answer sent, waiting for the agent');
   });
   it('an answered question the agent has picked up says so', () => {
-    expect(objectSheetTitle({ kind: 'question', fallbackText: 'A question is waiting on you' }, { kind: 'question', open: false })).toBe('Question answered');
+    expect(objectSheetTitle({ kind: 'question', fallbackText: 'Question open' }, { kind: 'question', open: false })).toBe('Question answered');
   });
 });
 

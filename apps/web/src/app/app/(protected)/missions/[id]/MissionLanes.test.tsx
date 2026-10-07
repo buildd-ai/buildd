@@ -40,7 +40,7 @@ describe('MissionLanes — running', () => {
 
   it('side rail: needs you, in review, up next', () => {
     expect(html).toContain('data-testid="needs-you-band"');
-    expect(html).toContain('Nothing waiting on you.');
+    expect(html).toContain('Nothing needs input.');
     expect(html).toContain('data-testid="lanes-in-review"');
     expect(html).toContain('data-testid="lanes-up-next"');
   });

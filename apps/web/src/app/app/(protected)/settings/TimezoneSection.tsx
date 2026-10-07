@@ -60,7 +60,7 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
       const data = await res.json();
       setStored(data.team?.timezone ?? null);
       setDraft(data.team?.timezone ?? detected);
-      setCanEdit(roleHas(data.currentUserRole, 'manage_team_settings'));
+      setCanEdit(roleHas(data.currentUserRole, 'manage_team_settings', data.team?.permissionOverrides ?? null));
     } catch {
       setMsg({ type: 'error', text: 'Failed to load the team timezone' });
     } finally {

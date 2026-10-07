@@ -2,13 +2,13 @@
 title: Human-in-the-Loop Protocol
 status: active
 owner: max
-last_verified: 2026-10-02
+last_verified: 2026-10-06
 summary: Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 domain: tasks
-surfaces: [apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts, apps/web/src/app/api/workers/[id]/question-check/route.ts, apps/runner/src/question-gate.ts, packages/core/question-brief.ts, packages/core/question-gate.ts]
+surfaces: [apps/web/src/lib/question-hold.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts, apps/web/src/app/api/workers/[id]/question-check/route.ts, apps/runner/src/question-gate.ts, packages/core/question-brief.ts, packages/core/question-gate.ts]
 related: [mission-task-lifecycle, runner-liveness, mcp-action-contracts, answered-question-resume]
 keywords: [waiting_input, waitingFor, pendingInstructions, instructionHistory, deliveryState, AskUserQuestion, send_agent_message, inputAsRetry, needs_input, worker-needs-input-banner, contractViolation, exitCause]
-verified_by: [apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts, packages/core/__tests__/question-brief.test.ts, packages/core/__tests__/question-gate.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/runner/__tests__/unit/question-gate.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, apps/web/src/app/api/workers/claim/question-gate.test.ts, apps/web/src/app/api/decisions/[id]/override/route.test.ts]
+verified_by: [apps/web/src/lib/question-hold.test.ts, apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts, packages/core/__tests__/question-brief.test.ts, packages/core/__tests__/question-gate.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/runner/__tests__/unit/question-gate.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, apps/web/src/app/api/workers/claim/question-gate.test.ts, apps/web/src/app/api/decisions/[id]/override/route.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -125,14 +125,12 @@ path unchanged.
   remains queryable via `getFailureSignatureFamily`'s `errorPrefix:
   "needs_input:"` rollup, which intentionally scans every failed/error row
   regardless of this exclusion.
-- **`deriveTaskPhase` checks a pending question before a failed task status.**
-  (`apps/web/src/lib/task-presentation.ts`). The waiting_input timeout — and
-  any other path that still reports `needs_input` as a failure — flips
-  `tasks.status` to `'failed'` as part of building its retry; if the phase
-  derivation checked `taskStatus === 'failed'` first, the `waiting_input`
-  phase (and the respond affordance rendered from it) could never appear once
-  that happened. A genuine `completed` task status still wins over a stale
-  `waitingFor`.
+- **An open ask requires a waiting worker and a nonterminal task.**
+  `isOpenAsk` gates task-page question heroes, Home asks, chat cards and
+  notification answer links. Retained `waitingFor` or an open question note
+  alone cannot revive an ended worker. Completed, failed and cancelled tasks
+  show past questions collapsed, with the recorded reply or "Not answered".
+  `deriveTaskPhase` preserves a terminal outcome over any retained question.
 - **The mission auto-retry gate excludes `needs_input`.** The PATCH route's
   per-task auto-retry (`shouldAutoRetry`, gated on `status === 'failed'`) must
   never blind-requeue a task whose failure is a parked question — that
@@ -183,10 +181,10 @@ path unchanged.
      spending), a second decision (`QUESTION_DECIDE_DECISION`) picks the
      disposition: `decide` (Jev picks one of the listed options; the answer is
      the AskUserQuestion tool result, verdict `decide` — nobody is parked or
-     notified), `hold` (parked exactly like `ask` today, tagged
-     `disposition: 'hold'` with a `holdReason` and a bounded `resurfaceAt` —
-     no notification-suppression wiring exists yet, see
-     `HOLD_RESURFACE_MS`'s doc comment), or `ask` (parked and notified,
+     notified), `hold` (parked like `ask`, tagged `disposition: 'hold'` with a
+     `holdReason` and a `resurfaceAt` at most `HOLD_RESURFACE_MS` out, but
+     nobody is notified when it parks — `apps/web/src/lib/question-hold.ts`
+     surfaces it at the deadline if it is still unanswered), or `ask` (parked and notified,
      unchanged). Low confidence, an invalid/missing option index, or a
      question with no options all fail open to `ask`.
   Every failure at either stage (sensitive workspace, no key, gateway decision
@@ -224,11 +222,12 @@ path unchanged.
   with a `needs_input:`-prefixed error WHEN the PATCH route evaluates its
   auto-retry gate THEN `shouldAutoRetry` is `false` — the task is not
   blind-requeued ahead of a human answering.
-- AC-HITL-35: GIVEN `taskStatus: 'failed'` and a live `workerWaitingFor` (or
-  `workerStatus: 'waiting_input'`) WHEN `deriveTaskPhase` runs THEN the result
-  is `'waiting_input'`, not `'failed'`; GIVEN `taskStatus: 'completed'` WHEN
-  the same stale `workerWaitingFor` is present THEN the result is still
-  `'completed'`.
+- AC-HITL-35: GIVEN a nonterminal task and `workerStatus: 'waiting_input'`
+  WHEN its question is rendered THEN the ask is open; GIVEN a completed,
+  failed or cancelled task, or an ended worker, with a retained question
+  WHEN task, Home, chat or needs-input surfaces render THEN no answer control
+  or open-ask count is offered. Past questions are collapsed with the recorded
+  reply or "Not answered". A retained prompt alone never overrides task phase.
 - AC-HITL-36: GIVEN a `waitingFor.type === 'question'` payload whose `prompt`
   is empty, whitespace-only, or the literal runner fallback `'Awaiting input'`
   WHEN the PATCH route persists it THEN the stored `waitingFor` carries
@@ -256,6 +255,17 @@ path unchanged.
   `decide` is never attempted — the outcome is `hard_rail`, the disposition is
   `ask`, and a `decision_records` row is written with
   `reason: 'rail_blocked:<rail>'`, `applied: false`.
+- AC-HITL-40a: GIVEN a question parked with `disposition: 'hold'` WHEN the
+  worker PATCH stores it THEN nobody is notified and no `task.needs_input` row
+  is recorded, unless the workspace is sensitive, the kill switch is off, or a
+  hard rail applies to the task's pathManifest or the question's text — then
+  the hold tag is stripped and it is notified as an `ask`, whatever the runner
+  sent. Its `resurfaceAt` is clamped to at most `HOLD_RESURFACE_MS` from the
+  first park, and a re-sent copy keeps the first deadline. WHEN `resurfaceAt`
+  passes and the worker is still `waiting_input` on that question THEN the
+  resurface pass (riding `/api/cron/notify-away`'s gated and floor ticks)
+  notifies exactly once; a worker that moved on is never notified, and one
+  whose task closed is settled as dropped.
 - AC-HITL-41: GIVEN a confident `decide` with a valid option index WHEN stage 2
   resolves THEN the reply's `verdict` is `decide` (not `send`), `decision`
   names the chosen option and its confidence, and a `decision_records` row is
@@ -281,8 +291,9 @@ path unchanged.
   `buildSignatureFamily` still scans it)
 - `apps/web/src/lib/stale-workers.ts` (`cleanupStuckWaitingInput` writes
   `exitCause: 'needs_input'`)
-- `apps/web/src/lib/task-presentation.ts` (`deriveTaskPhase` — pending
-  question checked before `taskStatus === 'failed'`)
+- `apps/web/src/lib/task-presentation.ts` (`deriveTaskPhase` — terminal
+  outcome wins over a retained question)
+- `apps/web/src/lib/open-ask.ts` (`isOpenAsk`, `isOpenQuestionNote`)
 - `apps/web/src/app/api/tasks/waiting-input/route.ts`
 - `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.tsx:331`
   (`worker-needs-input-banner`), fixtures at

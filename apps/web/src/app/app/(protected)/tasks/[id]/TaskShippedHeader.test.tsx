@@ -27,7 +27,7 @@ describe('TaskShippedTitle', () => {
     expect(html).toContain('What shipped · Feature');
     expect(html).toContain('Completed task page leads with what shipped');
     expect(html).toContain('Done');
-    expect(html).toContain('Waiting on your merge');
+    expect(html).toContain('Ready to merge');
     expect(html).toContain('data-testid="task-header-status"');
   });
 });

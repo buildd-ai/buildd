@@ -107,6 +107,7 @@ const NOT_AN_ACTION = new Set([
   'coder_report_task',
   'verified_by',
   'head_not_owned',
+  'head_claimed',
 ]);
 
 async function knownActions(): Promise<{ topLevel: Set<string>; known: Set<string> }> {

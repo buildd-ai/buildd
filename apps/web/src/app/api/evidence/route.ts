@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { evidenceObjects, workers } from '@buildd/core/db/schema';
 import type { EvidenceKind, EvidenceLookupResponse } from '@buildd/shared';
 import { and, desc, eq, inArray, or, type SQL } from 'drizzle-orm';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
@@ -28,7 +28,8 @@ export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token lists evidence only in its own task's workspace.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -39,7 +40,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'workspaceId (a full UUID) is required' }, { status: 400 });
   }
   const allowed = apiAccount
-    ? await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId)
+    ? taskScopeAllowsWorkspace(apiAccount, workspaceId) && await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId)
     : !!(await verifyWorkspaceAccess(user!.id, workspaceId));
   if (!allowed) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
 

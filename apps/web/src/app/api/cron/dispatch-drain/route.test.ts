@@ -68,6 +68,9 @@ mock.module('@/lib/dispatch-repair', () => ({
   repairDependencyWakes,
 }));
 
+const sweepEntitlementBlockedTasks = mock(async () => ({ teams: 0, woken: 0 }));
+mock.module('@/lib/entitlements/managed-runner', () => ({ sweepEntitlementBlockedTasks }));
+
 const { GET } = await import('./route');
 const call = (query = '', auth = 'Bearer s3cret') =>
   GET(new NextRequest(`http://localhost/api/cron/dispatch-drain${query}`, { headers: { authorization: auth } }));

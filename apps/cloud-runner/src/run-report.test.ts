@@ -10,6 +10,9 @@ import {
   parseMetricLine,
   parseRepoSourceLine,
   parseWarmUploadLine,
+  parseCacheSkippedLine,
+  CACHE_SKIPPED_LINE_PREFIX,
+  CACHE_SKIP_PARTS,
   WARM_UPLOAD_LINE_PREFIX,
   WARM_UPLOAD_SKIP_REASONS,
   recordMetric,
@@ -81,6 +84,46 @@ describe('warm upload skip line (a repo over the warm snapshot cap)', () => {
     expect(none.repo.warmUploadSkipReason).toBeNull();
     const hostile = assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { warmUpload: { skipped: 'sk-ant-leak' } } } as unknown as RunReportInput);
     expect(hostile.repo.warmUploadSkipReason).toBeNull();
+  });
+});
+
+describe('cache skipped line (a cache subtree left out of the warm upload for size)', () => {
+  test('matches phase-lines.ts and parses back', () => {
+    expect(CACHE_SKIPPED_LINE_PREFIX).toBe(runnerPhases.CACHE_SKIPPED_LINE_PREFIX);
+    expect([...CACHE_SKIP_PARTS]).toEqual([...runnerPhases.CACHE_SKIP_PARTS]);
+    for (const part of runnerPhases.CACHE_SKIP_PARTS) {
+      expect(parseCacheSkippedLine(runnerPhases.formatCacheSkippedLine(part, 2_100_000_000, 1024 ** 3))).toEqual({ part, bytes: 2_100_000_000, cap: 1024 ** 3 });
+    }
+  });
+
+  test.each([
+    'BUILDD_CACHE_SKIPPED=pnpm-store',
+    'BUILDD_CACHE_SKIPPED=pnpm-store 1',
+    'BUILDD_CACHE_SKIPPED=node_modules 1 2',
+    'BUILDD_CACHE_SKIPPED=pnpm-store -1 2',
+    'BUILDD_CACHE_SKIPPED=pnpm-store 1 2 extra',
+    '[warm] BUILDD_CACHE_SKIPPED=pnpm-store 1 2',
+  ])('rejects %p', (line) => {
+    expect(parseCacheSkippedLine(line)).toBeNull();
+  });
+
+  test('the report names the skipped part, its size and the cap, and times the cache restore', () => {
+    const r = assembleRunReport({
+      taskId: 'task-1', attempt: 1,
+      timings: {
+        cacheSkipped: { part: 'pnpm-store', bytes: 2_100_000_000, cap: 1024 ** 3 },
+        runnerMetrics: { cache_raw_bytes: 900 },
+        runnerPhases: { restore_cache_start: 1_000, restore_cache_end: 4_500 },
+      },
+    });
+    expect(r.repo.cacheSkipped).toEqual({ part: 'pnpm-store', bytes: 2_100_000_000, cap: 1024 ** 3 });
+    expect(r.repo.bytes.cacheRaw).toBe(900);
+    expect(r.durationsMs.restoreCache).toBe(3_500);
+    const none = assembleRunReport({ taskId: 'task-1', attempt: 1 });
+    expect(none.repo.cacheSkipped).toBeNull();
+    expect(none.durationsMs.restoreCache).toBeNull();
+    const hostile = assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { cacheSkipped: { part: 'sk-ant-x', bytes: 1, cap: 1 } } } as unknown as RunReportInput);
+    expect(hostile.repo.cacheSkipped).toBeNull();
   });
 });
 
@@ -297,7 +340,7 @@ describe('assembleRunReport', () => {
     const r = assembleRunReport(FULL);
     expect(r).toMatchObject({
       kind: 'cloud-run-report',
-      version: 4,
+      version: 9,
       taskId: 'task-1',
       attempt: 2,
       workerId: 'worker-9',
@@ -305,7 +348,7 @@ describe('assembleRunReport', () => {
       runLabel: 'task-1.2',
       instanceType: 'standard-1',
       timestamps: { dispatchReceivedAt: 1_000, containerRunningAt: 4_000, claimedAt: 6_000, firstModelRequestAt: 9_000, exitedAt: 60_000 },
-      durationsMs: { containerStart: 3_000, toClaim: 2_000, clone: 500, install: 1_000, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, toFirstModelRequest: 3_000, total: 59_000 },
+      durationsMs: { containerStart: 3_000, toClaim: 2_000, clone: 500, install: 1_000, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, restoreCache: null, toFirstModelRequest: 3_000, total: 59_000 },
       exitCode: 0,
       outcome: 'done',
       crashReport: null,
@@ -325,12 +368,23 @@ describe('assembleRunReport', () => {
   test('missing pieces are null, never guessed', () => {
     const r = assembleRunReport({ taskId: 'task-1', attempt: 1, dispatchReceivedAt: 1_000, timings: { exitedAt: 2_000, runnerPhases: { clone_start: 5 } }, exitCode: null, outcome: 'crashed', crashReport: 'no_worker_id' });
     expect(r.workerId).toBeNull();
-    expect(r.durationsMs).toEqual({ containerStart: null, toClaim: null, clone: null, install: null, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, toFirstModelRequest: null, total: 1_000 });
+    expect(r.durationsMs).toEqual({ containerStart: null, toClaim: null, clone: null, install: null, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, restoreCache: null, toFirstModelRequest: null, total: 1_000 });
     expect(r.resume).toEqual({ resumed: false, gapMs: null, layer: null, parkBytes: null });
-    expect(r.repo).toEqual({ source: null, fallbackReason: null, snapshotAgeMs: null, warmUploadSkipReason: null, bytes: { clone: null, restore: null, fetch: null, cache: null, upload: null, warmRepo: null } });
+    expect(r.repo).toEqual({ source: null, fallbackReason: null, snapshotAgeMs: null, warmUploadSkipReason: null, cacheSkipped: null, bytes: { clone: null, restore: null, fetch: null, cache: null, cacheRaw: null, upload: null, warmRepo: null } });
     expect(r.exitCode).toBeNull();
     expect(r.crashReport).toBe('no_worker_id');
     expect(r.egress.model).toEqual({ requests: 0, rejected: 0, responseBytes: 0 });
+  });
+
+  test('deferredRetry: present only when an outcome actually deferred, sanitized and null-backoff past the cap', () => {
+    expect(assembleRunReport(FULL).deferredRetry).toBeNull();
+    expect(assembleRunReport({ ...FULL, outcome: 'deferred', deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'workspace_cap' } }).deferredRetry)
+      .toEqual({ retryNumber: 1, backoffMs: 30_000, reason: 'workspace_cap' });
+    expect(assembleRunReport({ ...FULL, outcome: 'start_deferred', deferredRetry: { retryNumber: 6, backoffMs: null, reason: 'container_capacity' } }).deferredRetry)
+      .toEqual({ retryNumber: 6, backoffMs: null, reason: 'container_capacity' });
+    // A reason that is not a short identifier (stray prose, a credential-shaped string) is dropped, not passed through.
+    expect(assembleRunReport({ ...FULL, outcome: 'deferred', deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'not a valid reason!' } }).deferredRetry)
+      .toEqual({ retryNumber: 1, backoffMs: 30_000, reason: null });
   });
 
   test('a secret-looking value passed in any field cannot end up in the report', () => {
@@ -370,9 +424,45 @@ describe('assembleRunReport', () => {
 
   test('only allowlisted top-level keys', () => {
     expect(Object.keys(assembleRunReport({ ...FULL, extra: 'x' } as RunReportInput)).sort()).toEqual([
-      'attempt', 'containerInstanceId', 'crashReport', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'kind',
-      'outcome', 'repo', 'resume', 'runLabel', 'runnerPhases', 'schedule', 'taskId', 'timestamps', 'version', 'workerId',
+      'agentRestarts', 'attempt', 'containerInstanceId', 'crashReport', 'deferredRetry', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'interruption', 'kind',
+      'outcome', 'repo', 'resources', 'resume', 'reusedContainer', 'runLabel', 'runnerPhases', 'runnerSize', 'schedule', 'taskId', 'timestamps', 'version', 'workerId',
     ]);
+  });
+
+  test('agentRestarts: sanitized, capped, empty by default', () => {
+    expect(assembleRunReport(FULL).agentRestarts).toEqual([]);
+    const ok = { at: 5_000, recovery: 'reattached', containerRunning: true, runningForMs: 900, versionChanged: false } as const;
+    const r = assembleRunReport({
+      ...FULL,
+      agentRestarts: [ok, { ...ok, recovery: 'oom' as never }, { ...ok, at: -1 }, { ...ok, versionChanged: 'yes' as never, containerRunning: 'x' as never }],
+    });
+    expect(r.agentRestarts).toEqual([ok, { at: 5_000, recovery: 'reattached', containerRunning: false, runningForMs: 900, versionChanged: null }]);
+  });
+
+  test('resources: memory peak and limit, disk minimum and total, from the runner metric lines', () => {
+    const r = assembleRunReport({ ...FULL, timings: { ...FULL.timings, runnerMetrics: { mem_peak_bytes: 4_000_000_000, mem_limit_bytes: 4_294_967_296, disk_free_min_bytes: 2_500_000_000, disk_total_bytes: 8_000_000_000 } } });
+    expect(r.resources).toEqual({ memoryPeakBytes: 4_000_000_000, memoryLimitBytes: 4_294_967_296, diskFreeMinBytes: 2_500_000_000, diskTotalBytes: 8_000_000_000 });
+    expect(assembleRunReport(FULL).resources).toEqual({ memoryPeakBytes: null, memoryLimitBytes: null, diskFreeMinBytes: null, diskTotalBytes: null });
+  });
+
+  test('interruption: from the closed list only', () => {
+    expect(assembleRunReport(FULL).interruption).toBeNull();
+    for (const i of ['container_stopped', 'agent_restart', 'question'] as const) {
+      expect(assembleRunReport({ ...FULL, interruption: i }).interruption).toBe(i);
+    }
+    expect(assembleRunReport({ ...FULL, interruption: 'oom' as never }).interruption).toBeNull();
+  });
+
+  test('runnerSize: the class actually used, the decision that chose it, and weighted runner-seconds', () => {
+    // FULL: container running at 4 s, exited at 60 s -> 56 runner-seconds.
+    const large = assembleRunReport({ ...FULL, runnerSize: 'large', runnerSizeDecision: { size: 'large', source: 'derived', reason: 'low_disk' } });
+    expect(large.runnerSize).toEqual({ size: 'large', source: 'derived', reason: 'low_disk', weight: 2, runnerSeconds: 56, weightedRunnerSeconds: 112 });
+    const standard = assembleRunReport({ ...FULL, runnerSize: 'standard' });
+    expect(standard.runnerSize).toEqual({ size: 'standard', source: null, reason: null, weight: 1, runnerSeconds: 56, weightedRunnerSeconds: 56 });
+    // No class given: standard (the only class before there were two).
+    expect(assembleRunReport(FULL).runnerSize.size).toBe('standard');
+    // The container never ran: no runner-seconds.
+    expect(assembleRunReport({ taskId: 'task-1', attempt: 1, runnerSize: 'large' }).runnerSize).toMatchObject({ runnerSeconds: null, weightedRunnerSeconds: null });
   });
 
   test('warm restore: source, timings and bytes for restore, fetch and upload', () => {
@@ -387,8 +477,8 @@ describe('assembleRunReport', () => {
     });
     expect(r.durationsMs).toMatchObject({ clone: null, restoreWarm: 300, fetch: 100, warmUpload: 800 });
     expect(r.repo).toEqual({
-      source: 'warm', fallbackReason: null, snapshotAgeMs: 3_600_000, warmUploadSkipReason: null,
-      bytes: { clone: null, restore: 1_000_000, fetch: 2_048, cache: 500_000, upload: 0, warmRepo: null },
+      source: 'warm', fallbackReason: null, snapshotAgeMs: 3_600_000, warmUploadSkipReason: null, cacheSkipped: null,
+      bytes: { clone: null, restore: 1_000_000, fetch: 2_048, cache: 500_000, cacheRaw: null, upload: 0, warmRepo: null },
     });
   });
 

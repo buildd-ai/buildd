@@ -17,7 +17,7 @@ import { foldMissionDeliverables } from '@/lib/mission-pulse';
 import { fixtureMission, workTaskIds, FIXTURE_NOW } from './mission-feed.fixtures';
 
 const situation = {
-  headline: 'Waiting on you: an agent asked a question.',
+  headline: 'An agent asked a question.',
   tone: 'warning' as const,
   focus: null,
   nextAction: null,

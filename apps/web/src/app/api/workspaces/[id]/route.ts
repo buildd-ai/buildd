@@ -6,11 +6,11 @@ import { eq, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { roleHas } from '@/lib/permissions';
+import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
-import { findRemovedPathFieldInGitConfig, isWorkspaceExecutor, removedPolicyPathFieldError } from '@buildd/shared';
+import { findRemovedPathFieldInGitConfig, isRunnerSize, isWorkspaceExecutor, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 import { AGENT_GITHUB_CREDENTIALS_OPT_OUT } from '@buildd/core/agent-github-credentials';
@@ -217,7 +217,7 @@ export async function PATCH(
     if (touchesAdminSettings) {
       const isAdmin = apiAccount
         ? hasTokenRouteAdminAccess(apiAccount, req)
-        : roleHas(sessionRole, 'manage_workspace_settings');
+        : roleHas(sessionRole, 'manage_workspace_settings', await getTeamPermissionOverrides(workspaceTeamId!));
       if (!isAdmin) {
         return NextResponse.json({ error: 'Requires workspace admin' }, { status: 403 });
       }
@@ -359,6 +359,24 @@ export async function PATCH(
           );
         }
       }
+      // Cloud-runner container class: exact values only. The derived marker is
+      // buildd's to write; an admin may only clear it (null), which lets the
+      // next dispatch derive the size afresh.
+      if ('runnerSize' in gitConfig) {
+        const value = (gitConfig as Record<string, unknown>).runnerSize;
+        if (value !== null && !isRunnerSize(value)) {
+          return NextResponse.json(
+            { error: "gitConfig.runnerSize must be 'standard', 'large' or null" },
+            { status: 400 },
+          );
+        }
+      }
+      if ('runnerSizeDerived' in gitConfig && (gitConfig as Record<string, unknown>).runnerSizeDerived !== null) {
+        return NextResponse.json(
+          { error: 'gitConfig.runnerSizeDerived is set by buildd; send null to clear it' },
+          { status: 400 },
+        );
+      }
       // GitHub credentials opt-out for self-hosted agents: the one accepted
       // value is 'runner', so a typo cannot hand agents the operator's token.
       if ('agentGitHubCredentials' in gitConfig) {
@@ -460,7 +478,7 @@ export async function DELETE(
   try {
     // A caller who may not delete it is told the workspace does not exist.
     const access = await verifyWorkspaceAccess(user.id, id);
-    if (!access || !roleHas(access.role, 'delete_workspace')) {
+    if (!access || !roleHas(access.role, 'delete_workspace', await getTeamPermissionOverrides(access.teamId))) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 

@@ -27,7 +27,8 @@ export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'hea
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig } from '@buildd/shared';
+import type { ScheduleDelegation } from '../token-delegation';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -41,6 +42,23 @@ export const teams = pgTable('teams', {
   // active hours — where there is no single known viewer. Seeded from the detected zone
   // of the first member to sign in. See packages/core/timezone.ts.
   timezone: text('timezone'),
+
+  // Per-team permission grants: permission name -> team roles that hold it. An
+  // absent key = the registry default (apps/web/src/lib/permission-registry.ts).
+  // Read only through sanitizeOverrides; owners always hold everything, and
+  // locked permissions ignore this. Written by PUT /api/teams/[id]/permissions.
+  permissionOverrides: jsonb('permission_overrides').$type<Record<string, string[]>>().default({}).notNull(),
+  // Hosted plan assignment for Buildd-managed runners: { plan, ...overrides }.
+  // NULL = the deployment default (BUILDD_DEFAULT_MANAGED_PLAN), unlimited when
+  // that is unset, so a self-hosted install has no commercial limit. Written by
+  // hosted billing; read only through resolveManagedRunnerEntitlement
+  // (apps/web/src/lib/entitlements/plans.ts).
+  managedRunnerPlan: jsonb('managed_runner_plan').$type<{
+    plan: string;
+    concurrency?: number | null;
+    monthlyRunnerHours?: number | null;
+    overage?: 'block' | 'allow';
+  } | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 
@@ -122,9 +140,35 @@ export const teams = pgTable('teams', {
   // rows in chat_retros; `proposals` (requires lessons) lets the daily pass
   // file suggested improvements as tasks. Removal: see chat-retro/REMOVAL.md.
   chatRetro: jsonb('chat_retro').$type<{ lessons?: boolean; proposals?: boolean } | null>(),
+
+  // Billing (knowledge-base: buildd/plans/billing-v1.md). Never read directly by a
+  // gate — read packages/core/entitlements.ts entitlements(team), which also
+  // honours the BILLING_ENFORCED switch (off = unlimited for everyone). An unknown
+  // `plan` value reads as 'free'. Written by the Stripe webhook (later task).
+  plan: text('plan').$type<import('@buildd/shared').TeamPlan>().notNull().default('free'),
+  // Stripe subscription status as last reported ('active', 'trialing',
+  // 'past_due', 'canceled', ...). NULL = never subscribed.
+  billingStatus: text('billing_status'),
+  stripeCustomerId: text('stripe_customer_id'),
+  stripeSubscriptionId: text('stripe_subscription_id'),
+  // Seats paid for on the Team plan (subscription quantity). NULL = none; the
+  // Team plan still covers TEAM_PLAN_MIN_SEATS members.
+  paidSeats: integer('paid_seats'),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
+  stripeCustomerIdx: uniqueIndex('teams_stripe_customer_id_idx').on(t.stripeCustomerId),
 }));
+
+// Stripe webhook events already applied, keyed by Stripe's event id — the
+// webhook's idempotency ledger (apps/web/src/app/api/webhooks/stripe/route.ts).
+// A row is claimed before the event is applied and deleted again if applying
+// fails, so a Stripe retry of a failed event runs, a replay of a done one doesn't.
+export const stripeEvents = pgTable('stripe_events', {
+  id: text('id').primaryKey(),
+  type: text('type').notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
+  processedAt: timestamp('processed_at', { withTimezone: true }).defaultNow().notNull(),
+});
 
 // Team membership
 export const teamMembers = pgTable('team_members', {
@@ -165,6 +209,11 @@ export const users = pgTable('users', {
   // the shortcuts always work, the chips only show for people who ask for them
   // (Settings -> Profile).
   showKeyboardHints: boolean('show_keyboard_hints').default(false).notNull(),
+  // Chat retro account dogfood (experiment, apps/web/src/lib/chat-retro/).
+  // Set = every team this person owns, now and later, runs retros with
+  // lessons + proposals on, and a per-team "off" is refused. NULL = off: the
+  // teams keep the opt-in. Removal: see chat-retro/REMOVAL.md.
+  chatRetroDogfoodAt: timestamp('chat_retro_dogfood_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -228,6 +277,12 @@ export const accounts = pgTable('accounts', {
   // credentials only as handed to it at claim time.
   hostRunner: boolean('host_runner').default(false).notNull(),
 
+  // A Buildd-managed runner key: hosted compute Buildd pays for. Its claims
+  // count against the team's managed-runner entitlement (teams.managedRunnerPlan,
+  // packages/shared/src/entitlements.ts). Set by hosted provisioning, never by a
+  // team: a self-hosted runner key is false and no commercial limit applies to it.
+  managedRunner: boolean('managed_runner').default(false).notNull(),
+
   // Common
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
   totalTasks: integer('total_tasks').default(0).notNull(),
@@ -275,9 +330,8 @@ export interface WorkspaceGitConfig {
   // `integrationBranchEnabled`; an existing mission's flag is the runtime truth
   // from then on (see `missionIntegrationBase()` in mission-integration.ts).
   //
-  // Absent ⇒ 'mission-branch' (opt-OUT) — the same shape as `autoMergeOnGreenCI`
-  // replacing `autoMergePR` below: an unconfigured workspace gets the newer,
-  // batched-PR default, not the legacy per-task one.
+  // Absent ⇒ 'mission-branch' (opt-OUT): an unconfigured workspace gets the
+  // newer, batched-PR default, not the legacy per-task one.
   branchStrategy?: BranchStrategy;
 
   // Other same-team workspaces whose `docs` corpus this workspace's agents may
@@ -356,6 +410,13 @@ export interface WorkspaceGitConfig {
   // in-worker boot), 'vercel-preview', or 'auto'. Read only through
   // resolveVisualQaConfig(). See docs/design/visual-qa-auditor.md → "Page source".
   visualQa?: import('../visual-qa-page-source').VisualQaConfig;
+
+  // Cloud-runner container class. Absent = derived from recent run reports
+  // (apps/web/src/lib/runner-size.ts); an explicit value always wins.
+  runnerSize?: 'standard' | 'large';
+  // Written by buildd, never by the settings form: the first derivation that
+  // moved this workspace to `large`, kept so one light run does not move it back.
+  runnerSizeDerived?: { size: 'large'; reason: 'memory_pressure' | 'low_disk' | 'container_restart' | 'large_checkout'; at: string };
 
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached
@@ -473,12 +534,18 @@ export interface WorkspaceGitConfig {
   // at task-creation time. The existing loop machinery handles re-queuing.
   enforceGreenCI?: boolean;
 
-  // Auto-merge PRs via GitHub's auto-merge feature (requires branch protection + CI)
-  // When enabled, PRs created by workers will have auto-merge enabled with squash method
+  /**
+   * @deprecated Inert. No merge gate reads it: `resolvePolicy` decides from
+   * `mergePolicy` (migration 0113 converted these flags to a mergePolicy and
+   * stripped them). Kept in the type only so old stored rows still parse.
+   */
   autoMergePR?: boolean;
 
-  // Replaces autoMergePR — defaults to TRUE when neither field is set, making auto-merge opt-OUT.
-  // Takes precedence over autoMergePR when present.
+  /**
+   * @deprecated Inert, same as `autoMergePR`. The dashboard used to write it from
+   * an "Auto-merge on green CI" checkbox that changed nothing; the config route
+   * no longer writes it. Use `mergePolicy.tier` (auto-threshold = merge on green CI).
+   */
   autoMergeOnGreenCI?: boolean;
 
   // Safety rails for autoMergePR — legacy, no longer consulted.
@@ -568,6 +635,12 @@ export interface WorkspaceGitConfig {
   // ⇒ 'shadow' (record, never file). 'off' stops new runs; 'propose' applies
   // the follow-up action policy.
   postSessionQuality?: import('../post-session-quality').PostSessionQualityConfig;
+
+  // Quality Scout probe declarations: verification command, test environment,
+  // CLI/API journeys, UI routes, fixture setup, write constraints. Read only
+  // through resolveScoutExtension() in scout-capabilities.ts. Absent ⇒ Scout
+  // uses what the readiness report detects, read-only.
+  qualityScout?: WorkspaceQualityScoutConfig;
 }
 
 // How a workspace performs a release. buildd owns the envelope (resolve →
@@ -803,56 +876,6 @@ export interface ModelUsage {
   costUSD: number;
 }
 
-/** CBM (Codebase Memory) observability metrics captured per task. */
-export interface CbmMetrics {
-  /** How CBM was activated for this task. */
-  outcome: 'enforced' | 'legacy_mcp_json' | 'disabled';
-  /** Why CBM was not active (only set when outcome='disabled'). */
-  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'experiment_withheld' | 'binary_absent' | 'mount_unavailable';
-  /**
-   * Whether the pre-index bootstrap ran and whether it succeeded. Only set when
-   * outcome='enforced'.
-   *
-   * 'skipped_warm' means no index was needed because a shared seeded cache already
-   * held this repo's graph. Distinct from 'ok' on purpose: lumping them together
-   * makes the warm-start path invisible, so you cannot tell a fleet that is
-   * serving 0s starts from one that is paying a full index per task.
-   *
-   * 'backgrounded' means the build overran the startup wait budget and was handed
-   * off rather than aborted — the session started without a graph and the graph
-   * arrives mid-session. Kept separate from both 'ok' and 'failed' because it is
-   * neither: see backgroundIndexLanded for what the build actually did.
-   */
-  bootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
-  bootstrapFailReason?: string;
-  /**
-   * Whether a backgrounded build finished successfully before the session ended.
-   * Only set when bootstrapResult='backgrounded'.
-   *
-   * The load-bearing field for judging the hand-off. Reclassifying overrunning
-   * builds out of 'failed' improves the index-build failure rate by definition;
-   * this is the number that says whether it improved anything real.
-   */
-  backgroundIndexLanded?: boolean;
-  /** CBM MCP tool call counts, keyed by tool name (e.g. { search_code: 5, query_graph: 3 }). */
-  toolCalls: Record<string, number>;
-  /** Total CBM MCP tool calls across all CBM tools. */
-  totalCbmCalls: number;
-  /** Read tool call count for this task. */
-  readCount: number;
-  /** Grep tool call count for this task. */
-  grepCount: number;
-  /** Glob tool call count for this task. */
-  globCount: number;
-  /**
-   * CBM search injection (docs/design/cbm-search-injection.md): the runner's
-   * own graph lookups after an agent's identifier search, and what it appended.
-   * NOT agent CBM calls — never in `toolCalls` / `totalCbmCalls`. Counts and
-   * labels only. Absent on sessions where injection never ran.
-   */
-  injection?: import('../cbm-injection').CbmInjectionMetrics;
-}
-
 /**
  * What a session's `Bash` calls were FOR, as counts.
  *
@@ -860,8 +883,7 @@ export interface CbmMetrics {
  * which owns the bucket definitions and the pipeline/chain dominance rule).
  * Bash is the most-called tool and `toolCounts` records it as one opaque bar,
  * so a shell `grep`/`rg`/VCS content search was indistinguishable from a build
- * or a `cat` — and invisible to the Read/Grep/Glob counters in `cbm`, which
- * only see the file-access TOOLS.
+ * or a `cat`.
  *
  * Counts only, bounded at a few hundred bytes per worker. `searchShapes` is a
  * coarse shape of the search pattern (bare identifier / regex / quoted phrase
@@ -892,13 +914,10 @@ export interface ResultMeta {
    * policy off. See docs/design/reliable-env-provisioning.md.
    */
   provisionFailure?: { code: string; phase: string; message: string };
-  /** CBM observability metrics — present on all workers running CBM-enabled task 5+. */
-  cbm?: CbmMetrics;
   /**
    * Every tool_use in the session counted by exact tool name (`Bash`, `Edit`,
    * `mcp__buildd__buildd`, …), written by the runner at terminal state. Counts,
-   * not events — unlike `workers.mcpCalls` this is never truncated, and unlike
-   * `cbm.toolCalls` it covers built-in and non-CBM MCP tools too.
+   * not events — unlike `workers.mcpCalls` this is never truncated.
    *
    * Absent on workers that predate the histogram (runner release) or that called
    * no tools. Consumers must treat absence as "unknown", not zero — see
@@ -911,6 +930,14 @@ export interface ResultMeta {
    * or made no Bash call — absence is "unknown", not zero.
    */
   bashCommandCounts?: BashCommandCounts;
+  /**
+   * File tool calls (Read, Edit, Write, MultiEdit, NotebookEdit) per repo area:
+   * tool -> area -> calls. The area is the worktree's top-level directory (two
+   * levels for apps/ and packages/), "(repo root)", "(outside the repo)" or
+   * "(other)" past a per-tool cap. Never a path or content. Absent on workers
+   * that predate the capture or made no file tool call.
+   */
+  fileToolAreas?: Record<string, Record<string, number>>;
   /**
    * Outcome of the one-shot "closing turn" the runner gives a session that
    * ended without the agent calling `complete_task`, before it falls back to
@@ -2018,6 +2045,44 @@ export const workers = pgTable('workers', {
 }));
 
 /**
+ * Presence of a person's interactive coding session (Claude Code, Codex,
+ * Cursor) reported by the buildd agent plugin's lifecycle hooks. A row here is
+ * presence, never a worker: it holds no concurrency seat and no task. It is
+ * bound to a worker only after that same session's own verified `claim_task`
+ * minted one (`workers.runner = 'mcp'`); see apps/web/src/lib/local-session.ts
+ * and docs/specs/local-agent-presence.md.
+ *
+ * No transcript, prompt or response content is ever stored. The client's
+ * session id is kept only as a SHA-256 hash.
+ */
+export const localSessions = pgTable('local_sessions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  /** Resolved from the session's git remote among the workspaces the account reaches; null if none matched. */
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  /** 'claude' | 'codex' | 'cursor' | 'other' */
+  clientKind: text('client_kind').notNull(),
+  /** SHA-256 of the client's own session/conversation id. Opaque. */
+  clientSessionHash: text('client_session_hash').notNull(),
+  clientVersion: text('client_version'),
+  /** owner/name of the session's git remote, credentials stripped. */
+  repo: text('repo'),
+  /** False when the client says the session is a background agent. */
+  interactive: boolean('interactive').default(true).notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+  endReason: text('end_reason'),
+  /** The interactive worker this session's own claim_task minted. One session per worker, ever. */
+  boundWorkerId: uuid('bound_worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  boundAt: timestamp('bound_at', { withTimezone: true }),
+}, (t) => ({
+  clientIdx: uniqueIndex('local_sessions_client_idx').on(t.accountId, t.clientKind, t.clientSessionHash),
+  boundWorkerIdx: uniqueIndex('local_sessions_bound_worker_idx').on(t.boundWorkerId),
+  workspaceSeenIdx: index('local_sessions_workspace_seen_idx').on(t.workspaceId, t.lastSeenAt),
+}));
+
+/**
  * Pattern-matched errors observed in agent tool output (Bash results, Read
  * failures, etc.). The runner intercepts the Agent SDK's tool-result messages
  * and writes a row here for each match. Used for UI error-count badges and
@@ -2592,6 +2657,11 @@ export const taskSchedules = pgTable('task_schedules', {
     suggestedByTaskId?: string;
     suggestedByWorkerId?: string;
   }>(),
+  // Explicit cross-workspace reach for the tasks this schedule spawns
+  // (packages/core/token-delegation.ts). Kept off taskTemplate on purpose:
+  // the template is copied into each task, and nothing a task carries may
+  // widen its own token. Null = no delegation (the default).
+  delegation: jsonb('delegation').$type<ScheduleDelegation>(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -2821,15 +2891,14 @@ export const experiments = pgTable('experiments', {
   // 'tier_pool': one row per tier model pool (tier_pools.experiment_id), so
   // pool draws share this table's salt and assignment rows. See
   // docs/design/tier-model-pools.md.
-  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access' | 'tier_pool' | 'heartbeat_triage' | 'question_gate'>(),
+  kind: text('kind').notNull().$type<'model_routing' | 'tier_pool' | 'heartbeat_triage' | 'question_gate'>(),
   // Share of ELIGIBLE units drawn into the treatment arm. Resolved through
   // resolveEnrolmentFraction, so an out-of-range value runs the control rather
   // than enrolling everyone.
   treatmentFraction: real('treatment_fraction').notNull().default(0.5),
   policyVersion: integer('policy_version').notNull().default(1),
   // Kind-specific shape; for model_routing see ModelRoutingExperimentConfig in
-  // packages/core/model-routing-experiment.ts, for cbm_access see
-  // CbmAccessExperimentConfig in packages/core/cbm-access-experiment.ts.
+  // packages/core/model-routing-experiment.ts.
   config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
   visibility: text('visibility').notNull().default('admins').$type<'admins' | 'team'>(),
   decision: text('decision'),
@@ -4089,6 +4158,10 @@ export const connectors = pgTable('connectors', {
   // Assertion-mode fields (authMode='assertion')
   assertionAudience: text('assertion_audience'),
   assertionTokenEndpoint: text('assertion_token_endpoint'),
+  // Display icon, resolved best-effort at create time (catalog entry → MCP
+  // serverInfo.icons → site favicon). NULL renders a letter avatar.
+  // See apps/web/src/lib/connector-icon.ts.
+  iconUrl: text('icon_url'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -4120,6 +4193,52 @@ export const connectorShares = pgTable('connector_shares', {
 }, (t) => ({
   pk: primaryKey({ columns: [t.connectorId, t.sharedWithTeamId] }),
   sharedWithTeamIdx: index('connector_shares_shared_with_team_idx').on(t.sharedWithTeamId),
+}));
+
+// Connector catalog (marketplace). Presets for remote MCP servers that the
+// Add-connection modal offers one-click; installing one still creates an
+// ordinary `connectors` row. Built-in presets live in code
+// (apps/web/src/lib/connector-catalog.ts); a row here with the same slug and
+// team_id NULL overrides or disables a built-in for everyone. team_id NULL =
+// platform-wide (platform admins only, /api/admin/connector-catalog); team_id
+// set = an entry private to that team (team admins). Merged by
+// apps/web/src/lib/connector-catalog-store.ts.
+export const connectorCatalogEntries = pgTable('connector_catalog_entries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }),
+  slug: text('slug').notNull(),
+  name: text('name').notNull(),
+  url: text('url').notNull(),
+  authMode: connectorAuthModeEnum('auth_mode').notNull().default('oauth'),
+  headerName: text('header_name'),
+  description: text('description').notNull().default(''),
+  category: text('category').notNull().default('other'),
+  iconUrl: text('icon_url'),
+  // false hides the entry (and, for a platform row, the built-in it overrides).
+  enabled: boolean('enabled').default(true).notNull(),
+  createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  platformSlugIdx: uniqueIndex('connector_catalog_platform_slug_idx').on(t.slug).where(sql`${t.teamId} IS NULL`),
+  teamSlugIdx: uniqueIndex('connector_catalog_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.teamId} IS NOT NULL`),
+}));
+
+// A team admin's decision about one catalog entry (by slug, so it applies to
+// built-in, platform and team entries alike). No row = 'available'.
+//   blocked      — hidden from the team's catalog; members cannot add it.
+//   available    — offered in the catalog; an admin adds it on demand.
+//   preinstalled — buildd creates the connector for the team and enables it
+//                  in every workspace, including ones created later. Roles
+//                  still opt in via connectorRefs (spec §2).
+export const connectorCatalogTeamPolicies = pgTable('connector_catalog_team_policies', {
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  slug: text('slug').notNull(),
+  policy: text('policy').notNull().$type<'blocked' | 'available' | 'preinstalled'>(),
+  updatedByAccountId: uuid('updated_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.teamId, t.slug] }),
 }));
 
 export const connectorsRelations = relations(connectors, ({ one, many }) => ({
@@ -4211,7 +4330,9 @@ export const tierPools = pgTable('tier_pools', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
   tier: text('tier').notNull().$type<'premium' | 'standard' | 'budget'>(),
   surface: text('surface').notNull().$type<'agent' | 'chat'>(),
-  mode: text('mode').notNull().default('pinned').$type<'pinned' | 'split' | 'explore'>(),
+  // `dial`: buildd moves traffic from the cell's one dial and its own outcome
+  // evidence (packages/core/tier-dial.ts); `allocation` follows `dial_state`.
+  mode: text('mode').notNull().default('pinned').$type<'pinned' | 'split' | 'explore' | 'dial'>(),
   // kind 'tier_pool'; its id and policy_version salt the draw.
   experimentId: uuid('experiment_id').references(() => experiments.id, { onDelete: 'set null' }),
   // Current applied allocation: { [tier_pool_arms.id]: share }.
@@ -4232,6 +4353,13 @@ export const tierPools = pgTable('tier_pools', {
   challengerDailyCap: decimal('challenger_daily_cap', { precision: 10, scale: 2 }),
   autoChallenger: boolean('auto_challenger').notNull().default(false),
   autoShift: boolean('auto_shift').notNull().default(false),
+  // The cell's dial, 1 (always the primary) .. 5 (cheapest that keeps up).
+  // Read in `dial` mode only; 3 is balanced.
+  dial: integer('dial').notNull().default(3),
+  // `dial` mode state machine: always | learning | shifted | reverted, with
+  // the shifted alternate and the last revert reason (DialStateRecord in
+  // packages/core/tier-dial.ts). NULL until the first dial evaluation.
+  dialState: jsonb('dial_state').$type<Record<string, unknown> | null>(),
   frozenAt: timestamp('frozen_at', { withTimezone: true }),
   frozenBy: uuid('frozen_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -4271,7 +4399,7 @@ export const tierPoolArms = pgTable('tier_pool_arms', {
 export const tierPoolChanges = pgTable('tier_pool_changes', {
   id: uuid('id').primaryKey().defaultRandom(),
   poolId: uuid('pool_id').references(() => tierPools.id, { onDelete: 'cascade' }).notNull(),
-  kind: text('kind').notNull().$type<'allocation' | 'arm_added' | 'arm_removed' | 'mode' | 'freeze' | 'unfreeze' | 'suggestion' | 'suggestion_dismissed' | 'promotion'>(),
+  kind: text('kind').notNull().$type<'allocation' | 'arm_added' | 'arm_removed' | 'mode' | 'freeze' | 'unfreeze' | 'suggestion' | 'suggestion_dismissed' | 'promotion' | 'revert' | 'dial'>(),
   before: jsonb('before').$type<Record<string, unknown>>(),
   after: jsonb('after').$type<Record<string, unknown>>(),
   evidence: jsonb('evidence').$type<Record<string, unknown>>(),
@@ -4797,6 +4925,43 @@ export const gateEvents = pgTable('gate_events', {
   taskIdx: index('gate_events_task_idx').on(t.taskId),
 }));
 
+/**
+ * One row per capability decision about an agent run: a GitHub repo grant or
+ * model endpoint handed to a runner, a per-task token minted, a PR recorded,
+ * closed or merged — allowed or refused, and why. Answers "why was worker X
+ * allowed to do Y" from data instead of logs.
+ *
+ * Never holds credential material: no token, no key, no header. `resource`
+ * names the thing acted on (`github_repo:<row id>`, `pr:<number>`), and
+ * `sideEffect` records what actually happened when it is known (e.g. the PR
+ * number a create produced). Written fire-and-forget by
+ * apps/web/src/lib/agent-capabilities/audit.ts; pruned after 90 days by the
+ * task-archive sweep.
+ */
+export const agentCapabilityDecisions = pgTable('agent_capability_decisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  // How the run proved itself: 'dispatch' | 'runner_key' | 'task_token' | 'worker_account'.
+  principalVia: text('principal_via'),
+  // 'github.repo_grant' | 'model.endpoint' | 'task_token.mint' | 'pr.create' | 'pr.adopt' | 'pr.close' | 'pr.merge'
+  capability: text('capability').notNull(),
+  resource: text('resource'),
+  decision: text('decision').notNull().$type<'allowed' | 'refused'>(),
+  reasonCode: text('reason_code'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  sideEffect: jsonb('side_effect').$type<Record<string, unknown>>(),
+}, (t) => ({
+  workerOccurredIdx: index('agent_capability_decisions_worker_occurred_idx').on(t.workerId, t.occurredAt),
+  workspaceOccurredIdx: index('agent_capability_decisions_workspace_occurred_idx').on(t.workspaceId, t.occurredAt),
+  occurredIdx: index('agent_capability_decisions_occurred_idx').on(t.occurredAt),
+}));
+
+export type AgentCapabilityDecision = typeof agentCapabilityDecisions.$inferSelect;
+
 export const gateEventsRelations = relations(gateEvents, ({ one }) => ({
   workspace: one(workspaces, { fields: [gateEvents.workspaceId], references: [workspaces.id] }),
   mission: one(missions, { fields: [gateEvents.missionId], references: [missions.id] }),
@@ -5068,7 +5233,7 @@ export type DecisionChallengerRun = typeof decisionChallengerRuns.$inferSelect;
 
 // Prompt evals (apps/web/src/lib/prompt-evals/run.ts): the decision benchmark
 // sets scored against the prompt text a deployment runs, or is about to run.
-// One run row per eval, one result row per benchmark set. Content-free like the
+// One run row per eval, one result row per prompt id evaluated. Content-free like the
 // decision ledger: prompt ids, row versions, content hashes, model ids, counts
 // and rates. Never prompt text, case content or error strings; every result is
 // checked against the loaded prompt bodies before it is written.
@@ -5080,10 +5245,11 @@ export const promptEvalRuns = pgTable('prompt_eval_runs', {
   status: text('status').notNull().$type<'running' | 'passed' | 'failed' | 'refused' | 'skipped'>(),
   // The prompts repo ref scored (a sha for a push; else the configured ref).
   promptsRef: text('prompts_ref'),
-  // The model that answered the eval, and the model the team's live decisions use.
+  // The model that answered the decision prompts (the production model unless
+  // a per-run override was given), and the model the team's live decisions use.
   evalModel: text('eval_model'),
   prodModel: text('prod_model'),
-  // True when they differ: the scores then do not predict production behaviour.
+  // True only when an override differed: the scores then do not predict production behaviour.
   modelMismatch: boolean('model_mismatch').notNull().default(false),
   dryRun: boolean('dry_run').notNull().default(false),
   loadedPrompts: integer('loaded_prompts'),
@@ -5111,7 +5277,8 @@ export const promptEvalResults = pgTable('prompt_eval_results', {
   // The decision promptVersion naming the text, e.g. `tc1+p3`.
   promptVersion: text('prompt_version').notNull(),
   model: text('model'),
-  status: text('status').notNull().$type<'scored' | 'dry_run' | 'no_cases'>(),
+  // no_eval_set: nothing to score it against (no_cases on older rows).
+  status: text('status').notNull().$type<'scored' | 'dry_run' | 'no_eval_set' | 'no_cases'>(),
   cases: integer('cases').notNull(),
   accuracy: real('accuracy'),
   baselineAccuracy: real('baseline_accuracy'),
@@ -5205,7 +5372,7 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
   candidateCount: integer('candidate_count').notNull(),
   candidateTruncated: boolean('candidate_truncated').notNull().default(false),
   candidateOmitted: integer('candidate_omitted').notNull().default(0),
-  // { source, neighbours, neighboursUsed, excludedFuture, cbm, revision, revisionPinned, ... }
+  // { source, neighbours, neighboursUsed, excludedFuture, revision, revisionPinned, ... }
   coverage: jsonb('coverage').$type<Record<string, unknown>>().notNull(),
   // [{ step, fingerprint, decisionVersion, offered: number[], suggested, path, confidence, status, reason, applied }]
   picks: jsonb('picks').$type<Array<Record<string, unknown>>>().notNull(),
@@ -5268,6 +5435,149 @@ export const orchestrationOverlapAnswers = pgTable('orchestration_overlap_answer
 
 export type OrchestrationOverlapAnswer = typeof orchestrationOverlapAnswers.$inferSelect;
 export type NewOrchestrationOverlapAnswer = typeof orchestrationOverlapAnswers.$inferInsert;
+
+/**
+ * Quality Scout run ledger (artifact workspace-quality-scout-spec §3, §12).
+ * One row per Scout run. `candidate_sha` is the exact commit the probes
+ * exercised — staleness is "a newer SHA exists on candidate_ref", and the
+ * prior run pointer answers "what changed since". Results themselves are
+ * shared-substrate VerificationResults on the probe rows.
+ *
+ * Advisory only (v1): nothing reads these tables to block a merge or release.
+ */
+export const qualityScoutRuns = pgTable('quality_scout_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+  trigger: text('trigger').notNull().$type<import('../quality-scout/types').ScoutRunTrigger>(),
+  // The mode in effect at start; a later config change never reinterprets it.
+  mode: text('mode').notNull().$type<import('../quality-scout/types').ScoutRun['mode']>(),
+  status: text('status').notNull().default('running').$type<import('../quality-scout/types').ScoutRunStatus>(),
+  candidateRef: text('candidate_ref').notNull(),
+  candidateSha: text('candidate_sha').notNull(),
+  // Plain uuid, not an FK: pruning an old run must not rewrite a newer one.
+  priorRunId: uuid('prior_run_id'),
+  priorSha: text('prior_sha'),
+  budget: jsonb('budget').notNull().$type<import('../quality-scout/types').ScoutBudget>(),
+  policyVersion: text('policy_version').notNull(),
+  candidatesGenerated: integer('candidates_generated'),
+  probesSelected: integer('probes_selected'),
+  probesSkipped: integer('probes_skipped'),
+  // { total, pass, fail, inconclusive, unsupported } — written when the run ends.
+  verdicts: jsonb('verdicts').$type<import('../quality-scout/types').ScoutRunTotals['verdicts'] | null>(),
+  costUsd: decimal('cost_usd', { precision: 10, scale: 4 }),
+  // Full operational readout (stage cost, actions, dedupe, staleness) — written when the run ends.
+  metrics: jsonb('metrics').$type<import('../quality-scout/types').ScoutRunMetrics | null>(),
+  error: text('error'),
+  // Runner host (status 'awaiting_host'). host_state is frozen at park time:
+  // the profile snapshot the server planned against, the plan summary finalize
+  // needs, and the runner's duration bound. The candidate {ref, sha} is
+  // candidate_ref/candidate_sha above. Kept after the run completes, for the readout.
+  hostState: jsonb('host_state').$type<Pick<import('../quality-scout/types').ScoutRunParking, 'parkedAt' | 'runnerMaxDurationMs' | 'profile' | 'plan'> | null>(),
+  // Past this, the hourly sweep finalizes unexecuted runner probes `unsupported`.
+  hostDeadline: timestamp('host_deadline', { withTimezone: true }),
+  // Empty until a runner claims the run; claims are an atomic UPDATE on these.
+  hostLeaseHolder: text('host_lease_holder'),
+  hostLeaseExpiresAt: timestamp('host_lease_expires_at', { withTimezone: true }),
+  hostLeaseLapses: integer('host_lease_lapses').notNull().default(0),
+  startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceCreatedIdx: index('quality_scout_runs_workspace_created_idx').on(t.workspaceId, t.createdAt),
+  workspaceRefIdx: index('quality_scout_runs_workspace_ref_idx').on(t.workspaceId, t.candidateRef, t.createdAt),
+  // The parked-run queue: runner claims and the expiry sweep both scan it.
+  statusHostDeadlineIdx: index('quality_scout_runs_status_host_deadline_idx').on(t.status, t.hostDeadline),
+}));
+
+export type QualityScoutRun = typeof qualityScoutRuns.$inferSelect;
+export type NewQualityScoutRun = typeof qualityScoutRuns.$inferInsert;
+
+/**
+ * Every candidate a run considered — selected or skipped — with the probe
+ * contract frozen before execution (spec §6) and, once run, its substrate
+ * result. `verdict` and `signature` are lifted out of `result` for queries.
+ */
+export const qualityScoutProbes = pgTable('quality_scout_probes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  runId: uuid('run_id').references(() => qualityScoutRuns.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  candidateId: text('candidate_id').notNull(),
+  family: text('family').notNull().$type<import('../quality-scout/types').ScoutProbeFamily>(),
+  probeKind: text('probe_kind').notNull(),
+  title: text('title').notNull(),
+  invariant: text('invariant').notNull(),
+  sourceSignals: jsonb('source_signals').notNull().$type<import('../quality-scout/types').ScoutSourceSignal[]>(),
+  preconditions: jsonb('preconditions').notNull().$type<string[]>(),
+  executor: text('executor'),
+  estimatedCost: text('estimated_cost').notNull().$type<import('../quality-scout/types').ScoutCost>(),
+  risk: text('risk').notNull().$type<import('../verification-check').VerificationSeverity>(),
+  mutates: boolean('mutates').notNull().default(false),
+  evidenceRequirements: jsonb('evidence_requirements').notNull().$type<import('../verification-check').EvidenceRequirement[]>(),
+  unsupportedReason: text('unsupported_reason'),
+  selection: jsonb('selection').notNull().$type<import('../quality-scout/types').ScoutProbeSelection>(),
+  // Where the probe runs ('server' | 'runner'); null on a single-host run.
+  host: text('host').$type<import('../quality-scout/types').ScoutProbeHost>(),
+  verdict: text('verdict').$type<import('../verification-check').VerificationVerdict>(),
+  signature: text('signature'),
+  result: jsonb('result').$type<import('../verification-check').VerificationResult | null>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  runCandidateIdx: uniqueIndex('quality_scout_probes_run_candidate_idx').on(t.runId, t.candidateId),
+  workspaceSignatureIdx: index('quality_scout_probes_workspace_signature_idx').on(t.workspaceId, t.signature),
+}));
+
+export type QualityScoutProbe = typeof qualityScoutProbes.$inferSelect;
+export type NewQualityScoutProbe = typeof qualityScoutProbes.$inferInsert;
+
+/**
+ * One deduped Scout defect per (workspace, signature), across runs (spec §9–
+ * §10). Only a `fail` creates or recurs a row; inconclusive/unsupported never
+ * do, and only a `pass` of the same check resolves one. Writers merge through
+ * `applyScoutFailure` and compare-and-set on `occurrence_count`.
+ */
+export const qualityScoutFindings = pgTable('quality_scout_findings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  signature: text('signature').notNull(),
+  recurrenceKey: text('recurrence_key').notNull(),
+  checkId: text('check_id').notNull(),
+  family: text('family').notNull().$type<import('../quality-scout/types').ScoutProbeFamily>(),
+  invariant: text('invariant').notNull(),
+  severity: text('severity').notNull().$type<import('../verification-check').VerificationSeverity>(),
+  confidence: real('confidence'),
+  observed: text('observed'),
+  evidenceRefs: jsonb('evidence_refs').notNull().$type<import('../verification-check').VerificationEvidenceRef[]>(),
+  reproducibility: text('reproducibility').notNull().default('unknown').$type<import('../quality-scout/types').ScoutReproducibility>(),
+  state: text('state').notNull().default('open').$type<import('../quality-scout/types').ScoutFindingState>(),
+  actionState: text('action_state').notNull().default('none').$type<import('../quality-scout/types').ScoutActionState>(),
+  actionTaskId: uuid('action_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  occurrenceCount: integer('occurrence_count').notNull().default(1),
+  regressionCount: integer('regression_count').notNull().default(0),
+  firstSeenRunId: uuid('first_seen_run_id').notNull(),
+  firstSeenSha: text('first_seen_sha').notNull(),
+  lastSeenRunId: uuid('last_seen_run_id').notNull(),
+  lastSeenSha: text('last_seen_sha').notNull(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+  resolvedRunId: uuid('resolved_run_id'),
+  resolvedSha: text('resolved_sha'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  // Set together when state becomes 'dismissed'; the ledger's recurrence write never touches them.
+  dismissedReason: text('dismissed_reason'),
+  dismissedAt: timestamp('dismissed_at', { withTimezone: true }),
+  dismissedBy: text('dismissed_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceSignatureIdx: uniqueIndex('quality_scout_findings_workspace_signature_idx').on(t.workspaceId, t.signature),
+  workspaceCheckIdx: index('quality_scout_findings_workspace_check_idx').on(t.workspaceId, t.checkId, t.state),
+  workspaceStateIdx: index('quality_scout_findings_workspace_state_idx').on(t.workspaceId, t.state, t.lastSeenAt),
+}));
+
+export type QualityScoutFinding = typeof qualityScoutFindings.$inferSelect;
+export type NewQualityScoutFinding = typeof qualityScoutFindings.$inferInsert;
 
 /**
  * Post-session quality loop — one row per (worker attempt, policy version).

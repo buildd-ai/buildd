@@ -16,6 +16,7 @@
  *   - Controlled by workspace gitConfig.autoResolveMergeConflicts (default ON).
  */
 
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -420,6 +421,34 @@ ${task.description ? `## Original Task Description\n\n${task.description}` : ''}
 
 // ── DB dispatch ───────────────────────────────────────────────────────────────
 
+/**
+ * Free the (workspace, PR, head) dedupe key held by a conflict retry that has
+ * already ended on this exact head. A retry that finished without pushing
+ * leaves the head unchanged, so its row keeps owning the key forever. Every
+ * later dispatch for that still-conflicting head then hits the unique index
+ * and files nothing, while each caller reads that as "already handled". Only
+ * a terminal row gives up its key, so a live retry still dedupes. The row
+ * keeps `conflictRetryPrNumber` and `subjectHeadSha`, so attempt counts and
+ * history are unchanged. Returns the released task id, or null.
+ */
+export async function releaseSpentConflictRetryKey(
+  workspaceId: string,
+  prNumber: number,
+  headSha: string,
+): Promise<string | null> {
+  const [row] = await db
+    .update(tasks)
+    .set({ conflictRetryHeadSha: null })
+    .where(and(
+      eq(tasks.workspaceId, workspaceId),
+      eq(tasks.conflictRetryPrNumber, prNumber),
+      eq(tasks.conflictRetryHeadSha, headSha),
+      inArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
+    ))
+    .returning({ id: tasks.id });
+  return row?.id ?? null;
+}
+
 export interface DispatchConflictRetryParams {
   /** ID of the worker whose PR has conflicts. */
   workerId: string;
@@ -816,7 +845,7 @@ export async function dispatchConflictRetry(
   // of the task it re-attempts.
   const identity = await inheritAttemptIdentity(retryTask.parentTaskId);
 
-  const [newTask] = await db
+  const insertRetry = () => db
     .insert(tasks)
     .values({
       workspaceId: retryTask.workspaceId,
@@ -843,8 +872,16 @@ export async function dispatchConflictRetry(
     .onConflictDoNothing()
     .returning();
 
+  let [newTask] = await insertRetry();
+  // The key may be held by an earlier retry that ended on this same head
+  // without pushing. The conflict is still there, so file the next attempt.
+  // The iteration cap above still bounds how many attempts can run.
+  if (!newTask && await releaseSpentConflictRetryKey(workspaceId, prNumber, headSha)) {
+    [newTask] = await insertRetry();
+  }
+
   if (!newTask) {
-    // Hit the unique index — duplicate, already dispatched
+    // Hit the unique index — a concurrent caller filed the retry for this head
     return { dispatched: false };
   }
 

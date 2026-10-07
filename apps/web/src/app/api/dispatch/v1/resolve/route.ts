@@ -1,6 +1,6 @@
 /**
  * POST /api/dispatch/v1/resolve — Dispatch asks before a `resolve: true`
- * step (webhook, GitHub Actions): `{id, attempt, target}` →
+ * step (the webhook): `{id, attempt, target}` →
  * `deliver{payload, grant} | decline | skip | reschedule`.
  *
  * Signed with DISPATCH_CALLBACK_SECRET (lib/dispatch-callback-auth.ts). The

@@ -32,12 +32,14 @@ import * as schema from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import {
   effectiveRoles,
+  sanitizeOverrides,
   holds,
   keyHolds,
   OWNER_ADMIN,
   PERMISSIONS,
   type ApiKeyLevel,
   type Permission,
+  type PermissionOverrides,
   type TeamRole,
   type TeamScopeCaller,
 } from './permission-registry';
@@ -47,12 +49,16 @@ export {
   isApiKeyLevel,
   isTeamRole,
   keyLevelHas,
+  LOCKED_PERMISSIONS,
+  parseOverridesInput,
+  sanitizeOverrides,
   PERMISSIONS,
   roleHas,
   TEAM_ROLES,
   type ApiKeyLevel,
   type Permission,
   type PermissionDef,
+  type PermissionOverrides,
   type TeamRole,
   type TeamScopeCaller,
 } from './permission-registry';
@@ -81,8 +87,34 @@ export const getUserTeamRoles = cache(async (userId: string): Promise<Map<string
   return roles;
 });
 
+/**
+ * A team's permission overrides (teams.permission_overrides), sanitized.
+ * Cached per request, so every roleHas/can in one render or route reads the
+ * row once. A missing team is `{}` (defaults). A failed read is NOT swallowed:
+ * an override can take a permission away, so guessing "defaults" on error
+ * could widen access. The error propagates and the request fails closed.
+ */
+export const getTeamPermissionOverrides = cache(async (teamId: string): Promise<PermissionOverrides> => {
+  if (!teamId) return {};
+  const team = await db.query.teams.findFirst({
+    where: eq(schema.teams.id, teamId),
+    columns: { permissionOverrides: true },
+  });
+  return sanitizeOverrides(team?.permissionOverrides);
+});
+
+/** Overrides for several teams at once (each read is the cached one above). */
+export async function getTeamsPermissionOverrides(teamIds: readonly string[]): Promise<Map<string, PermissionOverrides>> {
+  const unique = [...new Set(teamIds)];
+  const all = await Promise.all(unique.map(id => getTeamPermissionOverrides(id)));
+  return new Map(unique.map((id, i) => [id, all[i]]));
+}
+
 /** A role grant plus key floor, the shape every check below resolves to. */
-type Grant = { roles: (teamId: string) => readonly TeamRole[]; minKeyLevel: ApiKeyLevel | null };
+type Grant = {
+  roles: (teamId: string, overrides: PermissionOverrides) => readonly TeamRole[];
+  minKeyLevel: ApiKeyLevel | null;
+};
 
 /**
  * Scoped tokens carry `scopes`, not a level. Callers map them to a level
@@ -94,12 +126,13 @@ async function teamIdsGranted(caller: TeamScopeCaller, grant: Grant): Promise<st
   if (caller.kind === 'account') {
     return keyHolds(grant.minKeyLevel, caller.level) ? [caller.teamId] : [];
   }
-  const roles = await getUserTeamRoles(caller.userId);
-  return [...roles].filter(([teamId, role]) => holds(grant.roles(teamId), role)).map(([teamId]) => teamId);
+  const roles = [...(await getUserTeamRoles(caller.userId))];
+  const overrides = await Promise.all(roles.map(([teamId]) => getTeamPermissionOverrides(teamId)));
+  return roles.filter(([teamId, role], i) => holds(grant.roles(teamId, overrides[i]), role)).map(([teamId]) => teamId);
 }
 
 function grantFor(permission: Permission): Grant {
-  return { roles: teamId => effectiveRoles(teamId, permission), minKeyLevel: PERMISSIONS[permission].minKeyLevel };
+  return { roles: (_teamId, overrides) => effectiveRoles(permission, overrides), minKeyLevel: PERMISSIONS[permission].minKeyLevel };
 }
 
 /**

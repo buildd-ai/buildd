@@ -1,0 +1,807 @@
+{
+  "backend": {
+    "apps/web/src/app/api/accounts/[id]/ai-budget/route.ts": {
+      "apps/web/src/lib/ai/account-budget.ts": "chat"
+    },
+    "apps/web/src/app/api/accounts/route.ts": {
+      "apps/web/src/lib/personal-workspace-links.ts": "notifications"
+    },
+    "apps/web/src/app/api/auth/cli/route.ts": {
+      "apps/web/src/lib/personal-workspace-links.ts": "notifications"
+    },
+    "apps/web/src/app/api/auth/device/approve/route.ts": {
+      "apps/web/src/lib/personal-workspace-links.ts": "notifications"
+    },
+    "apps/web/src/app/api/cron/codex-token-refresh/route.ts": {
+      "apps/web/src/lib/mcp-connector-refresh.ts": "connectors",
+      "apps/web/src/lib/notify.ts": "notifications"
+    },
+    "apps/web/src/app/api/cron/lease-expiry-guard/route.ts": {
+      "apps/web/src/lib/notify.ts": "notifications"
+    },
+    "apps/web/src/app/api/cron/pr-reconcile/route.ts": {
+      "apps/web/src/lib/ci-red-queue.ts": "reviews-merge",
+      "apps/web/src/lib/ci-red-sweep-deps.ts": "reviews-merge",
+      "apps/web/src/lib/dead-zone-sweep.ts": "reviews-merge",
+      "apps/web/src/lib/pr-landing-sweep-deps.ts": "reviews-merge",
+      "apps/web/src/lib/pr-landing-sweep.ts": "reviews-merge",
+      "apps/web/src/lib/pr-supersession-detect.ts": "reviews-merge",
+      "apps/web/src/lib/retry-pr-supersession.ts": "reviews-merge",
+      "apps/web/src/lib/spec-recheck.ts": "spec-conformance",
+      "apps/web/src/lib/stranded-tasks-sweep.ts": "health-quality"
+    },
+    "apps/web/src/app/api/github/pr/route.ts": {
+      "apps/web/src/lib/auto-merge.ts": "reviews-merge",
+      "apps/web/src/lib/base-refresh.ts": "reviews-merge",
+      "apps/web/src/lib/change-intent.ts": "missions",
+      "apps/web/src/lib/ci-failure-excerpts.ts": "reviews-merge",
+      "apps/web/src/lib/conflict-retry.ts": "reviews-merge",
+      "apps/web/src/lib/dependency-bot-pr.ts": "reviews-merge",
+      "apps/web/src/lib/escalation-supersession.ts": "reviews-merge",
+      "apps/web/src/lib/evidence-inline.ts": "knowledge",
+      "apps/web/src/lib/failed-checks.ts": "reviews-merge",
+      "apps/web/src/lib/merge-policy.ts": "reviews-merge",
+      "apps/web/src/lib/mission-base-guard.ts": "missions",
+      "apps/web/src/lib/mission-integration-branch.ts": "missions",
+      "apps/web/src/lib/mission-pr.ts": "missions",
+      "apps/web/src/lib/pr-activity-comment.ts": "reviews-merge",
+      "apps/web/src/lib/pr-branch-update.ts": "reviews-merge",
+      "apps/web/src/lib/pr-landing.ts": "reviews-merge",
+      "apps/web/src/lib/pr-review-request.ts": "reviews-merge",
+      "apps/web/src/lib/pr-review-status.ts": "reviews-merge",
+      "apps/web/src/lib/retry-pr-supersession.ts": "reviews-merge",
+      "apps/web/src/lib/review-verdict-gate.ts": "reviews-merge",
+      "apps/web/src/lib/reviewer.ts": "reviews-merge",
+      "apps/web/src/lib/supersession-check.ts": "reviews-merge",
+      "apps/web/src/lib/supersession.ts": "reviews-merge",
+      "apps/web/src/lib/surface-ordering-config.ts": "missions",
+      "apps/web/src/lib/surface-ordering-door.ts": "missions",
+      "packages/core/mission-integration.ts": "missions"
+    },
+    "apps/web/src/app/api/github/pr/supersede/route.ts": {
+      "apps/web/src/lib/pr-supersession.ts": "reviews-merge"
+    },
+    "apps/web/src/app/api/github/webhook/dark-check-detection.ts": {
+      "apps/web/src/lib/notify.ts": "notifications"
+    },
+    "apps/web/src/app/api/github/webhook/route.ts": {
+      "apps/web/src/lib/auto-merge.ts": "reviews-merge",
+      "apps/web/src/lib/knowledge-ingest.ts": "knowledge",
+      "apps/web/src/lib/merge-policy.ts": "reviews-merge",
+      "apps/web/src/lib/mission-base-guard.ts": "missions",
+      "apps/web/src/lib/notify.ts": "notifications",
+      "apps/web/src/lib/pr-landing.ts": "reviews-merge",
+      "apps/web/src/lib/pr-review-request.ts": "reviews-merge",
+      "apps/web/src/lib/pr-review-status.ts": "reviews-merge",
+      "apps/web/src/lib/pr-scope-reconcile-trigger.ts": "reviews-merge",
+      "apps/web/src/lib/prompt-evals/push-trigger.ts": "experiments",
+      "apps/web/src/lib/prompt-evals/run.ts": "experiments",
+      "apps/web/src/lib/prompt-evals/store.ts": "experiments",
+      "apps/web/src/lib/pushover.ts": "notifications",
+      "apps/web/src/lib/review-verdict-gate.ts": "reviews-merge",
+      "apps/web/src/lib/spec-recheck.ts": "spec-conformance",
+      "packages/core/mission-integration.ts": "missions"
+    },
+    "apps/web/src/app/api/mcp-oauth/[workspace]/route.ts": {
+      "apps/web/src/lib/linked-knowledge.ts": "knowledge",
+      "apps/web/src/lib/memory-decisions.ts": "jev-decisions",
+      "apps/web/src/lib/memory-helper.ts": "knowledge",
+      "apps/web/src/lib/memory-ledger.ts": "knowledge",
+      "packages/core/knowledge-store/index.ts": "knowledge",
+      "packages/core/memory-scope.ts": "knowledge"
+    },
+    "apps/web/src/app/api/mcp/route.ts": {
+      "apps/web/src/lib/linked-knowledge.ts": "knowledge",
+      "apps/web/src/lib/memory-decisions.ts": "jev-decisions",
+      "apps/web/src/lib/memory-helper.ts": "knowledge",
+      "apps/web/src/lib/memory-ledger.ts": "knowledge",
+      "packages/core/knowledge-store/index.ts": "knowledge",
+      "packages/core/memory-scope.ts": "knowledge"
+    },
+    "apps/web/src/app/api/models/route.ts": {
+      "packages/core/model-tier-liveness.ts": "model-tiers",
+      "packages/core/model-tier-registry.ts": "model-tiers"
+    },
+    "apps/web/src/app/api/objects/[kind]/[id]/route.ts": {
+      "apps/web/src/lib/chat-objects/load-mission-object.ts": "chat",
+      "apps/web/src/lib/chat-objects/load-pr-object.ts": "chat",
+      "apps/web/src/lib/chat-objects/load-question-object.ts": "chat",
+      "apps/web/src/lib/chat-objects/load-task-object.ts": "chat"
+    },
+    "apps/web/src/app/api/runner/credential-refresh/route.ts": {
+      "apps/web/src/lib/notify.ts": "notifications"
+    },
+    "apps/web/src/app/api/tasks/[id]/route.ts": {
+      "apps/web/src/lib/evidence-inline.ts": "knowledge",
+      "apps/web/src/lib/mission-feed.ts": "missions",
+      "apps/web/src/lib/mission-link-scope.ts": "missions",
+      "apps/web/src/lib/mission-loop.ts": "missions",
+      "apps/web/src/lib/required-connectors.ts": "connectors",
+      "packages/core/loop-config.ts": "missions",
+      "packages/core/model-tier-defaults.ts": "model-tiers"
+    },
+    "apps/web/src/app/api/tasks/[id]/start/route.ts": {
+      "apps/web/src/app/api/workers/claim/connector-gate.ts": "connectors",
+      "apps/web/src/app/api/workers/claim/mission-budget-gate.ts": "missions",
+      "apps/web/src/lib/subject-gate-contract.ts": "missions"
+    },
+    "apps/web/src/app/api/tasks/[id]/summary/route.ts": {
+      "apps/web/src/lib/mission-visual-review.ts": "visual-qa",
+      "apps/web/src/lib/task-failure-kind-load.ts": "health-quality",
+      "apps/web/src/lib/visual-review-load.ts": "visual-qa",
+      "apps/web/src/lib/visual-review-rounds.ts": "visual-qa"
+    },
+    "apps/web/src/app/api/tasks/route.ts": {
+      "apps/web/src/lib/change-intent.ts": "missions",
+      "apps/web/src/lib/mission-integration-branch.ts": "missions",
+      "apps/web/src/lib/mission-link-scope.ts": "missions",
+      "apps/web/src/lib/mission-surface-audit.ts": "visual-qa",
+      "apps/web/src/lib/required-connectors.ts": "connectors",
+      "apps/web/src/lib/subject-anchor-observer.ts": "missions",
+      "apps/web/src/lib/subject-intake-db.ts": "intake-integrations",
+      "apps/web/src/lib/subject-intake.ts": "intake-integrations",
+      "apps/web/src/lib/task-category.ts": "health-quality",
+      "apps/web/src/lib/task-role-apply.ts": "roles-skills",
+      "packages/core/friction-manifest.ts": "health-quality",
+      "packages/core/loop-config.ts": "missions",
+      "packages/core/mission-integration.ts": "missions",
+      "packages/core/model-tier-defaults.ts": "model-tiers",
+      "packages/core/role-model-routing.ts": "roles-skills",
+      "packages/core/spec-discrepancy-intake.ts": "spec-conformance",
+      "packages/core/subject-anchor-extractor.ts": "missions",
+      "packages/core/subject-anchor-observe.ts": "missions"
+    },
+    "apps/web/src/app/api/teams/[id]/route.ts": {
+      "packages/core/decision-model.ts": "jev-decisions",
+      "packages/core/inference-key-policy.ts": "jev-decisions",
+      "packages/core/inference-policy.ts": "jev-decisions"
+    },
+    "apps/web/src/app/api/version/route.ts": {
+      "apps/web/src/lib/deploy-identity.ts": "releases"
+    },
+    "apps/web/src/app/api/workers/[id]/artifacts/route.ts": {
+      "apps/web/src/lib/artifact-notify.ts": "notifications"
+    },
+    "apps/web/src/app/api/workers/[id]/prompt-bundles/route.ts": {
+      "apps/web/src/app/api/workers/claim/skill-and-role-injection.ts": "roles-skills"
+    },
+    "apps/web/src/app/api/workers/[id]/route.ts": {
+      "apps/web/src/lib/auto-merge-bound.ts": "reviews-merge",
+      "apps/web/src/lib/auto-merge.ts": "reviews-merge",
+      "apps/web/src/lib/chat/mission-events.ts": "chat",
+      "apps/web/src/lib/criteria-reviewer-findings.ts": "missions",
+      "apps/web/src/lib/dead-pr-shutdown.ts": "reviews-merge",
+      "apps/web/src/lib/dependency-bot-pr.ts": "reviews-merge",
+      "apps/web/src/lib/merge-policy.ts": "reviews-merge",
+      "apps/web/src/lib/migration-inspector.ts": "workspace-migration",
+      "apps/web/src/lib/mission-base-guard.ts": "missions",
+      "apps/web/src/lib/mission-budget.ts": "missions",
+      "apps/web/src/lib/mission-integration-branch.ts": "missions",
+      "apps/web/src/lib/notify.ts": "notifications",
+      "apps/web/src/lib/pr-activity-comment.ts": "reviews-merge",
+      "apps/web/src/lib/pr-activity-fix-claimed.ts": "reviews-merge",
+      "apps/web/src/lib/pr-landing.ts": "reviews-merge",
+      "apps/web/src/lib/pr-lede-correction.ts": "reviews-merge",
+      "apps/web/src/lib/pr-review-request.ts": "reviews-merge",
+      "apps/web/src/lib/pr-review-status.ts": "reviews-merge",
+      "apps/web/src/lib/pr-scope-reconcile-trigger.ts": "reviews-merge",
+      "apps/web/src/lib/read-only-review.ts": "reviews-merge",
+      "apps/web/src/lib/reviewer-evidence.ts": "knowledge",
+      "apps/web/src/lib/reviewer-output.ts": "reviews-merge",
+      "apps/web/src/lib/reviewer-prose-fallback.ts": "reviews-merge",
+      "apps/web/src/lib/reviewer.ts": "reviews-merge",
+      "apps/web/src/lib/silent-completion.ts": "health-quality",
+      "apps/web/src/lib/supersession.ts": "reviews-merge",
+      "apps/web/src/lib/terminal-record-ledger.ts": "health-quality",
+      "packages/core/bash-failure-trace.ts": "health-quality",
+      "packages/core/orchestration-ledger-source.ts": "missions",
+      "packages/core/routing-analytics.ts": "health-quality",
+      "packages/core/runner-health.ts": "health-quality"
+    },
+    "apps/web/src/app/api/workers/active/route.ts": {
+      "apps/web/src/lib/deploy-identity.ts": "releases",
+      "apps/web/src/lib/visual-audit-runner.ts": "visual-qa"
+    },
+    "apps/web/src/app/api/workers/claim/context-injection.ts": {
+      "apps/web/src/app/api/workers/claim/subject-prior-work.ts": "knowledge",
+      "apps/web/src/lib/knowledge-context.ts": "knowledge",
+      "apps/web/src/lib/linked-knowledge.ts": "knowledge",
+      "packages/core/friction-manifest.ts": "health-quality",
+      "packages/core/knowledge-store/index.ts": "knowledge",
+      "packages/core/memory-claim-index.ts": "knowledge",
+      "packages/core/memory-hit-scope.ts": "knowledge",
+      "packages/core/retrieval-clusters.ts": "knowledge",
+      "packages/core/spec-discrepancy-dispatch.ts": "spec-conformance",
+      "packages/core/subject-anchor-observe.ts": "missions"
+    },
+    "apps/web/src/app/api/workers/claim/hold-start-shadow.ts": {
+      "apps/web/src/lib/surface-ordering-config.ts": "missions",
+      "packages/core/decision-client.ts": "jev-decisions",
+      "packages/core/orchestration-claim-decision.ts": "jev-decisions",
+      "packages/core/orchestration-claim-source.ts": "missions",
+      "packages/core/orchestration-decision.ts": "jev-decisions",
+      "packages/core/orchestration-promotion.ts": "missions"
+    },
+    "apps/web/src/app/api/workers/claim/prompt-context-pipeline.ts": {
+      "apps/web/src/app/api/workers/claim/mission-handoff-injection.ts": "missions"
+    },
+    "apps/web/src/app/api/workers/claim/route.ts": {
+      "apps/web/src/app/api/workers/claim/connector-block-notify.ts": "connectors",
+      "apps/web/src/app/api/workers/claim/connector-prefilter.ts": "connectors",
+      "apps/web/src/app/api/workers/claim/mcp-connector-injection.ts": "connectors",
+      "apps/web/src/app/api/workers/claim/role-env-injection.ts": "roles-skills",
+      "apps/web/src/app/api/workers/claim/role-gate.ts": "roles-skills",
+      "apps/web/src/app/api/workers/claim/skill-and-role-injection.ts": "roles-skills",
+      "apps/web/src/lib/notify.ts": "notifications",
+      "apps/web/src/lib/pr-activity-fix-claimed.ts": "reviews-merge",
+      "apps/web/src/lib/read-only-review.ts": "reviews-merge",
+      "apps/web/src/lib/supersession.ts": "reviews-merge",
+      "packages/core/model-routing-experiment-source.ts": "experiments",
+      "packages/core/model-tier-registry.ts": "model-tiers",
+      "packages/core/role-model-routing.ts": "roles-skills",
+      "packages/core/tier-pool-source.ts": "model-tiers"
+    },
+    "apps/web/src/app/api/workers/claim/subject-gate.ts": {
+      "apps/web/src/lib/subject-gate-contract.ts": "missions"
+    },
+    "apps/web/src/app/api/workspaces/[id]/artifacts/route.ts": {
+      "apps/web/src/lib/notify.ts": "notifications"
+    },
+    "apps/web/src/app/api/workspaces/[id]/policy-init/route.ts": {
+      "packages/core/spec-conformance-detect.ts": "spec-conformance",
+      "packages/core/spec-conformance-schedule.ts": "spec-conformance"
+    },
+    "apps/web/src/app/api/workspaces/[id]/route.ts": {
+      "apps/web/src/lib/knowledge-ingest.ts": "knowledge",
+      "apps/web/src/lib/merge-policy.ts": "reviews-merge"
+    },
+    "apps/web/src/app/api/workspaces/route.ts": {
+      "apps/web/src/lib/knowledge-ingest.ts": "knowledge"
+    },
+    "apps/web/src/app/app/(protected)/home/home-view.ts": {
+      "apps/web/src/lib/action-queue.ts": "missions"
+    },
+    "apps/web/src/app/app/(protected)/settings/workspaces/rows.ts": {
+      "apps/web/src/lib/merge-policy.ts": "reviews-merge"
+    },
+    "apps/web/src/app/app/(protected)/tasks/[id]/also-running.ts": {
+      "apps/web/src/lib/mission-task-href.ts": "missions"
+    },
+    "apps/web/src/app/app/(protected)/tasks/[id]/execution-plan.ts": {
+      "packages/core/mission-helpers.ts": "missions"
+    },
+    "apps/web/src/app/app/(protected)/tasks/[id]/respond/respond-links.ts": {
+      "apps/web/src/lib/mission-task-href.ts": "missions"
+    },
+    "apps/web/src/auth.ts": {
+      "apps/web/src/lib/personal-workspace-links-plan.ts": "notifications"
+    },
+    "apps/web/src/lib/agent-capabilities/github.ts": {
+      "apps/web/src/lib/auto-merge-bound.ts": "reviews-merge"
+    },
+    "apps/web/src/lib/agent-capabilities/reported-pr.ts": {
+      "apps/web/src/lib/mission-base-guard.ts": "missions",
+      "apps/web/src/lib/mission-integration-branch.ts": "missions",
+      "apps/web/src/lib/retry-pr-supersession.ts": "reviews-merge"
+    },
+    "apps/web/src/lib/agent-endpoint-settings.ts": {
+      "packages/core/inference-keys.ts": "jev-decisions",
+      "packages/core/litellm-gateway.ts": "model-tiers",
+      "packages/core/model-tier-defaults.ts": "model-tiers"
+    },
+    "apps/web/src/lib/approval-carry-forward.ts": {
+      "apps/web/src/lib/pr-review-request.ts": "reviews-merge"
+    },
+    "apps/web/src/lib/artifact-helpers.ts": {
+      "apps/web/src/lib/artifact-notify.ts": "notifications"
+    },
+    "apps/web/src/lib/attempt-strip.ts": {
+      "packages/core/mission-helpers.ts": "missions"
+    },
+    "apps/web/src/lib/body-read-monitor.ts": {
+      "apps/web/src/lib/pushover.ts": "notifications"
+    },
+    "apps/web/src/lib/capacity-freed-wake.ts": {
+      "apps/web/src/app/api/cron/queue-stall/fleet-idle.ts": "health-quality"
+    },
+    "apps/web/src/lib/cron-run.ts": {
+      "apps/web/src/lib/cron-health.ts": "health-quality",
+      "apps/web/src/lib/pushover.ts": "notifications",
+      "packages/core/signal-registry.ts": "health-quality"
+    },
+    "apps/web/src/lib/dependency-rows.ts": {
+      "apps/web/src/lib/mission-helpers.ts": "missions"
+    },
+    "apps/web/src/lib/dispatch-alerts.ts": {
+      "apps/web/src/lib/pushover.ts": "notifications"
+    },
+    "apps/web/src/lib/early-release-dispatch.ts": {
+      "apps/web/src/lib/early-release-decision.ts": "jev-decisions",
+      "packages/core/decision-ledger.ts": "jev-decisions",
+      "packages/core/decision-policy.ts": "jev-decisions"
+    },
+    "apps/web/src/lib/early-release-metrics.ts": {
+      "apps/web/src/lib/coordination-stats-query.ts": "health-quality"
+    },
+    "apps/web/src/lib/early-release-reconciler.ts": {
+      "apps/web/src/lib/base-refresh.ts": "reviews-merge",
+      "apps/web/src/lib/pr-review-request.ts": "reviews-merge"
+    },
+    "apps/web/src/lib/early-release-rules.ts": {
+      "apps/web/src/lib/review-verdict-gate.ts": "reviews-merge"
+    },
+    "apps/web/src/lib/endpoint-model-suggest.ts": {
+      "apps/web/src/lib/memory-decisions.ts": "jev-decisions",
+      "packages/core/decision-client.ts": "jev-decisions"
+    },
+    "apps/web/src/lib/github.ts": {
+      "apps/web/src/lib/ci-lifecycle.ts": "reviews-merge"
+    },
+    "apps/web/src/lib/home-fleet.ts": {
+      "apps/web/src/lib/fleet-view.ts": "health-quality"
+    },
+    "apps/web/src/lib/home-ticker.ts": {
+      "apps/web/src/lib/mission-task-href.ts": "missions"
+    },
+    "apps/web/src/lib/local-strand.ts": {
+      "apps/web/src/lib/mission-helpers.ts": "missions"
+    },
+    "apps/web/src/lib/pr-attempts.ts": {
+      "apps/web/src/lib/task-evidence.ts": "knowledge"
+    },
+    "apps/web/src/lib/pr-comments.ts": {
+      "packages/core/knowledge-store/index.ts": "knowledge"
+    },
+    "apps/web/src/lib/pr-list.ts": {
+      "apps/web/src/lib/pr-attention.ts": "reviews-merge",
+      "packages/core/mission-integration.ts": "missions"
+    },
+    "apps/web/src/lib/pr-reconcile.ts": {
+      "apps/web/src/lib/mission-completion.ts": "missions",
+      "apps/web/src/lib/mission-dependency.ts": "missions",
+      "apps/web/src/lib/mission-pr.ts": "missions",
+      "apps/web/src/lib/subject-sweep.ts": "missions",
+      "apps/web/src/lib/surface-ordering.ts": "missions"
+    },
+    "apps/web/src/lib/prompt-catalog.ts": {
+      "apps/web/src/lib/chat-retro/lesson.ts": "chat",
+      "apps/web/src/lib/chat/instructions.ts": "chat",
+      "apps/web/src/lib/chat/routing.ts": "chat",
+      "apps/web/src/lib/default-roles.ts": "roles-skills",
+      "apps/web/src/lib/early-release-decision.ts": "jev-decisions",
+      "apps/web/src/lib/goal-criteria-quality-decision.ts": "jev-decisions",
+      "apps/web/src/lib/goal-criteria-rubric.ts": "missions",
+      "apps/web/src/lib/heartbeat-triage.ts": "missions",
+      "apps/web/src/lib/mission-criteria-eval.ts": "missions",
+      "apps/web/src/lib/mission-criteria-worker-eval.ts": "missions",
+      "apps/web/src/lib/mission-prompts.ts": "missions",
+      "apps/web/src/lib/reviewer.ts": "reviews-merge",
+      "apps/web/src/lib/strand-choice-decision.ts": "jev-decisions",
+      "apps/web/src/lib/surface-audit-advice.ts": "visual-qa",
+      "apps/web/src/lib/task-category-decision.ts": "jev-decisions",
+      "apps/web/src/lib/task-role-decision.ts": "jev-decisions"
+    },
+    "apps/web/src/lib/prompt-fallback-alert.ts": {
+      "apps/web/src/lib/pushover.ts": "notifications"
+    },
+    "apps/web/src/lib/provider-keys.ts": {
+      "packages/core/inference-key-policy.ts": "jev-decisions",
+      "packages/core/inference-keys.ts": "jev-decisions"
+    },
+    "apps/web/src/lib/question-gate-check.ts": {
+      "apps/web/src/lib/memory-decisions.ts": "jev-decisions",
+      "packages/core/decision-client.ts": "jev-decisions",
+      "packages/core/decision-ledger.ts": "jev-decisions",
+      "packages/core/question-gate-decision.ts": "jev-decisions"
+    },
+    "apps/web/src/lib/refresh-redrive.ts": {
+      "apps/web/src/lib/base-refresh.ts": "reviews-merge",
+      "apps/web/src/lib/surface-ordering-wake.ts": "missions"
+    },
+    "apps/web/src/lib/segment-label.ts": {
+      "packages/core/mission-helpers.ts": "missions"
+    },
+    "apps/web/src/lib/session-transcript.ts": {
+      "apps/web/src/lib/evidence-read.ts": "knowledge"
+    },
+    "apps/web/src/lib/stale-workers.ts": {
+      "apps/web/src/lib/auto-merge.ts": "reviews-merge",
+      "apps/web/src/lib/chat/mission-events.ts": "chat",
+      "apps/web/src/lib/silent-completion.ts": "health-quality",
+      "apps/web/src/lib/visual-review-load.ts": "visual-qa"
+    },
+    "apps/web/src/lib/task-cancel.ts": {
+      "apps/web/src/lib/mission-feed.ts": "missions",
+      "apps/web/src/lib/mission-loop.ts": "missions",
+      "apps/web/src/lib/supersession.ts": "reviews-merge"
+    },
+    "apps/web/src/lib/task-dependencies.ts": {
+      "apps/web/src/lib/approve-plan.ts": "missions",
+      "apps/web/src/lib/effective-roles.ts": "roles-skills",
+      "apps/web/src/lib/mission-evaluation.ts": "missions",
+      "apps/web/src/lib/mission-feed.ts": "missions",
+      "apps/web/src/lib/mission-loop.ts": "missions",
+      "apps/web/src/lib/mission-pr.ts": "missions",
+      "apps/web/src/lib/supersession.ts": "reviews-merge",
+      "packages/core/mission-helpers.ts": "missions"
+    },
+    "apps/web/src/lib/task-manifest-prediction.ts": {
+      "apps/web/src/lib/memory-decisions.ts": "jev-decisions",
+      "packages/core/orchestration-overlap-source.ts": "missions"
+    },
+    "apps/web/src/lib/task-origin.ts": {
+      "packages/core/mission-helpers.ts": "missions"
+    },
+    "apps/web/src/lib/task-pr-attach.ts": {
+      "apps/web/src/lib/pr-review-request.ts": "reviews-merge"
+    },
+    "apps/web/src/lib/task-presentation.ts": {
+      "apps/web/src/lib/subject-gate-contract.ts": "missions",
+      "packages/core/mission-helpers.ts": "missions"
+    },
+    "apps/web/src/lib/task-shipped-store.ts": {
+      "apps/web/src/lib/mission-shipped-report.ts": "missions",
+      "apps/web/src/lib/mission-shipped.ts": "missions"
+    },
+    "apps/web/src/lib/task-shipped.ts": {
+      "apps/web/src/lib/mission-shipped.ts": "missions"
+    },
+    "apps/web/src/lib/work-tracker.ts": {
+      "apps/web/src/lib/mcp-connector-refresh.ts": "connectors"
+    },
+    "apps/web/src/lib/workspace-state-context.ts": {
+      "packages/core/mission-helpers.ts": "missions"
+    },
+    "packages/core/agent-endpoint.ts": {
+      "packages/core/litellm-gateway.ts": "model-tiers"
+    },
+    "packages/core/branch-names.ts": {
+      "packages/core/mission-integration.ts": "missions"
+    },
+    "packages/core/db/schema.ts": {
+      "packages/core/decision-model.ts": "jev-decisions",
+      "packages/core/inference-policy.ts": "jev-decisions",
+      "packages/core/mission-helpers.ts": "missions",
+      "packages/core/post-session-quality.ts": "health-quality",
+      "packages/core/quality-scout/types.ts": "health-quality",
+      "packages/core/subject-anchor-observe.ts": "missions",
+      "packages/core/visual-qa-page-source.ts": "visual-qa"
+    },
+    "packages/core/dispatch-model-guard.ts": {
+      "packages/core/model-tier-defaults.ts": "model-tiers"
+    },
+    "packages/core/flight-strip-store.ts": {
+      "packages/core/mission-helpers.ts": "missions"
+    },
+    "packages/core/gate-events.ts": {
+      "packages/core/gate-friction-signature.ts": "health-quality"
+    },
+    "packages/core/manifest-prediction-source.ts": {
+      "packages/core/decision-client.ts": "jev-decisions",
+      "packages/core/knowledge-store/index.ts": "knowledge",
+      "packages/core/knowledge-store/pg-vector-store.ts": "knowledge",
+      "packages/core/orchestration-decision.ts": "jev-decisions",
+      "packages/core/orchestration-ledger-source.ts": "missions",
+      "packages/core/orchestration-promotion.ts": "missions"
+    },
+    "packages/core/mcp-tools.ts": {
+      "packages/core/dispatch-health-report.ts": "health-quality",
+      "packages/core/knowledge-store/cards.ts": "knowledge",
+      "packages/core/knowledge-store/consolidation.ts": "knowledge",
+      "packages/core/knowledge-store/edge-builder.ts": "knowledge",
+      "packages/core/knowledge-store/entity-extractor.ts": "knowledge",
+      "packages/core/knowledge-store/entity-resolver.ts": "knowledge",
+      "packages/core/knowledge-store/pg-vector-store.ts": "knowledge",
+      "packages/core/knowledge-store/reranker.ts": "knowledge",
+      "packages/core/knowledge-store/types.ts": "knowledge",
+      "packages/core/loop-config.ts": "missions",
+      "packages/core/mcp-visual-review.ts": "visual-qa",
+      "packages/core/memory-candidates.ts": "knowledge",
+      "packages/core/memory-claim-index.ts": "knowledge",
+      "packages/core/memory-context.ts": "knowledge",
+      "packages/core/memory-decisions.ts": "jev-decisions",
+      "packages/core/memory-hit-scope.ts": "knowledge",
+      "packages/core/memory-retrieval.ts": "knowledge",
+      "packages/core/memory-scope.ts": "knowledge",
+      "packages/core/memory-store.ts": "knowledge",
+      "packages/core/memory-write.ts": "knowledge",
+      "packages/core/model-tier-defaults.ts": "model-tiers",
+      "packages/core/prior-work-render.ts": "knowledge",
+      "packages/core/spec-discrepancy-ledger.ts": "spec-conformance",
+      "packages/core/task-evidence-format.ts": "knowledge"
+    },
+    "packages/core/model-aliases.ts": {
+      "packages/core/model-tier-defaults.ts": "model-tiers"
+    },
+    "packages/core/model-pin.ts": {
+      "packages/core/model-tier-defaults.ts": "model-tiers"
+    },
+    "packages/core/prompt-catalog.ts": {
+      "packages/core/decision-kind-post-session-triage.ts": "jev-decisions",
+      "packages/core/decision-kind-scout-probe-selection.ts": "jev-decisions",
+      "packages/core/memory-decisions.ts": "jev-decisions",
+      "packages/core/orchestration-claim-decision.ts": "jev-decisions",
+      "packages/core/orchestration-overlap-decision.ts": "jev-decisions",
+      "packages/core/question-gate-decision.ts": "jev-decisions",
+      "packages/core/task-size-bucket-decision.ts": "jev-decisions"
+    },
+    "packages/core/scripts/backfill-evict-orphans.ts": {
+      "packages/core/knowledge-store/ingest-filter.ts": "knowledge",
+      "packages/core/knowledge-store/ingest.ts": "knowledge",
+      "packages/core/knowledge-store/pg-vector-store.ts": "knowledge"
+    },
+    "packages/core/scripts/backfill-flight-strip-cache.ts": {
+      "packages/core/mission-helpers.ts": "missions"
+    },
+    "packages/core/scripts/probe-graph-expansion.ts": {
+      "packages/core/knowledge-store/pg-vector-store.ts": "knowledge"
+    },
+    "packages/core/task-area-prediction-source.ts": {
+      "packages/core/knowledge-store/pg-vector-store.ts": "knowledge"
+    },
+    "packages/core/task-area-prediction.ts": {
+      "packages/core/experiment-randomizer.ts": "experiments"
+    },
+    "packages/core/task-routing-preview.ts": {
+      "packages/core/model-tier-defaults.ts": "model-tiers",
+      "packages/core/role-model-routing.ts": "roles-skills"
+    },
+    "packages/core/task-size-bucket-source.ts": {
+      "packages/core/orchestration-decision.ts": "jev-decisions",
+      "packages/core/task-size-bucket-decision.ts": "jev-decisions"
+    },
+    "packages/core/task-size-estimate.ts": {
+      "packages/core/knowledge-store/index.ts": "knowledge"
+    },
+    "packages/shared/src/index.ts": {
+      "packages/shared/src/chat.ts": "chat",
+      "packages/shared/src/onboarding-interview.ts": "onboarding"
+    }
+  },
+  "ui": {
+    "apps/web/src/app/app/(protected)/home/ActionQueueCard.tsx": {
+      "apps/web/src/lib/action-card-context.ts": "missions"
+    },
+    "apps/web/src/app/app/(protected)/home/FleetLanes.tsx": {
+      "apps/web/src/lib/fleet-view.ts": "health-quality"
+    },
+    "apps/web/src/app/app/(protected)/home/FleetStrip.tsx": {
+      "apps/web/src/components/chat/SteerButton.tsx": "chat",
+      "apps/web/src/lib/fleet-view.ts": "health-quality",
+      "apps/web/src/lib/mission-list-card.ts": "missions",
+      "apps/web/src/lib/mission-task-href.ts": "missions"
+    },
+    "apps/web/src/app/app/(protected)/home/HomeMissions.tsx": {
+      "apps/web/src/components/chat/ChatEntry.tsx": "chat",
+      "apps/web/src/components/missions/MissionCard.tsx": "missions",
+      "apps/web/src/lib/mission-card-view.ts": "missions",
+      "apps/web/src/lib/mission-helpers.ts": "missions"
+    },
+    "apps/web/src/app/app/(protected)/home/HomeMissionsSummary.tsx": {
+      "apps/web/src/components/chat/ChatEntry.tsx": "chat",
+      "apps/web/src/components/missions/ContinueOnRunnerCta.tsx": "missions",
+      "apps/web/src/components/missions/MissionListCards.tsx": "missions",
+      "apps/web/src/components/missions/PhaseBar.tsx": "missions",
+      "apps/web/src/lib/mission-duration.ts": "missions",
+      "apps/web/src/lib/mission-list-card.ts": "missions"
+    },
+    "apps/web/src/app/app/(protected)/home/InFlightGroupCard.tsx": {
+      "apps/web/src/lib/action-card-context.ts": "missions"
+    },
+    "apps/web/src/app/app/(protected)/home/NeedsYouCards.tsx": {
+      "apps/web/src/components/missions/MissionListCards.tsx": "missions"
+    },
+    "apps/web/src/app/app/(protected)/home/NeedsYouStack.tsx": {
+      "apps/web/src/lib/mission-duration.ts": "missions"
+    },
+    "apps/web/src/app/app/(protected)/home/ReleaseWidget.tsx": {
+      "apps/web/src/lib/release-readiness.ts": "releases"
+    },
+    "apps/web/src/app/app/(protected)/home/page.tsx": {
+      "apps/web/src/app/app/(protected)/missions/[id]/mission-page-query.ts": "missions",
+      "apps/web/src/components/chat/ChatEntry.tsx": "chat",
+      "apps/web/src/components/chat/HomeChatCard.tsx": "chat",
+      "apps/web/src/components/onboarding/ConnectOwnKeyCard.tsx": "onboarding",
+      "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": "onboarding",
+      "apps/web/src/components/onboarding/ProviderOnboardingCard.tsx": "onboarding",
+      "apps/web/src/lib/action-card-context.ts": "missions",
+      "apps/web/src/lib/action-queue.ts": "missions",
+      "apps/web/src/lib/chat-availability.ts": "chat",
+      "apps/web/src/lib/chat/conversations.ts": "chat",
+      "apps/web/src/lib/ci-gate.ts": "reviews-merge",
+      "apps/web/src/lib/ci-retry.ts": "reviews-merge",
+      "apps/web/src/lib/conflict-retry.ts": "reviews-merge",
+      "apps/web/src/lib/connector-status.ts": "connectors",
+      "apps/web/src/lib/criteria-rearm.ts": "missions",
+      "apps/web/src/lib/dependency-bot-pr.ts": "reviews-merge",
+      "apps/web/src/lib/fleet-view.ts": "health-quality",
+      "apps/web/src/lib/initiative-list.ts": "missions",
+      "apps/web/src/lib/merge-policy.ts": "reviews-merge",
+      "apps/web/src/lib/mission-card-view.ts": "missions",
+      "apps/web/src/lib/mission-card-views.ts": "missions",
+      "apps/web/src/lib/mission-list-card.ts": "missions",
+      "apps/web/src/lib/mission-pr.ts": "missions",
+      "apps/web/src/lib/mission-task-href.ts": "missions",
+      "apps/web/src/lib/mission-visual-review.ts": "visual-qa",
+      "apps/web/src/lib/release-baseline.ts": "releases",
+      "apps/web/src/lib/reviewer-evidence.ts": "knowledge",
+      "apps/web/src/lib/reviewer-gate.ts": "reviews-merge",
+      "apps/web/src/lib/reviewer-stall-facts.ts": "reviews-merge",
+      "apps/web/src/lib/strand-choice-shadow.ts": "jev-decisions",
+      "packages/core/derived-metric.ts": "health-quality",
+      "packages/core/mission-helpers.ts": "missions",
+      "packages/core/mission-integration.ts": "missions",
+      "packages/core/release-archetype.ts": "releases",
+      "packages/core/release-queue-scope.ts": "releases"
+    },
+    "apps/web/src/app/app/(protected)/layout.tsx": {
+      "apps/web/src/components/chat/ChatCanvas.tsx": "chat",
+      "apps/web/src/components/chat/ChatEntry.tsx": "chat",
+      "apps/web/src/components/chat/ChatSetupCard.tsx": "chat",
+      "apps/web/src/lib/chat-availability.ts": "chat"
+    },
+    "apps/web/src/app/app/(protected)/settings/RunnerTokensSection.tsx": {
+      "apps/web/src/lib/mission-list-card.ts": "missions"
+    },
+    "apps/web/src/app/app/(protected)/settings/account/PersonalProviderKeys.tsx": {
+      "apps/web/src/app/app/(protected)/settings/account/chat-key-line.ts": "chat"
+    },
+    "apps/web/src/app/app/(protected)/settings/ai/ModelFeatures.tsx": {
+      "packages/core/inference-policy.ts": "jev-decisions"
+    },
+    "apps/web/src/app/app/(protected)/settings/ai/page.tsx": {
+      "apps/web/src/lib/chat-retro/ChatRetroSection.tsx": "chat",
+      "packages/core/inference-keys.ts": "jev-decisions"
+    },
+    "apps/web/src/app/app/(protected)/settings/budgets/page.tsx": {
+      "apps/web/src/lib/chat/limits.ts": "chat",
+      "apps/web/src/lib/spend-summary.ts": "health-quality",
+      "packages/core/inference-key-policy.ts": "jev-decisions"
+    },
+    "apps/web/src/app/app/(protected)/settings/providers/page.tsx": {
+      "apps/web/src/lib/chat-availability.ts": "chat"
+    },
+    "apps/web/src/app/app/(protected)/settings/runners/FleetOverview.tsx": {
+      "apps/web/src/lib/fleet-view.ts": "health-quality"
+    },
+    "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/MergePolicyEditor.tsx": {
+      "apps/web/src/lib/workspace-health.ts": "health-quality"
+    },
+    "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page.tsx": {
+      "apps/web/src/lib/merge-policy.ts": "reviews-merge"
+    },
+    "apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx": {
+      "apps/web/src/components/chat/ChatEntry.tsx": "chat"
+    },
+    "apps/web/src/app/app/(protected)/tasks/[id]/AuditRoundTrays.tsx": {
+      "apps/web/src/app/app/(protected)/missions/[id]/MissionVisualReview.tsx": "missions",
+      "apps/web/src/components/visual-review/VisualReviewDeck.tsx": "visual-qa",
+      "apps/web/src/components/visual-review/VisualReviewTray.tsx": "visual-qa",
+      "apps/web/src/components/visual-review/review-transport.ts": "visual-qa",
+      "apps/web/src/lib/visual-review-rounds.ts": "visual-qa"
+    },
+    "apps/web/src/app/app/(protected)/tasks/[id]/MissionContextBar.tsx": {
+      "apps/web/src/components/missions/MissionMasthead.tsx": "missions"
+    },
+    "apps/web/src/app/app/(protected)/tasks/[id]/TaskArtifactsSection.tsx": {
+      "apps/web/src/components/visual-review/VisualReviewTray.tsx": "visual-qa",
+      "apps/web/src/lib/mission-visual-review.ts": "visual-qa",
+      "apps/web/src/lib/visual-review-model.ts": "visual-qa"
+    },
+    "apps/web/src/app/app/(protected)/tasks/[id]/TaskEvidenceFiles.tsx": {
+      "apps/web/src/app/app/(protected)/tasks/[id]/task-evidence-files.ts": "knowledge"
+    },
+    "apps/web/src/app/app/(protected)/tasks/[id]/TaskPageActionZone.tsx": {
+      "apps/web/src/app/app/(protected)/missions/[id]/TaskActionZone.tsx": "missions"
+    },
+    "apps/web/src/app/app/(protected)/tasks/[id]/TaskShippedHeader.tsx": {
+      "apps/web/src/components/visual-review/ShotImage.tsx": "visual-qa",
+      "apps/web/src/lib/mission-visual-review.ts": "visual-qa"
+    },
+    "apps/web/src/app/app/(protected)/tasks/[id]/page.tsx": {
+      "apps/web/src/app/app/(protected)/tasks/[id]/mission-context-bar.ts": "missions",
+      "apps/web/src/components/chat/ChatEntry.tsx": "chat",
+      "apps/web/src/lib/evidence-read.ts": "knowledge",
+      "apps/web/src/lib/explain.ts": "health-quality",
+      "apps/web/src/lib/mission-card-views.ts": "missions",
+      "apps/web/src/lib/mission-shipped.ts": "missions",
+      "apps/web/src/lib/mission-task-href.ts": "missions",
+      "apps/web/src/lib/mission-visual-review.ts": "visual-qa",
+      "apps/web/src/lib/task-evidence.ts": "knowledge",
+      "apps/web/src/lib/task-failure-kind-load.ts": "health-quality",
+      "apps/web/src/lib/visual-review-load.ts": "visual-qa",
+      "apps/web/src/lib/visual-review-rounds.ts": "visual-qa"
+    },
+    "apps/web/src/app/app/(protected)/tasks/[id]/respond/page.tsx": {
+      "apps/web/src/lib/chat-availability.ts": "chat",
+      "apps/web/src/lib/chat-objects/load-question-object.ts": "chat",
+      "apps/web/src/lib/chat/conversations.ts": "chat",
+      "apps/web/src/lib/mission-task-href.ts": "missions"
+    },
+    "apps/web/src/app/app/(protected)/tasks/new/page.tsx": {
+      "apps/web/src/components/skills/SkillPills.tsx": "roles-skills",
+      "apps/web/src/components/skills/SkillSlashTypeahead.tsx": "roles-skills",
+      "apps/web/src/components/skills/WorkflowSelector.tsx": "roles-skills"
+    },
+    "apps/web/src/app/app/(protected)/tasks/page.tsx": {
+      "packages/core/mission-helpers.ts": "missions"
+    },
+    "apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx": {
+      "apps/web/src/app/app/(protected)/settings/team/qa-state.ts": "roles-skills"
+    },
+    "apps/web/src/app/app/(protected)/workspaces/[id]/config/ReadinessCard.tsx": {
+      "apps/web/src/lib/onboarding-view.ts": "onboarding"
+    },
+    "apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx": {
+      "packages/core/release-strategy.ts": "releases"
+    },
+    "apps/web/src/app/app/(protected)/workspaces/[id]/config/SpecWizard.tsx": {
+      "apps/web/src/lib/onboarding-view.ts": "onboarding"
+    },
+    "apps/web/src/app/app/(protected)/workspaces/[id]/config/page.tsx": {
+      "apps/web/src/lib/workspace-health.ts": "health-quality",
+      "packages/core/release-strategy.ts": "releases"
+    },
+    "apps/web/src/app/app/(protected)/workspaces/[id]/page.tsx": {
+      "apps/web/src/components/chat/ChatEntry.tsx": "chat"
+    },
+    "apps/web/src/app/app/dev/fixtures/page.tsx": {
+      "apps/web/src/components/visual-review/VisualReviewAsk.tsx": "visual-qa",
+      "apps/web/src/components/visual-review/VisualReviewDeck.tsx": "visual-qa",
+      "apps/web/src/components/visual-review/VisualReviewLine.tsx": "visual-qa",
+      "apps/web/src/components/visual-review/VisualReviewTray.tsx": "visual-qa",
+      "apps/web/src/components/visual-review/fixture-transport.ts": "visual-qa",
+      "apps/web/src/components/visual-review/review-transport.ts": "visual-qa"
+    },
+    "apps/web/src/components/ActionCardContextLine.tsx": {
+      "apps/web/src/lib/action-card-context.ts": "missions"
+    },
+    "apps/web/src/components/AgentHandledCard.tsx": {
+      "apps/web/src/lib/action-card-context.ts": "missions",
+      "apps/web/src/lib/action-queue.ts": "missions"
+    },
+    "apps/web/src/components/FlightDetailSheet.tsx": {
+      "apps/web/src/lib/mission-task-href.ts": "missions"
+    },
+    "apps/web/src/components/LandingActionConfirm.tsx": {
+      "apps/web/src/lib/landing-action-view.ts": "reviews-merge"
+    },
+    "apps/web/src/components/MissionProgress.tsx": {
+      "apps/web/src/lib/mission-helpers.ts": "missions",
+      "apps/web/src/lib/mission-task-href.ts": "missions"
+    },
+    "apps/web/src/components/MissionProgressBar.tsx": {
+      "apps/web/src/lib/mission-helpers.ts": "missions",
+      "apps/web/src/lib/mission-task-href.ts": "missions"
+    },
+    "apps/web/src/components/MissionReleaseFooter.tsx": {
+      "apps/web/src/lib/release-state.ts": "releases"
+    },
+    "apps/web/src/components/ModelPicker.tsx": {
+      "packages/core/model-tier-liveness.ts": "model-tiers"
+    },
+    "apps/web/src/components/MoveToTeamDialog.tsx": {
+      "apps/web/src/lib/migration-outcomes.ts": "workspace-migration"
+    },
+    "apps/web/src/components/NeedsInputBanner.tsx": {
+      "apps/web/src/lib/mission-task-href.ts": "missions"
+    },
+    "apps/web/src/components/NeedsInputProvider.tsx": {
+      "apps/web/src/lib/mission-task-href.ts": "missions"
+    },
+    "apps/web/src/components/PolicyRescanSheet.tsx": {
+      "apps/web/src/lib/workspace-health.ts": "health-quality"
+    },
+    "apps/web/src/components/TaskCard.tsx": {
+      "apps/web/src/components/chat/SteerButton.tsx": "chat",
+      "apps/web/src/lib/mission-task-href.ts": "missions",
+      "packages/core/mission-helpers.ts": "missions"
+    },
+    "apps/web/src/components/WaitingOnYouMergeCard.tsx": {
+      "apps/web/src/lib/action-card-context.ts": "missions"
+    },
+    "apps/web/src/components/WaitingOnYouReviewCard.tsx": {
+      "apps/web/src/lib/action-card-context.ts": "missions"
+    }
+  }
+}

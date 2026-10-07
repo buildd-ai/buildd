@@ -49,7 +49,7 @@ export default function MissionScreensRow({ missionId, step }: { missionId: stri
           <span aria-hidden="true">›</span>
         </span>
       </button>
-      <SideSheet open={sheet} onClose={() => setSheet(false)} title="Screens" testId="mission-screens-sheet">
+      <SideSheet open={sheet} onClose={() => setSheet(false)} title="Visual review" testId="mission-screens-sheet">
         <MissionVisualTray review={review} columns="one" />
       </SideSheet>
     </>

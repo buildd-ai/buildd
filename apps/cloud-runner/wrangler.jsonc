@@ -5,13 +5,18 @@
   "compatibility_date": "2026-09-29",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  // The run report records whether an agent restart came with a new Worker version.
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   // Backstop for the egress handler: large bodies stream natively
   // (run-report.ts measureResponse), but any JS work on a long request still
   // counts against one invocation's CPU budget (default 30 s).
   "limits": { "cpu_ms": 300000 },
 
-  // One container application backing the WorkerAgent Durable Object. The
-  // image is the runner's --once image (apps/runner/Dockerfile.once), built
+  // Two container applications, one per size (src/runner-class.ts).
+  // Cloudflare fixes the instance type per container class, so each size
+  // backs its own Durable Object class: WorkerAgent (standard) and
+  // WorkerAgentLarge (large). buildd picks the size per task at dispatch.
+  // Both run the runner's --once image (apps/runner/Dockerfile.once), built
   // from the repo root because it needs the lockfile and workspace packages.
   // Paths are relative to this file.
   "containers": [
@@ -33,12 +38,31 @@
       // lets in-flight runs finish; a longer run is parked and resumed by the
       // restarted agent (Phase 2, resumable runs).
       "rollout_active_grace_period": 1800
+    },
+    {
+      // Large: 2 vCPU, 8 GiB, 16 GB disk, for a workspace whose build or
+      // checkout does not fit standard (gitConfig.runnerSize, explicit or
+      // derived from its run reports). A runner-second here counts 2 toward
+      // fair use. Its own ceiling: the capacity retry (supervisor.ts
+      // scheduleDeferredRetry) applies per class.
+      "class_name": "WorkerAgentLarge",
+      "image": "../runner/Dockerfile.once",
+      "image_build_context": "../..",
+      "instance_type": "standard-3",
+      "max_instances": 4,
+      "rollout_active_grace_period": 1800
     }
   ],
   "durable_objects": {
-    "bindings": [{ "name": "WorkerAgent", "class_name": "WorkerAgent" }]
+    "bindings": [
+      { "name": "WorkerAgent", "class_name": "WorkerAgent" },
+      { "name": "WorkerAgentLarge", "class_name": "WorkerAgentLarge" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkerAgent"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["WorkerAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["WorkerAgentLarge"] }
+  ],
 
   // Warm-repo snapshots (docs/design/cloudflare-sandbox-runner.md, Phase 2).
   // Only the Worker reads or writes this bucket (src/snapshots.ts); the
@@ -63,8 +87,9 @@
   // (dashboard, `--var`, or an env block). The Worker refuses to dispatch
   // without it, because the runner would otherwise fall back to production.
   "vars": {
-    // Must equal containers[0].instance_type above (run report; run-report.test.ts checks).
+    // Must equal each class's instance_type above (run report; runner-class.test.ts checks).
     "CONTAINER_INSTANCE_TYPE": "standard-1",
+    "CONTAINER_INSTANCE_TYPE_LARGE": "standard-3",
     // Must equal "name" above: every container reports it, so the fleet shows
     // this deployment as one elastic group (deploy.ts --name rewrites both).
     "RUNNER_GROUP": "buildd-cloud-runner",

@@ -30,10 +30,19 @@ import { rewriteOtlp } from './otel';
 import { measureResponse, egressClassForKind, inspectGithubThrottle, throttleLogLine, type EgressClass, type EgressEvent, type GithubAuthLabel } from './run-report';
 import { resumableRunsEnabled, warmMaxBundleBytes, warmReposEnabled } from './lifecycle';
 import { SnapshotStore, handleSnapshotRequest, type BucketPort, type SnapshotScope } from './snapshots';
+import type { RunnerSize } from './runner-class';
 
 export interface EgressProps {
   /** The task whose container this handler serves. Set by the WorkerAgent, never by the container. */
   taskId: string;
+  /**
+   * The agent (Durable Object name) that installed this handler and holds the
+   * run: a lease agent when the container is reused (container-lease.ts).
+   * Absent: the task agent, named by taskId. Set by the agent too.
+   */
+  agentName?: string;
+  /** Which agent class serves it (WorkerAgentLarge for `large`). Set by the agent too. */
+  runnerSize?: RunnerSize;
 }
 
 interface AgentSource {
@@ -70,7 +79,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     // branch name). The original `request.body` stream is untouched, so the
     // eventual forward below is unaffected whether or not this ran.
     const bodyPeek = kind === 'github' && needsGithubBodyPeek(host, request.method, reqUrl.pathname)
-      ? await peekRequestBodyPrefix(request, GITHUB_BODY_PEEK_MAX_BYTES)
+      ? await peekRequestBodyPrefix(request, host.toLowerCase() === 'api.github.com' ? GITHUB_JSON_PEEK_MAX_BYTES : GITHUB_BODY_PEEK_MAX_BYTES)
       : undefined;
     const decision = rewriteOutbound(
       { url: request.url, method: request.method, headers: request.headers, ...(bodyPeek !== undefined ? { bodyPeek } : {}) },
@@ -188,10 +197,14 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     })());
   }
 
+  /** The task's agent, in the class that started this container. */
   private async agent(): Promise<AgentSource | null> {
     const taskId = this.ctx.props?.taskId;
     if (!taskId) return null;
-    return (await getAgentByName(this.env.WorkerAgent, taskId)) as unknown as AgentSource;
+    const name = this.ctx.props?.agentName || taskId;
+    return this.ctx.props?.runnerSize === 'large'
+      ? (await getAgentByName(this.env.WorkerAgentLarge, name)) as unknown as AgentSource
+      : (await getAgentByName(this.env.WorkerAgent, name)) as unknown as AgentSource;
   }
 
   /** The task's agent model endpoint, from its WorkerAgent's in-memory cache. */
@@ -239,7 +252,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     const taskId = this.ctx.props?.taskId;
     if (!taskId) return { grant: null, unavailable: 'no_run' };
     try {
-      const agent = (await getAgentByName(this.env.WorkerAgent, taskId)) as unknown as AgentSource;
+      const agent = (await this.agent())!;
       return await agent.getGithubGrant();
     } catch (err) {
       console.log(`[cloud-runner] task ${taskId}: GitHub grant lookup failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -250,6 +263,14 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
 
 /** How much of a peeked GitHub request body to read, at most. Bounds both checks: a GraphQL mutation name and the pkt-line ref list ahead of a push's pack data. */
 const GITHUB_BODY_PEEK_MAX_BYTES = 16 * 1024;
+
+/**
+ * The same bound for a JSON body to api.github.com (GraphQL, and REST ref
+ * writes under the push allow-list). Larger, because the push allow-list
+ * refuses a JSON body it cannot parse, and a cut-off prefix never parses: a
+ * PR body or file content past this size is refused rather than guessed at.
+ */
+const GITHUB_JSON_PEEK_MAX_BYTES = 1024 * 1024;
 
 /**
  * A bounded prefix of `request`'s body, read from an independent

@@ -1,5 +1,4 @@
 import type { RoleBundle, RoleConfig, RoleInstructions } from './roles.js';
-import type { SeedRefreshOutcome } from './cbm-enforcement.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
 import type { BashCommandCounts } from './bash-classify.js';
 import type { RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
@@ -250,10 +249,9 @@ export interface LocalWorker {
   /**
    * The ref this worker's worktree was cut from, as resolved by setupWorktree —
    * `origin/<default>` on a trunk task, the mission integration branch on a
-   * mission task that opted in. Recorded because the codebase-memory seed is
-   * keyed on `(repoPath, baseRef)`: setupWorktree runs in startWorker and the
-   * CBM decision happens later in startSession, so the resolved answer has to
-   * travel on the worker rather than be re-derived and risk disagreeing.
+   * mission task that opted in. setupWorktree runs in startWorker and later
+   * steps read the base in startSession, so the resolved answer travels on the
+   * worker rather than being re-derived and risking disagreement.
    */
   worktreeBaseRef?: string;
   /**
@@ -340,13 +338,6 @@ export interface LocalWorker {
   reportedModel?: string;
   // SDK result metadata (populated on completion)
   resultMeta?: ResultMeta | null;
-  // CBM observability counters (accumulated during session, flushed into resultMeta at completion)
-  cbmOutcome?: 'enforced' | 'legacy_mcp_json' | 'disabled';
-  /**
-   * The claim put this task in the CBM-withheld arm of a running `cbm_access`
-   * experiment: no CBM mount, no steering, every CBM tool denied.
-   */
-  cbmExperimentWithheld?: boolean;
   /**
    * The claim put this task in a running `question_gate` experiment: every
    * AskUserQuestion goes through POST /api/workers/[id]/question-check before
@@ -357,49 +348,8 @@ export interface LocalWorker {
   questionPushbacks?: number;
   /** Last file the agent edited or wrote, for the question brief's `where`. */
   lastEditedFile?: string;
-  cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'experiment_withheld' | 'binary_absent' | 'mount_unavailable';
-  cbmBootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
-  cbmBootstrapFailReason?: string;
-  /**
-   * Whether a backgrounded index build finished successfully before the session
-   * ended. Only meaningful with cbmBootstrapResult='backgrounded'.
-   *
-   * This is the field that keeps the hand-off honest: without it, every
-   * overrunning build reads as 'backgrounded' and nothing distinguishes "the
-   * graph arrived a few turns in" from "the graph never arrived".
-   */
-  cbmBackgroundIndexLanded?: boolean;
-  /**
-   * Whether this session ran on the host-wide seeded graph rather than indexing
-   * its own. Lived only in a local in startSession before, so it never reached
-   * resultMeta and the shared cache's hit rate could only be inferred from
-   * bootstrapResult — which is why role-scoped workers getting no seed at all
-   * went unnoticed.
-   */
-  cbmSharedCache?: boolean;
-  /** Why the out-of-band seed refresh did or did not spawn. */
-  cbmSeedRefresh?: SeedRefreshOutcome;
-  /**
-   * Set when a seed for this repo existed but described a DIFFERENT base, so it
-   * was refused and this task indexed its own graph instead.
-   *
-   * A value, not just a log line: refusing a stale seed and silently serving one
-   * are indistinguishable from outside, and the difference is whether the agent's
-   * graph answers describe its actual base.
-   */
-  cbmSeedBaseMismatch?: { wanted: string; found: string };
-  cbmToolCounts?: Record<string, number>;
-  cbmFileAccessCounts?: { read: number; grep: number; glob: number };
-  /**
-   * CBM search injection metrics (cbm-injection.ts). Counts and labels only.
-   * Set at session start for Claude workers with CBM enforced (and Codex
-   * workers with CBM active, as unsupported_backend); refreshed from the live
-   * injector when resultMeta is built. Separate from cbmToolCounts on purpose:
-   * the runner's own graph queries are not agent CBM calls (CBM-17/18).
-   */
-  cbmInjection?: import('@buildd/core/cbm-injection').CbmInjectionMetrics;
   // Full tool-call histogram keyed by exact SDK tool name (see tool-metrics.ts).
-  // Superset of the CBM counters above — flushed into resultMeta.toolCounts at completion.
+  // Flushed into resultMeta.toolCounts at completion.
   toolCounts?: Record<string, number>;
   /**
    * Bash sub-classification (see bash-classify.ts). The histogram above can
@@ -409,6 +359,8 @@ export interface LocalWorker {
    * coarse search-pattern shapes only; no command or pattern text is retained.
    */
   bashCommandCounts?: BashCommandCounts;
+  /** File tool calls per repo area (file-area.ts): tool -> area -> calls. Area only, never a path. */
+  fileToolAreas?: Record<string, Record<string, number>>;
   // MCP credential secrets (label → value) delivered inline at claim time.
   // Injected as env vars into cleanEnv so ${VAR} refs in .mcp.json HTTP headers resolve.
   mcpSecrets?: Record<string, string>;
@@ -518,36 +470,6 @@ export interface ModelUsage {
   costUSD: number;
 }
 
-/** CBM (Codebase Memory) observability metrics captured per task. */
-export interface CbmMetrics {
-  outcome: 'enforced' | 'legacy_mcp_json' | 'disabled';
-  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent' | 'mount_unavailable';
-  /**
-   * Whether the pre-index bootstrap ran and whether it succeeded. Only set when
-   * outcome='enforced'. `skipped_warm` means the shared seed was admitted, so no
-   * per-task index ran at all — the two extra members were written to the column
-   * for weeks while this type still claimed 'ok' | 'failed'.
-   */
-  bootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
-  bootstrapFailReason?: string;
-  /**
-   * Whether a backgrounded build landed before the session ended. Only set with
-   * bootstrapResult='backgrounded'.
-   */
-  backgroundIndexLanded?: boolean;
-  /** Whether the session ran on the host-wide seeded graph. Always emitted. */
-  sharedCache: boolean;
-  /** Why the out-of-band seed refresh did or did not spawn for this repo. */
-  seedRefresh?: SeedRefreshOutcome;
-  toolCalls: Record<string, number>;
-  totalCbmCalls: number;
-  readCount: number;
-  grepCount: number;
-  globCount: number;
-  /** CBM search injection (cbm-search-injection.md). Absent when it never ran for this session. */
-  injection?: import('@buildd/core/cbm-injection').CbmInjectionMetrics;
-}
-
 // SDK result metadata - captured from SDKResultSuccess/SDKResultError
 export interface ResultMeta {
   stopReason: string | null;
@@ -574,8 +496,6 @@ export interface ResultMeta {
   /** The model the session actually ran on (see resolveActualModel). */
   actualModel?: string | null;
   permissionDenials?: Array<{ tool: string; reason: string }>;
-  /** CBM observability metrics — present on all workers running CBM-enabled task 5+. */
-  cbm?: CbmMetrics;
   /**
    * Every tool_use in the session counted by exact tool name (`Bash`,
    * `mcp__buildd__buildd`, …). Absent on workers that predate the histogram or
@@ -588,6 +508,8 @@ export interface ResultMeta {
    * no Bash call or predates the classifier — absence is "unknown", not zero.
    */
   bashCommandCounts?: BashCommandCounts;
+  /** File tool calls per repo area (file-area.ts): tool -> area -> calls. Area only, never a path. */
+  fileToolAreas?: Record<string, Record<string, number>>;
   /**
    * Outcome of the one-shot "closing turn" a session that ends without
    * calling complete_task gets before the runner falls back to

@@ -9,6 +9,7 @@ const ALL: DeferralReason[] = [
   'mission_budget', 'mission_concurrent', 'mission_paced', 'workspace_cap',
   'provider_unavailable', 'budget_paused', 'routing_paused', 'duplicate_worker',
   'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'role_env_unsatisfied',
+  'managed_concurrency', 'managed_runner_hours',
 ];
 
 describe('describeExplicitDeferral', () => {

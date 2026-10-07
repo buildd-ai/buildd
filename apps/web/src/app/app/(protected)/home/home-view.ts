@@ -5,11 +5,12 @@
 import { after } from 'next/server';
 import { isActionableChip, type ActionQueueItem } from '@/lib/action-queue';
 import type { Stage } from '@/lib/stage';
-import { roleHas } from '@/lib/permission-registry';
+import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 
 /**
  * Split the Waiting-on-You queue into what needs the human and what an agent
- * is already handling (RESOLVING / FIXING_CI / CI_RUNNING / FIXING_SPEC).
+ * is already handling (RESOLVING / FIXING_CI / CI_RUNNING / REVIEW_RUNNING /
+ * FIXING_SPEC).
  * Queue order is kept within each half.
  */
 export function splitWaitingOnYou<T extends Pick<ActionQueueItem, 'chip'>>(queue: readonly T[]): {
@@ -24,7 +25,7 @@ export function splitWaitingOnYou<T extends Pick<ActionQueueItem, 'chip'>>(queue
 
 export type InFlightKind =
   | 'docfix-pr-open' | 'fixing-ci' | 'resolving' | 'docfix-running'
-  | 'ci-running' | 'auto-merge' | 'docfix-rerun' | 'other';
+  | 'ci-running' | 'review-running' | 'auto-merge' | 'docfix-rerun' | 'other';
 
 /** What an in-flight card is waiting on — the key repeated cards fold by. */
 export function inFlightKind(
@@ -46,6 +47,7 @@ export function inFlightKind(
     case 'FIXING_CI': return 'fixing-ci';
     case 'RESOLVING': return 'resolving';
     case 'CI_RUNNING': return 'ci-running';
+    case 'REVIEW_RUNNING': return 'review-running';
     case 'AUTO_MERGE': return 'auto-merge';
     default: return 'other';
   }
@@ -58,7 +60,7 @@ export function inFlightKind(
  */
 const IN_FLIGHT_RANK: Record<InFlightKind, number> = {
   'docfix-pr-open': 0, 'fixing-ci': 1, resolving: 1, 'docfix-running': 2,
-  'ci-running': 3, 'auto-merge': 3, other: 3, 'docfix-rerun': 4,
+  'ci-running': 3, 'review-running': 3, 'auto-merge': 3, other: 3, 'docfix-rerun': 4,
 };
 
 export const IN_FLIGHT_GROUP_COPY: Record<InFlightKind, { chip: string; detail: string }> = {
@@ -67,6 +69,7 @@ export const IN_FLIGHT_GROUP_COPY: Record<InFlightKind, { chip: string; detail: 
   resolving: { chip: 'Resolving conflicts', detail: 'Agents are rebasing these PRs' },
   'docfix-running': { chip: 'Doc fixes', detail: 'Agents are rewriting these specs' },
   'ci-running': { chip: 'CI running', detail: 'Waiting on checks' },
+  'review-running': { chip: 'Reviewing', detail: 'A reviewer is checking the latest commit' },
   'auto-merge': { chip: 'Auto-merging', detail: 'Merges when checks pass' },
   'docfix-rerun': { chip: 'Doc fixes shipped', detail: 'Waiting on the conformance re-run' },
   other: { chip: 'In flight', detail: '' },
@@ -111,8 +114,8 @@ export type HomeAudience = 'operator' | 'member';
  * first, and the fleet as one expandable line. A personal team resolves to
  * `owner` (getUserTeamRole), which covers a solo user and their own runners.
  */
-export function homeAudience(role: 'owner' | 'admin' | 'member' | null | undefined): HomeAudience {
-  return roleHas(role, 'view_team_usage') ? 'operator' : 'member';
+export function homeAudience(role: 'owner' | 'admin' | 'member' | null | undefined, overrides: PermissionOverrides | null): HomeAudience {
+  return roleHas(role, 'view_team_usage', overrides) ? 'operator' : 'member';
 }
 
 export type HomeChatPlacement =
@@ -157,7 +160,7 @@ export function waitingOnYouSummary(needsYouCount: number, inFlightCount: number
  */
 export function homeSubheading(shipClause: string | null, needsYouCount: number): string {
   const parts = [shipClause, waitingOnYouSummary(needsYouCount, 0)].filter(Boolean) as string[];
-  return parts.length > 0 ? parts.join(' · ') : 'Nothing waiting on you';
+  return parts.length > 0 ? parts.join(' · ') : 'Nothing needs input';
 }
 
 export type RightNowState = 'active' | 'create-workspace' | 'get-started' | 'idle';

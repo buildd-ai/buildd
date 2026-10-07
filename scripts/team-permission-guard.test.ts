@@ -25,18 +25,13 @@ const ALLOWED_FILES = new Map<string, string>([
   // Members routes: handle role assignment (adding, changing roles).
   ['apps/web/src/app/api/teams/[id]/members/route.ts', 'Role assignment: validates and assigns roles on POST'],
   ['apps/web/src/app/api/teams/[id]/members/[userId]/route.ts', 'Role assignment: validates and updates roles'],
+  ['apps/web/src/app/api/teams/[id]/invitations/route.ts', 'Role assignment: an invitation may only be for admin or member (input validation)'],
   // Shared types: the TeamRole type definition.
   ['packages/shared/src/types.ts', 'TeamRole type definition for API contracts'],
-  // ─ Entries below were left from prior migration and should eventually migrate to permissions ─
-  ['apps/web/src/app/api/teams/[id]/invitations/route.ts', 'Gates invitation listing/creation to owner/admin (pre-migration)'],
-  ['apps/web/src/app/api/teams/[id]/invitations/[invitationId]/route.ts', 'Gates invitation operations to owner/admin (pre-migration)'],
-  ['apps/web/src/app/api/accounts/route.ts', 'API key scope grant gating (pre-migration)'],
-  ['apps/web/src/app/api/connectors/route.ts', 'Gates connector sharing to owner/admin (pre-migration)'],
-  ['apps/web/src/app/api/connectors/[id]/shares/route.ts', 'Gates connector sharing to owner/admin (pre-migration)'],
-  ['apps/web/src/app/api/connectors/[id]/transfer/route.ts', 'Gates connector transfer to owner/admin (pre-migration)'],
-  ['apps/web/src/lib/chat/turn.ts', 'Includes teamRole in user context for logging (pre-migration)'],
-  ['apps/web/src/lib/migrate-access.ts', 'Migration utility checking role (pre-migration)'],
-  ['apps/web/src/lib/oauth/session-level.ts', 'Maps team role to API key level (pre-migration)'],
+  // OAuth session level is the API-key axis, not a team-role grant: an owner or
+  // admin's OAuth session acts as an admin-level key. Overrides govern sessions
+  // only (docs/specs/team-permissions.md, "Overrides").
+  ['apps/web/src/lib/oauth/session-level.ts', 'Maps team role to the OAuth session key level (key axis)'],
 ]);
 
 function trackedSources(): string[] {
@@ -111,6 +106,15 @@ describe('Team permission decisions are centralized', () => {
     expect(/\brole\s*[!=]==\s*['"][a-z]+['"]/.test(testSrc)).toBe(true);
     expect(/membership\s*\.\s*role\s*[!=]==\s*['"][a-z]+['"]/.test(testSrc)).toBe(true);
 
+    // A minimum role passed as an argument is a decision too.
+    expect(/verify(?:Account)?WorkspaceAccess\([^)]*,\s*['"](?:owner|admin|member)['"]\s*\)/.test(
+      `const ok = !!(await verifyWorkspaceAccess(user.id, task.workspaceId, 'admin'));`,
+    )).toBe(true);
+    // `membership?.role !== 'member'` (optional chaining) is the form that slipped through once.
+    expect(/\b(?:role|currentRole|userRole|teamRole)\s*(?:[!]==?|===?)\s*['"](?:owner|admin|member)['"]/.test(
+      `return membership?.role !== 'member';`,
+    )).toBe(true);
+
     // Non-matches
     expect(/\brole\s*[!=]==\s*['"][a-z]+['"]/.test(`$type<'owner' | 'admin' | 'member'>`)).toBe(false);
   });
@@ -133,11 +137,13 @@ describe('Team permission decisions are centralized', () => {
     // We try to avoid false positives by also matching context patterns
     const directRoleComparison = String.raw`\b(?:role|currentRole|userRole|teamRole)\s*(?:[!]==?|===?)\s*['"](?:owner|admin|member)['"]`;
 
+    // Pattern: verifyWorkspaceAccess(userId, wsId, 'admin') — a minimum role as an argument.
+    const roleArgument = String.raw`verify(?:Account)?WorkspaceAccess\([^)]*,\s*['"](?:owner|admin|member)['"]\s*\)`;
+
     const tracked = new Set(trackedSources());
     const allMatches = new Map<string, string[]>();
 
-    // Search with both patterns
-    for (const pattern of [membershipRolePattern, directRoleComparison]) {
+    for (const pattern of [membershipRolePattern, directRoleComparison, roleArgument]) {
       const matches = grepFiles(pattern);
       for (const [file, lines] of matches) {
         if (tracked.has(file)) {

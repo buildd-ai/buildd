@@ -277,7 +277,7 @@ describe('approval card', () => {
   it('the head names the write and its workspace; the draft is the card body', async () => {
     await render(fixtures.chatFixture('propose').messages as Msgs, 'split', { workspaceName: (id: string) => (id === fixtures.WS.id ? fixtures.WS.name : null) });
     const head = q('[data-testid="approval-card"] .kit-card-head')!;
-    expect(head.querySelector('.kit-eyebrow')?.textContent).toBe('Needs your OK');
+    expect(head.querySelector('.kit-eyebrow')?.textContent).toBe('Approval needed');
     expect(head.querySelector('.kit-card-tag')?.textContent).toBe('New mission');
     expect(head.querySelector('[data-testid="approval-workspace"]')?.textContent).toBe(fixtures.WS.name);
     expect(q('[data-testid="approval-card"] .kit-card-title')?.textContent).toBe('Multi-currency invoices');
@@ -643,7 +643,7 @@ describe('a fired watch', () => {
     expect(link.getAttribute('href')).toBe('https://github.com/harborline/billing-web/pull/418');
     expect(link.textContent).toContain('Open PR');
 
-    expect(notices[1].querySelector('p.font-voice')?.textContent).toBe('Dual-currency CSV needs your answer.');
+    expect(notices[1].querySelector('p.font-voice')?.textContent).toBe('Dual-currency CSV asked a question.');
     expect((notices[1].querySelector('a') as HTMLAnchorElement).getAttribute('href')).toBe('/app/tasks/task-export');
     expect(notices[2].querySelector('p.font-voice')?.textContent).toBe('CI failed on #421.');
 

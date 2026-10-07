@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  CACHE_SKIPPED_LINE_PREFIX,
+  CACHE_SKIP_PARTS,
+  emitCacheSkipped,
+  formatCacheSkippedLine,
   METRIC_LINE_PREFIX,
   PHASE_LINE_PREFIX,
   REPO_FALLBACK_REASONS,
@@ -24,14 +28,25 @@ describe('phase lines', () => {
       'restore_warm_start', 'restore_warm_end', 'fetch_start', 'fetch_end',
       'warm_upload_start', 'warm_upload_end',
       'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
+      'restore_cache_start', 'restore_cache_end',
     ]);
   });
 
   test('metric lines: BUILDD_METRIC=<name> <non-negative integer>', () => {
     expect(METRIC_LINE_PREFIX).toBe('BUILDD_METRIC=');
-    expect(RUN_METRICS).toEqual(['clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes', 'park_bytes', 'resume_layer', 'warm_repo_bytes']);
+    expect(RUN_METRICS).toEqual(['clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes', 'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes', 'mem_peak_bytes', 'mem_limit_bytes', 'disk_free_min_bytes', 'disk_total_bytes']);
     expect(formatMetricLine('fetch_bytes', 1234.9)).toBe('BUILDD_METRIC=fetch_bytes 1234');
     expect(formatMetricLine('fetch_bytes', -5)).toBe('BUILDD_METRIC=fetch_bytes 0');
+  });
+
+  test('cache skipped line: BUILDD_CACHE_SKIPPED=<part> <bytes> <cap>, cloud only', () => {
+    expect(CACHE_SKIPPED_LINE_PREFIX).toBe('BUILDD_CACHE_SKIPPED=');
+    expect(CACHE_SKIP_PARTS).toEqual(['pnpm-store', 'cache']);
+    expect(formatCacheSkippedLine('pnpm-store', 2_100_000.7, 1024)).toBe('BUILDD_CACHE_SKIPPED=pnpm-store 2100000 1024');
+    const out: string[] = [];
+    emitCacheSkipped('cache', 5, 4, { env: { BUILDD_EXECUTOR: 'cloud' }, log: (l) => out.push(l) });
+    emitCacheSkipped('cache', 5, 4, { env: {}, log: (l) => out.push(l) });
+    expect(out).toEqual(['BUILDD_CACHE_SKIPPED=cache 5 4']);
   });
 
   test('repo source line: warm, or clone with a reason from a closed list', () => {

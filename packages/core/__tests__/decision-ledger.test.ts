@@ -5,6 +5,7 @@ import {
   recordChallengerRun,
   recordDecision,
   rowFromRecord,
+  summarizeDecisionLedger,
   type DecisionLedgerFilters,
   type DecisionLedgerInput,
 } from '../decision-ledger';
@@ -158,5 +159,32 @@ describe('recordChallengerRun', () => {
   it('never throws', async () => {
     const insert = mock(async () => { throw new Error('db down'); });
     await expect(recordChallengerRun({ decisionRecordId: 'r', teamId: 't', capability: 'c', challengerKey: 'k', run: attempted }, { insert })).resolves.toBeUndefined();
+  });
+});
+
+describe('summarizeDecisionLedger', () => {
+  it('counts the question gate by disposition, answer, reason and override without echoing an option label', () => {
+    const rows = [
+      { status: 'applied', verdict: 'decide', appliedAnswer: 'Use the staging database', reason: null, humanOverride: null, confidence: 0.9 },
+      { status: 'applied', verdict: 'hold', appliedAnswer: 'hold', reason: null, humanOverride: { answer: 'B' }, confidence: 0.8 },
+      { status: 'applied', verdict: 'ask', appliedAnswer: 'ask', reason: null, humanOverride: null, confidence: 0.7 },
+      { status: 'suggested', verdict: 'decide', appliedAnswer: null, reason: 'below_threshold', humanOverride: null, confidence: 0.4 },
+      { status: 'fallback', verdict: null, appliedAnswer: null, reason: 'timeout', humanOverride: null, confidence: null },
+    ] as const;
+    const s = summarizeDecisionLedger(rows as any, 2);
+    expect(s.total).toBe(5);
+    expect(s.byStatus).toEqual({ applied: 3, suggested: 1, fallback: 1 });
+    expect(s.byVerdict).toEqual({ decide: 2, hold: 1, ask: 1, none: 1 });
+    expect(s.byAppliedAnswer).toEqual({ decided_option: 1, hold: 1, ask: 1, none: 2 });
+    expect(s.byReason).toEqual({ none: 3, below_threshold: 1, timeout: 1 });
+    expect(s.overridden).toBe(1);
+    expect(s.outcomeLabels).toBe(2);
+    expect(s.meanConfidence).toBe(0.7);
+    expect(JSON.stringify(s)).not.toContain('staging');
+  });
+
+  it('is all zeros for an empty page', () => {
+    expect(summarizeDecisionLedger([]).total).toBe(0);
+    expect(summarizeDecisionLedger([]).meanConfidence).toBeNull();
   });
 });

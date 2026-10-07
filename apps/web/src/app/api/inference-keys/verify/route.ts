@@ -1,8 +1,9 @@
+import { isPersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { getUserAdminTeamIds, getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { reverifyProviderKey } from '@/lib/provider-keys';
-import { isChatProvider, type VerifyProviderKeyRequest } from '@buildd/shared';
+import type { VerifyProviderKeyRequest } from '@buildd/shared';
 
 /**
  * POST /api/inference-keys/verify { teamId, provider, scope }
@@ -20,8 +21,8 @@ export async function POST(req: NextRequest) {
   const teamIds = await getUserTeamIds(userId);
   const teamId = body.teamId || await resolveActiveTeamId(userId, req.cookies.get('buildd-team')?.value ?? null);
   if (!teamId || !teamIds.includes(teamId)) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
-  if (!isChatProvider(body.provider)) {
-    return NextResponse.json({ error: 'provider must be anthropic, openai or openrouter' }, { status: 400 });
+  if (!isPersonalKeyProvider(body.provider)) {
+    return NextResponse.json({ error: 'Unsupported standalone key provider' }, { status: 400 });
   }
   if (body.scope !== 'user' && body.scope !== 'team') {
     return NextResponse.json({ error: "scope must be 'user' or 'team'" }, { status: 400 });

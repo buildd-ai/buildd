@@ -3,9 +3,9 @@
  * real `zstd` CLI to compress/restore the cache tarball; its unit tests do the
  * same to exercise that path for real, so a sandbox without the binary fails
  * those tests even though nothing else in the installer needs it. install.sh
- * is "the real upgrade path for the fleet" (see cbm-version-pin.test.ts) — this
- * checks it provisions zstd the same best-effort, non-fatal way it provisions
- * CBM, rather than leaving it to whatever happens to be on the base image.
+ * is the real upgrade path for the fleet — this checks it provisions zstd a
+ * best-effort, non-fatal way, rather than leaving it to whatever happens to be
+ * on the base image.
  */
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
@@ -19,7 +19,7 @@ describe('install.sh zstd provisioning', () => {
     expect(installSh).toMatch(/zstd_provision\s*\(\)\s*\{[\s\S]*?command -v zstd/);
   });
 
-  it('is called as a guarded, non-fatal step like CBM provisioning', () => {
+  it('is called as a guarded, non-fatal step', () => {
     expect(installSh).toMatch(/if ! zstd_provision; then/);
   });
 
@@ -28,8 +28,7 @@ describe('install.sh zstd provisioning', () => {
     expect(installSh).toContain('brew install');
   });
 
-  it('never types the word sudo for a check that already passes (idempotent)', () => {
-    // The function must return before reaching any install command when zstd exists.
+  it('never reaches an install command for a check that already passes (idempotent)', () => {
     const fn = installSh.match(/zstd_provision\s*\(\)\s*\{([\s\S]*?)\n\}/)?.[1] ?? '';
     const checkIdx = fn.indexOf('command -v zstd');
     const installIdx = fn.search(/apt-get install|brew install/);

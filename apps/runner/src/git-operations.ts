@@ -392,7 +392,7 @@ export interface SetupWorktreeResult {
    * resolveWorktreeBase settled on after probing the remote, including any
    * fallback it took.
    *
-   * Returned because the codebase-memory seed is keyed on it. A caller that
+   * Returned so callers read the real base. A caller that
    * re-derived this instead would be re-implementing the base decision, and
    * branch-names.ts documents what hand-mirroring that rule already cost once —
    * a predicted ref that never existed, failing silently.
@@ -412,7 +412,7 @@ export interface SetupWorktreeResult {
   /** Set when a resume/base candidate resolved to a branch that cannot be the
    *  worktree's own checkout — the repo default branch, or a branch another
    *  worktree already holds. The task's own `branch` was used instead, so the
-   *  worker keeps its isolated worktree (and CBM) instead of failing setup and
+   *  worker keeps its isolated worktree instead of failing setup and
    *  degrading into the shared repo root. `holder` is the worktree that owns the
    *  branch, when known. */
   sharedBranch?: {
@@ -869,7 +869,7 @@ export async function setupWorktree(
     // exists" / "cannot delete branch 'X' used by worktree at …".  Tasks whose
     // context carried baseBranch:"dev" used to hit exactly that: every
     // concurrent worker but one failed setup and was silently degraded into the
-    // shared role-clone root (no fs isolation, no CBM).  Fall back to the task's
+    // shared role-clone root (no fs isolation).  Fall back to the task's
     // own branch, which is unique per task, and report it.
     //
     // This also covers the mission-integration case: when the branch parameter
@@ -1318,7 +1318,13 @@ export async function collectGitStats(
 ): Promise<GitStats> {
   if (!cwd) return {};
 
-  const opts = { cwd, timeout: 5000, encoding: 'utf-8' as const };
+  // cwd is the worker's own live worktree; this can run while the agent is
+  // still staging/committing there. `diff`/`status` below would otherwise
+  // opportunistically rewrite the on-disk index to cache fresh stat info,
+  // taking index.lock and racing the agent's own git calls for it.
+  // GIT_OPTIONAL_LOCKS=0 skips that write-back without changing any output
+  // read here.
+  const opts = { cwd, timeout: 5000, encoding: 'utf-8' as const, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } };
   const stats: Record<string, number | string | boolean | undefined> = {};
 
   // Resolve the ref this worktree's own commits are measured against.

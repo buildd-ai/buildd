@@ -10,6 +10,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { roleHas } from '@/lib/permission-registry';
 import { RepoLinkCard } from './config/RepoLinkCard';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 export default async function WorkspaceDetailPage({
   params,
@@ -58,7 +59,6 @@ export default async function WorkspaceDetailPage({
 
   const connectedAccounts = workspace.accountWorkspaces || [];
   const runners = {
-    action: connectedAccounts.filter((aw) => aw.account?.type === 'action' && aw.canClaim),
     service: connectedAccounts.filter((aw) => aw.account?.type === 'service' && aw.canClaim),
     user: connectedAccounts.filter((aw) => aw.account?.type === 'user' && aw.canClaim),
   };
@@ -154,7 +154,7 @@ export default async function WorkspaceDetailPage({
         </div>
 
         {/* No repo means workers have nothing to work in; linking one is an admin write. */}
-        {!workspace.repo && roleHas(access.role, 'manage_workspace_settings') && (
+        {!workspace.repo && roleHas(access.role, 'manage_workspace_settings', await getTeamPermissionOverrides(access.teamId)) && (
           <RepoLinkCard workspaceId={workspace.id} />
         )}
 
@@ -237,9 +237,7 @@ export default async function WorkspaceDetailPage({
         {/* Runners */}
         <ConnectRunnerSection
           workspaceId={workspace.id}
-          workspaceName={workspace.name}
           runners={{
-            action: runners.action.map(r => r.account?.name || 'Unknown'),
             service: runners.service.map(r => r.account?.name || 'Unknown'),
             user: runners.user.map(r => r.account?.name || 'Unknown'),
           }}

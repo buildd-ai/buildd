@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { inArray } from 'drizzle-orm';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { fetchCoordinationStats } from '@/lib/coordination-stats-query';
@@ -13,7 +13,9 @@ import { fetchEarlyReleaseStats } from '@/lib/early-release-metrics';
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  const account = token ? await authenticateApiKey(token, req) : null;
+  // A per-task token reads coordination stats for its own task's workspace,
+  // plus any its schedule's delegation grants analytics:read on.
+  const account = token ? await authenticateTaskScopedCaller(token, req) : null;
   if (!user && !account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const params = new URL(req.url).searchParams;
   const window = params.get('window') ?? '7d';
@@ -25,9 +27,10 @@ export async function GET(req: NextRequest) {
   const metric = params.get('metric');
   if (metric && !['manifest', 'pathClaims', 'orchestrationDecisions', 'earlyRelease'].includes(metric)) return NextResponse.json({ error: 'Invalid metric' }, { status: 400 });
   const teamIds = await resolveAccountTeamIds(user, account);
-  const allowed = teamIds.length ? await db.query.workspaces.findMany({
+  const teamWorkspaces = teamIds.length ? await db.query.workspaces.findMany({
     where: inArray(workspaces.teamId, teamIds), columns: { id: true },
   }) : [];
+  const allowed = account ? teamWorkspaces.filter(w => taskScopeAllowsDelegated(account, w.id, 'analytics:read')) : teamWorkspaces;
   const workspace = params.get('workspaceId') ?? params.get('workspace');
   if (workspace && !allowed.some(w => w.id === workspace)) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   const filters = {

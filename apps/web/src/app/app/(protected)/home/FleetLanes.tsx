@@ -20,6 +20,18 @@ const TONE: Record<LaneBar['state'], SlotLaneBar['tone']> = {
   failed: 'done',
 };
 
+const STATE_WORD: Record<LaneBar['state'], string> = {
+  running: 'running',
+  waiting: 'needs input',
+  done: 'done',
+  failed: 'failed',
+};
+
+/** The hover card's facts line: "done · Builder · PR #12". */
+export function barDetails(b: Pick<LaneBar, 'state' | 'roleName' | 'prNumber'>): string[] {
+  return [[STATE_WORD[b.state], b.roleName, b.prNumber ? `PR #${b.prNumber}` : null].filter(Boolean).join(' · ')];
+}
+
 function toBar(b: LaneBar): SlotLaneBar {
   return {
     id: b.id,
@@ -31,6 +43,7 @@ function toBar(b: LaneBar): SlotLaneBar {
     endMark: b.state === 'failed' ? 'fail' : b.state === 'done' ? 'ok' : null,
     href: b.href ?? undefined,
     title: b.title ?? b.label,
+    details: barDetails(b),
   };
 }
 
@@ -53,6 +66,7 @@ export function FleetLanes({ fleet, now, timeZone }: { fleet: FleetSnapshot; now
       nowLabel="now"
       labels={false}
       bare
+      hoverCard
       tickLabel={(at) => fmt.format(at)}
     />
   );

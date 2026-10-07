@@ -122,6 +122,23 @@ describe('recordPrSupersession — cross-repo target', () => {
     });
     expect(r).toMatchObject({ ok: false, status: 409 });
   });
+
+  it('targetRepoWithinWorkspace drops the mission’s other repos, without asking GitHub', async () => {
+    missionSiblings = [{ id: 't-2', workspace: { repo: null, githubRepo: { fullName: 'org/buildd' } }, workers: [] }];
+    const r = await recordPrSupersession({
+      workerId: 'w-1', supersedingPrNumber: 3366, supersedingRepo: 'org/buildd', reason: 'x', recordedBy: 'me', targetRepoWithinWorkspace: true,
+    });
+    expect(r).toMatchObject({ ok: false, status: 403 });
+    expect(githubCalls).toHaveLength(0);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('targetRepoWithinWorkspace still allows the workspace’s own repo', async () => {
+    const r = await recordPrSupersession({
+      workerId: 'w-1', supersedingPrNumber: 9, supersedingRepo: 'org/kb', reason: 'x', recordedBy: 'me', targetRepoWithinWorkspace: true,
+    });
+    expect(r.ok).toBe(true);
+  });
 });
 
 describe('recordPrAbandonment', () => {

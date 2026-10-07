@@ -92,6 +92,10 @@ describe('classifyErrorClass', () => {
     expect(classifyErrorClass('operation timed out')).toBe('timeout');
     expect(classifyErrorClass('HTTP 401 Bad credentials')).toBe('auth');
   });
+  it('names the agent CLI "not logged in" failure as auth, not unknown', () => {
+    expect(classifyErrorClass('Not logged in · Please run /login')).toBe('auth');
+    expect(classifyErrorClass('[mcp-sdk] noise\nnot logged in')).toBe('auth');
+  });
   it('falls back to the scanner pattern label', () => {
     expect(classifyErrorClass('weird', ['command_not_found'])).toBe('infra');
   });
@@ -101,6 +105,23 @@ describe('classifyErrorClass', () => {
 });
 
 describe('buildTaskEvidence', () => {
+  // A claim-time model substitution is recorded as a trace, but the run went
+  // ahead on the fallback model — it never explains why a task then failed.
+  // It used to lead keyLines and push the task's own error out entirely.
+  it('never lets a model substitution stand in for why the task failed', () => {
+    const { evidence } = buildTaskEvidence(input({
+      error: 'Task has no confirmed outcome — the session ended without the agent calling complete_task.',
+      traces: [{
+        pattern: 'dispatch_model_rejected',
+        excerpt: 'dispatch refused model "claude-x-9" from tier_row (newer_than_floor_table); served "claude-x-8" instead',
+        ts: T0,
+      }],
+    }), T0);
+    expect(evidence?.keyLinesSource).toBe('error');
+    expect(evidence?.keyLines.join('\n')).not.toContain('dispatch refused model');
+    expect(evidence?.keyLines[0]).toContain('no confirmed outcome');
+  });
+
   it('seeds keyLines from the CI digest when the task itself left no trace', () => {
     const digest = [
       'CI failed on PR #12: 2 checks failing',
