@@ -208,6 +208,58 @@ describe('registerMergeDrivers + mergeBaseWithDerivedFiles (real git)', () => {
   });
 });
 
+describe('mergiraf (real git)', () => {
+  let dir: string;
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+
+  function mergirafPath(): string | null {
+    try {
+      return execFileSync('sh', ['-c', 'command -v mergiraf'], { encoding: 'utf-8' }).trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  test('absent or disabled: the clone gets no mergiraf driver or attribute', () => {
+    dir = conflictedRepo();
+    registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: true, mergirafPath: null });
+    expect(() => git(dir, 'config', '--get-regexp', '^merge\\.mergiraf\\.')).toThrow();
+    expect(readFileSync(join(dir, '.git', 'info', 'attributes'), 'utf-8')).not.toContain('mergiraf');
+    registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: false });
+    expect(() => git(dir, 'config', '--get-regexp', '^merge\\.mergiraf\\.')).toThrow();
+  });
+
+  // Naive both-sides merges duplicate a change the base already carries; the
+  // structural driver must not. Skipped where the binary is not installed (the
+  // runner image installs it in a separate change).
+  test.skipIf(!mergirafPath())('an identical addition on both sides appears once', () => {
+    dir = mkdtempSync(join(tmpdir(), 'merge-drivers-mergiraf-'));
+    git(dir, 'init', '-q', '-b', 'main');
+    git(dir, 'config', 'user.email', 't@example.com');
+    git(dir, 'config', 'user.name', 'T');
+    git(dir, 'config', 'commit.gpgsign', 'false');
+    writeFileSync(join(dir, 'a.ts'), "import { a } from 'a';\n\nexport const x = a;\n");
+    git(dir, 'add', '-A');
+    git(dir, 'commit', '-qm', 'base');
+    git(dir, 'checkout', '-qb', 'feature');
+    writeFileSync(join(dir, 'a.ts'), "import { a } from 'a';\nimport { s } from 's';\nimport { o } from 'o';\n\nexport const x = a;\n");
+    git(dir, 'commit', '-qam', 'feature');
+    git(dir, 'checkout', '-q', 'main');
+    writeFileSync(join(dir, 'a.ts'), "import { a } from 'a';\nimport { s } from 's';\nimport { t } from 't';\n\nexport const x = a;\n");
+    git(dir, 'commit', '-qam', 'main');
+    git(dir, 'checkout', '-q', 'feature');
+
+    registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: mergirafPath() });
+    const result = mergeBaseWithDerivedFiles(dir, 'main', []);
+    // A line-based merge conflicts here; the structural driver resolves it.
+    expect(result.status).toBe('merged');
+    const lines = readFileSync(join(dir, 'a.ts'), 'utf-8').split('\n');
+    expect(lines.filter(l => l === "import { s } from 's';").length).toBe(1);
+    expect(lines).toContain("import { o } from 'o';");
+    expect(lines).toContain("import { t } from 't';");
+  });
+});
+
 describe('isConflictRetryContext', () => {
   test('true only for a merge or semantic conflict retry on a resume branch', () => {
     expect(isConflictRetryContext({ resumeBranch: 'b', failureContext: { errorType: 'merge_conflict' } })).toBe(true);
