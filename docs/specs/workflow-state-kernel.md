@@ -238,6 +238,9 @@ at the base commit of this branch the last index is 0248).
 | `resume_state`, `trunk_incident_id` | set only while `BLOCKED_ON_TRUNK` |
 | (no counters) | attempt budgets are rows of `workflow_attempts` (§5.7), one ledger per family; the delivery row holds no `iteration` number, so no two code paths can disagree about it |
 | `approved_heads` text[] | heads covered by the standing approval: the approved head plus content-equivalent heads (today `context.equivalentHeadShas`) |
+| `approval_basis` | `verdict`, `human` or `composition`: what the standing approval rests on |
+| `composition_heads` text[] | heads covered **only** by a verified composition attestation (§5.9); kept apart from `approved_heads` so no reader takes it for a verdict at that head |
+| `bound_attempt_id` | the attempt whose end the delivery waits on in `FIXING`/`REPAIRING` (the `a` of `(H, r, a)`) |
 | `ci` text, `ci_head_sha`, `mergeable`, `mergeable_head_sha` | latest fact for the *current* head only |
 | `merged_at`, `merge_commit_sha` | GitHub's values, never receipt time |
 | `superseded_by_pr`, `superseded_by_url`, `superseded_reason`, `recorded_by` | the existing supersession edge, owned here |
@@ -256,7 +259,7 @@ at the base commit of this branch the last index is 0248).
 ### 5.3 `workflow_facts` (append-only)
 
 `id`, `delivery_id` (nullable until bound), `repo_full_name`, `pr_number`, `kind`,
-`fact_key` **unique**, `observed_at`, `source` (`webhook:<event>`, `sweep:<name>`,
+`fact_key` (**unique per workspace**), `workspace_id`, `observed_at`, `source` (`webhook:<event>`, `sweep:<name>`,
 `runner`, `reviewer`, `merge_call`, `import`), `payload` jsonb (bounded), `applied_transition_id`
 nullable. A duplicate `fact_key` is a no-op that returns the first application's
 result. `payload` MUST NOT hold raw webhook bodies (size, secrets); it holds the
@@ -293,7 +296,7 @@ agent, is a row.
 | Column | Notes |
 |---|---|
 | `id`, `delivery_id`, `family` | `review_fix`, `ci`, `conflict`, `migration`, `trunk`; **no `infra` family** (below) |
-| `attempt_no` int | 1-based, allocated by the dispatch statement; unique `(delivery_id, family, attempt_no)` |
+| `attempt_no` int | 1-based, allocated by the dispatch statement; unique `(delivery_id, family, mode, attempt_no)` (a mechanical attempt has its own budget, so it has its own numbering) |
 | `mode` | `mechanical` or `agent` (§6.7); a mechanical attempt has its own small budget and never consumes the agent budget of its family |
 | `bound_head_sha`, `trigger_fact_id`, `trigger_reason` | the head it repairs and the fact that justified it (CI signature, `mergeable=dirty`, round id) |
 | `task_id` | null for a mechanical attempt |
@@ -334,6 +337,28 @@ step or test name, reusing `normalizeErrorSignature` and the CI digest from
 affected deliveries (a join table, or a jsonb list bounded by the circuit-breaker
 cap). Unique per `(workspace_id, repo_full_name, base_ref, signature)` while not
 `resolved`.
+
+### 5.9 Composition attestation (release and integration PRs)
+
+A PR assembled from changes that were already reviewed (a release PR, a mission
+integration PR) is not reviewed again change by change, but it never borrows a verdict
+either. The fact `composition_attested` (key `compose:{repo}#{pr}:{aggregate_head}`)
+carries a `CompositionAttestation`: the base SHA, the aggregate head, a mechanical
+`method` (`tree_equal` or `patch_set_equal`), one entry per constituent (its delivery,
+the round whose verdict it cites, that round's `reviewed_head_sha`, the
+`equivalent_head_shas` its delivery recorded, and the `landed_sha` in the composed
+history) and an explicit `novel_delta` of `none`, `present` (with paths) or
+`unverifiable`.
+
+The reducer (`CompositionAttested`, from `AWAITING_REVIEW`, head must be current) checks
+each constituent against the ledger: the round is decided `approve` at exactly
+`reviewed_head_sha`, and `landed_sha` is that head or a recorded equivalent. With
+`none` the delivery becomes `APPROVED` with `approval_basis = composition` and the head
+in `composition_heads`; `approved_heads` is untouched and no round is decided at the
+aggregate head. With `present` a `delta` round scoped to the novel paths is queued.
+`unverifiable` or any failed check claims nothing (`rejected`). Ordinary verdicts stay
+exact-head (§8): `headCoverage` reports `verdict`, `human`, `composition` or `none`,
+and `PrMerged` records which one covered the merged head.
 
 ---
 
