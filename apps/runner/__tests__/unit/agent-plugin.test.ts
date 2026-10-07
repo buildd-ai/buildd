@@ -457,7 +457,7 @@ describe('installer', () => {
     const urls: string[] = [];
     const fetchImpl = (async (url: string) => {
       urls.push(url);
-      return Response.json({ workspaces: repos.map(r => ({ repo: `https://github.com/${r}` })) });
+      return Response.json({ workspaces: repos.map((r, i) => ({ id: `ws-${i + 1}-${r.replace('/', '-')}`, repo: `https://github.com/${r}` })) });
     }) as any;
     // The runner home is the test's own temp dir, never ~/.buildd (buildd-home.ts refuses that in tests).
     return { fetchImpl, urls, env: { BUILDD_HOME: join(home, '.buildd') } as Record<string, string | undefined> };
@@ -473,7 +473,7 @@ describe('installer', () => {
     expect('error' in parseCliArgs(['--force'])).toBe(true);
     expect('error' in parseCliArgs(['--everywhere'])).toBe(true);
     expect('error' in parseCliArgs(['--global', '--here'])).toBe(true);
-    expect(parseCliArgs(['--uninstall', '--global', '--client=claude'])).toEqual({ mode: 'uninstall', scope: 'global', clients: ['claude'], mcp: null });
+    expect(parseCliArgs(['--uninstall', '--global', '--client=claude'])).toEqual({ mode: 'uninstall', scope: 'global', clients: ['claude'], mcp: null, oauth: false });
     expect(parseCliArgs(['--global'])).toMatchObject({ mcp: 'workspaces' });
     expect(parseCliArgs(['--global', '--everywhere'])).toMatchObject({ mcp: 'everywhere' });
     expect((await runCli([], { home, cwd: project })).code).toBe(1);
@@ -551,6 +551,79 @@ describe('installer', () => {
     const all = await runCli(['--global', '--everywhere'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
     expect(all.lines.join('\n')).toContain('registered for every Claude Code session');
     expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers.buildd.url).toBe('https://b.test/api/mcp');
+  });
+
+  it('--oauth points each workspace folder at its own OAuth endpoint and writes no key anywhere', async () => {
+    const ws = join(home, 'code', 'widget');
+    const api = join(home, 'code', 'api');
+    const own = join(home, 'code', 'self-configured');
+    checkout(ws, 'acme/widget');
+    checkout(api, 'acme/api');
+    checkout(own, 'acme/own');
+    writeFileSync(join(own, '.mcp.json'), JSON.stringify({ mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' } } } }));
+    // A key entry an earlier install wrote, and a user-wide one: both go.
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({
+      mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_old' } } },
+      projects: { [ws]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_old' } } } }, [api]: {}, [own]: {} },
+    }));
+    const l = login(['acme/widget', 'acme/api', 'acme/own']);
+    const r = await runCli(['--global', '--oauth', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(r.code).toBe(0);
+
+    const raw = readFileSync(join(home, '.claude.json'), 'utf8');
+    expect(raw).not.toContain('bld_');
+    expect(raw).not.toContain('Authorization');
+    const cfg = JSON.parse(raw);
+    // The workspace id comes from the list, matched by repo.
+    expect(cfg.projects[ws].mcpServers.buildd).toEqual({ type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1-acme-widget' });
+    expect(cfg.projects[api].mcpServers.buildd).toEqual({ type: 'http', url: 'https://b.test/api/mcp-oauth/ws-2-acme-api' });
+    expect(cfg.projects[own]).toEqual({});
+    expect(cfg.mcpServers.buildd).toBeUndefined();
+
+    const out = r.lines.join('\n');
+    expect(out).toContain('signing in with OAuth');
+    expect(out).toMatch(/~\/code\/widget\s+acme\/widget\s+browser sign-in on first use/);
+    expect(out).toMatch(/~\/code\/api\s+acme\/api\s+browser sign-in on first use/);
+    expect(out).toContain('(its own .mcp.json)');
+  });
+
+  it('--here --oauth uses OAuth for a workspace folder, and the key for a folder that is not one yet', async () => {
+    const ws = join(home, 'code', 'widget');
+    const fresh = join(home, 'new-idea');
+    checkout(ws, 'acme/widget');
+    mkdirSync(fresh, { recursive: true });
+    const l = login(['acme/widget']);
+    const a = await runCli(['--here', '--oauth'], { home, cwd: ws, ...l });
+    expect(a.lines.join('\n')).toContain('browser sign-in on first use');
+    const b = await runCli(['--here', '--oauth'], { home, cwd: fresh, ...l });
+    expect(b.code).toBe(0);
+    expect(b.lines.join('\n')).toContain('not a workspace yet');
+    const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+    expect(cfg.projects[ws].mcpServers.buildd.url).toBe('https://b.test/api/mcp-oauth/ws-1-acme-widget');
+    expect(cfg.projects[fresh].mcpServers.buildd.headers.Authorization).toBe('Bearer bld_test');
+    expect('error' in parseCliArgs(['--global', '--everywhere', '--oauth'])).toBe(true);
+    expect('error' in parseCliArgs(['--oauth'])).toBe(true);
+  });
+
+  it("--status --global lists each folder's buildd MCP entry as key or OAuth, without the network", async () => {
+    const ws = join(home, 'code', 'widget');
+    const api = join(home, 'code', 'api');
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({
+      mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_x' } } },
+      projects: {
+        [ws]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1' } } },
+        [api]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_x' } } } },
+        [join(home, 'other')]: { mcpServers: { mine: { command: 'y' } } },
+      },
+    }));
+    const offline = (async () => { throw new Error('status must not call the network'); }) as any;
+    const r = await runCli(['--status', '--global', '--client=claude'], { home, cwd: home, fetchImpl: offline, env: { BUILDD_HOME: join(home, '.buildd') } });
+    const out = r.lines.join('\n');
+    expect(out).toMatch(/~\/code\/widget\s+OAuth/);
+    expect(out).toMatch(/~\/code\/api\s+key/);
+    expect(out).toMatch(/every session\s+key/);
+    expect(out).not.toContain('~/other');
+    expect(out).not.toContain('bld_x');
   });
 
   it('changes nothing when not logged in or when the workspace list cannot be loaded', async () => {

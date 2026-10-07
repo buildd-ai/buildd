@@ -68,6 +68,16 @@ be loaded they send nothing.
 folder, for the folders Claude Code has opened whose repo is a workspace.
 Re-run it after a new checkout, or use `--here` in any folder.
 
+With `--oauth` (opt-in) no key is written for those folders: each one points
+at its workspace's OAuth MCP endpoint, `<server>/api/mcp-oauth/<workspaceId>`,
+and Claude Code signs you in in the browser the first time the folder uses
+buildd (`/mcp` shows the state). You act as yourself, with your role in that
+workspace's team, so folders from different teams each sign in to their own.
+Re-running replaces a key entry the installer wrote; a folder's own `.mcp.json`
+is never touched. A `--here --oauth` folder that is not a workspace yet keeps
+the key until it is. `buildd install --global --status` lists every buildd
+entry and whether it uses the key or OAuth.
+
 ## Configuration
 
 | Variable | Effect |
