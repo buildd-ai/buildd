@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEFAULT_ROLES } from './default-roles';
 import { ROLE_COLOR_VALUES } from '@/components/ColorSwatches';
@@ -106,34 +106,8 @@ describe('default role colours stay off the reserved accent/status hues', () => 
   }
 });
 
-describe('role colour data migration', () => {
-  const dir = join(import.meta.dir, '..', '..', '..', '..', 'packages', 'core', 'drizzle');
-  const file = readdirSync(dir).find(f => /^\d{4}_role_colours_off_accent\.sql$/.test(f));
-  const sql = file ? readFileSync(join(dir, file), 'utf8') : '';
-  const statements = sql
-    .split('--> statement-breakpoint')
-    .map(s => s.replace(/--[^\n]*\n/g, '').trim())
-    .filter(Boolean);
+// The one-time data migration that moved existing rows off the old default
+// colours (0181_role_colours_off_accent.sql) was squashed into
+// packages/core/drizzle/0000_baseline.sql; it ran in every released database and
+// a fresh database has no rows to fix, so its guard went with it.
 
-  it('exists (matched by name so a renumber on collision does not break it)', () => {
-    expect(file).toBeDefined();
-  });
-
-  it('only touches rows still on the old default colour for that slug', () => {
-    const OLD: Record<string, string> = { builder: '#d4724a', researcher: '#d97706' };
-    expect(statements.length).toBe(RETUNED.length);
-    for (const slug of RETUNED) {
-      const stmt = statements.find(s => s.includes(`'${slug}'`));
-      expect(stmt).toBeDefined();
-      expect(stmt!).toMatch(/^UPDATE\s+"workspace_skills"\s+SET\s+"color"\s*=/i);
-      expect(stmt!).toContain(`'${bySlug[slug].color}'`);
-      expect(stmt!).toMatch(new RegExp(`"slug"\\s*=\\s*'${slug}'`));
-      expect(stmt!).toMatch(new RegExp(`lower\\("color"\\)\\s*=\\s*'${OLD[slug]}'`));
-    }
-  });
-
-  it('never deletes, and never inlines observed row data', () => {
-    expect(sql).not.toMatch(/\bDELETE\b|\bINSERT\b|\bid\s+IN\b/i);
-    expect(sql).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/i);
-  });
-});

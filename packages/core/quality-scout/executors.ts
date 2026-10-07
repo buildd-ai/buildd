@@ -28,7 +28,7 @@
  */
 
 import { createHash } from 'crypto';
-import type { ScoutProbeKind } from '../decision-kind-scout-probe-selection';
+import type { ScoutProbeKind } from './types';
 import type { AssertionResult } from '../spec-conformance';
 import type { ScoutCapability, ScoutCapabilityProfile } from '../scout-capabilities';
 import { captureRefMatch } from '../visual-qa-capture-ref';
@@ -58,7 +58,7 @@ import {
 import { SCOUT_ADAPTER_BY_KIND, SCOUT_ADAPTERS, type ScoutAdapterKind } from './adapters/kinds';
 import { evidenceRefs as refs } from './adapters/shared';
 import { SCOUT_EVIDENCE_REQUIREMENTS } from './candidates';
-import { executeScoutProbe } from './ledger';
+import { executeScoutProbe } from './probe-check';
 import type { ScoutProbeRecord, ScoutReproducibility, ScoutRun } from './types';
 
 // The command and API/contract adapters live in ./adapters; re-exported so
@@ -75,7 +75,7 @@ export { parseHttpExpectation, type ScoutHttpExpectation, type ScoutHttpRequest,
 
 // ── Adapters ────────────────────────────────────────────────────────────────
 
-export { SCOUT_ADAPTERS, type ScoutAdapterKind } from './adapters/kinds';
+export { SCOUT_ADAPTER_BY_KIND, SCOUT_ADAPTERS, type ScoutAdapterKind } from './adapters/kinds';
 
 /** The evidence key each adapter natively produces, usable directly as a requirement key. */
 export const SCOUT_ADAPTER_EVIDENCE: Readonly<Record<ScoutAdapterKind, string>> = {

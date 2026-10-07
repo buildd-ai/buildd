@@ -98,6 +98,18 @@ run the same command CI's `Build` step uses:
 cd apps/web && bun run build:only   # next build only, no migration, no DATABASE_URL needed
 ```
 
+**A fresh local database migrates through one baseline.** Every migration
+released up to `v0.284.0` was squashed into `packages/core/drizzle/0000_baseline.sql`.
+`bun db:migrate` against an empty Docker Postgres runs the baseline and then the
+later migrations. It refuses a database that stopped partway through the
+squashed history (`PreBaselineDatabaseError`). Migrate that one with `v0.284.0`
+first, or drop it and start fresh; a self-hosted deployment must reach
+`v0.284.0` before upgrading past the squash. To read an old migration, use git
+history before the squash (`git show v0.284.0:packages/core/drizzle/<file>.sql`).
+`apps/web/tests/db/migration-baseline.test.ts` (`bun run test:db`) replays the
+pre-squash tree from the `v0.284.0` tag and proves both trees build the same
+schema. Locally it needs the tag (`git fetch origin tag v0.284.0`).
+
 No dummy env vars or extra flags (`--webpack` etc.) are required — `build:only` compiles
 cleanly on its own.
 

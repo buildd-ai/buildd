@@ -5,6 +5,7 @@ import {
   buildScoutProbeCheck,
   completeScoutRun,
   executeScoutProbe,
+  expireRunnerProbes,
   failScoutRun,
   finalizeScoutProbes,
   recordScoutFailure,
@@ -15,14 +16,18 @@ import {
   scoutCheckId,
   scoutFindingLedgerSet,
   scoutFindingRow,
+  scoutParkingExpiry,
+  scoutProbeFromRow,
   scoutProbeRecord,
+  scoutProbeRow,
+  scoutRunFromRow,
   scoutRunRow,
   scoutRunStaleness,
   startScoutRun,
   type ScoutCandidateLike,
   type ScoutFindingStore,
 } from '../quality-scout/ledger';
-import { SCOUT_ACTION_STATES, SCOUT_AUTHORITY, SCOUT_MODES, type ScoutFinding, type ScoutProbeRecord, type ScoutRun } from '../quality-scout/types';
+import { SCOUT_ACTION_STATES, SCOUT_AUTHORITY, SCOUT_MODES, SCOUT_RUN_STATUSES, type ScoutFinding, type ScoutProbeRecord, type ScoutRun, type ScoutRunParking } from '../quality-scout/types';
 import { verificationSignature, type VerificationExecutor } from '../verification-check';
 import { qualityScoutFindings, qualityScoutProbes, qualityScoutRuns } from '../db/schema';
 
@@ -103,7 +108,7 @@ describe('startScoutRun', () => {
     const r = run({ prior: { runId: 'run-0', sha: SHA2 }, budget: { maxProbes: 99 } });
     expect(r.candidate).toEqual({ ref: 'main', sha: SHA });
     expect(r.prior).toEqual({ runId: 'run-0', sha: SHA2 });
-    expect(r.budget).toEqual({ maxProbes: 10, maxCostUsd: null });
+    expect(r.budget).toEqual({ maxProbes: 10, maxCostUsd: null, maxCaptureProbes: 1 });
     expect(r.status).toBe('running');
     expect(r.startedAt).toBe(T0.toISOString());
     expect(r.policyVersion).toBe('scout-v1');
@@ -529,5 +534,87 @@ describe('schema', () => {
 
   it('one finding per workspace and signature', () => {
     expect(uniques(qualityScoutFindings)).toContainEqual(['workspace_id', 'signature']);
+  });
+});
+
+// ── Runner-host parking ─────────────────────────────────────────────────────
+
+describe('parked runs', () => {
+  const parking = (over: Partial<ScoutRunParking> = {}): ScoutRunParking => ({
+    parkedAt: T0.toISOString(),
+    hostDeadline: new Date(T0.getTime() + 30 * 60_000).toISOString(),
+    runnerMaxDurationMs: 20 * 60_000,
+    profile: { capabilities: [] } as unknown as ScoutRunParking['profile'],
+    plan: {
+      candidatesGenerated: 1, candidatesTruncated: 0, decisionsAsked: 1, decisionFailures: 0, costCapHit: false,
+      stages: { profile: { ms: 1, costUsd: null }, signals: { ms: 0, costUsd: null }, generate: { ms: 0, costUsd: null }, select: { ms: 2, costUsd: 0.001 }, execute: { ms: 3, costUsd: null }, act: { ms: 0, costUsd: null } },
+      warnings: ['w'], deadlineHit: false, reproducibility: { a: 'deterministic' },
+    },
+    lease: null,
+    leaseLapses: 0,
+    ...over,
+  });
+  const at = (min: number) => new Date(T0.getTime() + min * 60_000);
+
+  it('awaiting_host is a run status', () => {
+    expect(SCOUT_RUN_STATUSES).toContain('awaiting_host');
+  });
+
+  it('expires at its deadline as no_runner_claimed when nobody ever held it', () => {
+    expect(scoutParkingExpiry(parking(), at(29))).toBeNull();
+    expect(scoutParkingExpiry(parking(), at(30))).toBe('no_runner_claimed');
+  });
+
+  it('a lease that lapses once is not yet expiry; twice is runner_host_lost, deadline or not', () => {
+    const held = parking({ lease: { holder: 'r', expiresAt: at(5).toISOString() } });
+    expect(scoutParkingExpiry(held, at(4))).toBeNull();
+    expect(scoutParkingExpiry(held, at(6))).toBeNull();
+    expect(scoutParkingExpiry({ ...held, leaseLapses: 1 }, at(6))).toBe('runner_host_lost');
+    expect(scoutParkingExpiry({ ...held, leaseLapses: 1 }, at(4))).toBeNull();
+    expect(scoutParkingExpiry(held, at(31))).toBe('runner_host_lost');
+  });
+
+  it('expires only runner probes without a result, as unsupported — never pass', () => {
+    const r = run();
+    const runner = { ...probe({ id: 'runner' }), host: 'runner' as const };
+    const server = { ...probe({ id: 'server' }), host: 'server' as const };
+    const done = executed(r, { exit: 0 }, { ...probe({ id: 'done' }), host: 'runner' as const } as ScoutProbeRecord);
+    const skipped = { ...scoutProbeRecord({ ...CANDIDATE, id: 'skip' }, { status: 'skipped', reason: 'deferred', reasonCode: null }), host: undefined };
+    const out = expireRunnerProbes(r, [runner, server, done, skipped], 'no_runner_claimed', T1);
+    expect(out.expired).toBe(1);
+    expect(out.probes[0].result).toMatchObject({ verdict: 'unsupported', reason: 'no_runner_claimed' });
+    expect(out.probes[1].result).toBeNull();
+    expect(out.probes[2]).toBe(done);
+    expect(out.probes[3].result).toBeNull();
+  });
+
+  it('a parked run and its probe hosts round-trip through their rows', () => {
+    const r: ScoutRun = { ...run(), status: 'awaiting_host', parking: parking({ lease: { holder: 'runner-1', expiresAt: at(25).toISOString() }, leaseLapses: 1 }) };
+    const row = { ...scoutRunRow(r), createdAt: T0 } as Parameters<typeof scoutRunFromRow>[0];
+    expect(row.hostLeaseLapses).toBe(1);
+    expect(scoutRunFromRow(row)).toEqual(r);
+    const p = { ...probe(), host: 'runner' as const };
+    const prow = { ...scoutProbeRow(r, p), id: 'x', createdAt: T0, updatedAt: T0 } as Parameters<typeof scoutProbeFromRow>[0];
+    expect(prow.host).toBe('runner');
+    expect(scoutProbeFromRow(prow)).toEqual(p);
+  });
+
+  it('a run that never parked writes no host state and reads back without parking', () => {
+    const row = { ...scoutRunRow(run()), createdAt: T0 } as Parameters<typeof scoutRunFromRow>[0];
+    expect(row.hostState).toBeNull();
+    expect(row.hostDeadline).toBeNull();
+    expect(scoutRunFromRow(row).parking).toBeNull();
+  });
+});
+
+describe('clampScoutCaptureProbes', () => {
+  it('defaults to one surface probe per run, allows 0, and caps the top', async () => {
+    const { clampScoutCaptureProbes } = await import('../quality-scout/ledger');
+    expect(clampScoutCaptureProbes(undefined)).toBe(1);
+    expect(clampScoutCaptureProbes('2')).toBe(1);
+    expect(clampScoutCaptureProbes(0)).toBe(0);
+    expect(clampScoutCaptureProbes(-4)).toBe(0);
+    expect(clampScoutCaptureProbes(2.7)).toBe(2);
+    expect(clampScoutCaptureProbes(99)).toBe(3);
   });
 });

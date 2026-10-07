@@ -28,6 +28,10 @@
  * command / request / capture as one, is a near-duplicate; a probe family is
  * capped at `maxPerFamily`. Neither costs a decision.
  *
+ * Hosts: a candidate no available host can run (`options.hostable`) is
+ * skipped `no_host` up front, so the 3–5 probe budget is spent on probes
+ * something can actually execute. Deterministic; the kind never sees it.
+ *
  * Every candidate ends up exactly once in `selected` or `skipped`, with a reason.
  */
 
@@ -95,6 +99,20 @@ export interface ScoutSelectionOptions {
    * an unknown spend cannot be capped, so it is not.
    */
   cost?: { maxUsd: number; spent(): number | null };
+  /**
+   * Can any available host run this candidate? Return null when one can, or a
+   * reason code when none can: the candidate is skipped `no_host` before it
+   * costs a decision or a budget slot. Absent: every host is assumed (a
+   * single-host run, where the executor's capability gate says `unsupported`).
+   */
+  hostable?: (c: ScoutProbeCandidate) => string | null;
+  /**
+   * Surface probes: a capture is a workflow run per viewport, so a run takes
+   * at most `max` of them (`budget.maxCaptureProbes`). A capture candidate
+   * past the cap is skipped `over_budget` (`max_capture_probes`) before it
+   * costs a decision; the slot stays open for a cheaper probe.
+   */
+  capture?: { max: number; needsCapture(c: ScoutProbeCandidate): boolean };
 }
 
 export interface ScoutSelectedProbe {
@@ -106,7 +124,7 @@ export interface ScoutSelectedProbe {
   decisionSource: DecisionSource | null;
 }
 
-export type ScoutSkipReason = 'unsupported' | 'near_duplicate' | 'family_cap' | 'deferred' | 'over_budget' | 'not_considered';
+export type ScoutSkipReason = 'unsupported' | 'no_host' | 'near_duplicate' | 'family_cap' | 'deferred' | 'over_budget' | 'not_considered';
 
 export interface ScoutSkippedProbe {
   candidate: ScoutProbeCandidate;
@@ -200,7 +218,10 @@ export async function selectScoutProbes(
     skipped.push(s);
     done.add(s.candidate.id);
   };
+  const captureCap = options.capture ?? null;
+  let captures = 0;
   const pick = (p: ScoutSelectedProbe) => {
+    if (captureCap?.needsCapture(p.candidate)) captures++;
     selected.push(p);
     done.add(p.candidate.id);
     perFamily.set(p.candidate.family, (perFamily.get(p.candidate.family) ?? 0) + 1);
@@ -211,6 +232,11 @@ export async function selectScoutProbes(
       skip({ candidate: c, reason: 'unsupported', ...(c.unsupportedReason ? { detail: c.unsupportedReason } : {}) });
       return false;
     }
+    const noHost = options.hostable?.(c) ?? null;
+    if (noHost) {
+      skip({ candidate: c, reason: 'no_host', reasonCode: noHost, detail: 'No available host offers what this probe needs.' });
+      return false;
+    }
     const dup = duplicateOf(c, selected);
     if (dup) {
       skip({ candidate: c, reason: 'near_duplicate', duplicateOf: dup });
@@ -218,6 +244,10 @@ export async function selectScoutProbes(
     }
     if ((perFamily.get(c.family) ?? 0) >= maxPerFamily) {
       skip({ candidate: c, reason: 'family_cap', detail: `${c.family} already has ${maxPerFamily} probe(s) selected.` });
+      return false;
+    }
+    if (captureCap && captureCap.needsCapture(c) && captures >= captureCap.max) {
+      skip({ candidate: c, reason: 'over_budget', reasonCode: 'max_capture_probes', detail: `A run captures at most ${captureCap.max} surface probe(s).` });
       return false;
     }
     return true;

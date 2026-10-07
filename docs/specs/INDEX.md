@@ -68,7 +68,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [DB Migration Operation-Class Gate](./db-migration-gates.md) · @builder — verified 2026-08-25
   Every generated Drizzle migration in a PR MUST be classified EXPAND or CONTRACT, and that verdict MUST gate auto-merge unconditionally, independent of any workspace path configuration.
-- [DB Migration Execution](./migration-execution.md) · @max — verified 2026-09-12
+- [DB Migration Execution](./migration-execution.md) · @max — verified 2026-10-06
   Every committed migration MUST execute exactly once and only while its journal `when` exceeds the applied high-water mark; a missing tracking row below that mark MUST be backfilled, never replayed.
 - [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-09-15
   For a mission with an integration base, canCompleteMission and the on_mission_complete release trigger MUST gate on the mission PR's merge into trunk through one shared accessor.
@@ -91,7 +91,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 - [Runner Liveness](./runner-liveness.md) · @max — verified 2026-09-29
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
-- [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-08-30
+- [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-07
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
 ### surfaces (12)

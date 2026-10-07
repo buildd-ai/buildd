@@ -10,8 +10,11 @@
  *   - git pack files. Only `objects/pack/pack-*.pack`: no loose objects, no
  *     .idx/.rev/.bitmap/multi-pack-index/commit-graph, no alternates, no refs,
  *     no config, no hooks. The seed re-indexes every pack with
- *     `git index-pack`, which re-hashes every object, then fetches the real
- *     refs from origin and runs `git fsck --connectivity-only`.
+ *     `git index-pack`, which re-hashes every object (an .idx the previous
+ *     task wrote could map an object id to other content; one computed here
+ *     cannot), then fetches the real refs from origin and runs
+ *     `git fsck --connectivity-only`. That is the same work a warm restore
+ *     does on its bundle, without the download.
  *   - the bun install cache (with the pnpm store nested in it), scrubbed of
  *     every registry-config / env file name and of symlinks that leave it. This
  *     is the same trust the warm snapshot already gives that cache: its
@@ -46,6 +49,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { pidsToStop, type ProcInfo } from './run-once';
 import { resolveBuilddHome } from './buildd-home';
+import { emitPhase, emitRepoSource } from './phase-lines';
 
 /** Printed on success, last line: the agent reads it next to exit code 0. */
 export const RESET_OK_LINE = 'BUILDD_RESET=ok';
@@ -93,6 +97,15 @@ export interface ResetResult {
 
 export function keepDirOf(home: string): string {
   return join(home, KEEP_DIRNAME);
+}
+
+/**
+ * This run starts in a container a reset handed over (cloud only): the keep
+ * dir exists only after a reset, which recreates it, and a fresh container
+ * never has one. Its dependency cache is already on disk.
+ */
+export function isReusedContainer(env: Record<string, string | undefined>): boolean {
+  return env.BUILDD_EXECUTOR === 'cloud' && !!env.HOME && existsSync(keepDirOf(env.HOME));
 }
 
 /** The paths of this container, from the env the agent exec'd the reset with. */
@@ -302,6 +315,8 @@ export interface SeedOptions {
   /** `git fetch origin` in the seeded clone; null on success, else git's reason. */
   fetchOrigin(clonePath: string): string | null;
   log(message: string): void;
+  /** Where phase / source lines go (phase-lines.ts); the process env and stdout when absent. */
+  lineOpts?: Parameters<typeof emitPhase>[1];
 }
 
 function git(cwd: string, args: string[], timeoutMs = 10 * 60 * 1000): { ok: boolean; out: string; err: string } {
@@ -314,9 +329,28 @@ function git(cwd: string, args: string[], timeoutMs = 10 * 60 * 1000): { ok: boo
  * restore or a clone. False (and nothing left at `clonePath`) when there is
  * nothing kept or any check fails; the caller then restores or clones as usual.
  * The kept dir is consumed either way.
+ *
+ * The result is shaped like a fresh cloud clone (git-clone.ts): the default
+ * branch only, checked out and tracking origin's, origin/HEAD set, shallow
+ * when the kept clone was. Not like a warm restore: there is no snapshot tip
+ * (WARM_BASE_REF), so a park bundle is built against origin, as after a clone.
+ *
+ * BUILDD_PHASE=restore_reuse_start/_end around it and BUILDD_REPO_SOURCE=reuse
+ * on success, for the run report.
  */
 export function seedCloneFromKept(clonePath: string, cloneUrl: string, keptDir: string, o: SeedOptions): boolean {
   if (!existsSync(join(keptDir, 'pack'))) return false;
+  emitPhase('restore_reuse_start', o.lineOpts);
+  try {
+    const ok = seed(clonePath, cloneUrl, keptDir, o);
+    if (ok) emitRepoSource('reuse', undefined, o.lineOpts);
+    return ok;
+  } finally {
+    emitPhase('restore_reuse_end', o.lineOpts);
+  }
+}
+
+function seed(clonePath: string, cloneUrl: string, keptDir: string, o: SeedOptions): boolean {
   const tipLine = (readSmall(join(keptDir, 'tip')) ?? '').trim().split(' ');
   const hintBranch = tipLine[0] && BRANCH_RE.test(tipLine[0]) && !tipLine[0].includes('..') ? tipLine[0] : null;
   const branch = o.defaultBranch && BRANCH_RE.test(o.defaultBranch) ? o.defaultBranch : hintBranch;
@@ -334,19 +368,23 @@ export function seedCloneFromKept(clonePath: string, cloneUrl: string, keptDir: 
     if (!git(clonePath, ['init', '-q', '-b', branch]).ok) return failWith('git init failed');
     const packDir = join(clonePath, '.git', 'objects', 'pack');
     mkdirSync(packDir, { recursive: true });
+    // The shallow boundary first: a cloud clone's pack names parents it does
+    // not hold, which git only accepts once their children are known shallow.
+    const shallow = readSmall(join(keptDir, 'shallow'));
+    if (shallow) writeFileSync(join(clonePath, '.git', 'shallow'), shallow);
     let packs = 0;
     for (const name of readdirSync(join(keptDir, 'pack'))) {
       if (!PACK_RE.test(name)) continue;
       const dest = join(packDir, name);
       renameSync(join(keptDir, 'pack', name), dest);
-      // Re-hashes every object and writes a fresh .idx; a tampered pack fails here.
-      const ix = git(clonePath, ['index-pack', '--strict', dest]);
+      // Re-hashes every object and writes a fresh .idx; a corrupted pack
+      // fails here. Not --strict: that also fsck's every object, which a
+      // clone does not either, and connectivity is checked once below.
+      const ix = git(clonePath, ['index-pack', dest]);
       if (!ix.ok) return failWith(`index-pack refused ${name}: ${ix.err}`);
       packs++;
     }
     if (packs === 0) return failWith('no packs kept');
-    const shallow = readSmall(join(keptDir, 'shallow'));
-    if (shallow) writeFileSync(join(clonePath, '.git', 'shallow'), shallow);
     // A hint only: fetch negotiation starts from it, and fsck below checks
     // whatever origin answers is complete.
     if (tip && git(clonePath, ['cat-file', '-e', `${tip}^{commit}`]).ok) {

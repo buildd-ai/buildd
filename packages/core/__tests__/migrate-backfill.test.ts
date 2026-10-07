@@ -115,6 +115,23 @@ describe('deriveAssertions', () => {
   });
 });
 
+describe('deriveAssertions on pg_dump syntax (the squashed baseline)', () => {
+  it('reads schema-qualified tables, ALTER TABLE ONLY constraints and indexes', () => {
+    const { assertions, opaque } = deriveAssertions([
+      'CREATE TABLE public.tasks (\n    id uuid NOT NULL\n);',
+      'ALTER TABLE ONLY public.tasks\n    ADD CONSTRAINT tasks_pkey PRIMARY KEY (id);',
+      'CREATE UNIQUE INDEX tasks_slug_idx ON public.tasks USING btree (slug);',
+      'CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;',
+    ]);
+    expect(assertions).toEqual([
+      { kind: 'table_exists', target: 'tasks' },
+      { kind: 'constraint_exists', target: 'tasks.tasks_pkey' },
+      { kind: 'index_exists', target: 'tasks_slug_idx' },
+    ]);
+    expect(opaque.length).toBe(1);
+  });
+});
+
 describe('evaluateBackfill', () => {
   it('is verified when every derived assertion holds against the live DB', () => {
     const result = evaluateBackfill(
@@ -316,22 +333,11 @@ describe('assertion coverage over the real migration corpus', () => {
 
     expect(assertions).toBeGreaterThan(500);
     // Only pure data-fix migrations should be unverifiable. If this grows, the
-    // parser has lost ground against a new SQL form.
-    // 7: 0155_backfill_orphaned_mission_schedules added a DO-block data cleanup
-    // with no ALTER/CREATE for the parser to derive an assertion from.
-    // 8: *_role_colours_off_accent is a pure data fix (UPDATE workspace_skills).
-    // 9: 0197 is a lone ALTER COLUMN (ai_usage.tier DROP NOT NULL). DbShape has
-    // no nullability, and a column_exists stand-in would "verify" it even if it
-    // never ran, so it stays unverifiable: a backfill refuses it loudly.
-    // 10: *_chat_directives_per_user_cap is a function + trigger (the standing
-    // rule cap under concurrent saves). DbShape has no triggers or functions.
-    // 11: *_backfill_host_runner is a pure data fix (UPDATE accounts); its
-    // column comes from the generated migration before it.
-    // 12: *_task_dispatch_outbox_trigger is a function + trigger (durable
-    // dispatch intent on every transition into pending); same reason as 10.
-    // 13: *_task_dispatch_trigger_hints replaces that trigger's function.
-    // 14: *_dispatch_transport_default is a lone ALTER COLUMN ... SET DEFAULT.
-    // DbShape has no column defaults; same reason as 9.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(14);
+    // parser has lost ground against a new SQL form. The squash absorbed every
+    // historical data-fix migration into the baseline (whose pg_dump DDL is
+    // fully checkable), so the tree starts again from zero. A new data fix,
+    // lone ALTER COLUMN or function/trigger migration may raise this: say which
+    // one beside the bump, as the pre-squash version of this test did.
+    expect(withoutAssertions.length).toBeLessThanOrEqual(0);
   });
 });

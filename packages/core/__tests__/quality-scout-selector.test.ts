@@ -358,3 +358,55 @@ describe('createScoutProbeDecider', () => {
     for (const s of r.selected) expect(s.decisionSource).toBe('fallback');
   });
 });
+
+describe('selectScoutProbes — hosts', () => {
+  it('a candidate no available host can run is skipped no_host, costing no decision and no slot', async () => {
+    const cmd = cand({ executor: 'cli-journey:only-a-runner' });
+    const ok = (['contract', 'surface', 'persistence', 'release'] as const).map((family) => cand({ family }));
+    const r = recorder();
+    const out = await selectScoutProbes(set([cmd, ...ok]), r.decide, {
+      budget: 4,
+      hostable: (c) => (c.id === cmd.id ? 'no_runner_host' : null),
+    });
+    expect(ids(out.selected)).toEqual(ok.map((c) => c.id));
+    expect(out.skipped).toEqual([expect.objectContaining({ reason: 'no_host', reasonCode: 'no_runner_host' })]);
+    expect(r.asked.some((q) => q.subjectRef?.id === cmd.id)).toBe(false);
+  });
+
+  it('applies to must-run candidates too: nothing is promised that no host can run', async () => {
+    const severe = cand({ severity: 'critical' });
+    const out = await selectScoutProbes(set([severe]), recorder().decide, { hostable: () => 'no_runner_host' });
+    expect(out.selected).toEqual([]);
+    expect(out.skipped[0].reason).toBe('no_host');
+  });
+
+  it('without hostable, selection is unchanged', async () => {
+    const cs = Array.from({ length: 3 }, () => cand());
+    const a = await selectScoutProbes(set(cs), recorder().decide);
+    const b = await selectScoutProbes(set(cs), recorder().decide, { hostable: () => null });
+    expect(ids(b.selected)).toEqual(ids(a.selected));
+  });
+});
+
+describe('selectScoutProbes — capture cap', () => {
+  const surface = (over: Partial<ScoutProbeCandidate> = {}) => cand({ family: 'surface', probeKind: 'visual', executor: 'ui-surface', ...over });
+  const needsCapture = (c: ScoutProbeCandidate) => !!c.executor?.startsWith('ui-surface');
+
+  it('selects at most max surface probes; the rest are skipped over_budget before costing a decision, and the slot goes to a cheaper probe', async () => {
+    const a = surface({ anchor: 'ui-a', paths: ['ui-a/page.tsx'] });
+    const b = surface({ anchor: 'ui-b', paths: ['ui-b/page.tsx'], executor: 'ui-surface:other', invariant: 'other' });
+    const cmd = cand();
+    const r = recorder();
+    const out = await selectScoutProbes(set([a, b, cmd]), r.decide, { budget: 3, capture: { max: 1, needsCapture } });
+    expect(ids(out.selected)).toEqual([a.id, cmd.id]);
+    expect(out.skipped).toEqual([expect.objectContaining({ candidate: b, reason: 'over_budget', reasonCode: 'max_capture_probes' })]);
+    expect(r.asked.some((q) => q.subjectRef?.id === b.id)).toBe(false);
+  });
+
+  it('max 0 turns surface probes off; must-run candidates obey the cap too', async () => {
+    const severe = surface({ severity: 'critical' });
+    const out = await selectScoutProbes(set([severe]), recorder().decide, { capture: { max: 0, needsCapture } });
+    expect(out.selected).toEqual([]);
+    expect(out.skipped[0]).toMatchObject({ reason: 'over_budget', reasonCode: 'max_capture_probes' });
+  });
+});
