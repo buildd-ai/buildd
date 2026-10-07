@@ -62,6 +62,13 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute(restricted, request('/api/evidence?workspaceId=ws-b&prNumber=1'))).toBe(false);
     expect(canAccessTokenRoute(restricted, request('/api/evidence?workspaceId=ws-a&prNumber=1'))).toBe(true);
   });
+  test('Scout runner-host routes take the runner capability, not admin', () => {
+    for (const path of ['/api/quality-scout/runs/claim', '/api/quality-scout/runs/r1/probes', '/api/quality-scout/runs/r1/release']) {
+      expect(requiredTokenScope(path, 'POST')).toBe('workers:write');
+      expect(canAccessTokenRoute({ scopes: TOKEN_PRESETS.runner.scopes }, request(path, 'POST'))).toBe(true);
+      expect(canAccessTokenRoute({ scopes: ['tasks:write'] }, request(path, 'POST'))).toBe(false);
+    }
+  });
   test('MCP transport defers to its action gate without requiring admin', () => {
     expect(canAccessTokenRoute({ scopes: ['analytics:read'] }, request('/api/mcp', 'POST'))).toBe(true);
   });
