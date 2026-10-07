@@ -259,7 +259,7 @@ export function hostedRunnerMeterView(
     : s.allowanceHours === 0 ? 100 : Math.min(100, Math.round((s.countedSeconds / 3600 / s.allowanceHours) * 1000) / 10);
 
   let forecast: string | null = null;
-  if (s.forecast) {
+  if (s.forecast && s.countedSeconds > 0) {
     forecast = `On pace for ${formatRunnerHours(s.forecast.projectedSeconds)} h by month end`;
     const limitSeconds = s.allowanceHours === null ? null : s.allowanceHours * 3600;
     if (limitSeconds !== null && level !== 'used' && s.forecast.projectedSeconds > limitSeconds && s.countedSeconds > 0) {

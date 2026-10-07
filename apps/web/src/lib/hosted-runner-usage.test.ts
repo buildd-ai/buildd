@@ -269,6 +269,10 @@ describe('hostedRunnerMeterView', () => {
     expect(v.forecast).not.toContain('reaching');
   });
 
+  it('no pace line before anything has run', () => {
+    expect(hostedRunnerMeterView({ allowanceHours: 50, countedSeconds: 0, forecast: forecastMonthEnd(0, NOW) }, NOW).forecast).toBeNull();
+  });
+
   it('no forecast on the first day', () => {
     expect(hostedRunnerMeterView({ allowanceHours: 50, countedSeconds: 3600, forecast: null }, NOW).forecast).toBeNull();
   });
