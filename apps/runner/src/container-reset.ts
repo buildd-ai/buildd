@@ -45,6 +45,7 @@ import {
 } from 'fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { pidsToStop, type ProcInfo } from './run-once';
+import { resolveBuilddHome } from './buildd-home';
 
 /** Printed on success, last line: the agent reads it next to exit code 0. */
 export const RESET_OK_LINE = 'BUILDD_RESET=ok';
@@ -97,7 +98,7 @@ export function keepDirOf(home: string): string {
 /** The paths of this container, from the env the agent exec'd the reset with. */
 export function containerResetPaths(env: Record<string, string | undefined>, cacheDir: string): ResetPaths {
   const home = env.HOME || '/home/bun';
-  const builddHome = env.BUILDD_HOME || join(home, '.buildd');
+  const builddHome = resolveBuilddHome({ env, home });
   return {
     home,
     isolationRoot: env.BUILDD_WORKSPACE_ISOLATION_ROOT || join(builddHome, 'once-workspaces'),
