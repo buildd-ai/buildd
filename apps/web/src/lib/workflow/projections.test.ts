@@ -6,7 +6,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { attemptFailureCounts, attemptLine, deriveDeliveryView, ownerOfNextMove, type DeliveryViewInput } from './projections';
-import { replacedFailedTaskIds } from './delivery-view';
+import { replacedFailedTaskIds } from './delivery-display';
 
 describe('attemptLine (§5.7 rule 4)', () => {
   test('family-labelled, 1-based, only the families the ledger has', () => {

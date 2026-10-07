@@ -11,8 +11,8 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { toAttemptSnapshot, toDeliverySnapshot, toRoundSnapshot, type Exec } from './kernel';
-import { ownerDeliveryDisplays, type DeliveryDisplay } from './delivery-display';
-import { attemptFailureCounts, deriveDeliveryView, type AttemptTaskRef, type DeliveryView, type RemediationRef, type TransitionRef } from './projections';
+import { ownerDeliveryDisplays, replacedFailedTaskIds, type DeliveryDisplay } from './delivery-display';
+import { deriveDeliveryView, type AttemptTaskRef, type DeliveryView, type RemediationRef, type TransitionRef } from './projections';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -105,34 +105,16 @@ export async function getDeliveryViewsForTasks(taskIds: string[], exec: Exec = d
 }
 
 /**
- * S35: failed tasks that are replaced work, by the kernel's reading. A failed
- * attempt (or owner) of a kernel-owned delivery that is still live or already
- * shipped is history, not a failure of the mission; only a delivery that is
- * itself FAILED keeps its current attempt failing. Legacy tasks (not found in
- * delivery views) are absent and keep the existing projection rule. On a read
- * error (views load fails), `getDeliveryViewsForTasks` returns an empty map and
- * no task is considered replaced, so legacy projections show through.
+ * S35: failed tasks that are replaced work, by the kernel's reading (the rule
+ * is `replacedFailedTaskIds` in delivery-display.ts). On a read error the map
+ * is empty, so nothing is replaced and the legacy reading shows the failure.
  */
 export async function kernelReplacedFailedTaskIds(failedTaskIds: string[], exec: Exec = dbExec): Promise<Set<string>> {
   return replacedFailedTaskIds(await getDeliveryViewsForTasks(failedTaskIds, exec), failedTaskIds);
 }
 
-/**
- * Pure half of `kernelReplacedFailedTaskIds`. A task is replaced iff:
- * - It has a delivery view, AND
- * - `attemptFailureCounts` says it is not a failure (i.e., either the delivery
- *   state is not FAILED, or the task is not the current/owner task in a FAILED
- *   delivery). This covers: live deliveries, shipped (MERGED), superseded,
- *   abandoned, and past attempts in a FAILED delivery whose current is running.
- */
-export function replacedFailedTaskIds(views: ReadonlyMap<string, DeliveryView>, failedTaskIds: string[]): Set<string> {
-  const out = new Set<string>();
-  for (const id of failedTaskIds) {
-    const v = views.get(id);
-    if (v && !attemptFailureCounts(v, id)) out.add(id);
-  }
-  return out;
-}
+/** Pure half of `kernelReplacedFailedTaskIds`; lives with the client-safe reading. */
+export { replacedFailedTaskIds };
 
 /**
  * Slice E (§17.5): taskId → the serialisable `DeliveryDisplay` for each given

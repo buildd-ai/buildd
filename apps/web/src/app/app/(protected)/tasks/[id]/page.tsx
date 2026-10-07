@@ -78,7 +78,7 @@ import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { getTeamPermissionOverrides } from '@/lib/permissions';
 import TaskOverflowMenu from './TaskOverflowMenu';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
-import { missionContextBarFor, type MissionContextBarData } from './mission-context-bar';
+import { missionContextBarFor, missionContextDeliveryTaskIds, type MissionContextBarData } from './mission-context-bar';
 import { truncateExcerpt } from './error-excerpt';
 import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, partitionChildTasks, selectExecutionPlan } from './execution-plan';
 import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
@@ -266,9 +266,14 @@ export default async function TaskDetailPage({
   const authFailure = task.status === 'failed'
     ? explainProviderAuthFailure(taskWorkers[0]?.error ?? null, taskBackend)
     : null;
+  // S35: the mission's failed deliverables read through the kernel, as its card does.
+  const missionContextDeliveryViews = missionContextRow
+    ? await getDeliveryViewsForTasks(missionContextDeliveryTaskIds(missionContextRow as unknown as MissionCardRow))
+    : null;
   const missionContextBar: MissionContextBarData | null = missionContextBarFor(
     missionContextRow as unknown as MissionCardRow | null,
     task.id,
+    missionContextDeliveryViews,
   );
 
   // Read-through PR fact import: if the latest worker is completed with an

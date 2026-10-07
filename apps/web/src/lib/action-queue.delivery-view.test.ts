@@ -105,6 +105,18 @@ describe('S35 — a replaced predecessor is not a FAILED card', () => {
     expect(build([], [['t-1', viewOf({ state: 'FAILED', prNumber: null })]], [failed('t-1')])[0].chip).toBe('FAILED');
     expect(build([], [], [failed('t-9')])[0].chip).toBe('FAILED');
   });
+
+  it('inside a FAILED delivery, an older superseded attempt is dropped and the current attempt stays', () => {
+    const v = viewOf({ state: 'FAILED', stateReason: 'attempt_failed', prNumber: null }, {
+      attemptTasks: [
+        { taskId: 't-1', role: 'owner', status: 'completed', createdAt: '2026-10-05T09:00:00Z' },
+        { taskId: 'fix-1', role: 'fix', status: 'failed', createdAt: '2026-10-05T10:00:00Z' },
+        { taskId: 'fix-2', role: 'fix', status: 'failed', createdAt: '2026-10-05T11:00:00Z' },
+      ],
+    });
+    const q = build([], [['fix-1', v], ['fix-2', v]], [failed('fix-1'), failed('fix-2')]);
+    expect(q.filter((c) => c.chip === 'FAILED').map((c) => c.subjectKey)).toEqual(['task:fix-2']);
+  });
 });
 
 describe('S36 — Needs You membership follows DeliveryView.needsYou', () => {
