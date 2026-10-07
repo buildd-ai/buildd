@@ -15,7 +15,7 @@ const MODE_OPTIONS: Array<{ value: ModelUpgradeMode; label: string; description:
 const SOURCE_TEXT: Record<PolicySource, string> = {
   team: 'Set for this team.',
   workspace: 'Set on a workspace.',
-  default: 'Default — nothing set yet.',
+  default: 'Default: nothing set yet.',
 };
 
 interface PolicyResponse {
@@ -35,7 +35,7 @@ export function withheldText(t: TierAdoption): string | null {
   switch (t.withheld.reason) {
     case 'pinned': return 'This tier is pinned to a specific model.';
     case 'manual': return 'Your upgrade policy is manual.';
-    case 'soak': return `Soaking — moves automatically ${shortDate(t.withheld.eligibleAt)}.`;
+    case 'soak': return `Soaking, moves automatically ${shortDate(t.withheld.eligibleAt)}.`;
   }
 }
 

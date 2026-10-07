@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { buildModelUpgradeNotice } from './model-upgrade-notice';
-import type { AdoptionReport } from '@buildd/core/model-adoption-report';
+import type { AdoptionReport } from '@buildd/core/model-tier-adoption-report';
 import type { ModelUpgradeMode } from '@buildd/core/model-upgrade-policy';
 import type { TierAdoption } from '@buildd/core/model-upgrade-policy';
 

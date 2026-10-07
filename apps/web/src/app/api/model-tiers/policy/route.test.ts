@@ -23,8 +23,13 @@ mock.module('@/lib/team-access', () => ({
   getUserTeamRole: mockGetUserTeamRole,
   resolveActiveTeamId: async () => TEAM,
 }));
+const mockSnoozeFindFirst = mock(async () => null as any);
 mock.module('@buildd/core/db', () => ({
-  db: { query: { teams: { findFirst: async () => null }, workspaces: { findFirst: async () => ({ teamId: TEAM }) } } },
+  db: { query: {
+    teams: { findFirst: async () => null },
+    workspaces: { findFirst: async () => ({ teamId: TEAM }) },
+    actionQueueSnoozes: { findFirst: mockSnoozeFindFirst },
+  } },
 }));
 mock.module('@buildd/core/model-upgrade-policy-store', () => ({
   readStoredUpgradePolicy: async () => ({ mode: 'manual', adoptedThrough: '2026-10-01T00:00:00.000Z' }),
@@ -32,7 +37,7 @@ mock.module('@buildd/core/model-upgrade-policy-store', () => ({
   loadUpgradePolicy: mockLoad,
   invalidateUpgradePolicyCache: () => {},
 }));
-mock.module('@buildd/core/model-adoption-report', () => ({ buildAdoptionReport: mockReport }));
+mock.module('@buildd/core/model-tier-adoption-report', () => ({ buildAdoptionReport: mockReport }));
 
 const { GET, PUT, DELETE } = await import('./route');
 const { POST: ADOPT } = await import('./adopt/route');
@@ -62,6 +67,22 @@ describe('/api/model-tiers/policy', () => {
     expect(body.source).toBe('team');
     expect(body.stored.team.mode).toBe('manual');
     expect(body.tiers[0].newer.model).toBe('claude-haiku-5-5');
+  });
+
+  it('notice=1 adds the Home notice; a snooze of that exact notice hides it', async () => {
+    const res = await GET(req('GET', undefined, `?teamId=${TEAM}&notice=1`));
+    const body = await res.json();
+    expect(body.notice.kind).toBe('newer');
+    expect(body.notice.canAdopt).toBe(true);
+
+    mockSnoozeFindFirst.mockResolvedValueOnce({ subjectKey: body.notice.subjectKey });
+    const snoozed = await (await GET(req('GET', undefined, `?teamId=${TEAM}&notice=1`))).json();
+    expect(snoozed.notice).toBeNull();
+  });
+
+  it('without notice=1 there is no notice field', async () => {
+    const body = await (await GET(req('GET', undefined, `?teamId=${TEAM}`))).json();
+    expect('notice' in body).toBe(false);
   });
 
   it('PUT writes the team level with the actor stamped', async () => {

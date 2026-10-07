@@ -1,5 +1,3 @@
-import { platformAdminAccountIds } from '@/lib/platform-admin';
-
 /**
  * Which runners may certify models for every team (packages/core/model-certification.ts).
  *
@@ -16,8 +14,13 @@ export function isModelProbeAccount(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   if (!accountId) return false;
-  const listed = (env[MODEL_PROBE_ENV] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
-  return listed.includes(accountId) || platformAdminAccountIds(env).has(accountId);
+  // The platform admin list is read by name, not through lib/platform-admin:
+  // that file belongs to the admin module, and this one is imported by core routes.
+  const listed = [env[MODEL_PROBE_ENV], env.BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS]
+    .flatMap((v) => (v ?? '').split(','))
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return listed.includes(accountId);
 }
 
 /** Dotted numeric version, as runners report `claudeCliVersion`. */

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Chip from '@/components/ui/Chip';
 import type { ModelUpgradeNotice as Notice } from '@/lib/model-upgrade-notice';
@@ -12,11 +12,24 @@ import type { ModelUpgradeNotice as Notice } from '@/lib/model-upgrade-notice';
  * Snooze hides this exact notice for a week, and a new deprecation or release
  * produces a different notice that is not snoozed.
  */
-export default function ModelUpgradeNotice({ notice, teamId }: { notice: Notice; teamId: string }) {
+export default function ModelUpgradeNotice({ teamId }: { teamId: string }) {
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [hidden, setHidden] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  if (hidden) return null;
+
+  // Fetched, not server-rendered: the adoption report belongs to the model-tiers
+  // module, which Home (core) reaches over HTTP, never by import.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/model-tiers/policy?teamId=${encodeURIComponent(teamId)}&notice=1`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled) setNotice((d?.notice as Notice | null) ?? null); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [teamId]);
+
+  if (hidden || !notice) return null;
 
   async function act(url: string, body: unknown) {
     setBusy(true);
@@ -65,7 +78,7 @@ export default function ModelUpgradeNotice({ notice, teamId }: { notice: Notice;
           type="button"
           className="text-meta text-text-muted underline"
           disabled={busy}
-          onClick={() => void act('/api/action-queue/snooze', { subjectKey: notice.subjectKey, hours: 168 })}
+          onClick={() => void act('/api/action-queue/snooze', { subjectKey: notice!.subjectKey, hours: 168 })}
         >
           Snooze for a week
         </button>

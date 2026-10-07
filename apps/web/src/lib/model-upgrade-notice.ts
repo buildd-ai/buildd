@@ -11,7 +11,7 @@
  * a snooze of one release does not hide the next one.
  */
 import { getModelDisplayName } from '@buildd/core/model-display';
-import type { AdoptionReport } from '@buildd/core/model-adoption-report';
+import type { AdoptionReport } from '@buildd/core/model-tier-adoption-report';
 import type { ModelUpgradeMode, TierAdoption } from '@buildd/core/model-upgrade-policy';
 
 export interface ModelUpgradeNoticeItem {

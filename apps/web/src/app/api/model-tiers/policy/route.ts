@@ -3,7 +3,10 @@
  *
  * GET    ?workspaceId | ?teamId   effective policy + source, what is stored at
  *                                 each level, and per tier: model, why, newer
- *                                 certified model, why it is withheld, deprecation
+ *                                 certified model, why it is withheld, deprecation.
+ *        &notice=1                 also `notice`: the Home stale/deprecated-model
+ *                                 notice (lib/model-upgrade-notice.ts), null when
+ *                                 nothing is held back or the caller snoozed it
  * PUT    { mode, soakHours?, workspaceId? | teamId? }   set at that level
  * DELETE ?workspaceId | ?teamId   clear that level (inherit the next one)
  *
@@ -16,7 +19,25 @@ import { authenticate, resolveTeam } from '@/lib/model-tier-access';
 import { buildUpgradePolicy } from '@buildd/core/model-upgrade-policy';
 import { readStoredUpgradePolicy, writeUpgradePolicy } from '@buildd/core/model-upgrade-policy-store';
 import { readUpgradePolicy } from '@buildd/core/model-upgrade-policy';
-import { buildAdoptionReport } from '@buildd/core/model-adoption-report';
+import { buildAdoptionReport } from '@buildd/core/model-tier-adoption-report';
+import { and, eq, gt } from 'drizzle-orm';
+import { db } from '@buildd/core/db';
+import { actionQueueSnoozes } from '@buildd/core/db/schema';
+import { buildModelUpgradeNotice, type ModelUpgradeNotice } from '@/lib/model-upgrade-notice';
+
+/** The notice unless this user snoozed exactly this one (the action-queue snooze table). */
+async function unsnoozed(notice: ModelUpgradeNotice | null, userId: string | null): Promise<ModelUpgradeNotice | null> {
+  if (!notice || !userId) return notice;
+  const snoozed = await db.query.actionQueueSnoozes.findFirst({
+    where: and(
+      eq(actionQueueSnoozes.userId, userId),
+      eq(actionQueueSnoozes.subjectKey, notice.subjectKey),
+      gt(actionQueueSnoozes.snoozedUntil, new Date()),
+    ),
+    columns: { subjectKey: true },
+  });
+  return snoozed ? null : notice;
+}
 
 function scopeOf(teamId: string, workspaceId: string | null) {
   return workspaceId ? { workspaceId } : { teamId };
@@ -39,11 +60,15 @@ export async function GET(req: NextRequest) {
       readStoredUpgradePolicy({ teamId: resolved.teamId }),
       workspaceId ? readStoredUpgradePolicy({ workspaceId }) : Promise.resolve(null),
     ]);
+    const notice = searchParams.get('notice') === '1'
+      ? await unsnoozed(buildModelUpgradeNotice(report), auth.user?.id ?? null)
+      : undefined;
     return NextResponse.json({
       policy: report.policy.policy,
       source: report.policy.source,
       stored: { team: readUpgradePolicy(team), workspace: readUpgradePolicy(workspace) },
       tiers: report.tiers,
+      ...(notice !== undefined ? { notice } : {}),
     });
   } catch (error) {
     console.error('GET /api/model-tiers/policy error:', error);
