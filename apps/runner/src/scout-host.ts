@@ -98,6 +98,11 @@ export function buildScoutBwrapArgv(ctx: ScoutBwrapContext): string[] {
     }
     out.push(a);
   }
+  // Dropping the cache's own rw bind is not enough: it sits inside the read-only
+  // bunInstall bind, so it stays readable. Mask it with an empty tmpfs (bwrap
+  // applies mounts in order, so this lands on top). Only when it exists: a
+  // missing mountpoint cannot be created inside the read-only parent.
+  if ((ctx.pathExists ?? fs.existsSync)(bunCache)) out.push('--tmpfs', bunCache);
   // The worker argv puts operator mounts last; ours too. Then the probe starts in its worktree.
   out.push('--chdir', resolve(ctx.worktree));
   return out;
