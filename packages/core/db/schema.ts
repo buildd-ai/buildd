@@ -4882,7 +4882,11 @@ export const workflowAttempts = pgTable('workflow_attempts', {
   boundHeadSha: text('bound_head_sha'),
   triggerFactId: uuid('trigger_fact_id'),
   triggerReason: text('trigger_reason'),
-  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  // No FK, like tasks.delivery_id (§5.6): allocation is consumption, so the
+  // dispatching statement writes the attempt row naming its task id BEFORE the
+  // dispatch_fix effect inserts that task (and re-inserts it under the same id
+  // after a crash). A tasks FK rejects every such allocation.
+  taskId: uuid('task_id'),
   trigger: text('trigger').default('automatic').notNull().$type<'automatic' | 'human'>(),
   reportedShas: text('reported_shas').array().default(sql`'{}'::text[]`).notNull(),
   pushedHeadSha: text('pushed_head_sha'),

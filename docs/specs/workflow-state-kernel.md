@@ -985,6 +985,10 @@ Deviations, each deliberate:
 8. `max_attempts` of a review fix is the delivery's `max_rounds`. A second attempt on
    the same head (the first failed) leaves `reviewerRetryHeadSha` empty: the ledger,
    not that unique index, dedupes it.
+9. `workflow_attempts.task_id` has no foreign key (like `tasks.delivery_id`, §5.6).
+   Allocation is consumption, so the dispatching statement names the fix task's id
+   before `dispatch_fix` inserts that task; the FK the first migration carried rejected
+   every allocation, so no fix task was ever filed. The live matrix caught it.
 
 ---
 
@@ -1119,6 +1123,17 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S35 | Replacement chains read current, not FAILED | a superseded predecessor attempt stays auditable but the delivery and mission situation project the current attempt; owner of next move is canonical | `apps/web/src/lib/workflow/projections.test.ts` (part 3) |
 | S37 | Conflict remediation already exists | a conflicted PR with a valid pending/stalled conflict-fix task re-dispatches or repairs it instead of filing a second; the recovery effect is keyed by delivery + remediation family; UI says "Conflict fix stalled" vs "Resolve conflicts" | `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/workflow/projections.test.ts` (part 3) |
 | S31 | Preflight | `create_pr` refuses a body the CI scan would reject, with the reason; runner preflight failure keeps the attempt open; CI miss is tagged `preflight_miss` | `apps/web/src/app/api/github/pr/route.test.ts`, `scripts/check-no-prod-data-local.test.ts` |
+| S32 | Release PR composed only of reviewed constituents | composition attestation accepted (`approval_basis = composition`, head in `composition_heads` only); CI still gates; no second reviewer or human escalation; idempotent under duplicate delivery | `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S33 | Release PR plus a release-only novel delta (conflict resolution, changed migration or generated output) | prior verdicts cover only mapped constituents; a delta round scoped to the novel paths; can still need a human | as S32 |
+| S34 | Stale constituent review, head mismatch, missing equivalence proof, incomplete set | composition proof fails closed; the release PR borrows nothing; ordinary PRs stay exact-head bound | as S32 |
+| S36 | Needs You reads the kernel, not a raw worker status | Home/task surfaces project the owner of the next move; a recoverable blocker stays platform-owned; failure evidence preserved | `apps/web/src/lib/workflow/projections.test.ts` (part 3) |
+
+**The live matrix.** `apps/web/tests/db/workflow-matrix.test.ts` (`bun run test:db`) carries
+every S-number: a passing case drives the seam and the real review-loop effect handlers on
+real Postgres; a scenario that needs later work is a `test.todo` naming the task that owns
+it (556cd910 part 2, 7ab4916f part 3) or the spec slice with no task yet, with its intended
+assertions beside it. The matrix is accepted when no todo is left. S14 is the static guard in
+`packages/core/__tests__/workflow-write-sites.test.ts`.
 
 Slice A part 1 coverage of the live path: S1 (both arms), S2, S3, S4, S5, S7, S8, S25,
 the cutover and the kill switch run end to end on real Postgres in
