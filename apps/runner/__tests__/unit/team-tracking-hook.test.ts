@@ -13,7 +13,9 @@
  * Run: bun test apps/runner/__tests__/unit/team-tracking-hook.test.ts
  */
 
-import { describe, test, expect, beforeEach, mock, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, mock, afterEach , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 
 // ─── Capture query options ──────────────────────────────────────────────────
@@ -76,13 +78,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -220,7 +222,19 @@ describe('PostToolUse team tracking hook', () => {
     manager?.destroy();
   });
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     lastQueryOpts = null;
     mockMessages = [];
     mockUpdateWorker.mockClear();
@@ -544,7 +558,12 @@ describe('Full team session simulation', () => {
     manager?.destroy();
   });
 
+  afterAll(() => {
+    cleanupTestWorkspace();
+  });
+
   beforeEach(() => {
+    initTestWorkspace();
     lastQueryOpts = null;
     mockMessages = [];
     mockUpdateWorker.mockClear();
@@ -569,7 +588,7 @@ describe('Full team session simulation', () => {
       // Phase 1: Analysis
       assistantMsg(
         textBlock('Let me analyze this task and create a team to handle it efficiently.'),
-        toolUse('Read', { file_path: '/tmp/test-workspace/src/index.ts' }),
+        toolUse('Read', { file_path: `${getTestWorkspace()}/src/index.ts` }),
       ),
       // Phase 2: Team setup
       assistantMsg(
@@ -610,7 +629,7 @@ describe('Full team session simulation', () => {
       assistantMsg(
         textBlock('Now implementing the changes based on team findings.'),
         toolUse('Edit', {
-          file_path: '/tmp/test-workspace/src/auth.ts',
+          file_path: `${getTestWorkspace()}/src/auth.ts`,
           old_string: 'const auth = basic',
           new_string: 'const auth = oauth',
         }),
