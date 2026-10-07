@@ -15,7 +15,7 @@
 import { describe, test, expect, mock, setDefaultTimeout, afterAll } from 'bun:test';
 import { tmpdir } from 'os';
 import type { LocalUIConfig } from '../../src/types';
-import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
+import { cleanupTestWorkspace } from '../test-workspace';
 
 // CI runners are slower than local; give construction + async claim headroom.
 setDefaultTimeout(30_000);

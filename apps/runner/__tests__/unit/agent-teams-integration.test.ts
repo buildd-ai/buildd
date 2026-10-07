@@ -10,7 +10,7 @@
  * Run: bun test apps/runner/__tests__/unit/agent-teams-integration.test.ts
  */
 
-import { describe, test, expect, beforeEach, mock, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, mock, afterEach , afterAll } from 'bun:test';
 import { tmpdir } from 'os';
 import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';

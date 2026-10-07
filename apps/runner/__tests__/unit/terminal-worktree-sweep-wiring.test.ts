@@ -10,7 +10,7 @@
  *
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/terminal-worktree-sweep-wiring.test.ts
  */
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock , afterAll } from 'bun:test';
 import { tmpdir } from 'os';
 import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';

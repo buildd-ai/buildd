@@ -10,7 +10,7 @@
  * Run: bun test apps/runner/__tests__/unit/terminal-reason.test.ts
  */
 
-import { describe, test, expect, mock, afterEach, setDefaultTimeout , afterAll} from 'bun:test';
+import { describe, test, expect, mock, afterEach, setDefaultTimeout, afterAll } from 'bun:test';
 import { tmpdir } from 'os';
 import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
@@ -193,8 +193,6 @@ describe('terminal_reason milestone', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
   afterAll(() => {
-
-
     cleanupTestWorkspace();
 
 

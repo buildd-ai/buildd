@@ -10,7 +10,7 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/bwrap-runtime-recovery.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach, setDefaultTimeout } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, setDefaultTimeout , afterAll } from 'bun:test';
 import { tmpdir } from 'os';
 import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 

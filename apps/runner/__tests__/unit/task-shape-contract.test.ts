@@ -33,7 +33,7 @@ import { tmpdir } from 'os';
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import type { LocalUIConfig } from '../../src/types';
-import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
+import { cleanupTestWorkspace } from '../test-workspace';
 import {
   type Script,
   init, say, success, errorResult, completeTask, createPr, createArtifact,

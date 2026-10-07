@@ -12,7 +12,7 @@
  * `resolveRoleCwd` fixes the cause (role-cwd-resolution.test.ts); this is the
  * backstop for any other way of arriving somewhere without a `.git`.
  */
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock , afterAll } from 'bun:test';
 import { tmpdir } from 'os';
 import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';

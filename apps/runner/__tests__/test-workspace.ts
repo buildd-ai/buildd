@@ -25,13 +25,13 @@ export function initTestWorkspace(): string {
 }
 
 /**
- * Get the current test workspace path. Must call initTestWorkspace() first.
+ * Get the current test workspace path. Lazily initializes on first call.
  */
 export function getTestWorkspace(): string {
   if (testWorkspace === null) {
-    throw new Error('Test workspace not initialized. Call initTestWorkspace() first.');
+    initTestWorkspace();
   }
-  return testWorkspace;
+  return testWorkspace!;
 }
 
 /**

@@ -23,9 +23,11 @@ describe('test workspace path safety', () => {
 
     for (const file of files) {
       const content = readFileSync(file, 'utf-8');
-      // Look for the hardcoded path - should use getTestWorkspace() instead
+      // Look for the hardcoded path in various quote styles (single, double, backtick, template literals)
       if (/'\/tmp\/test-workspace'/.test(content) ||
-          /"\/tmp\/test-workspace"/.test(content)) {
+          /"\/tmp\/test-workspace"/.test(content) ||
+          /`\/tmp\/test-workspace`/.test(content) ||
+          /\$\{[^}]*\/tmp\/test-workspace[^}]*\}/.test(content)) {
         violations.push(file);
       }
     }
@@ -34,7 +36,7 @@ describe('test workspace path safety', () => {
       const message = `${violations.length} test file(s) contain hardcoded '/tmp/test-workspace' paths:\n` +
         violations.map(v => `  - ${v}`).join('\n') +
         '\n\nThese paths cause test interference in parallel CI runs. ' +
-        'Use initTestWorkspace() and getTestWorkspace() instead.';
+        'Use getTestWorkspace() instead (which lazily initializes if needed).';
       throw new Error(message);
     }
 

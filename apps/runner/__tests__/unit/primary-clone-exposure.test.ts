@@ -21,7 +21,7 @@ import { tmpdir } from 'os';
 import type { LocalUIConfig } from '../../src/types';
 import * as realRoles from '../../src/roles';
 import * as realGitOps from '../../src/git-operations';
-import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
+import { cleanupTestWorkspace } from '../test-workspace';
 
 const PRIMARY = '/tmp/test-primary-clone';
 const WORKTREE = `${PRIMARY}/.buildd-worktrees/buildd-w-conf`;

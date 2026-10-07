@@ -10,7 +10,7 @@
  *
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/reconcile-reap-cleanup.test.ts
  */
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock , afterAll } from 'bun:test';
 import { tmpdir } from 'os';
 import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
