@@ -19,6 +19,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
     changes: changes.map(c => ({
       id: c.id, kind: c.kind, before: c.before, after: c.after,
       actor: c.actorSystem ?? (c.actorUserId ? 'admin' : null), at: new Date(c.createdAt).toISOString(),
+      reason: typeof c.evidence?.reason === 'string' ? c.evidence.reason : null,
     })),
   });
 }
