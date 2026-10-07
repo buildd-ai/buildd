@@ -51,6 +51,7 @@ import {
   buildConflictBecause,
   dispatchWakeLink,
   withDispatchLink,
+  entitlementHoldLink,
   type BaseSideMerge,
   type StateBecauseExtras,
   type ConflictSubject,
@@ -810,7 +811,8 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   const wake = task.status === 'pending'
     ? dispatchWakeLink(await latestDispatchForTask(taskId).catch(() => null), { taskId, workspaceId }, Date.now())
     : null;
-  const because = withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), wake);
+  const hold = task.status === 'pending' ? entitlementHoldLink(task.context, { taskId, workspaceId }) : null;
+  const because = withDispatchLink(withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), wake), hold);
   const gateHistory = await loadGateHistory(taskId);
   const evidenceObjects = workspaceId
     ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })
