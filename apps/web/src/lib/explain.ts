@@ -22,13 +22,13 @@
  */
 import { loadTaskAccess } from './agent-capabilities/access-log';
 import { BACKEND_ROUTING_KEY, describeBackendRouting } from '@buildd/core/backend-policy';
-import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
+import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, VISUAL_AUDITOR_ROLE_SLUG, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
 import { collectLineage } from '@/lib/attempt-lineage';
 import { evidenceHint } from '@/lib/task-evidence';
 import { loadInlineEvidence, type InlineEvidenceObject } from '@/lib/evidence-inline';
 import type { EvidenceActor } from '@/lib/evidence-audit';
 import { db } from '@buildd/core/db';
-import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
+import { missions, tasks, workers, gateEvents, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, unmetDependencyIds, unmetDependencyPrs, type DependencyRow } from '@/lib/mission-helpers';
@@ -45,6 +45,8 @@ import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { latestDispatchForTask } from '@buildd/core/dispatch-outbox';
+import { loadBrowserRunnerHeartbeats } from './runner-heartbeats';
+import { browserRunnerOnline } from './visual-audit-runner';
 import { deriveCiRedChains } from './ci-red-chain';
 import {
   buildStateBecause,
@@ -137,6 +139,7 @@ type LoadedTask = {
   id: string;
   title: string;
   status: string;
+  roleSlug?: string | null;
   mode: string | null;
   kind: string | null;
   taskClass: string;
@@ -175,7 +178,7 @@ type LoadedTask = {
 };
 
 const TASK_COLUMNS = {
-  id: true, title: true, status: true, mode: true, kind: true, taskClass: true,
+  id: true, title: true, status: true, roleSlug: true, mode: true, kind: true, taskClass: true,
   parentTaskId: true, creationSource: true, category: true, subjectPrNumber: true,
   pathManifest: true, context: true, startAt: true, loopConfig: true, loopState: true,
   result: true, createdAt: true, updatedAt: true, dependsOn: true,
@@ -200,6 +203,23 @@ const WORKER_WITH = {
 
 const LIVE_WORKER_STATUSES = new Set<string>(SHARED_LIVE_WORKER_STATUSES);
 const OPEN_TASK_STATUSES = new Set<string>(SHARED_OPEN_TASK_STATUSES);
+
+/** Unknown reads stay unknown; local-session missions do not need runner eligibility. */
+async function missingBrowserFor(rows: LoadedTask[], workspaceId: string | null, local: boolean): Promise<boolean> {
+  if (local || !workspaceId || !rows.some(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && t.status === 'pending' && !hasLiveWorker(t))) return false;
+  try {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+      columns: { id: true, teamId: true, accessMode: true, gitConfig: true, webhookConfig: true },
+    });
+    if (!ws) return false;
+    const now = Date.now();
+    const hbs = await loadBrowserRunnerHeartbeats(ws, now);
+    return hbs !== null && !browserRunnerOnline(hbs, workspaceId, now);
+  } catch {
+    return false;
+  }
+}
 
 /** True when a worker in a live status is on this row — the per-task half of `activeAgents`. */
 function hasLiveWorker(t: { workers?: Array<{ status: string }> | null }): boolean {
@@ -519,6 +539,7 @@ async function viewForMission(missionId: string): Promise<{
     ),
   };
 
+  const missingBrowser = await missingBrowserFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
   return {
     view: deriveMissionStateView(input),
     mission: m,
@@ -529,6 +550,7 @@ async function viewForMission(missionId: string): Promise<{
         title: t.title,
         status: t.status,
         live: hasLiveWorker(t),
+        missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
         waitingOn: waitingOnOf(t).map(id => ({ id, title: loadedById.get(id)?.title ?? null })),
       })),
       failedTasks: failedTasks.map(t => ({
@@ -767,6 +789,7 @@ async function viewForTask(taskId: string): Promise<{
       : null,
   };
 
+  const missingBrowser = await missingBrowserFor(family, task.workspaceId, executor === 'local');
   return {
     view: deriveMissionStateView(input),
     task: task as LoadedTask,
@@ -775,7 +798,7 @@ async function viewForTask(taskId: string): Promise<{
     workspaceId: task.workspaceId ?? null,
     missionId: task.missionId ?? null,
     answerExtras: {
-      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status, live: family.some(f => f.id === t.id && hasLiveWorker(f)) })),
+      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status, live: family.some(f => f.id === t.id && hasLiveWorker(f)), missingBrowser: missingBrowser && family.some(f => f.id === t.id && f.roleSlug === VISUAL_AUDITOR_ROLE_SLUG) })),
       failedTasks: failedTasks.map(t => ({
         id: t.id,
         title: t.title,

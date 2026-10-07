@@ -634,3 +634,8 @@ describe('measureResponse: GitHub and passthrough bodies are never piped through
     expect(seen).toEqual([11]);
   });
 });
+
+test('browser time and usage are allowlisted into the run report', () => {
+  const report = assembleRunReport({ taskId: null, attempt: 1, browser: { sessionMs: 1250, sessions: 1, requests: 3, bytes: 40, relayErrors: 0 } });
+  expect(report.browser).toEqual({ provider: 'cloudflare', sessionMs: 1250, sessionSeconds: 1.25, sessions: 1, requests: 3, bytes: 40, relayErrors: 0 });
+});

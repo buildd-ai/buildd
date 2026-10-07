@@ -58,6 +58,7 @@ export interface StateBecauseExtras {
     title: string | null;
     status: string;
     live?: boolean;
+    missingBrowser?: boolean;
     /**
      * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
      * is described as waiting on them (and ref'd to the first), never as
@@ -194,6 +195,13 @@ function openTaskLinks(
           ? `Task "${t.title ?? t.id}" is pending, waiting for a local session to claim it (runners never pick up this mission's tasks).`
           : `Task "${t.title ?? t.id}" is ${t.status} in a local session.`,
         'mission.executor',
+        { ...base, taskId: t.id },
+      );
+    }
+    if (t.missingBrowser && orphaned(t)) {
+      return link(
+        `Task "${t.title ?? t.id}" is waiting for a runner with the missing browser capability. No eligible runner advertises a working browser provider for this workspace.`,
+        'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor',
         { ...base, taskId: t.id },
       );
     }

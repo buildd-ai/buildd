@@ -50,6 +50,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       missions: { findFirst: mockMissionsFindFirst, findMany: mockMissionsFindMany },
+      workspaces: { findFirst: mock(async () => ({ id: 'ws-1', teamId: 'team-1', accessMode: 'open', gitConfig: { executor: 'cloud' } })) },
       tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
       workers: { findMany: mockWorkersFindMany },
       gateEvents: { findMany: mockGateEventsFindMany },
@@ -62,6 +63,7 @@ const mockLatestDispatchForTask = mock(async (_id: string) => latestWake);
 mock.module('@buildd/core/dispatch-outbox', () => ({ latestDispatchForTask: mockLatestDispatchForTask }));
 
 mock.module('@buildd/core/db/schema', () => ({
+  workspaces: { id: 'id' },
   missions: { id: 'id', workspaceId: 'workspaceId', status: 'status' },
   tasks: { id: 'id', missionId: 'missionId', parentTaskId: 'parentTaskId', workspaceId: 'workspaceId', status: 'status' },
   workers: { id: 'id', workspaceId: 'workspaceId', prBaseRef: 'prBaseRef', mergedAt: 'mergedAt', startedAt: 'startedAt' },
@@ -94,6 +96,9 @@ mock.module('@/lib/mission-completion', () => ({ canCompleteMission: mockCanComp
 
 const mockEvaluateMissionWorkState = mock(async () => workStateResult);
 mock.module('@/lib/mission-pr', () => ({ evaluateMissionWorkState: mockEvaluateMissionWorkState }));
+
+let browserHeartbeats: Row[] | null = [];
+mock.module('@/lib/runner-heartbeats', () => ({ loadBrowserRunnerHeartbeats: mock(async () => browserHeartbeats) }));
 
 // Imported AFTER the mocks.
 import { explainMission, explainTask, explainPr, explainWorkspace, historyPrStateOf } from './explain';
@@ -907,5 +912,22 @@ describe('explain — fix-attempt lineage', () => {
     const fix2 = (await explainTask('root', ACTOR))!.subjects[0].history[0].attempts[0].attempts[0];
     expect('evidence' in fix2).toBe(false);
     expect('mismatch' in fix2).toBe(false);
+  });
+});
+
+
+describe('visual task browser claimability explanation', () => {
+  it('names missing browser capability instead of silently leaving a queued visual task', async () => {
+    browserHeartbeats = [];
+    taskRows = [task({ status: 'pending', roleSlug: 'visual-auditor' })];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(answer.because.map(l => l.claim).join(' ')).toContain('browser capability');
+  });
+  it('does not invent a missing browser when the capability read failed', async () => {
+    browserHeartbeats = null;
+    taskRows = [task({ status: 'pending', roleSlug: 'visual-auditor' })];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(answer.because.map(l => l.claim).join(' ')).not.toContain('missing browser capability');
+    browserHeartbeats = [];
   });
 });

@@ -76,6 +76,7 @@ export type CausalLinkSource =
   | 'tasks.subjectPrNumber + workers.mergedAt'
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber'
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
+  | 'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor'
   | 'task_dispatch_outbox.status'
   | 'tasks.context.entitlementBlock';
 

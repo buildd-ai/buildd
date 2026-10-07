@@ -31,6 +31,7 @@
  * The decision logic below takes its collaborators as arguments; the real
  * wiring is `runOnceFromCli` at the bottom.
  */
+import { browserRoleNeedsProbe, selectBrowserProvider, startBrowserShim, stopBrowserShim } from './browser-provider';
 import { onceFleetIdentity } from '@buildd/shared';
 import type { LocalUIConfig, WorkerStatus } from './types';
 import type { WorkspaceResolver } from './workspace';
@@ -669,6 +670,15 @@ export async function runOnceFromCli(opts: {
   const outbox = new Outbox(join(opts.builddHome, `outbox-once-${outboxTask}.json`));
   outbox.setFlushHandler(createReplayHandler(() => config));
 
+  const browserProvider = selectBrowserProvider(opts.env);
+  if (browserProvider?.name === 'cloudflare' && opts.taskId) {
+    const browserTask = await client.getTask(opts.taskId);
+    if (browserRoleNeedsProbe(browserTask?.roleSlug)) {
+      const probe = await browserProvider.probe();
+      console.log(`BUILDD_BROWSER_PROBE=${JSON.stringify(probe)}`);
+      if (probe.ok) startBrowserShim(opts.env);
+    }
+  }
   const wm = new WorkerManager(config, resolver);
   wm.attachOutbox(outbox);
   // Mid-session credential refresh for long tasks. Not in a cloud container:
@@ -682,7 +692,7 @@ export async function runOnceFromCli(opts: {
     getTask: (id) => client.getTask(id) as Promise<OnceTask | null>,
     workerManager: wm,
     flushOutbox: async () => ({ remaining: await flushOutboxWithRetry(outbox) }),
-    shutdown: () => (cloud ? Promise.resolve() : credentialBroker.shutdown()),
+    shutdown: async () => { stopBrowserShim(); if (!cloud) await credentialBroker.shutdown(); },
     afterRun: async (outcome) => warm?.refresh(outcome),
     ...(parking ? {
       park: async (workerId: string) => {

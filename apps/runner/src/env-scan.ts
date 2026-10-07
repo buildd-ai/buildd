@@ -8,7 +8,7 @@ import { CAPABILITY_BROWSER, CAPABILITY_SANDBOX_MOUNT_ALLOWLIST } from '@buildd/
 export type { McpServerInfo } from './mcp-json';
 import { extractVarReferences, parseMcpJsonContent, type McpServerInfo } from './mcp-json';
 import { resolveClaudeCliVersion } from './sdk-binary-path';
-import { checkBrowserCapability } from './browser-capability';
+import { selectedBrowserCapability, getBrowserProviderProbe } from './browser-provider';
 import { hostSeatMode, localCodexAuthPath } from './host-seat';
 
 export interface ScanConfig {
@@ -290,7 +290,7 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
 
   // Self-check: does headless Chromium actually launch on this runner?
   // Logs one line with what was found or why not (see browser-capability.ts).
-  if (checkBrowserCapability()) {
+  if (selectedBrowserCapability()) {
     envKeys.push(CAPABILITY_BROWSER);
   }
 
@@ -319,6 +319,7 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
       hostname: hostname(),
     },
     scannedAt: new Date().toISOString(),
+    browserProvider: getBrowserProviderProbe(),
     claudeCliVersion: resolveClaudeCliVersion(),
   };
 }

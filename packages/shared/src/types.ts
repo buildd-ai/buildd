@@ -1162,6 +1162,17 @@ export interface McpServerInfo {
 }
 
 export interface WorkerEnvironment {
+  /** Latest real launch/CDP round trip; configuration alone is not capability. */
+  browserProvider?: {
+    provider: 'local' | 'cloudflare';
+    ok: boolean;
+    checkedAt: string;
+    code?: string;
+    detail?: string;
+    handle?: string;
+    browserVersion?: string;
+    latencyMs?: number;
+  };
   tools: WorkerTool[];
   envKeys: string[];
   mcp: string[] | McpServerInfo[];
