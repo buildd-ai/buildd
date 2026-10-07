@@ -105,7 +105,7 @@ export default function MobilePageHeader({
   );
   // Chat owns its crumbs (title, History) — they portal into the shell's slot.
   const headerRow = chatRoute ? (
-    <MobileTopBar barRef={headerRef}><div id={MOBILE_TOP_BAR_SLOT_ID} className="flex min-w-0 flex-1 items-center gap-2" /></MobileTopBar>
+    <MobileTopBar barRef={headerRef}><div id={MOBILE_TOP_BAR_SLOT_ID} className="flex min-w-0 flex-1 items-center gap-2 empty:before:font-mono empty:before:text-[13px] empty:before:font-bold empty:before:uppercase empty:before:tracking-[.12em] empty:before:text-[var(--chat-text)] empty:before:content-['Chat']" /></MobileTopBar>
   ) : (
     <MobileTopBar barRef={headerRef} leading={leading} trailing={trailing} />
   );
