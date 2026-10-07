@@ -297,6 +297,8 @@ const dispatchFix: EffectHandler = async (e) => {
       revalidation: { live, newerApprove },
     }, { ref: { deliveryId: d.id }, exec: dbExec });
     if (res.result === 'rejected' || res.result === 'stale') return { outcome: `skipped:${res.reason}` };
+    // A spent fix ledger escalates in T8 itself (67d34094): no task to file.
+    if (res.result === 'applied' && res.decision?.toState === 'ESCALATED') return { outcome: 'ok:escalated_budget_exhausted' };
     view = await loadView({ deliveryId: d.id }, dbExec);
     attempt = openFix();
     if (!attempt) return { outcome: 'skipped:no_open_attempt' };
@@ -447,9 +449,11 @@ const escalateExhaustion: EffectHandler = async (e) => {
   await escalateReviewerExhaustion(d.ownerTaskId, d.repoFullName, d.prNumber, d.currentHeadSha, d.maxRounds, out.feedback ?? null);
   const repo = await workspaceRepo(d.workspaceId);
   if (repo) {
+    // A fix ledger spent before the rounds were (T8, 67d34094) says so; otherwise the rounds ran out.
+    const detail = e.payload.max != null ? `after ${Number(e.payload.attempts)} fix attempts` : `after ${d.currentRound} review rounds`;
     await appendPrActivity({
       installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber,
-      entry: { kind: 'review_escalated', detail: `after ${d.currentRound} review rounds`, note: out.feedback ?? null },
+      entry: { kind: 'review_escalated', detail, note: out.feedback ?? null },
       workspaceId: d.workspaceId,
     });
   }
@@ -477,11 +481,30 @@ const missionNote: EffectHandler = async (e) => {
   return { outcome: 'ok' };
 };
 
+const DEAD_EFFECT_COPY: Record<string, string> = {
+  merge_call: 'the merge call kept failing',
+  verify_merge: 'reading back the merge kept failing',
+  dispatch_fix: 'filing the fix task kept failing',
+  dispatch_review: 'filing the review task kept failing',
+  post_review: 'posting the review to GitHub kept failing',
+};
+
 const notify: EffectHandler = async (e) => {
-  if (e.payload.event !== 'push_undeliverable') return { outcome: 'skipped:no_channel' };
+  if (e.payload.event !== 'push_undeliverable' && e.payload.event !== 'effect_dead') return { outcome: 'skipped:no_channel' };
   const view = await viewFor(e);
   const d = view.delivery;
   if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
+  if (e.payload.event === 'effect_dead') {
+    // §10.3: a critical effect went dead and the delivery escalated (67d34094).
+    const what = DEAD_EFFECT_COPY[String(e.payload.effectKind)] ?? `the ${String(e.payload.effectKind)} step kept failing`;
+    void notifyTeamOf({ workspaceId: d.workspaceId }, 'needsAttention', {
+      title: `PR #${d.prNumber} needs a person: ${what}`,
+      message: `buildd retried ${what.replace(' kept failing', '')} until it gave up, so nothing will move this PR on its own. Check the PR and land or re-run it.`,
+      url: `https://github.com/${d.repoFullName}/pull/${d.prNumber}`,
+      urlTitle: 'View PR',
+    });
+    return { outcome: 'ok' };
+  }
   const local = (e.payload.localHeadSha as string | null) ?? null;
   void notifyTeamOf({ workspaceId: d.workspaceId }, 'needsAttention', {
     title: `PR #${d.prNumber}: a fix never reached GitHub`,

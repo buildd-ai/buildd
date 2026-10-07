@@ -51,6 +51,19 @@ const NON_TERMINAL: DeliveryState[] = [
 export const DEFAULT_MAX_MECHANICAL = 2;
 /** Mechanical base refreshes a delivery may take across heads before landing needs a person (§16 S15; `treadmillMaxRefreshes`). */
 export const DEFAULT_MAX_BEHIND_REFRESHES = 3;
+/**
+ * §10.3 critical effects and the states they are owed in: a dead one escalates
+ * the delivery while it is still in one of them (`any`: every non-terminal state).
+ */
+export const DEAD_EFFECT_OWED_IN: Partial<Record<EffectSpec['kind'], DeliveryState[] | 'any'>> = {
+  merge_call: ['LANDING'],
+  verify_merge: ['LANDING'],
+  push_recovery: ['AWAITING_PUSH'],
+  dispatch_fix: ['CHANGES_REQUESTED'],
+  dispatch_review: ['AWAITING_REVIEW'],
+  post_review: 'any',
+};
+
 /** `push_recovery` backoff (§9): 2m, 10m, 30m, then T22. */
 export const PUSH_RECOVERY_BACKOFF_MS = [120_000, 600_000, 1_800_000] as const;
 
@@ -184,6 +197,7 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'SupersessionRecorded': return pr ? `supersede:${pr}:${cmd.target.repoFullName}#${cmd.target.prNumber}` : null;
     case 'RepairNotNeeded': return `notneeded:${cmd.attemptId}`;
     case 'MechanicalRepairFailed': return `mechfail:${cmd.attemptId}`;
+    case 'EffectDead': return `effectdead:${cmd.effectId}`;
     case 'Abandon': return pr ? `abandon:${pr}` : null;
     case 'DeliveryFailed': return d ? `fail:${d.ownerTaskId}` : null;
     case 'TrunkRedObserved': return d ? `trunk:${cmd.incidentId}:${d.id}` : null;
@@ -525,7 +539,17 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const inflight = c.view.attempts.find((a) => a.family === 'review_fix' && a.triggerReason === round.id && OPEN_ATTEMPT.has(a.status));
       if (inflight) return c.duplicate('fix_in_flight');
       const n = c.nextNo('review_fix', 'agent');
-      if (n > cmd.maxAttempts && !human) return c.rejected('budget_exhausted');
+      if (n > cmd.maxAttempts && !human) {
+        // AC-14: a spent fix ledger is an escalation, never a silent refusal. T6 escalates on
+        // rounds; failed fixes spend attempts faster than rounds, so this is where they run out
+        // (67d34094: fix 1 and 2 failed, fix 3 delivered, round 2 requested changes).
+        return c.apply(`fixbudget:${dd.id}:${round.id}`, 'ESCALATED', {
+          guardHead: true, guardRound: true,
+          patch: { stateReason: 'review_exhausted', boundAttemptId: null },
+          effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:review_fix:budget:${round.id}`, payload: { family: 'review_fix', attempts: n - 1, max: cmd.maxAttempts } }],
+          evidence: { roundId: round.id, attemptNo: n, max: cmd.maxAttempts, reason: 'fix_budget_spent' },
+        });
+      }
       // §5.7 rule 5: a person past the cap extends it by exactly this one dispatch, visibly.
       const extended = human && n > cmd.maxAttempts;
       const max = extended ? n : cmd.maxAttempts;
@@ -863,6 +887,27 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       return c.apply(`pushdead:${dd.id}:${cmd.localHeadSha ?? 'none'}`, 'ESCALATED', {
         patch: { stateReason: 'push_undeliverable' },
         effects: [{ kind: 'notify', dedupeKey: `notify:${dd.id}:pushdead:${cmd.localHeadSha ?? 'none'}`, payload: { event: 'push_undeliverable', localHeadSha: cmd.localHeadSha, baseRef: dd.baseRef } }],
+      });
+    }
+
+    // §10.3: a critical effect went dead. The state it was owed in hands over to a person.
+    case 'EffectDead': {
+      const dd = d!;
+      if (isTerminal(dd.state)) return c.stale('terminal');
+      if (dd.state === 'ESCALATED') return c.duplicate('already_escalated');
+      const owedIn = DEAD_EFFECT_OWED_IN[cmd.effectKind];
+      if (!owedIn) return c.rejected('not_critical');
+      if (owedIn !== 'any' && !owedIn.includes(dd.state)) return c.stale('state_moved');
+      const reason = cmd.effectKind === 'push_recovery' ? 'push_undeliverable'
+        : cmd.effectKind === 'merge_call' || cmd.effectKind === 'verify_merge' ? 'landing_needs_human' : 'effect_dead';
+      const local = dd.pushPendingLocalHead ?? null;
+      const notice: EffectSpec = reason === 'push_undeliverable'
+        ? { kind: 'notify', dedupeKey: `notify:${dd.id}:effectdead:${cmd.effectId}`, payload: { event: 'push_undeliverable', localHeadSha: local, baseRef: dd.baseRef } }
+        : { kind: 'notify', dedupeKey: `notify:${dd.id}:effectdead:${cmd.effectId}`, payload: { event: 'effect_dead', effectKind: cmd.effectKind, reason, fromState: dd.state } };
+      return c.apply(`effectdead:${cmd.effectId}`, 'ESCALATED', {
+        patch: { stateReason: reason, boundAttemptId: null },
+        effects: [notice],
+        evidence: { effectId: cmd.effectId, effectKind: cmd.effectKind, dedupeKey: cmd.dedupeKey, lastError: cmd.lastError ?? null, fromState: dd.state, reason },
       });
     }
 

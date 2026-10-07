@@ -213,6 +213,14 @@ export const GATE_SLUGS = {
    * actually happens. Retry children (explicit `parentTaskId`) are exempt.
    */
   DECOMPOSITION_REFUSED: 'decomposition_refused',
+  /**
+   * A workflow-kernel effect went `dead` after its last retry
+   * (`lib/workflow/dead-effects.ts`, docs/specs/workflow-state-kernel.md §10.3).
+   * `stranded` = a critical effect; the kernel applied `EffectDead` and the
+   * delivery is ESCALATED (`detail.applied` says whether it moved). `warned` =
+   * a non-critical effect; nothing escalates, the row is the alert.
+   */
+  WORKFLOW_EFFECT_DEAD: 'workflow_effect_dead',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

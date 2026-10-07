@@ -206,6 +206,7 @@ const ESCALATION_COPY: Record<string, string> = {
   conflict_exhausted: 'Conflict fix budget spent',
   push_undeliverable: 'The fix never reached GitHub',
   landing_needs_human: 'Merge refused; a person has to land it',
+  effect_dead: 'An automatic step kept failing; a person has to take it from here',
   policy_human: 'Workspace policy requires a person',
   unsafe_to_merge: 'Unsafe to merge',
 };
