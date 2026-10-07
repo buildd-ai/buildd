@@ -14,7 +14,7 @@
  * (gitEnv): planting, and checking what the next task sees, never touch the
  * developer's real HOME. ensureIsolatedClone reads process.env directly.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test';
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import { tmpdir } from 'os';
@@ -24,6 +24,9 @@ import { __resetGitOpsDeps, __setGitOpsDeps, setupWorktree, takeSetupWorktreeErr
 import { ensureIsolatedClone } from '../../src/workspace';
 import type { CloneHooks } from '../../src/warm-repo';
 import { makeDeepOrigin } from '../fixtures/deep-origin';
+
+// Real git throughout: well under a second alone, slower under the full suite's concurrency.
+setDefaultTimeout(15_000);
 
 const WS = 'ws-reuse-1';
 let dir: string;
