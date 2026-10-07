@@ -2007,6 +2007,24 @@ describe('S28 — ledger separation', () => {
 });
 
 describe('S29 — reviewer ends with prose or no verdict', () => {
+  test('a prose verdict is a round failure recorded as prose_verdict, never an approve, on the same T27 budget (task 7313de90)', async () => {
+    const o = await openAndHandOn();
+    const r = await reviewerOf(o.deliveryId);
+    expect(await seam.isKernelReviewRound(r)).toBe(true);
+    const w = await seedWorker(r.id, { status: 'failed' });
+    await seam.attemptEnded({ task: r, workerId: w, status: 'failed', localHeadSha: null, commitCount: 0, source: 'runner', reviewFailure: 'prose_verdict' }, deps);
+    expect((await rounds(o.deliveryId)).map((x) => [x.round, x.head_sha, x.status, x.failure_count, x.verdict])).toEqual([[1, 'H1', 'queued', 1, null]]);
+    const t = (await transitions(o.deliveryId)).at(-1)!;
+    expect(t).toMatchObject({ command: 'ReviewRoundFailed', to_state: 'AWAITING_REVIEW', evidence: { reason: 'prose_verdict' } });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', approvedHeads: [] });
+    expect(posted).toEqual([]);
+    expect(await tasksOf(o.deliveryId, 'fix')).toEqual([]);
+    // The kill switch released it: legacy decides the contract failure again.
+    await q(sql`UPDATE workflow_deliveries SET authority = 'legacy' WHERE id = ${o.deliveryId}::uuid`);
+    expect(await seam.isKernelReviewRound(await reviewerOf(o.deliveryId))).toBe(false);
+  });
+
+
   test('the round fails and is re-queued at the same head and round number, then ESCALATED(review_unavailable); a late verdict is never applied', async () => {
     const o = await openAndHandOn();
     const failOnce = async () => {
