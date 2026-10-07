@@ -270,9 +270,14 @@ describe('kernel-owned rows: chip and histogram read the delivery', () => {
     expect(stageToHistogramBucket(cardStage(task))).toBe(expected);
   });
   it.each(['needs_you', 'approved'] as const)("%s (a person's move) is in review on the histogram and needs you on the chip", (stage) => {
-    const task = makeTask({ delivery: d(stage) });
+    const task = makeTask({ delivery: { ...d(stage), owner: 'human', needsYou: true } });
     expect(deriveGridTaskStage(task)).toBe('REVIEW');
     expect(cardStage(task)).toBe('WAITING_INPUT');
+  });
+  it('approved with the landing path merging it is moving on the chip, never needs you', () => {
+    const task = makeTask({ delivery: { ...d('approved'), state: 'APPROVED', owner: 'landing', needsYou: false } });
+    expect(cardStage(task)).not.toBe('WAITING_INPUT');
+    expect(deriveGridTaskStage(task)).not.toBe('FAILED');
   });
   it('gridTaskPrProps forwards the delivery to the card', () => {
     expect(gridTaskPrProps(makeTask({ delivery: d('fixing') })).delivery?.stage).toBe('fixing');

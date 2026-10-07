@@ -225,18 +225,21 @@ describe('S17: each canonical state reads the same label, tone and counts on eve
       if (r.action) expect(dock.actions.map(a => a.label)).toContain(r.action.label);
 
       // Home: the same ownership. A landing card keeps Home's legacy merge
-      // rail, which an approved PR's MERGE chip already is.
+      // rail, read as in flight; a person's approved merge is the MERGE chip.
       if (view.owner !== 'landing') expect(kernelInboxMembership(view, false)).toBe(r.needsYou);
-      if (d.state === 'APPROVED') expect(chipForDelivery(view, 'REVIEW')).toBe('MERGE');
+      if (d.state === 'APPROVED') {
+        expect(chipForDelivery(view, 'REVIEW')).toBe(r.needsYou ? 'MERGE' : 'AUTO_MERGE');
+        expect(isActionableChip(chipForDelivery(view, 'MERGE'))).toBe(r.needsYou);
+      }
     });
   }
 
   test('the fixture deliveries: Home and the mission agree on who needs you and on nothing failed', () => {
-    const rows = TABLE.filter(t => ['awaiting push', 'stalled conflict fix', 'composition verified, a person merges', 'escalated', 'CI fix in flight', 'merged'].includes(t.name));
+    const rows = TABLE.filter(t => ['awaiting push', 'stalled conflict fix', 'composition verified, a person merges', 'approved, the landing path merges (approve-and-merge, auto-threshold)', 'escalated', 'CI fix in flight', 'merged'].includes(t.name));
     const displays = rows.map(t => toDeliveryDisplay(deriveDeliveryView(t.input)!));
     const model = buildMissionBoard({ now: 10_000, missionCreatedAt: 0, missionStatus: 'active', tasks: displays.map(boardInput) });
     expect(model.needsYou.length).toBe(2);
-    expect(stripCountsLabel(stripSlotCounts(stripSlots(model)))).toBe('5 open');
+    expect(stripCountsLabel(stripSlotCounts(stripSlots(model)))).toBe('6 open');
 
     const views = new Map(rows.map((t, i) => [`t${i}`, deriveDeliveryView(t.input)!] as const));
     const queue = buildActionQueue([], rows.map((t, i) => ({

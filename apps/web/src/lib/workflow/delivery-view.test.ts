@@ -4,7 +4,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { approvedNeedsPerson, deliveryViewsSql, getDeliveryViewsForTasks, remediationFrom, rowToDeliveryView } from './delivery-view';
+import { deliveryViewsSql, getDeliveryViewsForTasks, remediationFrom, rowToDeliveryView } from './delivery-view';
 
 const dialect = new PgDialect();
 const NOW = Date.parse('2026-10-06T12:00:00Z');
@@ -57,26 +57,26 @@ describe('rowToDeliveryView', () => {
   });
 });
 
-describe('approvedNeedsPerson: who merges an APPROVED delivery', () => {
-  const delivery = { id: 'd1', workspace_id: 'w1', owner_task_id: 't1', pr_number: 7, state: 'APPROVED', version: 4, current_head_sha: 'H1', current_round: 1, max_rounds: 3, approved_heads: ['H1'], composition_heads: [] };
-  const withPolicy = (mergePolicy: unknown, owner: Record<string, unknown> = {}, mode = 'enforce') => ({
-    delivery, workspace: { git_config: { mergePolicy, landing: { mode } } }, owner_task: owner,
+describe('the approved-merge slot: who merges an APPROVED delivery', () => {
+  const approved = { id: 'd1', workspace_id: 'w1', owner_task_id: 't1', pr_number: 7, state: 'APPROVED', version: 4, current_head_sha: 'H1', current_round: 1, max_rounds: 3, approved_heads: ['H1'], composition_heads: [] };
+  const row = { delivery: approved, rounds: [], attempts: [], attempt_tasks: [], remediation: null };
+  test('the rule maps the row to owner human (needs you) or landing (merging)', () => {
+    expect(rowToDeliveryView(row, NOW, () => true)).toMatchObject({ owner: 'human', needsYou: true });
+    expect(rowToDeliveryView(row, NOW, () => false)).toMatchObject({ owner: 'landing', needsYou: false });
   });
-  test('human tier needs a person', () => expect(approvedNeedsPerson(withPolicy({ tier: 'human' }))).toBe(true));
-  test('agent-review approve-and-merge lands without one', () => expect(approvedNeedsPerson(withPolicy({ tier: 'agent-review' }))).toBe(false));
-  test('agent-review approve-only needs a person', () =>
-    expect(approvedNeedsPerson(withPolicy({ tier: 'agent-review', agentReview: { reviewerRole: 'reviewer', gateCondition: 'approve-only' } }))).toBe(true));
-  test('auto-threshold lands without one', () => expect(approvedNeedsPerson(withPolicy({ tier: 'auto-threshold' }))).toBe(false));
-  test('an open landing handoff at the current head needs a person', () => {
-    const handoff = { prNumber: 7, headSha: 'H1', cause: 'x', reason: 'r' };
-    expect(approvedNeedsPerson(withPolicy({ tier: 'agent-review' }, { landing_handoff: handoff }))).toBe(true);
-    expect(approvedNeedsPerson(withPolicy({ tier: 'agent-review' }, { landing_handoff: { ...handoff, headSha: 'OLD' } }))).toBe(false);
+  test('with no rule a person merges: an unknown policy never hides a merge that waits on you', () => {
+    expect(rowToDeliveryView(row, NOW)).toMatchObject({ owner: 'human', needsYou: true });
   });
-  test('a task flagged requiresReview needs a person', () =>
-    expect(approvedNeedsPerson(withPolicy({ tier: 'auto-threshold' }, { requires_review: true }))).toBe(true));
-  test('the row maps to owner human vs landing', () => {
-    const base = { rounds: [], attempts: [], attempt_tasks: [], remediation: null };
-    expect(rowToDeliveryView({ ...base, ...withPolicy({ tier: 'human' }) })).toMatchObject({ owner: 'human', needsYou: true });
-    expect(rowToDeliveryView({ ...base, ...withPolicy({ tier: 'agent-review' }) })).toMatchObject({ owner: 'landing', needsYou: false });
+  test('the rule is asked only about APPROVED deliveries', () => {
+    const asked: unknown[] = [];
+    const rule = (r: Record<string, unknown>) => { asked.push(r); return true; };
+    expect(rowToDeliveryView({ ...row, delivery: { ...approved, state: 'LANDING' } }, NOW, rule)).toMatchObject({ owner: 'landing' });
+    expect(asked).toEqual([]);
+    rowToDeliveryView(row, NOW, rule);
+    expect(asked).toEqual([row]);
+  });
+  test('the loader applies the rule it is given', async () => {
+    const map = await getDeliveryViewsForTasks(['t1'], async () => ({ rows: [row] }), () => false);
+    expect(map.get('t1')).toMatchObject({ owner: 'landing', needsYou: false });
   });
 });

@@ -10,8 +10,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
-import { resolvePolicy } from '@/lib/merge-policy';
-import { landingModeOf, resolveLandingOwnership } from '@/lib/pr-landing-ownership';
 import { toAttemptSnapshot, toDeliverySnapshot, toRoundSnapshot, type Exec } from './kernel';
 import { ownerDeliveryDisplays, replacedFailedTaskIds, type DeliveryDisplay } from './delivery-display';
 import { deriveDeliveryView, type AttemptTaskRef, type DeliveryView, type RemediationRef, type TransitionRef } from './projections';
@@ -69,42 +67,30 @@ export function remediationFrom(r: J | null | undefined, now: number): Remediati
 }
 
 /**
- * Pure: does an APPROVED delivery wait on a person rather than the landing
- * path? The rule Home uses: the effective tier is `human`, or `agent-review`
- * with gateCondition `approve-only`, or a landing handoff is open at the
- * current head. `auto-threshold` and approve-and-merge land without a person.
+ * The approved-merge slot: does an APPROVED delivery wait on a person to merge
+ * it (true: owner `human`, needs you) or does the landing path merge it (false:
+ * owner `landing`, merging)? Answered from the loader row (delivery, workspace
+ * git config, owner task, mission) by the effective merge policy for that PR.
+ * That policy belongs to the reviews module, which core never imports
+ * (scripts/module-boundaries.test.ts): the composition root fills the slot
+ * (`apps/web/src/modules.ts` `APPROVED_MERGE_RULE`).
  */
-export function approvedNeedsPerson(row: J): boolean {
-  const d = row.delivery as J | null;
-  if (!d) return false;
-  const ws = (row.workspace as J | null) ?? {};
-  const ot = (row.owner_task as J | null) ?? {};
-  const m = ot.mission as J | null | undefined;
-  const policy = resolvePolicy(
-    { gitConfig: (ws.git_config as never) ?? null },
-    m ? {
-      mergePolicy: (m.merge_policy as never) ?? null,
-      requiresReview: m.requires_review === true,
-      workingBranch: m.working_branch == null ? null : String(m.working_branch),
-      integrationBranchEnabled: m.integration_branch_enabled === true,
-    } : null,
-    { requiresReview: ot.requires_review === true },
-    { baseRef: d.base_ref == null ? null : String(d.base_ref) },
-  );
-  if (policy.tier === 'human') return true;
-  if (policy.tier === 'agent-review' && policy.agentReview?.gateCondition === 'approve-only') return true;
-  if (d.pr_number == null) return false;
-  return resolveLandingOwnership({
-    policy,
-    landingMode: landingModeOf(ws.git_config as never),
-    landing: ot.landing ?? null,
-    handoff: ot.landing_handoff ?? null,
-    prNumber: Number(d.pr_number),
-    prHeadSha: d.current_head_sha == null ? null : String(d.current_head_sha),
-  }).owner === 'human';
+export type ApprovedMergeRule = (row: J) => boolean;
+
+/** With no rule a person merges: an unknown policy never hides a merge that waits on you. */
+const PERSON_MERGES: ApprovedMergeRule = () => true;
+
+/** The composition root's rule, loaded on first use so this file does not load every module. */
+async function approvedMergeRule(): Promise<ApprovedMergeRule> {
+  try {
+    return (await import('@/modules')).APPROVED_MERGE_RULE;
+  } catch (err) {
+    console.warn('[workflow] approved-merge rule unavailable; approved PRs read as yours:', err instanceof Error ? err.message : err);
+    return PERSON_MERGES;
+  }
 }
 
-export function rowToDeliveryView(row: J, now = Date.now()): DeliveryView | null {
+export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson: ApprovedMergeRule = PERSON_MERGES): DeliveryView | null {
   if (!row.delivery) return null;
   const rounds = ((row.rounds as J[]) ?? []).map(toRoundSnapshot);
   const attempts = ((row.attempts as J[]) ?? []).map(toAttemptSnapshot);
@@ -130,15 +116,17 @@ export function rowToDeliveryView(row: J, now = Date.now()): DeliveryView | null
  * to a kernel-owned delivery. Never throws: a projection read failing must
  * degrade the surface to its legacy projection, not break the page.
  */
-export async function getDeliveryViewsForTasks(taskIds: string[], exec: Exec = dbExec): Promise<Map<string, DeliveryView>> {
+export async function getDeliveryViewsForTasks(taskIds: string[], exec: Exec = dbExec, rule?: ApprovedMergeRule): Promise<Map<string, DeliveryView>> {
   const out = new Map<string, DeliveryView>();
   const ids = [...new Set(taskIds.filter(Boolean))];
   if (ids.length === 0) return out;
   try {
     const res = await exec(deliveryViewsSql(ids));
     const want = new Set(ids);
-    for (const row of (res.rows ?? []) as J[]) {
-      const v = rowToDeliveryView(row);
+    const rows = (res.rows ?? []) as J[];
+    const needsPerson = rule ?? (rows.some(r => (r.delivery as J | null)?.state === 'APPROVED') ? await approvedMergeRule() : PERSON_MERGES);
+    for (const row of rows) {
+      const v = rowToDeliveryView(row, Date.now(), needsPerson);
       if (!v) continue;
       if (want.has(v.ownerTaskId)) out.set(v.ownerTaskId, v);
       for (const h of v.history) if (want.has(h.taskId)) out.set(h.taskId, v);
