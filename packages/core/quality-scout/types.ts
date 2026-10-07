@@ -134,6 +134,8 @@ export interface ScoutRunMetrics {
   probesNotExecuted: number;
   decisionsAsked: number;
   decisionFailures: number;
+  /** `budget.maxCostUsd` stopped at least one selection decision; the fallback rule answered the rest. */
+  costCapHit: boolean;
   verdicts: ScoutRunTotals['verdicts'];
   stages: Record<ScoutStage, ScoutStageMetric>;
   costUsd: number | null;
