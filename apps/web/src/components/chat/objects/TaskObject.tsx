@@ -8,7 +8,7 @@ import Link from 'next/link';
 import { taskPageHref } from '@/lib/mission-task-href';
 import { formatAge } from '@/lib/mission-board';
 import { derivePrDisplayState } from '@/lib/pr-presentation';
-import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
+import { deliveryReading, type DeliveryDisplay, type DeliveryReadingInput, type DeliveryTone } from '@/lib/workflow/delivery-display';
 import NowStrip from '@/app/app/(protected)/tasks/[id]/NowStrip';
 import { RunnerAvatar, ScopeChip, useNow } from '@/app/app/(protected)/missions/[id]/MissionBoardParts';
 import type { BuilddObjectRef } from '../chat-contract';
@@ -20,25 +20,17 @@ import { Eyebrow, OpenButton, StateChip, type Tone } from './parts';
  * A kernel-owned delivery's words for the tile (§17.5). Null for `working`:
  * the owner's own attempt is the reading.
  */
-export function taskStateForDelivery(d: Pick<DeliveryDisplay, 'stage' | 'prNumber'>): { label: string; tone: Tone; live: boolean } | null {
+export function taskStateForDelivery(d: DeliveryReadingInput & Pick<DeliveryDisplay, 'prNumber'>): { label: string; tone: Tone; live: boolean } | null {
+  const r = deliveryReading(d);
+  if (!r) return null;
   const pr = d.prNumber != null ? `#${d.prNumber} ` : '';
-  switch (d.stage) {
-    case 'working': return null;
-    case 'needs_you': return { label: `${pr}needs you`, tone: 'attention', live: false };
-    case 'merged': return { label: `${pr}merged`, tone: 'ok', live: false };
-    case 'superseded': return { label: `${pr}shipped elsewhere`, tone: 'ok', live: false };
-    case 'closed':
-    case 'abandoned': return { label: `${pr}closed`, tone: 'idle', live: false };
-    case 'failed': return { label: 'failed', tone: 'bad', live: false };
-    case 'review': return { label: `${pr}in review`, tone: 'ok', live: false };
-    case 'approved': return { label: `${pr}approved`, tone: 'ok', live: false };
-    case 'landing': return { label: `${pr}merging`, tone: 'live', live: false };
-    case 'blocked': return { label: `${pr}blocked on base`, tone: 'neutral', live: false };
-    case 'awaiting_push':
-    case 'fixing':
-    case 'repairing': return { label: `${pr}fixing`, tone: 'live', live: false };
-  }
+  return { label: `${pr}${r.label}`, tone: TILE_TONE_FOR_DELIVERY[r.tone], live: false };
 }
+
+/** The tile's palette per canonical delivery tone (`deliveryReading`). */
+const TILE_TONE_FOR_DELIVERY: Record<DeliveryTone, Tone> = {
+  needs: 'attention', live: 'live', stalled: 'neutral', landed: 'ok', closed: 'idle', failed: 'bad',
+};
 
 /** The tile's words for where a task is: the worker's state wins over the task row's. */
 export function taskState(view: TaskObjectView): { label: string; tone: Tone; live: boolean } {

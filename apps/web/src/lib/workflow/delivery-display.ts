@@ -11,7 +11,7 @@
  * keeps the fact-cache projection until the legacy population drains (§14).
  */
 import type { PrDisplayState } from '@/lib/pr-presentation';
-import { attemptLine, type DeliveryStage, type DeliveryView, type NextMoveOwner } from './projections';
+import { attemptLine, type DeliveryCta, type DeliveryStage, type DeliveryView, type NextMoveOwner } from './projections';
 import type { DeliveryState } from './types';
 
 export interface DeliveryDisplay {
@@ -26,6 +26,8 @@ export interface DeliveryDisplay {
   prState: PrDisplayState | null;
   /** "CI 1 of 3 · review 1 of 3", or null when the ledger is empty. */
   attemptLine: string | null;
+  /** The next transition a person can trigger (S37's "Run fix"), the one Home's card offers. */
+  cta: DeliveryCta | null;
 }
 
 export function toDeliveryDisplay(v: DeliveryView): DeliveryDisplay {
@@ -40,6 +42,7 @@ export function toDeliveryDisplay(v: DeliveryView): DeliveryDisplay {
     prNumber: v.prNumber,
     prState: v.prState,
     attemptLine: attemptLine(v.attempts),
+    cta: v.cta,
   };
 }
 
@@ -62,4 +65,70 @@ export function deliveryShipped(d: Pick<DeliveryDisplay, 'state'>): boolean {
 /** Settled: nothing further will happen to this PR on its own. */
 export function deliverySettled(d: Pick<DeliveryDisplay, 'state'>): boolean {
   return d.state === 'MERGED' || d.state === 'SUPERSEDED' || d.state === 'ABANDONED' || d.state === 'CLOSED_UNMERGED' || d.state === 'FAILED';
+}
+
+// ─── The one reading every surface draws ─────────────────────────────────────
+
+/**
+ * The canonical tone of a delivery: the one colour family every surface maps
+ * its own palette from (one total table per palette, never one per state).
+ * - `needs`: a person's move (ESCALATED, or an approved PR waiting for its merge).
+ * - `live`: a worker, the reviewer, the platform or a merge is moving it.
+ * - `stalled`: platform-owned but not moving on its own (S37: a stalled or
+ *   missing conflict fix; a red base). Recoverable, so never "failed".
+ * - `landed` / `closed`: settled.
+ * - `failed`: the delivery itself is FAILED. Nothing else counts as failed (S35).
+ */
+export type DeliveryTone = 'needs' | 'live' | 'stalled' | 'landed' | 'closed' | 'failed';
+
+export interface DeliveryReading {
+  /** Sentence case. A surface may upper-case it; it never rewords it. */
+  label: string;
+  tone: DeliveryTone;
+  /** Counted in every Needs-you number (Home, the mission band, chat). */
+  needsYou: boolean;
+  /** Counted in every failed number (the strip header, the list histogram). */
+  failed: boolean;
+  /** S37: the remediation a person can kick, the action Home's card offers. */
+  action: { label: string; taskId: string } | null;
+}
+
+export type DeliveryReadingInput = Pick<DeliveryDisplay, 'stage' | 'state' | 'headline'> & { cta?: DeliveryCta | null };
+
+const reading = (label: string, tone: DeliveryTone, action: DeliveryReading['action'] = null): DeliveryReading =>
+  ({ label, tone, needsYou: tone === 'needs', failed: tone === 'failed', action });
+
+/**
+ * What a kernel-owned delivery reads as, on every surface (§12, §17.5): the
+ * task list chip and histogram, the mission board, strip, band and feed, and
+ * the chat tile and dock all take their label, tone, needs-you and failed
+ * counts from here, and Home's card says the same thing in its own layout.
+ * Null for `working`: the owner's own attempt is the reading, so the task's
+ * execution state (running, queued) is shown.
+ *
+ * An approved PR needs you: it is the Merge card Home shows, and it reads
+ * "Ready to merge", never "in review". A repair reads the kernel's headline
+ * ("Conflict fix stalled", "Fixing CI"). Only a FAILED delivery is failed; a
+ * stalled conflict fix or a CI fix in flight is recoverable work the platform
+ * owns (S35, S36, S37).
+ */
+export function deliveryReading(d: DeliveryReadingInput): DeliveryReading | null {
+  switch (d.stage) {
+    case 'working': return null;
+    case 'awaiting_push': return reading('Waiting for push', 'live');
+    case 'review': return reading(d.state === 'CHANGES_REQUESTED' ? 'Changes requested' : 'In review', 'live');
+    case 'fixing': return reading('Fixing', 'live');
+    case 'repairing':
+      if (d.cta?.action === 'repair_remediation') return reading(d.headline, 'stalled', { label: d.cta.label, taskId: d.cta.taskId });
+      return reading(d.headline, d.cta?.action === 'create_conflict_fix' ? 'stalled' : 'live');
+    case 'blocked': return reading('Blocked on base', 'stalled');
+    case 'approved': return reading('Ready to merge', 'needs');
+    case 'landing': return reading('Merging', 'live');
+    case 'needs_you': return reading('Needs you', 'needs');
+    case 'merged': return reading('Merged', 'landed');
+    case 'superseded': return reading('Shipped elsewhere', 'landed');
+    case 'closed':
+    case 'abandoned': return reading('Closed', 'closed');
+    case 'failed': return reading('Failed', 'failed');
+  }
 }

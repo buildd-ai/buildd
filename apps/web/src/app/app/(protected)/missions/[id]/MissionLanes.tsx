@@ -333,8 +333,8 @@ function Side({ model, now, link, completionText, review: visualReview }: { mode
               <ScopeChip scope={t.scope} />
               <span>{`${formatAge(t.waitStartedAt != null ? now - t.waitStartedAt : 0)} ago`}</span>
             </div>
-            <p className="font-mono text-[13px] font-semibold leading-[1.45] text-text-primary [overflow-wrap:anywhere]">{t.waitingFor?.prompt ?? 'Needs input.'}</p>
-            <AnswerButtons workerId={t.workerId} options={t.waitingFor?.options ?? []} compact />
+            <p className="font-mono text-[13px] font-semibold leading-[1.45] text-text-primary [overflow-wrap:anywhere]">{t.delivery ? (t.kernelReason ?? t.delivery.label) : t.waitingFor?.prompt ?? 'Needs input.'}</p>
+            {!t.delivery && <AnswerButtons workerId={t.workerId} options={t.waitingFor?.options ?? []} compact />}
           </div>
         )))}
       {screens}
