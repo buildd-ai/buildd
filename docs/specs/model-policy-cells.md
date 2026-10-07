@@ -10,6 +10,40 @@ related: [model-policy, model-routing-and-tiers]
 keywords: [dial, cell, primary, alternates, may also use, always, learning, shifted, reverted, shadow, threshold, non-inferiority, auto-revert, tier_pools.dial, dial_state]
 verified_by: [packages/core/__tests__/tier-dial.test.ts, packages/core/__tests__/tier-dial-source.test.ts, packages/core/__tests__/tier-pool-source.test.ts, apps/web/src/app/api/model-tiers/cells/route.test.ts, apps/web/src/app/api/cron/tier-pools/route.test.ts]
 supersedes: []
+assertions:
+  - id: "decide-dial-cell"
+    type: "symbol"
+    name: "decideDialCell"
+    path: "packages/core/tier-dial.ts"
+  - id: "dial-threshold"
+    type: "symbol"
+    name: "dialThreshold"
+    path: "packages/core/tier-dial.ts"
+  - id: "dial-settings"
+    type: "symbol"
+    name: "DIAL_SETTINGS"
+    path: "packages/core/tier-dial.ts"
+  - id: "write-dial-state"
+    type: "symbol"
+    name: "writeDialState"
+    path: "packages/core/tier-dial-source.ts"
+  - id: "cells-read-route"
+    type: "route"
+    method: "GET"
+    path: "/api/model-tiers/cells"
+    file: "apps/web/src/app/api/model-tiers/cells/route.ts"
+  - id: "cells-dial-route"
+    type: "route"
+    method: "PATCH"
+    path: "/api/model-tiers/cells"
+    file: "apps/web/src/app/api/model-tiers/cells/route.ts"
+  - id: "dial-column"
+    type: "config_key"
+    key: "dial_state"
+    file: "packages/core/db/schema.ts"
+  - id: "dial-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/tier-dial.test.ts"
 ---
 
 # Model Policy Cells and the Dial
