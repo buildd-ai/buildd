@@ -49,8 +49,24 @@ export const SWEEP_REVIEW_VERDICTS = ['approve', 'escalate', 'request-changes'] 
 export const SWEEP_REVIEW_STATES = new Set<string>(['approved', 'escalated', 'changes_requested']);
 
 /**
+ * Which PRs `landPr` can move forward, beyond a verdict it can act on:
+ *  - one that was never sent to review, under `agent-review` — the request was
+ *    lost or never made, and `landPr` sends the workspace reviewer (once per
+ *    head, through the reviewer dedupe);
+ *  - one the reconcile sweep saw conflicting, whatever its review state — a
+ *    conflict is repaired before any verdict matters, and nothing else
+ *    re-drives it once its conflict event has passed.
+ */
+export function sweepAdmits(input: { reviewState: string; tier: string; lifecycle: string | null }): boolean {
+  if (SWEEP_REVIEW_STATES.has(input.reviewState)) return true;
+  if (input.lifecycle === 'conflict') return true;
+  return input.reviewState === 'not_requested' && input.tier === 'agent-review';
+}
+
+/**
  * Open worker PRs in an `enforce` workspace whose newest review is one of
- * `SWEEP_REVIEW_VERDICTS`.
+ * `SWEEP_REVIEW_VERDICTS`, that have no review at all, or that are conflicting
+ * (`sweepAdmits` narrows these further once the policy is known).
  *
  * Deliberately NOT narrowed to lifecycle `ci_green`: a lost green event leaves
  * a PR at `ci_running`, which is the very case this backstop exists for, and
@@ -58,12 +74,14 @@ export const SWEEP_REVIEW_STATES = new Set<string>(['approved', 'escalated', 'ch
  * an approval carried across a refresh is judged inside `landPr`.
  */
 async function listFloor(limit: number): Promise<PrRef[]> {
-  const newestReviewVerdict = sql`(
-    SELECT COALESCE(rt.result->>'effectiveVerdict', rt.result->'structuredOutput'->>'verdict')
-    FROM ${tasks} rt
+  // Same predicate as findReviewTaskForPr, so "no review" here is not_requested there.
+  const reviewFor = sql`${tasks} rt
     WHERE rt.workspace_id = ${workers.workspaceId}
       AND rt.category = 'review'
-      AND rt.context->>'prNumber' = ${workers.prNumber}::text
+      AND rt.context->>'prNumber' = ${workers.prNumber}::text`;
+  const newestReviewVerdict = sql`(
+    SELECT COALESCE(rt.result->>'effectiveVerdict', rt.result->'structuredOutput'->>'verdict')
+    FROM ${reviewFor}
     ORDER BY rt.created_at DESC
     LIMIT 1
   )`;
@@ -79,7 +97,11 @@ async function listFloor(limit: number): Promise<PrRef[]> {
           SELECT 1 FROM ${workspaces} w
           WHERE w.id = ${workers.workspaceId} AND w.git_config->'landing'->>'mode' = 'enforce'
         )`,
-        sql`${newestReviewVerdict} IN ('approve', 'escalate', 'request-changes')`,
+        or(
+          sql`${newestReviewVerdict} IN ('approve', 'escalate', 'request-changes')`,
+          sql`NOT EXISTS (SELECT 1 FROM ${reviewFor})`,
+          eq(workers.prLifecycleStatus, 'conflict'),
+        ),
       ),
     )
     .limit(limit);
@@ -124,7 +146,7 @@ export function createLandingSweepDeps(): LandingSweepDeps {
           or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, TERMINAL_LIFECYCLE)),
         ),
         orderBy: desc(workers.createdAt),
-        columns: { id: true, taskId: true, prUrl: true, prBaseRef: true },
+        columns: { id: true, taskId: true, prUrl: true, prBaseRef: true, prLifecycleStatus: true },
       });
       if (!worker) return { ok: false, skip: 'no_open_worker' };
 
@@ -146,7 +168,9 @@ export function createLandingSweepDeps(): LandingSweepDeps {
       if (policyFor(worker.prBaseRef).tier === 'human') return { ok: false, skip: 'human_tier' };
 
       const review = await readPrReviewStatus({ workspaceId: ref.workspaceId, prNumber: ref.prNumber });
-      if (!SWEEP_REVIEW_STATES.has(review.state)) return { ok: false, skip: 'not_approved' };
+      if (!sweepAdmits({ reviewState: review.state, tier: policyFor(worker.prBaseRef).tier, lifecycle: worker.prLifecycleStatus ?? null })) {
+        return { ok: false, skip: 'not_approved' };
+      }
 
       const identity = pickWorkspaceRepoIdentity(workspace);
       const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: identity.fullName });

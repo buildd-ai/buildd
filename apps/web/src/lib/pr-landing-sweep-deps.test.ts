@@ -7,6 +7,7 @@ let workspaceRow: any;
 let taskRow: any;
 let floorRows: any[];
 let floorLimit: number | null;
+let floorWhere: any;
 let reviewState: string;
 let repoInstallation: number | null;
 
@@ -19,12 +20,15 @@ mock.module('@buildd/core/db', () => ({
     },
     selectDistinct: () => ({
       from: () => ({
-        where: () => ({
-          limit: async (n: number) => {
-            floorLimit = n;
-            return floorRows;
-          },
-        }),
+        where: (w: any) => {
+          floorWhere = w;
+          return {
+            limit: async (n: number) => {
+              floorLimit = n;
+              return floorRows;
+            },
+          };
+        },
       }),
     }),
   },
@@ -76,7 +80,7 @@ const redis = {
 };
 mock.module('@/lib/redis', () => redis);
 
-import { createLandingSweepDeps, sweepLandingPrs } from './pr-landing-sweep-deps';
+import { createLandingSweepDeps, sweepAdmits, sweepLandingPrs } from './pr-landing-sweep-deps';
 import { PR_LANDING_DUE_QUEUE } from './pr-landing-sweep';
 
 const REF = { workspaceId: 'ws-1', prNumber: 42 };
@@ -128,6 +132,24 @@ describe('resolveTarget', () => {
   it.each(['not_requested', 'in_flight', 'review_failed'])('skips a PR whose review is %s', async (state) => {
     reviewState = state;
     expect(await createLandingSweepDeps().resolveTarget(REF)).toEqual({ ok: false, skip: 'not_approved' });
+  });
+
+  // PR #3654's shape: green and mergeable, but the review request was lost, so
+  // nothing ever re-drove it until a person asked for the review by hand.
+  it('hands a never-reviewed PR to landPr under agent-review, so it can request the reviewer', async () => {
+    reviewState = 'not_requested';
+    workspaceRow.gitConfig = { landing: { mode: 'enforce' }, mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } };
+    const res: any = await createLandingSweepDeps().resolveTarget(REF);
+    expect(res.ok).toBe(true);
+    expect(res.target.policyFor('dev').tier).toBe('agent-review');
+  });
+
+  // PR #3502 / #3673's shape: conflicting now, whatever the review said before.
+  it.each(['not_requested', 'in_flight', 'review_failed'])('hands a conflicting PR whose review is %s to landPr for a repair', async (state) => {
+    reviewState = state;
+    workerRow.prLifecycleStatus = 'conflict';
+    const res: any = await createLandingSweepDeps().resolveTarget(REF);
+    expect(res.ok).toBe(true);
   });
 
   // A blocking verdict may be stale (an earlier head, a sibling PR that has
@@ -185,7 +207,31 @@ describe('peek', () => {
   });
 });
 
+describe('sweepAdmits', () => {
+  it.each([
+    ['approved', 'auto-threshold', 'ci_green', true],
+    ['escalated', 'agent-review', null, true],
+    ['changes_requested', 'agent-review', 'ci_failed', true],
+    ['not_requested', 'agent-review', 'ci_green', true],
+    ['not_requested', 'auto-threshold', 'ci_green', false],
+    ['queued', 'agent-review', 'ci_green', false],
+    ['review_failed', 'agent-review', 'ci_green', false],
+    ['review_failed', 'agent-review', 'conflict', true],
+    ['queued', 'auto-threshold', 'conflict', true],
+  ] as const)('review %s, tier %s, lifecycle %s → %s', (reviewState, tier, lifecycle, want) => {
+    expect(sweepAdmits({ reviewState, tier, lifecycle })).toBe(want);
+  });
+});
+
 describe('bindings', () => {
+  it('enumerates never-reviewed and conflicting PRs on the floor, not only reviewed ones', async () => {
+    await createLandingSweepDeps().listFloor(5);
+    const where = JSON.stringify(floorWhere);
+    expect(where).toContain('NOT EXISTS (SELECT 1 FROM');
+    expect(where).toContain('"b":"conflict"');
+    expect(where).toContain("IN ('approve', 'escalate', 'request-changes')");
+  });
+
   it('lists floor candidates as workspace and PR refs, asking the database for exactly the limit', async () => {
     floorRows = [{ workspaceId: 'ws-1', prNumber: 5 }, { workspaceId: 'ws-2', prNumber: null }];
     expect(await createLandingSweepDeps().listFloor(11)).toEqual([{ workspaceId: 'ws-1', prNumber: 5 }]);
