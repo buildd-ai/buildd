@@ -206,7 +206,8 @@ export function ActivityTape({
       </div>
       <div className="relative h-5 mt-1 font-mono text-[11px] text-text-muted tabular-nums">
         {tape.axis.map((a, i) => (
-          <span key={i} className="absolute" style={{ left: `${i * 25}%` }}>{a}</span>
+          // At phone width the 75% label runs into the end label; it gives way there.
+          <span key={i} data-axis={i} className={i === 3 ? 'absolute hidden md:inline' : 'absolute'} style={{ left: `${i * 25}%` }}>{a}</span>
         ))}
         {/* The right edge prints the time it stands for, so the axis visibly
             reaches ELAPSED instead of stopping at the last labelled quarter. */}
