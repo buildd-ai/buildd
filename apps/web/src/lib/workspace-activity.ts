@@ -2,7 +2,14 @@ import { inArray, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
-import type { WorkspaceActivity } from './rows';
+
+/** One workspace's row in the aggregate. */
+export interface WorkspaceActivity {
+  lastTaskAt: string | Date | null;
+  openTasks: number;
+  stuckTasks: number;
+  redPrs: number;
+}
 
 /**
  * The per-workspace aggregate Settings → Workspaces shows: one grouped select

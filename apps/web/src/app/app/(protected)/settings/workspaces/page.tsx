@@ -6,7 +6,7 @@ import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import WorkspacesTable from './WorkspacesTable';
 import { buildWorkspaceRows, WORKSPACE_DEFAULTS } from './rows';
-import { loadWorkspaceActivity } from './activity';
+import { loadWorkspaceActivity } from '@/lib/workspace-activity';
 import { getTeamsPermissionOverrides } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';

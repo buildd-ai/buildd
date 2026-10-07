@@ -5,17 +5,11 @@ import { resolvePolicy } from '@/lib/merge-policy';
 import { resolveRunnerSize } from '@/lib/runner-size';
 import type { UserTeam } from '@/lib/team-access';
 import { roleHas, type Permission, type PermissionOverrides } from '@/lib/permission-registry';
+import type { WorkspaceActivity } from '@/lib/workspace-activity';
 import type { WorkspaceDiffer, WorkspaceRow } from './list-groups';
 
 export type { WorkspaceDiffer, WorkspaceRow };
 
-/** The per-workspace aggregate from activity.ts (one grouped query for the list). */
-export interface WorkspaceActivity {
-  lastTaskAt: string | Date | null;
-  openTasks: number;
-  stuckTasks: number;
-  redPrs: number;
-}
 
 const BRANCH_LABEL = { 'mission-branch': 'Mission branch', direct: 'Direct' } as const;
 

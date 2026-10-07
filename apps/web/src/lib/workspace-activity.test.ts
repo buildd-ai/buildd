@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { inArray } from 'drizzle-orm';
 import { QueryBuilder } from 'drizzle-orm/pg-core';
 import { tasks } from '@buildd/core/db/schema';
-import { workspaceActivityFields } from './activity';
+import { workspaceActivityFields } from './workspace-activity';
 
 // Rendered through drizzle itself (a mocked db never renders SQL): the list's
 // one aggregate query, as loadWorkspaceActivity builds it.
