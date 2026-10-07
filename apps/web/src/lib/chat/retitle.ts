@@ -192,4 +192,4 @@ export async function handleTopicVerdict(
 // verdict already recorded). Wire this where manual rename lands (currently on
 // a route outside retitle.ts); update decision_records.appliedAnswer or
 // create a decision_outcomes row linking the verdict to the user's choice.
-// See task f5e876dc-7b2d-49c7-9064-7698ba2d5907 for context.
+// See task f5e876dc for context.
