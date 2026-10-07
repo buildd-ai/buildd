@@ -26,8 +26,15 @@ export const EFFECT_MAX_ATTEMPTS = 8;
 const BACKOFF_BASE_MS = 15_000;
 const BACKOFF_CAP_MS = 30 * 60_000;
 
-/** Effects whose permanent failure escalates the delivery (§10.3). */
-export const CRITICAL_EFFECTS: ReadonlySet<EffectKind> = new Set(['merge_call', 'push_recovery', 'post_review']);
+/**
+ * Effects whose permanent failure escalates the delivery (§10.3): the spec's
+ * three, plus the ones whose state has no other exit while they are dead
+ * (`verify_merge` holds LANDING; the dispatches hold CHANGES_REQUESTED and
+ * AWAITING_REVIEW, and the floor never re-owes a key that exists).
+ */
+export const CRITICAL_EFFECTS: ReadonlySet<EffectKind> = new Set([
+  'merge_call', 'verify_merge', 'push_recovery', 'post_review', 'dispatch_fix', 'dispatch_review',
+]);
 
 /**
  * Effects that stay true whatever the delivery did since: projections,
@@ -113,9 +120,18 @@ export interface DrainSummary {
   done: number;
   skipped: number;
   failed: number;
-  /** Effects that went dead; `critical` ones are the caller's to escalate (§10.3). */
-  dead: Array<{ id: string; deliveryId: string; kind: EffectKind; critical: boolean }>;
+  /** Effects that went dead; `critical` ones were escalated through `onDead` (§10.3). */
+  dead: DeadEffect[];
 }
+
+export interface DeadEffect { id: string; deliveryId: string; kind: EffectKind; critical: boolean; dedupeKey: string; lastError: string }
+
+/** What runs for each effect that just went dead. Default: dead-effects.ts escalation + gate event. */
+export type OnDeadEffect = (dead: DeadEffect, exec: Exec) => Promise<void>;
+
+const defaultOnDead: OnDeadEffect = async (dead, exec) => {
+  await (await import('./dead-effects')).escalateDeadEffect(dead, exec);
+};
 
 function toClaimed(r: Record<string, unknown>): ClaimedEffect {
   const d = r.delivery as { state?: string; version?: number | string } | null;
@@ -134,8 +150,9 @@ function toClaimed(r: Record<string, unknown>): ClaimedEffect {
 }
 
 /** Drain up to `limit` due effects once. Handlers MUST be idempotent (§10.2). */
-export async function runEffects(opts: { handlers: EffectHandlers; limit?: number; exec?: Exec; deliveryId?: string | null }): Promise<DrainSummary> {
+export async function runEffects(opts: { handlers: EffectHandlers; limit?: number; exec?: Exec; deliveryId?: string | null; onDead?: OnDeadEffect }): Promise<DrainSummary> {
   const exec = opts.exec ?? dbExec;
+  const onDead = opts.onDead ?? defaultOnDead;
   const rows = ((await exec(claimDueEffectsSql(opts.limit ?? 25, EFFECT_LEASE_MS, opts.deliveryId ?? null))).rows ?? []) as Array<Record<string, unknown>>;
   const summary: DrainSummary = { claimed: rows.length, done: 0, skipped: 0, failed: 0, dead: [] };
   for (const raw of rows) {
@@ -153,9 +170,15 @@ export async function runEffects(opts: { handlers: EffectHandlers; limit?: numbe
       await exec(ackEffectSql(e.id, outcome));
       if (outcome.startsWith('skipped')) summary.skipped++; else summary.done++;
     } catch (err) {
-      const r = ((await exec(failEffectSql(e.id, String((err as Error)?.message ?? err), e.attemptCount))).rows ?? [])[0] as { status?: string } | undefined;
-      if (r?.status === 'dead') summary.dead.push({ id: e.id, deliveryId: e.deliveryId, kind: e.kind, critical: CRITICAL_EFFECTS.has(e.kind) });
-      else summary.failed++;
+      const lastError = String((err as Error)?.message ?? err);
+      const r = ((await exec(failEffectSql(e.id, lastError, e.attemptCount))).rows ?? [])[0] as { status?: string } | undefined;
+      if (r?.status === 'dead') {
+        const dead: DeadEffect = { id: e.id, deliveryId: e.deliveryId, kind: e.kind, critical: CRITICAL_EFFECTS.has(e.kind), dedupeKey: e.dedupeKey, lastError: lastError.slice(0, 500) };
+        summary.dead.push(dead);
+        // §10.3: a dead effect is never left for someone to notice. Escalation failing must not
+        // fail the drain: the row is dead either way, and the floor (enqueue-missing) still sees it.
+        try { await onDead(dead, exec); } catch (escErr) { console.error(`[workflow] escalating dead effect ${e.id} (${e.kind}) failed:`, escErr); }
+      } else summary.failed++;
     }
   }
   return summary;

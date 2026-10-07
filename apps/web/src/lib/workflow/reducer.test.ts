@@ -78,6 +78,7 @@ const APPLIED: Array<[string, KernelView, Command, string]> = [
   ['T19 PrReopened', V(D({ state: 'CLOSED_UNMERGED' })), { type: 'PrReopened', actor: 'webhook', live: live('H1', { updatedAt: 'u2' }) }, 'AWAITING_REVIEW'],
   ['T20 SupersessionRecorded', V(D({ state: 'CLOSED_UNMERGED' })), { type: 'SupersessionRecorded', actor: 'agent:t2', target: { repoFullName: REPO, prNumber: 9, merged: true, url: null }, reason: 'reopened fresh', authorised: true }, 'SUPERSEDED'],
   ['T21 Abandon', V(D({ state: 'CLOSED_UNMERGED' })), { type: 'Abandon', actor: 'human:u', reason: 'dropped' }, 'ABANDONED'],
+  ['EffectDead', V(D({ state: 'LANDING', approvedHeads: ['H1'] })), { type: 'EffectDead', actor: 'kernel', effectId: 'e1', effectKind: 'merge_call', dedupeKey: 'merge_call:d1:H1:v5' }, 'ESCALATED'],
   ['T22 PushRecoveryExhausted', V(D({ state: 'AWAITING_PUSH' })), { type: 'PushRecoveryExhausted', actor: 'kernel', localHeadSha: 'L2' }, 'ESCALATED'],
   ['T23 HumanResolve', V(D({ state: 'ESCALATED', stateReason: 'review_escalated' })), { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5 }, 'APPROVED'],
   ['T24 DeliveryFailed', V(D({ prNumber: null, repoFullName: null })), { type: 'DeliveryFailed', actor: 'runner', reason: 'cancelled' }, 'FAILED'],
@@ -595,12 +596,27 @@ describe('T8 FixDispatched / T9 FixClaimed (S7, S25, §10.5)', () => {
     expectResult(dispatch(cr([A()])), 'duplicate', 'fix_in_flight');
   });
   test('budget exhausted, superseded round and revalidation failures allocate nothing', () => {
-    expectResult(dispatch(cr([A({ attemptNo: 3, status: 'ended' })])), 'rejected', 'budget_exhausted');
     expectResult(dispatch(cr([], { currentRound: 2 })), 'rejected', 'newer_verdict_supersedes_fix');
     expectResult(dispatch(cr(), { revalidation: { live: live('H1', { state: 'closed', merged: true }), newerApprove: false } }), 'rejected', 'fix_not_needed');
     expectResult(dispatch(cr(), { revalidation: { live: live('H2'), newerApprove: false } }), 'rejected', 'fix_not_needed');
     expectResult(dispatch(cr(), { revalidation: { live: live('H1'), newerApprove: true } }), 'rejected', 'fix_not_needed');
     expectResult(dispatch(V(D({ state: 'APPROVED' }))), 'stale', 'state_moved');
+  });
+
+  test('67d34094: a spent fix budget escalates through the reducer (ESCALATED(review_exhausted)), never a silent refusal', () => {
+    // Fixes 1 and 2 failed, fix 3 delivered, round 2 requested changes: attempt 4 is past the cap.
+    const spent = [1, 2, 3].map((n) => A({ id: `a${n}`, attemptNo: n, status: 'ended', outcome: n < 3 ? 'failed' : 'success' }));
+    const v = V(D({ state: 'CHANGES_REQUESTED', currentRound: 2 }), [R({ id: 'r2', round: 2, status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' })], spent);
+    const dec = applied(dispatch(v, { roundId: 'r2' }));
+    expect(dec.toState).toBe('ESCALATED');
+    expect(dec.patch).toMatchObject({ stateReason: 'review_exhausted', boundAttemptId: null });
+    expect(dec.attempts).toEqual([]);
+    expect(dec.guard).toMatchObject({ headSha: 'H1', round: 2 });
+    expect(dec.effects.find((e) => e.kind === 'escalate_exhaustion')).toMatchObject({ dedupeKey: 'exhaust:d1:review_fix:budget:r2', payload: { family: 'review_fix', attempts: 3, max: 3 } });
+    // A replay of the same dispatch is the same transition.
+    expect(dec.idempotencyKey).toBe('fixbudget:d1:r2');
+    // A person past the cap still extends it (§5.7 rule 5).
+    expect(applied(dispatch(v, { roundId: 'r2', trigger: 'human' })).toState).toBe('CHANGES_REQUESTED');
   });
 
   const claim = (v: KernelView, o: Partial<Extract<Command, { type: 'FixClaimed' }>> = {}) =>
@@ -1306,5 +1322,39 @@ describe('S9, S12, S15 kernel rules', () => {
     expect(capped.toState).toBe('ESCALATED');
     expect(capped.patch.stateReason).toBe('landing_needs_human');
     expect(capped.attempts).toEqual([]);
+  });
+});
+
+describe('EffectDead (§10.3, 67d34094): a critical dead effect hands the delivery to a person', () => {
+  const dead = (v: KernelView, effectKind: Extract<Command, { type: 'EffectDead' }>['effectKind'], o: Partial<Extract<Command, { type: 'EffectDead' }>> = {}) =>
+    run(v, { type: 'EffectDead', actor: 'kernel', effectId: 'e1', effectKind, dedupeKey: `${effectKind}:d1:x`, lastError: 'boom', ...o });
+
+  test('a dead merge_call or verify_merge leaves LANDING for ESCALATED(landing_needs_human), and a person is told', () => {
+    for (const kind of ['merge_call', 'verify_merge'] as const) {
+      const dec = applied(dead(V(D({ state: 'LANDING', approvedHeads: ['H1'] })), kind));
+      expect(dec.toState).toBe('ESCALATED');
+      expect(dec.patch).toMatchObject({ stateReason: 'landing_needs_human' });
+      expect(dec.effects.find((e) => e.kind === 'notify')).toMatchObject({ payload: { event: 'effect_dead', effectKind: kind, reason: 'landing_needs_human' } });
+      expect(dec.idempotencyKey).toBe('effectdead:e1');
+      expect(dec.evidence).toMatchObject({ effectId: 'e1', effectKind: kind, lastError: 'boom' });
+    }
+  });
+  test('a dead push_recovery is T22\'s outcome: ESCALATED(push_undeliverable) with the push notice', () => {
+    const dec = applied(dead(V(D({ state: 'AWAITING_PUSH', pushPendingLocalHead: 'L2' })), 'push_recovery'));
+    expect(dec.patch).toMatchObject({ stateReason: 'push_undeliverable' });
+    expect(dec.effects.find((e) => e.kind === 'notify')).toMatchObject({ payload: { event: 'push_undeliverable', localHeadSha: 'L2' } });
+  });
+  test('a dead dispatch_fix / dispatch_review / post_review is ESCALATED(effect_dead)', () => {
+    expect(applied(dead(V(D({ state: 'CHANGES_REQUESTED', currentRound: 1 }), [decidedRC]), 'dispatch_fix')).patch).toMatchObject({ stateReason: 'effect_dead' });
+    expect(applied(dead(V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R()]), 'dispatch_review')).patch).toMatchObject({ stateReason: 'effect_dead' });
+    expect(applied(dead(V(D({ state: 'APPROVED', approvedHeads: ['H1'] })), 'post_review')).patch).toMatchObject({ stateReason: 'effect_dead' });
+  });
+  test('an effect whose state the delivery has left is stale; terminal is stale; already escalated is a duplicate; non-critical is rejected', () => {
+    expectResult(dead(V(D({ state: 'APPROVED' })), 'merge_call'), 'stale', 'state_moved');
+    expectResult(dead(V(D({ state: 'AWAITING_REVIEW' })), 'push_recovery'), 'stale', 'state_moved');
+    expectResult(dead(V(D({ state: 'FIXING' })), 'dispatch_fix'), 'stale', 'state_moved');
+    expectResult(dead(V(D({ state: 'MERGED' })), 'post_review'), 'stale', 'terminal');
+    expectResult(dead(V(D({ state: 'ESCALATED', stateReason: 'review_escalated' })), 'post_review'), 'duplicate', 'already_escalated');
+    expectResult(dead(V(D({ state: 'LANDING' })), 'render_activity'), 'rejected', 'not_critical');
   });
 });
