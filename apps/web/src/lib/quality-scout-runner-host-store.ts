@@ -42,8 +42,8 @@ const pendingRunnerProbe = and(
 );
 
 export const dbScoutRunnerHostStore: ScoutRunnerHostStore = {
-  async sweepExpired(workspaceIds) {
-    const sweep = await finalizeExpiredQualityScoutRuns({ workspaceIds });
+  async sweepExpired({ teamId, workspaceIds }) {
+    const sweep = await finalizeExpiredQualityScoutRuns({ teamId, workspaceIds });
     return sweep.finalized;
   },
 

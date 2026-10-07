@@ -3706,7 +3706,13 @@ export type ScoutRunClaimResponse =
       expired?: string[];
     };
 
-/** One runner-hosted probe's substrate result (core `VerificationResult` shape). */
+/**
+ * One runner-hosted probe's substrate result (core `VerificationResult` shape).
+ * The server derives `signature` as `verificationSignature([checkId, ...signatureParts])`
+ * and the recurrence key as `checkId`; it caps `severity` at the probe's risk and
+ * `confidence` below the filing threshold. Send the core result as-is: its
+ * `signatureParts` are what count.
+ */
 export interface ScoutHostedProbeResult {
   candidateId: string;
   result: {
@@ -3718,7 +3724,11 @@ export interface ScoutHostedProbeResult {
     evidenceRefs?: Array<{ kind: string; ref: string }>;
     reason?: string | null;
     evidenceShortfall?: Array<{ key: string; need: 'complete' | 'partial'; have: 'complete' | 'partial' | 'absent' }>;
-    signature: string;
+    /** Executor dedupe parts (at most 20 strings, each clipped to 120 chars). Absent: none. */
+    signatureParts?: string[];
+    /** @deprecated Ignored: the server derives the signature from `checkId` and `signatureParts`. */
+    signature?: string;
+    /** @deprecated Ignored: the recurrence key is the check id. */
     recurrenceKey?: string;
     subject?: { kind: string; ref: string };
     provenance?: { executor?: string; ranAt?: string };

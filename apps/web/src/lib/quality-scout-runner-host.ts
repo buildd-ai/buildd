@@ -21,7 +21,10 @@
  * must be one the server would derive for that probe, the subject is the
  * run's SHA, provenance and version are the server's, every string is
  * clipped, and `file:` evidence refs (paths on the runner's disk, unreadable
- * from here) are dropped.
+ * from here) are dropped. The signature is derived here from the validated
+ * check id and the runner's bounded `signatureParts` (a sent `signature` is
+ * ignored), the recurrence key is the check id, severity is capped at the
+ * probe's own risk, and confidence at `RUNNER_MAX_CONFIDENCE`.
  *
  * This file holds the decisions; `quality-scout-runner-host-store.ts` holds
  * the SQL, behind `ScoutRunnerHostStore`.
@@ -45,8 +48,10 @@ import {
   EVIDENCE_COVERAGE,
   MAX_EVIDENCE_REFS,
   MAX_OBSERVED_CHARS,
+  severityRank,
   VERIFICATION_SEVERITIES,
   VERIFICATION_VERDICTS,
+  verificationSignature,
   type EvidenceShortfall,
   type VerificationEvidenceRef,
   type VerificationResult,
@@ -73,7 +78,16 @@ const MAX_KEY_CHARS = 120;
 const MAX_KIND_CHARS = 48;
 const MAX_REF_CHARS = 200;
 const MAX_SHORTFALL = 20;
-const SIGNATURE_RE = /^[0-9a-f]{24}$/;
+/** Dedupe parts a runner may send; the server signs `[checkId, ...parts]`. */
+export const MAX_SCOUT_SIGNATURE_PARTS = 20;
+export const MAX_SCOUT_SIGNATURE_PART_CHARS = 120;
+/**
+ * A runner's own confidence is capped here, below the default filing
+ * threshold (0.7). It is recorded, but never by itself verified evidence:
+ * whether a runner-hosted finding files is decided by server-counted
+ * recurrence (quality-scout-actions.ts `decideScoutAction`).
+ */
+export const RUNNER_MAX_CONFIDENCE = 0.5;
 const EXECUTOR_RE = /^scout-[a-z0-9-]{1,40}$/;
 const LEASE_ID_RE = /^[0-9a-f-]{36}$/i;
 
@@ -91,8 +105,11 @@ export interface ClaimableScoutRun {
 }
 
 export interface ScoutRunnerHostStore {
-  /** Finalize expired parked runs of these workspaces (the hourly sweep, narrowed). Ids it finalized. */
-  sweepExpired(workspaceIds: readonly string[]): Promise<string[]>;
+  /**
+   * Finalize expired parked runs of these workspaces, inside `teamId` only
+   * (the hourly sweep, narrowed). Ids it finalized: never another team's.
+   */
+  sweepExpired(q: { teamId: string; workspaceIds: readonly string[] }): Promise<string[]>;
   /**
    * Parked runs in `teamId` and `workspaceIds`, deadline not passed, lease
    * free (never taken, or lapsed once). Oldest deadline first.
@@ -220,10 +237,22 @@ function shortfallOf(v: unknown): EvidenceShortfall[] {
   return out;
 }
 
+/** Absent → no parts. Anything but an array of at most N strings is refused. */
+function signaturePartsOf(v: unknown): string[] | null {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v) || v.length > MAX_SCOUT_SIGNATURE_PARTS) return null;
+  if (!v.every((p) => typeof p === 'string')) return null;
+  return v.map((p: string) => clip(p, MAX_SCOUT_SIGNATURE_PART_CHARS));
+}
+
 /**
  * A runner's report → the result the server stores, or why it is refused.
- * Only verdict, severity, confidence, observation, evidence refs, reason,
- * shortfall, signature and recurrence key come from the runner, each bounded.
+ * Only verdict, severity (capped at the probe's risk), confidence (capped at
+ * `RUNNER_MAX_CONFIDENCE`), observation, evidence refs, reason, shortfall and
+ * signature parts come from the runner, each bounded. The signature is the
+ * server's: `verificationSignature([checkId, ...signatureParts])`, the same
+ * construction `runVerificationCheck` uses. A `signature` or `recurrenceKey`
+ * the runner sends is ignored.
  */
 export function normalizeRunnerResult(
   run: ScoutRun,
@@ -235,26 +264,29 @@ export function normalizeRunnerResult(
   if (!isRecord(raw)) return { ok: false, code: 'malformed_result' };
   const verdict = raw.verdict;
   if (!(VERIFICATION_VERDICTS as readonly unknown[]).includes(verdict)) return { ok: false, code: 'bad_verdict' };
-  if (typeof raw.signature !== 'string' || !SIGNATURE_RE.test(raw.signature)) return { ok: false, code: 'bad_signature' };
+  const parts = signaturePartsOf(raw.signatureParts);
+  if (parts === null) return { ok: false, code: 'bad_signature_parts' };
   if (typeof raw.checkId !== 'string' || !expectedScoutCheckIds(probe, profile).has(raw.checkId)) return { ok: false, code: 'wrong_check' };
   // A result for another commit is not a result for this run.
   if (raw.subject !== undefined && (!isRecord(raw.subject) || raw.subject.ref !== run.candidate.sha)) return { ok: false, code: 'wrong_sha' };
 
   const v = verdict as VerificationResult['verdict'];
-  const severity = v === 'fail'
-    ? ((VERIFICATION_SEVERITIES as readonly unknown[]).includes(raw.severity) ? (raw.severity as VerificationResult['severity']) : probe.risk)
+  // A runner may report a failure as less severe than the probe's risk, never more.
+  const reported = (VERIFICATION_SEVERITIES as readonly unknown[]).includes(raw.severity) ? (raw.severity as NonNullable<VerificationResult['severity']>) : probe.risk;
+  const severity = v === 'fail' ? (severityRank(reported) < severityRank(probe.risk) ? probe.risk : reported) : null;
+  const confidence = typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)
+    ? Math.min(RUNNER_MAX_CONFIDENCE, Math.max(0, raw.confidence))
     : null;
-  const confidence = typeof raw.confidence === 'number' && Number.isFinite(raw.confidence) ? Math.min(1, Math.max(0, raw.confidence)) : null;
   const prov = isRecord(raw.provenance) ? raw.provenance : {};
   const executor = typeof prov.executor === 'string' && EXECUTOR_RE.test(prov.executor) ? prov.executor : 'scout-runner';
   const ranAtMs = typeof prov.ranAt === 'string' ? Date.parse(prov.ranAt) : NaN;
   // A runner clock can drift; never let it date a result into the future.
   const ranAt = Number.isFinite(ranAtMs) && ranAtMs <= now.getTime() ? new Date(ranAtMs).toISOString() : now.toISOString();
-  const recurrenceKey = str(raw.recurrenceKey, MAX_REASON_CHARS) || raw.checkId;
+  const checkId = raw.checkId;
   return {
     ok: true,
     result: {
-      checkId: raw.checkId,
+      checkId,
       checkVersion: SCOUT_CHECK_VERSION,
       subject: { kind: 'candidate-sha', ref: run.candidate.sha },
       verdict: v,
@@ -264,8 +296,9 @@ export function normalizeRunnerResult(
       evidenceRefs: refsOf(raw.evidenceRefs),
       reason: v === 'pass' || v === 'fail' ? null : str(raw.reason, MAX_REASON_CHARS),
       evidenceShortfall: shortfallOf(raw.evidenceShortfall),
-      signature: raw.signature,
-      recurrenceKey,
+      signature: verificationSignature([checkId, ...parts]),
+      ...(parts.length > 0 ? { signatureParts: parts } : {}),
+      recurrenceKey: checkId,
       provenance: { flavor: SCOUT_FLAVOR, origin: `run:${run.id}`, executor, ranAt },
     },
   };
@@ -293,7 +326,7 @@ export async function claimScoutRunForRunner(input: ScoutClaimInput, store: Scou
   let expired: string[] = [];
   if (workspaceIds.length > 0) {
     try {
-      expired = await store.sweepExpired(workspaceIds);
+      expired = await store.sweepExpired({ teamId: input.caller.teamId, workspaceIds });
     } catch (err) {
       console.warn('[quality-scout] runner-claim sweep failed (non-fatal):', err instanceof Error ? err.message : err);
     }
