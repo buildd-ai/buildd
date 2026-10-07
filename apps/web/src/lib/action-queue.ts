@@ -1429,7 +1429,7 @@ export function buildActionQueue(
       // in a FAILED delivery; past attempts or any task in a live/shipped
       // delivery return false.
       const fv = item.taskId ? options.deliveryViews?.get(item.taskId) : undefined;
-      if (fv && !attemptFailureCounts(fv, item.taskId)) continue;
+      if (fv && item.taskId && !attemptFailureCounts(fv, item.taskId)) continue;
       if (!map.has(key)) {
         map.set(key, {
           subjectKey: key,
