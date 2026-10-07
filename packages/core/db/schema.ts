@@ -1998,6 +1998,44 @@ export const workers = pgTable('workers', {
 }));
 
 /**
+ * Presence of a person's interactive coding session (Claude Code, Codex,
+ * Cursor) reported by the buildd agent plugin's lifecycle hooks. A row here is
+ * presence, never a worker: it holds no concurrency seat and no task. It is
+ * bound to a worker only after that same session's own verified `claim_task`
+ * minted one (`workers.runner = 'mcp'`); see apps/web/src/lib/local-session.ts
+ * and docs/specs/local-agent-presence.md.
+ *
+ * No transcript, prompt or response content is ever stored. The client's
+ * session id is kept only as a SHA-256 hash.
+ */
+export const localSessions = pgTable('local_sessions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  /** Resolved from the session's git remote among the workspaces the account reaches; null if none matched. */
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  /** 'claude' | 'codex' | 'cursor' | 'other' */
+  clientKind: text('client_kind').notNull(),
+  /** SHA-256 of the client's own session/conversation id. Opaque. */
+  clientSessionHash: text('client_session_hash').notNull(),
+  clientVersion: text('client_version'),
+  /** owner/name of the session's git remote, credentials stripped. */
+  repo: text('repo'),
+  /** False when the client says the session is a background agent. */
+  interactive: boolean('interactive').default(true).notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+  endReason: text('end_reason'),
+  /** The interactive worker this session's own claim_task minted. One session per worker, ever. */
+  boundWorkerId: uuid('bound_worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  boundAt: timestamp('bound_at', { withTimezone: true }),
+}, (t) => ({
+  clientIdx: uniqueIndex('local_sessions_client_idx').on(t.accountId, t.clientKind, t.clientSessionHash),
+  boundWorkerIdx: uniqueIndex('local_sessions_bound_worker_idx').on(t.boundWorkerId),
+  workspaceSeenIdx: index('local_sessions_workspace_seen_idx').on(t.workspaceId, t.lastSeenAt),
+}));
+
+/**
  * Pattern-matched errors observed in agent tool output (Bash results, Read
  * failures, etc.). The runner intercepts the Agent SDK's tool-result messages
  * and writes a row here for each match. Used for UI error-count badges and
