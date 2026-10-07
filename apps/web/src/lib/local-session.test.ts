@@ -25,6 +25,7 @@ const {
   presenceTouchWhere,
   boundWorkerTouchWhere,
   bindInsertSql,
+  usageWriteWhere,
   LocalSessionError,
 } = await import('./local-session');
 type Store = import('./local-session').LocalSessionStore;
@@ -46,6 +47,10 @@ let seatWrites: number;
 let presenceWrites: number;
 let workerTouches: number;
 let detachCalls: Array<{ workerId: string; reason: string }>;
+type UsageWrite = Parameters<Store['recordUsage']>[0];
+let usageWrites: UsageWrite[];
+/** Interleaving of usage writes and detaches, to pin "usage lands before release". */
+let usageOrder: string[];
 let taskStatus: Map<string, string>;
 
 const row = (p: Presence) => ({
@@ -107,6 +112,10 @@ function memoryStore(): Store {
       p.endedAt = now; p.endReason = reason; presenceWrites++;
       return row(p);
     },
+    async recordUsage(u) {
+      usageWrites.push(u); usageOrder.push('usage');
+      return true;
+    },
     async workerState(id) {
       const w = workers.get(id);
       if (!w) return null;
@@ -119,6 +128,7 @@ function memoryStore(): Store {
 /** Mirrors detachInteractiveWorker's contract: CAS out of the live set; never rewrites a terminal task. */
 async function detach(workerId: string, reason: string) {
   detachCalls.push({ workerId, reason });
+  usageOrder.push('detach');
   const w = workers.get(workerId);
   if (!w || w.runner !== 'mcp' || !LIVE.has(w.status)) return { detached: false };
   const ts = w.taskId ? taskStatus.get(w.taskId) : undefined;
@@ -154,6 +164,8 @@ beforeEach(() => {
   presenceWrites = 0;
   workerTouches = 0;
   detachCalls = [];
+  usageWrites = [];
+  usageOrder = [];
   store = memoryStore();
 });
 
@@ -485,6 +497,52 @@ describe('end', () => {
   });
 });
 
+describe('usage', () => {
+  const id = '77777777-7777-4777-8777-777777777777';
+  const model = (over = {}) => ({ model: 'claude-sonnet-5', input: 100, cacheRead: 10_000, cacheWrite5m: 1000, cacheWrite1h: 0, output: 500, requests: 4, ...over });
+  const usage = (workerId: string, models = [model()]) => ({ workers: [{ workerId, models, toolCalls: 7, subagents: 0, firstAt: '2026-10-07T12:00:00.000Z', lastAt: '2026-10-07T12:04:00.000Z' }] });
+
+  it('a touch carrying usage records priced totals on the worker the session holds', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    const res = await run({ event: 'touch', usage: usage(id) }, ACCOUNT, later(30_000));
+    expect(res.ok).toBe(true);
+    expect(usageWrites).toHaveLength(1);
+    const w = usageWrites[0];
+    expect(w.workerId).toBe(id);
+    expect(w.allInInputTokens).toBe(11_100);
+    expect(w.outputTokens).toBe(500);
+    expect(w.requests).toBe(4);
+    // sonnet-5: $2 in, $0.2 cache read, $2.5 5m write, $10 out, per 1M.
+    expect(w.costUsd).toBeCloseTo((100 * 2 + 10_000 * 0.2 + 1000 * 2.5 + 500 * 10) / 1e6, 9);
+    expect(w.effort).toMatchObject({ toolCalls: 7, subagents: 0, requests: 4, costUnknown: false });
+  });
+
+  it('an unpriced model leaves the cost unknown, never written as a number', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'touch', usage: usage(id, [model(), model({ model: 'other-vendor/unknown-model' })]) }, ACCOUNT, later(30_000));
+    expect(usageWrites[0].costUsd).toBeNull();
+    expect(usageWrites[0].modelUsage).toBeNull();
+    expect(usageWrites[0].effort).toMatchObject({ costUnknown: true, unpricedModels: ['other-vendor/unknown-model'] });
+  });
+
+  it("usage for a worker the session does not hold is ignored, even the account's own", async () => {
+    claimWorker(id);
+    await run({ event: 'start' });
+    await run({ event: 'touch', usage: usage(id) }, ACCOUNT, later(30_000));
+    expect(usageWrites).toHaveLength(0);
+  });
+
+  it('end records the last usage before releasing the worker', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'end', reason: 'exit', usage: usage(id) });
+    expect(usageWrites).toHaveLength(1);
+    expect(usageOrder).toEqual(['usage', 'detach']);
+  });
+});
+
 describe('contract', () => {
   it('rejects unknown fields so no content can ride along', () => {
     for (const extra of [{ prompt: 'hi' }, { transcript: '...' }, { last_assistant_message: 'x' }]) {
@@ -501,6 +559,37 @@ describe('contract', () => {
     expect(parseLocalSessionEvent({ event: 'end', client: 'claude', clientSessionId: 's', reason: 'kill' }).ok).toBe(false);
     const ok = parseLocalSessionEvent({ event: 'end', client: 'codex', clientSessionId: 's' });
     expect(ok.ok && ok.event.reason).toBe('other');
+  });
+
+  describe('usage', () => {
+    const W = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const model = { model: 'claude-sonnet-5', input: 10, cacheRead: 2000, cacheWrite5m: 300, cacheWrite1h: 0, output: 50, requests: 2 };
+    const worker = { workerId: W, models: [model], toolCalls: 3, subagents: 1, firstAt: '2026-10-07T12:00:00.000Z', lastAt: '2026-10-07T12:05:00.000Z' };
+    const ev = (usage: unknown, event = 'touch') => parseLocalSessionEvent({ event, client: 'claude', clientSessionId: 's', usage });
+
+    it('rides on touch and end only, numbers and model ids only', () => {
+      const r = ev({ workers: [worker] });
+      expect(r.ok && r.event.usage?.workers[0]).toEqual(worker);
+      expect(ev({ workers: [worker] }, 'end').ok).toBe(true);
+      expect(ev({ workers: [worker] }, 'start').ok).toBe(false);
+      expect(parseLocalSessionEvent({ event: 'bind', client: 'claude', clientSessionId: 's', workerId: W, usage: { workers: [worker] } }).ok).toBe(false);
+    });
+
+    it('refuses any field it does not know, at every level, so no content can ride along', () => {
+      expect(ev({ workers: [worker], note: 'x' }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, summary: 'did a thing' }] }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, models: [{ ...model, text: 'hello' }] }] }).ok).toBe(false);
+    });
+
+    it('validates shapes and bounds', () => {
+      expect(ev({ workers: [{ ...worker, workerId: 'nope' }] }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, models: [{ ...model, output: -1 }] }] }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, models: [{ ...model, output: 1.5 }] }] }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, models: [{ ...model, model: 'has spaces and; stuff' }] }] }).ok).toBe(false);
+      expect(ev({ workers: Array.from({ length: 21 }, () => worker) }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, firstAt: 'yesterday' }] }).ok).toBe(false);
+      expect(ev({ workers: [] }).ok).toBe(true);
+    });
   });
 
   it('normalizes repos and strips credentials', () => {
@@ -532,6 +621,17 @@ describe('SQL', () => {
     expect(q.params).toContain('mcp');
     expect(q.params).toContain('acct-1');
     expect(q.params).toContain(new Date(NOW.getTime() - 60_000).toISOString());
+  });
+
+  it('a usage write reaches only an interactive worker that is live or ended within the grace window', () => {
+    const cutoff = new Date(NOW.getTime() - 10 * 60_000);
+    const q = render(usageWriteWhere('w1', cutoff));
+    expect(q.sql).toContain('"workers"."id" =');
+    expect(q.sql).toContain('"workers"."runner" =');
+    expect(q.sql).toContain('"workers"."status" in');
+    expect(q.sql).toContain('"workers"."completed_at" >');
+    expect(q.params).toContain('mcp');
+    expect(q.params).toContain(cutoff.toISOString());
   });
 
   it("a person's bound worker touch drops only the account guard: still interactive, live and a minute stale", () => {

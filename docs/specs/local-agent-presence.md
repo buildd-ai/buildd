@@ -8,7 +8,7 @@ domain: runners
 surfaces: [apps/web/src/lib/local-session.ts, apps/web/src/app/api/workers/local-sessions/route.ts, packages/shared/src/local-session.ts, apps/runner/plugin/scripts/buildd-hook.mjs]
 related: [runner-liveness, mission-task-lifecycle]
 keywords: [local_sessions, presence_tokens, presence token, bldp_, interactive session, presence, buildd plugin, agent plugin, hooks, SessionStart, SessionEnd, claude code, codex, cursor, buildd install, release slot]
-verified_by: [apps/web/src/lib/local-session.test.ts, apps/web/src/lib/presence-token.test.ts, apps/web/src/lib/presence-token-routes.test.ts, apps/web/src/lib/local-session-view.test.ts, apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/app/app/(protected)/tasks/InteractiveSessions.test.tsx, apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/local-sessions/workspaces/route.test.ts]
+verified_by: [apps/web/src/lib/local-session.test.ts, packages/core/__tests__/model-prices.test.ts, apps/web/src/lib/presence-token.test.ts, apps/web/src/lib/presence-token-routes.test.ts, apps/web/src/lib/local-session-view.test.ts, apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/app/app/(protected)/tasks/InteractiveSessions.test.tsx, apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/local-sessions/workspaces/route.test.ts]
 assertions:
   - id: "presence-token-auth"
     type: "symbol"
@@ -65,7 +65,7 @@ to buildd with four typed events and nothing else, and MUST never break the
 agent loop it runs in.
 
 **Invariants**:
-- The wire format is `{ event: start|touch|bind|end, client: claude|codex|cursor|other, clientSessionId, clientVersion?, repo?, interactive?, workerId? (bind only), reason?: exit|clear|other (end only) }`. The endpoint refuses any other field, so no prompt, response, reasoning, transcript or secret can ride along.
+- The wire format is `{ event: start|touch|bind|end, client: claude|codex|cursor|other, clientSessionId, clientVersion?, repo?, interactive?, workerId? (bind only), reason?: exit|clear|other (end only), usage? (touch and end only) }`. The endpoint refuses any other field, at every level of `usage` too, so no prompt, response, reasoning, transcript or secret can ride along.
 - The client session id is stored only as a SHA-256 hash. `repo` is reduced to `owner/name` (credentials and host dropped) on the client and again on the server.
 - Auth is the person's presence token (`bldp_`, `~/.buildd/config.json` `presenceToken`, written by `buildd login`; `BUILDD_PRESENCE_TOKEN` overrides), else the account API key. No credential is written into any hook configuration. Trigger-level keys are refused.
 - A presence token is minted only by a login (device flow or browser), for the person who signed in, one per machine (a new login on the same machine revokes the previous one). It is HMAC-signed and never stored; its `presence_tokens` row (user, machine label, created, last used, revoked) is what makes it revocable: `buildd logout` revokes it, and the signed-in person can list and revoke theirs (`/api/auth/presence-token`). A token whose person is in no team any more is refused.
@@ -123,6 +123,27 @@ and exactly once, and MUST never complete unfinished work or rewrite a finished 
 - AC-8b: GIVEN a presence holding two live workers WHEN `end` (exit) arrives THEN both tasks go back to `pending` and each seat is released exactly once; a replayed `end` changes nothing.
 
 **Code surface**: `handleLocalSessionEvent` `end` branch, `detachInteractiveWorker` (`apps/web/src/lib/interactive-detach.ts`).
+
+## Session usage
+
+**Capability statement**: Work done from a person's own session (and its
+subagents) MUST be counted in the task's usage and cost the same way runner work
+is, from numbers the client already wrote locally, and MUST never move content.
+
+**Invariants**:
+- Claude Code only, once the session holds a claim. On `Stop` and `SessionEnd` the hook reads the lines appended since its last report (byte offsets in the per-session hook state, at most 8 MB per file per run) of the session's transcript and of each `<session>/subagents/agent-<id>.jsonl`. From each API response record it keeps only the message id, model id, the four token counts (`input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` with its 5m/1h split), the timestamp and the number of `tool_use` blocks. Message text, tool inputs and outputs are never kept or sent. `BUILDD_HOOK_USAGE=0` turns it off.
+- A message written once per content block is counted once (deduped by message id); its tool calls are added up across the copies.
+- Attribution: a subagent that claimed a task is that task's for its whole run (the hook knows which subagent claimed what from its PostToolUse `agent_id`). Everything else, the session's own calls and subagents that claimed nothing, goes to the session's newest own claim, else its first claim, and only from the session's first claim on.
+- `usage` carries cumulative totals per worker (per model: the four buckets and a request count; plus tool calls, subagents, first/last timestamp) on the session's own `touch`/`end`, so `end` lands its last report before the release, in one request.
+- The server writes only to a worker this presence holds, that is interactive and live or ended within 10 minutes (the report after `complete_task`). It raises, never lowers: `inputTokens` (all-in), `outputTokens`, `turns` (requests), `costUsd`, and `resultMeta.modelUsage`/`totalUsage`/`localSessionUsage`, so replays and reordering are harmless.
+- Pricing is server-side and strict (`priceSessionUsage`): the live catalog, else the static table for a recognisably Anthropic model id; a 5-minute cache write at the table's write rate, a 1-hour write at 2x input. A model with no known price makes the cost unknown: no cost and no `modelUsage` are written, `localSessionUsage.costUnknown` is true and the model is listed in `unpricedModels`. It is never priced as some other model.
+
+**Acceptance criteria**:
+- AC-9: GIVEN a held worker WHEN a `touch` carries its usage THEN its tokens, turns and cost are raised to those totals, and an older, smaller report changes nothing.
+- AC-10: WHEN `usage` names a worker this presence does not hold THEN nothing is written.
+- AC-11: GIVEN a model with no known price WHEN usage is recorded THEN no cost is written and it is flagged unknown.
+
+**Code surface**: `usageRecord`, `collectUsage` (`apps/runner/plugin/scripts/buildd-hook.mjs`), `usageWrite`, `usageWriteWhere` (`apps/web/src/lib/local-session.ts`), `priceSessionUsage` (`packages/core/model-prices.ts`).
 
 ## Reporting and steering
 

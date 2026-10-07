@@ -354,6 +354,124 @@ describe('presence token', () => {
   });
 });
 
+describe('session usage', () => {
+  // Synthetic transcript lines in the shape Claude Code writes: one record per
+  // content block, so a message id can repeat with the same usage. Content is
+  // filled with text that must never reach the request body.
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'buildd-usage-')); workspaceCheckout(dir); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const SECRET = 'TOP-SECRET-CONTENT';
+  const rec = (o: { id: string; model?: string; at: string; input?: number; read?: number; w5m?: number; w1h?: number; out?: number; blocks?: string[]; agentId?: string }) => JSON.stringify({
+    type: 'assistant', timestamp: o.at, requestId: `req_${o.id}`, isSidechain: !!o.agentId, ...(o.agentId ? { agentId: o.agentId } : {}),
+    message: {
+      id: o.id, model: o.model ?? 'claude-sonnet-5', role: 'assistant',
+      content: (o.blocks ?? ['text']).map(t => t === 'tool_use' ? { type: 'tool_use', name: 'Bash', input: { command: SECRET } } : { type: 'text', text: SECRET }),
+      usage: {
+        input_tokens: o.input ?? 2, cache_read_input_tokens: o.read ?? 0, output_tokens: o.out ?? 10,
+        cache_creation_input_tokens: (o.w5m ?? 0) + (o.w1h ?? 0),
+        cache_creation: { ephemeral_5m_input_tokens: o.w5m ?? 0, ephemeral_1h_input_tokens: o.w1h ?? 0 },
+      },
+    },
+  });
+  const user = (at: string) => JSON.stringify({ type: 'user', timestamp: at, message: { role: 'user', content: SECRET } });
+  const W1 = '11111111-2222-4333-8444-0000000000a1';
+  const W2 = '11111111-2222-4333-8444-0000000000a2';
+  const env = () => ({ BUILDD_API_KEY: 'bld_test', BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_HOME: dir });
+  const transcript = () => join(dir, 'sess.jsonl');
+  const subagentFile = (agentId: string) => join(dir, 'sess', 'subagents', `agent-${agentId}.jsonl`);
+  const write = (path: string, lines: string[]) => { mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, lines.map(l => l + '\n').join(''), { flag: 'a' }); };
+  const ev = (hook_event_name: string, extra: object = {}) => JSON.stringify({ session_id: 'u-1', cwd: dir, transcript_path: transcript(), hook_event_name, ...extra });
+  const claimText = (w: string) => [{ type: 'text', text: `Claimed 1 task(s):\n\n**Worker ID:** ${w}\n**Task:** x` }];
+  let bodies: any[];
+  const fetchImpl = (async (url: string, init: any) => {
+    if (url.endsWith('/local-sessions')) bodies.push(JSON.parse(init.body));
+    return Response.json({ ok: true });
+  }) as any;
+  beforeEach(() => { bodies = []; });
+  const claim = async (w: string, agentId?: string, now = Date.parse('2026-10-07T12:00:00Z')) => run({
+    client: 'claude', env: env(), fetchImpl, now,
+    stdin: ev('PostToolUse', { ...(agentId ? { agent_id: agentId, agent_type: 'general-purpose' } : {}), tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task', params: {} }, tool_response: claimText(w) }),
+  });
+  const stop = (now: number) => run({ client: 'claude', env: env(), fetchImpl, now, stdin: ev('Stop') });
+
+  it('reads only usage numbers, dedupes repeated message records, and counts usage from the claim on', async () => {
+    write(transcript(), [
+      rec({ id: 'msg_before', at: '2026-10-07T11:59:00Z', input: 999, out: 999 }), // before the claim: not this task's
+      user('2026-10-07T12:00:30Z'),
+      rec({ id: 'msg_a', at: '2026-10-07T12:01:00Z', input: 3, read: 1000, w5m: 200, out: 40, blocks: ['text'] }),
+      rec({ id: 'msg_a', at: '2026-10-07T12:01:00Z', input: 3, read: 1000, w5m: 200, out: 40, blocks: ['tool_use'] }),
+      rec({ id: 'msg_b', at: '2026-10-07T12:02:00Z', input: 1, read: 1200, w1h: 50, out: 20, blocks: ['tool_use'] }),
+      '{not json',
+    ]);
+    await claim(W1);
+    await stop(Date.parse('2026-10-07T12:03:00Z'));
+    const body = bodies.at(-1);
+    expect(body.event).toBe('touch');
+    expect(body.usage.workers).toEqual([{
+      workerId: W1,
+      models: [{ model: 'claude-sonnet-5', input: 4, cacheRead: 2200, cacheWrite5m: 200, cacheWrite1h: 50, output: 60, requests: 2 }],
+      toolCalls: 2, subagents: 0, firstAt: '2026-10-07T12:01:00.000Z', lastAt: '2026-10-07T12:02:00.000Z',
+    }]);
+    expect(JSON.stringify(bodies)).not.toContain(SECRET);
+  });
+
+  it('sends cumulative totals, reading only new bytes since the last report', async () => {
+    write(transcript(), [rec({ id: 'm1', at: '2026-10-07T12:01:00Z', out: 10 })]);
+    await claim(W1);
+    await stop(Date.parse('2026-10-07T12:02:00Z'));
+    write(transcript(), [rec({ id: 'm2', at: '2026-10-07T12:05:00Z', out: 5 })]);
+    await stop(Date.parse('2026-10-07T12:06:00Z'));
+    const last = bodies.at(-1).usage.workers[0];
+    expect(last.models[0]).toMatchObject({ output: 15, requests: 2 });
+    // A replayed Stop with nothing new resends the same totals (the server only ever raises them).
+    await stop(Date.parse('2026-10-07T12:08:00Z'));
+    expect(bodies.at(-1).usage.workers[0].models[0]).toMatchObject({ output: 15, requests: 2 });
+  });
+
+  it("a subagent's usage goes to the task that subagent claimed; the parent's to the session's own claim", async () => {
+    write(transcript(), [rec({ id: 'p1', at: '2026-10-07T12:01:00Z', out: 7 })]);
+    write(subagentFile('aSub1'), [rec({ id: 's1', at: '2026-10-07T11:59:30Z', out: 100, agentId: 'aSub1', blocks: ['tool_use'] })]);
+    write(subagentFile('aIdle'), [rec({ id: 'i1', at: '2026-10-07T12:01:30Z', out: 1, agentId: 'aIdle' })]);
+    await claim(W1);
+    await claim(W2, 'aSub1');
+    await stop(Date.parse('2026-10-07T12:03:00Z'));
+    const byWorker = Object.fromEntries(bodies.at(-1).usage.workers.map((w: any) => [w.workerId, w]));
+    // The subagent's whole run is its task's, even the call before its claim landed.
+    expect(byWorker[W2].models[0]).toMatchObject({ output: 100, requests: 1 });
+    expect(byWorker[W2]).toMatchObject({ toolCalls: 1, subagents: 1 });
+    // A subagent that claimed nothing counts toward the session's own claim.
+    expect(byWorker[W1].models[0]).toMatchObject({ output: 8, requests: 2 });
+    expect(byWorker[W1].subagents).toBe(1);
+  });
+
+  it('nothing is read or sent without a claim, on start, or with BUILDD_HOOK_USAGE=0', async () => {
+    write(transcript(), [rec({ id: 'm1', at: '2026-10-07T12:01:00Z' })]);
+    await stop(Date.parse('2026-10-07T12:03:00Z'));
+    expect(bodies.at(-1).usage).toBeUndefined();
+    await claim(W1);
+    await run({ client: 'claude', env: { ...env(), BUILDD_HOOK_USAGE: '0' }, fetchImpl, now: Date.parse('2026-10-07T12:09:00Z'), stdin: ev('Stop') });
+    expect(bodies.at(-1).usage).toBeUndefined();
+  });
+
+  it('end carries the final usage in the same request', async () => {
+    write(transcript(), [rec({ id: 'm1', at: '2026-10-07T12:01:00Z', out: 3 })]);
+    await claim(W1);
+    await run({ client: 'claude', env: env(), fetchImpl, now: Date.parse('2026-10-07T12:02:00Z'), stdin: ev('SessionEnd', { reason: 'prompt_input_exit' }) });
+    expect(bodies.at(-1)).toMatchObject({ event: 'end', reason: 'exit', usage: { workers: [{ workerId: W1 }] } });
+  });
+
+  it('a model id the contract would refuse is reported as unknown, and synthetic local records are skipped', async () => {
+    write(transcript(), [
+      rec({ id: 'm1', at: '2026-10-07T12:01:00Z', model: 'weird model id; drop table', out: 4 }),
+      rec({ id: 'm2', at: '2026-10-07T12:01:10Z', model: '<synthetic>', out: 0, input: 0 }),
+    ]);
+    await claim(W1);
+    await stop(Date.parse('2026-10-07T12:02:00Z'));
+    expect(bodies.at(-1).usage.workers[0].models).toEqual([expect.objectContaining({ model: 'unknown', output: 4, requests: 1 })]);
+  });
+});
+
 describe('fail open', () => {
   let dir: string;
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'buildd-hook-')); workspaceCheckout(dir); });
