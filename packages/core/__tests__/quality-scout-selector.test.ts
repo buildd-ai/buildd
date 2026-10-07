@@ -387,3 +387,26 @@ describe('selectScoutProbes — hosts', () => {
     expect(ids(b.selected)).toEqual(ids(a.selected));
   });
 });
+
+describe('selectScoutProbes — capture cap', () => {
+  const surface = (over: Partial<ScoutProbeCandidate> = {}) => cand({ family: 'surface', probeKind: 'visual', executor: 'ui-surface', ...over });
+  const needsCapture = (c: ScoutProbeCandidate) => !!c.executor?.startsWith('ui-surface');
+
+  it('selects at most max surface probes; the rest are skipped over_budget before costing a decision, and the slot goes to a cheaper probe', async () => {
+    const a = surface({ anchor: 'ui-a', paths: ['ui-a/page.tsx'] });
+    const b = surface({ anchor: 'ui-b', paths: ['ui-b/page.tsx'], executor: 'ui-surface:other', invariant: 'other' });
+    const cmd = cand();
+    const r = recorder();
+    const out = await selectScoutProbes(set([a, b, cmd]), r.decide, { budget: 3, capture: { max: 1, needsCapture } });
+    expect(ids(out.selected)).toEqual([a.id, cmd.id]);
+    expect(out.skipped).toEqual([expect.objectContaining({ candidate: b, reason: 'over_budget', reasonCode: 'max_capture_probes' })]);
+    expect(r.asked.some((q) => q.subjectRef?.id === b.id)).toBe(false);
+  });
+
+  it('max 0 turns surface probes off; must-run candidates obey the cap too', async () => {
+    const severe = surface({ severity: 'critical' });
+    const out = await selectScoutProbes(set([severe]), recorder().decide, { capture: { max: 0, needsCapture } });
+    expect(out.selected).toEqual([]);
+    expect(out.skipped[0]).toMatchObject({ reason: 'over_budget', reasonCode: 'max_capture_probes' });
+  });
+});

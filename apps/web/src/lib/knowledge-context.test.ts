@@ -1264,3 +1264,39 @@ describe('buildClusteredKnowledgeContext — memory is pinned to the caller proj
     expect(assembly.items.find(i => i.step === memStep.step)!.reason).toBe('memory_skipped_no_scope');
   });
 });
+
+describe('buildKnowledgeContext — live relevance gate (claim_context only)', () => {
+  const TEAM = '11111111-1111-4111-8111-111111111111';
+  const WS = '22222222-2222-4222-8222-222222222222';
+  const TASK = '33333333-3333-4333-8333-333333333333';
+  const store = () => mockStore({
+    [`${TEAM}:memory`]: [
+      { id: 'noise', content: 'unrelated background', score: 0.9 },
+      { id: 'useful', content: 'the claim route trap', score: 0.8 },
+    ],
+  });
+
+  it('claim_context demotes a confident not-relevant memory below the relevant one; mission planning is never judged', async () => {
+    const { setMemoryRelevanceJudge } = await import('@buildd/core/memory-retrieval');
+    const judged: string[] = [];
+    setMemoryRelevanceJudge(async (input) => {
+      judged.push(input.caller);
+      return { demote: new Set(['noise']), record: () => {} };
+    });
+    try {
+      const claim = (await buildKnowledgeContext('fix the claim route', WS, TEAM, store(), {
+        caller: 'claim_context', attribution: { taskId: TASK }, ledger: false,
+      })).join('\n');
+      expect(claim.indexOf('the claim route trap')).toBeLessThan(claim.indexOf('unrelated background'));
+      expect(claim).toContain('unrelated background');
+
+      const planning = (await buildKnowledgeContext('fix the claim route', WS, TEAM, store(), {
+        caller: 'mission_planning', attribution: { taskId: TASK }, ledger: false,
+      })).join('\n');
+      expect(planning.indexOf('unrelated background')).toBeLessThan(planning.indexOf('the claim route trap'));
+      expect(judged).toEqual(['claim_context']);
+    } finally {
+      setMemoryRelevanceJudge(null);
+    }
+  });
+});

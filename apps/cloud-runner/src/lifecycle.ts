@@ -6,6 +6,8 @@
  * Design: docs/design/cloudflare-sandbox-runner.md, Components 3.
  */
 
+import { SEAT_CAP_REASON, SEAT_RETRY_BACKOFF_S, SEAT_WALL_REASON } from './owner-seat';
+
 // ── Exit codes ────────────────────────────────────────────────────────────────
 // Mirrors apps/runner/src/run-once.ts. Not imported from there: that module
 // lazily imports the whole runner, which must not end up in the Worker bundle.
@@ -240,7 +242,9 @@ export const MAX_DEFERRED_RETRIES = DEFERRED_RETRY_BACKOFF_S.length;
 export const RUNNER_CAPABILITY_RETRY_BACKOFF_S = [60, 180, 300, 600, 900, 1800] as const;
 
 export function deferredRetryBackoffMs(retryNumber: number, reason?: string | null): number | null {
-  const schedule = reason === 'runner_capability' ? RUNNER_CAPABILITY_RETRY_BACKOFF_S : DEFERRED_RETRY_BACKOFF_S;
+  const schedule = reason === 'runner_capability' ? RUNNER_CAPABILITY_RETRY_BACKOFF_S
+    : reason === SEAT_CAP_REASON || reason === SEAT_WALL_REASON ? SEAT_RETRY_BACKOFF_S
+    : DEFERRED_RETRY_BACKOFF_S;
   if (!Number.isInteger(retryNumber) || retryNumber < 1 || retryNumber > schedule.length) return null;
   return schedule[retryNumber - 1]! * 1000;
 }

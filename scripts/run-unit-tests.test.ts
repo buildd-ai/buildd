@@ -695,8 +695,8 @@ describe('orderByDuration', () => {
 
 describe('duration hints file', () => {
   it('parseRunnerArgs strips the update flag so it is never mistaken for a directory', () => {
-    expect(parseRunnerArgs(['apps/web/src', UPDATE_DURATIONS_FLAG])).toEqual({ named: ['apps/web/src'], updateDurations: true });
-    expect(parseRunnerArgs(['ALL'])).toEqual({ named: ['ALL'], updateDurations: false });
+    expect(parseRunnerArgs(['apps/web/src', UPDATE_DURATIONS_FLAG])).toEqual({ named: ['apps/web/src'], updateDurations: true, shard: null });
+    expect(parseRunnerArgs(['ALL'])).toEqual({ named: ['ALL'], updateDurations: false, shard: null });
   });
 
   it('every committed hint names an existing unit test file and is over the threshold', () => {

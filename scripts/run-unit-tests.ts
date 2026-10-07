@@ -21,6 +21,7 @@ const UNIT_TEST_ROOTS = [
   'apps/cloud-runner/src/',
   'apps/dispatch/src/',
   'apps/model-policy/src/',
+  'apps/model-policy/scripts/',
   'packages/core/',
   'packages/ai-kit/',
   'packages/dispatch-contract/',
@@ -180,11 +181,94 @@ export const DURATION_HINT_MIN_MS = 2_000;
 
 export type DurationHints = Record<string, number>;
 
-export function parseRunnerArgs(argv: readonly string[]): { named: string[]; updateDurations: boolean } {
-  return {
-    named: argv.filter(arg => arg !== UPDATE_DURATIONS_FLAG),
-    updateDurations: argv.includes(UPDATE_DURATIONS_FLAG),
-  };
+/** `--shard i/n` (or `--shard=i/n`): run only the i-th of n slices of the selection. */
+export const SHARD_FLAG = '--shard';
+
+export type Shard = { index: number; count: number };
+
+export function parseShard(value: string): Shard {
+  const m = /^(\d+)\/(\d+)$/.exec(value.trim());
+  const index = m ? Number(m[1]) : NaN;
+  const count = m ? Number(m[2]) : NaN;
+  if (!m || count < 1 || index < 1 || index > count) {
+    throw new Error(`${SHARD_FLAG} expects i/n with 1 <= i <= n, got '${value}'`);
+  }
+  return { index, count };
+}
+
+export function parseRunnerArgs(argv: readonly string[]): { named: string[]; updateDurations: boolean; shard: Shard | null } {
+  const named: string[] = [];
+  let shard: Shard | null = null;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === UPDATE_DURATIONS_FLAG) continue;
+    if (arg === SHARD_FLAG) {
+      const value = argv[++i];
+      if (value === undefined) throw new Error(`${SHARD_FLAG} needs a value (i/n)`);
+      shard = parseShard(value);
+      continue;
+    }
+    if (arg.startsWith(`${SHARD_FLAG}=`)) {
+      shard = parseShard(arg.slice(SHARD_FLAG.length + 1));
+      continue;
+    }
+    named.push(arg);
+  }
+  return { named, updateDurations: argv.includes(UPDATE_DURATIONS_FLAG), shard };
+}
+
+/**
+ * CI's shard count. Derived, not tuned: the full suite measured ~130s wall in
+ * one job at concurrency 8, and a shard should take about 40-50s, so 3. If the
+ * suite grows until a shard's `Run tests` step passes ~60s, raise this and the
+ * matrix in build.yml together (run-unit-tests-shard.test.ts keeps them equal).
+ */
+export const SHARD_COUNT = 3;
+
+/**
+ * Estimated cost of a file with no duration hint. Hints only list files over
+ * DURATION_HINT_MIN_MS, so the ~2,000 unlisted files are all fast; a flat
+ * estimate is enough for them to fill gaps between the slow ones evenly.
+ */
+export const UNHINTED_ESTIMATE_MS = 300;
+
+/**
+ * Below this much estimated work (summed per-file time, i.e. ~30s of wall at
+ * concurrency 8) a selection is not split: shard 1 runs all of it and the other
+ * shards run nothing. Splitting a small run only adds a job's setup overhead to
+ * every slice without shortening the slowest one.
+ */
+export const SHARD_MIN_TOTAL_MS = 240_000;
+
+const estimateMs = (file: string, hints: DurationHints): number => {
+  const ms = hints[file];
+  return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? ms : UNHINTED_ESTIMATE_MS;
+};
+
+/**
+ * Greedy longest-processing-time-first: slowest file to the least-loaded shard,
+ * ties to the lowest index. Input order does not matter (files are sorted by
+ * estimate then path first), so every CI shard computes the same split.
+ * Each shard comes back sorted by path; run order is orderByDuration's job.
+ */
+export function assignShards(files: readonly string[], hints: DurationHints, count: number): string[][] {
+  const shards: string[][] = Array.from({ length: count }, () => []);
+  const loads = new Array<number>(count).fill(0);
+  const ordered = [...new Set(files)].sort((a, b) => estimateMs(b, hints) - estimateMs(a, hints) || (a < b ? -1 : a > b ? 1 : 0));
+  for (const file of ordered) {
+    let target = 0;
+    for (let i = 1; i < count; i++) if (loads[i]! < loads[target]!) target = i;
+    shards[target]!.push(file);
+    loads[target]! += estimateMs(file, hints);
+  }
+  return shards.map(shard => shard.sort());
+}
+
+/** The files shard `index` (1-based) of `count` runs. */
+export function shardFiles(files: readonly string[], hints: DurationHints, index: number, count: number): string[] {
+  const total = files.reduce((sum, file) => sum + estimateMs(file, hints), 0);
+  if (count === 1 || total < SHARD_MIN_TOTAL_MS) return index === 1 ? [...files] : [];
+  return assignShards(files, hints, count)[index - 1] ?? [];
 }
 
 /**
@@ -682,14 +766,19 @@ async function main(): Promise<void> {
     process.exitCode = 1;
   };
 
-  const { named, updateDurations } = parseRunnerArgs(Bun.argv.slice(2));
+  const { named, updateDurations, shard } = parseRunnerArgs(Bun.argv.slice(2));
   const discovered = await discoverUnitTests();
   const hints = readDurationHints();
+  const selected = selectTestFiles(named, discovered);
+  const sliced = shard ? shardFiles(selected, hints, shard.index, shard.count) : selected;
+  if (shard) {
+    console.log(`Shard ${shard.index}/${shard.count}: ${sliced.length} of ${selected.length} selected files.`);
+  }
   // Order only: which files run, and that each runs alone in its own process,
   // is unchanged.
-  const files = orderByDuration(selectTestFiles(named, discovered), hints);
+  const files = orderByDuration(sliced, hints);
   if (files.length === 0) {
-    console.log('No unit test files selected.');
+    console.log(shard ? `No unit test files in shard ${shard.index}/${shard.count}.` : 'No unit test files selected.');
     reportHiddenDirTests();
     return;
   }

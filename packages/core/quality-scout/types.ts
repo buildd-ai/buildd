@@ -59,6 +59,10 @@ export type ScoutRunTrigger = (typeof SCOUT_RUN_TRIGGERS)[number];
  * ends `completed` either way, when the runner reports or when the expiry
  * sweep finalizes its unexecuted probes `unsupported`.
  */
+/** What a probe checks. The probe-selection decision kind re-exports these. */
+export const SCOUT_PROBE_KINDS = ['route_smoke', 'api_contract', 'visual', 'spec_invariant', 'regression', 'security_boundary'] as const;
+export type ScoutProbeKind = (typeof SCOUT_PROBE_KINDS)[number];
+
 export const SCOUT_RUN_STATUSES = ['running', 'awaiting_host', 'completed', 'failed'] as const;
 export type ScoutRunStatus = (typeof SCOUT_RUN_STATUSES)[number];
 
@@ -144,10 +148,20 @@ export interface ScoutRunParking {
 export const DEFAULT_SCOUT_MAX_PROBES = 4;
 export const MAX_SCOUT_MAX_PROBES = 10;
 
+/** Default `budget.maxCaptureProbes`: one surface probe per run (each costs a workflow run per viewport). */
+export const DEFAULT_SCOUT_MAX_CAPTURE_PROBES = 1;
+export const MAX_SCOUT_MAX_CAPTURE_PROBES = 3;
+
 export interface ScoutBudget {
   maxProbes: number;
   /** Null: no dollar cap beyond the probe count. */
   maxCostUsd: number | null;
+  /**
+   * Surface probes a run may select (each one is a Visual QA workflow run per
+   * viewport on the workspace's Actions minutes). Absent on runs from before
+   * the field: read as `DEFAULT_SCOUT_MAX_CAPTURE_PROBES`.
+   */
+  maxCaptureProbes?: number;
 }
 
 /** The exact state a run exercised. `sha` is what staleness is computed from. */

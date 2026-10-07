@@ -23,6 +23,7 @@
 export const ENTITLEMENT_KEYS = {
   managedRunnerConcurrency: 'managed_runner.concurrency',
   managedRunnerHours: 'managed_runner.hours',
+  hostedRunnerHours: 'hosted_runner.hours',
 } as const;
 export type EntitlementKey = typeof ENTITLEMENT_KEYS[keyof typeof ENTITLEMENT_KEYS];
 
@@ -63,6 +64,19 @@ export type EntitlementBlock =
       /** When the allowance refills (ISO), start of next UTC month. */
       resetsAt: string;
       scope: ManagedRunnerEntitlement['scope'];
+    }
+  | {
+      /**
+       * The team's monthly hosted (cloud) runner allowance is used. Counted
+       * hours: wall time weighted by container size (standard 1x, large 2x).
+       * Holds new cloud claims only; a host runner may still take the task.
+       */
+      kind: 'hosted_runner';
+      key: typeof ENTITLEMENT_KEYS.hostedRunnerHours;
+      unit: 'counted_runner_hours';
+      used: number;
+      limit: number;
+      resetsAt: string;
     };
 
 export interface ManagedRunnerUsage {
@@ -115,6 +129,28 @@ export function evaluateManagedRunnerEntitlement(
   return null;
 }
 
+/**
+ * Would one more hosted (cloud) run exceed the team's monthly allowance?
+ * `allowanceHours` null = no cap (the default for every team). At or past the
+ * allowance new cloud runs wait; running ones are never stopped.
+ */
+export function evaluateHostedRunnerAllowance(
+  allowanceHours: number | null,
+  countedHoursUsed: number,
+  now: Date,
+): EntitlementBlock | null {
+  if (allowanceHours === null || !Number.isFinite(allowanceHours)) return null;
+  if (countedHoursUsed < allowanceHours) return null;
+  return {
+    kind: 'hosted_runner',
+    key: ENTITLEMENT_KEYS.hostedRunnerHours,
+    unit: 'counted_runner_hours',
+    used: Math.round(countedHoursUsed * 10) / 10,
+    limit: allowanceHours,
+    resetsAt: nextMonthlyReset(now).toISOString(),
+  };
+}
+
 /** Narrow an untyped value (task context jsonb, a 422 body) to an EntitlementBlock. */
 export function parseEntitlementBlock(value: unknown): EntitlementBlock | null {
   if (!value || typeof value !== 'object') return null;
@@ -129,6 +165,9 @@ export function parseEntitlementBlock(value: unknown): EntitlementBlock | null {
   if (v.kind === 'usage' && num(v.used) && num(v.limit) && typeof v.resetsAt === 'string') {
     return { kind: 'usage', key: ENTITLEMENT_KEYS.managedRunnerHours, unit: 'runner_hours', used: v.used as number, limit: v.limit as number, resetsAt: v.resetsAt, scope };
   }
+  if (v.kind === 'hosted_runner' && num(v.used) && num(v.limit) && typeof v.resetsAt === 'string') {
+    return { kind: 'hosted_runner', key: ENTITLEMENT_KEYS.hostedRunnerHours, unit: 'counted_runner_hours', used: v.used as number, limit: v.limit as number, resetsAt: v.resetsAt };
+  }
   return null;
 }
 
@@ -136,6 +175,7 @@ export function parseEntitlementBlock(value: unknown): EntitlementBlock | null {
 export const ENTITLEMENT_BLOCK_CONTEXT_KEY = 'entitlementBlock';
 
 /** Claim deferral key for each block kind (ClaimDiagnostics.deferrals). */
-export function entitlementDeferralKey(block: EntitlementBlock): 'managed_concurrency' | 'managed_runner_hours' {
+export function entitlementDeferralKey(block: EntitlementBlock): 'managed_concurrency' | 'managed_runner_hours' | 'hosted_runner_hours' {
+  if (block.kind === 'hosted_runner') return 'hosted_runner_hours';
   return block.kind === 'concurrency' ? 'managed_concurrency' : 'managed_runner_hours';
 }

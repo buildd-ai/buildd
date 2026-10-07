@@ -2,7 +2,7 @@
 title: Worker Sandbox Isolation
 status: active
 owner: max
-last_verified: 2026-08-30
+last_verified: 2026-10-07
 summary: An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 domain: runners
 surfaces: [apps/runner/src/bwrap-mount-allowlist.ts, apps/runner/src/workers.ts, apps/runner/src/env-scan.ts]
@@ -61,13 +61,13 @@ Two facts a reader must carry into the rest of this document:
    (`apps/runner/src/bwrap-mount-allowlist.ts:45-47`). A runner that sets nothing
    runs agents with no outer namespace at all. This is phase 1 of the rollout in
    `docs/design/worker-mount-isolation.md` §5; phases 2-3 have not shipped.
-2. **The kernel-level denial probes have never passed.** The only tests that
-   assert an agent *cannot* reach a path outside the table live in
-   `apps/runner/src/__tests__/mount-isolation.e2e.ts`, whose recorded verdict is
-   BLOCKED (host denied unprivileged namespace creation) and which `bun test`
-   does not discover — `scripts/run-unit-tests.ts:42` globs `**/*.test.{ts,tsx}`
-   and that file is `.e2e.ts`. Everything asserted in CI is about the argv the
-   runner *builds*, not about what the kernel then enforces. See
+2. **The kernel-level denial probes run in CI.** The tests that assert an
+   agent *cannot* reach a path outside the table live in
+   `apps/runner/src/__tests__/mount-isolation.e2e.ts`, which `bun test` does not
+   discover (it is `.e2e.ts`); the `Sandbox isolation probe (bwrap)` job in
+   `.github/workflows/build.yml` runs it and fails on a `skipped` banner. Until
+   the capability probe bound `/lib` and `/lib64`, that job skipped on every
+   run (the loader was missing, so exec failed ENOENT). See
    **Verification gaps**.
 
 ---
@@ -371,16 +371,15 @@ comma-separated `<absolute-path>[:ro|:rw]` entries, parsed by
 Unguarded claims and known drift. Each is a real hole, listed so a regression in
 it is recognisable rather than discovered.
 
-1. **No CI test proves any denial.** Every invariant in §1 is verified as *argv
-   text* (snapshot in
-   `apps/runner/__tests__/unit/__snapshots__/bwrap-mount-allowlist.test.ts.snap`).
-   The only tests that spawn a real namespace and assert a blocked path —
-   sibling worktree, runner coordination key, the non-active backend's
-   credential dir — are in `apps/runner/src/__tests__/mount-isolation.e2e.ts`,
-   which is not matched by the `**/*.test.{ts,tsx}` discovery glob and whose
-   last recorded run was BLOCKED on a host that denies namespace creation
-   (13 of 24 checks skipped). WS-8 in particular is asserted by absence from a
-   snapshot, not by a failed read.
+1. **FIXED** — **No CI test proved any denial.** The namespace tests in
+   `apps/runner/src/__tests__/mount-isolation.e2e.ts` (sibling worktree, runner
+   coordination key, the non-active backend's credential dir) were collected by
+   no glob, and once a CI job ran them they skipped every time: the capability
+   probe bound only `/usr`, so on a merged-usr host the ELF loader was missing
+   and exec failed ENOENT, which read as "namespaces denied". The probe now
+   binds the loader dirs and the CI job fails on a skip. The same job runs the
+   Quality Scout probe sandbox suite (`scout-sandbox.e2e.ts`). WS-8 is still
+   asserted by absence from a snapshot, not by a failed read.
 2. **FIXED** — The wrapper is never exercised for Codex, but the code pretends otherwise.**
    `buildWorkerBwrapArgv()` has a full Codex branch (WS-4) with its own snapshot
    test, yet `workers.ts:2420` gates the wrapper on `!isCodexTask`. No production

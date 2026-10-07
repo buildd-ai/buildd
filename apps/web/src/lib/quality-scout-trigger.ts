@@ -108,13 +108,16 @@ export interface ScoutTriggerConfig {
   missionCandidate: boolean;
   /** Null: never periodic. */
   periodicHours: number | null;
-  budget: { maxProbes?: number; maxCostUsd?: number | null };
+  budget: { maxProbes?: number; maxCostUsd?: number | null; maxCaptureProbes?: number };
   maxDurationMs: number;
   policy: ScoutActionPolicy;
   /** `auto` (default): runner-only probes go to a runner when one is available. `server`: never. */
   host: ScoutHostMode;
-  /** A runner's execution bound for a parked run (`budget.runnerMaxDurationMs`, default 20 min, max 60). */
-  runnerMaxDurationMs: number;
+  /**
+   * A runner's execution bound for a parked run (`budget.runnerMaxDurationMs`, max 60 min). Unset:
+   * the park step picks it (20 min, or capture-aware when a surface probe is selected).
+   */
+  runnerMaxDurationMs?: number;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -136,6 +139,7 @@ export function resolveScoutTriggerConfig(raw: unknown, env: Env = process.env):
     budget: {
       ...(finite(budget.maxProbes) ? { maxProbes: budget.maxProbes } : {}),
       ...(finite(budget.maxCostUsd) ? { maxCostUsd: budget.maxCostUsd } : {}),
+      ...(finite(budget.maxCaptureProbes) ? { maxCaptureProbes: budget.maxCaptureProbes } : {}),
     },
     maxDurationMs: Math.min(
       clampScoutDuration(finite(budget.maxDurationMs) ? budget.maxDurationMs : DEFAULT_SERVER_SCOUT_DURATION_MS),
@@ -143,7 +147,7 @@ export function resolveScoutTriggerConfig(raw: unknown, env: Env = process.env):
     ),
     policy: resolveScoutActionPolicy(raw),
     host: (SCOUT_HOST_MODES as readonly unknown[]).includes(c.host) ? (c.host as ScoutHostMode) : 'auto',
-    runnerMaxDurationMs: clampRunnerDuration(finite(budget.runnerMaxDurationMs) ? budget.runnerMaxDurationMs : undefined),
+    ...(finite(budget.runnerMaxDurationMs) && budget.runnerMaxDurationMs > 0 ? { runnerMaxDurationMs: clampRunnerDuration(budget.runnerMaxDurationMs) } : {}),
   };
 }
 
@@ -219,7 +223,7 @@ export async function triggerQualityScout(input: ScoutTriggerInput, deps: ScoutT
       budget: cfg.budget,
       maxDurationMs: cfg.maxDurationMs,
       policy: cfg.policy,
-      host: { runnerMaxDurationMs: cfg.runnerMaxDurationMs },
+      host: cfg.runnerMaxDurationMs !== undefined ? { runnerMaxDurationMs: cfg.runnerMaxDurationMs } : {},
       ...(input.trigger === 'manual' ? { dedupeKey: manualDedupeKey(deps.now()) } : {}),
     };
     return await deps.run(req, deps.buildRunDeps(ws, req));
@@ -463,10 +467,22 @@ export function scoutRunnerNeeds(environments: readonly unknown[], repoFullName:
   return out;
 }
 
+/**
+ * A heartbeat advert as it counts for routing. A capture probe is served with
+ * a run-scoped GitHub token, which the claim hands only to a key flagged as a
+ * trusted host runner (`accounts.hostRunner`), so another key's `capture`
+ * claim is dropped here: the probe says `no_runner_host` at once instead of
+ * parking for a runner that will never be handed it.
+ */
+export function scoutAdvertForRouting(environment: unknown, hostRunner: boolean): unknown {
+  if (hostRunner || !isRecord(environment) || !isRecord(environment.scoutHost)) return environment;
+  return { ...environment, scoutHost: { ...environment.scoutHost, capture: false } };
+}
+
 /** Recent heartbeats of the workspace's team that advertise a Scout host. */
 async function loadScoutRunnerNeeds(ws: ScoutWorkspace, now: Date): Promise<Set<ScoutHostNeed>> {
   if (!ws.githubRepo) return new Set();
-  const rows = await db.select({ environment: workerHeartbeats.environment })
+  const rows = await db.select({ environment: workerHeartbeats.environment, hostRunner: accounts.hostRunner })
     .from(workerHeartbeats)
     .innerJoin(accounts, eq(accounts.id, workerHeartbeats.accountId))
     .where(and(
@@ -475,7 +491,7 @@ async function loadScoutRunnerNeeds(ws: ScoutWorkspace, now: Date): Promise<Set<
       isNotNull(sql`${workerHeartbeats.environment} -> 'scoutHost'`),
     ))
     .limit(50);
-  return scoutRunnerNeeds(rows.map((r) => r.environment), ws.githubRepo.fullName);
+  return scoutRunnerNeeds(rows.map((r) => scoutAdvertForRouting(r.environment, r.hostRunner === true)), ws.githubRepo.fullName);
 }
 
 // ── Parked-run expiry ───────────────────────────────────────────────────────
@@ -488,10 +504,21 @@ export interface ExpiredScoutSweep {
   errors: number;
 }
 
+/** Both fields narrow; `teamId` keeps a run whose workspace is outside that team out whatever ids are offered. */
+export interface ScoutExpiryScope {
+  teamId?: string;
+  workspaceIds?: readonly string[];
+}
+
 export interface ExpiredScoutDeps {
   now(): Date;
-  /** Parked runs past their deadline, or whose lease lapsed a second time. Oldest deadline first. */
-  listExpired(now: Date, limit: number): Promise<ScoutRun[]>;
+  /**
+   * Parked runs past their deadline, or whose lease lapsed a second time.
+   * Oldest deadline first. `scope` narrows it (the runner claim route sweeps
+   * only the workspaces it serves, inside its own team); empty, every
+   * workspace (the hourly cron).
+   */
+  listExpired(now: Date, limit: number, scope: ScoutExpiryScope): Promise<ScoutRun[]>;
   /** Atomic hand-off from `awaiting_host` to this sweep; false when someone else took it. */
   take(runId: string): Promise<boolean>;
   loadProbes(runId: string): Promise<ScoutProbeRecord[]>;
@@ -502,10 +529,15 @@ export interface ExpiredScoutDeps {
 
 const dbExpiredScoutDeps: ExpiredScoutDeps = {
   now: () => new Date(),
-  async listExpired(now, limit) {
+  async listExpired(now, limit, { teamId, workspaceIds }) {
+    if (workspaceIds && workspaceIds.length === 0) return [];
     const rows = await db.select().from(qualityScoutRuns)
       .where(and(
         eq(qualityScoutRuns.status, 'awaiting_host'),
+        workspaceIds ? inArray(qualityScoutRuns.workspaceId, [...workspaceIds]) : undefined,
+        teamId
+          ? inArray(qualityScoutRuns.workspaceId, db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.teamId, teamId)))
+          : undefined,
         or(
           lte(qualityScoutRuns.hostDeadline, now),
           and(lte(qualityScoutRuns.hostLeaseExpiresAt, now), gte(qualityScoutRuns.hostLeaseLapses, 1)),
@@ -530,13 +562,22 @@ const dbExpiredScoutDeps: ExpiredScoutDeps = {
     return rows.map(scoutProbeFromRow);
   },
   loadWorkspace: (id) => loadScoutWorkspace(id),
-  finalizeDeps: (ws, run) => ({
+  finalizeDeps: (ws, run) => serverScoutFinalizeDeps(ws, run),
+};
+
+/**
+ * The server stores a parked run is finalized with, whoever finalizes it (the
+ * expiry sweep, or the runner route when the last result lands): findings and
+ * follow-up policy never leave the server.
+ */
+export function serverScoutFinalizeDeps(ws: ScoutWorkspace | null, run: ScoutRun): Pick<ScoutRunDeps, 'now' | 'ledger' | 'actions' | 'headSha'> {
+  return {
     now: () => new Date(),
     ledger: dbScoutRunLedger,
     actions: dbScoutActionStore,
     headSha: async () => (ws ? serverHeadSha(ws, run.candidate.ref) : null),
-  }),
-};
+  };
+}
 
 /**
  * The hourly sweep for parked runs nobody finished: past `hostDeadline`, or a
@@ -547,12 +588,16 @@ const dbExpiredScoutDeps: ExpiredScoutDeps = {
  * run; one bad run is counted and the sweep goes on.
  */
 export async function finalizeExpiredQualityScoutRuns(
-  opts: { limit?: number; deps?: ExpiredScoutDeps } = {},
+  opts: { limit?: number; deps?: ExpiredScoutDeps; teamId?: string; workspaceIds?: readonly string[] } = {},
 ): Promise<ExpiredScoutSweep> {
   const deps = opts.deps ?? dbExpiredScoutDeps;
   const out: ExpiredScoutSweep = { expired: 0, finalized: [], raced: 0, errors: 0 };
   const now = deps.now();
-  const runs = await deps.listExpired(now, opts.limit ?? 20);
+  const scope: ScoutExpiryScope = {
+    ...(opts.teamId !== undefined ? { teamId: opts.teamId } : {}),
+    ...(opts.workspaceIds !== undefined ? { workspaceIds: opts.workspaceIds } : {}),
+  };
+  const runs = await deps.listExpired(now, opts.limit ?? 20, scope);
   for (const run of runs) {
     out.expired++;
     try {

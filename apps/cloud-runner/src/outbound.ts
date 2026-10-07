@@ -11,6 +11,7 @@
  *
  *   api.anthropic.com        -> per resolveModelRoute: an Anthropic-compatible proxy such as
  *                               LiteLLM (`Authorization: Bearer <proxy key>` or `x-api-key`),
+ *                               the deployer's own Claude token when set (owner-seat.ts; `Authorization: Bearer`),
  *                               or AI Gateway (`cf-aig-authorization: Bearer <gateway token>`);
  *                               only MODEL_API_ROUTES, anything else is refused (403)
  *   github.com (git https)   -> `Authorization: Basic x-access-token:<installation token>`
@@ -22,6 +23,7 @@
  *
  * Design: docs/design/cloudflare-sandbox-runner.md, Components 4.
  */
+import { ownerSeatToken, withOauthBeta, type OwnerSeatEnv } from './owner-seat';
 
 export const ANTHROPIC_HOST = 'api.anthropic.com';
 export const AI_GATEWAY_HOST = 'gateway.ai.cloudflare.com';
@@ -53,7 +55,7 @@ export const CONTAINER_CREDENTIAL_HEADERS = [
 // ── Config ────────────────────────────────────────────────────────────────────
 
 /** Worker vars/secrets the handler reads. See README "Egress credentials". */
-export interface EgressEnv {
+export interface EgressEnv extends OwnerSeatEnv {
   AI_GATEWAY_ACCOUNT_ID?: string;
   AI_GATEWAY_ID?: string;
   /** Secret. Sent as `cf-aig-authorization`; the Anthropic key itself lives in AI Gateway. */
@@ -80,6 +82,7 @@ export type ModelRoute =
   | { kind: 'gateway'; baseUrl: string; token: string }
   | { kind: 'proxy'; baseUrl: string; key: string; authHeader: ModelProxyAuthHeader; mapModel?: (id: string) => string }
   | { kind: 'direct'; apiKey: string }
+  | { kind: 'owner_seat'; token: string }
   | { kind: 'unconfigured'; reason: string };
 
 const GATEWAY_SEGMENT_RE = /^[A-Za-z0-9_-]{1,128}$/;
@@ -225,6 +228,11 @@ export function resolveModelRoute(env: EgressEnv, server?: ServerModelEndpointSt
   if (server === 'unavailable') {
     return { kind: 'unconfigured', reason: 'the team agent model endpoint is temporarily unavailable' };
   }
+  // The deployer's own Claude token (owner-seat.ts) applies only where the
+  // effective route is the default Anthropic one: no operator proxy and no team
+  // endpoint or Anthropic key (all handled above). It replaces the AI Gateway.
+  const seat = !server ? ownerSeatToken(env) : null;
+  if (seat) return { kind: 'owner_seat', token: seat };
   if (server) {
     const route: ModelRoute = { kind: 'proxy', baseUrl: server.baseUrl, key: server.key, authHeader: server.authHeader };
     if (server.kind === 'openrouter' || (server.models && Object.keys(server.models).length > 0)) {
@@ -381,7 +389,7 @@ export type EgressDecision =
   /** Answered by the handler itself; nothing leaves the Worker. */
   | { action: 'respond'; status: number }
   | {
-      action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'github_basic' | 'github_bearer' | 'otlp' | 'none';
+      action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'owner_seat' | 'github_basic' | 'github_bearer' | 'otlp' | 'none';
       /** Set for a message request to a team endpoint with a model mapping: the egress handler rewrites the body's `model`. */
       mapModel?: (id: string) => string;
       /** GitHub only: why our credential did not go with this forward (counted in the run report). */
@@ -779,6 +787,12 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
     if (route.kind === 'direct') {
       headers.set('x-api-key', route.apiKey);
       return { action: 'forward', url: url.toString(), headers, injected: 'direct' };
+    }
+    if (route.kind === 'owner_seat') {
+      // Container credentials are already stripped; the seat is the only one added.
+      headers.set('authorization', `Bearer ${route.token}`);
+      headers.set('anthropic-beta', withOauthBeta(headers.get('anthropic-beta')));
+      return { action: 'forward', url: url.toString(), headers, injected: 'owner_seat' };
     }
     if (route.kind === 'proxy') {
       // Container credentials are already stripped; this is the only one added.

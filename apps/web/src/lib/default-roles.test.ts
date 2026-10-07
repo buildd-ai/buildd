@@ -11,7 +11,8 @@ describe('DEFAULT_ROLES', () => {
   // A role with no text is never a candidate, so every seeded role must say
   // either what it is for or, explicitly, that it is not routable.
   describe('routing text (role-routing.md §2)', () => {
-    const EXCLUDED = ['reviewer', VISUAL_AUDITOR_ROLE_SLUG];
+    // operator: filed with the slug on purpose, never inferred (deploy authority).
+    const EXCLUDED = ['reviewer', VISUAL_AUDITOR_ROLE_SLUG, 'operator'];
 
     it('every role has routing text or an explicit exclusion', () => {
       for (const role of DEFAULT_ROLES) {
@@ -71,9 +72,9 @@ describe('DEFAULT_ROLES', () => {
     });
   });
 
-  it('seeds the full eight-role set', () => {
+  it('seeds the full nine-role set', () => {
     expect(Object.keys(bySlug).sort()).toEqual([
-      'analyst', 'builder', 'organizer', 'researcher', 'reviewer', 'spec-validator', 'visual-auditor', 'writer',
+      'analyst', 'builder', 'operator', 'organizer', 'researcher', 'reviewer', 'spec-validator', 'visual-auditor', 'writer',
     ]);
   });
 

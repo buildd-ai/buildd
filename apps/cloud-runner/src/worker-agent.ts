@@ -45,6 +45,19 @@ import {
   type ServerModelEndpointState,
 } from './outbound';
 import type { EgressProps } from './egress';
+import {
+  EMPTY_SEAT_GATE,
+  OWNER_SEAT_GATE_NAME,
+  OwnerSeatRun,
+  acquireSeat,
+  markSeatWall,
+  ownerSeatCap,
+  ownerSeatEnabled,
+  releaseSeat,
+  type SeatAcquire,
+  type SeatGateState,
+  type SeatRouteDecision,
+} from './owner-seat';
 import { otlpInterceptHosts } from './otel';
 import { SNAPSHOT_HOST, type SnapshotScope } from './snapshots';
 import { instanceTypeFor, normalizeRunnerSizeDecision, type RunnerSize } from './runner-class';
@@ -166,6 +179,8 @@ export class WorkerAgent extends Agent<Env, RunState> {
         this.browserSessionToken = undefined;
         return bridge ? await bridge.close() : undefined;
       },
+      // Only with the seat secret on the Worker (owner-seat.ts); otherwise runs start as before.
+      ...(ownerSeatEnabled(env) ? { ownerSeat: this.ownerSeatRun } : {}),
       mintTaskToken: () => this.mintTaskToken(),
       // One-shot alarms only (Agents SDK schedule, backed by the Durable
       // Object alarm), for task.scheduled. The callback is runScheduledDispatch.
@@ -442,6 +457,69 @@ export class WorkerAgent extends Agent<Env, RunState> {
   async getModelEndpoint(): Promise<ServerModelEndpointState> {
     if (this.state.status !== 'starting' && this.state.status !== 'running') return null;
     return this.modelEndpoints.get();
+  }
+
+  // ── Owner seat (owner-seat.ts) ──
+  // The token itself never reaches the agent's state, RPC surface or logs: it
+  // is read from env by the egress handler alone. Here: slots and a label.
+
+  private ownerSeatRunInstance: OwnerSeatRun | null = null;
+
+  private get ownerSeatRun(): OwnerSeatRun {
+    if (this.ownerSeatRunInstance) return this.ownerSeatRunInstance;
+    const agent = this;
+    const gate = async () => (await getAgentByName(this.env.WorkerAgent, OWNER_SEAT_GATE_NAME)) as unknown as {
+      seatGateAcquire(taskId: string, cap: number): Promise<SeatAcquire>;
+      seatGateRelease(taskId: string): Promise<void>;
+      seatGateWall(untilMs: number): Promise<void>;
+    };
+    this.ownerSeatRunInstance = new OwnerSeatRun({
+      get taskId() { return agent.taskId; },
+      gate: {
+        acquire: async (taskId) => (await gate()).seatGateAcquire(taskId, ownerSeatCap(this.env)),
+        release: async (taskId) => (await gate()).seatGateRelease(taskId),
+        wall: async (untilMs) => (await gate()).seatGateWall(untilMs),
+      },
+      now: () => Date.now(),
+      log: (m) => console.log(m),
+    });
+    return this.ownerSeatRunInstance;
+  }
+
+  /** RPC from EgressHandler before a model request goes out (seat route or not). Only while a run is live. */
+  async noteModelRoute(seat: boolean): Promise<SeatRouteDecision> {
+    if (!ownerSeatEnabled(this.env) || (this.state.status !== 'starting' && this.state.status !== 'running')) return { proceed: true };
+    return this.ownerSeatRun.noteRoute(seat);
+  }
+
+  /** RPC from EgressHandler when the seat route answered 429. Header values only. */
+  async noteOwnerSeatWall(headers: { retryAfter: string | null; reset: string | null }): Promise<void> {
+    if (!ownerSeatEnabled(this.env)) return;
+    await this.ownerSeatRun.noteWall(headers);
+  }
+
+  // The gate: this Worker's one shared counter, kept by the WorkerAgent named
+  // OWNER_SEAT_GATE_NAME (never a task, never a lease). Durable Object input
+  // gates make each of these a single atomic step.
+  private async readSeatGate(): Promise<SeatGateState> {
+    return (await this.ctx.storage.get<SeatGateState>('ownerSeatGate')) ?? EMPTY_SEAT_GATE;
+  }
+
+  async seatGateAcquire(taskId: string, cap: number): Promise<SeatAcquire> {
+    if (this.name !== OWNER_SEAT_GATE_NAME) throw new Error('not the owner seat gate');
+    const r = acquireSeat(await this.readSeatGate(), taskId, Date.now(), cap);
+    await this.ctx.storage.put('ownerSeatGate', r.state);
+    return r.result;
+  }
+
+  async seatGateRelease(taskId: string): Promise<void> {
+    if (this.name !== OWNER_SEAT_GATE_NAME) throw new Error('not the owner seat gate');
+    await this.ctx.storage.put('ownerSeatGate', releaseSeat(await this.readSeatGate(), taskId, Date.now()));
+  }
+
+  async seatGateWall(untilMs: number): Promise<void> {
+    if (this.name !== OWNER_SEAT_GATE_NAME) throw new Error('not the owner seat gate');
+    await this.ctx.storage.put('ownerSeatGate', markSeatWall(await this.readSeatGate(), untilMs, Date.now()));
   }
 
   /** RPC from EgressHandler after the endpoint answered 401 (endpointRejectedKey). */

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { computeReadiness } from '@buildd/core/workspace-readiness';
 import { discoverScoutCapabilities } from '@buildd/core/scout-capabilities';
 import type { ScoutFindingStore } from '@buildd/core/quality-scout/ledger';
-import type { ScoutCommandOutput, ScoutCommandRequest, ScoutProbePorts } from '@buildd/core/quality-scout/executors';
+import { SCOUT_VIEWPORTS, type ScoutCommandOutput, type ScoutCommandRequest, type ScoutProbePorts } from '@buildd/core/quality-scout/executors';
 import type { ScoutProbeDecider } from '@buildd/core/quality-scout/selector';
 import type {
   ScoutActionState,
@@ -19,8 +19,13 @@ import {
   executeScoutProbes,
   finalizeExpiredScoutRun,
   finalizeScoutRun,
+  MAX_SCOUT_CAPTURE_RUNNER_DURATION_MS,
   mergeScoutExecution,
+  parkScoutRun,
   planScoutRun,
+  SCOUT_CAPTURE_MS_PER_VIEWPORT,
+  SCOUT_LEASE_SLACK_MS,
+  scoutRunnerDuration,
   runQualityScout,
   scoutHostNeed,
   scoutRunId,
@@ -601,6 +606,54 @@ describe('a parked run', () => {
     expect(Date.parse(saved.parking!.hostDeadline) - T0.getTime()).toBe(65 * 60_000);
   });
 
+  /** Park a planned run whose records gain `n` runner-hosted surface probes (two viewports each). */
+  async function parkedWithCapture(n: number, host: ScoutRunRequest['host'] = {}) {
+    const w = memoryWorld();
+    const req = request({ host });
+    const d = deps(w, { ports: serverPorts(), runnerHost: runnerOffers('command') });
+    const planned = await planScoutRun(req, d);
+    if (planned.status !== 'planned') throw new Error(planned.status);
+    const surface = (i: number): ScoutProbeRecord => ({
+      candidateId: `surface-${i}`, family: 'surface', probeKind: 'regression', title: 't', invariant: 'i', sourceSignals: [], preconditions: [],
+      executor: 'ui-surface', estimatedCost: 'high', risk: 'medium', mutates: false, evidenceRequirements: [], unsupportedReason: null,
+      selection: { status: 'selected', via: 'decision', reasonCode: 'x', decisionSource: null }, host: 'runner', result: null,
+    });
+    const plan = { ...planned.plan, records: [...planned.plan.records, ...Array.from({ length: n }, (_, i) => surface(i))] };
+    const out = await parkScoutRun(plan, req, d);
+    if (out.status !== 'awaiting_host') throw new Error(out.status);
+    return w.runs.get(out.runId)!.run.parking!;
+  }
+
+  it('with a two-viewport surface probe, defaults to a lease longer than the capture estimate', async () => {
+    const parking = await parkedWithCapture(1);
+    const estimate = SCOUT_VIEWPORTS.length * SCOUT_CAPTURE_MS_PER_VIEWPORT;
+    expect(parking.runnerMaxDurationMs).toBeGreaterThanOrEqual(estimate);
+    expect(parking.runnerMaxDurationMs + SCOUT_LEASE_SLACK_MS).toBeGreaterThan(estimate);
+    // The host deadline still never cuts the lease short.
+    expect(Date.parse(parking.hostDeadline) - T0.getTime()).toBeGreaterThanOrEqual(parking.runnerMaxDurationMs + SCOUT_LEASE_SLACK_MS);
+  });
+
+  it('a capture-aware lease ends before the hour a GitHub installation token lives', async () => {
+    const parking = await parkedWithCapture(3);
+    expect(parking.runnerMaxDurationMs).toBe(MAX_SCOUT_CAPTURE_RUNNER_DURATION_MS);
+    expect(parking.runnerMaxDurationMs + SCOUT_LEASE_SLACK_MS).toBeLessThanOrEqual(55 * 60_000);
+  });
+
+  it('an explicit runner bound still wins with a surface probe, but never past the token-bounded cap', async () => {
+    expect((await parkedWithCapture(1, { runnerMaxDurationMs: 15 * 60_000 })).runnerMaxDurationMs).toBe(15 * 60_000);
+    expect((await parkedWithCapture(1, { runnerMaxDurationMs: 60 * 60_000 })).runnerMaxDurationMs).toBe(MAX_SCOUT_CAPTURE_RUNNER_DURATION_MS);
+  });
+
+  it('a command-only run keeps the 20-minute default', async () => {
+    expect((await parkedWithCapture(0)).runnerMaxDurationMs).toBe(20 * 60_000);
+  });
+
+  it('scoutRunnerDuration: no capture probe is exactly clampRunnerDuration', () => {
+    expect(scoutRunnerDuration(undefined, 0)).toBe(20 * 60_000);
+    expect(scoutRunnerDuration(5 * 3_600_000, 0)).toBe(60 * 60_000);
+    expect(scoutRunnerDuration(undefined, 2)).toBe(MAX_SCOUT_CAPTURE_RUNNER_DURATION_MS);
+  });
+
   it('is live: a re-trigger on the same SHA is a duplicate', async () => {
     const { w } = await parked();
     const again = await runQualityScout(request({ trigger: 'periodic' }), deps(w, { ports: serverPorts(), runnerHost: runnerOffers('command') }));
@@ -658,6 +711,23 @@ describe('a parked run', () => {
     expect(kept.result?.verdict).toBe(ex.records[0].result?.verdict);
     expect(kept.result?.reason).not.toBe('no_runner_claimed');
     expect(out.metrics.hosts?.runnerExpired).toBe(out.metrics.hosts!.runnerProbes - 1);
+  });
+
+  it('a runner-hosted fail is recorded but, on first sight, files nothing in propose mode', async () => {
+    const { w, saved } = await parked();
+    const records = w.probes.get(saved.id)!;
+    const runnerOnes = records.filter((p) => p.host === 'runner');
+    const ex = await executeScoutProbes(saved, runnerOnes, saved.parking!.profile, { command: commandPort({ exitCode: 3 }).port }, {
+      now: () => T0, startedAt: T0, maxDurationMs: 60_000, host: 'runner',
+    });
+    expect(ex.records.some((p) => p.result?.verdict === 'fail' && (p.result.confidence ?? 0) >= 0.7)).toBe(true);
+    const byId = new Map(ex.records.map((p) => [p.candidateId, p]));
+    const merged = records.map((p) => byId.get(p.candidateId) ?? p);
+    const out = await finalizeScoutRun({ run: saved, records: merged, summary: structuredClone(saved.parking!.plan), mode: 'propose' }, deps(w, { now: () => T0 }));
+    if (out?.status !== 'completed') throw new Error(String(out?.status));
+    expect(w.findings.size).toBeGreaterThan(0);
+    expect(w.tasks.size).toBe(0);
+    expect([...w.findings.values()].every((f) => f.actionState === 'aggregated' || f.actionState === 'retained')).toBe(true);
   });
 
   it('a completed or never-parked run is not touched by the expiry finalizer', async () => {

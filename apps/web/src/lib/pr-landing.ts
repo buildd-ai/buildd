@@ -629,11 +629,13 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // dispatcher the legacy auto-merge door uses (resolveReReviewPlan + the
   // reviewer-task dedupe). Already-reviewing names that reviewer as the owner.
   // A stale blocking verdict uses the same dispatcher, labelled with why.
-  const reReviewVia = (staleReason?: string): NonNullable<LandPrDeps['dispatchFix']> => async (fi) => {
+  // A PR nobody ever asked a reviewer about uses it too, as a first review.
+  const reReviewVia = (staleReason?: string, firstReview = false): NonNullable<LandPrDeps['dispatchFix']> => async (fi) => {
     const send = deps.dispatchStaleApprovalReReview
       ?? (await import('@/lib/stale-approval-re-review')).dispatchStaleApprovalReReview;
     const res = await send({
       ...(staleReason ? { staleReason } : {}),
+      ...(firstReview ? { firstReview: true } : {}),
       workspaceId: fi.workspaceId,
       installationId: fi.installationId,
       repoFullName: fi.repoFullName,
@@ -746,7 +748,16 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
 
   if (!safety.ok) {
     const reason = safety.reason;
-    switch (classifyAutoMergeRefusal(reason)) {
+    const refusal = classifyAutoMergeRefusal(reason);
+    // A conflict blocks every door, and GitHub runs no fresh CI on a PR it
+    // cannot merge, so a dirty PR is repaired first even when an earlier rail
+    // (red CI, a deny path, the size cap) refused it. Repairing is not
+    // merging: every rail is evaluated again on the repaired head.
+    const dirty = (observed.mergeableState ?? pr.mergeableState) === 'dirty';
+    if (dirty && refusal !== 'conflict' && refusal !== 'stale_head' && refusal !== 'github_read') {
+      return conflictOutcome(`PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch; also refused: ${reason}`, { alsoRefused: refusal });
+    }
+    switch (refusal) {
       case 'ci': {
         const red = (observed.checkRuns ?? []).some((r) => r.conclusion === 'failure');
         return red ? needsFix('ci_fix', reason) : waiting(reason);
@@ -819,6 +830,18 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       }
       if (status.state === 'review_failed') {
         return human('review_failed', 'the review produced no verdict');
+      }
+      // Green, mergeable and never reviewed: the review request was lost (or
+      // never sent), so send the workspace's reviewer now. Single-flight per
+      // PR + head through the reviewer dedupe; once it exists the state is
+      // queued/reviewing and the verdict gate above waits on it.
+      if (status.state === 'not_requested') {
+        return needsFix(
+          're_review',
+          'the PR is green and mergeable but no review was ever requested. Next: the workspace reviewer was asked; its verdict decides the landing',
+          deps.dispatchFix ?? reReviewVia(undefined, true),
+          { firstReview: true },
+        );
       }
       return needsFix('re_review', 'no approved review is on file for this head');
     }
@@ -1055,21 +1078,43 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     return mapRetry(res, why);
   }
 
-  async function conflictOutcome(reason: string): Promise<LandingOutcome> {
-    if (!owner.taskId || !owner.workerId) return human('no_owner', `${reason}, and no task owns this PR to fix it`);
-    if (!act) return done({ kind: 'needs_fix', fix: 'conflict', reason }, reason, { fix: 'conflict', fixDispatched: false });
+  /**
+   * One concrete repair for the conflict as it stands now. The base tip is
+   * passed so the dispatcher can key the repair to this conflict basis (head +
+   * base): a spent attempt budget from an earlier conflict does not strand a
+   * new one, and the same basis is never repaired twice.
+   */
+  async function conflictOutcome(reason: string, extra: Record<string, unknown> = {}): Promise<LandingOutcome> {
+    if (!owner.taskId || !owner.workerId) return human('no_owner', `${reason}, and no task owns this PR to fix it`, extra);
+    if (!act) return done({ kind: 'needs_fix', fix: 'conflict', reason }, reason, { ...extra, fix: 'conflict', fixDispatched: false });
+    const baseSha = baseRef
+      ? await githubApi(installationId, `${ghPath}/commits/${encodeURIComponent(baseRef)}`)
+        .then((c) => (typeof c?.sha === 'string' ? c.sha : null))
+        .catch(() => null)
+      : null;
     let res: DispatchConflictRetryResult;
     try {
       res = await dispatchConflictRetry({
-        workerId: owner.workerId, taskId: owner.taskId, prNumber, headSha: liveHead, repoFullName, workspaceId,
+        workerId: owner.workerId, taskId: owner.taskId, prNumber, headSha: liveHead, repoFullName, workspaceId, baseSha,
       });
     } catch (err) {
-      return human('merge_failed', `could not file the conflict fix: ${errMessage(err)}`);
+      return human('merge_failed', `could not file the conflict fix: ${errMessage(err)}`, extra);
     }
-    return mapRetry(res, reason);
+    return mapRetry(res, reason, extra);
   }
 
-  async function mapRetry(res: DispatchConflictRetryResult, reason: string): Promise<LandingOutcome> {
+  async function mapRetry(res: DispatchConflictRetryResult, reason: string, extra: Record<string, unknown> = {}): Promise<LandingOutcome> {
+    // The conflict flag was stale: a merge against the current base tip was
+    // clean, so the branch was updated with no agent. The new head earns its
+    // own CI and lands on its own event.
+    if (res.conflictFalsePositive && res.branchUpdated) {
+      const after = await readLivePr(installationId, repoFullName, prNumber).catch(() => null);
+      return done(
+        { kind: 'updating_branch', newHeadSha: after?.headSha ?? liveHead },
+        `flagged as conflicting, but the base merged in cleanly; updated the branch instead of filing a fix (${reason})`,
+        { ...extra, refresh: 'conflict_false_positive' },
+      );
+    }
     // Refresh outcomes that are not conflicts (lib/base-refresh.ts): no fix was
     // filed and none is owed. A later event or the sweep re-drives the PR.
     if (res.headChanged) return waiting(`the PR head moved before the refresh (${reason}); re-reading on the new head`, { refresh: 'head_changed' });
@@ -1090,14 +1135,14 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     if (res.baseRewritten) return human('base_rewritten', 'the base branch was rewritten after this PR opened');
     if (res.exhausted) {
       if (owner.taskId) await escalate(owner.taskId, repoFullName, prNumber, liveHead).catch(() => {});
-      return human('fix_exhausted', `the conflict-fix attempts are exhausted (${reason}). Next: a person resolves the conflict or closes the PR; a push that resolves it re-enters landing`);
+      return human('fix_exhausted', `the conflict-fix attempts are exhausted and this exact conflict (head and base) was already attempted (${reason}). Next: a person resolves the conflict or closes the PR; a push, or a base that moves, re-enters landing with a fresh repair`);
     }
     if (res.disabled) return human('auto_resolve_disabled', `automatic conflict resolution is off for this workspace (${reason}). Next: a person resolves the conflict, or turns automatic resolution on`);
     const taskId = res.inFlightTaskId ?? res.taskId;
     return done(
       { kind: 'needs_fix', fix: 'conflict', reason, ...(taskId ? { taskId } : {}) },
       reason,
-      { fix: 'conflict', fixDispatched: !!res.dispatched, dedup: !res.dispatched && !res.inFlightTaskId },
+      { ...extra, fix: 'conflict', fixDispatched: !!res.dispatched, dedup: !res.dispatched && !res.inFlightTaskId },
     );
   }
 }

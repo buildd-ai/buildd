@@ -6,6 +6,7 @@ import {
   checkManualScoutRateLimit,
   finalizeExpiredQualityScoutRuns,
   type ExpiredScoutDeps,
+  scoutAdvertForRouting,
   scoutRunnerNeeds,
   isPeriodicScoutDue,
   isQualityScoutDisabled,
@@ -384,8 +385,9 @@ describe('gitConfig.qualityScout.host', () => {
     expect(resolveScoutTriggerConfig({ mode: 'shadow', host: 'cloud' }).host).toBe('auto');
   });
 
-  it('reads the runner bound from budget.runnerMaxDurationMs: default 20 min, capped at 60', () => {
-    expect(resolveScoutTriggerConfig({ mode: 'shadow' }).runnerMaxDurationMs).toBe(20 * 60_000);
+  it('reads the runner bound from budget.runnerMaxDurationMs: unset until the run knows its probes, capped at 60', () => {
+    // Unset: the park step picks the default (20 min, or capture-aware with a surface probe).
+    expect(resolveScoutTriggerConfig({ mode: 'shadow' }).runnerMaxDurationMs).toBeUndefined();
     expect(resolveScoutTriggerConfig({ mode: 'shadow', budget: { runnerMaxDurationMs: 5 * 60_000 } }).runnerMaxDurationMs).toBe(5 * 60_000);
     expect(resolveScoutTriggerConfig({ mode: 'shadow', budget: { runnerMaxDurationMs: 5 * H } }).runnerMaxDurationMs).toBe(60 * 60_000);
   });
@@ -394,6 +396,12 @@ describe('gitConfig.qualityScout.host', () => {
     const t = triggerDeps(workspace({ mode: 'shadow', budget: { runnerMaxDurationMs: 7 * 60_000 } }));
     await triggerQualityScout({ workspaceId: 'ws-1', trigger: 'manual' }, t.deps);
     expect(t.runs[0].host).toEqual({ runnerMaxDurationMs: 7 * 60_000 });
+  });
+
+  it('with no budget.runnerMaxDurationMs the trigger hands no bound, so the park step chooses it', async () => {
+    const t = triggerDeps(workspace({ mode: 'shadow' }));
+    await triggerQualityScout({ workspaceId: 'ws-1', trigger: 'manual' }, t.deps);
+    expect(t.runs[0].host).toEqual({});
   });
 
   it('host: server builds a single-host run with no runner lookup — today\'s pipeline exactly', () => {
@@ -416,6 +424,24 @@ describe('scoutRunnerNeeds', () => {
   it('a malformed advert, or one that says false, counts for nothing', () => {
     const envs = [null, {}, { scoutHost: 'yes' }, { scoutHost: { repos: 'acme/tool', command: true } }, { scoutHost: { repos: ['acme/tool'], command: 'true', capture: false } }];
     expect(scoutRunnerNeeds(envs, 'acme/tool').size).toBe(0);
+  });
+});
+
+describe('scoutAdvertForRouting', () => {
+  const env = { scoutHost: { repos: ['acme/tool'], command: true, capture: true } };
+  it('a key that is not a trusted host runner never counts as a capture host (the claim would not hand it the probe)', () => {
+    expect([...scoutRunnerNeeds([scoutAdvertForRouting(env, false)], 'acme/tool')]).toEqual(['command']);
+  });
+  it('a trusted host runner\'s advert counts as sent', () => {
+    expect([...scoutRunnerNeeds([scoutAdvertForRouting(env, true)], 'acme/tool')].sort()).toEqual(['capture', 'command']);
+    expect(scoutAdvertForRouting(null, false)).toBeNull();
+  });
+});
+
+describe('resolveScoutTriggerConfig — capture budget', () => {
+  it('passes budget.maxCaptureProbes through for the run to clamp', () => {
+    expect(resolveScoutTriggerConfig({ budget: { maxCaptureProbes: 2 } }, {}).budget).toEqual({ maxCaptureProbes: 2 });
+    expect(resolveScoutTriggerConfig({ budget: { maxCaptureProbes: 'x' } }, {}).budget).toEqual({});
   });
 });
 
@@ -484,6 +510,15 @@ describe('finalizeExpiredQualityScoutRuns', () => {
     expect(p.result?.verdict).toBe('unsupported');
     expect(p.result?.reason).toBe('no_runner_claimed');
     expect(s.saved.get('r1')!.metrics!.verdicts.pass).toBe(0);
+  });
+
+  it('hands the caller\'s team and workspaces to the expired-run query', async () => {
+    const s = sweepDeps([], new Set());
+    const seen: unknown[] = [];
+    s.deps.listExpired = async (_now, _limit, scope) => { seen.push(scope); return []; };
+    await finalizeExpiredQualityScoutRuns({ deps: s.deps, teamId: 'team-a', workspaceIds: ['ws-1'] });
+    await finalizeExpiredQualityScoutRuns({ deps: s.deps });
+    expect(seen).toEqual([{ teamId: 'team-a', workspaceIds: ['ws-1'] }, {}]);
   });
 
   it('a run someone else already took is counted as raced and not finalized twice', async () => {

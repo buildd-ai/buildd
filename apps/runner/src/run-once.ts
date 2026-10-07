@@ -240,6 +240,8 @@ const DEFERRED_TASK_EXCLUSION_CODES = new Set<string>([
   'path_overlap', 'connector_mismatch', 'role_env_unsatisfied',
   // Commercial entitlement on a managed runner: queued until capacity frees.
   'managed_concurrency', 'managed_runner_hours',
+  // The team's hosted runner allowance: queued until it refills or grows.
+  'hosted_runner_hours',
   // SQL-probe codes (explicit-task-exclusion.ts) — scheduled, cooling down, or
   // simply stale by the time the probe ran; none of these say "never".
   'deferred', 'deps_blocked', 'runner_cooldown', 'state_changed',

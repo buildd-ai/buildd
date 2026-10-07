@@ -6,7 +6,8 @@ import type { WorkerAgent, WorkerAgentLarge } from './worker-agent';
  * Worker bindings, vars and secrets. See README.md for which is which.
  * Secrets: DISPATCH_TOKEN, BUILDD_API_KEY, AI_GATEWAY_TOKEN or MODEL_PROXY_KEY,
  * OTEL_EXPORTER_OTLP_AUTH_HEADER / OTEL_EXPORTER_OTLP_AUTH_VALUE, and (local only)
- * ANTHROPIC_DIRECT_API_KEY. Everything else is a plain var. The egress settings
+ * ANTHROPIC_DIRECT_API_KEY, and (opt-in, owner seat) CLAUDE_CODE_OAUTH_TOKEN.
+ * Everything else is a plain var. The egress settings
  * are in EgressEnv (outbound.ts), the telemetry ones in OtelEgressEnv (otel.ts).
  */
 export interface Env extends EgressEnv, OtelEgressEnv {

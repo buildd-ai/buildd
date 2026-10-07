@@ -27,19 +27,17 @@ import { db } from '../db/client';
 import { qualityScoutFindings, qualityScoutProbes, qualityScoutRuns } from '../db/schema';
 import {
   maxSeverity,
-  runVerificationCheck,
   summarizeVerificationResults,
   verificationSignature,
   VERIFICATION_SEVERITIES,
   type EvidenceRequirement,
-  type VerificationCheck,
-  type VerificationExecutor,
   type VerificationResult,
-  type VerificationRunContext,
   type VerificationSeverity,
 } from '../verification-check';
 import {
+  DEFAULT_SCOUT_MAX_CAPTURE_PROBES,
   DEFAULT_SCOUT_MAX_PROBES,
+  MAX_SCOUT_MAX_CAPTURE_PROBES,
   MAX_SCOUT_DISMISS_REASON,
   MAX_SCOUT_MAX_PROBES,
   SCOUT_COSTS,
@@ -65,11 +63,15 @@ import {
   type ScoutSourceSignal,
 } from './types';
 
+// The probe-as-check half is pure and lives apart from the DB stores below, so
+// a runner can execute probes without this module's database graph.
+import { buildScoutProbeCheck, executeScoutProbe, SCOUT_CHECK_VERSION, scoutCheckId, scoutExecutionCheckId } from './probe-check';
+export { buildScoutProbeCheck, executeScoutProbe, SCOUT_CHECK_VERSION, scoutCheckId, scoutExecutionCheckId };
+
 const SHA_RE = /^[0-9a-f]{40}$/;
 const MAX_ERROR_CHARS = 500;
 const MAX_REF_CHARS = 255;
 /** Version of the check a probe becomes. Bump if a probe's id stops meaning the same invariant. */
-export const SCOUT_CHECK_VERSION = 1;
 
 const clip = (s: string, max: number) => (s.length > max ? s.slice(0, max) : s);
 
@@ -97,7 +99,7 @@ export interface StartScoutRunInput {
   mode: ScoutMode;
   candidate: { ref: string; sha: string };
   prior?: { runId: string; sha: string } | null;
-  budget?: { maxProbes?: number; maxCostUsd?: number | null };
+  budget?: { maxProbes?: number; maxCostUsd?: number | null; maxCaptureProbes?: number };
   now: Date;
 }
 
@@ -111,7 +113,18 @@ export function clampScoutBudget(b: StartScoutRunInput['budget']): ScoutBudget {
     ? Math.min(Math.max(Math.floor(raw), 1), MAX_SCOUT_MAX_PROBES)
     : DEFAULT_SCOUT_MAX_PROBES;
   const cost = b?.maxCostUsd;
-  return { maxProbes, maxCostUsd: typeof cost === 'number' && Number.isFinite(cost) && cost > 0 ? cost : null };
+  return {
+    maxProbes,
+    maxCostUsd: typeof cost === 'number' && Number.isFinite(cost) && cost > 0 ? cost : null,
+    maxCaptureProbes: clampScoutCaptureProbes(b?.maxCaptureProbes),
+  };
+}
+
+/** Default 1; 0 turns surface probes off for the run; never above `MAX_SCOUT_MAX_CAPTURE_PROBES`. */
+export function clampScoutCaptureProbes(raw: unknown): number {
+  return typeof raw === 'number' && Number.isFinite(raw)
+    ? Math.min(Math.max(Math.floor(raw), 0), MAX_SCOUT_MAX_CAPTURE_PROBES)
+    : DEFAULT_SCOUT_MAX_CAPTURE_PROBES;
 }
 
 function normalizeSha(sha: unknown): string | null {
@@ -185,21 +198,6 @@ export interface ScoutCandidateLike {
   mutates?: boolean;
 }
 
-export function scoutCheckId(candidateId: string): string {
-  return `${SCOUT_FLAVOR}:${candidateId}`;
-}
-
-/**
- * The check id for a probe whose execution does not depend on which hypothesis
- * selected it (the same command, request or capture). Two hypotheses that run
- * the same thing gather the same evidence, so a failure there is one defect:
- * keying it by the execution is what keeps it one finding and one follow-up
- * across hypotheses and across runs.
- */
-export function scoutExecutionCheckId(executionKey: string): string {
-  return `${SCOUT_FLAVOR}:exec:${executionKey}`;
-}
-
 function normalizeRequirement(r: string | EvidenceRequirement): EvidenceRequirement {
   if (typeof r === 'string') return { key: r, need: 'complete' };
   return { key: r.key, need: r.need === 'partial' ? 'partial' : 'complete' };
@@ -228,47 +226,6 @@ export function scoutProbeRecord(c: ScoutCandidateLike, selection: ScoutProbeSel
     selection: { ...selection },
     result: null,
   });
-}
-
-/** Required capability for a probe with no matched executor — never offered, so the check is `unsupported`. */
-const NO_EXECUTOR = 'scout:no-usable-executor';
-
-/**
- * The probe as a substrate check on the run's candidate SHA. The id depends
- * only on the candidate — or, given `executionKey`, only on what is executed —
- * so the signature of the same failure is the same in every run. The executor
- * must also find the probe's chosen capability.
- */
-export function buildScoutProbeCheck<I>(
-  run: ScoutRun,
-  probe: ScoutProbeRecord,
-  executor: VerificationExecutor<I>,
-  executionKey?: string | null,
-): VerificationCheck<I> {
-  const requires = [probe.executor ?? NO_EXECUTOR, ...executor.requires.filter(r => r !== probe.executor)];
-  return {
-    id: executionKey ? scoutExecutionCheckId(executionKey) : scoutCheckId(probe.candidateId),
-    version: SCOUT_CHECK_VERSION,
-    invariant: probe.invariant,
-    subject: { kind: 'candidate-sha', ref: run.candidate.sha },
-    provenance: { flavor: SCOUT_FLAVOR, origin: `run:${run.id}` },
-    executor: { kind: executor.kind, requires, run: (i: I) => executor.run(i) },
-    evidenceRequirements: probe.evidenceRequirements,
-    defaultSeverity: probe.risk,
-  };
-}
-
-/** Run one selected probe through the substrate and attach its result. Never throws for executor errors. */
-export function executeScoutProbe<I>(
-  run: ScoutRun,
-  probe: ScoutProbeRecord,
-  executor: VerificationExecutor<I>,
-  ctx: VerificationRunContext<I>,
-  executionKey?: string | null,
-): ScoutProbeRecord {
-  if (probe.selection.status !== 'selected') throw new Error(`scout probe ${probe.candidateId}: only a selected probe is executed`);
-  const result = runVerificationCheck(buildScoutProbeCheck(run, probe, executor, executionKey), ctx);
-  return Object.freeze({ ...probe, result });
 }
 
 function notExecutedResult(run: ScoutRun, probe: ScoutProbeRecord, now: Date): VerificationResult {
