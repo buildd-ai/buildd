@@ -122,7 +122,7 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
       {/* Desktop: one table, tier rows, Coding and Chat columns. */}
       {!isMobile && <div className="card mt-5 max-w-5xl" data-testid="tier-table">
         <div className="grid grid-cols-[180px_minmax(0,1fr)_minmax(0,1fr)] gap-3 px-3 py-2 border-b-2 border-border-strong font-mono text-chip font-semibold uppercase tracking-[1.5px] text-text-muted">
-          <span>Tier</span><span>Coding</span><span>Chat</span>
+          <span>Tier</span><span className="pl-2">Coding</span><span className="pl-2">Chat</span>
         </div>
         {!data && !loadError && <div className="px-3 py-4 text-meta text-text-muted">Loading…</div>}
         {data && TIERS.map((tier) => (
