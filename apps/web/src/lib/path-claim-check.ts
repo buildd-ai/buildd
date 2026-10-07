@@ -27,6 +27,7 @@ import {
   registerWaiter,
 } from '@buildd/core/path-claim';
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
+import { PATH_SIGNAL_REASONS } from '@buildd/core/gate-analytics';
 import { GATE_SLUGS, fireGateEvent, type GateCallerOrigin } from '@/lib/gate-ledger';
 import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { deliverPathReleased } from '@/lib/path-claim-release';
@@ -187,17 +188,20 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
     }
 
     // A real blocker and a circular wait look the same to a caller that only
-    // sees claimed:false; the ledger row keeps the distinction.
+    // sees claimed:false; the ledger row keeps the distinction — as its own
+    // reason AND `detail.signal`, so a sentinel reading either sees a healthy
+    // `claim_blocked` or a `deadlock_detected` conflict, never an outage.
     fireGateEvent({
       gate: GATE_SLUGS.PATH_CLAIM,
       surface,
       outcome: 'deferred',
-      reason: 'paths overlap an active claim held by another task',
+      reason: hasDeadlock ? PATH_SIGNAL_REASONS.deadlock_detected : PATH_SIGNAL_REASONS.claim_blocked,
       workspaceId: task.workspaceId,
       missionId: task.missionId,
       taskId: task.id,
       callerOrigin,
       detail: {
+        signal: hasDeadlock ? 'deadlock_detected' : 'claim_blocked',
         blockingTaskId: conflict.blockingTaskId,
         blockingPath: conflict.blockingPath,
         crossMission: isCrossMission,
