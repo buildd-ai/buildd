@@ -1484,4 +1484,57 @@ describe('buildFailedTaskItems — a failed task whose cause the owner can fix',
     const items = buildFailedTaskItems([failed(), failed()]);
     expect(buildActionQueue(items, [])).toHaveLength(1);
   });
+
+  describe('S35: failed task filtering by delivery state', () => {
+    it('a FAILED delivery: current attempt still counts, task appears in queue', () => {
+      // When a delivery is in FAILED state, its current attempt owns that failure.
+      // The task must remain in the action queue. ownerTaskId must match the task ID.
+      const queue = buildActionQueue(buildFailedTaskItems([failed()]), [], {
+        deliveryViews: new Map([['t-1', {
+          state: 'FAILED' as any,
+          ownerTaskId: 't-1',
+          headline: 'Failed',
+          owner: 'agent' as any,
+          needsYou: false,
+        } as any]]),
+      });
+      expect(queue).toHaveLength(1);
+      expect(queue[0].chip).toBe('FAILED');
+    });
+
+    it('a LIVE delivery: failed task is filtered out (replaced work)', () => {
+      // LIVE delivery means a new attempt owns the next move. Older failures
+      // are history, not current needs. Only FAILED state keeps the failure.
+      const queue = buildActionQueue(buildFailedTaskItems([failed()]), [], {
+        deliveryViews: new Map([['t-1', {
+          state: 'LIVE' as any,
+          ownerTaskId: 't-1',
+          headline: 'Running',
+          owner: 'agent' as any,
+          needsYou: false,
+        } as any]]),
+      });
+      expect(queue).toHaveLength(0);
+    });
+
+    it('no delivery view: failed task is included (legacy)', () => {
+      // Tasks without kernel-owned deliveries are included. No knowledge of
+      // whether they are replaced.
+      const queue = buildActionQueue(buildFailedTaskItems([failed()]), [], {
+        deliveryViews: new Map(),
+      });
+      expect(queue).toHaveLength(1);
+      expect(queue[0].chip).toBe('FAILED');
+    });
+
+    it('null deliveryViews (read error): failed task is included', () => {
+      // If delivery views fail to load, default to including the task.
+      // Safe fallback: show rather than hide.
+      const queue = buildActionQueue(buildFailedTaskItems([failed()]), [], {
+        deliveryViews: null,
+      });
+      expect(queue).toHaveLength(1);
+      expect(queue[0].chip).toBe('FAILED');
+    });
+  });
 });
