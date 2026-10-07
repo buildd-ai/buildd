@@ -1370,6 +1370,12 @@ export const tasks = pgTable('tasks', {
     skipped?: 'sensitive' | 'unconfigured';
     at: string;
   }>(),
+  // The task verdict's cached decision (apps/web/src/lib/task-verdict-decision.ts):
+  // the wording/actions the decision model picked for the state the rules
+  // derived, its error-class calls and the orchestration_decisions ids behind
+  // them. Written on a state change only; the page reads it, never computes it.
+  // Shape: StoredVerdictDecision in apps/web/src/lib/task-verdict.ts.
+  verdictDecision: jsonb('verdict_decision').$type<Record<string, unknown>>(),
   project: text('project'),
   // Output requirement — controls what deliverables are enforced on completion
   outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),

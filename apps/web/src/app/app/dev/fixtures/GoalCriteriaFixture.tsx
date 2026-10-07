@@ -50,7 +50,7 @@ export default function GoalCriteriaFixture() {
       <div className="max-w-xl mx-auto space-y-6">
         {PANELS.map(p => (
           <section key={p.title}>
-            <p className="font-mono text-[11px] uppercase tracking-wide text-text-muted mb-2">{p.title}</p>
+            <p className="font-mono text-meta uppercase tracking-wide text-text-muted mb-2">{p.title}</p>
             <MissionGoalCriteria {...p.props} />
           </section>
         ))}

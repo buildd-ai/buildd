@@ -524,18 +524,18 @@ function DeckInner({
   const header = (
     <header className="sticky top-0 z-20 border-b-2 border-border-strong bg-surface-1 px-4 pb-3 pt-[max(12px,env(safe-area-inset-top))] md:px-6 md:pt-4">
       <div className="flex items-center gap-2">
-        <p data-testid="deck-progress" className="font-mono text-[12px] font-semibold uppercase tracking-[1.5px] text-text-secondary">
+        <p data-testid="deck-progress" className="font-mono text-meta font-semibold uppercase tracking-[1.5px] text-text-secondary">
           {remaining > 0 ? `${remaining} to review` : 'Nothing to review'}
         </p>
         <span className="ml-auto flex items-center gap-1">
-          <button type="button" data-testid="deck-prev" aria-label="Previous route" disabled={prevIndex < 0} onClick={prev} className={`${BTN_BASE} ${BTN_GHOST} h-10 w-10 text-[16px]`}>
+          <button type="button" data-testid="deck-prev" aria-label="Previous route" disabled={prevIndex < 0} onClick={prev} className={`${BTN_BASE} ${BTN_GHOST} h-10 w-10 text-lede`}>
             ‹<Kbd className="sr-only">K</Kbd>
           </button>
-          <button type="button" data-testid="deck-next" aria-label="Next route" disabled={atEnd} onClick={next} className={`${BTN_BASE} ${BTN_GHOST} h-10 w-10 text-[16px]`}>
+          <button type="button" data-testid="deck-next" aria-label="Next route" disabled={atEnd} onClick={next} className={`${BTN_BASE} ${BTN_GHOST} h-10 w-10 text-lede`}>
             ›
           </button>
           {onClose && (
-            <button type="button" data-testid="deck-close" aria-label="Close review" onClick={onClose} className={`${BTN_BASE} ${BTN_SECONDARY} h-10 w-10 text-[18px] leading-none`}>
+            <button type="button" data-testid="deck-close" aria-label="Close review" onClick={onClose} className={`${BTN_BASE} ${BTN_SECONDARY} h-10 w-10 text-heading leading-none`}>
               ×
             </button>
           )}
@@ -545,7 +545,7 @@ function DeckInner({
         <div className="h-full bg-text-primary transition-[width]" style={{ width: `${total ? ((total - remaining) / total) * 100 : 100}%` }} />
       </div>
       <div className="mt-3 flex min-w-0 flex-wrap items-center gap-2">
-        <h2 id={titleId} data-testid="deck-route" className="min-w-0 break-all font-mono text-[17px] font-semibold leading-tight text-text-primary md:text-[19px]">
+        <h2 id={titleId} data-testid="deck-route" className="min-w-0 break-all font-mono text-heading font-semibold leading-tight text-text-primary">
           {group ? group.route : 'End of the queue'}
         </h2>
         {group?.variant && <span className={CHIP}>{group.variant}</span>}
@@ -555,7 +555,7 @@ function DeckInner({
             data-testid="deck-compare"
             aria-pressed={comparing}
             onClick={toggleCompare}
-            className={`${BTN_BASE} min-h-9 px-2.5 text-[12px] ${comparing ? 'border-text-primary bg-text-primary text-surface-1' : BTN_SECONDARY}`}
+            className={`${BTN_BASE} min-h-9 px-2.5 text-meta ${comparing ? 'border-text-primary bg-text-primary text-surface-1' : BTN_SECONDARY}`}
           >
             {comparing ? 'Close compare' : focused.fixCheck ? 'Before / After' : 'Compare'}<Kbd>C</Kbd>
           </button>
@@ -587,7 +587,7 @@ function DeckInner({
               data-testid={`deck-viewport-${c.viewport}`}
               aria-pressed={c.key === focused.key}
               onClick={() => { setPos({ index: pos.index, viewport: c.viewport }); setZoomed(false); closeNote(); }}
-              className={`flex min-h-11 items-center justify-center gap-2 font-mono text-[13px] font-semibold ${c.key === focused.key ? 'bg-text-primary text-surface-1' : 'bg-surface-2 text-text-secondary'}`}
+              className={`flex min-h-11 items-center justify-center gap-2 font-mono text-body font-semibold ${c.key === focused.key ? 'bg-text-primary text-surface-1' : 'bg-surface-2 text-text-secondary'}`}
             >
               <i aria-hidden="true" className={`inline-block h-2.5 w-2.5 ${VERDICT_DOT[c.effectiveVerdict]}`} />
               {VIEWPORT_LABEL[c.viewport]}
@@ -633,13 +633,13 @@ function DeckInner({
     >
       <div className="mx-auto flex max-w-[760px] flex-col gap-2.5">
         {notice && (
-          <p role="alert" data-testid="deck-notice" className="border-l-[3px] border-status-error bg-surface-2 py-2 pl-3 pr-2 font-mono text-[12px] text-text-primary">
+          <p role="alert" data-testid="deck-notice" className="border-l-[3px] border-status-error bg-surface-2 py-2 pl-3 pr-2 font-mono text-meta text-text-primary">
             {notice}
           </p>
         )}
         {(toast || flash) && (
           <div role="status" data-testid="deck-toast" className="flex min-h-11 items-center justify-between gap-3 border-2 border-border-strong bg-surface-3 py-1 pl-3 pr-1">
-            <span data-testid="deck-toast-label" className="min-w-0 break-words py-1 font-mono text-[12px] leading-snug text-text-primary">
+            <span data-testid="deck-toast-label" className="min-w-0 break-words py-1 font-mono text-meta leading-snug text-text-primary">
               {toast ? (
                 <>
                   <span className="block text-text-secondary">{toast.label}</span>
@@ -650,11 +650,11 @@ function DeckInner({
             {toast && (
               <span className="flex shrink-0 gap-1">
                 {toast.decision === 'needs_fix' && toast.cells.every(c => c.current.agentVerdict === 'issue') && (
-                  <button type="button" data-testid="deck-add-note" onClick={addNote} className={`${BTN_BASE} ${BTN_GHOST} min-h-9 shrink-0 px-2.5 text-[12px]`}>
+                  <button type="button" data-testid="deck-add-note" onClick={addNote} className={`${BTN_BASE} ${BTN_GHOST} min-h-9 shrink-0 px-2.5 text-meta`}>
                     Add note
                   </button>
                 )}
-                <button type="button" data-testid="deck-undo" onClick={() => void undo()} className={`${BTN_BASE} ${BTN_SECONDARY} min-h-9 shrink-0 px-3 text-[12px]`}>
+                <button type="button" data-testid="deck-undo" onClick={() => void undo()} className={`${BTN_BASE} ${BTN_SECONDARY} min-h-9 shrink-0 px-3 text-meta`}>
                   Undo<Kbd>U</Kbd>
                 </button>
               </span>
@@ -662,7 +662,7 @@ function DeckInner({
           </div>
         )}
         {!atEnd && focused && sibling && canApplyBoth && note === null && (
-          <label className="flex min-h-9 cursor-pointer items-center gap-2.5 font-mono text-[12px] text-text-secondary">
+          <label className="flex min-h-9 cursor-pointer items-center gap-2.5 font-mono text-meta text-text-secondary">
             <input
               type="checkbox"
               data-testid="deck-apply-both"
@@ -693,18 +693,18 @@ function DeckInner({
                 onChange={e => setNote(e.target.value)}
                 onFocus={e => e.currentTarget.select()}
                 placeholder={filesFix ? 'One line for the fix task' : 'Guidance for the fix task'}
-                className="min-h-12 w-full border-2 border-border-strong bg-surface-2 px-3 font-mono text-base text-text-primary placeholder:text-text-muted focus:border-primary focus:outline-none md:text-[13px]"
+                className="min-h-12 w-full border-2 border-border-strong bg-surface-2 px-3 font-mono text-base text-text-primary placeholder:text-text-muted focus:border-primary focus:outline-none"
               />
             </label>
             <div className="flex gap-2">
-              <button type="button" data-testid="deck-note-cancel" onClick={closeNote} className={`${BTN_BASE} ${BTN_SECONDARY} min-h-12 basis-1/2 text-[14px]`}>
+              <button type="button" data-testid="deck-note-cancel" onClick={closeNote} className={`${BTN_BASE} ${BTN_SECONDARY} min-h-12 basis-1/2 text-title`}>
                 Cancel
               </button>
               <button
                 type="submit"
                 data-testid="deck-note-submit"
                 disabled={filesFix && !note.trim() && (noteRequired || !focused.current.finding.trim())}
-                className={`${BTN_BASE} ${BTN_PRIMARY} min-h-12 basis-1/2 text-[14px]`}
+                className={`${BTN_BASE} ${BTN_PRIMARY} min-h-12 basis-1/2 text-title`}
               >
                 {filesFix ? 'File fix' : 'Send note'}
               </button>
@@ -712,7 +712,7 @@ function DeckInner({
           </form>
         )}
         {!atEnd && focused && !labels && (
-          <p data-testid="deck-settled" className="border-l-[3px] border-status-success bg-surface-2 py-2 pl-3 pr-2 font-mono text-[12px] text-text-primary">
+          <p data-testid="deck-settled" className="border-l-[3px] border-status-success bg-surface-2 py-2 pl-3 pr-2 font-mono text-meta text-text-primary">
             {FIX_MERGED_STATUS}
           </p>
         )}
@@ -781,8 +781,8 @@ function DecisionButton({ testId, label, hint, effect, copy, primary, onClick }:
       onClick={onClick}
       className={`${BTN_BASE} ${primary ? BTN_PRIMARY : BTN_SECONDARY} min-h-12 basis-1/2 flex-col gap-0.5 px-2 py-2`}
     >
-      <span className="flex items-center gap-2 text-[15px] leading-none">{label}<Kbd tone={primary ? 'accent' : 'default'}>{hint}</Kbd></span>
-      <span className={`text-[11px] font-normal leading-tight ${primary ? 'text-white/90' : 'text-text-secondary'}`}>{copy}</span>
+      <span className="flex items-center gap-2 text-lede leading-none">{label}<Kbd tone={primary ? 'accent' : 'default'}>{hint}</Kbd></span>
+      <span className={`text-meta font-normal leading-tight ${primary ? 'text-white/90' : 'text-text-secondary'}`}>{copy}</span>
     </button>
   );
 }
@@ -816,13 +816,13 @@ function ShotPanel({ cell, focused, paired, done, zoomed, onFocus, onImageClick,
         tabIndex={paired ? 0 : -1}
         className="order-1 flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1 text-left"
       >
-        <span className={`${paired ? 'hidden md:inline' : ''} font-mono text-[12px] font-semibold uppercase tracking-[1.5px] text-text-primary`}>{VIEWPORT_LABEL[cell.viewport]}</span>
-        <span className="inline-flex items-center gap-1.5 font-mono text-[12px] text-text-secondary">
+        <span className={`${paired ? 'hidden md:inline' : ''} font-mono text-meta font-semibold uppercase tracking-[1.5px] text-text-primary`}>{VIEWPORT_LABEL[cell.viewport]}</span>
+        <span className="inline-flex items-center gap-1.5 font-mono text-meta text-text-secondary">
           <i aria-hidden="true" className={`inline-block h-2.5 w-2.5 ${VERDICT_DOT[entry.agentVerdict]}`} />
           Agent: {entry.agentVerdict}
         </span>
         {(review || (done && !settled)) && (
-          <span className="inline-flex items-center gap-1.5 font-mono text-[12px] text-text-secondary">
+          <span className="inline-flex items-center gap-1.5 font-mono text-meta text-text-secondary">
             <ReviewMarker marker={review ? cell.marker : 'confirmed'} />
             {review
               ? `Decided: ${(cell.fixCheck?.state === 'check' ? CHECK_WORDS : DECISION_WORDS)[review.decision]}`
@@ -848,10 +848,10 @@ function ShotPanel({ cell, focused, paired, done, zoomed, onFocus, onImageClick,
 
       <div className="order-2">
         <p className="section-label mb-1.5">Finding</p>
-        <p data-testid="deck-finding" className={`border-l-[3px] ${entry.agentVerdict === 'issue' ? 'border-status-error' : entry.agentVerdict === 'unsure' ? 'border-status-info' : 'border-status-success'} py-0.5 pl-3 text-[15px] leading-[1.5] text-text-primary`}>
+        <p data-testid="deck-finding" className={`border-l-[3px] ${entry.agentVerdict === 'issue' ? 'border-status-error' : entry.agentVerdict === 'unsure' ? 'border-status-info' : 'border-status-success'} py-0.5 pl-3 text-lede leading-[1.5] text-text-primary`}>
           {entry.finding}
         </p>
-        {review?.note && <p className="mt-2 pl-3 text-[13px] text-text-secondary">Note: {review.note}</p>}
+        {review?.note && <p className="mt-2 pl-3 text-body text-text-secondary">Note: {review.note}</p>}
       </div>
 
       {fix && (
@@ -860,12 +860,12 @@ function ShotPanel({ cell, focused, paired, done, zoomed, onFocus, onImageClick,
             <span className="section-label">{fix.origin === 'human' ? 'Your fix' : 'Fix task'}</span>
             <FixStatus fix={fix} stillPresent={entry.agentVerdict === 'issue' && findingIsStillThere(entry.finding)} />
           </p>
-          {settled && <p data-testid="deck-fix-merged" className="text-[13px] leading-[1.4] text-text-primary">{FIX_MERGED_STATUS}</p>}
-          <a href={fixTaskHref(fix.id)} className="text-[14px] leading-[1.4] text-text-primary underline decoration-border-strong underline-offset-2 hover:text-accent-text">
+          {settled && <p data-testid="deck-fix-merged" className="text-body leading-[1.4] text-text-primary">{FIX_MERGED_STATUS}</p>}
+          <a href={fixTaskHref(fix.id)} className="text-title leading-[1.4] text-text-primary underline decoration-border-strong underline-offset-2 hover:text-accent-text">
             {fixTitleText(fix.title, cell.route)}
           </a>
           {fix.prUrl && (
-            <a href={fix.prUrl} target="_blank" rel="noreferrer" className="font-mono text-[12px] text-accent-text underline underline-offset-2">
+            <a href={fix.prUrl} target="_blank" rel="noreferrer" className="font-mono text-meta text-accent-text underline underline-offset-2">
               PR #{fix.prNumber ?? ''}{fix.mergedAt ? ', merged' : ''}
             </a>
           )}
@@ -884,17 +884,17 @@ function EndOfQueue({ remaining, fine, fixing, onBack, onClose }: {
 }) {
   return (
     <div data-testid="deck-end" className="mx-auto flex max-w-[560px] flex-col gap-5 px-4 py-8 md:px-6 md:py-12">
-      <p className="font-mono text-[20px] font-semibold leading-tight text-text-primary">
+      <p className="font-mono text-heading font-semibold leading-tight text-text-primary">
         {remaining > 0 ? `${remaining} to review` : 'Nothing to review'}
       </p>
       <div className="flex gap-2">
         {remaining > 0 && (
-          <button type="button" data-testid="deck-back" onClick={onBack} className={`${BTN_BASE} ${BTN_PRIMARY} min-h-12 basis-1/2 flex-1 text-[14px]`}>
+          <button type="button" data-testid="deck-back" onClick={onBack} className={`${BTN_BASE} ${BTN_PRIMARY} min-h-12 basis-1/2 flex-1 text-title`}>
             Next to review
           </button>
         )}
         {onClose && (
-          <button type="button" data-testid="deck-done" onClick={onClose} className={`${BTN_BASE} ${remaining > 0 ? BTN_SECONDARY : BTN_PRIMARY} min-h-12 basis-1/2 flex-1 text-[14px]`}>
+          <button type="button" data-testid="deck-done" onClick={onClose} className={`${BTN_BASE} ${remaining > 0 ? BTN_SECONDARY : BTN_PRIMARY} min-h-12 basis-1/2 flex-1 text-title`}>
             Done
           </button>
         )}
@@ -914,9 +914,9 @@ function SettledGroup({ testId, title, cells }: { testId: string; title: string;
       <ul className="flex flex-col border-2 border-border-default">
         {cells.map(c => (
           <li key={c.key} data-testid="deck-settled-row" data-cell={c.key} className="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-border-default px-3 py-2 last:border-b-0">
-            <span className="min-w-0 break-all font-mono text-[13px] text-text-primary">{c.route}{c.variant ? ` (${c.variant})` : ''}</span>
-            <span className="font-mono text-[12px] text-text-secondary">{VIEWPORT_LABEL[c.viewport]}</span>
-            <span className="ml-auto font-mono text-[12px] text-text-secondary">{standingNote(c)}</span>
+            <span className="min-w-0 break-all font-mono text-body text-text-primary">{c.route}{c.variant ? ` (${c.variant})` : ''}</span>
+            <span className="font-mono text-meta text-text-secondary">{VIEWPORT_LABEL[c.viewport]}</span>
+            <span className="ml-auto font-mono text-meta text-text-secondary">{standingNote(c)}</span>
           </li>
         ))}
       </ul>

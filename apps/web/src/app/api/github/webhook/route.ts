@@ -477,6 +477,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           // Model policy: every check suite passed on the run's PR.
           if (worker.prLifecycleStatus !== 'ci_green') {
             await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: true }]);
+            await emit({ type: 'pr.ci_passed', repoFullName: repository.full_name, prNumber: pr.number, headSha, installationId: installation.id });
           }
         }
 
