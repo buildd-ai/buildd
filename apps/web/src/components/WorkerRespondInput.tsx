@@ -3,13 +3,16 @@
 import { useState } from 'react';
 import { useAnswerSubmit, type AnswerSubmitState } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import AnswerRecorded from './AnswerRecorded';
+import { normalizeOptions } from '@/app/app/(protected)/tasks/[id]/question-hero';
+import type { WaitingForOption } from '@buildd/shared';
 
 interface WorkerRespondInputProps {
   workerId: string;
   /** The worker's task: marks the global banner answered. */
   taskId?: string | null;
   question: string;
-  options?: string[];
+  /** Canonical rich options, or legacy plain strings. */
+  options?: (string | WaitingForOption)[] | null;
   /** Question brief: the task and the exact decision. */
   context?: string;
   /**
@@ -33,6 +36,7 @@ export default function WorkerRespondInput({
   const own = useAnswerSubmit({ workerId, taskId, resetKey: `${workerId}:${question}` });
   const { submit, sending, outcome, error } = hosted ?? own;
   const busy = sending !== null;
+  const choices = normalizeOptions(options as WaitingForOption[] | null | undefined);
 
   if (outcome) return <AnswerRecorded outcome={outcome} className="mt-2" />;
 
@@ -60,13 +64,15 @@ export default function WorkerRespondInput({
       )}
 
       {/* Quick option buttons */}
-      {options && options.length > 0 && (
+      {choices.length > 0 && (
         <div className="flex flex-wrap gap-1.5 ml-[18px]">
-          {options.map((opt) => {
+          {choices.map((choice) => {
+            const opt = choice.label;
             const pending = sending === opt.trim();
             return (
               <button
                 key={opt}
+                title={choice.description}
                 type="button"
                 data-testid="respond-option"
                 data-pending={pending ? 'true' : undefined}
@@ -79,6 +85,7 @@ export default function WorkerRespondInput({
                 }`}
               >
                 {pending ? `Sending… ${opt}` : opt}
+                {!pending && choice.recommended && <span className="sr-only"> (recommended)</span>}
               </button>
             );
           })}
