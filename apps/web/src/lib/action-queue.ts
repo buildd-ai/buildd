@@ -2,7 +2,7 @@ import type { HumanPrReview } from './reviewer-gate';
 import type { CiGate } from './ci-gate';
 import { resolveStaleGate, type StaleGate } from './pr-freshness';
 import { explainProviderAuthFailure } from './provider-auth-failure';
-import type { DeliveryView } from './workflow/projections';
+import { attemptFailureCounts, type DeliveryView } from './workflow/projections';
 
 /**
  * ── The queue freshness rule ────────────────────────────────────────────────
@@ -1424,9 +1424,12 @@ export function buildActionQueue(
     } else if (item.kind === 'failed') {
       const key = `task:${item.taskId}`;
       // S35: a failed attempt of a kernel-owned delivery that is still live,
-      // or already shipped, is history, not a failure that needs you.
+      // or already shipped, is history, not a failure that needs you. Use
+      // attemptFailureCounts: it returns true only for the current/owner task
+      // in a FAILED delivery; past attempts or any task in a live/shipped
+      // delivery return false.
       const fv = item.taskId ? options.deliveryViews?.get(item.taskId) : undefined;
-      if (fv && fv.state !== 'FAILED') continue;
+      if (fv && !attemptFailureCounts(fv, item.taskId)) continue;
       if (!map.has(key)) {
         map.set(key, {
           subjectKey: key,
