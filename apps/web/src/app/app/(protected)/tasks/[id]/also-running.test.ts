@@ -89,6 +89,23 @@ describe('sidePanelPeers', () => {
     ], { missionId: 'm1', excludeTaskIds: new Set() });
     expect(peers.map(p => [p.taskId, p.phase])).toEqual([['a', 'Pushed']]);
   });
+
+  // C-4: the loader picks peers by updatedAt (every runner sync bumps it), so the
+  // rows used to reshuffle while being read. Render order is createdAt, then id.
+  it('orders peers by when their worker was created, not by input (updatedAt) order', () => {
+    const t0 = new Date('2026-01-01T00:00:00Z');
+    const t1 = new Date('2026-01-01T00:05:00Z');
+    const rows = [
+      row('late', 'feat(l): late', { id: 'w-late', createdAt: t1 }),
+      row('tie-b', 'feat(b): b', { id: 'w-b', createdAt: t0 }),
+      row('tie-a', 'feat(a): a', { id: 'w-a', createdAt: t0 }),
+    ];
+    const opts = { missionId: 'm1', excludeTaskIds: new Set<string>() };
+    const expected = ['tie-a', 'tie-b', 'late'];
+    expect(sidePanelPeers(rows, opts).map(p => p.taskId)).toEqual(expected);
+    expect(sidePanelPeers([rows[1], rows[2], rows[0]], opts).map(p => p.taskId)).toEqual(expected);
+    expect(sidePanelPeers([...rows].reverse(), opts).map(p => p.taskId)).toEqual(expected);
+  });
 });
 
 describe('unresolvedParentIds', () => {

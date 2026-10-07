@@ -120,17 +120,18 @@ function TouchedRowView({ row, nowMs, latest }: { row: TouchedRow; nowMs: number
       className={`flex items-center gap-3 px-3 md:px-4 min-h-11 md:min-h-12 border-b border-border-default last:border-b-0 ${latest ? 'bg-accent-soft' : ''}`}
     >
       <span title={g.title} className={`w-6 h-6 shrink-0 grid place-items-center font-mono text-[11px] font-bold ${g.cls}`}>{g.ch}</span>
-      <span className="flex-1 min-w-0 truncate font-mono text-[13px]">
+      {/* Middle truncation: the directory gives way first, the file name last. */}
+      <span className="flex flex-1 min-w-0 items-baseline font-mono text-body">
         {row.kind === 'run' ? (
-          <span className="text-text-primary">$ {collapseWorkspacePath(row.cmd ?? '')}</span>
+          <span className="min-w-0 truncate text-text-primary">$ {collapseWorkspacePath(row.cmd ?? '')}</span>
         ) : (
           <>
-            <span className="text-text-muted">{dir}</span>
-            <span className="text-text-primary">{base}</span>
+            <span className="min-w-0 truncate text-text-muted">{dir}</span>
+            <span className="shrink-0 max-w-full truncate text-text-primary">{base}</span>
           </>
         )}
         {row.count > 1 && row.kind !== 'read' && (
-          <span className="ml-2 text-[11px] text-text-muted">×{row.count}</span>
+          <span className="ml-2 shrink-0 text-chip text-text-muted tabular-nums">×{row.count}</span>
         )}
       </span>
       <span className="hidden sm:flex items-center gap-2 shrink-0 font-mono text-[12px] tabular-nums">

@@ -411,7 +411,7 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
           />
         </div>
 
-        <PausedBar evidence={now.evidence} elapsed={elapsed} turns={worker.turns} tokens={formatTokens(tokens)} />
+        <PausedBar evidence={now.evidence} elapsed={elapsed} turns={worker.turns} tokens={formatTokens(tokens)} nowMs={nowMs} />
 
         <div data-testid="worker-paused-context" className="border-t border-border-default">
           {now.headline && now.headline !== question.headline && (

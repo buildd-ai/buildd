@@ -77,6 +77,22 @@ describe('partitionChildTasks', () => {
     expect(subtasks.map(t => t.id)).toEqual(['s1', 's2']);
     expect(attempts.map(t => t.id)).toEqual(['r1', 'r2']);
   });
+
+  // §3.2: the subTasks relation had no orderBy, so "Related tasks" rendered in
+  // whatever order the database returned. Order is (createdAt, id), whatever came in.
+  it('orders both lists by createdAt, then id, regardless of input order', () => {
+    const t0 = new Date('2026-01-01T00:00:00Z');
+    const t1 = new Date('2026-01-01T00:01:00Z');
+    const rows = [
+      work('s-late', { createdAt: t1 }), attempt('r-b', { createdAt: t0 }), work('s-b', { createdAt: t0 }),
+      attempt('r-a', { createdAt: t0 }), work('s-a', { createdAt: t0 }),
+    ];
+    for (const input of [rows, [...rows].reverse(), [rows[2], rows[4], rows[0], rows[3], rows[1]]]) {
+      const { subtasks, attempts } = partitionChildTasks(input);
+      expect(subtasks.map(t => t.id)).toEqual(['s-a', 's-b', 's-late']);
+      expect(attempts.map(t => t.id)).toEqual(['r-a', 'r-b']);
+    }
+  });
 });
 
 describe('descriptionDuplicatesSummary', () => {

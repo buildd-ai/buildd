@@ -42,7 +42,7 @@ export function DeliveryStateChip({ state }: { state: MessageDeliveryState }) {
       data-testid="message-delivery-state"
       data-state={state}
       title={deliveryStateDetail(state)}
-      className={`inline-flex items-center gap-1 text-[11px] font-medium ${TONE[state]}`}
+      className={`inline-flex items-center gap-1 whitespace-nowrap text-meta font-medium ${TONE[state]}`}
     >
       <span aria-hidden="true">{GLYPH[state]}</span>
       {DELIVERY_STATE_LABEL[state]}
@@ -70,7 +70,7 @@ export default function InstructionHistory({
 
   return (
     <div data-testid={testId} className="mt-4 pt-4 border-t border-border-default">
-      <h4 className="text-sm font-medium text-text-secondary mb-2">{title}</h4>
+      <h4 className="text-body font-medium text-text-secondary mb-2">{title}</h4>
 
       <div className="space-y-2 max-h-48 overflow-y-auto">
         {history.map((entry, i) => {
@@ -81,15 +81,15 @@ export default function InstructionHistory({
           return (
             <div
               key={entry.id ?? `${entry.timestamp}-${i}`}
-              className={`flex gap-2 text-sm ${isInstruction ? 'justify-end' : 'justify-start'}`}
+              className={`flex gap-2 text-body ${isInstruction ? 'justify-end' : 'justify-start'}`}
             >
               <div
-                className={`max-w-[80%] px-3 py-2 rounded-lg ${
+                className={`min-w-0 max-w-[80%] px-3 py-2 ${
                   isInstruction ? 'bg-primary/10 text-primary' : 'bg-surface-3 text-text-primary'
                 }`}
               >
                 <p className="break-words [overflow-wrap:anywhere]">{entry.message ?? '(hidden in a sensitive workspace)'}</p>
-                <p className={`text-xs mt-1 flex flex-wrap items-center gap-x-1.5 ${isInstruction ? 'text-primary/60' : 'text-text-muted'}`}>
+                <p className={`text-meta mt-1 flex flex-wrap items-center gap-x-1.5 ${isInstruction ? 'text-primary/60' : 'text-text-muted'}`}>
                   <span>{isInstruction ? 'You' : 'Worker'} · {formatTime(entry.timestamp)}</span>
                   {state && <DeliveryStateChip state={state} />}
                 </p>
@@ -99,7 +99,7 @@ export default function InstructionHistory({
                     data-testid="message-resend"
                     disabled={resending}
                     onClick={() => onResend(entry.message!)}
-                    className="mt-2 min-h-11 px-3 text-[12px] font-medium border border-border-default text-text-secondary hover:border-text-primary hover:text-text-primary disabled:opacity-50"
+                    className="mt-2 min-h-11 px-3 text-meta font-medium border border-border-default text-text-secondary hover:border-text-primary hover:text-text-primary disabled:opacity-50"
                   >
                     {resending ? 'Resending…' : 'Resend to this run'}
                   </button>
