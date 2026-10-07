@@ -135,6 +135,12 @@ export interface ScoutRunnerHostStore {
   finalize(run: ScoutRun, probes: readonly ScoutProbeRecord[]): Promise<ScoutRunOutcome>;
   /** Clear the lease (back to `awaiting_host`, claimable), only for its holder. */
   release(q: { runId: string; holder: string; now: Date; reason: string }): Promise<boolean>;
+  /**
+   * Which of `ids` are evidence objects of this run (scout_run_id = runId) whose
+   * upload has not failed. A result may cite only those as `evidence:<id>`.
+   * A store without it keeps no `evidence:` ref (fail closed).
+   */
+  ownedEvidenceIds?(runId: string, ids: readonly string[]): Promise<Set<string>>;
 }
 
 // ── Callers ─────────────────────────────────────────────────────────────────
@@ -495,6 +501,8 @@ export async function reportScoutProbeResults(input: ScoutResultsInput, store: S
     accepted.push({ candidateId: id, result: norm.result, reproducibility: rep });
   }
 
+  await keepOwnedEvidenceRefs(run.id, accepted, store);
+
   const written: string[] = [];
   for (const a of accepted) {
     const ok = await store.recordResult({ runId: run.id, holder, now: input.now, ...a });
@@ -520,6 +528,53 @@ export async function reportScoutProbeResults(input: ScoutResultsInput, store: S
     status: 200,
     body: { accepted: written, remaining: 0, finalized: true, runStatus: outcome.status === 'completed' ? 'completed' : 'failed' },
   };
+}
+
+// ── Run evidence ────────────────────────────────────────────────────────────
+
+/** `evidence:<uuid>`: a run evidence object (POST /api/quality-scout/runs/[id]/evidence). */
+export const SCOUT_EVIDENCE_REF_RE = /^evidence:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+/**
+ * Drop every `evidence:` ref that does not name an object this run uploaded:
+ * a runner cannot point a finding at another run's (or team's) object.
+ */
+async function keepOwnedEvidenceRefs(
+  runId: string,
+  accepted: Array<{ result: VerificationResult }>,
+  store: ScoutRunnerHostStore,
+): Promise<void> {
+  const wanted = new Set<string>();
+  for (const a of accepted) {
+    for (const r of a.result.evidenceRefs) {
+      const m = r.ref.match(SCOUT_EVIDENCE_REF_RE);
+      if (m) wanted.add(m[1].toLowerCase());
+    }
+  }
+  const owned = wanted.size > 0 && store.ownedEvidenceIds ? await store.ownedEvidenceIds(runId, [...wanted]) : new Set<string>();
+  for (const a of accepted) {
+    a.result.evidenceRefs = a.result.evidenceRefs.filter((r) => {
+      if (!r.ref.startsWith('evidence:')) return true;
+      const m = r.ref.match(SCOUT_EVIDENCE_REF_RE);
+      return !!m && owned.has(m[1].toLowerCase());
+    });
+  }
+}
+
+/**
+ * The held-lease check the probes and release routes use, for the run's
+ * evidence upload and confirm routes: another team's run is 404, a lease this
+ * key and lease id do not hold (or that expired) is 409.
+ */
+export async function checkScoutRunLease(
+  caller: ScoutHostCaller,
+  runId: string,
+  leaseId: unknown,
+  now: Date,
+  store: ScoutRunnerHostStore,
+): Promise<{ ok: true; run: ScoutRun } | { ok: false; status: number; body: { error: string; code: string } }> {
+  const loaded = await loadHeld(caller, runId, leaseId, now, store);
+  return loaded.ok ? { ok: true, run: loaded.held.run } : loaded;
 }
 
 // ── Release ─────────────────────────────────────────────────────────────────

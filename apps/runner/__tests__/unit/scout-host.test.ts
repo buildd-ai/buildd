@@ -22,8 +22,10 @@ import type { ScoutHostedProbeResult, ScoutRunClaimRequest, ScoutRunClaimRespons
 import { computeReadiness } from '@buildd/core/workspace-readiness';
 import { discoverScoutCapabilities, type ScoutCapabilityProfile } from '@buildd/core/scout-capabilities';
 import { exec } from '@buildd/core/quality-scout/local-host';
+import { gunzipSync } from 'zlib';
 import {
   buildScoutProbeEnv,
+  createScoutHostHttpApi,
   hostClaimedScoutRun,
   SCOUT_FIXTURE_FAILED,
   type ScoutClaimed,
@@ -408,6 +410,44 @@ describe('hostClaimedScoutRun', () => {
     expect(readdirSync(tr)).toEqual([]);
   });
 
+  test('a command log is uploaded as run evidence (redacted, gzipped) and cited as evidence:<id>, never as a file path', async () => {
+    const leaked = 'ghp_' + 'z'.repeat(36);
+    const profile = profileWith([{ name: 'boom', command: `echo "token ${leaked}"; echo FAILED-HERE; exit 3` }]);
+    const { api, calls } = fakeApi();
+    const uploads: Array<{ runId: string; leaseId: string; kind: string; seq: number; text: string }> = [];
+    api.uploadEvidence = async (runId, leaseId, u) => {
+      uploads.push({ runId, leaseId, kind: u.kind, seq: u.seq, text: gunzipSync(Buffer.from(u.body)).toString('utf8') });
+      return `0000000${uploads.length}-0000-4000-8000-000000000000`;
+    };
+    await hostClaimedScoutRun({
+      claimed: claimFor(profile, [probe('p-boom', 'boom')]), repoPath: repo, api, tmpRoot: tmpRoot(), attempts: 1, log: () => {},
+      secretValues: [leaked],
+    });
+    expect(uploads.length).toBeGreaterThan(0);
+    expect(uploads[0]).toMatchObject({ kind: 'command_output', seq: 0 });
+    expect(uploads[0].text).toContain('FAILED-HERE');
+    expect(uploads[0].text).not.toContain(leaked);
+    const refs = calls.posts[0][0].result.evidenceRefs ?? [];
+    expect(refs.some((r) => r.ref.startsWith('file:'))).toBe(false);
+    expect(refs.filter((r) => r.ref.startsWith('evidence:')).map((r) => r.ref)).toEqual(
+      uploads.map((_, i) => `evidence:0000000${i + 1}-0000-4000-8000-000000000000`),
+    );
+  });
+
+  test('without an upload path (or when it fails) the file: ref is dropped and the result still posts', async () => {
+    const profile = profileWith([{ name: 'boom', command: 'exit 3' }]);
+    const { api, calls } = fakeApi();
+    await hostClaimedScoutRun({ claimed: claimFor(profile, [probe('p', 'boom')]), repoPath: repo, api, tmpRoot: tmpRoot(), attempts: 1, log: () => {} });
+    expect((calls.posts[0][0].result.evidenceRefs ?? []).some((r) => r.ref.startsWith('file:'))).toBe(false);
+    expect(calls.posts[0][0].result.verdict).toBe('fail');
+
+    const second = fakeApi();
+    second.api.uploadEvidence = async () => { throw new Error('storage down'); };
+    await hostClaimedScoutRun({ claimed: claimFor(profile, [probe('p', 'boom')]), repoPath: repo, api: second.api, tmpRoot: tmpRoot(), attempts: 1, log: () => {} });
+    expect((second.calls.posts[0][0].result.evidenceRefs ?? []).some((r) => r.ref.startsWith('file:') || r.ref.startsWith('evidence:'))).toBe(false);
+    expect(second.calls.posts).toHaveLength(1);
+  });
+
   test('the worktree is removed after a normal run too', async () => {
     const profile = profileWith([{ name: 'ok', command: 'true' }]);
     const { api } = fakeApi();
@@ -416,5 +456,45 @@ describe('hostClaimedScoutRun', () => {
     await hostClaimedScoutRun({ claimed: claimFor(profile, [probe('p', 'ok')]), repoPath: repo, api, tmpRoot: tr, log: () => {} });
     expect(await worktrees()).toBe(before);
     expect(readdirSync(tr)).toEqual([]);
+  });
+});
+
+describe('createScoutHostHttpApi.uploadEvidence', () => {
+  test('asks under the lease, PUTs to the signed URL without the API key, confirms, and returns the stored id', async () => {
+    const seen: Array<{ url: string; method: string; auth: string | null; body: unknown }> = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      const headers = new Headers(init.headers);
+      seen.push({ url, method: init.method ?? 'GET', auth: headers.get('authorization'), body: typeof init.body === 'string' ? JSON.parse(init.body) : 'bytes' });
+      if (url.endsWith('/evidence')) return Response.json({ uploadUrl: 'https://storage.example/k?sig=1', evidenceId: 'ev-1', contentLength: 3, expiresIn: 900 });
+      if (url.startsWith('https://storage.example/')) return new Response(null, { status: 200 });
+      return Response.json({ evidenceId: 'ev-1', uploadState: 'stored', bytes: 3 });
+    }) as unknown as typeof fetch;
+    const api = createScoutHostHttpApi({ serverUrl: 'https://buildd.invalid/', apiKey: 'bld_key', fetchImpl });
+    const id = await api.uploadEvidence!('run-1', 'lease-1', { kind: 'command_output', seq: 2, body: new Uint8Array([1, 2, 3]) });
+    expect(id).toBe('ev-1');
+    expect(seen.map((s) => [s.method, s.url])).toEqual([
+      ['POST', 'https://buildd.invalid/api/quality-scout/runs/run-1/evidence'],
+      ['PUT', 'https://storage.example/k?sig=1'],
+      ['POST', 'https://buildd.invalid/api/quality-scout/runs/run-1/evidence/ev-1/confirm'],
+    ]);
+    expect(seen[0].body).toEqual({ leaseId: 'lease-1', kind: 'command_output', seq: 2, sizeBytes: 3 });
+    expect(seen[0].auth).toBe('Bearer bld_key');
+    expect(seen[1].auth).toBeNull();
+    expect(seen[2].body).toEqual({ leaseId: 'lease-1' });
+  });
+
+  test('a refused upload URL or an unconfirmed object is null', async () => {
+    const refused = createScoutHostHttpApi({
+      serverUrl: 'https://buildd.invalid', apiKey: 'k',
+      fetchImpl: (async () => Response.json({ code: 'lease_not_held' }, { status: 409 })) as unknown as typeof fetch,
+    });
+    expect(await refused.uploadEvidence!('r', 'l', { kind: 'command_output', seq: 0, body: new Uint8Array([1]) })).toBeNull();
+    const failed = createScoutHostHttpApi({
+      serverUrl: 'https://buildd.invalid', apiKey: 'k',
+      fetchImpl: (async (url: string) => (url.endsWith('/evidence')
+        ? Response.json({ uploadUrl: 'https://s.example/x', evidenceId: 'e' })
+        : url.endsWith('/confirm') ? Response.json({ uploadState: 'failed' }) : new Response(null, { status: 200 }))) as unknown as typeof fetch,
+    });
+    expect(await failed.uploadEvidence!('r', 'l', { kind: 'command_output', seq: 0, body: new Uint8Array([1]) })).toBeNull();
   });
 });
