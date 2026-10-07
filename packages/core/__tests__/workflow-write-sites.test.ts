@@ -34,7 +34,10 @@ const ALLOWED = new Set([
  * None of them imports the reducer, the CAS runner or the fact funnel, so none
  * can assign a delivery state.
  */
-const KERNEL_ENTRY_POINTS = new Set(['seam', 'authority', 'github-facts']);
+// Part 3 adds three, none of which can assign a state either: the read model
+// (`projections` is pure, `delivery-view` only SELECTs) and the activity-note
+// funnel (`pr-activity-effects` records a fact and enqueues a render, §12.1).
+const KERNEL_ENTRY_POINTS = new Set(['seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 const KERNEL_IMPORT = /(?:from\s+|import\()\s*['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:lib\/)?workflow)\/([a-z-]+)['"]/g;
 

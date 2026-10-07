@@ -40,6 +40,8 @@ import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
+import { getDeliveryViewsForTasks, kernelReplacedFailedTaskIds } from '@/lib/workflow/delivery-view';
+import { attemptLine } from '@/lib/workflow/projections';
 import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
@@ -383,9 +385,12 @@ async function viewForMission(missionId: string): Promise<{
     })),
   );
 
+  // S35: a failed attempt the kernel already replaced (its delivery is live or
+  // shipped) is history too, read from the DeliveryView, not a title heuristic.
+  const kernelReplaced = await kernelReplacedFailedTaskIds(failedDeliverables.map(t => t.id));
   const health = deriveTaskHealthSignal(
     { ...m, heartbeatWaitingUntil },
-    loaded.map(t => ({ ...t, superseded: supersededMap.has(t.id) })),
+    loaded.map(t => ({ ...t, superseded: supersededMap.has(t.id) || kernelReplaced.has(t.id) })),
     { dependencies: foreignDeps },
   );
 
@@ -468,7 +473,7 @@ async function viewForMission(missionId: string): Promise<{
   // Superseded failures shipped their deliverable under a different task/PR —
   // see mission-task-superseded.ts. Excluded here so they never drive the
   // mission into a `failing` state; reported separately below instead.
-  const failedTasks = failedDeliverables.filter(t => !supersededMap.has(t.id));
+  const failedTasks = failedDeliverables.filter(t => !supersededMap.has(t.id) && !kernelReplaced.has(t.id));
   const supersededTasks = failedDeliverables
     .filter(t => supersededMap.has(t.id))
     .map(t => ({ task: t, superseded: supersededMap.get(t.id)! }));
@@ -789,6 +794,16 @@ async function viewForTask(taskId: string): Promise<{
  * `actor` is who the inline evidence list is audited to. Reach is the caller's
  * job: GET /api/explain has already decided the actor can read the workspace.
  */
+/** Attach the kernel's DeliveryView reading when the task's delivery is kernel-owned (S28). */
+async function withDelivery(answer: ExplainAnswer, taskId: string): Promise<ExplainAnswer> {
+  const v = (await getDeliveryViewsForTasks([taskId])).get(taskId);
+  if (!v) return answer;
+  return {
+    ...answer,
+    delivery: { state: v.state, owner: v.owner, needsYou: v.needsYou, headline: v.headline, detail: v.detail, attempts: attemptLine(v.attempts) },
+  };
+}
+
 export async function explainTask(taskId: string, actor: EvidenceActor): Promise<ExplainResult | null> {
   const loaded = await viewForTask(taskId);
   if (!loaded) return null;
@@ -818,7 +833,8 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   // What the task's runs were given and refused; the most recent 40, so a
   // long-running task's renewals do not crowd out the answer.
   const access = (await loadTaskAccess(taskId).catch(() => [])).slice(-40);
-  const answer = withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task);
+  const routed = withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task);
+  const answer = await withDelivery(routed, taskId);
   return { scope: 'task', subjects: [access.length > 0 ? { ...answer, access } : answer] };
 }
 

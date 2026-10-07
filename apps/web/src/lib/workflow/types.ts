@@ -101,6 +101,8 @@ export interface RoundSnapshot {
   effectiveVerdict: Verdict | null;
   failureCount: number;
   reviewerTaskId?: string | null;
+  /** What a delta round is scoped to, e.g. a composition's novel paths (§5.9). */
+  scope?: Record<string, unknown> | null;
 }
 
 export interface AttemptSnapshot {

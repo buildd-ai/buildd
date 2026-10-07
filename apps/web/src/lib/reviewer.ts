@@ -411,6 +411,29 @@ export interface CreateReviewerTaskParams {
    * authority's reviewer onto it.
    */
   workflowRound?: { deliveryId: string; roundId: string; round: number };
+  /**
+   * Set by the kernel for the delta round of a composed PR (release or mission
+   * integration PR, docs/specs/workflow-state-kernel.md §5.9): every other
+   * change in it was already reviewed at its own head and mechanically
+   * attested, so this review covers ONLY these novel paths.
+   */
+  compositionScope?: { novelDeltaPaths: string[] };
+}
+
+/** The prompt section that scopes a composition delta review to its novel paths. */
+export function compositionScopeSection(scope: { novelDeltaPaths: string[] }): string {
+  return [
+    '',
+    '## Composition verified: review only the novel delta',
+    '',
+    'This PR is composed of changes that were each already reviewed and approved at their own head;',
+    'buildd checked that mechanically (composition attestation). Those changes are NOT yours to re-review,',
+    'and the release-PR escalation rule does not apply to them. Review ONLY these paths, which no prior',
+    'review covers, under the normal policy (escalate or request changes on them exactly as you would on any PR):',
+    '',
+    ...scope.novelDeltaPaths.map((p) => `- \`${p}\``),
+    '',
+  ].join('\n');
 }
 
 /** Task states in which a reviewer task still owns its subject. */
@@ -582,6 +605,8 @@ export async function createReviewerTask(
         specSource,
       });
 
+  const description = params.compositionScope ? `${diffContext}${compositionScopeSection(params.compositionScope)}` : diffContext;
+
   const title = reviewerTitle(prNumber, originalTask.title);
 
   // Rule P1-7: an attempt inherits its parent's phase. The rail collapses
@@ -595,7 +620,7 @@ export async function createReviewerTask(
     .values({
       workspaceId,
       title,
-      description: diffContext,
+      description,
       category: 'review',
       roleSlug: reviewerRole,
       // A review DERIVES A JUDGMENT from a diff — analysis, in the seven-kind
@@ -636,6 +661,7 @@ export async function createReviewerTask(
         // that index.
         ...(missionCriteria.length > 0 ? { [REVIEWER_CRITERIA_CONTEXT_KEY]: missionCriteria } : {}),
         ...(params.workflowRound ? { workflowRoundId: params.workflowRound.roundId } : {}),
+        ...(params.compositionScope ? { compositionDelta: { novelDeltaPaths: params.compositionScope.novelDeltaPaths } } : {}),
       },
       ...(params.workflowRound ? { deliveryId: params.workflowRound.deliveryId, deliveryRole: 'review' as const } : {}),
       release: 'false', // reviewer tasks never trigger releases

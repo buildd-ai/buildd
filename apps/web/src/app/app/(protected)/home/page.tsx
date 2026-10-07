@@ -22,6 +22,8 @@ import { workerNotDependencyBotPr } from '@/lib/dependency-bot-pr';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { isActionableChip, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
@@ -1108,6 +1110,8 @@ export default async function HomePage({
             // The newest conflict retry per PR, live or not: its failure context
             // names the conflict in one line (describeConflictReason).
             const conflictReasonMap = new Map<string, string>();
+            // S37: live conflict fixes that stalled, with why.
+            const conflictStalledMap = new Map<string, string>();
             const openPrNumbers = [...new Set(
               openPrWorkers.map(w => w.prNumber).filter((n): n is number => n != null),
             )];
@@ -1118,7 +1122,7 @@ export default async function HomePage({
                   sql`${tasks.creationSource} = 'conflict'`,
                   inArray(tasks.conflictRetryPrNumber, openPrNumbers),
                 ),
-                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true, status: true },
+                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true, status: true, createdAt: true, claimedAt: true },
                 orderBy: [desc(tasks.createdAt)],
               });
               for (const t of conflictRetryTasks) {
@@ -1133,6 +1137,11 @@ export default async function HomePage({
                 if (conflictRetryMap.has(key)) continue;
                 const iteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 1;
                 conflictRetryMap.set(key, { taskId: t.id, iteration });
+                // S37: a live fix that stalled is still the canonical remediation
+                // (the card stays RESOLVING and its CTA repairs it), but it must
+                // say so instead of reading as work in progress forever.
+                const liveness = classifyConflictFix({ status: t.status, createdAt: t.createdAt, claimedAt: t.claimedAt, lastRecoveryAt: (ctx.conflictRecovery as { at?: string } | undefined)?.at ?? null });
+                if (liveness.stalled && liveness.reason) conflictStalledMap.set(key, liveness.reason);
               }
             }
             // ───────────────────────────────────────────────────────────────────
@@ -1402,6 +1411,7 @@ export default async function HomePage({
                   deadZoneLastRetryTaskId: deadZoneInfo?.lastRetryTaskId ?? null,
                   conflictAutoResolve: isAutoResolveMergeConflictsEnabled(ws?.gitConfig),
                   conflictReason: w.prNumber != null ? conflictReasonMap.get(`${w.workspaceId}:${w.prNumber}`) ?? null : null,
+                  remediationStalled: w.prNumber != null ? conflictStalledMap.get(`${w.workspaceId}:${w.prNumber}`) ?? null : null,
                   // Read from persisted columns only (I-9): the sweep owns all
                   // GitHub resolution, this layer only judges how old that
                   // resolution is.
@@ -1907,7 +1917,13 @@ export default async function HomePage({
         const snoozedSubjectKeys = new Set(activeSnoozes.map((s) => s.subjectKey));
 
         // Merge waitingOnYou + escalationInbox into one deduplicated action queue
-        actionQueue = buildActionQueue(waitingOnYou, escalationInbox, { snoozedSubjectKeys });
+        // Kernel-owned deliveries project the kernel's owner of the next move
+        // (workflow-state-kernel §17.5); every other task keeps today's chip.
+        const deliveryViews = await getDeliveryViewsForTasks([
+          ...escalationInbox.map((e) => e.taskId),
+          ...waitingOnYou.flatMap((w) => (w.kind === 'failed' && w.taskId ? [w.taskId] : [])),
+        ]);
+        actionQueue = buildActionQueue(waitingOnYou, escalationInbox, { snoozedSubjectKeys, deliveryViews });
 
         // Age telemetry. Four MERGE cards up to 90 days old were visible here
         // for months with nothing in the system counting them — the regression

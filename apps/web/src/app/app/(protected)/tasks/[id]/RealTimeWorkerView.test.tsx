@@ -277,3 +277,25 @@ describe('staleAnswerNotice', () => {
     expect(staleAnswerNotice(null, 'task-1')).toBeNull();
   });
 });
+
+// S36: a kernel-owned delivery whose next move is the platform's (a recoverable
+// blocker) is stated with its evidence, never asked as "Needs input".
+describe('RealTimeWorkerView — kernel DeliveryView owner of the next move', () => {
+  const waiting = baseWorker({ status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Push failed, what now?', options: [] } });
+  const renderWith = (delivery: { headline: string; owner: string; needsYou: boolean; detail: string | null } | null) =>
+    renderToStaticMarkup(<RealTimeWorkerView initialWorker={waiting as any} taskId="task-1" delivery={delivery} />);
+
+  test('platform-owned: no needs-input banner, the headline and evidence instead', () => {
+    const html = renderWith({ headline: 'Waiting for the fix to reach GitHub', owner: 'platform', needsYou: false, detail: 'PR #7 is still at abc1234' });
+    expect(html).not.toContain('worker-needs-input-banner');
+    expect(html).toContain('worker-platform-owned-banner');
+    expect(html).toContain('Waiting for the fix to reach GitHub');
+    expect(html).toContain('PR #7 is still at abc1234');
+  });
+
+  test('a worker-owned or human-owned delivery keeps the question', () => {
+    expect(renderWith({ headline: 'Fixing review feedback', owner: 'worker', needsYou: false, detail: null })).toContain('worker-needs-input-banner');
+    expect(renderWith({ headline: 'Needs a decision', owner: 'human', needsYou: true, detail: null })).toContain('worker-needs-input-banner');
+    expect(renderWith(null)).toContain('worker-needs-input-banner');
+  });
+});

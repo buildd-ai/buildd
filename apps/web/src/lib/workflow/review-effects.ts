@@ -15,7 +15,7 @@ import { and, desc, eq, ne, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '@buildd/core/db';
 import { missionNotes, missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { postPrReview } from '@/lib/github';
+import { githubApi, postPrReview } from '@/lib/github';
 import { notifyTeamOf } from '@/lib/notify';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -33,6 +33,7 @@ import type { ClaimedEffect, EffectHandler, EffectHandlers } from './effects';
 import { insertFollowupEffectSql } from './effects';
 import { applyCommand, loadView, type Exec } from './kernel';
 import { ingestFact } from './facts';
+import { collectComposition, isCompositionPr } from './review-composition';
 import { githubReader, workspaceRepo } from './github-facts';
 import type { KernelView, RoundSnapshot } from './types';
 
@@ -83,6 +84,57 @@ async function cancelPendingAttemptTasks(deliveryId: string, role: 'review' | 'f
 
 // ── dispatch_review: one reviewer task per round ────────────────────────────
 
+/** The novel-delta scope a composition delta round carries, for the reviewer prompt. */
+function compositionScopeOf(round: RoundSnapshot): { novelDeltaPaths: string[] } | undefined {
+  const sc = round.scope;
+  if (!sc?.composition || !Array.isArray(sc.novelDeltaPaths)) return undefined;
+  return { novelDeltaPaths: (sc.novelDeltaPaths as unknown[]).map(String) };
+}
+
+/**
+ * Attest a composed PR's head before its review is dispatched (§5.9). Returns
+ * the effect outcome when the attestation took the round (no reviewer for it
+ * now), or null to fall through to the normal full review: an ordinary PR, an
+ * unverifiable composition, or a rejected one all review in full.
+ */
+async function tryCompositionAttestation(p: {
+  d: NonNullable<KernelView['delivery']>;
+  round: RoundSnapshot;
+  mission: { workingBranch?: string | null } | null | undefined;
+  workspace: { releaseConfig?: unknown };
+  repo: { installationId: number };
+}): Promise<string | null> {
+  const { d, round } = p;
+  if (!d.repoFullName || d.prNumber == null || round.headSha !== d.currentHeadSha) return null;
+  try {
+    const pull = (await githubApi(p.repo.installationId, `/repos/${d.repoFullName}/pulls/${d.prNumber}`)) as { head?: { ref?: string }; base?: { ref?: string } } | null;
+    const headRef = pull?.head?.ref ?? null;
+    const baseRef = pull?.base?.ref ?? d.baseRef;
+    if (!headRef || !baseRef) return null;
+    if (!isCompositionPr({ headRef, baseRef, missionWorkingBranch: p.mission?.workingBranch ?? null, releaseConfig: (p.workspace.releaseConfig ?? null) as never })) return null;
+    const built = await collectComposition({
+      api: githubApi, exec: dbExec, installationId: p.repo.installationId, workspaceId: d.workspaceId,
+      repoFullName: d.repoFullName, prNumber: d.prNumber, baseRef, headRef, aggregateHeadSha: round.headSha,
+    });
+    if (built.attestation.novelDelta.result === 'unverifiable') {
+      console.log(`[workflow] composition of ${d.repoFullName}#${d.prNumber} unverifiable (${built.attestation.novelDelta.reason}); full review`);
+      return null;
+    }
+    const res = await ingestFact(
+      { kind: 'composition_attested', workspaceId: d.workspaceId, source: 'effect:dispatch_review', attestation: built.attestation },
+      { exec: dbExec },
+    );
+    if (res.result !== 'applied' && res.result !== 'duplicate') {
+      console.log(`[workflow] composition of ${d.repoFullName}#${d.prNumber} not accepted: ${(res as { reason?: string }).reason ?? res.result}; full review`);
+      return null;
+    }
+    return built.attestation.novelDelta.result === 'none' ? 'ok:composition_attested' : 'skipped:composition_delta';
+  } catch (err) {
+    console.warn(`[workflow] composition check failed for ${d.repoFullName}#${d.prNumber}; full review:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 const dispatchReview: EffectHandler = async (e) => {
   const view = await viewFor(e);
   const d = view.delivery;
@@ -104,6 +156,14 @@ const dispatchReview: EffectHandler = async (e) => {
   const mission = owner.missionId
     ? await db.query.missions.findFirst({ where: eq(missions.id, owner.missionId), columns: RESOLVE_POLICY_MISSION_COLUMNS })
     : null;
+  // §5.9: a composed PR (mission integration PR, release PR) whose commits are
+  // all already-reviewed changes needs no second full review. Runs once per
+  // round that is not itself the composition's delta round.
+  if (!round.scope?.composition) {
+    const composed = await tryCompositionAttestation({ d, round, mission, workspace, repo });
+    if (composed) return { outcome: composed };
+  }
+
   const policy = resolvePolicy(workspace as never, mission as never, null, { baseRef: d.baseRef });
   const roles = await listWorkspaceRoles(workspace.id, workspace.teamId);
   const picked = pickReviewerRole({ requested: null, policyRole: policy.agentReview?.reviewerRole ?? null, available: roles });
@@ -150,6 +210,7 @@ const dispatchReview: EffectHandler = async (e) => {
     policyConfig: (workspace.gitConfig as { policyConfig?: never } | null)?.policyConfig ?? undefined,
     baseRef: d.baseRef,
     priorVerdict,
+    compositionScope: compositionScopeOf(round),
     workflowRound: { deliveryId: d.id, roundId: round.id, round: round.round },
   });
   if (!created) return { outcome: 'skipped:dispatch_refused' };
@@ -434,7 +495,6 @@ const pushRecovery: EffectHandler = async (e) => {
 };
 
 const LEGACY_OWNED: EffectKind[] = [
-  'render_activity', // §12.1 regeneration ships with the projections slice; appendPrActivity still writes the comment
   'stamp_pr_rows', 'emit_pr_merged', 'wake_mission', 'release_attribution', 'finalize_mission_pr',
   'scan_supersession', 'project_supersession', 'verify_merge', 'gate_event',
 ];
@@ -448,6 +508,9 @@ export const reviewEffectHandlers: EffectHandlers = {
   notify,
   cancel_open_attempts: cancelOpenAttempts,
   push_recovery: pushRecovery,
+  // §12.1: the comment is regenerated from transitions. Loaded lazily so this
+  // module does not pull the activity renderer into every importer.
+  render_activity: async (e) => (await import('./pr-activity-effects')).renderActivity(e),
   ...Object.fromEntries(LEGACY_OWNED.map((k) => [k, legacyOwns])),
 };
 

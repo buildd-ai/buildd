@@ -22,6 +22,7 @@ import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
 import FailureKindsFixture from './FailureKindsFixture';
+import DeliveryStatesFixture from './DeliveryStatesFixture';
 import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
 import EntitlementBlockedFixture from './EntitlementBlockedFixture';
@@ -49,6 +50,7 @@ import {
     AGENT_ACCESS_FIXTURE_STATE,
     ENTITLEMENT_BLOCKED_FIXTURE_STATE,
     FAILURE_KINDS_FIXTURE_STATE,
+    DELIVERY_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
@@ -125,6 +127,10 @@ export default function DevFixturesPage() {
 
     if (state === FAILURE_KINDS_FIXTURE_STATE) {
         return <FailureKindsFixture />;
+    }
+
+    if (state === DELIVERY_STATES_FIXTURE_STATE) {
+        return <DeliveryStatesFixture />;
     }
 
     if (state === ANSWER_STATES_FIXTURE_STATE) {

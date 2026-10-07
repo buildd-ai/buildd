@@ -3,9 +3,30 @@ import type { ReactNode } from 'react';
 import StatusBadge, { STATUS_LABELS } from '@/components/StatusBadge';
 
 /** The page header's status: one square pill, loud only when it's on you. */
-export function HeaderStatusPill({ status, merged }: { status: string; merged: boolean }) {
+/**
+ * The kernel's reading of a kernel-owned delivery (workflow-state-kernel
+ * §17.5): its headline and who owns the next move. Serializable, so it can
+ * cross into client components.
+ */
+export interface DeliveryPillState {
+  headline: string;
+  owner: string;
+  needsYou: boolean;
+  stage: string;
+  detail: string | null;
+}
+
+export function HeaderStatusPill({ status, merged, delivery = null }: { status: string; merged: boolean; delivery?: DeliveryPillState | null }) {
   const base = 'inline-flex items-center gap-2 px-2.5 min-h-8 font-mono text-[11px] font-semibold uppercase tracking-[1.2px] border whitespace-nowrap';
   const dot = (extra = '') => <span className={`w-[7px] h-[7px] bg-current ${extra}`} aria-hidden="true" />;
+  if (delivery && !merged) {
+    // Loud only when the kernel says a person owns the next move.
+    if (delivery.needsYou) return <span data-owner={delivery.owner} className={`${base} text-[var(--on-accent)] border-accent bg-accent`}>{dot()}{delivery.headline}</span>;
+    if (delivery.stage === 'merged') return <span data-owner={delivery.owner} className={`${base} text-status-success border-status-success bg-status-success/10`}>{dot()}{delivery.headline}</span>;
+    if (delivery.stage === 'failed' || delivery.stage === 'closed' || delivery.stage === 'abandoned') return <span data-owner={delivery.owner} className={`${base} text-status-error border-status-error bg-status-error/10`}>{dot()}{delivery.headline}</span>;
+    if (delivery.owner === 'landing') return <span data-owner={delivery.owner} className={`${base} text-status-success border-status-success bg-status-success/10`}>{dot()}{delivery.headline}</span>;
+    return <span data-owner={delivery.owner} className={`${base} text-accent-text border-accent bg-accent-soft`}>{dot(delivery.owner === 'worker' || delivery.owner === 'reviewer' ? 'animate-status-pulse' : '')}{delivery.headline}</span>;
+  }
   if (merged) return <span className={`${base} text-status-success border-status-success bg-status-success/10`}>{dot()}Merged</span>;
   switch (status) {
     case 'running':
