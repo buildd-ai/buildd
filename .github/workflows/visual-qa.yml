@@ -212,11 +212,23 @@ jobs:
         # On a prod clone the journal is usually current and bun db:migrate is a
         # no-op, or applies this branch's pending migrations. "already exists" is
         # treated as success: the schema is already correct.
+        #
+        # Mission branches with pending migrations may have DDL that isn't yet in
+        # prod. When a migration timestamp is older than prod's high-water mark,
+        # the backfill verification fails because the DDL is not present. This is
+        # expected — the branch needs a migration rebase onto current trunk before
+        # it can capture CI screenshots. Print a clear message instead of failing.
         run: |
           OUTPUT=$(cd packages/core && bun db:migrate 2>&1) && echo "$OUTPUT" || {
             if echo "$OUTPUT" | grep -q "already exists"; then
               echo "::warning::Migration warning (schema already applied): ${OUTPUT##*Migration failed: }"
               echo "$OUTPUT"
+            elif echo "$OUTPUT" | grep -q "their DDL is NOT present in the database"; then
+              echo "::notice::Mission branch migration rebase needed — pending migrations not in prod"
+              echo "This branch has migrations with timestamps older than prod's current state."
+              echo "Rebase this branch onto dev to update migration timestamps."
+              echo "$OUTPUT"
+              exit 1
             else
               echo "$OUTPUT"
               exit 1

@@ -453,6 +453,15 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   const failureContext = ciLogs.summary ||
     `CI check suite failed on ${repoFullName} PR #${prNumber} (SHA: ${headSha})`;
 
+  // Visual QA is advisory-only: it never gates merge (conclusion: 'neutral').
+  // Don't create CI-fix tasks when it fails, since failures are non-blocking
+  // and often due to expected reasons (e.g., mission branch migrations not in prod).
+  if (ciLogs.failedJobNames.some(name => name.includes('Visual QA'))) {
+    console.log(`[ci-retry] Skipping CI-fix task for advisory Visual QA failure on ${repoFullName}#${prNumber}`);
+    recordSkip(skipCtx, 'retries_disabled', { reason: 'visual_qa_advisory' });
+    return { kind: 'skipped', reason: 'retries_disabled' };
+  }
+
   // Schema drift is diagnose-only — never a fix agent, automatic or manual.
   // Classified by check name (the only reliable signal here); see
   // ci-drift-diagnose.ts for why. This skips buildCIRetryTask entirely,
