@@ -1,0 +1,11 @@
+{
+  "name": "buildd",
+  "owner": { "name": "buildd", "url": "https://buildd.dev" },
+  "plugins": [
+    {
+      "name": "buildd",
+      "source": "./apps/runner/plugin",
+      "description": "buildd MCP server, session skill, and presence hooks for interactive coding sessions."
+    }
+  ]
+}

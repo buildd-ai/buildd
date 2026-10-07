@@ -11,6 +11,7 @@ import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
 import { displayWorkspaceName } from '@buildd/shared';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
 import TaskGrid from './TaskGrid';
+import { listLocalSessions, type LocalSessionView } from '@/lib/local-session-view';
 import { parseTaskListSelection } from '@/lib/task-list-filters';
 import { backendLabel } from '@buildd/core/backend-policy';
 
@@ -72,6 +73,7 @@ export default async function TasksPage({
   let teamWorkspaces: { id: string; name: string }[] = [];
   let initiativeTitle: string | null = null;
   let initiativeMissionIds: string[] = [];
+  let localSessions: LocalSessionView[] = [];
 
   if (!isDev && user) {
     try {
@@ -105,6 +107,17 @@ export default async function TasksPage({
         const wsNameMap = new Map(teamWorkspaces.map(w => [w.id, w.name]));
 
         if (wsIds.length > 0) {
+          // Presence of local interactive sessions. Best-effort: the task list
+          // never waits on or fails because of it.
+          try {
+            localSessions = await listLocalSessions({ workspaceIds: wsIds });
+          } catch (err) {
+            console.warn('[tasks] local sessions query failed:', err);
+          }
+          // A task a local session is working on names that client, not a runner.
+          const localClientByTaskId = new Map(
+            localSessions.filter(s => s.workerLive && s.task).map(s => [s.task!.id, `${s.clientLabel} · local`]),
+          );
           const bandIds = taskListFilter?.ids ?? null;
           // Band membership is historical, so it must not use current task status.
           // Fetch recent tasks (last 30 days, limit 200)
@@ -363,7 +376,7 @@ export default async function TasksPage({
               workerStatus: activeW?.status ?? null,
               workerStartedAt: activeW?.startedAt ?? null,
               workerUpdatedAt: activeW?.updatedAt ?? null,
-              runnerName: activeW?.name ?? null,
+              runnerName: localClientByTaskId.get(t.id) ?? activeW?.name ?? null,
               chain,
               attemptCurrent: typeof ctx.iteration === 'number' ? ctx.iteration + 1 : null,
               attemptTotal: typeof ctx.maxIterations === 'number' ? ctx.maxIterations : null,
@@ -418,6 +431,7 @@ export default async function TasksPage({
       initiativeFilter={initiativeId || null}
       initiativeTitle={initiativeTitle}
       initiativeMissionIds={initiativeMissionIds}
+      localSessions={localSessions}
     />
   );
 }

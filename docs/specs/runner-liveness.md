@@ -374,6 +374,11 @@ id, and every runner rule applies to its workers.
   `INTERACTIVE_WORKER_IDLE_TTL_MS` (2 hours) is reaped by an account-scoped arm,
   booked with its own error text, and does not consume a retry attempt.
 - `waiting_input` interactive workers stay governed by the waiting_input timeout.
+- The buildd agent plugin's hooks can also keep an interactive worker alive,
+  but only the one bound to that hook's own session presence, under the same
+  once-a-minute `updatedAt` guard (so a hook touch and an MCP touch coalesce).
+  A presence without a bound worker holds no seat. See
+  [local-agent-presence](local-agent-presence.md).
 
 **Acceptance criteria**:
 - AC-9a: GIVEN an interactive worker in `idle` with `updatedAt` 10 minutes ago
