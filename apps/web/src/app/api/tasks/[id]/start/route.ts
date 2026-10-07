@@ -14,6 +14,20 @@ import { BYPASS_SUBJECT_GATE_KEY, isSubjectDead } from '@/lib/subject-gate-contr
 import { BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import { ENTITLEMENT_BLOCK_CONTEXT_KEY } from '@buildd/shared';
 import { checkManagedRunnerEntitlement } from '@/lib/entitlements/managed-runner';
+import { probeCoordination } from '@/lib/coordination-probe';
+import { buildForceStartIntent, recordForceStartRequest } from '@/lib/force-start';
+import {
+  FORCE_START_CONTEXT_KEY,
+  RAIL_TEXT,
+  blockingReasons,
+  canForceStart,
+  gateName,
+  railsRemainingFor,
+  waitingHeadline,
+  waitingReasonsDigest,
+  type ForceStartIntent,
+  type WaitingReason,
+} from '@buildd/core/waiting-reason';
 
 /**
  * POST /api/tasks/[id]/start
@@ -25,6 +39,13 @@ import { checkManagedRunnerEntitlement } from '@/lib/entitlements/managed-runner
  *
  * Body:
  * - targetLocalUiUrl?: string - Specific runner to assign to (optional)
+ * - forceOverride?: boolean - lift the policy gates above (startAt, deps, holds, budget, subject)
+ * - capExempt?: boolean - run past the workspace cap this once
+ * - forceCoordination?: { reasonsDigest, note? } - Force start past the coordination
+ *   gates a 422 `coordination_hold` named. The digest must be the one that refusal
+ *   returned: a person never confirms a gate they did not see (409 otherwise).
+ *   Persisted as `context.forceStart` and honoured by the next runner's claim —
+ *   never a claim made here (see lib/force-start.ts).
  */
 export async function POST(
   req: NextRequest,
@@ -59,6 +80,9 @@ export async function POST(
   try {
     const body = await req.json().catch(() => ({}));
     const { targetLocalUiUrl, forceOverride, capExempt } = body;
+    const forceCoordination = body.forceCoordination && typeof body.forceCoordination === 'object'
+      ? body.forceCoordination as { reasonsDigest?: unknown; note?: unknown }
+      : null;
 
     // Get the task
     const task = await db.query.tasks.findFirst({
@@ -318,6 +342,42 @@ export async function POST(
       }
     }
 
+    // ── Coordination gates ──────────────────────────────────────────────────
+    // The claim loop's in-loop gates: path overlap with an open PR or a live
+    // path claim, mission concurrency and pacing, one scope-undeclared task
+    // per mission, planner order. /start used to accept a task these held, so
+    // the page said "Queued at front · No runner has responded" while an idle
+    // runner deferred it on every poll. Same predicates as the claim route
+    // (claim/coordination-gates). A probe read failure (null) falls back to
+    // the old behaviour rather than blocking the start.
+    const now = new Date();
+    const waitingReasons: WaitingReason[] = (await probeCoordination(task as any, now)) ?? [];
+    const blocking = blockingReasons(waitingReasons);
+    let forceIntent: ForceStartIntent | null = null;
+    if (blocking.length > 0) {
+      const refusal = coordinationRefusal(blocking);
+      if (!forceCoordination) {
+        return NextResponse.json(refusal, { status: 422 });
+      }
+      if (forceCoordination.reasonsDigest !== refusal.reasonsDigest) {
+        return NextResponse.json({
+          ...refusal,
+          error: `What holds this task changed since you confirmed. ${refusal.error}`,
+          reasonsChanged: true,
+        }, { status: 409 });
+      }
+      if (!refusal.canForce) {
+        return NextResponse.json(refusal, { status: 422 });
+      }
+      forceIntent = buildForceStartIntent({
+        reasons: blocking,
+        userId,
+        accountId,
+        now,
+        note: typeof forceCoordination.note === 'string' ? forceCoordination.note : null,
+      });
+    }
+
     // Always stamp manualStartAt so the task is durably prioritized on next claim cycle
     // even if the Pusher broadcast is missed. Also boost priority once to float it
     // above other same-priority tasks. Human-override bypass flags are written here too.
@@ -336,7 +396,6 @@ export async function POST(
     const hasMission = !!task.missionId;
     const existingContext = (task.context as Record<string, unknown>) || {};
     const alreadyManualStarted = !!existingContext.manualStartAt;
-    const now = new Date();
 
     await db
       .update(tasks)
@@ -349,6 +408,7 @@ export async function POST(
           ...(forceOverride && missionBudgetExhausted ? { [BYPASS_MISSION_BUDGET_KEY]: true } : {}),
           ...(forceOverride && subjectDead ? { [BYPASS_SUBJECT_GATE_KEY]: true } : {}),
           ...(capExempt ? { capExempt: true } : {}),
+          ...(forceIntent ? { [FORCE_START_CONTEXT_KEY]: forceIntent } : {}),
         },
         // Boost priority once on first manual start so task floats to top of claim queue.
         // Idempotent: re-poking ('Poke workers again') does not compound the boost.
@@ -366,17 +426,60 @@ export async function POST(
       targetLocalUiUrl: targetLocalUiUrl || null,
     }));
 
+    if (forceIntent) {
+      recordForceStartRequest({
+        intent: forceIntent,
+        task: { id: task.id, workspaceId: task.workspaceId, missionId: task.missionId ?? null },
+        callerOrigin: authType === 'session' ? 'dashboard' : 'api',
+      });
+    }
+
     // The wake re-evaluates; the claim route still applies every gate this
     // route did not override. Delivery sends the (targeted) TASK_ASSIGNED.
+    // A force start is honoured by THAT claim (a runner's), never by a claim
+    // made here: this route creates no worker.
     await wakeTask(task.id, 'manual.start', { targetLocalUiUrl: targetLocalUiUrl || null });
 
     return NextResponse.json({
       started: true,
       taskId: task.id,
       targetLocalUiUrl: targetLocalUiUrl || null,
+      // Soft reasons (planner order) only order the task; shown, never refused.
+      ...(waitingReasons.length > 0 && !forceIntent ? { waitingReasons } : {}),
+      ...(forceIntent ? {
+        forced: {
+          forceId: forceIntent.id,
+          gates: forceIntent.kinds.map(gateName),
+          railsRemaining: railsRemainingFor(blocking).map(r => RAIL_TEXT[r]),
+          expiresAt: forceIntent.expiresAt,
+        },
+      } : {}),
     });
   } catch (error) {
     console.error('Start task error:', error);
     return NextResponse.json({ error: 'Failed to start task' }, { status: 500 });
   }
+}
+
+/**
+ * The 422 body for a start a coordination gate holds: the canonical reasons,
+ * their digest (echoed back to confirm a force), and — when every one is
+ * forceable — exactly which gates a force lifts and which rails remain.
+ */
+function coordinationRefusal(blocking: WaitingReason[]) {
+  const head = blocking[0];
+  const canForce = canForceStart(blocking);
+  const notForceable = blocking.filter(r => !r.action.force);
+  return {
+    error: `${waitingHeadline(head)} because ${head.because}. Starts when ${head.releasesWhen.text}.`,
+    gateReason: 'coordination_hold',
+    blockClass: 'policy' as const,
+    waitingReasons: blocking,
+    reasonsDigest: waitingReasonsDigest(blocking),
+    canForce,
+    force: canForce
+      ? { gates: [...new Set(blocking.map(r => gateName(r.kind)))], railsRemaining: railsRemainingFor(blocking).map(r => RAIL_TEXT[r]) }
+      : null,
+    ...(notForceable.length > 0 ? { notForceable: notForceable.map(r => gateName(r.kind)) } : {}),
+  };
 }

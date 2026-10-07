@@ -8866,6 +8866,106 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.taskExclusion.code).toBe('path_overlap');
     expect(data.diagnostics.taskExclusion.detail).toContain('#7');
   });
+
+  // ── Dashboard Force start (task 1fd75933) ────────────────────────────────
+  // /start persists context.forceStart; the NEXT RUNNER's ordinary claim — a
+  // worker-level token, no forceOverride, no interactive session — honours it
+  // for exactly the confirmed gates. Never the MCP claim_task force path.
+  describe('dashboard Force start intent (context.forceStart)', () => {
+    const intent = (over: Record<string, unknown> = {}) => ({
+      id: 'force-1', at: new Date(Date.now() - 5_000).toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      userId: 'user-9', accountId: null, kinds: ['pr_overlap_ended'], loopKeys: ['path_overlap'], reasonsDigest: 'abcd1234',
+      blockers: [{ kind: 'pr_overlap_ended', type: 'pr', id: '3818', label: 'PR #3818' }],
+      ...over,
+    });
+    /** Idle runner, one pending task whose manifest overlaps open PR #3818 on the schema file. */
+    function openPrOverlap(context: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+      mockWorkersFindMany
+        .mockResolvedValueOnce([]) // the runner is idle: no active workers
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 3818, prUrl: 'https://github.com/o/r/pull/3818', status: 'completed', prLifecycleStatus: 'open' }]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([task({ pathManifest: ['packages/core/db/schema.ts'], context, ...extra })])
+        .mockResolvedValueOnce([{ id: 'pr-task', pathManifest: ['packages/core/db/schema.ts'] }]);
+    }
+
+    it('reproduction: an idle runner defers the overlapping task with no intent', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account('worker'));
+      openPrOverlap({});
+      const data = await (await claim({ runner: 'runner-7' })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.taskExclusion.code).toBe('path_overlap');
+    });
+
+    it('a runner (worker token, no forceOverride) claims past the confirmed path_overlap and consumes the intent', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account('worker'));
+      openPrOverlap({ forceStart: intent() });
+      const ctx = claimedContext();
+
+      const data = await (await claim({ runner: 'runner-7' })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].taskId).toBe('task-1');
+      // Not the MCP force path: no forceClaim audit, no admin token involved.
+      expect(mockEvaluateForcedGates).not.toHaveBeenCalled();
+      expect('forceClaim' in ctx()).toBe(false);
+      // Single-use: consumed into history with what it actually lifted.
+      expect('forceStart' in ctx()).toBe(false);
+      expect(ctx().forceStartHistory).toEqual([expect.objectContaining({ id: 'force-1', bypassed: ['path_overlap'], userId: 'user-9' })]);
+      const ev = bypassEvents().find((e: any) => e.reason === 'force_start');
+      expect(ev).toMatchObject({ taskId: 'task-1', workerId: 'worker-1', callerOrigin: 'worker' });
+      expect(ev.detail).toMatchObject({ phase: 'claimed', forceId: 'force-1', bypassed: ['path_overlap'], runner: 'runner-7' });
+    });
+
+    it('a runner poll with no taskId honours it too (the wake is not the only path)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account('worker'));
+      openPrOverlap({ forceStart: intent() });
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'runner-7' } }));
+      expect((await res.json()).workers).toHaveLength(1);
+    });
+
+    it('a lapsed intent no longer lifts anything', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account('worker'));
+      openPrOverlap({ forceStart: intent({ expiresAt: new Date(Date.now() - 1_000).toISOString() }) });
+      const data = await (await claim({ runner: 'runner-7' })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.taskExclusion.code).toBe('path_overlap');
+    });
+
+    it('lifts only the confirmed gates: a mission-cap intent does not lift path overlap', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account('worker'));
+      openPrOverlap({ forceStart: intent({ kinds: ['mission_concurrent'], loopKeys: ['mission_concurrent'] }) });
+      const data = await (await claim({ runner: 'runner-7' })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.taskExclusion.code).toBe('path_overlap');
+    });
+
+    it('never lifts scope-undeclared serialization, even if the context names it', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account('worker'));
+      mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: null, context: { forceStart: intent({ kinds: ['scope_undeclared_mutex'], loopKeys: ['advisory_manifest'] }) } })]);
+      mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+      mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
+      const data = await (await claim({ runner: 'runner-7' })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.taskExclusion.code).toBe('advisory_manifest');
+    });
+
+    it('never lifts the mission budget', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account('worker'));
+      mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: ['a.ts'], context: { forceStart: intent({ loopKeys: ['path_overlap', 'mission_budget'] }) } })]);
+      mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'budget_exhausted', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+      const data = await (await claim({ runner: 'runner-7' })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.taskExclusion.code).toBe('mission_budget');
+    });
+
+    it('lifts a confirmed mission concurrency cap for that task', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account('worker'));
+      mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: ['a.ts'], context: { forceStart: intent({ kinds: ['mission_concurrent'], loopKeys: ['mission_concurrent'] }) } })]);
+      mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: 1, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+      mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'other', pathManifest: ['b.ts'], category: null, context: {} }]));
+      const data = await (await claim({ runner: 'runner-7' })).json();
+      expect(data.workers).toHaveLength(1);
+    });
+  });
 });
 
 // ── Interactive session marker: runner 'mcp' is honoured only when signed ────

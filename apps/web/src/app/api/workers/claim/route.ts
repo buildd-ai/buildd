@@ -49,7 +49,7 @@ import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type Ag
 import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
-import { findBlockingPr, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { findBlockingPr, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
   BYPASS_MISSION_BUDGET_KEY,
@@ -59,12 +59,15 @@ import {
 import { getActiveClaimsByWorkspace, registerClaimDeferralWaiters, type ClaimDeferralWaiter } from '@buildd/core/path-claim';
 import { withDispatchHint } from '@buildd/core/dispatch-outbox';
 import { kickDispatch } from '@/lib/dispatch-authority';
-import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { depsGate } from './deps-gate';
 import { allowExplicitClaim, EXPLICIT_CLAIM_WINDOW_SEC } from './explicit-claim-rate-limit';
 import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
+import { readForceStart } from '@buildd/core/waiting-reason';
+import { consumeForceStart, recordForceStartClaim } from '@/lib/force-start';
 import { describeExplicitDeferral } from './explicit-deferral';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
+import { advisoryBlockingPeer, advisoryMutexApplies, findActiveClaimBlocker, producesNoFileEdits } from './coordination-gates';
+import { loadMissionCoordination, loadOpenPrTasksByWorkspace } from './coordination-snapshot';
 import { missionNotHeld, missionNotLocal, taskNotHeld, checkTaskMissionLocal } from './held-gate';
 import { diagnoseExplicitTaskExclusion, evaluateForcedGates, explicitExclusionGateEvent, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
@@ -132,15 +135,6 @@ import {
 const CLAIM_COOLDOWN_MS = 60_000;
 
 
-/**
- * True when the task's declared deliverable is not a code change
- * ('artifact_required' / 'none'), so it cannot conflict with another task's
- * files. Same exemption the task-create manifest gate grants these tasks.
- * 'auto' and 'pr_required' still count as file-editing.
- */
-function producesNoFileEdits(outputRequirement: unknown): boolean {
-  return outputRequirement === 'artifact_required' || outputRequirement === 'none';
-}
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -1294,59 +1288,8 @@ export async function POST(req: NextRequest) {
   // Pre-fetch tasks with open PRs per workspace, keyed by workspaceId.
   // Used by the path-overlap claim guard below. Fetched once outside the loop
   // so we don't repeat the query for every candidate task.
-  const openPrTasksByWorkspace = new Map<string, Array<{
-    taskId: string | null;
-    pathManifest: string[] | null;
-    prNumber: number | null;
-    prUrl: string | null;
-    workerStatus: string | null;
-    prLifecycle: string | null;
-    branch: string | null;
-    prBaseRef: string | null;
-  }>>();
   const openPrWorkspaceIds = [...new Set(filteredTasks.map(t => t.workspaceId))];
-  if (openPrWorkspaceIds.length > 0) {
-    const openPrWorkers = await db.query.workers.findMany({
-      where: and(
-        inArray(workers.workspaceId, openPrWorkspaceIds),
-        not(isNull(workers.prUrl)),
-        isNull(workers.mergedAt),
-        inArray(workers.status, ['running', 'idle', 'starting', 'waiting_input', 'completed']),
-      ),
-      columns: { workspaceId: true, taskId: true, prNumber: true, prUrl: true, branch: true, prBaseRef: true, prLifecycleStatus: true, status: true, updatedAt: true },
-    });
-    // Exclude closed/abandoned PRs — a closed PR should not block sibling tasks
-    // from claiming (it was abandoned, not merged; treating it as open would
-    // block dependent tasks forever if the PR branch is never re-opened).
-    // Also exclude holders parked on a question past the TTL (path-claim-ttl.ts).
-    // Per worker on purpose, unlike layer 2 / check_path_claim (per task via
-    // expiredParkedTaskIds): this layer is keyed on the PR, and the PR belongs
-    // to the one worker that opened it. A fresh sibling worker on the same task
-    // with no PR still blocks through its path_claims at layer 2.
-    const activeOpenPrWorkers = openPrWorkers.filter(w => w.prLifecycleStatus !== 'closed' && !isExpiredParkedHolder(w));
-    if (activeOpenPrWorkers.length > 0) {
-      const prTaskIds = activeOpenPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
-      const prTasks = prTaskIds.length > 0
-        ? (await db.query.tasks.findMany({
-            where: inArray(tasks.id, prTaskIds),
-            columns: { id: true, pathManifest: true },
-          })) ?? []
-        : [];
-      const prTaskManifestMap = new Map(prTasks.map(t => [t.id, t.pathManifest as string[] | null]));
-
-      for (const w of activeOpenPrWorkers) {
-        const manifest = w.taskId ? (prTaskManifestMap.get(w.taskId) ?? null) : null;
-        const entry = {
-          taskId: w.taskId, pathManifest: manifest, prNumber: w.prNumber, prUrl: w.prUrl,
-          workerStatus: (w.status as string | null) ?? null, prLifecycle: (w.prLifecycleStatus as string | null) ?? null,
-          branch: w.branch ?? null, prBaseRef: w.prBaseRef ?? null,
-        };
-        const list = openPrTasksByWorkspace.get(w.workspaceId) ?? [];
-        list.push(entry);
-        openPrTasksByWorkspace.set(w.workspaceId, list);
-      }
-    }
-  }
+  const openPrTasksByWorkspace = await loadOpenPrTasksByWorkspace(openPrWorkspaceIds);
 
   // Pre-fetch active path_claims per workspace for the path-overlap backstop.
   // path_claims holds actual file locks: declared ones from check_path_claim,
@@ -1388,96 +1331,17 @@ export async function POST(req: NextRequest) {
   // derive the base. Without them the prompt could only see the workspace's
   // trunk, which is exactly how a worker came to be told "PR to <trunk>" by a
   // server that then refused trunk for that task.
-  type MissionClaimData = {
-    id: string;
-    status: string;
-    maxConcurrentTasks: number | null;
-    pacingMode: 'eager' | 'paced';
-    pacingMaxPerHour: number | null;
-    lastTaskStartedAt: Date | null;
-    workingBranch: string | null;
-    integrationBranchEnabled: boolean | null;
-  };
-  const missionClaimMap = new Map<string, MissionClaimData>();
-  /**
-   * missionId → in-flight NON-review tasks. Reviewer-dispatched tasks
-   * (`isDispatchedReview`) inherit the reviewed PR's missionId but are not mission work: they are
-   * exempt from the mission concurrency cap and pacing gate below, so they must
-   * not occupy a slot either — otherwise a running reviewer pushes back the
-   * next builder, and the builder queue pushes back the review.
-   */
-  const missionActiveCountMap = new Map<string, number>();
-  /**
-   * missionId → ids of that mission's in-flight tasks that declared no file
-   * scope. "No scope" is `declaresNoScope()`, NOT `isAdvisoryManifest()`: null,
-   * `[]` and `['**']` are all equally undeclared, and the sentinel-only reading
-   * let a manifest-less task (anything predating the `['**']` mission default)
-   * past this guard entirely.
-   *
-   * Feeds the compensating serialization guard in the dispatch loop: since the
-   * authoring pass no longer mints dependsOn edges from a wildcard manifest
-   * (packages/core/path-overlap.ts), and a task with no concrete paths cannot be
-   * matched against a held lease by layer 2 no matter who is holding one, two
-   * scope-undeclared tasks in one mission would otherwise run concurrently and
-   * ping-pong conflict retries on the same files.
-   *
-   * `category: 'review'` tasks are excluded from both sides of this guard.
-   * `createReviewerTask` (lib/reviewer.ts) never sets a pathManifest — a
-   * reviewer reads a diff and posts a verdict, it has no file scope to
-   * declare — so every reviewer task is "scope-undeclared" by construction.
-   * Counting it as the mission's one undeclared-scope occupant blocks every
-   * other reviewer task in the same mission (they can never conflict with each
-   * other on disk), and worse, an orchestration/investigation task that is
-   * ALSO scope-undeclared and stays in flight starves reviewer tasks
-   * indefinitely — the mission's heartbeat loop keeps refilling that slot
-   * before a reviewer ever gets a turn.
-   */
-  const missionAdvisoryInFlight = new Map<string, Set<string>>();
-  /** The same in-flight rows, kept for the claim planner's input. */
-  let missionInFlightRows: MissionInFlightRow[] = [];
-
+  // Mission rows, in-flight counts (reviews excluded) and each mission's
+  // scope-undeclared in-flight set: see ./coordination-snapshot.
   const filteredMissionIds = [...new Set(
     filteredTasks.map(t => (t as any).missionId as string | null).filter(Boolean) as string[],
   )];
-  if (filteredMissionIds.length > 0) {
-    const missionRows = await db.query.missions.findMany({
-      where: inArray(missions.id, filteredMissionIds),
-      columns: {
-        id: true, status: true, maxConcurrentTasks: true, pacingMode: true,
-        pacingMaxPerHour: true, lastTaskStartedAt: true,
-        workingBranch: true, integrationBranchEnabled: true,
-      },
-    });
-    for (const m of missionRows) {
-      missionClaimMap.set(m.id, m as MissionClaimData);
-    }
-
-    // In-flight tasks per mission. ONE query feeds two gates: the concurrency
-    // count (was a COUNT(*) GROUP BY) and the advisory-manifest serialization
-    // guard below, which needs the in-flight tasks' manifests. Row-level instead
-    // of aggregated so we don't add a second round trip; the count is the same
-    // number of joined worker rows the aggregate produced.
-    missionInFlightRows = await db
-      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest, category: tasks.category, context: tasks.context, outputRequirement: tasks.outputRequirement })
-      .from(workers)
-      .innerJoin(tasks, eq(tasks.id, workers.taskId))
-      .where(and(
-        inArray(tasks.missionId, filteredMissionIds),
-        inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
-      ));
-    for (const row of missionInFlightRows) {
-      if (!row.missionId) continue;
-      if (!isDispatchedReview(row.category, row.context)) {
-        missionActiveCountMap.set(row.missionId, (missionActiveCountMap.get(row.missionId) ?? 0) + 1);
-      }
-      if (row.category !== 'review' && !producesNoFileEdits(row.outputRequirement)
-        && declaresNoScope(row.pathManifest as string[] | null)) {
-        const set = missionAdvisoryInFlight.get(row.missionId) ?? new Set<string>();
-        if (row.taskId) set.add(row.taskId);
-        missionAdvisoryInFlight.set(row.missionId, set);
-      }
-    }
-  }
+  const {
+    missionClaimMap,
+    missionActiveCountMap,
+    missionAdvisoryInFlight,
+    missionInFlightRows,
+  } = await loadMissionCoordination(filteredMissionIds);
 
   // Hold/start at claim (knowledge-base: buildd/design/conflict-aware-orchestration.md §5b).
   // The collector only remembers advisory deferrals that pass every
@@ -1530,6 +1394,9 @@ export async function POST(req: NextRequest) {
   const plannerConfigs = new Map<string, ReturnType<typeof resolveClaimPlannerConfig>>();
   const plannerModeOf = (t: { workspaceId: string }): ClaimPlannerMode => {
     if (taskId) return 'off';
+    // A force-started task walks in queue order: the person already chose to
+    // start it past its coordination wait, so the planner never orders it behind.
+    if (readForceStart((t as any).context, now)) return 'off';
     let cfg = plannerConfigs.get(t.workspaceId);
     if (!cfg) {
       cfg = resolveClaimPlannerConfig((t as any).workspace?.gitConfig);
@@ -1627,10 +1494,23 @@ export async function POST(req: NextRequest) {
     // The named task under an admin force claim skips the gates a person may
     // override; every other candidate in the batch is gated as usual.
     const forced = forceClaim && task.id === taskId;
-    /** Forceable gate hit: record it as bypassed on a force claim, else defer. True = skip the task. */
+    // A dashboard Force start (POST /api/tasks/[id]/start with forceOverride)
+    // leaves an audited intent on the task naming the coordination gates the
+    // person confirmed. Whichever runner claims next honours it for exactly
+    // those gates, then consumes it — the person never needs an admin token,
+    // and the task runs on a real runner, not an MCP session worker.
+    const forceStartIntent = forced ? null : readForceStart(task.context as Record<string, unknown> | null, now);
+    const startForceBypassed: string[] = [];
+    const liftedByForce = (reasonKey: string): boolean =>
+      forced || (!!forceStartIntent && (forceStartIntent.loopKeys as string[]).includes(reasonKey));
+    /** Forceable gate hit: record it as bypassed on a force claim / force start, else defer. True = skip the task. */
     const bypassOrDefer = (reasonKey: keyof typeof deferrals, detail?: Record<string, unknown>): boolean => {
       if (forced) {
         if (!forceBypassed.includes(reasonKey)) forceBypassed.push(reasonKey);
+        return false;
+      }
+      if (liftedByForce(reasonKey)) {
+        if (!startForceBypassed.includes(reasonKey)) startForceBypassed.push(reasonKey);
         return false;
       }
       deferTask(task, reasonKey, detail);
@@ -1708,7 +1588,7 @@ export async function POST(req: NextRequest) {
         const blockingEntry = filterOpenPrTasks.find(
           t => (t.prNumber ?? null) === blockedByPr.prNumber && (t.prUrl ?? null) === blockedByPr.prUrl,
         );
-        if (task.id === taskId && !forced) {
+        if (task.id === taskId && !liftedByForce('path_overlap')) {
           const overlapPaths = intersectPaths(taskManifest, blockingEntry?.pathManifest ?? []);
           const prLabel = blockedByPr.prNumber ? `#${blockedByPr.prNumber}` : (blockedByPr.prUrl ?? 'an open PR');
           explicitTaskExclusion = {
@@ -1734,36 +1614,23 @@ export async function POST(req: NextRequest) {
       // fully declared", which is no reason to discard the parts that ARE
       // declared. A manifest (or claim) that is *only* the sentinel has no
       // concrete paths left and stays advisory.
-      const concreteManifest = taskManifest.filter(p => p !== REPO_WIDE_SENTINEL);
-      if (concreteManifest.length > 0) {
-        const activeClaims = activePathClaimsByWorkspace.get(task.workspaceId);
-        if (activeClaims) {
-          let blockedByActiveClaim = false;
-          for (const [claimingTaskId, claimedPaths] of activeClaims) {
-            if (claimingTaskId === task.id) continue; // own claims never block self
-            const concreteClaimed = claimedPaths.filter(p => p !== REPO_WIDE_SENTINEL);
-            if (concreteClaimed.length === 0) continue; // advisory-only claim
-            if (pathsOverlap(concreteManifest, concreteClaimed)) {
-              console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
-              const overlapPaths = intersectPaths(concreteManifest, concreteClaimed);
-              if (task.id === taskId && !forced) {
-                explicitTaskExclusion = {
-                  code: 'path_overlap',
-                  detail: `Its files overlap an active claim held by task ${claimingTaskId}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for that task to finish, or rebase onto its work.`,
-                };
-              }
-              // prNumber/prUrl: null so a coalesced row does not keep naming a
-              // PR from an earlier layer-1 deferral as the current blocker.
-              blockedByActiveClaim = bypassOrDefer('path_overlap', { blockingTaskId: claimingTaskId, prNumber: null, prUrl: null });
-              // The holder's lease paths, so a narrowing that gives one back
-              // wakes this task too (narrow matches waiters by exact path).
-              if (blockedByActiveClaim) {
-                noteDeferralWaiter(task.workspaceId, task.id, claimingTaskId, intersectPaths(concreteClaimed, concreteManifest));
-              }
-              break;
-            }
-          }
-          if (blockedByActiveClaim) continue;
+      const leaseBlock = findActiveClaimBlocker(task.id, taskManifest, activePathClaimsByWorkspace.get(task.workspaceId));
+      if (leaseBlock) {
+        const { holderTaskId: claimingTaskId, claimedPaths: concreteClaimed, overlapPaths } = leaseBlock;
+        console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
+        if (task.id === taskId && !liftedByForce('path_overlap')) {
+          explicitTaskExclusion = {
+            code: 'path_overlap',
+            detail: `Its files overlap an active claim held by task ${claimingTaskId}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for that task to finish, or rebase onto its work.`,
+          };
+        }
+        // prNumber/prUrl: null so a coalesced row does not keep naming a
+        // PR from an earlier layer-1 deferral as the current blocker.
+        if (bypassOrDefer('path_overlap', { blockingTaskId: claimingTaskId, prNumber: null, prUrl: null })) {
+          // The holder's lease paths, so a narrowing that gives one back
+          // wakes this task too (narrow matches waiters by exact path).
+          noteDeferralWaiter(task.workspaceId, task.id, claimingTaskId, intersectPaths(concreteClaimed, taskManifest.filter(p => p !== REPO_WIDE_SENTINEL)));
+          continue;
         }
       }
     }
@@ -1881,12 +1748,8 @@ export async function POST(req: NextRequest) {
         //    still does NOT lift this gate (see the force-claim comment
         //    block and its regression test) — because force alone carries no
         //    guarantee a human is actually supervising concurrent work.
-        if ((task as any).category !== 'review' && !producesNoFileEdits((task as any).outputRequirement)
-          && declaresNoScope(taskManifest) && !plannerReplacesMutex.has(task.id) && !localMissionClaim) {
-          const advisoryPeers = missionAdvisoryInFlight.get(taskMissionId);
-          const blockingPeer = advisoryPeers
-            ? [...advisoryPeers].find(id => id !== task.id)
-            : undefined;
+        if (advisoryMutexApplies(task as any) && !plannerReplacesMutex.has(task.id) && !localMissionClaim) {
+          const blockingPeer = advisoryBlockingPeer(task.id, missionAdvisoryInFlight.get(taskMissionId));
           // Shadow-only by default (see layer 1 above). A gated START relaxes
           // only this serialization; there are no declared paths to acquire,
           // and observed touches are leased by the exclusive primitive later.
@@ -2367,8 +2230,9 @@ export async function POST(req: NextRequest) {
       console.log(`[claim] force claim: task ${task.id} past [${forceBypassed.join(', ')}] by admin account ${account.id}`);
     }
     const patchedContext = {
-      // A previous claim's force audit never carries over (withoutForceClaim).
-      ...withoutForceClaim(taskContext),
+      // A previous claim's force audit never carries over (withoutForceClaim),
+      // and a force-start intent is single-use: consumed into its history here.
+      ...consumeForceStart(withoutForceClaim(taskContext), forceStartIntent, { bypassed: startForceBypassed, at: now }),
       ...(forced ? {
         [FORCE_CLAIM_CONTEXT_KEY]: {
           at: now.toISOString(),
@@ -2662,6 +2526,17 @@ export async function POST(req: NextRequest) {
         workerId: worker.id,
         callerOrigin: gateCallerOrigin({ apiAccount: account }),
         detail: { bypassed: [...forceBypassed], accountId: account.id, userId: interactiveSession?.userId ?? null },
+      });
+    }
+    if (forceStartIntent) {
+      recordForceStartClaim({
+        intent: forceStartIntent,
+        bypassed: [...startForceBypassed],
+        task: { id: task.id, workspaceId: task.workspaceId, missionId: (task as any).missionId ?? null, teamId: (task as any).workspace?.teamId ?? null },
+        workerId: worker.id,
+        accountId: account.id,
+        runner,
+        now,
       });
     }
     if (usesOauthSeat && oauthSeatSlotsLeft !== null) oauthSeatSlotsLeft--;
