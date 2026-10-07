@@ -10,18 +10,27 @@
  * A 200 is never a failure: `/start` stamps `manualStartAt` and bumps the
  * priority, so the next claim cycle takes the task whether or not the Pusher
  * claim event reaches this tab. After ASSIGNMENT_TIMEOUT_MS without a claim the
- * state degrades to `queued`, with the runner fleet's liveness.
+ * state degrades to `queued`, and the task's canonical waiting reasons are
+ * fetched: when a coordination gate holds it, that is what the page says —
+ * never "no runner has responded" while an idle runner defers it.
+ *
+ * A `coordination_hold` refusal offers Force start; confirming it sends the
+ * refusal's reasons digest (`forceCoordination`), and the server records an
+ * intent the next runner claim honours. A 409 re-renders the fresh reasons.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { subscribeToChannel, unsubscribeFromChannel, getSubscribedChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import {
   canOfferForce,
   fetchRunnerFleet,
+  fetchTaskWaiting,
   requestBackendSwitch,
   requestTaskStart,
+  type ForcedStart,
   type GateRefusal,
   type RunnerFleetStatus,
   type StartRequest,
+  type TaskWaiting,
 } from '@/lib/task-actions';
 
 export type StartStatus = 'idle' | 'starting' | 'waiting' | 'queued' | 'accepted' | 'gated' | 'failed';
@@ -36,7 +45,13 @@ export interface TaskStart {
   refusal: GateRefusal | null;
   error: string | null;
   fleet: RunnerFleetStatus | null;
+  /** What an accepted Force start skipped and what stays enforced. */
+  forced: ForcedStart | null;
+  /** After `queued`: why the task is still pending, when the probe can tell. */
+  waiting: TaskWaiting | null;
   start(req?: StartRequest): Promise<void>;
+  /** Open a refusal the host already knows (Force start from the waiting line). */
+  present(refusal: GateRefusal): void;
   switchBackendAndStart(backend: string): Promise<void>;
   raiseCapAndStart(cap: number): Promise<void>;
   /** Close a refusal or an error and go back to idle. */
@@ -54,6 +69,8 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
   const [refusal, setRefusal] = useState<GateRefusal | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fleet, setFleet] = useState<RunnerFleetStatus | null>(null);
+  const [forced, setForced] = useState<ForcedStart | null>(null);
+  const [waiting, setWaiting] = useState<TaskWaiting | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const channelRef = useRef<string | null>(null);
   // The workspace channel is shared with the layout providers, so the handler
@@ -106,6 +123,7 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
       if (Date.now() - startedAt >= ASSIGNMENT_TIMEOUT_MS) {
         stopTracking();
         loadFleet();
+        void fetchTaskWaiting(taskId).then(setWaiting);
         setStatus(s => (s === 'waiting' ? 'queued' : s));
         return;
       }
@@ -123,8 +141,9 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
   }, [stopTracking, workspaceId, taskId, loadFleet]);
 
   const start = useCallback(async (asked: StartRequest = {}) => {
-    setPending(asked.forceOverride ? 'force' : asked.capExempt ? 'exempt' : 'start');
+    setPending(asked.forceOverride || asked.forceCoordination ? 'force' : asked.capExempt ? 'exempt' : 'start');
     setError(null);
+    setWaiting(null);
     setStatus('starting');
     const req: StartRequest = {
       ...asked,
@@ -137,6 +156,7 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
         grantedRef.current = {};
         setRefusal(null);
         setFleet(null);
+        setForced(out.forced ?? null);
         setStatus('waiting');
         track();
         await onStartedRef.current?.();
@@ -146,7 +166,8 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
         grantedRef.current = { forceOverride: req.forceOverride, capExempt: req.capExempt };
         setRefusal(out.refusal);
         setStatus('gated');
-        if (canOfferForce(out.refusal)) loadFleet();
+        // A coordination hold is about another task, not the fleet: no runner copy.
+        if (canOfferForce(out.refusal) && out.refusal.gateReason !== 'coordination_hold') loadFleet();
         return;
       }
       setError(out.error);
@@ -184,6 +205,12 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
     await start();
   }, [workspaceId, start]);
 
+  const present = useCallback((r: GateRefusal) => {
+    setRefusal(r);
+    setError(null);
+    setStatus('gated');
+  }, []);
+
   const dismiss = useCallback(() => {
     stopTracking();
     grantedRef.current = {};
@@ -191,7 +218,8 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
     setRefusal(null);
     setError(null);
     setFleet(null);
+    setWaiting(null);
   }, [stopTracking]);
 
-  return { status, pending, refusal, error, fleet, start, switchBackendAndStart, raiseCapAndStart, dismiss };
+  return { status, pending, refusal, error, fleet, forced, waiting, start, present, switchBackendAndStart, raiseCapAndStart, dismiss };
 }

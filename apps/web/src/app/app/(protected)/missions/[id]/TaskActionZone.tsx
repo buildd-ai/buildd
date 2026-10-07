@@ -31,13 +31,18 @@ import { explainProviderAuthFailure } from '@/lib/provider-auth-failure';
 import EntitlementBlockedNotice from '@/components/entitlements/EntitlementBlockedNotice';
 import { parseEntitlementBlock, type EntitlementBlock } from '@buildd/shared';
 import { useTaskStart } from '@/components/tasks/useTaskStart';
+import WaitingLine from '@/components/tasks/WaitingLine';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import { formatInZone } from '@/lib/zoned-time';
 import type { TaskPhase } from '@/lib/task-presentation';
 import {
   type MissionExecutor,
   canOfferForce,
+  fetchTaskWaiting,
   formatFleetStatus,
+  refusalFromWaiting,
+  type GateRefusal,
+  type TaskWaiting,
   getGateReasonSubtitle,
   getGateReasonTitle,
   otherBackendOf,
@@ -175,6 +180,18 @@ export default function TaskActionZone({
     setRetrying(null);
   }, [taskId, otherBackend, onChanged]);
 
+  // What holds a queued task, from the same probe /start refuses on.
+  const [waiting, setWaiting] = useState<TaskWaiting | null>(null);
+  const probeWaiting = has('run_now') && phase === 'pending' && missionExecutor !== 'local';
+  useEffect(() => {
+    if (!probeWaiting || start.status !== 'idle') return;
+    let cancelled = false;
+    void fetchTaskWaiting(taskId).then(w => { if (!cancelled) setWaiting(w); });
+    return () => { cancelled = true; };
+  }, [probeWaiting, taskId, start.status]);
+  const held = waiting ? refusalFromWaiting(waiting) : null;
+  const queuedHeld = start.status === 'queued' && start.waiting ? refusalFromWaiting(start.waiting) : null;
+
   const refusal = start.refusal;
   const starting = start.pending !== null;
   // A start refused on a plan limit is the same entitlement state, not a gate warning.
@@ -307,7 +324,19 @@ export default function TaskActionZone({
       {/* Queued → run now (a local mission's task: claim it from a session first) */}
       {showRunNow && (
         <div className="space-y-3 border border-border-default p-4">
-          {!hideQueuedNote && <p className="font-mono text-meta text-text-secondary">
+          {held?.waitingReasons ? (
+            <WaitingLine reasons={held.waitingReasons}>
+              {waiting?.forceStart ? (
+                <p data-testid="task-force-pending" className="font-mono text-eyebrow text-text-secondary">
+                  Force start requested. The next runner claim skips this wait.
+                </p>
+              ) : held.canForce && (
+                <button type="button" data-action="force_start_offer" onClick={() => start.present(held)} disabled={starting} className={QUIET_BTN}>
+                  Force start…
+                </button>
+              )}
+            </WaitingLine>
+          ) : !hideQueuedNote && <p className="font-mono text-meta text-text-secondary">
             {local
               ? "Waiting for a local session to claim it. Runners never pick up this mission's tasks."
               : 'Waiting for a runner to claim it.'}
@@ -329,7 +358,17 @@ export default function TaskActionZone({
       )}
 
       {/* After a start the server accepted: claimed, or first in the queue. */}
-      {(start.status === 'waiting' || start.status === 'queued' || start.status === 'accepted') && (
+      {queuedHeld?.waitingReasons && (
+        <WaitingLine reasons={queuedHeld.waitingReasons}>
+          {queuedHeld.canForce && !start.forced && (
+            <button type="button" data-action="force_start_offer" onClick={() => start.present(queuedHeld)} disabled={starting} className={QUIET_BTN}>
+              Force start…
+            </button>
+          )}
+        </WaitingLine>
+      )}
+
+      {(start.status === 'waiting' || (start.status === 'queued' && !queuedHeld) || start.status === 'accepted') && (
         <div data-testid="task-start-status" data-status={start.status} role="status" className="flex flex-col gap-2 border border-border-default p-4">
           <div className="flex items-center gap-3">
             {start.status === 'accepted'
@@ -337,17 +376,20 @@ export default function TaskActionZone({
               : <Spinner size="sm" className={start.status === 'queued' ? 'text-status-warning' : 'text-status-success'} aria-label="Start requested" />}
             <div className="font-mono">
               <p className="text-meta font-medium text-text-primary">
-                {start.status === 'accepted' ? 'Task started' : start.status === 'queued' ? 'Queued at front' : 'Start requested'}
+                {start.status === 'accepted' ? 'Task started' : start.forced ? 'Force start requested' : start.status === 'queued' ? 'Queued at front' : 'Start requested'}
               </p>
               <p className="text-eyebrow text-text-secondary">
                 {start.status === 'accepted'
                   ? 'A worker claimed the task.'
-                  : start.status === 'queued'
-                    ? 'No runner has responded. The task is first in the queue and starts on the next claim cycle.'
-                    : 'Waiting for a worker to claim it.'}
+                  : start.forced
+                    ? `Skipping: ${start.forced.gates.join(', ')}. A runner claims it on its next poll.`
+                    : start.status === 'queued'
+                      ? 'No runner has responded. The task is first in the queue and starts on the next claim cycle.'
+                      : 'Waiting for a worker to claim it.'}
               </p>
             </div>
           </div>
+          {start.forced && start.status !== 'accepted' && <RailsRemaining rails={start.forced.railsRemaining} />}
           {start.status === 'queued' && start.fleet && (
             <p className={`border border-border-default bg-surface-3 p-2 font-mono text-eyebrow ${start.fleet.count === 0 ? 'text-status-warning' : 'text-text-secondary'}`}>
               {formatFleetStatus(start.fleet, roleSlug)}
@@ -360,7 +402,15 @@ export default function TaskActionZone({
       {start.status === 'gated' && refusalEntitlement && (
         <EntitlementBlockedNotice block={refusalEntitlement} onLeaveQueued={start.dismiss} />
       )}
-      {start.status === 'gated' && refusal && !refusalEntitlement && (
+      {start.status === 'gated' && refusal?.gateReason === 'coordination_hold' && (
+        <CoordinationRefusal
+          refusal={refusal}
+          pending={start.pending}
+          onForce={() => refusal.reasonsDigest && start.start({ forceCoordination: { reasonsDigest: refusal.reasonsDigest }, targetLocalUiUrl: target || undefined })}
+          onCancel={start.dismiss}
+        />
+      )}
+      {start.status === 'gated' && refusal && !refusalEntitlement && refusal.gateReason !== 'coordination_hold' && (
         <div data-testid="task-start-refusal" data-gate={refusal.gateReason} className="space-y-3 border border-status-warning p-4">
           <div>
             <p className="mb-1 font-mono text-meta font-medium text-status-warning">
@@ -436,6 +486,69 @@ export default function TaskActionZone({
         <div className="flex flex-wrap items-center gap-2">
           <p role="alert" className="font-mono text-meta text-status-error">{start.error}</p>
           <button type="button" onClick={start.dismiss} className={QUIET_BTN}>Try again</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RailsRemaining({ rails }: { rails: string[] }) {
+  if (rails.length === 0) return null;
+  return (
+    <div className="font-mono text-eyebrow text-text-muted">
+      <p className="text-text-secondary">Still enforced:</p>
+      <ul className="list-disc space-y-0.5 pl-4">
+        {rails.map(r => <li key={r}>{r}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * A start a coordination gate holds: the canonical waiting line, then the
+ * Force start confirmation — exactly which gate it skips, what stays
+ * enforced, and that the override is recorded. A wait no force can lift
+ * says so and offers nothing.
+ */
+export function CoordinationRefusal({ refusal, pending, onForce, onCancel }: {
+  refusal: GateRefusal;
+  pending: string | null;
+  onForce: () => void;
+  onCancel: () => void;
+}) {
+  const busy = pending !== null;
+  return (
+    <div data-testid="task-start-refusal" data-gate="coordination_hold" className="space-y-3">
+      {refusal.reasonsChanged && (
+        <p role="status" className="font-mono text-eyebrow text-status-warning">What holds this task changed since you looked. Review it again.</p>
+      )}
+      {refusal.waitingReasons && <WaitingLine reasons={refusal.waitingReasons} />}
+      {canOfferForce(refusal) && refusal.force ? (
+        <div data-testid="task-force-confirm" className="space-y-2 border border-status-warning p-3">
+          <p className="font-mono text-meta font-medium text-text-primary">
+            Force start skips: {refusal.force.gates.join(', ')}
+          </p>
+          <RailsRemaining rails={refusal.force.railsRemaining} />
+          <p className="font-mono text-eyebrow text-text-muted">This start and how it lands are recorded and used to tune automatic holds.</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              data-action="force_start"
+              onClick={onForce}
+              disabled={busy || !refusal.reasonsDigest}
+              className="min-h-11 border-2 border-status-warning bg-status-warning px-3 font-mono text-meta font-medium text-white hover:opacity-90 disabled:opacity-50"
+            >
+              {pending === 'force' ? 'Force starting…' : 'Force start'}
+            </button>
+            <button type="button" onClick={onCancel} disabled={busy} className={QUIET_BTN}>Keep waiting</button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          {refusal.notForceable && refusal.notForceable.length > 0 && (
+            <p className="font-mono text-eyebrow text-text-muted">Can&apos;t be forced: {refusal.notForceable.join(', ')}.</p>
+          )}
+          <button type="button" onClick={onCancel} disabled={busy} className={QUIET_BTN}>Close</button>
         </div>
       )}
     </div>

@@ -20,11 +20,9 @@ import {
   FORCE_START_CONTEXT_KEY,
   RAIL_TEXT,
   blockingReasons,
-  canForceStart,
+  coordinationHoldBody,
   gateName,
   railsRemainingFor,
-  waitingHeadline,
-  waitingReasonsDigest,
   type ForceStartIntent,
   type WaitingReason,
 } from '@buildd/core/waiting-reason';
@@ -355,7 +353,7 @@ export async function POST(
     const blocking = blockingReasons(waitingReasons);
     let forceIntent: ForceStartIntent | null = null;
     if (blocking.length > 0) {
-      const refusal = coordinationRefusal(blocking);
+      const refusal = coordinationHoldBody(blocking);
       if (!forceCoordination) {
         return NextResponse.json(refusal, { status: 422 });
       }
@@ -461,25 +459,3 @@ export async function POST(
   }
 }
 
-/**
- * The 422 body for a start a coordination gate holds: the canonical reasons,
- * their digest (echoed back to confirm a force), and — when every one is
- * forceable — exactly which gates a force lifts and which rails remain.
- */
-function coordinationRefusal(blocking: WaitingReason[]) {
-  const head = blocking[0];
-  const canForce = canForceStart(blocking);
-  const notForceable = blocking.filter(r => !r.action.force);
-  return {
-    error: `${waitingHeadline(head)} because ${head.because}. Starts when ${head.releasesWhen.text}.`,
-    gateReason: 'coordination_hold',
-    blockClass: 'policy' as const,
-    waitingReasons: blocking,
-    reasonsDigest: waitingReasonsDigest(blocking),
-    canForce,
-    force: canForce
-      ? { gates: [...new Set(blocking.map(r => gateName(r.kind)))], railsRemaining: railsRemainingFor(blocking).map(r => RAIL_TEXT[r]) }
-      : null,
-    ...(notForceable.length > 0 ? { notForceable: notForceable.map(r => gateName(r.kind)) } : {}),
-  };
-}

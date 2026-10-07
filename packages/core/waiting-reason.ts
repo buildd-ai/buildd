@@ -277,6 +277,29 @@ export function gateName(kind: WaitingKind): string {
   return WAITING_KIND_SPEC[kind].gateName;
 }
 
+/**
+ * The 422 body for a start a coordination gate holds: the canonical reasons,
+ * their digest (echoed back to confirm a force), and — when every one is
+ * forceable — exactly which gates a force lifts and which rails remain.
+ */
+export function coordinationHoldBody(blocking: WaitingReason[]) {
+  const head = blocking[0];
+  const canForce = canForceStart(blocking);
+  const notForceable = blocking.filter(r => !r.action.force);
+  return {
+    error: `${waitingHeadline(head)} because ${head.because}. Starts when ${head.releasesWhen.text}.`,
+    gateReason: 'coordination_hold',
+    blockClass: 'policy' as const,
+    waitingReasons: blocking,
+    reasonsDigest: waitingReasonsDigest(blocking),
+    canForce,
+    force: canForce
+      ? { gates: [...new Set(blocking.map(r => gateName(r.kind)))], railsRemaining: railsRemainingFor(blocking).map(r => RAIL_TEXT[r]) }
+      : null,
+    ...(notForceable.length > 0 ? { notForceable: notForceable.map(r => gateName(r.kind)) } : {}),
+  };
+}
+
 const CONTAINER_DIRS = new Set(['apps', 'packages', 'services', 'libs']);
 const HOT_DIRS = new Set(['db', 'drizzle']);
 
