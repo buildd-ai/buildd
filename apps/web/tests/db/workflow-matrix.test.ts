@@ -1195,11 +1195,56 @@ describe('S30 — runner hand-off failures', () => {
     expect((await effects(o.deliveryId, 'push_recovery')).length).toBe(1);
   });
 
-  // Intended: the runner's hand-off failures ("no confirmed outcome", "commits but no PR",
-  // "uncommitted changes", output requirement unmet) arrive as AttemptEnded(outcome=unproven):
-  // AWAITING_PUSH when commits exist, a WORKING requeue bounded by the task's retry count when
-  // nothing exists; never a completed delivery. Part 1's seam maps only completed/failed/lost.
-  test.todo('S30: runner hand-off failures arrive as AttemptEnded(unproven) (needs the runner completion payload — no task filed)');
+  // The runner's hand-off failures ("no confirmed outcome", "commits but no PR", "uncommitted
+  // changes", output requirement unmet) arrive as `failed` + outcome=unproven with the local head
+  // and commit count (apps/runner/src/hand-off-outcome.ts); the worker PATCH maps that onto
+  // AttemptEnded(unproven) (lib/workflow/hand-off.ts). Driven here through the seam it calls.
+  test('S30: an owner hand-off failure with local commits → AttemptEnded(unproven) → AWAITING_PUSH + push_recovery; replay is a duplicate', async () => {
+    const o = await open();
+    const w = await seedWorker(o.ownerTaskId, { status: 'failed', lastCommitSha: 'L5', prNumber: o.prNumber, commitCount: 2 });
+    const end = () => seam.attemptEnded({ task: ownerTask(o), workerId: w, status: 'unproven', localHeadSha: 'L5', commitCount: 2, source: 'runner' }, deps);
+    expect((await end()).result).toMatchObject({ result: 'applied', decision: { toState: 'AWAITING_PUSH' } });
+    expect((await end()).result).toMatchObject({ result: 'duplicate' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H1', currentRound: 0 });
+    expect(await rounds(o.deliveryId)).toEqual([]);
+    expect((await effects(o.deliveryId, 'push_recovery')).map((e) => e.dedupe_key)).toEqual([`push_recovery:${o.deliveryId}:L5:1`]);
+    const t = (await transitions(o.deliveryId)).at(-1)!;
+    expect(t).toMatchObject({ command: 'AttemptEnded', to_state: 'AWAITING_PUSH' });
+    expect(t.evidence).toMatchObject({ outcome: 'unproven', localHeadSha: 'L5', commitCount: 2 });
+    // Never a completed delivery, and the owner task is not settled as delivered.
+    expect((await taskRow(o.ownerTaskId)).status).not.toBe('completed');
+  });
+
+  test('S30: an owner hand-off failure with nothing local and the task\'s retry queued stays WORKING (a requeue, no round, no recovery)', async () => {
+    const o = await open();
+    const w = await seedWorker(o.ownerTaskId, { status: 'failed', prNumber: o.prNumber, commitCount: 0 });
+    const r = await seam.attemptEnded({ task: ownerTask(o), workerId: w, status: 'unproven', localHeadSha: null, commitCount: 0, source: 'runner', taskRetryBudgetLeft: true }, deps);
+    expect(r.result).toMatchObject({ result: 'applied', decision: { toState: 'WORKING' } });
+    expect((await transitions(o.deliveryId)).at(-1)!.evidence).toMatchObject({ outcome: 'unproven', requeue: true });
+    expect(await rounds(o.deliveryId)).toEqual([]);
+    expect(await effects(o.deliveryId, 'push_recovery')).toEqual([]);
+  });
+
+  test('S30: a fix attempt whose hand-off failed with a local commit → AWAITING_PUSH and the attempt ends unproven, never delivered; no fix re-dispatch', async () => {
+    const f = await fixing();
+    const w = await seedWorker(f.fix.id, { status: 'failed', lastCommitSha: 'L7', commitCount: 1 });
+    await seam.attemptEnded({ task: f.fix, workerId: w, status: 'unproven', localHeadSha: 'L7', commitCount: 1, source: 'runner' }, deps);
+    const view = await loadView({ deliveryId: f.deliveryId });
+    expect(view.delivery).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H1', currentRound: 1 });
+    expect(view.attempts.find((a) => a.family === 'review_fix')).toMatchObject({ status: 'ended', outcome: 'unproven', reportedShas: ['L7'] });
+    expect((await tasksOf(f.deliveryId, 'fix')).length).toBe(1);
+    expect((await effects(f.deliveryId, 'push_recovery')).length).toBe(1);
+  });
+
+  test('S30: an old runner omits the outcome — the same refusal reads as a plain failure, exactly today\'s behaviour (the fix is re-dispatched)', async () => {
+    const f = await fixing();
+    const w = await seedWorker(f.fix.id, { status: 'failed', lastCommitSha: 'L7', commitCount: 1 });
+    await seam.attemptEnded({ task: f.fix, workerId: w, status: 'failed', localHeadSha: 'L7', commitCount: 1, source: 'runner' }, deps);
+    const view = await loadView({ deliveryId: f.deliveryId });
+    expect(view.delivery!.state).toBe('CHANGES_REQUESTED');
+    expect(view.attempts.find((a) => a.family === 'review_fix' && a.attemptNo === 1)).toMatchObject({ status: 'ended', outcome: 'failed' });
+    expect(await effects(f.deliveryId, 'push_recovery')).toEqual([]);
+  });
 });
 
 describe('S31 — preflight', () => {

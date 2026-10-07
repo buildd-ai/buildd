@@ -198,11 +198,17 @@ export interface AttemptTask {
 export async function attemptEnded(p: {
   task: AttemptTask;
   workerId: string;
-  /** `lost`: the reaper ended it (no report, no local head known). */
-  status: 'completed' | 'failed' | 'lost';
+  /**
+   * `lost`: the reaper ended it (no report, no local head known).
+   * `unproven`: the runner's hand-off failed after work (§6.6, S30): the work
+   * is not on GitHub, which is not the same as the work having failed.
+   */
+  status: 'completed' | 'failed' | 'lost' | 'unproven';
   localHeadSha: string | null;
   commitCount: number;
   source: string;
+  /** The task's own retry is queued (its retry count, not a ledger): an owner end with nothing local stays WORKING. */
+  taskRetryBudgetLeft?: boolean;
 }, deps: SeamDeps = {}): Promise<{ handled: boolean; result?: CommandResult }> {
   const attemptKind = p.task.deliveryRole;
   if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind) && attemptKind !== 'review')) return { handled: false };
@@ -248,6 +254,7 @@ export async function attemptEnded(p: {
     commitCount: p.commitCount,
     live,
     ...(proof ? { proof } : {}),
+    ...(p.taskRetryBudgetLeft ? { taskRetryBudgetLeft: true } : {}),
     // The kernel owns only deliveries whose policy dispatched a review (§14 Slice A).
     reviewRequired: true,
   };

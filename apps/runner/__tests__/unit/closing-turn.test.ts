@@ -706,6 +706,11 @@ describe('session-end classification', () => {
     expect(call).toBeDefined();
     expect(call!.payload.error).not.toContain('no commits were made');
     expect(call!.payload.error).toContain('No PR was created');
+    // S30: an unmet output requirement after work is a hand-off failure the
+    // kernel reads as AttemptEnded(unproven), with the head and count it saw.
+    expect(call!.payload.outcome).toBe('unproven');
+    expect(call!.payload).toHaveProperty('localHeadSha');
+    expect(call!.payload.commitCount).toBeGreaterThanOrEqual(1);
   });
 
   test('genuinely_blocked calls the Jev gate with the synthesized question', async () => {

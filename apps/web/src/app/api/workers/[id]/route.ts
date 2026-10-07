@@ -68,6 +68,7 @@ import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { attemptEnded as workflowAttemptEnded, fixCompletionGate, isRepairRole, recordLocalHead, recordReviewVerdict } from '@/lib/workflow/seam';
+import { attemptEndFromPatch, taskRetryCoversAttemptEnd } from '@/lib/workflow/hand-off';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
@@ -3982,15 +3983,21 @@ export async function PATCH(
       // next (review round, push recovery, re-dispatch, escalation) from a live
       // GitHub read; an infra requeue is not an attempt end (§5.7 rule 2).
       await runStep('workflow-attempt-ended', async () => {
+        // A runner hand-off failure says `outcome: 'unproven'` (S30, §6.6); an old runner omits it.
         const row = terminalTaskRow[0];
-        if (!row?.deliveryId || shouldAutoRetry || loop?.kind === 'hold' || releaseHeld) return;
+        const end = attemptEndFromPatch({
+          status: (contractViolation || slotFailure ? 'failed' : status) === 'completed' ? 'completed' : 'failed',
+          outcome: body.outcome, localHeadSha: body.localHeadSha, commitCount,
+          fallbackLocalHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+          fallbackCommitCount: worker.commitCount ?? 0,
+        });
+        if (!row?.deliveryId || taskRetryCoversAttemptEnd(end, shouldAutoRetry, row?.deliveryRole ?? null) || loop?.kind === 'hold' || releaseHeld) return;
         await workflowAttemptEnded({
           task: { id: taskId, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
           workerId: id,
-          status: (contractViolation || slotFailure ? 'failed' : status) === 'completed' ? 'completed' : 'failed',
-          localHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
-          commitCount: commitCount ?? worker.commitCount ?? 0,
+          ...end,
           source: 'runner',
+          taskRetryBudgetLeft: shouldAutoRetry,
         });
       });
 

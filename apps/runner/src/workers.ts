@@ -126,6 +126,7 @@ import {
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
+import { handOffUnproven, isHandOffRefusal } from './hand-off-outcome';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
@@ -2783,9 +2784,18 @@ export class WorkerManager {
     worker.completedAt = Date.now();
 
     const failSpans = buildSubagentSpans(worker.subagentTasks);
+    // S30 (workflow-state-kernel.md §6.6): the output gate refused a session
+    // that ran — its work is not on GitHub, which is not the work failing.
+    const handOff = isHandOffRefusal(refusal)
+      ? handOffUnproven(
+        await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+        worker.commits.length,
+      )
+      : null;
     await this.buildd.updateWorker(worker.id, {
       status: 'failed',
       error: refusal.message,
+      ...(handOff ?? {}),
       serverRefused: true,
       refusal: {
         status: refusal.status,
@@ -4891,6 +4901,11 @@ export class WorkerManager {
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: errMsg,
+          // S30: an unmet output requirement after work is a hand-off failure, not a failed attempt.
+          ...handOffUnproven(
+            await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+            worker.commits.length,
+          ),
           milestones: worker.milestones,
           resultMeta: {
             closingTurnOutcome: isClosingTurn

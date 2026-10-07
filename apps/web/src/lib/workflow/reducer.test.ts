@@ -348,6 +348,16 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(applied(end(V(D({ prNumber: null, repoFullName: null })), { outcome: 'unproven', live: null })).toState).toBe('AWAITING_PUSH');
     expect(applied(end(V(D({ prNumber: null, repoFullName: null })), { outcome: 'unproven', commitCount: 0, live: null, taskRetryBudgetLeft: true })).toState).toBe('WORKING');
   });
+  test('S30: WORKING unproven with nothing local and the task retry queued is a requeue even with the PR open (no round at the old head)', () => {
+    const dec = applied(end(V(D()), { outcome: 'unproven', commitCount: 0, localHeadSha: null, taskRetryBudgetLeft: true }));
+    expect(dec.toState).toBe('WORKING');
+    expect(dec.evidence).toMatchObject({ requeue: true });
+    expect(effectKinds(dec)).not.toContain('dispatch_review');
+    // Retry spent: nothing local to lose, so the open PR's head hands on exactly as row 1.
+    expect(applied(end(V(D()), { outcome: 'unproven', commitCount: 0, localHeadSha: null })).toState).toBe('AWAITING_REVIEW');
+    // Commits exist: AWAITING_PUSH whatever the retry budget says.
+    expect(applied(end(V(D()), { outcome: 'unproven', commitCount: 2, localHeadSha: 'L9', taskRetryBudgetLeft: true })).toState).toBe('AWAITING_PUSH');
+  });
   test('an exit for a non-bound attempt is stale', () => {
     expectResult(end(V(D()), { taskId: 'other' }), 'stale', 'attempt_not_bound');
     expectResult(end(V(D({ state: 'APPROVED' })), {}), 'stale', 'attempt_not_bound');

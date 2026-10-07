@@ -3415,6 +3415,56 @@ describe('PATCH /api/workers/[id]', () => {
         workerId: (await mockParams).id, status: 'completed', localHeadSha: 'pushed-l2', commitCount: 1,
       });
     });
+
+    const failKernelAttempt = async (body: Record<string, unknown>, taskRow: Record<string, unknown> = fixTaskRow) => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(fixWorker);
+      mockTasksFindFirst.mockResolvedValue(taskRow);
+      mockFixCompletionGate.mockReset();
+      mockWorkflowAttemptEnded.mockReset();
+      mockWorkflowAttemptEnded.mockResolvedValue({ handled: true });
+      mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ ...fixWorker, status: 'failed' }]) })) })) });
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'fix-task-1' }])) })) })) });
+      return PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body }), { params: mockParams });
+    };
+    const handOffRefusal = {
+      status: 'failed', error: 'Task has 2 commit(s) on branch but no pull request or artifact.',
+      serverRefused: true, refusal: { status: 400, method: 'PATCH', endpoint: '/api/workers/worker-1', gate: 'output_requirement' },
+    };
+
+    it('S30: a runner hand-off failure (outcome=unproven) ends the kernel attempt as unproven with the runner-reported head and count', async () => {
+      const res = await failKernelAttempt({ ...handOffRefusal, outcome: 'unproven', localHeadSha: 'local-l3', commitCount: 2 });
+      expect(res.status).toBe(200);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({
+        task: { id: 'fix-task-1', deliveryId: 'delivery-1', deliveryRole: 'fix' },
+        status: 'unproven', localHeadSha: 'local-l3', commitCount: 2,
+      });
+    });
+
+    it('S30: an old runner that omits outcome/localHeadSha gets today\'s failed attempt end, with the head and count the row holds', async () => {
+      const res = await failKernelAttempt(handOffRefusal);
+      expect(res.status).toBe(200);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ status: 'failed', localHeadSha: 'local-l2', commitCount: 1 });
+    });
+
+    it('S30: under a task auto-retry, an unproven end with commits is still reported (AWAITING_PUSH), one with nothing is the requeue', async () => {
+      const missionTask = { ...fixTaskRow, missionId: 'mission-1', status: 'in_progress' };
+      await failKernelAttempt({ ...handOffRefusal, outcome: 'unproven', localHeadSha: 'local-l3', commitCount: 2 }, missionTask);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ status: 'unproven', commitCount: 2 });
+
+      await failKernelAttempt({ ...handOffRefusal, outcome: 'unproven', localHeadSha: null, commitCount: 0 }, missionTask);
+      expect(mockWorkflowAttemptEnded).not.toHaveBeenCalled();
+      // And an old runner's plain failure under the same retry: unchanged, the retry is the requeue.
+      await failKernelAttempt(handOffRefusal, missionTask);
+      expect(mockWorkflowAttemptEnded).not.toHaveBeenCalled();
+      // An owner attempt with nothing local: reported, so the kernel records the WORKING requeue itself.
+      await failKernelAttempt({ ...handOffRefusal, outcome: 'unproven', localHeadSha: null, commitCount: 0 }, { ...missionTask, deliveryRole: 'owner' });
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ status: 'unproven', commitCount: 0, taskRetryBudgetLeft: true });
+    });
   });
 
   describe('output requirement validation ordering', () => {

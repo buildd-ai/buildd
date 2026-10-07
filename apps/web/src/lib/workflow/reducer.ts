@@ -1073,6 +1073,11 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
       const r = c.startRound(h);
       return c.apply(key, 'AWAITING_REVIEW', { patch: { ...r.patch, currentHeadSha: h }, rounds: r.rounds, effects: r.effects, evidence });
     };
+    // §6.6 (S30): a hand-off failure with nothing local is a requeue while the task's own retry
+    // is queued — never a review round at a head the retry is about to move.
+    if (cmd.outcome === 'unproven' && cmd.commitCount === 0 && cmd.taskRetryBudgetLeft) {
+      return c.apply(key, 'WORKING', { evidence: { ...evidence, requeue: true } });
+    }
     if ((success || cmd.outcome === 'unproven') && contains) return handOn(live!.headSha);
     if (success || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
       // A local commit is never delivery (§9).
