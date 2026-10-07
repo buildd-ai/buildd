@@ -17,6 +17,7 @@ type LabelledMilestone = Milestone & { label: string };
 const TYPE_FALLBACK_LABELS: Record<Milestone['type'], string> = {
   phase: 'Phase',
   status: 'Status update',
+  plan: 'Plan',
   checkpoint: 'Checkpoint',
   action: 'Action',
 };
@@ -295,7 +296,7 @@ export default function WorkerActivityTimeline({
 
   // Rows without structured tool data (older runners, sensitive workspaces)
   // produce no tape; the log then opens by default so nothing is hidden.
-  const hasTape = milestones.some(m => m.type === 'action' || (m.type === 'status' && typeof m.progress === 'number'));
+  const hasTape = milestones.some(m => m.type === 'action' || (m.type === 'status' && !!m.label?.trim()));
 
   return (
     <div className="mt-6" data-testid="worker-activity-timeline">
@@ -417,7 +418,7 @@ function StatusRow({
   milestone,
   formatTime,
 }: {
-  milestone: Extract<LabelledMilestone, { type: 'status' }>;
+  milestone: Extract<LabelledMilestone, { type: 'status' | 'plan' }>;
   formatTime: (ts: number) => string;
 }) {
   const [rowExpanded, setRowExpanded] = useState(false);
@@ -431,7 +432,6 @@ function StatusRow({
     if (lower.includes('question') || lower.includes('user:')) return '?';
     if (lower.includes('config changed')) return 'c';
     if (lower.includes('skill')) return '*';
-    if (typeof milestone.progress === 'number') return '%';
     return '-';
   };
 

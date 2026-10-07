@@ -1694,7 +1694,8 @@ export type WorkerWaitingFor = {
  */
 export type WorkerMilestone =
   | { type: 'phase'; label?: string; toolCount: number; ts: number; pending?: boolean }
-  | { type: 'status'; label?: string; progress?: number; ts: number }
+  | { type: 'status'; label?: string; progress?: number; ts: number; origin?: 'agent' }
+  | { type: 'plan'; label?: string; progress?: number; ts: number; origin?: 'agent' }
   | { type: 'checkpoint'; event: string; label?: string; ts: number }
   | {
       type: 'action';
@@ -1861,14 +1862,24 @@ export const workers = pgTable('workers', {
   pendingInstructions: text('pending_instructions'),
   // Instruction history - log of sent instructions and worker responses
   instructionHistory: jsonb('instruction_history').default([]).$type<Array<{
+    /** Server-generated at enqueue; consumers settle and acknowledge by it. Absent on older entries. */
+    id?: string;
     type: 'instruction' | 'response';
     /** Omitted for sensitive workspaces — the {type, ts} envelope is kept only. */
     message?: string;
     timestamp: number;
-    // 'pending' = queued, not yet confirmed delivered; 'delivered' = a consumer
-    // (the runner) confirmed the text reached the agent session. Never set to
-    // 'delivered' at write time — that recorded deliveries that never happened.
-    deliveryState?: 'pending' | 'delivered';
+    // 'pending' = queued (shown as Queued); 'delivered' = a consumer (the
+    // runner, or an MCP read) confirmed the text reached the agent session;
+    // 'acknowledged' = the agent's turn read it (observed, never inferred).
+    // Never set to 'delivered' at write time — that recorded deliveries that
+    // never happened. Undelivered is derived (run ended first), never stored.
+    // Read through messageDeliveryStatus (apps/web/src/lib/worker-instructions.ts).
+    deliveryState?: 'pending' | 'delivered' | 'acknowledged';
+    deliveredAt?: number;
+    acknowledgedAt?: number;
+    /** Settled by id: its consumer reports reads, so an unread one is undelivered once the run ends. */
+    awaitsAck?: true;
+    turnAtSend?: number;
   }>>(),
   // Transitional capability flag: true once this worker's runner has checked in
   // with `consumeInstructions: true`, i.e. it speaks the delivery-confirmation

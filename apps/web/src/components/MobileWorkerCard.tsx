@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { deriveRunEvidence } from '@buildd/core/run-evidence';
 
 interface Props {
   workerId: string;
@@ -42,16 +43,7 @@ export default function MobileWorkerCard({
   startedAt,
   taskId,
 }: Props) {
-  const CHECKPOINT_ORDER = ['session_started', 'first_read', 'first_edit', 'first_commit', 'task_completed'];
-  const checkpointEvents = new Set(
-    milestones
-      .filter(m => m.type === 'checkpoint')
-      .map(m => m.event)
-  );
-  const checkpointCount = CHECKPOINT_ORDER.filter(e => checkpointEvents.has(e)).length;
-  const progressWidth = checkpointCount > 0
-    ? Math.round((checkpointCount / CHECKPOINT_ORDER.length) * 100)
-    : Math.min(100, milestones.length * 10); // Fallback for workers without checkpoints
+  const phase = deriveRunEvidence({ status, startedAt, milestones: milestones.map(m => ({ ...m, ts: m.timestamp })) }).phases.filter(p => p.state === 'done' || p.state === 'current' || p.state === 'failed').at(-1)?.label;
   const isWaiting = status === 'waiting_input';
 
   return (
@@ -74,15 +66,7 @@ export default function MobileWorkerCard({
           <p className="text-sm text-text-secondary mb-3 truncate">{workspaceName}</p>
         )}
 
-        {/* Progress bar */}
-        <div className="mb-3">
-          <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-primary rounded-full transition-all duration-500 ease-in-out"
-              style={{ width: `${progressWidth}%` }}
-            />
-          </div>
-        </div>
+        {phase && <p className="mb-3 text-chip text-text-muted">{phase}</p>}
 
         {/* Stats row */}
         <div className="flex items-center justify-between">

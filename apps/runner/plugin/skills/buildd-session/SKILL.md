@@ -24,8 +24,10 @@ specific to a session like this one:
    "Claude Code · working on <task>" and your activity keeps the claim alive.
    Never claim just to look at a task; use `get_task`.
 2. **Report through buildd's actions, not prose.**
-   - progress → `update_progress` (also how you receive a message someone sent
-     you from buildd; when the hook says one is waiting, call it)
+   - progress → `update_progress`
+   - messages → `receive_messages`: what someone sent you from buildd (steering,
+     replies to your questions). When the hook says one is waiting, call it
+     before you go on; each message is returned once.
    - a question you can proceed under → `post_note type=question` with
      `defaultChoice`; a genuine hard block → ask the user
    - done → `create_pr` (if there are changes), then `complete_task`

@@ -140,7 +140,7 @@ describe('checkPathClaim', () => {
     expect(r.body.blockingMissionId).toBe(OTHER_MISSION_ID);
     expect(r.body.message).toContain('different mission');
     expect(r.body.message).toContain('path_released message');
-    expect(r.body.message).toContain('update_progress');
+    expect(r.body.message).toContain('next turn boundary');
     expect(r.body.message).not.toContain('Pusher');
     expect(mockRegisterWaiter).toHaveBeenCalledWith(SIBLING_ID, TASK_ID, 'shared.ts', WORKSPACE_ID);
 

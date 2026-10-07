@@ -16,6 +16,8 @@ describe('ActivityTape axis', () => {
     const html = renderToStaticMarkup(<ActivityTape milestones={milestones} startMs={T0} nowMs={T0 + 261_000} live />);
     const end = html.match(/data-testid="worker-activity-axis-end"[^>]*>([\s\S]*?)<\/span><\/div>/);
     expect(end).not.toBeNull();
+    expect(html).not.toContain('45%');
+    expect(html).toContain('Halfway');
     expect(end![1]).toContain('4:21');
     expect(end![1]).toContain('now');
   });

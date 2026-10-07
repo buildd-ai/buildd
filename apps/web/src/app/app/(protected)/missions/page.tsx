@@ -30,7 +30,6 @@ import {
 import { loadHumanSteeringMarksByMission } from '@/lib/mission-steering-notes';
 import { buildMissionListCard, missionsHeadline, type ListMissionRow } from '@/lib/mission-list-card';
 import { applyStrandChoice } from '@/lib/strand-choice-shadow';
-import { loadWorkerProgress } from '@/lib/worker-progress';
 import { loadTeamRoleColors } from '@/lib/role-colors';
 import { SlotMeter } from '@/components/fleet/SlotMeter';
 
@@ -158,14 +157,10 @@ export default async function MissionsPage({
   // produces, so they are one wait rather than two. The release footers are
   // themselves 3 deep per workspace.
   const releaseFooters: Record<string, ReleaseFooterData> = {};
-  // The running cells fill to each live worker's last reported progress.
-  const liveWorkerIds = (activeRows as any[]).flatMap(m => (m.tasks || []).flatMap((t: any) =>
-    (t.workers || []).filter((w: any) => (LIVE_WORKER_STATUSES as readonly string[]).includes(w.status)).map((w: any) => w.id as string)));
-  const [steeringMarksByMission, progressByWorker] = await Promise.all([
+  const [steeringMarksByMission] = await Promise.all([
     // Rule A-1/A-2: human steering marks (mission_notes, authorType='user') are
     // one batched query across the whole active set, not one per mission.
     loadHumanSteeringMarksByMission(activeRows.map((m: any) => m.id)),
-    loadWorkerProgress(liveWorkerIds),
     // Shared with mission detail's MissionReleaseSection (lib/release-footer.ts)
     // so the two surfaces cannot disagree about queue depth or deploy state.
     Promise.all(
@@ -216,7 +211,7 @@ export default async function MissionsPage({
 
     return {
       view,
-      list: buildMissionListCard(obj as ListMissionRow, view, summary, { now, roleColors, progressByWorker, taskIndex: allMissionTaskMap }),
+      list: buildMissionListCard(obj as ListMissionRow, view, summary, { now, roleColors, taskIndex: allMissionTaskMap }),
       workspaceId: obj.workspaceId || null,
       workspaceName: (obj.workspace as any)?.name || null,
       isHeld: obj.isHeld ?? false,

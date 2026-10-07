@@ -257,7 +257,12 @@ describe('send_agent_message', () => {
         ctx(),
       );
 
-      expect(result.content[0].text).toContain('UNDELIVERED');
+      // Queued, not delivered: the agent receives it at its next turn boundary,
+      // and get_task_messages is where delivery and reading show up.
+      const out = result.content[0].text;
+      expect(out).toContain('Queued');
+      expect(out).toContain('next turn boundary');
+      expect(out).toContain('get_task_messages');
     });
   });
 

@@ -7,8 +7,8 @@ summary: A local coding session with the buildd plugin MUST show as seat-free pr
 domain: runners
 surfaces: [apps/web/src/lib/local-session.ts, apps/web/src/app/api/workers/local-sessions/route.ts, packages/shared/src/local-session.ts, apps/runner/plugin/scripts/buildd-hook.mjs]
 related: [runner-liveness, mission-task-lifecycle]
-keywords: [local_sessions, interactive session, presence, buildd plugin, agent plugin, hooks, SessionStart, SessionEnd, claude code, codex, cursor, buildd install, release slot]
-verified_by: [apps/web/src/lib/local-session.test.ts, apps/web/src/lib/local-session-view.test.ts, apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/app/app/(protected)/tasks/InteractiveSessions.test.tsx, apps/web/src/app/api/workers/[id]/instruct/route.test.ts]
+keywords: [receive_messages, turn boundary nudge, local_sessions, interactive session, presence, buildd plugin, agent plugin, hooks, SessionStart, SessionEnd, claude code, codex, cursor, buildd install, release slot]
+verified_by: [packages/core/__tests__/mcp-tools-receive-messages.test.ts, apps/web/src/lib/local-session.test.ts, apps/web/src/lib/local-session-view.test.ts, apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/app/app/(protected)/tasks/InteractiveSessions.test.tsx, apps/web/src/app/api/workers/[id]/instruct/route.test.ts]
 assertions:
   - id: "session-event-handler"
     type: "symbol"
@@ -59,7 +59,7 @@ agent loop it runs in.
 - Auth is the account API key (environment or `~/.buildd/config.json`). No key is written into any hook configuration. Trigger-level tokens are refused.
 - Every event is idempotent: a replayed `start`/`touch` refreshes, a replayed `bind` answers `already_bound`, a replayed `end` answers `already_ended`.
 - The hook script exits 0 on every path (no key, buildd down, non-2xx, timeout, bad payload, unknown client) within its 3 s request timeout, and prints nothing except an optional one-line nudge.
-- Writes are coalesced to one a minute per session: on the client (state file per session) and on the server (`last_seen_at < now - 60s` guard).
+- Writes are coalesced to one a minute per session: on the client (state file per session; a `Stop` touch is exempt, it is the turn's last chance to learn a message waits) and on the server (`last_seen_at < now - 60s` guard).
 
 **Acceptance criteria**:
 - AC-1: WHEN a body carries a field outside the contract (e.g. `prompt`) THEN the endpoint answers 400 and writes nothing.
@@ -110,7 +110,11 @@ and exactly once, and MUST never complete unfinished work or rewrite a finished 
 
 **Invariants**:
 - Session → buildd uses existing primitives only: `update_progress`, `post_note`, `create_pr`, `complete_task` over MCP. Hooks never post task progress, notes or summaries, and a presence-only session never produces task progress.
-- Buildd → session reuses the instruction queue. `send_agent_message`/instruct queues into `workers.pending_instructions` for an interactive worker even for `priority: urgent` (no runner listens on Pusher for it). `update_progress` returns and acknowledges the text. The hook's `touch` answer carries only a `pendingInstructions` flag; on Claude Code's and Codex's `UserPromptSubmit` the hook adds one line telling the agent to call `update_progress`. The message text never travels through a hook.
+- Buildd → session reuses the instruction queue. `send_agent_message`/instruct queues into `workers.pending_instructions` for an interactive worker even for `priority: urgent` (no runner listens on Pusher for it). On an interactive worker the agent is the queue's only consumer: the dedicated `receive_messages` action returns the text once and acknowledges it delivered and read by id in one PATCH; `update_progress` still does the same for older prompts, but nothing depends on it. The hook's `touch` answer carries only a `pendingInstructions` flag. On Claude Code and Codex the hook turns that flag into a nudge naming `receive_messages` at every turn boundary the client exposes: `UserPromptSubmit` and `PostToolUse` add one line of context, and `Stop` blocks once (`decision: 'block'`, never while `stop_hook_active`, so it cannot loop). `Stop` touches are never throttled; `PostToolUse` touches are (one a minute). The message text never travels through a hook.
+
+**Acceptance criteria**:
+- AC-9: GIVEN `pendingInstructions: true` WHEN a Claude Code or Codex `PostToolUse` hook runs THEN stdout is `additionalContext` naming `receive_messages`; WHEN `Stop` runs THEN `decision: 'block'` once, and nothing while `stop_hook_active`; GIVEN `false` THEN stdout is empty on every event; the message text appears in no hook output.
+- AC-10: WHEN `receive_messages` is called with a message queued THEN it returns the text once and acknowledges it by id; a second call returns nothing.
 
 ## Surfaces
 
@@ -137,7 +141,7 @@ installable from the repo's marketplace (`.claude-plugin/marketplace.json`).
 | Stable session id | `session_id` | `session_id` | `conversation_id` |
 | Session end | reliable on exit; `clear` keeps the claim | `SessionEnd` reason is always `other` (treated as exit) | only `window_close` / `user_close` end; `completed`/`aborted`/`error` are touches |
 | Subagent identity | subagents share the parent `session_id`; they are the same presence | same | same conversation |
-| Inbound steering | queued + `UserPromptSubmit` nudge | queued + `UserPromptSubmit` nudge | queued only (read on next `update_progress`) |
+| Inbound steering | queued + nudge on `UserPromptSubmit`, `PostToolUse`, `Stop` | queued + nudge on `UserPromptSubmit`, `PostToolUse`, `Stop` | queued only (read on the next `receive_messages` / `update_progress`) |
 | Without hooks | MCP-only: works as before; buildd sees the session once it claims, and MCP calls keep the claim alive | same | same |
 
 `BUILDD_HOOKS_DISABLED=1` forces MCP-only mode on any client.

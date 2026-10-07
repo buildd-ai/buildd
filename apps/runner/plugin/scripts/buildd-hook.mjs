@@ -94,12 +94,16 @@ function normalizeClaudeLike(client, p, env) {
     case 'SessionStart':
       return { ...base, event: 'start', interactive: attended(client, env) };
     case 'UserPromptSubmit':
-    case 'Stop':
       return { ...base, event: 'touch' };
+    // The end of the agent's turn: the last chance to hand it a waiting
+    // message this turn, so it is never throttled.
+    case 'Stop':
+      return { ...base, event: 'touch', force: true };
     case 'PostToolUse': {
-      if (!isBuilddTool(p.tool_name)) return null;
-      const workerId = claimedWorkerId(p.tool_input, p.tool_response);
-      return workerId ? { ...base, event: 'bind', workerId } : null;
+      // A successful buildd claim binds. Any other tool call is a turn
+      // boundary: a (throttled) touch, whose answer says whether a message waits.
+      const workerId = isBuilddTool(p.tool_name) ? claimedWorkerId(p.tool_input, p.tool_response) : null;
+      return workerId ? { ...base, event: 'bind', workerId } : { ...base, event: 'touch' };
     }
     case 'SessionEnd': {
       // Claude: clear | resume | logout | prompt_input_exit | other. Codex: always other.
@@ -201,9 +205,9 @@ function writeState(file, state) {
   } catch { /* throttling degrades to server-side coalescing */ }
 }
 
-/** Whether to skip a touch because one went out this minute. Start/bind/end always go. */
-export function shouldSkip(event, state, now = Date.now()) {
-  return event === 'touch' && typeof state.lastSentAt === 'number' && now - state.lastSentAt < TOUCH_INTERVAL_MS;
+/** Whether to skip a touch because one went out this minute. Start/bind/end and forced touches (Stop) always go. */
+export function shouldSkip(event, state, now = Date.now(), force = false) {
+  return !force && event === 'touch' && typeof state.lastSentAt === 'number' && now - state.lastSentAt < TOUCH_INTERVAL_MS;
 }
 
 /** The exact body POSTed. Built from the normalized event only. */
@@ -220,16 +224,30 @@ export function buildBody(client, n, repo) {
   };
 }
 
-/** Hook stdout for the client, or '' for none. Only a nudge toward the existing delivery path. */
-export function hookOutput(client, hookEventName, result) {
+/**
+ * Hook stdout for the client, or '' for none. Only a nudge toward the MCP
+ * (`receive_messages`): the message text itself never travels through a hook,
+ * and only the boolean `pendingInstructions` is read from buildd's answer.
+ *
+ * At every turn boundary the client exposes: a prompt (UserPromptSubmit), a
+ * tool call (PostToolUse, context for the next model call) and the end of the
+ * turn (Stop: block once so the agent collects it before stopping, never
+ * again while `stop_hook_active`, so it cannot loop). Cursor stays queued-only.
+ */
+export function hookOutput(client, hookEventName, result, payload = null) {
   if (client === 'cursor') return hookEventName === 'sessionStart' ? '{}' : '';
-  if (!result?.pendingInstructions || hookEventName !== 'UserPromptSubmit') return '';
-  return JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'UserPromptSubmit',
-      additionalContext: `Buildd has an unread message for the task this session claimed${result.taskId ? ` (${result.taskId.slice(0, 8)})` : ''}. Call buildd update_progress to receive it.`,
-    },
-  });
+  if (!result?.pendingInstructions) return '';
+  const nudge = `Buildd has an unread message for the task this session claimed${typeof result.taskId === 'string' ? ` (${result.taskId.slice(0, 8)})` : ''}. Call buildd receive_messages to read it.`;
+  switch (hookEventName) {
+    case 'UserPromptSubmit':
+    case 'PostToolUse':
+      return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: nudge } });
+    case 'Stop':
+      if (payload?.stop_hook_active === true) return '';
+      return JSON.stringify({ decision: 'block', reason: nudge });
+    default:
+      return '';
+  }
 }
 
 async function readStdin() {
@@ -256,7 +274,7 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
 
   const file = statePath(stateDir(env), client, n.clientSessionId);
   const state = readState(file);
-  if (shouldSkip(n.event, state, now)) return { sent: false, why: 'throttled', output: hookOutput(client, hookEventName, null) };
+  if (shouldSkip(n.event, state, now, n.force === true)) return { sent: false, why: 'throttled', output: hookOutput(client, hookEventName, null) };
 
   const repo = n.event === 'start' ? gitRepo(n.cwd) : null;
   const body = buildBody(client, n, repo);
@@ -274,7 +292,7 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
     debug('request failed', err?.message ?? err);
   }
   writeState(file, { ...state, lastSentAt: now, lastEvent: n.event });
-  return { sent: true, ok: !!result, body, output: hookOutput(client, hookEventName, result) };
+  return { sent: true, ok: !!result, body, output: hookOutput(client, hookEventName, result, payload) };
 }
 
 async function main() {

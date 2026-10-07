@@ -121,4 +121,21 @@ describe('SteerConversation — message status', () => {
     expect(container.textContent).not.toContain('Read at turn');
     expect(container.querySelector('[data-testid="steer-turn"]')).toBeNull();
   });
+
+  it('shows read and not-delivered from the server-derived state', async () => {
+    messagesResponse = {
+      workerId: WORKER_ID,
+      canSend: true,
+      workerStatus: 'completed',
+      messages: [
+        { id: 'a', type: 'instruction', message: 'it read this', timestamp: 1, deliveryState: 'acknowledged', state: 'acknowledged' },
+        { id: 'b', type: 'instruction', message: 'run ended first', timestamp: 2, deliveryState: 'pending', state: 'undelivered' },
+      ],
+    };
+    await render();
+    const rows = Array.from(container.querySelectorAll('[data-testid="kit-steer-message"]'));
+    expect(rows.map(r => r.getAttribute('data-status'))).toEqual(['acknowledged', 'undelivered']);
+    expect(rows[0].textContent).toContain('Read');
+    expect(rows[1].textContent).toContain('Not delivered');
+  });
 });

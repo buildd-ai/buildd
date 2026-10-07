@@ -105,12 +105,9 @@ function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
         <div className="mt-1 flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-[1px] text-status-warning">
           ? Needs input{mins != null && <span className="font-normal normal-case tracking-normal text-text-muted">· {mins}</span>}
         </div>
-      ) : w.progress != null ? (
-        <div className="mt-1.5 flex items-center gap-2.5 font-mono text-[11px] text-text-muted">
-          <span className="relative h-[3px] w-full max-w-[150px] bg-border-default" aria-hidden="true">
-            <span className="absolute inset-y-0 left-0 bg-accent" style={{ width: `${w.progress}%` }} />
-          </span>
-          <span className="shrink-0 whitespace-nowrap">{`${Math.round(w.progress)}%`}{mins != null && ` · ${mins}`}</span>
+      ) : w.phase ? (
+        <div className="mt-1 font-mono text-chip uppercase tracking-wide text-text-muted">
+          {w.phase}{mins != null && ` · ${mins}`}
         </div>
       ) : justClaimed ? (
         // Claimed this minute and nothing reported: not "— · 0m" under an empty track.
