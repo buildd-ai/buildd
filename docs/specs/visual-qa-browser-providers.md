@@ -10,6 +10,36 @@ verified_by: [scripts/qa/capture-provider.test.ts, apps/runner/__tests__/unit/br
 related: [qa-capture-steps, worker-sandbox-isolation, credential-isolation, cloud-egress-merge-guard, runner-liveness]
 keywords: [visual-auditor, BrowserProvider, Browser Rendering, CDP, connectOverCDP, browser bridge, local service, CAPABILITY_BROWSER]
 supersedes: []
+# Structural guards complement the behavioral suites; live deployment proof is separate.
+assertions:
+  - id: "runner-provider-selection"
+    type: "symbol_reachable"
+    symbol: "selectBrowserProvider"
+    entry: "apps/runner/src/run-once.ts"
+  - id: "worker-browser-bridge"
+    type: "symbol_reachable"
+    symbol: "BrowserBridge"
+    entry: "apps/cloud-runner/src/worker-agent.ts"
+  - id: "task-interception-scope"
+    type: "symbol"
+    name: "handleScopedBrowserRequest"
+    path: "apps/cloud-runner/src/browser-bridge.ts"
+  - id: "capture-provider-connection"
+    type: "symbol_reachable"
+    symbol: "connectReviewBrowser"
+    entry: "scripts/qa/capture.ts"
+  - id: "provider-selection-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/browser-provider.test.ts"
+  - id: "browser-isolation-tests"
+    type: "test_file"
+    path: "apps/cloud-runner/src/browser-bridge.test.ts"
+  - id: "claimability-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/visual-audit-runner.test.ts"
+  - id: "provider-evidence-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/visual-audit-evidence.test.ts"
 ---
 
 # Provider-Backed Browser for Visual Review
