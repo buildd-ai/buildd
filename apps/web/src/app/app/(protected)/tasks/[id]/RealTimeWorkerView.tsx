@@ -177,7 +177,8 @@ export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus =
   const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
   // The question is this page's hero: the global "…needs your input" banner
   // naming it above the hero only repeats it.
-  const platformOwned = !!delivery && delivery.owner === 'platform' && !delivery.needsYou;
+  // §13.2: the needs-input banner is only for a worker-owned delivery (or a person's own move); reviewer, landing, trunk and platform owners are Buildd's.
+  const platformOwned = !!delivery && delivery.owner !== 'worker' && delivery.owner !== 'human' && !delivery.needsYou;
   useHideNeedsInputWhileOpen(worker.waitingFor && isOpenAsk(taskStatus, worker.status) ? taskId : null);
 
   // When the server component re-renders (via router.refresh()), pick up fresh

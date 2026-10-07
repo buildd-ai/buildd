@@ -4,7 +4,7 @@
  * worker/reviewer/task columns. A task with no kernel view keeps today's chip.
  */
 import { describe, expect, it } from 'bun:test';
-import { buildActionQueue, isActionableChip, type EscalationRawItem, type WaitingOnYouRawItem } from './action-queue';
+import { buildActionQueue, isActionableChip, kernelInboxMembership, type EscalationRawItem, type WaitingOnYouRawItem } from './action-queue';
 import { deriveDeliveryView } from './workflow/projections';
 import type { DeliverySnapshot, DeliveryState } from './workflow/types';
 
@@ -104,5 +104,26 @@ describe('S35 — a replaced predecessor is not a FAILED card', () => {
   it('a FAILED delivery still shows its failure; a legacy task is untouched', () => {
     expect(build([], [['t-1', viewOf({ state: 'FAILED', prNumber: null })]], [failed('t-1')])[0].chip).toBe('FAILED');
     expect(build([], [], [failed('t-9')])[0].chip).toBe('FAILED');
+  });
+});
+
+describe('S36 — Needs You membership follows DeliveryView.needsYou', () => {
+  it('ESCALATED for a non-review reason with no notes is admitted', () => {
+    const v = viewOf({ state: 'ESCALATED', stateReason: 'push_undeliverable' });
+    expect(kernelInboxMembership(v, false)).toBe(true);
+    const [card] = build([esc({ policyTier: 'agent-review', escalationReason: null })], [['t-1', v]]);
+    expect(isActionableChip(card.chip)).toBe(true);
+  });
+
+  it('AWAITING_PUSH with a stale reviewer_escalated note is not admitted', () => {
+    const v = viewOf({ state: 'AWAITING_PUSH' });
+    expect(kernelInboxMembership(v, true)).toBe(false);
+    const [card] = build([esc({ hasEscalationNote: true })], [['t-1', v]]);
+    expect(isActionableChip(card.chip)).toBe(false);
+  });
+
+  it('a task without a view keeps the legacy predicate', () => {
+    expect(kernelInboxMembership(undefined, true)).toBe(true);
+    expect(kernelInboxMembership(undefined, false)).toBe(false);
   });
 });

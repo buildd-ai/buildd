@@ -613,7 +613,8 @@ mock.module('@/lib/workflow/seam', () => ({
   observePrState: mockObservePrState,
   observeCiFailure: mock(async () => ({ handled: false })),
 }));
-mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr }));
+const mockKernelDeliveryForPr = mock(async (..._a: any[]): Promise<string | null> => null);
+mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr }));
 
 // The mission loop-on-merge and integration-PR helpers, recorded in call order
 // for the missions characterization at the end of this file. Real modules are
@@ -2793,6 +2794,34 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(updateCalls.some((c) => (c.setValues as any).status === 'completed')).toBe(true);
       // Path B must NOT dispatch for branch_merge — Path A is authoritative
+      expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
+    });
+
+    // Slice C (workflow-state-kernel.md §14): a kernel-owned PR's merge work is the kernel's
+    // post-merge effects (stamp_pr_rows, emit_pr_merged, finalize_mission_pr), run from T17.
+    // The webhook records the fact and does none of that work inline.
+    it('a kernel-owned merge: the fact goes to the kernel; the task is not flipped and nothing is stamped here', async () => {
+      mockObservePrState.mockImplementationOnce(async () => true);
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w1',
+        workspaceId: 'ws1',
+        taskId: 't1',
+        task: { id: 't1', status: 'pending', workspaceId: 'ws1', release: 'true', title: 'Fix bug', missionId: null },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', releaseConfig: null, gitConfig: { defaultBranch: 'dev' } });
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+      const before = updateCalls.length;
+
+      const res = await POST(createWebhookRequest('pull_request', {
+        action: 'closed',
+        pull_request: { number: 7, merged: true, draft: false, head: { ref: 'buildd/t1-fix', sha: 'sha-7' }, html_url: 'https://github.com/test-org/test-repo/pull/7', merged_at: '2026-10-06T00:00:00Z' },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      }));
+
+      expect(res.status).toBe(200);
+      expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws1', repoFullName: 'test-org/test-repo', prNumber: 7, source: 'webhook:closed' }));
+      expect(updateCalls.slice(before).some((c) => (c.setValues as any).status === 'completed')).toBe(false);
       expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
     });
 
@@ -7005,6 +7034,20 @@ describe('webhook → reviews (characterization)', () => {
     expect(call('reconcileSubjectEvent')).toEqual([expect.objectContaining({ kind: 'closed', door: 'webhook pull_request.closed' })]);
     expect(call('shutdownDeadBuilddPrs')).toEqual(['ws1', 93, false, 5000, 'test-org/test-repo']);
     expect(verdictTelemetry()).toHaveLength(0);
+  });
+
+  // Slice D: a kernel-owned PR's close (T18) owes a scan_supersession effect; the subscriber
+  // does not run a second, request-bound scan beside it.
+  it('closed unmerged, kernel-owned PR: no inline detection; the kernel\'s scan_supersession owns it', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker());
+    mockKernelDeliveryForPr.mockImplementation(async () => 'delivery-93');
+    try {
+      await POST(createWebhookRequest('pull_request', prEvent({ merged: false })));
+      expect(mockKernelDeliveryForPr).toHaveBeenCalledWith('ws1', 'test-org/test-repo', 93);
+      expect(order()).toEqual(['appendPrActivity', 'deliverPrReviewCallback', 'reconcileSubjectEvent', 'shutdownDeadBuilddPrs']);
+    } finally {
+      mockKernelDeliveryForPr.mockImplementation(async () => null);
+    }
   });
 
   it('no installation: no comment and no shutdown; the reconcile runs without PR coordinates', async () => {

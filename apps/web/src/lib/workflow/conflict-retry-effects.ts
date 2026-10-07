@@ -2,7 +2,7 @@
  * Effect handlers for the conflict and migration families of the workflow
  * kernel (docs/specs/workflow-state-kernel.md §6.7, §10.2, §10.5), owned by
  * the reviews module like ci-retry-effects.ts and reached only through the
- * composition root (`WORKFLOW_EFFECT_HANDLERS` in apps/web/src/modules.ts).
+ * composition root (`workflowEffectHandlers()` in apps/web/src/modules.ts).
  *
  * Mechanical first. `refresh_branch` merges the base in server-side (GitHub
  * update-branch pinned to the bound head, through base-refresh.ts so the
@@ -31,6 +31,7 @@ import { notifyTeamOf } from '@/lib/notify';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { policyValue } from '@/lib/policy-overrides';
+import { isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import type { MigrationCollision } from '@/lib/migration-safety';
 import type { EffectHandler, EffectHandlers } from './effects';
 import { applyCommand, loadView, type Exec } from './kernel';
@@ -144,6 +145,8 @@ const refreshBranch: EffectHandler = async (e) => {
     const view = await loadView({ deliveryId: e.deliveryId }, dbExec);
     const d = view.delivery;
     if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
+    const owner = await db.query.tasks.findFirst({ where: eq(tasks.id, d.ownerTaskId), columns: { context: true } });
+    if (isDependencyBotPrContext(owner?.context)) return { outcome: 'skipped:dependency_bot' };
     const repo = await workspaceRepo(d.workspaceId);
     if (!repo) throw new Error('no GitHub installation for the workspace');
     const { updateBehindPrBranch } = await import('@/lib/pr-branch-update');
@@ -152,7 +155,10 @@ const refreshBranch: EffectHandler = async (e) => {
   }
   const b = await boundAttempt(e, source);
   if ('outcome' in b) return b;
-  const owner = await db.query.tasks.findFirst({ where: eq(tasks.id, b.d.ownerTaskId), columns: { id: true, missionId: true } });
+  const owner = await db.query.tasks.findFirst({ where: eq(tasks.id, b.d.ownerTaskId), columns: { id: true, missionId: true, context: true } });
+  // A dependency bot owns its branch: the platform never pushes to it (S27). A landing door reaches
+  // here through T16 without the conflict doors' own check; no agent may push either, so a person lands it.
+  if (isDependencyBotPrContext(owner?.context)) return mechanicalFailed(b, source, 'dependency_bot_pr: the platform does not push to a dependency bot\'s branch');
   const prw = await prWorker(b.d.workspaceId, b.d.prNumber!);
   const refresh = deps.refresh ?? (await import('@/lib/base-refresh')).refreshBehindPr;
   const out = await refresh({

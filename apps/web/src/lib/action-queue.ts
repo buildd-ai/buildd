@@ -664,6 +664,19 @@ export function chipForDelivery(v: DeliveryView, legacyChip: ActionChip): Action
   }
 }
 
+/**
+ * S36: Needs You membership for a task whose delivery the kernel owns is the
+ * kernel's `needsYou`, never the legacy reviewer gate / note / tier predicate
+ * (that only restyles rows the kernel already admits). Landing keeps the
+ * legacy predicate because the merge rails stay legacy until Slice C. A task
+ * with no view keeps today's predicate untouched.
+ */
+export function kernelInboxMembership(view: DeliveryView | undefined, legacyIncluded: boolean): boolean {
+  if (!view) return legacyIncluded;
+  if (view.owner === 'landing') return legacyIncluded;
+  return view.needsYou;
+}
+
 const deliveryCard = (v: DeliveryView): NonNullable<ActionQueueItem['delivery']> => ({
   owner: v.owner, state: v.state, headline: v.headline, detail: v.detail, cta: v.cta, compositionVerified: v.compositionVerified,
 });

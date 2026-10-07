@@ -127,6 +127,13 @@ export const reviewSubscribers: readonly AnySubscriber[] = [
   // is the backstop.
   subscriber('reviews', 'pr.closed', 'supersession-detect-on-close', async e => {
     if (e.merged) return;
+    // A kernel-owned PR's scan is the `scan_supersession` effect its close (T18) recorded.
+    // A failed ownership read falls back to scanning here: detection is idempotent and a
+    // kernel-owned PR's edge still goes through T20 (recordPrSupersession).
+    const owned = await import('@/lib/workflow/authority')
+      .then(m => m.kernelDeliveryForPr(e.workspaceId, e.repoFullName, e.prNumber))
+      .catch(() => null);
+    if (owned) return;
     const detect = () => detectPrSupersession({ workerId: e.workerId, via: 'webhook' }).then(
       r => console.log(`[webhook] supersession detection for PR #${e.prNumber}: ${r.outcome}`),
       err => console.error(`[webhook] supersession detection failed for PR #${e.prNumber}:`, err),

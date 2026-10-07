@@ -319,6 +319,9 @@ export function toDeliverySnapshot(r: J): DeliverySnapshot {
     mergedAt: s(r.merged_at),
     mergeCommitSha: s(r.merge_commit_sha),
     supersededByPr: r.superseded_by_pr == null ? null : Number(r.superseded_by_pr),
+    supersededByUrl: s(r.superseded_by_url),
+    supersededReason: s(r.superseded_reason),
+    recordedBy: s(r.recorded_by),
     authority: r.authority === 'legacy' ? 'legacy' : 'kernel',
     pushPendingLocalHead: s(r.push_pending_local_head),
   };

@@ -4,6 +4,16 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 // A fake GitHub answers by path, so the real `evaluateAutoMergeSafety` runs its
 // rails against it: a row that merges did so because every rail passed.
 
+// Workflow kernel landing (lib/workflow/landing.ts; real-SQL cases in
+// apps/web/tests/db/workflow-matrix.test.ts S10/S15/S20). Default: no kernel
+// delivery, so every legacy merge case below runs unchanged.
+const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
+const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+mock.module('@/lib/workflow/landing', () => ({
+  landThroughKernel: mockLandThroughKernel,
+  kernelLandingView: mockKernelLandingView,
+  staleLandingVersion: async () => null,
+}));
 mock.module('@/lib/notify', () => ({ notifyTeamOf: async () => {} }));
 mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 
@@ -349,6 +359,51 @@ describe('resolveLandingMode', () => {
     expect(resolveLandingMode({ landing: { mode: 'off' } } as any)).toBe('off');
     expect(resolveLandingMode({ landing: { mode: 'enforce' } } as any)).toBe('enforce');
     expect(resolveLandingMode({ landing: { mode: 'turbo' } } as any)).toBe('shadow');
+  });
+});
+
+// ── Kernel-owned PR (workflow-state-kernel.md §14 Slice C) ────────────────────
+
+describe('landPr — kernel-owned PR (T15/T16)', () => {
+  const k = (o: Record<string, unknown>) => ({ merged: false, reason: 'x', message: 'm', mergeCommitSha: null, current: { state: 'APPROVED', version: 3, head: 'head1', round: 1 }, result: null, ...o });
+  const kernelDeps = (answer: Record<string, unknown>) => {
+    const calls: any[] = [];
+    return { calls, d: { ...deps(), landThroughKernel: async (i: any) => { calls.push(i); return k(answer) as any; } } };
+  };
+
+  it('every rail runs as before, then the kernel merges: no direct GitHub merge, no mission finalize here', async () => {
+    const { calls, d } = kernelDeps({ merged: true, outcome: 'merged', mergeCommitSha: 'M1' });
+    const out = await land({ door: 'merge_pr', mergeMethod: 'rebase', actor: { kind: 'agent', workerId: 'w-1' }, expectedVersion: 3 }, d);
+    expect(out).toEqual({ kind: 'merged', sha: 'M1' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(calls).toEqual([expect.objectContaining({
+      workspaceId: 'ws-1', installationId: 7, repoFullName: 'buildd-ai/buildd', prNumber: 42, headSha: 'head1',
+      door: 'land_pr:merge_pr', actor: 'agent:w-1', mergeMethod: 'rebase', expectedVersion: 3,
+    })]);
+    expect(calls[0].override).toBeUndefined();
+    expect(landingEvents()[0].detail.landingOutcome).toBe('merged');
+  });
+
+  it("a person's verdict override reaches the kernel as a recorded override", async () => {
+    const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
+    await land({ door: 'dashboard', actor: { kind: 'human', userId: 'u-1', override: { verdict: true } } }, d);
+    expect(calls[0]).toMatchObject({ actor: 'human:u-1', override: { reason: expect.any(String) } });
+  });
+
+  it('a refresh the kernel queued is updating_branch; a conflict is the kernel\'s fix; a refusal goes to a person; anything else waits', async () => {
+    expect(await land({}, kernelDeps({ outcome: 'behind' }).d)).toEqual({ kind: 'updating_branch', newHeadSha: 'head1' });
+    expect(await land({}, kernelDeps({ outcome: 'conflict', message: 'conflict' }).d)).toMatchObject({ kind: 'needs_fix', fix: 'conflict' });
+    expect(await land({}, kernelDeps({ outcome: 'refused', message: 'Required status check' }).d)).toMatchObject({ kind: 'needs_human', cause: 'merge_failed', reason: 'Required status check' });
+    for (const outcome of ['landing', 'stale', 'rejected', 'not_merged']) {
+      expect(await land({}, kernelDeps({ outcome }).d)).toMatchObject({ kind: 'waiting_ci', headSha: 'head1' });
+    }
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a PR the kernel does not own merges directly, as before', async () => {
+    const out = await land({}, { ...deps(), landThroughKernel: async () => null });
+    expect(out).toEqual({ kind: 'merged', sha: 'head1' });
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
   });
 });
 

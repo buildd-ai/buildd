@@ -293,6 +293,12 @@ describe('RealTimeWorkerView — kernel DeliveryView owner of the next move', ()
     expect(html).toContain('PR #7 is still at abc1234');
   });
 
+  test.each(['reviewer', 'landing', 'trunk'])('%s-owned: no needs-input banner', (owner) => {
+    const html = renderWith({ headline: 'In review', owner, needsYou: false, detail: null });
+    expect(html).not.toContain('worker-needs-input-banner');
+    expect(html).toContain('worker-platform-owned-banner');
+  });
+
   test('a worker-owned or human-owned delivery keeps the question', () => {
     expect(renderWith({ headline: 'Fixing review feedback', owner: 'worker', needsYou: false, detail: null })).toContain('worker-needs-input-banner');
     expect(renderWith({ headline: 'Needs a decision', owner: 'human', needsYou: true, detail: null })).toContain('worker-needs-input-banner');

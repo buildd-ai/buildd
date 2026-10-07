@@ -154,7 +154,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 - [Provider-Backed Browser for Visual Review](./visual-qa-browser-providers.md) · @max — verified 2026-10-05
   The visual-auditor role MUST be eligible exactly when a selected browser provider (local Chromium or a Cloudflare session) proves it works, and MUST be able to review a Buildd service booted inside its own sandbox.
-- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-06
+- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-07
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 
 ## Superseded (2)
