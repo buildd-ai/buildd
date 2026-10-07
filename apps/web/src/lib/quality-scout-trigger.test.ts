@@ -385,8 +385,9 @@ describe('gitConfig.qualityScout.host', () => {
     expect(resolveScoutTriggerConfig({ mode: 'shadow', host: 'cloud' }).host).toBe('auto');
   });
 
-  it('reads the runner bound from budget.runnerMaxDurationMs: default 20 min, capped at 60', () => {
-    expect(resolveScoutTriggerConfig({ mode: 'shadow' }).runnerMaxDurationMs).toBe(20 * 60_000);
+  it('reads the runner bound from budget.runnerMaxDurationMs: unset until the run knows its probes, capped at 60', () => {
+    // Unset: the park step picks the default (20 min, or capture-aware with a surface probe).
+    expect(resolveScoutTriggerConfig({ mode: 'shadow' }).runnerMaxDurationMs).toBeUndefined();
     expect(resolveScoutTriggerConfig({ mode: 'shadow', budget: { runnerMaxDurationMs: 5 * 60_000 } }).runnerMaxDurationMs).toBe(5 * 60_000);
     expect(resolveScoutTriggerConfig({ mode: 'shadow', budget: { runnerMaxDurationMs: 5 * H } }).runnerMaxDurationMs).toBe(60 * 60_000);
   });
@@ -395,6 +396,12 @@ describe('gitConfig.qualityScout.host', () => {
     const t = triggerDeps(workspace({ mode: 'shadow', budget: { runnerMaxDurationMs: 7 * 60_000 } }));
     await triggerQualityScout({ workspaceId: 'ws-1', trigger: 'manual' }, t.deps);
     expect(t.runs[0].host).toEqual({ runnerMaxDurationMs: 7 * 60_000 });
+  });
+
+  it('with no budget.runnerMaxDurationMs the trigger hands no bound, so the park step chooses it', async () => {
+    const t = triggerDeps(workspace({ mode: 'shadow' }));
+    await triggerQualityScout({ workspaceId: 'ws-1', trigger: 'manual' }, t.deps);
+    expect(t.runs[0].host).toEqual({});
   });
 
   it('host: server builds a single-host run with no runner lookup — today\'s pipeline exactly', () => {

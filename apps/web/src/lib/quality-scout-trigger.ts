@@ -113,8 +113,11 @@ export interface ScoutTriggerConfig {
   policy: ScoutActionPolicy;
   /** `auto` (default): runner-only probes go to a runner when one is available. `server`: never. */
   host: ScoutHostMode;
-  /** A runner's execution bound for a parked run (`budget.runnerMaxDurationMs`, default 20 min, max 60). */
-  runnerMaxDurationMs: number;
+  /**
+   * A runner's execution bound for a parked run (`budget.runnerMaxDurationMs`, max 60 min). Unset:
+   * the park step picks it (20 min, or capture-aware when a surface probe is selected).
+   */
+  runnerMaxDurationMs?: number;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -144,7 +147,7 @@ export function resolveScoutTriggerConfig(raw: unknown, env: Env = process.env):
     ),
     policy: resolveScoutActionPolicy(raw),
     host: (SCOUT_HOST_MODES as readonly unknown[]).includes(c.host) ? (c.host as ScoutHostMode) : 'auto',
-    runnerMaxDurationMs: clampRunnerDuration(finite(budget.runnerMaxDurationMs) ? budget.runnerMaxDurationMs : undefined),
+    ...(finite(budget.runnerMaxDurationMs) && budget.runnerMaxDurationMs > 0 ? { runnerMaxDurationMs: clampRunnerDuration(budget.runnerMaxDurationMs) } : {}),
   };
 }
 
@@ -220,7 +223,7 @@ export async function triggerQualityScout(input: ScoutTriggerInput, deps: ScoutT
       budget: cfg.budget,
       maxDurationMs: cfg.maxDurationMs,
       policy: cfg.policy,
-      host: { runnerMaxDurationMs: cfg.runnerMaxDurationMs },
+      host: cfg.runnerMaxDurationMs !== undefined ? { runnerMaxDurationMs: cfg.runnerMaxDurationMs } : {},
       ...(input.trigger === 'manual' ? { dedupeKey: manualDedupeKey(deps.now()) } : {}),
     };
     return await deps.run(req, deps.buildRunDeps(ws, req));
