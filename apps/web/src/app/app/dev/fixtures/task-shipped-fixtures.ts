@@ -2,13 +2,18 @@
  * The completed task page's "What shipped" header and the phone "Checks by
  * commit" list, over illustrative data (no database, never real captures):
  *
- *   ?state=task-shipped&variant=open | merged-shots | recovered | no-lede
+ *   ?state=task-shipped&variant=open | merged-shots | recovered | no-lede | blocked
  *   ?state=commit-checks&variant=all-passed | one-failed | two-attempts   (omit: all three)
  */
 import type { CiCheckRun, PrCommitChecks, PrOutcome } from '@/components/task/PrCard';
 import { buildTaskShippedView, type BuildTaskShippedViewInput, type TaskShippedView } from '@/app/app/(protected)/tasks/[id]/task-shipped-header';
+import { deriveTaskVerdict, type TaskVerdict } from '@/lib/task-verdict';
 
-export const TASK_SHIPPED_VARIANTS = ['open', 'merged-shots', 'recovered', 'no-lede'] as const;
+/**
+ * `blocked`: an open PR whose required check is red while the agent reported
+ * success, and a fix attempt that edited only the PR body (no diff).
+ */
+export const TASK_SHIPPED_VARIANTS = ['open', 'merged-shots', 'recovered', 'no-lede', 'blocked'] as const;
 export type TaskShippedVariant = (typeof TASK_SHIPPED_VARIANTS)[number];
 
 export const COMMIT_CHECKS_VARIANTS = ['all-passed', 'one-failed', 'two-attempts'] as const;
@@ -69,6 +74,20 @@ export function fixtureCommits(variant: CommitChecksVariant): PrCommitChecks[] {
 }
 
 export function fixtureOutcome(variant: TaskShippedVariant): PrOutcome {
+  if (variant === 'blocked') {
+    return {
+      repoLabel: 'example/app',
+      summary: null,
+      totals: { add: 412, rem: 96, files: 11, commits: 3, attempts: 2, claimToMerge: null },
+      attempts: [{ add: 412, rem: 96, files: 11 }, { add: 0, rem: 0, files: 0, actions: ['Edited PR body'] }],
+      lineage: [],
+      commits: [{
+        attempt: 1, sha: '69786bc', state: 'failed',
+        failure: { job: 'PR body lint', excerpt: 'The PR body contains an identifier the public-repo rule forbids.' },
+        runs: CHECK_NAMES.map(n => (n === 'No production data' ? failed('PR body lint') : passed(n))),
+      }],
+    };
+  }
   const twoAttempts = variant === 'recovered';
   return {
     repoLabel: 'example/app',
@@ -104,11 +123,26 @@ export function taskShippedFixtureInput(variant: TaskShippedVariant): BuildTaskS
         },
     summary: HANDOFF,
     summarySource: 'agent',
-    pr: { url: PR_URL, number: 1234, lifecycle: merged ? 'merged' : 'ci_green', merged },
     heroShots: merged ? FIXTURE_HERO_SHOTS : [],
-    errorTraceCount: variant === 'recovered' ? 1 : 0,
-    inRelease: false,
   };
+}
+
+/** The verdict each variant leads with, through the same rules a real page uses. */
+export function taskShippedFixtureVerdict(variant: TaskShippedVariant): TaskVerdict {
+  const merged = variant === 'merged-shots';
+  const blocked = variant === 'blocked';
+  return deriveTaskVerdict({
+    taskStatus: 'completed',
+    live: null,
+    openQuestion: false,
+    pr: { url: PR_URL, number: 1234, lifecycle: merged ? 'merged' : blocked ? 'ci_failed' : 'ci_green', merged },
+    checks: blocked
+      ? [{ name: 'PR body lint', state: 'failed', url: 'https://github.com/example/app/actions', line: 'The PR body contains an identifier the public-repo rule forbids.' }]
+      : null,
+    openAttempt: null,
+    lede: LEDE,
+    mismatch: blocked ? [{ kind: 'success_with_red_check', detail: 'Reported success while a check was failing: PR body lint.' }] : [],
+  })!;
 }
 
 export function taskShippedFixtureView(variant: TaskShippedVariant): TaskShippedView {

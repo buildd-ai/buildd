@@ -65,17 +65,17 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
           className="block border-l-2 border-status-warning bg-status-warning/5 px-4 py-3 hover:bg-status-warning/10 transition-colors"
         >
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-[11px] font-mono font-medium text-status-warning tracking-wide uppercase">
+            <span className="text-meta font-mono font-medium text-status-warning tracking-wide uppercase">
               Question
             </span>
             {arc && arc.kind !== 'workspace' && (
-              <span className="text-[11px] text-text-muted">{arc.label}</span>
+              <span className="text-meta text-text-muted">{arc.label}</span>
             )}
           </div>
-          <div className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] mb-0.5">
+          <div className="text-body font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] mb-0.5">
             {item.taskTitle}
           </div>
-          <p className="text-[12px] text-text-secondary line-clamp-2">{item.question}</p>
+          <p className="text-meta text-text-secondary line-clamp-2">{item.question}</p>
         </Link>
       );
     }
@@ -97,12 +97,12 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
           className="block border-l-2 border-status-error bg-status-error/5 px-4 py-3 hover:bg-status-error/10 transition-colors"
         >
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-[11px] font-mono font-medium tracking-wide uppercase text-status-error">
+            <span className="text-meta font-mono font-medium tracking-wide uppercase text-status-error">
               Reconnect
             </span>
-            <span className="text-[11px] text-text-muted">Connection</span>
+            <span className="text-meta text-text-muted">Connection</span>
           </div>
-          <div className="text-[13px] font-medium text-text-primary truncate">
+          <div className="text-body font-medium text-text-primary truncate">
             {item.connectorName}
             <span className="font-normal text-text-secondary"> needs re-authorising</span>
           </div>
@@ -118,19 +118,19 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
           className="border-l-2 border-status-error bg-status-error/5 px-4 py-3"
         >
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-[11px] font-mono font-medium tracking-wide uppercase text-status-error">
+            <span className="text-meta font-mono font-medium tracking-wide uppercase text-status-error">
               Failed
             </span>
             {arc && arc.kind !== 'workspace' && (
-              <span className="text-[11px] text-text-muted">{arc.label}</span>
+              <span className="text-meta text-text-muted">{arc.label}</span>
             )}
           </div>
-          <Link href={actionCardTaskLink(item, { page: true })} className="block text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] hover:underline">
+          <Link href={actionCardTaskLink(item, { page: true })} className="block text-body font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] hover:underline">
             {item.taskTitle}
           </Link>
-          {item.failureMessage && <p className="text-[12px] text-text-secondary mt-0.5">{item.failureMessage}</p>}
+          {item.failureMessage && <p className="text-meta text-text-secondary mt-0.5">{item.failureMessage}</p>}
           {item.fixHref && (
-            <Link href={item.fixHref} data-action="fix_credential" className="inline-flex items-center min-h-11 md:min-h-0 mt-1 font-mono text-[12px] font-medium text-accent-text hover:underline">
+            <Link href={item.fixHref} data-action="fix_credential" className="inline-flex items-center min-h-11 md:min-h-0 mt-1 font-mono text-meta font-medium text-accent-text hover:underline">
               {item.fixLabel ?? 'Fix it'}
             </Link>
           )}
@@ -145,14 +145,14 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
           className="block border-l-2 border-accent bg-accent/5 px-4 py-3 hover:bg-accent/10 transition-colors"
         >
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-[11px] font-mono font-medium text-accent-text tracking-wide uppercase">
+            <span className="text-meta font-mono font-medium text-accent-text tracking-wide uppercase">
               Approve Plan
             </span>
             {arc && arc.kind !== 'workspace' && (
-              <span className="text-[11px] text-text-muted">{arc.label}</span>
+              <span className="text-meta text-text-muted">{arc.label}</span>
             )}
           </div>
-          <div className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere]">
+          <div className="text-body font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere]">
             {item.taskTitle}
           </div>
         </Link>
@@ -188,14 +188,14 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                <span className="inline-flex items-center gap-1 text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
+                <span className="inline-flex items-center gap-1 text-meta font-mono font-medium text-text-muted tracking-wide uppercase">
                   <Spinner size="xs" aria-label="Resolving conflicts" />
                   Resolving Conflicts
                   {item.conflictRetryIteration != null && ` · attempt ${item.conflictRetryIteration}`}
                 </span>
               </div>
               {item.taskTitle && (
-                <div className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] mt-0.5">
+                <div className="text-body font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] mt-0.5">
                   {item.conflictRetryTaskId ? (
                     <Link href={actionCardTaskLink(item, { taskId: item.conflictRetryTaskId, page: true })} className="hover:underline">
                       {item.taskTitle}
@@ -212,7 +212,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
                   href={item.prUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline mt-0.5"
+                  className="inline-flex items-center min-h-11 md:min-h-0 text-meta text-text-muted hover:underline mt-0.5"
                 >
                   PR #{item.prNumber} ↗
                 </a>
@@ -234,15 +234,15 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                <span className="text-[11px] font-mono font-medium text-status-error tracking-wide uppercase">
+                <span className="text-meta font-mono font-medium text-status-error tracking-wide uppercase">
                   Blocked
                 </span>
                 {arc && (
-                  <span className="text-[11px] text-text-muted">{arc.label}</span>
+                  <span className="text-meta text-text-muted">{arc.label}</span>
                 )}
               </div>
               {item.taskTitle && (
-                <div className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] mt-0.5">
+                <div className="text-body font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] mt-0.5">
                   {item.taskId ? (
                     <Link href={actionCardTaskLink(item)} className="hover:underline">
                       {item.taskTitle}
@@ -250,7 +250,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
                   ) : item.taskTitle}
                 </div>
               )}
-              <p className="text-[12px] text-text-secondary mt-0.5">
+              <p className="text-meta text-text-secondary mt-0.5">
                 {item.escalationReason ?? 'Agents ran out of conflict-resolution retries. Resolve the conflict yourself.'}
               </p>
               {/* The human is being asked to decide something an
@@ -266,7 +266,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
                   href={item.prUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline mt-0.5"
+                  className="inline-flex items-center min-h-11 md:min-h-0 text-meta text-text-muted hover:underline mt-0.5"
                 >
                   PR #{item.prNumber} ↗
                 </a>
@@ -275,7 +275,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
             {item.deadZoneLastRetryTaskId && (
               <Link
                 href={actionCardTaskLink(item, { taskId: item.deadZoneLastRetryTaskId, page: true })}
-                className="shrink-0 inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-text-secondary hover:text-text-primary border border-border rounded-md px-2.5 py-1 whitespace-nowrap"
+                className="shrink-0 inline-flex items-center min-h-11 md:min-h-0 text-meta font-medium text-text-secondary hover:text-text-primary border border-border rounded-md px-2.5 py-1 whitespace-nowrap"
               >
                 Last attempt
               </Link>
@@ -307,18 +307,18 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
           className="border-l-2 border-border bg-surface-raised/40 px-4 py-3"
         >
           <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-            <span className="text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
+            <span className="text-meta font-mono font-medium text-text-muted tracking-wide uppercase">
               Stale
             </span>
             {ageLabel && (
-              <span className="text-[11px] font-mono text-text-muted">{ageLabel}</span>
+              <span className="text-meta font-mono text-text-muted">{ageLabel}</span>
             )}
             {arc && (
-              <span className="text-[11px] text-text-muted">{arc.label}</span>
+              <span className="text-meta text-text-muted">{arc.label}</span>
             )}
           </div>
           {item.taskTitle && (
-            <div className="text-[13px] font-medium text-text-secondary line-clamp-2 [overflow-wrap:anywhere] mt-0.5">
+            <div className="text-body font-medium text-text-secondary line-clamp-2 [overflow-wrap:anywhere] mt-0.5">
               {item.taskId ? (
                 <Link href={actionCardTaskLink(item)} className="hover:underline">
                   {item.taskTitle}
@@ -326,7 +326,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
               ) : item.taskTitle}
             </div>
           )}
-          <p className="text-[12px] text-text-muted mt-0.5">
+          <p className="text-meta text-text-muted mt-0.5">
             {item.staleGate?.reason ?? item.escalationReason}
           </p>
           {item.prUrl && (
@@ -334,7 +334,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
               href={item.prUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline mt-0.5"
+              className="inline-flex items-center min-h-11 md:min-h-0 text-meta text-text-muted hover:underline mt-0.5"
             >
               Check PR #{item.prNumber} on GitHub ↗
             </a>

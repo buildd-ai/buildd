@@ -185,6 +185,10 @@ describe('the guard sees the files it polices', () => {
     expect(moduleOf('apps/web/src/lib/subscriptions.ts')).toBe('notifications');
     expect(moduleOf('apps/web/src/lib/path-claim-release.ts')).toBe('core');
     expect(moduleOf('apps/web/src/lib/credential-health.ts')).toBe('core');
+    // Trace parsing and task-page error presentation belong to the core run record,
+    // rather than the knowledge retrieval or health analytics modules.
+    expect(moduleOf('packages/core/bash-failure-trace.ts')).toBe('core');
+    expect(moduleOf('apps/web/src/app/app/(protected)/tasks/[id]/error-evidence.ts')).toBe('core');
     // Ops paging is core infrastructure every layer uses, not the health module.
     expect(moduleOf('packages/core/report-ops.ts')).toBe('core');
     expect(moduleOf('apps/web/src/app/api/cron/maintenance/route.ts')).toBe('core');
