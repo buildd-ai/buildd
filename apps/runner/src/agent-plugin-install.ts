@@ -627,7 +627,7 @@ export async function runCli(argv: string[], e: CliEnv = {}): Promise<{ code: nu
       lines.push('Presence is reported only for sessions in one of your workspace repos.');
     }
     lines.push('Anywhere else the hooks send nothing, unless that session claims a buildd task.');
-    lines.push('They never send prompts, responses or transcripts.');
+    lines.push('They never send prompts, responses or transcripts. Once a session claims a task they report its token counts (BUILDD_HOOK_USAGE=0 turns that off).');
     if (clients.includes('codex')) lines.push('Codex MCP: codex mcp add buildd --url <server>/api/mcp --bearer-token-env-var BUILDD_API_KEY');
     if (clients.includes('cursor')) lines.push('Cursor MCP: add buildd (<server>/api/mcp, Authorization: Bearer <key>) under Settings > MCP if not already there.');
   }

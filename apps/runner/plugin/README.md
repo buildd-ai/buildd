@@ -18,6 +18,14 @@ go through the buildd MCP tool. The hooks only send four typed events to
 send prompts, responses, reasoning, transcripts or secrets, and they always
 exit 0: if buildd is down the agent carries on.
 
+Once a Claude Code session has claimed a task, `touch` and `end` also carry its
+token usage, so the task's cost counts work done from your own session. The
+hook reads the new lines of the session's own local transcript files and keeps
+only each API call's message id, model id, token counts, timestamp and number
+of tool calls; message text and tool inputs and outputs are never kept or sent.
+A subagent that claimed a task has its usage counted on that task.
+`BUILDD_HOOK_USAGE=0` turns this off.
+
 The contract and server behaviour are specified in
 `docs/specs/local-agent-presence.md` in the buildd repo.
 
@@ -104,4 +112,5 @@ config without one (an older login) falls back to the API key.
 | `BUILDD_PRESENCE_TOKEN` | Override the saved presence token |
 | `BUILDD_API_KEY`, `BUILDD_SERVER` | Override `~/.buildd/config.json` |
 | `BUILDD_HOOKS_DISABLED=1` | Hooks do nothing (MCP-only mode) |
+| `BUILDD_HOOK_USAGE=0` | Don't read or report session token usage |
 | `BUILDD_HOOK_DEBUG=1` | Log hook decisions to stderr |

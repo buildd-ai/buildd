@@ -183,6 +183,74 @@ describe('a session holding several claims (its subagents each claimed one)', ()
   });
 });
 
+describe('session usage', () => {
+  const m = (over: Record<string, unknown> = {}) => ({ model: 'claude-sonnet-5', input: 100, cacheRead: 10_000, cacheWrite5m: 1000, cacheWrite1h: 0, output: 500, requests: 4, ...over });
+  const usage = (workerId: string, models = [m()]) => ({ workers: [{ workerId, models, toolCalls: 7, subagents: 1, firstAt: '2026-10-07T12:00:00.000Z', lastAt: '2026-10-07T12:04:00.000Z' }] });
+  const row = async (workerId: string) => (await q<{ input_tokens: number; output_tokens: number; turns: number; cost_usd: string; result_meta: any }>(sql`
+    SELECT input_tokens, output_tokens, turns, cost_usd::text, result_meta FROM workers WHERE id = ${workerId}::uuid`))[0];
+
+  test('a touch records priced, cumulative usage on the held worker, and never lowers it', async () => {
+    const s = sid();
+    const { workerId } = await seedClaim(account);
+    await send(account, { event: 'start', client: 'claude', clientSessionId: s });
+    await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId });
+    await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: usage(workerId) } as LocalSessionEvent);
+    const r = await row(workerId);
+    expect(r.input_tokens).toBe(11_100);
+    expect(r.output_tokens).toBe(500);
+    expect(r.turns).toBe(4);
+    expect(Number(r.cost_usd)).toBeCloseTo((100 * 2 + 10_000 * 0.2 + 1000 * 2.5 + 500 * 10) / 1e6, 6);
+    expect(r.result_meta.modelUsage['claude-sonnet-5']).toMatchObject({ inputTokens: 100, outputTokens: 500, cacheReadInputTokens: 10_000, cacheCreationInputTokens: 1000 });
+    expect(r.result_meta.localSessionUsage).toMatchObject({ source: 'local-session', toolCalls: 7, subagents: 1, costUnknown: false });
+    // An older, smaller report (replayed or out of order) does not lower anything.
+    await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: usage(workerId, [m({ input: 1, cacheRead: 0, cacheWrite5m: 0, output: 1, requests: 1 })]) } as LocalSessionEvent);
+    const again = await row(workerId);
+    expect(again.input_tokens).toBe(11_100);
+    expect(Number(again.cost_usd)).toBeCloseTo(Number(r.cost_usd), 6);
+  });
+
+  test('an unpriced model writes tokens but no cost, flagged unknown', async () => {
+    const s = sid();
+    const { workerId } = await seedClaim(account);
+    await send(account, { event: 'start', client: 'claude', clientSessionId: s });
+    await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId });
+    await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: usage(workerId, [m(), m({ model: 'other-vendor/unknown-model' })]) } as LocalSessionEvent);
+    const r = await row(workerId);
+    expect(Number(r.cost_usd)).toBe(0);
+    expect(r.input_tokens).toBe(22_200);
+    expect(r.result_meta.modelUsage).toBeUndefined();
+    expect(r.result_meta.localSessionUsage).toMatchObject({ costUnknown: true, unpricedModels: ['other-vendor/unknown-model'] });
+  });
+
+  test("usage only reaches this session's own held workers, and a task finished long ago is left alone", async () => {
+    const s = sid();
+    const mine = await seedClaim(account);
+    const notHeld = await seedClaim(account);
+    await send(account, { event: 'start', client: 'claude', clientSessionId: s });
+    await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId: mine.workerId });
+    await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: usage(notHeld.workerId) } as LocalSessionEvent);
+    expect((await row(notHeld.workerId)).input_tokens).toBe(0);
+
+    await q(sql`UPDATE workers SET status = 'completed', completed_at = now() - interval '1 hour' WHERE id = ${mine.workerId}::uuid`);
+    await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: usage(mine.workerId) } as LocalSessionEvent);
+    expect((await row(mine.workerId)).input_tokens).toBe(0);
+    // Just finished (complete_task, then the session's last report): still counted.
+    await q(sql`UPDATE workers SET completed_at = now() - interval '2 minutes' WHERE id = ${mine.workerId}::uuid`);
+    await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: usage(mine.workerId) } as LocalSessionEvent);
+    expect((await row(mine.workerId)).input_tokens).toBe(11_100);
+  });
+
+  test('end lands the final usage before releasing the worker', async () => {
+    const s = sid();
+    const { workerId, taskId } = await seedClaim(account);
+    await send(account, { event: 'start', client: 'claude', clientSessionId: s });
+    await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId });
+    await send(account, { event: 'end', client: 'claude', clientSessionId: s, reason: 'exit', usage: usage(workerId) } as LocalSessionEvent);
+    expect((await row(workerId)).input_tokens).toBe(11_100);
+    expect(await taskStatus(taskId)).toBe('pending');
+  });
+});
+
 describe('session end', () => {
   test('exit releases unfinished work back to pending, frees the seat once, and never completes it', async () => {
     const s = sid();

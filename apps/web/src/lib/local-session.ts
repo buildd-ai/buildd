@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
 import { accounts, localSessions, localSessionWorkers, tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNull, lt, sql, type SQL } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
 import {
   INTERACTIVE_WORKER_RUNNER,
   LIVE_WORKER_STATUSES,
@@ -10,6 +10,8 @@ import {
   type LocalSessionEventResult,
 } from '@buildd/shared';
 import { INTERACTIVE_CLAIM_USER_KEY, INTERACTIVE_LIVE_STATUSES } from '@/lib/interactive-worker-liveness';
+import { priceSessionUsage } from '@buildd/core/model-prices';
+import type { LocalSessionUsage } from '@buildd/shared';
 
 /**
  * Presence for a person's interactive coding session, fed by the buildd agent
@@ -124,8 +126,76 @@ export interface LocalSessionStore {
   bind(presenceId: string, workerId: string, workspaceId: string, now: Date): Promise<boolean>;
   /** CAS on `ended_at IS NULL`. Returns the row it ended, or null if already ended. */
   end(presenceId: string, reason: string, now: Date): Promise<PresenceRow | null>;
+  /**
+   * Raise a held worker's usage to the session's cumulative totals (never
+   * lowers them, so replays and reordering are harmless). Only an interactive
+   * worker that is live, or ended within USAGE_GRACE_MS (the last report of a
+   * session that just called complete_task). True if written.
+   */
+  recordUsage(u: WorkerUsageWrite): Promise<boolean>;
   /** Whether the worker has an instruction queued that no consumer picked up. */
   workerState(workerId: string): Promise<{ taskId: string | null; pendingInstructions: boolean; live: boolean } | null>;
+}
+
+/** What one held worker's usage report writes. */
+export interface WorkerUsageWrite {
+  workerId: string;
+  allInInputTokens: number;
+  outputTokens: number;
+  requests: number;
+  /** Null when any model was unpriced: nothing is written to cost. */
+  costUsd: number | null;
+  /** Per-model usage for priced sessions; null when unpriced (see priceSessionUsage). */
+  modelUsage: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number }> | null;
+  totalUsage: { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number };
+  /** Effort and provenance, kept under resultMeta.localSessionUsage. */
+  effort: {
+    source: 'local-session';
+    requests: number;
+    toolCalls: number;
+    subagents: number;
+    firstAt: string | null;
+    lastAt: string | null;
+    costUnknown: boolean;
+    unpricedModels: string[];
+    models: LocalSessionUsage['workers'][number]['models'];
+  };
+  now: Date;
+}
+
+/** A session's last usage report may land just after its task completed. */
+export const USAGE_GRACE_MS = 10 * 60 * 1000;
+
+/** Price one held worker's cumulative usage into the write the store applies. */
+export function usageWrite(w: LocalSessionUsage['workers'][number], now: Date): WorkerUsageWrite {
+  const priced = priceSessionUsage(w.models);
+  const costUnknown = priced.costUsd === null;
+  return {
+    workerId: w.workerId,
+    allInInputTokens: priced.allInInputTokens,
+    outputTokens: priced.outputTokens,
+    requests: priced.requests,
+    costUsd: priced.costUsd,
+    modelUsage: costUnknown ? null : Object.fromEntries(Object.entries(priced.modelUsage).map(([m, u]) => [m, { ...u, costUSD: u.costUSD ?? 0 }])),
+    totalUsage: {
+      inputTokens: priced.allInInputTokens,
+      outputTokens: priced.outputTokens,
+      cacheReadInputTokens: priced.cacheReadInputTokens,
+      cacheCreationInputTokens: priced.cacheCreationInputTokens,
+    },
+    effort: {
+      source: 'local-session',
+      requests: priced.requests,
+      toolCalls: w.toolCalls,
+      subagents: w.subagents,
+      firstAt: w.firstAt ?? null,
+      lastAt: w.lastAt ?? null,
+      costUnknown,
+      unpricedModels: priced.unpricedModels,
+      models: w.models,
+    },
+    now,
+  };
 }
 
 export interface LocalSessionDeps {
@@ -191,6 +261,19 @@ export async function handleLocalSessionEvent(
     });
   };
 
+  // Usage only ever reaches a worker this very presence holds: the hook names
+  // workers, but bind already decided which of them are this session's.
+  const recordHeldUsage = async (presence: PresenceRow) => {
+    for (const w of event.usage?.workers ?? []) {
+      if (!presence.workerIds.includes(w.workerId)) continue;
+      try {
+        await store.recordUsage(usageWrite(w, now));
+      } catch (err) {
+        console.warn('[local-session] usage write failed:', err instanceof Error ? err.message : err);
+      }
+    }
+  };
+
   // Across every held worker: a pending instruction on any of them is flagged
   // (naming that task), else the most recently bound live task is reported.
   const boundState = async (presence: PresenceRow) => {
@@ -215,6 +298,7 @@ export async function handleLocalSessionEvent(
         presence = await ensurePresence();
         return result('started', presence, await boundState(presence));
       }
+      await recordHeldUsage(presence);
       const wrote = await store.touchPresence(presence.id, now);
       for (const workerId of presence.workerIds) {
         await store.touchBoundWorker(workerId, isLocalSessionPerson(principal) ? null : principal.id, now);
@@ -251,6 +335,8 @@ export async function handleLocalSessionEvent(
     case 'end': {
       const presence = await store.find(owner, event.client, hash);
       if (!presence) return result('unknown_session', null);
+      // The last usage lands before the release, while the worker is still live.
+      await recordHeldUsage(presence);
       const ended = await store.end(presence.id, event.reason ?? 'other', now);
       // Already ended: the release (if any) happened on the first end. Exactly once.
       if (!ended) return result('already_ended', presence);
@@ -310,6 +396,21 @@ export async function resolveWorkspaceForRepo(principal: LocalSessionPrincipal, 
 // ── SQL predicates (exported so tests render them with the real dialect) ─────
 
 const throttleCutoff = (now: Date) => new Date(now.getTime() - LOCAL_SESSION_TOUCH_THROTTLE_MS);
+
+/**
+ * Usage writes reach only an interactive worker that is live, or that ended
+ * after `graceCutoff` (the report that follows complete_task).
+ */
+export function usageWriteWhere(workerId: string, graceCutoff: Date): SQL {
+  return and(
+    eq(workers.id, workerId),
+    eq(workers.runner, INTERACTIVE_WORKER_RUNNER),
+    or(
+      inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+      gt(workers.completedAt, graceCutoff),
+    ),
+  )!;
+}
 
 /** Presence write coalescing: only an open row not written this minute. */
 export function presenceTouchWhere(id: string, now: Date): SQL {
@@ -485,6 +586,26 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
       .where(and(eq(localSessions.id, presenceId), isNull(localSessions.endedAt)))
       .returning(presenceColumns);
     return row ? toPresence(row) : null;
+  },
+  async recordUsage(u) {
+    const graceCutoff = new Date(u.now.getTime() - USAGE_GRACE_MS);
+    const meta = {
+      ...(u.modelUsage ? { modelUsage: u.modelUsage } : {}),
+      totalUsage: u.totalUsage,
+      localSessionUsage: u.effort,
+    };
+    const rows = await db
+      .update(workers)
+      .set({
+        inputTokens: sql`GREATEST(${workers.inputTokens}, ${u.allInInputTokens})`,
+        outputTokens: sql`GREATEST(${workers.outputTokens}, ${u.outputTokens})`,
+        turns: sql`GREATEST(${workers.turns}, ${u.requests})`,
+        ...(u.costUsd !== null ? { costUsd: sql`GREATEST(${workers.costUsd}, ${u.costUsd.toFixed(6)}::numeric)` } : {}),
+        resultMeta: sql`COALESCE(${workers.resultMeta}, '{}'::jsonb) || ${JSON.stringify(meta)}::jsonb`,
+      })
+      .where(usageWriteWhere(u.workerId, graceCutoff))
+      .returning({ id: workers.id });
+    return rows.length > 0;
   },
   async workerState(workerId) {
     const w = await db.query.workers.findFirst({
