@@ -26,8 +26,10 @@ mock.module('@/lib/permissions', () => ({
 mock.module('@buildd/core/tier-pool-admin', () => ({
   findTeamPool: async (...a: any[]) => { log('findTeamPool')(...a); return found; },
 }));
+const RETRO_SOURCE = { status: async () => ({ enabled: false, judgeModel: null }), verdicts: async () => [] };
+mock.module('@/lib/chat-retro/policy-signal', () => ({ chatRetroQualitySource: RETRO_SOURCE }));
 mock.module('@buildd/core/tier-dial-source', () => ({
-  buildModelPolicyCells: async (teamId: string) => ({ ...CELLS, teamId }),
+  buildModelPolicyCells: async (teamId: string, _now: Date, opts: any) => { log('build')(opts); return { ...CELLS, teamId }; },
   writeDialState: async (a: any) => { log('writeDialState')(a); return writeVersion; },
 }));
 mock.module('@buildd/core/tier-pool-source', () => ({
@@ -65,6 +67,8 @@ describe('GET /api/model-tiers/cells', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toMatchObject({ teamId: 'team-1', windowDays: 30, cells: [], isAdmin: false });
+    // Chat cells read their quality signal from the chat retro.
+    expect(calls.build.at(-1)![0]).toEqual({ chatQuality: RETRO_SOURCE });
   });
 
   it('refuses without a session', async () => {

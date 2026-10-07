@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-07
 summary: Each tier x surface cell MUST serve its primary until the team's own graded coding outcomes show an alternate keeps up within the dial's tolerance, and MUST revert, recorded, when it slips.
 domain: integrations
-surfaces: [packages/core/tier-dial.ts, packages/core/tier-dial-source.ts, apps/web/src/app/api/model-tiers/cells/route.ts, packages/shared/src/model-policy-cells.ts]
+surfaces: [packages/core/tier-dial.ts, packages/core/tier-dial-chat.ts, packages/core/tier-dial-source.ts, apps/web/src/lib/chat-retro/policy-signal.ts, apps/web/src/app/api/model-tiers/cells/route.ts, packages/shared/src/model-policy-cells.ts]
 related: [model-policy, model-routing-and-tiers]
 keywords: [dial, cell, primary, alternates, may also use, always, learning, shifted, reverted, shadow, threshold, non-inferiority, auto-revert, tier_pools.dial, dial_state]
-verified_by: [packages/core/__tests__/tier-dial.test.ts, packages/core/__tests__/tier-dial-source.test.ts, packages/core/__tests__/tier-pool-source.test.ts, apps/web/src/app/api/model-tiers/cells/route.test.ts, apps/web/src/app/api/cron/tier-pools/route.test.ts]
+verified_by: [packages/core/__tests__/tier-dial.test.ts, packages/core/__tests__/tier-dial-chat.test.ts, apps/web/src/lib/chat-retro/policy-signal.test.ts, packages/core/__tests__/tier-dial-source.test.ts, packages/core/__tests__/tier-pool-source.test.ts, apps/web/src/app/api/model-tiers/cells/route.test.ts, apps/web/src/app/api/cron/tier-pools/route.test.ts]
 supersedes: []
 assertions:
   - id: "decide-dial-cell"
@@ -44,6 +44,21 @@ assertions:
   - id: "dial-tests"
     type: "test_file"
     path: "packages/core/__tests__/tier-dial.test.ts"
+  - id: "decide-chat-cell"
+    type: "symbol"
+    name: "decideChatCell"
+    path: "packages/core/tier-dial-chat.ts"
+  - id: "chat-quality-source"
+    type: "symbol"
+    name: "ChatQualitySource"
+    path: "packages/core/tier-dial-chat.ts"
+  - id: "chat-retro-quality-source"
+    type: "symbol"
+    name: "chatRetroQualitySource"
+    path: "apps/web/src/lib/chat-retro/policy-signal.ts"
+  - id: "chat-dial-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/tier-dial-chat.test.ts"
 ---
 
 # Model Policy Cells and the Dial
@@ -77,6 +92,36 @@ failure is not graded), **review ok** (the first reviewer verdict was approve)
 and **no rework** (no reviewer asked for changes). A run counts as graded once
 merged is known.
 
+## Chat signals
+
+A chat cell runs the same loop on three chat signals in the same slots:
+**satisfied** (the chat retro's verdict on a session window: `yes` is a
+success, `partly` and `no` misses), **thumbs up** (a person's thumbs on an
+assistant turn; "too slow" is not a wrong answer) and **no re-ask** (no turn
+in the window labelled re_asked / wrong_tier, stopped, or hit a routing
+error). A window is graded once the retro judged it.
+
+- **Attribution.** A thumb belongs to the model that served its turn. A
+  retro verdict is credited only when every assistant turn in its window was
+  served by one model at one tier; mixed windows are dropped, not
+  down-weighted, because a verdict on a mixed session cannot say which model
+  earned it.
+- **Higher bar, derived.** The judge's error rate ε is measured where a
+  thumb falls inside a judged window and contradicts it (prior: one in four).
+  The judged signals' margin is the dial's times (1 − 2ε), so the threshold
+  is 1/(1 − 2ε)² times coding's for the same dial and primary. Thumbs keep
+  the dial's own margin. ε ≥ 0.4 means the judge is not a signal.
+- **Judge independence.** The retro's judging model must be from a different
+  family (vendor) than the primary and every alternate; otherwise the cell
+  stays in shadow and `heldReason` says why. A verdict whose recorded judge
+  is not independent is never evidence.
+- **Retros are optional.** Verdicts come through `ChatQualitySource`,
+  implemented by the chat retro experiment; core never imports it. With
+  retros off or removed, a chat cell reads `qualitySignal: 'none'` ("no
+  quality signal"): a fixed split still works, the dial never shifts, and a
+  shifted cell returns to its primary with a recorded reason.
+- Only ids, labels and times are read. No conversation content moves.
+
 ## Threshold
 
 Not a constant. For the dial's margin `m`, confidence `z` and the primary's
@@ -105,6 +150,12 @@ that same `z`.
 - Workspace overrides keep precedence: a workspace with its own registry row
   for the tier never enters the pool (`overrideCount` on the cell).
 - A task in a model-routing experiment never enters a pool.
+- A chat dial cell promotes only with retros on, an independent judge, and a
+  judge that agrees with people often enough. A shifted chat cell reverts at
+  once on a thumbs-down trend (at least 3 real downs since the shift and a
+  down rate more than the margin above the primary's), retros on or off.
+- A chat dial pool's chain only continues on an arm that is serving now, and
+  a learning chat turn records its shadow pick on the turn's assignment.
 
 ## Acceptance criteria
 
@@ -122,17 +173,27 @@ that same `z`.
   the same write.
 - AC-6: GIVEN a `split` pool WHEN a task is claimed THEN the draw follows the
   admin's allocation exactly.
+- AC-8: GIVEN a chat dial cell and chat retros off WHEN the step runs THEN
+  the cell does not shift and the read model shows `qualitySignal: 'none'`.
+- AC-9: GIVEN a chat retro judge from the same family as an arm WHEN the
+  step runs THEN the cell stays `learning` with `heldReason`.
+- AC-10: GIVEN a shifted chat cell with a thumbs-down trend on the
+  alternate WHEN the step runs THEN it is `reverted` with a `revert` row whose
+  evidence names `signal: 'thumbs'`.
 - AC-7: `GET /api/model-tiers/cells?teamId=` returns `ModelPolicyCellsResponse`
   to any team member; `PATCH` (dial) is owner/admin only and 409s on a stale
   `expectedVersion`.
 
 ## Out of scope
 
-Chat cells report their configured state only; chat evidence comes from the
-chat-learning work. UI is separate.
+UI is separate. Chat cells have no `whatRan` yet. Fireworks / FireRouter.
 
 ## Code surface
 
+- Chat: `packages/core/tier-dial-chat.ts` — `decideChatCell`,
+  `chatDialInputFor`, `attributeVerdict`, `judgeIndependence`,
+  `chatMarginScale`, `thumbsDownTrend`, `ChatQualitySource`; the retro's
+  implementation is `apps/web/src/lib/chat-retro/policy-signal.ts`.
 - Pure decisions: `packages/core/tier-dial.ts` — `DIAL_SETTINGS`,
   `dialThreshold`, `withinTolerance`, `decideDialCell`, `applyDialChange`,
   `dialAllocation`, `decideDialArm`, `gradeRun`.

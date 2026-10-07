@@ -35,6 +35,12 @@ import type { RunnerSize } from './runner-class';
 export interface EgressProps {
   /** The task whose container this handler serves. Set by the WorkerAgent, never by the container. */
   taskId: string;
+  /**
+   * The agent (Durable Object name) that installed this handler and holds the
+   * run: a lease agent when the container is reused (container-lease.ts).
+   * Absent: the task agent, named by taskId. Set by the agent too.
+   */
+  agentName?: string;
   /** Which agent class serves it (WorkerAgentLarge for `large`). Set by the agent too. */
   runnerSize?: RunnerSize;
 }
@@ -195,9 +201,10 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
   private async agent(): Promise<AgentSource | null> {
     const taskId = this.ctx.props?.taskId;
     if (!taskId) return null;
+    const name = this.ctx.props?.agentName || taskId;
     return this.ctx.props?.runnerSize === 'large'
-      ? (await getAgentByName(this.env.WorkerAgentLarge, taskId)) as unknown as AgentSource
-      : (await getAgentByName(this.env.WorkerAgent, taskId)) as unknown as AgentSource;
+      ? (await getAgentByName(this.env.WorkerAgentLarge, name)) as unknown as AgentSource
+      : (await getAgentByName(this.env.WorkerAgent, name)) as unknown as AgentSource;
   }
 
   /** The task's agent model endpoint, from its WorkerAgent's in-memory cache. */

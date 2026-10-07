@@ -86,6 +86,9 @@ describe('isGithubThrottle', () => {
 });
 
 describe('cloneRetryDelayMs', () => {
+  test('a missing repo is not retried even when its path contains "ssl" (random tmp dir names)', () => {
+    expect(cloneRetryDelayMs({ attempt: 0, stderr: "fatal: repository '/tmp/phase-clone-SslMnp/missing' does not exist", retryAfterS: null, waitedMs: 0 })).toBeNull();
+  });
   const at = (o: Partial<Parameters<typeof cloneRetryDelayMs>[0]>) =>
     cloneRetryDelayMs({ attempt: 0, stderr: T429, retryAfterS: null, waitedMs: 0, ...o });
 

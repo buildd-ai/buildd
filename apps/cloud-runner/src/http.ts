@@ -198,6 +198,8 @@ export async function handleRequest(
       agent = await getAgent(taskId, size);
     }
     dispatchRequest.runnerSize = size === runnerSize.size ? runnerSize : { size, source: 'pinned', reason: null };
+    // Container reuse keys on the workspace buildd named (container-lease.ts), never the body's.
+    if (!dispatchRequest.resumeWorkerId && runnerSize.workspaceId) dispatchRequest.workspaceId = runnerSize.workspaceId;
     const result = await agent.dispatch(dispatchRequest);
     // 202 for a duplicate too: buildd treats a non-2xx as "webhook failed" and
     // falls back to Pusher, which would let a polling runner race this one.

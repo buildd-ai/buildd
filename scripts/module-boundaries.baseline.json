@@ -447,6 +447,7 @@
       "packages/core/inference-policy.ts": "jev-decisions",
       "packages/core/mission-helpers.ts": "missions",
       "packages/core/post-session-quality.ts": "health-quality",
+      "packages/core/quality-scout/types.ts": "health-quality",
       "packages/core/subject-anchor-observe.ts": "missions",
       "packages/core/visual-qa-page-source.ts": "visual-qa"
     },

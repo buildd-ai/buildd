@@ -2,10 +2,9 @@
  * Park bundles (park.ts): what a --once runner uploads when its worker parks
  * on a question, and how a new container puts it back. Real git, real tar.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import {
   MAX_PARKS,
@@ -27,6 +26,7 @@ import {
 import { WARM_BASE_REF } from '../../src/warm-repo';
 import { cloneRepo, ensureRemoteBranch } from '../../src/git-clone';
 import { makeDeepOrigin } from '../fixtures/deep-origin';
+import { templateDir } from '../fixtures/template-dir';
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
@@ -74,8 +74,13 @@ function writeRunnerState(p: ParkPaths, wt: string) {
   writeFileSync(join(p.claudeConfigDirs[0]!, '.credentials.json'), '{"token":"sk-ant-should-not-travel"}');
 }
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'park-'));
+/**
+ * origin + seed + run1's base clone, task worktree and runner state, built
+ * once and copied per test (see fixtures/template-dir.ts). Every test still
+ * starts from exactly this state and owns its copy.
+ */
+const fixture = templateDir('park-', root => {
+  dir = root;
   origin = join(dir, 'origin.git');
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
   const seed = join(dir, 'seed');
@@ -85,11 +90,26 @@ beforeEach(() => {
   git(seed, 'add', '.');
   commit(seed, 'initial');
   git(seed, 'push', '-q', 'origin', 'main');
-  ({ clonePath, worktree, paths } = setUpRun(join(dir, 'run1')));
-  writeRunnerState(paths, worktree);
+  const run = setUpRun(join(dir, 'run1'));
+  writeRunnerState(run.paths, run.worktree);
 });
 
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+beforeEach(() => {
+  dir = fixture.setup();
+  origin = join(dir, 'origin.git');
+  // The same paths setUpRun produced when the template was built.
+  const root = join(dir, 'run1');
+  clonePath = join(root, 'buildd-home', 'once-workspaces', 'ws-1');
+  worktree = join(clonePath, '.buildd-worktrees', 'buildd_task');
+  paths = {
+    builddHome: join(root, 'buildd-home'),
+    claudeConfigDirs: [join(root, 'home', '.claude')],
+    tmpDir: join(root, 'tmp'),
+  };
+});
+
+afterEach(() => fixture.teardown());
+afterAll(() => fixture.dispose());
 
 function park(kind: 'waiting' | 'orphan' = 'waiting', parks = 0) {
   return buildParkBundle({
