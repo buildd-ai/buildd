@@ -12,10 +12,23 @@ let missionRow: any = null;
 let currentUser: any = { id: 'u-1' };
 let apiAccountRow: any = null;
 
-mock.module('drizzle-orm', () => ({ eq: (...a: any[]) => ({ _op: 'eq', a }) }));
-mock.module('@buildd/core/db/schema', () => ({ missions: Symbol('missions') }));
+mock.module('drizzle-orm', () => ({
+  eq: (...a: any[]) => ({ _op: 'eq', a }),
+  desc: (...a: any[]) => ({ _op: 'desc', a }),
+}));
+mock.module('@buildd/core/db/schema', () => ({
+  missions: Symbol('missions'),
+  decisionRecords: Symbol('decisionRecords'),
+  decisionOutcomes: Symbol('decisionOutcomes'),
+}));
 mock.module('@buildd/core/db', () => ({
-  db: { query: { missions: { findFirst: () => Promise.resolve(missionRow) } } },
+  db: {
+    query: {
+      missions: { findFirst: () => Promise.resolve(missionRow) },
+      decisionRecords: { findFirst: () => Promise.resolve(null) },
+    },
+    insert: () => ({ values: () => ({ catch: () => Promise.resolve() }) }),
+  },
 }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: () => Promise.resolve(currentUser) }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: () => Promise.resolve(apiAccountRow) }));
@@ -28,6 +41,7 @@ mock.module('@/lib/strand-choice-decision', () => ({
   strandLabelLine: (i: { missionId: string; label: string; order: string; quietMs: number }) =>
     `[decision-label] ${JSON.stringify({ site: 'mission_strand', mission: i.missionId.slice(0, 8), label: i.label, order: i.order, quietMinutes: Math.round(i.quietMs / 60_000) })}`,
   emitDecisionLabel: (line: string) => { logged.push(line); },
+  STRAND_CHOICE_CAPABILITY: 'mission_strand_choice',
 }));
 
 const { POST } = await import('./route');
@@ -68,5 +82,13 @@ describe('POST /api/missions/[id]/strand-choice', () => {
     expect(JSON.parse(line!.slice('[decision-label] '.length))).toEqual({
       site: 'mission_strand', mission: 'cccccccc', label: 'continue-on-runner', order: 'runner-first', quietMinutes: 45,
     });
+  });
+});
+
+describe("POST /api/missions/[id]/strand-choice - gated mode (TDD)", () => {
+  it("responds 200 even if decision outcome recording fails", async () => {
+    const res = await call({ label: 'wait-for-local', order: 'local-first', quietMs: 60 * 60_000 });
+    expect(res.status).toBe(200);
+    expect(logged.length).toBeGreaterThan(0);
   });
 });

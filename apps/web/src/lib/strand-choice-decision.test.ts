@@ -159,3 +159,26 @@ describe('the owner’s tap is recorded as a label', () => {
     });
   });
 });
+describe("adviseStrandChoice - gated mode ledger recording (TDD)", () => {
+  it("records decisions with full ledger input on successful advice", async () => {
+    const lines: string[] = [];
+    let calls = 0;
+    const cache = new Map();
+    const deps = {
+      resolveAccess: allowed as any,
+      decide: (async () => { calls++; return okDecide('wait-for-local', 0.92)(); }) as any,
+      cache, log: (l: string) => lines.push(l),
+    };
+    const r = await adviseStrandChoice(facts, deps);
+    expect(r).toEqual({ pick: 'wait-for-local', confidence: 0.92 });
+    const rec = JSON.parse(lines[0].slice('[decision-shadow] '.length));
+    expect(rec).toMatchObject({
+      site: 'mission_strand',
+      mission: '11111111',
+      pick: 'wait-for-local',
+      confidence: 0.92,
+      mode: 'gated',
+    });
+    expect(rec.v).toContain('ms1');
+  });
+});

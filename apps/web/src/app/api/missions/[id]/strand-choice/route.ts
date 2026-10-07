@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { missions, decisionRecords, decisionOutcomes } from '@buildd/core/db/schema';
+import { eq, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
-import { emitDecisionLabel, strandLabelLine } from '@/lib/strand-choice-decision';
+import { emitDecisionLabel, strandLabelLine, STRAND_CHOICE_CAPABILITY } from '@/lib/strand-choice-decision';
 
 const LABELS = new Set(['continue-on-runner', 'wait-for-local']);
 const ORDERS = new Set(['runner-first', 'local-first']);
@@ -65,6 +65,31 @@ export async function POST(
       order: order as 'runner-first' | 'local-first',
       quietMs,
     }));
+
+    // Record the human choice as an outcome on the most recent decision record for this mission
+    try {
+      const mostRecentDecision = await db.query.decisionRecords.findFirst({
+        where: eq(decisionRecords.missionId, id),
+        columns: { id: true, teamId: true, capability: true },
+        orderBy: desc(decisionRecords.createdAt),
+      });
+
+      if (mostRecentDecision?.capability === STRAND_CHOICE_CAPABILITY) {
+        await db.insert(decisionOutcomes).values({
+          id: undefined,
+          decisionRecordId: mostRecentDecision.id,
+          teamId: mostRecentDecision.teamId,
+          capability: STRAND_CHOICE_CAPABILITY,
+          source: 'human',
+          label: 'human_choice',
+          value: label === 'wait-for-local' ? 1.0 : 0.0,
+          observedAt: new Date(),
+        }).catch(() => {});
+      }
+    } catch {
+      // Outcome recording is non-fatal; the tap is still recorded in the log
+    }
+
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error('Record strand choice error:', error);

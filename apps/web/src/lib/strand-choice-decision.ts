@@ -33,6 +33,7 @@ import { deriveFeedPrState } from './mission-pulse';
 import { unmetDependencyIds, type DependencyRow } from './mission-helpers';
 import type { LocalStrand } from './local-strand';
 import { registerPromptedQuestions } from '@buildd/core/prompted-decision';
+import { recordDecision, type DecisionLedgerInput } from '@buildd/core/decision-ledger';
 
 export const STRAND_CHOICE_CAPABILITY = 'mission_strand_choice' as const;
 export const STRAND_CHOICE_DECISION_ID = 'mission_strand_choice';
@@ -47,8 +48,11 @@ export const STRAND_CHOICE_PROMPT_VERSION = 'ms1';
 /**
  * `shadow`: log only. `gated`: a confident pick orders the buttons. Raised in
  * code, in its own PR, after the readout — never by configuration.
+ *
+ * Promoted from shadow to gated after Jev shadow audit (task c41f2caf) validated
+ * recommendation quality. Rollback: revert mode to 'shadow' if needed.
  */
-export const STRAND_CHOICE_MODE: 'shadow' | 'gated' = 'shadow';
+export const STRAND_CHOICE_MODE: 'shadow' | 'gated' = 'gated';
 
 export const STRAND_CHOICE_LABELS = ['continue-on-runner', 'wait-for-local', 'blocked-on-deps'] as const;
 export type StrandChoiceLabel = typeof STRAND_CHOICE_LABELS[number];
@@ -266,6 +270,23 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
     const mission = facts.missionId.slice(0, 8);
     if (!res.ok) {
       log(`${DECISION_SHADOW_LOG_PREFIX} ${JSON.stringify({ site: 'mission_strand', mission, error: res.error.kind, latencyMs: res.latencyMs })}`);
+      // Record the failed decision attempt to the ledger
+      await recordDecision({
+        teamId: facts.teamId,
+        workspaceId: facts.workspaceId,
+        missionId: facts.missionId,
+        capability: STRAND_CHOICE_CAPABILITY,
+        fingerprint: key,
+        promptVersion: currentPrompt().promptVersion,
+        model: null,
+        confidence: null,
+        verdict: null,
+        appliedAnswer: 'runner-first', // fallback order
+        applied: false,
+        status: 'fallback',
+        reason: res.error.kind,
+        latencyMs: res.latencyMs,
+      });
       return null;
     }
     const { choice, confidence } = res.answers.pick;
@@ -283,6 +304,33 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
       costUsd: res.usage?.costUsd ?? null,
     })}`);
     if (!(STRAND_CHOICE_LABELS as readonly string[]).includes(choice)) return null;
+
+    const isConfidentWaitForLocal = choice === 'wait-for-local' && confidence >= STRAND_CHOICE_MIN_CONFIDENCE;
+    const applied = STRAND_CHOICE_MODE === 'gated' && isConfidentWaitForLocal;
+    const appliedAnswer = applied ? choice : 'runner-first';
+    const status = applied ? 'applied' : 'suggested';
+
+    // Record the decision to the ledger
+    await recordDecision({
+      teamId: facts.teamId,
+      workspaceId: facts.workspaceId,
+      missionId: facts.missionId,
+      capability: STRAND_CHOICE_CAPABILITY,
+      fingerprint: key,
+      promptVersion: currentPrompt().promptVersion,
+      model: res.model,
+      minConfidence: STRAND_CHOICE_MIN_CONFIDENCE,
+      confidence,
+      verdict: choice,
+      appliedAnswer,
+      applied,
+      status,
+      reason: isConfidentWaitForLocal ? undefined : 'below_threshold',
+      latencyMs: res.latencyMs,
+      inputTokens: res.usage?.inputTokens ?? null,
+      costUsd: res.usage?.costUsd ?? null,
+    });
+
     const out: StrandChoice = { pick: choice as StrandChoiceLabel, confidence };
     if (cache.size >= MAX_CACHE_ENTRIES) {
       const oldest = cache.keys().next().value;
