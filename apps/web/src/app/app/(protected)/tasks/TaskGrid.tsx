@@ -2,6 +2,8 @@
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
+import InteractiveSessions from './InteractiveSessions';
+import type { LocalSessionView } from '@/lib/local-session-view';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { useRouter } from 'next/navigation';
 import LocalTime from './LocalTime';
@@ -304,6 +306,8 @@ interface TaskGridProps {
   initiativeFilter?: string | null;
   initiativeTitle?: string | null;
   initiativeMissionIds?: string[];
+  /** Local interactive sessions (presence). Never counted as agents. */
+  localSessions?: LocalSessionView[];
 }
 
 /**
@@ -327,7 +331,7 @@ export function splitTaskRoots(tasks: GridTask[]): { rootTasks: GridTask[]; chil
   return { rootTasks, childrenByParentId };
 }
 
-export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds }: TaskGridProps) {
+export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds, localSessions = [] }: TaskGridProps) {
   const router = useRouter();
 
   const visibleTasks = useMemo(() => {
@@ -592,7 +596,9 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
 
   if (rootTasks.length === 0 && !missionFilter) {
     return (
-      <div className="h-full flex items-center justify-center p-8 pt-20 md:pt-8">
+      <div className="h-full flex flex-col pt-20 md:pt-8">
+      <InteractiveSessions sessions={localSessions} />
+      <div className="flex-1 flex items-center justify-center p-8">
         <div className="max-w-md text-center">
           <div className="w-16 h-16 mx-auto bg-surface-3 rounded-full flex items-center justify-center mb-4">
             <svg className="w-8 h-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -619,6 +625,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
             </NewWorkLink>
           </div>
         </div>
+      </div>
       </div>
     );
   }
@@ -674,6 +681,8 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
             )}
           </div>
         </div>
+
+        {!missionFilter && !bandFilterLabel && <InteractiveSessions sessions={localSessions} />}
 
         {/* Mobile filter UI: single scrollable chip row + optional search */}
         <div className="sm:hidden">

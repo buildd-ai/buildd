@@ -322,6 +322,20 @@ MCPEOF
     ;;
 
   install)
+    # Lifecycle hooks + session skill for Claude Code / Codex / Cursor (the
+    # buildd agent plugin, apps/runner/plugin). See agent-plugin-install.ts.
+    AGENT_PLUGIN_INSTALL="$HOME/.buildd/apps/runner/src/agent-plugin-install.ts"
+    case " $* " in
+      *" --uninstall "*|*" --status "*)
+        shift
+        exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$AGENT_PLUGIN_INSTALL" "$@"
+        ;;
+    esac
+    if [ "${2:-}" != "--global" ]; then
+      # Project scope: hooks for this repo only (MCP entry: `buildd init`).
+      shift
+      exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$AGENT_PLUGIN_INSTALL" "$@"
+    fi
     if [ "${2:-}" = "--global" ]; then
       # Global MCP registration: writes to ~/.claude.json
       CLAUDE_JSON="$HOME/.claude.json"
@@ -372,12 +386,10 @@ GLOBALEOF
 
       echo "Registered buildd MCP server globally in ~/.claude.json"
       echo "Buildd will be available in every Claude Code session."
-      exit 0
-    else
-      echo "Usage: buildd install --global"
       echo ""
-      echo "Registers the buildd MCP server globally for Claude Code."
-      exit 1
+      echo "Session presence hooks:"
+      shift
+      exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$AGENT_PLUGIN_INSTALL" "$@"
     fi
     ;;
 

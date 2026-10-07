@@ -223,6 +223,7 @@ DELETE FROM conversation_messages;
 DELETE FROM conversations;
 -- Standing rules are text a person wrote about how they work; wiped like chat.
 DELETE FROM chat_directives;
+DELETE FROM local_sessions;         -- presence of people's local coding sessions (repo, client)
 DELETE FROM device_codes;
 DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;

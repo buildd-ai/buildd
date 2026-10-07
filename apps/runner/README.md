@@ -187,7 +187,8 @@ Codex task per login, or give Codex a team OpenAI API key.
 | `buildd status` | Show login status |
 | `buildd service install\|uninstall\|status\|logs` | Manage the background service (macOS/Linux) |
 | `buildd init <workspace-id>` | Write a per-repo `.mcp.json` for Claude Code |
-| `buildd install --global` | Register the buildd MCP server in `~/.claude.json` |
+| `buildd install --global` | Register the buildd MCP server in `~/.claude.json`, and install the session presence hooks + skill for every detected client (Claude Code, Codex, Cursor) — see `plugin/README.md` |
+| `buildd install [--global] --status` / `--uninstall` | Show or remove only buildd's own hook entries; every other hook is preserved |
 
 ## Agent identity on buildd
 
