@@ -123,6 +123,79 @@ export function estimateCostUsd(
 }
 
 /**
+ * Strict price lookup: the live catalog, else the static table but only for a
+ * model id that is recognisably Anthropic's. Anything else is null — unpriced,
+ * so a total that includes it reads as unknown instead of quietly priced as
+ * Sonnet (which is what priceForModel does, by design, for budget gates).
+ */
+export function knownPriceForModel(modelId: string): TokenPrice | null {
+  const fromCatalog = priceFromCatalog(catalogPrices, modelId);
+  if (fromCatalog) return fromCatalog;
+  return /claude|opus|sonnet|haiku|fable|mythos/i.test(modelId) ? priceForModel(modelId) : null;
+}
+
+/** One model's usage from a local session: four disjoint token buckets. */
+export interface SessionModelBuckets {
+  model: string;
+  /** Uncached input (`input_tokens`). */
+  input: number;
+  cacheRead: number;
+  /** Cache writes with the 5-minute TTL (1.25x input). */
+  cacheWrite5m: number;
+  /** Cache writes with the 1-hour TTL (2x input). */
+  cacheWrite1h: number;
+  output: number;
+  requests: number;
+}
+
+export interface PricedSessionUsage {
+  /** Null when any model is unpriced: the total is unknown, never understated. */
+  costUsd: number | null;
+  unpricedModels: string[];
+  /** Same shape as the SDK's per-model usage, `costUSD` null when unpriced. */
+  modelUsage: Record<string, Omit<ModelUsage, 'costUSD'> & { costUSD: number | null }>;
+  /** Fresh + cache read + cache write, like workers.inputTokens. */
+  allInInputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  requests: number;
+}
+
+/** Price a local session's per-model token buckets (see knownPriceForModel). */
+export function priceSessionUsage(models: readonly SessionModelBuckets[]): PricedSessionUsage {
+  const out: PricedSessionUsage = {
+    costUsd: 0, unpricedModels: [], modelUsage: {},
+    allInInputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, requests: 0,
+  };
+  for (const m of models) {
+    const p = knownPriceForModel(m.model);
+    const cost = p
+      ? (m.input * p.input + m.cacheRead * p.cacheRead + m.cacheWrite5m * p.cacheWrite + m.cacheWrite1h * 2 * p.input + m.output * p.output) / 1_000_000
+      : null;
+    out.modelUsage[m.model] = {
+      inputTokens: m.input,
+      outputTokens: m.output,
+      cacheReadInputTokens: m.cacheRead,
+      cacheCreationInputTokens: m.cacheWrite5m + m.cacheWrite1h,
+      costUSD: cost,
+    };
+    if (cost === null) {
+      out.unpricedModels.push(m.model);
+      out.costUsd = null;
+    } else if (out.costUsd !== null) {
+      out.costUsd += cost;
+    }
+    out.allInInputTokens += m.input + m.cacheRead + m.cacheWrite5m + m.cacheWrite1h;
+    out.outputTokens += m.output;
+    out.cacheReadInputTokens += m.cacheRead;
+    out.cacheCreationInputTokens += m.cacheWrite5m + m.cacheWrite1h;
+    out.requests += m.requests;
+  }
+  return out;
+}
+
+/**
  * All-in token totals for a session, as the runner reports them in
  * `resultMeta.totalUsage`. `inputTokens` is the ALL-IN input figure (fresh +
  * cache read + cache creation); the two cache fields are the breakdown of it.

@@ -11,7 +11,7 @@
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import type { LocalSessionEvent } from '@buildd/shared';
-import { handleLocalSessionEvent, LocalSessionError, type LocalSessionAccount, type LocalSessionPerson } from '@/lib/local-session';
+import { handleLocalSessionEvent, hashClientSessionId, LocalSessionError, type LocalSessionAccount, type LocalSessionPerson } from '@/lib/local-session';
 import { authenticatePresenceToken, issuePresenceToken, revokePresenceToken } from '@/lib/presence-token';
 import { listLocalSessions } from '@/lib/local-session-view';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
@@ -100,10 +100,10 @@ describe('bind', () => {
     await send(account, { event: 'start', client: 'claude', clientSessionId: s });
     expect((await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId })).outcome).toBe('bound');
     expect((await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId })).outcome).toBe('already_bound');
-    const [row] = await q<{ bound_worker_id: string }>(sql`SELECT bound_worker_id FROM local_sessions WHERE bound_worker_id = ${workerId}::uuid`);
-    expect(row.bound_worker_id).toBe(workerId);
+    const rows = await q<{ local_session_id: string }>(sql`SELECT local_session_id FROM local_session_workers WHERE worker_id = ${workerId}::uuid`);
+    expect(rows).toHaveLength(1);
 
-    // A second session cannot take it: the unique index holds, not just the code path.
+    // A second session cannot take it: the primary key holds, not just the code path.
     const err = await send(account, { event: 'bind', client: 'claude', clientSessionId: sid(), workerId }).catch(e => e);
     expect(err).toBeInstanceOf(LocalSessionError);
     expect((err as LocalSessionError).code).toBe('bound_elsewhere');
@@ -117,6 +117,137 @@ describe('bind', () => {
     const theirs = await seedClaim(other);
     const e2 = await send(account, { event: 'bind', client: 'claude', clientSessionId: sid(), workerId: theirs.workerId }).catch(e => e);
     expect((e2 as LocalSessionError).status).toBe(404);
+  });
+});
+
+describe('a session holding several claims (its subagents each claimed one)', () => {
+  test('both binds stick; exit releases both, each seat exactly once; a replay changes nothing', async () => {
+    const s = sid();
+    const one = await seedClaim(account);
+    const two = await seedClaim(account);
+    await send(account, { event: 'start', client: 'claude', clientSessionId: s, repo: 'acme/widget' });
+    expect((await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId: one.workerId })).outcome).toBe('bound');
+    expect((await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId: two.workerId })).outcome).toBe('bound');
+    const held = await q<{ worker_id: string }>(sql`
+      SELECT lsw.worker_id FROM local_session_workers lsw JOIN local_sessions ls ON ls.id = lsw.local_session_id
+      WHERE ls.client_session_hash = ${hashClientSessionId('claude', s)}`);
+    expect(held.map(r => r.worker_id).sort()).toEqual([one.workerId, two.workerId].sort());
+
+    // Another session still cannot take either.
+    const err = await send(account, { event: 'bind', client: 'claude', clientSessionId: sid(), workerId: two.workerId }).catch(e => e);
+    expect((err as LocalSessionError).code).toBe('bound_elsewhere');
+
+    // Activity lists both tasks under the one session.
+    const view = (await listLocalSessions({ workspaceIds: [workspaceId] })).find(v => v.tasks.some(t => t.id === one.taskId));
+    expect(view?.tasks.map(t => t.id).sort()).toEqual([one.taskId, two.taskId].sort());
+    expect(view?.state).toBe('bound');
+
+    const before = await seats(account);
+    expect((await send(account, { event: 'end', client: 'claude', clientSessionId: s, reason: 'exit' })).outcome).toBe('ended_released');
+    expect(await taskStatus(one.taskId)).toBe('pending');
+    expect(await taskStatus(two.taskId)).toBe('pending');
+    expect(await workerStatus(one.workerId)).toBe('failed');
+    expect(await workerStatus(two.workerId)).toBe('failed');
+    expect(await seats(account)).toBe(before - 2);
+    expect((await send(account, { event: 'end', client: 'claude', clientSessionId: s, reason: 'exit' })).outcome).toBe('already_ended');
+    expect(await seats(account)).toBe(before - 2);
+  });
+
+  test('one finished, one open: the finished task stays finished, the open one goes back', async () => {
+    const s = sid();
+    const done = await seedClaim(account);
+    const open = await seedClaim(account);
+    await send(account, { event: 'start', client: 'claude', clientSessionId: s });
+    await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId: done.workerId });
+    await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId: open.workerId });
+    await q(sql`UPDATE tasks SET status = 'completed' WHERE id = ${done.taskId}::uuid`);
+    await send(account, { event: 'end', client: 'claude', clientSessionId: s, reason: 'exit' });
+    expect(await taskStatus(done.taskId)).toBe('completed');
+    expect(await taskStatus(open.taskId)).toBe('pending');
+  });
+
+  test('a session bound before multi-claim (legacy column) still releases its worker, and keeps it from other sessions', async () => {
+    const s = sid();
+    const old = await seedClaim(account);
+    const r = await send(account, { event: 'start', client: 'claude', clientSessionId: s });
+    // How a pre-migration bind left the row: the single legacy column, no join row.
+    await q(sql`UPDATE local_sessions SET bound_worker_id = ${old.workerId}::uuid, bound_at = now() WHERE id = ${r.sessionId}::uuid`);
+    const err = await send(account, { event: 'bind', client: 'claude', clientSessionId: sid(), workerId: old.workerId }).catch(e => e);
+    expect((err as LocalSessionError).code).toBe('bound_elsewhere');
+    // The same session can add a new claim next to it.
+    const fresh = await seedClaim(account);
+    expect((await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId: fresh.workerId })).outcome).toBe('bound');
+    expect((await send(account, { event: 'end', client: 'claude', clientSessionId: s, reason: 'exit' })).outcome).toBe('ended_released');
+    expect(await taskStatus(old.taskId)).toBe('pending');
+    expect(await taskStatus(fresh.taskId)).toBe('pending');
+  });
+});
+
+describe('session usage', () => {
+  const m = (over: Record<string, unknown> = {}) => ({ model: 'claude-sonnet-5', input: 100, cacheRead: 10_000, cacheWrite5m: 1000, cacheWrite1h: 0, output: 500, requests: 4, ...over });
+  const usage = (workerId: string, models = [m()]) => ({ workers: [{ workerId, models, toolCalls: 7, subagents: 1, firstAt: '2026-10-07T12:00:00.000Z', lastAt: '2026-10-07T12:04:00.000Z' }] });
+  const row = async (workerId: string) => (await q<{ input_tokens: number; output_tokens: number; turns: number; cost_usd: string; result_meta: any }>(sql`
+    SELECT input_tokens, output_tokens, turns, cost_usd::text, result_meta FROM workers WHERE id = ${workerId}::uuid`))[0];
+
+  test('a touch records priced, cumulative usage on the held worker, and never lowers it', async () => {
+    const s = sid();
+    const { workerId } = await seedClaim(account);
+    await send(account, { event: 'start', client: 'claude', clientSessionId: s });
+    await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId });
+    await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: usage(workerId) } as LocalSessionEvent);
+    const r = await row(workerId);
+    expect(r.input_tokens).toBe(11_100);
+    expect(r.output_tokens).toBe(500);
+    expect(r.turns).toBe(4);
+    expect(Number(r.cost_usd)).toBeCloseTo((100 * 2 + 10_000 * 0.2 + 1000 * 2.5 + 500 * 10) / 1e6, 6);
+    expect(r.result_meta.modelUsage['claude-sonnet-5']).toMatchObject({ inputTokens: 100, outputTokens: 500, cacheReadInputTokens: 10_000, cacheCreationInputTokens: 1000 });
+    expect(r.result_meta.localSessionUsage).toMatchObject({ source: 'local-session', toolCalls: 7, subagents: 1, costUnknown: false });
+    // An older, smaller report (replayed or out of order) does not lower anything.
+    await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: usage(workerId, [m({ input: 1, cacheRead: 0, cacheWrite5m: 0, output: 1, requests: 1 })]) } as LocalSessionEvent);
+    const again = await row(workerId);
+    expect(again.input_tokens).toBe(11_100);
+    expect(Number(again.cost_usd)).toBeCloseTo(Number(r.cost_usd), 6);
+  });
+
+  test('an unpriced model writes tokens but no cost, flagged unknown', async () => {
+    const s = sid();
+    const { workerId } = await seedClaim(account);
+    await send(account, { event: 'start', client: 'claude', clientSessionId: s });
+    await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId });
+    await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: usage(workerId, [m(), m({ model: 'other-vendor/unknown-model' })]) } as LocalSessionEvent);
+    const r = await row(workerId);
+    expect(Number(r.cost_usd)).toBe(0);
+    expect(r.input_tokens).toBe(22_200);
+    expect(r.result_meta.modelUsage).toBeUndefined();
+    expect(r.result_meta.localSessionUsage).toMatchObject({ costUnknown: true, unpricedModels: ['other-vendor/unknown-model'] });
+  });
+
+  test("usage only reaches this session's own held workers, and a task finished long ago is left alone", async () => {
+    const s = sid();
+    const mine = await seedClaim(account);
+    const notHeld = await seedClaim(account);
+    await send(account, { event: 'start', client: 'claude', clientSessionId: s });
+    await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId: mine.workerId });
+    await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: usage(notHeld.workerId) } as LocalSessionEvent);
+    expect((await row(notHeld.workerId)).input_tokens).toBe(0);
+
+    await q(sql`UPDATE workers SET status = 'completed', completed_at = now() - interval '1 hour' WHERE id = ${mine.workerId}::uuid`);
+    await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: usage(mine.workerId) } as LocalSessionEvent);
+    expect((await row(mine.workerId)).input_tokens).toBe(0);
+    // Just finished (complete_task, then the session's last report): still counted.
+    await q(sql`UPDATE workers SET completed_at = now() - interval '2 minutes' WHERE id = ${mine.workerId}::uuid`);
+    await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: usage(mine.workerId) } as LocalSessionEvent);
+    expect((await row(mine.workerId)).input_tokens).toBe(11_100);
+  });
+
+  test('end lands the final usage before releasing the worker', async () => {
+    const s = sid();
+    const { workerId, taskId } = await seedClaim(account);
+    await send(account, { event: 'start', client: 'claude', clientSessionId: s });
+    await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId });
+    await send(account, { event: 'end', client: 'claude', clientSessionId: s, reason: 'exit', usage: usage(workerId) } as LocalSessionEvent);
+    expect((await row(workerId)).input_tokens).toBe(11_100);
+    expect(await taskStatus(taskId)).toBe('pending');
   });
 });
 
