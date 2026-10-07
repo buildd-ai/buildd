@@ -65,6 +65,16 @@ export interface Env extends EgressEnv, OtelEgressEnv {
    * Default off. Needs the SNAPSHOTS binding too (resumableRunsEnabled).
    */
   RESUMABLE_RUNS?: string;
+  /**
+   * `1` turns on container reuse (container-lease.ts): a warm container goes
+   * to the next task of the same workspace and size, after a verified reset.
+   * Default off.
+   */
+  CONTAINER_REUSE?: string;
+  /** How long a lease keeps a container warm after a run; default 5 minutes, 30 s to 30 min. */
+  CONTAINER_REUSE_WINDOW_MS?: string;
+  /** Leases per workspace and size; default 2, never above the class's max_instances. */
+  CONTAINER_REUSE_SLOTS?: string;
   /** This Worker version's id, to tell a deploy from any other agent restart in the run report (wrangler.jsonc `version_metadata`). */
   CF_VERSION_METADATA?: { id: string };
   /** R2 bucket for snapshots (wrangler.jsonc `r2_buckets`). Only the Worker writes it. */

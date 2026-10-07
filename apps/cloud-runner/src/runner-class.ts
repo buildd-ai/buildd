@@ -34,6 +34,12 @@ export interface RunnerSizeDecision {
   size: RunnerSize;
   source: RunnerSizeSource;
   reason: RunnerSizeReason | null;
+  /**
+   * The task's workspace, as buildd answered it (authenticated with the runner
+   * key and dispatch token). Only on a fresh answer: never stored, never in a
+   * report (normalizeRunnerSizeDecision drops it). Keys container reuse.
+   */
+  workspaceId?: string;
 }
 
 /**
@@ -87,9 +93,11 @@ export function runnerSizeRequest(cfg: {
 
 /** buildd's answer, or null when it is not one (wrong task, unknown size). */
 export function parseRunnerSizeResponse(body: unknown, taskId: string): RunnerSizeDecision | null {
-  const b = (body ?? {}) as { taskId?: unknown; runnerSize?: unknown; source?: unknown; reason?: unknown };
+  const b = (body ?? {}) as { taskId?: unknown; workspaceId?: unknown; runnerSize?: unknown; source?: unknown; reason?: unknown };
   if (b.taskId !== taskId) return null;
-  return normalizeRunnerSizeDecision({ size: b.runnerSize, source: b.source, reason: b.reason });
+  const decision = normalizeRunnerSizeDecision({ size: b.runnerSize, source: b.source, reason: b.reason });
+  if (!decision) return null;
+  return typeof b.workspaceId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(b.workspaceId) ? { ...decision, workspaceId: b.workspaceId } : decision;
 }
 
 const RUNNER_SIZE_TIMEOUT_MS = 5_000;
