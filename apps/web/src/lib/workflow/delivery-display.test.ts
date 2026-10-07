@@ -60,7 +60,7 @@ describe('S17: every surface agrees with the one DeliveryView', () => {
 
       // Yours: a person's move (ESCALATED, or an approved PR waiting for its merge).
       const yours = deliveryReading(d)!.needsYou;
-      expect(yours).toBe(state === 'ESCALATED' || state === 'APPROVED');
+      expect(yours).toBe(state === 'ESCALATED');
       expect(card === 'WAITING_INPUT').toBe(yours);
       // The Board's `waiting` is an agent's question; a PR awaiting your decision reads `review`.
       expect(tile === 'waiting').toBe(false);
@@ -151,8 +151,9 @@ const TABLE: Row[] = [
     input: V({ state: 'REPAIRING', stateReason: 'conflict' }, { remediation: { taskId: 'cf-1', family: 'conflict', taskStatus: 'in_progress', stalled: false } }),
   },
   { name: 'CI fix in flight', input: V({ state: 'REPAIRING', stateReason: 'ci', ci: 'red', ciHeadSha: 'H1abcdef' }), label: 'Fixing CI', tone: 'live' },
-  { name: 'composition verified', input: V({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1abcdef'] }), label: 'Ready to merge', tone: 'needs' },
-  { name: 'approved', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }), label: 'Ready to merge', tone: 'needs' },
+  { name: 'composition verified, a person merges', input: V({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1abcdef'] }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
+  { name: 'approved, a person merges (human tier, approve-only, open handoff)', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
+  { name: 'approved, the landing path merges (approve-and-merge, auto-threshold)', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }), label: 'Approved · merging', tone: 'live' },
   { name: 'escalated', input: V({ state: 'ESCALATED', stateReason: 'review_escalated' }), label: 'Needs you', tone: 'needs' },
   { name: 'in review', input: V({ state: 'AWAITING_REVIEW' }), label: 'In review', tone: 'live' },
   { name: 'changes requested', input: V({ state: 'CHANGES_REQUESTED' }), label: 'Changes requested', tone: 'live' },
@@ -224,18 +225,21 @@ describe('S17: each canonical state reads the same label, tone and counts on eve
       if (r.action) expect(dock.actions.map(a => a.label)).toContain(r.action.label);
 
       // Home: the same ownership. A landing card keeps Home's legacy merge
-      // rail, which an approved PR's MERGE chip already is.
+      // rail, read as in flight; a person's approved merge is the MERGE chip.
       if (view.owner !== 'landing') expect(kernelInboxMembership(view, false)).toBe(r.needsYou);
-      if (d.state === 'APPROVED') expect(chipForDelivery(view, 'REVIEW')).toBe('MERGE');
+      if (d.state === 'APPROVED') {
+        expect(chipForDelivery(view, 'REVIEW')).toBe(r.needsYou ? 'MERGE' : 'AUTO_MERGE');
+        expect(isActionableChip(chipForDelivery(view, 'MERGE'))).toBe(r.needsYou);
+      }
     });
   }
 
   test('the fixture deliveries: Home and the mission agree on who needs you and on nothing failed', () => {
-    const rows = TABLE.filter(t => ['awaiting push', 'stalled conflict fix', 'composition verified', 'escalated', 'CI fix in flight', 'merged'].includes(t.name));
+    const rows = TABLE.filter(t => ['awaiting push', 'stalled conflict fix', 'composition verified, a person merges', 'approved, the landing path merges (approve-and-merge, auto-threshold)', 'escalated', 'CI fix in flight', 'merged'].includes(t.name));
     const displays = rows.map(t => toDeliveryDisplay(deriveDeliveryView(t.input)!));
     const model = buildMissionBoard({ now: 10_000, missionCreatedAt: 0, missionStatus: 'active', tasks: displays.map(boardInput) });
     expect(model.needsYou.length).toBe(2);
-    expect(stripCountsLabel(stripSlotCounts(stripSlots(model)))).toBe('5 open');
+    expect(stripCountsLabel(stripSlotCounts(stripSlots(model)))).toBe('6 open');
 
     const views = new Map(rows.map((t, i) => [`t${i}`, deriveDeliveryView(t.input)!] as const));
     const queue = buildActionQueue([], rows.map((t, i) => ({

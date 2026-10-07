@@ -1700,7 +1700,7 @@ source per row: a surface never combines the delivery with the worker columns.
 - **Mission strip, board and feed.** `deriveFeedTaskState` and
   `deriveBoardStatus` read `task.delivery` (`feedStateForDelivery`,
   `boardStatusForDelivery`, both over `deliveryReading`). A person's move
-  (ESCALATED, or an approved PR awaiting its merge) is yours. Every other live
+  (ESCALATED, or an approved PR whose merge policy leaves the merge to a person) is yours. Every other live
   state is moving, so a fix in flight is never "needs you" and never FAILED.
   On the Board every non-human live state reads `running` and the tile says
   the reading's label (deviation 5). The strip drawer gives the kernel's headline and evidence
@@ -1762,8 +1762,15 @@ Deviations, each deliberate:
    needs-you and failed answer per delivery. The task chip and histogram, the
    board tile, strip drawer and band, the feed, the chat tile and the dock take
    it as is. Each maps the tone through one total palette table and never maps
-   a state. An approved PR reads "Ready to merge" and needs you, as Home's Merge
-   card does. A stalled remediation reads "Conflict fix stalled" and offers
+   a state. An approved PR reads "Ready to merge" and needs you only when a
+   person merges it (tier `human`, `agent-review` approve-only, or a landing
+   handoff open at the current head, or a mission that requires review on its
+   mission PR; the loader asks the approved-merge slot once per row, which the
+   composition root fills with the reviews module's `approvedNeedsPerson`, and
+   `ownerOfNextMove` turns a yes into owner `human`). Under approve-and-merge or
+   auto-threshold (a task PR into its mission integration branch included) the
+   landing path merges it and it reads live, "Approved · merging"; Home's chip
+   for it is `AUTO_MERGE` ("merging"), never a MERGE card. A stalled remediation reads "Conflict fix stalled" and offers
    Home's "Run fix" in the strip drawer and the dock. Only a FAILED delivery is
    failed. The Board still keeps `waiting` (and its Ask/Reply) for an agent's
    question. A delivery that needs you reads `review` and is counted in Needs
