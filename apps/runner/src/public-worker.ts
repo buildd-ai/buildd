@@ -86,6 +86,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   sessionCwd: true,
   worktreeBaseRef: true,
   prBaseRef: true,
+  derivedMergeNote: true,
   envDegraded: true,
   checkpoints: true,
   checkpointEvents: true,

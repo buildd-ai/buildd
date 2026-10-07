@@ -31,6 +31,7 @@ import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, co
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
 import * as gitOperations from './git-operations';
+import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
@@ -2269,6 +2270,36 @@ export class WorkerManager {
         // (see startWithPersistedBranch below), since create_pr derives its head
         // from workers.branch rather than the claim-time prediction.
         worker.branch = setupResult.branch;
+        // Derived files (gitConfig.derivedFiles): drivers in this clone resolve
+        // lockfiles and generated indexes by regenerating them, for the runner's
+        // merges and the agent's alike. A conflict retry merges its base here,
+        // before the agent starts, so a derived-only conflict needs no agent work
+        // and a mixed one hands it only the real files. Best-effort throughout:
+        // any failure leaves the branch as it was and the agent merges as before.
+        const derivedRules = normalizeDerivedFiles(gitConfig?.derivedFiles);
+        if (derivedRules.length > 0 || gitConfig?.mergiraf === true) {
+          try {
+            registerMergeDrivers(setupResult.path, derivedRules, { mergiraf: gitConfig?.mergiraf === true });
+            if (derivedRules.length > 0 && worker.prBaseRef && isConflictRetryContext(fullTask.context)) {
+              const merged = mergeBaseWithDerivedFiles(setupResult.path, worker.prBaseRef, derivedRules);
+              console.log(`[Worker ${worker.id}] Pre-merged ${worker.prBaseRef}: ${merged.status}` +
+                (merged.conflicted.length ? ` (${merged.conflicted.length} real conflict(s))` : '') +
+                (merged.error ? ` — ${merged.error}` : ''));
+              worker.derivedMergeNote = formatDerivedMergeNote(merged, worker.prBaseRef) ?? undefined;
+              if (merged.status === 'merged' || merged.status === 'conflicts') {
+                this.addMilestone(worker, {
+                  type: 'status',
+                  label: merged.status === 'merged'
+                    ? `Base merged by the runner${merged.regenerated.length ? `; regenerated ${merged.regenerated.length} derived file command(s)` : ''}`
+                    : `Base merge started; ${merged.conflicted.length} file(s) left for the agent`,
+                  ts: Date.now(),
+                });
+              }
+            }
+          } catch (err) {
+            console.warn(`[Worker ${worker.id}] Derived-file merge drivers skipped: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
         // Fallback warning: the resume branch or the declared base was
         // missing/diverged — make it visible rather than silently starting
         // fresh. A missing MISSION INTEGRATION branch gets its own signature
@@ -3933,6 +3964,13 @@ export class WorkerManager {
       });
       if (retryContinuitySection) {
         systemPrompt.append = (systemPrompt.append ?? '') + retryContinuitySection;
+      }
+      if (worker.derivedMergeNote) {
+        systemPrompt.append = (systemPrompt.append ?? '') + worker.derivedMergeNote;
+      }
+      const derivedFilesGuidance = formatDerivedFilesGuidance(normalizeDerivedFiles(gitConfig?.derivedFiles));
+      if (derivedFilesGuidance && worker.worktreePath) {
+        systemPrompt.append = (systemPrompt.append ?? '') + derivedFilesGuidance;
       }
 
       // Degraded connectors (advisory mode): inform the agent which connector tools

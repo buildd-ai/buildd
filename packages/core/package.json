@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.288.0",
+  "version": "0.289.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -61,6 +61,7 @@
     "./describe-error": "./describe-error.ts",
     "./runner-health": "./runner-health.ts",
     "./question-brief": "./question-brief.ts",
+    "./human-attention": "./human-attention.ts",
     "./question-gate": "./question-gate.ts",
     "./question-gate-decision": "./question-gate-decision.ts",
     "./question-gate-source": "./question-gate-source.ts",
@@ -156,6 +157,7 @@
     "./external-links": "./external-links.ts",
     "./ecosystem-detect": "./ecosystem-detect.ts",
     "./risk-class-detect": "./risk-class-detect.ts",
+    "./derived-files-detect": "./derived-files-detect.ts",
     "./workspace-readiness": "./workspace-readiness.ts",
     "./scout-capabilities": "./scout-capabilities.ts",
     "./quality-scout/types": "./quality-scout/types.ts",

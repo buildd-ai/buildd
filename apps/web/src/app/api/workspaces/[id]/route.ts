@@ -1,5 +1,6 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
+import { normalizeDerivedFiles } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { workspaces, githubRepos, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 import { eq, sql } from 'drizzle-orm';
@@ -339,6 +340,29 @@ export async function PATCH(
             { error: "gitConfig.pathClaimEnforcement must be 'advisory', 'enforce' or null" },
             { status: 400 },
           );
+        }
+      }
+      // Derived files: refuse any rule the runner would drop on read (repo-wide
+      // pattern, migration chain, malformed), so what is stored is what runs.
+      if ('derivedFiles' in gitConfig) {
+        const rules = (gitConfig as Record<string, unknown>).derivedFiles;
+        if (rules !== null) {
+          const valid = Array.isArray(rules)
+            && normalizeDerivedFiles(rules).length === rules.length
+            && rules.every((r) => (r as { strategy?: unknown }).strategy === undefined
+              || (r as { strategy?: unknown }).strategy === 'ours' || (r as { strategy?: unknown }).strategy === 'theirs');
+          if (!valid) {
+            return NextResponse.json(
+              { error: "gitConfig.derivedFiles must be null or a list of { glob, regenerate, strategy?: 'ours' | 'theirs' }; a repo-wide pattern or a migration chain is never derived" },
+              { status: 400 },
+            );
+          }
+        }
+      }
+      if ('mergiraf' in gitConfig) {
+        const on = (gitConfig as Record<string, unknown>).mergiraf;
+        if (on !== null && typeof on !== 'boolean') {
+          return NextResponse.json({ error: 'gitConfig.mergiraf must be a boolean or null' }, { status: 400 });
         }
       }
       // Where the workspace's work runs: exact values only, so a typo can never

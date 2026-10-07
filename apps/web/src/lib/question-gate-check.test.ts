@@ -237,6 +237,56 @@ describe('checkQuestion', () => {
   });
 });
 
+// The question that reached a person as a bare "How should I proceed?" card.
+const BLOCKER: QuestionGateRequest = {
+  priorPushbacks: 0,
+  question: {
+    prompt: 'How should I proceed?',
+    context: 'Visual QA cannot boot the app: the mission migration is below the migration high-water mark.',
+    options: [{ label: 'Skip visual QA', recommended: true }, 'Wait'],
+  },
+};
+
+describe('checkQuestion: recoverable blockers route to repair, not to a person', () => {
+  const noModel = { runGate: (() => { throw new Error('must not run'); }) as any, runDecide: (() => { throw new Error('must not run'); }) as any };
+
+  it('files a repair task and answers the agent itself; no model call, no person', async () => {
+    const filed: any[] = [];
+    const { d, records } = deps({ ...noModel, fileRepair: async (input) => { filed.push(input); return { id: 'abcdef12-0000-0000-0000-000000000000', reused: false }; } });
+    const reply = await checkQuestion({ ...SCOPE, missionId: 'm-1' }, BLOCKER, d);
+    expect(reply).toMatchObject({ verdict: 'decide', outcome: 'recovered', disposition: 'decide', repairTaskId: 'abcdef12-0000-0000-0000-000000000000' });
+    expect(reply.reason).toContain('abcdef12');
+    expect(reply.reason).toContain('Skip visual QA');
+    expect(filed[0].spec.signature).toBe('recoverable-blocker:migration_order:m-1');
+    expect(filed[0].blockedTaskId).toBe('task-1');
+    expect(records[0]).toMatchObject({ capability: 'question_gate', applied: true, status: 'applied', reason: 'recovered:migration_order' });
+  });
+
+  it('a hard rail still asks, even when the text reads like a recoverable blocker', async () => {
+    const { d } = deps({
+      runDecide: decideRun('ask', null, 0.9) as any,
+      fileRepair: async () => { throw new Error('must not file'); },
+    });
+    const reply = await checkQuestion({ ...SCOPE, hardRail: { pathManifest: ['packages/core/drizzle/'] } }, BLOCKER, d);
+    expect(reply).toMatchObject({ verdict: 'send', outcome: 'hard_rail', disposition: 'ask' });
+  });
+
+  it('fails open to the normal gate when the repair cannot be filed', async () => {
+    const { d } = deps({ runDecide: decideRun('ask', null, 0.9) as any, fileRepair: async () => null });
+    expect(await checkQuestion(SCOPE, BLOCKER, d)).toMatchObject({ verdict: 'send', outcome: 'asked' });
+  });
+
+  it('with no repair slot wired, a recoverable blocker is asked rather than dropped', async () => {
+    const { d } = deps({ runDecide: decideRun('ask', null, 0.9) as any });
+    expect(await checkQuestion(SCOPE, BLOCKER, d)).toMatchObject({ verdict: 'send', outcome: 'asked' });
+  });
+
+  it('a real decision is untouched', async () => {
+    const { d } = deps({ runDecide: decideRun('ask', null, 0.9) as any, fileRepair: async () => { throw new Error('must not file'); } });
+    expect(await checkQuestion(SCOPE, BARE, d)).toMatchObject({ outcome: 'asked' });
+  });
+});
+
 describe('gateEnabledFromGitConfig / hardRailContextFromGitConfig', () => {
   it('absent or true is on; only an explicit false is the kill switch', () => {
     expect(gateEnabledFromGitConfig(undefined)).toBe(true);

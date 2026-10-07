@@ -4056,3 +4056,20 @@ export interface PromptEvalRunSummary {
   finishedAt: string | null;
   results: PromptEvalResultSummary[];
 }
+
+/**
+ * A file the workspace regenerates rather than merges (`gitConfig.derivedFiles`).
+ *
+ * Runners register a merge driver for `glob` in their own clone (never the
+ * repo): on a conflict it takes one side whole, then `regenerate` runs from the
+ * repo root once the merge has no other conflicts. Lockfiles, generated indexes.
+ * Never a migration chain: renumbering reorders schema changes.
+ */
+export interface DerivedFileRule {
+  /** A gitattributes pattern, e.g. `bun.lock` or `docs/specs/INDEX.md`. */
+  glob: string;
+  /** Shell command run from the repo root, e.g. `bun install`. */
+  regenerate: string;
+  /** Which side the driver keeps before regenerating. Default `theirs` (the incoming base). */
+  strategy?: 'ours' | 'theirs';
+}
