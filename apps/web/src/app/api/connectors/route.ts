@@ -8,7 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { encrypt } from '@buildd/core/secrets';
-import { discoverOAuthMetadata, registerClient, getCallbackUrl } from '@/lib/mcp-oauth';
+import { discoverAndRegister } from '@/lib/connector-provision';
 import { deriveConnectorStatus as deriveStatus } from '@/lib/connector-status';
 import { resolveConnectorIcon } from '@/lib/connector-icon';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
@@ -265,27 +265,16 @@ export async function POST(req: NextRequest) {
       : Promise.resolve(null);
 
     if (authMode === 'oauth' && url) {
-      let discovered: Awaited<ReturnType<typeof discoverOAuthMetadata>>;
       try {
-        discovered = await discoverOAuthMetadata(url);
+        const setup = await discoverAndRegister(url, req.nextUrl.origin, clientId);
+        discoveredMetadata = setup.discoveredMetadata ?? undefined;
+        clientId = setup.clientId ?? undefined;
+        encryptedClientSecret = setup.encryptedClientSecret ?? undefined;
       } catch (err) {
         return NextResponse.json(
           { error: 'discovery_failed', message: `Could not reach this MCP server: ${(err as Error).message}` },
           { status: 422 },
         );
-      }
-      if (discovered.authMode === 'oauth') {
-        discoveredMetadata = discovered as unknown as Record<string, unknown>;
-        if (!clientId && discovered.authorizationServer.registration_endpoint) {
-          const dcrResult = await registerClient(
-            discovered.authorizationServer.registration_endpoint,
-            getCallbackUrl(req.nextUrl.origin),
-          );
-          clientId = dcrResult.client_id;
-          if (dcrResult.client_secret) {
-            encryptedClientSecret = encrypt(dcrResult.client_secret);
-          }
-        }
       }
     }
 

@@ -25,6 +25,7 @@ import { releaseSubscribers } from '@/lib/release/subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
 import { notificationSubscribers } from '@/lib/notification-subscribers';
 import { roleSubscribers } from '@/lib/default-roles-subscribers';
+import { connectorCatalogSubscribers } from '@/lib/connector-catalog-subscribers';
 import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
@@ -42,6 +43,7 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // pr.ci_failed: the ledger records the red head before the CI-fix retry is asked.
   ...reviewerSubscribers,
   ...roleSubscribers,
+  ...connectorCatalogSubscribers,
   // A held release's outcome-analytics row, recorded when its CI resolves it.
   ...routingAnalyticsSubscribers,
 ];

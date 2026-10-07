@@ -4154,6 +4154,52 @@ export const connectorShares = pgTable('connector_shares', {
   sharedWithTeamIdx: index('connector_shares_shared_with_team_idx').on(t.sharedWithTeamId),
 }));
 
+// Connector catalog (marketplace). Presets for remote MCP servers that the
+// Add-connection modal offers one-click; installing one still creates an
+// ordinary `connectors` row. Built-in presets live in code
+// (apps/web/src/lib/connector-catalog.ts); a row here with the same slug and
+// team_id NULL overrides or disables a built-in for everyone. team_id NULL =
+// platform-wide (platform admins only, /api/admin/connector-catalog); team_id
+// set = an entry private to that team (team admins). Merged by
+// apps/web/src/lib/connector-catalog-store.ts.
+export const connectorCatalogEntries = pgTable('connector_catalog_entries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }),
+  slug: text('slug').notNull(),
+  name: text('name').notNull(),
+  url: text('url').notNull(),
+  authMode: connectorAuthModeEnum('auth_mode').notNull().default('oauth'),
+  headerName: text('header_name'),
+  description: text('description').notNull().default(''),
+  category: text('category').notNull().default('other'),
+  iconUrl: text('icon_url'),
+  // false hides the entry (and, for a platform row, the built-in it overrides).
+  enabled: boolean('enabled').default(true).notNull(),
+  createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  platformSlugIdx: uniqueIndex('connector_catalog_platform_slug_idx').on(t.slug).where(sql`${t.teamId} IS NULL`),
+  teamSlugIdx: uniqueIndex('connector_catalog_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.teamId} IS NOT NULL`),
+}));
+
+// A team admin's decision about one catalog entry (by slug, so it applies to
+// built-in, platform and team entries alike). No row = 'available'.
+//   blocked      — hidden from the team's catalog; members cannot add it.
+//   available    — offered in the catalog; an admin adds it on demand.
+//   preinstalled — buildd creates the connector for the team and enables it
+//                  in every workspace, including ones created later. Roles
+//                  still opt in via connectorRefs (spec §2).
+export const connectorCatalogTeamPolicies = pgTable('connector_catalog_team_policies', {
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  slug: text('slug').notNull(),
+  policy: text('policy').notNull().$type<'blocked' | 'available' | 'preinstalled'>(),
+  updatedByAccountId: uuid('updated_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.teamId, t.slug] }),
+}));
+
 export const connectorsRelations = relations(connectors, ({ one, many }) => ({
   team: one(teams, { fields: [connectors.teamId], references: [teams.id] }),
   connectorWorkspaces: many(connectorWorkspaces),
