@@ -459,7 +459,8 @@ describe('installer', () => {
       urls.push(url);
       return Response.json({ workspaces: repos.map(r => ({ repo: `https://github.com/${r}` })) });
     }) as any;
-    return { fetchImpl, urls, env: {} as Record<string, string | undefined> };
+    // The runner home is the test's own temp dir, never ~/.buildd (buildd-home.ts refuses that in tests).
+    return { fetchImpl, urls, env: { BUILDD_HOME: join(home, '.buildd') } as Record<string, string | undefined> };
   };
   const checkout = (path: string, repo: string) => {
     mkdirSync(path, { recursive: true });
@@ -554,11 +555,11 @@ describe('installer', () => {
 
   it('changes nothing when not logged in or when the workspace list cannot be loaded', async () => {
     writeFileSync(join(home, '.claude.json'), '{"mcpServers":{}}');
-    const notIn = await runCli(['--global'], { home, cwd: home, env: {} });
+    const notIn = await runCli(['--global'], { home, cwd: home, env: { BUILDD_HOME: join(home, '.buildd') } });
     expect(notIn.code).toBe(1);
     expect(notIn.lines[0]).toContain('buildd login');
     login();
-    const down = await runCli(['--global'], { home, cwd: home, env: {}, fetchImpl: (async () => { throw new Error('offline'); }) as any });
+    const down = await runCli(['--global'], { home, cwd: home, env: { BUILDD_HOME: join(home, '.buildd') }, fetchImpl: (async () => { throw new Error('offline'); }) as any });
     expect(down.code).toBe(1);
     expect(down.lines[0]).toContain('Nothing was changed');
     expect(readFileSync(join(home, '.claude.json'), 'utf8')).toBe('{"mcpServers":{}}');
