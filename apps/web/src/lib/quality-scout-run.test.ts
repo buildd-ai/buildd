@@ -114,6 +114,15 @@ function memoryWorld() {
       return true;
     },
     taskStatus: async (id) => tasks.get(id)?.status ?? null,
+    cancelledByScout: async () => true,
+    releaseHold: async () => {},
+    async dismissFinding(_w, sig, fields) {
+      const f = findings.get(sig);
+      if (!f) return { dismissed: false, exists: false };
+      if (f.state === 'dismissed') return { dismissed: false, exists: true };
+      findings.set(sig, { ...f, state: 'dismissed', dismissedReason: fields.dismissedReason, dismissedBy: fields.dismissedBy, dismissedAt: fields.dismissedAt.toISOString() });
+      return { dismissed: true, actionTaskId: f.actionTaskId };
+    },
     async insertTask(input) {
       const id = `task-${++n}`;
       tasks.set(id, { status: 'pending', input });

@@ -114,8 +114,10 @@ export interface ScoutStageMetric {
  * What the action policy did with one finding in one run. `cancelled` /
  * `annotated`: a pass resolved the finding, so its still-pending follow-up was
  * cancelled, or its already-claimed one was marked resolved and deprioritised.
+ * `dismissed`: the finding's follow-up had been cancelled by someone other than
+ * the Scout, so the finding was dismissed instead of re-filed.
  */
-export const SCOUT_ACTION_OUTCOMES = ['filed', 'updated', 'proposed', 'aggregated', 'retained', 'suppressed', 'cancelled', 'annotated', 'noop', 'failed'] as const;
+export const SCOUT_ACTION_OUTCOMES = ['filed', 'updated', 'proposed', 'aggregated', 'retained', 'suppressed', 'cancelled', 'annotated', 'dismissed', 'noop', 'failed'] as const;
 export type ScoutActionOutcome = (typeof SCOUT_ACTION_OUTCOMES)[number];
 
 /**
@@ -207,7 +209,9 @@ export interface ScoutProbeRecord {
 /**
  * `open`: the invariant is broken as of `lastSeenSha`. `resolved`: a later run
  * passed the same check. `dismissed`: a person said it is not a defect — a
- * dismissed finding stays dismissed when it recurs, it only counts.
+ * dismissed finding stays dismissed when it recurs, it only counts, and it is
+ * never acted on again. Set by the dismiss action (with a reason), or when a
+ * follow-up the Scout filed is cancelled by anyone but the Scout.
  */
 export const SCOUT_FINDING_STATES = ['open', 'resolved', 'dismissed'] as const;
 export type ScoutFindingState = (typeof SCOUT_FINDING_STATES)[number];
@@ -254,4 +258,12 @@ export interface ScoutFinding {
   resolvedRunId: string | null;
   resolvedSha: string | null;
   resolvedAt: string | null;
+  /** Why it was dismissed; null unless `state` is `dismissed`. */
+  dismissedReason: string | null;
+  dismissedAt: string | null;
+  /** Who dismissed it: `user:<id>`, `account:<id>`, or `follow-up-cancelled:<taskId>`. */
+  dismissedBy: string | null;
 }
+
+/** Longest dismissal reason kept; a longer one is clipped, never refused. */
+export const MAX_SCOUT_DISMISS_REASON = 500;

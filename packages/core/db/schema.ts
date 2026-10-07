@@ -5420,6 +5420,10 @@ export const qualityScoutFindings = pgTable('quality_scout_findings', {
   resolvedRunId: uuid('resolved_run_id'),
   resolvedSha: text('resolved_sha'),
   resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  // Set together when state becomes 'dismissed'; the ledger's recurrence write never touches them.
+  dismissedReason: text('dismissed_reason'),
+  dismissedAt: timestamp('dismissed_at', { withTimezone: true }),
+  dismissedBy: text('dismissed_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
