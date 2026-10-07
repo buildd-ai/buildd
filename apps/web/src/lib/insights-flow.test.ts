@@ -105,8 +105,8 @@ describe('buildFlowSeries: stages', () => {
         worker({ workerId: 'w3', taskId: 't3', roleSlug: null, startedAt: T0, completedAt: T0 + H }),
       ],
     }));
-    expect(s.buckets[0].running).toEqual({ builder: 1, reviewer: 1, unassigned: 1 });
-    expect(s.roles).toEqual(['builder', 'reviewer', 'unassigned']);
+    expect(s.buckets[0].running).toEqual({ builder: 1, reviewer: 1, 'general-purpose': 1 });
+    expect(s.roles).toEqual(['builder', 'general-purpose', 'reviewer']);
   });
 
   it('marks a worker waiting on a person as waiting from when it parked, until now', () => {

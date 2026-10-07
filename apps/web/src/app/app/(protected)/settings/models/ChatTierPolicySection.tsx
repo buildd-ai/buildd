@@ -55,21 +55,27 @@ export default function ChatTierPolicySection({ teamId, isAdmin }: { teamId: str
   const disabled = !isAdmin || !loaded;
 
   return (
-    <div className="mt-10 max-w-4xl" data-testid="chat-tier-policy">
-      <h2 className="mb-2 flex items-baseline gap-2 font-mono text-[15px] font-bold text-text-primary">
-        New chats <span className="text-[12px] font-normal text-text-muted">the tier a new conversation starts at</span>
-      </h2>
-      <div className="card divide-y divide-border-default">
-        <div className="flex items-start justify-between gap-3 px-4 py-3">
-          <span className="min-w-0">
-            <span id="chat-tier-cap-label" className="block text-sm text-text-primary">Cap new chats at the team default</span>
-            <span className="block text-xs text-text-muted">
-              Off: each person starts where they left off. On: a higher tier resets down to the default; a lower one is kept.
-            </span>
-          </span>
+    <div className="mt-6 max-w-5xl" data-testid="chat-tier-policy">
+      <div className="card flex flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:gap-4">
+        <span id="chat-default-tier-label" className="font-mono text-body text-text-primary">New chats start at</span>
+        <Select
+          aria-labelledby="chat-default-tier-label"
+          testId="chat-default-tier"
+          className="w-full sm:w-40"
+          options={TIER_OPTIONS}
+          value={tier ?? 'auto'}
+          disabled={disabled}
+          onChange={(v: string) => {
+            const next = isChatTierName(v) ? v : null;
+            const before = tier;
+            setTier(next);
+            void save({ chatDefaultTier: next }, () => setTier(before));
+          }}
+        />
+        <span className="flex items-center gap-2 sm:ml-auto" title="On: a higher tier resets down to the default; a lower one is kept.">
+          <span id="chat-tier-cap-label" className="font-mono text-body text-text-primary">Cap at this tier</span>
           <Switch
             labelledBy="chat-tier-cap-label"
-            className="mt-1"
             checked={cap}
             disabled={disabled}
             onChange={(next) => {
@@ -78,30 +84,9 @@ export default function ChatTierPolicySection({ teamId, isAdmin }: { teamId: str
               void save({ chatCapNewSessionTier: next }, () => setCap(before));
             }}
           />
-        </div>
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-3 px-4 py-3">
-          <span id="chat-default-tier-label" className="text-sm text-text-primary">Team default tier</span>
-          <Select
-            aria-labelledby="chat-default-tier-label"
-            testId="chat-default-tier"
-            className="w-full sm:w-44"
-            options={TIER_OPTIONS}
-            value={tier ?? 'auto'}
-            disabled={disabled}
-            onChange={(v: string) => {
-              const next = isChatTierName(v) ? v : null;
-              const before = tier;
-              setTier(next);
-              void save({ chatDefaultTier: next }, () => setTier(before));
-            }}
-          />
-        </div>
+        </span>
       </div>
-      <div className="mt-2 min-h-5">
-        {isAdmin
-          ? msg && <span role="status" className={`text-xs ${msg.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{msg.text}</span>
-          : <p className="text-xs text-text-muted">Only a team owner or admin can change this.</p>}
-      </div>
+      {msg && <span role="status" className={`mt-1 block text-meta ${msg.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{msg.text}</span>}
     </div>
   );
 }

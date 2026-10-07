@@ -1,5 +1,22 @@
+/**
+ * Whether `next build` may skip its own TypeScript check.
+ *
+ * Only in GitHub Actions, and only when the workflow says the check already ran
+ * elsewhere (CI_TYPECHECK_DONE=1): Build & Test runs `next typegen` + `tsc
+ * --noEmit` on this same tsconfig in a parallel job that gates `build`, so
+ * repeating it here only lengthens the critical path. Local builds and Vercel
+ * (which sets CI but not GITHUB_ACTIONS) keep type-checking.
+ * Guarded by src/lib/next-config-typecheck.test.ts.
+ *
+ * @param {Record<string, string | undefined>} env
+ */
+export function buildSkipsTypecheck(env) {
+  return env.GITHUB_ACTIONS === 'true' && env.CI_TYPECHECK_DONE === '1';
+}
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  typescript: { ignoreBuildErrors: buildSkipsTypecheck(process.env) },
   // @aws-sdk/client-s3 is on Next's default server-external list. Left
   // external, Turbopack loads it in `bun --bun next dev` through a hashed alias
   // (`@aws-sdk/client-s3-<hash>`) that Bun's resolver can't find, so every page

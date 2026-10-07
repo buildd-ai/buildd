@@ -19,7 +19,9 @@
  * `gitConfig.runnerSize`, else derived from recent run reports and stored the
  * first time it derives `large`.
  *
- * Response: { taskId, runnerSize, source: explicit|derived|default|pinned, reason }.
+ * Response: { taskId, workspaceId, runnerSize, source: explicit|derived|default|pinned, reason }.
+ * workspaceId keys the cloud runner's container reuse (apps/cloud-runner
+ * container-lease.ts): a warm container only ever goes to the same workspace.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -67,12 +69,12 @@ export async function POST(req: NextRequest) {
 
   if (typeof workerId === 'string') {
     const pinned = await runnerSizeOfWorker(ws.id, workerId);
-    if (pinned) return NextResponse.json({ taskId, runnerSize: pinned, source: 'pinned', reason: null }, { headers: NO_STORE });
+    if (pinned) return NextResponse.json({ taskId, workspaceId: ws.id, runnerSize: pinned, source: 'pinned', reason: null }, { headers: NO_STORE });
   }
 
   const decision = await resolveWorkspaceRunnerSize(ws, { persist: true });
   return NextResponse.json(
-    { taskId, runnerSize: decision.size, source: decision.source, reason: decision.reason },
+    { taskId, workspaceId: ws.id, runnerSize: decision.size, source: decision.source, reason: decision.reason },
     { headers: NO_STORE },
   );
 }

@@ -13,3 +13,5 @@ export * from './runner-fleet';
 export * from './claude-ai-artifacts';
 export * from './tool-names';
 export * from './entitlements';
+export * from './model-policy-cells';
+export * from './local-session';
