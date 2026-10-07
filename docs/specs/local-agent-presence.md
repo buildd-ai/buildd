@@ -8,7 +8,7 @@ domain: runners
 surfaces: [apps/web/src/lib/local-session.ts, apps/web/src/app/api/workers/local-sessions/route.ts, packages/shared/src/local-session.ts, apps/runner/plugin/scripts/buildd-hook.mjs]
 related: [runner-liveness, mission-task-lifecycle]
 keywords: [local_sessions, presence_tokens, presence token, bldp_, interactive session, presence, buildd plugin, agent plugin, hooks, SessionStart, SessionEnd, claude code, codex, cursor, buildd install, release slot]
-verified_by: [apps/web/src/lib/local-session.test.ts, apps/web/src/lib/presence-token.test.ts, apps/web/src/lib/presence-token-routes.test.ts, apps/web/src/lib/local-session-view.test.ts, apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/app/app/(protected)/tasks/InteractiveSessions.test.tsx, apps/web/src/app/api/workers/[id]/instruct/route.test.ts]
+verified_by: [apps/web/src/lib/local-session.test.ts, apps/web/src/lib/presence-token.test.ts, apps/web/src/lib/presence-token-routes.test.ts, apps/web/src/lib/local-session-view.test.ts, apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/app/app/(protected)/tasks/InteractiveSessions.test.tsx, apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/local-sessions/workspaces/route.test.ts]
 assertions:
   - id: "presence-token-auth"
     type: "symbol"
@@ -69,7 +69,7 @@ agent loop it runs in.
 - The client session id is stored only as a SHA-256 hash. `repo` is reduced to `owner/name` (credentials and host dropped) on the client and again on the server.
 - Auth is the person's presence token (`bldp_`, `~/.buildd/config.json` `presenceToken`, written by `buildd login`; `BUILDD_PRESENCE_TOKEN` overrides), else the account API key. No credential is written into any hook configuration. Trigger-level keys are refused.
 - A presence token is minted only by a login (device flow or browser), for the person who signed in, one per machine (a new login on the same machine revokes the previous one). It is HMAC-signed and never stored; its `presence_tokens` row (user, machine label, created, last used, revoked) is what makes it revocable: `buildd logout` revokes it, and the signed-in person can list and revoke theirs (`/api/auth/presence-token`). A token whose person is in no team any more is refused.
-- A presence token reaches exactly three things: presence events (`POST /api/workers/local-sessions`), the scope list (`GET /api/workers/local-sessions/workspaces`, repo slugs of every workspace the person reaches across all their teams), and revoking itself. `authenticateApiKey` refuses it before any lookup, so every other route answers 401; `presence-token-routes.test.ts` pins the files that verify one.
+- A presence token reaches exactly three things: presence events (`POST /api/workers/local-sessions`), the scope list (`GET /api/workers/local-sessions/workspaces`, `{ id, repo, teamId }` of every workspace with a repo the person reaches across all their teams, nothing else; presence token only, an API key or task token answers 401), and revoking itself. `authenticateApiKey` refuses it before any lookup, so every other route answers 401; `presence-token-routes.test.ts` pins the files that verify one.
 - A presence is owned by exactly one of an account (API key) or a person (presence token), enforced by a check constraint.
 - Every event is idempotent: a replayed `start`/`touch` refreshes, a replayed `bind` answers `already_bound`, a replayed `end` answers `already_ended`.
 - The hook script exits 0 on every path (no key, buildd down, non-2xx, timeout, bad payload, unknown client) within its 3 s request timeout, and prints nothing except an optional one-line nudge.
@@ -134,7 +134,7 @@ and exactly once, and MUST never complete unfinished work or rewrite a finished 
 
 ## Install
 
-`buildd install --global` registers the MCP server for Claude Code per folder, only for folders Claude Code has opened whose repo is one of the account's workspaces (a repo whose own `.mcp.json` names buildd is left alone; `--here` adds the current folder, `--everywhere` restores the user-wide entry; `--oauth`, opt-in, writes each folder's entry as the key-free per-workspace OAuth endpoint `/api/mcp-oauth/<workspaceId>` instead, and `--status --global` reports each entry as key or OAuth without the network),
+`buildd install --global` registers the MCP server for Claude Code per folder, only for folders Claude Code has opened whose repo is a workspace the person reaches in any of their teams (the presence token's scope list; the login key's list alone without one). A folder whose workspace the login key's team cannot reach always gets the OAuth entry, never the key, and re-running switches an existing such key entry to OAuth, including one shadowing the folder's own `.mcp.json` (a repo whose own `.mcp.json` names buildd is left alone; `--here` adds the current folder, `--everywhere` restores the user-wide entry; `--oauth`, opt-in, writes each folder's entry as the key-free per-workspace OAuth endpoint `/api/mcp-oauth/<workspaceId>` instead, and `--status --global` reports each entry as key or OAuth without the network),
 and installs the hooks and the `buildd-session` skill for every detected client;
 `buildd install` does the same for one repo; `--status` and `--uninstall` inspect
 or remove them. A handler is buildd's if and only if its command names
