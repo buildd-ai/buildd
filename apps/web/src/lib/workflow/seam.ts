@@ -27,6 +27,8 @@ import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy
 import { githubReader, workspaceRepo } from './github-facts';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
+import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
+import { floorCandidatesSql, type FloorCandidate } from './reconcile';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
 export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
@@ -763,6 +765,82 @@ export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): 
     } catch (err) {
       s.errors++;
       console.error(`[workflow] trunk recovery of delivery ${b.id} failed:`, err);
+    }
+  }
+  return s;
+}
+
+export interface FloorSummary {
+  /** Kernel-owned deliveries the pass read GitHub for. */
+  checked: number;
+  /** Facts the live read produced that the reducer applied (a head, a merge, a close, a reopen). */
+  imported: number;
+  /** Owed effects that were missing and were re-enqueued under their own dedupe key. */
+  enqueued: number;
+  errors: number;
+}
+
+/**
+ * §11's reconciliation floor for kernel deliveries: for each open delivery
+ * (stalest first, capped) read the PR and import what GitHub says, then
+ * re-enqueue any effect its state owes and lacks. Only the two permitted
+ * operations: a fact through `ingestFact` (source `sweep:kernel-floor`) and an
+ * effect insert under the effect's own dedupe key. A missed `synchronize`
+ * (or a push to a draft PR, which the webhook path skips) or a missed
+ * `closed` is repaired on the next pass instead of stranding the delivery.
+ */
+export async function reconcileKernelDeliveries(
+  deps: SeamDeps = {},
+  o: { limit?: number; minQuietMs?: number; only?: string[] } = {},
+): Promise<FloorSummary> {
+  const exec = deps.exec ?? seamExec;
+  const s: FloorSummary = { checked: 0, imported: 0, enqueued: 0, errors: 0 };
+  const rows = ((await exec(floorCandidatesSql({ limit: o.limit ?? 100, minQuietMs: o.minQuietMs ?? 10 * 60_000, only: o.only ?? null }))).rows ?? []) as FloorCandidate[];
+  const source = 'sweep:kernel-floor';
+  for (const row of rows) {
+    const workspaceId = String(row.workspace_id);
+    const repoFullName = String(row.repo_full_name);
+    const prNumber = Number(row.pr_number);
+    try {
+      // The kill switch: a delivery released to legacy is legacy's to reconcile.
+      const deliveryId = await kernelDeliveryForPr(workspaceId, repoFullName, prNumber, deps.exec);
+      if (!deliveryId) continue;
+      const repo = await (deps.repoFor ?? workspaceRepo)(workspaceId);
+      if (!repo) continue;
+      s.checked++;
+      const reader = readerFor(deps, repo.installationId);
+      const live = await reader.readPr(repoFullName, prNumber);
+      if (!live) { s.errors++; continue; }
+      // One read per delivery: the fact funnel acts on this same live read (R2).
+      const once: GithubFactReader = { ...reader, readPr: async () => live };
+      const base = { workspaceId, source, repoFullName, prNumber };
+      const closedNow = live.merged || live.state !== 'open';
+      const fact = closedNow
+        ? (row.state === 'CLOSED_UNMERGED' && !live.merged ? null : { kind: 'pr_closed' as const, ...base })
+        : row.state === 'CLOSED_UNMERGED'
+          ? { kind: 'pr_closed' as const, ...base } // reopened: the live read makes it T19
+          : live.headSha !== row.current_head_sha ? { kind: 'head_observed' as const, ...base, hintedHeadSha: null } : null;
+      if (fact) {
+        const r = await ingestFact(fact, { exec: deps.exec, github: once });
+        if (r.result === 'applied') s.imported++;
+      }
+      let enqueued = 0;
+      const view = await loadView({ deliveryId }, deps.exec);
+      if (view.delivery) {
+        const existing = new Set((((await exec(existingEffectsSql(deliveryId))).rows ?? []) as Array<{ dedupe_key: string }>).map((e) => String(e.dedupe_key)));
+        for (const e of enqueueMissingEffects(view, existing)) {
+          const ins = ((await exec(enqueueEffectSql(deliveryId, view.delivery.version, e))).rows ?? []).length;
+          if (ins > 0) {
+            enqueued++;
+            s.enqueued++;
+            console.log(`[workflow] floor re-enqueued ${e.kind} for ${repoFullName}#${prNumber} (${e.dedupeKey})`);
+          }
+        }
+      }
+      if (fact || enqueued) await drainDelivery(deliveryId, deps);
+    } catch (err) {
+      s.errors++;
+      console.error(`[workflow] floor reconcile of ${repoFullName}#${prNumber} failed:`, err);
     }
   }
   return s;

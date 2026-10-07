@@ -78,7 +78,7 @@ import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
 import { redriveDeferredRefreshes, type RefreshRedriveResult } from '@/lib/refresh-redrive';
 import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
 import { sweepCiRedPrs } from '@/lib/ci-red-sweep-deps';
-import { drainDueEffects, reconcileTrunkIncidents } from '@/lib/workflow/seam';
+import { drainDueEffects, reconcileKernelDeliveries, reconcileTrunkIncidents } from '@/lib/workflow/seam';
 import type { CiRedSweepResult } from '@/lib/ci-red-sweep';
 import { CI_RED_DUE_QUEUE } from '@/lib/ci-red-queue';
 import { gateOnDueQueue } from '@/lib/cron-due-queue';
@@ -109,7 +109,7 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox, trunk] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox, trunk, kernelFloor] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -174,7 +174,19 @@ export async function GET(req: NextRequest) {
       reconcileTrunkIncidents().catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
+      // The kernel's reconciliation floor (§11): re-read each open kernel delivery's PR and
+      // import its head / merged / closed state as a fact, then re-enqueue any effect its
+      // state owes and lacks. A lost synchronize or closed webhook costs an hour, not the PR.
+      // Isolated.
+      reconcileKernelDeliveries().catch((err): { error: string } => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
     ]);
+    if ('error' in kernelFloor) {
+      console.error('[KernelFloor] error:', kernelFloor.error);
+    } else {
+      console.log(`[KernelFloor] checked=${kernelFloor.checked} imported=${kernelFloor.imported} enqueued=${kernelFloor.enqueued} errors=${kernelFloor.errors}`);
+    }
     // subjectsReconciled is NOT folded into `changed` below: the subject sweep
     // only runs on the merged/closed branches, each of which already increments
     // stamped or closed, so adding it would count one event twice. It rides in
@@ -259,11 +271,13 @@ export async function GET(req: NextRequest) {
         + ('error' in landing ? 0 : landingChanged(landing))
         + ('error' in refreshRedrive ? 0 : refreshRedrive.merged + refreshRedrive.exhausted)
         + ('error' in ciRed ? 0 : ciRedChanged(ciRed))
-        + ('error' in closedPrs ? 0 : closedPrs.recorded + closedPrs.suggested),
+        + ('error' in closedPrs ? 0 : closedPrs.recorded + closedPrs.suggested)
+        + ('error' in kernelFloor ? 0 : kernelFloor.imported + kernelFloor.enqueued),
       errors:
         reconcile.errors + missionPrErrors + strandedErrors + specRecheckErrors + lineageErrors
-        + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors,
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox, trunk },
+        + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors
+        + ('error' in kernelFloor ? 1 : kernelFloor.errors),
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox, trunk, kernelFloor },
     });
 
     return NextResponse.json({
@@ -281,6 +295,7 @@ export async function GET(req: NextRequest) {
       closedPrs,
       kernelOutbox,
       trunk,
+      kernelFloor,
     });
   });
 }

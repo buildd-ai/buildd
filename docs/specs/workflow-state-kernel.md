@@ -858,6 +858,29 @@ is logged and never stored). They are bounded by three permitted operations:
 3. **Raise an invariant alert** (gate event / `notifyOperator`) when a delivery has
    stayed in a non-terminal state with no effect due and no owner past a stated bound.
 
+**The kernel floor.** `reconcileKernelDeliveries` (seam.ts, on the hourly
+`pr-reconcile` pass) is the floor for kernel deliveries. It reads every open
+delivery with a bound PR, stalest first and capped per pass, and skips any
+that moved in the last few minutes so it never races a webhook in flight. For
+each one it reads the PR once and imports what GitHub says through
+`ingestFact`, source `sweep:kernel-floor`:
+- the head, when it differs from `current_head_sha` (T3);
+- merged or closed, when the delivery has not recorded it (T17/T18);
+- reopened, for a `CLOSED_UNMERGED` delivery whose PR is open again (T19).
+
+It then inserts whatever `enqueueMissingEffects` (`enqueue-missing.ts`) says the
+state owes and the delivery lacks:
+- `CHANGES_REQUESTED`: a `dispatch_fix` for the current round at the current head;
+- `AWAITING_REVIEW`: a `dispatch_review` for the queued round at the current head;
+- `AWAITING_PUSH`: a `push_recovery` chain.
+
+Each owed effect is keyed exactly as the reducer keys it and attached to the
+delivery's latest transition, pinned to the version read. A delivery released
+by the kill switch is skipped. A missed `synchronize`, including a push to a
+draft PR (the webhook observes drafts too), or a missed `closed` therefore
+costs at most one pass. `APPROVED` ⇒ `merge_call` stays with `sweepLandingPrs`
+and `MERGED` ⇒ post-merge effects with the drain.
+
 A reconciler MUST NOT: write `workflow_deliveries.state`, write a guarded column
 directly, create a task outside an effect, or derive a state from elapsed time. Today's
 violations are listed in §17.3 (`pr-state-reconcile` regressing `ci_green` to `pr_open`,
