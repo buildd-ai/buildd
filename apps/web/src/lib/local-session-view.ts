@@ -131,10 +131,19 @@ export async function listLocalSessions(opts: {
     .where(and(scope, or(gt(localSessions.lastSeenAt, since), gt(workers.updatedAt, since))))
     .orderBy(desc(localSessions.lastSeenAt))
     .limit(opts.limit ?? 50);
-  return sortLocalSessions(rows.map(r => classifyLocalSession(r as LocalSessionRow, now)));
+  return sortLocalSessions(rows.map(r => classifyLocalSession(r as LocalSessionRow, now)).filter(shownInSessionList));
+}
+
+/**
+ * A headless session (`claude -p`, an SDK run, a Cursor background agent) is
+ * nobody's interactive session, so its bare presence is not listed. Once it
+ * has claimed a task it is shown: it holds a worker and real work.
+ */
+export function shownInSessionList(v: LocalSessionView): boolean {
+  return v.interactive || v.task !== null;
 }
 
 /** "Interactive sessions" count: online presences. Never part of agent capacity. */
 export function countInteractiveSessions(views: LocalSessionView[]): number {
-  return views.filter(v => v.state === 'bound' || v.state === 'online').length;
+  return views.filter(v => shownInSessionList(v) && (v.state === 'bound' || v.state === 'online')).length;
 }
