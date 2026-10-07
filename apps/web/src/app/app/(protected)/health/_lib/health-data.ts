@@ -467,7 +467,7 @@ need('budgetForecast') ? getBudgetForecast(activeTeamId, scopedWsIds).catch(() =
         groups: stats.groups.map(g => ({
           ...g,
           label: g.key === UNASSIGNED_ROLE
-            ? 'No role'
+            ? 'General-purpose'
             : `${roleBySlug.get(g.roleSlug ?? g.key)?.name ?? g.roleSlug ?? g.key}${g.roleSource === 'inferred' ? INFERRED_ROLE_SUFFIX : ''}`,
           color: roleBySlug.get(g.roleSlug ?? g.key)?.color ?? '#888',
         })),

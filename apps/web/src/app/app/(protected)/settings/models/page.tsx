@@ -13,8 +13,8 @@ export const dynamic = 'force-dynamic';
 /**
  * Settings → AI → Model tiers.
  *
- * Tier → model mapping. Everyone in the team can see it; only owners and
- * admins can change it (the APIs enforce the same rule, this only decides which
+ * One table of tier x surface cells, then the new-chat default as one row.
+ * Everyone in the team can see it; only owners and admins can change it (the APIs enforce the same rule, this only decides which
  * controls render). Provider keys live at /app/settings/providers.
  */
 export default async function ModelTiersPage() {
