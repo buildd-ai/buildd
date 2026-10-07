@@ -22,6 +22,8 @@ import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import type { DeliveryPillState } from './TaskSidePanel';
 import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
 
@@ -603,6 +605,14 @@ export default async function TaskDetailPage({
 
   const openQuestionCount = openQuestionRows.filter(n => isOpenQuestionNote(n, task.status, activeWorker)).length;
 
+  // A kernel-owned delivery's header reads the kernel's DeliveryView, not the
+  // raw task/worker columns below (workflow-state-kernel §17.5). Legacy-owned
+  // or PR-less tasks get null and keep today's status.
+  const deliveryView = (await getDeliveryViewsForTasks([task.id])).get(task.id) ?? null;
+  const deliveryPill: DeliveryPillState | null = deliveryView
+    ? { headline: deliveryView.headline, owner: deliveryView.owner, needsYou: deliveryView.needsYou, stage: deliveryView.stage, detail: deliveryView.detail }
+    : null;
+
   // Derive canonical display status from task + active worker state.
   // If the worker is running, the chip shows "Running" not "Assigned".
   const isTerminal = isTerminalTaskStatus(task.status);
@@ -1103,6 +1113,7 @@ export default async function TaskDetailPage({
                   <HeaderStatusPill
                     status={displayStatus}
                     merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
+                    delivery={deliveryPill}
                   />
                 </span>
               )}
@@ -1567,6 +1578,7 @@ export default async function TaskDetailPage({
         {activeWorker && (
           <div className="mb-8 order-first" data-testid="task-active-worker">
             <RealTimeWorkerView
+              delivery={deliveryPill}
               taskStatus={task.status}
               taskId={task.id}
               initialWorker={{

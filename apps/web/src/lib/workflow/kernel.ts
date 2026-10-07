@@ -326,6 +326,7 @@ export function toRoundSnapshot(r: J): RoundSnapshot {
     status: r.status as RoundSnapshot['status'], verdict: (r.verdict ?? null) as RoundSnapshot['verdict'],
     effectiveVerdict: (r.effective_verdict ?? null) as RoundSnapshot['effectiveVerdict'], failureCount: n(r.failure_count),
     reviewerTaskId: s(r.reviewer_task_id),
+    scope: (r.scope as Record<string, unknown> | null) ?? null,
   };
 }
 

@@ -40,6 +40,7 @@ import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
+import { kernelReplacedFailedTaskIds } from '@/lib/workflow/delivery-view';
 import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
@@ -383,9 +384,12 @@ async function viewForMission(missionId: string): Promise<{
     })),
   );
 
+  // S35: a failed attempt the kernel already replaced (its delivery is live or
+  // shipped) is history too, read from the DeliveryView, not a title heuristic.
+  const kernelReplaced = await kernelReplacedFailedTaskIds(failedDeliverables.map(t => t.id));
   const health = deriveTaskHealthSignal(
     { ...m, heartbeatWaitingUntil },
-    loaded.map(t => ({ ...t, superseded: supersededMap.has(t.id) })),
+    loaded.map(t => ({ ...t, superseded: supersededMap.has(t.id) || kernelReplaced.has(t.id) })),
     { dependencies: foreignDeps },
   );
 
@@ -468,7 +472,7 @@ async function viewForMission(missionId: string): Promise<{
   // Superseded failures shipped their deliverable under a different task/PR —
   // see mission-task-superseded.ts. Excluded here so they never drive the
   // mission into a `failing` state; reported separately below instead.
-  const failedTasks = failedDeliverables.filter(t => !supersededMap.has(t.id));
+  const failedTasks = failedDeliverables.filter(t => !supersededMap.has(t.id) && !kernelReplaced.has(t.id));
   const supersededTasks = failedDeliverables
     .filter(t => supersededMap.has(t.id))
     .map(t => ({ task: t, superseded: supersededMap.get(t.id)! }));

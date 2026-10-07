@@ -51,7 +51,7 @@ mock.module('@buildd/core/db', () => ({
         },
       },
       workers: { findFirst: async () => ({ id: 'w1', branch: 'feat/x', prUrl: 'https://github.com/acme/w/pull/7', prBaseRef: 'dev', lastCommitSha: 'H1' }) },
-      workspaces: { findFirst: async () => ({ id: 'ws1', teamId: 'team1', gitConfig: null }) },
+      workspaces: { findFirst: async () => ({ id: 'ws1', teamId: 'team1', gitConfig: null, releaseConfig: workspaceReleaseConfig }) },
       missions: { findFirst: async () => null },
     },
     insert: (table: any) => ({
@@ -70,7 +70,10 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: new Proxy({}, { get: (_t, k) => `workers.${String(k)}` }), workspaces: new Proxy({}, { get: (_t, k) => `workspaces.${String(k)}` }),
 }));
 const mockPostPrReview = mock(async (_p: any) => postResult);
-mock.module('@/lib/github', () => ({ postPrReview: mockPostPrReview }));
+/** Composed-PR reads for the §5.9 check; default: GitHub unreadable (the check falls through). */
+let ghApi: (path: string) => unknown = (path) => { throw new Error(`no fake GitHub for ${path}`); };
+let workspaceReleaseConfig: unknown = null;
+mock.module('@/lib/github', () => ({ postPrReview: mockPostPrReview, githubApi: async (_i: number, path: string) => ghApi(path) }));
 mock.module('@/lib/notify', () => ({ notifyTeamOf: mock(async () => undefined) }));
 const mockAppend = mock(async (_p: any) => ({ action: 'created' }));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppend, taskActivityUrl: (id: string) => `u/${id}` }));
@@ -104,6 +107,7 @@ beforeEach(() => {
   applied.length = 0; ingested.length = 0; executed.length = 0; inserted.length = 0; notes.length = 0;
   existingTask = null; livePr = { state: 'open', merged: false, headSha: 'H1', headRepoFullName: 'acme/w', baseRef: 'dev' };
   roles = [{ slug: 'reviewer' }]; created = { id: 'reviewer-2' }; postResult = { posted: true };
+  ghApi = (path) => { throw new Error(`no fake GitHub for ${path}`); }; workspaceReleaseConfig = null;
   ownerRow = { id: 'owner-1', title: 'Fix the thing', description: 'd', missionId: 'm1', pathManifest: ['a.ts'], backend: 'claude', context: {} };
   for (const m of [mockPostPrReview, mockAppend, mockWake, mockCreateReviewer, mockSupersedeFix, mockEscalateExhaustion]) m.mockClear();
 });
@@ -169,6 +173,68 @@ describe('dispatch_review', () => {
     view = { delivery: D({ state: 'AWAITING_REVIEW' }) as any, rounds: [{ ...round1, status: 'queued', reviewerTaskId: 'rev-x' }], attempts: [] };
     expect(await __handlers.dispatchReview(E('dispatch_review', { roundId: 'r1' }))).toEqual({ outcome: 'skipped:already_dispatched' });
     expect(mockCreateReviewer).not.toHaveBeenCalled();
+  });
+
+  describe('composed PRs (§5.9)', () => {
+    const composed = (o: { headRef?: string; extraCommit?: boolean } = {}) => {
+      workspaceReleaseConfig = { enabled: true, releaseBranch: 'dev', prodBranch: 'main' };
+      const commits = [{ sha: 'SQ1', files: ['a.ts'], pr: 11 }, ...(o.extraCommit ? [{ sha: 'X1', files: ['b.ts'], pr: null }] : [])];
+      ghApi = (path) => {
+        if (path === '/repos/acme/w/pulls/7') return { head: { ref: o.headRef ?? 'dev' }, base: { ref: 'main' } };
+        if (path.startsWith('/repos/acme/w/compare/main...H1')) return {
+          merge_base_commit: { sha: 'B0' }, total_commits: commits.length,
+          commits: commits.map((c) => ({ sha: c.sha, parents: [{ sha: 'B0' }], commit: { message: 'x' } })),
+          files: commits.flatMap((c) => c.files).map((filename) => ({ filename })),
+        };
+        const c = commits.find((x) => path === `/repos/acme/w/commits/${x.sha}`);
+        if (c) return { files: c.files.map((filename) => ({ filename })) };
+        const pc = commits.find((x) => path === `/repos/acme/w/commits/${x.sha}/pulls`);
+        if (pc) return pc.pr ? [{ number: pc.pr, merged_at: 't', base: { ref: 'dev' }, head: { sha: 'P11' } }] : [];
+        throw new Error(`unexpected ${path}`);
+      };
+    };
+
+    test('a release PR whose changes were all reviewed is attested and gets no second reviewer', async () => {
+      composed();
+      // The constituent's kernel delivery, read by the collector.
+      const db = (await import('@buildd/core/db')).db as any;
+      const realExec = db.execute;
+      db.execute = async (q: any) => {
+        const text = JSON.stringify(q.queryChunks?.map((c: any) => c.value ?? '').flat());
+        if (text.includes('composition_constituents')) return { rows: [{ id: 'd11', pr_number: 11, approved_heads: ['P11'], rounds: [{ id: 'r11', head_sha: 'P11', status: 'decided', effective_verdict: 'approve' }] }] };
+        return realExec(q);
+      };
+      try {
+        view = { delivery: D({ state: 'AWAITING_REVIEW' }) as any, rounds: [{ ...round1, status: 'queued', verdict: null, effectiveVerdict: null, reviewerTaskId: null }], attempts: [] };
+        expect(await __handlers.dispatchReview(E('dispatch_review', { roundId: 'r1' }))).toEqual({ outcome: 'ok:composition_attested' });
+      } finally { db.execute = realExec; }
+      expect(mockCreateReviewer).not.toHaveBeenCalled();
+      expect(ingested[0]).toMatchObject({ kind: 'composition_attested', attestation: { prNumber: 7, aggregateHeadSha: 'H1', novelDelta: { result: 'none' } } });
+    });
+
+    test('an unverifiable composition (the constituent has no kernel review) with nothing else falls through to the full review', async () => {
+      composed();
+      view = { delivery: D({ state: 'AWAITING_REVIEW' }) as any, rounds: [{ ...round1, status: 'queued', verdict: null, effectiveVerdict: null, reviewerTaskId: null }], attempts: [] };
+      expect(await __handlers.dispatchReview(E('dispatch_review', { roundId: 'r1' }))).toEqual({ outcome: 'ok' });
+      expect(ingested).toHaveLength(0);
+      expect(mockCreateReviewer).toHaveBeenCalledTimes(1);
+    });
+
+    test('an ordinary PR is never checked for composition', async () => {
+      composed({ headRef: 'buildd/abc-feature' });
+      view = { delivery: D({ state: 'AWAITING_REVIEW' }) as any, rounds: [{ ...round1, status: 'queued', verdict: null, effectiveVerdict: null, reviewerTaskId: null }], attempts: [] };
+      expect(await __handlers.dispatchReview(E('dispatch_review', { roundId: 'r1' }))).toEqual({ outcome: 'ok' });
+      expect(ingested).toHaveLength(0);
+    });
+
+    test('the composition delta round is reviewed scoped to its novel paths, without a second composition check', async () => {
+      composed();
+      const r2 = { ...round1, id: 'r2', round: 2, kind: 'delta' as const, status: 'queued' as const, verdict: null, effectiveVerdict: null, reviewerTaskId: null, scope: { composition: true, novelDeltaPaths: ['b.ts'] } };
+      view = { delivery: D({ state: 'AWAITING_REVIEW', currentRound: 2 }) as any, rounds: [{ ...round1, status: 'superseded', verdict: null, effectiveVerdict: null }, r2], attempts: [] };
+      expect(await __handlers.dispatchReview(E('dispatch_review', { roundId: 'r2' }))).toEqual({ outcome: 'ok' });
+      expect(ingested).toHaveLength(0);
+      expect((mockCreateReviewer.mock.calls[0][0] as any).compositionScope).toEqual({ novelDeltaPaths: ['b.ts'] });
+    });
   });
 
   test('no role can run the review: the round fails (T27), it is never silently dropped', async () => {

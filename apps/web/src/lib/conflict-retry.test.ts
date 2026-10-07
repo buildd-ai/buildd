@@ -65,6 +65,7 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => args,
   inArray: (...args: any[]) => args,
   isNotNull: (field: any) => ({ isNotNull: field }),
+  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ sql: strings.join('?'), values }),
 }));
 
 // Keep real path-overlap for meaningful overlap tests
@@ -106,6 +107,7 @@ import {
   isAutoResolveMergeConflictsEnabled,
   buildConflictRetryTask,
   dispatchConflictRetry,
+  classifyConflictFix,
   DEFAULT_MAX_CONFLICT_ITERATIONS,
 } from './conflict-retry';
 import type { ConflictRetryInput } from './conflict-retry';
@@ -528,6 +530,68 @@ describe('dispatchConflictRetry', () => {
     expect(result.exhausted).toBeUndefined();
     expect(mockInsert).not.toHaveBeenCalled();
     expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  // S37: the existing remediation is canonical. A stalled one is recovered in
+  // place (keyed by the task + a throttle window), never shadowed by a second.
+  describe('S37 — a stalled live conflict fix is recovered, not duplicated', () => {
+    const OLD = new Date(Date.now() - 45 * 60_000);
+    const pendingStalled = { id: 'live-retry', conflictRetryHeadSha: 'sha-older', status: 'pending', createdAt: OLD, claimedAt: null, updatedAt: OLD, context: {} };
+
+    it('re-dispatches a pending fix no runner claimed, and files nothing new', async () => {
+      mockLiveConflictRetryProbe.mockResolvedValue(pendingStalled);
+      mockUpdateReturning.mockResolvedValueOnce([{ id: 'live-retry' }]);
+      const result = await dispatchConflictRetry({ ...BASE_PARAMS, humanInitiated: true });
+      expect(result).toMatchObject({ dispatched: false, inFlightTaskId: 'live-retry', remediationStalled: true, remediationRecovery: 'redispatch' });
+      expect(mockInsert).not.toHaveBeenCalled();
+      expect(mockWakeTask).toHaveBeenCalledWith('live-retry', 'conflict.retry');
+      expect(capturedUpdateSet.context.conflictRecovery.action).toBe('redispatch');
+      expect(capturedUpdateSet.status).toBeUndefined();
+    });
+
+    it('repairs a claimed fix whose worker already ended: back to pending, then woken', async () => {
+      mockLiveConflictRetryProbe.mockResolvedValue({ ...pendingStalled, status: 'assigned', claimedAt: OLD });
+      mockWorkerFindFirst.mockResolvedValue({ status: 'failed', updatedAt: OLD });
+      mockUpdateReturning.mockResolvedValueOnce([{ id: 'live-retry' }]);
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+      expect(result.remediationRecovery).toBe('repair');
+      expect(capturedUpdateSet.status).toBe('pending');
+      expect(capturedUpdateSet.claimedAt).toBeNull();
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
+
+    it('a concurrent caller that loses the compare-and-set applies nothing (duplicate sweep/click/webhook)', async () => {
+      mockLiveConflictRetryProbe.mockResolvedValue(pendingStalled);
+      mockUpdateReturning.mockResolvedValueOnce([]);
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+      expect(result).toMatchObject({ dispatched: false, inFlightTaskId: 'live-retry', remediationStalled: true, remediationRecovery: 'none' });
+      expect(mockWakeTask).not.toHaveBeenCalled();
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
+
+    it('a fix re-dispatched a minute ago is waiting again, not stalled: no second recovery', async () => {
+      mockLiveConflictRetryProbe.mockResolvedValue({ ...pendingStalled, context: { conflictRecovery: { at: new Date(Date.now() - 60_000).toISOString() } } });
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+      expect(result).toEqual({ dispatched: false, inFlightTaskId: 'live-retry' });
+      expect(mockUpdate).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
+    });
+
+    it('a fresh pending fix is left alone', async () => {
+      const now = new Date();
+      mockLiveConflictRetryProbe.mockResolvedValue({ ...pendingStalled, createdAt: now, updatedAt: now });
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+      expect(result).toEqual({ dispatched: false, inFlightTaskId: 'live-retry' });
+      expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
+    it('classifyConflictFix: a silent live worker is stalled but never raced', () => {
+      const now = Date.now();
+      expect(classifyConflictFix({ status: 'in_progress', createdAt: OLD, workerStatus: 'running', workerUpdatedAt: new Date(now - 30 * 60_000) }, now))
+        .toMatchObject({ stalled: true, action: 'none' });
+      expect(classifyConflictFix({ status: 'in_progress', createdAt: OLD, workerStatus: 'running', workerUpdatedAt: new Date(now - 60_000) }, now))
+        .toEqual({ stalled: false, reason: null, action: 'none' });
+    });
   });
 
   it('scopes the in-flight probe to this workspace, this PR and live statuses', async () => {

@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/pr-review-status.ts]
 related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts]
+verified_by: [apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts]
 supersedes: []
 ---
 
@@ -32,8 +32,11 @@ first review is dispatched after deploy is kernel-owned: deliveries open at the
 legacy first-review dispatch points, review rounds, the verdict (T6), fix dispatch
 (T8) and claim (T9), attempt end (T4), the §9 completion gate, `synchronize` heads
 (T3) and close/reopen facts (T17–T19) run through `apps/web/src/lib/workflow/seam.ts`,
-and the legacy write is skipped for those PRs. §13.1 lists what landed, what is
-deferred to parts 2–3, and the deviations; §14 the cutover and the kill switch.
+and the legacy write is skipped for those PRs. Part 3 adds the read side: a
+`DeliveryView` with one owner of the next move feeds Home, the task page and the
+mission failure reading; the PR activity comment is regenerated from transitions;
+release and integration PRs are checked by composition; S35–S37 hold. §13.1 and
+§13.2 list what landed and the deviations; §14 the cutover and the kill switch.
 
 **Capability statement.** For every deliverable that is meant to reach GitHub as a
 pull request, exactly one row (the *delivery*) records where the work stands. That row
@@ -845,7 +848,7 @@ or a projection (written only by `projectDelivery`), or retired. Never two.**
 | PR activity comment | parallel log by ~18 writers | **render** of `workflow_transitions` (`render_activity`); `parsePrActivityState` stops being a read-modify-write source |
 | `missions.status` | mission aggregate | unchanged authority; its completion gate reads deliveries |
 
-Readers move to one accessor, `getDeliveryView(...)`, extending `derivePrDisplayState`
+Readers move to one accessor, `getDeliveryViewsForTasks(...)` (`lib/workflow/delivery-view.ts`, over the pure `deriveDeliveryView` in `lib/workflow/projections.ts`), extending `derivePrDisplayState`
 (`lib/pr-presentation.ts`, the one existing PR accessor) the way
 `deriveMissionStateView` already works for missions: sealed return type,
 `stage`/`waitingOn`/`nextAction` computed once.
@@ -967,10 +970,10 @@ Deviations, each deliberate:
    approve tail (`landPr` / `tryAutoMergeWorkerPr`), which reads the reviewer task the
    round created. The kernel posts the GitHub review (`post_review`); the legacy post
    does not run. Slice C moves landing.
-3. **The legacy activity comment stays** (`appendPrActivity` from the handlers);
-   `render_activity` is acknowledged `skipped:legacy_owns` until part 3. Post-merge and
-   supersession effects of T17/T18 are likewise acknowledged: the webhook still runs
-   them.
+3. **The legacy activity comment stayed** in part 1 (`appendPrActivity` from the
+   handlers). Part 3 replaced it for kernel-owned PRs (§13.2). Post-merge and
+   supersession effects of T17/T18 are still acknowledged `legacy_owns`: the webhook
+   runs them.
 4. **`push_recovery` re-reads and bounds, it does not instruct.** Each try reads the PR;
    a new head goes through T3, otherwise the next try is enqueued (2m/10m/30m), then
    T22 notifies a person. The live worker is told to push by the completion gate's 400
@@ -989,6 +992,79 @@ Deviations, each deliberate:
    Allocation is consumption, so the dispatching statement names the fix task's id
    before `dispatch_fix` inserts that task; the FK the first migration carried rejected
    every allocation, so no fix task was ever filed. The live matrix caught it.
+
+
+### 13.2 What Slice A part 3 shipped, and its deviations
+
+Shipped live (kill switch only), for kernel-owned deliveries; a legacy-owned or
+PR-less task is absent from every map below and keeps today's projection:
+
+- **`DeliveryView`** (`lib/workflow/projections.ts`, pure; loaded in one statement
+  per surface by `getDeliveryViewsForTasks` in `lib/workflow/delivery-view.ts`). One
+  owner of the next move per §4 state (`worker`, `reviewer`, `platform`, `human`,
+  `landing`, `trunk`, `none`); `needsYou` is true only for `human`. A headline and
+  the evidence behind it (`detail`, from the delivery and its last transition), the
+  ledger's `attempt N of M`, the current attempt, and every earlier attempt marked
+  `superseded` for audit.
+- **Home** (`buildActionQueue` option `deliveryViews`): the chip of a kernel-owned
+  PR comes from `chipForDelivery`, applied after `resolveMergeChip`. Landing keeps the
+  legacy merge chip, because the merge rails stay legacy until Slice C. A failed
+  attempt of a delivery that is live or merged produces no FAILED card.
+- **Task page**: the header pill reads the view; `RealTimeWorkerView` replaces the
+  needs-input banner with a "Buildd is handling this" notice when the platform owns
+  the next move.
+- **Mission failure reading (S35)**: `kernelReplacedFailedTaskIds` marks a failed
+  attempt of a live or shipped delivery as superseded, in `explain` and in the mission
+  page's fallback (which now also applies the existing title/PR supersession rule it
+  skipped).
+- **`render_activity`** (`lib/workflow/pr-activity-render.ts`, `pr-activity-effects.ts`):
+  the comment is rendered from the delivery row and every `workflow_transitions` row,
+  with the headline from canonical state and a `buildd-render-version` marker. A
+  render older than the marker is skipped, duplicate comments are reduced to the
+  oldest, and a version that advanced during the write owes another render. For a
+  kernel-owned PR, `appendPrActivity` no longer writes. It records the entry as an
+  `activity_note` fact and enqueues a render. Kinds a transition owns are dropped from
+  those notes; the rest (CI, lede corrections, human overrides) are kept until their
+  families move.
+- **Release composition (§5.9)** (`lib/workflow/review-composition.ts`): before
+  `dispatch_review` dispatches a full round on a composition PR (a mission integration
+  branch into trunk, or a release PR per `isReleaseBranchPr`), it builds a
+  `patch_set_equal` attestation from the compare and per-commit reads. Zero novel
+  delta → `CompositionAttested` → `APPROVED` with `approval_basis = composition` and no
+  reviewer. A novel delta → a delta round scoped to those paths, with the
+  attestation in the reviewer's prompt. Unverifiable → the normal full review. CI
+  still gates the aggregate through the unchanged landing rails. The headline reads
+  "Release composition verified".
+- **S37 conflict recovery** (`dispatchConflictRetry`, `classifyConflictFix`,
+  `recoverStalledConflictFix` in `lib/conflict-retry.ts`): a live conflict fix is
+  the canonical remediation. A pending one unclaimed for 30 minutes is re-dispatched,
+  and a claimed one whose worker ended is requeued. A claimed one whose worker is only
+  silent is stalled but left to the reaper. Recovery is a compare-and-set on
+  `context.conflictRecovery`, so concurrent sweeps, webhooks and clicks apply it once,
+  and no second fix task is filed. The view's CTA reads "Conflict fix stalled" with
+  Run fix / Repair, "Resolving conflicts", or "Resolve conflicts" when none exists.
+
+Deviations, each deliberate:
+
+1. **The conflict family is still legacy (Slice B).** S37's recovery lives in the
+   legacy conflict-retry path, keyed by the live fix task plus its recovery marker
+   (the remediation family is implied by `conflict_retry_pr_number`). It is not a
+   kernel effect, and `ConflictObserved` is still not wired; the view reads `mergeable`
+   on the current head and the open conflict-fix row.
+2. **Explain, the mission strip and the chat dock** still read their own
+   projections (Slice E); S17 covers Home, the task header and the mission failure
+   reading.
+3. **A fix worker's own question stays a question.** A worker-owned delivery whose
+   worker is `waiting_input` keeps the needs-input banner. Only a platform-owned
+   blocker is restated; generic `needs_input` is task 01b8a69d's.
+4. **Composition constituents need kernel evidence.** A change reviewed on the
+   legacy path is novel delta, so it gets the delta review rather than borrowing a
+   verdict. A merge commit's novel delta is approximated as the files both sides
+   changed. Release artifacts are recognised by the release automation's commit
+   subjects plus a path allowlist (`package.json`, `CHANGELOG.md`, `bun.lock`).
+5. **Chips stay in the existing vocabulary.** A kernel-owned card reuses
+   `REVIEW_RUNNING`, `FIXING_REVIEW`, `FIXING_CI` and `RESOLVING`, and carries the
+   headline as its reason line, so no card component changed.
 
 ---
 
@@ -1106,7 +1182,7 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S14 | A sweep tries to assign state | sweep modules import only `ingestFact`/`enqueueMissingEffects`; write-site guard fails on any direct write to a guarded column outside the allowlist | `packages/core/__tests__/workflow-write-sites.test.ts` (new; pattern of `packages/core/__tests__/model-policy-authority.test.ts`) |
 | S15 | Base keeps moving under an approved PR | `LANDING`/`REPAIRING(behind)` bounded by the existing treadmill cap; hard gates unchanged | `apps/web/src/lib/pr-landing.test.ts`, `apps/web/src/lib/pr-landing-sweep.test.ts`, `apps/web/src/lib/base-refresh.test.ts` |
 | S16 | Mission with a `SUPERSEDED`/`ABANDONED`/open/closed delivery | `canCompleteMission` results identical to today for all legacy inputs | `apps/web/src/lib/mission-completion.test.ts`, `packages/core/__tests__/pr-shipped.test.ts` |
-| S17 | UI projections agree | one `DeliveryView` → Home chip, task card stage, mission strip, explain, chat dock all show the same stage for a table of states | `apps/web/src/lib/pr-presentation.test.ts`, `apps/web/src/lib/action-queue.test.ts`, `apps/web/src/lib/mission-state-view.test.ts`, `apps/web/src/components/TaskCard.test.tsx`, `apps/web/src/components/chat/dock-model.test.ts` |
+| S17 | UI projections agree | one `DeliveryView` → Home chip, task header and mission failure reading agree (part 3); task card stage, mission strip, explain and chat dock join in Slice E | `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts`, `apps/web/src/app/app/(protected)/tasks/[id]/lineage-status.test.tsx` |
 | S18 | Mission integration branch deleted under an open task PR (cause of the PR #3744 closure) | `CLOSED_UNMERGED(base_deleted)`, `scan_supersession` finds the re-opened PR, T20 records it | `apps/web/src/lib/pr-supersession-detect.test.ts`, `apps/web/src/lib/mission-pr.test.ts` |
 | S19 | Fix worker killed after claim | `FIXING → CHANGES_REQUESTED`, the ledger row ends `failed`, the next dispatch allocates the next `attempt_no`, or exhausts | reducer test |
 | S20 | Stale `version` from a human action | `stale` + current view, HTTP 409; nothing applied | reducer test; route tests for `/api/prs/[prNumber]/merge` and `/api/github/pr` |
@@ -1115,18 +1191,18 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S23 | CI provenance (audit): worker pushes under the owner's git identity; worker pushes under the bot identity; a person pushes | the first two are attributed by SHA set and consume a ledger row; the third is `foreign_push` and consumes none; the cap bounds dispatches in all three; manual "Fix CI" uses the configured cap | `apps/web/src/lib/ci-failure-retry.test.ts`, `apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts`, reducer test (replaces the author-string cases around `isBuilddWorkerCommit`) |
 | S24 | Trunk breakage: one signature red on trunk and on several PRs | one incident, one trunk-fix task, zero per-PR `ci` attempts, queued ones `skipped`, deliveries `BLOCKED_ON_TRUNK`, `ci` budget untouched, recovery re-enters `resume_state`; two dependency-bot PRs do not accumulate retries | `apps/web/src/lib/ci-red-sweep.test.ts`, `apps/web/src/lib/ci-failure-retry.test.ts`, `apps/web/src/lib/workflow/trunk.test.ts` (new) |
 | S25 | Stale dispatch: target merged / approved / CI green / conflict resolved between trigger and dispatch, and between dispatch and claim | ledger row `skipped`, no task (or task cancelled as skipped, not failed); replay is a no-op; reason recorded | `apps/web/src/lib/workflow/effects.test.ts` (new), `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/ci-failure-retry.test.ts` |
-| S26 | Comment as projection: concurrent renders, lost-update race (a `reviewing` write racing the merge), entries after merge, duplicate sticky comments, PR with no comment, CI red while approved | final comment equals a fresh render of canonical state; `Merged` stays the headline; one comment; created for every bound PR; "Approved" never heads a `REPAIRING` delivery | `apps/web/src/lib/pr-activity-comment.test.ts`, `apps/web/src/lib/pr-activity-fix-claimed.test.ts`, `apps/web/src/lib/workflow/projections.test.ts` (new) |
+| S26 | Comment as projection: concurrent renders, lost-update race (a `reviewing` write racing the merge), entries after merge, duplicate sticky comments, PR with no comment, CI red while approved | final comment equals a fresh render of canonical state; `Merged` stays the headline; one comment; created for every bound PR; "Approved" never heads a `REPAIRING` delivery | `apps/web/src/lib/pr-activity-comment.test.ts`, `apps/web/src/lib/workflow/pr-activity-render.test.ts`, `apps/web/src/lib/workflow/pr-activity-effects.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S27 | Mechanical versus agent repair | behind-only conflict and byte-identical renumber complete with no task; textual conflict and non-identical renumber escalate to an agent attempt; false collision from a lagging mission branch is not a collision; dependency-bot PRs are never pushed to | `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/migration-collision-retry.test.ts`, `apps/web/src/lib/base-refresh.test.ts` |
 | S28 | Ledger separation | CI, review, conflict, migration, trunk families count independently; a reviewer spawned on a CI-fix task does not inherit the CI count; infra requeues change no ledger; `attemptView` is 1-based and identical in comment, title and `explain` | reducer test; `apps/web/src/lib/pr-activity-comment.test.ts`, `apps/web/src/lib/explain.test.ts` |
 | S29 | Reviewer prose or no verdict | round fails (T27), re-queued at the same head without a new round number, then `ESCALATED(review_unavailable)`; prose is never applied as approve | `apps/web/src/lib/reviewer-output.test.ts`, `apps/web/src/app/api/workers/[id]/route.test.ts` |
 | S30 | Runner hand-off failures (no confirmed outcome, commits but no PR, uncommitted changes) | `AttemptEnded(unproven)` → `AWAITING_PUSH` or requeue; never `completed` delivery | `apps/runner/__tests__/unit/` (new case beside the existing completion tests), `apps/web/src/app/api/workers/[id]/route.test.ts` |
-| S35 | Replacement chains read current, not FAILED | a superseded predecessor attempt stays auditable but the delivery and mission situation project the current attempt; owner of next move is canonical | `apps/web/src/lib/workflow/projections.test.ts` (part 3) |
-| S37 | Conflict remediation already exists | a conflicted PR with a valid pending/stalled conflict-fix task re-dispatches or repairs it instead of filing a second; the recovery effect is keyed by delivery + remediation family; UI says "Conflict fix stalled" vs "Resolve conflicts" | `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/workflow/projections.test.ts` (part 3) |
+| S35 | Replacement chains read current, not FAILED | a superseded predecessor attempt stays auditable but the delivery and mission situation project the current attempt; owner of next move is canonical | `apps/web/src/lib/workflow/projections.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S37 | Conflict remediation already exists | a conflicted PR with a valid pending/stalled conflict-fix task re-dispatches or repairs it instead of filing a second; the recovery effect is keyed by delivery + remediation family; UI says "Conflict fix stalled" vs "Resolve conflicts" | `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/workflow/projections.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S31 | Preflight | `create_pr` refuses a body the CI scan would reject, with the reason; runner preflight failure keeps the attempt open; CI miss is tagged `preflight_miss` | `apps/web/src/app/api/github/pr/route.test.ts`, `scripts/check-no-prod-data-local.test.ts` |
-| S32 | Release PR composed only of reviewed constituents | composition attestation accepted (`approval_basis = composition`, head in `composition_heads` only); CI still gates; no second reviewer or human escalation; idempotent under duplicate delivery | `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S32 | Release PR composed only of reviewed constituents | composition attestation accepted (`approval_basis = composition`, head in `composition_heads` only); CI still gates; no second reviewer or human escalation; idempotent under duplicate delivery | `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/src/lib/workflow/review-composition.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S33 | Release PR plus a release-only novel delta (conflict resolution, changed migration or generated output) | prior verdicts cover only mapped constituents; a delta round scoped to the novel paths; can still need a human | as S32 |
 | S34 | Stale constituent review, head mismatch, missing equivalence proof, incomplete set | composition proof fails closed; the release PR borrows nothing; ordinary PRs stay exact-head bound | as S32 |
-| S36 | Needs You reads the kernel, not a raw worker status | Home/task surfaces project the owner of the next move; a recoverable blocker stays platform-owned; failure evidence preserved | `apps/web/src/lib/workflow/projections.test.ts` (part 3) |
+| S36 | Needs You reads the kernel, not a raw worker status | Home/task surfaces project the owner of the next move; a recoverable blocker stays platform-owned; failure evidence preserved | `apps/web/src/lib/workflow/projections.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.test.tsx`, `apps/web/tests/db/workflow-matrix.test.ts` |
 
 **The live matrix.** `apps/web/tests/db/workflow-matrix.test.ts` (`bun run test:db`) carries
 every S-number: a passing case drives the seam and the real review-loop effect handlers on
@@ -1221,9 +1297,10 @@ mismatch as a fact (`local_head_reported` vs live head) for the activity timelin
 ### 17.5 UI projections
 
 - Stage chips, Home "Needs You", task detail, mission strip, explain, chat dock and
-  `get_pr`/`list_prs` currently each re-derive state (§18.2). Slice E replaces them
-  with `getDeliveryView`; until then they keep reading fact-cache columns, which keep
-  their values. Visible differences to expect and to review: a task whose fix did not
+  `get_pr`/`list_prs` each re-derived state (§18.2). Since part 3, Home, the task
+  header, the worker banner and the mission failure reading consume `DeliveryView`
+  for kernel-owned deliveries (§13.2); the rest move in Slice E and until then keep
+  reading fact-cache columns, which keep their values. Visible differences to expect and to review: a task whose fix did not
   push now shows `AWAITING_PUSH`/needs-you instead of "in review"; the activity comment
   header comes from the last transition, so "Re-reviewing" appears only with a real
   round; chat "Landed" is no longer `mergedAt || status==='completed'`.

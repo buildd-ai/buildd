@@ -37,6 +37,7 @@ import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import type { MigrationCollision } from '@/lib/migration-safety';
 import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
+import { classifyConflictFix, type ConflictRecoveryAction } from '@/lib/conflict-fix-liveness';
 
 /** Public default; read the live value with `policyValue('maxConflictIterations')`. */
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = POLICY_DEFAULTS.maxConflictIterations;
@@ -478,6 +479,10 @@ export interface DispatchConflictRetryResult {
   superseded?: boolean;
   /** A conflict retry is already live on this PR; nothing new was filed. */
   inFlightTaskId?: string;
+  /** The live conflict retry had stalled (S37). */
+  remediationStalled?: boolean;
+  /** What recovery did to it: re-dispatched, repaired (requeued), or nothing (throttled / worker silent). */
+  remediationRecovery?: ConflictRecoveryAction;
   /** The PR that appears to have already landed the change, if identifiable. */
   successorPrNumber?: number | null;
   /** True when the base branch was force-pushed after the PR was opened. */
@@ -510,6 +515,51 @@ export interface DispatchConflictRetryResult {
   semanticUnverified?: boolean;
   /** GitHub said there is nothing to merge in: the "behind" reading was stale. Re-read. */
   alreadyUpToDate?: boolean;
+}
+
+// ── S37: an existing conflict fix is recovered, not duplicated ──────────────
+
+export {
+  STALE_PENDING_CONFLICT_FIX_MS, SILENT_CONFLICT_FIX_MS, CONFLICT_RECOVERY_THROTTLE_MS, classifyConflictFix,
+  type ConflictRecoveryAction, type ConflictFixLiveness,
+} from '@/lib/conflict-fix-liveness';
+
+/**
+ * Recover a stalled live conflict fix in place. Compare-and-set on the row's
+ * `updatedAt`, recording `context.conflictRecovery`, so concurrent callers
+ * (a sweep, a webhook, a human click) apply at most one recovery per window
+ * and never file a second task.
+ */
+export async function recoverStalledConflictFix(row: {
+  id: string; status: string; createdAt?: Date | string | null; claimedAt?: Date | string | null; updatedAt?: Date | string | null; context?: unknown;
+}, now: number = Date.now()): Promise<{ stalled: boolean; action: ConflictRecoveryAction }> {
+  const ctx = (row.context ?? {}) as Record<string, unknown>;
+  const last = (ctx.conflictRecovery as { at?: string } | undefined)?.at ?? null;
+  let workerStatus: string | null = null;
+  let workerUpdatedAt: Date | null = null;
+  if (row.status !== 'pending') {
+    const w = await db.query.workers.findFirst({
+      where: eq(workers.taskId, row.id),
+      columns: { status: true, updatedAt: true },
+      orderBy: (wk, { desc }) => [desc(wk.createdAt)],
+    }).catch(() => null);
+    workerStatus = (w?.status as string | undefined) ?? null;
+    workerUpdatedAt = (w?.updatedAt as Date | undefined) ?? null;
+  }
+  const verdict = classifyConflictFix({ status: row.status, createdAt: row.createdAt ?? null, claimedAt: row.claimedAt, workerStatus, workerUpdatedAt, lastRecoveryAt: last }, now);
+  if (!verdict.stalled || verdict.action === 'none') return { stalled: verdict.stalled, action: 'none' };
+  const nextCtx = { ...ctx, conflictRecovery: { at: new Date(now).toISOString(), action: verdict.action, reason: verdict.reason } };
+  const set: Record<string, unknown> = { context: nextCtx, updatedAt: new Date(now) };
+  if (verdict.action === 'repair') { set.status = 'pending'; set.claimedAt = null; }
+  const won = await db.update(tasks).set(set as never)
+    // CAS on the recovery marker itself (not updated_at: Postgres keeps
+    // microseconds a JS Date drops), so exactly one concurrent caller wins.
+    .where(and(eq(tasks.id, row.id), eq(tasks.status, row.status as never),
+      sql`coalesce(${tasks.context}->'conflictRecovery'->>'at', '') = ${last ?? ''}`))
+    .returning({ id: tasks.id });
+  if (!won || won.length === 0) return { stalled: true, action: 'none' };
+  await wakeTask(row.id, 'conflict.retry');
+  return { stalled: true, action: verdict.action };
 }
 
 /**
@@ -549,13 +599,21 @@ export async function dispatchConflictRetry(
       eq(tasks.conflictRetryPrNumber, prNumber),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
     ),
-    columns: { id: true, conflictRetryHeadSha: true },
+    columns: { id: true, conflictRetryHeadSha: true, status: true, createdAt: true, claimedAt: true, updatedAt: true, context: true },
   });
   if (liveRetry) {
+    // S37: an existing remediation is the canonical one. A stalled one is
+    // re-dispatched or repaired, never shadowed by a second fix task.
+    const recovery = await recoverStalledConflictFix(liveRetry);
     console.log(
-      `[conflict-retry] PR #${prNumber} already has live conflict retry ${liveRetry.id} — not filing another`,
+      `[conflict-retry] PR #${prNumber} already has live conflict retry ${liveRetry.id} — not filing another` +
+        (recovery.action !== 'none' ? ` (stalled: ${recovery.action})` : ''),
     );
-    return { dispatched: false, inFlightTaskId: liveRetry.id };
+    return {
+      dispatched: false,
+      inFlightTaskId: liveRetry.id,
+      ...(recovery.stalled ? { remediationStalled: true, remediationRecovery: recovery.action } : {}),
+    };
   }
 
   // Fetch the original task — before the behind-only update, whose target

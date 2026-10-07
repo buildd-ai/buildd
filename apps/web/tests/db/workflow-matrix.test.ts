@@ -54,8 +54,25 @@ let reviewersCreated: Array<{ taskId: string; round: number; head: string }>;
 const realGithubFacts = await import('../../src/lib/workflow/github-facts');
 mock.module('../../src/lib/workflow/github-facts', () => ({ ...realGithubFacts, githubReader: () => reader, workspaceRepo: repoFor }));
 const realGithub = await import('../../src/lib/github');
+/** The PR's issue comments, as GitHub would hold them (render_activity writes here, §12.1). */
+let comments: Map<number, string>;
+let commentSeq = 1;
+/** Composed-PR reads (§5.9 collector: pulls, compare, commits), served per test; undefined = not faked. */
+let ghApi: ((path: string) => unknown) | null = null;
+async function fakeGithubApi(_installationId: number, path: string, opts?: RequestInit): Promise<unknown> {
+  const method = opts?.method ?? 'GET';
+  if (ghApi && method === 'GET' && !/\/issues\//.test(path)) { const out = ghApi(path); if (out !== undefined) return out; }
+  if (!/\/issues\//.test(path)) return null;
+  const id = /comments\/(\d+)$/.exec(path);
+  if (method === 'GET') return path.includes('page=1') ? [...comments.entries()].map(([cid, body]) => ({ id: cid, body })) : [];
+  if (method === 'POST') { const cid = commentSeq++; comments.set(cid, JSON.parse(String(opts!.body)).body); return { id: cid }; }
+  if (method === 'PATCH' && id) { comments.set(Number(id[1]), JSON.parse(String(opts!.body)).body); return null; }
+  if (method === 'DELETE' && id) { comments.delete(Number(id[1])); return null; }
+  return null;
+}
 mock.module('../../src/lib/github', () => ({
   ...realGithub,
+  githubApi: fakeGithubApi,
   postPrReview: async (p: { headSha: string; event: string }) => { posted.push({ commitId: p.headSha, event: p.event }); return { posted: true }; },
 }));
 const realActivity = await import('../../src/lib/pr-activity-comment');
@@ -91,8 +108,15 @@ const seam = await import('../../src/lib/workflow/seam');
 const { reviewEffectHandlers } = await import('../../src/lib/workflow/review-effects');
 const { runEffects } = await import('../../src/lib/workflow/effects');
 const { applyCommand, loadView } = await import('../../src/lib/workflow/kernel');
-const { attemptView } = await import('../../src/lib/workflow/reducer');
+const { attemptView, headCoverage } = await import('../../src/lib/workflow/reducer');
+const facts = await import('../../src/lib/workflow/facts');
 const { kernelDeliveryForPr } = await import('../../src/lib/workflow/authority');
+const { getDeliveryViewsForTasks, kernelReplacedFailedTaskIds } = await import('../../src/lib/workflow/delivery-view');
+const { buildActionQueue, isActionableChip } = await import('../../src/lib/action-queue');
+const { dispatchConflictRetry } = await import('../../src/lib/conflict-retry');
+const { HeaderStatusPill } = await import('../../src/app/app/(protected)/tasks/[id]/TaskSidePanel');
+const { createElement } = await import('react');
+const { renderToStaticMarkup } = await import('react-dom/server');
 
 /** The composition root's handlers, with an optional per-test override (a crash, a race). */
 let override: Partial<Record<string, EffectHandler>> = {};
@@ -114,7 +138,8 @@ beforeAll(async () => {
 });
 beforeEach(() => {
   gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0', ancestors: {} };
-  posted = []; activity = []; notified = []; exhaustions = 0; reviewersCreated = []; override = {};
+  posted = []; activity = []; notified = []; exhaustions = 0; reviewersCreated = []; override = {}; ghApi = null;
+  comments = new Map();
 });
 
 // ── Fixtures and reads ──────────────────────────────────────────────────────
@@ -534,7 +559,24 @@ describe('S16–S21', () => {
   // Intended: one DeliveryView per delivery drives the Home chip, task card stage, mission strip,
   // explain and chat dock; a table of states (every §4 state × owner) renders the same stage label
   // on all five surfaces.
-  test.todo('S17: one DeliveryView → Home chip, task card, mission strip, explain, chat dock agree (needs 7ab4916f)');
+  test('S17: one DeliveryView drives the Home card, the task header and the mission failure reading', async () => {
+    const a = await awaitingPush();
+    const v = (await getDeliveryViewsForTasks([a.ownerTaskId, a.fix.id]));
+    // The owner task and its attempt resolve to the same view.
+    expect(v.get(a.fix.id)).toEqual(v.get(a.ownerTaskId));
+    const view = v.get(a.ownerTaskId)!;
+    const [card] = buildActionQueue([], [{
+      workerId: 'w', taskId: a.ownerTaskId, taskTitle: 't', workspaceId, workspaceName: 'm', prNumber: a.prNumber, prUrl: 'u', policyTier: 'agent-review',
+      escalationReason: null, waitingMinutes: 1, prOpenedAt: new Date(), prLifecycleVerifiedAt: new Date(), prLifecycleStatus: 'ci_green', prLifecycleUpdatedAt: new Date(),
+    } as never], { deliveryViews: v });
+    const header = renderToStaticMarkup(createElement(HeaderStatusPill, { status: 'waiting_on_you', merged: false, delivery: { headline: view.headline, owner: view.owner, needsYou: view.needsYou, stage: view.stage, detail: view.detail } }));
+    expect(card.delivery?.headline).toBe(view.headline);
+    expect(header).toContain(view.headline);
+    expect(header).toContain(`data-owner="${view.owner}"`);
+    // A legacy-owned delivery is absent: every surface keeps today's projection.
+    await q(sql`UPDATE workflow_deliveries SET authority = 'legacy' WHERE id = ${a.deliveryId}::uuid`);
+    expect((await getDeliveryViewsForTasks([a.ownerTaskId])).size).toBe(0);
+  });
 
   test('S18 (part 1): a PR closed under an open fix → CLOSED_UNMERGED, open attempts cancelled; T20 only from CLOSED_UNMERGED and never overwrites', async () => {
     const f = await fixing();
@@ -740,12 +782,60 @@ describe('S24–S27', () => {
   // meanwhile — at dispatch and at claim (conflict-retry, ci-failure-retry).
   test.todo('S25: CI-green / conflict-resolved targets skipped at dispatch and claim for the ci and conflict families (needs 556cd910)');
 
-  // Intended: concurrent renders, a `reviewing` write racing the merge, entries after merge,
-  // duplicate sticky comments, a PR with no comment, CI red while approved → the final comment
-  // equals a fresh render of canonical state from workflow_transitions; Merged stays the headline;
-  // one comment per PR; "Approved" never heads a REPAIRING delivery. render_activity is still
-  // acknowledged skipped:legacy_owns (§13.1 deviation 3).
-  test.todo('S26: activity comment is a projection regenerated from transitions (needs 7ab4916f)');
+  test('S26: the activity comment is regenerated from transitions: one comment, equal to a fresh render, Merged stays the headline', async () => {
+    const { renderDeliveryActivity } = await import('../../src/lib/workflow/pr-activity-render');
+    const { renderActivityEffect } = await import('../../src/lib/workflow/pr-activity-effects');
+    const f = await fixing();
+    // A sticky comment written before the kernel took over, and a duplicate of it.
+    comments.set(commentSeq++, `${realActivity.ACTIVITY_COMMENT_MARKER}\n**buildd** · **Reviewing**`);
+    comments.set(commentSeq++, `${realActivity.ACTIVITY_COMMENT_MARKER}\n**buildd** · **Reviewing**`);
+    const workerId = await seedWorker(f.fix.id, { status: 'completed', lastCommitSha: 'H2', commitCount: 1 });
+    gh.head = 'H2'; gh.ancestors.H2 = ['H1'];
+    await seam.attemptEnded({ task: f.fix, workerId, status: 'completed', localHeadSha: 'H2', commitCount: 1, source: 'runner' }, deps);
+    await verdict(f, 'approve', 'H2');
+    await closeOrMerge(f, true);
+    // A late legacy write after the merge (a `reviewing` row racing it) is diverted, not appended.
+    await q(sql`INSERT INTO workflow_facts (delivery_id, workspace_id, repo_full_name, pr_number, kind, fact_key, source, payload)
+      VALUES (${f.deliveryId}::uuid, ${workspaceId}::uuid, ${REPO}, ${f.prNumber}, 'activity_note', ${`activity:${f.deliveryId}:late`}, 'test',
+        ${JSON.stringify({ kind: 'reviewing', at: new Date(Date.now() + 60_000).toISOString() })}::jsonb)`);
+    await makeDue(f.deliveryId);
+    await drain(f.deliveryId);
+
+    const renders = await effects(f.deliveryId, 'render_activity');
+    expect(renders.length).toBeGreaterThan(0);
+    expect(renders.every((e) => e.status === 'done')).toBe(true);
+    expect(comments.size).toBe(1);
+    const [body] = [...comments.values()];
+    expect(body.split('\n')[1]).toContain('**Merged**');
+
+    // The comment equals a fresh render of canonical state.
+    const view = await loadView({ deliveryId: f.deliveryId });
+    const log = (await q<{ command: string; from_state: string | null; to_state: string; to_version: number; evidence: Record<string, unknown>; created_at: string }>(
+      sql`SELECT command, from_state, to_state, to_version, evidence, created_at FROM workflow_transitions WHERE delivery_id = ${f.deliveryId}::uuid ORDER BY to_version`))
+      .map((t) => ({ command: t.command, fromState: t.from_state, toState: t.to_state, toVersion: Number(t.to_version), evidence: t.evidence, createdAt: new Date(t.created_at).toISOString() }));
+    const notes = (await q<{ payload: never; observed_at: string }>(sql`SELECT payload, observed_at FROM workflow_facts WHERE delivery_id = ${f.deliveryId}::uuid AND kind = 'activity_note'`))
+      .map((n) => ({ entry: n.payload, observedAt: new Date(n.observed_at).toISOString() }));
+    expect(body).toBe(renderDeliveryActivity({ view, transitions: log, notes, timezone: 'UTC' }));
+    expect(body).toContain('Changes requested');
+    expect(body).toContain('Pushed `H2`');
+    expect(body).not.toContain('Reviewing');
+
+    // Replaying a render is convergent: nothing changes, still one comment.
+    const last = (await effects(f.deliveryId, 'render_activity')).at(-1)!;
+    const replay = await renderActivityEffect({ id: last.id, deliveryId: f.deliveryId, transitionId: last.transition_id, kind: 'render_activity', dedupeKey: last.dedupe_key, payload: {}, attemptCount: 1, delivery: null, transition: null },
+      { github: fakeGithubApi as never, repoFor, timezone: async () => 'UTC' });
+    expect(replay.outcome).toBe('ok:unchanged');
+    expect(comments.size).toBe(1);
+  });
+
+  test('S26: "Approved" never heads a delivery whose current head went to REPAIRING', async () => {
+    const { renderDeliveryActivity } = await import('../../src/lib/workflow/pr-activity-render');
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    const view = await loadView({ deliveryId: o.deliveryId });
+    const repairing = { ...view, delivery: { ...view.delivery!, state: 'REPAIRING' as const, stateReason: 'ci' } };
+    expect(renderDeliveryActivity({ view: repairing, transitions: [], timezone: 'UTC' }).split('\n')[1]).not.toContain('Approved');
+  });
 
   // Intended: behind-only conflict and a byte-identical migration renumber complete as mechanical
   // attempts with no task; a textual conflict and a non-identical renumber escalate to an agent
@@ -827,44 +917,226 @@ describe('S31 — preflight', () => {
 // ══ S32–S34: release composition ═════════════════════════════════════════════
 
 describe('S32–S34 — release composition', () => {
-  // Intended (live: a composition_attested fact through ingestFact on a release PR):
-  // constituents each with a decided approve at exactly their reviewed head (or a recorded
-  // equivalent) and novel_delta none → APPROVED with approval_basis composition, the head in
-  // composition_heads and NOT in approved_heads, no round decided at the aggregate head, no reviewer
-  // dispatched and no human escalation; CI still gates the aggregate (T15 rails); a duplicate
-  // webhook/sweep delivery of the same attestation is one fact and one transition.
-  test.todo('S32: release PR mechanically composed of reviewed changes → composition attestation accepted, CI still gates, no second reviewer (needs 7ab4916f)');
+  const { ingestFact } = facts;
+  const RELEASE = { enabled: true, releaseBranch: 'dev', prodBranch: 'main' };
+  const setRelease = (cfg: unknown) => q(sql`UPDATE workspaces SET release_config = ${JSON.stringify(cfg)}::jsonb WHERE id = ${workspaceId}::uuid`);
 
-  // Intended: the same release PR plus a release-only novel delta (a conflict-resolution edit, a
-  // changed migration or generated file) → prior verdicts cover only the mapped constituents; a delta
-  // round scoped to the novel paths is queued and can still require a human (ESCALATED).
-  test.todo('S33: release PR with a novel delta → the delta is reviewed on its own and can still need a human (needs 7ab4916f)');
+  /** Two task PRs, each approved by a kernel round at its own head (H1). */
+  async function reviewedConstituents() {
+    const out: Delivery[] = [];
+    for (let i = 0; i < 2; i++) {
+      const c = await openAndHandOn();
+      expect(await verdict(c, 'approve')).toMatchObject({ toState: 'APPROVED' });
+      out.push(c);
+    }
+    return out;
+  }
 
-  // Intended: a stale constituent review, a head mismatch, a missing equivalence proof, an
-  // incomplete constituent set or an unverifiable delta → rejected (composition_not_verified /
-  // composition_unverifiable), nothing claimed, the release PR cannot borrow approval. An ordinary
-  // non-release PR stays exact-head bound: composition never satisfies a verdict lookup.
-  test.todo('S34: composition proof fails closed; ordinary PRs stay exact-head bound; verification idempotent under redelivery (needs 7ab4916f)');
+  /**
+   * Fake GitHub for the composed PR `agg` (dev → main): its compare lists one
+   * squash commit per constituent, the version bump, and any `extra` commits.
+   */
+  function composedGithub(aggPr: number, cs: Delivery[], o: { extra?: Array<{ sha: string; files: string[]; message?: string }>; truncated?: boolean; headRef?: string } = {}) {
+    const commits = [
+      ...cs.map((c, i) => ({ sha: `SQ${i}`, files: [`src/c${i}.ts`], message: `feat: constituent (#${c.prNumber})`, pr: c.prNumber })),
+      { sha: 'BUMP', files: ['apps/web/package.json', 'CHANGELOG.md'], message: 'chore: bump version to v9.9.9', pr: null as number | null },
+      ...(o.extra ?? []).map((x) => ({ ...x, message: x.message ?? 'edit on the release branch', pr: null as number | null })),
+    ];
+    ghApi = (path) => {
+      if (path === `/repos/${REPO}/pulls/${aggPr}`) return { head: { ref: o.headRef ?? 'dev' }, base: { ref: 'main' } };
+      if (path.startsWith(`/repos/${REPO}/compare/main...`)) return {
+        merge_base_commit: { sha: 'BASE0' }, base_commit: { sha: 'BASE0' }, total_commits: o.truncated ? 999 : commits.length,
+        commits: commits.map((c, i) => ({ sha: c.sha, parents: [{ sha: i ? commits[i - 1].sha : 'BASE0' }], commit: { message: c.message } })),
+        files: commits.flatMap((c) => c.files).map((filename) => ({ filename })),
+      };
+      const m = /^\/repos\/[^/]+\/[^/]+\/commits\/([^/]+)(\/pulls)?$/.exec(path);
+      const c = m && commits.find((x) => x.sha === m[1]);
+      if (c && !m![2]) return { files: c.files.map((filename) => ({ filename })) };
+      if (c) return c.pr == null ? [] : [{ number: c.pr, merged_at: '2026-10-06T00:00:00Z', base: { ref: 'dev' }, head: { sha: 'H1' } }];
+      return undefined;
+    };
+  }
+
+  /** The composed PR, opened after its constituents merged into dev; round 1's dispatch runs the check. */
+  async function composedPr(cs: Delivery[], o: Parameters<typeof composedGithub>[2] = {}) {
+    await setRelease(RELEASE);
+    const agg = await open();
+    composedGithub(agg.prNumber, cs, o);
+    const workerId = await seedWorker(agg.ownerTaskId, { status: 'completed', lastCommitSha: 'H1', prNumber: agg.prNumber, commitCount: 1 });
+    await seam.attemptEnded({ task: ownerTask(agg), workerId, status: 'completed', localHeadSha: 'H1', commitCount: 1, source: 'runner' }, deps);
+    await setRelease(null);
+    return agg;
+  }
+  const reviewersFor = (d: Delivery) => q<{ id: string }>(sql`SELECT id FROM tasks WHERE delivery_id = ${d.deliveryId}::uuid AND delivery_role = 'review'`);
+  const compositionFacts = (d: Delivery) => q<{ id: string; payload: { attestation: import('../../src/lib/workflow/types').CompositionAttestation } }>(
+    sql`SELECT id, payload FROM workflow_facts WHERE workspace_id = ${workspaceId}::uuid AND kind = 'composition_attested' AND pr_number = ${d.prNumber}::int`);
+
+  test('S32: release PR mechanically composed of reviewed changes → composition attestation accepted, CI still gates, no second reviewer', async () => {
+    const cs = await reviewedConstituents();
+    const agg = await composedPr(cs);
+
+    const d = await delivery(agg.deliveryId);
+    expect(d).toMatchObject({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1'], approvedHeads: [] });
+    // Covered by composition, never by a verdict at the aggregate head.
+    expect(headCoverage(d, 'H1')).toBe('composition');
+    expect((await rounds(agg.deliveryId)).map((r) => [r.round, r.status, r.verdict])).toEqual([[1, 'superseded', null]]);
+    expect(await reviewersFor(agg)).toEqual([]);
+    expect(notified).toEqual([]);
+    expect((await effects(agg.deliveryId, 'dispatch_review')).map((e) => e.outcome)).toEqual(['ok:composition_attested']);
+    const [t] = (await transitions(agg.deliveryId)).filter((x) => x.command === 'CompositionAttested');
+    expect(t.evidence).toMatchObject({ method: 'patch_set_equal', novelDelta: { result: 'none' } });
+    expect((t.evidence.constituents as Array<{ prNumber: number }>).map((c) => c.prNumber).sort()).toEqual(cs.map((c) => c.prNumber).sort());
+
+    // CI still gates the aggregate: landing goes through T15's rails like any PR.
+    const land = (rails: { passed: boolean; redCi?: boolean }) => applyCommand(
+      { type: 'LandingRequested', actor: 'sweep:landing', headSha: 'H1', door: 'sweep', live: live(), rails }, { ref: { deliveryId: agg.deliveryId } });
+    expect(await land({ passed: false, redCi: true })).toMatchObject({ result: 'rejected', reason: 'rail_not_overridable' });
+    expect(await land({ passed: true })).toMatchObject({ result: 'applied' });
+    expect((await transitions(agg.deliveryId)).at(-1)!.evidence).toMatchObject({ coverage: 'composition' });
+
+    // Redelivery (a webhook or sweep replaying the same attestation) is one fact and one transition.
+    const [fact] = await compositionFacts(agg);
+    const replay = await ingestFact({ kind: 'composition_attested', workspaceId, source: 'sweep:replay', attestation: fact.payload.attestation });
+    expect(replay.firstSeen).toBe(false);
+    expect((await compositionFacts(agg)).length).toBe(1);
+    expect((await transitions(agg.deliveryId)).filter((x) => x.command === 'CompositionAttested').length).toBe(1);
+  });
+
+  test('S33: release PR with a novel delta → the delta is reviewed on its own and can still need a human', async () => {
+    const cs = await reviewedConstituents();
+    const agg = await composedPr(cs, { extra: [{ sha: 'HAND', files: ['packages/core/drizzle/9999_hand.sql'] }] });
+    await drain(agg.deliveryId);
+
+    const d = await delivery(agg.deliveryId);
+    expect(d).toMatchObject({ state: 'AWAITING_REVIEW', currentRound: 2, compositionHeads: [], approvedHeads: [] });
+    const [r1, r2] = await rounds(agg.deliveryId);
+    expect([r1.status, r2.kind, r2.status]).toEqual(['superseded', 'delta', 'queued']);
+    const [scope] = await q<{ scope: { novelDeltaPaths: string[]; composition: boolean } }>(sql`SELECT scope FROM workflow_review_rounds WHERE id = ${r2.id}::uuid`);
+    expect(scope.scope).toMatchObject({ composition: true, novelDeltaPaths: ['packages/core/drizzle/9999_hand.sql'] });
+    // Only the delta round gets a reviewer; prior verdicts cover the constituents only.
+    expect(reviewersCreated.filter((x) => x.round === 2).length).toBe(1);
+    expect((await reviewersFor(agg)).length).toBe(1);
+
+    expect(await verdict(agg, 'escalate')).toMatchObject({ handled: true, toState: 'ESCALATED' });
+    expect(await delivery(agg.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'review_escalated', compositionHeads: [] });
+  });
+
+  test('S34: composition proof fails closed; ordinary PRs stay exact-head bound; verification idempotent under redelivery', async () => {
+    const cs = await reviewedConstituents();
+
+    // Unverifiable (a truncated compare): nothing claimed, the normal full review runs.
+    const trunc = await composedPr(cs, { truncated: true });
+    expect(await delivery(trunc.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', compositionHeads: [], approvalBasis: null });
+    expect(await compositionFacts(trunc)).toEqual([]);
+    expect((await reviewersFor(trunc)).length).toBe(1);
+
+    // An ordinary PR (not release, not a mission integration PR) is never composed.
+    const ordinary = await composedPr(cs, { headRef: 'buildd/abc-feature' });
+    expect(await delivery(ordinary.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', compositionHeads: [] });
+    expect(await compositionFacts(ordinary)).toEqual([]);
+    expect(headCoverage(await delivery(ordinary.deliveryId), 'H1')).toBe('none');
+
+    // A forged constituent (wrong reviewed head) and a stale aggregate head are refused at the reducer.
+    const [c0] = cs;
+    const [round] = await rounds(c0.deliveryId);
+    const forged = {
+      repoFullName: REPO, prNumber: trunc.prNumber, baseSha: 'BASE0', aggregateHeadSha: 'H1', method: 'patch_set_equal' as const,
+      verifiedAt: '2026-10-07T00:00:00Z', verifier: 'kernel',
+      constituents: [{ deliveryId: c0.deliveryId, roundId: round.id, prNumber: c0.prNumber, reviewedHeadSha: 'NOT-REVIEWED', equivalentHeadShas: [], landedSha: 'NOT-REVIEWED' }],
+      novelDelta: { result: 'none' as const },
+    };
+    expect(await ingestFact({ kind: 'composition_attested', workspaceId, source: 'test', attestation: forged })).toMatchObject({ result: 'rejected', reason: 'composition_not_verified' });
+    const stale = { ...forged, aggregateHeadSha: 'H-OLD', constituents: [{ ...forged.constituents[0], reviewedHeadSha: 'H1', landedSha: 'H1' }] };
+    expect(await ingestFact({ kind: 'composition_attested', workspaceId, source: 'test', attestation: stale })).toMatchObject({ result: 'stale' });
+    expect(await delivery(trunc.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', compositionHeads: [], approvalBasis: null });
+  });
 });
 
 // ══ S35–S37: human attention and state truth ═════════════════════════════════
 
 describe('S35–S37 — owner of the next move', () => {
-  // Intended: a FAILED/abandoned predecessor explicitly replaced by current work stays auditable but
-  // the mission projection and nextAction read the live replacement chain, not FAILED.
-  test.todo('S35: a replaced predecessor never dominates the mission projection as FAILED (needs 7ab4916f)');
+  const views = (ids: string[]) => getDeliveryViewsForTasks(ids);
+  const escFor = (o: Delivery, extra: Record<string, unknown> = {}) => ({
+    workerId: 'w', taskId: o.ownerTaskId, taskTitle: 'feat: matrix owner', workspaceId, workspaceName: 'm', prNumber: o.prNumber,
+    prUrl: `https://github.com/${REPO}/pull/${o.prNumber}`, policyTier: 'agent-review' as const, escalationReason: 'raw column says human',
+    waitingMinutes: 1, prOpenedAt: new Date(), prLifecycleVerifiedAt: new Date(), prLifecycleStatus: 'ci_green', prLifecycleUpdatedAt: new Date(), ...extra,
+  });
 
-  // Intended: for kernel-owned deliveries, Home/Needs You and task surfaces project the kernel's
-  // owner of the next move (DeliveryView), never a raw worker status or failure string; a
-  // deterministic recoverable blocker (e.g. AWAITING_PUSH with push_recovery owed) stays
-  // platform-owned and never renders as Needs You; only a human-owned state (ESCALATED) does, with
-  // the failure evidence preserved in the projection.
-  test.todo('S36: Needs You renders only canonical human-owned states; recoverable blockers stay platform-owned (needs 7ab4916f)');
+  test('S35: a replaced predecessor stays auditable but never reads FAILED while its replacement is current', async () => {
+    const o = await openAndHandOn();
+    const f = await fixing(o);
+    const w1 = await seedWorker(f.fix.id, { status: 'failed' });
+    await seam.attemptEnded({ task: f.fix, workerId: w1, status: 'lost', localHeadSha: null, commitCount: 0, source: 'sweep:stale-workers' }, deps);
+    await q(sql`UPDATE tasks SET status = 'failed' WHERE id = ${f.fix.id}::uuid`);
+    const fixes = await tasksOf(o.deliveryId, 'fix');
+    expect(fixes.length).toBe(2);
 
-  // Intended: a live conflicted PR with an existing pending/unclaimed/stalled conflict-fix task →
-  // the next action repairs/claims/re-dispatches THAT task (effect keyed by delivery + remediation
-  // family); only with no valid remediation is one created; duplicate sweeps/clicks/webhooks create
-  // no second fix task; the CTA reads "Conflict fix stalled" / "run existing fix" vs "Resolve
-  // conflicts" / "file conflict fix".
-  test.todo('S37: conflict-fix recovery re-uses the existing remediation; duplicates create no second task; the CTA names the real transition (needs 7ab4916f)');
+    const v = (await views([f.fix.id])).get(f.fix.id)!;
+    expect(v.state).toBe('CHANGES_REQUESTED');
+    expect(v.currentAttempt?.taskId).toBe(fixes[1].id);
+    expect(v.history.find((h) => h.taskId === f.fix.id)).toMatchObject({ status: 'failed', superseded: true });
+    expect(v.stage).not.toBe('failed');
+
+    // Mission projection: the failed predecessor is replaced work (explain and the mission page read this).
+    expect([...(await kernelReplacedFailedTaskIds([f.fix.id]))]).toEqual([f.fix.id]);
+    // Home: no FAILED card for it.
+    const queue = buildActionQueue([{ kind: 'failed', taskId: f.fix.id, taskTitle: 'fix', failureMessage: 'lost' } as never], [], { deliveryViews: await views([f.fix.id]) });
+    expect(queue.find((c) => c.chip === 'FAILED')).toBeUndefined();
+  });
+
+  test('S36: AWAITING_PUSH is platform-owned with its evidence; only ESCALATED is Needs You', async () => {
+    const a = await awaitingPush();
+    let v = (await views([a.ownerTaskId])).get(a.ownerTaskId)!;
+    expect(v).toMatchObject({ state: 'AWAITING_PUSH', owner: 'platform', needsYou: false, headline: 'Waiting for the fix to reach GitHub' });
+    expect(v.detail).toContain(`PR #${a.prNumber}`);
+    // A raw human-review column on the same PR does not make it Needs You.
+    let [card] = buildActionQueue([], [escFor(a, { humanReview: { reason: 'worker waiting_input' } }) as never], { deliveryViews: await views([a.ownerTaskId]) });
+    expect(isActionableChip(card.chip)).toBe(false);
+    expect(card.delivery?.owner).toBe('platform');
+
+    // The same delivery escalated by its reviewer: now a person owns it, with the reason.
+    const o = await openAndHandOn();
+    await verdict(o, 'escalate');
+    v = (await views([o.ownerTaskId])).get(o.ownerTaskId)!;
+    expect(v).toMatchObject({ state: 'ESCALATED', owner: 'human', needsYou: true });
+    [card] = buildActionQueue([], [escFor(o, { prLifecycleStatus: 'ci_running' }) as never], { deliveryViews: await views([o.ownerTaskId]) });
+    expect(isActionableChip(card.chip)).toBe(true);
+  });
+
+  test('S37: a stalled conflict fix is recovered in place; duplicates create no second task; the CTA names the real transition', async () => {
+    const o = await openAndHandOn();
+    await q(sql`UPDATE workflow_deliveries SET mergeable = 'dirty', mergeable_head_sha = current_head_sha WHERE id = ${o.deliveryId}::uuid`);
+
+    // No remediation yet: the CTA is to create one.
+    let v = (await views([o.ownerTaskId])).get(o.ownerTaskId)!;
+    expect(v.cta).toEqual({ action: 'create_conflict_fix', label: 'Resolve conflicts' });
+
+    // A conflict fix filed earlier that no runner ever claimed.
+    const cf = await seedTask(workspaceId, { status: 'pending', title: 'fix(conflict): matrix' });
+    await q(sql`UPDATE tasks SET conflict_retry_pr_number = ${o.prNumber}::int, conflict_retry_head_sha = 'H0', creation_source = 'conflict',
+      created_at = now() - interval '45 minutes', updated_at = now() - interval '45 minutes' WHERE id = ${cf}::uuid`);
+    v = (await views([o.ownerTaskId])).get(o.ownerTaskId)!;
+    expect(v.headline).toBe('Conflict fix stalled');
+    expect(v.cta).toEqual({ action: 'repair_remediation', label: 'Run fix', taskId: cf });
+    expect(v.needsYou).toBe(false);
+
+    // A sweep, a webhook and a human click arrive together: one recovery, no new task.
+    const params = { workerId: 'none', taskId: o.ownerTaskId, prNumber: o.prNumber, headSha: 'H1', repoFullName: REPO, workspaceId };
+    const results = await Promise.all([
+      dispatchConflictRetry({ ...params, humanInitiated: true }),
+      dispatchConflictRetry({ ...params, humanInitiated: true }),
+      dispatchConflictRetry({ ...params, humanInitiated: true }),
+    ]);
+    for (const r of results) expect(r).toMatchObject({ dispatched: false, inFlightTaskId: cf });
+    expect(results.filter((r) => r.remediationRecovery === 'redispatch').length).toBe(1);
+    const filed = await q<{ id: string }>(sql`SELECT id FROM tasks WHERE workspace_id = ${workspaceId}::uuid AND conflict_retry_pr_number = ${o.prNumber}::int`);
+    expect(filed.map((t) => t.id)).toEqual([cf]);
+
+    // Re-dispatched: the CTA reads the real next transition, the fix running again.
+    v = (await views([o.ownerTaskId])).get(o.ownerTaskId)!;
+    expect(v.headline).toBe('Resolving conflicts');
+    expect(v.cta).toBeNull();
+    // And a later click before the new wait expires changes nothing.
+    expect(await dispatchConflictRetry({ ...params, humanInitiated: true })).toEqual({ dispatched: false, inFlightTaskId: cf });
+  });
 });

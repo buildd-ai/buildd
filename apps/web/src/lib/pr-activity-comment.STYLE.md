@@ -43,6 +43,13 @@ deciding whether to step in, so every rule below comes down to two things:
 | queued/running fix cancelled, reviewer approved first | `fix_superseded_by_approval` | ✓ Fix cancelled · already approved | none |
 | other queued work cancelled by a supersession rule (aside) | `work_superseded` | Superseded · fix cancelled · PR closed (row only) | none |
 | abandoned | `closed_unmerged` | ✕ Closed without merging | none |
+| fix ended, GitHub head unchanged (kernel) | `push_pending` | ○ Fix N of M not on GitHub yet · waiting for the push | none |
+| push recovery gave up (kernel) | `push_undeliverable` | ⚑ Fix never reached GitHub · needs a human | none |
+| release/integration PR composed of reviewed changes (kernel) | `composition_verified` | ✓ Release composition verified · every change was reviewed at its own head | none |
+
+For a kernel-owned PR the header is not the newest row: it is the delivery's
+canonical state (`DeliveryView.headline`, docs/specs/workflow-state-kernel.md
+§12.1 rule 4), and the whole body is regenerated from the transition log.
 
 Rules:
 

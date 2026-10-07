@@ -6,6 +6,9 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { formatCompletionRecord, situationRepeatsCompletion } from '@/lib/mission-completion-record';
+import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
+import { kernelReplacedFailedTaskIds } from '@/lib/workflow/delivery-view';
+import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE, buildReviewerRetryMap } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip } from '@buildd/core/mission-helpers';
 import { surfaceAuditHeadline } from '@buildd/core/surface-audit';
@@ -375,8 +378,24 @@ export default async function MissionDetailPage({
     ? (mission.schedule as any)?.nextRunAt ?? null
     : null;
   // Out-of-mission dependencies are loaded by id so they are judged, not guessed.
-  const foreignDeps = await loadDependencyRows(foreignDependencyIds(mission.tasks || []));
-  const healthState = deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks || [], { dependencies: foreignDeps });
+  // Same superseded rule explain uses (S35): a failed deliverable whose work
+  // shipped under another task/PR, or that the kernel already replaced, must
+  // not drive this fallback reading to FAILING.
+  const failedDeliverableRows = (mission.tasks || []).filter((t) => isDeliverableTask(t as never) && t.status === 'failed');
+  const [foreignDeps, supersededMap, kernelReplaced] = await Promise.all([
+    loadDependencyRows(foreignDependencyIds(mission.tasks || [])),
+    computeSupersededFailedTasks(
+      mission.id,
+      (mission.workspaceId as string | null) ?? null,
+      failedDeliverableRows.map((t) => ({ id: t.id, title: t.title, subjectPrNumber: (t as { subjectPrNumber?: number | null }).subjectPrNumber ?? null, createdAt: t.createdAt })),
+    ).catch(() => new Map()),
+    kernelReplacedFailedTaskIds(failedDeliverableRows.map((t) => t.id)),
+  ]);
+  const healthState = deriveTaskHealthSignal(
+    { ...mission, heartbeatWaitingUntil },
+    (mission.tasks || []).map((t) => ({ ...t, superseded: supersededMap.has(t.id) || kernelReplaced.has(t.id) })),
+    { dependencies: foreignDeps },
+  );
 
   // Orchestration mode
   const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';
