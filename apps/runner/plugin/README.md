@@ -24,7 +24,8 @@ The contract and server behaviour are specified in
 ## Install
 
 **With the buildd CLI** (recommended; installs hooks + skill for every
-detected client, no credential in any hook file):
+detected client, no credential in any hook file). No runner needed: the
+client-only install is enough (`curl -fsSL https://buildd.dev/install.sh | bash -s -- --client`).
 
 ```bash
 buildd login
