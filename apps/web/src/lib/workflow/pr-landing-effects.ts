@@ -19,6 +19,7 @@
  * at least once.
  */
 import { and, desc, eq } from 'drizzle-orm';
+import { prWorkerWhere } from './pr-worker-where';
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { mergePullRequest, type MergePullRequestResult } from '@/lib/github';
@@ -58,9 +59,9 @@ export function classifyMergeCall(res: Pick<MergePullRequestResult, 'merged' | '
   return 'refused';
 }
 
-async function prWorker(workspaceId: string, prNumber: number) {
+async function prWorker(workspaceId: string, repoFullName: string, prNumber: number) {
   return db.query.workers.findFirst({
-    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+    where: prWorkerWhere(workspaceId, repoFullName, prNumber),
     columns: { id: true, taskId: true },
     orderBy: [desc(workers.createdAt)],
   });
@@ -174,7 +175,7 @@ const dispatchConflictFix: EffectHandler = async (e) => {
   const a = view.attempts.find((x) => x.id === e.payload.attemptId);
   if (!d?.repoFullName || d.prNumber == null || !a) return { outcome: 'skipped:no_attempt' };
   if (d.state !== 'REPAIRING' || d.boundAttemptId !== a.id) return { outcome: `skipped:state_${d.state}` };
-  const worker = await prWorker(d.workspaceId, d.prNumber);
+  const worker = await prWorker(d.workspaceId, d.repoFullName, d.prNumber);
   if (!worker) return { outcome: 'skipped:no_worker' };
   const headSha = String(e.payload.headSha ?? a.boundHeadSha ?? '');
   // The conflict family's task is still filed by its own dispatcher (Slice B): one live

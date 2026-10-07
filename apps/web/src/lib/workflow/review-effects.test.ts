@@ -18,6 +18,7 @@ let ownerRow: any = { id: 'owner-1', title: 'Fix the thing', description: 'd', m
 let reviewerResult: any = { structuredOutput: { verdict: 'request-changes', confidence: 0.9, summary: 's', feedback: 'check the caller task' } };
 let livePr: any = { state: 'open', merged: false, headSha: 'H1', headRepoFullName: 'acme/w', baseRef: 'dev' };
 let roles: any[] = [{ slug: 'reviewer' }];
+const workerQueries: any[] = [];
 let created: any = { id: 'reviewer-2' };
 let postResult: any = { posted: true };
 
@@ -50,7 +51,7 @@ mock.module('@buildd/core/db', () => ({
           return ownerRow;
         },
       },
-      workers: { findFirst: async () => ({ id: 'w1', branch: 'feat/x', prUrl: 'https://github.com/acme/w/pull/7', prBaseRef: 'dev', lastCommitSha: 'H1' }) },
+      workers: { findFirst: async (o: any) => { workerQueries.push(o); return ({ id: 'w1', branch: 'feat/x', prUrl: 'https://github.com/acme/w/pull/7', prBaseRef: 'dev', lastCommitSha: 'H1' }); } },
       workspaces: { findFirst: async () => ({ id: 'ws1', teamId: 'team1', gitConfig: null, releaseConfig: workspaceReleaseConfig }) },
       missions: { findFirst: async () => null },
     },
@@ -112,7 +113,23 @@ beforeEach(() => {
   for (const m of [mockPostPrReview, mockAppend, mockWake, mockCreateReviewer, mockSupersedeFix, mockEscalateExhaustion]) m.mockClear();
 });
 
+/** Every string/number a drizzle where-clause carries, however deeply nested. */
+function literals(x: any, out: unknown[] = [], seen = new Set<any>()): unknown[] {
+  if (x == null || seen.has(x)) return out;
+  if (typeof x !== 'object') { out.push(x); return out; }
+  seen.add(x);
+  for (const v of Array.isArray(x) ? x : Object.values(x)) literals(v, out, seen);
+  return out;
+}
+
 describe('dispatch_fix (T8 then the fix task)', () => {
+  test("looks the PR's worker up within the delivery's repo, not just workspace + number", async () => {
+    workerQueries.length = 0;
+    await __handlers.dispatchFix(E('dispatch_fix', { roundId: 'r1', round: 1, headSha: 'H1', attemptNo: 1 }));
+    expect(workerQueries.length).toBeGreaterThan(0);
+    expect(literals(workerQueries[0].where).some((v) => typeof v === 'string' && v.includes('acme/w'))).toBe(true);
+  });
+
   test('allocates the ledger row first, then files ONE legacy-shaped fix task linked to the delivery and attempt', async () => {
     const r = await __handlers.dispatchFix(E('dispatch_fix', { roundId: 'r1', round: 1, headSha: 'H1', attemptNo: 1 }));
     expect(r).toEqual({ outcome: 'ok' });
