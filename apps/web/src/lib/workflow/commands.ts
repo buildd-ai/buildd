@@ -222,6 +222,18 @@ export type Command =
   | (Base & { type: 'Abandon'; reason: string })
   | (Base & { type: 'PushRecoveryExhausted'; localHeadSha: string | null })
   | (Base & {
+      /**
+       * §10.3: an effect the delivery needed went `dead` (8 failed tries). A
+       * critical one hands the delivery to a person; the reducer decides
+       * whether it still describes the delivery.
+       */
+      type: 'EffectDead';
+      effectId: string;
+      effectKind: EffectKind;
+      dedupeKey: string;
+      lastError?: string | null;
+    })
+  | (Base & {
       type: 'HumanResolve';
       choice: 'approve' | 'request_changes' | 'apply_recommendation' | 'dismiss';
       reason?: string;

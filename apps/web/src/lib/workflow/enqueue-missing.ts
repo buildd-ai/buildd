@@ -9,7 +9,9 @@
  * `enqueueMissingEffects` is a pure function of (state, attributes, existing
  * effects). It never writes state and never decides one: an owed effect whose
  * premise has moved on (a newer head, a spent budget) is refused by the
- * transition its handler issues, not here.
+ * transition its handler issues, not here. A `dead` key still counts as held,
+ * except where a case says otherwise (AWAITING_PUSH, LANDING): there the dead
+ * effect was the state's only exit.
  */
 import { sql, type SQL } from 'drizzle-orm';
 import type { EffectSpec } from './commands';
@@ -18,10 +20,18 @@ import type { KernelView, RoundSnapshot } from './types';
 
 const OPEN_ATTEMPT = new Set(['queued', 'running']);
 
-/** The effects `view`'s state owes and `existing` (the delivery's dedupe keys) does not hold. */
-export function enqueueMissingEffects(view: KernelView, existing: ReadonlySet<string>): EffectSpec[] {
+const LIVE_EFFECT = new Set(['pending', 'delivering']);
+
+/**
+ * The effects `view`'s state owes and `existing` (the delivery's dedupe keys) does not hold.
+ * `status` maps a key to its row status when the caller read it (existingEffectsSql does):
+ * the cases that must tell a dead or a still-running effect from a finished one use it.
+ */
+export function enqueueMissingEffects(view: KernelView, existing: ReadonlySet<string>, status: ReadonlyMap<string, string> = new Map()): EffectSpec[] {
   const d = view.delivery;
   if (!d) return [];
+  const isLive = (k: string) => LIVE_EFFECT.has(status.get(k) ?? '');
+  const isDead = (k: string) => status.get(k) === 'dead';
   const owed: EffectSpec[] = [];
   const current = view.rounds.find((r) => r.round === d.currentRound);
   const lastDecidedBefore = (round: number): RoundSnapshot | undefined =>
@@ -52,13 +62,29 @@ export function enqueueMissingEffects(view: KernelView, existing: ReadonlySet<st
       break;
     }
     case 'AWAITING_PUSH': {
-      // A push_recovery chain for the pending local head; any try of it, done or not, counts.
+      // A push_recovery chain for the pending local head; any try of it that did not go dead counts.
       const local = view.attempts.find((a) => a.id === d.boundAttemptId)?.reportedShas.at(-1) ?? d.pushPendingLocalHead ?? null;
       const prefix = `push_recovery:${d.id}:${local ?? 'none'}:`;
-      if ([...existing].some((k) => k.startsWith(prefix))) break;
+      const chain = [...existing].filter((k) => k.startsWith(prefix));
+      if (chain.some((k) => !isDead(k))) break;
+      const maxTries = PUSH_RECOVERY_BACKOFF_MS.length;
+      // 67d34094: a chain that died owes its last try, which re-reads GitHub and, with the head
+      // still unmoved, is T22 (ESCALATED(push_undeliverable)). A dead key never blocks it.
+      owed.push(chain.length === 0
+        ? { kind: 'push_recovery', dedupeKey: `${prefix}1`, payload: { localHeadSha: local, try: 1, maxTries } }
+        : { kind: 'push_recovery', dedupeKey: `${prefix}final`, payload: { localHeadSha: local, try: maxTries, maxTries } });
+      break;
+    }
+    case 'LANDING': {
+      // 67d34094: LANDING has an exit only while its merge call or read-back runs. With neither
+      // live (dead, or done with the delivery somehow still here), owe one more read-back: it
+      // re-reads the PR and is T17 (merged), a head fact, or MergeCallResult(not_merged) → APPROVED.
+      // The floor's own fact import already ran T17 for a PR it saw merged.
+      const landingKeys = [...existing].filter((k) => k.startsWith(`merge_call:${d.id}:`) || k.startsWith(`verify_merge:${d.id}:`));
+      if (landingKeys.some(isLive) || !d.currentHeadSha) break;
       owed.push({
-        kind: 'push_recovery', dedupeKey: `${prefix}1`,
-        payload: { localHeadSha: local, try: 1, maxTries: PUSH_RECOVERY_BACKOFF_MS.length },
+        kind: 'verify_merge', dedupeKey: `verify_merge:${d.id}:${d.currentHeadSha}:floor:v${d.version}`,
+        payload: { headSha: d.currentHeadSha, outcome: 'indeterminate', landingVersion: d.version, source: 'floor' },
       });
       break;
     }
@@ -68,10 +94,10 @@ export function enqueueMissingEffects(view: KernelView, existing: ReadonlySet<st
   return owed.filter((e) => !existing.has(e.dedupeKey));
 }
 
-/** Every effect dedupe key the delivery holds, in any status. */
+/** Every effect dedupe key the delivery holds, in any status, with that status. */
 export function existingEffectsSql(deliveryId: string): SQL {
   return sql`-- workflow:existing_effects
-SELECT dedupe_key FROM workflow_effects WHERE delivery_id = ${deliveryId}::uuid`;
+SELECT dedupe_key, status FROM workflow_effects WHERE delivery_id = ${deliveryId}::uuid`;
 }
 
 /**
