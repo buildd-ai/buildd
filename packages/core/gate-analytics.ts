@@ -20,6 +20,8 @@ import type {
   GateWindow,
 } from '@buildd/shared';
 
+import { summarizePathCoordination } from './path-coordination-signal';
+
 /** One ledger row, already read from `gate_events`. */
 export interface GateEventRow {
   id: string;
@@ -176,6 +178,10 @@ export function computeGateAnalytics(input: GateAnalyticsInput): GateAnalytics {
     },
     gates,
     truncatedGates: Math.max(0, byGate.size - gates.length),
+    // Classified from the normalized reason (this row set carries no detail),
+    // so the five path signals are told apart even when a gate row's count
+    // would otherwise read as one big outage.
+    pathCoordination: summarizePathCoordination(events),
   };
 }
 
@@ -253,3 +259,16 @@ export function buildGateReasonFamily(events: GateEventRow[], prefix: string): G
       .slice(0, FAMILY_TOP_REASONS),
   };
 }
+
+// The path-coordination signal vocabulary (observation_truncated, claim_blocked,
+// deadlock_detected, coordination_unavailable, coverage_unknown_at_ship) is
+// what `pathCoordination` above is computed from; writers import it from here.
+export {
+  classifyPathCoordinationEvent,
+  summarizePathCoordination,
+  PATH_SIGNAL_REASONS,
+  PATH_COORDINATION_GATES,
+  PATH_COORDINATION_SIGNALS,
+  SIGNAL_SEVERITY,
+  type PathCoordinationEventLike,
+} from './path-coordination-signal';

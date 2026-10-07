@@ -89,6 +89,16 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { isReadOnlyReview } from '@/lib/read-only-review';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import { acquireObservedPaths } from '@buildd/core/path-claim';
+import {
+  parseWorkingSetDelta,
+  parseShipCheckpointReports,
+  boundedObservedSample,
+  applyWorkingSetSync,
+  fireObservationTruncated,
+  recordShipCheckpointReports,
+  handoffPrScope,
+  terminalOwnedPaths,
+} from '@/lib/working-set-sync';
 import { recordPathCollisionDeferral } from '@/lib/path-collision-deferral';
 import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
@@ -829,6 +839,13 @@ export async function PATCH(
     // Runner pre-push/completion sweep: re-offer every touchedPaths entry for
     // lease, not only the ones new to observedTouches (see auto-lease below).
     checkpointSweep,
+    // Authoritative working-set delta (lib/working-set-sync.ts): the paths
+    // added to / removed from the task-owned set since the last ACK. When
+    // present it is what gets leased; touchedPaths is then only the sample.
+    workingSet: rawWorkingSet,
+    // Ship checkpoints the runner could not prove while the server was
+    // unreachable, reported on the first sync that lands.
+    shipCheckpoints: rawShipCheckpoints,
     // Enforce-mode path claims: the checkpoint collision a `Deferred:` failure
     // is based on (lib/path-collision-deferral.ts). Ignored on anything else.
     pathCollision: reportedPathCollision,
@@ -1396,18 +1413,25 @@ export async function PATCH(
 
   const isTerminalStatus = status === 'completed' || status === 'failed' || status === 'error';
 
-  // §6d Passive observed-touches accumulation.
-  // On terminal status: clear. On update_progress with touchedPaths: dedup-append, cap at 500.
-  //
-  // Paths this sync actually added to the column. Feeds the auto-lease below,
-  // which must not re-offer the whole accumulated list every tick: that would
-  // put a SELECT plus an INSERT attempt for up to 500 paths on the hot sync
-  // path to discover, every time, that they are all already held.
-  const sessionObservedTouches = [...new Set([
-    ...(Array.isArray(worker.observedTouches) ? worker.observedTouches as string[] : []),
+  // §6d observed-touch SAMPLE (lib/working-set-sync.ts).
+  // On terminal status: clear. Otherwise dedup-append the paths this sync
+  // reported, bounded at OBSERVED_TOUCHES_CAP. This column is what the
+  // dashboard and explain read; it is NOT what coordination is decided on —
+  // the authoritative current set is `path_claims`, fed by `workingSet` (or,
+  // for an older runner, by every reported touch regardless of the cap).
+  const workingSetDelta = parseWorkingSetDelta(rawWorkingSet);
+  const reportedTouches = [...new Set([
     ...(Array.isArray(touchedPaths)
       ? touchedPaths.filter((path: unknown): path is string => typeof path === 'string') : []),
+    ...(workingSetDelta?.add ?? []),
   ])];
+  const sessionObservedTouches = [...new Set([
+    ...(Array.isArray(worker.observedTouches) ? worker.observedTouches as string[] : []),
+    ...reportedTouches,
+  ])];
+  // Legacy lease offer (no `workingSet` on the request): what this sync
+  // reported that the column did not already hold. Independent of the cap —
+  // a path past the sample cap is still leased.
   let newlyObservedPaths: string[] = [];
   if (isTerminalStatus) {
     // Ground truth for the task-area-prediction experiment, captured HERE
@@ -1416,10 +1440,11 @@ export async function PATCH(
     // PRs, which would silently narrow the cohort to work that landed.
     // Best-effort and awaited-but-never-thrown — see recordTaskAreaOutcome.
     if (worker.taskId) {
+      // The sample plus this sync's paths plus what the task actually holds:
+      // the leases are the complete set, the sample may be truncated.
       const observed = Array.isArray(worker.observedTouches) ? (worker.observedTouches as string[]) : [];
-      const finalPaths = Array.isArray(touchedPaths)
-        ? [...observed, ...touchedPaths.filter((p: unknown): p is string => typeof p === 'string')]
-        : observed;
+      const owned = worker.workspaceId ? await terminalOwnedPaths(worker.workspaceId, worker.taskId) : [];
+      const finalPaths = [...new Set([...observed, ...reportedTouches, ...owned])];
       await recordTaskAreaOutcome(worker.taskId, finalPaths);
       // Final touched-file label for orchestration decisions (conflict-aware
       // orchestration §5), from the same observation, before the clear. Writes
@@ -1440,36 +1465,18 @@ export async function PATCH(
       }
     }
     updates.observedTouches = null;
-  } else if (Array.isArray(touchedPaths) && touchedPaths.length > 0) {
+  } else if (reportedTouches.length > 0) {
     const existing = Array.isArray(worker.observedTouches) ? (worker.observedTouches as string[]) : [];
-    const merged = [...existing];
-    for (const p of touchedPaths) {
-      if (typeof p === 'string' && !merged.includes(p)) merged.push(p);
+    const sample = boundedObservedSample(existing, reportedTouches);
+    updates.observedTouches = sample.sample;
+    if (sample.crossedCap) {
+      // Once per worker: the diagnostic sample is truncated from here on.
+      // Coverage is unaffected — every reported path is still leased below.
+      console.log(`[Worker ${id}] observedTouches sample at its cap (${sample.dropped} more not shown); leases unaffected`);
+      fireObservationTruncated(worker, sample);
     }
-    if (merged.length > 500) {
-      console.warn(`[Worker ${id}] observedTouches cap hit (${merged.length}) — truncating to 500`);
-      updates.observedTouches = merged.slice(0, 500);
-      // A path past the cap is neither recorded nor leased: say so on the
-      // ledger, or a task over the cap loses path-claim coverage silently.
-      const dropped = merged.slice(500);
-      fireGateEvent({
-        gate: GATE_SLUGS.PATH_CLAIM,
-        surface: 'PATCH /api/workers/[id]',
-        outcome: 'warned',
-        reason: 'observed touches past the 500-path cap were not recorded or leased: path-claim enforcement degraded',
-        workspaceId: worker.workspaceId,
-        taskId: worker.taskId,
-        workerId: worker.id,
-        callerOrigin: 'worker',
-        detail: { cap: 500, dropped: dropped.length, sample: dropped.slice(0, 10) },
-      });
-    } else {
-      updates.observedTouches = merged;
-    }
-    // Diffed against the *stored* column, i.e. after the cap: a path truncated
-    // away must not become a lease nobody can see it holding.
     const existingSet = new Set(existing);
-    newlyObservedPaths = (updates.observedTouches as string[]).filter(p => !existingSet.has(p));
+    newlyObservedPaths = reportedTouches.filter(p => !existingSet.has(p));
   }
 
   // Fetch mission ownership for every terminal transition. Completion also uses
@@ -4162,6 +4169,17 @@ export async function PATCH(
       : status === 'completed' && hasOpenPr
         ? 'pending_merge' as const
         : 'abandoned' as const;
+    // PR handoff: the worker is gone but its PR is open. Its leases are the
+    // PR's actual changed files; promote them into the open-PR overlap
+    // surface (claim route layer 1 reads the manifest) before letting them
+    // go, or a manifest-less task's PR would be invisible to every later
+    // claim. Merge/close releases that scope with the PR.
+    if (releaseReason === 'pending_merge' && worker.workspaceId) {
+      await handoffPrScope({
+        workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: id,
+        prNumber: (updated.prNumber ?? worker.prNumber ?? null) as number | null,
+      });
+    }
     await releaseAndNotify(worker.taskId, releaseReason);
   }
 
@@ -4274,12 +4292,31 @@ export async function PATCH(
   // observedTouches without a lease, and the diff-against-column rule would
   // never offer it again — yet this is the sweep right before it ships.
   // Own leases are no-ops in acquireObservedPaths.
-  // Only recorded paths: a lease must always be visible in observedTouches,
-  // so an incoming path past the cap (warned above) is not offered.
-  const recordedTouches = new Set(Array.isArray(updates.observedTouches) ? (updates.observedTouches as string[]) : []);
-  const offeredPaths = checkpointSweep === true && Array.isArray(touchedPaths)
-    ? [...new Set((touchedPaths as unknown[]).filter((p): p is string => typeof p === 'string' && recordedTouches.has(p)))]
-    : newlyObservedPaths;
+  // Every reported path is offered, whether or not the sample had room for
+  // it: the sample is a diagnostic, the lease is the coverage.
+  //
+  // With a `workingSet` delta on the request this legacy block is skipped:
+  // the delta is applied through lib/working-set-sync.ts below, which also
+  // releases reverted paths and records the checkpoint proof.
+  let workingSetAck: import('@buildd/shared').WorkingSetAck | null = null;
+  const offeredPaths = workingSetDelta
+    ? []
+    : checkpointSweep === true && Array.isArray(touchedPaths)
+      ? [...new Set((touchedPaths as unknown[]).filter((p): p is string => typeof p === 'string'))]
+      : newlyObservedPaths;
+  if (workingSetDelta && worker.workspaceId && worker.taskId && !isTerminalStatus) {
+    const leaseTask = await db.query.tasks.findFirst({
+      where: eq(tasks.id, worker.taskId),
+      columns: { category: true, context: true },
+    }).catch(() => null);
+    const applied = await applyWorkingSetSync({
+      worker: { id, workspaceId: worker.workspaceId, taskId: worker.taskId },
+      delta: workingSetDelta,
+      readOnly: isReadOnlyReview(leaseTask?.category, leaseTask?.context),
+    });
+    workingSetAck = applied.ack;
+    pathCollisions = applied.collisions;
+  }
   if (offeredPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
     try {
       const leaseTask = await db.query.tasks.findFirst({
@@ -4321,11 +4358,20 @@ export async function PATCH(
     typeof reportedPathClaimDegraded === 'number' && Number.isInteger(reportedPathClaimDegraded)
     && reportedPathClaimDegraded > 0 && reportedPathClaimDegraded <= 10_000 && worker.taskId
   ) {
+    // Attributed by cause (timeout vs network/5xx) so a slow round trip is
+    // never read as a backend outage — PR #3487's distinction, kept.
+    const causes = (body.pathClaimDegradedByCause ?? {}) as Record<string, unknown>;
+    const causeCount = (k: string) => (typeof causes[k] === 'number' && Number.isFinite(causes[k]) ? Math.max(0, Math.floor(causes[k] as number)) : 0);
     recordPathDeclaration({
       result: 'degraded', provenance: 'hook', surface: 'PATCH /api/workers/[id]',
       workspaceId: worker.workspaceId ?? null, taskId: worker.taskId, workerId: id, callerOrigin: 'worker',
       pathCount: reportedPathClaimDegraded,
+      detail: { causes: { timeout: causeCount('timeout'), error: causeCount('error') } },
     });
+  }
+  const shipReports = parseShipCheckpointReports(rawShipCheckpoints);
+  if (shipReports.length > 0 && worker.taskId) {
+    recordShipCheckpointReports({ id, workspaceId: worker.workspaceId ?? null, taskId: worker.taskId }, shipReports);
   }
 
   // Worker self-classification (Rule K2-15/K2-16).
@@ -4702,6 +4748,9 @@ export async function PATCH(
     ...(instructionsAck ? { instructionsAck } : {}),
     ...(retainedWorkerMessages.length > 0 ? { pendingMessages: retainedWorkerMessages } : {}),
     ...(pathCollisions.length > 0 ? { pathCollisions } : {}),
+    // The working-set ACK: what this delta leased, released or found held,
+    // and whether coverage is complete for its generation.
+    ...(workingSetAck ? { workingSetAck } : {}),
   }, undefined, { route: req.nextUrl.pathname });
 }
 

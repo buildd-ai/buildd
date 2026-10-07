@@ -2021,7 +2021,10 @@ export const workers = pgTable('workers', {
  */
 export const localSessions = pgTable('local_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  /** Owner when the hook authenticated with an account API key. Exactly one of accountId / userId. */
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
+  /** Owner when the hook authenticated with the person's presence token (presenceTokens). */
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
   /** Resolved from the session's git remote among the workspaces the account reaches; null if none matched. */
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
   /** 'claude' | 'codex' | 'cursor' | 'other' */
@@ -2042,8 +2045,29 @@ export const localSessions = pgTable('local_sessions', {
   boundAt: timestamp('bound_at', { withTimezone: true }),
 }, (t) => ({
   clientIdx: uniqueIndex('local_sessions_client_idx').on(t.accountId, t.clientKind, t.clientSessionHash),
+  userClientIdx: uniqueIndex('local_sessions_user_client_idx').on(t.userId, t.clientKind, t.clientSessionHash),
+  oneOwner: check('local_sessions_one_owner', sql`num_nonnulls(${t.accountId}, ${t.userId}) = 1`),
   boundWorkerIdx: uniqueIndex('local_sessions_bound_worker_idx').on(t.boundWorkerId),
   workspaceSeenIdx: index('local_sessions_workspace_seen_idx').on(t.workspaceId, t.lastSeenAt),
+}));
+
+/**
+ * A person's presence token (apps/web/src/lib/presence-token.ts): what the
+ * agent plugin's hooks authenticate with, one per machine. The token itself is
+ * signed, never stored; this row is what makes it revocable and lists it in
+ * settings. It can only report presence and bind/release that person's own
+ * interactive workers.
+ */
+export const presenceTokens = pgTable('presence_tokens', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  /** The machine it was issued to (hostname at `buildd login`). */
+  label: text('label').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+}, (t) => ({
+  userIdx: index('presence_tokens_user_idx').on(t.userId),
 }));
 
 /**
