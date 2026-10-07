@@ -90,8 +90,7 @@ export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId:
     <section id="model-upgrades" className="mt-6 max-w-5xl scroll-mt-20" data-testid="model-upgrade-policy">
       <h2 className="font-mono text-body text-text-primary">Model upgrades</h2>
       <p className="mt-1 text-meta text-text-secondary">
-        Buildd checks each new model release once, centrally, before any team can use it. This decides
-        when your tiers move to a newly certified model. Pinned tiers never move on their own.
+        When your tiers move to a model Buildd has certified. Pinned tiers never move.
       </p>
 
       <div className="card mt-3 flex flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:gap-4">
