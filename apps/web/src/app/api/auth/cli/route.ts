@@ -140,6 +140,15 @@ export async function GET(req: NextRequest) {
     successUrl.searchParams.set('token', plaintextKey);
     successUrl.searchParams.set('level', grantedLevel);
     successUrl.searchParams.set('email', session.user.email || '');
+    // The person's presence token for the agent plugin's hooks (lib/presence-token.ts),
+    // one per machine. Best effort: a login without one still works.
+    try {
+      const { issuePresenceToken } = await import('@/lib/presence-token');
+      const presenceToken = await issuePresenceToken(session.user.id, req.nextUrl.searchParams.get('machine'));
+      if (presenceToken) successUrl.searchParams.set('presenceToken', presenceToken);
+    } catch (err) {
+      console.warn('[auth/cli] presence token not issued:', err instanceof Error ? err.message : err);
+    }
     if (process.env.NEXT_PUBLIC_PUSHER_KEY) successUrl.searchParams.set('pusherKey', process.env.NEXT_PUBLIC_PUSHER_KEY);
     if (process.env.NEXT_PUBLIC_PUSHER_CLUSTER) successUrl.searchParams.set('pusherCluster', process.env.NEXT_PUBLIC_PUSHER_CLUSTER);
     if (process.env.PUSHER_CHANNEL_PREFIX) successUrl.searchParams.set('pusherChannelPrefix', process.env.PUSHER_CHANNEL_PREFIX);

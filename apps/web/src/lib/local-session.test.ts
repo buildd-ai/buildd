@@ -34,8 +34,8 @@ const LIVE = new Set(['idle', 'running', 'starting', 'waiting_input']);
 const NOW = new Date('2026-10-07T12:00:00Z');
 const later = (ms: number) => new Date(NOW.getTime() + ms);
 
-interface Presence { id: string; accountId: string; kind: string; hash: string; boundWorkerId: string | null; endedAt: Date | null; lastSeenAt: Date; workspaceId: string | null; endReason?: string }
-interface Worker { id: string; accountId: string; runner: string; status: string; taskId: string | null; workspaceId: string; updatedAt: Date; pendingInstructions: string | null }
+interface Presence { id: string; accountId: string | null; userId: string | null; kind: string; hash: string; boundWorkerId: string | null; endedAt: Date | null; lastSeenAt: Date; workspaceId: string | null; endReason?: string }
+interface Worker { id: string; accountId: string; runner: string; status: string; taskId: string | null; workspaceId: string; updatedAt: Date; pendingInstructions: string | null; ownerTeamId?: string | null; claimUserId?: string | null }
 
 let presences: Presence[];
 let workers: Map<string, Worker>;
@@ -51,9 +51,10 @@ function memoryStore(): Store {
   return {
     async upsertStart(i) {
       presenceWrites++;
-      let p = presences.find(x => x.accountId === i.accountId && x.kind === i.clientKind && x.hash === i.clientSessionHash);
+      const same = (x: Presence) => ('userId' in i.owner ? x.userId === i.owner.userId : x.accountId === i.owner.accountId);
+      let p = presences.find(x => same(x) && x.kind === i.clientKind && x.hash === i.clientSessionHash);
       if (!p) {
-        p = { id: `p${++seq}`, accountId: i.accountId, kind: i.clientKind, hash: i.clientSessionHash, boundWorkerId: null, endedAt: null, lastSeenAt: i.now, workspaceId: i.workspaceId };
+        p = { id: `p${++seq}`, accountId: 'accountId' in i.owner ? i.owner.accountId : null, userId: 'userId' in i.owner ? i.owner.userId : null, kind: i.clientKind, hash: i.clientSessionHash, boundWorkerId: null, endedAt: null, lastSeenAt: i.now, workspaceId: i.workspaceId };
         presences.push(p);
       } else {
         p.lastSeenAt = i.now; p.endedAt = null;
@@ -61,8 +62,9 @@ function memoryStore(): Store {
       }
       return { id: p.id, boundWorkerId: p.boundWorkerId, endedAt: p.endedAt };
     },
-    async find(accountId, kind, hash) {
-      const p = presences.find(x => x.accountId === accountId && x.kind === kind && x.hash === hash);
+    async find(owner, kind, hash) {
+      const same = (x: Presence) => ('userId' in owner ? x.userId === owner.userId : x.accountId === owner.accountId);
+      const p = presences.find(x => same(x) && x.kind === kind && x.hash === hash);
       return p ? { id: p.id, boundWorkerId: p.boundWorkerId, endedAt: p.endedAt } : null;
     },
     async touchPresence(id, now) {
@@ -73,14 +75,14 @@ function memoryStore(): Store {
     },
     async touchBoundWorker(workerId, accountId, now) {
       const w = workers.get(workerId);
-      if (!w || w.accountId !== accountId || w.runner !== 'mcp' || !['idle', 'running', 'starting'].includes(w.status)) return false;
+      if (!w || (accountId !== null && w.accountId !== accountId) || w.runner !== 'mcp' || !['idle', 'running', 'starting'].includes(w.status)) return false;
       if (now.getTime() - w.updatedAt.getTime() < 60_000) return false;
       w.updatedAt = now; workerTouches++;
       return true;
     },
     async findWorker(id) {
       const w = workers.get(id);
-      return w ? { id: w.id, accountId: w.accountId, runner: w.runner, status: w.status, taskId: w.taskId, workspaceId: w.workspaceId } : null;
+      return w ? { id: w.id, accountId: w.accountId, runner: w.runner, status: w.status, taskId: w.taskId, workspaceId: w.workspaceId, ownerTeamId: w.ownerTeamId ?? 'team-1', claimUserId: w.claimUserId ?? null } : null;
     },
     async bind(presenceId, workerId, workspaceId) {
       const p = presences.find(x => x.id === presenceId)!;
@@ -288,6 +290,67 @@ describe('touch of a bound worker', () => {
   });
 });
 
+describe('a person presence token', () => {
+  // The hooks hold a token for the PERSON, not a team account: their claim may
+  // have been made with any of their teams' keys, or over OAuth.
+  const PERSON = { kind: 'user' as const, userId: 'user-1', teamIds: ['team-1', 'team-2'] };
+  const runAs = (ev: Record<string, unknown>, who: typeof PERSON = PERSON, now = NOW) => {
+    const parsed = parseLocalSessionEvent({ client: 'claude', clientSessionId: 'sess-P', ...ev });
+    if (!parsed.ok) throw new Error(parsed.error);
+    return handleLocalSessionEvent(who, parsed.event, { store, now, detach, resolveWorkspace: async () => 'ws-1' });
+  };
+
+  it('start writes a presence owned by the person, no worker, no seat', async () => {
+    await runAs({ event: 'start' });
+    expect(presences).toHaveLength(1);
+    expect(presences[0]).toMatchObject({ userId: 'user-1', accountId: null });
+    expect(workerInserts + seatWrites).toBe(0);
+  });
+
+  it("binds a worker claimed with another team's key, when the person is in that team", async () => {
+    claimWorker('00000000-0000-4000-8000-0000000000b1', { accountId: 'acct-team-2', ownerTeamId: 'team-2' });
+    await runAs({ event: 'start' });
+    expect((await runAs({ event: 'bind', workerId: '00000000-0000-4000-8000-0000000000b1' })).outcome).toBe('bound');
+    // ...and its exit releases it, exactly as for an account-owned presence.
+    expect((await runAs({ event: 'end', reason: 'exit' })).outcome).toBe('ended_released');
+    expect(taskStatus.get('t-00000000-0000-4000-8000-0000000000b1')).toBe('pending');
+  });
+
+  it('refuses, as not found, a worker in a team the person is not in', async () => {
+    claimWorker('00000000-0000-4000-8000-0000000000b2', { accountId: 'acct-elsewhere', ownerTeamId: 'team-9' });
+    const err = await runAs({ event: 'bind', workerId: '00000000-0000-4000-8000-0000000000b2' }).catch(e => e);
+    expect(err).toBeInstanceOf(LocalSessionError);
+    expect(err.status).toBe(404);
+  });
+
+  it("refuses, as not found, a teammate's claim: the claim records who made it", async () => {
+    claimWorker('00000000-0000-4000-8000-0000000000b3', { ownerTeamId: 'team-1', claimUserId: 'user-2' });
+    const err = await runAs({ event: 'bind', workerId: '00000000-0000-4000-8000-0000000000b3' }).catch(e => e);
+    expect(err.status).toBe(404);
+    claimWorker('00000000-0000-4000-8000-0000000000b4', { ownerTeamId: 'team-1', claimUserId: 'user-1' });
+    expect((await runAs({ event: 'bind', workerId: '00000000-0000-4000-8000-0000000000b4' })).outcome).toBe('bound');
+  });
+
+  it("still refuses a runner's worker", async () => {
+    claimWorker('00000000-0000-4000-8000-0000000000b5', { runner: 'runner-host', ownerTeamId: 'team-1' });
+    expect((await runAs({ event: 'bind', workerId: '00000000-0000-4000-8000-0000000000b5' }).catch(e => e)).code).toBe('not_interactive');
+  });
+
+  it('a touch keeps the bound worker alive whichever account claimed it', async () => {
+    claimWorker('00000000-0000-4000-8000-0000000000b1', { accountId: 'acct-team-2', ownerTeamId: 'team-2', updatedAt: later(-120_000) });
+    await runAs({ event: 'start' });
+    await runAs({ event: 'bind', workerId: '00000000-0000-4000-8000-0000000000b1' });
+    await runAs({ event: 'touch' }, PERSON, later(61_000));
+    expect(workerTouches).toBe(1);
+  });
+
+  it("a person's presence and an account's presence for the same client session are separate rows", async () => {
+    await runAs({ event: 'start' });
+    await run({ event: 'start', clientSessionId: 'sess-P' });
+    expect(presences.map(p => [p.userId, p.accountId])).toEqual([['user-1', null], [null, 'acct-1']]);
+  });
+});
+
 describe('end', () => {
   const id = '33333333-3333-4333-8333-333333333333';
 
@@ -398,6 +461,14 @@ describe('SQL', () => {
     expect(q.params).toContain('mcp');
     expect(q.params).toContain('acct-1');
     expect(q.params).toContain(new Date(NOW.getTime() - 60_000).toISOString());
+  });
+
+  it("a person's bound worker touch drops only the account guard: still interactive, live and a minute stale", () => {
+    const q = render(boundWorkerTouchWhere('w1', null, NOW));
+    expect(q.sql).not.toContain('"workers"."account_id"');
+    expect(q.sql).toContain('"workers"."runner" =');
+    expect(q.sql).toContain('"workers"."status" in');
+    expect(q.sql).toContain('"workers"."updated_at" <');
   });
 
   it('bind CAS requires an open presence holding no other live worker', () => {

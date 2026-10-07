@@ -68,10 +68,31 @@ be loaded they send nothing.
 folder, for the folders Claude Code has opened whose repo is a workspace.
 Re-run it after a new checkout, or use `--here` in any folder.
 
+With `--oauth` (opt-in) no key is written for those folders: each one points
+at its workspace's OAuth MCP endpoint, `<server>/api/mcp-oauth/<workspaceId>`,
+and Claude Code signs you in in the browser the first time the folder uses
+buildd (`/mcp` shows the state). You act as yourself, with your role in that
+workspace's team, so folders from different teams each sign in to their own.
+Re-running replaces a key entry the installer wrote; a folder's own `.mcp.json`
+is never touched. A `--here --oauth` folder that is not a workspace yet keeps
+the key until it is. `buildd install --global --status` lists every buildd
+entry and whether it uses the key or OAuth.
+
+## Credential
+
+`buildd login` saves a **presence token** for you (`presenceToken` in
+`~/.buildd/config.json`, one per machine) next to the API key, and the hooks
+send that. It covers every team you are in, so a claim made with another team's
+key or over OAuth still binds and is released on exit. It can only report
+presence, read your workspace repos and bind or release your own interactive
+workers; every other buildd route refuses it. `buildd logout` revokes it. A
+config without one (an older login) falls back to the API key.
+
 ## Configuration
 
 | Variable | Effect |
 |---|---|
+| `BUILDD_PRESENCE_TOKEN` | Override the saved presence token |
 | `BUILDD_API_KEY`, `BUILDD_SERVER` | Override `~/.buildd/config.json` |
 | `BUILDD_HOOKS_DISABLED=1` | Hooks do nothing (MCP-only mode) |
 | `BUILDD_HOOK_DEBUG=1` | Log hook decisions to stderr |

@@ -100,11 +100,15 @@ function probeBwrapNamespaces(unshareFlags: readonly string[], loaderBinds = fal
  * user-ns check passes. Confirmed by inspecting the Claude Code binary: it always
  * passes all three --unshare flags to bwrap.
  *
+ * Binds the ELF loader dirs too (loaderBinds): without them the probe reads
+ * false on every merged-usr host whatever the kernel allows, which forced the
+ * inner sandbox and subprocess env scrub off there.
+ *
  * This is the STRICTEST of the runner's bwrap requirements. Do not reuse it for a
  * consumer that unshares less — see checkBwrapMountIsolationSupport.
  */
 export function checkBwrapSupport(): boolean {
-  return probeBwrapNamespaces(['--unshare-user', '--unshare-pid', '--unshare-net']);
+  return probeBwrapNamespaces(['--unshare-user', '--unshare-pid', '--unshare-net'], true);
 }
 
 /**
@@ -119,9 +123,7 @@ export function checkBwrapSupport(): boolean {
  */
 export function checkBwrapMountIsolationSupport(): boolean {
   // The wrapper's own argv binds /bin, /lib and /lib64 (SYSTEM_RO_BINDS), so the
-  // probe does too. checkBwrapSupport above still binds only /usr: on a
-  // merged-usr host it reads false whatever the kernel allows. Changing that
-  // flips Claude Code's inner sandbox on for those hosts and is a separate change.
+  // probe does too.
   return probeBwrapNamespaces(['--unshare-user', '--unshare-pid'], true);
 }
 

@@ -27,6 +27,7 @@ export const RUNNER_USAGE = [
   '                             plus session presence hooks for Claude Code / Codex / Cursor',
   '  buildd install --here      Register the buildd MCP server for this folder (any repo)',
   '  buildd install --global --everywhere   Register it for every Claude Code session',
+  '  buildd install --global --oauth        Same, but each folder signs in with OAuth (no key on disk)',
   '  buildd install [--global] --status|--uninstall   Inspect or remove those hooks',
   '  buildd env verify [--json] Check that the current repo is runnable',
   '  buildd help                Show this help',
