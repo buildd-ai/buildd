@@ -1,6 +1,5 @@
 import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
-import { readPrReviewStatus } from '@/lib/pr-review-request';
-import { resolvePolicy } from '@/lib/merge-policy';
+import { RUN_PROGRESS_READERS } from '@/modules';
 import { Suspense } from 'react';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
@@ -330,7 +329,7 @@ export default async function TaskDetailPage({
         .catch(() => null)
     : Promise.resolve(null);
   const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
-    prWorker?.prNumber ? readPrReviewStatus({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : Promise.resolve(null),
+    prWorker?.prNumber ? RUN_PROGRESS_READERS.review({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : Promise.resolve(null),
     taskWorkers.find(w => isLiveWorkerStatus(w.status)) ? getWorkerDeliverableArtifactCount(taskWorkers.find(w => isLiveWorkerStatus(w.status))!.id) : Promise.resolve(0),
     // Artifacts for all workers on this task
     workerIds.length > 0
@@ -1574,7 +1573,7 @@ export default async function TaskDetailPage({
             <RealTimeWorkerView
               outputRequirement={task.outputRequirement}
               deliverableArtifactCount={evidenceArtifactCount}
-              usesReviewer={resolvePolicy(task.workspace, missionContextRow, task, { baseRef: activeWorker.prBaseRef }).tier === 'agent-review'}
+              usesReviewer={RUN_PROGRESS_READERS.usesReviewer(task.workspace, missionContextRow, task, { baseRef: activeWorker.prBaseRef })}
               reviewState={evidenceReview?.state}
               taskStatus={task.status}
               taskId={task.id}
