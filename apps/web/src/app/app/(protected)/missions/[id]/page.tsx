@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { after } from 'next/server';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
@@ -142,8 +143,8 @@ export default async function MissionDetailPage({
     notFound();
   }
 
-  // Read-through refresh: stamp mergedAt on any completed workers whose PR
-  // webhook was missed, so the timeline renders the correct state immediately.
+  // Read-through PR fact import: any completed worker whose PR merge webhook
+  // was missed is re-checked against GitHub after this response.
   if (mission.workspaceId) {
     const staleWorkers = (mission.tasks ?? []).flatMap(t => {
       if (t.status !== 'completed') return [];
@@ -159,16 +160,10 @@ export default async function MissionDetailPage({
       });
       const installId = wsWithInstall?.githubInstallation?.installationId;
       if (installId) {
-        const refreshed = await Promise.all(
-          staleWorkers.map(w => refreshWorkerMergeStateIfStale(w, installId))
-        );
-        if (refreshed.some(Boolean)) {
-          const refreshedMission = await db.query.missions.findFirst({
-            where: eq(missions.id, id),
-            with: MISSION_DETAIL_WITH,
-          });
-          if (refreshedMission) mission = refreshedMission;
-        }
+        // Enqueued after the response, never written during the render (spec
+        // workflow-state-kernel §11): this render shows what is stored.
+        after(() => Promise.all(staleWorkers.map(w => refreshWorkerMergeStateIfStale(w, installId)))
+          .catch((err) => console.error('[mission-page] PR fact import failed (non-fatal):', err)));
       }
     }
   }

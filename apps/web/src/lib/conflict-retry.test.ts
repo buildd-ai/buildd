@@ -102,8 +102,18 @@ mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mockFireGateEvent,
 }));
 
+// The workflow kernel's door (spec §6.7): off by default here (no kernel delivery), so the
+// legacy cases below run exactly as before; the kernel block turns it on.
+const mockKernelDeliveryForPr = mock(async (..._a: unknown[]) => null as string | null);
+const realAuthority = await import('@/lib/workflow/authority');
+mock.module('@/lib/workflow/authority', () => ({ ...realAuthority, kernelDeliveryForPr: mockKernelDeliveryForPr }));
+const mockObserveConflict = mock(async (_p: any) => ({ handled: false }) as any);
+const realSeam = await import('@/lib/workflow/seam');
+mock.module('@/lib/workflow/seam', () => ({ ...realSeam, observeConflict: mockObserveConflict }));
+
 import {
   classifyMergeFailure,
+  kernelConflictOutcome,
   isAutoResolveMergeConflictsEnabled,
   buildConflictRetryTask,
   dispatchConflictRetry,
@@ -976,5 +986,78 @@ describe('dispatchConflictRetry', () => {
     const result = await dispatchConflictRetry(BASE_PARAMS);
     expect(result.dispatched).toBe(false);
     expect(result.exhausted).toBe(true);
+  });
+});
+
+
+// ── The kernel owns the conflict family for its PRs (Slice B part 2, §6.7) ────
+
+describe('dispatchConflictRetry for a kernel-owned PR', () => {
+  const KERNEL_WS = { id: 'ws-k', repo: 'acme/widgets', gitConfig: {}, githubInstallation: { installationId: 42 } };
+  const params = { workerId: 'w1', taskId: 't1', prNumber: 7, headSha: 'H1', repoFullName: 'acme/widgets', workspaceId: 'ws-k' };
+  const applied = (toState: string, stateReason: string | null, attempt: Record<string, unknown> | null) => ({
+    handled: true, mergeable: 'dirty', after: { state: toState, stateReason, headSha: 'H1' }, attempt,
+    result: { result: 'applied', transitionId: 'tr', deliveryId: 'd1', version: 2, decision: { toState, patch: { stateReason }, attempts: [] } },
+  });
+  beforeEach(() => {
+    mockWorkspaceFindFirst.mockReset();
+    mockWorkspaceFindFirst.mockResolvedValue(KERNEL_WS);
+    mockTaskFindFirst.mockReset();
+    mockTaskFindFirst.mockResolvedValue(null); // no live legacy retry; owner context empty
+    mockInsert.mockClear();
+    mockUpdate.mockClear();
+    mockUpdateBehindPrBranch.mockClear();
+    mockObserveConflict.mockReset();
+    mockKernelDeliveryForPr.mockReset();
+    mockKernelDeliveryForPr.mockResolvedValue('d1');
+  });
+
+  it('asks the kernel, and the legacy decision (counter, key release, behind refresh, insert) never runs', async () => {
+    mockObserveConflict.mockResolvedValue(applied('REPAIRING', 'conflict', { id: 'g1', family: 'conflict', mode: 'agent', status: 'queued', outcome: null, taskId: 'g1' }));
+    const res = await dispatchConflictRetry({ ...params, behindOnly: true });
+    expect(res).toMatchObject({ dispatched: true, taskId: 'g1' });
+    expect(mockObserveConflict.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-k', prNumber: 7, installationId: 42, hint: 'behind', isDependencyBot: false });
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
+  });
+
+  it('a disabled workspace still lets the platform refresh, but gives agents no budget', async () => {
+    mockWorkspaceFindFirst.mockResolvedValue({ ...KERNEL_WS, gitConfig: { autoResolveMergeConflicts: false } });
+    mockObserveConflict.mockResolvedValue(applied('ESCALATED', 'conflict_exhausted', null));
+    expect(await dispatchConflictRetry(params)).toMatchObject({ dispatched: false, exhausted: true });
+    expect(mockObserveConflict.mock.calls[0][0].maxAgentAttempts).toBe(0);
+  });
+
+  it('a migration collision is handed over as the repair subject', async () => {
+    mockObserveConflict.mockResolvedValue(applied('REPAIRING', 'migration', { id: 'm1', family: 'migration', mode: 'mechanical', status: 'ended', outcome: 'delivered', taskId: null }));
+    const collision = { file: '0007_a.sql', otherFile: '0007_b.sql', otherPrNumber: 3 };
+    expect(await dispatchConflictRetry({ ...params, migrationCollision: collision })).toMatchObject({ dispatched: true, branchUpdated: true });
+    expect(mockObserveConflict.mock.calls[0][0].migrationCollision).toEqual(collision);
+  });
+
+  it('not kernel-owned: the kernel is not asked', async () => {
+    mockKernelDeliveryForPr.mockResolvedValue(null);
+    await dispatchConflictRetry(params).catch(() => null);
+    expect(mockObserveConflict).not.toHaveBeenCalled();
+  });
+});
+
+describe('kernelConflictOutcome', () => {
+  const seen = (result: Record<string, unknown>, attempt: Record<string, unknown> | null = null, state: string | null = null) =>
+    ({ handled: true, mergeable: 'dirty', after: state ? { state, stateReason: null, headSha: 'H1' } : null, attempt, result }) as never;
+  const rej = (reason: string) => ({ result: 'rejected', reason, current: { state: 'REPAIRING', version: 3, head: 'H1', round: 1 } });
+  it('maps the kernel answer onto the shape the doors understand', () => {
+    expect(kernelConflictOutcome(seen(rej('not_conflicting')))).toMatchObject({ dispatched: false, alreadyUpToDate: true });
+    expect(kernelConflictOutcome(seen(rej('dependency_bot_pr')))).toMatchObject({ dispatched: false, dependencyBot: true });
+    expect(kernelConflictOutcome(seen({ result: 'stale', reason: 'head_not_current', current: null }))).toMatchObject({ dispatched: false, headChanged: true });
+    expect(kernelConflictOutcome(seen(rej('fix_in_flight'), { id: 'g1', mode: 'agent', taskId: 'g1' }))).toMatchObject({ dispatched: false, inFlightTaskId: 'g1' });
+    expect(kernelConflictOutcome(seen(rej('fix_in_flight'), { id: 'm1', mode: 'mechanical', taskId: null }))).toMatchObject({ dispatched: false, refreshInFlight: true });
+    const esc = (reason: string) => ({ result: 'applied', decision: { toState: 'ESCALATED', patch: { stateReason: reason }, attempts: [] } });
+    expect(kernelConflictOutcome(seen(esc('landing_needs_human')))).toMatchObject({ dispatched: false, refreshExhausted: true });
+    expect(kernelConflictOutcome(seen(esc('conflict_exhausted')))).toMatchObject({ dispatched: false, exhausted: true });
+    const rep = { result: 'applied', decision: { toState: 'REPAIRING', patch: { stateReason: 'behind' }, attempts: [] } };
+    expect(kernelConflictOutcome(seen(rep, { mode: 'mechanical', status: 'queued', outcome: null }))).toMatchObject({ dispatched: false, refreshDeferred: true });
+    expect(kernelConflictOutcome(seen(rep, { mode: 'mechanical', status: 'skipped', outcome: 'noop' }))).toMatchObject({ dispatched: false, alreadyUpToDate: true });
   });
 });

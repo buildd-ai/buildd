@@ -18,7 +18,16 @@
  *     Postgres, with their route wiring a todo of the spec slice that moves those doors.
  *   - 7ab4916f: Slice A part 3 (DeliveryView / owner of next move, activity from
  *     transitions, release composition, S35–S37)
- *   - "spec Slice B/C/D": no task filed yet (§14).
+ *   - 2583024f: S30 (runner hand-off failures → AttemptEnded(unproven)) and S31 (preflight,
+ *     preflight_miss) run live.
+ *   - 6eab5bf4 (Slice C: landing and merge through T15/T16, post-merge work as effects, S20's
+ *     stale version) has no todo left: S10, S15 and S20 run their doors' kernel path live.
+ *   - eb22d207 (Slice D: supersession T20, abandonment T21, mission completion from the delivery)
+ *     has no todo left: S12, S16, S18 and S21 run live.
+ *   - 4878423d (Slice B part 2: conflict and migration families, mechanical first) has no
+ *     todo left: S25 (conflict), S27 and the refresh_branch half of S15 run live.
+ *   - 4878423d (Slice B part 3: the trunk circuit breaker, BLOCKED_ON_TRUNK) has no todo left:
+ *     S24 runs live, the base-red rule on by default and `trunkBreaker: false` turning it off.
  */
 import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
@@ -29,19 +38,23 @@ import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
 
 const REPO = 'acme/matrix';
 let workspaceId: string;
+let teamId: string;
 let prSeq = 9100;
 
 // ── Fake GitHub: one PR whose head, state and ancestry a test moves ─────────
 
 interface FakePr {
-  head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]>; ciGreen?: boolean | null;
+  head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]>; ciGreen?: boolean | null; failing?: string[] | null; mergeable?: string | null;
+  /** The PR's base branch, and whether it still exists (a deleted mission branch closes its PRs, §4 base_deleted). */
+  baseRef?: string; baseExists?: boolean | null;
   /** §6.10: failing check names per commit (absent = check runs unreadable), the base branch's head, and commits whose runs are still going. */
   checks?: Record<string, string[]>; baseHead?: string | null; running?: string[];
 }
 let gh: FakePr;
 const live = (): LivePr => ({
-  state: gh.state, merged: gh.merged, headSha: gh.head, headRepoFullName: REPO, baseRef: 'dev', updatedAt: gh.updatedAt,
+  state: gh.state, merged: gh.merged, headSha: gh.head, headRepoFullName: REPO, baseRef: gh.baseRef ?? 'dev', updatedAt: gh.updatedAt,
   mergedAt: gh.merged ? '2026-10-06T00:00:00Z' : null, mergeCommitSha: gh.merged ? `M-${gh.head}` : null,
+  mergeableState: gh.mergeable ?? null,
 });
 const reader: GithubFactReader = {
   readPr: async () => live(),
@@ -49,6 +62,8 @@ const reader: GithubFactReader = {
   ciGreen: async () => gh.ciGreen ?? null,
   checkRuns: async (_repo, sha) => (gh.checks && sha in gh.checks ? { complete: !(gh.running ?? []).includes(sha), failing: gh.checks[sha] } : null),
   branchHead: async () => gh.baseHead ?? null,
+  failingChecks: async () => gh.failing ?? null,
+  branchExists: async () => gh.baseExists ?? null,
 };
 const repoFor = async () => ({ installationId: 1, repoFullName: REPO, gitConfig: null });
 
@@ -70,10 +85,28 @@ let comments: Map<number, string>;
 let commentSeq = 1;
 /** Composed-PR reads (§5.9 collector: pulls, compare, commits), served per test; undefined = not faked. */
 let ghApi: ((path: string) => unknown) | null = null;
+/** GitHub writes outside the PR comment (update-branch, git data API), served per test; undefined = accepted. */
+let ghWrite: ((path: string, method: string, body: unknown) => unknown) | null = null;
+const ghWrites: Array<{ path: string; method: string; body: unknown }> = [];
+/** update-branch calls the mechanical refresh made (§6.7), and an error to answer the next one with. */
+let updateBranchCalls: Array<{ path: string; expectedHead: string | null }>;
+let updateBranchError: string | null;
 async function fakeGithubApi(_installationId: number, path: string, opts?: RequestInit): Promise<unknown> {
   const method = opts?.method ?? 'GET';
+  if (method === 'PUT' && path.endsWith('/update-branch')) {
+    updateBranchCalls.push({ path, expectedHead: JSON.parse(String(opts!.body)).expected_head_sha ?? null });
+    if (updateBranchError) { const e = updateBranchError; updateBranchError = null; throw new Error(e); }
+    const body = JSON.parse(String(opts!.body));
+    ghWrites.push({ path, method, body });
+    return (ghWrite ? ghWrite(path, method, body) : undefined) ?? { message: 'Updating pull request branch.' };
+  }
   if (ghApi && method === 'GET' && !/\/issues\//.test(path)) { const out = ghApi(path); if (out !== undefined) return out; }
-  if (!/\/issues\//.test(path)) return null;
+  if (!/\/issues\//.test(path)) {
+    if (method === 'GET') return null;
+    const body = opts?.body ? JSON.parse(String(opts.body)) : null;
+    ghWrites.push({ path, method, body });
+    return ghWrite ? ghWrite(path, method, body) ?? {} : {};
+  }
   const id = /comments\/(\d+)$/.exec(path);
   if (method === 'GET') return path.includes('page=1') ? [...comments.entries()].map(([cid, body]) => ({ id: cid, body })) : [];
   if (method === 'POST') { const cid = commentSeq++; comments.set(cid, JSON.parse(String(opts!.body)).body); return { id: cid }; }
@@ -81,9 +114,16 @@ async function fakeGithubApi(_installationId: number, path: string, opts?: Reque
   if (method === 'DELETE' && id) { comments.delete(Number(id[1])); return null; }
   return null;
 }
+/** The pinned merge calls the kernel's merge_call effect made, and how GitHub answers the next one. */
+let mergeCalls: Array<{ prNumber: number; method: string; sha: string }>;
+let mergeAnswer: () => { merged: boolean; message: string; indeterminate?: boolean };
 mock.module('../../src/lib/github', () => ({
   ...realGithub,
   githubApi: fakeGithubApi,
+  mergePullRequest: async (_i: number, _repo: string, prNumber: number, method: string, sha: string) => {
+    mergeCalls.push({ prNumber, method, sha });
+    return mergeAnswer();
+  },
   postPrReview: async (p: { headSha: string; event: string }) => { posted.push({ commitId: p.headSha, event: p.event }); return { posted: true }; },
 }));
 const realActivity = await import('../../src/lib/pr-activity-comment');
@@ -97,6 +137,9 @@ const realDispatch = await import('../../src/lib/dispatch-authority');
 mock.module('../../src/lib/dispatch-authority', () => ({ ...realDispatch, announceTaskCreated: async () => {}, wakeTask: async () => {} }));
 const realScope = await import('../../src/lib/pr-scope-reconcile-trigger');
 mock.module('../../src/lib/pr-scope-reconcile-trigger', () => ({ ...realScope, schedulePrScopeReconcile: () => {} }));
+// Supersession reads find the installation for a PR's repo; every repo here is the fake one.
+const realInstallation = await import('../../src/lib/workspace-installation');
+mock.module('../../src/lib/workspace-installation', () => ({ ...realInstallation, installationIdForRepo: async () => 1 }));
 const realReviewRequest = await import('../../src/lib/pr-review-request');
 mock.module('../../src/lib/pr-review-request', () => ({ ...realReviewRequest, listWorkspaceRoles: async () => [{ slug: 'reviewer' }] }));
 const realAutoMerge = await import('../../src/lib/auto-merge');
@@ -132,8 +175,13 @@ const seam = await import('../../src/lib/workflow/seam');
 const { reviewEffectHandlers: reviewOnly } = await import('../../src/lib/workflow/review-effects');
 const { withCiRetryEffects } = await import('../../src/lib/workflow/ci-retry-effects');
 const { withTrunkEffects } = await import('../../src/lib/workflow/ci-red-trunk-effects');
-/** The composition root's set (apps/web/src/modules.ts): review loop, the CI family and the trunk breaker. */
-const reviewEffectHandlers = withTrunkEffects(withCiRetryEffects(reviewOnly));
+const { withConflictEffects } = await import('../../src/lib/workflow/conflict-retry-effects');
+const { withPrFactEffects } = await import('../../src/lib/workflow/pr-fact-effects');
+const { withLandingEffects } = await import('../../src/lib/workflow/pr-landing-effects');
+const { withSupersessionEffects } = await import('../../src/lib/workflow/supersession-effects');
+const { recordPrFact } = await import('@buildd/core/pr-facts');
+/** The composition root's set (apps/web/src/modules.ts): review loop, the CI family, the conflict/migration families, the trunk breaker, landing, a closed PR's resolution and the fact-cache projection. */
+const reviewEffectHandlers = withPrFactEffects(withSupersessionEffects(withLandingEffects(withTrunkEffects(withConflictEffects(withCiRetryEffects(reviewOnly))))));
 const { runEffects } = await import('../../src/lib/workflow/effects');
 const { applyCommand, loadView } = await import('../../src/lib/workflow/kernel');
 const { attemptView, headCoverage } = await import('../../src/lib/workflow/reducer');
@@ -142,6 +190,9 @@ const { kernelDeliveryForPr } = await import('../../src/lib/workflow/authority')
 const { getDeliveryViewsForTasks, kernelReplacedFailedTaskIds } = await import('../../src/lib/workflow/delivery-view');
 const { buildActionQueue, isActionableChip } = await import('../../src/lib/action-queue');
 const { dispatchConflictRetry } = await import('../../src/lib/conflict-retry');
+const { recordPrSupersession, recordPrAbandonment } = await import('../../src/lib/pr-supersession');
+const { canCompleteMission } = await import('../../src/lib/mission-completion');
+const { taskScopeTaskNamesPr } = await import('../../src/lib/task-token-auth');
 const { HeaderStatusPill } = await import('../../src/app/app/(protected)/tasks/[id]/TaskSidePanel');
 const { createElement } = await import('react');
 const { renderToStaticMarkup } = await import('react-dom/server');
@@ -162,12 +213,20 @@ const crashedDeps = { ...deps, drain: async () => null };
 
 beforeAll(async () => {
   assertDbConfigured();
-  ({ workspaceId } = await seedWorkspace());
+  ({ workspaceId, teamId } = await seedWorkspace());
+  // The conflict doors read the workspace's installation (the GitHub surface itself is faked).
+  const instNo = Math.floor(Math.random() * 1e12);
+  const [inst] = await q<{ id: string }>(sql`INSERT INTO github_installations (installation_id, account_type, account_login, account_id)
+    VALUES (${instNo}, 'Organization', 'acme', ${instNo}) RETURNING id`);
+  await q(sql`UPDATE workspaces SET github_installation_id = ${inst.id}::uuid WHERE id = ${workspaceId}::uuid`);
 });
 beforeEach(() => {
   gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0', ancestors: {} };
-  posted = []; activity = []; notified = []; exhaustions = 0; reviewersCreated = []; override = {}; activityEntries = []; ciEscalations = []; ghApi = null;
+  posted = []; activity = []; notified = []; exhaustions = 0; reviewersCreated = []; override = {}; activityEntries = []; ciEscalations = []; ghApi = null; ghWrite = null; ghWrites.length = 0;
   comments = new Map();
+  updateBranchCalls = []; updateBranchError = null; mergeCalls = [];
+  // GitHub merges a PR whose head is the pinned one, as the real PUT /merge does.
+  mergeAnswer = () => { gh.state = 'closed'; gh.merged = true; gh.updatedAt = 'u-merged'; return { merged: true, message: 'Pull Request successfully merged' }; };
 });
 
 // ── Fixtures and reads ──────────────────────────────────────────────────────
@@ -237,6 +296,26 @@ const closeOrMerge = (o: Delivery, merged: boolean, updatedAt = 'u1') => {
   return seam.observePrState({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, source: 'webhook:closed' }, deps);
 };
 
+// ── A closed PR's resolution (Slice D) ──────────────────────────────────────
+
+const prUrl = (n: number) => `https://github.com/${REPO}/pull/${n}`;
+/** Every worker row of the PR carries its URL, as create_pr and the webhook record it. */
+const stampPrUrl = (o: Delivery) => q(sql`UPDATE workers SET pr_url = ${prUrl(o.prNumber)} WHERE workspace_id = ${workspaceId}::uuid AND pr_number = ${o.prNumber}`);
+const prWorkerOf = async (o: Delivery) => (await q<{ id: string }>(sql`SELECT id FROM workers WHERE workspace_id = ${workspaceId}::uuid AND pr_number = ${o.prNumber} ORDER BY created_at DESC LIMIT 1`))[0].id;
+const prRows = (o: Delivery) => q<{ superseded_by_pr_number: number | null; superseded_recorded_by: string | null; abandoned_reason: string | null; abandoned_recorded_by: string | null; merged_at: string | null }>(
+  sql`SELECT superseded_by_pr_number, superseded_recorded_by, abandoned_reason, abandoned_recorded_by, merged_at FROM workers WHERE workspace_id = ${workspaceId}::uuid AND pr_number = ${o.prNumber}`);
+/**
+ * The owner task, completed, as the one deliverable of a fresh active mission. Held, so the
+ * resolution's wake_mission (which would re-plan and close it) leaves it for the test to judge.
+ */
+async function inMission(o: Delivery): Promise<string> {
+  const [m] = await q<{ id: string }>(sql`INSERT INTO missions (team_id, workspace_id, title, is_held) VALUES (${teamId}::uuid, ${workspaceId}::uuid, 'matrix mission', true) RETURNING id`);
+  await q(sql`UPDATE tasks SET mission_id = ${m.id}::uuid, status = 'completed' WHERE id = ${o.ownerTaskId}::uuid`);
+  return m.id;
+}
+/** GitHub's answer for a merged PR the supersession write verifies (live read, write time). */
+const mergedPr = (n: number) => ({ number: n, merged: true, state: 'closed', html_url: prUrl(n), merge_commit_sha: `M${n}`, commits: 1 });
+
 /** request-changes on round 1, the fix task filed by the real dispatch_fix, claimed: FIXING at H1. */
 async function fixing(o?: Delivery) {
   o ??= await openAndHandOn();
@@ -280,6 +359,76 @@ async function ciRepairing(o: Delivery, max = 3) {
   const t = (await taskRow((seen as { attemptTaskId: string }).attemptTaskId)).task;
   expect(await seam.claimFix(t, deps)).toEqual({ action: 'proceed' });
   return t;
+}
+
+
+// ── The conflict and migration families (Slice B part 2) ────────────────────
+
+const conflictTasks = (deliveryId: string) => tasksOf(deliveryId, 'conflict_fix' as never);
+/** Mechanical rows before agent rows, each by attempt number: the order the kernel allocates them. */
+const repairAttempts = async (deliveryId: string) => (await loadView({ deliveryId })).attempts
+  .filter((a) => a.family === 'conflict' || a.family === 'migration')
+  .sort((x, y) => (x.mode === y.mode ? x.attemptNo - y.attemptNo : x.mode === 'mechanical' ? -1 : 1));
+/** The owner task's own PR worker (the one the conflict doors are called with). */
+const ownerPrWorkerOf = async (o: Delivery) => (await q<{ id: string }>(sql`SELECT id FROM workers WHERE task_id = ${o.ownerTaskId}::uuid AND pr_number = ${o.prNumber}::int ORDER BY created_at LIMIT 1`))[0].id;
+/**
+ * Every door that used to decide a conflict retry funnels through dispatchConflictRetry. The PR's
+ * worker rows carry its URL, as create_pr records it: the handlers find the PR worker by repo.
+ */
+const conflictDoor = async (o: Delivery, extra: Partial<Parameters<typeof dispatchConflictRetry>[0]> = {}) =>
+  (await stampPrUrl(o), dispatchConflictRetry({ workerId: await ownerPrWorkerOf(o), taskId: o.ownerTaskId, prNumber: o.prNumber, headSha: gh.head, repoFullName: REPO, workspaceId, ...extra }));
+/** GitHub's update-branch: either merges the base in (a new head descending from the old) or refuses. */
+function updateBranch(outcome: { merged: string } | { conflict: true; thenMergeable?: string }) {
+  ghWrite = (path, method) => {
+    if (!/\/update-branch$/.test(path) || method !== 'PUT') return undefined;
+    if ('merged' in outcome) {
+      gh.ancestors[outcome.merged] = [gh.head];
+      gh.head = outcome.merged; gh.mergeable = 'clean';
+      return { message: 'Updating pull request branch.' };
+    }
+    if (outcome.thenMergeable) gh.mergeable = outcome.thenMergeable;
+    throw new Error('GitHub API error: 422 {"message":"merge conflict between base and head"}');
+  };
+}
+const b64 = (t: string) => ({ encoding: 'base64', content: Buffer.from(t).toString('base64') });
+/**
+ * A PR adding `packages/core/drizzle/0007_add.sql` while open PR #77 into `peerBase` adds another
+ * 0007. `journal`: the directory carries drizzle's meta/ (a chained journal, not renumberable).
+ */
+function migrationRepo(o: Delivery, opts: { journal: boolean; peerBase?: string; ourBase?: string }) {
+  const dir = 'packages/core/drizzle';
+  const ourBase = opts.ourBase ?? 'dev';
+  ghApi = (path) => {
+    if (path.startsWith(`/repos/${REPO}/pulls/${o.prNumber}/files`)) return [{ filename: `${dir}/0007_add.sql`, status: 'added' }];
+    if (path.startsWith(`/repos/${REPO}/pulls/77/files`)) return [{ filename: `${dir}/0007_other.sql`, status: 'added' }];
+    if (path.startsWith(`/repos/${REPO}/pulls?state=open`)) {
+      return [{ number: o.prNumber, base: { ref: ourBase }, head: { sha: gh.head } }, { number: 77, base: { ref: opts.peerBase ?? ourBase }, head: { sha: 'O1' } }];
+    }
+    if (path === `/repos/${REPO}/pulls/${o.prNumber}`) return { head: { ref: 'feat/matrix', sha: gh.head }, base: { ref: ourBase, repo: { default_branch: 'dev' } } };
+    if (path === `/repos/${REPO}/pulls/77`) return { head: { sha: 'O1' } };
+    const file = /\/contents\/(.+)\?ref=(.+)$/.exec(path);
+    if (file) {
+      const [p2, ref] = [decodeURIComponent(file[1]), decodeURIComponent(file[2])];
+      if (p2 === `${dir}/0007_add.sql`) return ref === gh.head ? b64('CREATE TABLE "a" ();') : null;
+      if (p2 === `${dir}/0007_other.sql`) return ref === 'O1' ? b64('CREATE TABLE "b" ();') : null;
+      if (p2 === dir) {
+        const base = [{ name: '0005_x.sql', path: `${dir}/0005_x.sql`, sha: 's5', type: 'file' }, { name: '0006_y.sql', path: `${dir}/0006_y.sql`, sha: 's6', type: 'file' }];
+        if (ref === gh.head) return [...base, { name: '0007_add.sql', path: `${dir}/0007_add.sql`, sha: 'BLOB7', type: 'file' }, ...(opts.journal ? [{ name: 'meta', path: `${dir}/meta`, sha: 'm', type: 'dir' }] : [])];
+        if (ref === 'O1') return [...base, { name: '0007_other.sql', path: `${dir}/0007_other.sql`, sha: 'o7', type: 'file' }];
+        return base;
+      }
+      return null;
+    }
+    if (/\/git\/commits\/[^/]+$/.test(path)) return { tree: { sha: 'TREE0' } };
+    return undefined;
+  };
+  ghWrite = (path, method) => {
+    if (path.endsWith('/git/trees') && method === 'POST') return { sha: 'TREE1' };
+    if (path.endsWith('/git/commits') && method === 'POST') return { sha: 'N1' };
+    if (/\/git\/refs\/heads\//.test(path) && method === 'PATCH') { gh.ancestors.N1 = [gh.head]; gh.head = 'N1'; return {}; }
+    return undefined;
+  };
+  return { file: '0007_add.sql', otherFile: '0007_other.sql', otherPrNumber: 77 };
 }
 
 // ══ S1–S8: the review / fix / approval loop ══════════════════════════════════
@@ -459,10 +608,51 @@ describe('S6 — out of order: closed(merged), then late synchronize / opened / 
     expect((await transitions(o.deliveryId)).length).toBe(n);
   });
 
-  // Intended: the same sequence leaves workers.prLifecycleStatus / mergedAt as the merge set them,
-  // and a check_suite failure for the pre-merge SHA neither overwrites CI on the delivery nor files
-  // a CI fix (T10: head_not_current; recordPrFact funnel replaces the direct column writers).
-  test.todo('S6: workers PR columns unchanged and an old-SHA CI failure does not overwrite (needs spec Slice B: fact funnel / recordPrFact — no task filed)');
+  /** The worker rows of a delivery's PR as the fact cache holds them. */
+  const prRows = (o: Delivery) => q<{ id: string; pr_lifecycle_status: string | null; merged_at: string | null }>(
+    sql`SELECT id, pr_lifecycle_status, merged_at FROM workers WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid ORDER BY created_at, id`);
+  const prUrl = (o: Delivery) => `https://github.com/${REPO}/pull/${o.prNumber}`;
+
+  test('S6: the merge reaches every worker row through stamp_pr_rows; late open-state and CI facts leave them as the merge set them', async () => {
+    const o = await openAndHandOn();
+    await q(sql`UPDATE workers SET pr_url = ${prUrl(o)}, pr_lifecycle_status = 'ci_green' WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
+    await closeOrMerge(o, true);
+    expect((await effects(o.deliveryId, 'stamp_pr_rows')).map((e) => [e.status, e.outcome])).toEqual([['done', 'ok:merged_2']]);
+    const merged = await prRows(o);
+    expect(merged.length).toBe(2);
+    for (const r of merged) {
+      expect(r.pr_lifecycle_status).toBe('merged');
+      // GitHub's merged_at from the kernel's live read, not receipt time.
+      expect(new Date(r.merged_at!).toISOString()).toBe('2026-10-06T00:00:00.000Z');
+    }
+
+    // The late deliveries the webhook and the sweeps would hand the funnel, in a hostile order.
+    const target = { prUrl: prUrl(o), prNumber: o.prNumber };
+    expect(await recordPrFact(target, { kind: 'open' })).toEqual([]); // late synchronize / opened
+    expect(await recordPrFact(target, { kind: 'open', reopened: true })).toEqual([]);
+    expect(await recordPrFact(target, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H1' })).toEqual([]); // late check_suite
+    expect(await recordPrFact(target, { kind: 'closed' })).toEqual([]);
+    expect(await recordPrFact(target, { kind: 'merged', mergedAt: new Date() })).toEqual([]); // a merge door's receipt time
+    // …and the kernel's own late CI fact files nothing on a merged delivery.
+    expect(await ciFail(o, { head: 'H1' })).toMatchObject({ handled: true, result: { result: 'stale' } });
+    expect(await tasksOf(o.deliveryId, 'ci_fix')).toEqual([]);
+    expect(await prRows(o)).toEqual(merged);
+  });
+
+  test('S6: a check_suite failure for the pre-push SHA neither overwrites CI on the delivery nor the fact cache, and files no CI fix', async () => {
+    const o = await openAndHandOn();
+    await q(sql`UPDATE workers SET pr_url = ${prUrl(o)} WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
+    await push(o, 'H2', { ancestors: ['H1'] });
+    await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_green', headSha: 'H2', currentHeadSha: 'H2' });
+    const before = await delivery(o.deliveryId);
+    // The old suite's failure arrives late: its SHA is H1, the PR head is H2.
+    expect(await ciFail(o, { head: 'H1' })).toMatchObject({ handled: true, result: { result: 'stale', reason: 'head_not_current' } });
+    expect(await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H2' })).toEqual([]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: before.state, ci: before.ci, version: before.version, currentHeadSha: 'H2' });
+    expect(await ciAttempts(o.deliveryId)).toEqual([]);
+    expect(await tasksOf(o.deliveryId, 'ci_fix')).toEqual([]);
+    expect((await prRows(o)).map((r) => r.pr_lifecycle_status)).toEqual(['ci_green', 'ci_green']);
+  });
 });
 
 describe('S7 — two fix dispatches race (#3420)', () => {
@@ -525,6 +715,11 @@ describe('S9–S15', () => {
     expect(reviewersCreated).toEqual([]);
     expect((await effects(o.deliveryId, 'push_recovery')).length).toBe(1);
     expect((await taskRow(o.ownerTaskId)).status).not.toBe('completed');
+    // The reaped work reaches GitHub after all (recovered by hand): the local head was never
+    // reported, so §9's proof is "moved off H1 and the PR's content changed" (H2 descends from H1).
+    await push(o, 'H2', { ancestors: ['H1'] });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 1 });
+    expect(reviewersCreated.map((r) => r.head)).toEqual(['H2']);
   });
 
   test('S9: a reaped CI fix that pushed nothing re-dispatches the next ledger row; the attempt is never delivered', async () => {
@@ -539,7 +734,7 @@ describe('S9–S15', () => {
 
   // Intended: MergeCallResult(indeterminate) stays LANDING with one verify_merge; a second merge
   // call for the same head is `duplicate` (merge:{pr}:{head}); PrMerged arrives once; the merge
-  // is pinned at current_head_sha. Landing is still the legacy door (§13.1 deviation 2).
+  // is pinned at current_head_sha. The doors that issue it are the S10 (doors) cases below.
   test('S10 (kernel): merge indeterminate and a double merge call → LANDING pinned at the head, one verify_merge, one PrMerged', async () => {
     const o = await openAndHandOn();
     await verdict(o, 'approve');
@@ -547,7 +742,7 @@ describe('S9–S15', () => {
     expect(await land()).toMatchObject({ result: 'applied' });
     expect(await land()).toMatchObject({ result: 'duplicate' });
     const [mc] = await effects(o.deliveryId, 'merge_call');
-    expect(mc.dedupe_key).toBe(`merge_call:${o.deliveryId}:H1`);
+    expect(mc.dedupe_key).toMatch(new RegExp(`^merge_call:${o.deliveryId}:H1:v\\d+$`));
     const result = () => applyCommand({ type: 'MergeCallResult', actor: 'kernel', headSha: 'H1', outcome: 'indeterminate' }, { ref: { deliveryId: o.deliveryId } });
     expect(await result()).toMatchObject({ result: 'applied' });
     expect(await result()).toMatchObject({ result: 'duplicate' });
@@ -559,9 +754,87 @@ describe('S9–S15', () => {
     expect((await transitions(o.deliveryId)).filter((t) => t.command === 'PrMerged').length).toBe(1);
   });
 
-  // Intended: the five merge doors (auto-merge, landPr, the merge route, PUT /api/github/pr, the
-  // sweep) issue LandingRequested/MergeCallResult instead of merging directly (§13.1 deviation 2).
-  test.todo('S10: the merge doors call T15/T16 instead of merging directly (needs spec Slice C landing — no task filed)');
+  // Slice C: every merge door (landPr — and through it the landing sweep —, tryAutoMergeWorkerPr,
+  // the dashboard merge route, PUT /api/github/pr) keeps its rails and, for a kernel-owned PR,
+  // calls landThroughKernel where it used to call GitHub. Each door's wiring (it calls this, it
+  // does no post-merge work of its own) is pinned in its own unit test; this is what that call does.
+  test('S10 (doors): landing a kernel-owned PR is T15 → one pinned merge call → T16 → verify_merge → PrMerged, and the post-merge work runs as effects', async () => {
+    const o = await openAndHandOn();
+    await q(sql`UPDATE workers SET pr_url = ${`https://github.com/${REPO}/pull/${o.prNumber}`} WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
+    await verdict(o, 'approve');
+    const res = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps);
+    expect(res).toMatchObject({ merged: true, outcome: 'merged', mergeCommitSha: 'M-H1' });
+    expect(mergeCalls).toEqual([{ prNumber: o.prNumber, method: 'squash', sha: 'H1' }]);
+    const cmds = (await transitions(o.deliveryId)).map((t) => t.command);
+    expect(cmds.slice(-3)).toEqual(['LandingRequested', 'MergeCallResult', 'PrMerged']);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'MERGED', mergedAt: expect.any(String), mergeCommitSha: 'M-H1' });
+    // The post-merge work: the fact cache from GitHub's merged_at (stamp_pr_rows), the owner task
+    // completed by the merge (emit_pr_merged), and nothing left owed.
+    const [w] = await q<{ merged_at: Date | null; pr_lifecycle_status: string | null }>(sql`SELECT merged_at, pr_lifecycle_status FROM workers WHERE task_id = ${o.ownerTaskId}::uuid AND pr_number = ${o.prNumber} ORDER BY created_at LIMIT 1`);
+    expect(w.pr_lifecycle_status).toBe('merged');
+    expect(new Date(w.merged_at!).toISOString()).toBe('2026-10-06T00:00:00.000Z');
+    expect((await taskRow(o.ownerTaskId)).status).toBe('completed');
+    const owed = (await effects(o.deliveryId)).filter((e) => ['merge_call', 'verify_merge', 'stamp_pr_rows', 'emit_pr_merged', 'finalize_mission_pr'].includes(e.kind));
+    expect(owed.every((e) => e.status === 'done')).toBe(true);
+    expect(owed.find((e) => e.kind === 'emit_pr_merged')!.outcome).toBe('ok');
+    // A second door after the merge: the fact, not a second merge call.
+    expect(await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'merge_pr', actor: 'agent:w' }, deps))
+      .toMatchObject({ merged: true, reason: 'already_merged' });
+    expect(mergeCalls.length).toBe(1);
+    expect((await transitions(o.deliveryId)).filter((t) => t.command === 'PrMerged').length).toBe(1);
+  });
+
+  test('S10 (doors): an indeterminate merge answer is verified before anything re-calls; nothing landed → APPROVED, and the next door lands it', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    mergeAnswer = () => ({ merged: false, message: 'Could not reach GitHub: socket hang up', indeterminate: true });
+    const first = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps);
+    expect(first).toMatchObject({ merged: false, outcome: 'not_merged' });
+    expect(mergeCalls.length).toBe(1);
+    expect((await effects(o.deliveryId, 'verify_merge')).map((e) => e.status)).toEqual(['done']);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H1' });
+    // The answer was lost but the merge DID go through: verify reads it and records the fact.
+    mergeAnswer = () => { gh.state = 'closed'; gh.merged = true; return { merged: false, message: 'GitHub returned 502 with no readable response body', indeterminate: true }; };
+    const second = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'land_pr:sweep', actor: 'system:sweep' }, deps);
+    expect(second).toMatchObject({ merged: true, outcome: 'merged' });
+    expect(mergeCalls.map((c) => c.sha)).toEqual(['H1', 'H1']);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'MERGED' });
+    expect((await transitions(o.deliveryId)).filter((t) => t.command === 'PrMerged').length).toBe(1);
+  });
+
+  test('S10 (doors): two doors at once land one merge — the second finds the landing in flight', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    // The first door's merge call never drains (the request died after T15 committed).
+    const first = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, crashedDeps);
+    expect(first).toMatchObject({ merged: false, outcome: 'landing', indeterminate: true });
+    expect((await delivery(o.deliveryId)).state).toBe('LANDING');
+    const second = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'merge_pr', actor: 'agent:w' }, deps);
+    expect(second).toMatchObject({ merged: true });
+    expect(mergeCalls.length).toBe(1);
+    expect((await effects(o.deliveryId, 'merge_call')).length).toBe(1);
+  });
+
+  test('S10 (doors): a kernel refusal is the door\'s answer; no merge call is made for a head the kernel has not approved', async () => {
+    const o = await openAndHandOn(); // AWAITING_REVIEW: round 1 still open
+    const res = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'merge_pr', actor: 'agent:w' }, deps);
+    expect(res).toMatchObject({ merged: false, outcome: 'rejected', reason: 'state_not_allowed', current: { state: 'AWAITING_REVIEW' } });
+    expect(mergeCalls).toEqual([]);
+    // GitHub refusing for a reason no repair answers goes to a person.
+    await verdict(o, 'approve');
+    mergeAnswer = () => ({ merged: false, message: 'Required status check "build" is expected.' });
+    const refused = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps);
+    expect(refused).toMatchObject({ merged: false, outcome: 'refused', reason: 'landing_needs_human', message: 'Required status check "build" is expected.' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'landing_needs_human' });
+    // A person merges past it from the dashboard: a new landing request at the same head, recorded as a bypass.
+    gh.state = 'open'; gh.merged = false;
+    mergeAnswer = () => { gh.state = 'closed'; gh.merged = true; return { merged: true, message: 'merged' }; };
+    const v = (await delivery(o.deliveryId)).version;
+    const human = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'dashboard', actor: 'human:owner', override: { reason: 'checks are advisory here' }, expectedVersion: v }, deps);
+    expect(human).toMatchObject({ merged: true });
+    const t15 = (await q<{ bypass: Record<string, unknown> | null }>(sql`SELECT bypass FROM workflow_transitions WHERE delivery_id = ${o.deliveryId}::uuid AND command = 'LandingRequested' ORDER BY to_version`));
+    expect(t15.map((t) => t.bypass?.reason ?? null)).toEqual([null, 'checks are advisory here']);
+  });
 
   test('S11: a person merges on GitHub while AWAITING_REVIEW → MERGED from any state; open rounds superseded; classified merged_unreviewed', async () => {
     const o = await openAndHandOn();
@@ -587,11 +860,8 @@ describe('S9–S15', () => {
     expect((await delivery(f.deliveryId)).state).toBe('MERGED');
   });
 
-  // Intended: T20 only from CLOSED_UNMERGED, authorised on the CALLER's task naming the PR (not the
-  // owner's), an existing edge never overwritten, and canCompleteMission treats the superseded PR as
-  // shipped — through POST /api/github/pr/supersede and record_pr_supersession. An attempt to
-  // overwrite must come back REFUSED (409 edge_exists): today applyCommand answers it `duplicate`
-  // via the target-less stable key `supersede:{pr}` (see S18 below).
+  // T20 only from CLOSED_UNMERGED, and an existing edge is never overwritten: a different target
+  // reaches the reducer (the key names the target) and is refused edge_exists.
   test('S12 (kernel): T20 only from CLOSED_UNMERGED; a second, different target is refused edge_exists and never overwrites', async () => {
     const o = await openAndHandOn();
     const caller = await seedTask(workspaceId, { status: 'in_progress', title: 'friction: record the supersession' });
@@ -609,10 +879,49 @@ describe('S9–S15', () => {
     expect(t20.map((t) => t.evidence.actor)).toEqual([`agent:${caller}`]);
   });
 
-  // Intended: POST /api/github/pr/supersede and record_pr_supersession call T20, authorised on the
-  // CALLER's task naming the PR (not the owner's), and canCompleteMission treats the superseded PR
-  // as shipped from the delivery.
-  test.todo('S12: the supersede route and record_pr_supersession call T20 on the caller\'s task (needs spec Slice D — no task filed)');
+  // The write behind POST /api/github/pr/supersede and record_pr_supersession (the route's
+  // authorization on the CALLER's task is S21). The kernel decides; the columns are its projection.
+  test('S12: record_pr_supersession on a kernel-owned PR is T20 by the caller; the projection writes the rows; the mission reads it as shipped', async () => {
+    const o = await openAndHandOn();
+    const missionId = await inMission(o);
+    await stampPrUrl(o);
+    const caller = await seedTask(workspaceId, { status: 'in_progress', title: `friction: #${o.prNumber} landed under #4242` });
+    ghApi = (path) => {
+      const n = /\/pulls\/(\d+)$/.exec(path)?.[1];
+      if (!n) return undefined;
+      return Number(n) === o.prNumber ? { number: o.prNumber, merged: false, body: null } : mergedPr(Number(n));
+    };
+    const workerId = await prWorkerOf(o);
+    const record = (n: number) => recordPrSupersession({ workerId, supersedingPrNumber: n, reason: 'landed under a fresh PR', recordedBy: `agent:${caller}` });
+
+    // Open: the kernel refuses, and no column is written.
+    expect(await record(4242)).toMatchObject({ ok: false, status: 409 });
+    expect((await prRows(o)).every((r) => r.superseded_by_pr_number == null)).toBe(true);
+
+    // Closed, but the close webhook was lost: the write reads GitHub, records the close, then T20.
+    gh.state = 'closed'; gh.updatedAt = 'u-closed';
+    expect(await record(4242)).toMatchObject({ ok: true, supersededPrNumber: o.prNumber, supersedingPrNumber: 4242, supersedingPrUrl: prUrl(4242) });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'SUPERSEDED', supersededByPr: 4242 });
+    const t = await transitions(o.deliveryId);
+    expect(t.slice(-2).map((x) => [x.command, x.to_state])).toEqual([['PrClosedUnmerged', 'CLOSED_UNMERGED'], ['SupersessionRecorded', 'SUPERSEDED']]);
+    expect(t.at(-1)!.evidence.actor).toBe(`agent:${caller}`);
+    expect((await prRows(o)).map((r) => [r.superseded_by_pr_number, r.superseded_recorded_by])).toEqual((await prRows(o)).map(() => [4242, `agent:${caller}`]));
+    expect((await effects(o.deliveryId, 'project_supersession')).map((e) => e.status)).toEqual(['done']);
+
+    // A replay is the same answer; a different target never overwrites the edge.
+    expect(await record(4242)).toMatchObject({ ok: true });
+    const over = await record(4343);
+    expect(over).toMatchObject({ ok: false, status: 409 });
+    expect((over as { error: string }).error).toContain('never overwritten');
+    expect(await delivery(o.deliveryId)).toMatchObject({ supersededByPr: 4242 });
+
+    // The mission's completion gate reads the delivery: shipped, under #4242.
+    const gate = await canCompleteMission(missionId, { evaluateCriteria: false });
+    expect(gate).toMatchObject({ ok: true, awaitingMerge: 0, supersededCount: 1 });
+    expect(gate.supersededDetails[0]).toMatchObject({ prNumber: o.prNumber, supersededByPrNumber: 4242 });
+    // T20 woke the mission: a no-op here only because the test holds it.
+    expect((await effects(o.deliveryId, 'wake_mission')).map((e) => [e.status, e.outcome])).toEqual([['done', 'ok:not_woken_held']]);
+  });
 
   test('S13: the transition and its effects commit together; a crash before the inline drain is picked up by the next drain', async () => {
     const o = await openAndHandOn();
@@ -685,16 +994,107 @@ describe('S9–S15', () => {
 
   // Intended: landPr and the landing sweep raise MergeCallResult(behind) from their real merge call,
   // and the refresh_branch effect runs pr-branch-update with its expected_head (§6.7).
-  test.todo('S15: landPr / the landing sweep drive the treadmill through T16 and refresh_branch (needs spec Slice B/C — no task filed)');
+  test('S15 (refresh_branch): the platform refresh is GitHub update-branch pinned to the bound head; the refreshed head keeps the approval', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    gh.mergeable = 'behind';
+    updateBranch({ merged: 'R1' });
+    expect(await conflictDoor(o, { behindOnly: true })).toMatchObject({ dispatched: true, branchUpdated: true });
+    const put = ghWrites.find((w) => w.path.endsWith('/update-branch'))!;
+    expect(put).toMatchObject({ method: 'PUT', path: `/repos/${REPO}/pulls/${o.prNumber}/update-branch`, body: { expected_head_sha: 'H1' } });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'R1', approvedHeads: ['H1', 'R1'] });
+    expect((await repairAttempts(o.deliveryId)).map((a) => [a.mode, a.status, a.outcome, a.taskId])).toEqual([['mechanical', 'ended', 'delivered', null]]);
+    expect(reviewersCreated.length).toBe(1);
+  });
+
+  // Slice C: a door's real merge call answered "behind" is T16, and refresh_branch runs the
+  // pinned update-branch (pr-branch-update.ts) with its expected_head (§6.7). Our own refresh
+  // carries the approval forward, the next door lands it; the treadmill cap still bounds it.
+  test('S15 (doors): a merge refused as behind is refreshed mechanically by refresh_branch, pinned to the head; the refreshed head lands', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    const land = (head: string) => seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: head, door: 'land_pr:sweep', actor: 'system:sweep' }, deps);
+    mergeAnswer = () => ({ merged: false, message: 'Base branch was modified. Review and try the merge again.' });
+    expect(await land('H1')).toMatchObject({ merged: false, outcome: 'behind' });
+    expect(updateBranchCalls).toEqual([{ path: `/repos/${REPO}/pulls/${o.prNumber}/update-branch`, expectedHead: 'H1' }]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'REPAIRING', stateReason: 'behind' });
+    const [mech] = (await loadView({ deliveryId: o.deliveryId })).attempts.filter((a) => a.mode === 'mechanical');
+    expect(mech).toMatchObject({ family: 'conflict', attemptNo: 1, boundHeadSha: 'H1', taskId: null });
+    expect((await effects(o.deliveryId, 'refresh_branch')).map((e) => e.outcome)).toEqual(['ok:updated']);
+    // GitHub's update-branch lands as a new head; it is the platform's own refresh.
+    await push(o, 'R1', { ancestors: ['H1'], carryForward: 'own_refresh' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'R1' });
+    mergeAnswer = () => { gh.state = 'closed'; gh.merged = true; return { merged: true, message: 'merged' }; };
+    expect(await land('R1')).toMatchObject({ merged: true });
+    expect(mergeCalls.map((c) => c.sha)).toEqual(['H1', 'R1']);
+    expect(reviewersCreated.length).toBe(1);
+  });
+
+  test('S15 (doors): an update-branch GitHub refuses with a conflict hands the repair to an agent attempt; a branch already current resumes landing', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    const land = () => seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps);
+    mergeAnswer = () => ({ merged: false, message: 'Head branch is out of date' });
+    updateBranchError = 'GitHub API error: 422 {"message":"There are no new commits on the base branch."}';
+    expect(await land()).toMatchObject({ merged: false });
+    // Nothing to refresh after all: the mechanical row is skipped (spends nothing) and the approval stands.
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H1' });
+    expect((await loadView({ deliveryId: o.deliveryId })).attempts.map((a) => [a.mode, a.status])).toEqual([['mechanical', 'skipped']]);
+    updateBranchError = 'GitHub API error: 422 {"message":"merge conflict between base and head"}';
+    override.dispatch_conflict_fix = async () => ({ outcome: 'ok:dispatched:test' }); // the conflict family's own dispatcher (Slice B)
+    expect(await land()).toMatchObject({ merged: false, outcome: 'conflict' });
+    const v = await loadView({ deliveryId: o.deliveryId });
+    expect(v.delivery).toMatchObject({ state: 'REPAIRING', stateReason: 'conflict' });
+    expect(v.attempts.map((a) => [a.mode, a.attemptNo, a.status, a.outcome])).toEqual([
+      ['agent', 1, 'queued', null], ['mechanical', 1, 'skipped', 'noop'], ['mechanical', 2, 'ended', 'failed'],
+    ]);
+    expect((await effects(o.deliveryId, 'dispatch_conflict_fix')).map((e) => e.status)).toEqual(['done']);
+  });
 });
 
 // ══ S16–S21: projections and authorization ═══════════════════════════════════
 
 describe('S16–S21', () => {
-  // Intended: for every legacy input (SUPERSEDED/ABANDONED/open/closed deliveries) canCompleteMission
-  // and prShipState answer exactly as before the kernel; with deliveries present they read the
-  // delivery instead and agree.
-  test.todo('S16: canCompleteMission identical for all legacy inputs once it reads deliveries (needs spec Slice D — no task filed)');
+  // canCompleteMission's rules are unchanged (mission-task-lifecycle ACs, mission-completion.test.ts);
+  // what changed is its input: a kernel-owned PR answers from the delivery, a legacy one from its columns.
+  test('S16: the completion gate reads the delivery for a kernel-owned PR (merged before its stamp, closed, abandoned) and the columns for a legacy one', async () => {
+    // Merged by the kernel; the stamp_pr_rows projection has not run yet.
+    const merged = await openAndHandOn();
+    const m1 = await inMission(merged);
+    await stampPrUrl(merged);
+    await closeOrMerge(merged, true, 'u-merged');
+    await q(sql`UPDATE workflow_effects SET status = 'pending' WHERE delivery_id = ${merged.deliveryId}::uuid AND kind = 'stamp_pr_rows'`);
+    await q(sql`UPDATE workers SET merged_at = NULL, pr_lifecycle_status = 'pr_open' WHERE pr_number = ${merged.prNumber} AND workspace_id = ${workspaceId}::uuid`);
+    expect(await canCompleteMission(m1, { evaluateCriteria: false })).toMatchObject({ ok: true, awaitingMerge: 0 });
+
+    // Closed unmerged: blocks as closed with no supersession, until a person abandons it (T21).
+    gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0', ancestors: {} };
+    const closed = await openAndHandOn();
+    const m2 = await inMission(closed);
+    await stampPrUrl(closed);
+    await closeOrMerge(closed, false, 'u-closed');
+    const blocked = await canCompleteMission(m2, { evaluateCriteria: false });
+    expect(blocked).toMatchObject({ ok: false, code: 'awaiting_merge' });
+    expect(blocked.awaitingMergeDetails[0].closedUnsuperseded).toBe(true);
+    expect(await recordPrAbandonment({ workerId: await prWorkerOf(closed), reason: 'plan changed', recordedBy: 'owner@example.com' })).toEqual({ ok: true });
+    expect(await delivery(closed.deliveryId)).toMatchObject({ state: 'ABANDONED', stateReason: 'plan changed' });
+    expect((await transitions(closed.deliveryId)).at(-1)!.evidence.actor).toBe('human:owner@example.com');
+    expect((await prRows(closed)).every((r) => r.abandoned_reason === 'plan changed' && r.abandoned_recorded_by === 'owner@example.com')).toBe(true);
+    const settled = await canCompleteMission(m2, { evaluateCriteria: false });
+    expect(settled).toMatchObject({ ok: true, awaitingMerge: 0 });
+    expect(settled.abandonedDetails).toEqual([{ taskId: closed.ownerTaskId, title: 'feat: matrix owner', prNumber: closed.prNumber, abandonedReason: 'plan changed' }]);
+
+    // Legacy (no delivery): exactly the column answer, open PR blocks, closed+abandoned settles.
+    const legacyTask = await seedTask(workspaceId, { status: 'completed', title: 'legacy deliverable' });
+    const legacyPr = prSeq++;
+    await seedWorker(legacyTask, { status: 'completed', prNumber: legacyPr });
+    await q(sql`UPDATE workers SET pr_url = ${prUrl(legacyPr)}, pr_lifecycle_status = 'pr_open' WHERE task_id = ${legacyTask}::uuid`);
+    const [m3] = await q<{ id: string }>(sql`INSERT INTO missions (team_id, workspace_id, title) VALUES (${teamId}::uuid, ${workspaceId}::uuid, 'legacy mission') RETURNING id`);
+    await q(sql`UPDATE tasks SET mission_id = ${m3.id}::uuid WHERE id = ${legacyTask}::uuid`);
+    expect(await canCompleteMission(m3.id, { evaluateCriteria: false })).toMatchObject({ ok: false, code: 'awaiting_merge' });
+    await q(sql`UPDATE workers SET pr_lifecycle_status = 'closed', abandoned_at = now(), abandoned_reason = 'legacy drop' WHERE task_id = ${legacyTask}::uuid`);
+    expect(await canCompleteMission(m3.id, { evaluateCriteria: false })).toMatchObject({ ok: true });
+  });
 
   // Intended: one DeliveryView per delivery drives the Home chip, task card stage, mission strip,
   // explain and chat dock; a table of states (every §4 state × owner) renders the same stage label
@@ -733,10 +1133,9 @@ describe('S16–S21', () => {
     expect(await supersede(other, 1)).toMatchObject({ result: 'rejected', reason: 'not_closed_unmerged' });
     expect(await supersede(f, 4242)).toMatchObject({ result: 'applied' });
     expect(await supersede(f, 4242)).toMatchObject({ result: 'duplicate' });
-    // A different target never overwrites the edge. (Live answer: `duplicate` of the first
-    // transition, because the stable key `supersede:{pr}` carries no target; the pure reducer
-    // says rejected(edge_exists). S12's todo owns surfacing that as a refusal.)
-    expect((await supersede(f, 4343)).result).not.toBe('applied');
+    // A different target never overwrites the edge: refused, and the record_pr_supersession
+    // write answers 409 with that reason (S12).
+    expect(await supersede(f, 4343)).toMatchObject({ result: 'rejected', reason: 'edge_exists' });
     expect(await delivery(f.deliveryId)).toMatchObject({ state: 'SUPERSEDED', supersededByPr: 4242 });
   });
 
@@ -748,10 +1147,43 @@ describe('S16–S21', () => {
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2 });
   });
 
-  // Intended: deleting the mission integration branch closes the task PR as
-  // CLOSED_UNMERGED(base_deleted) (pr_closed ingests the cause from the live base-ref read; today it
-  // is always 'unknown'), scan_supersession finds the re-opened PR and T20 records it.
-  test.todo('S18: integration branch deleted → CLOSED_UNMERGED(base_deleted), scan_supersession, T20 (needs spec Slice D — no task filed)');
+  // The cause of the PR #3744 closure: the mission integration branch was deleted under an open
+  // task PR, and the work was re-opened as a fresh PR that merged.
+  test('S18: integration branch deleted → CLOSED_UNMERGED(base_deleted); scan_supersession proves the re-opened PR and T20 records it', async () => {
+    gh.baseRef = 'mission/matrix-x';
+    const o = await openAndHandOn();
+    await stampPrUrl(o);
+    const reopened = prSeq++;
+    const patch = '@@ -0,0 +1,4 @@\n' + [
+      'export function settleClosedPr(id: string) {', '  return lookupDelivery(id).resolution;', '}', 'export const SETTLE_LIMIT = 17;',
+    ].map((l) => `+${l}`).join('\n');
+    ghApi = (path) => {
+      if (path === `/repos/${REPO}/pulls/${o.prNumber}`) return { number: o.prNumber, merged: false, commits: 1, created_at: '2026-10-01T00:00:00Z', body: `Base branch was deleted; re-opened as #${reopened}. Superseded by #${reopened}.` };
+      if (path.startsWith(`/repos/${REPO}/pulls/${o.prNumber}/files`)) return [{ filename: 'src/settle.ts', status: 'added', patch }];
+      if (path === `/repos/${REPO}/pulls/${reopened}`) return mergedPr(reopened);
+      if (path.startsWith(`/repos/${REPO}/pulls/${reopened}/files`)) return [{ filename: 'src/settle.ts', status: 'added', patch }];
+      return undefined;
+    };
+    // GitHub closes the PR because its base is gone; the live branch read says so.
+    gh.baseExists = false;
+    await closeOrMerge(o, false, 'u-base-gone');
+
+    const t = await transitions(o.deliveryId);
+    expect(t.slice(-2).map((x) => [x.command, x.to_state])).toEqual([['PrClosedUnmerged', 'CLOSED_UNMERGED'], ['SupersessionRecorded', 'SUPERSEDED']]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'SUPERSEDED', stateReason: 'base_deleted', supersededByPr: reopened });
+    expect(t.at(-1)!.evidence.actor).toBe('system:auto-supersession');
+    expect((await effects(o.deliveryId, 'scan_supersession')).map((e) => [e.status, e.outcome])).toEqual([['done', 'ok:recorded']]);
+    expect((await prRows(o)).every((r) => r.superseded_by_pr_number === reopened && r.superseded_recorded_by === 'system:auto-supersession')).toBe(true);
+    const [gate] = await q<{ outcome: string; surface: string }>(sql`SELECT outcome, surface FROM gate_events WHERE worker_id = ${await prWorkerOf(o)}::uuid AND gate = 'auto_pr_supersession'`);
+    expect(gate).toMatchObject({ outcome: 'accepted', surface: 'workflow scan_supersession' });
+
+    // A close whose base still exists is not guessed to be anything.
+    gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0', ancestors: {}, baseRef: 'dev', baseExists: true };
+    ghApi = null;
+    const manual = await openAndHandOn();
+    await closeOrMerge(manual, false, 'u-closed');
+    expect(await delivery(manual.deliveryId)).toMatchObject({ state: 'CLOSED_UNMERGED', stateReason: 'unknown' });
+  });
 
   test('S19: fix worker killed after claim → CHANGES_REQUESTED, ledger row failed, the next attempt_no dispatched; the last one exhausts', async () => {
     const o = await open();
@@ -795,13 +1227,58 @@ describe('S16–S21', () => {
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', approvalBasis: 'human', approvedHeads: ['H1'] });
   });
 
-  // Intended: POST /api/prs/[prNumber]/merge and /api/github/pr answer HTTP 409 with `current` when
-  // the caller's version is stale, and apply nothing.
-  test.todo('S20: HTTP 409 + current view from the merge and PR routes on a stale version (needs spec Slice C — no task filed)');
+  // Slice C: the merge doors carry the version a person saw. The routes answer HTTP 409 with this
+  // `current` (route tests for /api/prs/[prNumber]/merge and PUT /api/github/pr); this is the kernel
+  // side on real Postgres: a stale version is told so before any rail acts, and nothing applies.
+  test('S20 (doors): a merge on a stale version is refused with the current view; nothing applies and no merge call is made', async () => {
+    const o = await openAndHandOn();
+    const seen = (await delivery(o.deliveryId)).version;
+    await verdict(o, 'approve');
+    const now = await delivery(o.deliveryId);
+    expect(now.version).toBeGreaterThan(seen);
+    const current = { state: 'APPROVED', version: now.version, head: 'H1', round: 1 };
+    // The routes' check before any rail runs.
+    expect(await seam.staleLandingVersion({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, expectedVersion: seen })).toEqual(current);
+    expect(await seam.staleLandingVersion({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, expectedVersion: now.version })).toBeNull();
+    expect(await seam.staleLandingVersion({ workspaceId, repoFullName: REPO, prNumber: o.prNumber })).toBeNull();
+    // And the CAS at T15 itself, for a screen that went stale after that check.
+    const n = (await transitions(o.deliveryId)).length;
+    const res = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'dashboard', actor: 'human:owner', expectedVersion: seen }, deps);
+    expect(res).toMatchObject({ merged: false, outcome: 'stale', reason: 'version_moved', current });
+    expect((await transitions(o.deliveryId)).length).toBe(n);
+    expect(mergeCalls).toEqual([]);
+    expect(await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'dashboard', actor: 'human:owner', expectedVersion: now.version }, deps))
+      .toMatchObject({ merged: true });
+  });
 
-  // Intended: owner task, a caller task that names the PR, a sibling task, another workspace and a
-  // human against supersede/review routes and task-token auth (§17.1).
-  test.todo('S21: authorization matrix for supersede/review routes (needs spec Slice D — no task filed)');
+  // §17.1 on real rows: who may record T20 is decided on the CALLER's own task. The routes apply
+  // this rule (apps/web/src/app/api/github/pr/supersede/route.test.ts and .../pr/review/route.test.ts
+  // run the full matrix: owner, caller-names-PR, sibling, other workspace, a person, other team).
+  test('S21: the caller\'s own task decides (owner, names it, retry subject, sibling, other workspace); T20 records the caller', async () => {
+    const o = await openAndHandOn();
+    await q(sql`UPDATE tasks SET description = ${`Opens #${o.prNumber}.`} WHERE id = ${o.ownerTaskId}::uuid`);
+    const names = await seedTask(workspaceId, { status: 'in_progress', title: `friction: #${o.prNumber} shipped elsewhere` });
+    const retry = await seedTask(workspaceId, { status: 'in_progress', title: 'fix review' });
+    await q(sql`UPDATE tasks SET reviewer_retry_pr_number = ${o.prNumber} WHERE id = ${retry}::uuid`);
+    const sibling = await seedTask(workspaceId, { status: 'in_progress', title: 'sibling work on the same files' });
+    const elsewhere = (await seedWorkspace()).workspaceId;
+    const foreign = await seedTask(elsewhere, { status: 'in_progress', title: `see #${o.prNumber}` });
+    const may = (taskId: string, ws = workspaceId) => taskScopeTaskNamesPr({ taskScope: { taskId, workspaceId: ws, expiresAt: Date.now() + 60_000 } }, { workspaceId, prNumber: o.prNumber });
+
+    expect(await may(o.ownerTaskId)).toBe(true);
+    expect(await may(names)).toBe(true);
+    expect(await may(retry)).toBe(true);
+    // The owner's task names the PR; that gives the sibling nothing.
+    expect(await may(sibling)).toBe(false);
+    expect(await may(foreign, elsewhere)).toBe(false);
+    expect(await taskScopeTaskNamesPr({}, { workspaceId, prNumber: o.prNumber })).toBe(false);
+
+    gh.state = 'closed'; gh.updatedAt = 'u-closed';
+    await stampPrUrl(o);
+    ghApi = (path) => path === `/repos/${REPO}/pulls/5151` ? mergedPr(5151) : undefined;
+    expect(await recordPrSupersession({ workerId: await prWorkerOf(o), supersedingPrNumber: 5151, reason: 'shipped elsewhere', recordedBy: `agent:${names}` })).toMatchObject({ ok: true });
+    expect((await transitions(o.deliveryId)).filter((x) => x.command === 'SupersessionRecorded').map((x) => x.evidence.actor)).toEqual([`agent:${names}`]);
+  });
 });
 
 // ══ S22–S31: recovery, ledgers and hand-off ══════════════════════════════════
@@ -1049,6 +1526,24 @@ describe('S24–S27', () => {
     expect(await incidentsOf('ci:nightly smoke')).toEqual([]);
   });
 
+  // The base-red rule is on by default; a workspace turns the whole breaker off with
+  // gitConfig.trunkBreaker = false. Off: a PR failing the same checks as its red base is an
+  // ordinary per-PR CI repair, and no incident or trunk fix exists.
+  test('S24 (off): with gitConfig.trunkBreaker = false, a red base failing the same checks opens no incident; each PR gets its own CI attempt', async () => {
+    const off = { ...deps, repoFor: async () => ({ installationId: 1, repoFullName: REPO, gitConfig: { trunkBreaker: false } }) };
+    gh.baseHead = 'BX'; gh.checks = { BX: ['Integration'], H1: ['Integration'] };
+    const o = await openAndHandOn();
+    expect(await ciFail(o, { d: off })).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'REPAIRING', trunkIncidentId: null });
+    expect((await ciAttempts(o.deliveryId)).map((x) => [x.status, x.triggerReason])).toEqual([['queued', 'ci:integration']]);
+    expect(await tasksOf(o.deliveryId, 'ci_fix')).toHaveLength(1);
+    expect(await incidentsOf('ci:integration')).toEqual([]);
+    // The same failure with the default config is the base's: the breaker is on unless turned off.
+    const p2 = await openAndHandOn();
+    expect(await ciFail(p2)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+    expect(await incidentsOf('ci:integration')).toHaveLength(1);
+  });
+
   test('S25: a fix whose head moved between the verdict and the dispatch is skipped at dispatch: no ledger row, no task; replay is a no-op', async () => {
     const o = await openAndHandOn();
     await verdict(o, 'request-changes', 'H1', crashedDeps);
@@ -1127,7 +1622,41 @@ describe('S24–S27', () => {
 
   // Intended: the same skip for the conflict family (conflict resolved meanwhile) at dispatch and at
   // claim, once conflict-retry dispatches through T12 (§6.7).
-  test.todo('S25: conflict-resolved targets skipped at dispatch and claim for the conflict family (needs spec Slice B — no task filed)');
+  test('S25 (conflict): resolved between the mechanical refusal and the agent dispatch → the agent row is skipped, no task; replay is a no-op', async () => {
+    const o = await openAndHandOn();
+    gh.mergeable = 'dirty';
+    // update-branch refuses with a textual conflict; by the time the agent is dispatched it is gone.
+    updateBranch({ conflict: true, thenMergeable: 'clean' });
+    await conflictDoor(o);
+    const rows = await repairAttempts(o.deliveryId);
+    expect(rows.map((a) => [a.mode, a.status, a.outcome])).toEqual([['mechanical', 'ended', 'failed'], ['agent', 'skipped', 'noop']]);
+    expect(await conflictTasks(o.deliveryId)).toEqual([]);
+    const [df] = await effects(o.deliveryId, 'dispatch_conflict_fix');
+    expect(df).toMatchObject({ status: 'done', outcome: 'skipped:conflict_resolved' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', mergeable: 'clean', currentRound: 1 });
+    await q(sql`UPDATE workflow_effects SET status = 'pending', not_before = now() WHERE id = ${df.id}::uuid`);
+    await drain(o.deliveryId);
+    expect(await conflictTasks(o.deliveryId)).toEqual([]);
+    expect((await repairAttempts(o.deliveryId)).length).toBe(2);
+  });
+
+  test('S25 (conflict): resolved between dispatch and claim → the task is cancelled as skipped, not failed, and the delivery resumes', async () => {
+    const o = await openAndHandOn();
+    gh.mergeable = 'dirty';
+    updateBranch({ conflict: true });
+    const res = await conflictDoor(o);
+    expect(res).toMatchObject({ dispatched: true });
+    const [cf] = await conflictTasks(o.deliveryId);
+    expect(res.taskId).toBe(cf.id);
+    gh.mergeable = 'clean'; // someone merged the base in by hand; the head did not move
+    const t = (await taskRow(cf.id)).task;
+    const decision = await seam.claimFix(t, deps);
+    expect(decision).toEqual({ action: 'cancel', reason: 'conflict_resolved' });
+    await seam.cancelSkippedTask(cf.id, 'conflict_resolved');
+    expect(await taskRow(cf.id)).toMatchObject({ status: 'cancelled', result: { skipped: true, skipReason: 'conflict_resolved' } });
+    expect((await repairAttempts(o.deliveryId)).at(-1)).toMatchObject({ mode: 'agent', status: 'skipped', outcome: 'noop' });
+    expect((await delivery(o.deliveryId)).state).toBe('AWAITING_REVIEW');
+  });
 
   test('S26: the activity comment is regenerated from transitions: one comment, equal to a fresh render, Merged stays the headline', async () => {
     const { renderDeliveryActivity } = await import('../../src/lib/workflow/pr-activity-render');
@@ -1187,7 +1716,92 @@ describe('S24–S27', () => {
   // Intended: behind-only conflict and a byte-identical migration renumber complete as mechanical
   // attempts with no task; a textual conflict and a non-identical renumber escalate to an agent
   // attempt; a lagging mission branch is not a collision; dependency-bot PRs are never pushed to.
-  test.todo('S27: mechanical vs agent repair for conflict and migration families (needs spec Slice B — no task filed)');
+  test('S27: a behind-only branch is brought up to date mechanically: no task, no agent budget spent', async () => {
+    const o = await openAndHandOn();
+    gh.mergeable = 'behind';
+    updateBranch({ merged: 'R1' });
+    expect(await conflictDoor(o, { behindOnly: true })).toMatchObject({ dispatched: true, branchUpdated: true });
+    expect(await conflictTasks(o.deliveryId)).toEqual([]);
+    expect((await repairAttempts(o.deliveryId)).map((a) => [a.family, a.mode, a.outcome])).toEqual([['conflict', 'mechanical', 'delivered']]);
+    // Unapproved: the refreshed head is reviewed (a delta round), it never borrows a verdict.
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'R1', currentRound: 2 });
+  });
+
+  test('S27: a textual conflict escalates to exactly one agent attempt; a second door finds it in flight', async () => {
+    const o = await openAndHandOn();
+    gh.mergeable = 'dirty';
+    updateBranch({ conflict: true });
+    const first = await conflictDoor(o);
+    const [cf] = await conflictTasks(o.deliveryId);
+    expect(first).toMatchObject({ dispatched: true, taskId: cf.id });
+    expect(cf).toMatchObject({ creation_source: 'conflict', context: { workflowAttemptId: cf.id } });
+    expect(cf.title).toContain('after conflict #1');
+    expect((await repairAttempts(o.deliveryId)).map((a) => [a.mode, a.attemptNo, a.status, a.outcome])).toEqual([['mechanical', 1, 'ended', 'failed'], ['agent', 1, 'queued', null]]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'REPAIRING', stateReason: 'conflict' });
+    // The legacy counter never moved: the ledger is the budget.
+    expect((await taskRow(o.ownerTaskId)).context?.conflictIteration ?? null).toBeNull();
+    expect(await conflictDoor(o)).toMatchObject({ dispatched: false, inFlightTaskId: cf.id });
+    expect((await conflictTasks(o.deliveryId)).length).toBe(1);
+  });
+
+  test('S27: a byte-identical migration renumber is a mechanical rename (same blob, next free slot past base, trunk and the peer); no task', async () => {
+    const o = await openAndHandOn();
+    const collision = migrationRepo(o, { journal: false });
+    expect(await conflictDoor(o, { migrationCollision: collision })).toMatchObject({ dispatched: true, branchUpdated: true });
+    const tree = ghWrites.find((w) => w.path.endsWith('/git/trees'))!;
+    expect(tree.body).toMatchObject({ base_tree: 'TREE0', tree: [
+      { path: 'packages/core/drizzle/0008_add.sql', sha: 'BLOB7' },
+      { path: 'packages/core/drizzle/0007_add.sql', sha: null },
+    ] });
+    expect(ghWrites.find((w) => /\/git\/refs\/heads\/feat\/matrix$/.test(w.path))!.body).toEqual({ sha: 'N1', force: false });
+    expect(await conflictTasks(o.deliveryId)).toEqual([]);
+    expect((await repairAttempts(o.deliveryId)).map((a) => [a.family, a.mode, a.status, a.outcome])).toEqual([['migration', 'mechanical', 'ended', 'delivered']]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'N1' });
+  });
+
+  test('S27: a renumber that must be regenerated (drizzle journal) escalates to an agent attempt with the renumber recipe', async () => {
+    const o = await openAndHandOn();
+    const collision = migrationRepo(o, { journal: true });
+    expect(await conflictDoor(o, { migrationCollision: collision })).toMatchObject({ dispatched: true });
+    const [cf] = await conflictTasks(o.deliveryId);
+    expect(cf.title).toContain('migration collision');
+    expect((await repairAttempts(o.deliveryId)).map((a) => [a.family, a.mode, a.status])).toEqual([['migration', 'mechanical', 'ended'], ['migration', 'agent', 'queued']]);
+    expect(ghWrites.some((w) => w.path.endsWith('/git/trees'))).toBe(false);
+  });
+
+  test('S27: a "collision" with a PR into another base (a mission branch lagging trunk) is not a collision: nothing renumbered, nothing filed', async () => {
+    const o = await openAndHandOn();
+    const collision = migrationRepo(o, { journal: false, ourBase: 'mission/m1', peerBase: 'dev' });
+    expect(await conflictDoor(o, { migrationCollision: collision })).toMatchObject({ dispatched: false, alreadyUpToDate: true });
+    expect(ghWrites).toEqual([]);
+    expect(await conflictTasks(o.deliveryId)).toEqual([]);
+    expect((await repairAttempts(o.deliveryId)).map((a) => [a.mode, a.status])).toEqual([['mechanical', 'skipped']]);
+    expect((await delivery(o.deliveryId)).state).toBe('AWAITING_REVIEW');
+  });
+
+  test('S27: a dependency-bot PR is never pushed to: no update-branch, no task', async () => {
+    const o = await openAndHandOn();
+    await q(sql`UPDATE tasks SET context = jsonb_build_object('adoptedPr', jsonb_build_object('author', 'renovate[bot]', 'authorType', 'Bot')) WHERE id = ${o.ownerTaskId}::uuid`);
+    gh.mergeable = 'behind';
+    updateBranch({ merged: 'R1' });
+    expect(await conflictDoor(o, { behindOnly: true })).toMatchObject({ dispatched: false, dependencyBot: true });
+    expect(ghWrites).toEqual([]);
+    expect(await repairAttempts(o.deliveryId)).toEqual([]);
+  });
+
+  // The landing door reaches refresh_branch through T16, past the conflict doors' own dependency-bot
+  // check: the handler refuses to push there too, and a person lands it.
+  test('S27 (doors): a dependency-bot PR whose merge is answered behind is never pushed to: no update-branch, no task, a person lands it', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    await q(sql`UPDATE tasks SET context = jsonb_build_object('adoptedPr', jsonb_build_object('author', 'renovate[bot]', 'authorType', 'Bot')) WHERE id = ${o.ownerTaskId}::uuid`);
+    mergeAnswer = () => ({ merged: false, message: 'Head branch is out of date' });
+    await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps);
+    expect(updateBranchCalls).toEqual([]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'landing_needs_human' });
+    expect((await repairAttempts(o.deliveryId)).map((a) => [a.mode, a.status, a.outcome])).toEqual([['mechanical', 'ended', 'failed']]);
+    expect(await conflictTasks(o.deliveryId)).toEqual([]);
+  });
 });
 
 describe('S28 — ledger separation', () => {
@@ -1284,6 +1898,50 @@ describe('S29 — reviewer ends with prose or no verdict', () => {
   });
 });
 
+describe('AWAITING_PUSH — an owner delivery leaves on a push (§6.4, §9)', () => {
+  const prUrlOf = (o: Delivery) => `https://github.com/${REPO}/pull/${o.prNumber}`;
+  /** The owner's hand-off failed with local commit L5: AWAITING_PUSH at H1. */
+  async function ownerAwaitingPush(local: string | null = 'L5', status: 'unproven' | 'lost' = 'unproven') {
+    const o = await open();
+    const w = await seedWorker(o.ownerTaskId, { status: 'failed', lastCommitSha: local, prNumber: o.prNumber, commitCount: 2 });
+    await q(sql`UPDATE workers SET pr_url = ${prUrlOf(o)} WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
+    await seam.attemptEnded({ task: ownerTask(o), workerId: w, status, localHeadSha: local, commitCount: 2, source: status === 'lost' ? 'sweep:stale-workers' : 'runner' }, deps);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H1', currentRound: 0 });
+    return o;
+  }
+
+  test('the pushed head (webhook synchronize: the fact funnel plus the kernel hint) proves L5 → AWAITING_REVIEW, round 1 at the new head, review dispatched', async () => {
+    const o = await ownerAwaitingPush();
+    gh.head = 'L5'; gh.ancestors.L5 = ['H1'];
+    // What the synchronize webhook does: the open-state fact to the funnel, the head hint to the kernel.
+    await recordPrFact({ prUrl: prUrlOf(o), prNumber: o.prNumber }, { kind: 'open' });
+    expect(await push(o, 'L5', { ancestors: ['H1'] })).toBe(true);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
+    expect((await rounds(o.deliveryId)).map((r) => [r.round, r.head_sha, r.status])).toEqual([[1, 'L5', 'queued']]);
+    expect(reviewersCreated.map((r) => r.head)).toEqual(['L5']);
+  });
+
+  test('a head that does not contain L5 is recorded, the delivery stays, and the next push_recovery is scheduled; the real push then proves it', async () => {
+    const o = await ownerAwaitingPush();
+    const recoveryBefore = (await effects(o.deliveryId, 'push_recovery')).length;
+    await push(o, 'H7', { ancestors: ['H1'] }); // someone else's push: L5 is not in it
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H7', currentRound: 0 });
+    expect(await rounds(o.deliveryId)).toEqual([]);
+    expect((await effects(o.deliveryId, 'push_recovery')).length).toBe(recoveryBefore + 1);
+    await push(o, 'L5', { ancestors: ['H7', 'H1'] });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
+  });
+
+  test('a push the webhook never delivered is found by push_recovery\'s own re-read and proves the same way', async () => {
+    const o = await ownerAwaitingPush();
+    gh.head = 'L5'; gh.ancestors.L5 = ['H1'];
+    await makeDue(o.deliveryId);
+    await drain(o.deliveryId);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
+    expect(reviewersCreated.map((r) => r.head)).toEqual(['L5']);
+  });
+});
+
 describe('S30 — runner hand-off failures', () => {
   test('S30 (part 1): an owner attempt reporting completed whose commits are not on GitHub → AWAITING_PUSH, no review round; never a completed delivery', async () => {
     const o = await open();
@@ -1294,18 +1952,94 @@ describe('S30 — runner hand-off failures', () => {
     expect((await effects(o.deliveryId, 'push_recovery')).length).toBe(1);
   });
 
-  // Intended: the runner's hand-off failures ("no confirmed outcome", "commits but no PR",
-  // "uncommitted changes", output requirement unmet) arrive as AttemptEnded(outcome=unproven):
-  // AWAITING_PUSH when commits exist, a WORKING requeue bounded by the task's retry count when
-  // nothing exists; never a completed delivery. Part 1's seam maps only completed/failed/lost.
-  test.todo('S30: runner hand-off failures arrive as AttemptEnded(unproven) (needs the runner completion payload — no task filed)');
+  // The runner's hand-off failures ("no confirmed outcome", "commits but no PR", "uncommitted
+  // changes", output requirement unmet) arrive as `failed` + outcome=unproven with the local head
+  // and commit count (apps/runner/src/hand-off-outcome.ts); the worker PATCH maps that onto
+  // AttemptEnded(unproven) (lib/workflow/hand-off.ts). Driven here through the seam it calls.
+  test('S30: an owner hand-off failure with local commits → AttemptEnded(unproven) → AWAITING_PUSH + push_recovery; replay is a duplicate', async () => {
+    const o = await open();
+    const w = await seedWorker(o.ownerTaskId, { status: 'failed', lastCommitSha: 'L5', prNumber: o.prNumber, commitCount: 2 });
+    const end = () => seam.attemptEnded({ task: ownerTask(o), workerId: w, status: 'unproven', localHeadSha: 'L5', commitCount: 2, source: 'runner' }, deps);
+    expect((await end()).result).toMatchObject({ result: 'applied', decision: { toState: 'AWAITING_PUSH' } });
+    expect((await end()).result).toMatchObject({ result: 'duplicate' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H1', currentRound: 0 });
+    expect(await rounds(o.deliveryId)).toEqual([]);
+    expect((await effects(o.deliveryId, 'push_recovery')).map((e) => e.dedupe_key)).toEqual([`push_recovery:${o.deliveryId}:L5:1`]);
+    const t = (await transitions(o.deliveryId)).at(-1)!;
+    expect(t).toMatchObject({ command: 'AttemptEnded', to_state: 'AWAITING_PUSH' });
+    expect(t.evidence).toMatchObject({ outcome: 'unproven', localHeadSha: 'L5', commitCount: 2 });
+    // Never a completed delivery, and the owner task is not settled as delivered.
+    expect((await taskRow(o.ownerTaskId)).status).not.toBe('completed');
+  });
+
+  test('S30: an owner hand-off failure with nothing local and the task\'s retry queued stays WORKING (a requeue, no round, no recovery)', async () => {
+    const o = await open();
+    const w = await seedWorker(o.ownerTaskId, { status: 'failed', prNumber: o.prNumber, commitCount: 0 });
+    const r = await seam.attemptEnded({ task: ownerTask(o), workerId: w, status: 'unproven', localHeadSha: null, commitCount: 0, source: 'runner', taskRetryBudgetLeft: true }, deps);
+    expect(r.result).toMatchObject({ result: 'applied', decision: { toState: 'WORKING' } });
+    expect((await transitions(o.deliveryId)).at(-1)!.evidence).toMatchObject({ outcome: 'unproven', requeue: true });
+    expect(await rounds(o.deliveryId)).toEqual([]);
+    expect(await effects(o.deliveryId, 'push_recovery')).toEqual([]);
+  });
+
+  test('S30: a fix attempt whose hand-off failed with a local commit → AWAITING_PUSH and the attempt ends unproven, never delivered; no fix re-dispatch', async () => {
+    const f = await fixing();
+    const w = await seedWorker(f.fix.id, { status: 'failed', lastCommitSha: 'L7', commitCount: 1 });
+    await seam.attemptEnded({ task: f.fix, workerId: w, status: 'unproven', localHeadSha: 'L7', commitCount: 1, source: 'runner' }, deps);
+    const view = await loadView({ deliveryId: f.deliveryId });
+    expect(view.delivery).toMatchObject({ state: 'AWAITING_PUSH', currentHeadSha: 'H1', currentRound: 1 });
+    expect(view.attempts.find((a) => a.family === 'review_fix')).toMatchObject({ status: 'ended', outcome: 'unproven', reportedShas: ['L7'] });
+    expect((await tasksOf(f.deliveryId, 'fix')).length).toBe(1);
+    expect((await effects(f.deliveryId, 'push_recovery')).length).toBe(1);
+  });
+
+  test('S30: an old runner omits the outcome — the same refusal reads as a plain failure, exactly today\'s behaviour (the fix is re-dispatched)', async () => {
+    const f = await fixing();
+    const w = await seedWorker(f.fix.id, { status: 'failed', lastCommitSha: 'L7', commitCount: 1 });
+    await seam.attemptEnded({ task: f.fix, workerId: w, status: 'failed', localHeadSha: 'L7', commitCount: 1, source: 'runner' }, deps);
+    const view = await loadView({ deliveryId: f.deliveryId });
+    expect(view.delivery!.state).toBe('CHANGES_REQUESTED');
+    expect(view.attempts.find((a) => a.family === 'review_fix' && a.attemptNo === 1)).toMatchObject({ status: 'ended', outcome: 'failed' });
+    expect(await effects(f.deliveryId, 'push_recovery')).toEqual([]);
+  });
 });
 
 describe('S31 — preflight', () => {
-  // Intended: create_pr refuses a body the no-prod-data CI scan would reject, with the reason, via
-  // the function the CI script shares; a runner preflight failure keeps the attempt open with the
-  // output as its next instruction; a CI miss of a preflight class is tagged preflight_miss.
-  test.todo('S31: create_pr and runner preflight; CI miss tagged preflight_miss (§6.10 — no task filed)');
+  // Tier 1 (create_pr refuses a body CI's prose scan would reject, via the TS port held to the
+  // Python script by packages/core/__tests__/no-prod-data-prose.test.ts) is covered in
+  // apps/web/src/app/api/github/pr/route.test.ts; tier 2 (the runner's preflight denies the push
+  // with the output as the next instruction, attempt open) in
+  // apps/runner/__tests__/unit/preflight-guard.test.ts. Tier 3 runs here, on the live CI door.
+  test('S31: a CI failure of a preflight class is tagged preflight_miss on its transition; the repair is exactly as without it', async () => {
+    const o = await openAndHandOn();
+    gh.failing = ['Build', 'No Production Data'];
+    const seen = await ciFail(o);
+    expect(seen).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+    const t = (await transitions(o.deliveryId)).at(-1)!;
+    expect(t).toMatchObject({ command: 'CiFailedObserved', to_state: 'REPAIRING' });
+    expect(t.evidence).toMatchObject({ preflightMiss: 'No Production Data', signature: 'ci_failed', attemptNo: 1 });
+    expect((await ciAttempts(o.deliveryId)).map((a) => [a.attemptNo, a.status])).toEqual([[1, 'queued']]);
+  });
+
+  test('S31: a product failure, or an unreadable check list, is not a miss', async () => {
+    const o = await openAndHandOn();
+    gh.failing = ['Unit tests'];
+    await ciFail(o);
+    expect((await transitions(o.deliveryId)).at(-1)!.evidence).not.toHaveProperty('preflightMiss');
+
+    const o2 = await openAndHandOn();
+    gh.failing = null;
+    await ciFail(o2);
+    expect((await transitions(o2.deliveryId)).at(-1)!.evidence).not.toHaveProperty('preflightMiss');
+  });
+
+  test('S31: a workspace names its own preflight classes (gitConfig.preflight.ciChecks)', async () => {
+    const o = await openAndHandOn();
+    gh.failing = ['Lint ratchet'];
+    const own = { ...deps, repoFor: async () => ({ installationId: 1, repoFullName: REPO, gitConfig: { preflight: { ciChecks: ['lint'] } } }) };
+    await ciFail(o, { d: own });
+    expect((await transitions(o.deliveryId)).at(-1)!.evidence).toMatchObject({ preflightMiss: 'Lint ratchet' });
+  });
 });
 
 // ══ S32–S34: release composition ═════════════════════════════════════════════

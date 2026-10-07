@@ -16,7 +16,7 @@
  *   - Controlled by workspace gitConfig.autoResolveMergeConflicts (default ON).
  */
 
-import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import { OPEN_TASK_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -38,6 +38,8 @@ import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import type { MigrationCollision } from '@/lib/migration-safety';
 import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
 import { classifyConflictFix, type ConflictRecoveryAction } from '@/lib/conflict-fix-liveness';
+import { observeConflict, type ConflictSeen } from '@/lib/workflow/seam';
+import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 
 /** Public default; read the live value with `policyValue('maxConflictIterations')`. */
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = POLICY_DEFAULTS.maxConflictIterations;
@@ -515,6 +517,105 @@ export interface DispatchConflictRetryResult {
   semanticUnverified?: boolean;
   /** GitHub said there is nothing to merge in: the "behind" reading was stale. Re-read. */
   alreadyUpToDate?: boolean;
+  /**
+   * The workflow kernel owns this PR (spec §6.7, T12): the legacy decision did
+   * not run. `state` is the delivery's state after the kernel acted.
+   */
+  kernel?: { result: string; reason: string | null; state: string | null; attempt: ConflictSeen['attempt'] };
+}
+
+/**
+ * What a kernel T12 answer means to the conflict doors, in the shape they
+ * already understand (exported for tests). The kernel did the work: a
+ * mechanical refresh that landed reads as `branchUpdated`, an agent attempt
+ * as `dispatched` with its task, a spent budget as `exhausted` (the kernel's
+ * own effect escalated; the doors' escalation is idempotent per head).
+ */
+export function kernelConflictOutcome(seen: ConflictSeen): DispatchConflictRetryResult {
+  const r = seen.result;
+  const a = seen.attempt;
+  const state = seen.after?.state ?? ('current' in r ? r.current?.state ?? null : null);
+  const kernel = { result: r.result, reason: 'reason' in r ? (r.reason ?? null) : null, state, attempt: a };
+  if (r.result === 'applied') {
+    const to = r.decision.toState;
+    if (to === 'ESCALATED') {
+      const reason = r.decision.patch.stateReason;
+      return reason === 'landing_needs_human'
+        ? { dispatched: false, refreshExhausted: true, kernel }
+        : { dispatched: false, exhausted: true, kernel };
+    }
+    if (a?.mode === 'agent') return { dispatched: true, ...(a.taskId ? { taskId: a.taskId } : {}), kernel };
+    if (a?.mode === 'mechanical') {
+      if (a.outcome === 'delivered') return { dispatched: true, branchUpdated: true, kernel };
+      if (a.status === 'skipped') return { dispatched: false, alreadyUpToDate: true, kernel };
+      if (a.status === 'queued') return { dispatched: false, refreshDeferred: true, kernel };
+      // The mechanical row ended failed: what followed (an agent, an escalation) is in `state`.
+      if (state === 'ESCALATED') return { dispatched: false, refreshExhausted: true, kernel };
+    }
+    // The inline drain moved the delivery on (an agent attempt now bound, or a fresh round).
+    return { dispatched: state === 'REPAIRING', kernel };
+  }
+  if (r.reason === 'not_conflicting') return { dispatched: false, alreadyUpToDate: true, kernel };
+  if (r.reason === 'dependency_bot_pr') return { dispatched: false, dependencyBot: true, kernel };
+  if (r.reason === 'head_not_current') return { dispatched: false, headChanged: true, kernel };
+  if (r.reason === 'fix_in_flight') {
+    return a?.mode === 'agent'
+      ? { dispatched: false, ...(a.taskId ? { inFlightTaskId: a.taskId } : {}), kernel }
+      : { dispatched: false, refreshInFlight: true, kernel };
+  }
+  return { dispatched: false, kernel };
+}
+
+/** The kernel door: T12 for a kernel-owned PR, null when legacy owns it. */
+async function kernelConflictRetry(
+  params: DispatchConflictRetryParams,
+  workspace: { id: string; gitConfig: unknown; githubInstallation?: { installationId: number } | null },
+): Promise<DispatchConflictRetryResult | null> {
+  const installationId = workspace.githubInstallation?.installationId;
+  if (!installationId) return null;
+  if (!(await kernelDeliveryForPr(params.workspaceId, params.repoFullName, params.prNumber))) return null;
+  // A conflict retry filed by the legacy path (before cutover) is legacy's to
+  // finish or recover: one authority per remediation (S37).
+  const legacyLive = await db.query.tasks.findFirst({
+    where: and(
+      eq(tasks.workspaceId, params.workspaceId),
+      eq(tasks.conflictRetryPrNumber, params.prNumber),
+      inArray(tasks.status, [...OPEN_TASK_STATUSES]),
+      sql`${tasks.deliveryId} IS NULL`,
+    ),
+    columns: { id: true, deliveryId: true },
+  });
+  if (legacyLive) return null;
+  const owner = await db.query.tasks.findFirst({ where: eq(tasks.id, params.taskId), columns: { context: true } });
+  const disabled = !params.humanInitiated && !isAutoResolveMergeConflictsEnabled(workspace.gitConfig as WorkspaceGitConfig | null);
+  const seen = await observeConflict({
+    workspaceId: params.workspaceId,
+    repoFullName: params.repoFullName,
+    prNumber: params.prNumber,
+    installationId,
+    hint: params.behindOnly ? 'behind' : 'dirty',
+    migrationCollision: params.migrationCollision ? { ...params.migrationCollision } : null,
+    isDependencyBot: isDependencyBotPrContext(owner?.context),
+    // Disabled stops agents, not the platform's own mechanical refresh.
+    maxAgentAttempts: disabled ? 0 : policyValue('maxConflictIterations'),
+    humanInitiated: params.humanInitiated,
+    source: params.humanInitiated ? 'human:conflict' : 'door:conflict',
+  });
+  if (!seen.handled) return null;
+  const out = kernelConflictOutcome(seen);
+  if (out.inFlightTaskId) {
+    // S37: the kernel's live conflict fix is the canonical remediation. A stalled
+    // one is re-woken or requeued in place (a task-row repair, not a decision).
+    const row = await db.query.tasks.findFirst({
+      where: eq(tasks.id, out.inFlightTaskId),
+      columns: { id: true, status: true, createdAt: true, claimedAt: true, updatedAt: true, context: true },
+    });
+    if (row && (OPEN_TASK_STATUSES as readonly string[]).includes(row.status)) {
+      const recovery = await recoverStalledConflictFix(row);
+      if (recovery.stalled) return { ...out, remediationStalled: true, remediationRecovery: recovery.action };
+    }
+  }
+  return out;
 }
 
 // ── S37: an existing conflict fix is recovered, not duplicated ──────────────
@@ -582,6 +683,12 @@ export async function dispatchConflictRetry(
     console.warn(`[conflict-retry] workspace ${workspaceId} not found — skipping dispatch`);
     return { dispatched: false };
   }
+
+  // The workflow kernel owns the conflict family for its PRs (spec §6.7): the
+  // legacy decision below (counter, key release, stalled-fix recovery, the
+  // behind-only refresh) runs only for PRs it does not own.
+  const kernel = await kernelConflictRetry(params, workspace as never);
+  if (kernel) return kernel;
 
   if (!params.humanInitiated && !isAutoResolveMergeConflictsEnabled(workspace.gitConfig)) {
     return { dispatched: false, disabled: true };

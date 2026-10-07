@@ -315,6 +315,29 @@ export const accountWorkspaces = pgTable('account_workspaces', {
 //   - 'direct': every task PR merges into the default branch on its own.
 export type BranchStrategy = 'mission-branch' | 'direct';
 
+/**
+ * Cheap checks run before CI (docs/specs/workflow-state-kernel.md §6.10, S31).
+ * Advisory for the workflow kernel: a runner or server without them is no less
+ * safe, only noisier. Every field is off when absent.
+ */
+export interface WorkspacePreflightConfig {
+  /** create_pr refuses a title/body that CI's No Production Data prose scan would reject (counts, UUIDs). */
+  prProseScan?: boolean;
+  /**
+   * Shell commands the runner runs in the worktree before a push or create_pr
+   * (e.g. `bun run no-prod-data:check`). A failure denies that call with the
+   * output as the agent's next instruction; the attempt stays open.
+   */
+  commands?: string[];
+  /**
+   * CI check or workflow names (case-insensitive substrings) whose failure a
+   * preflight should have caught. A kernel CI failure naming one is tagged
+   * `preflight_miss` so the miss rate is measurable. Absent: the built-in
+   * production-data check name.
+   */
+  ciChecks?: string[];
+}
+
 // Git workflow configuration type
 export interface WorkspaceGitConfig {
   // Branching
@@ -464,6 +487,10 @@ export interface WorkspaceGitConfig {
   // Edit/Write/MultiEdit before the write, and a checkpoint sweep that finds a
   // collision (Bash/untracked/Codex writes) stops push/completion and defers the task.
   pathClaimEnforcement?: 'advisory' | 'enforce' | null;
+
+  // Policy checks before PR creation and push (docs/specs/workflow-state-kernel.md
+  // §6.10, S31). All off by default; advisory for the workflow kernel.
+  preflight?: WorkspacePreflightConfig | null;
 
   // Block config file changes during worker sessions (SDK v0.2.49+ ConfigChange hook)
   // When true, returns { continue: false } to prevent agents from modifying config files.

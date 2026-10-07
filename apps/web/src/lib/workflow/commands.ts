@@ -30,6 +30,8 @@ export interface LivePr {
   mergedAt?: string | null;
   mergeCommitSha?: string | null;
   updatedAt?: string | null;
+  /** GitHub's `mergeable_state` at read time (`clean`, `dirty`, `behind`, `blocked`, `unstable`, `unknown`, ...). */
+  mergeableState?: string | null;
 }
 
 interface Base {
@@ -104,7 +106,7 @@ export type Command =
       type: 'FixClaimed';
       attemptId: string;
       /** `ciGreen`: the CI family's own trigger fact is no longer true at the head (§10.5). */
-      revalidation: { live: LivePr; approved: boolean; ciGreen?: boolean };
+      revalidation: { live: LivePr; approved: boolean; ciGreen?: boolean; conflictResolved?: boolean };
     })
   | (Base & {
       /**
@@ -140,6 +142,8 @@ export type Command =
       maxAttempts: number;
       /** An open trunk incident whose signature matches (§6.10); routes to T25. */
       openTrunkIncidentId?: string | null;
+      /** §6.10 tier 3: the failing check a configured preflight covers, recorded as `preflightMiss` on the transition. */
+      preflightMiss?: string | null;
       trigger?: 'automatic' | 'human';
       triggerFactId?: string | null;
     })
@@ -154,6 +158,21 @@ export type Command =
       maxMechanical?: number;
       maxAgentAttempts: number;
       isDependencyBot?: boolean;
+      /** What the refused mechanical attempt saw (update-branch refusal, semantic overlap), handed to the agent attempt. */
+      refusal?: Record<string, unknown> | null;
+      /** The repair's subject, carried on its effects (e.g. the migration collision: file, otherFile, otherPrNumber). */
+      detail?: Record<string, unknown> | null;
+    })
+  | (Base & {
+      /**
+       * A mechanical repair failed for an operational reason (update-branch kept
+       * failing, refused by GitHub, semantic overlap unverifiable), not a textual
+       * conflict. No agent can fix that: the bound mechanical row ends `failed`
+       * and landing needs a person (§6.7).
+       */
+      type: 'MechanicalRepairFailed';
+      attemptId: string;
+      reason: string;
     })
   | (Base & { type: 'HumanApproved'; reviewId: string; commitId: string; hasMergePermission: boolean })
   | (Base & {
@@ -162,13 +181,28 @@ export type Command =
       headSha: string;
       live: LivePr;
       rails: { passed: boolean; redCi?: boolean; denyPaths?: boolean; reasons?: string[] };
+      /**
+       * A person merging past a review verdict (the dashboard's "Merge anyway"):
+       * recorded in `bypass`, allowed from the review states, never past red CI
+       * or a deny path.
+       */
       override?: { reason: string } | null;
+      /** How GitHub combines the PR; carried to the `merge_call` effect. Default squash. */
+      mergeMethod?: 'merge' | 'squash' | 'rebase';
     })
   | (Base & {
       type: 'MergeCallResult';
       headSha: string;
-      outcome: 'merged' | 'indeterminate' | 'behind' | 'conflict' | 'refused';
+      /**
+       * GitHub's answer to the pinned merge call. `not_merged`: the live read a
+       * `verify_merge` took after an indeterminate answer shows the PR still open
+       * and unmerged at the head (or the head moved under the call), so nothing
+       * landed and landing may be requested again.
+       */
+      outcome: 'merged' | 'indeterminate' | 'behind' | 'conflict' | 'refused' | 'not_merged';
       detail?: string;
+      /** The version T15 left the delivery at: one landing request, so a re-landing at the same head after a refusal is a new key. */
+      landingVersion?: number;
     })
   | (Base & { type: 'PrMerged'; live: LivePr })
   | (Base & { type: 'PrClosedUnmerged'; live: LivePr; closeCause: CloseCause })
@@ -214,31 +248,17 @@ export type CommandType = Command['type'];
 
 // ── Decision (§6.1) ─────────────────────────────────────────────────────────
 
-export type EffectKind =
-  | 'dispatch_review'
-  | 'dispatch_fix'
-  | 'dispatch_ci_fix'
-  | 'dispatch_conflict_fix'
-  | 'dispatch_trunk_fix'
-  | 'post_review'
-  | 'merge_call'
-  | 'verify_merge'
-  | 'refresh_branch'
-  | 'renumber_migration'
-  | 'push_recovery'
-  | 'stamp_pr_rows'
-  | 'cancel_open_attempts'
-  | 'render_activity'
-  | 'notify'
-  | 'mission_note'
-  | 'wake_mission'
-  | 'release_attribution'
-  | 'finalize_mission_pr'
-  | 'emit_pr_merged'
-  | 'scan_supersession'
-  | 'project_supersession'
-  | 'escalate_exhaustion'
-  | 'gate_event';
+/** Every effect kind the kernel can record (§10.2); a runtime list so the composition root can be checked against it. */
+export const EFFECT_KINDS = [
+  'dispatch_review', 'dispatch_fix', 'dispatch_ci_fix', 'dispatch_conflict_fix',
+  'dispatch_trunk_fix', 'post_review', 'merge_call', 'verify_merge', 'refresh_branch',
+  'renumber_migration', 'push_recovery', 'stamp_pr_rows', 'cancel_open_attempts',
+  'render_activity', 'notify', 'mission_note', 'wake_mission', 'release_attribution',
+  'finalize_mission_pr', 'emit_pr_merged', 'scan_supersession', 'project_supersession',
+  'escalate_exhaustion', 'gate_event',
+] as const;
+
+export type EffectKind = (typeof EFFECT_KINDS)[number];
 
 export interface EffectSpec {
   kind: EffectKind;

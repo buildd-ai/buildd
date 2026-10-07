@@ -1,21 +1,21 @@
 /**
  * Effect handlers of the trunk circuit breaker (docs/specs/workflow-state-kernel.md
  * §6.10, §10.2), reached only through the composition root
- * (`WORKFLOW_EFFECT_HANDLERS` in apps/web/src/modules.ts).
+ * (`workflowEffectHandlers()` in apps/web/src/modules.ts).
  *
  *  - `dispatch_trunk_fix`: exactly one trunk-fix task per incident. Its task id
  *    IS the incident id, so concurrent drains and replays file it once; the
  *    incident is linked after the task exists (the FK, §13.1 deviation 9).
  *  - `cancel_open_attempts` (reason `blocked_on_trunk`): cancels the per-PR
  *    CI fix tasks that never started; the ledger rows were skipped by T25.
- *  - `refresh_branch`, only when no richer handler is composed in: the
- *    mechanical base refresh T26 owes a head that predates the trunk fix.
+ *
+ * T26's mechanical base refresh (`refresh_branch` with no ledger row) is the
+ * conflict family's handler (conflict-retry-effects.ts): one handler per kind.
  */
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces } from '@buildd/core/db/schema';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
-import { updateBehindPrBranch } from '@/lib/pr-branch-update';
 import type { EffectHandler, EffectHandlers } from './effects';
 import { loadView, type Exec } from './kernel';
 import { githubReader, workspaceRepo } from './github-facts';
@@ -109,21 +109,6 @@ const cancelBlockedCiTasks: EffectHandler = async (e) => {
   return { outcome: `ok:cancelled_${rows.length}` };
 };
 
-/** The mechanical base refresh T26 owes (minimal: GitHub update-branch pinned to the head). */
-const refreshBranch: EffectHandler = async (e) => {
-  const d = (await loadView({ deliveryId: e.deliveryId }, dbExec)).delivery;
-  if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
-  const head = String(e.payload.headSha ?? '');
-  if (!head || d.currentHeadSha !== head) return { outcome: 'skipped:head_moved' };
-  const repo = await workspaceRepo(d.workspaceId);
-  if (!repo) throw new Error('no GitHub installation for the workspace');
-  const r = await updateBehindPrBranch({ installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, headSha: head });
-  if (r.updated) return { outcome: 'ok' };
-  if (r.failure === 'transient' || r.failure === 'rate_limit' || r.failure === 'unknown') throw new Error(r.reason ?? 'update-branch failed');
-  // conflict / up_to_date / head_changed / refused: the PR's own facts decide next (T3, T12).
-  return { outcome: `skipped:${r.failure}` };
-};
-
 /** The CI handlers plus the trunk breaker: what the composition root registers. */
 export function withTrunkEffects(base: EffectHandlers): EffectHandlers {
   return {
@@ -132,9 +117,8 @@ export function withTrunkEffects(base: EffectHandlers): EffectHandlers {
     cancel_open_attempts: async (e) => (e.payload.reason === 'blocked_on_trunk'
       ? cancelBlockedCiTasks(e)
       : (base.cancel_open_attempts ? base.cancel_open_attempts(e) : { outcome: 'skipped:no_handler' })),
-    refresh_branch: base.refresh_branch ?? refreshBranch,
   };
 }
 
 // Exported for tests.
-export const __trunkHandlers = { dispatchTrunkFix, cancelBlockedCiTasks, refreshBranch };
+export const __trunkHandlers = { dispatchTrunkFix, cancelBlockedCiTasks };

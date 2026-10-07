@@ -613,7 +613,8 @@ mock.module('@/lib/workflow/seam', () => ({
   observePrState: mockObservePrState,
   observeCiFailure: mock(async () => ({ handled: false })),
 }));
-mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr }));
+const mockKernelDeliveryForPr = mock(async (..._a: any[]): Promise<string | null> => null);
+mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr }));
 
 // The mission loop-on-merge and integration-PR helpers, recorded in call order
 // for the missions characterization at the end of this file. Real modules are
@@ -659,6 +660,29 @@ const mockRetryCiFailureForPr = mock(async (input: any) => {
   return realRetryCiFailureForPr(input);
 });
 mock.module('@/lib/ci-failure-retry', () => ({ ...realCiFailureRetry, retryCiFailureForPr: mockRetryCiFailureForPr }));
+
+// The PR fact funnel: the one writer of prLifecycleStatus / mergedAt /
+// conflictDetectedAt (stampPrMergedOnAllRows delegates to it). Terminal-wins,
+// the stale-SHA drop and first-seen conflict are proven on real Postgres in
+// apps/web/tests/db/pr-facts.test.ts; here we assert the FACT each door hands
+// over, and drive the changed-rows answer (`[]` = terminal won, nothing changed).
+import * as realPrFacts from '@buildd/core/pr-facts';
+type RecordedPrFactRow = { id: string; taskId: string | null; workspaceId: string | null; previousStatus: string | null };
+const recordedFacts: Array<{ target: any; fact: any; opts?: any }> = [];
+const DEFAULT_PR_FACT_ROWS: RecordedPrFactRow[] = [{ id: 'row-1', taskId: null, workspaceId: null, previousStatus: null }];
+let recordPrFactRows: RecordedPrFactRow[] = DEFAULT_PR_FACT_ROWS;
+mock.module('@buildd/core/pr-facts', () => ({
+  ...realPrFacts,
+  recordPrFact: async (target: unknown, fact: unknown, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return recordPrFactRows;
+  },
+}));
+beforeEach(() => {
+  recordedFacts.length = 0;
+  recordPrFactRows = DEFAULT_PR_FACT_ROWS;
+});
+const factsOfKind = (kind: string) => recordedFacts.filter((r) => r.fact.kind === kind);
 
 // Import handler AFTER mocks
 import { POST } from './route';
@@ -1912,6 +1936,11 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
       expect(res.status).toBe(200);
+      // The door hands the CI fact over; terminal-wins is the funnel's WHERE
+      // (tests/db/pr-facts.test.ts). The real rule agrees it cannot apply here.
+      const ci = factsOfKind('ci');
+      expect(ci.map((r) => r.fact.status)).toEqual(['ci_failed']);
+      expect(realPrFacts.prFactApplies(ci[0]!.fact, { prLifecycleStatus: 'merged', mergedAt: null })).toBe(false);
       const ciFailedWrite = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'ci_failed');
       expect(ciFailedWrite).toBeUndefined();
     });
@@ -1935,6 +1964,9 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
       expect(res.status).toBe(200);
+      const ci = factsOfKind('ci');
+      expect(ci.map((r) => r.fact.status)).toEqual(['ci_failed']);
+      expect(realPrFacts.prFactApplies(ci[0]!.fact, { prLifecycleStatus: 'unresolvable', mergedAt: null })).toBe(false);
       const ciFailedWrite = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'ci_failed');
       expect(ciFailedWrite).toBeUndefined();
     });
@@ -2765,6 +2797,34 @@ describe('POST /api/github/webhook', () => {
       expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
     });
 
+    // Slice C (workflow-state-kernel.md §14): a kernel-owned PR's merge work is the kernel's
+    // post-merge effects (stamp_pr_rows, emit_pr_merged, finalize_mission_pr), run from T17.
+    // The webhook records the fact and does none of that work inline.
+    it('a kernel-owned merge: the fact goes to the kernel; the task is not flipped and nothing is stamped here', async () => {
+      mockObservePrState.mockImplementationOnce(async () => true);
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w1',
+        workspaceId: 'ws1',
+        taskId: 't1',
+        task: { id: 't1', status: 'pending', workspaceId: 'ws1', release: 'true', title: 'Fix bug', missionId: null },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', releaseConfig: null, gitConfig: { defaultBranch: 'dev' } });
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+      const before = updateCalls.length;
+
+      const res = await POST(createWebhookRequest('pull_request', {
+        action: 'closed',
+        pull_request: { number: 7, merged: true, draft: false, head: { ref: 'buildd/t1-fix', sha: 'sha-7' }, html_url: 'https://github.com/test-org/test-repo/pull/7', merged_at: '2026-10-06T00:00:00Z' },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      }));
+
+      expect(res.status).toBe(200);
+      expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws1', repoFullName: 'test-org/test-repo', prNumber: 7, source: 'webhook:closed' }));
+      expect(updateCalls.slice(before).some((c) => (c.setValues as any).status === 'completed')).toBe(false);
+      expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
+    });
+
     it('workflow_dispatch + trigger=every_merge: dispatches configured workflow file', async () => {
       const payload = {
         action: 'closed',
@@ -3221,12 +3281,12 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('pull_request', payload));
       expect(res.status).toBe(200);
 
-      // worker.mergedAt must be set — this is what the dependsOn gate checks
-      const workerUpdate = updateCalls.find(
-        (c) => (c.setValues as any).mergedAt instanceof Date,
-      );
-      expect(workerUpdate).toBeDefined();
-      expect((workerUpdate!.setValues as any).mergedAt).toBeInstanceOf(Date);
+      // worker.mergedAt must be set — this is what the dependsOn gate checks.
+      // No merged_at in this payload, so the receipt instant stands in.
+      const merged = factsOfKind('merged');
+      expect(merged).toHaveLength(1);
+      expect(merged[0]!.target).toEqual({ prUrl: 'https://github.com/test-org/test-repo/pull/55', prNumber: 55 });
+      expect(merged[0]!.fact.mergedAt).toBeInstanceOf(Date);
     });
 
     it('sets worker.mergedAt even when task was already completed', async () => {
@@ -3260,10 +3320,7 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
 
       // mergedAt must still be set even though task was already 'completed'
-      const workerUpdate = updateCalls.find(
-        (c) => (c.setValues as any).mergedAt instanceof Date,
-      );
-      expect(workerUpdate).toBeDefined();
+      expect(factsOfKind('merged')).toHaveLength(1);
     });
 
     it('stamps mergedAt on EVERY worker row carrying the PR, not just the findFirst one', async () => {
@@ -3294,20 +3351,13 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('pull_request', payload));
       expect(res.status).toBe(200);
 
-      const mergeUpdate = updateCalls.find(
-        (c) => (c.setValues as any).mergedAt instanceof Date && (c.setValues as any).prLifecycleStatus === 'merged',
-      );
-      expect(mergeUpdate).toBeDefined();
-      // Scoped to the PR's identity (url + number) and to rows still unmerged,
-      // never to the single worker id findFirst returned.
-      const cond = mergeUpdate!.condition;
-      expect(cond).toEqual({
-        type: 'and',
-        conditions: [
-          { type: 'workerOwnsPrUrl', prUrl: 'https://github.com/test-org/test-repo/pull/57', prNumber: 57 },
-          { field: schemaMock.workers.mergedAt, type: 'isNull' },
-        ],
-      });
+      // Targeted at the PR's identity (url + number), never at the single
+      // worker id findFirst returned. "Only rows still unmerged" is the
+      // funnel's own WHERE (proven in tests/db/pr-facts.test.ts).
+      const merged = factsOfKind('merged');
+      expect(merged).toHaveLength(1);
+      expect(merged[0]!.target).toEqual({ prUrl: 'https://github.com/test-org/test-repo/pull/57', prNumber: 57 });
+      expect(merged[0]!.target).not.toHaveProperty('workerId');
     });
 
     it('enqueues a knowledge diff ingest job per bound workspace on merged PR', async () => {
@@ -3631,9 +3681,9 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('pull_request', payload));
       expect(res.status).toBe(200);
 
-      const openUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'pr_open');
-      expect(openUpdate).toBeDefined();
-      expect((openUpdate!.setValues as any).prIsDraft).toBe(false);
+      expect(recordedFacts).toEqual([
+        { target: { workerId: 'w-open' }, fact: { kind: 'open', reopened: false }, opts: { bookkeeping: { prIsDraft: false } } },
+      ]);
     });
 
     it.each([
@@ -3664,9 +3714,10 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('pull_request', payload));
       expect(res.status).toBe(200);
 
-      const lifecycleUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'pr_open');
-      expect(lifecycleUpdate).toBeDefined();
-      expect((lifecycleUpdate!.setValues as any).prIsDraft).toBe(draft);
+      const open = factsOfKind('open');
+      expect(open).toHaveLength(1);
+      expect(open[0]!.target).toEqual({ workerId: 'w-draft' });
+      expect(open[0]!.opts).toEqual({ bookkeeping: { prIsDraft: draft } });
     });
 
     it('sets prLifecycleStatus=merged (and mergedAt) when PR is merged', async () => {
@@ -3700,10 +3751,9 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('pull_request', payload));
       expect(res.status).toBe(200);
 
-      const mergeUpdate = updateCalls.find(
-        (c) => (c.setValues as any).prLifecycleStatus === 'merged' && (c.setValues as any).mergedAt instanceof Date,
-      );
-      expect(mergeUpdate).toBeDefined();
+      const merged = factsOfKind('merged');
+      expect(merged).toHaveLength(1);
+      expect(merged[0]!.fact.mergedAt).toBeInstanceOf(Date);
     });
 
     it('sets prLifecycleStatus=closed when PR is closed without merge', async () => {
@@ -3737,10 +3787,9 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('pull_request', payload));
       expect(res.status).toBe(200);
 
-      const closedUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'closed');
-      expect(closedUpdate).toBeDefined();
+      expect(factsOfKind('closed')).toHaveLength(1);
       // mergedAt must NOT be set on an abandoned PR
-      expect(closedUpdate!.setValues.mergedAt).toBeUndefined();
+      expect(factsOfKind('merged')).toHaveLength(0);
       // The task must NOT be auto-completed on a non-merged close
       const taskUpdate = updateCalls.find((c) => (c.setValues as any).status === 'completed');
       expect(taskUpdate).toBeUndefined();
@@ -3968,8 +4017,9 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('check_suite', payload));
       expect(res.status).toBe(200);
 
-      const ciUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'ci_running');
-      expect(ciUpdate).toBeDefined();
+      expect(recordedFacts).toEqual([
+        { target: { workerId: 'w-ci' }, fact: { kind: 'ci', status: 'ci_running', headSha: 'sha-ci', currentHeadSha: 'sha-ci' }, opts: undefined },
+      ]);
     });
 
     it('sets prLifecycleStatus=ci_failed on check_suite completed failure', async () => {
@@ -3988,8 +4038,193 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('check_suite', payload));
       expect(res.status).toBe(200);
 
-      const failUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'ci_failed');
-      expect(failUpdate).toBeDefined();
+      const failed = factsOfKind('ci');
+      expect(failed).toHaveLength(1);
+      expect(failed[0]).toEqual({
+        target: { workerId: 'w-ci-fail' },
+        fact: { kind: 'ci', status: 'ci_failed', headSha: 'abc123', currentHeadSha: 'abc123' },
+        opts: undefined,
+      });
+    });
+
+    it('hands a mergeable=false open-state event to the funnel as a conflict fact', async () => {
+      mockWorkersFindFirst.mockReturnValue({ id: 'w-conf', workspaceId: 'ws1', taskId: 'task-conf', prNumber: 44 });
+      mockWorkspacesFindMany.mockReturnValue([]);
+
+      const res = await POST(createWebhookRequest('pull_request', {
+        action: 'synchronize',
+        pull_request: {
+          number: 44, merged: false, draft: false, mergeable: false,
+          head: { ref: 'buildd/abc-conf', sha: 'sha-44' },
+          html_url: 'https://github.com/test-org/test-repo/pull/44',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      }));
+      expect(res.status).toBe(200);
+      expect(recordedFacts).toEqual([
+        { target: { workerId: 'w-conf' }, fact: { kind: 'conflict' }, opts: { bookkeeping: { prIsDraft: false } } },
+      ]);
+    });
+
+    it('a reopened event is the only open fact that may lift a close (reopened: true)', async () => {
+      mockWorkersFindFirst.mockReturnValue({ id: 'w-reopen', workspaceId: 'ws1', taskId: 'task-reopen', prNumber: 45 });
+      mockWorkspacesFindMany.mockReturnValue([]);
+
+      await POST(createWebhookRequest('pull_request', {
+        action: 'reopened',
+        pull_request: {
+          number: 45, merged: false, draft: false,
+          head: { ref: 'buildd/abc-reopen', sha: 'sha-45' },
+          html_url: 'https://github.com/test-org/test-repo/pull/45',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      }));
+      expect(factsOfKind('open').map((r) => r.fact)).toEqual([{ kind: 'open', reopened: true }]);
+    });
+
+    // ── §16 S6: arrival order never matters — terminal wins in the funnel ──
+    describe('late and out-of-order facts (spec §16 S6)', () => {
+      it.each(['synchronize', 'opened'] as const)(
+        'a late %s after the merge hands {kind:open} to the funnel, which changes nothing',
+        async (action) => {
+          // The PR already merged; the row still matches the open-state lookup.
+          mockWorkersFindFirst.mockReturnValue({ id: 'w-late', workspaceId: 'ws1', taskId: 'task-late', prNumber: 46 });
+          mockWorkspacesFindMany.mockReturnValue([]);
+          recordPrFactRows = []; // terminal wins: merged is final
+
+          const res = await POST(createWebhookRequest('pull_request', {
+            action,
+            pull_request: {
+              number: 46, merged: false, draft: false,
+              head: { ref: 'buildd/abc-late', sha: 'sha-46-late' },
+              html_url: 'https://github.com/test-org/test-repo/pull/46',
+            },
+            repository: { full_name: 'test-org/test-repo' },
+            installation: { id: 5000 },
+          }));
+          expect(res.status).toBe(200);
+          // The door does not decide terminal-wins itself: it hands over a plain
+          // open fact (never reopened) and the funnel's WHERE refuses it.
+          expect(recordedFacts).toEqual([
+            { target: { workerId: 'w-late' }, fact: { kind: 'open', reopened: false }, opts: { bookkeeping: { prIsDraft: false } } },
+          ]);
+          expect(realPrFacts.prFactApplies(recordedFacts[0]!.fact, { prLifecycleStatus: 'merged', mergedAt: new Date() })).toBe(false);
+          // No status/merge write slipped past the funnel.
+          expect(updateCalls.find((c) => 'prLifecycleStatus' in (c.setValues ?? {}) || 'mergedAt' in (c.setValues ?? {}))).toBeUndefined();
+        },
+      );
+
+      it('a late check_suite failure after the merge fires no progress side effects when the funnel changes nothing', async () => {
+        mockWorkersFindFirst.mockReturnValue({
+          id: 'w-late-ci', workspaceId: 'ws1', taskId: 'task-late-ci', prNumber: 42, prLifecycleStatus: 'merged',
+          task: { id: 'task-late-ci', status: 'completed', workspaceId: 'ws1', missionId: null, title: 'Fix', context: {} },
+        });
+        mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: {} });
+        mockGithubApi.mockReturnValue(Promise.resolve({ workflow_runs: [] }));
+        recordPrFactRows = [];
+
+        const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+        expect(res.status).toBe(200);
+        expect(factsOfKind('ci').map((r) => r.fact.status)).toEqual(['ci_failed']);
+        const progress = (mockTriggerEvent.mock.calls as any[]).filter(
+          (c) => c[1] === 'worker:progress' && c[2]?.taskId === 'task-late-ci',
+        );
+        expect(progress).toHaveLength(0);
+      });
+
+      it('a late check_suite requested after the merge fires no WORKER_PROGRESS when the funnel changes nothing', async () => {
+        mockWorkersFindFirst.mockReturnValue({ id: 'w-late-run', workspaceId: 'ws1', taskId: 'task-late-run', prNumber: 42 });
+        recordPrFactRows = [];
+
+        const res = await POST(createWebhookRequest('check_suite', {
+          action: 'requested',
+          check_suite: {
+            id: 1, head_sha: 'sha-run', status: 'queued', conclusion: null,
+            pull_requests: [{ number: 42, head: { sha: 'sha-run', ref: 'buildd/fix' }, base: { sha: 'base', ref: 'dev' } }],
+          },
+          repository: { id: 100, full_name: 'test-org/test-repo' },
+          installation: { id: 5000 },
+        }));
+        expect(res.status).toBe(200);
+        expect(factsOfKind('ci').map((r) => r.fact.status)).toEqual(['ci_running']);
+        expect((mockTriggerEvent.mock.calls as any[]).filter((c) => c[1] === 'worker:progress')).toHaveLength(0);
+      });
+
+      it('a check_suite failure for an old head passes both SHAs so the funnel drops it', async () => {
+        mockWorkersFindFirst.mockReturnValue({
+          id: 'w-old-head', workspaceId: 'ws1', taskId: 'task-old-head', prNumber: 42, prLifecycleStatus: 'ci_running',
+          task: { id: 'task-old-head', status: 'in_progress', workspaceId: 'ws1', missionId: null, title: 'Fix', context: {} },
+        });
+        mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: {} });
+        mockGithubApi.mockReturnValue(Promise.resolve({ workflow_runs: [] }));
+        recordPrFactRows = []; // stale SHA: dropped
+
+        const payload = makeCheckSuitePayload({
+          check_suite: {
+            head_sha: 'old-head-sha',
+            pull_requests: [{ number: 42, head: { sha: 'new-head-sha', ref: 'buildd/task-1-fix-bug' }, base: { sha: 'def456', ref: 'main' } }],
+          },
+        });
+        const res = await POST(createWebhookRequest('check_suite', payload));
+        expect(res.status).toBe(200);
+
+        const ci = factsOfKind('ci');
+        expect(ci).toHaveLength(1);
+        expect(ci[0]!.fact).toEqual({ kind: 'ci', status: 'ci_failed', headSha: 'old-head-sha', currentHeadSha: 'new-head-sha' });
+        // The real funnel's own rule agrees this fact is stale for a live row.
+        expect(realPrFacts.prFactApplies(ci[0]!.fact, { prLifecycleStatus: 'ci_running', mergedAt: null })).toBe(false);
+        // Nothing changed, so no progress refresh for the stale suite.
+        expect((mockTriggerEvent.mock.calls as any[]).filter(
+          (c) => c[1] === 'worker:progress' && c[2]?.taskId === 'task-old-head',
+        )).toHaveLength(0);
+      });
+
+      it('closed-unmerged targets every row carrying the PR ({prUrl, prNumber}), not the findFirst row', async () => {
+        mockWorkersFindFirst.mockReturnValue({
+          id: 'w-closed-any', workspaceId: 'ws1', taskId: 'task-closed-any', prNumber: 62,
+          task: { id: 'task-closed-any', status: 'completed', workspaceId: 'ws1', release: 'false', missionId: null },
+        });
+
+        await POST(createWebhookRequest('pull_request', {
+          action: 'closed',
+          pull_request: {
+            number: 62, merged: false, draft: false,
+            head: { ref: 'buildd/x', sha: 'sha-62' }, base: { ref: 'dev' },
+            html_url: 'https://github.com/test-org/test-repo/pull/62',
+          },
+          repository: { full_name: 'test-org/test-repo' },
+          installation: { id: 5000 },
+        }));
+
+        expect(factsOfKind('closed')).toEqual([
+          { target: { prUrl: 'https://github.com/test-org/test-repo/pull/62', prNumber: 62 }, fact: { kind: 'closed' }, opts: undefined },
+        ]);
+      });
+
+      it("closed-merged stamps GitHub's merged_at, not the receipt instant", async () => {
+        mockWorkersFindFirst.mockReturnValue({
+          id: 'w-gh-clock', workspaceId: 'ws1', taskId: 'task-gh-clock', prNumber: 63,
+          task: { id: 'task-gh-clock', status: 'completed', workspaceId: 'ws1', release: 'false', missionId: null },
+        });
+
+        await POST(createWebhookRequest('pull_request', {
+          action: 'closed',
+          pull_request: {
+            number: 63, merged: true, merged_at: '2026-09-01T12:34:56Z', draft: false,
+            head: { ref: 'buildd/x', sha: 'sha-63' }, base: { ref: 'dev' },
+            html_url: 'https://github.com/test-org/test-repo/pull/63',
+          },
+          repository: { full_name: 'test-org/test-repo' },
+          installation: { id: 5000 },
+        }));
+
+        const merged = factsOfKind('merged');
+        expect(merged).toHaveLength(1);
+        expect(merged[0]!.target).toEqual({ prUrl: 'https://github.com/test-org/test-repo/pull/63', prNumber: 63 });
+        expect(merged[0]!.fact.mergedAt).toBe('2026-09-01T12:34:56Z');
+      });
     });
   });
 
@@ -5304,8 +5539,11 @@ describe('pull_request → workers.prBaseRef sync', () => {
   it('registers an externally opened PR on the matching worker before processing it', async () => {
     await POST(createWebhookRequest('pull_request', makeRetargetPayload({ action: 'opened', changes: undefined })));
     const adopted = updateCalls.find(c => c.setValues?.prUrl);
-    expect(adopted?.setValues).toMatchObject({ prNumber: 9, prLifecycleStatus: 'pr_open', prBaseRef: 'mission/example-slug-0a1b2c3d' });
+    expect(adopted?.setValues).toMatchObject({ prNumber: 9, prBaseRef: 'mission/example-slug-0a1b2c3d' });
     expect(adopted?.condition).toBeDefined();
+    // The open state is a fact for the funnel, on exactly the rows the CAS bound.
+    expect(adopted?.setValues).not.toHaveProperty('prLifecycleStatus');
+    expect(recordedFacts).toContainEqual({ target: { workerIds: ['row-1'] }, fact: { kind: 'open' }, opts: undefined });
   });
 
   it.each(['test-org/fork', null])('does not adopt a PR from a fork or deleted head repo (%s)', async headRepo => {
@@ -6796,6 +7034,20 @@ describe('webhook → reviews (characterization)', () => {
     expect(call('reconcileSubjectEvent')).toEqual([expect.objectContaining({ kind: 'closed', door: 'webhook pull_request.closed' })]);
     expect(call('shutdownDeadBuilddPrs')).toEqual(['ws1', 93, false, 5000, 'test-org/test-repo']);
     expect(verdictTelemetry()).toHaveLength(0);
+  });
+
+  // Slice D: a kernel-owned PR's close (T18) owes a scan_supersession effect; the subscriber
+  // does not run a second, request-bound scan beside it.
+  it('closed unmerged, kernel-owned PR: no inline detection; the kernel\'s scan_supersession owns it', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker());
+    mockKernelDeliveryForPr.mockImplementation(async () => 'delivery-93');
+    try {
+      await POST(createWebhookRequest('pull_request', prEvent({ merged: false })));
+      expect(mockKernelDeliveryForPr).toHaveBeenCalledWith('ws1', 'test-org/test-repo', 93);
+      expect(order()).toEqual(['appendPrActivity', 'deliverPrReviewCallback', 'reconcileSubjectEvent', 'shutdownDeadBuilddPrs']);
+    } finally {
+      mockKernelDeliveryForPr.mockImplementation(async () => null);
+    }
   });
 
   it('no installation: no comment and no shutdown; the reconcile runs without PR coordinates', async () => {

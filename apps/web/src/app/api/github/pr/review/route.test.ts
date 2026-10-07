@@ -79,6 +79,15 @@ mock.module('@/lib/pr-review-request', () => ({
 // contract this route is judged on, and stubbing them would only assert that
 // the route calls its own stubs.
 
+// The PR fact funnel (recordPrFact): the adoption records what GitHub says
+// about the PR as a fact after the insert.
+const recordedFacts: Array<{ target: unknown; fact: unknown }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: unknown) => { recordedFacts.push({ target, fact }); return []; },
+  recordPrFactSql: () => null,
+  prFactApplies: () => true,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -312,8 +321,9 @@ describe('POST /api/github/pr/review — adoption', () => {
       prNumber: 42,
       prUrl: OPEN_PR.html_url,
       branch: 'fix/spinner',
-      prLifecycleStatus: 'pr_open',
     });
+    expect(workerInsert.values.prLifecycleStatus).toBeUndefined();
+    expect(recordedFacts.at(-1)).toMatchObject({ fact: { kind: 'open' } });
     // Diff stats come from the PR so policy thresholds see real numbers.
     expect(workerInsert.values.linesAdded).toBe(40);
     expect(workerInsert.values.filesChanged).toBe(2);
@@ -770,6 +780,16 @@ describe('per-task token', () => {
     mockTasksFindFirst.mockReturnValue({
       id: 'task-1', title: 'Unrelated work', description: 'nothing about PRs here', context: {}, workspaceId: 'ws-1',
     });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  // S21 (§17.1): the rule is the caller's task. The owner's task naming its own PR gives a
+  // sibling's token nothing; the lookup reads the caller's task only.
+  it('S21: a sibling task is refused even though the PR owner\'s task names the PR', async () => {
+    mockFindPrOwningWorker.mockReturnValue({ ...owner('task-2'), task: { id: 'task-2', title: 'Fix #42', description: 'land #42', context: {} } });
+    mockTasksFindFirst.mockImplementation(((..._a: unknown[]) => ({ id: 'task-1', title: 'Sibling work', description: 'touches the same files', context: {}, workspaceId: 'ws-1' })) as never);
     const res = await POST(post({ prNumber: 42 }));
     expect(res.status).toBe(403);
     expect(mockCreateReviewerTask).not.toHaveBeenCalled();

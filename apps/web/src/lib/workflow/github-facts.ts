@@ -16,6 +16,7 @@ interface GithubPull {
   merged_at?: string | null;
   merge_commit_sha?: string | null;
   updated_at?: string | null;
+  mergeable_state?: string | null;
   head?: { sha?: string; repo?: { full_name?: string } | null };
   base?: { ref?: string };
 }
@@ -32,6 +33,7 @@ export function toLivePr(pr: GithubPull | null | undefined): LivePr | null {
     mergedAt: pr.merged_at ?? null,
     mergeCommitSha: pr.merge_commit_sha ?? null,
     updatedAt: pr.updated_at ?? null,
+    mergeableState: pr.mergeable_state ?? null,
   };
 }
 
@@ -53,6 +55,11 @@ export function checkRunsSummary(runs: Array<{ name?: string; status?: string; c
     complete: runs.every((r) => r.status === 'completed'),
     failing: runs.filter((r) => r.status === 'completed' && FAILING.has(String(r.conclusion ?? ''))).map((r) => String(r.name ?? 'unnamed')),
   };
+}
+
+/** The distinct names of failed workflow runs and check runs. */
+export function failingNames(rows: Array<{ name?: string | null; conclusion?: string | null }>): string[] {
+  return [...new Set(rows.filter((r) => FAILING.has(String(r.conclusion ?? '')) && r.name).map((r) => String(r.name)))];
 }
 
 export function githubReader(installationId: number, api: typeof githubApi = githubApi): GithubFactReader {
@@ -81,12 +88,32 @@ export function githubReader(installationId: number, api: typeof githubApi = git
         return null;
       }
     },
+    async failingChecks(repoFullName, headSha) {
+      try {
+        const [runs, checks] = await Promise.all([
+          api(installationId, `/repos/${repoFullName}/actions/runs?head_sha=${headSha}&per_page=50`) as Promise<{ workflow_runs?: Array<{ name?: string | null; conclusion?: string | null }> } | null>,
+          api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-runs?per_page=100`) as Promise<{ check_runs?: Array<{ name?: string | null; conclusion?: string | null }> } | null>,
+        ]);
+        return failingNames([...(runs?.workflow_runs ?? []), ...(checks?.check_runs ?? [])]);
+      } catch {
+        return null;
+      }
+    },
     async branchHead(repoFullName, ref) {
       try {
         const data = await api(installationId, `/repos/${repoFullName}/branches/${ref}`) as { commit?: { sha?: string } } | null;
         return data?.commit?.sha ?? null;
       } catch {
         return null;
+      }
+    },
+    async branchExists(repoFullName, ref) {
+      try {
+        const b = await api(installationId, `/repos/${repoFullName}/branches/${ref.split('/').map(encodeURIComponent).join('/')}`) as { name?: string } | null;
+        return b ? true : null;
+      } catch (err) {
+        // Only GitHub's own "not found" says the branch is gone; anything else is unknown.
+        return /\b404\b/.test(err instanceof Error ? err.message : String(err)) ? false : null;
       }
     },
     async contains(repoFullName, ancestorSha, headSha) {

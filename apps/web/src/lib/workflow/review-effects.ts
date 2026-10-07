@@ -2,16 +2,16 @@
  * Effect handlers for the fix-loop seam (docs/specs/workflow-state-kernel.md
  * §10.2), owned by the reviews module: they create reviewer and fix tasks,
  * post GitHub reviews and raise review escalations. Core reaches them only
- * through the composition root (`WORKFLOW_EFFECT_HANDLERS` in
+ * through the composition root (`workflowEffectHandlers()` in
  * apps/web/src/modules.ts), never by import. Each one is idempotent: the outbox delivers at least once, so every
  * handler re-reads the delivery and acts only on what is still owed.
  *
- * Effects owned by later slices (post-merge work, landing, CI/conflict/trunk
- * repair) are acknowledged `skipped:legacy_owns`: the legacy code still runs
- * them in this slice, and a transition that names them must not make the
- * outbox retry forever.
+ * Effects owned by later slices (trunk repair) are acknowledged
+ * `skipped:legacy_owns`: the legacy code still runs them, and a transition
+ * that names them must not make the outbox retry forever.
  */
 import { and, desc, eq, ne, sql } from 'drizzle-orm';
+import { prWorkerWhere } from './pr-worker-where';
 import { randomUUID } from 'node:crypto';
 import { db } from '@buildd/core/db';
 import { missionNotes, missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
@@ -50,9 +50,9 @@ async function roundOutput(round: RoundSnapshot | undefined): Promise<Output> {
   return out && typeof out === 'object' ? (out as Output) : {};
 }
 
-async function prWorker(workspaceId: string, prNumber: number) {
+async function prWorker(workspaceId: string, repoFullName: string, prNumber: number) {
   return db.query.workers.findFirst({
-    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+    where: prWorkerWhere(workspaceId, repoFullName, prNumber),
     columns: { id: true, branch: true, prUrl: true, prBaseRef: true, lastCommitSha: true },
     orderBy: [desc(workers.createdAt)],
   });
@@ -65,7 +65,7 @@ async function viewFor(e: ClaimedEffect): Promise<KernelView> {
 const legacyOwns: EffectHandler = async () => ({ outcome: 'skipped:legacy_owns' });
 
 /** Pending reviewer/fix tasks of this delivery that a newer decision made pointless. */
-async function cancelPendingAttemptTasks(deliveryId: string, role: 'review' | 'fix' | 'ci_fix', keepTaskId: string | null, reason: string): Promise<number> {
+async function cancelPendingAttemptTasks(deliveryId: string, role: 'review' | 'fix' | 'ci_fix' | 'conflict_fix', keepTaskId: string | null, reason: string): Promise<number> {
   const rows = await db.update(tasks)
     .set({
       status: 'cancelled',
@@ -150,7 +150,7 @@ const dispatchReview: EffectHandler = async (e) => {
     columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true },
   });
   const repo = await workspaceRepo(d.workspaceId);
-  const prw = await prWorker(d.workspaceId, d.prNumber);
+  const prw = await prWorker(d.workspaceId, d.repoFullName, d.prNumber);
   if (!workspace || !owner || !repo) return { outcome: 'skipped:missing_context' };
 
   const mission = owner.missionId
@@ -287,7 +287,7 @@ const dispatchFix: EffectHandler = async (e) => {
     await appendPrActivity({ installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, entry: { kind: 'review_escalated', detail: 'dependency-bot PR · no fix pushed', note: feedback }, workspaceId: d.workspaceId });
     return { outcome: 'skipped:dependency_bot' };
   }
-  const prw = await prWorker(d.workspaceId, d.prNumber);
+  const prw = await prWorker(d.workspaceId, d.repoFullName, d.prNumber);
   const branch = prw?.branch ?? '';
   const lastCommitSha = prw?.lastCommitSha ?? null;
   // The (workspace, PR, head) dedupe index allows one row per head; a second
@@ -445,7 +445,7 @@ const cancelOpenAttempts: EffectHandler = async (e) => {
   if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
   if (reason === 'head_moved') {
     const families = Array.isArray(e.payload.families) ? (e.payload.families as string[]) : ['review_fix'];
-    const role = families.includes('ci') ? 'ci_fix' : 'fix';
+    const role = families.includes('ci') ? 'ci_fix' : families.includes('conflict') || families.includes('migration') ? 'conflict_fix' : 'fix';
     const n = await cancelPendingAttemptTasks(d.id, role, null, 'the PR head moved before the fix started');
     return { outcome: `ok:cancelled_${n}` };
   }
@@ -494,10 +494,10 @@ const pushRecovery: EffectHandler = async (e) => {
   return { outcome: 'ok:exhausted' };
 };
 
-const LEGACY_OWNED: EffectKind[] = [
-  'stamp_pr_rows', 'emit_pr_merged', 'wake_mission', 'release_attribution', 'finalize_mission_pr',
-  'scan_supersession', 'project_supersession', 'verify_merge', 'gate_event',
-];
+// The landing and post-merge effects are pr-landing-effects.ts's; the supersession
+// scan, its projection and the mission wake (T18/T20/T21) are supersession-effects.ts's.
+// Nothing emits these two yet.
+const LEGACY_OWNED: EffectKind[] = ['release_attribution', 'gate_event'];
 
 export const reviewEffectHandlers: EffectHandlers = {
   dispatch_review: dispatchReview,
