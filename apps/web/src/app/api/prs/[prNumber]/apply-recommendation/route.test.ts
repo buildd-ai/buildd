@@ -37,6 +37,9 @@ mock.module('@/lib/dispatch-authority', () => ({
 }));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
 mock.module('@/lib/escalation-supersession', () => ({ supersedeAncestorEscalations: mockSupersedeAncestorEscalations }));
+// Workflow kernel (lib/workflow/seam.ts): default, the PR is legacy-owned and every case below runs unchanged.
+const mockKernelDeliveryOfPr = mock(async (_p: any): Promise<any> => null);
+mock.module('@/lib/workflow/seam', () => ({ kernelDeliveryOfPr: mockKernelDeliveryOfPr }));
 
 const TASKS_TABLE = { __name: 'tasks' };
 const MISSION_NOTES_TABLE = { __name: 'missionNotes' };
@@ -133,6 +136,28 @@ describe('POST /api/prs/[prNumber]/apply-recommendation', () => {
     mockAppendPrActivity.mockReset();
     mockSupersedeAncestorEscalations.mockReset();
     mockPerformLandingAction.mockReset();
+    mockKernelDeliveryOfPr.mockReset();
+    mockKernelDeliveryOfPr.mockResolvedValue(null);
+  });
+
+  // Task 3f57afd0: a kernel-owned PR has one authority over its review family. A
+  // legacy fix task (iteration 0, no delivery, no ledger row) beside it would be
+  // an uncounted second one, so the route refuses and names the delivery state.
+  it('refuses with 409 on a kernel-owned PR and files no legacy fix task, even with an open escalation note', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+    mockKernelDeliveryOfPr.mockResolvedValue({ deliveryId: 'd-1', state: 'ESCALATED', stateReason: 'review_escalated', version: 7 });
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toMatchObject({ code: 'kernel_owned', kernel: true, delivery: { state: 'ESCALATED', stateReason: 'review_escalated', version: 7 } });
+    expect(body.error).toContain('ESCALATED');
+    expect(mockKernelDeliveryOfPr.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-1', prNumber: 42 });
+    expect(mockTasksValues).not.toHaveBeenCalled();
+    expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+    expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
+    expect(mockMissionNotesValues).not.toHaveBeenCalled();
   });
 
   it('returns 401 when unauthenticated', async () => {

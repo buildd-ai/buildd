@@ -14,6 +14,7 @@ import type { LivePr } from '../../src/lib/workflow/commands';
 import {
   attemptEnded,
   claimFix,
+  kernelDeliveryOfPr,
   fixCompletionGate,
   observeHead,
   observePrState,
@@ -311,6 +312,15 @@ describe('S7/S8/S25 — fix dispatch races, budget, claim-time revalidation', ()
 });
 
 describe('§14 cutover and the kill switch', () => {
+  test('kernelDeliveryOfPr names the owning delivery and its state; a legacy PR or a released delivery is null (task 3f57afd0)', async () => {
+    const { prNumber, deliveryId } = await openAndHandOn();
+    expect(await kernelDeliveryOfPr({ workspaceId, prNumber }, deps)).toMatchObject({ deliveryId, state: 'AWAITING_REVIEW' });
+    expect(await kernelDeliveryOfPr({ workspaceId, prNumber: prSeq++ }, deps)).toBeNull();
+    await q(sql`UPDATE workflow_deliveries SET authority = 'legacy' WHERE id = ${deliveryId}::uuid`);
+    expect(await kernelDeliveryOfPr({ workspaceId, prNumber }, deps)).toBeNull();
+  });
+
+
   test('a PR open at cutover (no delivery) stays legacy everywhere', async () => {
     const prNumber = prSeq++;
     expect(await kernelDeliveryForPr(workspaceId, REPO, prNumber)).toBeNull();

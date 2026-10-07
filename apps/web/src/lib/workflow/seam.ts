@@ -201,6 +201,25 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
   return { owned: true, deliveryId };
 }
 
+// ── §14: one authority per delivery ─────────────────────────────────────────
+
+/**
+ * The kernel delivery that owns PR `prNumber` of the workspace's repo, with the
+ * state a person would be acting against; null = legacy-owned (or no repo).
+ * A door that would file legacy review-family work (a fix task with no
+ * delivery and no ledger row) checks this first and refuses on a kernel PR.
+ */
+export async function kernelDeliveryOfPr(p: { workspaceId: string; prNumber: number }, deps: SeamDeps = {}): Promise<{
+  deliveryId: string; state: string | null; stateReason: string | null; version: number;
+} | null> {
+  const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
+  if (!repo) return null;
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, repo.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return null;
+  const d = (await loadView({ deliveryId }, deps.exec)).delivery;
+  return { deliveryId, state: d?.state ?? null, stateReason: d?.stateReason ?? null, version: d?.version ?? 0 };
+}
+
 // ── T4: an attempt ended ────────────────────────────────────────────────────
 
 export interface AttemptTask {

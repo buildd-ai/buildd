@@ -33,6 +33,7 @@ import { applyRecommendationTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { performLandingAction } from '@/lib/landing-action-run';
+import { kernelDeliveryOfPr } from '@/lib/workflow/seam';
 
 // A human choosing to apply a fix is a deliberate one-off, not another lap of
 // the bounded agent-only request-changes loop — it gets its own fresh budget
@@ -149,6 +150,24 @@ export async function POST(
           ? NextResponse.json({ ok: true, stale: outcome.stale, result: outcome.result })
           : NextResponse.json({ error: outcome.error, stale: outcome.stale }, { status: 502 });
     }
+  }
+
+  // A PR the workflow kernel owns has one authority over its review family
+  // (docs/specs/workflow-state-kernel.md §14). The fix below is a legacy task:
+  // iteration 0, no delivery, no review_fix ledger row, so the kernel would read
+  // its push as foreign and never count it. Refuse, naming the state the person
+  // is looking at, rather than run a second, uncounted fix loop beside the kernel.
+  const kernel = await kernelDeliveryOfPr({ workspaceId: worker.workspaceId, prNumber });
+  if (kernel) {
+    return NextResponse.json(
+      {
+        error: `PR #${prNumber} is owned by the workflow kernel (delivery ${kernel.state ?? 'unknown'}${kernel.stateReason ? `: ${kernel.stateReason}` : ''}); apply-recommendation files a legacy fix task and is not available for it`,
+        code: 'kernel_owned',
+        kernel: true,
+        delivery: kernel,
+      },
+      { status: 409 },
+    );
   }
 
   const headSha = worker.lastCommitSha;
