@@ -2,60 +2,27 @@
 
 import { useEffect, useId, useRef, useState } from 'react';
 import Link from 'next/link';
-import Switch, { SWITCH_HIT_AREA } from '@/components/ui/Switch';
+import Chip from '@/components/ui/Chip';
+import Disclosure from '@/components/ui/Disclosure';
 import { useMoveToTeam, type MoveTeam } from '@/components/MoveToTeamDialog';
-import type { WorkspaceRow } from './rows';
+import { groupWorkspaceRows, type WorkspaceRow } from './list-groups';
 
-const CELL = 'md:table-cell md:px-3 md:py-2.5 md:align-middle';
-const HEAD = 'px-3 py-2 text-left section-label font-normal';
-/** Label shown before a value on phones, where the header row is hidden. */
-const MOBILE_LABEL = 'md:hidden text-xs text-text-muted';
-const VALUE_LINK =
-  'inline-flex min-h-11 md:min-h-0 items-center text-[13px] text-text-primary underline decoration-border-default underline-offset-4 hover:decoration-current';
+/** Workspace · runs on · last activity · open · menu. Below md the row stacks. */
+const GRID = 'md:grid md:grid-cols-[minmax(0,1fr)_8rem_7rem_4rem_2.75rem] md:items-center md:gap-x-4';
+const EXECUTOR_LABEL = { cloud: 'Cloud', host: 'Host', any: 'Any runner' } as const;
 
-function CiSwitch({ row }: { row: WorkspaceRow }) {
-  const [on, setOn] = useState(row.enforceGreenCI);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function runsOn(row: WorkspaceRow): string {
+  const label = EXECUTOR_LABEL[row.runsOn.executor];
+  return row.runsOn.size ? `${label} · ${row.runsOn.size}` : label;
+}
 
-  async function toggle(next: boolean) {
-    if (saving) return;
-    setOn(next);
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/workspaces/${row.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gitConfig: { enforceGreenCI: next } }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? 'Save failed');
-      }
-    } catch (e) {
-      setOn(!next);
-      setError(e instanceof Error ? e.message : 'Save failed');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <span className="flex items-center justify-between md:justify-start gap-3 min-h-11 md:min-h-0">
-      <span className={MOBILE_LABEL}>Require green CI</span>
-      <span className="flex items-center gap-2">
-        {error && <span className="text-xs text-status-error" role="alert">{error}</span>}
-        <Switch
-          checked={on}
-          onChange={toggle}
-          disabled={!row.canEdit || saving}
-          label={`Require green CI for ${row.name}`}
-          className={SWITCH_HIT_AREA}
-        />
-      </span>
-    </span>
-  );
+function ago(iso: string | null, now: Date): string {
+  if (!iso) return 'No tasks';
+  const mins = Math.max(0, Math.floor((now.getTime() - Date.parse(iso)) / 60000));
+  if (mins < 60) return mins < 1 ? 'Just now' : `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 function RowMenu({ row, onMove }: { row: WorkspaceRow; onMove: () => void }) {
@@ -84,7 +51,7 @@ function RowMenu({ row, onMove }: { row: WorkspaceRow; onMove: () => void }) {
   }, [open]);
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative z-10">
       <button
         ref={triggerRef}
         type="button"
@@ -103,73 +70,159 @@ function RowMenu({ row, onMove }: { row: WorkspaceRow; onMove: () => void }) {
       </button>
       {open && (
         <div id={panelId} className="absolute right-0 top-full z-20 mt-1 min-w-44 card p-1">
-          <button
-            type="button"
-            onClick={() => { setOpen(false); onMove(); }}
-            className="w-full min-h-11 md:min-h-9 px-3 text-left text-[13px] text-text-primary hover:bg-surface-3 whitespace-nowrap"
+          <Link
+            href={`/app/workspaces/${row.id}`}
+            className="flex items-center w-full min-h-11 md:min-h-9 px-3 text-body text-text-primary hover:bg-surface-3 whitespace-nowrap"
           >
-            Move to team&hellip;
-          </button>
+            Open
+          </Link>
+          {row.canMove && (
+            <button
+              type="button"
+              onClick={() => { setOpen(false); onMove(); }}
+              className="w-full min-h-11 md:min-h-9 px-3 text-left text-body text-text-primary hover:bg-surface-3 whitespace-nowrap"
+            >
+              Move to team&hellip;
+            </button>
+          )}
+          <Link
+            href={`/app/workspaces/${row.id}/config`}
+            className="flex items-center w-full min-h-11 md:min-h-9 px-3 text-body text-text-primary hover:bg-surface-3 whitespace-nowrap"
+          >
+            Settings
+          </Link>
         </div>
       )}
     </div>
   );
 }
 
+function HealthChips({ row }: { row: WorkspaceRow }) {
+  const { redPrs, stuckTasks } = row.health;
+  if (redPrs === 0 && stuckTasks === 0) return null;
+  const href = `/api/explain?workspaceId=${row.id}`;
+  return (
+    <>
+      {redPrs > 0 && (
+        <Link href={href} className="relative z-10 inline-flex" data-testid="workspace-health-red">
+          <Chip tone="error">{redPrs === 1 ? '1 red PR' : `${redPrs} red PRs`}</Chip>
+        </Link>
+      )}
+      {stuckTasks > 0 && (
+        <Link href={href} className="relative z-10 inline-flex" data-testid="workspace-health-stuck">
+          <Chip tone="warning">{`${stuckTasks} stuck`}</Chip>
+        </Link>
+      )}
+    </>
+  );
+}
+
+function Row({ row, now, onMove }: { row: WorkspaceRow; now: Date; onMove: (row: WorkspaceRow) => void }) {
+  const chips = row.differs.length > 0 || row.health.redPrs > 0 || row.health.stuckTasks > 0;
+  return (
+    <li
+      data-testid="workspace-row"
+      className={`relative ${GRID} grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 px-4 py-3 md:px-3 md:py-2.5 hover:bg-card-hover`}
+    >
+      <div className="min-w-0">
+        {/* The whole row opens the workspace; chips and the menu sit above this link. */}
+        <Link
+          href={`/app/workspaces/${row.id}`}
+          className="block text-title font-semibold text-text-primary break-words after:absolute after:inset-0 after:content-['']"
+        >
+          {row.name}
+        </Link>
+        {chips && (
+          <div className="flex flex-wrap gap-1.5 mt-1.5">
+            {row.differs.map((d) => (
+              <Link key={d.key} href={d.href} className="relative z-10 inline-flex" data-testid={`workspace-differs-${d.key}`}>
+                <Chip tone="muted" dot={false}>{d.label}</Chip>
+              </Link>
+            ))}
+            <HealthChips row={row} />
+          </div>
+        )}
+        <p className="md:hidden text-meta text-text-muted mt-1.5">
+          {runsOn(row)} · <span suppressHydrationWarning>{ago(row.lastActivityAt, now)}</span> · {row.openTasks} open
+        </p>
+      </div>
+      <span className="hidden md:block text-body text-text-secondary" data-testid="workspace-runs-on">
+        <span className="sr-only">Runs on </span>{runsOn(row)}
+      </span>
+      <span className="hidden md:block text-body text-text-secondary" suppressHydrationWarning>
+        <span className="sr-only">Last task </span>{ago(row.lastActivityAt, now)}
+      </span>
+      <span className="hidden md:block text-body text-text-secondary tabular-nums">
+        {row.openTasks}<span className="sr-only"> open tasks</span>
+      </span>
+      <div className="col-start-2 row-start-1 -mr-2 -mt-2 md:m-0 md:col-auto md:row-auto md:justify-self-end">
+        <RowMenu row={row} onMove={() => onMove(row)} />
+      </div>
+    </li>
+  );
+}
+
+function RowList({ rows, now, onMove }: { rows: WorkspaceRow[]; now: Date; onMove: (row: WorkspaceRow) => void }) {
+  return (
+    <ul className="card p-0 divide-y divide-border-default">
+      {rows.map((row) => <Row key={row.id} row={row} now={now} onMove={onMove} />)}
+    </ul>
+  );
+}
+
 /**
- * Settings → Workspaces: one row per workspace. A table from `md` up; below
- * that the same markup stacks into one card per workspace, so a phone never
- * scrolls sideways.
+ * Settings → Workspaces: a list per team (team headings only when the rows
+ * span more than one team), most recently active first. A row shows only the
+ * settings that differ from the defaults, where its work runs, its last task,
+ * open tasks and a health hint; the whole row opens the workspace. Workspaces
+ * with no task in 30 days fold under "Inactive (N)". A header row labels the
+ * columns from md; below that each row stacks, so a phone never scrolls sideways.
  */
-export default function WorkspacesTable({ rows, moveTeams }: { rows: WorkspaceRow[]; moveTeams: MoveTeam[] }) {
+export default function WorkspacesTable({
+  rows,
+  moveTeams,
+  defaults,
+  now: nowIso,
+}: {
+  rows: WorkspaceRow[];
+  moveTeams: MoveTeam[];
+  /** What a workspace with no settings of its own gets (rows.ts WORKSPACE_DEFAULTS). */
+  defaults: { gitWorkflow: string; mergePolicy: string };
+  /** The server's clock (ISO), so the server render and hydration agree on what is inactive. */
+  now?: string;
+}) {
   const move = useMoveToTeam();
-  const anyMenu = rows.some((r) => r.canMove);
+  const now = nowIso ? new Date(nowIso) : new Date();
+  const { showTeamHeadings, groups } = groupWorkspaceRows(rows, now);
+  const onMove = (row: WorkspaceRow) => move.start({ id: row.id, name: row.name, teamId: row.teamId }, moveTeams);
 
   return (
     <>
-      <table className="block md:table w-full border-collapse md:bg-card md:border-2 md:border-border-strong md:shadow-[var(--card-shadow)]">
-        <thead className="hidden md:table-header-group">
-          <tr className="border-b border-border-default">
-            <th scope="col" className={HEAD}>Workspace</th>
-            <th scope="col" className={HEAD}>Team</th>
-            <th scope="col" className={HEAD}>Git workflow</th>
-            <th scope="col" className={HEAD}>Merge policy</th>
-            <th scope="col" className={HEAD}>Green CI</th>
-            {anyMenu && <th scope="col" className={HEAD}><span className="sr-only">Actions</span></th>}
-          </tr>
-        </thead>
-        <tbody className="block md:table-row-group space-y-4 md:space-y-0">
-          {rows.map((row) => (
-            <tr
-              key={row.id}
-              data-testid="workspace-row"
-              className="card md:shadow-none md:border-x-0 md:border-t-0 md:bg-transparent grid grid-cols-[1fr_auto] gap-x-3 px-4 py-3 md:table-row md:h-[3.25rem] md:p-0 md:border-b md:border-border-default md:last:border-b-0"
-            >
-              <th scope="row" className={`${CELL} block min-w-0 text-left font-normal`}>
-                <span className="block text-sm font-semibold text-text-primary break-words">{row.name}</span>
-                <span className="block md:hidden text-xs text-text-muted mt-0.5">{row.teamName}</span>
-              </th>
-              <td className={`${CELL} hidden md:table-cell text-[13px] text-text-secondary`}>{row.teamName}</td>
-              <td className={`${CELL} col-span-2 flex md:table-cell items-center justify-between gap-3 border-t border-border-default md:border-0 mt-2 md:mt-0`}>
-                <span className={MOBILE_LABEL}>Git workflow</span>
-                <Link href={`/app/workspaces/${row.id}/config`} className={VALUE_LINK}>{row.gitWorkflow}</Link>
-              </td>
-              <td className={`${CELL} col-span-2 flex md:table-cell items-center justify-between gap-3 border-t border-border-default md:border-0`}>
-                <span className={MOBILE_LABEL}>Merge policy</span>
-                <Link href={`/app/settings/workspace/${row.id}`} className={VALUE_LINK}>{row.mergePolicy}</Link>
-              </td>
-              <td className={`${CELL} block col-span-2 border-t border-border-default md:border-0`}>
-                <CiSwitch row={row} />
-              </td>
-              {anyMenu && (
-                <td className={`${CELL} block col-start-2 row-start-1 -mr-2 -mt-2 md:m-0 md:w-12 md:text-right`}>
-                  {row.canMove && <RowMenu row={row} onMove={() => move.start({ id: row.id, name: row.name, teamId: row.teamId }, moveTeams)} />}
-                </td>
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <p className="text-meta text-text-muted mb-4" data-testid="workspace-defaults">
+        Default: {defaults.gitWorkflow} · {defaults.mergePolicy}
+      </p>
+      <div aria-hidden="true" className={`hidden ${GRID} px-3 pb-1.5 text-meta text-text-muted`}>
+        <span>Workspace</span>
+        <span>Runs on</span>
+        <span>Last task</span>
+        <span>Open</span>
+        <span />
+      </div>
+      <div className="space-y-6">
+        {groups.map((g) => (
+          <section key={g.teamId} aria-label={showTeamHeadings ? g.teamName : undefined} data-testid="workspace-team-group">
+            {showTeamHeadings && <h3 className="section-label mb-2">{g.teamName}</h3>}
+            {g.active.length > 0 && <RowList rows={g.active} now={now} onMove={onMove} />}
+            {g.inactive.length > 0 && (
+              <Disclosure summary={`Inactive (${g.inactive.length})`} className={g.active.length > 0 ? 'mt-2' : ''}>
+                <div className="mt-1" data-testid="workspace-inactive">
+                  <RowList rows={g.inactive} now={now} onMove={onMove} />
+                </div>
+              </Disclosure>
+            )}
+          </section>
+        ))}
+      </div>
 
       {move.ui}
     </>
