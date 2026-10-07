@@ -5,7 +5,8 @@
  * recorded to the decision ledger (plus its ai_usage receipt).
  */
 import { describe, expect, it } from 'bun:test';
-import { checkQuestion, labelDecidedQuestionOutcomes, gateEnabledFromGitConfig, hardRailContextFromGitConfig, type QuestionCheckDeps, type QuestionCheckScope } from './question-gate-check';
+import { checkQuestion, gateEnabledFromGitConfig, hardRailContextFromGitConfig, type QuestionCheckDeps, type QuestionCheckScope } from './question-gate-check';
+import { labelDecidedQuestionOutcomes } from './question-gate-decision-outcomes';
 import type { QuestionGateRequest } from '@buildd/core/question-gate';
 
 const SCOPE: QuestionCheckScope = {
