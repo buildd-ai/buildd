@@ -11,6 +11,8 @@
  */
 
 import { describe, test, expect, mock, beforeEach, afterEach, setDefaultTimeout } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 
 // CI runners are slower — give tests more room than the 5s default.
 // WorkerManager constructor calls scanEnvironment() which probes tools on first run.
@@ -66,13 +68,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -180,8 +182,8 @@ function injectWorker(
   (manager as any).workers.set(worker.id, worker);
   (manager as any).sessions.set(worker.id, {
     abortController,
-    cwd: '/tmp/test-workspace',
-    repoPath: '/tmp/test-workspace',
+    cwd: getTestWorkspace(),
+    repoPath: getTestWorkspace(),
     generation: 1,
     inputStream: {
       enqueue: () => {},
@@ -230,7 +232,19 @@ function makeTask() {
 describe('bwrap runtime recovery', () => {
   let originalDisableSandbox: string | undefined;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     // Exercise mocked probes regardless of the worker's operator flag.
     originalDisableSandbox = process.env.BUILDD_DISABLE_SANDBOX;
     delete process.env.BUILDD_DISABLE_SANDBOX;
@@ -335,7 +349,7 @@ describe('bwrap runtime recovery', () => {
 
     // Call startSession directly — first query aborts, catch block detects
     // bwrapRetryPending and restarts; second query completes normally.
-    await (manager as any).startSession(worker, '/tmp/test-workspace', makeTask());
+    await (manager as any).startSession(worker, getTestWorkspace(), makeTask());
 
     // The session must NOT have been reported as failed
     const failedCalls = mockUpdateWorker.mock.calls.filter(
@@ -361,7 +375,7 @@ describe('bwrap runtime recovery', () => {
     const worker = makeWorker({ id: 'w-bwrap-session-id' });
     worker.bwrapRetryPending = true;
 
-    await (manager as any).startSession(worker, '/tmp/test-workspace', makeTask());
+    await (manager as any).startSession(worker, getTestWorkspace(), makeTask());
 
     expect(queryCallCount).toBe(2);
     // Both calls must have a non-empty session ID

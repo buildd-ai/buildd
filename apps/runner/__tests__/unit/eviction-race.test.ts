@@ -13,6 +13,8 @@
  */
 
 import { describe, test, expect, beforeEach, mock, afterEach } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
@@ -74,13 +76,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -223,8 +225,8 @@ function injectWorker(
     sessions.set(worker.id, {
       inputStream,
       abortController: new AbortController(),
-      cwd: '/tmp/test-workspace',
-      repoPath: '/tmp/test-workspace',
+      cwd: getTestWorkspace(),
+      repoPath: getTestWorkspace(),
       generation: 1,
     });
   }
@@ -240,7 +242,19 @@ describe('Eviction race conditions', () => {
     mockExistsSync = () => false;
   });
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     queryCallCount = 0;
     mockMessages = [];
     mockUpdateWorker.mockClear();

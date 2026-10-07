@@ -8,6 +8,8 @@
  */
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
@@ -55,13 +57,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -204,7 +206,15 @@ describe('purgeCompleted', () => {
 });
 
 describe('reconcileLocalWorkers', () => {
+  afterAll(() => {
+
+    cleanupTestWorkspace();
+
+  });
+
   beforeEach(() => {
+
+    initTestWorkspace();
     mockUpdateWorker.mockClear();
     mockGetWorkerRemote.mockReset();
     mockGetWorkerRemote.mockResolvedValue(null); // restore module-level default

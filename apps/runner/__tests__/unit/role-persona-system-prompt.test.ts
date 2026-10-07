@@ -14,6 +14,8 @@
  * backends and with or without a bundle.
  */
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import { join } from 'path';
 import type { LocalUIConfig } from '../../src/types';
 
@@ -89,13 +91,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -150,7 +152,7 @@ mock.module('../../src/roles', () => ({
 // cwd-CLAUDE.md cases below read the same directory either way.
 mock.module('../../src/git-operations', () => ({
   ...realGitOps,
-  setupWorktree: async (_repo: string, branch: string) => ({ path: '/tmp/test-workspace', branch, base: 'origin/main' }),
+  setupWorktree: async (_repo: string, branch: string) => ({ path: getTestWorkspace(), branch, base: 'origin/main' }),
 }));
 
 mock.module('../../src/worker-store', () => ({
@@ -211,7 +213,7 @@ async function runTask(
   mockClaimTask.mockImplementation(async () => ({ workers: [{
     id: workerId,
     branch: `buildd/${workerId}`,
-    worktreePath: '/tmp/test-workspace',
+    worktreePath: getTestWorkspace(),
     task,
     ...claimExtra,
   }] }));
@@ -230,7 +232,19 @@ function countOccurrences(haystack: string, needle: string): number {
 describe('assembled system prompt: role persona', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     lastQueryOpts = null;
     claudeMdInCwd = null;
     mockUpdateWorker.mockClear();

@@ -6,6 +6,8 @@
  */
 
 import { describe, test, expect, beforeEach, mock, afterEach } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
@@ -71,13 +73,13 @@ mock.module('../../src/buildd', () => ({
 let lastResolveArg: { id: string; name: string; repo?: string | null } | null = null;
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: (ws: { id: string; name: string; repo?: string | null }) => { lastResolveArg = ws; return '/tmp/test-workspace'; },
+    resolve: (ws: { id: string; name: string; repo?: string | null }) => { lastResolveArg = ws; return getTestWorkspace(); },
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -182,7 +184,19 @@ describe('WorkerManager — lifecycle', () => {
     manager?.destroy();
   });
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     queryCallCount = 0;
     mockMessages = [];
     mockUpdateWorker.mockClear();
