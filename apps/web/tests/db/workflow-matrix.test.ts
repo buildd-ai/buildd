@@ -1362,6 +1362,83 @@ describe('S16–S21', () => {
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', approvalBasis: 'human', approvedHeads: ['H1'] });
   });
 
+  // T23 (task eee04322): Apply on a kernel PR's escalation is HumanResolve(apply_recommendation).
+  // The route's whole kernel path is this seam call (route test for /api/prs/[prNumber]/apply-recommendation).
+  const applyRec = (o: Delivery, expectedVersion: number | undefined, instructions: string | null = null) =>
+    seam.applyRecommendationThroughKernel({ workspaceId, prNumber: o.prNumber, actor: 'human:owner', expectedVersion, instructions }, deps);
+  const bypassOf = async (deliveryId: string, command: string) => (await q<{ bypass: Record<string, unknown> | null; actor: string }>(
+    sql`SELECT bypass, actor FROM workflow_transitions WHERE delivery_id = ${deliveryId}::uuid AND command = ${command} ORDER BY to_version DESC LIMIT 1`))[0];
+
+  test('T23: Apply on a reviewer escalation dispatches the fix through the kernel: human ledger row, instructions in the task, then the normal claim', async () => {
+    const o = await openAndHandOn();
+    const reviewer = await reviewerOf(o.deliveryId);
+    await q(sql`UPDATE tasks SET result = ${JSON.stringify({ structuredOutput: { verdict: 'escalate', escalationReason: 'The schema changed with no generated migration.' } })}::jsonb WHERE id = ${reviewer.id}::uuid`);
+    await verdict(o, 'escalate');
+    const d = await delivery(o.deliveryId);
+    expect(d).toMatchObject({ state: 'ESCALATED', stateReason: 'review_escalated' });
+
+    const out = await applyRec(o, d.version, 'Generate the migration with bun db:generate and commit it.');
+    expect(out!.result).toMatchObject({ result: 'applied' });
+    // The person and the bypass are on T23's own transition.
+    expect(await bypassOf(o.deliveryId, 'HumanResolve')).toMatchObject({ actor: 'human:owner', bypass: { choice: 'apply_recommendation', actor: 'human:owner', escalation: 'review_escalated' } });
+    // One review_fix ledger row, trigger=human, against the escalated round.
+    const v = await loadView({ deliveryId: o.deliveryId });
+    const fixes = v.attempts.filter((a) => a.family === 'review_fix');
+    expect(fixes.map((a) => [a.attemptNo, a.trigger, a.status, a.boundHeadSha])).toEqual([[1, 'human', 'queued', 'H1']]);
+    expect(v.delivery).toMatchObject({ state: 'CHANGES_REQUESTED', stateReason: null });
+    // The kernel's fix task carries the instructions (authoritative) and the reviewer's words (context).
+    const [fix] = await tasksOf(o.deliveryId, 'fix');
+    expect(out!.attempt).toMatchObject({ attemptNo: 1, taskId: fix.id });
+    expect(fix.creation_source).toBe('dashboard');
+    expect(fix.context).toMatchObject({ trigger: 'human', appliedBy: 'human:owner', humanInstructions: 'Generate the migration with bun db:generate and commit it.', workflowAttemptId: fixes[0].id });
+    const [{ description }] = await q<{ description: string }>(sql`SELECT description FROM tasks WHERE id = ${fix.id}::uuid`);
+    expect(description).toContain('Generate the migration with bun db:generate and commit it.');
+    expect(description).toContain('The schema changed with no generated migration.');
+    expect(description.indexOf('Generate the migration')).toBeLessThan(description.indexOf('The schema changed'));
+    // Nothing on the legacy path: the only fix task is the delivery's own.
+    const legacy = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM tasks WHERE workspace_id = ${workspaceId}::uuid AND reviewer_retry_pr_number = ${o.prNumber} AND delivery_id IS NULL`);
+    expect(legacy[0].n).toBe(0);
+    // And the fix claims like any other.
+    expect(await seam.claimFix((await taskRow(fix.id)).task, deps)).toEqual({ action: 'proceed' });
+    expect((await delivery(o.deliveryId)).state).toBe('FIXING');
+  });
+
+  test('T23: a stale version is answered stale with the current view; nothing is dispatched', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'escalate');
+    const d = await delivery(o.deliveryId);
+    const n = (await transitions(o.deliveryId)).length;
+    const out = await applyRec(o, d.version - 1);
+    expect(out!.result).toEqual({ result: 'stale', reason: 'version_moved', current: { state: 'ESCALATED', version: d.version, head: 'H1', round: 1 } });
+    expect(out!.current).toMatchObject({ state: 'ESCALATED', stateReason: 'review_escalated', version: d.version });
+    expect(out!.attempt).toBeNull();
+    expect((await transitions(o.deliveryId)).length).toBe(n);
+    expect(await tasksOf(o.deliveryId, 'fix')).toEqual([]);
+    // A push that lands while the card is open moves the version too.
+    gh.head = 'H2'; gh.ancestors.H2 = ['H1'];
+    expect((await applyRec(o, d.version))!.result).toMatchObject({ result: 'stale' });
+    expect(await tasksOf(o.deliveryId, 'fix')).toEqual([]);
+  });
+
+  test('T23: an exhausted review budget is applied as a human attempt with no version from the card', async () => {
+    const o = await openAndHandOn();
+    await q(sql`UPDATE workflow_deliveries SET max_rounds = 1 WHERE id = ${o.deliveryId}::uuid`);
+    await verdict(o, 'request-changes');
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'review_exhausted' });
+    const out = await applyRec(o, undefined);
+    expect(out!.result).toMatchObject({ result: 'applied' });
+    const v = await loadView({ deliveryId: o.deliveryId });
+    expect(v.attempts.filter((a) => a.family === 'review_fix').map((a) => [a.attemptNo, a.trigger, a.maxAttempts])).toEqual([[1, 'human', 1]]);
+    expect((await tasksOf(o.deliveryId, 'fix')).length).toBe(1);
+    // A second click is not a second fix: the delivery left ESCALATED.
+    expect((await applyRec(o, undefined))!.result).toMatchObject({ result: 'stale', reason: 'state_moved' });
+    expect((await tasksOf(o.deliveryId, 'fix')).length).toBe(1);
+  });
+
+  test('T23: a legacy PR is not the kernel door', async () => {
+    expect(await seam.applyRecommendationThroughKernel({ workspaceId, prNumber: 999_999, actor: 'human:owner' }, deps)).toBeNull();
+  });
+
   // Slice C: the merge doors carry the version a person saw. The routes answer HTTP 409 with this
   // `current` (route tests for /api/prs/[prNumber]/merge and PUT /api/github/pr); this is the kernel
   // side on real Postgres: a stale version is told so before any rail acts, and nothing applies.

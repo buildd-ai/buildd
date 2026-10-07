@@ -465,7 +465,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | T20 | `SupersessionRecorded(target)` | `CLOSED_UNMERGED` **only** | live read: target PR exists, `merged=true`, is a different PR; caller authorised (§17.1) | `SUPERSEDED` | project `workers.supersededBy*`; mission wake | `supersede:{repo}#{pr}` | not closed → `rejected(not_closed_unmerged)`; fixes today's ability to mark an open PR superseded and to overwrite an edge |
 | T21 | `Abandon(reason)` | `CLOSED_UNMERGED` | human actor; reason non-empty | `ABANDONED` | project `workers.abandoned*` | `abandon:{repo}#{pr}` | not closed → `rejected` |
 | T22 | `PushRecoveryExhausted` | `AWAITING_PUSH` | `push_recovery` effect hit its attempt cap | `ESCALATED(push_undeliverable)` | notify with branch and reported `L` | `pushdead:{delivery}:{L}` | a head observed meanwhile wins (T3) |
-| T23 | `Escalate(reason)` / `HumanResolve(choice)` | `ESCALATED` | human actor; choice ∈ approve (T14), request changes (→ `CHANGES_REQUESTED`), apply recommendation (→ `FIXING` path, new attempt), dismiss with reason (→ `AWAITING_REVIEW` forced round) | per choice | per choice | `resolve:{delivery}:{version}` | resolves only the escalation at the version the human saw (§7) |
+| T23 | `Escalate(reason)` / `HumanResolve(choice)` | `ESCALATED` | human actor; choice ∈ approve (T14), request changes (→ `CHANGES_REQUESTED`), apply recommendation (→ `FIXING` path, new attempt), dismiss with reason (→ `AWAITING_REVIEW` forced round) | per choice | per choice | `resolve:{delivery}:{version}` | resolves only the escalation at the version the human saw (§7); apply/request changes need a review round at the current head (`no_review_at_head`) and dispatch a `trigger=human` T8 carrying the person's instructions |
 | T24 | `DeliveryFailed(reason)` (owner task terminal, no PR) | `WORKING`, `AWAITING_PUSH` | task `failed`/`cancelled`, retry budget spent, no PR bound | `FAILED` | none | `fail:{task}` | with a PR bound, T18/T22 apply instead |
 | T25 | `TrunkRedObserved(signature)` (circuit breaker, §6.10) | `AWAITING_REVIEW`, `APPROVED`, `LANDING`, `REPAIRING(ci)` | the same `signature` is failing on the base branch's own head, **or** ≥ the configured count of deliveries in the workspace hit it inside the configured window; open or join the `trunk_incidents` row | `BLOCKED_ON_TRUNK` with `resume_state` = the source | one `dispatch_trunk_fix` per incident (never per PR); cancel queued per-PR `ci` attempts for affected deliveries as `skipped`; `render_activity` ("blocked on trunk") | `trunk:{incident}:{delivery}` | a fact for a head that is no longer current is recorded only |
 | T26 | `TrunkRecovered(incident)` (base head green for the signature, or incident resolved by the trunk-fix PR merging) | `BLOCKED_ON_TRUNK` | live read: base branch's CI no longer fails the signature | `resume_state` re-entered at the current head; if that head predates the trunk fix, effect `refresh_branch` then re-run CI is the mechanical repair | none | `trunkok:{incident}:{delivery}` | a still-red re-read keeps the state; the budget of the `ci` family is **not** consumed while blocked |
@@ -1036,11 +1036,20 @@ reviewer that ended without a verdict, including one that completed with a prose
 malformed verdict: on a kernel round (`isKernelReviewRound`) the worker PATCH skips the
 prose fallback, the legacy same-task requeue and `escalateReviewContractFailure`, and T4
 sends `ReviewRoundFailed` with `prose_verdict`, `no_verdict` or (silent start) `infra`;
-`POST /api/prs/[prNumber]/apply-recommendation` refuses a kernel-owned PR with 409
-`kernel_owned`, naming the delivery state (`kernelDeliveryOfPr`), instead of filing a
-legacy fix task with no delivery and no `review_fix` ledger row beside the kernel; T23
-`HumanResolve(apply_recommendation)` carrying the person's instruction is not wired to
-a route yet; the outbox floor drain on the `pr-reconcile`
+T23 `HumanResolve(apply_recommendation)` for `POST /api/prs/[prNumber]/apply-recommendation`
+on a kernel-owned PR (`applyRecommendationThroughKernel`): the route never files a legacy
+fix task there. The seam records the live head first, then resolves at the version the
+person sent (`version` in the body, or the version read before that head was recorded),
+so a stale screen gets 409 with `current` and nothing is dispatched. The transition records
+the person and the bypass. Its `dispatch_fix` carries `trigger: 'human'` and the person's
+`humanInstructions` (their corrections, else the card's recommendation or defect text).
+The handler then sends T8 with `trigger: 'human'`, which accepts the escalated round
+whatever its verdict, still runs the §10.5 revalidation, and allocates a `review_fix` row
+with `trigger=human`. Past the cap it extends the budget by exactly that one dispatch,
+recorded as a bypass (`budgetFrom`/`budgetTo`). The fix task puts the instructions first,
+as the authoritative ask, with the reviewer's own words below them as context. With no
+review round at the current head, T23 refuses `no_review_at_head` rather than strand the
+delivery in `CHANGES_REQUESTED`; the outbox floor drain on the `pr-reconcile`
 full pass plus an inline drain after every applied transition.
 
 Shipped live in part 2 (the CI family):
@@ -1934,7 +1943,7 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S17 | UI projections agree | one `DeliveryView` → Home chip, task header and mission failure reading agree (part 3); task card stage, mission strip and feed, chat dock, chat tile, PR pill and explain's state chain agree with it for every §4 state, and none reads the worker columns for a kernel-owned PR (Slice E, §13.9) | `apps/web/src/lib/workflow/delivery-display.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts`, `apps/web/src/app/app/(protected)/tasks/[id]/lineage-status.test.tsx`, `apps/web/src/lib/explain-because.test.ts` |
 | S18 | Mission integration branch deleted under an open task PR (cause of the PR #3744 closure) | `CLOSED_UNMERGED(base_deleted)`, `scan_supersession` finds the re-opened PR, T20 records it | `apps/web/src/lib/pr-supersession-detect.test.ts`, `apps/web/src/lib/mission-pr.test.ts` |
 | S19 | Fix worker killed after claim | `FIXING → CHANGES_REQUESTED`, the ledger row ends `failed`, the next dispatch allocates the next `attempt_no`, or exhausts | reducer test |
-| S20 | Stale `version` from a human action | `stale` + current view, HTTP 409; nothing applied | reducer test; route tests for `/api/prs/[prNumber]/merge` and `/api/github/pr` |
+| S20 | Stale `version` from a human action | `stale` + current view, HTTP 409; nothing applied | reducer test; route tests for `/api/prs/[prNumber]/merge`, `/api/github/pr` and `/api/prs/[prNumber]/apply-recommendation`; `apps/web/tests/db/workflow-matrix.test.ts` (S20, T23) |
 | S21 | Authorization matrix (§17.1) | owner, caller-names-PR, sibling, other workspace, human | `apps/web/src/app/api/github/pr/supersede/route.test.ts`, `apps/web/src/app/api/github/pr/review/route.test.ts`, `apps/web/src/lib/task-token-auth.test.ts` |
 | S22 | Kill switch | with `workflowKernel=false` a delivery is released to legacy (sticky), no new one opens, and a PR with no delivery is untouched by every seam function | `apps/web/tests/db/workflow-seam.test.ts`, `bun run test` |
 | S23 | CI provenance (audit): worker pushes under the owner's git identity; worker pushes under the bot identity; a person pushes | the first two are attributed by SHA set and consume a ledger row; the third is `foreign_push` and consumes none; the cap bounds dispatches in all three; manual "Fix CI" uses the configured cap | `apps/web/src/lib/ci-failure-retry.test.ts`, `apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts`, reducer test (replaces the author-string cases around `isBuilddWorkerCommit`) |
