@@ -9,7 +9,7 @@
  */
 
 import { derivePrDisplayState } from './pr-presentation';
-import type { DeliveryDisplay } from './workflow/delivery-display';
+import { deliveryReading, type DeliveryReadingInput, type DeliveryTone } from './workflow/delivery-display';
 
 // ─── Stage enum ───────────────────────────────────────────────────────────────
 
@@ -21,7 +21,8 @@ export type Stage =
   | 'RUNNING'
   | 'WAITING_INPUT'
   | 'REVIEWING'    // agent review is in progress (caller must set explicitly)
-  | 'FIXING'       // kernel-owned PR: a fix, repair or push recovery is in flight (platform or worker owns it)
+  | 'FIXING'       // kernel-owned PR moving under a non-human owner (fix, repair, review, push recovery, merge); its label is the delivery's
+  | 'STALLED'      // kernel-owned PR the platform owns but is not moving on its own (a stalled conflict fix, a red base)
   | 'OPEN'         // PR open, no CI signal yet
   | 'CI'           // CI in progress (ci_running)
   | 'CI_FAILING'   // CI completed with at least one failure (ci_failed)
@@ -58,31 +59,48 @@ export interface StageInput {
    * PR branch below: a kernel-owned PR's stage never reads the fact-cache
    * columns. Absent for legacy-owned and PR-less tasks.
    */
-  delivery?: Pick<DeliveryDisplay, 'stage'> | null;
+  delivery?: DeliveryReadingInput | null;
 }
+
+/**
+ * The chip palette for a delivery's canonical tone (`deliveryReading`). The
+ * one table: the chip's words are the reading's label, never a stage name.
+ */
+export const STAGE_FOR_DELIVERY_TONE: Record<DeliveryTone, Stage> = {
+  needs: 'WAITING_INPUT',
+  live: 'FIXING',
+  stalled: 'STALLED',
+  landed: 'DONE',
+  closed: 'DONE',
+  failed: 'FAILED',
+};
 
 /**
  * A kernel-owned delivery's stage in the chip vocabulary. Null for
  * `working`: the delivery waits on the owner's own attempt, so the task's
  * execution state (running, queued) is the truthful reading.
  */
-export function stageForDelivery(d: Pick<DeliveryDisplay, 'stage'>): Stage | null {
-  switch (d.stage) {
-    case 'working': return null;
-    case 'awaiting_push':
-    case 'fixing':
-    case 'repairing': return 'FIXING';
-    case 'review': return 'REVIEWING';
-    case 'blocked': return 'BLOCKED';
-    case 'approved':
-    case 'landing': return 'MERGE';
-    case 'needs_you': return 'WAITING_INPUT';
-    case 'merged':
-    case 'closed':
-    case 'superseded':
-    case 'abandoned': return 'DONE';
-    case 'failed': return 'FAILED';
-  }
+export function stageForDelivery(d: DeliveryReadingInput): Stage | null {
+  const r = deliveryReading(d);
+  return r ? STAGE_FOR_DELIVERY_TONE[r.tone] : null;
+}
+
+/**
+ * `deriveStage` plus the chip's words: the delivery's canonical label when
+ * the kernel decided the stage, else null (the stage's own label stands).
+ */
+export function deriveStageReading(input: StageInput): { stage: Stage; label: string | null } {
+  const stage = deriveStage(input);
+  const r = input.delivery && kernelDecides(input) ? deliveryReading(input.delivery) : null;
+  return { stage, label: r ? r.label : null };
+}
+
+/** The kernel's reading wins unless a live worker or its own question leads. */
+function kernelDecides({ taskStatus, workerStatus }: StageInput): boolean {
+  if (taskStatus === 'cancelled') return false;
+  if (workerStatus === 'waiting_input' && taskStatus !== 'failed') return false;
+  const workerLive = workerStatus === 'running' || workerStatus === 'starting' || workerStatus === 'idle';
+  return !(workerLive && taskStatus !== 'failed');
 }
 
 /**

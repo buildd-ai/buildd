@@ -8,8 +8,8 @@
  * the useMemo key in StructureView.tsx to guarantee this.
  */
 
-import { deriveStage } from '@/lib/stage';
-import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
+import { deriveStageReading } from '@/lib/stage';
+import type { DeliveryReadingInput } from '@/lib/workflow/delivery-display';
 import type { Stage } from '@/lib/stage';
 import type { WorkKind } from '@/lib/task-presentation';
 import type { TaskType } from '@buildd/core/mission-helpers';
@@ -33,7 +33,7 @@ export type StructureTask = {
     mergedAt: string | null;
   } | null;
   /** The kernel's reading when this task owns a kernel-owned delivery (§17.5); null = legacy. */
-  delivery?: Pick<DeliveryDisplay, 'stage'> | null;
+  delivery?: DeliveryReadingInput | null;
   loopState?: string | null;
   loopMaxLoops?: number | null;
   loopIteration?: number | null;
@@ -95,6 +95,8 @@ export type StructureNode<T extends StructureTask = StructureTask> = {
   label: string;
   /** Stage of the HEAD task (drives node fill). */
   stage: Stage;
+  /** The chip's words when a kernel-owned delivery decided the stage (`deriveStageReading`). */
+  stageLabel: string | null;
   /** True when the task is stranded (dep is terminal but will never resolve). */
   isStranded: boolean;
   roleColor: string;
@@ -175,7 +177,7 @@ function taskStage<T extends StructureTask>(
   task: T,
   taskMap: Map<string, CondensedTask>,
   allTaskIds: Set<string>,
-): Stage {
+): { stage: Stage; label: string | null } {
   const condensed = taskMap.get(task.id);
   const deps = condensed?.dependsOn ?? [];
   const isBlocked = deps.some(depId => {
@@ -191,7 +193,7 @@ function taskStage<T extends StructureTask>(
   });
 
   const w = task.latestWorker;
-  return deriveStage({
+  return deriveStageReading({
     taskStatus: task.status,
     workerStatus: w?.status ?? null,
     prUrl: w?.prUrl ?? null,
@@ -389,7 +391,7 @@ export function computeStructureLayout<T extends StructureTask>(
     if (collapsed) {
       // Collapsed chain node
       const chainTasks = [collapsed.head, ...collapsed.tail];
-      const stage = taskStage(headTask, taskMap, allTaskIds);
+      const { stage, label: stageLabel } = taskStage(headTask, taskMap, allTaskIds);
       const isStranded = isStrandedTask(headId, taskMap);
       const titlePrefix = headTask.title.length > 32
         ? headTask.title.slice(0, 32) + '…'
@@ -407,6 +409,7 @@ export function computeStructureLayout<T extends StructureTask>(
         chainLength: chainTasks.length,
         label,
         stage,
+        stageLabel,
         isStranded,
         roleColor: headTask.roleColor,
         latestWorker: headTask.latestWorker,
@@ -420,7 +423,7 @@ export function computeStructureLayout<T extends StructureTask>(
       };
     } else {
       // Individual task node
-      const stage = taskStage(headTask, taskMap, allTaskIds);
+      const { stage, label: stageLabel } = taskStage(headTask, taskMap, allTaskIds);
       const isStranded = isStrandedTask(headId, taskMap);
 
       return {
@@ -433,6 +436,7 @@ export function computeStructureLayout<T extends StructureTask>(
         chainLength: 1,
         label: headTask.title.length > 32 ? headTask.title.slice(0, 32) + '…' : headTask.title,
         stage,
+        stageLabel,
         isStranded,
         roleColor: headTask.roleColor,
         latestWorker: headTask.latestWorker,

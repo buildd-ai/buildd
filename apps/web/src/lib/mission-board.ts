@@ -33,7 +33,7 @@ import { classifyTaskFailure, type TaskFailureKind } from './task-failure-kind';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
 import { activeWorkMs, formatDuration } from './mission-duration';
-import type { DeliveryDisplay } from './workflow/delivery-display';
+import { deliveryReading, type DeliveryDisplay, type DeliveryReading, type DeliveryReadingInput, type DeliveryTone } from './workflow/delivery-display';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -185,6 +185,12 @@ export interface BoardTask {
    * and evidence. The strip drawer says this instead of generic copy.
    */
   kernelReason?: string | null;
+  /**
+   * The delivery's canonical reading when the kernel decided this row's
+   * status (`deliveryReading`): the tile, the strip drawer's pill, the band's
+   * Needs-you count and chat's AT WORK row all say its label. Null otherwise.
+   */
+  delivery?: DeliveryReading | null;
   /** Runner (display name) of the live worker (the fix attempt's, while fixing), else the last one. */
   runner: string | null;
   /** 0-based slot on that runner, derived from overlap. */
@@ -500,42 +506,39 @@ const isLiveWorker = (w: BoardWorkerInput | null | undefined) => !!w && LIVE.has
  * (`deriveFeedTaskState`). `depsLanded` answers "is anything still holding it".
  */
 /**
- * A kernel-owned delivery's tile state (§17.5). Null for `working` (the
- * owner's own attempt is the reading). The Board's own vocabulary holds:
- * `fixing` is a red PR under repair (CI, conflict, a red base), so a review
- * fix or a push recovery, whose PR is not red, is `running`. Review and
- * landing read `review`; so does ESCALATED, whose reason the drawer carries.
+ * The Board's status per canonical delivery tone (`deliveryReading`). The
+ * tile's words are the reading's label; the status only places the row. A
+ * person's move reads `review`, never `waiting` (the Board's `waiting` and its
+ * Ask/Reply are an agent's question), and still counts in Needs you through
+ * `BoardTask.delivery`. Nothing but a FAILED delivery is `failed` or in the
+ * strip's error bucket: a stalled conflict fix or a CI fix in flight is
+ * recoverable work the platform owns (S35, S36).
  */
-export function boardStatusForDelivery(d: Pick<DeliveryDisplay, 'stage'>): BoardStatus | null {
-  switch (d.stage) {
-    case 'working': return null;
-    case 'awaiting_push':
-    case 'fixing': return 'running';
-    case 'repairing':
-    case 'blocked': return 'fixing';
-    case 'review':
-    case 'approved':
-    case 'landing': return 'review';
-    // A person's decision on the PR, not an agent's question: the Board's
-    // `waiting` (and its Ask/Reply) is for questions, so it reads `review`,
-    // as a legacy PR awaiting you does. The drawer names the escalation.
-    case 'needs_you': return 'review';
-    case 'merged':
-    case 'superseded': return 'merged';
-    case 'closed':
-    case 'abandoned': return 'done';
-    case 'failed': return 'failed';
-  }
+const BOARD_STATUS_FOR_DELIVERY_TONE: Record<DeliveryTone, BoardStatus> = {
+  needs: 'review', live: 'running', stalled: 'running', landed: 'merged', closed: 'done', failed: 'failed',
+};
+
+/** A kernel-owned delivery's tile state (§17.5). Null for `working` (the owner's own attempt is the reading). */
+export function boardStatusForDelivery(d: DeliveryReadingInput): BoardStatus | null {
+  const r = deliveryReading(d);
+  return r ? BOARD_STATUS_FOR_DELIVERY_TONE[r.tone] : null;
+}
+
+/** The delivery reading that decides this row, or null when the row keeps its own projection. */
+export function boardDeliveryReading(row: DeliverableRow<BoardTaskInput>): DeliveryReading | null {
+  const { task } = row;
+  if (!task.delivery || task.status === 'cancelled') return null;
+  // A worker's own question stays a question (§13.2 dev. 3).
+  const feed = deriveFeedTaskState(row);
+  const asked = feed.needsYou === 'input' || feed.needsYou === 'question' || feed.needsYou === 'decision';
+  return asked ? null : deliveryReading(task.delivery);
 }
 
 export function deriveBoardStatus(row: DeliverableRow<BoardTaskInput>, depsLanded: boolean): BoardStatus {
   const { task } = row;
+  const kernel = boardDeliveryReading(row);
+  if (kernel) return BOARD_STATUS_FOR_DELIVERY_TONE[kernel.tone];
   const feed = deriveFeedTaskState(row);
-  // A worker's own question stays a question (§13.2 dev. 3); otherwise the
-  // kernel's reading wins for a kernel-owned delivery.
-  const asked = feed.needsYou === 'input' || feed.needsYou === 'question' || feed.needsYou === 'decision';
-  const kernel = task.delivery && !asked && task.status !== 'cancelled' ? boardStatusForDelivery(task.delivery) : null;
-  if (kernel) return kernel;
   const pr = deriveFeedPrState(task.worker);
   const openAttempt = [...row.attempts].reverse().find(a => !TERMINAL.has(a.status) && a.taskClass !== 'work');
   const attemptLive = !!openAttempt && (isLiveWorker(openAttempt.workers[0]) || openAttempt.status === 'in_progress' || openAttempt.status === 'assigned');
@@ -707,6 +710,7 @@ export function buildBoardCells(
       kernelReason: t.delivery && t.delivery.stage !== 'working'
         ? (t.delivery.detail ? `${t.delivery.headline}: ${t.delivery.detail}.` : `${t.delivery.headline}.`)
         : null,
+      delivery: boardDeliveryReading(r),
       runner: activeWorker ? displayOf(activeWorker)?.name ?? null : null,
       slot: null,
       workerId: activeWorker?.id ?? null,
@@ -886,8 +890,10 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   );
 
   // Side rail.
-  const needsYou = all.filter(t => t.status === 'waiting').map(t => t.id);
-  const inReview = all.filter(t => t.status === 'review' || t.status === 'ci_failed' || t.status === 'fixing').map(t => t.id);
+  // Needs you: an agent's question, or a delivery whose next move is a
+  // person's (the same reading Home's Needs You admits, S36).
+  const needsYou = all.filter(t => t.status === 'waiting' || t.delivery?.needsYou).map(t => t.id);
+  const inReview = all.filter(t => !t.delivery?.needsYou && (t.status === 'review' || t.status === 'ci_failed' || t.status === 'fixing')).map(t => t.id);
   const upNext = rows.map(r => r.task.id).filter(id => BOARD_QUEUED.has(tasks[id].status));
 
   // Ticker: newest first.

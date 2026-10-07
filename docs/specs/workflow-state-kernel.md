@@ -1592,23 +1592,25 @@ source per row: a surface never combines the delivery with the worker columns.
   the columns. `PR_PILL`, keyed by display state, is the only pill vocabulary.
   The task page's stat tile, PR card and shipped header, the chat PR object,
   explain's history and the mission feed's PR state all call it.
-- **Task card stage.** `deriveStage` takes `delivery` and maps it through
-  `stageForDelivery`. That adds one chip, `FIXING`, for a fix, repair or push
-  recovery in flight. `AWAITING_PUSH` reads Fixing, not "in review". The
-  tasks list histogram (`deriveGridTaskStage`) buckets from the same stage. A
-  live worker and a worker's own question still lead (§13.2 deviation 3). A
-  failed owner attempt of a live delivery reads the delivery, not FAILED.
+- **Task card stage.** `deriveStageReading` takes `delivery` and returns
+  `deliveryReading`'s label with a chip style from its tone: `FIXING` for live
+  work under a non-human owner, `STALLED` for a stalled or missing
+  remediation and a red base. The tasks list histogram (`deriveGridTaskStage`)
+  buckets from the same tone. A live worker and a worker's own question still
+  lead (§13.2 deviation 3). A failed owner attempt of a live delivery reads
+  the delivery, not FAILED.
 - **Mission strip, board and feed.** `deriveFeedTaskState` and
   `deriveBoardStatus` read `task.delivery` (`feedStateForDelivery`,
-  `boardStatusForDelivery`). Only ESCALATED is yours. Every other live state
-  is moving, so a fix in flight is never "needs you" and never FAILED. On
-  the Board, a review fix or a push recovery reads `running`. A red PR under
-  repair (CI, conflict, a red base) reads `fixing`, the Board's own word for
-  it. The strip drawer gives the kernel's headline and evidence
+  `boardStatusForDelivery`, both over `deliveryReading`). A person's move
+  (ESCALATED, or an approved PR awaiting its merge) is yours. Every other live
+  state is moving, so a fix in flight is never "needs you" and never FAILED.
+  On the Board every non-human live state reads `running` and the tile says
+  the reading's label (deviation 5). The strip drawer gives the kernel's headline and evidence
   (`BoardTask.kernelReason`) instead of generic copy. The chat's mission
   object loads the same displays for its board and AT WORK rows.
 - **Chat.** The dock badge (`dockToneForDelivery`), the task tile
-  (`taskStateForDelivery`) and the PR object (`prStateOf`) read the delivery.
+  (`taskStateForDelivery`), both over `deliveryReading`, and the PR object
+  (`prStateOf`) read the delivery.
   The dock's insight and closing line carry the kernel's headline and evidence
   instead of "Needs input."
 - **Explain.** For the owner of a kernel-owned delivery, the state chain's
@@ -1652,12 +1654,23 @@ Deviations, each deliberate:
    `CondensedTimeline` component keep their column reads.** The timeline's
    rows pass `delivery` to `TaskCard`, so its chip is correct. The drawer's PR
    card still takes `prLifecycleStatus` from its own query.
-5. **The Board keeps its own needs-you word.** An ESCALATED delivery is
-   `review` on the Board, as a legacy PR awaiting you is. The Board's
-   `waiting`, its Ask/Reply and its NEEDS YOU count are for an agent's
-   question. Home, the task card, the feed, the chip and the chat all say
-   "needs you". The strip still counts a red PR under repair as "failed"
-   (its tone vocabulary, #3846).
+5. **Resolved after the slice: one reading, not one mapping per surface.** A
+   visual review of the `delivery-states` fixture found the surfaces still
+   disagreeing: a stalled conflict fix and a CI fix counted as "failed" on the
+   strip, an escalation read "in review" on the board and "needs input" in the
+   list, an approved PR read "in review", and the mission's Needs-you count was
+   zero while Home listed two. `deliveryReading`
+   (`lib/workflow/delivery-display.ts`) is now the one label, canonical tone,
+   needs-you and failed answer per delivery. The task chip and histogram, the
+   board tile, strip drawer and band, the feed, the chat tile and the dock take
+   it as is. Each maps the tone through one total palette table and never maps
+   a state. An approved PR reads "Ready to merge" and needs you, as Home's Merge
+   card does. A stalled remediation reads "Conflict fix stalled" and offers
+   Home's "Run fix" in the strip drawer and the dock. Only a FAILED delivery is
+   failed. The Board still keeps `waiting` (and its Ask/Reply) for an agent's
+   question. A delivery that needs you reads `review` and is counted in Needs
+   you through `BoardTask.delivery`. The S17 table test in
+   `delivery-display.test.ts` holds every surface to it.
 6. **Visual QA ran locally.** The dispatched capture fails at Run migrations
    for any mission-branch ref, because a branch migration sits below prod's
    journal mark and the planner refuses the backfill. That has nothing to do

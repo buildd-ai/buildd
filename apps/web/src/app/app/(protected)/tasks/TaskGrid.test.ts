@@ -61,6 +61,8 @@ function stageToHistogramBucket(stage: Stage): string {
     case 'REVIEWING':
     case 'FIXING':
       return 'REVIEW';
+    case 'STALLED':
+      return 'BLOCKED';
     case 'WAITING_INPUT':
       return 'RUNNING';
     default:
@@ -253,13 +255,12 @@ describe('capGroupedRows', () => {
 // card's chip shows, whatever the worker columns say.
 describe('kernel-owned rows: chip and histogram read the delivery', () => {
   const d = (stage: NonNullable<GridTask['delivery']>['stage']): NonNullable<GridTask['delivery']> => ({
-    ownerTaskId: 't1', state: 'FIXING', stage, owner: 'worker', needsYou: false, headline: 'x', detail: null, prNumber: 1234, prState: 'awaiting_ci', attemptLine: null,
+    ownerTaskId: 't1', state: 'FIXING', stage, owner: 'worker', needsYou: false, headline: 'x', detail: null, prNumber: 1234, prState: 'awaiting_ci', attemptLine: null, cta: null,
   });
   it.each([
     ['fixing', 'REVIEW'],
     ['awaiting_push', 'REVIEW'],
     ['review', 'REVIEW'],
-    ['approved', 'REVIEW'],
     ['merged', 'DONE'],
     ['superseded', 'DONE'],
     ['blocked', 'BLOCKED'],
@@ -268,8 +269,8 @@ describe('kernel-owned rows: chip and histogram read the delivery', () => {
     expect(deriveGridTaskStage(task)).toBe(expected);
     expect(stageToHistogramBucket(cardStage(task))).toBe(expected);
   });
-  it('an escalated PR is in review on the histogram and needs you on the chip', () => {
-    const task = makeTask({ delivery: d('needs_you') });
+  it.each(['needs_you', 'approved'] as const)("%s (a person's move) is in review on the histogram and needs you on the chip", (stage) => {
+    const task = makeTask({ delivery: d(stage) });
     expect(deriveGridTaskStage(task)).toBe('REVIEW');
     expect(cardStage(task)).toBe('WAITING_INPUT');
   });
