@@ -25,6 +25,10 @@ import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
 import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
+import { preflightMissOf } from './preflight-miss';
+
+// The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
+export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
 import type { Verdict } from './types';
 
 export type DeliveryRole = 'owner' | 'fix' | 'ci_fix' | 'conflict_fix' | 'review';
@@ -201,11 +205,17 @@ export interface AttemptTask {
 export async function attemptEnded(p: {
   task: AttemptTask;
   workerId: string;
-  /** `lost`: the reaper ended it (no report, no local head known). */
-  status: 'completed' | 'failed' | 'lost';
+  /**
+   * `lost`: the reaper ended it (no report, no local head known).
+   * `unproven`: the runner's hand-off failed after work (§6.6, S30): the work
+   * is not on GitHub, which is not the same as the work having failed.
+   */
+  status: 'completed' | 'failed' | 'lost' | 'unproven';
   localHeadSha: string | null;
   commitCount: number;
   source: string;
+  /** The task's own retry is queued (its retry count, not a ledger): an owner end with nothing local stays WORKING. */
+  taskRetryBudgetLeft?: boolean;
 }, deps: SeamDeps = {}): Promise<{ handled: boolean; result?: CommandResult }> {
   const attemptKind = p.task.deliveryRole;
   if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind) && attemptKind !== 'review')) return { handled: false };
@@ -251,6 +261,7 @@ export async function attemptEnded(p: {
     commitCount: p.commitCount,
     live,
     ...(proof ? { proof } : {}),
+    ...(p.taskRetryBudgetLeft ? { taskRetryBudgetLeft: true } : {}),
     // The kernel owns only deliveries whose policy dispatched a review (§14 Slice A).
     reviewRequired: true,
   };
@@ -501,6 +512,27 @@ async function attemptTaskOf(deliveryId: string, result: CommandResult, exec?: E
 }
 
 /**
+ * §6.10 tier 3 (S31): the failing check a configured preflight covers, or
+ * null. Best-effort: an unreadable check list or workspace is never a miss.
+ */
+async function preflightMissFor(
+  reader: GithubFactReader,
+  p: { workspaceId: string; repoFullName: string; headSha: string },
+  deps: SeamDeps,
+): Promise<string | null> {
+  if (!reader.failingChecks) return null;
+  try {
+    const failing = await reader.failingChecks(p.repoFullName, p.headSha);
+    if (!failing?.length) return null;
+    const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
+    const preflight = (repo?.gitConfig as { preflight?: { ciChecks?: unknown } | null } | null)?.preflight;
+    return preflightMissOf(failing, preflight?.ciChecks);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The `check_suite` webhook and the red-PR sweep for a kernel-owned PR: T10
  * from a live read. The head is recorded first (R2), so an old-SHA failure is
  * answered `stale(head_not_current)` and never overwrites a newer head.
@@ -517,10 +549,12 @@ export async function observeCiFailure(p: {
   if (!live) return { handled: true, result: { result: 'rejected', reason: 'live_read_failed', current: { state: null, version: 0, head: null, round: 0 } }, attemptTaskId: null };
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.source}:ci`, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
+  const preflightMiss = await preflightMissFor(reader, p, deps);
   const result = await applyCommand(
-    { type: 'CiFailedObserved', actor: p.source, headSha: p.headSha, signature: p.signature, maxAttempts: p.maxAttempts },
+    { type: 'CiFailedObserved', actor: p.source, headSha: p.headSha, signature: p.signature, maxAttempts: p.maxAttempts, ...(preflightMiss ? { preflightMiss } : {}) },
     { ref: { deliveryId }, exec: deps.exec },
   );
+  if (preflightMiss) console.log(`[workflow] preflight_miss on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}: ${preflightMiss}`);
   await drainDelivery(deliveryId, deps);
   return { handled: true, result, attemptTaskId: await attemptTaskOf(deliveryId, result, deps.exec) };
 }

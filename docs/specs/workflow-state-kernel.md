@@ -43,7 +43,7 @@ integration PRs are checked by composition; S35–S37 hold. **Slice B part 1 mov
 PR fact cache onto one funnel**: `recordPrFact` (`packages/core/pr-facts.ts`) is the
 only writer of `workers.prLifecycleStatus` / `mergedAt`, with terminal-wins in its
 `WHERE`; `pr-state-reconcile.ts` is deleted and pages no longer write while they
-render. §13.1–§13.3 list what landed and the deviations; §14 the cutover and the kill
+render. §13.1–§13.3 and §13.6 list what landed and the deviations; §14 the cutover and the kill
 switch.
 
 **Capability statement.** For every deliverable that is meant to reach GitHub as a
@@ -846,8 +846,8 @@ or a projection (written only by `projectDelivery`), or retired. Never two.**
 | `workers.status`, `completedAt`, `waitingFor` | attempt execution | execution fact; unchanged |
 | `workers.lastCommitSha`, `commitCount`, `dirtyWorktree` | runner-reported | local facts (R1); `registerLocalPr` stops writing `lastCommitSha = pr.head.sha` (a fact about GitHub stored in a field named for local state); GitHub head lives in `current_head_sha` |
 | `workers.prUrl`, `prNumber`, `prBaseRef`, `prIsDraft`, `prOpenedBaseSha` | PR identity and facts | fact cache via `PrBound`; the adopt-override paths stop replacing them without a reset (T2 rejects) |
-| `workers.prLifecycleStatus` | mixed: facts (`ci_*`, `conflict`, `merged`, `closed`, `unresolvable`) used as state | **fact cache** for CI/mergeable/merged/closed plus `unresolvable` (a reconcile-bookkeeping flag). No gate or UI reads it to decide workflow; they read `workflow_deliveries`. Written only through `recordPrFact` (shipped in Slice B part 1, §13.3), which enforces terminal-wins in the `WHERE`. Retire the redundant `pr_open` meaning. |
-| `workers.mergedAt` | merge fact with two clocks | GitHub `merged_at` (webhook payload, live read, `stamp_pr_rows` from T17); the first instant recorded is never moved. The merge doors still stamp their own instant until Slice C (§13.3 deviation 2) |
+| `workers.prLifecycleStatus` | mixed: facts (`ci_*`, `conflict`, `merged`, `closed`, `unresolvable`) used as state | **fact cache** for CI/mergeable/merged/closed plus `unresolvable` (a reconcile-bookkeeping flag). No gate or UI reads it to decide workflow; they read `workflow_deliveries`. Written only through `recordPrFact` (shipped in Slice B part 1, §13.6), which enforces terminal-wins in the `WHERE`. Retire the redundant `pr_open` meaning. |
+| `workers.mergedAt` | merge fact with two clocks | GitHub `merged_at` (webhook payload, live read, `stamp_pr_rows` from T17); the first instant recorded is never moved. The merge doors still stamp their own instant until Slice C (§13.6 deviation 2) |
 | `workers.conflictDetectedAt`, `prLastCheckedAt`, `prLastVerifiedAt`, `prCheckFailureCount`, `prUnresolvableReason` | reconcile bookkeeping | unchanged; owned by the importers |
 | `workers.supersededBy*`, `abandoned*` | the supersession edge | **projection** of T20/T21, written by `projectDelivery`; `canCompleteMission` and `prShipState` keep reading them until Slice D |
 | reviewer tasks' `result.structuredOutput`, `effectiveVerdict` | raw model output and server override | raw output stays a fact; the decision lives on `workflow_review_rounds.effective_verdict` |
@@ -1143,7 +1143,41 @@ Deviations, each deliberate:
    `REVIEW_RUNNING`, `FIXING_REVIEW`, `FIXING_CI` and `RESOLVING`, and carries the
    headline as its reason line, so no card component changed.
 
-### 13.3 What Slice B part 1 shipped, and its deviations
+### 13.3 What the S30/S31 runner signals shipped, and their deviations
+
+S30 (§6.6). The runner reports a hand-off failure after work (an output-gate
+refusal of its completion, or an unmet `pr_required`) as `failed` with
+`outcome: 'unproven'`, `localHeadSha` and `commitCount`
+(`apps/runner/src/hand-off-outcome.ts`). The worker PATCH maps that onto
+`AttemptEnded(unproven)` (`apps/web/src/lib/workflow/hand-off.ts`). With commits the
+result is `AWAITING_PUSH` plus `push_recovery`, even while the task's own retry is
+queued. An owner with nothing local and a retry queued gets a recorded `WORKING`
+requeue. An old runner omits the fields and gets today's `failed` mapping.
+
+S31 (§6.10). Tier 1: on a workspace with `gitConfig.preflight.prProseScan`, `create_pr`
+refuses a title or body that CI's prose scan would reject, and names the line and
+category. Tier 2: the runner runs `gitConfig.preflight.commands` before a push or
+`create_pr`, and a failing command denies that one call with its output. Tier 3: a
+kernel CI failure is tagged `preflightMiss` on its T10 transition when it names a
+preflight class (`gitConfig.preflight.ciChecks`, default the No Production Data
+workflow).
+
+Deviations:
+
+1. **The prose rule is a port, not a shared function.** CI runs Python and the
+   server cannot. `packages/core/no-prod-data-prose.ts` is the same count/UUID rule
+   in TypeScript. A parity test runs both on one fixture set and fails on any
+   disagreement. The identifier half needs CI's secret and stays CI-only.
+2. **An owner in `AWAITING_PUSH` does not leave on a push alone.** Owner attempts
+   have no ledger row, so the local head is only on the transition's evidence, not
+   in `reported_shas`. The `AWAITING_PUSH` proof then has no `L` to check
+   containment against. `push_recovery` and T22 still bound the owner case. This
+   gap predates S30 (S9 has it too) and belongs to the `push_recovery` work.
+3. **Preflight evidence is not stored on the delivery.** Tier 1 refusals and tier 2
+   denials appear in the refusal and the runner milestone. Only tier 3's
+   `preflightMiss` is a kernel record.
+
+### 13.6 What Slice B part 1 shipped, and its deviations
 
 Shipped live: the fact-ingestion funnel and terminal-wins for the PR fact cache.
 
