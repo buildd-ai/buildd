@@ -914,19 +914,33 @@ export async function PATCH(
   // Sensitive: generic state string instead of prose action description
   if (currentAction !== undefined) updates.currentAction = isSensitive ? 'working' : currentAction;
   // Sensitive: keep {type, ts} only — strip label and metadata prose
-  if (milestones !== undefined) {
-    updates.milestones = isSensitive
-      ? (milestones as any[]).map((m: any) => ({ type: m.type, ts: m.ts }))
-      : milestones;
-  }
-  // appendMilestones: merge new milestones into existing (for MCP workers)
-  if (appendMilestones && Array.isArray(appendMilestones)) {
+  if (milestones !== undefined || Array.isArray(appendMilestones)) {
     const existing = (worker.milestones as any[]) || [];
-    const toAppend = isSensitive
-      ? appendMilestones.map((m: any) => ({ type: m.type, ts: m.ts }))
-      : appendMilestones;
-    const merged = [...existing, ...toAppend];
-    updates.milestones = merged.length > 50 ? merged.slice(-50) : merged;
+    // Runner snapshots do not contain server-appended agent narration. Preserve
+    // that narration while letting the runner refresh its own action entries.
+    const incoming = milestones !== undefined
+      ? [...milestones, ...existing.filter(m => m.origin === 'agent')]
+      : [...existing];
+    if (Array.isArray(appendMilestones)) {
+      incoming.push(...appendMilestones.map((m: any) => ({
+        ...m,
+        ...((m.type === 'status' || m.type === 'plan') && { origin: 'agent' }),
+      })));
+    }
+    // Plan and status may share a timestamp, so their type is part of identity.
+    const unique = new Map<string, any>();
+    for (const m of incoming) unique.set(`${m.ts}:${m.type}:${m.event ?? ''}`, m);
+    const merged = [...unique.values()].sort((a, b) => a.ts - b.ts);
+    const cap = milestones !== undefined ? 100 : 50;
+    // Checkpoints are lifecycle facts; cap narration and actions first.
+    while (merged.length > cap) {
+      const index = merged.findIndex(m => m.type !== 'checkpoint');
+      if (index === -1) break;
+      merged.splice(index, 1);
+    }
+    updates.milestones = isSensitive
+      ? merged.map(m => ({ type: m.type, ts: m.ts, ...(m.origin === 'agent' && { origin: 'agent' }) }))
+      : merged;
   }
   // appendMcpCalls: merge new MCP tool calls into existing log
   if (appendMcpCalls && Array.isArray(appendMcpCalls)) {

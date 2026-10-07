@@ -58,8 +58,6 @@ export interface MissionListCardOptions {
   now?: number;
   /** Role slug → the role's own colour (workspace_skills.color). Never hardcoded here. */
   roleColors?: ReadonlyMap<string, string | null>;
-  /** Live worker id → its last reported progress, 0..100. */
-  progressByWorker?: ReadonlyMap<string, number>;
   /**
    * Every task the page loaded, by id (the page's cross-mission index): a
    * dependency on another mission's task is judged from it, the way the
@@ -79,8 +77,6 @@ export interface ListCell {
   label: string;
   title: string;
   state: ListCellState;
-  /** 0..1 — the live worker's reported progress for `running`, 1 otherwise. */
-  fill: number;
   href: string;
 }
 
@@ -253,18 +249,11 @@ export function buildMissionListCard(
     const fs = deriveFeedTaskState(r, { now });
     const source = byId.get(r.task.id)!;
     let state: ListCellState;
-    let fill = 1;
     switch (fs.state) {
       case 'moving': {
         // A completed row that is still moving is its PR in CI or mid-merge.
         const inCi = r.task.status === 'completed' && !!deriveFeedPrState(r.task.worker);
         state = inCi ? 'in_ci' : 'running';
-        if (!inCi) {
-          const candidates = [source, ...r.attempts.map(a => byId.get(a.id)!).filter(Boolean)];
-          const live = candidates.map(liveWorkerOf).find(Boolean);
-          const pct = live?.id ? opts.progressByWorker?.get(live.id) : undefined;
-          fill = pct == null ? 0 : Math.max(0, Math.min(1, pct / 100));
-        }
         break;
       }
       default:
@@ -277,7 +266,7 @@ export function buildMissionListCard(
     else if (state === 'failed') counts.failed++;
 
     const { label } = taskShortLabel(source);
-    const cell: ListCell = { taskId: r.task.id, label, title: r.task.title, state, fill, href: link(r.task.id) };
+    const cell: ListCell = { taskId: r.task.id, label, title: r.task.title, state, href: link(r.task.id) };
 
     if (state === 'needs_you' && !question) {
       const candidates = [source, ...r.attempts.map(a => byId.get(a.id)!).filter(Boolean)];

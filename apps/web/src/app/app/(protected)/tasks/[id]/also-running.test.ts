@@ -51,6 +51,10 @@ describe('sidePanelPeers', () => {
     ...extra,
   });
 
+  it('names checks that are currently running', () => {
+    expect(sidePanelPeers([row('checks', 'Checks', { prNumber:1, prLifecycleStatus:'ci_running' })], { missionId:'m1', excludeTaskIds:new Set() })[0].phase).toBe('CI');
+  });
+
   // Regression (demo reshoot, merged step): a dependent that had been claimed
   // was listed under both "Also running" and "Unblocked by this". The rule: a
   // task that depends on this one is shown once, under "Unblocked by this",
@@ -77,13 +81,13 @@ describe('sidePanelPeers', () => {
     expect(fx.title).not.toContain(':');
   });
 
-  it('keeps only the same mission, one row per task, with the latest progress', () => {
+  it('keeps only the same mission, one row per task, with observed lifecycle evidence', () => {
     const peers = sidePanelPeers([
-      row('a', 'feat(a): one', { milestones: [{ type: 'status', progress: 10 }, { type: 'status', progress: 55 }] }),
+      row('a', 'feat(a): one', { milestones: [{ type: 'checkpoint', event: 'first_push', ts: 100 }] }),
       row('a', 'feat(a): one'),
       row('other', 'x', { task: { id: 'other', title: 'feat(b): two', label: null, missionId: 'm2' } }),
     ], { missionId: 'm1', excludeTaskIds: new Set() });
-    expect(peers.map(p => [p.taskId, p.pct])).toEqual([['a', 55]]);
+    expect(peers.map(p => [p.taskId, p.phase])).toEqual([['a', 'Pushed']]);
   });
 });
 

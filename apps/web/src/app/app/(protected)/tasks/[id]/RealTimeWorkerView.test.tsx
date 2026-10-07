@@ -151,7 +151,9 @@ describe('RealTimeWorkerView — needs-input answering', () => {
       }),
     );
     expect(html).toContain('worker-paused-bar');
-    expect(html).toContain('Paused at');
+    expect(html).toContain('Paused');
+    expect(html).not.toContain('40%');
+    expect(html).toContain('run-evidence-rail');
     expect(html).toContain('Rounding differs');
     expect(html).not.toContain('worker-now-strip');
   });
@@ -176,7 +178,9 @@ describe('RealTimeWorkerView — running', () => {
     const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={running as any} taskId="task-1" nowMs={T0 + 261_000} />);
     expect(html).toContain('worker-now-strip');
     expect(html).toContain('PDF footnote: base amount and the rate used');
-    expect(html).toContain('worker-progress-bar');
+    expect(html).toContain('run-evidence-rail');
+    expect(html).not.toContain('worker-progress-bar');
+    expect(html).not.toContain('worker-now-pct');
     expect(html).toContain('worker-current-action');
     expect(html).toContain('worker-stats');
     expect(html).toContain('4:21');

@@ -46,6 +46,7 @@ export const CheckpointEvent = {
   FIRST_READ: 'first_read',
   FIRST_EDIT: 'first_edit',
   FIRST_COMMIT: 'first_commit',
+  FIRST_PUSH: 'first_push',
   TASK_COMPLETED: 'task_completed',
   TASK_ERROR: 'task_error',
 } as const;
@@ -58,6 +59,7 @@ export const CHECKPOINT_LABELS: Record<CheckpointEventType, string> = {
   first_read: 'First file read',
   first_edit: 'First file edit',
   first_commit: 'First commit',
+  first_push: 'First push',
   task_completed: 'Task completed',
   task_error: 'Task failed',
 };

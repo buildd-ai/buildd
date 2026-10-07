@@ -19,8 +19,8 @@ export async function loadAlsoRunningWorkers(opts: {
   const { task } = opts;
   const rows = await db.query.workers.findMany({
     where: and(eq(workers.workspaceId, task.workspaceId), inArray(workers.status, opts.liveStatuses), ne(workers.taskId, task.id)),
-    columns: { id: true, taskId: true, status: true, milestones: true },
-    with: { task: { columns: { id: true, title: true, label: true, missionId: true, parentTaskId: true } } },
+    columns: { id: true, taskId: true, status: true, milestones: true, createdAt: true, startedAt: true, prNumber: true, prUrl: true, prLifecycleStatus: true, lastCommitSha: true, commitCount: true, dirtyWorktree: true, observedTouches: true },
+    with: { task: { columns: { id: true, title: true, label: true, missionId: true, parentTaskId: true, outputRequirement: true } } },
     orderBy: desc(workers.updatedAt),
     limit: 12,
   });

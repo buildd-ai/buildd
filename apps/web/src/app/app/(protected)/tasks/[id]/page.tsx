@@ -1,3 +1,5 @@
+import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
+import { RUN_PROGRESS_READERS } from '@/modules';
 import { Suspense } from 'react';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
@@ -243,7 +245,7 @@ export default async function TaskDetailPage({
             id: true, title: true, status: true, orchestrationMode: true, dependsOnMissionId: true,
             dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, executor: true, startAt: true,
             goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true,
-            integrationBranchEnabled: true,
+            integrationBranchEnabled: true, mergePolicy: true, requiresReview: true,
           },
           with: {
             tasks: {
@@ -326,7 +328,9 @@ export default async function TaskDetailPage({
         .then(([diagnosis, overrides]) => diagnosis ? { diagnosis, canFix: canAdministerTeamKeys(access.role, overrides) } : null)
         .catch(() => null)
     : Promise.resolve(null);
-  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
+  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
+    prWorker?.prNumber ? RUN_PROGRESS_READERS.review({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : Promise.resolve(null),
+    taskWorkers.find(w => isLiveWorkerStatus(w.status)) ? getWorkerDeliverableArtifactCount(taskWorkers.find(w => isLiveWorkerStatus(w.status))!.id) : Promise.resolve(0),
     // Artifacts for all workers on this task
     workerIds.length > 0
       ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
@@ -1567,6 +1571,10 @@ export default async function TaskDetailPage({
         {activeWorker && (
           <div className="mb-8 order-first" data-testid="task-active-worker">
             <RealTimeWorkerView
+              outputRequirement={task.outputRequirement}
+              deliverableArtifactCount={evidenceArtifactCount}
+              usesReviewer={RUN_PROGRESS_READERS.usesReviewer(task.workspace, missionContextRow, task, { baseRef: activeWorker.prBaseRef })}
+              reviewState={evidenceReview?.state}
               taskStatus={task.status}
               taskId={task.id}
               initialWorker={{
@@ -1580,6 +1588,11 @@ export default async function TaskDetailPage({
                 costUsd: activeWorker.costUsd?.toString() || null,
                 inputTokens: activeWorker.inputTokens,
                 outputTokens: activeWorker.outputTokens,
+                createdAt: activeWorker.createdAt?.toISOString() || null,
+                mergedAt: activeWorker.mergedAt?.toISOString() || null,
+                dirtyWorktree: activeWorker.dirtyWorktree,
+                observedTouches: activeWorker.observedTouches,
+                prIsDraft: activeWorker.prIsDraft,
                 startedAt: activeWorker.startedAt?.toISOString() || null,
                 prUrl: activeWorker.prUrl,
                 prNumber: activeWorker.prNumber,

@@ -17,6 +17,7 @@ type LabelledMilestone = Milestone & { label: string };
 const TYPE_FALLBACK_LABELS: Record<Milestone['type'], string> = {
   phase: 'Phase',
   status: 'Status update',
+  plan: 'Plan',
   checkpoint: 'Checkpoint',
   action: 'Action',
 };
@@ -179,7 +180,7 @@ export function ActivityTape({
             style={{ left: `${f.pos * 100}%`, transform: flip ? 'translateX(-100%)' : undefined }}
           >
             <div className={`flex items-center gap-2 ${flip ? 'flex-row-reverse' : ''}`}>
-              <span className={`px-1 font-semibold tabular-nums ${isLast ? 'bg-accent text-[var(--on-accent)]' : 'bg-text-primary text-surface-1'}`}>{f.pct}%</span>
+              <span className={`px-1 font-semibold tabular-nums ${isLast ? 'bg-accent text-[var(--on-accent)]' : 'bg-text-primary text-surface-1'}`}>{f.at}</span>
               {labelled && <span className="text-text-secondary max-w-[40vw] md:max-w-[360px] truncate">{f.label}</span>}
             </div>
             <div className={`text-text-muted tabular-nums ${flip ? 'text-right' : ''}`}>{f.at}</div>
@@ -295,7 +296,7 @@ export default function WorkerActivityTimeline({
 
   // Rows without structured tool data (older runners, sensitive workspaces)
   // produce no tape; the log then opens by default so nothing is hidden.
-  const hasTape = milestones.some(m => m.type === 'action' || (m.type === 'status' && typeof m.progress === 'number'));
+  const hasTape = milestones.some(m => m.type === 'action' || (m.type === 'status' && !!m.label?.trim()));
 
   return (
     <div className="mt-6" data-testid="worker-activity-timeline">
@@ -417,7 +418,7 @@ function StatusRow({
   milestone,
   formatTime,
 }: {
-  milestone: Extract<LabelledMilestone, { type: 'status' }>;
+  milestone: Extract<LabelledMilestone, { type: 'status' | 'plan' }>;
   formatTime: (ts: number) => string;
 }) {
   const [rowExpanded, setRowExpanded] = useState(false);
@@ -431,7 +432,6 @@ function StatusRow({
     if (lower.includes('question') || lower.includes('user:')) return '?';
     if (lower.includes('config changed')) return 'c';
     if (lower.includes('skill')) return '*';
-    if (typeof milestone.progress === 'number') return '%';
     return '-';
   };
 
@@ -455,9 +455,6 @@ function StatusRow({
         isError ? 'text-status-error font-medium' : isConfigChange ? 'text-status-warning' : 'text-text-secondary'
       }`}>
         {milestone.label}
-        {typeof milestone.progress === 'number' && (
-          <span className="ml-2 text-xs text-text-muted">{milestone.progress}%</span>
-        )}
       </span>
       <div className="flex items-center gap-1 flex-shrink-0">
         {isLong && (
