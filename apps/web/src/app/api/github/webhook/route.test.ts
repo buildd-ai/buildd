@@ -2796,6 +2796,34 @@ describe('POST /api/github/webhook', () => {
       expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
     });
 
+    // Slice C (workflow-state-kernel.md §14): a kernel-owned PR's merge work is the kernel's
+    // post-merge effects (stamp_pr_rows, emit_pr_merged, finalize_mission_pr), run from T17.
+    // The webhook records the fact and does none of that work inline.
+    it('a kernel-owned merge: the fact goes to the kernel; the task is not flipped and nothing is stamped here', async () => {
+      mockObservePrState.mockImplementationOnce(async () => true);
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w1',
+        workspaceId: 'ws1',
+        taskId: 't1',
+        task: { id: 't1', status: 'pending', workspaceId: 'ws1', release: 'true', title: 'Fix bug', missionId: null },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', releaseConfig: null, gitConfig: { defaultBranch: 'dev' } });
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+      const before = updateCalls.length;
+
+      const res = await POST(createWebhookRequest('pull_request', {
+        action: 'closed',
+        pull_request: { number: 7, merged: true, draft: false, head: { ref: 'buildd/t1-fix', sha: 'sha-7' }, html_url: 'https://github.com/test-org/test-repo/pull/7', merged_at: '2026-10-06T00:00:00Z' },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      }));
+
+      expect(res.status).toBe(200);
+      expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws1', repoFullName: 'test-org/test-repo', prNumber: 7, source: 'webhook:closed' }));
+      expect(updateCalls.slice(before).some((c) => (c.setValues as any).status === 'completed')).toBe(false);
+      expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
+    });
+
     it('workflow_dispatch + trigger=every_merge: dispatches configured workflow file', async () => {
       const payload = {
         action: 'closed',

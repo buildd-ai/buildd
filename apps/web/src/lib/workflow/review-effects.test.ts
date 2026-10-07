@@ -294,10 +294,13 @@ describe('push_recovery (§9)', () => {
 
 test('every effect the fix-loop reducer can emit has a handler (none retries forever on "no handler")', () => {
   for (const k of ['dispatch_review', 'dispatch_fix', 'post_review', 'escalate_exhaustion', 'mission_note', 'notify', 'cancel_open_attempts',
-    'push_recovery', 'render_activity', 'emit_pr_merged', 'wake_mission', 'release_attribution', 'finalize_mission_pr',
-    'scan_supersession', 'project_supersession', 'verify_merge', 'gate_event']) {
+    'push_recovery', 'render_activity', 'wake_mission', 'release_attribution',
+    'scan_supersession', 'project_supersession', 'gate_event']) {
     expect(typeof (reviewEffectHandlers as Record<string, unknown>)[k]).toBe('function');
   }
-  // stamp_pr_rows is the fact-cache projection, composed in by withPrFactEffects (pr-fact-effects.test.ts).
-  expect((reviewEffectHandlers as Record<string, unknown>).stamp_pr_rows).toBeUndefined();
+  // stamp_pr_rows is the fact-cache projection, composed in by withPrFactEffects (pr-fact-effects.test.ts);
+  // landing and post-merge work by withLandingEffects (pr-landing-effects.test.ts).
+  for (const k of ['stamp_pr_rows', 'merge_call', 'verify_merge', 'emit_pr_merged', 'finalize_mission_pr']) {
+    expect((reviewEffectHandlers as Record<string, unknown>)[k]).toBeUndefined();
+  }
 });

@@ -2,13 +2,13 @@
 title: Workflow State Kernel
 status: draft
 owner: max
-last_verified: 2026-10-06
+last_verified: 2026-10-07
 summary: One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 domain: tasks
-surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/pr-review-status.ts]
+surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/pr-review-status.ts, apps/web/src/lib/workflow/landing.ts, apps/web/src/lib/workflow/pr-landing-effects.ts, apps/web/src/lib/pr-merged-work.ts]
 related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts]
+verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts]
 supersedes: []
 ---
 
@@ -43,8 +43,12 @@ integration PRs are checked by composition; S35–S37 hold. **Slice B part 1 mov
 PR fact cache onto one funnel**: `recordPrFact` (`packages/core/pr-facts.ts`) is the
 only writer of `workers.prLifecycleStatus` / `mergedAt`, with terminal-wins in its
 `WHERE`; `pr-state-reconcile.ts` is deleted and pages no longer write while they
-render. §13.1–§13.3 and §13.6 list what landed and the deviations; §14 the cutover and the kill
-switch.
+render. **Slice C moves landing and merge**: every merge door keeps its rails and,
+for a kernel-owned PR, hands the merge to the kernel (T15 `LandingRequested` → the
+`merge_call` effect → T16 `MergeCallResult` → `verify_merge` → T17); the post-merge
+work is outbox effects, and a person on a stale version gets HTTP 409 with the
+current view. §13.1–§13.3, §13.6 and §13.7 list what landed and the deviations; §14
+the cutover and the kill switch.
 
 **Capability statement.** For every deliverable that is meant to reach GitHub as a
 pull request, exactly one row (the *delivery*) records where the work stands. That row
@@ -424,8 +428,8 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | T12 | `ConflictObserved(H')` fact | as T10 | `H' == current`; `mergeable=dirty` or behind-base from a live read taken **now**, not a stored snapshot | `REPAIRING(conflict)` or `REPAIRING(behind)` with `repair_mode` per §6.7 | mechanical attempt first (`refresh_branch`, or `renumber_migration` for a collision); only on a mechanical refusal an `agent` ledger row and `dispatch_conflict_fix` | `conflict:{delivery}:{H'}` | as T10 |
 | T13 | `CarryForwardEvaluated(H')` (inside T3 from `APPROVED`/`LANDING`) | `APPROVED`, `LANDING` | content-equivalence of `H'` against the approved head, or the head moved only by the platform's own refresh effect (matched by effect payload `expected_head`) | `APPROVED`, `approved_heads += H'` | none | `carry:{delivery}:{H'}` | not equivalent → T5 (round `r+1`, delta) from `APPROVED` |
 | T14 | `HumanApproved(H')` (GitHub human review or dashboard approve on current head) | `ESCALATED`, `CHANGES_REQUESTED`, `AWAITING_REVIEW` | review `commit_id == current_head_sha`; actor holds merge permission | `APPROVED` with `approver=human` | notify; never enables unattended merge (§17.2) | `approve:{repo}#{pr}:{review}` | review on an older commit: recorded, `stale` |
-| T15 | `LandingRequested(door)` (the five merge doors, sweep) | `APPROVED`; `CHANGES_REQUESTED`/`ESCALATED` only for the dashboard override door | live read: open, head == `current_head_sha`; `landPr` rails pass (CI, deny paths, size, migration inspector, freshness, surface order, review gate, mission-PR gate); override recorded in `bypass` and never covers red CI or deny paths | `LANDING` | `merge_call(head)` | `merge:{repo}#{pr}:{head}` | head moved → `stale` and T3 path |
-| T16 | `MergeCallResult` | `LANDING` | GitHub response | merged → T17 (not asserted here: the merged fact comes from a live read); `indeterminate` → stay, `verify_merge` effect; behind/out-of-date → `REPAIRING(behind)`; conflict → `REPAIRING(conflict)`; policy/other refusal → `ESCALATED(landing_needs_human)` | `refresh_branch` or alert | `mergeresult:{repo}#{pr}:{head}` | result for a head that is no longer current: ignored (`stale`) |
+| T15 | `LandingRequested(door)` (the five merge doors, sweep) | `APPROVED`; `AWAITING_REVIEW`/`CHANGES_REQUESTED`/`ESCALATED` only for a person's verdict override (§13.7 deviation 3) | live read: open, head == `current_head_sha`; `landPr` rails pass (CI, deny paths, size, migration inspector, freshness, surface order, review gate, mission-PR gate); override recorded in `bypass` and never covers red CI or deny paths | `LANDING` | `merge_call(head)` | `merge:{repo}#{pr}:{head}:v{version}` (§13.7 deviation 1) | head moved → `stale` and T3 path; a second door while `LANDING` at the head → `duplicate(landing_in_flight)` |
+| T16 | `MergeCallResult` | `LANDING` | GitHub response | merged → T17 (not asserted here: the merged fact comes from a live read); `indeterminate` → stay, `verify_merge` effect; `not_merged` (the verify read shows the PR open and unmerged) → `APPROVED`; behind/out-of-date → `REPAIRING(behind)`; conflict → `REPAIRING(conflict)`; policy/other refusal → `ESCALATED(landing_needs_human)` | `refresh_branch` or alert | `mergeresult:{repo}#{pr}:{head}:{landing_version}:{outcome}` | result for a head that is no longer current: ignored (`stale`) |
 | T17 | `PrMerged` fact | **any** non-terminal | live read `merged=true`; records GitHub `merged_at` and `merge_commit_sha` | `MERGED` | stamp `workers.mergedAt`/`prLifecycleStatus` on **all** rows of the PR; cancel open review/fix attempts; `task.pr_merged` emit; dependents, mission wake, release attribution, mission-branch deletion (`finalizeMissionPrMerge`); classify merged-over-verdict | `merged:{repo}#{pr}` | replay is `duplicate`; "merged" is never overwritten by a later fact |
 | T18 | `PrClosedUnmerged` fact | any non-terminal | live read `state=closed`, `merged=false` | `CLOSED_UNMERGED(close_cause)` | cancel open attempts; `scan_supersession`; mission note; stamp all rows `closed` | `closed:{repo}#{pr}:{updated_at}` | a closed fact older than a later `PrReopened` loses to the live read |
 | T19 | `PrReopened` | `CLOSED_UNMERGED` | live read `state=open` | `AWAITING_REVIEW` at the live head | `dispatch_review` | `reopen:{repo}#{pr}:{updated_at}` | none |
@@ -733,8 +737,8 @@ between "merge accepted" and "`task.pr_merged` emitted" loses the effect.
 | `dispatch_review` | create the reviewer task for a round, announce, wake | one task per `(delivery, round)`; `createReviewerTask` dedupe by `(PR, head)` remains as backstop |
 | `dispatch_fix` / `dispatch_ci_fix` / `dispatch_conflict_fix` | create the attempt task | unique `dedupe_key`; existing `*_retry_event_unique` indexes until Slice C |
 | `post_review` | submit GitHub review at `commit_id` | GitHub dedupe on `(commit_id, state)`; the effect checks the posted result and fails on `posted:false` unless the dedupe reason matched (`postPrReview` never throws) |
-| `merge_call` | `PUT /pulls/{n}/merge` with `sha` pinned | the pin makes a replay at the same head a no-op or a clean refusal; `indeterminate` triggers `verify_merge` |
-| `verify_merge` | read PR; emit `PrMerged` fact if merged | read-only |
+| `merge_call` | `PUT /pulls/{n}/merge` with `sha` pinned (`pr-landing-effects.ts`) | the pin makes a replay at the same head a no-op or a clean refusal; `indeterminate` triggers `verify_merge`; one per landing request (`merge_call:{delivery}:{head}:v{n}`) |
+| `verify_merge` | read PR; `PrMerged` (T17) if merged, `MergeCallResult(not_merged)` if still open at the head | read-only |
 | `refresh_branch` | update-branch, records `expected_head` | one in flight per head (existing 60s lease) |
 | `push_recovery` | §9 | bounded tries; each try is a read-then-instruct |
 | `stamp_pr_rows` | project columns on every worker row of the PR | `WHERE` guarded on `merged_at IS NULL` etc. |
@@ -847,7 +851,7 @@ or a projection (written only by `projectDelivery`), or retired. Never two.**
 | `workers.lastCommitSha`, `commitCount`, `dirtyWorktree` | runner-reported | local facts (R1); `registerLocalPr` stops writing `lastCommitSha = pr.head.sha` (a fact about GitHub stored in a field named for local state); GitHub head lives in `current_head_sha` |
 | `workers.prUrl`, `prNumber`, `prBaseRef`, `prIsDraft`, `prOpenedBaseSha` | PR identity and facts | fact cache via `PrBound`; the adopt-override paths stop replacing them without a reset (T2 rejects) |
 | `workers.prLifecycleStatus` | mixed: facts (`ci_*`, `conflict`, `merged`, `closed`, `unresolvable`) used as state | **fact cache** for CI/mergeable/merged/closed plus `unresolvable` (a reconcile-bookkeeping flag). No gate or UI reads it to decide workflow; they read `workflow_deliveries`. Written only through `recordPrFact` (shipped in Slice B part 1, §13.6), which enforces terminal-wins in the `WHERE`. Retire the redundant `pr_open` meaning. |
-| `workers.mergedAt` | merge fact with two clocks | GitHub `merged_at` (webhook payload, live read, `stamp_pr_rows` from T17); the first instant recorded is never moved. The merge doors still stamp their own instant until Slice C (§13.6 deviation 2) |
+| `workers.mergedAt` | merge fact with two clocks | GitHub `merged_at` (webhook payload, live read, `stamp_pr_rows` from T17); the first instant recorded is never moved. A merge door stamps nothing for a kernel-owned PR (Slice C, §13.7); it still stamps its own instant for a legacy PR (opened before cutover or released by the kill switch) |
 | `workers.conflictDetectedAt`, `prLastCheckedAt`, `prLastVerifiedAt`, `prCheckFailureCount`, `prUnresolvableReason` | reconcile bookkeeping | unchanged; owned by the importers |
 | `workers.supersededBy*`, `abandoned*` | the supersession edge | **projection** of T20/T21, written by `projectDelivery`; `canCompleteMission` and `prShipState` keep reading them until Slice D |
 | reviewer tasks' `result.structuredOutput`, `effectiveVerdict` | raw model output and server override | raw output stays a fact; the decision lives on `workflow_review_rounds.effective_verdict` |
@@ -1247,6 +1251,86 @@ Deviations, each deliberate:
    pass. `push_recovery` re-armed per non-proving head is bounded by the pushes that
    arrive, and each chain still ends in T22.
 
+### 13.7 What Slice C shipped, and its deviations
+
+Shipped live (kill switch only), for kernel-owned deliveries; a legacy PR keeps every
+door exactly as it was (AC-11):
+
+- **One merge call per landing, by the kernel.** `landThroughKernel`
+  (`lib/workflow/landing.ts`, through `seam.ts`) is the merge of a kernel-owned PR
+  for every door: `landPr` (and through it the landing sweep and
+  `surface-ordering-wake`), `tryAutoMergeWorkerPr` (now an adapter: its rails run, it
+  never calls GitHub's merge or finalizes the mission branch for a kernel-owned PR),
+  `POST /api/prs/[prNumber]/merge` and `PUT /api/github/pr` (`merge_pr`). Each door
+  runs its rails unchanged and calls it where it used to call `mergePullRequest`,
+  inside the same surface-ordering slot. It records the live head (R2), applies T15,
+  and drains: `merge_call` (`lib/workflow/pr-landing-effects.ts`) makes the pinned
+  `PUT /merge` and applies T16 from GitHub's answer (`classifyMergeCall`); merged and
+  indeterminate answers go through `verify_merge`, whose live read is the only thing
+  that produces `PrMerged`.
+- **Refusals are repair, not a page.** Behind / out-of-date is
+  `REPAIRING(behind)` with a mechanical `refresh_branch` (`updateBehindPrBranch`,
+  pinned to its `expected_head`; the refreshed head is attributed to the attempt and
+  carried forward as the platform's own refresh, §8.3), bounded by the treadmill cap.
+  A textual conflict from update-branch hands over to an agent attempt
+  (`dispatch_conflict_fix`); a branch already current skips the row and resumes
+  `APPROVED`. Anything else GitHub definitely refused is
+  `ESCALATED(landing_needs_human)`.
+- **Post-merge work is outbox effects.** T17 queues `stamp_pr_rows`,
+  `cancel_open_attempts`, `emit_pr_merged` and `finalize_mission_pr`.
+  `emit_pr_merged` runs `runMergedPrWork` (`lib/pr-merged-work.ts`, extracted from the
+  webhook): the owner task's completion, dependents, path-claim release, the
+  `pr.closed` / `task.pr_merge_delivered` / `task.pr_merged` fan-out (mission wake,
+  dependent missions, release Path B) and the work-tracker update.
+  `finalize_mission_pr` deletes a shipped mission branch whoever merged it. The
+  `pull_request.closed` webhook records the fact for a kernel-owned PR and runs none of
+  that inline; for a legacy PR it calls the same function.
+- **Removed for kernel-owned PRs**: the per-door `recordPrFact(merged)` stamps, the
+  doors' inline `finalizeMissionPrMerge`, `checkDependsOnResolved`,
+  `reconcileSubjectEvent`, `checkAndUnblockDependentMissions`, the post-merge-call
+  conflict dispatch in `tryAutoMergeWorkerPr` and the routes, and the webhook's
+  inline post-merge block.
+- **S20.** Both merge routes accept `version` (the delivery version the caller read)
+  and answer HTTP 409 `{ stale: true, current }` before any rail runs when it is
+  stale; the same version rides T15 as `expectedVersion`, so a screen that goes stale
+  between the check and the CAS is also refused, and nothing applies.
+
+Deviations, each deliberate:
+
+1. **The landing key carries the version** (`merge:{repo}#{pr}:{head}:v{version}`,
+   and `merge_call` / `mergeresult` / `verify_merge` keys name the landing version).
+   With the head alone, a landing GitHub refused could never be requested again at
+   that head, not even by a person past the escalation. A double door is still one
+   landing: the second reads `LANDING` and is `duplicate(landing_in_flight)`.
+2. **`not_merged` is a T16 outcome.** After an indeterminate answer, a
+   `verify_merge` read that shows the PR still open and unmerged at the head returns
+   the delivery to `APPROVED` (the approval stands; a door or the sweep lands it
+   again). "Head branch was modified" maps to it too: the new head has its own fact.
+   A merge GitHub *accepted* whose read lags is retried by `verify_merge`, never
+   turned into `not_merged`.
+3. **The override door is a person's verdict override from any review state**
+   (`APPROVED`, `AWAITING_REVIEW`, `CHANGES_REQUESTED`, `ESCALATED`), matching the
+   dashboard's "Merge anyway", which also overrides an in-flight review. It is
+   recorded in `bypass` with the state it overrode; red CI and deny paths stay
+   non-overridable, and an agent actor never gets it.
+4. **The mission wake and release attribution are not separate T17 effects.** They
+   are subscribers of the `task.pr_merged` event `emit_pr_merged` emits, and they read
+   the task transition (`flipped` / `already_completed`) that same effect produced; two
+   effects racing it would see a different one. `wake_mission` /
+   `release_attribution` remain effects of T20/T21 (Slice D, `legacy_owns`).
+5. **`landPr`'s own freshness step is unchanged.** A PR found behind *before* the
+   merge call is still refreshed by `landPr`'s marker-keyed treadmill (a rail); only a
+   merge call GitHub refuses as behind is T16's `refresh_branch`.
+6. **The conflict family's task is still filed by `dispatchConflictRetry`** (Slice B
+   part 2). `dispatch_conflict_fix` adapts it; the kernel's agent row stays queued
+   until the fix's push arrives as a head fact, which skips it and re-enters review.
+7. **The doc-fix spec recheck stays in the webhook** for every merged worker PR: it
+   belongs to the spec-conformance module, which core may not import, and its sweep
+   is the backstop.
+8. **`version` is accepted, not yet shown.** The routes take it and the kernel
+   enforces it; the dashboard card, `get_pr` and the MCP `merge_pr` tool do not send
+   or display it yet (Slice E reads the delivery view).
+
 ---
 
 ## 14. Migration plan: no two authorities, ever
@@ -1408,6 +1492,18 @@ Slice B part 1 adds S6 on the live path: the merge reaches every worker row thro
 an old-SHA CI failure neither moves the delivery nor the fact cache
 (`apps/web/tests/db/workflow-matrix.test.ts`); every (status, fact) ordering of the
 funnel runs on real Postgres in `apps/web/tests/db/pr-facts.test.ts`.
+
+Slice C adds S10, S15 and S20 on the live path: the four merge doors call
+`landThroughKernel`, which lands through T15 → one pinned merge call → T16 →
+`verify_merge` → T17 and runs the post-merge effects (S10, including an indeterminate
+answer verified before anything re-calls, a double door, and a person's override
+after a refusal); a merge refused as behind is refreshed by `refresh_branch` pinned to
+its head, and a conflict from update-branch becomes an agent attempt (S15); a stale
+version is refused with the current view and applies nothing (S20)
+(`apps/web/tests/db/workflow-matrix.test.ts`). Each door's wiring and the routes' HTTP
+409 are in `apps/web/src/lib/pr-landing.test.ts`, `apps/web/src/lib/auto-merge.test.ts`,
+`apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts`,
+`apps/web/src/app/api/github/pr/route.test.ts` and the webhook route test.
 
 Integration (needs a live server): extend `apps/web/tests/integration/` with one
 end-to-end case for S1 against the dev preview (open PR, request changes, fix attempt
@@ -1683,9 +1779,11 @@ is a site to tick off in the Phase 2 PR that moves it.
 - [ ] `lib/supersession-store.ts:275,290` and rules in `lib/supersession.ts`
 - [ ] `lib/ci-failure-retry.ts` (`:180,487,612,636`), `app/api/prs/[prNumber]/retry-ci/route.ts`
 - [ ] `lib/conflict-retry.ts` (`:241,422,812,893,974`), `lib/migration-collision-retry.ts`, `lib/dead-zone-sweep.ts` retry insert
-- [ ] `lib/auto-merge.ts` (`:777` merge door; `:991,1055,1071,1141,1158` escalation stamps)
-- [ ] `lib/pr-landing.ts` `landPr` decision and `lib/pr-landing-marker.ts`, `pr-landing-handoff.ts`, `pr-landing-sweep*.ts`
-- [ ] `app/api/prs/[prNumber]/merge/route.ts:566,257`; `app/api/github/pr/route.ts:1956,1722,1978,2016`
+- [x] `lib/auto-merge.ts` `:777` merge door (Slice C: an adapter calling `LandingRequested` for a kernel-owned PR)
+- [ ] `lib/auto-merge.ts` `:991,1055,1071,1141,1158` escalation stamps
+- [x] `lib/pr-landing.ts` `landPr` merge call (Slice C: T15/T16; its rails, marker, handoff and sweep are unchanged)
+- [ ] `lib/pr-landing-marker.ts`, `pr-landing-handoff.ts`, `pr-landing-sweep*.ts` decision data → delivery
+- [x] `app/api/prs/[prNumber]/merge/route.ts:566,257`; `app/api/github/pr/route.ts:1956,1722,1978,2016` (Slice C, kernel-owned PRs)
 - [ ] `lib/stale-workers.ts:251` auto-complete; `app/api/tasks/cleanup/route.ts:266` assigned-task complete
 - [ ] `lib/pr-supersession.ts:236,285`, `lib/pr-supersession-detect.ts:384`, `app/api/github/pr/supersede/route.ts`
 - [ ] `lib/dead-pr-shutdown.ts:396`; `lib/loop-webhook.ts:72`
@@ -1700,7 +1798,7 @@ is a site to tick off in the Phase 2 PR that moves it.
 
 **Projection-only (P)**
 - [ ] `workers.supersededBy*`, `abandoned*`
-- [ ] `lib/pr-merge-stamp.ts:31` `stampPrMergedOnAllRows` (done, Slice B part 1: a funnel caller); `tasks.status='completed'` on merge (`webhook/route.ts:1141,1221`)
+- [x] `lib/pr-merge-stamp.ts:31` `stampPrMergedOnAllRows` (Slice B part 1: a funnel caller); `tasks.status='completed'` on merge (Slice C: `emit_pr_merged` → `lib/pr-merged-work.ts` for a kernel-owned PR)
 - [ ] mission notes for reviewer verdicts; `workers.mergedAt`/`prLifecycleStatus` after a transition (done, Slice B part 1: `stamp_pr_rows`)
 - [ ] `tasks.result.shipped`, evidence stores (`task-shipped-store.ts`, `task-evidence-store.ts`)
 

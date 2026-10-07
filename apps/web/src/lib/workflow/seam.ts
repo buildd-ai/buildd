@@ -26,6 +26,7 @@ import { headCoverage, ledgerBudget } from './reducer';
 import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
 import { preflightMissOf } from './preflight-miss';
+import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
 export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
@@ -595,4 +596,23 @@ export async function requestCiRetry(p: {
   }
   await drainDelivery(deliveryId, deps);
   return { handled: true, extended, result, attemptTaskId: await attemptTaskOf(deliveryId, result, deps.exec) };
+}
+
+// ── T15/T16: the merge doors (Slice C) ──────────────────────────────────────
+
+export type { KernelLanding, LandingInput, LandingOutcome } from './landing';
+export { staleLandingVersion, kernelLandingView } from './landing';
+
+/**
+ * The merge of a kernel-owned PR, for every merge door (§14 Slice C): the door
+ * keeps its rails and calls this where it used to call GitHub. Null = not the
+ * kernel's PR, and the door merges as before. When it answers, the door does
+ * no post-merge work of its own: the kernel's effects did it.
+ */
+export async function landThroughKernel(p: LandingInput, deps: SeamDeps = {}): Promise<KernelLanding | null> {
+  return landThroughKernelImpl(p, {
+    exec: deps.exec,
+    reader: deps.reader,
+    drain: (deliveryId) => drainDelivery(deliveryId, deps),
+  });
 }

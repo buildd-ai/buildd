@@ -10,6 +10,7 @@ import { db } from '@buildd/core/db';
 import { tasks, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
+import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { notifyTeamOf } from '@/lib/notify';
 import type { MergePolicy } from '@buildd/shared';
@@ -529,6 +530,8 @@ export async function tryAutoMergeWorkerPr(params: {
    * decision itself is `policy`). Omitted, the ordering check loads it.
    */
   surfaceOrderingConfig?: WorkspaceGitConfig | null;
+  /** The kernel's landing (T15/T16); null = not the kernel's PR. Defaults to the seam's. Injected by tests. */
+  landThroughKernel?: (input: LandingInput) => Promise<KernelLanding | null>;
 }): Promise<{ merged: boolean; reason?: string }> {
   const { installationId, repoFullName, prNumber, headSha, worker, policy, bound } = params;
 
@@ -773,14 +776,28 @@ export async function tryAutoMergeWorkerPr(params: {
     return { merged: false, reason: mergeGate.reason };
   }
 
-  const slotted = await mergeInSurfaceSlot(surfaceOrder, () =>
-    mergePullRequest(installationId, repoFullName, prNumber, 'squash', headSha),
-  );
+  // Every rail passed. For a kernel-owned PR this door is only an adapter: the
+  // kernel lands it (LandingRequested → merge_call → MergeCallResult) and owns
+  // what follows — the post-merge work, and the refresh or conflict repair a
+  // refusal is owed. Any other PR merges here as before.
+  const kernelLand = params.landThroughKernel ?? (await import('@/lib/workflow/seam')).landThroughKernel;
+  const landingWorkspaceId = await workspaceIdOnce();
+  const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
+    const kernel = landingWorkspaceId
+      ? await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod: 'squash' })
+      : null;
+    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, 'squash', headSha) };
+  });
   if ('refused' in slotted) {
     console.log(`Auto-merge deferred for ${repoFullName}#${prNumber}: ${slotted.refused}`);
     return { merged: false, reason: slotted.refused };
   }
-  const result = slotted.result;
+  if (slotted.result.kernel) {
+    const k = slotted.result.kernel;
+    console.log(`[auto-merge] ${repoFullName}#${prNumber}: kernel landing ${k.outcome} (${k.reason})`);
+    return k.merged ? { merged: true } : { merged: false, reason: k.message };
+  }
+  const result = slotted.result.legacy;
   if (result.merged) {
     console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
     await finalizeMissionPrMerge(mergingTask, installationId, repoFullName);

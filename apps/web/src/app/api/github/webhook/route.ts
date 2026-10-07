@@ -12,21 +12,20 @@ import { notifyOperator } from '@/lib/pushover';
 import { notifyTeamOf } from '@/lib/notify';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
-import { checkDependsOnResolved, resolveCompletedTask } from '@/lib/task-dependencies';
+import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { detachInteractiveWorkersOfEndedTasks } from '@/lib/interactive-detach';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, enqueuePushIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
-import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
+import { workerOwnsPr, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
 import { emit } from '@/lib/core-emit';
 import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
 import { PR_OPENED_POLICY } from '@/modules';
 import type { PrOwnerFact } from '@/lib/core-events';
-import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
+import { maybePostWorkTrackerIssueUpdate, runMergedPrWork } from '@/lib/pr-merged-work';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
@@ -960,19 +959,24 @@ async function handlePullRequestEvent(event: {
   });
 
   // The workflow kernel records the close as a fact on a kernel-owned PR
-  // (T17 / T18, from a live read). Post-merge work below stays here until the
-  // landing slice moves it into effects.
+  // (T17 / T18, from a live read). For a merge, everything the merge owes runs
+  // as the kernel's post-merge effects (stamp_pr_rows, emit_pr_merged,
+  // finalize_mission_pr) from that transition, not from this request.
+  let kernelOwned = false;
   if (worker?.workspaceId && event.installation) {
-    await observePrState({
+    kernelOwned = await observePrState({
       workspaceId: worker.workspaceId, repoFullName: repository.full_name, prNumber: pr.number,
       installationId: event.installation.id, source: 'webhook:closed',
-    }).catch((err) => console.error(`[webhook] workflow kernel close fact failed for PR #${pr.number}:`, err));
+    }).catch((err) => {
+      console.error(`[webhook] workflow kernel close fact failed for PR #${pr.number}:`, err);
+      return false;
+    });
   }
 
   // Is this handler LEARNING about the merge, or is it a redelivery of one it
-  // already processed? Captured here because the stamp below destroys the
-  // evidence, and it is what keeps the per-merge effects further down
-  // exactly-once now that they no longer ride on the task's status transition.
+  // already processed? Captured from the row read before any stamp, and it is
+  // what keeps the per-merge effects exactly-once now that they no longer ride
+  // on the task's status transition.
   const mergeIsNew = !worker?.mergedAt;
 
   // Subscriptions ledger: any merged PR, buildd-opened or not. Idempotent on
@@ -1005,64 +1009,74 @@ async function handlePullRequestEvent(event: {
     workspaceId: worker?.workspaceId ?? null,
   });
 
-  if (worker) {
-    if (pr.merged) {
-      // Stamp mergedAt regardless of task completion state so the dependsOn gate
-      // (which checks workers.mergedAt) is unblocked for downstream tasks.
-      // Every row carrying this PR, not just the one findFirst returned: a
-      // CI-retry attempt pushes to its parent's branch and adopts the PR
-      // number, and a sibling left unstamped reads as an open PR forever.
-      await stampPrMergedOnAllRows({
-        prUrl: prUrlFor(repository.full_name, pr.number),
+  if (worker && pr.merged) {
+    // A merged doc fix gets its conformance re-run now, not whenever the
+    // next dev push happens to evaluate the doc (spec-conformance.md §9).
+    // Best-effort; the hourly pr-reconcile sweep is the backstop.
+    if (worker.taskId) {
+      const docFixTaskId = worker.taskId;
+      const recheck = () => requestRecheckForMergedDocFix(docFixTaskId).catch(e =>
+        console.error(`[webhook] spec recheck dispatch failed for task ${docFixTaskId}:`, e),
+      );
+      try {
+        after(recheck);
+      } catch {
+        await recheck();
+      }
+    }
+    // A kernel-owned merge's work already ran (or is durably owed) as effects of T17.
+    if (!kernelOwned) {
+      await runMergedPrWork({
+        worker: { id: worker.id, workspaceId: worker.workspaceId, taskId: worker.taskId ?? null },
+        task: worker.task
+          ? {
+              id: worker.task.id,
+              status: worker.task.status,
+              workspaceId: worker.task.workspaceId,
+              missionId: worker.task.missionId ?? null,
+              taskClass: worker.task.taskClass ?? null,
+              release: worker.task.release ?? null,
+              loopState: worker.task.loopState ?? null,
+            }
+          : null,
+        repoFullName: repository.full_name,
         prNumber: pr.number,
+        prUrl: prUrlFor(repository.full_name, pr.number),
+        prHtmlUrl: pr.html_url,
+        baseRef: pr.base?.ref ?? null,
+        headSha: pr.head.sha,
+        installationId: event.installation?.id ?? null,
         // GitHub's clock, not receipt time (§12).
         mergedAt: pr.merged_at ?? new Date(),
+        mergeIsNew,
+        stamp: true,
       });
-      // Model policy: the merge, once (a redelivery is not a second merge).
-      // A close without merge is not reported: superseded and abandoned PRs
-      // close too, and that is not evidence about the model.
-      if (mergeIsNew) {
-        await reportTaskPolicyOutcome(worker.taskId, [{ type: 'merged', merged: true }]);
-      }
-      // A merged doc fix gets its conformance re-run now, not whenever the
-      // next dev push happens to evaluate the doc (spec-conformance.md §9).
-      // Best-effort; the hourly pr-reconcile sweep is the backstop.
-      if (worker.taskId) {
-        const docFixTaskId = worker.taskId;
-        const recheck = () => requestRecheckForMergedDocFix(docFixTaskId).catch(e =>
-          console.error(`[webhook] spec recheck dispatch failed for task ${docFixTaskId}:`, e),
-        );
-        try {
-          after(recheck);
-        } catch {
-          await recheck();
-        }
-      }
-    } else {
-      // PR closed without merge (abandoned/superseded): every row carrying the
-      // PR, never over a merge (recordPrFact).
-      await recordPrFact({ prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number }, { kind: 'closed' });
     }
+    // A worker row with no task falls through to the branch-name match below.
+    if (worker.task) return;
+  }
+
+  if (worker && !pr.merged) {
+    // PR closed without merge (abandoned/superseded): every row carrying the
+    // PR, never over a merge (recordPrFact).
+    await recordPrFact({ prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number }, { kind: 'closed' });
     await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
     });
 
-    // Release path claims when a PR is merged or closed — the task's file
-    // edits are either landed (merged) or abandoned (closed), so held locks
-    // should unblock waiting tasks.
+    // The task's file edits are abandoned: held path claims unblock waiting tasks.
     if (worker.taskId) {
       const releaseTaskId = worker.taskId;
-      const releaseReason = pr.merged ? 'merged' as const : 'abandoned' as const;
       // after(): delivery is now N DB writes (one message per waiter), not one
       // Pusher call, so an unawaited promise can be cut off when the response
       // returns — and `notifiedAt` is already stamped by then.
       try {
-        after(() => releaseAndNotify(releaseTaskId, releaseReason).catch(e =>
+        after(() => releaseAndNotify(releaseTaskId, 'abandoned').catch(e =>
           console.error(`[webhook] releaseAndNotify failed for task ${releaseTaskId}:`, e),
         ));
       } catch {
         // Outside a request scope (tests, direct invocation) — run inline.
-        await releaseAndNotify(releaseTaskId, releaseReason).catch(e =>
+        await releaseAndNotify(releaseTaskId, 'abandoned').catch(e =>
           console.error(`[webhook] releaseAndNotify failed for task ${releaseTaskId}:`, e),
         );
       }
@@ -1070,129 +1084,20 @@ async function handlePullRequestEvent(event: {
 
     // Close any open changeIntent rows for this PR, drop its merge
     // reservations and re-drive the PR waiting behind it (missions). Then the
-    // reviews module measures a merge against its verdict (first delivery
-    // only, before the reviewer is superseded), looks for where an unmerged
-    // PR's work went, cancels what the close made obsolete, and shuts down
-    // superseded buildd PRs.
+    // reviews module looks for where the unmerged PR's work went, cancels what
+    // the close made obsolete, and shuts down superseded buildd PRs.
     await emit({
       type: 'pr.closed',
       workspaceId: worker.workspaceId,
       prNumber: pr.number,
-      merged: !!pr.merged,
-      mergeIsNew: !!pr.merged && mergeIsNew,
+      merged: false,
+      mergeIsNew: false,
       workerId: worker.id,
       taskId: worker.taskId ?? null,
       headSha: pr.head.sha,
       repoFullName: repository.full_name,
       installationId: event.installation?.id ?? null,
     });
-  }
-
-  if (pr.merged && worker?.task) {
-    // Unconditionally unblock dependents now that mergedAt is stamped — this fires even
-    // when the task was already completed, because checkDependsOnResolved now gates on
-    // mergedAt and would have held back any downstream dispatch until this moment.
-    checkDependsOnResolved(worker.task.id).catch((e) =>
-      console.error(`[webhook] checkDependsOnResolved failed for task ${worker.task!.id}:`, e)
-    );
-
-    // Every merged delivery: the missions module advances a loop waiting on
-    // this merge and, for a task PR landing on a mission integration branch,
-    // opens the one mission PR (awaited inside its subscriber).
-    await emit({
-      type: 'task.pr_merge_delivered',
-      taskId: worker.task.id,
-      workerId: worker.id,
-      workspaceId: worker.workspaceId,
-      missionId: worker.task.missionId ?? null,
-      baseRef: pr.base?.ref ?? null,
-    });
-  }
-
-  if (pr.merged && worker?.task) {
-    // Two different questions, and they used to share one guard.
-    //
-    // `tasks.status = 'completed'` belongs to the TRANSITION — this task was not
-    // finished, and this merge finished it. Everything after it belongs to the
-    // MERGE, and is true of the PR landing whatever the task row already said.
-    //
-    // Collapsing them meant a merged PR whose task was ALREADY completed got no
-    // post-merge effects at all. That is not an edge case: the bookkeeping task
-    // that owns a mission integration PR is created already `completed` (nothing
-    // should ever claim it), so merging the mission PR on GitHub fired neither
-    // the `merged` dependency signal — the only writer of
-    // `missions.dependencyMetAt`, and the only thing that clears the `merged`
-    // gate — nor the Path-B release trigger. A downstream mission waited
-    // forever, and only when the human clicked Merge on GitHub rather than in
-    // buildd, because the dashboard merge route raises the signal itself.
-    let transition: 'flipped' | 'already_completed' | 'not_flipped' = 'already_completed';
-    if (worker.task.status !== 'completed') {
-      // Guarded on the row, not only on the copy read above: the worker's own
-      // completion (PATCH /api/workers/[id]) can land between that read and
-      // this write, and it resolves the task itself. Only the writer that
-      // actually flips the row resolves it, so the task is resolved once.
-      const [flipped] = await db
-        .update(tasks)
-        .set({ status: 'completed', updatedAt: new Date() })
-        .where(and(eq(tasks.id, worker.task.id), ne(tasks.status, 'completed')))
-        .returning({ id: tasks.id });
-      transition = flipped ? 'flipped' : 'not_flipped';
-      if (flipped) {
-        console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
-        // Same fact as the worker route's completion, same dedupe key: one row.
-        await emit({ type: 'task.completed', via: 'merge', taskId: worker.task.id, workerId: worker.id, workspaceId: worker.workspaceId });
-
-        // Work-tracker: post completion comment and transition issue to "Done".
-        // Stays inside the transition guard deliberately: a "Done" comment is a
-        // one-shot announcement, and re-posting it on every delivery is spam on
-        // someone's issue tracker.
-        maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, true).catch(() => {});
-
-        // The same post-completion path every other completion takes: parent
-        // rollup, dependents, mission completion and re-planning. Writing the
-        // status alone left a mission waiting for its next heartbeat tick.
-        // A loop task still waiting on this merge is resolved by
-        // evaluateAndAdvanceLoopOnMerge above, which runs resolveCompletedTask
-        // itself; doing it here too would resolve it twice.
-        if (worker.task.loopState !== 'condition_unmet') {
-          await resolveCompletedTask(worker.task.id, worker.task.workspaceId).catch(e =>
-            console.error(`[webhook] resolveCompletedTask failed for task ${worker.task!.id}:`, e),
-          );
-        }
-      }
-    }
-
-    // A local (claim_task) session that opened this PR is usually still open.
-    // The task is done, so its worker stops holding a seat now. Idempotent,
-    // and a no-op unless the task row is terminal.
-    await detachInteractiveWorkersOfEndedTasks({ taskId: worker.task.id, graceMs: 0 });
-
-    // ── Effects of the merge itself ──────────────────────────────────────────
-    //
-    // Gated on `mergeIsNew`, not on the task's status. GitHub redelivers, and
-    // these must run exactly once per merge — the status guard used to provide
-    // that by accident, and `workers.mergedAt` (captured before this handler
-    // stamped it) is the honest version of the same question.
-    if (mergeIsNew) {
-      // Effects of the merge itself, once per merge: the missions module wakes
-      // the mission and unblocks missions gated on this one's merges; the
-      // releases module runs the post-merge release trigger (Path B).
-      await emit({
-        type: 'task.pr_merged',
-        via: 'worker',
-        transition,
-        taskClass: worker.task.taskClass ?? null,
-        taskId: worker.task.id,
-        workerId: worker.id,
-        workspaceId: worker.task.workspaceId,
-        missionId: worker.task.missionId ?? null,
-        release: worker.task.release ?? null,
-        repoFullName: repository.full_name,
-        baseRef: pr.base?.ref ?? null,
-        installationId: event.installation?.id ?? null,
-      });
-    }
-
     return;
   }
 
@@ -1698,40 +1603,6 @@ async function handleWorkflowRunEvent(event: {
   // the releases module's business.
   await emit({ type: 'workflow_run.completed', run, installationId: event.installation?.id ?? null });
 }
-
-// Work-tracker helper: if the PR belongs to a task with externalIssueId set and the
-// workspace has a workTracker connector, post a completion comment and transition state.
-async function maybePostWorkTrackerIssueUpdate(
-  prNumber: number,
-  prUrl: string,
-  merged: boolean,
-): Promise<void> {
-  const worker = await db.query.workers.findFirst({
-    where: workerOwnsPrUrl(prUrl, prNumber),
-    with: { task: true },
-  });
-  const task = worker?.task;
-  // A tracker link is either the id (Linear) or the issue URL (GitHub).
-  if (!task || (!task.externalIssueId && !task.externalIssueUrl)) return;
-
-  const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, task.workspaceId),
-    columns: { workTrackerConfig: true, teamId: true },
-  });
-  if (!ws?.workTrackerConfig) return;
-
-  // Provider-dispatched (Linear via connector, GitHub via the App installation).
-  await postWorkTrackerCompletionUpdate({
-    workspaceId: task.workspaceId,
-    teamId: ws.teamId,
-    config: ws.workTrackerConfig,
-    externalIssueId: task.externalIssueId,
-    externalIssueUrl: task.externalIssueUrl,
-    prUrl,
-    merged,
-  });
-}
-
 
 /** Resolve the worker that owns a PR, plus the workspace the row needs. */
 async function resolvePrOwner(repoFullName: string, prNumber: number) {

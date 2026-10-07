@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -25,6 +25,16 @@ const mockSupersedeAncestorEscalations = mock(() => Promise.resolve());
 const mockGuardReviewVerdict = mock(() => Promise.resolve({ blocks: false } as any));
 const mockFireGateEvent = mock((_input: any) => {});
 
+// Workflow kernel landing (lib/workflow/landing.ts; real-SQL cases in
+// apps/web/tests/db/workflow-matrix.test.ts S10/S15/S20). Default: no kernel
+// delivery, so every legacy merge case below runs unchanged.
+const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
+const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+mock.module('@/lib/workflow/landing', () => ({
+  landThroughKernel: mockLandThroughKernel,
+  kernelLandingView: mockKernelLandingView,
+  staleLandingVersion: async () => null,
+}));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/team-access', () => ({ getUserWorkspaceIds: mockGetUserWorkspaceIds }));
 mock.module('@/lib/github', () => ({ mergePullRequest: mockMergePullRequest, githubApi: mockGithubApi }));
@@ -1129,5 +1139,79 @@ describe('POST /api/prs/[prNumber]/merge — post-refresh semantic hold', () => 
     const res = await POST(req, ctx);
     expect(res.status).toBe(409);
     expect(mockCheckBaseRefreshHold).not.toHaveBeenCalled();
+  });
+});
+
+// ── Workflow kernel (workflow-state-kernel.md §14 Slice C) ────────────────────
+// A kernel-owned PR: the kernel merges it (T15/T16) and owns the post-merge
+// work, and a person acting on a stale view gets 409 with the current one (S20).
+describe('POST /api/prs/[prNumber]/merge — kernel-owned PR (Slice C)', () => {
+  const current = { state: 'APPROVED', version: 7, head: 'head-A', round: 1 };
+  const kernelMerged = { merged: true, outcome: 'merged', reason: 'merged', message: 'merged', mergeCommitSha: 'M1', current: { ...current, state: 'MERGED', version: 10 }, result: null };
+  beforeEach(() => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'owner@example.test' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([openWorker]);
+    mockWorkspacesFindFirst.mockResolvedValue(workspace);
+    mockMergePullRequest.mockReset();
+    mockCheckDependsOnResolved.mockReset();
+    mockLandThroughKernel.mockReset();
+    mockKernelLandingView.mockReset();
+    mockKernelLandingView.mockResolvedValue({ deliveryId: 'd-1', current });
+    mockGuardReviewVerdict.mockReset();
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValue({ head: { sha: 'head-A' } });
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue(null);
+  });
+  afterAll(() => {
+    mockKernelLandingView.mockReset();
+    mockKernelLandingView.mockResolvedValue(null);
+    mockLandThroughKernel.mockReset();
+    mockLandThroughKernel.mockResolvedValue(null);
+  });
+
+  it('S20: a stale version is a 409 with the current view; no rail runs and nothing merges', async () => {
+    const [req, ctx] = makeRequest('42', { version: 6 });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toMatchObject({ stale: true, reason: 'version_moved', current });
+    expect(mockGuardReviewVerdict).not.toHaveBeenCalled();
+    expect(mockLandThroughKernel).not.toHaveBeenCalled();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('merges through the kernel with the version the person saw; the door stamps nothing and runs no post-merge work', async () => {
+    mockLandThroughKernel.mockResolvedValue(kernelMerged);
+    const [req, ctx] = makeRequest('42', { version: 7 });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, merged: true });
+    expect(mockLandThroughKernel).toHaveBeenCalledTimes(1);
+    expect(mockLandThroughKernel.mock.calls[0]![0]).toMatchObject({
+      workspaceId: 'ws-1', repoFullName: 'org/repo', prNumber: 42, headSha: 'head-A', door: 'dashboard', actor: 'human:u-1', expectedVersion: 7,
+    });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(recordedFacts).toEqual([]);
+    expect(mockCheckDependsOnResolved).not.toHaveBeenCalled();
+  });
+
+  it('a stale answer from the kernel itself (the screen went stale after the check) is a 409 with the current view', async () => {
+    mockLandThroughKernel.mockResolvedValue({ merged: false, outcome: 'stale', reason: 'version_moved', message: 'changed', mergeCommitSha: null, current: { ...current, version: 8 }, result: null });
+    const [req, ctx] = makeRequest('42', { version: 7 });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ stale: true, current: { version: 8 } });
+    expect(recordedFacts).toEqual([]);
+  });
+
+  it('a refresh the kernel queued is accepted work (202), not a failure', async () => {
+    mockLandThroughKernel.mockResolvedValue({ merged: false, outcome: 'behind', reason: 'behind', message: 'behind', mergeCommitSha: null, current: { ...current, state: 'REPAIRING' }, result: null });
+    const [req, ctx] = makeRequest('42');
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(202);
+    expect(await res.json()).toMatchObject({ branchUpdated: true, merged: false });
   });
 });
