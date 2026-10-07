@@ -35,8 +35,26 @@ const { values } = parseArgs({
       type: 'boolean',
       default: false,
     },
+    help: {
+      type: 'boolean',
+      short: 'h',
+      default: false,
+    },
   },
 });
+
+if (values.help) {
+  console.log([
+    'Usage: buildd login [--device] [--server <url>] [--name <key name>] [--no-mcp]',
+    '',
+    "Sign in and save an API key (and this machine's session presence token) to ~/.buildd/config.json.",
+    '  --device        Sign in on another device with a code (no browser on this machine)',
+    '  --server <url>  buildd server (default: the saved one, else https://buildd.dev)',
+    '  --name <name>   Name for the new API key',
+    '  --no-mcp        Do not update the buildd MCP entries in ~/.claude.json',
+  ].join('\n'));
+  process.exit(0);
+}
 
 // Load existing config
 function loadConfig(): Record<string, unknown> {

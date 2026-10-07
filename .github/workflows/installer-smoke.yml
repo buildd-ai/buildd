@@ -62,3 +62,26 @@ jobs:
           cp apps/runner/scripts/installer-smoke.sh /tmp/installer-smoke.sh
           chmod 755 /tmp/installer-smoke.sh
           su stranger -s /bin/bash -c "BUILDD_REF='$BUILDD_REF' BUILDD_REPO='$BUILDD_REPO' bash /tmp/installer-smoke.sh"
+
+  fresh-install-client:
+    name: Fresh install --client (ubuntu, non-root, no sudo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: ubuntu:26.04
+    steps:
+      - name: Base tools a fresh machine has
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl git unzip ca-certificates procps >/dev/null
+          useradd -m -s /bin/bash stranger
+
+      - uses: actions/checkout@v7
+
+      - name: Client install, then upgrade to the full runner, then --client over it
+        env:
+          BUILDD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+          BUILDD_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+        run: |
+          cp apps/runner/scripts/installer-smoke-client.sh /tmp/installer-smoke-client.sh
+          chmod 755 /tmp/installer-smoke-client.sh
+          su stranger -s /bin/bash -c "BUILDD_REF='$BUILDD_REF' BUILDD_REPO='$BUILDD_REPO' bash /tmp/installer-smoke-client.sh"
