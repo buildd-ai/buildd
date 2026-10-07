@@ -216,6 +216,10 @@ DELETE FROM secrets;             -- cascades credential_leases
 -- evidence objects hold real bucket paths; wiped like credentials.
 DELETE FROM evidence_objects;    -- cascades to anything referencing objects
 DELETE FROM evidence_backends;   -- cascades to anything referencing backends
+-- Team-private catalog entries name a team's own (often internal) MCP servers;
+-- platform rows (team_id NULL) are buildd's public presets and stay.
+DELETE FROM connector_catalog_entries WHERE team_id IS NOT NULL;
+DELETE FROM connector_catalog_team_policies;
 -- Agent chat: every message part is tenant-authored text or tool output over
 -- it. Chat renders from fixtures in QA; missions.conversation_id sets null.
 DELETE FROM conversation_approvals;

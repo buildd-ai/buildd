@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { getTableConfig } from 'drizzle-orm/pg-core';
+import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core';
 import {
   applyScoutFailure,
   buildScoutProbeCheck,
@@ -10,6 +10,8 @@ import {
   recordScoutFailure,
   resolveScoutFinding,
   resolveScoutMode,
+  scoutDismissal,
+  scoutFindingCasWhere,
   scoutCheckId,
   scoutFindingLedgerSet,
   scoutFindingRow,
@@ -388,6 +390,57 @@ describe('ledger writes never touch the action columns', () => {
   });
 });
 
+describe('dismissal', () => {
+  it('a new finding starts undismissed', () => {
+    const r = run();
+    expect(applyScoutFailure(null, r, executed(r, { exit: 0 }), T0).finding).toMatchObject({
+      dismissedReason: null,
+      dismissedAt: null,
+      dismissedBy: null,
+    });
+  });
+
+  it('scoutDismissal needs a reason and who; trims and clips the reason', () => {
+    expect(scoutDismissal({ reason: '  ', by: 'user:u-1', now: T0 })).toEqual({ ok: false, error: 'reason_required' });
+    expect(scoutDismissal({ reason: 'not a defect', by: '', now: T0 })).toEqual({ ok: false, error: 'by_required' });
+    expect(scoutDismissal({ reason: '  flaky env  ', by: 'user:u-1', now: T0 })).toEqual({
+      ok: true,
+      fields: { state: 'dismissed', dismissedReason: 'flaky env', dismissedBy: 'user:u-1', dismissedAt: T0 },
+    });
+    const long = scoutDismissal({ reason: 'x'.repeat(2000), by: 'user:u-1', now: T0 });
+    expect(long.ok && long.fields.dismissedReason.length).toBe(500);
+  });
+
+  it('a recurrence keeps a dismissal and its reason', () => {
+    const r1 = run();
+    const first = applyScoutFailure(null, r1, executed(r1, { exit: 0 }), T0).finding!;
+    const dismissed = { ...first, state: 'dismissed' as const, dismissedReason: 'expected', dismissedBy: 'user:u-1', dismissedAt: T0.toISOString() };
+    const r2 = run({ id: 'run-2' });
+    expect(applyScoutFailure(dismissed, r2, executed(r2, { exit: 0 }), T1).finding).toMatchObject({
+      state: 'dismissed',
+      dismissedReason: 'expected',
+      occurrenceCount: 2,
+    });
+  });
+
+  it('the recurrence write never carries the dismissal columns', () => {
+    const r = run();
+    const set = scoutFindingLedgerSet(applyScoutFailure(null, r, executed(r, { exit: 0 }), T0).finding!);
+    for (const k of ['dismissedReason', 'dismissedAt', 'dismissedBy']) expect(set).not.toHaveProperty(k);
+  });
+
+  it('a recurrence read before a dismissal cannot write over it: its compare-and-set also requires the row is not dismissed', () => {
+    const r = run();
+    const open = applyScoutFailure(null, r, executed(r, { exit: 0 }), T0).finding!;
+    const q = new PgDialect().sqlToQuery(scoutFindingCasWhere(open, 1)!);
+    expect(q.sql).toContain('"state" <> $');
+    expect(q.params).toContain('dismissed');
+    // Merging into an already-dismissed row needs no such guard: it keeps the state.
+    const q2 = new PgDialect().sqlToQuery(scoutFindingCasWhere({ ...open, state: 'dismissed' }, 1)!);
+    expect(q2.sql).not.toContain('"state" <>');
+  });
+});
+
 describe('recordScoutFailure — compare-and-set on occurrence count', () => {
   function memoryStore(initial: ScoutFinding | null, opts: { raceOnce?: boolean } = {}) {
     let row = initial;
@@ -467,6 +520,11 @@ describe('schema', () => {
 
   it('one probe row per candidate per run', () => {
     expect(uniques(qualityScoutProbes)).toContainEqual(['run_id', 'candidate_id']);
+  });
+
+  it('findings carry a dismissal reason, time and actor', () => {
+    const cols = getTableConfig(qualityScoutFindings).columns.map(c => c.name);
+    for (const c of ['dismissed_reason', 'dismissed_at', 'dismissed_by']) expect(cols).toContain(c);
   });
 
   it('one finding per workspace and signature', () => {

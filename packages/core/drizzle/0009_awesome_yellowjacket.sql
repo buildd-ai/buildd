@@ -1,1 +1,0 @@
-ALTER TABLE "teams" ADD COLUMN "memory_api_key" text;

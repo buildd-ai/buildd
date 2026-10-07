@@ -1,1 +1,0 @@
-ALTER TABLE "missions" ADD COLUMN "is_held" boolean DEFAULT false NOT NULL;

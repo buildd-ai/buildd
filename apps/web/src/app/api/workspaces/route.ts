@@ -11,6 +11,7 @@ import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { toPublicWorkspace } from '@/lib/workspace-public';
+import { emit } from '@/lib/core-emit';
 
 /**
  * The account fields a workspace listing may carry. The response spreads each
@@ -283,6 +284,9 @@ export async function POST(req: NextRequest) {
         teamId,
       })
       .returning();
+
+    // Modules react (e.g. connectors preinstalled from the team's catalog).
+    await emit({ type: 'workspace.created', workspaceId: workspace.id, teamId, origin: req.nextUrl.origin });
 
     // Auto-ingest on repo link: enqueue a full ingest job when a repo URL was provided.
     if (repoUrl) {

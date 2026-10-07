@@ -38,6 +38,9 @@ mock.module('@/lib/github-installation-access', () => ({
   getInstallationOwnerTeamIds: mockGetInstallationOwnerTeamIds,
 }));
 
+const mockEmit = mock(async (_e: any) => {});
+mock.module('@/lib/core-emit', () => ({ emit: mockEmit }));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -429,6 +432,14 @@ describe('POST /api/workspaces', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.name).toBe('New Workspace');
+  });
+
+  it('emits workspace.created so modules (catalog preinstall) can react', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockEmit.mockClear();
+    const res = await POST(createMockPostRequest({ name: 'My Workspace' }));
+    expect(res.status).toBe(200);
+    expect(mockEmit).toHaveBeenCalledWith({ type: 'workspace.created', workspaceId: 'ws-new', teamId: 'team-1', origin: 'http://localhost:3000' });
   });
 
   it('auto-derives name from repoUrl', async () => {

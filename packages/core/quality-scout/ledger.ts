@@ -21,7 +21,7 @@
  * is injectable, the way `decision-ledger.ts` is.
  */
 
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, ne, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '../db/client';
 import { qualityScoutFindings, qualityScoutProbes, qualityScoutRuns } from '../db/schema';
@@ -40,6 +40,7 @@ import {
 } from '../verification-check';
 import {
   DEFAULT_SCOUT_MAX_PROBES,
+  MAX_SCOUT_DISMISS_REASON,
   MAX_SCOUT_MAX_PROBES,
   SCOUT_COSTS,
   SCOUT_FLAVOR,
@@ -373,6 +374,9 @@ export function applyScoutFailure(
         resolvedRunId: null,
         resolvedSha: null,
         resolvedAt: null,
+        dismissedReason: null,
+        dismissedAt: null,
+        dismissedBy: null,
       },
     };
   }
@@ -405,6 +409,22 @@ export function resolveScoutFinding(existing: ScoutFinding, run: ScoutRun, now: 
   return {
     change: 'resolved',
     finding: { ...existing, state: 'resolved', resolvedRunId: run.id, resolvedSha: run.candidate.sha, resolvedAt: now.toISOString() },
+  };
+}
+
+/** The columns a dismissal writes, or why it cannot. Pure: the write is `dismissScoutFindingRow`. */
+export type ScoutDismissal =
+  | { ok: true; fields: { state: 'dismissed'; dismissedReason: string; dismissedBy: string; dismissedAt: Date } }
+  | { ok: false; error: 'reason_required' | 'by_required' };
+
+export function scoutDismissal(input: { reason: unknown; by: unknown; now: Date }): ScoutDismissal {
+  const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+  if (!reason) return { ok: false, error: 'reason_required' };
+  const by = typeof input.by === 'string' ? input.by.trim() : '';
+  if (!by) return { ok: false, error: 'by_required' };
+  return {
+    ok: true,
+    fields: { state: 'dismissed', dismissedReason: clip(reason, MAX_SCOUT_DISMISS_REASON), dismissedBy: clip(by, MAX_REF_CHARS), dismissedAt: input.now },
   };
 }
 
@@ -480,6 +500,9 @@ export function scoutFindingRow(f: ScoutFinding) {
     resolvedRunId: f.resolvedRunId,
     resolvedSha: f.resolvedSha,
     resolvedAt: f.resolvedAt ? new Date(f.resolvedAt) : null,
+    dismissedReason: f.dismissedReason,
+    dismissedAt: f.dismissedAt ? new Date(f.dismissedAt) : null,
+    dismissedBy: f.dismissedBy,
   };
 }
 
@@ -491,8 +514,32 @@ export function scoutFindingRow(f: ScoutFinding) {
  * next run would file a second task for the same defect.
  */
 export function scoutFindingLedgerSet(f: ScoutFinding) {
-  const { actionState: _state, actionTaskId: _task, ...rest } = scoutFindingRow(f);
+  const {
+    actionState: _state,
+    actionTaskId: _task,
+    // The dismissal belongs to whoever dismissed it, same as the action columns.
+    dismissedReason: _reason,
+    dismissedAt: _at,
+    dismissedBy: _by,
+    ...rest
+  } = scoutFindingRow(f);
   return rest;
+}
+
+/**
+ * The recurrence compare-and-set. A dismissal does not bump
+ * `occurrence_count`, so a run that read the row before it was dismissed would
+ * pass the count check and write `state = 'open'` back. Unless the merged
+ * finding is itself dismissed, the write also requires the row is not: a lost
+ * check re-reads, and the re-merge keeps the dismissal.
+ */
+export function scoutFindingCasWhere(finding: ScoutFinding, expectedCount: number): SQL | undefined {
+  return and(
+    eq(qualityScoutFindings.workspaceId, finding.workspaceId),
+    eq(qualityScoutFindings.signature, finding.signature),
+    eq(qualityScoutFindings.occurrenceCount, expectedCount),
+    ...(finding.state === 'dismissed' ? [] : [ne(qualityScoutFindings.state, 'dismissed')]),
+  );
 }
 
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
@@ -524,6 +571,9 @@ export function scoutFindingFromRow(row: FindingRow): ScoutFinding {
     resolvedRunId: row.resolvedRunId,
     resolvedSha: row.resolvedSha,
     resolvedAt: iso(row.resolvedAt),
+    dismissedReason: row.dismissedReason ?? null,
+    dismissedAt: iso(row.dismissedAt ?? null),
+    dismissedBy: row.dismissedBy ?? null,
   };
 }
 
@@ -543,15 +593,32 @@ export const dbScoutFindingStore: ScoutFindingStore = {
   async update(finding, expectedCount) {
     const rows = await db.update(qualityScoutFindings)
       .set({ ...scoutFindingLedgerSet(finding), updatedAt: new Date() })
-      .where(and(
-        eq(qualityScoutFindings.workspaceId, finding.workspaceId),
-        eq(qualityScoutFindings.signature, finding.signature),
-        eq(qualityScoutFindings.occurrenceCount, expectedCount),
-      ))
+      .where(scoutFindingCasWhere(finding, expectedCount))
       .returning({ id: qualityScoutFindings.id });
     return rows.length > 0;
   },
 };
+
+/**
+ * Dismiss one finding: a single conditional UPDATE, so two people dismissing
+ * at once record one reason. `dismissed: false` with `exists` tells an
+ * already-dismissed finding apart from one that is not there. The follow-up
+ * task, if any, is the caller's to retire.
+ */
+export async function dismissScoutFindingRow(
+  workspaceId: string,
+  signature: string,
+  fields: Extract<ScoutDismissal, { ok: true }>['fields'],
+): Promise<{ dismissed: true; actionTaskId: string | null } | { dismissed: false; exists: boolean }> {
+  const where = and(eq(qualityScoutFindings.workspaceId, workspaceId), eq(qualityScoutFindings.signature, signature));
+  const [row] = await db.update(qualityScoutFindings)
+    .set({ ...fields, updatedAt: fields.dismissedAt })
+    .where(and(where, ne(qualityScoutFindings.state, 'dismissed')))
+    .returning({ actionTaskId: qualityScoutFindings.actionTaskId });
+  if (row) return { dismissed: true, actionTaskId: row.actionTaskId };
+  const [existing] = await db.select({ id: qualityScoutFindings.id }).from(qualityScoutFindings).where(where).limit(1);
+  return { dismissed: false, exists: !!existing };
+}
 
 export function scoutRunRow(run: ScoutRun, totals?: ScoutRunTotals, metrics?: ScoutRunMetrics) {
   return {
