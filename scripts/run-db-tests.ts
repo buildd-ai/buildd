@@ -6,8 +6,9 @@
  * One process per file, like scripts/run-unit-tests.ts, and it refuses to
  * report green over nothing: no files, or no loopback database, is a failure.
  * CI's `db-architecture` job (build.yml) brings up Postgres and the neon-http
- * proxy, migrates, then runs this. Locally: scripts/demo/up.sh's stack, or any
- * migrated loopback Postgres behind NEON_LOCAL_FETCH_ENDPOINT.
+ * shim (scripts/ci/neon-sql-shim.ts), migrates, then runs this. Locally:
+ * scripts/demo/up.sh's stack, or any migrated loopback Postgres behind
+ * NEON_LOCAL_FETCH_ENDPOINT (`bun scripts/ci/neon-sql-shim.ts` is the fast one).
  */
 import { readdirSync } from 'fs';
 import { join } from 'path';
