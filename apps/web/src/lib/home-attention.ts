@@ -155,6 +155,45 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
   return [...items.values()];
 }
 
+/** A waiting task as the layout's needs-input feed carries it (components/needs-input-context.ts). */
+export interface WaitingInputTask {
+  id: string;
+  title: string;
+  missionId?: string | null;
+  waitingFor: { prompt?: string; context?: string } | null;
+  answerSent?: boolean;
+}
+
+/**
+ * Admit every task the global needs-input banner would name. Home's own
+ * question loader and the banner's feed read different queries (scope, window,
+ * row cap), so without this the banner names a task the inbox does not count.
+ * Home is the one list of what needs you: whatever the banner holds is in it.
+ * `hrefFor` is the banner's own link, so both point at the same place.
+ */
+export function admitWaitingTasks(items: readonly HomeAttentionItem[], waiting: readonly WaitingInputTask[], hrefFor: (t: WaitingInputTask) => string): HomeAttentionItem[] {
+  const covered = new Set<string>();
+  for (const i of items) {
+    if (i.question?.taskId) covered.add(i.question.taskId);
+    if (i.queue?.chip === 'QUESTION' && i.queue.taskId) covered.add(i.queue.taskId);
+  }
+  const out = [...items];
+  for (const t of waiting) {
+    // An answered question waits on the agent, not the person.
+    if (t.answerSent || covered.has(t.id)) continue;
+    covered.add(t.id);
+    const href = hrefFor(t);
+    const prompt = t.waitingFor?.prompt?.trim();
+    out.push({
+      key: `question:${t.id}`, kind: 'question', label: 'needs input', tone: 'warning',
+      title: prompt || t.title,
+      sentence: t.waitingFor?.context?.trim() || `Asked while working on ${t.title}.`,
+      meta: '', href, actionType: 'answer', primary: { label: 'Answer', href }, owner: 'human',
+    });
+  }
+  return out;
+}
+
 /** Shared grammar for attention lists; each surface keeps its existing zero copy. */
 export function needsYouHeadline(count: number, empty = 'All good.'): string {
   return count === 0 ? empty : count === 1 ? '1 thing needs you.' : `${count} things need you.`;

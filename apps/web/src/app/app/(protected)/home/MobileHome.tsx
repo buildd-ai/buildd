@@ -1,9 +1,13 @@
 'use client';
 import Link from 'next/link';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { homeAttentionCopy, type HomeAttentionItem } from '@/lib/home-needs-you';
+import { admitWaitingTasks } from '@/lib/home-attention';
 import { publishHomeAttentionCount } from '@/lib/home-attention-store';
+import { useHideNeedsInputBannerOnPhone } from '@/lib/needs-input-hidden';
+import { useNeedsInput } from '@/components/needs-input-context';
+import { needsInputTaskHref } from '@/components/NeedsInputBanner';
 import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import type { HomeShippedMission } from './NeedsYouStack';
 import { shippedDurationFacts, shippedSummaryHref } from './NeedsYouStack';
@@ -80,13 +84,18 @@ function AttentionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key
 
 export interface HomeFlightRow { key: string; title: string; agent: string; href: string; age: string; fixing: boolean }
 
-export function MobileHome({ items, ask, live, capacity, mergedToday, inCi, shipped, flight, timeZone }: {
+export function MobileHome({ items: serverItems, ask, live, capacity, mergedToday, inCi, shipped, flight, timeZone }: {
   items: HomeAttentionItem[]; ask: ReactNode; live: number; capacity: number; mergedToday: number; inCi: number;
   shipped: HomeShippedMission[]; flight: HomeFlightRow[]; timeZone?: string | null;
 }) {
   const [done, setDone] = useState<Record<string, string>>({});
   // Optimism covers only this snapshot. Fresh server truth wins after every refresh.
-  useEffect(() => { setDone({}); }, [items]);
+  useEffect(() => { setDone({}); }, [serverItems]);
+  // One list of what needs you: every task the global banner would name is in
+  // it, so the banner steps aside on a phone instead of naming a second list.
+  const { tasks: waiting } = useNeedsInput();
+  const items = useMemo(() => admitWaitingTasks(serverItems, waiting, needsInputTaskHref), [serverItems, waiting]);
+  useHideNeedsInputBannerOnPhone(true);
   const open = items.filter(i => !done[i.key]);
   const copy = homeAttentionCopy(open);
   useEffect(() => { publishHomeAttentionCount(copy.count); return () => publishHomeAttentionCount(null); }, [copy.count]);
