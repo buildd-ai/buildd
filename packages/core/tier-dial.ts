@@ -154,9 +154,10 @@ function requiredRuns(z: number, v: number, m: number): number {
  * the worst case, p = 0.5). `gradedPerDay` is how fast the cell accrues graded
  * runs.
  */
-export function dialThreshold(args: { dial: Dial; primary: OutcomeRates; gradedPerDay: number }): DialThreshold {
+export function dialThreshold(args: { dial: Dial; primary: OutcomeRates; gradedPerDay: number; marginScale?: MarginScale }): DialThreshold {
   const s = DIAL_SETTINGS[args.dial];
-  const m = s.margin > 0 ? s.margin : DIAL_SETTINGS[DEFAULT_DIAL].margin;
+  // The tightest signal's margin sets the bar.
+  const m = Math.min(...Object.values(signalMargins(s.margin > 0 ? s.margin : DIAL_SETTINGS[DEFAULT_DIAL].margin, args.marginScale)));
   let v = 0;
   for (const sig of OUTCOME_SIGNALS) {
     const r = args.primary[sig];
@@ -200,7 +201,7 @@ export interface ToleranceCheck {
  * compared; review signals are compared when both sides have
  * `MIN_METRIC_N` reviewed runs.
  */
-export function withinTolerance(alt: OutcomeRates, primary: OutcomeRates, margin: number, z: number): ToleranceCheck {
+export function withinTolerance(alt: OutcomeRates, primary: OutcomeRates, margin: number | Record<OutcomeSignal, number>, z: number): ToleranceCheck {
   const checked: OutcomeSignal[] = [];
   const failing: OutcomeSignal[] = [];
   for (const sig of OUTCOME_SIGNALS) {
@@ -211,27 +212,47 @@ export function withinTolerance(alt: OutcomeRates, primary: OutcomeRates, margin
     const pa = adjusted(a);
     const pp = adjusted(p);
     const se = Math.sqrt((pa * (1 - pa)) / (a.n + 2) + (pp * (1 - pp)) / (p.n + 2));
-    if (pa - pp - z * se < -margin) failing.push(sig);
+    if (pa - pp - z * se < -marginOf(margin, sig)) failing.push(sig);
   }
   return { ok: checked.includes('merged') && failing.length === 0, checked, failing };
 }
 
-const SIGNAL_LABEL: Record<OutcomeSignal, string> = {
+export const SIGNAL_LABEL: Record<OutcomeSignal, string> = {
   merged: 'merged',
   reviewOk: 'review ok',
   reworkFree: 'no rework',
 };
 
+/** A margin multiplier in (0, 1], for every signal or per signal. */
+export type MarginScale = number | Partial<Record<OutcomeSignal, number>>;
+
+/** Anything outside (0, 1] reads as 1. */
+function scaleOf(v: number | undefined): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 1 ? v : 1;
+}
+
+/** Each signal's margin: the dial's, times its scale. */
+export function signalMargins(margin: number, scale?: MarginScale): Record<OutcomeSignal, number> {
+  const out = {} as Record<OutcomeSignal, number>;
+  for (const sig of OUTCOME_SIGNALS) out[sig] = margin * scaleOf(typeof scale === 'object' ? scale[sig] : scale);
+  return out;
+}
+
+function marginOf(margin: number | Record<OutcomeSignal, number>, sig: OutcomeSignal): number {
+  return typeof margin === 'number' ? margin : margin[sig];
+}
+
 /** The revert test: any signal's point estimate below the comparator by more than the margin. */
-function slipped(alt: OutcomeRates, comparator: OutcomeRates, margin: number): string | null {
+function slipped(alt: OutcomeRates, comparator: OutcomeRates, margins: Record<OutcomeSignal, number>, labels: Record<OutcomeSignal, string>): string | null {
   for (const sig of OUTCOME_SIGNALS) {
     const a = alt[sig];
     const c = comparator[sig];
     if (a.n < REVERT_MIN_N || c.n < MIN_METRIC_N) continue;
     const ra = raw(a)!;
     const rc = raw(c)!;
+    const margin = margins[sig];
     if (ra < rc - margin) {
-      return `${SIGNAL_LABEL[sig]} rate ${pct(ra)} vs primary ${pct(rc)} over ${a.n} runs (tolerance ${Math.round(margin * 100)} points)`;
+      return `${labels[sig]} rate ${pct(ra)} vs primary ${pct(rc)} over ${a.n} runs (tolerance ${Math.round(margin * 100)} points)`;
     }
   }
   return null;
@@ -286,6 +307,16 @@ export interface DialCellInput {
   primaryInCellSinceShift: ModelEvidence;
   /** Graded runs per day the cell accrues. */
   gradedPerDay: number;
+  /**
+   * Scales the dial's margin, in (0, 1], for all signals or per signal;
+   * default 1. A surface whose signal is noisier than coding's (chat: a
+   * model-judged verdict) passes < 1 for it: the threshold, the promotion
+   * bound and the revert test all use the smaller margin, so the cell needs
+   * more evidence to move. See tier-dial-chat.ts.
+   */
+  marginScale?: MarginScale;
+  /** What each signal slot means on this surface, for reasons. Default: the coding words. */
+  signalLabels?: Record<OutcomeSignal, string>;
 }
 
 export interface DialProgress {
@@ -341,6 +372,8 @@ export function decideDialCell(input: DialCellInput): DialDecision {
   const nowIso = input.now.toISOString();
   const prior = input.prior;
   const s = DIAL_SETTINGS[input.dial];
+  const margins = signalMargins(s.margin, input.marginScale);
+  const labels = input.signalLabels ?? SIGNAL_LABEL;
 
   if (input.dial === 1 || input.alternates.length === 0) {
     const record: DialStateRecord = { ...keep(prior), state: 'always', since: prior?.state === 'always' ? prior.since : nowIso };
@@ -379,7 +412,7 @@ export function decideDialCell(input: DialCellInput): DialDecision {
     const comparator = gradedRuns(input.primaryInCellSinceShift) >= MIN_METRIC_N
       ? input.primaryInCellSinceShift.rates
       : input.primary.evidence.rates;
-    const reason = slipped(alt.inCell.rates, comparator, s.margin);
+    const reason = slipped(alt.inCell.rates, comparator, margins, labels);
     if (reason) {
       return {
         record: { state: 'reverted', since: nowIso, alternateArmId: null, revertReason: reason, revertedFrom: alt.model, revertedAt: nowIso, evidenceSince: nowIso },
@@ -410,13 +443,13 @@ export function decideDialCell(input: DialCellInput): DialDecision {
   }
 
   // learning
-  const t = dialThreshold({ dial: input.dial, primary: input.primary.evidence.rates, gradedPerDay: input.gradedPerDay });
+  const t = dialThreshold({ dial: input.dial, primary: input.primary.evidence.rates, gradedPerDay: input.gradedPerDay, marginScale: input.marginScale });
   const primaryGraded = gradedRuns(input.primary.evidence);
   let anyReady = false;
   for (const alt of byCost(input.alternates)) {
     if (gradedRuns(alt.evidence) < t.threshold || primaryGraded < t.threshold) continue;
     anyReady = true;
-    const check = withinTolerance(alt.evidence.rates, input.primary.evidence.rates, s.margin, t.z);
+    const check = withinTolerance(alt.evidence.rates, input.primary.evidence.rates, margins, t.z);
     if (!check.ok) continue;
     return {
       record: { ...keep(prior), state: 'shifted', since: nowIso, alternateArmId: alt.armId },
@@ -424,10 +457,10 @@ export function decideDialCell(input: DialCellInput): DialDecision {
       alternateArmId: alt.armId,
       event: {
         kind: 'promotion',
-        reason: `${alt.model} kept up with the primary on ${check.checked.map(c => SIGNAL_LABEL[c]).join(', ')} over ${gradedRuns(alt.evidence)} graded runs`,
+        reason: `${alt.model} kept up with the primary on ${check.checked.map(c => labels[c]).join(', ')} over ${gradedRuns(alt.evidence)} graded runs`,
         evidence: {
           alternateArmId: alt.armId, model: alt.model, dial: input.dial, share: s.maxShare,
-          threshold: t.threshold, z: t.z, margin: s.margin, basis: t.basis,
+          threshold: t.threshold, z: t.z, margin: s.margin, ...(input.marginScale !== undefined ? { margins } : {}), basis: t.basis,
           alternate: alt.evidence.rates, primary: input.primary.evidence.rates,
         },
       },
@@ -442,7 +475,7 @@ export function decideDialCell(input: DialCellInput): DialDecision {
 }
 
 /** Fields that survive a transition: the last revert reason stays for history. */
-function keep(prior: DialStateRecord | null): Partial<DialStateRecord> {
+export function keep(prior: DialStateRecord | null): Partial<DialStateRecord> {
   if (!prior) return {};
   return {
     ...(prior.revertReason ? { revertReason: prior.revertReason } : {}),
@@ -458,7 +491,7 @@ export function learningProgress(input: DialCellInput): DialProgress {
 }
 
 function progressFor(input: DialCellInput, t: DialThreshold | null, note?: string): DialProgress {
-  const th = t ?? dialThreshold({ dial: input.dial, primary: input.primary.evidence.rates, gradedPerDay: input.gradedPerDay });
+  const th = t ?? dialThreshold({ dial: input.dial, primary: input.primary.evidence.rates, gradedPerDay: input.gradedPerDay, marginScale: input.marginScale });
   const cand = shadowCandidate(input.alternates);
   const graded = cand ? gradedRuns(cand.evidence) : 0;
   const remaining = Math.max(0, th.threshold - Math.min(graded, gradedRuns(input.primary.evidence)));
@@ -515,6 +548,15 @@ export function decideDialArm(args: {
 export function cellState(record: DialStateRecord | null, dial: Dial, alternates: number): DialState {
   if (dial === 1 || alternates === 0) return 'always';
   return record?.state ?? 'learning';
+}
+
+/**
+ * The same model under two spellings: an exact id, or one id plus a dated
+ * suffix (`claude-x-4-5` vs `claude-x-4-5-20251001`).
+ */
+export function sameModel(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  return a === b || a.startsWith(`${b}-`) || b.startsWith(`${a}-`);
 }
 
 // ── Grading the team's own coding runs ──────────────────────────────────────

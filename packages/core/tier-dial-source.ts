@@ -15,8 +15,10 @@
  * - `buildModelPolicyCells` is the team read model shared with the UI and
  *   chat-learning tasks (`ModelPolicyCellsResponse` in @buildd/shared).
  *
- * Only coding (agent) cells learn here. Chat cells report their configured
- * state; the chat-learning task supplies chat evidence.
+ * Coding (agent) cells learn from the team's coding outcomes. Chat cells
+ * learn from thumbs (`loadTeamChatThumbs`) and chat retro verdicts, which
+ * arrive through an injected `ChatQualitySource` (./tier-dial-chat.ts): with
+ * none, a chat dial cell reads "no quality signal" and never shifts.
  */
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type {
@@ -29,8 +31,12 @@ import { resolveAllTiers, workspaceOverrides } from './model-tier-registry';
 import { TIERS, type Tier, type TierEntry, type TierSurface } from './model-tier-defaults';
 import {
   DEFAULT_DIAL, cellState, decideDialCell, dialAllocation, evidenceFrom, gradeRun, gradedPace, isDial,
-  learningProgress, shadowCandidate, type CodingRun, type DialDecision, type DialStateRecord,
+  learningProgress, sameModel, shadowCandidate, type CodingRun, type DialDecision, type DialStateRecord,
 } from './tier-dial';
+import {
+  CHAT_EVIDENCE_DAYS, NO_QUALITY_SIGNAL, chatDialInputFor, chatHoldReason, decideChatCell,
+  type ChatQualitySource, type ChatQualityStatus, type ChatSessionVerdict, type ChatThumb,
+} from './tier-dial-chat';
 import { invalidateTierPoolCache, orderArms, readDialState } from './tier-pool-source';
 import { POOL_SURFACES, type Allocation, type PoolArmRef } from './tier-pool';
 
@@ -120,13 +126,67 @@ export async function loadTeamCodingRuns(teamId: string, since: Date): Promise<C
   });
 }
 
+export { sameModel };
+
+// ── Chat thumbs ──────────────────────────────────────────────────────────────
+
+interface ThumbRow {
+  message_id: string;
+  conversation_id: string;
+  at: string | Date;
+  tier: string | null;
+  model: string | null;
+  signal: string;
+  reason: string | null;
+}
+
 /**
- * The same model under two spellings: an exact id, or one id plus a dated
- * suffix (`claude-x-4-5` vs `claude-x-4-5-20251001`).
+ * Thumbs on a team's assistant turns since `since`, with the model and tier
+ * that served each turn. Ids, labels and times only: no message content.
  */
-export function sameModel(a: string | null | undefined, b: string | null | undefined): boolean {
-  if (!a || !b) return false;
-  return a === b || a.startsWith(`${b}-`) || b.startsWith(`${a}-`);
+export async function loadTeamChatThumbs(teamId: string, since: Date): Promise<ChatThumb[]> {
+  const result = await db.execute(sql`
+    SELECT m.id AS message_id, m.conversation_id, m.created_at AS at, m.tier, m.model, f.signal, f.reason
+    FROM user_feedback f
+    JOIN conversation_messages m ON m.id::text = f.entity_id AND m.role = 'assistant'
+    JOIN conversations c ON c.id = m.conversation_id AND c.team_id = ${teamId}
+    WHERE f.team_id = ${teamId}
+      AND f.entity_type = 'conversation_message'
+      AND f.signal IN ('up', 'down')
+      AND m.created_at >= ${since.toISOString()}::timestamptz
+  `);
+  return (result.rows as unknown as ThumbRow[]).map(r => ({
+    messageId: r.message_id,
+    conversationId: r.conversation_id,
+    at: new Date(r.at),
+    tier: r.tier,
+    model: r.model,
+    signal: r.signal === 'up' ? 'up' : 'down',
+    reason: r.reason,
+  }));
+}
+
+/** No source, or a failing one, means no quality signal: never a reason to move traffic. */
+const NO_RETRO: ChatQualityStatus = { enabled: false, judgeModel: null };
+
+/** A team's chat signal: retro status, verdicts (only when on) and thumbs. */
+export async function loadTeamChatSignal(teamId: string, now: Date, source?: ChatQualitySource | null): Promise<{
+  retro: ChatQualityStatus; verdicts: ChatSessionVerdict[]; thumbs: ChatThumb[];
+}> {
+  const since = new Date(now.getTime() - CHAT_EVIDENCE_DAYS * DAY_MS);
+  let retro = NO_RETRO;
+  let verdicts: ChatSessionVerdict[] = [];
+  if (source) {
+    try {
+      retro = await source.status(teamId);
+      if (retro.enabled) verdicts = await source.verdicts(teamId, since);
+    } catch (err) {
+      console.warn(`[tier-dial] chat quality source failed for team ${teamId}; no quality signal:`, err);
+      retro = NO_RETRO;
+      verdicts = [];
+    }
+  }
+  return { retro, verdicts, thumbs: await loadTeamChatThumbs(teamId, since) };
 }
 
 // ── Daily step ──────────────────────────────────────────────────────────────
@@ -135,6 +195,7 @@ export interface DialPool {
   id: string;
   teamId: string;
   tier: string;
+  surface: TierSurface;
   dial: ModelPolicyDial;
   dialState: DialStateRecord | null;
   allocation: Allocation;
@@ -180,6 +241,7 @@ export async function loadDialPools(teamId?: string): Promise<DialPool[]> {
     id: tierPools.id,
     teamId: tierPools.teamId,
     tier: tierPools.tier,
+    surface: tierPools.surface,
     dial: tierPools.dial,
     dialState: tierPools.dialState,
     allocation: tierPools.allocation,
@@ -188,7 +250,6 @@ export async function loadDialPools(teamId?: string): Promise<DialPool[]> {
     isNull(tierPools.workspaceId),
     isNull(tierPools.frozenAt),
     eq(tierPools.mode, 'dial'),
-    eq(tierPools.surface, 'agent'),
     ...(teamId ? [eq(tierPools.teamId, teamId)] : []),
   ));
   if (rows.length === 0) return [];
@@ -200,6 +261,7 @@ export async function loadDialPools(teamId?: string): Promise<DialPool[]> {
     id: r.id,
     teamId: r.teamId,
     tier: r.tier,
+    surface: r.surface === 'chat' ? 'chat' as const : 'agent' as const,
     dial: isDial(r.dial) ? r.dial : DEFAULT_DIAL,
     dialState: readDialState(r.dialState),
     allocation: (r.allocation ?? {}) as Allocation,
@@ -290,23 +352,45 @@ export interface DialStepSummary {
   errors: number;
 }
 
-/** Evaluate every dial agent cell (optionally one team's). */
-export async function runDialStep(args: { now: Date; teamId?: string }): Promise<DialStepSummary> {
+/** The decision for one dial cell, from its surface's evidence (loaded once per team). */
+async function decidePool(
+  pool: DialPool,
+  now: Date,
+  cache: { runs: Map<string, CodingRun[]>; chat: Map<string, Awaited<ReturnType<typeof loadTeamChatSignal>>> },
+  chatQuality: ChatQualitySource | null | undefined,
+): Promise<DialDecision | null> {
+  if (pool.surface === 'chat') {
+    let signal = cache.chat.get(pool.teamId);
+    if (!signal) {
+      signal = await loadTeamChatSignal(pool.teamId, now, chatQuality);
+      cache.chat.set(pool.teamId, signal);
+    }
+    const input = chatDialInputFor(pool, signal.verdicts, signal.thumbs, signal.retro, now);
+    return input ? decideChatCell(input) : null;
+  }
+  let runs = cache.runs.get(pool.teamId);
+  if (!runs) {
+    runs = await loadTeamCodingRuns(pool.teamId, new Date(now.getTime() - DIAL_EVIDENCE_DAYS * DAY_MS));
+    cache.runs.set(pool.teamId, runs);
+  }
+  const input = dialInputFor(pool, runs, now);
+  return input ? decideDialCell(input) : null;
+}
+
+/**
+ * Evaluate every dial cell (optionally one team's). Chat cells read their
+ * retro verdicts from `chatQuality`; without it they have no quality signal.
+ */
+export async function runDialStep(args: { now: Date; teamId?: string; chatQuality?: ChatQualitySource | null }): Promise<DialStepSummary> {
   const summary: DialStepSummary = { pools: 0, evaluated: 0, transitions: [], stale: 0, errors: 0 };
   const pools = await loadDialPools(args.teamId);
   summary.pools = pools.length;
-  const runsByTeam = new Map<string, CodingRun[]>();
+  const cache = { runs: new Map<string, CodingRun[]>(), chat: new Map() };
   const touched = new Set<string>();
   for (const pool of pools) {
     try {
-      let runs = runsByTeam.get(pool.teamId);
-      if (!runs) {
-        runs = await loadTeamCodingRuns(pool.teamId, new Date(args.now.getTime() - DIAL_EVIDENCE_DAYS * DAY_MS));
-        runsByTeam.set(pool.teamId, runs);
-      }
-      const input = dialInputFor(pool, runs, args.now);
-      if (!input) continue;
-      const decision = decideDialCell(input);
+      const decision = await decidePool(pool, args.now, cache, args.chatQuality);
+      if (!decision) continue;
       const record = recordAfter(decision, args.now);
       const allocation = dialAllocation(pool.arms, record, pool.dial);
       const moved = !!decision.event || !sameAllocation(allocation, pool.allocation);
@@ -382,9 +466,15 @@ interface CellPoolRow {
 
 /**
  * The team's read model: every tier x surface cell, with its primary,
- * alternates, dial, learning state and what ran.
+ * alternates, dial, learning state and what ran. Chat cells also say what
+ * they learn from (`qualitySignal`) and, when they cannot move traffic, why
+ * (`heldReason`); pass the chat retro's `chatQuality` source for that.
  */
-export async function buildModelPolicyCells(teamId: string, now = new Date()): Promise<ModelPolicyCellsResponse> {
+export async function buildModelPolicyCells(
+  teamId: string,
+  now = new Date(),
+  opts: { chatQuality?: ChatQualitySource | null } = {},
+): Promise<ModelPolicyCellsResponse> {
   const [agentTiers, chatTiers, overrideInfo, poolRows, runs, routingExps] = await Promise.all([
     resolveAllTiers(teamId, null, 'agent'),
     resolveAllTiers(teamId, null, 'chat'),
@@ -414,6 +504,12 @@ export async function buildModelPolicyCells(teamId: string, now = new Date()): P
     if (t) routingTiers.add(t);
   }
   const whatRanSince = now.getTime() - WHAT_RAN_DAYS * DAY_MS;
+  // Chat evidence is read only when a chat cell is under the dial; the
+  // retro's on/off status labels every chat cell.
+  const chatDial = pools.some(p => p.surface === 'chat' && p.mode === 'dial');
+  const chat = chatDial
+    ? await loadTeamChatSignal(teamId, now, opts.chatQuality)
+    : { retro: opts.chatQuality ? await opts.chatQuality.status(teamId).catch(() => NO_RETRO) : NO_RETRO, verdicts: [], thumbs: [] };
 
   const cells: ModelPolicyCell[] = [];
   for (const surface of POOL_SURFACES) {
@@ -457,9 +553,28 @@ export async function buildModelPolicyCells(teamId: string, now = new Date()): P
         cell.share = alloc[record.alternateArmId] ?? 0;
         if (alt) cell.shiftedTo = alt.model;
       }
+      if (surface === 'chat') {
+        cell.qualitySignal = chat.retro.enabled ? 'chat-retro' : 'none';
+        if (!chat.retro.enabled) cell.heldReason = NO_QUALITY_SIGNAL;
+      }
+      if (isDialPool && surface === 'chat' && state !== 'always') {
+        const input = chatDialInputFor({ tier, dial, dialState: record, arms: poolArms }, chat.verdicts, chat.thumbs, chat.retro, now);
+        if (input) {
+          const held = chatHoldReason(input);
+          if (held) cell.heldReason = held;
+          if (state === 'learning') {
+            const p = learningProgress(input.base);
+            const cand = shadowCandidate(input.base.alternates);
+            cell.progress = {
+              graded: p.graded, threshold: p.threshold, primaryGraded: p.primaryGraded,
+              candidate: cand?.model ?? null, etaDays: p.etaDays, ...(held ? { note: held } : {}),
+            };
+          }
+        }
+      }
       if (isDialPool && state === 'learning' && surface === 'agent') {
         const input = dialInputFor({
-          id: pool!.id, teamId, tier, dial, dialState: record, allocation: pool!.allocation,
+          id: pool!.id, teamId, tier, surface, dial, dialState: record, allocation: pool!.allocation,
           allocationVersion: pool!.allocationVersion, arms: poolArms,
         }, runs, now);
         if (input) {
