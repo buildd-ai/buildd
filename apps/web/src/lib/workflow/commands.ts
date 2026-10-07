@@ -227,6 +227,10 @@ export type Command =
       reason?: string;
       /** apply_recommendation / request_changes: what the person wants fixed, carried into the fix task. */
       instructions?: string;
+      /** approve: the head the person approved. T14's evidence: must equal the live head. */
+      commitId?: string;
+      /** approve: the person holds merge permission on the repo (T14's evidence). */
+      hasMergePermission?: boolean;
     })
   | (Base & { type: 'DeliveryFailed'; reason: string })
   | (Base & {

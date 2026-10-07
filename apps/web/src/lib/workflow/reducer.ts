@@ -876,7 +876,16 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const bypass = { choice: cmd.choice, reason: cmd.reason ?? null, actor: cmd.actor, escalation: dd.stateReason };
       if (cmd.choice === 'approve') {
         if (!dd.currentHeadSha) return c.rejected('no_head');
-        return c.apply(key, 'APPROVED', { patch: { approvedHeads: [dd.currentHeadSha], approvalBasis: 'human', stateReason: null }, bypass });
+        // The same evidence T14 requires: an approval of the live head by someone who may merge.
+        if (!cmd.commitId) return c.rejected('commit_id_required');
+        if (cmd.commitId !== dd.currentHeadSha) return c.stale('review_on_older_commit');
+        if (cmd.hasMergePermission !== true) return c.rejected('no_merge_permission');
+        return c.apply(key, 'APPROVED', {
+          guardHead: true,
+          patch: { approvedHeads: [cmd.commitId], approvalBasis: 'human', stateReason: null },
+          evidence: { commitId: cmd.commitId },
+          bypass,
+        });
       }
       if (cmd.choice === 'dismiss') {
         if (!cmd.reason?.trim()) return c.rejected('reason_required');

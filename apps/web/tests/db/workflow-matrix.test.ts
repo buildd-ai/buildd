@@ -901,6 +901,24 @@ describe('S9–S15', () => {
     expect((await effects(o.deliveryId, 'merge_call')).length).toBe(1);
   });
 
+  // Task 57e1d5b8 (#2574): the landing sweep's floor picks kernel PRs by their delivery, so a
+  // delivery APPROVED with no reviewer row at all (composition, human) is still a candidate.
+  test('S10 (sweep): an APPROVED kernel delivery with no reviewer verdict is a floor candidate; one still in review is not', async () => {
+    const { createLandingSweepDeps } = await import('../../src/lib/pr-landing-sweep-deps');
+    const approved = await openAndHandOn();
+    const inReview = await openAndHandOn();
+    // Neither PR has a decided reviewer row; one delivery is approved by composition.
+    await q(sql`UPDATE workflow_deliveries SET state = 'APPROVED', approval_basis = 'composition', approved_heads = ARRAY['H1']::text[] WHERE id = ${approved.deliveryId}::uuid`);
+    await q(sql`UPDATE workspaces SET git_config = COALESCE(git_config, '{}'::jsonb) || '{"landing":{"mode":"enforce"}}'::jsonb WHERE id = ${workspaceId}::uuid`);
+    try {
+      const floor = (await createLandingSweepDeps().listFloor(500)).filter((r) => r.workspaceId === workspaceId).map((r) => r.prNumber);
+      expect(floor).toContain(approved.prNumber);
+      expect(floor).not.toContain(inReview.prNumber);
+    } finally {
+      await q(sql`UPDATE workspaces SET git_config = git_config - 'landing' WHERE id = ${workspaceId}::uuid`);
+    }
+  });
+
   test('S10 (doors): a kernel refusal is the door\'s answer; no merge call is made for a head the kernel has not approved', async () => {
     const o = await openAndHandOn(); // AWAITING_REVIEW: round 1 still open
     const res = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'merge_pr', actor: 'agent:w' }, deps);
@@ -1355,7 +1373,7 @@ describe('S16–S21', () => {
     expect(d.state).toBe('ESCALATED');
     const n = (await transitions(o.deliveryId)).length;
 
-    const resolve = (expectedVersion: number) => applyCommand({ type: 'HumanResolve', actor: 'human:owner', choice: 'approve', expectedVersion }, { ref: { deliveryId: o.deliveryId } });
+    const resolve = (expectedVersion: number) => applyCommand({ type: 'HumanResolve', actor: 'human:owner', choice: 'approve', expectedVersion, commitId: 'H1', hasMergePermission: true }, { ref: { deliveryId: o.deliveryId } });
     expect(await resolve(d.version - 1)).toEqual({ result: 'stale', reason: 'version_moved', current: { state: 'ESCALATED', version: d.version, head: 'H1', round: 1 } });
     expect((await transitions(o.deliveryId)).length).toBe(n);
     expect(await resolve(d.version)).toMatchObject({ result: 'applied' });
