@@ -186,6 +186,11 @@ mock.module('@buildd/core/model-catalog-cache', () => ({
   getCachedOpenRouterCatalog: (...a: any[]) => (mockGetCatalog as any)(...a),
 }));
 
+// No certification records: the static floor table only, as before certification.
+mock.module('@buildd/core/model-certification-store', () => ({
+  getModelCertifications: () => Promise.resolve(new Map()),
+}));
+
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => ({ args, type: 'and' }),
