@@ -237,6 +237,15 @@ DELETE FROM stripe_events;
 DELETE FROM agent_capability_decisions;
 -- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.
 DELETE FROM task_dispatch_outbox;
+-- Workflow kernel ledger: facts, transitions and effects carry repo names, PR
+-- heads and evidence payloads. Children first (effects reference transitions).
+DELETE FROM workflow_effects;
+DELETE FROM workflow_transitions;
+DELETE FROM workflow_facts;
+DELETE FROM workflow_review_rounds;
+DELETE FROM workflow_attempts;
+DELETE FROM workflow_deliveries;
+DELETE FROM trunk_incidents;
 DELETE FROM watcher_events;
 -- Watches and their ledger: payloads carry task/PR titles and repo names.
 DELETE FROM notification_deliveries;
