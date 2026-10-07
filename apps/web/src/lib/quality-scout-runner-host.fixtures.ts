@@ -108,7 +108,7 @@ export function memoryHostStore() {
   const rows = new Map<string, Row>();
   const probes = new Map<string, ScoutProbeRecord[]>();
   const finalized: Array<{ run: ScoutRun; probes: ScoutProbeRecord[] }> = [];
-  const swept: string[][] = [];
+  const swept: Array<{ teamId: string; workspaceIds: string[] }> = [];
   const released: string[] = [];
   let sweepResult: string[] = [];
 
@@ -121,8 +121,8 @@ export function memoryHostStore() {
     r.status === 'awaiting_host' && r.parking?.lease?.holder === holder && Date.parse(r.parking.lease.expiresAt) > now.getTime();
 
   const store: ScoutRunnerHostStore = {
-    async sweepExpired(ids) {
-      swept.push([...ids]);
+    async sweepExpired({ teamId, workspaceIds }) {
+      swept.push({ teamId, workspaceIds: [...workspaceIds] });
       return sweepResult;
     },
     async listClaimable({ teamId, workspaceIds, now, limit }) {

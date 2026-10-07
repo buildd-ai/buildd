@@ -660,6 +660,23 @@ describe('a parked run', () => {
     expect(out.metrics.hosts?.runnerExpired).toBe(out.metrics.hosts!.runnerProbes - 1);
   });
 
+  it('a runner-hosted fail is recorded but, on first sight, files nothing in propose mode', async () => {
+    const { w, saved } = await parked();
+    const records = w.probes.get(saved.id)!;
+    const runnerOnes = records.filter((p) => p.host === 'runner');
+    const ex = await executeScoutProbes(saved, runnerOnes, saved.parking!.profile, { command: commandPort({ exitCode: 3 }).port }, {
+      now: () => T0, startedAt: T0, maxDurationMs: 60_000, host: 'runner',
+    });
+    expect(ex.records.some((p) => p.result?.verdict === 'fail' && (p.result.confidence ?? 0) >= 0.7)).toBe(true);
+    const byId = new Map(ex.records.map((p) => [p.candidateId, p]));
+    const merged = records.map((p) => byId.get(p.candidateId) ?? p);
+    const out = await finalizeScoutRun({ run: saved, records: merged, summary: structuredClone(saved.parking!.plan), mode: 'propose' }, deps(w, { now: () => T0 }));
+    if (out?.status !== 'completed') throw new Error(String(out?.status));
+    expect(w.findings.size).toBeGreaterThan(0);
+    expect(w.tasks.size).toBe(0);
+    expect([...w.findings.values()].every((f) => f.actionState === 'aggregated' || f.actionState === 'retained')).toBe(true);
+  });
+
   it('a completed or never-parked run is not touched by the expiry finalizer', async () => {
     const w = memoryWorld();
     const out = await runQualityScout(request(), deps(w));

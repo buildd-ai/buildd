@@ -179,6 +179,15 @@ describe('runVerificationCheck', () => {
     expect(a.recurrenceKey).toBe('positive_number');
   });
 
+  it('carries the parts it signed, so a remote host can report parts and let the receiver re-derive the signature', () => {
+    const c = check({ executor: { kind: 'deterministic', requires: [], run: () => ({ verdict: 'fail', signatureParts: ['oom', 'b'] }) } });
+    const r = runVerificationCheck(c, ctx(1));
+    expect(r.signatureParts).toEqual(['oom', 'b']);
+    expect(verificationSignature([r.checkId, ...r.signatureParts!])).toBe(r.signature);
+    const none = runVerificationCheck(check({ executor: { kind: 'deterministic', requires: [], run: () => ({ verdict: 'pass' }) } }), ctx(1));
+    expect('signatureParts' in none).toBe(false);
+  });
+
   it('executor may override severity and recurrence key', () => {
     const c = check({
       executor: { kind: 'deterministic', requires: [], run: () => ({ verdict: 'fail', severity: 'critical', recurrenceKey: 'family' }) },

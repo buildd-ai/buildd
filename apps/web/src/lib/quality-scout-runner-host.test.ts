@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import {
   canServeScoutProbes,
+  MAX_SCOUT_SIGNATURE_PART_CHARS,
+  MAX_SCOUT_SIGNATURE_PARTS,
+  RUNNER_MAX_CONFIDENCE,
   claimScoutRunForRunner,
   expectedScoutCheckIds,
   normalizeRunnerResult,
@@ -11,6 +14,8 @@ import {
   scoutLeaseHolder,
   type ScoutHostCaller,
 } from './quality-scout-runner-host';
+import { verificationSignature } from '@buildd/core/verification-check';
+import { DEFAULT_SCOUT_ACTION_POLICY } from './quality-scout-actions';
 import { memoryHostStore, parkedRun, probeRecord, profile, REPO, runnerResult, SHA, T0 } from './quality-scout-runner-host.fixtures';
 
 const TEAM = 'team-a';
@@ -57,7 +62,7 @@ describe('claimScoutRunForRunner', () => {
     expect(m.run(run.id)!.parking!.lease!.holder).toBe(scoutLeaseHolder('acct-1', out.lease.leaseId));
     // The lease id is a bearer for this run only alongside the key: never the bare account id.
     expect(out.lease.leaseId).not.toBe('acct-1');
-    expect(m.swept).toEqual([[WS]]);
+    expect(m.swept).toEqual([{ teamId: TEAM, workspaceIds: [WS] }]);
   });
 
   it('never claims another team\'s run, even in a workspace id the key can reach', async () => {
@@ -127,7 +132,9 @@ describe('normalizeRunnerResult', () => {
     expect(code({ ...real, checkId: 'quality-scout:other' })).toBe('wrong_check');
     expect(code({ ...real, subject: { kind: 'candidate-sha', ref: 'f'.repeat(40) } })).toBe('wrong_sha');
     expect(code({ ...real, verdict: 'passish' })).toBe('bad_verdict');
-    expect(code({ ...real, signature: 'nope' })).toBe('bad_signature');
+    expect(code({ ...real, signatureParts: 'exit:3' })).toBe('bad_signature_parts');
+    expect(code({ ...real, signatureParts: [1, 2] })).toBe('bad_signature_parts');
+    expect(code({ ...real, signatureParts: Array.from({ length: MAX_SCOUT_SIGNATURE_PARTS + 1 }, (_, i) => `p${i}`) })).toBe('bad_signature_parts');
     expect(code('x')).toBe('malformed_result');
   });
 
@@ -138,6 +145,70 @@ describe('normalizeRunnerResult', () => {
     expect(real.verdict).toBe('fail');
     const out = normalizeRunnerResult(run, probe, profile, { ...real, severity: 'apocalyptic' }, T0);
     expect(out.ok && out.result.severity).toBe('high');
+  });
+});
+
+describe('normalizeRunnerResult: what the server derives', () => {
+  it('derives the signature from the validated check id and the runner\'s parts; a sent signature is ignored', async () => {
+    const run = parkedRun(WS);
+    const probe = probeRecord('c1');
+    const real = await runnerResult(run, probe, { exitCode: 3 });
+    const forged = verificationSignature(['quality-scout:someone-else']);
+    const out = normalizeRunnerResult(run, probe, profile, { ...real, signature: forged, signatureParts: ['exit:3'] }, T0);
+    if (!out.ok) throw new Error(out.code);
+    expect(out.result.signature).toBe(verificationSignature([real.checkId, 'exit:3']));
+    expect(out.result.signature).not.toBe(forged);
+  });
+
+  it('a result without parts (or with only the old signature field) signs on the check id alone', async () => {
+    const run = parkedRun(WS);
+    const probe = probeRecord('c1');
+    const real = await runnerResult(run, probe);
+    const { signatureParts: _drop, ...noParts } = real as typeof real & { signatureParts?: string[] };
+    const out = normalizeRunnerResult(run, probe, profile, { ...noParts, signature: 'f'.repeat(24) }, T0);
+    if (!out.ok) throw new Error(out.code);
+    expect(out.result.signature).toBe(verificationSignature([real.checkId]));
+    const bare = normalizeRunnerResult(run, probe, profile, { checkId: real.checkId, verdict: 'pass' }, T0);
+    expect(bare.ok && bare.result.signature).toBe(verificationSignature([real.checkId]));
+  });
+
+  it('bounds each part before signing', async () => {
+    const run = parkedRun(WS);
+    const probe = probeRecord('c1');
+    const real = await runnerResult(run, probe, { exitCode: 3 });
+    const long = 'x'.repeat(5_000);
+    const out = normalizeRunnerResult(run, probe, profile, { ...real, signatureParts: [long] }, T0);
+    expect(out.ok && out.result.signature).toBe(verificationSignature([real.checkId, long.slice(0, MAX_SCOUT_SIGNATURE_PART_CHARS)]));
+  });
+
+  it('the recurrence key is always the check id', async () => {
+    const run = parkedRun(WS);
+    const probe = probeRecord('c1');
+    const real = await runnerResult(run, probe, { exitCode: 3 });
+    const out = normalizeRunnerResult(run, probe, profile, { ...real, recurrenceKey: 'quality-scout:another-family' }, T0);
+    expect(out.ok && out.result.recurrenceKey).toBe(real.checkId);
+  });
+
+  it('caps the runner\'s severity at the probe\'s risk; a lower one stands', async () => {
+    const run = parkedRun(WS);
+    const probe = probeRecord('c1', { risk: 'medium' });
+    const real = await runnerResult(run, probe, { exitCode: 3 });
+    const sev = (severity: string) => { const r = normalizeRunnerResult(run, probe, profile, { ...real, severity }, T0); return r.ok ? r.result.severity : r.code; };
+    expect(sev('critical')).toBe('medium');
+    expect(sev('high')).toBe('medium');
+    expect(sev('medium')).toBe('medium');
+    expect(sev('low')).toBe('low');
+  });
+
+  it('caps the runner\'s confidence below the default filing threshold', async () => {
+    const run = parkedRun(WS);
+    const probe = probeRecord('c1');
+    const real = await runnerResult(run, probe, { exitCode: 3 });
+    const out = normalizeRunnerResult(run, probe, profile, { ...real, confidence: 1 }, T0);
+    expect(out.ok && out.result.confidence).toBe(RUNNER_MAX_CONFIDENCE);
+    expect(RUNNER_MAX_CONFIDENCE).toBeLessThan(DEFAULT_SCOUT_ACTION_POLICY.minConfidence);
+    const low = normalizeRunnerResult(run, probe, profile, { ...real, confidence: 0.2 }, T0);
+    expect(low.ok && low.result.confidence).toBe(0.2);
   });
 });
 
@@ -208,6 +279,18 @@ describe('reportScoutProbeResults', () => {
     expect(await code(caller({ accessibleWorkspaceIds: new Set() }), leaseId)).toBe('run_not_found');
     expect(await code(caller(), leaseId, new Date(T0.getTime() + 26 * 60_000))).toBe('lease_expired');
     expect(m.finalized).toHaveLength(0);
+  });
+
+  it('a runner-sent signature for another check never reaches the finding store', async () => {
+    const m = memoryHostStore();
+    const { run, leaseId } = await claimed(m);
+    const real = await runnerResult(run, probeRecord('c1'), { exitCode: 3 });
+    const forged = verificationSignature(['quality-scout:someone-else']);
+    const out = await reportScoutProbeResults({ caller: caller(), runId: run.id, leaseId, now: T0, results: [{ candidateId: 'c1', result: { ...real, signature: forged, signatureParts: ['exit:3'] } }] }, m.store);
+    expect(out.status).toBe(200);
+    const stored = m.finalized[0].probes.find((p) => p.candidateId === 'c1')!.result!;
+    expect(stored.signature).toBe(verificationSignature([real.checkId, 'exit:3']));
+    expect(stored.signature).not.toBe(forged);
   });
 
   it('bounds the batch', async () => {

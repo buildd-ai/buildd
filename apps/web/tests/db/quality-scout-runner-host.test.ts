@@ -169,10 +169,23 @@ describe('sweepExpired: narrowed to the caller\'s workspaces', () => {
     const mine = await park(a.workspaceId);
     const theirs = await park(b.workspaceId);
     await db.execute(sql`UPDATE quality_scout_runs SET host_deadline = now() - interval '1 minute' WHERE id IN (${mine.id}::uuid, ${theirs.id}::uuid)`);
-    const finalized = await store.sweepExpired([a.workspaceId]);
+    const finalized = await store.sweepExpired({ teamId: a.teamId, workspaceIds: [a.workspaceId] });
     expect(finalized).toContain(mine.id);
     expect(finalized).not.toContain(theirs.id);
     expect((await row(mine.id)).status).toBe('completed');
+    expect((await row(theirs.id)).status).toBe('awaiting_host');
+  });
+
+  test("another team's expired run is neither finalized nor returned, even when its workspace id is offered", async () => {
+    const a = await seedWorkspace();
+    const b = await seedWorkspace();
+    expect(b.teamId).not.toBe(a.teamId);
+    const mine = await park(a.workspaceId);
+    const theirs = await park(b.workspaceId);
+    await db.execute(sql`UPDATE quality_scout_runs SET host_deadline = now() - interval '1 minute' WHERE id IN (${mine.id}::uuid, ${theirs.id}::uuid)`);
+    const finalized = await store.sweepExpired({ teamId: a.teamId, workspaceIds: [a.workspaceId, b.workspaceId] });
+    expect(finalized).toContain(mine.id);
+    expect(finalized).not.toContain(theirs.id);
     expect((await row(theirs.id)).status).toBe('awaiting_host');
   });
 });
