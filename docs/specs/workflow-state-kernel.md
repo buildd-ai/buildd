@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/workflow/landing.ts]
 related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts, apps/web/src/lib/workflow/delivery-display.test.ts, apps/web/src/lib/explain-because.test.ts, apps/web/src/lib/explain.test.ts, apps/web/src/lib/pr-presentation.test.ts]
+verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts, apps/web/src/lib/workflow/delivery-display.test.ts, apps/web/src/lib/explain-because.test.ts, apps/web/src/lib/explain.test.ts, apps/web/src/lib/pr-presentation.test.ts, apps/web/src/lib/pr-list.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, packages/core/__tests__/workflow-write-sites.test.ts]
 supersedes: []
 ---
 
@@ -872,7 +872,7 @@ or a projection (written only by `projectDelivery`), or retired. Never two.**
 | `workers.conflictDetectedAt`, `prLastCheckedAt`, `prLastVerifiedAt`, `prCheckFailureCount`, `prUnresolvableReason` | reconcile bookkeeping | unchanged; owned by the importers |
 | `workers.supersededBy*`, `abandoned*` | the supersession edge | **projection** of T20/T21, written by the `project_supersession` effect for a kernel-owned PR (Slice D); `prShipState` answers from the delivery when there is one and from these columns for a legacy PR |
 | reviewer tasks' `result.structuredOutput`, `effectiveVerdict` | raw model output and server override | raw output stays a fact; the decision lives on `workflow_review_rounds.effective_verdict` |
-| `tasks.context.iteration/maxIterations`, `reviewerRetry*`, `ciRetry*`, `conflictRetry*` | budgets and dedupe | budgets move to `fix_attempts`, `current_round`, `repair_attempts`; dedupe keys move to `workflow_effects.dedupe_key` |
+| `tasks.context.iteration/maxIterations`, `reviewerRetry*`, `ciRetry*`, `conflictRetry*` | budgets and dedupe | budgets move to `fix_attempts`, `current_round`, `repair_attempts`; dedupe keys move to `workflow_effects.dedupe_key`. **Retired, drop after legacy drains** (§13.10): the legacy paths, the runner's prompt and the kill switch still read them |
 | `tasks.context.landing`, `landingHandoff`, `baseRefresh` | landing and refresh bookkeeping | `landing` marker content that decides "what next" moves to delivery attributes/effects; `baseRefresh` stays as refresh-effect state |
 | `mission_notes` (reviewer/escalation notes) | human-readable record | projection (written by effects from transitions) |
 | PR activity comment | parallel log by ~18 writers | **render** of `workflow_transitions` (`render_activity`); `parsePrActivityState` stops being a read-modify-write source |
@@ -1667,6 +1667,81 @@ Deviations, each deliberate:
    on its head reads `awaiting_ci` ("Open"), where a legacy row may read
    "CI running".
 
+### 13.10 What Slice F shipped, and what it deferred
+
+Slice F is the reader-removal half of the drop. It drops no column and no
+index, because every one the plan names is still read or written by code that
+is deployed, or will stay deployed until legacy drains (below).
+
+- **`get_pr` reads the delivery.** For the owner or an attempt of a
+  kernel-owned delivery, the merge record and the supersession edge come from
+  the delivery (`prRecord`, `lib/pr-presentation.ts`, over
+  `DeliveryView.mergedAt` and `DeliveryView.supersededBy`). `canonicalPrState`
+  lets GitHub decide open versus closed, and the record fills in a merge that
+  GitHub reported as a plain close. The worker's `mergedAt`,
+  `prLifecycleStatus` and `supersededBy*` are not read for that PR.
+- **`list_prs` and its ranking read the delivery.** `kernelPrStatuses` maps
+  each task of a kernel-owned delivery to its `prState`, in the list's own
+  lifecycle words (`prListStatus`, the inverse of `derivePrDisplayState`).
+  `shapePrRows` lets that decide merged, closed and the state for the PR,
+  over every worker row it has. `rankPrs` and `needsAttention` rank that state.
+  `conflict` and `ci_failed` now read every open PR and filter after the
+  collapse, so a stale column can neither hide a red kernel PR nor list a
+  green one.
+- **The mission task drawer reads the delivery.** `GET /api/tasks/[id]/summary`
+  returns `worker.prState` for a kernel-owned PR, and `TaskPanel`'s PR card
+  passes it to `PrCard`, where it wins over `prLifecycleStatus`.
+- **The write-site guard blocks, with an empty allowlist.**
+  `packages/core/__tests__/workflow-write-sites.test.ts` scans every deployed
+  module in `apps`, `packages` and `scripts`. Tests are excluded by the same
+  rule as the PR-fact guard. It flags access to a kernel table: raw SQL that
+  reads or writes one, or a Drizzle builder or `db.query` over a table object.
+  A declaration is not access, so the schema passes without an exemption, and
+  the test proves it does declare the tables. `ALLOWED` is asserted empty.
+- **The matrix has no todo left.** The one remaining `test.todo` was the live
+  S1 integration case (`apps/web/tests/integration/workflow-s1.test.ts`). It is
+  retired, not passed. It needs a real reviewer verdict, and a fix worker that
+  commits but does not push, against a deployment running the kernel. The
+  integration harness can drive neither deterministically. S1 runs end to end
+  on real Postgres in `workflow-seam.test.ts` and the matrix (both arms), and
+  the route's 400 `delivery_not_advanced` is in the workers route test.
+
+**Drop after legacy drains.** Each item below still has a deployed reader or
+writer, so dropping it in this release would break a live path:
+
+| Column, index or key | Still used by | Why it cannot go yet |
+|---|---|---|
+| `tasks.reviewer_retry_pr_number`, `reviewer_retry_head_sha`, index `tasks_reviewer_retry_event_unique` | the legacy request-changes fix insert (workers route), `supersession.ts` / `supersession-store.ts`, and the kernel's own `dispatch_fix` (`review-effects.ts` stamps the head on the first fix at a head) | The kill switch hands a released delivery back to legacy, and legacy dedupes its fix insert on this index. The kernel stamps the first fix so that a legacy insert after a release still collides. |
+| `tasks.ci_retry_pr_number`, `ci_retry_head_sha`, index `tasks_ci_retry_event_unique` (and the pending-retry index beside it) | `ci-failure-retry.ts` (legacy path and the cap count), `retry-ci` route, `apply-recommendation` route, `pr-list.ts` CI-fix counts, the kernel's `ci-retry-effects.ts` | The same kill-switch dedupe, and the CI-fix attempt count `list_prs` reports. |
+| `tasks.conflict_retry_pr_number`, `conflict_retry_head_sha`, index `tasks_conflict_retry_event_unique` | `conflict-retry.ts`, `dead-zone-sweep.ts`, `pr-attention.ts`, the delivery view's own remediation lookup (`delivery-view.ts`), the kernel's `conflict-retry-effects.ts` | S37's remediation join reads `conflict_retry_pr_number`. Legacy conflict retries dedupe on the index. |
+| `tasks.context.iteration` / `maxIterations` (and `conflictIteration`) | the runner's prompt builder (`apps/runner/src/prompt-builder.ts`, deployed by release), the activity comment's attempt line, `pr-attention.ts`, legacy CI and review paths | No decision reads them for a kernel-owned delivery (§13.1). The runner reads them to word its prompt, and fix tasks created by kernel effects keep carrying them for it (§14, kill switch semantics). |
+
+The safe order is the schema-change skill's. First, a release removes the
+legacy writers and readers above, together with the kill switch, because
+legacy is the rollback path. That release also moves the runner's prompt off
+`context.iteration`, and moves the remediation join to the attempt ledger.
+That is possible only after the legacy-owned population has drained: every
+delivery with `authority = 'legacy'`, and every PR without a delivery row,
+merged or closed. The drop then ships in the next release, when nothing
+deployed reads the columns, with the production row counts in its PR. Both
+steps are owned by follow-up task `9d7ce2d4` (§14 row F).
+
+Deviations, each deliberate:
+
+1. **No column or index is dropped.** This is the safety rule above, not an
+   omission. `bun db:generate` reports no change.
+2. **`list_prs`' merged window still comes from the worker stamp.** The
+   candidate query keeps `workers.merged_at` for `state: merged`. For a
+   kernel-owned PR, `stamp_pr_rows` (T17) writes that stamp, and the instant
+   shown is the delivery's. A delivery whose stamp effect has not run yet
+   appears once it runs.
+3. **`pr-attention.ts` keeps its column pre-filter.** Its open-PR query and
+   dead-zone count read the fact cache. For a kernel-owned PR, the inbox
+   decision is already the kernel's (S36).
+4. **`CondensedTimeline` keeps its column reads.** It is not mounted anywhere,
+   and its rows already pass `delivery` to `TaskCard`. It goes away with the
+   legacy readers.
+
 ---
 
 ## 14. Migration plan: no two authorities, ever
@@ -1687,7 +1762,7 @@ the cutover commit moves the whole family at once.
 | **C** | landing and merge: the five merge doors and `landPr` run as T15/T16 with `merge_call` effect; post-merge effects become outbox effects | inline `emit()` post-merge work; per-door `mergedAt` stamps; `tryAutoMergeWorkerPr` as a decision-maker (it becomes an adapter calling `LandingRequested`) | S10, S15; `landPr` rails untouched |
 | **D** | supersession, abandonment, mission completion inputs, reaper/cleanup | `recordPrSupersession` direct update; reaper auto-complete for deliveries; `prShipState` reads delivery | S9, S12, S16; `canCompleteMission` ACs of `mission-task-lifecycle` still pass unmodified |
 | **E** | projections: UI, explain, Home, activity comment read `getDeliveryView`; retire duplicate maps (`derivePrLifecycle`, `isPrMerged`, `TaskCard` `PR_LIFECYCLE`, `deriveStage` PR branch, chat `dock-model`, `TaskObject`) | the re-derivations in §17.5 | S17; visual QA per `/visual-review` |
-| **F** | delete retired columns/indexes; turn on the write-site guard in blocking mode | `*RetryHeadSha` unique indexes; `iteration` context keys | guard test green with an empty allowlist beyond the kernel |
+| **F** | delete retired columns/indexes; turn on the write-site guard in blocking mode | the last column readers for kernel-owned PRs (`get_pr`, `list_prs`, the mission drawer, §13.10); `*RetryHeadSha` unique indexes and `iteration` context keys **after legacy drains** (task `9d7ce2d4`: a reader-and-kill-switch removal release, then the drop one release later) | guard test green with an empty allowlist beyond the kernel |
 
 **Backfill and import.** `PrBound` on a PR that already has legacy rows creates the
 delivery by a **live read**, not by trusting legacy columns: GitHub says open/merged/
@@ -1809,8 +1884,9 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 every S-number: a passing case drives the seam and the real review-loop effect handlers on
 real Postgres; a scenario that needs later work is a `test.todo` naming the task that owns
 it (556cd910 part 2, 7ab4916f part 3) or the spec slice with no task yet, with its intended
-assertions beside it. The matrix is accepted when no todo is left. S14 is the static guard in
-`packages/core/__tests__/workflow-write-sites.test.ts`.
+assertions beside it. The matrix is accepted when no todo is left, and since Slice F none is
+(§13.10). S14 is the static guard in `packages/core/__tests__/workflow-write-sites.test.ts`,
+blocking with an empty allowlist.
 
 Slice A part 1 coverage of the live path: S1 (both arms), S2, S3, S4, S5, S7, S8, S25,
 the cutover and the kill switch run end to end on real Postgres in
@@ -1851,11 +1927,14 @@ caller's own task deciding §17.1 (`apps/web/tests/db/workflow-matrix.test.ts`).
 route-level authorization matrix is in `apps/web/src/app/api/github/pr/supersede/route.test.ts`
 and `apps/web/src/app/api/github/pr/review/route.test.ts`, the gate's reading of the
 delivery in `apps/web/src/lib/mission-completion.test.ts` and
-`packages/core/__tests__/pr-shipped.test.ts`. The matrix's remaining todo is Slice B's trunk breaker (S24).
+`packages/core/__tests__/pr-shipped.test.ts`. Slice B part 3 then made the trunk breaker
+(S24) a live case, which left the matrix with no todo.
 
-Integration (needs a live server): extend `apps/web/tests/integration/` with one
-end-to-end case for S1 against the dev preview (open PR, request changes, fix attempt
-that does not push, assert state via `explain`). Run with `bun run test:integration`.
+Integration: retired in Slice F (§13.10). A live S1 case needs a real reviewer verdict and a
+fix worker that commits but does not push, against a deployment that runs the kernel. The
+integration harness can drive neither deterministically, so the placeholder was a
+`test.todo` that could never pass. S1 is covered end to end on real Postgres (both arms) and
+by the workers route test.
 
 ---
 

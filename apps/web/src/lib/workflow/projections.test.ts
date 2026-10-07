@@ -167,3 +167,13 @@ describe('S37: conflict remediation already exists', () => {
     expect(v.headline).toBe('Merged');
   });
 });
+
+describe('Slice F: the view carries the PR ending get_pr and list_prs report', () => {
+  test('merged_at and the T20 record come from the delivery row', () => {
+    const v = view({ view: V(D({ state: 'MERGED', mergedAt: '2026-10-01T00:00:00.000Z' })) });
+    expect(v.mergedAt).toBe('2026-10-01T00:00:00.000Z');
+    expect(v.supersededBy).toBeNull();
+    const s = view({ view: V(D({ state: 'SUPERSEDED', supersededByPr: 12, supersededByUrl: 'https://github.com/acme/widgets/pull/12', supersededReason: 'reopened' })) });
+    expect(s.supersededBy).toEqual({ prNumber: 12, url: 'https://github.com/acme/widgets/pull/12', reason: 'reopened' });
+  });
+});
