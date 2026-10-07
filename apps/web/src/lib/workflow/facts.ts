@@ -320,6 +320,7 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
       if (bound?.boundHeadSha && live && bound.boundHeadSha !== live.headSha && !bound.reportedShas.includes(live.headSha) && github?.contains) {
         attribution = { descendsFromBound: await github.contains(fact.repoFullName, bound.boundHeadSha, live.headSha) };
       }
+      const d = view.delivery;
       const carryForward = live ? await carryForwardEvidence(view, fact.repoFullName, live, exec, github) : null;
       return {
         command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(attribution ? { attribution } : {}) },
