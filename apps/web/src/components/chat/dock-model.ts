@@ -8,6 +8,8 @@ import type { BuilddObjectRef } from './chat-contract';
 import type { TaskObjectView } from './objects/object-views';
 import type { BoardStatus, BoardTask, MissionBoardModel } from '@/lib/mission-board';
 import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
+import { derivePrDisplayState } from '@/lib/pr-presentation';
+import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
 
 export type DockMode = KitDockMode;
 export type DockChoice = KitDockChoice<BuilddObjectRef>;
@@ -63,14 +65,48 @@ export interface TaskDockModel {
 
 const MAX_TRIES = 6;
 
-function taskTone(view: TaskObjectView): { label: string; tone: DockTone; stopped: boolean } {
+const LIVE_WORKER = new Set(['running', 'starting', 'idle']);
+
+/**
+ * A kernel-owned delivery's badge (§17.5). Null for `working`: the owner's
+ * own attempt is the reading. Only ESCALATED needs you; a fix, review,
+ * landing or trunk block in flight is live work the platform owns.
+ */
+export function dockToneForDelivery(d: Pick<DeliveryDisplay, 'stage'>): { label: string; tone: DockTone; stopped: boolean } | null {
+  switch (d.stage) {
+    case 'working': return null;
+    case 'needs_you': return { label: 'Needs you', tone: 'needs', stopped: false };
+    case 'merged':
+    case 'superseded': return { label: 'Landed', tone: 'landed', stopped: false };
+    case 'closed':
+    case 'abandoned': return { label: 'Closed', tone: 'idle', stopped: false };
+    case 'failed': return { label: 'Stopped', tone: 'needs', stopped: true };
+    case 'review':
+    case 'approved': return { label: 'In review', tone: 'live', stopped: false };
+    case 'landing': return { label: 'Merging', tone: 'live', stopped: false };
+    case 'blocked': return { label: 'Blocked', tone: 'live', stopped: false };
+    case 'awaiting_push':
+    case 'fixing':
+    case 'repairing': return { label: 'Fixing', tone: 'live', stopped: false };
+  }
+}
+
+function taskTone(view: TaskObjectView): { label: string; tone: DockTone; stopped: boolean; kernel?: boolean } {
   const w = view.worker;
+  // A worker's own question stays a question (§13.2 dev. 3).
   if (w?.waiting || w?.status === 'waiting_input') return { label: 'Needs you', tone: 'needs', stopped: false };
-  if (w?.mergedAt || view.status === 'completed') return { label: 'Landed', tone: 'landed', stopped: false };
+  const kernel = view.delivery ? dockToneForDelivery(view.delivery) : null;
+  if (kernel) return { ...kernel, kernel: true };
+  // Legacy-owned: the one fact-cache mapping. A completed task whose PR is
+  // still open is in review, not landed (§17.5: "Landed" is no longer
+  // `mergedAt || status === 'completed'`).
+  const pr = w?.prNumber ? derivePrDisplayState(w.prLifecycleStatus, w.mergedAt) : null;
+  if (pr === 'merged' || (!pr && view.status === 'completed')) return { label: 'Landed', tone: 'landed', stopped: false };
   if (view.status === 'failed' || w?.status === 'failed' || w?.status === 'error') return { label: 'Stopped', tone: 'needs', stopped: true };
-  if (w?.prLifecycleStatus === 'ci_failed') return { label: 'CI failed', tone: 'needs', stopped: true };
-  if (w && ['running', 'starting', 'idle'].includes(w.status)) return { label: 'Running', tone: 'live', stopped: false };
-  if (w?.prNumber) return { label: 'In review', tone: 'live', stopped: false };
+  if (pr === 'ci_failed') return { label: 'CI failed', tone: 'needs', stopped: true };
+  if (w && LIVE_WORKER.has(w.status)) return { label: 'Running', tone: 'live', stopped: false };
+  if (pr === 'closed' || pr === 'unresolvable') return { label: 'Closed', tone: 'idle', stopped: false };
+  if (pr) return { label: 'In review', tone: 'live', stopped: false };
   return { label: 'Queued', tone: 'idle', stopped: false };
 }
 
@@ -83,16 +119,25 @@ export function taskDockModel(view: TaskObjectView): TaskDockModel {
   const segs: DockTone[] = Array.from({ length: shown }, (_, i) => (i === shown - 1 ? last : 'needs'));
 
   const w = view.worker;
-  const insight = t.tone === 'needs' && !t.stopped
-    ? (view.waitingPrompt ? { text: view.waitingPrompt, flag: true } : null)
-    : t.stopped
-      ? { text: view.error?.trim() || (t.label === 'CI failed' ? 'The pull request’s checks failed.' : 'The agent stopped before it finished.'), flag: true }
-      : t.tone === 'live' && w?.currentAction
-        ? { text: w.currentAction, flag: false }
-        : null;
+  // A kernel-owned delivery's own evidence for where it stands (§17.5),
+  // never generic copy; a live worker's current action still leads.
+  const kernelLine = t.kernel && t.tone !== 'landed' && view.delivery
+    ? { text: view.delivery.detail ? `${view.delivery.headline}: ${view.delivery.detail}` : view.delivery.headline, flag: view.delivery.needsYou }
+    : null;
+  const insight = kernelLine
+    ?? (t.tone === 'needs' && !t.stopped
+      ? (view.waitingPrompt ? { text: view.waitingPrompt, flag: true } : null)
+      : t.stopped
+        ? { text: view.error?.trim() || (t.label === 'CI failed' ? 'The pull request’s checks failed.' : 'The agent stopped before it finished.'), flag: true }
+        : t.tone === 'live' && w?.currentAction
+          ? { text: w.currentAction, flag: false }
+          : null);
 
   const happened: TaskDockModel['happened'] = [...(view.happened ?? [])];
-  if (t.tone === 'needs') happened.push({ ts: null, text: t.stopped ? 'Stopped. Needs input.' : 'Needs input.', needs: true });
+  if (t.tone === 'needs') {
+    const text = t.kernel && view.delivery ? `${view.delivery.headline}.` : t.stopped ? 'Stopped. Needs input.' : 'Needs input.';
+    happened.push({ ts: null, text, needs: true });
+  }
 
   const title = taskHeading({ title: view.title, label: view.label || null }, null).heading;
   // Mid-sentence the heading reads lower-case (an acronym such as CSV keeps its capitals).

@@ -227,7 +227,7 @@ function TaskDock({ objRef, onSend, onOpen }: { objRef: BuilddObjectRef; onSend(
   );
 }
 
-function TaskDockCard({ view, model }: { view: TaskObjectView; model: ReturnType<typeof taskDockModel> }) {
+export function TaskDockCard({ view, model }: { view: TaskObjectView; model: ReturnType<typeof taskDockModel> }) {
   const needs = model.badge.tone === 'needs';
   return (
     <section

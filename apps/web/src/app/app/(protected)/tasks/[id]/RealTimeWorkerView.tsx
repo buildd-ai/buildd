@@ -1,5 +1,6 @@
 'use client';
 
+import { resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
 import { isOpenAsk } from '@/lib/open-ask';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -144,7 +145,7 @@ interface Props {
    * GitHub yet) is never shown as "Needs input" just because the worker
    * stopped on a question (workflow-state-kernel §17.5, S36).
    */
-  delivery?: { headline: string; owner: string; needsYou: boolean; detail: string | null } | null;
+  delivery?: { headline: string; owner: string; needsYou: boolean; detail: string | null; prState?: PrDisplayState | null } | null;
 }
 
 // Entries carry optional agentId/parentAgentId (SDK v0.3.202+) so nested agent
@@ -486,7 +487,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus =
         elapsed={elapsed}
         turns={worker.turns}
         tokens={tokens}
-        pr={worker.prUrl ? { url: worker.prUrl, number: worker.prNumber, lifecycle: worker.prLifecycleStatus ?? null } : null}
+        pr={worker.prUrl ? { url: worker.prUrl, number: worker.prNumber, state: resolvePrDisplayState({ delivery, prLifecycleStatus: worker.prLifecycleStatus }) } : null}
         filesTouched={Math.max(filesEdited, worker.filesChanged ?? 0)}
         added={added}
         removed={removed}

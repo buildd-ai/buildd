@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildStateBecause, buildConflictBecause, dispatchWakeLink, withDispatchLink, type BaseSideMerge, type ConflictSubject } from './explain-because';
+import { buildStateBecause, buildConflictBecause, deliveryTransitionLink, dispatchWakeLink, withDispatchLink, type BaseSideMerge, type ConflictSubject } from './explain-because';
 import { rankGatedSubjects, waitingOnRank, type ExplainAnswer } from './explain-types';
 import { deriveMissionStateView, type MissionStateInput } from './mission-state-view';
 
@@ -373,5 +373,32 @@ describe('dispatchWakeLink (explain for a pending task)', () => {
     expect(out[1].refs.outboxId).toBe('outbox-1');
     expect(out[2].claim).toBe('State is stalled.');
     expect(withDispatchLink(chain, null)).toBe(chain);
+  });
+});
+
+describe('deliveryTransitionLink (§17.5: because[] from the newest kernel transition)', () => {
+  const d = {
+    state: 'AWAITING_PUSH', headline: 'Waiting for the fix to reach GitHub', detail: 'PR #7 is still at abc1234', prNumber: 7, attemptLine: 'review 1 of 3',
+    lastTransition: { command: 'AttemptEnded', fromState: 'FIXING', toState: 'AWAITING_PUSH', createdAt: '2026-01-01T00:00:00.000Z' },
+  };
+  it('names the transition, the state and its evidence, with hard refs', () => {
+    const l = deliveryTransitionLink(d, { taskId: 't1', workspaceId: 'w1' })!;
+    expect(l.derivedFrom).toBe('DeliveryView.lastTransition');
+    expect(l.refs).toEqual({ taskId: 't1', workspaceId: 'w1', prNumber: 7 });
+    expect(l.claim).toContain('AttemptEnded moved it FIXING → AWAITING_PUSH');
+    expect(l.claim).toContain('abc1234');
+    expect(l.claim).toContain('review 1 of 3');
+  });
+  it('no delivery or no transition: no link', () => {
+    expect(deliveryTransitionLink(null, {})).toBeNull();
+    expect(deliveryTransitionLink({ ...d, lastTransition: null }, {})).toBeNull();
+  });
+  it('goes just before the chain conclusion', () => {
+    const chain = withDispatchLink([
+      { order: 1, claim: 'a', derivedFrom: 'tasks.dependsOn', refs: {} },
+      { order: 2, claim: 'end', derivedFrom: 'tasks.dependsOn', refs: {} },
+    ], deliveryTransitionLink(d, {}));
+    expect(chain.map(c => c.derivedFrom)).toEqual(['tasks.dependsOn', 'DeliveryView.lastTransition', 'tasks.dependsOn']);
+    expect(chain.map(c => c.order)).toEqual([1, 2, 3]);
   });
 });

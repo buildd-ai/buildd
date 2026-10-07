@@ -16,6 +16,8 @@ import {
 import { StageChip, stageChipShowsPrNumber } from '@/components/StageChip';
 import SteerButton from '@/components/chat/SteerButton';
 import { deriveStage, type Stage } from '@/lib/stage';
+import { resolvePrDisplayState } from '@/lib/pr-presentation';
+import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
 import { DependencyRail } from '@/components/DependencyRail';
 import { SegmentStrip } from '@/components/SegmentStrip';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
@@ -63,6 +65,12 @@ export interface TaskCardProps {
   prUrl?: string | null;
   prNumber?: number | null;
   prLifecycleStatus?: string | null;
+  /**
+   * The kernel's reading when this task owns a kernel-owned delivery
+   * (workflow-state-kernel §17.5). Its stage and PR state replace the
+   * `prLifecycleStatus` reading; absent for legacy-owned or PR-less tasks.
+   */
+  delivery?: Pick<DeliveryDisplay, 'stage' | 'prState'> | null;
 
   // Agent current action (shown in inline density when running)
   currentAction?: string | null;
@@ -127,17 +135,6 @@ function ChainStrip({ chain }: { chain: ChainPositionResult }) {
 }
 
 // ─── Intensity tier → elapsed color ──────────────────────────────────────────
-
-// PR lifecycle pills (mirrors mission page)
-const PR_LIFECYCLE: Record<string, { label: string; cls: string }> = {
-  merged:     { label: 'merged',    cls: 'bg-status-success/12 text-status-success' },
-  ci_running: { label: 'CI…',       cls: 'bg-status-info/12 text-status-info' },
-  ci_failed:  { label: 'CI ✗',      cls: 'bg-status-error/12 text-status-error' },
-  ci_green:   { label: 'CI ✓',      cls: 'bg-status-success/12 text-status-success' },
-  conflict:   { label: 'conflict',  cls: 'bg-status-warning/12 text-status-warning' },
-  closed:     { label: 'closed',    cls: 'bg-text-muted/10 text-text-muted' },
-  pr_open:    { label: 'open',      cls: 'bg-accent/12 text-accent-text' },
-};
 
 const TIER_COLOR: Record<IntensityTier, string> = {
   fresh:   'text-status-success',
@@ -272,6 +269,7 @@ export function TaskCard({
   prUrl,
   prNumber,
   prLifecycleStatus,
+  delivery,
   currentAction,
   taskType,
   kind,
@@ -295,6 +293,7 @@ export function TaskCard({
     workerStatus,
     prUrl,
     prLifecycleStatus,
+    delivery,
     isBlocked,
     isSubjectDead: subjectDead,
     isMissionBudgetExhausted: missionBudgetExhausted,
@@ -326,7 +325,8 @@ export function TaskCard({
   // Tiers: 1 (identity), 2 (position), 4 (provenance).
   if (density === 'inline') {
     const isCompleted = displayStatus === 'completed';
-    const isTerminalPr = prLifecycleStatus === 'merged' || prLifecycleStatus === 'closed';
+    const prState = resolvePrDisplayState({ delivery, prLifecycleStatus });
+    const isTerminalPr = prState === 'merged' || prState === 'closed';
     // Chip only for genuinely non-default active states; completed/pending/assigned
     // are conveyed by their section label and need no redundant badge.
     // Exception: a loop task with condition_unmet (e.g. waiting for PR merge) must
@@ -340,8 +340,8 @@ export function TaskCard({
     // WaitingOnYou tasks (completed + open PR) omit the inline PR — PrStatusLine in
     // CondensedTimeline renders it alongside the Merge button.
     const showInlinePr = isCompleted && !!prUrl && isTerminalPr;
-    const prStatusLabel = prLifecycleStatus === 'merged' ? 'merged' : 'closed';
-    const prStatusCls   = prLifecycleStatus === 'merged' ? 'text-status-success' : 'text-text-muted';
+    const prStatusLabel = prState === 'merged' ? 'merged' : 'closed';
+    const prStatusCls   = prState === 'merged' ? 'text-status-success' : 'text-text-muted';
 
     return (
       <div className="relative group flex items-center gap-2 py-1.5 min-w-0" data-testid="task-card" data-status={displayStatus}>

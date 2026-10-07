@@ -38,7 +38,9 @@ const ALLOWED = new Set([
 // (`projections` is pure, `delivery-view` only SELECTs) and the activity-note
 // funnel (`pr-activity-effects` records a fact and enqueues a render, §12.1).
 // Slice D adds `delivery-ship`: mission completion's input, a SELECT like `delivery-view`.
-const KERNEL_ENTRY_POINTS = new Set(['seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship']);
+// Slice E adds `delivery-display`: the pure, serialisable slice of the read model that
+// list surfaces carry to the client. No SQL, no command, so it cannot assign a state.
+const KERNEL_ENTRY_POINTS = new Set(['seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship', 'delivery-display']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 const KERNEL_IMPORT = /(?:from\s+|import\()\s*['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:lib\/)?workflow)\/([a-z-]+)['"]/g;
 

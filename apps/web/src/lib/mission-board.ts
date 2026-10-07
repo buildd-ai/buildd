@@ -33,6 +33,7 @@ import { classifyTaskFailure, type TaskFailureKind } from './task-failure-kind';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
 import { activeWorkMs, formatDuration } from './mission-duration';
+import type { DeliveryDisplay } from './workflow/delivery-display';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -179,6 +180,11 @@ export interface BoardTask {
   roleColor: string | null;
   phaseKey: string;
   status: BoardStatus;
+  /**
+   * The kernel's sentence for a kernel-owned delivery (§17.5): its headline
+   * and evidence. The strip drawer says this instead of generic copy.
+   */
+  kernelReason?: string | null;
   /** Runner (display name) of the live worker (the fix attempt's, while fixing), else the last one. */
   runner: string | null;
   /** 0-based slot on that runner, derived from overlap. */
@@ -468,6 +474,7 @@ export function toBoardTaskInput(t: Record<string, unknown> & { id: string; titl
     outputRequirement: str(t.outputRequirement),
     ciRetryPrNumber: num(t.ciRetryPrNumber),
     backend: str(t.backend),
+    delivery: (t.delivery as DeliveryDisplay | null | undefined) ?? null,
     worker: w0
       ? {
           status: w0.status,
@@ -492,9 +499,43 @@ const isLiveWorker = (w: BoardWorkerInput | null | undefined) => !!w && LIVE.has
  * The Board's state for one deliverable row, refining the feed's
  * (`deriveFeedTaskState`). `depsLanded` answers "is anything still holding it".
  */
+/**
+ * A kernel-owned delivery's tile state (§17.5). Null for `working` (the
+ * owner's own attempt is the reading). The Board's own vocabulary holds:
+ * `fixing` is a red PR under repair (CI, conflict, a red base), so a review
+ * fix or a push recovery, whose PR is not red, is `running`. Review and
+ * landing read `review`; so does ESCALATED, whose reason the drawer carries.
+ */
+export function boardStatusForDelivery(d: Pick<DeliveryDisplay, 'stage'>): BoardStatus | null {
+  switch (d.stage) {
+    case 'working': return null;
+    case 'awaiting_push':
+    case 'fixing': return 'running';
+    case 'repairing':
+    case 'blocked': return 'fixing';
+    case 'review':
+    case 'approved':
+    case 'landing': return 'review';
+    // A person's decision on the PR, not an agent's question: the Board's
+    // `waiting` (and its Ask/Reply) is for questions, so it reads `review`,
+    // as a legacy PR awaiting you does. The drawer names the escalation.
+    case 'needs_you': return 'review';
+    case 'merged':
+    case 'superseded': return 'merged';
+    case 'closed':
+    case 'abandoned': return 'done';
+    case 'failed': return 'failed';
+  }
+}
+
 export function deriveBoardStatus(row: DeliverableRow<BoardTaskInput>, depsLanded: boolean): BoardStatus {
   const { task } = row;
   const feed = deriveFeedTaskState(row);
+  // A worker's own question stays a question (§13.2 dev. 3); otherwise the
+  // kernel's reading wins for a kernel-owned delivery.
+  const asked = feed.needsYou === 'input' || feed.needsYou === 'question' || feed.needsYou === 'decision';
+  const kernel = task.delivery && !asked && task.status !== 'cancelled' ? boardStatusForDelivery(task.delivery) : null;
+  if (kernel) return kernel;
   const pr = deriveFeedPrState(task.worker);
   const openAttempt = [...row.attempts].reverse().find(a => !TERMINAL.has(a.status) && a.taskClass !== 'work');
   const attemptLive = !!openAttempt && (isLiveWorker(openAttempt.workers[0]) || openAttempt.status === 'in_progress' || openAttempt.status === 'assigned');
@@ -652,7 +693,7 @@ export function buildBoardCells(
     const own = t.workers[0] ?? null;
     const role = t.roleSlug ? roles.get(t.roleSlug) : undefined;
     const kind = deriveWorkKind({ kind: t.kind ?? null, roleSlug: t.roleSlug ?? null });
-    const prState = deriveFeedPrState(t.worker);
+    const prState = deriveFeedPrState(t.worker, t.delivery);
     tasks[t.id] = {
       id: t.id,
       title: t.title,
@@ -663,6 +704,9 @@ export function buildBoardCells(
       roleColor: role?.color ?? null,
       phaseKey: phaseKeyOf(t),
       status,
+      kernelReason: t.delivery && t.delivery.stage !== 'working'
+        ? (t.delivery.detail ? `${t.delivery.headline}: ${t.delivery.detail}.` : `${t.delivery.headline}.`)
+        : null,
       runner: activeWorker ? displayOf(activeWorker)?.name ?? null : null,
       slot: null,
       workerId: activeWorker?.id ?? null,

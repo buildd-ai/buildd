@@ -139,7 +139,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Creation-manifest and claim hold/start decisions MUST only record suggestions unless a committed readout promotion grants a cohort, and MUST fall back to the deterministic rule on every failure.
 - [Path Claim Ownership](./path-claim-ownership.md) · @max — verified 2026-10-01
   Edit leases MUST be acquired exclusively per workspace, narrowed only by their owner, released on terminal status, and reconciled to a PR's pinned actual diff without ever treating missing data as an empty diff.
-- [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-09-01
+- [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-10-07
   The PR lifecycle status shown on every surface MUST reflect live GitHub CI state within one read cycle, with terminal states (merged/closed) never overwritten by later CI events.
 - [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.

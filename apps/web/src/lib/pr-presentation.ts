@@ -13,17 +13,6 @@ export interface PrLifecyclePresentation {
   cls: string;
 }
 
-export const PR_LIFECYCLE: Record<string, PrLifecyclePresentation> = {
-  merged:     { label: 'Merged',     cls: 'bg-status-success/15 text-status-success' },
-  ci_running: { label: 'CI running', cls: 'bg-status-info/15 text-status-info' },
-  ci_failed:  { label: 'CI failing', cls: 'bg-status-error/15 text-status-error' },
-  ci_green:   { label: 'CI passing', cls: 'bg-status-success/15 text-status-success' },
-  conflict:   { label: 'Conflict',   cls: 'bg-status-warning/15 text-status-warning' },
-  closed:     { label: 'Closed',     cls: 'bg-text-muted/15 text-text-muted' },
-  pr_open:    { label: 'Open',       cls: 'bg-accent/15 text-accent-text' },
-  unresolvable: { label: 'Unresolvable', cls: 'bg-text-muted/15 text-text-muted' },
-};
-
 /**
  * The display state of a PR from the two stored facts (`workers.mergedAt`,
  * `workers.prLifecycleStatus`). Every surface that says what state a PR is in
@@ -70,19 +59,30 @@ export function derivePrDisplayState(
 }
 
 /**
- * Resolve the lifecycle pill for a worker's PR. `prLifecycleStatus` is the
- * webhook-fed column; when absent but a PR exists we fall back to "Open".
- * Returns null when there is no PR at all.
+ * The display state of a PR, from the one source that owns it: the
+ * delivery's own facts when the workflow kernel owns the PR
+ * (`DeliveryView.prState`, workflow-state-kernel §17.5), else the fact-cache
+ * columns through `derivePrDisplayState`. Every surface that needs a PR's
+ * state for a row that may be kernel-owned calls this, never the columns.
  */
-export function derivePrLifecycle(
-  prLifecycleStatus: string | null | undefined,
-  hasPr: boolean,
-): PrLifecyclePresentation | null {
-  if (prLifecycleStatus && PR_LIFECYCLE[prLifecycleStatus]) return PR_LIFECYCLE[prLifecycleStatus];
-  return hasPr ? PR_LIFECYCLE.pr_open : null;
+export function resolvePrDisplayState(input: {
+  delivery?: { prState?: PrDisplayState | null } | null;
+  prLifecycleStatus?: string | null;
+  mergedAt?: unknown;
+}): PrDisplayState {
+  if (input.delivery?.prState) return input.delivery.prState;
+  return derivePrDisplayState(input.prLifecycleStatus, input.mergedAt);
 }
 
-/** True when the PR is merged — used to pick "View PR" vs "Review & merge" verbs. */
-export function isPrMerged(prLifecycleStatus: string | null | undefined): boolean {
-  return prLifecycleStatus === 'merged';
-}
+/** The pill for each display state: the only PR pill vocabulary. */
+export const PR_PILL: Record<PrDisplayState, PrLifecyclePresentation> = {
+  merged:       { label: 'Merged',       cls: 'bg-status-success/15 text-status-success' },
+  ci_running:   { label: 'CI running',   cls: 'bg-status-info/15 text-status-info' },
+  ci_failed:    { label: 'CI failing',   cls: 'bg-status-error/15 text-status-error' },
+  ci_passed:    { label: 'CI passing',   cls: 'bg-status-success/15 text-status-success' },
+  conflict:     { label: 'Conflict',     cls: 'bg-status-warning/15 text-status-warning' },
+  closed:       { label: 'Closed',       cls: 'bg-text-muted/15 text-text-muted' },
+  awaiting_ci:  { label: 'Open',         cls: 'bg-accent/15 text-accent-text' },
+  open:         { label: 'Open',         cls: 'bg-accent/15 text-accent-text' },
+  unresolvable: { label: 'Unresolvable', cls: 'bg-text-muted/15 text-text-muted' },
+};

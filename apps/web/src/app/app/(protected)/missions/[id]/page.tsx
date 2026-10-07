@@ -8,7 +8,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { formatCompletionRecord, situationRepeatsCompletion } from '@/lib/mission-completion-record';
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
-import { kernelReplacedFailedTaskIds } from '@/lib/workflow/delivery-view';
+import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
+import { ownerDeliveryDisplays } from '@/lib/workflow/delivery-display';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE, buildReviewerRetryMap } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip } from '@buildd/core/mission-helpers';
@@ -377,15 +378,19 @@ export default async function MissionDetailPage({
   // shipped under another task/PR, or that the kernel already replaced, must
   // not drive this fallback reading to FAILING.
   const failedDeliverableRows = (mission.tasks || []).filter((t) => isDeliverableTask(t as never) && t.status === 'failed');
-  const [foreignDeps, supersededMap, kernelReplaced] = await Promise.all([
+  const [foreignDeps, supersededMap, deliveryViews] = await Promise.all([
     loadDependencyRows(foreignDependencyIds(mission.tasks || [])),
     computeSupersededFailedTasks(
       mission.id,
       (mission.workspaceId as string | null) ?? null,
       failedDeliverableRows.map((t) => ({ id: t.id, title: t.title, subjectPrNumber: (t as { subjectPrNumber?: number | null }).subjectPrNumber ?? null, createdAt: t.createdAt })),
     ).catch(() => new Map()),
-    kernelReplacedFailedTaskIds(failedDeliverableRows.map((t) => t.id)),
+    // One DeliveryView load for the page (§17.5): the failure reading, the
+    // board/strip, the timeline cards and the structure view all read it.
+    getDeliveryViewsForTasks((mission.tasks || []).map((t) => t.id)),
   ]);
+  const kernelReplaced = replacedFailedTaskIds(deliveryViews, failedDeliverableRows.map((t) => t.id));
+  const deliveryDisplays = ownerDeliveryDisplays(deliveryViews);
   const healthState = deriveTaskHealthSignal(
     { ...mission, heartbeatWaitingUntil },
     (mission.tasks || []).map((t) => ({ ...t, superseded: supersededMap.has(t.id) || kernelReplaced.has(t.id) })),
@@ -734,6 +739,7 @@ export default async function MissionDetailPage({
       // unclaimable task as QUEUED (rule CG-2).
       missionBudgetExhausted: missionBudgetExhausted,
       latestWorker: condensedTask.workers[0] ?? null,
+      delivery: deliveryDisplays.get(task.id) ?? null,
       taskType: deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId, mode: task.mode }),
       // The three `deriveWorkKind` inputs, plus the stored phase. Carried as
       // data on the task object so `buildRail` and `computeStructureLayout` —
@@ -1324,7 +1330,7 @@ export default async function MissionDetailPage({
   const boardModel = buildMissionBoard({
     runnerHeartbeats,
     fleetCapacity,
-    tasks: allTasks.map(t => toBoardTaskInput(t as unknown as Parameters<typeof toBoardTaskInput>[0])),
+    tasks: allTasks.map(t => toBoardTaskInput({ ...t, delivery: deliveryDisplays.get(t.id) ?? null } as unknown as Parameters<typeof toBoardTaskInput>[0])),
     roles,
     now: renderedAt,
     missionCreatedAt: new Date((mission as any).createdAt).getTime(),

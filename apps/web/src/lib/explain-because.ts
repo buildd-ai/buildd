@@ -569,6 +569,28 @@ export function dispatchWakeLink(row: LatestDispatchRow | null | undefined, subj
   }
 }
 
+/**
+ * Slice E (§17.5): for a kernel-owned delivery, the transition that put it
+ * where it is, read from `workflow_transitions` (the newest row). It is the
+ * cause the chain's conclusion rests on, so it goes just before it.
+ */
+export function deliveryTransitionLink(
+  d: { state: string; headline: string; detail: string | null; prNumber: number | null; attemptLine: string | null; lastTransition: { command: string; fromState: string | null; toState: string; createdAt: string } | null } | null | undefined,
+  subject: BecauseSubjectRefs,
+): Link | null {
+  if (!d?.lastTransition) return null;
+  const t = d.lastTransition;
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+    ...(d.prNumber != null ? { prNumber: d.prNumber } : {}),
+  };
+  const moved = t.fromState ? `${t.fromState} → ${t.toState}` : t.toState;
+  const detail = d.detail ? `; ${d.detail}` : '';
+  const attempts = d.attemptLine ? ` (${d.attemptLine})` : '';
+  return link(`Delivery is ${d.state} (${d.headline}${detail})${attempts}: ${t.command} moved it ${moved} at ${t.createdAt}.`, 'DeliveryView.lastTransition', refs);
+}
+
 /** Insert the wake link before the chain's closing conclusion, renumbered. */
 export function withDispatchLink(chain: CausalLink[], wake: Link | null): CausalLink[] {
   if (!wake) return chain;

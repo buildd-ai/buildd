@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/workflow/landing.ts]
 related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts]
+verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts, apps/web/src/lib/workflow/delivery-display.test.ts, apps/web/src/lib/explain-because.test.ts, apps/web/src/lib/explain.test.ts, apps/web/src/lib/pr-presentation.test.ts]
 supersedes: []
 ---
 
@@ -56,8 +56,13 @@ current view. **Slice D moves a closed PR's resolution and mission completion's
 input**: supersession is T20 and abandonment T21 for a kernel-owned PR (the worker
 columns are their projection), a PR closed because its base branch was deleted is
 `CLOSED_UNMERGED(base_deleted)`, the supersession scan is an effect of the close,
-and `prShipState` answers from the delivery. §13.1–§13.8 list what
-landed and the deviations; §14 the cutover and the kill switch.
+and `prShipState` answers from the delivery. **Slice E moves every projection**:
+for a kernel-owned delivery the task card stage, the tasks list, the mission
+board and Landed strip, the mission feed, the task page's PR tile, card and
+shipped header, explain's state chain, history and `because[]`, and the chat
+tile, dock and PR object all read `getDeliveryView`, and the duplicate PR-state
+maps are deleted (§13.9). §13.1–§13.9 list what landed and the deviations; §14
+the cutover and the kill switch.
 
 **Capability statement.** For every deliverable that is meant to reach GitHub as a
 pull request, exactly one row (the *delivery*) records where the work stands. That row
@@ -1146,7 +1151,8 @@ Deviations, each deliberate:
    on the current head and the open conflict-fix row.
 2. **Explain's state chain, the mission strip and the chat dock** still read their
    own projections (Slice E); explain only adds the `delivery` block. S17 covers
-   Home, the task header and the mission failure reading.
+   Home, the task header and the mission failure reading. *Closed by Slice E
+   (§13.9).*
 3. **A fix worker's own question stays a question.** A worker-owned delivery whose
    worker is `waiting_input` keeps the needs-input banner. Only a platform-owned
    blocker is restated; generic `needs_input` is task 01b8a69d's.
@@ -1562,6 +1568,105 @@ Deviations, each deliberate:
    change what plain builders see and are left to their own slice; the kernel still
    only records the mismatch.
 
+### 13.9 What Slice E shipped, and its deviations
+
+Shipped live (kill switch only). A kernel-owned delivery is read from
+`getDeliveryView` on every surface below; a legacy-owned or PR-less task keeps
+the fact-cache projection until that population drains (§14). There is one
+source per row: a surface never combines the delivery with the worker columns.
+
+- **`DeliveryView` carries the PR's own state.** `prState`
+  (`deliveryPrState`, `lib/workflow/projections.ts`) comes from the delivery
+  row: terminal state first, then a CI or mergeable fact only when it was
+  observed on the current head. It also carries `lastTransition`, the newest
+  `workflow_transitions` row.
+- **One serialisable display, one load per surface.** `DeliveryDisplay`
+  (`lib/workflow/delivery-display.ts`, client-safe) is the slice list surfaces
+  carry. `getOwnerDeliveryDisplays` loads it for the **owner** task of each
+  kernel-owned delivery only, because an attempt row is history of the
+  delivery, not the delivery itself (S35). The mission page makes one
+  `getDeliveryViewsForTasks` call. Its failure reading (`replacedFailedTaskIds`),
+  board, strip and structure view all read that call.
+- **One PR accessor.** `resolvePrDisplayState` (`lib/pr-presentation.ts`) returns
+  the delivery's `prState` when there is one, else `derivePrDisplayState` over
+  the columns. `PR_PILL`, keyed by display state, is the only pill vocabulary.
+  The task page's stat tile, PR card and shipped header, the chat PR object,
+  explain's history and the mission feed's PR state all call it.
+- **Task card stage.** `deriveStage` takes `delivery` and maps it through
+  `stageForDelivery`. That adds one chip, `FIXING`, for a fix, repair or push
+  recovery in flight. `AWAITING_PUSH` reads Fixing, not "in review". The
+  tasks list histogram (`deriveGridTaskStage`) buckets from the same stage. A
+  live worker and a worker's own question still lead (§13.2 deviation 3). A
+  failed owner attempt of a live delivery reads the delivery, not FAILED.
+- **Mission strip, board and feed.** `deriveFeedTaskState` and
+  `deriveBoardStatus` read `task.delivery` (`feedStateForDelivery`,
+  `boardStatusForDelivery`). Only ESCALATED is yours. Every other live state
+  is moving, so a fix in flight is never "needs you" and never FAILED. On
+  the Board, a review fix or a push recovery reads `running`. A red PR under
+  repair (CI, conflict, a red base) reads `fixing`, the Board's own word for
+  it. The strip drawer gives the kernel's headline and evidence
+  (`BoardTask.kernelReason`) instead of generic copy. The chat's mission
+  object loads the same displays for its board and AT WORK rows.
+- **Chat.** The dock badge (`dockToneForDelivery`), the task tile
+  (`taskStateForDelivery`) and the PR object (`prStateOf`) read the delivery.
+  The dock's insight and closing line carry the kernel's headline and evidence
+  instead of "Needs input."
+- **Explain.** For the owner of a kernel-owned delivery, the state chain's
+  unmerged-PR input is `kernelUnmergedPr`: merged, superseded, abandoned and
+  failed deliveries are settled, and `CLOSED_UNMERGED` is closed-unsuperseded.
+  The worker's `mergedAt` and `prLifecycleStatus` are not read. The CI-red chain
+  takes the delivery's `prState`. Failed attempts the kernel carried past drop
+  out of the task's failure input. `because[]` gains a link from the newest `workflow_transitions` row
+  (`deliveryTransitionLink`, cited as `DeliveryView.lastTransition`) before the conclusion, and history nodes
+  take their PR state from the delivery. The chain loads deliveries once, and
+  the `delivery` block reuses that load.
+
+**Retired in this PR:**
+- `derivePrLifecycle` and `isPrMerged`. They were the second map, and it
+  ignored `mergedAt`.
+- TaskCard's private `PR_LIFECYCLE`, which was dead.
+- `deriveStage`'s own PR state machine (now `derivePrDisplayState` for legacy
+  rows, `stageForDelivery` for kernel ones).
+- `deriveGridTaskStage`'s lifecycle read.
+- The chat dock's `mergedAt || status === 'completed'` "Landed" rule.
+- The chat task tile's column reads.
+- The chat PR object's `lifecycleOf` reverse map, which also mislabelled CI
+  running as Open.
+- Explain's `unmergedPr` column predicate, for kernel-owned PRs.
+
+Deviations, each deliberate:
+
+1. **Legacy rows got one behaviour fix.** "Landed" in the chat dock is no
+   longer `status === 'completed'` for a legacy task whose PR is still open
+   (§17.5 named it a bug). Every other legacy reading is unchanged; it now runs
+   through `derivePrDisplayState` instead of its own column checks.
+2. **`get_pr`, `list_prs` and the PR attention ranking are not in this slice.**
+   S36 (#3881) already moved their human-ownership reading to the view. Their
+   `canonicalState` and terminal sets are API vocabulary that Slice F's column
+   drop has to revisit anyway.
+3. **The mission card's failure count is task 058285e3's.** The card's strip
+   reads the board cells, which accept `delivery`. The Home and missions-list
+   loaders do not pass it yet, and the raw failed-task count
+   (`mission-card-view.ts`) is left to that task to avoid a conflicting edit.
+4. **The mission task drawer (`TaskPanel`) and the unmounted
+   `CondensedTimeline` component keep their column reads.** The timeline's
+   rows pass `delivery` to `TaskCard`, so its chip is correct. The drawer's PR
+   card still takes `prLifecycleStatus` from its own query.
+5. **The Board keeps its own needs-you word.** An ESCALATED delivery is
+   `review` on the Board, as a legacy PR awaiting you is. The Board's
+   `waiting`, its Ask/Reply and its NEEDS YOU count are for an agent's
+   question. Home, the task card, the feed, the chip and the chat all say
+   "needs you". The strip still counts a red PR under repair as "failed"
+   (its tone vocabulary, #3846).
+6. **Visual QA ran locally.** The dispatched capture fails at Run migrations
+   for any mission-branch ref, because a branch migration sits below prod's
+   journal mark and the planner refuses the backfill. That has nothing to do
+   with this PR. The fixture was shot locally with `scripts/qa/shoot.sh`
+   against Docker Postgres through the neon-sql shim.
+7. **The kernel has no "CI running" fact.** An open kernel PR without a verdict
+   on its head reads `awaiting_ci` ("Open"), where a legacy row may read
+   "CI running".
+
 ---
 
 ## 14. Migration plan: no two authorities, ever
@@ -1678,7 +1783,7 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S14 | A sweep tries to assign state | sweep modules import only `ingestFact`/`enqueueMissingEffects`; write-site guard fails on any direct write to a guarded column outside the allowlist | `packages/core/__tests__/workflow-write-sites.test.ts` (new; pattern of `packages/core/__tests__/model-policy-authority.test.ts`) |
 | S15 | Base keeps moving under an approved PR | `LANDING`/`REPAIRING(behind)` bounded by the existing treadmill cap; hard gates unchanged | `apps/web/src/lib/pr-landing.test.ts`, `apps/web/src/lib/pr-landing-sweep.test.ts`, `apps/web/src/lib/base-refresh.test.ts` |
 | S16 | Mission with a `SUPERSEDED`/`ABANDONED`/open/closed delivery | `canCompleteMission` results identical to today for all legacy inputs | `apps/web/src/lib/mission-completion.test.ts`, `packages/core/__tests__/pr-shipped.test.ts` |
-| S17 | UI projections agree | one `DeliveryView` → Home chip, task header and mission failure reading agree (part 3); task card stage, mission strip, explain and chat dock join in Slice E | `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts`, `apps/web/src/app/app/(protected)/tasks/[id]/lineage-status.test.tsx` |
+| S17 | UI projections agree | one `DeliveryView` → Home chip, task header and mission failure reading agree (part 3); task card stage, mission strip and feed, chat dock, chat tile, PR pill and explain's state chain agree with it for every §4 state, and none reads the worker columns for a kernel-owned PR (Slice E, §13.9) | `apps/web/src/lib/workflow/delivery-display.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts`, `apps/web/src/app/app/(protected)/tasks/[id]/lineage-status.test.tsx`, `apps/web/src/lib/explain-because.test.ts` |
 | S18 | Mission integration branch deleted under an open task PR (cause of the PR #3744 closure) | `CLOSED_UNMERGED(base_deleted)`, `scan_supersession` finds the re-opened PR, T20 records it | `apps/web/src/lib/pr-supersession-detect.test.ts`, `apps/web/src/lib/mission-pr.test.ts` |
 | S19 | Fix worker killed after claim | `FIXING → CHANGES_REQUESTED`, the ledger row ends `failed`, the next dispatch allocates the next `attempt_no`, or exhausts | reducer test |
 | S20 | Stale `version` from a human action | `stale` + current view, HTTP 409; nothing applied | reducer test; route tests for `/api/prs/[prNumber]/merge` and `/api/github/pr` |
@@ -1830,8 +1935,10 @@ are unchanged and the kernel only *records* the mismatch as a fact
 - Stage chips, Home "Needs You", task detail, mission strip, explain, chat dock and
   `get_pr`/`list_prs` each re-derived state (§18.2). Since part 3, Home, the task
   header, the worker banner and the mission failure reading consume `DeliveryView`
-  for kernel-owned deliveries (§13.2); the rest move in Slice E and until then keep
-  reading fact-cache columns, which keep their values. Visible differences to expect and to review: a task whose fix did not
+  for kernel-owned deliveries (§13.2); since Slice E the task card, tasks list,
+  mission board, strip and feed, the task page's PR surfaces, explain and the
+  chat tile, dock and PR object do too (§13.9). `get_pr`/`list_prs` and the
+  mission drawer remain (§13.9 deviations 2 and 4). Visible differences to expect and to review: a task whose fix did not
   push now shows `AWAITING_PUSH`/needs-you instead of "in review"; the activity comment
   header comes from the last transition, so "Re-reviewing" appears only with a real
   round; chat "Landed" is no longer `mergedAt || status==='completed'`.
@@ -1992,8 +2099,8 @@ write `prLastVerifiedAt`; owner lookup by `(workspaceId, prNumber)` without repo
 | Reader | Re-derives | Cheapest canonical read |
 |---|---|---|
 | `lib/pr-presentation.ts:48` `derivePrDisplayState` | canonical today for display | extend into `getDeliveryView` |
-| `derivePrLifecycle :78`, `isPrMerged :86` | second map ignoring `mergedAt` | take `DeliveryView.stage` |
-| `components/TaskCard.tsx:132,329,343`; `lib/stage.ts:59` `deriveStage` | duplicate `PR_LIFECYCLE`, own state machine without `conflict`/`unresolvable` | stage from view |
+| `derivePrLifecycle :78`, `isPrMerged :86` | second map ignoring `mergedAt` | **retired (Slice E)**: `resolvePrDisplayState` + `PR_PILL` |
+| `components/TaskCard.tsx:132,329,343`; `lib/stage.ts:59` `deriveStage` | duplicate `PR_LIFECYCLE`, own state machine without `conflict`/`unresolvable` | **retired (Slice E)**: `stageForDelivery`; legacy via `derivePrDisplayState` |
 | `lib/action-queue.ts:128,161,222,1194,1236,1285` | `resolveMergeChip` 10-rule precedence; `partitionEscalations` omits `unresolvable`/`mergedAt` | one landing-state row |
 | `app/app/(protected)/home/page.tsx:789,1220,1354-1438,504` | assembles inputs inline; three SQL/JS filters; refresh-before-read | `getDeliveryView` per PR |
 | `lib/pr-attention.ts`, `lib/pr-list.ts:93-256` (`list_prs`), `app/api/github/pr/route.ts:149` (`get_pr` `canonicalState`) | own terminal sets and ranking | view |

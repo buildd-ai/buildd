@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import type { PrDisplayState } from '@/lib/pr-presentation';
 import type { ReactNode } from 'react';
 import StatusBadge, { STATUS_LABELS } from '@/components/StatusBadge';
 
@@ -14,6 +15,8 @@ export interface DeliveryPillState {
   needsYou: boolean;
   stage: string;
   detail: string | null;
+  /** The delivery's PR state (§17.5): what the PR tile, card and shipped header say. */
+  prState?: PrDisplayState | null;
 }
 
 export function HeaderStatusPill({ status, merged, delivery = null }: { status: string; merged: boolean; delivery?: DeliveryPillState | null }) {

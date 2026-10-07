@@ -18,8 +18,9 @@
  *     attempt stays in `history`, but the delivery's stage comes from its
  *     canonical state and its current attempt, never from the worst attempt.
  */
+import type { PrDisplayState } from '@/lib/pr-presentation';
 import { attemptView } from './reducer';
-import type { AttemptFamily, DeliveryState, KernelView } from './types';
+import type { AttemptFamily, DeliverySnapshot, DeliveryState, KernelView } from './types';
 
 export type { DeliverySnapshot } from './types';
 
@@ -114,6 +115,38 @@ export interface DeliveryView {
   /** Every attempt, oldest first; superseded ones stay for audit (S35). */
   history: DeliveryAttemptHistoryEntry[];
   cta: DeliveryCta | null;
+  /**
+   * The PR's display state read from the delivery's own facts on its current
+   * head (§17.5). Replaces `derivePrDisplayState` over the worker columns for
+   * a kernel-owned PR. Null when no PR is bound.
+   */
+  prState: PrDisplayState | null;
+  /** The newest `workflow_transitions` row: what moved the delivery here, and when. */
+  lastTransition: TransitionRef | null;
+}
+
+/**
+ * The PR display state from the delivery alone. A CI or mergeable fact counts
+ * only when it was observed on the current head; the kernel records no
+ * "CI running" fact, so an open PR without a verdict on its head reads
+ * `awaiting_ci`.
+ */
+export function deliveryPrState(d: DeliverySnapshot): PrDisplayState | null {
+  if (d.prNumber == null) return null;
+  switch (d.state) {
+    case 'MERGED': return 'merged';
+    case 'SUPERSEDED':
+    case 'ABANDONED':
+    case 'CLOSED_UNMERGED': return 'closed';
+    default: break;
+  }
+  const onHead = (sha: string | null) => sha != null && sha === d.currentHeadSha;
+  if (d.state === 'REPAIRING' && (d.stateReason === 'conflict' || d.stateReason === 'migration')) return 'conflict';
+  if (d.mergeable === 'dirty' && onHead(d.mergeableHeadSha)) return 'conflict';
+  if ((d.state === 'REPAIRING' && d.stateReason === 'ci') || d.state === 'BLOCKED_ON_TRUNK') return 'ci_failed';
+  if (d.ci === 'red' && onHead(d.ciHeadSha)) return 'ci_failed';
+  if (d.ci === 'green' && onHead(d.ciHeadSha)) return 'ci_passed';
+  return 'awaiting_ci';
 }
 
 const short = (sha: string | null | undefined): string => (sha ? sha.slice(0, 7) : 'unknown');
@@ -293,6 +326,8 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     currentAttempt,
     history,
     cta,
+    prState: deliveryPrState(d),
+    lastTransition: input.lastTransition ?? null,
   };
 }
 

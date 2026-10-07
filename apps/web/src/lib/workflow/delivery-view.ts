@@ -11,6 +11,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { toAttemptSnapshot, toDeliverySnapshot, toRoundSnapshot, type Exec } from './kernel';
+import { ownerDeliveryDisplays, type DeliveryDisplay } from './delivery-display';
 import { attemptFailureCounts, deriveDeliveryView, type AttemptTaskRef, type DeliveryView, type RemediationRef, type TransitionRef } from './projections';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
@@ -111,11 +112,25 @@ export async function getDeliveryViewsForTasks(taskIds: string[], exec: Exec = d
  * and keep the existing title/PR supersession rule.
  */
 export async function kernelReplacedFailedTaskIds(failedTaskIds: string[], exec: Exec = dbExec): Promise<Set<string>> {
-  const views = await getDeliveryViewsForTasks(failedTaskIds, exec);
+  return replacedFailedTaskIds(await getDeliveryViewsForTasks(failedTaskIds, exec), failedTaskIds);
+}
+
+/** Pure half of `kernelReplacedFailedTaskIds`, over views a page already loaded. */
+export function replacedFailedTaskIds(views: ReadonlyMap<string, DeliveryView>, failedTaskIds: string[]): Set<string> {
   const out = new Set<string>();
   for (const id of failedTaskIds) {
     const v = views.get(id);
     if (v && !attemptFailureCounts(v, id)) out.add(id);
   }
   return out;
+}
+
+/**
+ * Slice E (§17.5): taskId → the serialisable `DeliveryDisplay` for each given
+ * task that OWNS a kernel-owned delivery. The one load a list surface makes;
+ * every chip, tile and badge it draws for those rows projects from it. Never
+ * throws (same degradation as `getDeliveryViewsForTasks`).
+ */
+export async function getOwnerDeliveryDisplays(taskIds: string[], exec: Exec = dbExec): Promise<Map<string, DeliveryDisplay>> {
+  return ownerDeliveryDisplays(await getDeliveryViewsForTasks(taskIds, exec));
 }
