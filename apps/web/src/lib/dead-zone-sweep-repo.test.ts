@@ -16,7 +16,7 @@
  * `buildConflictRetryTask`, i.e. into the instructions handed to an agent.
  */
 
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 
 // ─── DB mocks ─────────────────────────────────────────────────────────────────
 
@@ -74,12 +74,18 @@ const mockGithubApi = mock(() => Promise.resolve({} as any));
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 
 const mockBuildConflictRetryTask = mock(() => null as any);
+const mockDispatchConflictRetry = mock(async (_p: any): Promise<any> => ({ dispatched: false }));
 mock.module('@/lib/conflict-retry', () => ({
   buildConflictRetryTask: mockBuildConflictRetryTask,
+  dispatchConflictRetry: mockDispatchConflictRetry,
   DEFAULT_MAX_CONFLICT_ITERATIONS: 3,
   isAutoResolveMergeConflictsEnabled: () => true,
   releaseSpentConflictRetryKey: async () => null,
 }));
+
+// Which authority owns the PR (workflow-state-kernel §14). Null = legacy.
+const mockKernelDeliveryForPr = mock(async (_ws: string, _repo: string, _pr: number): Promise<string | null> => null);
+mock.module('@/lib/workflow/authority', () => ({ kernelDeliveryForPr: mockKernelDeliveryForPr }));
 
 // The dispatch authority's full surface: mock.module is process-global.
 const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
@@ -378,5 +384,118 @@ describe('sweepDeadZonePrs PR facts', () => {
     await sweepDeadZonePrs();
 
     expect(recordedFacts).toEqual([]);
+  });
+});
+
+// Final kernel audit (task b6a62a4e): the sweep inserted a conflict task straight
+// into `tasks` for any open PR whose owner task was terminal. A kernel owner task
+// is normally `completed` while its delivery is live, so kernel PRs qualified,
+// and the task it filed had no delivery, no ledger row and no budget. Spec §14:
+// no two authorities. A kernel PR goes through the one conflict door (T12).
+describe('sweepDeadZonePrs on a kernel-owned PR', () => {
+  const WORKSPACE = {
+    id: 'ws1', repo: 'owner/repo', gitConfig: {},
+    githubRepo: { installation: { installationId: 123 } },
+  };
+
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubApi.mockReset();
+    mockBuildConflictRetryTask.mockReset();
+    mockDispatchConflictRetry.mockReset();
+    mockKernelDeliveryForPr.mockReset();
+    mockWakeTask.mockClear();
+    mockInsertValues.length = 0;
+    mockTasksFindMany.mockResolvedValue([]);
+    mockWorkersFindMany.mockResolvedValue([deadZoneWorker()]);
+    mockWorkspacesFindFirst.mockResolvedValue(WORKSPACE);
+    mockKernelDeliveryForPr.mockResolvedValue('delivery-1');
+    mockBuildConflictRetryTask.mockReturnValue({
+      workspaceId: 'ws1', title: 't', description: 'd', parentTaskId: 't1', missionId: null, creationSource: 'webhook',
+      context: { conflictIteration: 1, maxConflictIterations: 3 }, conflictRetryPrNumber: 42, conflictRetryHeadSha: 'deadbeef',
+    });
+  });
+
+  afterAll(() => {
+    mockKernelDeliveryForPr.mockReset();
+    mockKernelDeliveryForPr.mockResolvedValue(null);
+  });
+
+  it('a dirty kernel PR goes through dispatchConflictRetry, and no task is inserted here', async () => {
+    mockGithubApi.mockResolvedValue(DIRTY_PR);
+    mockDispatchConflictRetry.mockResolvedValue({ dispatched: true, taskId: 'kernel-fix-1', kernel: { result: 'applied', reason: null, state: 'REPAIRING', attempt: null } });
+
+    const result = await sweepDeadZonePrs();
+
+    expect(mockKernelDeliveryForPr).toHaveBeenCalledWith('ws1', 'owner/repo', 42);
+    expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+    expect(mockDispatchConflictRetry.mock.calls[0]![0]).toMatchObject({
+      workerId: 'w1', taskId: 't1', prNumber: 42, headSha: 'deadbeef', repoFullName: 'owner/repo', workspaceId: 'ws1',
+    });
+    expect(mockBuildConflictRetryTask).not.toHaveBeenCalled();
+    expect(mockInsertValues).toHaveLength(0);
+    expect(mockWakeTask).not.toHaveBeenCalled();
+    expect(result.sparked).toBe(1);
+  });
+
+  it('counts a spent kernel budget as exhausted, and still inserts nothing', async () => {
+    mockGithubApi.mockResolvedValue(DIRTY_PR);
+    mockDispatchConflictRetry.mockResolvedValue({ dispatched: false, exhausted: true, kernel: { result: 'applied', reason: null, state: 'ESCALATED', attempt: null } });
+
+    const result = await sweepDeadZonePrs();
+
+    expect(result.exhausted).toBe(1);
+    expect(mockInsertValues).toHaveLength(0);
+  });
+
+  it('ignores the legacy retry count: the kernel ledger is the budget', async () => {
+    mockGithubApi.mockResolvedValue(DIRTY_PR);
+    mockTasksFindMany.mockResolvedValue([{ id: 'r1', status: 'completed' }, { id: 'r2', status: 'completed' }, { id: 'r3', status: 'completed' }]);
+    mockDispatchConflictRetry.mockResolvedValue({ dispatched: false, inFlightTaskId: 'kernel-fix-1' });
+
+    const result = await sweepDeadZonePrs();
+
+    expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+    expect(result.skipped).toBe(1);
+    expect(mockInsertValues).toHaveLength(0);
+  });
+
+  it('a red-CI kernel PR is left to the kernel CI family: no conflict retry of any kind', async () => {
+    mockGithubApi.mockImplementation((async (_inst: number, path: string) => (
+      path.includes('/check-runs')
+        ? { check_runs: [{ status: 'completed', conclusion: 'failure' }] }
+        : { state: 'open', merged: false, merged_at: null, mergeable_state: 'blocked', head: { sha: 'cafe01' } }
+    )) as any);
+
+    const result = await sweepDeadZonePrs();
+
+    expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    expect(mockBuildConflictRetryTask).not.toHaveBeenCalled();
+    expect(mockInsertValues).toHaveLength(0);
+    expect(result.skipped).toBe(1);
+  });
+
+  it('an authority read error inserts nothing (fails closed for this PR)', async () => {
+    mockGithubApi.mockResolvedValue(DIRTY_PR);
+    mockKernelDeliveryForPr.mockRejectedValue(new Error('db down'));
+
+    const result = await sweepDeadZonePrs();
+
+    expect(mockInsertValues).toHaveLength(0);
+    expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    expect(result.skipped).toBe(1);
+  });
+
+  it('a legacy PR (no kernel delivery) keeps today\'s direct retry insert', async () => {
+    mockGithubApi.mockResolvedValue(DIRTY_PR);
+    mockKernelDeliveryForPr.mockResolvedValue(null);
+
+    const result = await sweepDeadZonePrs();
+
+    expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    expect(mockInsertValues).toHaveLength(1);
+    expect(result.sparked).toBe(1);
   });
 });
