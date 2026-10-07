@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (55)
+## Active (56)
 
 ### auth (5)
 
@@ -86,7 +86,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Codex Backend Behavioral Spec](./codex-backend-spec.md) · @max — verified 2026-09-11
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
 - [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-07
-  An interactive coding session running the buildd plugin MUST appear in buildd as seat-free presence, bind only to the worker its own verified claim_task minted, and release that worker exactly once when it ends without completing work.
+  A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-10-04
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 - [Runner Liveness](./runner-liveness.md) · @max — verified 2026-09-29

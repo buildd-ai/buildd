@@ -3,7 +3,7 @@ title: Local Agent Presence
 status: active
 owner: max
 last_verified: 2026-10-07
-summary: An interactive coding session running the buildd plugin MUST appear in buildd as seat-free presence, bind only to the worker its own verified claim_task minted, and release that worker exactly once when it ends without completing work.
+summary: A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 domain: runners
 surfaces: [apps/web/src/lib/local-session.ts, apps/web/src/app/api/workers/local-sessions/route.ts, packages/shared/src/local-session.ts, apps/runner/plugin/scripts/buildd-hook.mjs]
 related: [runner-liveness, mission-task-lifecycle]

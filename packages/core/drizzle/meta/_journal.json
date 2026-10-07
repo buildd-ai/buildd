@@ -1702,6 +1702,13 @@
       "when": 1791330930115,
       "tag": "0251_round_betty_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 252,
+      "version": "7",
+      "when": 1791334914644,
+      "tag": "0252_fair_young_avengers",
+      "breakpoints": true
     }
   ]
 }
