@@ -28,7 +28,8 @@ detected client, no credential in any hook file):
 
 ```bash
 buildd login
-buildd install --global          # or `buildd install` inside one repo
+buildd install --global          # MCP for your workspace folders + hooks; or `buildd install` inside one repo
+buildd install --here            # MCP for this folder too, e.g. to set up a new workspace
 buildd install --status --global
 buildd install --uninstall --global
 ```
@@ -52,6 +53,20 @@ also keep a `buildd` entry from `buildd install --global` in `~/.claude.json`.
 
 **Cursor** project hooks resolve commands from the project root; the CLI
 writes absolute paths, so prefer it over copying `com.cursor/hooks.json`.
+
+## Scope
+
+The hooks report a session only when it is opened in a git repo that is one of
+your workspaces (checked locally against a cached list of your workspace repos,
+`~/.buildd/workspace-repos-<key>.json`, refreshed by `buildd install` and at
+most every 10 minutes when an unknown repo starts), in a repo whose own
+`.mcp.json` names a buildd server, or when the session claims a buildd task.
+Anywhere else they send nothing, not even the folder name. If the list cannot
+be loaded they send nothing.
+
+`buildd install --global` registers the buildd MCP server the same way: per
+folder, for the folders Claude Code has opened whose repo is a workspace.
+Re-run it after a new checkout, or use `--here` in any folder.
 
 ## Configuration
 
