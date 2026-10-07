@@ -15,6 +15,7 @@ import { resolvePolicy } from '@/lib/merge-policy';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { policyValue } from '@/lib/policy-overrides';
+import { resolveLandingOwnership } from '@/lib/pr-landing-ownership';
 
 type WorkspacePolicyRow = Parameters<typeof resolvePolicy>[0] & { id: string; name: string };
 
@@ -54,12 +55,14 @@ export interface PrAttention {
   wsMap: Map<string, WorkspacePolicyRow>;
   conflictRetryMap: Map<string, { taskId: string; iteration: number }>;
   deadZoneExhaustedMap: Map<string, { lastRetryTaskId: string | null }>;
+  /** taskId → landing's own `needs_human` handoff (e.g. a protected path): only a person can resolve it. */
+  landingHandoffMap: Map<string, { cause: string; reason: string }>;
 }
 
 const EMPTY: PrAttention = {
   openPrWorkers: [], isInInbox: () => false, agentReviewingTaskIds: new Set(),
   escalationMap: new Map(), approvalMap: new Map(), wsMap: new Map(),
-  conflictRetryMap: new Map(), deadZoneExhaustedMap: new Map(),
+  conflictRetryMap: new Map(), deadZoneExhaustedMap: new Map(), landingHandoffMap: new Map(),
 };
 
 /** The open PRs in `wsIds` (optionally only these workers) and the inbox decision for each. */
@@ -205,6 +208,35 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
   }
   // ──────────────────────────────────────────────────────────────────────────
 
+  // ── Landing handoff ───────────────────────────────────────────────────────
+  // landPr records `needs_human` (deny_path, size cap, ...) on the task. That is
+  // a condition only a person can resolve, whatever the reviewer notes say, so
+  // it puts the PR in the inbox. Staleness (new head / later refresh marker) is
+  // judged by resolveLandingOwnership, the same read Home uses.
+  const landingHandoffMap = new Map<string, { cause: string; reason: string }>();
+  if (openTaskIds.length > 0) {
+    const handoffRows = await db
+      .select({ id: tasks.id, landing: sql<unknown>`${tasks.context}->'landing'`, handoff: sql<unknown>`${tasks.context}->'landingHandoff'` })
+      .from(tasks)
+      .where(and(inArray(tasks.id, openTaskIds), sql`${tasks.context} ? 'landingHandoff'`));
+    const byTask = new Map(handoffRows.map(r => [r.id, r]));
+    for (const w of openPrWorkers) {
+      const row = w.taskId ? byTask.get(w.taskId) : undefined;
+      if (!w.taskId || !row || w.prNumber == null) continue;
+      const own = resolveLandingOwnership({
+        policy: { tier: 'agent-review', agentReview: undefined },
+        landingMode: 'enforce',
+        landing: row.landing,
+        handoff: row.handoff,
+        prNumber: w.prNumber,
+      });
+      if (own.owner !== 'human') continue;
+      const cause = (row.handoff as { cause?: unknown } | null)?.cause;
+      landingHandoffMap.set(w.taskId, { cause: typeof cause === 'string' ? cause : 'unknown', reason: own.reason });
+    }
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
   const isInInbox = (w: OpenPrWorker): boolean => {
     if (w.prLifecycleStatus === 'closed' || w.prLifecycleStatus === 'merged') return false;
     const taskTitle = (w.task as any)?.title ?? '';
@@ -221,6 +253,7 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
     if (deadZoneExhaustedMap.has(w.id)) return true;
 
     if (w.taskId && escalationMap.has(w.taskId)) return true;
+    if (w.taskId && landingHandoffMap.has(w.taskId)) return true;
     // Include agent-approved items (approve-only gate) so the human can merge
     if (w.taskId && approvalMap.has(w.taskId)) return true;
     const ws = wsMap.get(w.workspaceId);
@@ -239,6 +272,6 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
 
   return {
     openPrWorkers, isInInbox, agentReviewingTaskIds, escalationMap, approvalMap,
-    wsMap: wsMap as PrAttention['wsMap'], conflictRetryMap, deadZoneExhaustedMap,
+    wsMap: wsMap as PrAttention['wsMap'], conflictRetryMap, deadZoneExhaustedMap, landingHandoffMap,
   };
 }
