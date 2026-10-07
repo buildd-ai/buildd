@@ -257,7 +257,8 @@ export type Command =
   | (Base & {
       type: 'ReviewRoundFailed';
       roundId: string;
-      reason: 'no_verdict' | 'prose_verdict' | 'infra';
+      /** `human_takeover` (a person interrupted the reviewer) escalates at once, never re-queued. */
+      reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover';
       maxContractRetries: number;
     })
   | (Base & {

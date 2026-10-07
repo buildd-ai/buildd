@@ -148,6 +148,16 @@ export const reviewSubscribers: readonly AnySubscriber[] = [
   // open fixes on a merge, unstarted fixes on a close, and anchored tasks whose
   // subject is now dead. Idempotent; never throws.
   subscriber('reviews', 'pr.closed', 'supersession-reconcile-on-close', async e => {
+    // A kernel-owned PR's close (T18) or merge (T17) carries its own
+    // `cancel_open_attempts`, which ends each attempt in the ledger; a casCancel
+    // here would be a second authority with no AttemptEnded, and a reopen (T19)
+    // could find a row still `queued` (spec §14). A failed ownership read falls
+    // back to the reconciler, like the detect sibling above. Tasks merely
+    // anchored to the PR are left to the hourly subject_check sweep.
+    const owned = await import('@/lib/workflow/authority')
+      .then(m => m.kernelDeliveryForPr(e.workspaceId, e.repoFullName, e.prNumber))
+      .catch(() => null);
+    if (owned) return;
     await reconcileSubjectEvent({
       kind: e.merged ? 'merged' : 'closed',
       workspaceId: e.workspaceId,

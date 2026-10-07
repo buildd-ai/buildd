@@ -265,6 +265,40 @@ describe('cleanupStuckWaitingInput', () => {
     }
   });
 
+  // Final kernel audit (task 708a55c0): the sweep sent localHeadSha null and
+  // commitCount 0 whatever the worker had, so the reducer read an owner attempt
+  // with unpushed commits as safe and handed the remote head to review instead
+  // of AWAITING_PUSH (§9, AC-10). It now passes what the worker reported.
+  it('passes a kernel owner attempt\'s local head and commit count to the seam', async () => {
+    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: { type: 'question', prompt: 'q' }, lastCommitSha: 'local-h2', commitCount: 3 },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', title: 'Build', description: 'd', priority: 0, context: {},
+      deliveryId: 'd1', deliveryRole: 'owner', requiredCapabilities: [], missionId: null,
+    });
+    kernelOwned = 'd1';
+    mockWorkflowAttemptEnded.mockClear();
+    mockWorkersFindMany.mockClear();
+    try {
+      await cleanupStuckWaitingInput('account-1');
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({
+        task: { id: 'task-1', deliveryId: 'd1', deliveryRole: 'owner' },
+        workerId: 'w1',
+        status: 'lost',
+        localHeadSha: 'local-h2',
+        commitCount: 3,
+      });
+      // The query must select them, or the values above never reach the seam in production.
+      const cols = (mockWorkersFindMany.mock.calls[0] as any[])[0]?.columns ?? {};
+      expect(cols).toMatchObject({ lastCommitSha: true, commitCount: true });
+    } finally {
+      kernelOwned = null;
+    }
+  });
+
   it('does not touch waiting_input workers under 24 hours old', async () => {
     const recentDate = new Date(Date.now() - 12 * 60 * 60 * 1000); // 12 hours ago
     mockWorkersFindMany.mockResolvedValue([]); // Query with lt(24h) returns nothing

@@ -1037,7 +1037,7 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
       eq(workers.status, 'waiting_input'),
       lt(workers.updatedAt, missionCutoff),
     ),
-    columns: { id: true, taskId: true, accountId: true, waitingFor: true, updatedAt: true, branch: true, error: true },
+    columns: { id: true, taskId: true, accountId: true, waitingFor: true, updatedAt: true, branch: true, error: true, lastCommitSha: true, commitCount: true },
     with: { task: { columns: { missionId: true } } },
   });
 
@@ -1112,8 +1112,10 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
         task: { id: originalTask.id, workspaceId: originalTask.workspaceId, deliveryId: originalTask.deliveryId ?? null, deliveryRole: originalTask.deliveryRole ?? null, context: originalTask.context },
         workerId: worker.id,
         status: 'lost',
-        localHeadSha: null,
-        commitCount: 0,
+        // What the worker reported: an unknown head with commits is not proof
+        // of a push, so unpushed owner work goes to AWAITING_PUSH (§9, AC-10).
+        localHeadSha: worker.lastCommitSha ?? null,
+        commitCount: worker.commitCount ?? 0,
         source: 'sweep:waiting-input',
       }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${originalTask.id}:`, err));
       continue;
