@@ -2659,3 +2659,131 @@ describe('S35–S37 — owner of the next move', () => {
     expect(await dispatchConflictRetry({ ...params, humanInitiated: true })).toEqual({ dispatched: false, inFlightTaskId: cf });
   });
 });
+
+// ══ AC-14 / §10.3: a spent budget or a dead effect always reaches a person (67d34094) ══
+
+describe('AC-14 / §10.3 — no platform-owned state without an exit (67d34094)', () => {
+  const floor = (o: Delivery) => seam.reconcileKernelDeliveries(deps, { only: [o.deliveryId], minQuietMs: 0 });
+  /** The effect's next try is its last: the drain sees it go dead. */
+  const lastTry = (deliveryId: string, kind: string) => q(sql`UPDATE workflow_effects SET attempt_count = 7, not_before = now() - interval '1 second'
+    WHERE delivery_id = ${deliveryId}::uuid AND kind = ${kind} AND status = 'pending'`);
+  const deadGates = (deliveryId: string) => q<{ outcome: string; workspace_id: string; detail: Record<string, unknown> }>(
+    sql`SELECT outcome, workspace_id, detail FROM gate_events WHERE gate = 'workflow_effect_dead' AND detail->>'deliveryId' = ${deliveryId}`);
+  /** A fix attempt ends: `fail` = the worker died with nothing pushed; otherwise it pushed `head`. */
+  async function endFix(t: { id: string } & Record<string, unknown>, o: { fail: true } | { head: string; from: string }) {
+    if ('fail' in o) {
+      const w = await seedWorker(t.id, { status: 'failed' });
+      return seam.attemptEnded({ task: t as never, workerId: w, status: 'failed', localHeadSha: null, commitCount: 0, source: 'runner' }, deps);
+    }
+    gh.head = o.head; gh.ancestors[o.head] = [o.from];
+    const w = await seedWorker(t.id, { status: 'completed', lastCommitSha: o.head, commitCount: 1 });
+    return seam.attemptEnded({ task: t as never, workerId: w, status: 'completed', localHeadSha: o.head, commitCount: 1, source: 'runner' }, deps);
+  }
+  const claimNewestFix = async (deliveryId: string) => {
+    const t = (await taskRow((await tasksOf(deliveryId, 'fix')).at(-1)!.id)).task;
+    expect(await seam.claimFix(t, deps)).toEqual({ action: 'proceed' });
+    return t;
+  };
+
+  test('fix 1 and 2 fail, fix 3 delivers, round 2 requests changes: the spent fix budget is ESCALATED(review_exhausted) and a person is told', async () => {
+    const f = await fixing();
+    expect((await delivery(f.deliveryId)).maxRounds).toBe(3);
+    await endFix(f.fix, { fail: true });
+    await endFix(await claimNewestFix(f.deliveryId), { fail: true });
+    await endFix(await claimNewestFix(f.deliveryId), { head: 'H2', from: 'H1' });
+    expect(await delivery(f.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2 });
+
+    await verdict(f, 'request-changes', 'H2');
+    const d = await delivery(f.deliveryId);
+    expect(d).toMatchObject({ state: 'ESCALATED', stateReason: 'review_exhausted' });
+    expect((await transitions(f.deliveryId)).at(-1)).toMatchObject({ command: 'FixDispatched', to_state: 'ESCALATED' });
+    // No fourth fix task, the escalation notice ran once, the request-changes review was still posted.
+    expect((await tasksOf(f.deliveryId, 'fix')).length).toBe(3);
+    expect(exhaustions).toBe(1);
+    expect(posted.filter((p) => p.commitId === 'H2' && p.event === 'REQUEST_CHANGES').length).toBe(1);
+    expect((await effects(f.deliveryId, 'dispatch_fix')).at(-1)!.outcome).toBe('ok:escalated_budget_exhausted');
+    // The floor owes nothing more (it used to see the dispatch key and stop, leaving CHANGES_REQUESTED forever).
+    expect(await floor(f)).toMatchObject({ enqueued: 0 });
+    expect((await delivery(f.deliveryId)).state).toBe('ESCALATED');
+  });
+
+  test('a dead merge_call: LANDING → ESCALATED(landing_needs_human), a person is told, the gate event is written, and a door no longer reads landing_in_flight', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    expect(await applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } }))
+      .toMatchObject({ result: 'applied' });
+    override = { merge_call: async () => { throw new Error('GitHub API error: 502'); } };
+    await lastTry(o.deliveryId, 'merge_call');
+    await drain(o.deliveryId);
+
+    expect((await effects(o.deliveryId, 'merge_call'))[0]).toMatchObject({ status: 'dead', last_error: 'GitHub API error: 502' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'landing_needs_human' });
+    expect((await transitions(o.deliveryId)).at(-1)).toMatchObject({ command: 'EffectDead', to_state: 'ESCALATED' });
+    expect(notified.some((t) => t.includes(`PR #${o.prNumber} needs a person`))).toBe(true);
+    const [gate] = await deadGates(o.deliveryId);
+    expect(gate).toMatchObject({ outcome: 'stranded', workspace_id: workspaceId, detail: { kind: 'merge_call', critical: true, applied: true } });
+    // ESCALATED is human-owned: no door is told a landing is in flight.
+    const again = await applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } });
+    expect(again).toMatchObject({ result: 'rejected', reason: 'state_not_allowed' });
+  });
+
+  test('a verify_merge that keeps throwing escalates too; a non-critical dead effect only writes the gate event', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    await applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } });
+    await applyCommand({ type: 'MergeCallResult', actor: 'kernel', headSha: 'H1', outcome: 'indeterminate' }, { ref: { deliveryId: o.deliveryId } });
+    override = {
+      merge_call: async () => ({ outcome: 'ok:test' }),
+      verify_merge: async () => { throw new Error('live PR read failed'); },
+      render_activity: async () => { throw new Error('comment API down'); },
+    };
+    await lastTry(o.deliveryId, 'verify_merge');
+    await lastTry(o.deliveryId, 'render_activity');
+    await drain(o.deliveryId);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'landing_needs_human' });
+    const gates = await deadGates(o.deliveryId);
+    expect(gates.find((g) => g.detail.kind === 'verify_merge')).toMatchObject({ outcome: 'stranded', detail: { applied: true } });
+    expect(gates.find((g) => g.detail.kind === 'render_activity')).toMatchObject({ outcome: 'warned', detail: { critical: false, applied: false } });
+  });
+
+  test('a dead push_recovery: AWAITING_PUSH → ESCALATED(push_undeliverable), and a person is told', async () => {
+    const p = await awaitingPush();
+    override = { push_recovery: async () => { throw new Error('no GitHub installation for the workspace'); } };
+    await lastTry(p.deliveryId, 'push_recovery');
+    await drain(p.deliveryId);
+    expect(await delivery(p.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'push_undeliverable' });
+    expect(notified.some((t) => t.includes('never reached GitHub'))).toBe(true);
+    expect((await deadGates(p.deliveryId))[0]).toMatchObject({ outcome: 'stranded', detail: { kind: 'push_recovery', applied: true } });
+  });
+
+  test('floor: a dead push_recovery chain (its escalation lost) is re-owed as the last try, which is T22', async () => {
+    const p = await awaitingPush();
+    // The row died before dead effects escalated: nothing moved the delivery.
+    await q(sql`UPDATE workflow_effects SET status = 'dead' WHERE delivery_id = ${p.deliveryId}::uuid AND kind = 'push_recovery'`);
+    expect(await floor(p)).toMatchObject({ enqueued: 1 });
+    expect(await delivery(p.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'push_undeliverable' });
+    expect((await effects(p.deliveryId, 'push_recovery')).map((e) => [e.dedupe_key.split(':').at(-1), e.status])).toEqual([['1', 'dead'], ['final', 'done']]);
+  });
+
+  test('floor: LANDING with a dead merge_call (its escalation lost) re-reads the PR: open → APPROVED (landable again); merged → MERGED', async () => {
+    for (const merged of [false, true]) {
+      const o = await openAndHandOn();
+      await verdict(o, 'approve');
+      await applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } });
+      await q(sql`UPDATE workflow_effects SET status = 'dead' WHERE delivery_id = ${o.deliveryId}::uuid AND kind = 'merge_call'`);
+      if (merged) { gh.state = 'closed'; gh.merged = true; gh.updatedAt = 'u-merged'; }
+      await floor(o);
+      expect((await delivery(o.deliveryId)).state).toBe(merged ? 'MERGED' : 'APPROVED');
+      gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0', ancestors: {} };
+    }
+  });
+
+  test('floor: LANDING whose merge call is still retrying is left alone', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    await applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } });
+    await q(sql`UPDATE workflow_effects SET not_before = now() + interval '1 hour' WHERE delivery_id = ${o.deliveryId}::uuid AND kind = 'merge_call'`);
+    expect(await floor(o)).toMatchObject({ enqueued: 0 });
+    expect((await delivery(o.deliveryId)).state).toBe('LANDING');
+  });
+});

@@ -112,7 +112,13 @@ export function transitionsToActivityEntries(
         break;
       }
       case 'FixDispatched':
-        fixAttempt = attempts.find((a) => a.id === ev.attemptId);
+        if (t.toState !== 'ESCALATED') fixAttempt = attempts.find((a) => a.id === ev.attemptId);
+        else push({ kind: 'review_escalated', detail: 'fix budget spent' });
+        break;
+      case 'EffectDead':
+        if (t.toState !== 'ESCALATED') break;
+        if (ev.reason === 'push_undeliverable') push({ kind: 'push_undeliverable' });
+        else push({ kind: 'review_escalated', detail: `${str(ev.effectKind) ?? 'an automatic step'} kept failing` });
         break;
       case 'FixClaimed': {
         fixAttempt = attempts.find((a) => a.id === ev.attemptId) ?? fixAttempt;

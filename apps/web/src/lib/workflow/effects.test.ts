@@ -102,8 +102,11 @@ describe('runEffects', () => {
     const f = exec([claimed({})]);
     expect(await runEffects({ exec: f.exec, handlers: { dispatch_fix: async () => { throw new Error('gh 502'); } } })).toMatchObject({ failed: 1, dead: [] });
     const d = exec([claimed({ kind: 'merge_call', attempt_count: 8 })], 'dead');
-    const s = await runEffects({ exec: d.exec, handlers: {} });
-    expect(s.dead).toEqual([{ id: 'e1', deliveryId: 'd1', kind: 'merge_call', critical: true }]);
+    const escalated: unknown[] = [];
+    const s = await runEffects({ exec: d.exec, handlers: {}, onDead: async (x) => { escalated.push(x); } });
+    expect(s.dead).toEqual([{ id: 'e1', deliveryId: 'd1', kind: 'merge_call', critical: true, dedupeKey: expect.any(String), lastError: 'no handler for merge_call' }]);
+    // 67d34094: the dead effect is handed to the escalation, not only reported.
+    expect(escalated).toEqual(s.dead);
     expect(d.seen.find((q) => q.tag === 'fail_effect')!.params[1]).toBe('no handler for merge_call');
   });
 });

@@ -39,6 +39,8 @@ export type EscalationReason =
   | 'conflict_exhausted'
   | 'push_undeliverable'
   | 'landing_needs_human'
+  /** A critical effect went `dead` and no more specific reason fits (§10.3). */
+  | 'effect_dead'
   | 'policy_human'
   | 'unsafe_to_merge';
 export type CloseCause = 'manual' | 'base_deleted' | 'superseded_by_policy' | 'unknown';

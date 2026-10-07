@@ -885,8 +885,10 @@ export async function reconcileKernelDeliveries(
       let enqueued = 0;
       const view = await loadView({ deliveryId }, deps.exec);
       if (view.delivery) {
-        const existing = new Set((((await exec(existingEffectsSql(deliveryId))).rows ?? []) as Array<{ dedupe_key: string }>).map((e) => String(e.dedupe_key)));
-        for (const e of enqueueMissingEffects(view, existing)) {
+        const held = ((await exec(existingEffectsSql(deliveryId))).rows ?? []) as Array<{ dedupe_key: string; status?: string }>;
+        const existing = new Set(held.map((e) => String(e.dedupe_key)));
+        const status = new Map(held.map((e) => [String(e.dedupe_key), String(e.status ?? '')]));
+        for (const e of enqueueMissingEffects(view, existing, status)) {
           const ins = ((await exec(enqueueEffectSql(deliveryId, view.delivery.version, e))).rows ?? []).length;
           if (ins > 0) {
             enqueued++;
