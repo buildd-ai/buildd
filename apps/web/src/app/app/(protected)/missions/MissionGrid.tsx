@@ -102,17 +102,11 @@ export function MissionGrid({
             <span className="section-label text-text-muted">Active</span>
             {active.length > 0 && <PhaseBarLegend />}
           </div>
-          {show('active') && active.length === 0 && (
-            <div data-testid="missions-nothing-running" className="flex flex-wrap items-center justify-between gap-2 border border-dashed border-border-strong px-[18px] py-4 font-mono text-[12.5px] text-text-secondary">
+          {show('active') && active.length === 0 && lastDone && (
+            <div data-testid="missions-nothing-running" className="font-mono text-[12px] text-text-muted">
               <span>
-                Nothing running.
-                {slots && slots.max > 0 && ` ${slots.max - slots.live === slots.max ? `All ${slots.max}` : slots.max - slots.live} slot${slots.max === 1 ? '' : 's'} free.`}
+                Last: {lastDone.view.title}{lastDone.view.completedAt ? ` · ${timeAgo(lastDone.view.completedAt)}` : ''}
               </span>
-              {lastDone && (
-                <span className="text-text-muted">
-                  Last: {lastDone.view.title}{lastDone.view.completedAt ? ` · ${timeAgo(lastDone.view.completedAt)}` : ''}
-                </span>
-              )}
             </div>
           )}
           {active.map(m => <ActiveMissionCard key={m.view.id} view={m.view} model={m.list} workspaceName={ws(m)} />)}
