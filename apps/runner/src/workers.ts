@@ -123,6 +123,7 @@ import {
   SESSION_BUDGET_CAP_ERROR,
   sdkMaxBudgetUsd,
 } from './claim-budget-signals';
+import { InstructionAckTracker } from './instruction-acks';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
@@ -241,6 +242,11 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
   private resolvers: Array<(result: IteratorResult<SDKUserMessage>) => void> = [];
   private done = false;
 
+  /** Messages enqueued that the session has not taken yet. */
+  get pending(): number {
+    return this.queue.length;
+  }
+
   enqueue(message: SDKUserMessage) {
     if (this.done) {
       console.log(`[MessageStream] ⚠️ enqueue called after stream ended — parent_tool_use_id=${message.parent_tool_use_id}`);
@@ -284,7 +290,7 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
 // Build a user message for the SDK
 function buildUserMessage(
   content: string | Array<{ type: string; text?: string; source?: any }>,
-  opts?: { parentToolUseId?: string; sessionId?: string },
+  opts?: { parentToolUseId?: string; sessionId?: string; uuid?: string },
 ): SDKUserMessage {
   const messageContent = typeof content === 'string'
     ? [{ type: 'text' as const, text: content }]
@@ -298,6 +304,12 @@ function buildUserMessage(
       content: messageContent as any,
     },
     parent_tool_use_id: opts?.parentToolUseId || null,
+    // The CLI echoes this on the assistant frame that answers it
+    // (user_message_uuid / user_message_uuids): how a steering message is
+    // acknowledged as read. No `priority`: its semantics are undocumented, and
+    // a queued message already folds into the running turn at its next
+    // boundary without one.
+    ...(opts?.uuid ? { uuid: opts.uuid as SDKUserMessage['uuid'] } : {}),
   };
 }
 
@@ -755,6 +767,8 @@ export class WorkerManager {
   private hookFactory: HookFactory;
   private recoveryManager: RecoveryManager;
   private workerSync: WorkerSync;
+  /** Served message ids injected into a session, awaiting the session's own read. */
+  private instructionAcks = new InstructionAckTracker();
   // Full knowledge-ingest jobs (KM v2 A2) — claimed only when this runner is idle.
   private knowledgeIngestPoller: KnowledgeIngestPoller;
   // Quality Scout command probes (runner-host design §6) — idle ticks only, never a worker slot.
@@ -794,6 +808,7 @@ export class WorkerManager {
       emitCommand: (workerId, command) => this.emitCommand(workerId, command),
       abort: (workerId, cancelQueued) => this.abort(workerId, undefined, cancelQueued),
       sendMessage: (workerId, text) => this.sendMessage(workerId, text),
+      syncWorker: (workerId) => this.workerSync.requestSync(workerId),
       rollback: (workerId, uuid) => this.rollback(workerId, uuid),
       recover: (workerId, mode) => this.recover(workerId, mode),
       sendHeartbeat: () => this.sendHeartbeat(),
@@ -836,7 +851,7 @@ export class WorkerManager {
       dirtyForDisk: this.dirtyForDisk,
       emit: (event) => this.emit(event),
       abort: (workerId, reason) => this.abort(workerId, reason),
-      sendMessage: (workerId, message) => this.sendMessage(workerId, message),
+      sendMessage: (workerId, message, ids) => this.sendMessage(workerId, message, ids),
       getAdaptiveStaleTimeout: () => this.adaptiveStaleTimeout,
       setAdaptiveStaleTimeout: (ms) => { this.adaptiveStaleTimeout = ms; },
       recentCycleTimes: this.recentCycleTimes,
@@ -4635,6 +4650,12 @@ export class WorkerManager {
           throw new Error(event.error);
         }
 
+        // Codex took a queued message as its next turn's prompt: read.
+        if (event.type === 'input_consumed') {
+          this.acknowledgeInstructions(worker.id, this.instructionAcks.onInputConsumed(worker.id, event.uuids));
+          continue;
+        }
+
         if (event.type === 'turn_complete') {
           // Accumulate per-turn usage as the last-resort token source. Assistant
           // messages always carry usage, including on seat auth.
@@ -4686,6 +4707,13 @@ export class WorkerManager {
           }
           if (outputReqNudged) {
             continue; // Keep session alive — agent needs to create the deliverable
+          }
+
+          // A steering message queued during the turn that just ended is
+          // delivered at this boundary, not dropped: Codex takes it as the next
+          // turn's prompt (it parks on the input stream after turn.completed).
+          if ((this.sessions.get(worker.id)?.inputStream.pending ?? 0) > 0) {
+            continue;
           }
 
           // No more turns to force — the SDK session ended naturally (or the
@@ -5843,6 +5871,9 @@ export class WorkerManager {
     }
 
     if (msg.type === 'assistant') {
+      // A steering message this reply answers has been read (instruction-acks.ts).
+      this.acknowledgeInstructions(worker.id, this.instructionAcks.onAssistant(worker.id, msg as any));
+
       // Surface rate_limit errors on assistant messages
       if ((msg as any).error === 'rate_limit') {
         worker.currentAction = 'Rate limited — retrying...';
@@ -6600,7 +6631,17 @@ export class WorkerManager {
     }
   }
 
-  async sendMessage(workerId: string, message: string): Promise<boolean> {
+  /**
+   * Report served message ids as read by the agent's turn (see
+   * instruction-acks.ts). Fire-and-forget: an unreported read leaves the
+   * message Delivered, which is true, never wrong.
+   */
+  private acknowledgeInstructions(workerId: string, ids: string[]) {
+    if (ids.length === 0) return;
+    this.buildd.updateWorker(workerId, { instructionsAcknowledged: ids } as any).catch(() => {});
+  }
+
+  async sendMessage(workerId: string, message: string, ids: string[] = []): Promise<boolean> {
     let worker = this.workers.get(workerId);
 
     // If evicted from memory, try loading from disk (24h TTL) for resume
@@ -6680,6 +6721,9 @@ export class WorkerManager {
         ? worker.worktreePath
         : workspacePath;
 
+      // The message is the resumed session's prompt: its first reply reads it.
+      this.instructionAcks.register(worker.id, ids, { ackOnNextAssistant: true });
+
       // Resume session with automatic fallback: SDK resume → reconstructed context
       this.recoveryManager.resumeSession(worker, sessionCwd, message).catch(err => {
         console.error(`[Worker ${worker.id}] Resume failed:`, err);
@@ -6716,9 +6760,14 @@ export class WorkerManager {
       if (parentToolUseId) {
         console.log(`[Worker ${worker.id}] Responding to tool_use ${parentToolUseId} with sessionId=${sessionId}`);
       }
+      // An answer to a parked tool call goes in as its tool_result, which the
+      // CLI never echoes: the next top-level reply is the model reading it.
+      // Anything else gets a uuid the reply frame will echo.
+      const uuid = this.instructionAcks.register(worker.id, ids, { ackOnNextAssistant: !!parentToolUseId }) ?? undefined;
       session.inputStream.enqueue(buildUserMessage(message, {
         parentToolUseId,
         sessionId,
+        ...(uuid && !parentToolUseId ? { uuid } : {}),
       }));
       worker.hasNewActivity = true;
       worker.lastActivity = Date.now();

@@ -102,7 +102,7 @@ interface Worker {
   linesRemoved: number | null;
   lastCommitSha: string | null;
   waitingFor: WorkerWaitingFor | null;
-  instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response'; deliveryState?: 'pending' | 'delivered' }>;
+  instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response'; deliveryState?: 'pending' | 'delivered' | 'acknowledged' }>;
   pendingInstructions: string | null;
   updatedAt: string | null;
   account?: { authType: string } | null;
