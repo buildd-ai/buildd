@@ -13,6 +13,8 @@ mock.module('@buildd/core/tier-pool-daily-source', () => ({ TIER_POOLS_JOB: 'tie
 let dialSummary: any = { pools: 0, evaluated: 0, transitions: [], stale: 0, errors: 0 };
 const runDial = mock(async (_a: { now: Date }) => dialSummary);
 mock.module('@buildd/core/tier-dial-source', () => ({ runDialStep: runDial }));
+const RETRO_SOURCE = { status: async () => ({ enabled: true, judgeModel: 'typesafe/jev-1.13' }), verdicts: async () => [] };
+mock.module('@/lib/chat-retro/policy-signal', () => ({ chatRetroQualitySource: RETRO_SOURCE }));
 
 const recorded: any[] = [];
 mock.module('@buildd/core/db', () => ({
@@ -56,5 +58,11 @@ describe('GET /api/cron/tier-pools', () => {
     expect((await res.json()).dial).toMatchObject({ pools: 1, transitions: [{ kind: 'revert' }] });
     const verdict = recorded.filter(r => r.changed !== undefined).at(-1);
     expect(verdict).toMatchObject({ processed: 3, changed: 2 });
+  });
+
+  it('gives chat dial cells the chat retro as their quality source', async () => {
+    runDial.mockClear();
+    await GET(req());
+    expect((runDial.mock.calls[0][0] as { chatQuality?: unknown }).chatQuality).toBe(RETRO_SOURCE);
   });
 });

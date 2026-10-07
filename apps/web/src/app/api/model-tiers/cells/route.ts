@@ -6,6 +6,8 @@ import { buildModelPolicyCells, writeDialState } from '@buildd/core/tier-dial-so
 import { applyDialChange, dialAllocation } from '@buildd/core/tier-dial';
 import { invalidateTierPoolCache, readDialState } from '@buildd/core/tier-pool-source';
 import { tierPoolAccess } from '@/lib/tier-pool-access';
+// Chat retro verdicts for chat cells (experiment; lib/chat-retro/REMOVAL.md).
+import { chatRetroQualitySource } from '@/lib/chat-retro/policy-signal';
 
 /**
  * GET /api/model-tiers/cells?teamId= — the team's model policy read model:
@@ -18,7 +20,7 @@ export async function GET(req: NextRequest) {
   if (!access.ok) return access.response;
   try {
     const body: ModelPolicyCellsResponse & { isAdmin: boolean } = {
-      ...(await buildModelPolicyCells(access.teamId)),
+      ...(await buildModelPolicyCells(access.teamId, new Date(), { chatQuality: chatRetroQualitySource })),
       isAdmin: access.isAdmin,
     };
     return NextResponse.json(body);
