@@ -24,6 +24,14 @@ assertions:
     type: "symbol"
     name: "refreshMcpConnectorCredential"
     path: "apps/web/src/lib/mcp-connector-refresh.ts"
+  - id: "connector-catalog"
+    type: "symbol"
+    name: "CONNECTOR_CATALOG"
+    path: "apps/web/src/lib/connector-catalog.ts"
+  - id: "resolve-connector-icon"
+    type: "symbol"
+    name: "resolveConnectorIcon"
+    path: "apps/web/src/lib/connector-icon.ts"
 ---
 # MCP Connectors & Roles (unified model)
 
@@ -381,6 +389,55 @@ create (or reuse) a team `connectors` row and add its id to the role's
 
 **Out of scope**: auto-running DCR for registry entries whose AS is unknown until
 the user connects.
+
+---
+
+## 5b. Built-in catalog + connector icons
+
+**Capability statement**: Settings → MCP connectors → Add connection MUST open
+on a built-in catalog of remote MCP servers; picking one MUST create an
+ordinary team `connectors` row through the same `POST /api/connectors` path a
+custom URL uses. Every http connector SHOULD carry a display icon.
+
+**Invariants**:
+- The catalog is static code (`CONNECTOR_CATALOG`), not a table. An entry is a
+  preset (name, url, expected authMode, icon), never a second connector store.
+- An entry is listed only if its URL completes `discoverOAuthMetadata` (+ DCR)
+  or serves anonymously; servers that fail discovery stay out.
+- Creation stays team-admin only (`manage_connectors`, §6); the catalog does
+  not widen who can add a connector.
+- `connectors.iconUrl` is resolved best-effort at create time — catalog icon,
+  then MCP `serverInfo.icons` from an anonymous `initialize`, then the site's
+  `<link rel=icon>` on the server origin and its apex domain, then
+  `/favicon.ico`. Resolution never fails a create; NULL renders a letter avatar.
+- `POST /api/connectors` rejects a non-http(s) url with `400 invalid_url`, and
+  a discovery throw with `422 discovery_failed` + `message`, never a bare 500.
+
+**Acceptance criteria**:
+- AC-1: WHEN an admin picks a catalog entry THEN the create body carries the
+  entry's url and an OAuth entry goes straight to the connect redirect.
+- AC-2: GIVEN the team already has a connector at a catalog url WHEN the
+  catalog opens THEN that entry shows "Added" and is disabled.
+- AC-3: WHEN a custom url's MCP server returns `serverInfo.icons` THEN the
+  created connector's `iconUrl` is that icon.
+- AC-4: WHEN the url is `ttps://…` THEN the response is `400 invalid_url`
+  and the modal shows its message.
+
+**Code surface**:
+- Catalog: `apps/web/src/lib/connector-catalog.ts`
+- Icon resolver: `apps/web/src/lib/connector-icon.ts`
+- UI: `apps/web/src/app/app/(protected)/settings/connectors/AddConnectionModal.tsx`,
+  `apps/web/src/components/ConnectorIcon.tsx`
+- Route: `apps/web/src/app/api/connectors/route.ts`
+
+**Verified by**:
+- `apps/web/src/lib/connector-catalog.test.ts`
+- `apps/web/src/lib/connector-icon.test.ts`
+- `apps/web/src/app/app/(protected)/settings/connectors/AddConnectionModal.dom.test.tsx`
+- `apps/web/src/app/api/connectors/route.test.ts`
+
+**Out of scope**: a per-team allowlist restricting members to catalog entries
+(creation is already admin-only); header-auth catalog entries.
 
 ---
 

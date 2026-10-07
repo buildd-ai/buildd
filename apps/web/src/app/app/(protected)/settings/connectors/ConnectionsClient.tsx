@@ -5,6 +5,7 @@ import ConfirmDialog from '@/components/ConfirmDialog';
 import AddConnectionModal from './AddConnectionModal';
 import { Select } from '@/components/ui/Select';
 import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
+import { ConnectorIcon } from '@/components/ConnectorIcon';
 
 interface Connector {
   id: string;
@@ -15,6 +16,7 @@ interface Connector {
   /** Present when the connector is shared *to* the current team (grantee view). */
   shared?: boolean;
   ownerTeamName?: string | null;
+  iconUrl?: string | null;
 }
 
 interface Team {
@@ -406,6 +408,7 @@ export default function ConnectionsClient({
               <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 sm:gap-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap mb-1">
+                    <ConnectorIcon name={connector.name} iconUrl={connector.iconUrl} size={18} />
                     <span className="font-medium text-text-primary">{connector.name}</span>
                     <StatusBadge authMode={connector.authMode} status={connector.status} />
                     {connector.shared && (
@@ -492,6 +495,7 @@ export default function ConnectionsClient({
         <AddConnectionModal
           onClose={() => setShowAddModal(false)}
           onAdded={handleAdded}
+          existingUrls={connectors.filter((c) => !c.shared).map((c) => c.url)}
         />
       )}
 

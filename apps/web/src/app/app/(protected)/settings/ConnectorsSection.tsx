@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import SettingsSection from './SettingsSection';
 import { Select } from '@/components/ui/Select';
+import { ConnectorIcon } from '@/components/ConnectorIcon';
 
 interface Workspace {
   id: string;
@@ -25,6 +26,7 @@ interface Connector {
    * owner team on Settings → MCP connectors. */
   shared?: boolean;
   ownerTeamName?: string | null;
+  iconUrl?: string | null;
 }
 
 interface ConnectorWithWorkspaces extends Connector {
@@ -181,6 +183,7 @@ export default function ConnectorsSection({
               <div className="flex items-start gap-3">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5">
+                    <ConnectorIcon name={connector.name} iconUrl={connector.iconUrl} size={18} />
                     <span className="text-sm font-medium text-text-primary">{connector.name}</span>
                     <span className="text-xs text-text-muted font-mono">{connector.authMode}</span>
                     {connector.shared && (
