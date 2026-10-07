@@ -71,6 +71,16 @@ const actions = {
     return true;
   },
   taskStatus: async (id: string) => tasks.get(id)?.status ?? null,
+  // Every cancel in this probe is the Scout's own (a resolve), never a person's.
+  cancelledByScout: async () => true,
+  releaseHold: async () => {},
+  dismissFinding: async (_w: string, s: string) => {
+    const f = findings.get(s);
+    if (!f) return { dismissed: false, exists: false };
+    if (f.state === 'dismissed') return { dismissed: false, exists: true };
+    findings.set(s, { ...f, state: 'dismissed' });
+    return { dismissed: true, actionTaskId: f.actionTaskId };
+  },
   insertTask: async () => { const id = `t${++n}`; tasks.set(id, { status: 'pending', refreshed: 0 }); return { id }; },
   claimFollowUp: async (_w: string, s: string, id: string, takeover: string[]) => {
     const f = findings.get(s);
