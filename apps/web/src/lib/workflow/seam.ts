@@ -35,7 +35,7 @@ import type { Verdict } from './types';
 export type DeliveryRole = 'owner' | 'fix' | 'ci_fix' | 'conflict_fix' | 'review';
 
 /** Attempt roles that repair a PR and must deliver a pushed head (§9). */
-const REPAIR_ROLES: ReadonlySet<string> = new Set(['fix', 'ci_fix']);
+const REPAIR_ROLES: ReadonlySet<string> = new Set(['fix', 'ci_fix', 'conflict_fix']);
 export const isRepairRole = (role: string | null | undefined): boolean => !!role && REPAIR_ROLES.has(role);
 
 /** Reviewer runs a round may lose to infra before it escalates as review_unavailable (T27). */
@@ -305,7 +305,7 @@ export async function fixCompletionGate(p: { task: AttemptTask; localHeadSha: st
   if (live.headSha !== attempt.boundHeadSha) return null;
   return {
     code: 'delivery_not_advanced',
-    error: `Your fix is not on GitHub: PR #${d.prNumber}'s head is still ${live.headSha.slice(0, 7)}, the commit ${p.task.deliveryRole === 'ci_fix' ? 'whose CI failed' : 'the review asked you to change'}.`
+    error: `Your fix is not on GitHub: PR #${d.prNumber}'s head is still ${live.headSha.slice(0, 7)}, the commit ${p.task.deliveryRole === 'ci_fix' ? 'whose CI failed' : p.task.deliveryRole === 'conflict_fix' ? 'that conflicts with its base' : 'the review asked you to change'}.`
       + (p.localHeadSha && p.localHeadSha !== live.headSha ? ` Your local head is ${p.localHeadSha.slice(0, 7)}.` : ''),
     hint: 'Push your branch (git push), confirm with git ls-remote that the PR head moved, then complete again.',
     boundHeadSha: attempt.boundHeadSha,
@@ -341,7 +341,10 @@ export async function claimFix(task: AttemptTask, deps: SeamDeps = {}): Promise<
   const reader = readerFor(deps, repo.installationId);
   // The CI family's own trigger fact: a re-run that went green while the fix queued.
   const ciGreen = task.deliveryRole === 'ci_fix' && reader.ciGreen ? (await reader.ciGreen(d.repoFullName, live.headSha)) === true : false;
-  const result = await applyCommand({ type: 'FixClaimed', actor: `claim:${task.id}`, attemptId, revalidation: { live, approved, ciGreen } }, { ref: { deliveryId }, exec: deps.exec });
+  // The conflict family's own trigger fact: GitHub no longer reports the head as conflicting.
+  const attempt = view.attempts.find((a) => a.id === attemptId);
+  const conflictResolved = task.deliveryRole === 'conflict_fix' && attempt?.family === 'conflict' && isMergeableNow(live.mergeableState);
+  const result = await applyCommand({ type: 'FixClaimed', actor: `claim:${task.id}`, attemptId, revalidation: { live, approved, ciGreen, conflictResolved } }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);
   if (result.result === 'applied') {
     const skipped = result.decision.evidence.skipped;
@@ -544,7 +547,7 @@ SET reported_shas = CASE WHEN ${sha}::text = ANY(wa.reported_shas) THEN wa.repor
 FROM tasks t
 JOIN workflow_deliveries d ON d.id = t.delivery_id AND d.authority = 'kernel'
 WHERE t.id = ${taskId}::uuid
-  AND t.delivery_role IN ('fix', 'ci_fix')
+  AND t.delivery_role IN ('fix', 'ci_fix', 'conflict_fix')
   AND wa.id = NULLIF(t.context->>'workflowAttemptId', '')::uuid
   AND wa.delivery_id = d.id
   AND wa.status IN ('queued', 'running')`);
@@ -651,6 +654,88 @@ export async function requestCiRetry(p: {
   }
   await drainDelivery(deliveryId, deps);
   return { handled: true, extended, result, attemptTaskId: await attemptTaskOf(deliveryId, result, deps.exec) };
+}
+
+// ── T12: the PR conflicts with, or is behind, its base ──────────────────────
+
+/** GitHub says nothing conflicts and nothing is missing from the base (§10.5 for the conflict family). */
+export function isMergeableNow(state: string | null | undefined): boolean {
+  return state === 'clean' || state === 'unstable' || state === 'has_hooks' || state === 'blocked';
+}
+
+export interface ConflictSeen {
+  handled: true;
+  result: CommandResult;
+  /** What GitHub said NOW: `dirty`, `behind`, `clean` (nothing to do) or `unknown` (the door's hint was used). */
+  mergeable: 'dirty' | 'behind' | 'clean' | 'unknown';
+  /** The delivery after the inline drain. */
+  after: { state: string | null; stateReason: string | null; headSha: string | null } | null;
+  /** The attempt the transition allocated, or the one already bound. */
+  attempt: { id: string; family: string; mode: string; status: string; outcome: string | null; taskId: string | null } | null;
+}
+
+/**
+ * Every door that used to decide a conflict retry (landing, the merge routes,
+ * auto-merge, the dead-zone sweep, the migration-collision dispatch) for a
+ * kernel-owned PR: T12 from a live read taken now (§6.7). Mechanical first:
+ * `refresh_branch` for behind or dirty, `renumber_migration` for a collision,
+ * and an agent attempt only when the mechanical one is refused. The mechanical
+ * refresh is also the "is it really a conflict against today's base" recheck:
+ * a conflict that GitHub's own merge of the base resolves never reaches an
+ * agent. `handled: false` = not the kernel's PR; the legacy retry runs.
+ */
+export async function observeConflict(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number;
+  /** What the door saw (a merge refusal, a stored snapshot); used only when GitHub says `unknown`. */
+  hint: 'dirty' | 'behind';
+  migrationCollision?: Record<string, unknown> | null;
+  isDependencyBot: boolean;
+  maxAgentAttempts: number;
+  /** A person asked: the agent budget is the configured cap on top of what is already spent. */
+  humanInitiated?: boolean;
+  source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: false } | ConflictSeen> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return { handled: false };
+  const reader = readerFor(deps, p.installationId);
+  const live = await reader.readPr(p.repoFullName, p.prNumber);
+  const none = (reason: string, mergeable: ConflictSeen['mergeable'] = 'unknown'): ConflictSeen => ({
+    handled: true, mergeable, after: null, attempt: null,
+    result: { result: 'rejected', reason, current: { state: null, version: 0, head: null, round: 0 } },
+  });
+  if (!live) return none('live_read_failed');
+  await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.source}:conflict`, repoFullName: p.repoFullName, prNumber: p.prNumber },
+    { exec: deps.exec, github: { ...reader, readPr: async () => live } });
+  const state = live.mergeableState ?? null;
+  const mergeable: ConflictSeen['mergeable'] = state === 'dirty' ? 'dirty' : state === 'behind' ? 'behind' : isMergeableNow(state) ? 'clean' : 'unknown';
+  if (mergeable === 'clean' && !p.migrationCollision) return none('not_conflicting', 'clean');
+  let maxAgent = p.maxAgentAttempts;
+  if (p.humanInitiated) {
+    const v0 = await loadView({ deliveryId }, deps.exec);
+    maxAgent = ledgerBudget(v0.attempts, p.migrationCollision ? 'migration' : 'conflict', 0).spent + p.maxAgentAttempts;
+  }
+  const result = await applyCommand({
+    type: 'ConflictObserved', actor: p.source, headSha: live.headSha,
+    mergeable: mergeable === 'behind' || mergeable === 'dirty' ? mergeable : p.hint,
+    migrationCollision: !!p.migrationCollision,
+    detail: p.migrationCollision ? { migrationCollision: p.migrationCollision } : null,
+    maxAgentAttempts: maxAgent,
+    isDependencyBot: p.isDependencyBot,
+  }, { ref: { deliveryId }, exec: deps.exec });
+  await drainDelivery(deliveryId, deps);
+  const view = await loadView({ deliveryId }, deps.exec);
+  const d = view.delivery;
+  const ins = result.result === 'applied'
+    ? (result.decision.attempts.filter((a) => a.op === 'insert').at(-1) as { id: string } | undefined)
+    : undefined;
+  // The attempt the delivery is bound to after the drain (a refused mechanical row hands on to an
+  // agent one), else the one this transition allocated.
+  const a = view.attempts.find((x) => x.id === d?.boundAttemptId) ?? (ins ? view.attempts.find((x) => x.id === ins.id) : undefined);
+  return {
+    handled: true, result, mergeable,
+    after: d ? { state: d.state, stateReason: d.stateReason, headSha: d.currentHeadSha } : null,
+    attempt: a ? { id: a.id, family: a.family, mode: a.mode, status: a.status, outcome: a.outcome, taskId: a.taskId } : null,
+  };
 }
 
 // ── T15/T16: the merge doors (Slice C) ──────────────────────────────────────

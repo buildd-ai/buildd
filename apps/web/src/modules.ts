@@ -24,6 +24,7 @@ import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
 import type { EffectHandlers } from '@/lib/workflow/effects';
 import { reviewEffectHandlers } from '@/lib/workflow/review-effects';
 import { withCiRetryEffects } from '@/lib/workflow/ci-retry-effects';
+import { withConflictEffects } from '@/lib/workflow/conflict-retry-effects';
 import { withLandingEffects } from '@/lib/workflow/pr-landing-effects';
 import { withSupersessionEffects } from '@/lib/workflow/supersession-effects';
 import { releaseSubscribers } from '@/lib/release/subscribers';
@@ -75,9 +76,12 @@ export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
  * The workflow kernel's effect handlers (lib/workflow/effects.ts). The kernel
  * (core) decides and records the effect; the reviews module carries out the
  * review-loop ones (reviewer and fix tasks, GitHub reviews, escalations), the
- * CI family's (CI fix tasks bound to their ledger row, CI exhaustion), landing
- * and post-merge work (merge call, verify, refresh, finalize), and a closed
- * PR's resolution (supersession scan, the edge's projection, mission wake).
+ * CI family's (CI fix tasks bound to their ledger row, CI exhaustion), the
+ * conflict/migration families' (mechanical refresh and renumber first, an
+ * agent conflict fix only on a refusal, conflict exhaustion), landing and
+ * post-merge work (merge call, verify, post-merge events, mission-PR
+ * finalize), and a closed PR's resolution (supersession scan, the edge's
+ * projection, mission wake). Each effect kind has exactly one handler.
  *
  * Built on first use, not at load: the handler modules reach back into this
  * file through core-emit (post-merge work emits events), so composing them at
@@ -85,5 +89,5 @@ export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
  */
 let workflowEffectHandlersMemo: EffectHandlers | null = null;
 export function workflowEffectHandlers(): EffectHandlers {
-  return (workflowEffectHandlersMemo ??= withSupersessionEffects(withLandingEffects(withCiRetryEffects(reviewEffectHandlers))));
+  return (workflowEffectHandlersMemo ??= withSupersessionEffects(withLandingEffects(withConflictEffects(withCiRetryEffects(reviewEffectHandlers)))));
 }

@@ -65,7 +65,7 @@ async function viewFor(e: ClaimedEffect): Promise<KernelView> {
 const legacyOwns: EffectHandler = async () => ({ outcome: 'skipped:legacy_owns' });
 
 /** Pending reviewer/fix tasks of this delivery that a newer decision made pointless. */
-async function cancelPendingAttemptTasks(deliveryId: string, role: 'review' | 'fix' | 'ci_fix', keepTaskId: string | null, reason: string): Promise<number> {
+async function cancelPendingAttemptTasks(deliveryId: string, role: 'review' | 'fix' | 'ci_fix' | 'conflict_fix', keepTaskId: string | null, reason: string): Promise<number> {
   const rows = await db.update(tasks)
     .set({
       status: 'cancelled',
@@ -445,7 +445,7 @@ const cancelOpenAttempts: EffectHandler = async (e) => {
   if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
   if (reason === 'head_moved') {
     const families = Array.isArray(e.payload.families) ? (e.payload.families as string[]) : ['review_fix'];
-    const role = families.includes('ci') ? 'ci_fix' : 'fix';
+    const role = families.includes('ci') ? 'ci_fix' : families.includes('conflict') || families.includes('migration') ? 'conflict_fix' : 'fix';
     const n = await cancelPendingAttemptTasks(d.id, role, null, 'the PR head moved before the fix started');
     return { outcome: `ok:cancelled_${n}` };
   }

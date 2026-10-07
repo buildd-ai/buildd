@@ -96,9 +96,9 @@ describe('composition root', () => {
   it('every workflow effect the kernel can record has a handler in production', () => {
     const production = withPrFactEffects(workflowEffectHandlers()); // as seam.ts composes it
     const missing = EFFECT_KINDS.filter(k => typeof production[k] !== 'function');
-    // Slice B's trunk breaker and migration family: in the reducer, but no live fact reaches them yet.
-    // Whoever wires TrunkRedObserved or a migration collision adds the handler and shrinks this list.
-    expect(missing).toEqual(['dispatch_trunk_fix', 'renumber_migration']);
+    // Slice B's trunk breaker: in the reducer, but no live fact reaches it yet.
+    // Whoever wires TrunkRedObserved adds the handler and shrinks this list.
+    expect(missing).toEqual(['dispatch_trunk_fix']);
   });
 
   it('labels are unique, so a page names exactly one step', () => {

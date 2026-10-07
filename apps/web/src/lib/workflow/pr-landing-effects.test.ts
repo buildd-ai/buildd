@@ -1,7 +1,7 @@
 /**
  * The landing family's effect handlers (T15–T17, §14 Slice C). The handlers'
  * behaviour on real Postgres — the pinned merge call, verification, the
- * mechanical refresh, the post-merge work — is S10/S15 in
+ * post-merge work — is S10/S15 in
  * apps/web/tests/db/workflow-matrix.test.ts; this file pins the pure mapping
  * from GitHub's merge answer to the T16 outcome, and the composition.
  */
@@ -37,7 +37,13 @@ describe('classifyMergeCall: GitHub answer → MergeCallResult outcome', () => {
 
 test('withLandingEffects composes every landing and post-merge effect the reducer emits', () => {
   const h = withLandingEffects({}) as Record<string, unknown>;
-  for (const k of ['merge_call', 'verify_merge', 'refresh_branch', 'dispatch_conflict_fix', 'emit_pr_merged', 'finalize_mission_pr']) {
+  for (const k of ['merge_call', 'verify_merge', 'emit_pr_merged', 'finalize_mission_pr']) {
     expect(typeof h[k]).toBe('function');
   }
+});
+
+// T16's behind/conflict is a conflict-family repair: its handlers are conflict-retry-effects.ts's,
+// so the landing family must not register a second one that shadows them by composition order.
+test('withLandingEffects adds no conflict-family handler', () => {
+  expect(Object.keys(withLandingEffects({})).sort()).toEqual(['emit_pr_merged', 'finalize_mission_pr', 'merge_call', 'verify_merge']);
 });
