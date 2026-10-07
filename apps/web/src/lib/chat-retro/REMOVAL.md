@@ -3,6 +3,14 @@
 Chat session retros (knowledge-base: buildd/design/chat-session-retro.md) are an experiment. This
 is everything it adds. Nothing else in the codebase depends on it.
 
+The model policy reads retro verdicts for chat cells, but the dependency runs
+one way: `packages/core/tier-dial-chat.ts` defines `ChatQualitySource` and
+works without one, and `policy-signal.ts` here implements it. With the retro
+gone (or just turned off), chat dial cells read "no quality signal": a fixed
+split keeps working, the dial never shifts chat traffic, and a cell already
+shifted goes back to its primary with a recorded reason on the next hourly
+step. Thumbs keep reverting a shifted cell either way.
+
 ## To turn it off without removing code
 
 - One team: `PATCH /api/teams/<teamId>/chat-retro` with `{ "lessons": false }`.
@@ -18,8 +26,8 @@ is everything it adds. Nothing else in the codebase depends on it.
 ## Files (delete them)
 
 - `apps/web/src/lib/chat-retro/`: the whole directory (settings, vocab,
-  skeleton, lesson, proposals, store, run, deps, the settings UI section, their
-  tests, and this file)
+  skeleton, lesson, proposals, store, run, deps, policy-signal, the settings
+  UI section, their tests, and this file)
 - `apps/web/src/app/api/cron/chat-retro/`: the cron route and its test
 - `apps/web/src/app/api/teams/[id]/chat-retro/`: the settings and lessons API
   and its test
@@ -43,6 +51,14 @@ so a team they create later is covered with no write. It is set by:
   team with such an owner so the stored value matches.
 
 ## Touch points (edit them)
+
+- `apps/web/src/app/api/cron/tier-pools/route.ts`: the
+  `chatRetroQualitySource` import and the `chatQuality` argument to
+  `runDialStep` (and the matching mock + test in `route.test.ts`).
+- `apps/web/src/app/api/model-tiers/cells/route.ts`: the
+  `chatRetroQualitySource` import and the `{ chatQuality }` argument to
+  `buildModelPolicyCells` (and the matching mock + assertion in
+  `route.test.ts`). Nothing in `packages/core` changes.
 
 - `apps/web/src/app/app/(protected)/settings/ai/page.tsx`: the
   `ChatRetroSection` import and its one JSX line.
