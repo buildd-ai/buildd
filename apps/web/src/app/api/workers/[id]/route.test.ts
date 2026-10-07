@@ -102,6 +102,9 @@ const mockSelect = mock(selectAllColumns);
 
 // Dashboard session — accepted on GET only.
 const mockGetCurrentUser = mock(async () => null as { id: string } | null);
+// Central certification learns from a version-gate failure; not under test here.
+mock.module('@/lib/model-compatibility-incident', () => ({ reportWorkerModelIncident: async () => {} }));
+
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 const mockVerifyWorkspaceAccess = mock(async (_userId: string, _workspaceId: string) => null as { teamId: string; role: string } | null);
 mock.module('@/lib/team-access', () => ({ verifyWorkspaceAccess: mockVerifyWorkspaceAccess }));

@@ -40,6 +40,7 @@ import { readModelPin, shorthandPinTier } from '@buildd/core/model-pin';
 import type { TierPolicyMeta } from '@buildd/core/model-policy';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
 import { getCachedOpenRouterCatalog } from '@buildd/core/model-catalog-cache';
+import { getModelCertifications } from '@buildd/core/model-certification-store';
 import {
   checkDispatchModel, guardDispatchModel, describeDispatchModelRejection, tierForModelId,
   DISPATCH_MODEL_REJECTED_PATTERN,
@@ -2240,12 +2241,16 @@ export async function POST(req: NextRequest) {
     const modelRejections: Omit<DispatchModelRejection, 'fallback'>[] = [];
     const runnerCliVersion = body.environment?.claudeCliVersion;
     const dispatchCatalog = await getCachedOpenRouterCatalog();
+    // Central certification (model-certification.ts): floors learned by the
+    // probe, so a model certified after this build shipped is served and gated
+    // like one in the static table. Empty on any failure: the static table only.
+    const certifications = await getModelCertifications();
     // A challenger or treatment the runner cannot launch is not served; the
     // incumbent is. Same fallback accounting as a CLI-floor miss, plus a record
     // of the id so a bad arm cannot go on silently losing its draws.
     const clientCanServe = (source: DispatchModelSource) => (m: string): boolean => {
-      if (!checkModelClientCapability(m, runnerCliVersion).ok) return false;
-      const verdict = checkDispatchModel(m, dispatchCatalog);
+      if (!checkModelClientCapability(m, runnerCliVersion, certifications).ok) return false;
+      const verdict = checkDispatchModel(m, dispatchCatalog, certifications);
       if (!verdict.ok) modelRejections.push({ rejected: m, reason: verdict.reason, source });
       return verdict.ok;
     };
@@ -2328,7 +2333,7 @@ export async function POST(req: NextRequest) {
     // rejected id and where it came from.
     {
       let fallbacks = tierEntryModel ? [tierEntryModel] : [];
-      if (!tierEntryModel && taskTeamId && !checkDispatchModel(resolvedModel, dispatchCatalog).ok) {
+      if (!tierEntryModel && taskTeamId && !checkDispatchModel(resolvedModel, dispatchCatalog, certifications).ok) {
         // A rejected pin: fall back to the workspace default for its family.
         const entry = await resolveTierEntry(guardTier, taskTeamId, task.workspaceId, 'agent', runnerCliVersion);
         fallbacks = [{ model: entry.model, source: tierModelSource(entry.source) }];
@@ -2340,6 +2345,7 @@ export async function POST(req: NextRequest) {
         tier: guardTier,
         fallbacks,
         catalog: dispatchCatalog,
+        certifications,
       });
       if (guarded.rejection) {
         modelRejections.push({ rejected: guarded.rejection.rejected, reason: guarded.rejection.reason, source: guarded.rejection.source });
@@ -2371,7 +2377,7 @@ export async function POST(req: NextRequest) {
     // version A.B.C or newer is required") is otherwise deterministic and
     // identical on every retry, burning a full worker session each time. See
     // packages/core/model-capability-requirements.ts.
-    const capabilityCheck = checkModelClientCapability(resolvedModel, body.environment?.claudeCliVersion);
+    const capabilityCheck = checkModelClientCapability(resolvedModel, body.environment?.claudeCliVersion, certifications);
     if (!capabilityCheck.ok) {
       deferTask(task, 'runner_capability', {
         model: resolvedModel,
