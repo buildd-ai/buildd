@@ -175,7 +175,8 @@ path unchanged.
      state, a transient 5xx or rate limit, CI already red on the base and not
      this change's doing) and with no hard rail is NOT parked or notified. A
      repair task is filed, or the live one reused (one per blocker kind per
-     mission, else per workspace; `apps/web/src/lib/recoverable-blocker-repair.ts`),
+     mission, else per workspace; `apps/web/src/lib/recoverable-blocker-repair.ts`,
+     wired into the gate's `fileRepair` slot by `apps/web/src/modules.ts`),
      the blocked task is recorded on it, and the agent gets an answer naming the
      repair and telling it to carry on (its recommended option when it gave one)
      or finish blocked on it. Verdict `decide`, outcome `recovered`, recorded

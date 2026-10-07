@@ -112,7 +112,11 @@ export interface QuestionCheckDeps {
   runDecide?: typeof QUESTION_DECIDE_DECISION.run;
   record?: (input: DecisionLedgerInput) => Promise<string | null | void>;
   recordReceipts?: (receipts: DecisionReceipt[], scope: { teamId: string; accountId: string | null }) => Promise<void>;
-  /** File or reuse the repair task for a recoverable blocker; null when it could not. */
+  /**
+   * File or reuse the repair task for a recoverable blocker; null when it could
+   * not. A slot, not a default: the filer lives in a module and the composition
+   * root (modules.ts) supplies it. Absent, a recoverable blocker is asked.
+   */
   fileRepair?: (input: FileRepairInput) => Promise<{ id: string; reused: boolean } | null>;
   now?: () => number;
 }
@@ -122,11 +126,6 @@ export interface FileRepairInput {
   missionId: string | null;
   blockedTaskId: string;
   spec: RepairTaskSpec;
-}
-
-async function defaultFileRepair(input: FileRepairInput): Promise<{ id: string; reused: boolean } | null> {
-  const { fileRecoverableBlockerRepair } = await import('./recoverable-blocker-repair');
-  return fileRecoverableBlockerRepair(input);
 }
 
 async function defaultResolveAccess(s: { teamId: string; workspaceId: string; accountId: string | null }): Promise<DecisionAccess> {
@@ -185,14 +184,14 @@ export async function checkQuestion(
   const rail: HardRailKind | null = detectHardRail({ ...scope.hardRail, questionText })
     ?? (detectIrreversibleAction([req.question.prompt, req.question.context]) ? 'irreversible' : null);
   const blocker = rail ? null : classifyRecoverableBlocker(questionText);
-  if (blocker) {
+  if (blocker && deps.fileRepair) {
     const spec = repairTaskSpec(blocker, {
       scopeId: scope.missionId ?? scope.workspaceId,
       blockedTaskId: scope.taskId,
       blockedTaskTitle: scope.taskTitle,
       evidence: [req.question.context, req.question.prompt].filter(Boolean).join(' '),
     });
-    const repair = await (deps.fileRepair ?? defaultFileRepair)({
+    const repair = await deps.fileRepair({
       workspaceId: scope.workspaceId, missionId: scope.missionId, blockedTaskId: scope.taskId, spec,
     }).catch(() => null);
     if (repair) {

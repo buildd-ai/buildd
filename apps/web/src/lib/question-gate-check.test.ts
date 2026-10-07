@@ -276,6 +276,11 @@ describe('checkQuestion: recoverable blockers route to repair, not to a person',
     expect(await checkQuestion(SCOPE, BLOCKER, d)).toMatchObject({ verdict: 'send', outcome: 'asked' });
   });
 
+  it('with no repair slot wired, a recoverable blocker is asked rather than dropped', async () => {
+    const { d } = deps({ runDecide: decideRun('ask', null, 0.9) as any });
+    expect(await checkQuestion(SCOPE, BLOCKER, d)).toMatchObject({ verdict: 'send', outcome: 'asked' });
+  });
+
   it('a real decision is untouched', async () => {
     const { d } = deps({ runDecide: decideRun('ask', null, 0.9) as any, fileRepair: async () => { throw new Error('must not file'); } });
     expect(await checkQuestion(SCOPE, BARE, d)).toMatchObject({ outcome: 'asked' });
