@@ -1107,7 +1107,7 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
       }
       if (headCoverage(d, d.currentHeadSha) !== 'none') {
         const cf = carry();
-        if (cf && cf.result === 'apply') return { ...cf, patch: { ...cf.patch, boundAttemptId: null }, attempts, effects: [...cf.effects, ...effects], evidence: ev };
+        if (cf && cf.result === 'apply') return { ...cf, patch: { ...cf.patch, boundAttemptId: null }, attempts, effects: [...cf.effects, ...effects], evidence: { ...ev, carryForward: cf.evidence.carryForward } };
       }
       return toReview({ attempts, effects, evidence: ev });
     }

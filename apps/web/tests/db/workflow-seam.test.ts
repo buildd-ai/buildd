@@ -30,12 +30,13 @@ let workspaceId: string;
 let prSeq = 500;
 
 /** The fake GitHub: one PR whose head, state and ancestry a test moves. */
-interface FakePr { head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]> }
+interface FakePr { head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]>; equivalent?: Array<[string, string]> }
 let gh: FakePr;
 const live = (): LivePr => ({ state: gh.state, merged: gh.merged, headSha: gh.head, headRepoFullName: REPO, baseRef: 'dev', updatedAt: gh.updatedAt, mergedAt: gh.merged ? '2026-10-06T00:00:00Z' : null });
 const reader: GithubFactReader = {
   readPr: async () => live(),
   contains: async (_repo, ancestor, head) => ancestor === head || (gh.ancestors[head] ?? []).includes(ancestor),
+  contentEquivalent: async (_repo, _base, from, to) => (gh.equivalent ?? []).some(([f, t]) => f === from && t === to),
 };
 
 /** What the fake handlers dispatched, in order. */
@@ -198,7 +199,7 @@ describe('S2/S3 — a push under an approval', () => {
   test('S2: a non-equivalent push dispatches a delta round on the push, not at merge time', async () => {
     const { deliveryId, prNumber } = await approved();
     gh.head = 'H2';
-    await observeHead({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, hintedHeadSha: 'H2', source: 'webhook:synchronize', carryForward: async () => null }, deps);
+    await observeHead({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, hintedHeadSha: 'H2', source: 'webhook:synchronize' }, deps);
     expect((await loadView({ deliveryId })).delivery).toMatchObject({ state: 'AWAITING_REVIEW', currentRound: 2, currentHeadSha: 'H2' });
     expect(dispatched.filter((x) => x.kind === 'review').map((x) => x.head)).toEqual(['H1', 'H2']);
   });
@@ -206,12 +207,25 @@ describe('S2/S3 — a push under an approval', () => {
   test('S3: a content-equivalent push carries the approval forward exactly once, even when observed twice concurrently', async () => {
     const { deliveryId, prNumber } = await approved();
     gh.head = 'H2';
-    const obs = () => observeHead({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, hintedHeadSha: 'H2', source: 'webhook:synchronize', carryForward: async () => 'content_equivalent' }, deps);
+    gh.equivalent = [['H1', 'H2']];
+    const obs = () => observeHead({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, hintedHeadSha: 'H2', source: 'webhook:synchronize' }, deps);
     await Promise.all([obs(), obs()]);
     const d = (await loadView({ deliveryId })).delivery!;
     expect(d).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H2' });
     expect(d.approvedHeads).toEqual(['H1', 'H2']);
     expect(dispatched.filter((x) => x.kind === 'review').length).toBe(1);
+  });
+});
+
+describe('request_pr_review answers from rounds (task 1ebce52a)', () => {
+  test('the reviewer named is the round\'s at the live head, never the newest reviewer row of the PR', async () => {
+    const { prNumber, review } = await openAndHandOn();
+    // A newer reviewer row for the same PR number that is not this delivery's.
+    const other = await seedTask(workspaceId, { status: 'completed', title: 'legacy review' });
+    await q(sql`UPDATE tasks SET category = 'review',
+      context = jsonb_build_object('prNumber', ${prNumber}::int, 'headSha', 'HX') WHERE id = ${other}::uuid`);
+    const r = await requestReview({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, forced: false, actor: 'agent:test' }, deps);
+    expect(r).toMatchObject({ handled: true, result: { result: 'rejected', reason: 'review_in_flight' }, reviewTaskId: review.taskId });
   });
 });
 

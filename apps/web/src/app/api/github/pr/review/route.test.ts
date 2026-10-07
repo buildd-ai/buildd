@@ -499,6 +499,19 @@ describe('POST /api/github/pr/review — idempotency', () => {
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
     });
 
+    it('answers from the round\'s reviewer at the live head, never the newest reviewer row (task 1ebce52a)', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current }, reviewTaskId: 'round-reviewer' });
+      mockFindReviewTaskForPr.mockClear();
+      mockFindReviewTaskForPr.mockReturnValue({ id: 'newest-legacy-row', status: 'completed', result: { structuredOutput: { verdict: 'request-changes', confidence: 0.9 } }, context: { prNumber: 42, headSha: 'other' } });
+      mockTasksFindFirst.mockImplementation(async () => ({ id: 'round-reviewer', status: 'in_progress', result: null, context: { prNumber: 42 } }));
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json).toMatchObject({ kernel: true, reviewTaskId: 'round-reviewer' });
+      expect(mockFindReviewTaskForPr).not.toHaveBeenCalled();
+      mockFindReviewTaskForPr.mockReturnValue(null);
+    });
+
     it('force is a recorded bypass actor, never a second reviewer on a running round', async () => {
       mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current } });
       const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));

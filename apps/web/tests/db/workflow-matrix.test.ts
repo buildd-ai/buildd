@@ -49,6 +49,8 @@ interface FakePr {
   baseRef?: string; baseExists?: boolean | null;
   /** §6.10: failing check names per commit (absent = check runs unreadable), the base branch's head, and commits whose runs are still going. */
   checks?: Record<string, string[]>; baseHead?: string | null; running?: string[];
+  /** §8.3: `[from, to]` head pairs whose PR diff the compare API reports unchanged. */
+  equivalent?: Array<[string, string]>;
 }
 let gh: FakePr;
 const live = (): LivePr => ({
@@ -64,6 +66,7 @@ const reader: GithubFactReader = {
   branchHead: async () => gh.baseHead ?? null,
   failingChecks: async () => gh.failing ?? null,
   branchExists: async () => gh.baseExists ?? null,
+  contentEquivalent: async (_repo, _base, from, to) => (gh.equivalent ?? []).some(([f, t]) => f === from && t === to),
 };
 const repoFor = async () => ({ installationId: 1, repoFullName: REPO, gitConfig: null });
 
@@ -291,12 +294,13 @@ const reviewerOf = async (deliveryId: string) => (await taskRow((await tasksOf(d
 async function verdict(o: Delivery, v: 'approve' | 'request-changes' | 'escalate', head = gh.head, d = deps) {
   return seam.recordReviewVerdict({ reviewerTask: await reviewerOf(o.deliveryId), verdict: v, effectiveVerdict: v, headSha: head, confidence: 0.9 }, d);
 }
-const push = (o: Delivery, head: string, extra: { carryForward?: 'content_equivalent' | 'own_refresh' | null; ancestors?: string[] } = {}) => {
+/** A push; `equivalent: true` = the compare API reports the PR diff unchanged from the head it replaces (§8.3). */
+const push = (o: Delivery, head: string, extra: { equivalent?: boolean; ancestors?: string[] } = {}) => {
+  if (extra.equivalent) (gh.equivalent ??= []).push([gh.head, head]);
   gh.head = head;
   if (extra.ancestors) gh.ancestors[head] = extra.ancestors;
   return seam.observeHead({
     workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, hintedHeadSha: head, source: 'webhook:synchronize',
-    ...(extra.carryForward !== undefined ? { carryForward: async () => extra.carryForward ?? null } : {}),
   }, deps);
 };
 const closeOrMerge = (o: Delivery, merged: boolean, updatedAt = 'u1') => {
@@ -506,7 +510,7 @@ describe('S2 — approve at H0, non-equivalent push to H1', () => {
     const o = await openAndHandOn();
     expect(await verdict(o, 'approve')).toMatchObject({ handled: true, toState: 'APPROVED' });
     expect(posted).toEqual([{ commitId: 'H1', event: 'APPROVE' }]);
-    await push(o, 'H2', { carryForward: null });
+    await push(o, 'H2');
     const d = await delivery(o.deliveryId);
     expect(d).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2, approvedHeads: ['H1'] });
     expect((await rounds(o.deliveryId)).map((r) => [r.round, r.kind, r.status])).toEqual([[1, 'full', 'decided'], [2, 'delta', 'queued']]);
@@ -519,7 +523,8 @@ describe('S3 — approve at H0, head moves by a content-equivalent change', () =
     const o = await openAndHandOn();
     await verdict(o, 'approve');
     gh.head = 'H2';
-    const obs = () => seam.observeHead({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, hintedHeadSha: 'H2', source: 'webhook:synchronize', carryForward: async () => 'content_equivalent' }, deps);
+    gh.equivalent = [['H1', 'H2']];
+    const obs = () => seam.observeHead({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, hintedHeadSha: 'H2', source: 'webhook:synchronize' }, deps);
     await Promise.all([obs(), obs(), obs()]);
     const d = await delivery(o.deliveryId);
     expect(d).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H2', approvedHeads: ['H1', 'H2'] });
@@ -530,10 +535,64 @@ describe('S3 — approve at H0, head moves by a content-equivalent change', () =
   test('the platform\'s own refresh carries forward; a later non-equivalent push is still re-reviewed', async () => {
     const o = await openAndHandOn();
     await verdict(o, 'approve');
-    await push(o, 'H2', { carryForward: 'own_refresh' });
+    await push(o, 'H2', { equivalent: true });
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', approvedHeads: ['H1', 'H2'] });
-    await push(o, 'H3', { carryForward: null });
+    await push(o, 'H3');
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H3', currentRound: 2, approvedHeads: ['H1', 'H2'] });
+  });
+});
+
+describe('T13 — carry-forward decides from the delivery (task 1ebce52a)', () => {
+  test('a newer legacy reviewer row at another head saying request-changes does not stop the carry', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    // A reviewer row newer than round 1's, at a head this delivery never reviewed: the old
+    // carry-forward read "the newest reviewer row" and refused on it.
+    const legacy = await seedTask(workspaceId, { status: 'completed', title: 'legacy review' });
+    await q(sql`UPDATE tasks SET category = 'review',
+      context = jsonb_build_object('prNumber', ${o.prNumber}::int, 'headSha', 'HX'),
+      result = jsonb_build_object('structuredOutput', jsonb_build_object('verdict', 'request-changes', 'confidence', 0.9))
+      WHERE id = ${legacy}::uuid`);
+    await push(o, 'H2', { equivalent: true });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H2', approvedHeads: ['H1', 'H2'] });
+    expect(reviewersCreated.length).toBe(1);
+  });
+
+  test('equivalentHeadShas is a projection of an applied T13 onto the approving round\'s reviewer, never ahead of it', async () => {
+    const o = await openAndHandOn();
+    const [r1] = await tasksOf(o.deliveryId, 'review');
+    await verdict(o, 'approve');
+    await push(o, 'H2', { equivalent: true });
+    expect((await taskRow(r1.id)).context.equivalentHeadShas).toEqual(['H2']);
+    // Not equivalent: a delta round, and nothing is projected for H3.
+    await push(o, 'H3');
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H3', currentRound: 2 });
+    expect((await taskRow(r1.id)).context.equivalentHeadShas).toEqual(['H2']);
+    const carried = (await transitions(o.deliveryId)).filter((t) => t.command === 'HeadObserved' && t.to_state === 'APPROVED');
+    expect(carried.map((t) => t.evidence.carryForward)).toEqual(['content_equivalent']);
+  });
+
+  test('a head moved by the platform\'s own refresh_branch, pinned to the approved head, is carried as own_refresh', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    const last = (await transitions(o.deliveryId)).at(-1)!;
+    await q(sql`INSERT INTO workflow_effects (delivery_id, transition_id, kind, dedupe_key, payload, status, outcome)
+      VALUES (${o.deliveryId}::uuid, ${last.id}::uuid, 'refresh_branch', ${`refresh_branch:${o.deliveryId}:H1:test`},
+        jsonb_build_object('headSha', 'H1', 'reason', 'trunk_recovered'), 'done', 'ok:updated')`);
+    await push(o, 'R1', { ancestors: ['H1'], equivalent: true });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'R1', approvedHeads: ['H1', 'R1'] });
+    expect((await transitions(o.deliveryId)).at(-1)!.evidence).toMatchObject({ carryForward: 'own_refresh' });
+  });
+
+  test('without content equivalence nothing carries, even after the platform\'s own refresh', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    const last = (await transitions(o.deliveryId)).at(-1)!;
+    await q(sql`INSERT INTO workflow_effects (delivery_id, transition_id, kind, dedupe_key, payload, status, outcome)
+      VALUES (${o.deliveryId}::uuid, ${last.id}::uuid, 'refresh_branch', ${`refresh_branch:${o.deliveryId}:H1:test`},
+        jsonb_build_object('headSha', 'H1', 'reason', 'trunk_recovered'), 'done', 'ok:updated')`);
+    await push(o, 'R1', { ancestors: ['H1'] });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'R1', currentRound: 2, approvedHeads: ['H1'] });
   });
 });
 
@@ -1007,7 +1066,7 @@ describe('S9–S15', () => {
       expect(await delivery(o.deliveryId)).toMatchObject({ state: 'REPAIRING', stateReason: 'behind' });
       // The refresh lands: our own mechanical push, carried forward without a new review.
       const next = `R${i}`;
-      await push(o, next, { ancestors: [head], carryForward: 'own_refresh' });
+      await push(o, next, { ancestors: [head], equivalent: true });
       expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: next });
       head = next;
     }
@@ -1049,7 +1108,7 @@ describe('S9–S15', () => {
     expect(mech).toMatchObject({ family: 'conflict', attemptNo: 1, boundHeadSha: 'H1', taskId: null });
     expect((await effects(o.deliveryId, 'refresh_branch')).map((e) => e.outcome)).toEqual(['ok:updated']);
     // GitHub's update-branch lands as a new head; it is the platform's own refresh.
-    await push(o, 'R1', { ancestors: ['H1'], carryForward: 'own_refresh' });
+    await push(o, 'R1', { ancestors: ['H1'], equivalent: true });
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'R1' });
     mergeAnswer = () => { gh.state = 'closed'; gh.merged = true; return { merged: true, message: 'merged' }; };
     expect(await land('R1')).toMatchObject({ merged: true });
@@ -2182,6 +2241,15 @@ describe('S32–S34 — release composition', () => {
   const reviewersFor = (d: Delivery) => q<{ id: string }>(sql`SELECT id FROM tasks WHERE delivery_id = ${d.deliveryId}::uuid AND delivery_role = 'review'`);
   const compositionFacts = (d: Delivery) => q<{ id: string; payload: { attestation: import('../../src/lib/workflow/types').CompositionAttestation } }>(
     sql`SELECT id, payload FROM workflow_facts WHERE workspace_id = ${workspaceId}::uuid AND kind = 'composition_attested' AND pr_number = ${d.prNumber}::int`);
+
+  test('S32/T13: a composition approval carries forward on a content-equivalent push, with no reviewer task anywhere (task 1ebce52a)', async () => {
+    const cs = await reviewedConstituents();
+    const agg = await composedPr(cs);
+    expect(await delivery(agg.deliveryId)).toMatchObject({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1'] });
+    await push(agg, 'H2', { equivalent: true });
+    expect(await delivery(agg.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H2', compositionHeads: ['H1', 'H2'], approvedHeads: [] });
+    expect(await reviewersFor(agg)).toEqual([]);
+  });
 
   test('S32: release PR mechanically composed of reviewed changes → composition attestation accepted, CI still gates, no second reviewer', async () => {
     const cs = await reviewedConstituents();
