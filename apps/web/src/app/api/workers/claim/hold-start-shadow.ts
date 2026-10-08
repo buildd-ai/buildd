@@ -64,6 +64,8 @@ import {
 import { intersectPaths, pathsOverlap, REPO_WIDE_SENTINEL, type ManifestOverlapKind } from '@buildd/core/path-overlap';
 import { LIVE_HOLDER_STATUSES, assessClaimOverlapRisk, holderStateOf, type ClaimRiskAssessment } from '@buildd/core/orchestration-claim-decision';
 import { RULE_DECIDED } from '@buildd/core/orchestration-decision';
+import type { EffectiveScope, PairProbeEvidence } from '@buildd/core/orchestration-claim-risk';
+import type { PrDiffScope } from '@/lib/claim-pr-diff-scope';
 import type { AcquireInput, AcquireResult, LeaseRowsRelease, ReleaseResult } from '@buildd/core/path-claim';
 import type { PathReleaseReason } from '@/lib/path-claim-release';
 import type { ClaimDecisionKey } from '@buildd/core/orchestration-claim-source';
@@ -132,6 +134,17 @@ export interface SoftOverlapHolderEntry {
   overlapKind?: 'same_file' | 'prefix';
   /** The holder's newest worker status, or null when it has not started. */
   workerStatus: string | null;
+}
+
+/**
+ * Evidence the route read BEFORE the synchronous collector runs (the collector
+ * does no I/O): each open PR's current diff, and the newest sibling probe of
+ * the (candidate, holder) pair. Absent = unknown, never "disjoint".
+ */
+export interface ClaimRiskEvidence {
+  /** Current changed files of the holders' open PRs, by PR number. */
+  prScopes?: ReadonlyMap<number, PrDiffScope>;
+  probe?: PairProbeEvidence | null;
 }
 
 export interface ClaimHoldNote {
@@ -249,6 +262,7 @@ export class ClaimHoldCollector {
     manifest: string[],
     holder: SoftOverlapHolderEntry,
     activeLeases: Map<string, string[]> | undefined,
+    evidence: ClaimRiskEvidence = {},
   ): SoftOverlapAssessment {
     // Built defensively: this runs in the claim loop for every team, and the
     // fail-closed answer below must not itself throw on a malformed input.
@@ -259,6 +273,7 @@ export class ClaimHoldCollector {
       candidatePaths: Array.isArray(manifest) ? manifest.filter(p => p !== REPO_WIDE_SENTINEL) : [],
       overlapPaths: Array.isArray(holder?.overlapPaths) ? holder.overlapPaths : [],
       holderState: holderStateOf(holder?.workerStatus, LIVE_HOLDER_STATUSES),
+      probe: evidence?.probe ?? null,
       now: typeof ctx?.now === 'string' ? ctx.now : new Date().toISOString(),
     });
     try {
@@ -305,9 +320,10 @@ export class ClaimHoldCollector {
     manifest: string[],
     openPrs: OpenPrHolderEntry[],
     activeLeases: Map<string, string[]> | undefined,
+    evidence: ClaimRiskEvidence = {},
   ): ClaimHoldNote | null {
     try {
-      return this.openPrOverlap(ctx, manifest, openPrs, activeLeases);
+      return this.openPrOverlap(ctx, manifest, openPrs, activeLeases, evidence);
     } catch (err) {
       console.warn('[claim] hold/start note failed (skipped):', (err as Error)?.message ?? err);
       return this.skip('error');
@@ -319,6 +335,7 @@ export class ClaimHoldCollector {
     manifest: string[],
     openPrs: OpenPrHolderEntry[],
     activeLeases: Map<string, string[]> | undefined,
+    evidence: ClaimRiskEvidence,
   ): ClaimHoldNote | null {
     const concrete = manifest.filter(p => p !== REPO_WIDE_SENTINEL);
     const blockers = openPrs.filter(p => p.pathManifest?.length && intersectPaths(concrete, p.pathManifest).length > 0);
@@ -343,9 +360,19 @@ export class ClaimHoldCollector {
     }
     const first = blockers[0];
     const holder: ClaimHoldHolder = { taskId: first.taskId, prNumber: first.prNumber, workerStatus: first.workerStatus ?? null, prLifecycle: first.prLifecycle ?? null };
-    // No effective-scope input yet: the PR's current diff (task c3785f15) is
-    // what would let a disjoint pair start without the model.
-    const risk = assessClaimOverlapRisk({ gate: 'open_pr_overlap', rail: null, candidatePaths: concrete, overlapPaths: overlap, holderState: 'ended', now: ctx.now });
+    // The holders' PRs' current diffs, when every blocker's is known: a disjoint
+    // diff means the overlap came from an older or broader declaration. One
+    // unknown diff makes the whole scope unknown (uncertain, never disjoint).
+    const risk = assessClaimOverlapRisk({
+      gate: 'open_pr_overlap',
+      rail: null,
+      candidatePaths: concrete,
+      overlapPaths: overlap,
+      holderState: 'ended',
+      holderScope: combinedPrScope(blockers, evidence.prScopes),
+      probe: blockers.length === 1 ? evidence.probe ?? null : null,
+      now: ctx.now,
+    });
     return this.keep({ ...this.candidate(ctx, 'open_pr_overlap', 'declared', concrete, overlap, holder), risk });
   }
 
@@ -374,6 +401,32 @@ export class ClaimHoldCollector {
       title: ctx.title,
     };
   }
+}
+
+/** Is this worker status a live writer (a hard rail for an open PR)? */
+export const isLiveHolderStatus = (status: string | null | undefined): boolean => LIVE_HOLDER_STATUSES.has(status ?? '');
+
+/** One effective scope for several blockers; null unless every blocker's current diff is known. */
+function combinedPrScope(
+  blockers: ReadonlyArray<{ prNumber: number | null }>,
+  scopes: ReadonlyMap<number, PrDiffScope> | undefined,
+): EffectiveScope | null {
+  if (!scopes || blockers.length === 0) return null;
+  const found: PrDiffScope[] = [];
+  for (const b of blockers) {
+    const s = b.prNumber ? scopes.get(b.prNumber) : undefined;
+    if (!s) return null;
+    found.push(s);
+  }
+  // Any diff from a head that has since moved makes the combination stale.
+  const lead = found.find(s => s.headSha !== s.currentHeadSha) ?? found[0];
+  return {
+    source: 'pr_diff_at_head',
+    paths: [...new Set(found.flatMap(s => s.paths))],
+    headSha: lead.headSha,
+    currentHeadSha: lead.currentHeadSha,
+    observedAt: found.reduce((oldest, s) => (Date.parse(s.observedAt) < Date.parse(oldest) ? s.observedAt : oldest), found[0].observedAt),
+  };
 }
 
 // ── 2. Shadow dispatch (after the response) ──────────────────────────────────
@@ -597,6 +650,26 @@ export async function softOverlapStartVerdict(
   if (!note) return 'HOLD';
   if (note.candidate.risk?.route === 'deterministic_start') return 'rule_start';
   if (note.candidate.risk?.route === 'deterministic_hold') return 'HOLD';
+  return gated && await gatedStartApplies(note, deps) ? 'START' : 'HOLD';
+}
+
+/**
+ * The open-PR-overlap verdict for one note: `rule_start` only when the risk
+ * profile proved the holders' CURRENT diffs disjoint from the candidate's
+ * (`effective_scope_disjoint`: every blocker's diff known, at its current head);
+ * otherwise `START` when an applied Jev START exists for this exact state, else
+ * `HOLD`. A null note is HOLD. Either START's paths are acquired exclusively
+ * before the claim, exactly as for the soft path. Never throws.
+ */
+export async function openPrStartVerdict(
+  note: ClaimHoldNote | null,
+  gated: boolean,
+  deps: ClaimHoldDeps = {},
+): Promise<'rule_start' | 'START' | 'HOLD'> {
+  if (!note) return 'HOLD';
+  const risk = note.candidate.risk;
+  if (risk?.route === 'deterministic_start' && risk.reasons.includes('effective_scope_disjoint')) return 'rule_start';
+  if (risk?.route === 'deterministic_hold') return 'HOLD';
   return gated && await gatedStartApplies(note, deps) ? 'START' : 'HOLD';
 }
 

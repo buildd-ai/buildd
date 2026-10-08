@@ -428,6 +428,16 @@ describe('landPr — kernel-owned PR (T15/T16)', () => {
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
 
+    // Nothing moves an ESCALATED delivery on its own, so the wait says a person must act;
+    // every other review state clears on a later event.
+    it.each([['ESCALATED', true], ['AWAITING_REVIEW', undefined], ['CHANGES_REQUESTED', undefined]])('a %s delivery flags needsPerson=%s', async (state, needsPerson) => {
+      verdict = 'approved';
+      const { d } = kernelDeps({ merged: true, outcome: 'merged' });
+      const out = await land({ policy: agentReview }, { ...d, kernelLandingView: view(state as string) });
+      expect(out.kind).toBe('waiting_ci');
+      expect((out as { needsPerson?: boolean }).needsPerson).toBe(needsPerson as boolean | undefined);
+    });
+
     it('a head the kernel has not observed yet waits', async () => {
       const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
       const out = await land({}, { ...d, kernelLandingView: view('APPROVED', 'older') });
@@ -477,6 +487,22 @@ describe('landPr — merge', () => {
   it('merges with the caller-chosen method (merge_pr), squash by default', async () => {
     await land({ door: 'merge_pr', mergeMethod: 'rebase' });
     expect(mockMergePullRequest.mock.calls[0]![3]).toBe('rebase');
+  });
+
+  it('lands an integration-refresh PR as a merge commit even when the caller asked for squash', async () => {
+    mockFindFirst = mock(() => ({ id: 'task-1', title: 'chore(mission): merge dev', taskClass: 'work', missionId: null, context: { requireMergeCommit: true, refreshTrunk: 'dev' } }) as any);
+    await land({ door: 'merge_pr', mergeMethod: 'squash' });
+    expect(mockMergePullRequest.mock.calls[0]![3]).toBe('merge');
+  });
+
+  it('an integration-refresh PR reaches the kernel as a merge commit too', async () => {
+    mockFindFirst = mock(() => ({ id: 'task-1', title: 't', taskClass: 'work', missionId: null, context: { requireMergeCommit: true } }) as any);
+    const calls: any[] = [];
+    await land({ door: 'merge_pr', mergeMethod: 'squash' }, {
+      ...deps(),
+      landThroughKernel: async (i: any) => { calls.push(i); return { merged: true, outcome: 'merged', mergeCommitSha: 'M', reason: 'x', message: 'm', current: { state: 'APPROVED', version: 3, head: 'head1', round: 1 }, result: null } as any; },
+    });
+    expect(calls[0].mergeMethod).toBe('merge');
   });
 
   it('is a no-op on a PR that already merged', async () => {
@@ -1236,6 +1262,40 @@ describe('landPr — behind base is work with an owner', () => {
       mockDispatchConflictRetry.mockImplementation(async () => result);
       expect(await land()).toMatchObject({ kind: 'needs_human', cause });
       expect(mockEscalate).not.toHaveBeenCalled();
+    });
+    // A kernel refresh that was queued (it ran, the new head is not observed yet)
+    // is not a failure, and must never read as "failed (unknown)".
+    it('refreshQueued → waiting on the refresh, never "failed"', async () => {
+      mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: false, refreshQueued: true }));
+      const out = await land();
+      expect(out.kind).toBe('waiting_ci');
+      expect((out as { reason?: string }).reason).toMatch(/refresh is queued/);
+      expect((out as { reason?: string }).reason).not.toMatch(/failed|unknown/);
+    });
+    it('a deferred refresh names the raw GitHub error, not just its class', async () => {
+      mockDispatchConflictRetry.mockImplementation(async () => ({
+        dispatched: false, refreshDeferred: true, refreshFailure: 'unknown', refreshReason: 'GitHub API error: 404 {"message":"Not Found"}',
+      }));
+      const out = await land();
+      expect((out as { reason?: string }).reason).toContain('GitHub API error: 404');
+    });
+    it('the kernel treadmill bound → needs_human(refresh_exhausted) saying the base kept moving', async () => {
+      mockDispatchConflictRetry.mockImplementation(async () => ({
+        dispatched: false, refreshExhausted: true, refreshTreadmill: 3, refreshReason: 'base moved 3 times under the approved PR',
+      }));
+      const out = await land();
+      expect(out).toMatchObject({ kind: 'needs_human', cause: 'refresh_exhausted' });
+      expect((out as { reason: string }).reason).toMatch(/base kept moving after 3 refreshes/);
+      expect((out as { reason: string }).reason).not.toMatch(/unknown/);
+    });
+    it('a kernel escalation with a reason carries it instead of "unknown"', async () => {
+      mockDispatchConflictRetry.mockImplementation(async () => ({
+        dispatched: false, refreshExhausted: true, refreshReason: 'the mechanical refresh failed (landing_needs_human)',
+      }));
+      const out = await land();
+      expect(out).toMatchObject({ kind: 'needs_human', cause: 'refresh_failed' });
+      expect((out as { reason: string }).reason).toContain('the mechanical refresh failed');
+      expect((out as { reason: string }).reason).not.toMatch(/\(unknown\)/);
     });
     it('a throwing dispatch → needs_human, not an exception', async () => {
       mockDispatchConflictRetry.mockImplementation(async () => {

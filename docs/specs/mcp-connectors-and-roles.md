@@ -426,10 +426,21 @@ custom URL uses. Every http connector SHOULD carry a display icon.
   §5a), so the UI says why instead of omitting it.
 - Creation stays team-admin only (`manage_connectors`, §6); the catalog does
   not widen who can add a connector.
-- `connectors.iconUrl` is resolved best-effort at create time — catalog icon,
-  then MCP `serverInfo.icons` from an anonymous `initialize`, then the site's
-  `<link rel=icon>` on the server origin and its apex domain, then
-  `/favicon.ico`. Resolution never fails a create; NULL renders a letter avatar.
+- `connectors.iconUrl` is resolved best-effort — catalog icon, then MCP
+  `serverInfo.icons` (light/unthemed over dark, png/svg over ico, larger over
+  smaller), then `<link rel=icon>` and `/favicon.ico` on `serverInfo.websiteUrl`,
+  then on the server origin and its apex domain. It runs at create time
+  (anonymous `initialize`, or with the header credential), again after OAuth
+  connect with the fresh bearer, and lazily from `GET /api/connectors` for rows
+  without an inlined icon, at most once per `ICON_RECHECK_MS` per row
+  (`connectors.iconCheckedAt`). Resolution never fails a create; NULL renders a
+  letter avatar.
+- A connector's stored icon MUST be a `data:` URL of at most `MAX_ICON_BYTES`
+  of an allowlisted image type, so the dashboard never requests a third-party
+  host. Every icon fetch is https-only and re-checks each redirect hop with
+  `validatePublicEndpoint` (no private, loopback or link-local addresses). An
+  icon is only ever rendered via `<img>`, never as inline SVG markup.
+- buildd's own MCP `serverInfo` carries `icons` and `websiteUrl`.
 - `POST /api/connectors` rejects a non-http(s) url with `400 invalid_url`, and
   a discovery throw with `422 discovery_failed` + `message`, never a bare 500.
 
@@ -442,13 +453,19 @@ custom URL uses. Every http connector SHOULD carry a display icon.
   created connector's `iconUrl` is that icon.
 - AC-4: WHEN the url is `ttps://…` THEN the response is `400 invalid_url`
   and the modal shows its message.
+- AC-5: GIVEN a connector with no inlined icon WHEN the connectors list loads
+  THEN a lookup is scheduled after the response, and a remote icon that will
+  not download is cleared rather than hotlinked.
+- AC-6: WHEN an icon URL or a redirect hop resolves to a private address THEN
+  it is not fetched.
 
 **Code surface**:
 - Catalog: `apps/web/src/lib/connector-catalog.ts`, `apps/web/src/lib/connector-catalog-merge.ts`,
   `apps/web/src/lib/connector-catalog-store.ts`, `apps/web/src/lib/connector-catalog-input.ts`
 - Provisioning: `apps/web/src/lib/connector-provision.ts`
 - Data model: `packages/core/db/schema.ts` → `connectorCatalogEntries`, `connectorCatalogTeamPolicies`
-- Icon resolver: `apps/web/src/lib/connector-icon.ts`
+- Icon resolver: `apps/web/src/lib/connector-icon.ts`, `apps/web/src/lib/connector-icon-refresh.ts`,
+  `apps/web/src/lib/public-endpoint.ts`, `apps/web/src/lib/mcp-server-info.ts`
 - UI: `apps/web/src/app/app/(protected)/settings/connectors/AddConnectionModal.tsx`,
   `apps/web/src/app/app/(protected)/settings/connectors/CatalogSection.tsx`,
   `apps/web/src/components/ConnectorIcon.tsx`
@@ -457,7 +474,8 @@ custom URL uses. Every http connector SHOULD carry a display icon.
 
 **Verified by**:
 - `apps/web/src/lib/connector-catalog.test.ts`
-- `apps/web/src/lib/connector-icon.test.ts`
+- `apps/web/src/lib/connector-icon.test.ts`, `apps/web/src/lib/connector-icon-refresh.test.ts`,
+  `apps/web/src/lib/mcp-server-info.test.ts`
 - `apps/web/src/app/app/(protected)/settings/connectors/AddConnectionModal.dom.test.tsx`
 - `apps/web/src/app/api/connectors/route.test.ts`
 - `apps/web/src/lib/connector-catalog-merge.test.ts`, `apps/web/src/lib/connector-provision.test.ts`,

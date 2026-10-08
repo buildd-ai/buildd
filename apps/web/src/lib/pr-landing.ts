@@ -72,7 +72,9 @@ import {
   type SiblingState,
 } from '@/lib/escalation-revalidation';
 import { LANDING_CYCLE_COOLDOWN_MS } from '@/lib/pr-landing-sweep';
+import { refreshCause } from '@/lib/refresh-cause';
 import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
+import { resolveMergeMethod } from '@/lib/integration-refresh';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -133,7 +135,14 @@ export type HumanCause =
 export type LandingOutcome =
   | { kind: 'merged'; sha: string }
   | { kind: 'updating_branch'; newHeadSha: string }
-  | { kind: 'waiting_ci'; headSha: string; /** What the landing is actually waiting on (the refusing rail / check / review / kernel state). */ reason?: string }
+  | {
+      kind: 'waiting_ci';
+      headSha: string;
+      /** What the landing is actually waiting on (the refusing rail / check / review / kernel state). */
+      reason?: string;
+      /** No later event clears this wait on its own (an ESCALATED delivery): a person must act. */
+      needsPerson?: true;
+    }
   | { kind: 'needs_fix'; reason: string; fix: FixKind; taskId?: string }
   | { kind: 'needs_human'; reason: string; cause: HumanCause };
 
@@ -591,8 +600,8 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
 
   const human = (cause: HumanCause, reason: string, extra?: Record<string, unknown>) =>
     done({ kind: 'needs_human', cause, reason }, reason, { cause, ...extra });
-  const waiting = (reason: string, extra?: Record<string, unknown>) =>
-    done({ kind: 'waiting_ci', headSha: headSha ?? '', reason }, reason, extra);
+  const waiting = (reason: string, extra?: Record<string, unknown>, needsPerson = false) =>
+    done({ kind: 'waiting_ci', headSha: headSha ?? '', reason, ...(needsPerson ? { needsPerson: true as const } : {}) }, reason, extra);
 
   const bypass = (gate: string, reason: string, detail: Record<string, unknown>) => {
     if (!act) return;
@@ -814,7 +823,8 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     if (head !== liveHead) return waiting(`the kernel has not observed head ${liveHead.slice(0, 7)} yet`, extra);
     const overridable = override.verdict && (state === 'AWAITING_REVIEW' || state === 'CHANGES_REQUESTED' || state === 'ESCALATED');
     if (state !== 'APPROVED' && !overridable) {
-      return waiting(`the delivery is ${state ?? 'unknown'}; the kernel lands it only once APPROVED (T15)`, extra);
+      // ESCALATED is terminal for the kernel: no event moves it back to APPROVED on its own.
+      return waiting(`the delivery is ${state ?? 'unknown'}; the kernel lands it only once APPROVED (T15)`, extra, state === 'ESCALATED');
     }
   }
 
@@ -938,8 +948,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // conflict-resolution task IS the merge commit that catches a mission's
   // integration branch up with dev, and squashing it would drop that
   // ancestry — the same conflict would reappear on the next refresh.
-  const requireMergeCommit = (mergingTask?.context as Record<string, unknown> | null)?.requireMergeCommit === true;
-  const mergeMethod = requireMergeCommit ? 'merge' : (input.mergeMethod ?? 'squash');
+  const mergeMethod = resolveMergeMethod(mergingTask?.context, input.mergeMethod);
   // Every rail above passed. A kernel-owned PR is merged by the kernel (T15 →
   // merge_call → T16 → verify_merge → PrMerged), which also owns the
   // post-merge work; any other PR merges here as before.
@@ -1186,13 +1195,19 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     // filed and none is owed. A later event or the sweep re-drives the PR.
     if (res.headChanged) return waiting(`the PR head moved before the refresh (${reason}); re-reading on the new head`, { refresh: 'head_changed' });
     if (res.refreshInFlight) return waiting(`another refresh of this PR is in flight (${reason})`, { refresh: 'in_flight' });
+    if (res.refreshQueued) {
+      return waiting(`a branch refresh is queued; landing re-reads on the new head (${reason})`, { refresh: 'queued' });
+    }
     if (res.refreshDeferred) {
-      return waiting(`updating the branch failed (${res.refreshFailure ?? 'unknown'}), not a conflict; will retry (${reason})`, { refresh: 'deferred', failure: res.refreshFailure ?? null });
+      return waiting(`updating the branch failed (${refreshCause(res)}), not a conflict; will retry (${reason})`, { refresh: 'deferred', failure: res.refreshFailure ?? null });
     }
     if (res.semanticDeferred) return waiting(`semantic overlap with the base is not yet verified; will recheck (${reason})`, { refresh: 'semantic_deferred' });
     if (res.alreadyUpToDate) return waiting(`the branch already has every base commit; re-reading (${reason})`, { refresh: 'up_to_date' });
+    if (res.refreshExhausted && res.refreshTreadmill !== undefined) {
+      return human('refresh_exhausted', `the base kept moving after ${res.refreshTreadmill} refreshes (${refreshCause(res)}; ${reason})`, { refreshCount: res.refreshTreadmill });
+    }
     if (res.refreshExhausted) {
-      return human('refresh_failed', `updating the branch kept failing (${res.refreshFailure ?? 'unknown'}), not a conflict (${reason})`, { failure: res.refreshFailure ?? null });
+      return human('refresh_failed', `updating the branch kept failing (${refreshCause(res)}), not a conflict (${reason})`, { failure: res.refreshFailure ?? null });
     }
     if (res.semanticUnverified) {
       return human('semantic_unverified', `the PR and the base change the same files and their symbol overlap could not be verified (${reason})`);
