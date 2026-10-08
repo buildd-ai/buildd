@@ -11,6 +11,10 @@ import {
   isConflictRetryContext,
   formatDerivedMergeNote,
   formatDerivedFilesGuidance,
+  finishDerivedMerge,
+  derivedMergeVerificationCommand,
+  formatDerivedMergeSummary,
+  formatDerivedFinishFallback,
 } from '../../src/merge-drivers';
 
 function git(cwd: string, ...args: string[]): string {
@@ -276,5 +280,118 @@ describe('formatDerivedFilesGuidance', () => {
     const note = formatDerivedFilesGuidance(normalizeDerivedFiles([{ glob: 'bun.lock', regenerate: 'bun install' }]));
     expect(note).toContain('`bun.lock` → `bun install`');
     expect(formatDerivedFilesGuidance([])).toBeNull();
+  });
+});
+
+describe('finishDerivedMerge (real git, bare remote)', () => {
+  let dir: string;
+  let remote: string;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    if (remote) rmSync(remote, { recursive: true, force: true });
+  });
+
+  /** A derived-only conflict merged by the runner, with `feature` tracking a bare origin. */
+  function mergedWithRemote(): string {
+    dir = conflictedRepo();
+    remote = mkdtempSync(join(tmpdir(), 'merge-drivers-remote-'));
+    git(remote, 'init', '-q', '--bare');
+    git(dir, 'remote', 'add', 'origin', remote);
+    git(dir, 'push', '-q', 'origin', 'main', 'feature');
+    const rules = normalizeDerivedFiles([LOCK_RULE]);
+    registerMergeDrivers(dir, rules, { mergiraf: false });
+    expect(mergeBaseWithDerivedFiles(dir, 'main', rules).status).toBe('merged');
+    return git(dir, 'rev-parse', 'HEAD');
+  }
+
+  test('no verification command: pushes the merge commit and reports the head', async () => {
+    const head = mergedWithRemote();
+    const finish = await finishDerivedMerge(dir, 'feature', { verificationCommand: null });
+    expect(finish).toEqual({ status: 'pushed', verification: null, headSha: head });
+    expect(git(remote, 'rev-parse', 'refs/heads/feature')).toBe(head);
+  });
+
+  test('a passing verification command runs in the worktree before the push', async () => {
+    const head = mergedWithRemote();
+    const finish = await finishDerivedMerge(dir, 'feature', { verificationCommand: 'test "$(cat bun.lock)" = "lock regenerated"' });
+    expect(finish.status).toBe('pushed');
+    expect(finish.verification).toBe('test "$(cat bun.lock)" = "lock regenerated"');
+    expect(git(remote, 'rev-parse', 'refs/heads/feature')).toBe(head);
+  });
+
+  test('a failing verification command pushes nothing', async () => {
+    mergedWithRemote();
+    const remoteBefore = git(remote, 'rev-parse', 'refs/heads/feature');
+    const finish = await finishDerivedMerge(dir, 'feature', { verificationCommand: 'echo broken >&2; exit 4' });
+    expect(finish.status).toBe('verify_failed');
+    expect(finish.error).toContain('broken');
+    expect(git(remote, 'rev-parse', 'refs/heads/feature')).toBe(remoteBefore);
+  });
+
+  test('a rejected push (remote moved) is reported, never forced', async () => {
+    mergedWithRemote();
+    // Someone else pushed to the branch since the runner fetched it.
+    const other = mkdtempSync(join(tmpdir(), 'merge-drivers-other-'));
+    try {
+      git(other, 'clone', '-q', '-b', 'feature', remote, '.');
+      git(other, 'config', 'user.email', 't@example.com');
+      git(other, 'config', 'user.name', 'T');
+      writeFileSync(join(other, 'extra.ts'), 'z\n');
+      git(other, 'add', '-A');
+      git(other, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'concurrent');
+      git(other, 'push', '-q', 'origin', 'feature');
+      const theirs = git(other, 'rev-parse', 'HEAD');
+      const finish = await finishDerivedMerge(dir, 'feature', { verificationCommand: null });
+      expect(finish.status).toBe('push_failed');
+      expect(finish.error).toBeTruthy();
+      expect(git(remote, 'rev-parse', 'refs/heads/feature')).toBe(theirs);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  test('a dirty tree after verification is not pushed as if verified', async () => {
+    mergedWithRemote();
+    const finish = await finishDerivedMerge(dir, 'feature', { verificationCommand: 'echo changed > bun.lock' });
+    expect(finish.status).toBe('verify_failed');
+    expect(finish.error).toContain('bun.lock');
+  });
+});
+
+describe('derivedMergeVerificationCommand', () => {
+  test('the task context verificationCommand, trimmed; null when absent or blank', () => {
+    expect(derivedMergeVerificationCommand({ verificationCommand: '  bun run test  ' })).toBe('bun run test');
+    expect(derivedMergeVerificationCommand({ verificationCommand: '   ' })).toBeNull();
+    expect(derivedMergeVerificationCommand({ verificationCommand: 7 })).toBeNull();
+    expect(derivedMergeVerificationCommand({})).toBeNull();
+    expect(derivedMergeVerificationCommand(null)).toBeNull();
+  });
+});
+
+describe('formatDerivedMergeSummary / formatDerivedFinishFallback', () => {
+  const merged = { status: 'merged' as const, conflicted: [], regenerated: ['bun install', 'bun run specs:check'], pendingRegenerate: [] };
+
+  test('the summary names the base, every regenerate command and how it was verified', () => {
+    const summary = formatDerivedMergeSummary(merged, 'origin/dev', { status: 'pushed', verification: 'bun run test', headSha: 'abc1234def' });
+    expect(summary).toContain('origin/dev');
+    expect(summary).toContain('`bun install`');
+    expect(summary).toContain('`bun run specs:check`');
+    expect(summary).toContain('`bun run test`');
+    expect(summary).toContain('no agent');
+  });
+
+  test('the summary says when nothing was verified', () => {
+    const summary = formatDerivedMergeSummary({ ...merged, regenerated: [] }, 'origin/dev', { status: 'pushed', verification: null, headSha: 'abc' });
+    expect(summary).toContain('No verification command');
+  });
+
+  test('the fallback note tells the agent what the runner tried and what is left', () => {
+    const verify = formatDerivedFinishFallback({ status: 'verify_failed', verification: 'bun run test', error: 'exit 1' });
+    expect(verify).toContain('`bun run test`');
+    expect(verify).toContain('exit 1');
+    expect(verify).toContain('not pushed');
+    const push = formatDerivedFinishFallback({ status: 'push_failed', verification: null, error: 'rejected' });
+    expect(push).toContain('rejected');
+    expect(push).toContain('not pushed');
   });
 });

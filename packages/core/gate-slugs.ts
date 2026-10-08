@@ -190,6 +190,8 @@ export const GATE_SLUGS = {
    * `warned` = shadow semantic verdict or a moved head; `rejected` = attempts
    * exhausted, with an operational diagnostic posted. A textual conflict is
    * never recorded here as an operational failure — it goes to the conflict agent.
+   * Also `accepted` with `detail.stage: 'derived_merge'`: a conflict retry the
+   * runner finished itself because every conflict was in a derived file.
    */
   BASE_REFRESH: 'base_refresh',
   /**
