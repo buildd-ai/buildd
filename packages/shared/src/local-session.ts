@@ -83,7 +83,17 @@ export interface LocalSessionWorkerUsage {
 
 export interface LocalSessionUsage {
   workers: LocalSessionWorkerUsage[];
+  /**
+   * How this session's usage was charged, when the hook's environment settles
+   * it: `real` (per token) or `virtual` (plan usage at list price); `unknown`
+   * when it cannot tell. Absent from an older hook. Never `mixed`: that is a
+   * server-side result (docs/specs/real-and-virtual-cost.md).
+   */
+  costBasis?: LocalSessionCostBasis;
 }
+
+export const LOCAL_SESSION_COST_BASES = ['real', 'virtual', 'unknown'] as const;
+export type LocalSessionCostBasis = (typeof LOCAL_SESSION_COST_BASES)[number];
 
 /** What the event endpoint answers. Hooks only read `pendingInstructions`. */
 export interface LocalSessionEventResult {
@@ -112,7 +122,7 @@ const MAX_ID = 200;
 const MAX_VERSION = 64;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ALLOWED_KEYS = new Set(['event', 'client', 'clientSessionId', 'clientVersion', 'repo', 'interactive', 'workerId', 'reason', 'usage']);
-const USAGE_KEYS = new Set(['workers']);
+const USAGE_KEYS = new Set(['workers', 'costBasis']);
 const WORKER_USAGE_KEYS = new Set(['workerId', 'models', 'toolCalls', 'subagents', 'firstAt', 'lastAt']);
 const MODEL_USAGE_KEYS = new Set(['model', 'input', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h', 'output', 'requests']);
 const MODEL_ID_RE = /^[A-Za-z0-9._:/@\[\]-]{1,100}$/;
@@ -129,6 +139,9 @@ const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v =
 function parseUsage(v: unknown): LocalSessionUsage | string {
   if (!isObject(v) || !onlyKeys(v, USAGE_KEYS) || !Array.isArray(v.workers)) return 'usage must be { workers: [...] }';
   if (v.workers.length > MAX_USAGE_WORKERS) return `usage.workers holds at most ${MAX_USAGE_WORKERS} entries`;
+  if (v.costBasis !== undefined && !(LOCAL_SESSION_COST_BASES as readonly unknown[]).includes(v.costBasis)) {
+    return 'usage.costBasis must be real, virtual or unknown';
+  }
   const workers: LocalSessionWorkerUsage[] = [];
   for (const w of v.workers) {
     if (!isObject(w) || !onlyKeys(w, WORKER_USAGE_KEYS)) return 'usage.workers[] has an unknown field';
@@ -156,7 +169,7 @@ function parseUsage(v: unknown): LocalSessionUsage | string {
       ...(w.lastAt !== undefined ? { lastAt: w.lastAt as string } : {}),
     });
   }
-  return { workers };
+  return { workers, ...(v.costBasis !== undefined ? { costBasis: v.costBasis as LocalSessionCostBasis } : {}) };
 }
 
 /**

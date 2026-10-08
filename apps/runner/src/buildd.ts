@@ -295,6 +295,13 @@ export class BuilddClient {
      */
     costUsd?: number;
     /**
+     * How this session's usage was charged: `real` (per token: API key, team
+     * endpoint) or `virtual` (a subscription login, valued at list price).
+     * Sent with every report that carries usage; the server records `unknown`
+     * when it is absent (docs/specs/real-and-virtual-cost.md).
+     */
+    costBasis?: 'real' | 'virtual' | 'unknown';
+    /**
      * The model the session actually ran on. Feeds task_outcomes.actual_model.
      * Optional: an older runner simply omits it and the server falls back to
      * deriving it from resultMeta.

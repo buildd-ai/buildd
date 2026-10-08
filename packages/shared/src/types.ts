@@ -866,6 +866,8 @@ export interface Worker {
   status: WorkerStatusType;
   waitingFor: WaitingFor | null;
   costUsd: number;
+  /** How costUsd and the tokens were charged (docs/specs/real-and-virtual-cost.md). NULL = no usage. */
+  costBasis?: 'real' | 'virtual' | 'mixed' | 'unknown' | null;
   turns: number;
   startedAt: Date | null;
   completedAt: Date | null;
