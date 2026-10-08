@@ -1,6 +1,8 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { reconcileSubjectEvent } from '@/lib/supersession';
 import { NextRequest, NextResponse } from 'next/server';
+import { ensureRepoAccessForPr, refuseForRepoAccess } from '@/lib/github-repo-access-gate';
+import { isIntegrationPermissionError, missingPermissions as missingRepoPermissions } from '@/lib/github-repo-access';
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -643,19 +645,20 @@ export async function POST(req: NextRequest) {
     }
 
     const workspace = worker.workspace;
-    if (!workspace?.githubRepoId || !workspace?.githubInstallationId) {
-      return NextResponse.json({ error: 'Workspace not linked to GitHub repo' }, { status: 400 });
-    }
-
-    // Get the GitHub repo details
-    const repo = await db.query.githubRepos.findFirst({
-      where: eq(githubRepos.id, workspace.githubRepoId),
-      with: { installation: true },
+    // Typed refusal naming the unmet GitHub requirement (lib/github-repo-access-gate.ts).
+    const repoAccess = await ensureRepoAccessForPr({
+      workspace,
+      workspaceId: worker.workspaceId,
+      operation: 'pr.create',
+      worker: { id: worker.id, taskId: worker.taskId },
+      head,
+      surface: 'POST /api/github/pr',
     });
-
-    if (!repo || !repo.installation) {
-      return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
+    if (!repoAccess.ok) return repoAccess.response;
+    if (!workspace) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
+    const repo = repoAccess.repo;
 
     // Dedup: if worker already has a PR for THIS head branch, and it isn't
     // already known merged/closed, return the existing one. A worker that
@@ -1130,6 +1133,36 @@ export async function POST(req: NextRequest) {
       // that was never created, on a task whose own missionId is unset so the
       // integration guard above never ran) rather than from the guard.
       const message = err instanceof Error ? err.message : String(err);
+      // The installation's recorded permissions said yes; GitHub says no.
+      // Same typed refusal as the pre-check, not a raw 500.
+      if (isIntegrationPermissionError(message)) {
+        const perms = (repo.installation.permissions ?? {}) as Record<string, string>;
+        const gaps = missingRepoPermissions(perms, 'pr.create');
+        return refuseForRepoAccess({
+          workspaceId: worker.workspaceId,
+          problem: {
+            reason: 'permission_missing',
+            operation: 'pr.create',
+            repoFullName: repo.fullName,
+            installation: {
+              id: repo.installation.id,
+              installationId: repo.installation.installationId,
+              accountLogin: repo.installation.accountLogin,
+              accountType: repo.installation.accountType,
+              accountId: repo.installation.accountId,
+              installedByUserId: repo.installation.installedByUserId ?? null,
+              repositorySelection: repo.installation.repositorySelection ?? null,
+              suspendedAt: repo.installation.suspendedAt ?? null,
+              permissions: perms,
+            },
+            missingPermissions: gaps.length > 0 ? gaps : [{ name: 'pull_requests', need: 'write', have: perms.pull_requests ?? null }],
+            repoRow: null,
+          },
+          worker: { id: worker.id, taskId: worker.taskId },
+          head,
+          surface: 'POST /api/github/pr',
+        });
+      }
       if (/GitHub API error: 422/.test(message) && /"field":"base"/.test(message)) {
         if (looksLikeMissionIntegrationBranch(effectiveBase)) {
           await reportMissionBranchUnresolved({
@@ -1395,18 +1428,19 @@ export async function PATCH(req: NextRequest) {
     }
 
     const workspace = worker.workspace;
-    if (!workspace?.githubRepoId || !workspace?.githubInstallationId) {
-      return NextResponse.json({ error: 'Workspace not linked to GitHub repo' }, { status: 400 });
-    }
-
-    const repo = await db.query.githubRepos.findFirst({
-      where: eq(githubRepos.id, workspace.githubRepoId),
-      with: { installation: true },
+    // Typed refusal naming the unmet GitHub requirement (lib/github-repo-access-gate.ts).
+    const repoAccess = await ensureRepoAccessForPr({
+      workspace,
+      workspaceId: worker.workspaceId,
+      operation: 'pr.update',
+      worker: { id: worker.id, taskId: worker.taskId },
+      surface: 'PATCH /api/github/pr',
     });
-
-    if (!repo || !repo.installation) {
-      return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
+    if (!repoAccess.ok) return repoAccess.response;
+    if (!workspace) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
+    const repo = repoAccess.repo;
 
     void recordCapabilityDecision({ capability, decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}` });
     if (isReadyUpdate) {
@@ -1673,18 +1707,19 @@ export async function PUT(req: NextRequest) {
       });
     };
 
-    if (!workspace?.githubRepoId || !workspace?.githubInstallationId) {
-      return NextResponse.json({ error: 'Workspace not linked to GitHub repo' }, { status: 400 });
-    }
-
-    const repo = await db.query.githubRepos.findFirst({
-      where: eq(githubRepos.id, workspace.githubRepoId),
-      with: { installation: true },
+    // Typed refusal naming the unmet GitHub requirement (lib/github-repo-access-gate.ts).
+    const repoAccess = await ensureRepoAccessForPr({
+      workspace,
+      workspaceId: worker.workspaceId,
+      operation: 'pr.merge',
+      worker: { id: worker.id, taskId: worker.taskId },
+      surface: 'PUT /api/github/pr',
     });
-
-    if (!repo || !repo.installation) {
-      return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
+    if (!repoAccess.ok) return repoAccess.response;
+    if (!workspace) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
+    const repo = repoAccess.repo;
 
     // A kernel-owned PR (workflow-state-kernel §14 Slice C): the kernel merges it
     // and owns the post-merge work; this door keeps its policy and rails. A
@@ -2338,18 +2373,19 @@ export async function GET(req: NextRequest) {
     }
 
     const workspace = worker.workspace;
-    if (!workspace?.githubRepoId || !workspace?.githubInstallationId) {
-      return NextResponse.json({ error: 'Workspace not linked to GitHub repo' }, { status: 400 });
-    }
-
-    const repo = await db.query.githubRepos.findFirst({
-      where: eq(githubRepos.id, workspace.githubRepoId),
-      with: { installation: true },
+    // Typed refusal naming the unmet GitHub requirement (lib/github-repo-access-gate.ts).
+    const repoAccess = await ensureRepoAccessForPr({
+      workspace,
+      workspaceId: worker.workspaceId,
+      operation: 'pr.read',
+      worker: { id: worker.id, taskId: worker.taskId },
+      surface: 'GET /api/github/pr',
     });
-
-    if (!repo || !repo.installation) {
-      return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
+    if (!repoAccess.ok) return repoAccess.response;
+    if (!workspace) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
+    const repo = repoAccess.repo;
 
     const prNumber = resolvedPrNumber;
 
