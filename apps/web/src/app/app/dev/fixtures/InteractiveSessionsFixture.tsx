@@ -60,7 +60,7 @@ export function interactiveSessionsFleetFixture(now: number): FleetSnapshot {
         task: { id: 'fixture-task-20', title: 'feat(search): index product tags', roleSlug: 'builder', missionId: null } },
       { id: 'w-1', accountId: 'acct', runner: 'mcp', status: 'running', startedAt: ago(24), updatedAt: ago(1),
         task: { id: 'fixture-task-1', title: 'fix(checkout): total rounding', roleSlug: null, missionId: null } },
-      { id: 'w-3', accountId: 'acct', runner: 'mcp', status: 'running', startedAt: ago(9), updatedAt: ago(0), phase: 'Commit',
+      { id: 'w-3', accountId: 'acct', runner: 'mcp', status: 'running', startedAt: ago(9), updatedAt: ago(0), phase: 'Changes',
         task: { id: 'fixture-task-3', title: 'feat(shipping): cache the quote', roleSlug: null, missionId: null } },
     ],
     { now, sessionsOnline: 5 },
