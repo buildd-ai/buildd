@@ -72,6 +72,7 @@ import {
   type SiblingState,
 } from '@/lib/escalation-revalidation';
 import { LANDING_CYCLE_COOLDOWN_MS } from '@/lib/pr-landing-sweep';
+import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -167,6 +168,12 @@ export interface LandPrInput {
    * Omitted, the ordering check loads it; with ordering off nothing is read.
    */
   gitConfig?: WorkspaceGitConfig | null;
+  /**
+   * The workflow-kernel delivery version a person's action was taken against
+   * (§7.2). A stale one makes the kernel refuse the landing; routes check it
+   * before calling here so no rail acts on a stale screen either.
+   */
+  expectedVersion?: number;
 }
 
 export interface FixDispatchInput {
@@ -211,6 +218,14 @@ export interface LandPrDeps {
    * exactly one caller per review task). Defaults to the marker-backed claim.
    */
   claimReviewRevalidation?: (taskId: string, reviewTaskId: string) => Promise<boolean>;
+  /** The kernel's landing (T15/T16) for a kernel-owned PR; null = not the kernel's PR. Defaults to the seam's. */
+  landThroughKernel?: (input: LandingInput) => Promise<KernelLanding | null>;
+  /**
+   * The kernel delivery that owns this PR and its current view; null = legacy-owned.
+   * On a kernel PR the delivery, not the legacy reviewer row, is the review gate.
+   * Defaults to the seam's `kernelLandingView`.
+   */
+  kernelLandingView?: typeof import('@/lib/workflow/seam').kernelLandingView;
 }
 
 // ── Constants and pure pieces ──────────────────────────────────────────────────
@@ -785,8 +800,26 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     }
   }
 
-  // ── 4. Review verdict — always with the carry-forward hint ──────────────────
-  const gate = await guardReviewVerdict({
+  // ── 4. Review verdict ───────────────────────────────────────────────────────
+  // A kernel-owned PR's review gate is its delivery (T15 lands only from APPROVED at
+  // the exact head, or a person's override from a review state). The legacy reviewer
+  // row must not block, stall or re-review it: a composition- or human-approved
+  // delivery has no reviewer row at all (incident #2574). A read error falls back to
+  // the legacy gate, which can only hold a landing, never authorise one past T15.
+  const readKernelView = deps.kernelLandingView ?? (await import('@/lib/workflow/seam')).kernelLandingView;
+  const kernelView = await readKernelView(workspaceId, repoFullName, prNumber).catch(() => null);
+  if (kernelView) {
+    const { state, head } = kernelView.current;
+    const extra = { deliveryState: state, deliveryVersion: kernelView.current.version };
+    if (head !== liveHead) return waiting(`the kernel has not observed head ${liveHead.slice(0, 7)} yet`, extra);
+    const overridable = override.verdict && (state === 'AWAITING_REVIEW' || state === 'CHANGES_REQUESTED' || state === 'ESCALATED');
+    if (state !== 'APPROVED' && !overridable) {
+      return waiting(`the delivery is ${state ?? 'unknown'}; the kernel lands it only once APPROVED (T15)`, extra);
+    }
+  }
+
+  // Legacy: the newest reviewer row, always with the carry-forward hint.
+  const gate = kernelView ? { blocks: false as const } : await guardReviewVerdict({
     workspaceId,
     prNumber,
     headSha: liveHead,
@@ -821,7 +854,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   }
 
   // ── 5. Agent-review tier: a stored approve above the confidence bar ─────────
-  if (policy.tier === 'agent-review' && actor.kind !== 'human') {
+  if (!kernelView && policy.tier === 'agent-review' && actor.kind !== 'human') {
     const status = await reviewStatus();
     if (!status) return waiting('could not read the stored review verdict');
     if (!isApprovalSelfMergeable(status, policy.agentReview?.maxConfidenceThreshold)) {
@@ -882,13 +915,13 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   }
 
   // ── 7. Mission PR lifecycle, then the merge ─────────────────────────────────
-  let mergingTask: { id: string; title: string; taskClass: string | null; missionId: string | null } | null = null;
+  let mergingTask: { id: string; title: string; taskClass: string | null; missionId: string | null; context: unknown } | null = null;
   if (owner.taskId) {
     try {
       mergingTask =
         (await db.query.tasks.findFirst({
           where: eq(tasks.id, owner.taskId),
-          columns: { id: true, title: true, taskClass: true, missionId: true },
+          columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
         })) ?? null;
     } catch (err) {
       console.warn(`[pr-landing] could not read task ${owner.taskId}:`, errMessage(err));
@@ -901,11 +934,30 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
 
   if (!act) return done({ kind: 'merged', sha: liveHead }, 'every rail passed; this PR would merge now');
 
-  const slotted = await mergeInSurfaceSlot(surfaceOrder, () =>
-    mergePullRequest(installationId, repoFullName, prNumber, input.mergeMethod ?? 'squash', liveHead),
-  );
+  // See the matching note in auto-merge.ts: mission-branch-refresh.ts's
+  // conflict-resolution task IS the merge commit that catches a mission's
+  // integration branch up with dev, and squashing it would drop that
+  // ancestry — the same conflict would reappear on the next refresh.
+  const requireMergeCommit = (mergingTask?.context as Record<string, unknown> | null)?.requireMergeCommit === true;
+  const mergeMethod = requireMergeCommit ? 'merge' : (input.mergeMethod ?? 'squash');
+  // Every rail above passed. A kernel-owned PR is merged by the kernel (T15 →
+  // merge_call → T16 → verify_merge → PrMerged), which also owns the
+  // post-merge work; any other PR merges here as before.
+  const kernelLand = deps.landThroughKernel ?? (await import('@/lib/workflow/seam')).landThroughKernel;
+  const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
+    const kernel = await kernelLand({
+      workspaceId, installationId, repoFullName, prNumber, headSha: liveHead,
+      door: `land_pr:${input.door}`,
+      actor: actor.kind === 'human' ? `human:${actor.userId ?? 'unknown'}` : actor.kind === 'agent' ? `agent:${actor.workerId ?? 'unknown'}` : `system:${input.door}`,
+      mergeMethod,
+      ...(override.verdict ? { override: { reason: 'a person merged past the review verdict' } } : {}),
+      ...(input.expectedVersion !== undefined ? { expectedVersion: input.expectedVersion } : {}),
+    });
+    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHead) };
+  });
   if ('refused' in slotted) return waiting(slotted.refused, { waitingOn: 'surface_slot' });
-  const result = slotted.result;
+  if (slotted.result.kernel) return kernelLanded(slotted.result.kernel);
+  const result = slotted.result.legacy;
   if (result.merged) return landed(liveHead, mergingTask);
 
   const message = result.message || 'the merge call failed';
@@ -922,6 +974,21 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   return human('merge_failed', message);
 
   // ── helpers that close over the landing state ───────────────────────────────
+
+  /** The kernel's answer, as a landing outcome. It already queued whatever repair it owes. */
+  async function kernelLanded(k: KernelLanding): Promise<LandingOutcome> {
+    const extra = { kernel: k.outcome, kernelReason: k.reason, deliveryState: k.current.state, deliveryVersion: k.current.version };
+    switch (k.outcome) {
+      // The mission branch is finalized by the kernel's post-merge effect, not here.
+      case 'merged': return landed(k.mergeCommitSha ?? liveHead, null);
+      case 'behind': return done({ kind: 'updating_branch', newHeadSha: liveHead }, `the kernel is refreshing the branch: ${k.message}`, extra);
+      case 'conflict': return done({ kind: 'needs_fix', fix: 'conflict', reason: k.message }, k.message, { ...extra, fix: 'conflict', fixDispatched: true });
+      case 'refused': return human('merge_failed', k.message, extra);
+      // A lost answer is verified by the kernel before anything re-calls GitHub; a moved head or
+      // a stale screen is re-read; a delivery not ready to land is the kernel's to move on.
+      default: return waiting(k.message, extra);
+    }
+  }
 
   async function landed(sha: string, mergingTask: Parameters<typeof finalizeMissionPrMerge>[0]): Promise<LandingOutcome> {
     await finalizeMissionPrMerge(mergingTask, installationId, repoFullName).catch((err) =>

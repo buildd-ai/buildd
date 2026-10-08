@@ -90,6 +90,7 @@ describe('Git Workflow "checked out with latest code from" line', () => {
       mission: { workingBranch: INTEGRATION_BRANCH, integrationBranchEnabled: true },
       missionId: 'mission-1',
       context: { baseBranch: 'buildd/99999999-phase-1' },
+      dependsOn: ['99999999-0000-0000-0000-000000000000'],
     };
     expect(checkedOutFrom(task)).toBe('origin/buildd/99999999-phase-1');
   });

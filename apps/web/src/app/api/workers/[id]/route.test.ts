@@ -69,13 +69,16 @@ const mockExhaustMissionBudget = mock(() => Promise.resolve());
 // mockTasksFindFirst, wrapped in an array — so existing `outputRequirement`
 // setups drive both the relational and the select-based reads.
 const selectAllColumns = () => {
+  let fromGateLedger = false;
   const chain: any = {
-    from: () => chain,
+    // The gate ledger's coalescing read (fireRepeatGateEvent) finds no prior
+    // row, so a coalesced advisory is inserted and lands in gateEventInserts.
+    from: (table: any) => { fromGateLedger = !!(table && table.gate && table.surface && table.outcome); return chain; },
     where: () => chain,
     limit: () => chain,
     orderBy: () => chain,
     then: (resolve: any, reject: any) =>
-      mockTasksFindFirst().then((row: any) => (row ? [row] : [])).then(resolve, reject),
+      (fromGateLedger ? Promise.resolve([]) : mockTasksFindFirst().then((row: any) => (row ? [row] : []))).then(resolve, reject),
   };
   return chain;
 };
@@ -708,6 +711,36 @@ mock.module('@/lib/pr-activity-fix-claimed', () => ({
   announceFixEnded: mockAnnounceFixEnded,
   announceFixClaimed: mock(async () => undefined),
   fixAttemptOf: () => null,
+}));
+
+// The workflow kernel seam (lib/workflow/seam.ts) has its own real-Postgres
+// suite (apps/web/tests/db/workflow-seam.test.ts). Here: that the route calls
+// it at the right points and that the legacy write does not run beside it.
+const mockWorkflowAttemptEnded = mock(async (_p: any) => ({ handled: false }));
+const mockFixCompletionGate = mock(async (_p: any): Promise<any> => null);
+const mockRecordLocalHead = mock(async (_taskId: string, _sha: string) => undefined);
+const mockRecordReviewVerdict = mock(async (_p: any): Promise<any> => ({ handled: false }));
+const mockIsKernelReviewRound = mock(async (_t: any): Promise<boolean> => false);
+const realHandOff = await import('@/lib/workflow/hand-off');
+mock.module('@/lib/workflow/seam', () => ({
+  attemptEnded: mockWorkflowAttemptEnded,
+  attemptEndFromPatch: realHandOff.attemptEndFromPatch,
+  taskRetryCoversAttemptEnd: realHandOff.taskRetryCoversAttemptEnd,
+  fixCompletionGate: mockFixCompletionGate,
+  recordReviewVerdict: mockRecordReviewVerdict,
+  isKernelReviewRound: mockIsKernelReviewRound,
+  isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
+  recordLocalHead: mockRecordLocalHead,
+  openKernelDelivery: mock(async () => ({ owned: false })),
+  observeHead: mock(async () => false),
+  observePrState: mock(async () => false),
+  requestReview: mock(async () => ({ handled: false })),
+  claimFix: mock(async () => ({ action: 'proceed' })),
+  cancelSkippedTask: mock(async () => undefined),
+  drainDelivery: mock(async () => null),
+  drainDueEffects: mock(async () => ({ claimed: 0, done: 0, skipped: 0, failed: 0, dead: [] })),
+  toKernelVerdict: (v: string) => v,
+  REVIEW_CONTRACT_RETRIES: 2,
 }));
 
 // The terminal-record ledger is fire-and-forget over a real db client
@@ -3393,6 +3426,122 @@ describe('PATCH /api/workers/[id]', () => {
     });
   });
 
+  describe('workflow kernel: §9 completion gate and T4', () => {
+    const fixWorker = {
+      id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'fix-task-1',
+      branch: 'buildd/original-branch', commitCount: 1, lastCommitSha: 'local-l2', prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42,
+      pendingInstructions: null,
+    };
+    const fixTaskRow = {
+      id: 'fix-task-1', outputRequirement: 'auto', category: 'bug', deliveryId: 'delivery-1', deliveryRole: 'fix',
+      context: { workflowAttemptId: 'attempt-1', prNumber: 42 },
+    };
+
+    it('S1: a fix attempt whose PR head never moved is refused delivery_not_advanced, and nothing is written', async () => {
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({ set: mock(() => { taskUpdateCalled = true; return { where: mock(() => Promise.resolve()) }; }) });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(fixWorker);
+      mockTasksFindFirst.mockResolvedValue(fixTaskRow);
+      mockFixCompletionGate.mockReset();
+      mockFixCompletionGate.mockResolvedValue({
+        code: 'delivery_not_advanced', error: 'Your fix is not on GitHub', hint: 'Push your branch',
+        boundHeadSha: 'h1', liveHeadSha: 'h1', localHeadSha: 'local-l2',
+      });
+
+      const res = await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed', lastCommitSha: 'local-l2' } }), { params: mockParams });
+      const body = await res.json();
+
+      expect(res.status).toBe(400);
+      expect(body).toMatchObject({ code: 'delivery_not_advanced', gate: 'output_requirement', boundHeadSha: 'h1', liveHeadSha: 'h1', localHeadSha: 'local-l2' });
+      expect(mockFixCompletionGate.mock.calls[0][0]).toMatchObject({
+        task: { id: 'fix-task-1', deliveryId: 'delivery-1', deliveryRole: 'fix' }, localHeadSha: 'local-l2',
+      });
+      expect(taskUpdateCalled).toBe(false);
+      expect(mockWorkflowAttemptEnded).not.toHaveBeenCalled();
+    });
+
+    it('the gate is not consulted for a task with no kernel delivery (legacy, or open at cutover)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...fixWorker, taskId: 'task-1' });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required' });
+      mockFixCompletionGate.mockReset();
+      await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed' } }), { params: mockParams });
+      expect(mockFixCompletionGate).not.toHaveBeenCalled();
+    });
+
+    it('T4: a terminal PATCH of a kernel attempt reports AttemptEnded with the local head (a fact, never delivery)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(fixWorker);
+      mockTasksFindFirst.mockResolvedValue(fixTaskRow);
+      mockFixCompletionGate.mockReset();
+      mockFixCompletionGate.mockResolvedValue(null);
+      mockWorkflowAttemptEnded.mockReset();
+      mockWorkflowAttemptEnded.mockResolvedValue({ handled: true });
+      mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ ...fixWorker, status: 'completed' }]) })) })) });
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+      const res = await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed', lastCommitSha: 'pushed-l2', commitCount: 1 } }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({
+        task: { id: 'fix-task-1', deliveryId: 'delivery-1', deliveryRole: 'fix' },
+        workerId: (await mockParams).id, status: 'completed', localHeadSha: 'pushed-l2', commitCount: 1,
+      });
+    });
+
+    const failKernelAttempt = async (body: Record<string, unknown>, taskRow: Record<string, unknown> = fixTaskRow) => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(fixWorker);
+      mockTasksFindFirst.mockResolvedValue(taskRow);
+      mockFixCompletionGate.mockReset();
+      mockWorkflowAttemptEnded.mockReset();
+      mockWorkflowAttemptEnded.mockResolvedValue({ handled: true });
+      mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ ...fixWorker, status: 'failed' }]) })) })) });
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'fix-task-1' }])) })) })) });
+      return PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body }), { params: mockParams });
+    };
+    const handOffRefusal = {
+      status: 'failed', error: 'Task has 2 commit(s) on branch but no pull request or artifact.',
+      serverRefused: true, refusal: { status: 400, method: 'PATCH', endpoint: '/api/workers/worker-1', gate: 'output_requirement' },
+    };
+
+    it('S30: a runner hand-off failure (outcome=unproven) ends the kernel attempt as unproven with the runner-reported head and count', async () => {
+      const res = await failKernelAttempt({ ...handOffRefusal, outcome: 'unproven', localHeadSha: 'local-l3', commitCount: 2 });
+      expect(res.status).toBe(200);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({
+        task: { id: 'fix-task-1', deliveryId: 'delivery-1', deliveryRole: 'fix' },
+        status: 'unproven', localHeadSha: 'local-l3', commitCount: 2,
+      });
+    });
+
+    it('S30: an old runner that omits outcome/localHeadSha gets today\'s failed attempt end, with the head and count the row holds', async () => {
+      const res = await failKernelAttempt(handOffRefusal);
+      expect(res.status).toBe(200);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ status: 'failed', localHeadSha: 'local-l2', commitCount: 1 });
+    });
+
+    it('S30: under a task auto-retry, an unproven end with commits is still reported (AWAITING_PUSH), one with nothing is the requeue', async () => {
+      const missionTask = { ...fixTaskRow, missionId: 'mission-1', status: 'in_progress' };
+      await failKernelAttempt({ ...handOffRefusal, outcome: 'unproven', localHeadSha: 'local-l3', commitCount: 2 }, missionTask);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ status: 'unproven', commitCount: 2 });
+
+      await failKernelAttempt({ ...handOffRefusal, outcome: 'unproven', localHeadSha: null, commitCount: 0 }, missionTask);
+      expect(mockWorkflowAttemptEnded).not.toHaveBeenCalled();
+      // And an old runner's plain failure under the same retry: unchanged, the retry is the requeue.
+      await failKernelAttempt(handOffRefusal, missionTask);
+      expect(mockWorkflowAttemptEnded).not.toHaveBeenCalled();
+      // An owner attempt with nothing local: reported, so the kernel records the WORKING requeue itself.
+      await failKernelAttempt({ ...handOffRefusal, outcome: 'unproven', localHeadSha: null, commitCount: 0 }, { ...missionTask, deliveryRole: 'owner' });
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ status: 'unproven', commitCount: 0, taskRetryBudgetLeft: true });
+    });
+  });
+
   describe('output requirement validation ordering', () => {
     it('refuses completion when commits exist but no PR or artifact (auto mode)', async () => {
       let taskUpdateCalled = false;
@@ -4819,12 +4968,14 @@ describe('PATCH /api/workers/[id]', () => {
       });
 
       it('exempts a stacked-plan phase, whose base is the predecessor branch', async () => {
-        const predecessor = 'buildd/predecessor00-earlier-thing';
+        const predecessorId = '9f8e7d6c-1111-2222-3333-444444444444';
+        const predecessor = `buildd/${predecessorId.slice(0, 8)}-earlier-thing`;
         completingWorker({
           missionId: 'mission-1',
           taskClass: 'work',
           title: 'Second phase',
           context: { baseBranch: predecessor },
+          dependsOn: [predecessorId],
         });
         optedInMission();
         detectedPr(predecessor);
@@ -5196,6 +5347,110 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(400);
       const data = await res.json();
       expect(data.hint).toBe('create_pr');
+    });
+
+    // The task asked for work that had already landed in another task's PR,
+    // which its text never names, so the referenced-PR fallback above cannot
+    // see it, and adopting it would make this worker own someone else's PR.
+    // `alreadyShippedIn` names the PR; the gate checks it is merged in the
+    // linked repo and records it on the result, never on the worker row.
+    describe('pr_required + alreadyShippedIn', () => {
+      const shippedTask = {
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'fix(conflict-retry): verify a real conflict before dispatching',
+        description: 'Re-check the base tip before dispatching an agent.',
+      };
+      let capturedTaskSet: any;
+      let workerSets: any[];
+
+      beforeEach(() => {
+        capturedTaskSet = null;
+        workerSets = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            capturedTaskSet = updates;
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => {
+            workerSets.push(u);
+            return { where: mock(() => ({ returning: mock(() => [{ ...baseWorker, status: 'completed' }]) })) };
+          }),
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockTasksFindFirst.mockResolvedValue(shippedTask);
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+        mockGithubReposFindFirst.mockResolvedValue({
+          id: 'repo-1', fullName: 'org/repo', installation: { installationId: 123 },
+        });
+      });
+
+      const githubPr = (merged: boolean) => mockGithubApi.mockImplementation((_i: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]);
+        if (path === '/repos/org/repo/pulls/3851') {
+          return Promise.resolve({
+            number: 3851, merged, html_url: 'https://github.com/org/repo/pull/3851',
+            head: { ref: 'buildd/aaaa1111-another-task' }, base: { ref: 'dev' },
+          });
+        }
+        return Promise.resolve(null);
+      });
+
+      const complete = (extra: Record<string, unknown>) => PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Already shipped in #3851; verified on dev.', summarySource: 'agent', ...extra },
+      }), { params: mockParams });
+
+      it('a merged PR completes the task and is recorded on the result, not the worker', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+        githubPr(true);
+
+        const res = await complete({ alreadyShippedIn: 3851 });
+
+        expect(res.status).toBe(200);
+        expect(capturedTaskSet?.result?.alreadyShippedIn).toEqual({
+          prNumber: 3851, prUrl: 'https://github.com/org/repo/pull/3851',
+        });
+        expect(workerSets.some(u => u.prNumber === 3851 || u.prUrl)).toBe(false);
+      });
+
+      it('an unmerged PR still refuses, and says why', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+        githubPr(false);
+
+        const res = await complete({ alreadyShippedIn: 3851 });
+
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('#3851');
+        expect(data.error).toContain('not merged');
+      });
+
+      it('own commits on the branch need discardEdits too, so they are not stranded silently', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 1 });
+        githubPr(true);
+
+        const refused = await complete({ alreadyShippedIn: 3851 });
+        expect(refused.status).toBe(400);
+        expect((await refused.json()).error).toContain('discardEdits');
+
+        const accepted = await complete({ alreadyShippedIn: 3851, discardEdits: 'duplicate of tests already on dev' });
+        expect(accepted.status).toBe(200);
+        expect(capturedTaskSet?.result?.alreadyShippedIn?.prNumber).toBe(3851);
+      });
+
+      it('the plain pr_required refusal points at alreadyShippedIn', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+        githubPr(true);
+
+        const res = await complete({});
+
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toContain('alreadyShippedIn');
+      });
     });
 
     // C17: the gate's predicate was a single-column eq(artifacts.workerId, id).
@@ -8004,6 +8259,8 @@ describe('PATCH /api/workers/[id]', () => {
     function setupReviewerTaskCompletion(verdict: 'approve' | 'request-changes' | 'escalate', opts: {
       iteration?: number;
       maxIterations?: number;
+      /** A review round of a workflow-kernel delivery. */
+      kernel?: boolean;
     } = {}) {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
 
@@ -8045,12 +8302,16 @@ describe('PATCH /api/workers/[id]', () => {
             workerBranch: 'buildd/original-branch',
             iteration: opts.iteration ?? 0,
             maxIterations: opts.maxIterations ?? 3,
+            ...(opts.kernel ? { workflowRoundId: 'round-1' } : {}),
           },
+          ...(opts.kernel ? { deliveryId: 'delivery-1', deliveryRole: 'review' } : {}),
           missionId: 'mission-1',
           title: '[reviewer] PR #42: Original task',
           outputRequirement: 'none',
         });
       });
+      mockRecordReviewVerdict.mockReset();
+      mockRecordReviewVerdict.mockResolvedValue({ handled: false });
 
       // Original worker for approve path
       mockWorkersFindFirst
@@ -8124,6 +8385,146 @@ describe('PATCH /api/workers/[id]', () => {
         },
       });
     }
+
+    describe('workflow kernel round (one authority per delivery)', () => {
+      const current = { state: 'AWAITING_REVIEW', version: 4, head: 'h2', round: 2 };
+
+      it('S4: a verdict the kernel kept for audit posts no review, files no fix and starts no merge', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        mockRecordReviewVerdict.mockResolvedValue({ handled: true, result: { result: 'stale', reason: 'round_superseded', current }, toState: null });
+        mockGenericInsert.mockClear();
+
+        const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(mockRecordReviewVerdict).toHaveBeenCalledTimes(1);
+        expect(mockRecordReviewVerdict.mock.calls[0][0]).toMatchObject({
+          reviewerTask: { id: 'reviewer-task-1', deliveryId: 'delivery-1' }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'abc123',
+        });
+        expect(mockPostPrReview).not.toHaveBeenCalled();
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+        expect(mockLandPr).not.toHaveBeenCalled();
+        expect(missionNoteInserts.some((n) => n.type === 'reviewer_approved')).toBe(false);
+      });
+
+      it('S5: a replayed verdict (duplicate) acts on nothing', async () => {
+        setupReviewerTaskCompletion('request-changes', { kernel: true });
+        mockRecordReviewVerdict.mockResolvedValue({ handled: true, result: { result: 'duplicate', transitionId: 't1', reason: 'idempotency_key_seen', current }, toState: null });
+        mockGenericInsert.mockClear();
+        await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+        expect(mockPostPrReview).not.toHaveBeenCalled();
+        expect(mockGenericInsert.mock.calls.some((c) => c[0] === 'tasks')).toBe(false);
+        expect(mockEscalateReviewerExhaustion).not.toHaveBeenCalled();
+      });
+
+      it('request-changes the kernel applied: the fix is its effect, never the legacy insert', async () => {
+        setupReviewerTaskCompletion('request-changes', { kernel: true });
+        mockRecordReviewVerdict.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't1', deliveryId: 'delivery-1', version: 5, decision: { toState: 'CHANGES_REQUESTED' } }, toState: 'CHANGES_REQUESTED' });
+        mockGenericInsert.mockClear();
+        await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+        expect(mockRecordReviewVerdict.mock.calls[0][0]).toMatchObject({ verdict: 'request-changes', effectiveVerdict: 'request-changes' });
+        expect(mockGenericInsert.mock.calls.some((c) => c[0] === 'tasks')).toBe(false);
+        expect(mockPostPrReview).not.toHaveBeenCalled();
+        expect(mockEscalateReviewerExhaustion).not.toHaveBeenCalled();
+        // The audit note still records the decision.
+        expect(missionNoteInserts.some((n) => n.type === 'reviewer_request_changes')).toBe(true);
+      });
+
+      it('approve the kernel applied: the landing doors still run (landing is legacy until Slice C), the GitHub review is the kernel effect', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        mockRecordReviewVerdict.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't1', deliveryId: 'delivery-1', version: 5, decision: { toState: 'APPROVED' } }, toState: 'APPROVED' });
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+        expect(mockPostPrReview).not.toHaveBeenCalled();
+        expect(mockLandPr.mock.calls.length + mockTryAutoMergeWorkerPr.mock.calls.length).toBeGreaterThan(0);
+      });
+
+      it('a delivery released to legacy by the kill switch falls back to the legacy verdict path', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        mockRecordReviewVerdict.mockResolvedValue({ handled: false });
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+        expect(mockPostPrReview).toHaveBeenCalledTimes(1);
+      });
+
+      // Task 7313de90: a reviewer contract failure on a kernel round is T27, never the
+      // prose fallback, the legacy same-task requeue, or the legacy escalation.
+      describe('contract failure on a kernel round', () => {
+        const proseRequest = (summary: string) => createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed', summary },
+        });
+        function setupKernelContractFailure(extraCtx: Record<string, unknown> = {}) {
+          setupReviewerTaskCompletion('approve', { kernel: true });
+          mockTasksFindFirst.mockImplementation((opts_?: any) => {
+            if (opts_?.columns?.status && Object.keys(opts_.columns).length === 1) return Promise.resolve({ status: 'pending' });
+            return Promise.resolve({
+              id: 'reviewer-task-1', category: 'review',
+              context: {
+                reviewerFor: 'original-task-1', prNumber: 42, prUrl: 'https://github.com/org/repo/pull/42', headSha: 'abc123',
+                repoFullName: 'org/repo', installationId: 5000, workerBranch: 'buildd/original-branch', iteration: 0, maxIterations: 3,
+                workflowRoundId: 'round-1', ...extraCtx,
+              },
+              deliveryId: 'delivery-1', deliveryRole: 'review',
+              missionId: 'mission-1', title: '[reviewer] PR #42: Original task', outputRequirement: 'none',
+            });
+          });
+          mockIsKernelReviewRound.mockReset();
+          mockIsKernelReviewRound.mockResolvedValue(true);
+          mockWorkflowAttemptEnded.mockReset();
+          mockWorkflowAttemptEnded.mockResolvedValue({ handled: true });
+          const taskSetCalls: any[] = [];
+          mockTasksUpdate.mockReturnValue({
+            set: mock((updates: any) => { taskSetCalls.push(updates); return { where: mock(() => Promise.resolve()) }; }),
+          });
+          return taskSetCalls;
+        }
+        afterEach(() => { mockIsKernelReviewRound.mockReset(); mockIsKernelReviewRound.mockResolvedValue(false); });
+
+        it('a prose approve is ReviewRoundFailed(prose_verdict): no T6, no legacy requeue, no legacy escalation', async () => {
+          const taskSetCalls = setupKernelContractFailure();
+          const res = await PATCH(proseRequest('LGTM, approve. The change is correct and well tested.'), { params: mockParams });
+          expect(res.status).toBe(200);
+          expect(mockRecordReviewVerdict).not.toHaveBeenCalled();
+          expect(mockEscalateReviewContractFailure).not.toHaveBeenCalled();
+          expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+          const failing = taskSetCalls.find((u: any) => u.status === 'failed');
+          expect((failing?.result as any)?.errorType).toBe('review_contract_violation');
+          expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+          expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ status: 'failed', reviewFailure: 'prose_verdict', task: { deliveryId: 'delivery-1', deliveryRole: 'review' } });
+          expect(missionNoteInserts.some((n) => n.type === 'reviewer_escalated')).toBe(false);
+        });
+
+        it('a prose request-changes dispatches no fix: the verdict is never synthesized', async () => {
+          setupKernelContractFailure();
+          mockGenericInsert.mockClear();
+          await PATCH(proseRequest('Request changes: the handler is missing error handling.'), { params: mockParams });
+          expect(mockRecordReviewVerdict).not.toHaveBeenCalled();
+          expect(mockGenericInsert.mock.calls.some((c) => c[0] === 'tasks')).toBe(false);
+          expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ reviewFailure: 'prose_verdict' });
+        });
+
+        it('no verdict at all, with the legacy contract retry already spent, is still T27 (no_verdict), never the legacy escalation', async () => {
+          const taskSetCalls = setupKernelContractFailure({ reviewContractRetryCount: 1 });
+          await PATCH(proseRequest("I'll pause here."), { params: mockParams });
+          expect(mockEscalateReviewContractFailure).not.toHaveBeenCalled();
+          expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+          expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+          expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ status: 'failed', reviewFailure: 'no_verdict' });
+        });
+
+        it('a delivery released to legacy keeps the legacy contract handling', async () => {
+          const taskSetCalls = setupKernelContractFailure();
+          mockIsKernelReviewRound.mockResolvedValue(false);
+          await PATCH(proseRequest("I'll pause here."), { params: mockParams });
+          expect(taskSetCalls.find((u: any) => u.status === 'pending')?.context?.reviewContractRetryCount).toBe(1);
+        });
+      });
+
+      it('a legacy reviewer task (no delivery: open at cutover) never reaches the kernel', async () => {
+        setupReviewerTaskCompletion('approve');
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+        expect(mockRecordReviewVerdict).not.toHaveBeenCalled();
+        expect(mockPostPrReview).toHaveBeenCalledTimes(1);
+      });
+    });
 
     it('approve: re-reads the PR file list at verdict time and passes it to the gate', async () => {
       // Pre-flight runs at most once, on the webhook's `opened` action. A
@@ -15102,7 +15503,8 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
       body: { status: 'running', touchedPaths: paths501 },
     });
     await PATCH(req, { params: mockParams });
-    await new Promise(r => setTimeout(r, 0));
+    // One advisory per task: the ledger coalesces on the task key (a read, then the insert).
+    await new Promise(r => setTimeout(r, 20));
 
     // The diagnostic sample is bounded…
     expect(capturedSet?.observedTouches).toBeDefined();
@@ -15439,7 +15841,7 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
       },
     });
     await PATCH(req, { params: mockParams });
-    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 20));
 
     // 499 stored + new-a fills the sample; new-b/new-c are past it and leased anyway.
     const offered = mockClaimObservedPaths.mock.calls.at(-1)![2] as string[];

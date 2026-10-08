@@ -767,6 +767,29 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(capturedUpdates.gitConfig).toMatchObject({ runnerSizeDerived: null });
   });
 
+  // Early release is a workspace opt-in (knowledge-base: buildd/design/early-release.md).
+  it('accepts every gitConfig.earlyRelease mode and null to clear', async () => {
+    for (const value of [{ mode: 'off' }, { mode: 'rule_only' }, { mode: 'rule_and_jev' }, null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { earlyRelease: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, earlyRelease: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.earlyRelease shape or mode (returns 400)', async () => {
+    for (const value of ['rule_only', true, { mode: 'on' }, { mode: 'rule_only', extra: 1 }]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { earlyRelease: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/earlyRelease/);
+    }
+  });
+
   it('rejects an unknown gitConfig.pathClaimEnforcement value (returns 400)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });

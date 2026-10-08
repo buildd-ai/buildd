@@ -266,6 +266,23 @@ describe('a refused completion is reported as a refusal', () => {
     });
   });
 
+  // S30 (workflow-state-kernel.md §6.6): an output-gate refusal is a hand-off
+  // failure after work. The report says the work is unproven (not on GitHub)
+  // and carries the local head and commit count, so the kernel can decide
+  // AWAITING_PUSH vs a requeue instead of reading it as a plain failure.
+  test('an output-gate refusal reports outcome=unproven with the local head and commit count', async () => {
+    mockMessages = busySession();
+    refuseCompletionWith(gateRefusal('Task has 2 commit(s) on branch but no pull request or artifact.'));
+
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-refusal-s30');
+
+    const terminal = terminalCall()!;
+    expect(terminal.payload.outcome).toBe('unproven');
+    expect(terminal.payload).toHaveProperty('localHeadSha');
+    expect(typeof terminal.payload.commitCount).toBe('number');
+  });
+
   test('the persisted error is the server\'s own message, not the stringified body', async () => {
     mockMessages = busySession();
     refuseCompletionWith(gateRefusal());
@@ -328,6 +345,8 @@ describe('a refused completion is reported as a refusal', () => {
     expect(terminal.payload.refusal.status).toBe(401);
     expect(terminal.payload.refusal.gate).toBeUndefined();
     expect(terminal.payload.error).toBe('Runner credential rejected');
+    // A refusal of the request says nothing about the work: no hand-off outcome.
+    expect(terminal.payload.outcome).toBeUndefined();
   });
 
   // Unchanged-behaviour guard: an ordinary crash must keep taking the

@@ -322,6 +322,19 @@ export function standingOf(c: Pick<VisualReviewCell, 'fixCheck' | 'current'>): V
 /** The cell's standing: the server's, else derived the same way for a model that predates the field. */
 export const cellStanding = (c: Pick<VisualReviewCell, 'fixCheck' | 'current' | 'standing'>): VisualReviewStanding => c.standing ?? standingOf(c);
 
+/** A cell that waits on a person: the deck's queue membership. */
+export const isToReview = (c: Pick<VisualReviewCell, 'fixCheck' | 'current' | 'standing'>): boolean => cellStanding(c) === 'to_review';
+
+/**
+ * The one "screens to review" count: every cell waiting on a person (an
+ * unsure shot, a merged fix's new screenshot, an issue nobody is fixing),
+ * less any `decided` this session. The board's Needs you number and caption,
+ * the Ask's button and the deck header all read this, so they never disagree.
+ */
+export function screensToReview(m: Pick<VisualReviewModel, 'cells'>, decided?: ReadonlySet<string>): number {
+  return m.cells.filter(c => !decided?.has(c.key) && isToReview(c)).length;
+}
+
 export function markerOf(review: HumanShotReview | null, fixCheck?: VisualReviewFixCheck | null): VisualReviewMarker {
   if (fixCheck?.state === 'awaiting_capture') return 'fix_merged';
   if (!review) return 'awaiting';

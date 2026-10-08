@@ -420,6 +420,14 @@ export interface SetupWorktreeResult {
     reason: 'default_branch' | 'checked_out' | 'mission_branch';
     holder?: string;
   };
+  /**
+   * Set when `base` is more than 10 commits behind `origin/<defaultBranch>` at
+   * setup time. Previously `console.warn`-only (a line nobody but someone
+   * tailing runner logs would ever see) — returned now so the caller can
+   * surface it the same way it already surfaces `fallback`: an appended error
+   * trace on the worker, visible on the dashboard and to `get_error_traces`.
+   */
+  staleBase?: { ref: string; defaultBranch: string; commitsBehind: number };
 }
 
 /**
@@ -820,6 +828,7 @@ export async function setupWorktree(
     // Non-blocking and advisory, deliberately: it never changes the base, never
     // fails setup, and the log line names the ref it measured so a wrong-tree
     // measurement is visible next time instead of inferred.
+    let staleBase: SetupWorktreeResult['staleBase'];
     try {
       const behindStr = execSync(
         `git rev-list --count "${base}..origin/${defaultBranch}"`,
@@ -833,6 +842,7 @@ export async function setupWorktree(
           `Consider running: git fetch origin && git rebase origin/${defaultBranch} before pushing. ` +
           `Past CI retry chains were caused by this kind of staleness.`,
         );
+        staleBase = { ref: base, defaultBranch, commitsBehind };
       }
     } catch {
       // Non-fatal: git rev-list can fail for repos with no remote or when the
@@ -1197,6 +1207,7 @@ export async function setupWorktree(
       install,
       ...(fallback ? { fallback } : {}),
       ...(sharedBranch ? { sharedBranch } : {}),
+      ...(staleBase ? { staleBase } : {}),
     };
   } catch (err) {
     console.error(`[Worker ${workerId}] Failed to set up worktree:`, err instanceof Error ? err.message : err);

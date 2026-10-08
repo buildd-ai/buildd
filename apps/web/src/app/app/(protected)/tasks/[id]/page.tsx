@@ -1,4 +1,5 @@
 import { Suspense } from 'react';
+import { after } from 'next/server';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
@@ -22,6 +23,9 @@ import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { resolvePrDisplayState } from '@/lib/pr-presentation';
+import type { DeliveryPillState } from './TaskSidePanel';
 import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
 
@@ -74,7 +78,7 @@ import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { getTeamPermissionOverrides } from '@/lib/permissions';
 import TaskOverflowMenu from './TaskOverflowMenu';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
-import { missionContextBarFor, type MissionContextBarData } from './mission-context-bar';
+import { missionContextBarFor, missionContextDeliveryTaskIds, type MissionContextBarData } from './mission-context-bar';
 import { truncateExcerpt } from './error-excerpt';
 import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, isMeaningfulPlan, partitionChildTasks, selectExecutionPlan } from './execution-plan';
 import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
@@ -273,13 +277,20 @@ export default async function TaskDetailPage({
   const authFailure = task.status === 'failed'
     ? explainProviderAuthFailure(taskWorkers[0]?.error ?? null, taskBackend)
     : null;
+  // S35: the mission's failed deliverables read through the kernel, as its card does.
+  const missionContextDeliveryViews = missionContextRow
+    ? await getDeliveryViewsForTasks(missionContextDeliveryTaskIds(missionContextRow as unknown as MissionCardRow))
+    : null;
   const missionContextBar: MissionContextBarData | null = missionContextBarFor(
     missionContextRow as unknown as MissionCardRow | null,
     task.id,
+    missionContextDeliveryViews,
   );
 
-  // Read-through refresh: if the latest worker is completed with an open PR,
-  // check GitHub in case the merged webhook was missed.
+  // Read-through PR fact import: if the latest worker is completed with an
+  // open PR, check GitHub in case the merged webhook was missed. Enqueued after
+  // the response, never written during the render (spec workflow-state-kernel
+  // §11): this render shows what is stored, the next one what the import found.
   if (task.status === 'completed' && task.workspaceId) {
     const latestWorker = taskWorkers[0];
     if (latestWorker?.prNumber && !latestWorker?.mergedAt && latestWorker?.prUrl) {
@@ -290,19 +301,9 @@ export default async function TaskDetailPage({
       });
       const installId = wsWithInstall?.githubInstallation?.installationId;
       if (installId) {
-        const refreshed = await refreshWorkerMergeStateIfStale(
-          { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl },
-          installId,
-        );
-        if (refreshed) {
-          const updatedWorkers = await db.query.workers.findMany({
-            where: eq(workers.taskId, id),
-            orderBy: desc(workers.createdAt),
-            // Must match the shape above: these rows replace the ones there.
-            with: { account: { columns: { name: true, authType: true } } },
-          });
-          taskWorkers.splice(0, taskWorkers.length, ...updatedWorkers);
-        }
+        const stale = { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl };
+        after(() => refreshWorkerMergeStateIfStale(stale, installId).catch((err) =>
+          console.error('[task-page] PR fact import failed (non-fatal):', err)));
       }
     }
   }
@@ -618,6 +619,14 @@ export default async function TaskDetailPage({
 
   const openQuestionCount = openQuestionRows.filter(n => isOpenQuestionNote(n, task.status, activeWorker)).length;
 
+  // A kernel-owned delivery's header reads the kernel's DeliveryView, not the
+  // raw task/worker columns below (workflow-state-kernel §17.5). Legacy-owned
+  // or PR-less tasks get null and keep today's status.
+  const deliveryView = (await getDeliveryViewsForTasks([task.id])).get(task.id) ?? null;
+  const deliveryPill: DeliveryPillState | null = deliveryView
+    ? { headline: deliveryView.headline, owner: deliveryView.owner, needsYou: deliveryView.needsYou, stage: deliveryView.stage, detail: deliveryView.detail, prState: deliveryView.prState }
+    : null;
+
   // Derive canonical display status from task + active worker state.
   // If the worker is running, the chip shows "Running" not "Assigned".
   const isTerminal = isTerminalTaskStatus(task.status);
@@ -874,6 +883,8 @@ export default async function TaskDetailPage({
     openAttempt,
     openQuestion: openQuestionCount > 0,
     inRelease: !!shippedRelease,
+    // §17.5: a kernel-owned PR's state is the delivery's, not the columns'.
+    deliveryPrState: deliveryView?.prState ?? null,
   }));
   const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;
   // What each agent error means for the outcome. Every trace stays inspectable;
@@ -1338,6 +1349,7 @@ export default async function TaskDetailPage({
                   <HeaderStatusPill
                     status={displayStatus}
                     merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
+                    delivery={deliveryPill}
                   />
                 </span>
               )}
@@ -1764,6 +1776,7 @@ export default async function TaskDetailPage({
         {activeWorker && (
           <div className="mb-8 order-first" data-testid="task-active-worker">
             <RealTimeWorkerView
+              delivery={deliveryPill}
               taskStatus={task.status}
               taskId={task.id}
               initialWorker={{
@@ -1807,11 +1820,14 @@ export default async function TaskDetailPage({
             CI → retry → merge) and checks per commit (AC-4). Shown for an open
             PR and for one that landed. */}
         {(() => {
-          if (!prWorker?.prUrl || !prWorker.prNumber || prWorker.prLifecycleStatus === 'closed') return null;
+          if (!prWorker?.prUrl || !prWorker.prNumber) return null;
+          const prState = resolvePrDisplayState({ delivery: deliveryView, prLifecycleStatus: prWorker.prLifecycleStatus, mergedAt: prWorker.mergedAt });
+          if (prState === 'closed') return null;
           const storedPrFacts = {
             prUrl: prWorker.prUrl,
             prNumber: prWorker.prNumber,
             prLifecycleStatus: prWorker.mergedAt ? 'merged' : prWorker.prLifecycleStatus,
+            prState,
             linesAdded: prWorker.linesAdded,
             linesRemoved: prWorker.linesRemoved,
             filesChanged: prWorker.filesChanged,

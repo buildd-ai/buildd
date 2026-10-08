@@ -21,6 +21,7 @@ import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
+import { recordPrFact } from '@buildd/core/pr-facts';
 import { escalateConflictExhaustion } from '@/lib/auto-merge';
 import { reconcileSubjectEvent } from '@/lib/supersession';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
@@ -31,11 +32,31 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landing';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { latestRunPerName } from '@/lib/auto-merge-bound';
+import { kernelLandingView, landThroughKernel, type KernelLanding } from '@/lib/workflow/seam';
 
 /**
  * The dashboard's answer when the landing function did not merge. A refresh in
  * flight is accepted work (202); everything else is a refusal the card shows.
  */
+/**
+ * The kernel's answer when it did not merge a kernel-owned PR (T15/T16). A
+ * stale screen is a 409 with the delivery as it stands now (§7.2, S20).
+ */
+function kernelLandingRefusal(k: KernelLanding): NextResponse {
+  switch (k.outcome) {
+    case 'stale':
+      return NextResponse.json({ error: k.message, stale: true, reason: k.reason, current: k.current }, { status: 409 });
+    case 'behind':
+      return NextResponse.json({ ok: false, merged: false, branchUpdated: true, message: 'The branch was behind its base and is being updated. It merges when CI is green on the new head.', current: k.current }, { status: 202 });
+    case 'landing':
+      return NextResponse.json({ ok: false, merged: false, landing: true, message: k.message, current: k.current }, { status: 202 });
+    case 'conflict':
+      return NextResponse.json({ error: `PR has merge conflicts: ${k.message}`, conflictRetryDispatched: true, mergeConflict: true, current: k.current }, { status: 409 });
+    default:
+      return NextResponse.json({ error: k.message, kernel: { outcome: k.outcome, reason: k.reason }, current: k.current }, { status: 409 });
+  }
+}
+
 function dashboardLandingRefusal(outcome: Exclude<LandingOutcome, { kind: 'merged' }>): NextResponse {
   switch (outcome.kind) {
     case 'updating_branch':
@@ -105,6 +126,9 @@ export async function POST(
   let sizeOverride = false;
   let freshnessOverride = false;
   let overrideEscalationReason: string | null = null;
+  // The workflow-kernel delivery version the card was rendered from (§7.2): a
+  // stale one is refused with the current view before anything acts.
+  let expectedVersion: number | undefined;
   // Set by the legacy review gate when it blocked and `override` bypassed it.
   let reviewGateReason: string | null = null;
   try {
@@ -115,6 +139,9 @@ export async function POST(
     if (body?.overrides && typeof body.overrides === 'object') {
       sizeOverride = body.overrides.size === true;
       freshnessOverride = body.overrides.freshness === true;
+    }
+    if (typeof body?.version === 'number' && Number.isInteger(body.version)) {
+      expectedVersion = body.version;
     }
     if (body?.override === true || body?.overrides?.verdict === true) {
       override = true;
@@ -241,6 +268,20 @@ export async function POST(
     `[pr-merge] merging PR #${prNumber} — worker=${worker.id} workspace=${worker.workspaceId} repo=${repoFullName} installation=${installationId}`,
   );
 
+  // A kernel-owned PR (workflow-state-kernel §14 Slice C): the kernel merges it
+  // and owns the post-merge work; this route keeps its rails. A person acting
+  // on a stale view is told so, with the current one, before any rail acts.
+  const kernelView = await kernelLandingView(worker.workspaceId, repoFullName, prNumber);
+  if (kernelView && expectedVersion !== undefined && kernelView.current.version !== expectedVersion) {
+    return NextResponse.json({
+      error: `This PR changed since the card was loaded (version ${expectedVersion}, now ${kernelView.current.version}); nothing was merged. Reload and try again.`,
+      stale: true,
+      reason: 'version_moved',
+      current: kernelView.current,
+    }, { status: 409 });
+  }
+  const kernelOwned = !!kernelView;
+
   // Mission-PR branch-lifecycle gate (P3) — same rule the other merge paths
   // enforce: refuse to merge the mission PR while a sibling task PR based on
   // the integration branch is still open, since merging deletes that branch.
@@ -253,14 +294,15 @@ export async function POST(
   // success response, or a live re-check after an indeterminate one below.
   // Every side effect after the PUT itself lives here so both paths agree.
   const finalizeSuccessfulMerge = async (opts: { missionFinalized?: boolean } = {}) => {
-    await db
-      .update(workers)
-      .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
-      .where(eq(workers.id, worker.id));
-
-    // landPr finalizes the mission PR itself when it merged.
-    if (!opts.missionFinalized) {
-      await finalizeMissionPrMerge(worker.task ?? null, installationId, repoFullName);
+    // A legacy PR's merge is recorded here, through the fact funnel (terminal
+    // wins). A kernel-owned PR's merge, its stamp and everything it owes are the
+    // kernel's post-merge effects (PrMerged from a live read), never this door's.
+    if (!kernelOwned) {
+      await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
+      // landPr finalizes the mission PR itself when it merged.
+      if (!opts.missionFinalized) {
+        await finalizeMissionPrMerge(worker.task ?? null, installationId, repoFullName);
+      }
     }
 
     // "Merge anyway" — record the override ONLY now that the merge actually
@@ -308,8 +350,10 @@ export async function POST(
       taskId: worker.taskId,
     });
 
-    // Unblock tasks that depend on this task (mergedAt now set — gate is clear)
-    if (worker.taskId) {
+    // Unblock tasks that depend on this task (mergedAt now set — gate is clear).
+    // A kernel-owned PR's dependents, cancellations and mission unblocking ran
+    // as its post-merge effects.
+    if (worker.taskId && !kernelOwned) {
       checkDependsOnResolved(worker.taskId).catch((e: unknown) =>
         console.error(`[pr-merge] checkDependsOnResolved failed for task ${worker.taskId}:`, e)
       );
@@ -329,7 +373,7 @@ export async function POST(
 
     // Unblock dependent missions if this task belonged to one
     const missionId = (worker.task as any)?.missionId;
-    if (missionId) {
+    if (missionId && !kernelOwned) {
       checkAndUnblockDependentMissions(missionId, 'merged').catch((e: unknown) =>
         console.error(`[pr-merge] unblock failed for mission ${missionId}:`, e)
       );
@@ -397,6 +441,7 @@ export async function POST(
       owner: { taskId: worker.taskId ?? null, workerId: worker.id },
       releaseConfig: workspace.releaseConfig ?? null,
       gitConfig: workspace.gitConfig ?? null,
+      ...(expectedVersion !== undefined ? { expectedVersion } : {}),
     });
     if (landingMode === 'enforce') {
       return outcome.kind === 'merged'
@@ -561,14 +606,26 @@ export async function POST(
     );
   }
 
-  // Perform the merge
-  const slotted = await mergeInSurfaceSlot(surfaceOrder, () =>
-    mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha),
-  );
+  // Perform the merge: the kernel's for a kernel-owned PR, GitHub's directly otherwise.
+  const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
+    const kernel = kernelOwned
+      ? await landThroughKernel({
+          workspaceId: worker.workspaceId, installationId, repoFullName, prNumber, headSha: liveHeadSha!,
+          door: 'dashboard', actor: `human:${user.id}`, mergeMethod: 'squash',
+          ...(override && reviewGateReason ? { override: { reason: overrideEscalationReason ?? reviewGateReason } } : {}),
+          ...(expectedVersion !== undefined ? { expectedVersion } : {}),
+        })
+      : null;
+    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha!) };
+  });
   if ('refused' in slotted) {
     return NextResponse.json({ error: `Merge deferred: ${slotted.refused}`, surfaceOrderBlocked: true }, { status: 409 });
   }
-  const result = slotted.result;
+  if (slotted.result.kernel) {
+    const k = slotted.result.kernel;
+    return k.merged ? finalizeSuccessfulMerge() : kernelLandingRefusal(k);
+  }
+  const result = slotted.result.legacy;
 
   if (!result.merged) {
     const rawMessage = result.message ?? '';

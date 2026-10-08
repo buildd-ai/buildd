@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { AgentModelDecision } from '@buildd/core/agent-endpoint';
 
-const { attachAgentEndpoints } = await import('./agent-endpoint-injection');
+const { attachAgentEndpoints, attachCloudToolSearchHint } = await import('./agent-endpoint-injection');
 
 const endpoint = {
   kind: 'anthropic-compatible' as const, baseUrl: 'https://litellm.example.com', apiKey: 'sk-agent-example',
@@ -149,5 +149,34 @@ describe('attachAgentEndpoints', () => {
     expect(won.size).toBe(0);
     expect(resolve).not.toHaveBeenCalled();
     expect(JSON.stringify(workers)).toBe(before);
+  });
+});
+
+describe('attachCloudToolSearchHint', () => {
+  it('endpoint wins without tool search: marks the worker, never attaches the endpoint', async () => {
+    const { workers, tasks } = claim();
+    await attachCloudToolSearchHint(workers, tasks, 'acc-1', { resolve: async () => win });
+    expect(workers[0].toolSearchDisabled).toBe(true);
+    expect(workers[0].modelEndpoint).toBeUndefined();
+  });
+
+  it('endpoint wins with tool search: no marker', async () => {
+    const { workers, tasks } = claim();
+    await attachCloudToolSearchHint(workers, tasks, 'acc-1', { resolve: async () => winOpenAi });
+    expect(workers[0].toolSearchDisabled).toBeUndefined();
+  });
+
+  it('endpoint loses the ranking, no endpoint, or a Codex task: no marker', async () => {
+    for (const [decision, backend] of [[lose, undefined], [null, undefined], [win, 'codex']] as const) {
+      const { workers, tasks } = claim(backend);
+      await attachCloudToolSearchHint(workers, tasks, 'acc-1', { resolve: async () => decision });
+      expect(workers[0].toolSearchDisabled).toBeUndefined();
+    }
+  });
+
+  it('lookup failure writes nothing', async () => {
+    const { workers, tasks } = claim();
+    await attachCloudToolSearchHint(workers, tasks, 'acc-1', { resolve: async () => { throw new Error('boom'); } });
+    expect(workers[0].toolSearchDisabled).toBeUndefined();
   });
 });

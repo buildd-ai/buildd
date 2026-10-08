@@ -1,9 +1,10 @@
 import { isNull, or, sql, type SQL } from 'drizzle-orm';
 import { BYPASS_DEPS_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
-import { tasks, workers } from '@buildd/core/db/schema';
+import { tasks, workers, dependencyReleases } from '@buildd/core/db/schema';
 import {
   DEP_SATISFYING_STATUSES,
   DEP_UNBLOCKING_PR_LIFECYCLE,
+  EARLY_RELEASE_SATISFYING_DECISIONS,
 } from '@/lib/dep-gate-contract';
 
 /**
@@ -21,12 +22,19 @@ export { DEP_SATISFYING_STATUSES };
  * Returns a SQL condition that is TRUE when every id in `tasks.depends_on`
  * resolves to a satisfied dependency:
  *
- *   satisfied = status ∈ DEP_SATISFYING_STATUSES
- *               AND NOT (status = 'completed' AND the dep has an open/unmerged PR)
+ *   satisfied = (status ∈ DEP_SATISFYING_STATUSES
+ *                AND NOT (status = 'completed' AND the dep has an open/unmerged PR))
+ *               OR a non-revoked dependency_releases row names this task as the
+ *                  dependent and this dep as the upstream, with
+ *                  decision ∈ EARLY_RELEASE_SATISFYING_DECISIONS
  *
  * The open-PR guard only applies to `completed` deps — it prevents a downstream
  * task from starting while an upstream PR is still open (root cause of the
  * 6-overlapping-PR burst, PRs #1044-1049). `cancelled` deps carry no such guard.
+ *
+ * The early-release arm (docs/design/early-release.md "Data model") is purely
+ * additive — it OR's onto the status check, never replaces it, so a workspace
+ * that never writes a `dependency_releases` row sees zero behavior change.
  *
  * Callers should OR this with the bypass conditions (no deps, empty deps,
  * `context.bypassDepsGate = 'true'`).
@@ -49,7 +57,13 @@ export function dependencySatisfied(depId: SQL): SQL {
     sql`, `,
   );
 
-  return sql`EXISTS (
+  const releaseDecisions = sql.join(
+    EARLY_RELEASE_SATISFYING_DECISIONS.map((d) => sql`${d}`),
+    sql`, `,
+  );
+
+  return sql`(
+    EXISTS (
       SELECT 1 FROM ${tasks} t2
       WHERE t2.id = ${depId}
       AND t2.status IN (${satisfyingStatuses})
@@ -67,7 +81,18 @@ export function dependencySatisfied(depId: SQL): SQL {
           AND COALESCE(w.pr_lifecycle_status, '') != ${DEP_UNBLOCKING_PR_LIFECYCLE}
         )
       )
-    )`;
+    )
+    OR EXISTS (
+      -- Early release: a human/decision-model call to start this dependent
+      -- before the upstream's own status/PR state would otherwise allow it.
+      -- Revoked rows (revoked_at set) do not count — see docs/design/early-release.md.
+      SELECT 1 FROM ${dependencyReleases} dr
+      WHERE dr.dependent_task_id = ${tasks.id}
+      AND dr.upstream_task_id = ${depId}
+      AND dr.decision IN (${releaseDecisions})
+      AND dr.revoked_at IS NULL
+    )
+  )`;
 }
 
 /**

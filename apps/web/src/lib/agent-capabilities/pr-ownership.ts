@@ -19,11 +19,12 @@
  *                   branch (workers.runner === INTERACTIVE_RUNNER, see
  *                   interactive-session.ts), when no OTHER worker already
  *                   holds that exact name live or with a PR of its own
- *   cut_from_assigned_base the worker was assigned the mission integration
- *                   branch (context.baseBranch) itself, so it pushed to a task
- *                   branch cut from it; owned when that head carries no other
- *                   task's short id and no other worker holds it (same holder
- *                   rule as interactive_head)
+ *
+ * Having the right base proves nothing about a head. A mission task's head is
+ * its own generated branch (claim never hands out a pinned head equal to the
+ * task's base — see `pinnedHeadBranch` in @buildd/core/branch-names), so
+ * there is no "cut from the integration branch" basis: ownership is
+ * established at claim, not inferred at create_pr.
  *
  * A protected head (trunk, release branches, the repo's default branch) is
  * owned only as the worker's own branch: naming a release PR in a task does
@@ -52,8 +53,7 @@ export type PrOwnershipBasis =
   | 'stacked_base'
   | 'depends_on'
   | 'task_lineage'
-  | 'interactive_head'
-  | 'cut_from_assigned_base';
+  | 'interactive_head';
 
 export type PrOwnershipVerdict =
   | { owned: true; basis: PrOwnershipBasis }
@@ -102,21 +102,10 @@ export interface PrOwnershipInput {
   interactiveWorker?: boolean;
   /**
    * Other workers already recorded on `head` — only consulted for
-   * `interactive_head` and `cut_from_assigned_base`, when no cheaper basis
-   * matched (see `needsHeadHolders`). Fetch with one
+   * `interactive_head`, when no cheaper basis matched. Fetch with one
    * branch-equality query in the same workspace; omit otherwise.
    */
   otherHeadHolders?: readonly InteractiveHeadHolder[];
-}
-
-/**
- * Whether the caller must fetch `otherHeadHolders` for this worker: an
- * interactive session, or a worker assigned its task's mission base itself.
- */
-export function needsHeadHolders(interactiveWorker: boolean, workerBranch: string | null, task: PrOwnershipTask | null): boolean {
-  if (interactiveWorker) return true;
-  const ctx = task?.context && typeof task.context === 'object' ? task.context as Record<string, unknown> : {};
-  return !!workerBranch && ctx.baseBranch === workerBranch;
 }
 
 /** Ids of this task and its retry ancestors, nearest first. Injected so the pure part stays pure. */
@@ -152,11 +141,6 @@ function claimingHolder(
   selfTaskId: string,
 ): InteractiveHeadHolder | null {
   return holders.find(h => isLiveWorkerStatus(h.status) || (h.hasPr && h.taskId !== selfTaskId)) ?? null;
-}
-
-/** True when `branch` carries any 8-hex token, the short-id shape every naming strategy embeds. */
-function carriesAnyTaskId(branch: string): boolean {
-  return /(?:^|[/_-])[0-9a-f]{8}(?:[/_-]|$)/.test(branch.toLowerCase());
 }
 
 function headClaimed(head: string, holder: InteractiveHeadHolder): PrOwnershipVerdict {
@@ -197,18 +181,6 @@ export async function verifyPrOwnership(input: PrOwnershipInput, loadLineage: Lo
 
   const lineage = await loadLineage(task.id);
   if ([task.id, ...lineage].some(id => branchCarriesTaskId(head, id))) return { owned: true, basis: 'task_lineage' };
-
-  // The worker was assigned the mission integration branch itself as its own
-  // branch (workers.branch === context.baseBranch), so its real work lives on a
-  // task branch cut from it. That head is owned only when it is not visibly
-  // someone else's: it carries no other task's short id (this task's own ids
-  // matched above) and no other worker holds it live or with a PR of its own.
-  if (workerBranch && ctx.baseBranch === workerBranch) {
-    const holder = claimingHolder(input.otherHeadHolders ?? [], task.id);
-    if (!holder && !carriesAnyTaskId(head)) return { owned: true, basis: 'cut_from_assigned_base' };
-    if (holder) return headClaimed(head, holder);
-    return refuse('head_not_owned', head);
-  }
 
   if (input.interactiveWorker) {
     const holder = claimingHolder(input.otherHeadHolders ?? [], task.id);

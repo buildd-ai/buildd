@@ -396,6 +396,8 @@ export interface LocalWorker {
   modelEndpoint?: import('@buildd/shared').ClaimModelEndpoint;
   // The claim withheld a winning endpoint because this runner has a per-machine provider.
   modelEndpointIgnored?: boolean;
+  // Cloud claim: the endpoint behind egress lacks ToolSearch pass-through (ENABLE_TOOL_SEARCH=false).
+  toolSearchDisabled?: boolean;
   // Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
   // 'scoped': only the task-scoped token (agent-github-credentials.ts). A mode, not a secret.
   githubCredentials?: { mode: 'scoped' | 'runner' };
@@ -733,6 +735,10 @@ export interface WorkspaceGitConfig {
 
   // Auto-merge PRs via GitHub's auto-merge feature
   autoMergePR?: boolean;
+
+  // Policy checks before push / create_pr (workflow-state-kernel.md §6.10, S31).
+  // Only `commands` is the runner's; the server reads the rest.
+  preflight?: { commands?: string[] } | null;
 }
 
 // SSE event types
