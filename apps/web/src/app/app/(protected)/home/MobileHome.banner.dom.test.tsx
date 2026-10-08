@@ -48,7 +48,7 @@ function mount(tasks: WaitingTask[], questions: Parameters<typeof deriveHomeAtte
   act(() => root.render(
     <NeedsInputContext.Provider value={{ tasks, count: tasks.filter(t => !t.answerSent).length, alertPermission: 'unsupported', enableAlerts() {} }}>
       <NeedsInputBanner />
-      <MobileHome items={items} ask={null} live={0} capacity={1} mergedToday={0} inCi={0} shipped={[]} flight={[]} />
+      <MobileHome items={items} ask={null} counts={{ openMissions: 0, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 1 } }} milestones={[]} quietMissions={0} shipped={[]} />
     </NeedsInputContext.Provider>,
   ));
 }
