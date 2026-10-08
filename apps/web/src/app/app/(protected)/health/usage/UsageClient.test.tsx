@@ -9,9 +9,8 @@ mock.module('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
-import { UsageClient } from './UsageClient';
+import { UsageClient, UsageInternals } from './UsageClient';
 import { computeUsageStats, type UsageWorkerRow } from '@/lib/usage-stats';
-import type { CbmHealthSummary } from '@/lib/cbm-insight';
 import {
   buildActionBreakdownPanel,
   buildUsageDrilldownView,
@@ -31,7 +30,7 @@ const worker = (over: Partial<UsageWorkerRow> & { counts?: Record<string, number
     roleSlug: 'builder',
     inputTokens: 120_000,
     outputTokens: 4_000,
-    // Seat/OAuth auth: no cost is reported at all.
+    // No cost recorded for this worker.
     costUsd: null,
     turns: 12,
     resultMeta: { toolCounts: counts ?? { Read: 10, Grep: 3, Bash: 8 } } as any,
@@ -40,40 +39,6 @@ const worker = (over: Partial<UsageWorkerRow> & { counts?: Record<string, number
   };
 };
 
-const cbm = (over: Partial<CbmHealthSummary> = {}): CbmHealthSummary => ({
-  tracked: 20,
-  activeCount: 16,
-  adoptionRate: 0.5,
-  totalGraphCalls: 40,
-  zeroCallTasks: 8,
-  state: 'partial',
-  warmStartRate: 1,
-  warmStarts: 16,
-  indexAttempted: 0,
-  indexFailed: 0,
-  indexFailureRate: null,
-  topIndexFailReason: null,
-  eligibleFallbackRate: 0,
-  byDesignSkips: {},
-  binaryAbsent: 0,
-  mountUnavailable: 0,
-  avgFileAccessOnActive: 12,
-  avgGraphCallsOnActive: 2.5,
-  inputTokenDeltaPct: null,
-  fileAccessDeltaPct: null,
-  deltasSuppressedBecause: null,
-  topTools: [],
-  tools: {
-    sessions: 16,
-    totalCalls: 40,
-    tools: [
-      { tool: 'search_graph', calls: 30, sessions: 8, share: 0.75 },
-      { tool: 'trace_path', calls: 10, sessions: 4, share: 0.25 },
-    ],
-  },
-  ...over,
-});
-
 const rows = (n: number, counts?: Record<string, number>) =>
   Array.from({ length: n }, (_, i) => worker({ workerId: `w${i}`, taskId: `t-${i}`, counts }));
 
@@ -81,7 +46,6 @@ const view = (over: {
   window?: string | null;
   rows?: UsageWorkerRow[];
   previous?: PreviousPeriod | null;
-  cbm?: CbmHealthSummary | null;
   truncated?: boolean;
   actions?: Parameters<typeof buildUsageDrilldownView>[0]['actions'];
 } = {}) =>
@@ -95,7 +59,6 @@ const view = (over: {
       truncated: over.truncated ?? false,
       completeSince: '2026-08-27T00:00:00.000Z',
     },
-    cbm: over.cbm === undefined ? cbm() : over.cbm,
     actions: over.actions === undefined ? actionPanel() : over.actions,
   });
 
@@ -114,13 +77,35 @@ const actionPanel = (over: Partial<Parameters<typeof buildActionBreakdownPanel>[
     ...over,
   });
 
-const render = (over: Parameters<typeof view>[0] = {}, wsFilter: string | null = null) =>
-  renderToStaticMarkup(
-    <UsageClient
-      view={view(over)}
-      wsFilter={wsFilter}
-    />,
+/**
+ * Usage (per-task cost) and, below it, the internals that render on Health →
+ * Operator. Rendered together so every panel test still reads one page.
+ */
+const render = (over: Parameters<typeof view>[0] = {}, wsFilter: string | null = null) => {
+  const v = view(over);
+  return renderToStaticMarkup(
+    <>
+      <UsageClient view={v} wsFilter={wsFilter} />
+      <UsageInternals view={v} />
+    </>,
   );
+};
+
+describe('UsageClient — operator internals live elsewhere', () => {
+  it('Usage alone shows per-task cost but none of the internal panels', () => {
+    const html = renderToStaticMarkup(<UsageClient view={view()} wsFilter={null} />);
+    expect(html).toContain('data-testid="usage-section-per-task"');
+    for (const id of ['usage-section-code-nav', 'usage-section-shell', 'usage-internals']) {
+      expect(html).not.toContain(`data-testid="${id}"`);
+    }
+    expect(html).not.toContain('Shell (all uses)');
+    expect(html).not.toContain('buildd actions');
+  });
+
+  it('UsageInternals renders nothing for an empty window', () => {
+    expect(renderToStaticMarkup(<UsageInternals view={view({ rows: [] })} />)).toBe('');
+  });
+});
 
 describe('UsageClient — header', () => {
   it('is task-keyed: the denominator counts tasks, folding a task’s attempts into one', () => {
@@ -131,7 +116,7 @@ describe('UsageClient — header', () => {
         worker({ workerId: 'c', taskId: 't-2' }),
       ],
     });
-    expect(html).toContain('over 2 tasks (7d)');
+    expect(html).toContain('2 tasks · last 7 days');
     expect(html).not.toContain('worker sessions (7d)');
   });
 
@@ -139,7 +124,7 @@ describe('UsageClient — header', () => {
     const html = render({ window: '24h' });
     expect(html).toContain('data-testid="usage-clamp-notice"');
     expect(html).toContain('24h is too thin for stable percentages here');
-    expect(html).toContain('over 8 tasks (7d)');
+    expect(html).toContain('8 tasks · last 7 days');
   });
 
   it('sends you back to Health at 24h, unclamped — the clamp does not follow you out', () => {
@@ -174,6 +159,29 @@ describe('UsageClient — per-task cost', () => {
     const html = render();
     expect(html).toContain('data-testid="usage-cost-proxy-note"');
     expect(html).toContain('input tokens / task');
+  });
+
+  it('does not blame an auth type when no cost was recorded', () => {
+    const html = render();
+    expect(html).not.toMatch(/seat|oauth/i);
+  });
+
+  // docs/specs/real-and-virtual-cost.md "Reporting".
+  it('shows real cost and plan usage at list price as separate figures, and a labelled combined total', () => {
+    const html = render({ rows: [
+      worker({ workerId: 'a', taskId: 'a', costUsd: '2', costBasis: 'real' }),
+      worker({ workerId: 'b', taskId: 'b', costUsd: '5', costBasis: 'virtual', runner: 'mcp' }),
+    ] });
+    expect(html).toContain('data-testid="usage-cost-basis"');
+    expect(html).toContain('Real cost');
+    expect(html).toContain('Plan usage at list price');
+    expect(html).toContain('Combined');
+    expect(html).not.toContain('Basis not reported');
+  });
+
+  it('names cost that arrived without a basis on its own line', () => {
+    const html = render({ rows: [worker({ costUsd: '1', costBasis: null })] });
+    expect(html).toContain('Basis not reported');
   });
 
   it('drops the proxy entirely once cost is actually measured', () => {
@@ -247,33 +255,6 @@ describe('UsageClient — code navigation vs shell', () => {
     });
     const html = render({ rows: [...rows(3), derived] });
     expect(html).toContain('≥3/4 tasks measured exactly');
-  });
-});
-
-describe('UsageClient — index adoption', () => {
-  it('labels the line in sessions and never in tasks', () => {
-    const html = render();
-    expect(html).toContain('Graph queried in 8 of 16 sessions where it was available (7d, completed sessions only)');
-    expect(html).toContain('Index adoption · 50% · 8/16 CBM-enabled sessions');
-  });
-
-  it('declares itself session-keyed on an otherwise task-keyed page', () => {
-    const html = render();
-    expect(html).toContain('data-testid="usage-adoption-session-keyed"');
-    expect(html).toContain('Session-keyed');
-  });
-
-  it('states the exclusions without requiring a hover', () => {
-    const html = render();
-    expect(html).toContain('data-testid="usage-adoption-caveat"');
-    expect(html).toContain('Failed workers are excluded from both sides');
-    expect(html).toContain('rather than counting as zero');
-  });
-
-  it('renders an em-dash with a reason when no session had the graph available', () => {
-    const html = render({ cbm: null });
-    expect(html).toContain('data-testid="usage-adoption-unavailable"');
-    expect(html).not.toContain('0% — ');
   });
 });
 
@@ -360,7 +341,7 @@ describe('UsageClient — shell buckets and search shapes', () => {
 
   it('breaks shell calls into every bucket, with share of shell', () => {
     const html = render({ rows: [classified(0), classified(1)] });
-    const shell = html.slice(html.indexOf('data-testid="usage-section-shell"'), html.indexOf('data-testid="usage-section-adoption"'));
+    const shell = html.slice(html.indexOf('data-testid="usage-section-shell"'), html.indexOf('data-testid="usage-section-actions"'));
     expect(shell).toContain('data-testid="usage-bash-buckets"');
     for (const b of ['code_search', 'file_find', 'test', 'build', 'gh', 'git', 'file_write', 'file_read', 'other']) {
       expect(shell).toContain(`>${b}<`);
@@ -383,7 +364,7 @@ describe('UsageClient — shell buckets and search shapes', () => {
       rows: [classified(0), classified(1)],
       previous: { stats: computeUsageStats([classified(0)], 'none'), truncated: false },
     });
-    const shell = html.slice(html.indexOf('data-testid="usage-section-shell"'), html.indexOf('data-testid="usage-section-adoption"'));
+    const shell = html.slice(html.indexOf('data-testid="usage-section-shell"'), html.indexOf('data-testid="usage-section-actions"'));
     expect(shell).toContain('across 2 of 2 tasks with an exact histogram');
     expect(shell).not.toContain('vs prev');
     expect(shell).not.toMatch(/[+-]\d+%/);
@@ -394,24 +375,6 @@ describe('UsageClient — shell buckets and search shapes', () => {
     expect(html).toContain('data-testid="usage-bash-buckets-empty"');
     expect(html).toContain('predates the command classifier');
     expect(html).not.toContain('data-testid="usage-bash-buckets"');
-  });
-});
-
-describe('UsageClient — codebase-graph tools', () => {
-  it('lists every graph tool beside the adoption line, over sessions', () => {
-    const html = render();
-    const graph = html.slice(html.indexOf('data-testid="usage-section-adoption"'));
-    expect(graph).toContain('data-testid="usage-cbm-tools"');
-    expect(graph).toContain('search_graph');
-    expect(graph).toContain('trace_path');
-    expect(graph).toContain('over 16 sessions');
-    // Session-keyed, so it never claims tasks.
-    const block = graph.slice(graph.indexOf('data-testid="usage-cbm-tools"'), graph.indexOf('data-testid="usage-section-actions"'));
-    expect(block).not.toContain('tasks');
-  });
-
-  it('renders no tool list when no session had the graph', () => {
-    expect(render({ cbm: null })).not.toContain('data-testid="usage-cbm-tools"');
   });
 });
 

@@ -128,18 +128,9 @@ but does not exist (see `timeline-mobile-rail.md` §10.3); nothing here needs it
 1. **component order** — components ordered by the earliest `createdAt` of any
    member (ties: smallest task id).
 2. **level** — ascending.
-3. **readiness class** — ascending, from this table:
-
-   | class | display states |
-   |---|---|
-   | 0 | `landed` |
-   | 1 | `review` |
-   | 2 | `running`, `fixing`, `waiting` |
-   | 3 | `ci_failed`, `failed` |
-   | 4 | `ready` |
-   | 5 | `blocked` |
-   | 6 | `queued` |
-
+3. ~~readiness class~~ — removed: no key reads runtime state, so a status
+   change never moves a cell and ‹ / › / arrow keys step to the adjacent
+   rendered cell.
 4. **phase index** — the stored `missionPhaseIndex`, nulls last.
 5. **`createdAt`** — ascending.
 6. **task id** — ascending (total order; two renders of one model are identical).
@@ -627,10 +618,12 @@ cell's tick slot, minimum 1px, at every n ≤ 64. At 4.1px a direct mark is a
 
 ## 9. Next open
 
-**Rule NX-1**: Next open cycles through **active** cells only, in strip order
-(§2.1), starting after the selection and wrapping. Held cells are skipped:
-there is nothing to do on a held task except look at its blockers, which the
-marks already show.
+**Rule NX-1**: Next open cycles through **open** cells only (active and not
+failed, `openIndices`), in strip order (§2.1), starting after the selection
+and wrapping. Held cells are skipped: there is nothing to do on a held task
+except look at its blockers, which the marks already show. Failed cells are
+skipped too: the header counts them apart (TONE-1), so the cycle must not
+visit a cell the count does not call open.
 
 Readiness decides membership (active vs held); topology decides sequence
 (strip order). The two are not alternatives: Next open uses both, and because
@@ -643,7 +636,9 @@ which counts held cells the button then visits; after this change the count
 and the cycle set are the same set.
 
 **Rule NX-3**: label states: `Next open · 06` / `Only open task · 06` /
-`All tasks landed` (unchanged) / **new** `Nothing open · 3 held` when a = 0
+`All tasks landed` (unchanged) / `Nothing open · 2 failed` when a = 0 and a
+cell has failed (it selects the leftmost failed cell) / **new**
+`Nothing open · 3 held` when a = 0, nothing failed
 and h > 0 — enabled, and it selects the leftmost held cell (whose blocker is
 off-strip or in a cycle; there is no other way for every non-landed cell to
 be held).

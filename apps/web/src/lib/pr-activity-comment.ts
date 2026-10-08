@@ -57,6 +57,7 @@ export const MAX_DETAIL_CHARS = 60;
 export const MAX_NOTE_CHARS = 1200;
 
 export type PrActivityKind =
+  | 'review_queued'
   | 'reviewing'
   | 'review_approved'
   | 'review_approved_awaiting_human'
@@ -77,7 +78,14 @@ export type PrActivityKind =
   | 'human_applied_recommendation'
   | 'human_override_merge'
   | 'merged'
-  | 'closed_unmerged';
+  | 'closed_unmerged'
+  // Kernel-rendered kinds (docs/specs/workflow-state-kernel.md §12.1).
+  | 'push_pending'
+  | 'push_undeliverable'
+  | 'composition_verified'
+  | 'composition_delta_approved'
+  | 'blocked_on_trunk'
+  | 'trunk_recovered';
 
 export interface PrActivityEntry {
   kind: PrActivityKind;
@@ -182,7 +190,19 @@ function fixTaskHeadline(e: { taskTitle?: string | null }): string | null {
  */
 function present(e: NormalizedEntry, story: Story): Rendered {
   switch (e.kind) {
+    case 'review_queued':
+      // Written when a reviewer task is filed. Nothing is running until a
+      // worker claims it — that claim writes `reviewing`.
+      return {
+        tone: 'waiting',
+        label: story.fix
+          ? story.fix.iteration != null ? `Re-review queued · after ${fixText(story.fix)}` : 'Re-review queued'
+          : 'Review queued',
+        status: 'waiting for a worker',
+      };
     case 'reviewing':
+      // Only ever written once a worker has CLAIMED the reviewer task
+      // (`announceReviewClaimed`), or by a comment that predates `review_queued`.
       return story.fix
         ? { tone: 'working', label: story.fix.iteration != null ? `Re-reviewing · after ${fixText(story.fix)}` : 'Re-reviewing' }
         : { tone: 'working', label: 'Reviewing' };
@@ -280,6 +300,21 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       return { tone: 'done', label: 'Merged' };
     case 'closed_unmerged':
       return { tone: 'ended', label: 'Closed without merging' };
+    case 'push_pending':
+      // A fix attempt ended but GitHub's head never moved: no review is owed yet.
+      return { tone: 'waiting', label: `${capitalize(fixText(hasIteration(e) ? e : story.fix))} not on GitHub yet`, status: 'waiting for the push' };
+    case 'push_undeliverable':
+      return { tone: 'human', label: 'Fix never reached GitHub · needs a human', noteLabel: 'Details' };
+    case 'composition_verified':
+      return { tone: 'done', label: 'Release composition verified', status: 'every change was reviewed at its own head' };
+    case 'composition_delta_approved':
+      // A delta round reviewed only the release-only paths; the rest rests on each change's own review.
+      return { tone: 'done', label: 'Release-only changes approved', status: 'this review covered only the new paths', noteLabel: 'Paths' };
+    case 'blocked_on_trunk':
+      // The base branch fails the same checks: one trunk fix runs, this PR's CI retries wait.
+      return { tone: 'waiting', label: 'Blocked on a red base branch', status: 'CI retries paused until the base is green' };
+    case 'trunk_recovered':
+      return { tone: 'done', label: 'Base branch green again', status: 'resuming' };
   }
 }
 
@@ -361,13 +396,29 @@ function rowGlyph(tone: Tone): string {
  * `timezone` is applied at render time and never stored in the state block, so
  * changing a team's zone re-stamps the comment on the next update.
  */
+/**
+ * A header computed from canonical state instead of the newest row: the
+ * kernel's render (§12.1 rule 4) passes it so the headline can never disagree
+ * with the delivery, whatever was recorded after a terminal state.
+ */
+export interface ActivityHeader {
+  headline: string;
+  tone: Tone;
+  status?: string;
+}
+
 export function renderPrActivityComment(
   entries: PrActivityEntry[],
   timezone: string = DEFAULT_TIMEZONE,
+  opts: { header?: ActivityHeader; stateBlock?: boolean } = {},
 ): string {
+  const withState = opts.stateBlock !== false;
+  const tail = (k: NormalizedEntry[]): string[] => (withState ? [stateBlock(k)] : []);
   const kept = entries.slice(-MAX_ACTIVITY_ENTRIES).map(normalize);
   if (kept.length === 0) {
-    return [ACTIVITY_COMMENT_MARKER, '**buildd** · no activity yet', stateBlock(kept)].join('\n');
+    const h = opts.header;
+    const line = h ? `**buildd** · ${h.tone === 'plain' || h.tone === 'working' ? '' : `${GLYPH[h.tone]} `}**${h.headline}**${h.status ? ` · ${h.status}` : ''}` : '**buildd** · no activity yet';
+    return [ACTIVITY_COMMENT_MARKER, line, ...tail(kept)].join('\n');
   }
 
   const start = kept[0].at;
@@ -389,7 +440,10 @@ export function renderPrActivityComment(
     }
   }
 
-  const { entry: current, p: currentP } = head!;
+  const { entry: current, p: rowP } = head!;
+  const currentP: Rendered = opts.header
+    ? { tone: opts.header.tone, label: opts.header.headline, status: opts.header.status }
+    : rowP;
   // Movement means "a worker is on this right now" — never a queued fix.
   const marker = currentP.tone === 'working'
     ? `<img src="${assetOrigin()}${SPINNER_PATH}" width="12" height="12" alt="working" align="absmiddle" />`
@@ -404,7 +458,7 @@ export function renderPrActivityComment(
     ...rows,
     '',
     `<sub>Started ${formatStamp(start, timezone)} · edited in place by [buildd](https://buildd.dev)</sub>`,
-    stateBlock(kept),
+    ...tail(kept),
   ].join('\n');
 }
 
@@ -415,12 +469,13 @@ function stateBlock(kept: NormalizedEntry[]): string {
 }
 
 const KNOWN_KINDS: ReadonlySet<string> = new Set<PrActivityKind>([
-  'reviewing', 'review_approved', 'review_approved_awaiting_human', 'review_changes_requested',
+  'review_queued', 'reviewing', 'review_approved', 'review_approved_awaiting_human', 'review_changes_requested',
   'review_escalated', 'review_failed', 'lede_corrected', 'human_review_required', 'ci_fixing',
   'migration_collision_fixing',
   'ci_exhausted', 'fix_started', 'fix_ended', 'fix_superseded_by_approval', 'changes_pushed',
   'review_superseded_by_merge', 'work_superseded',
   'human_applied_recommendation', 'human_override_merge', 'merged', 'closed_unmerged',
+  'push_pending', 'push_undeliverable', 'composition_verified', 'composition_delta_approved', 'blocked_on_trunk', 'trunk_recovered',
 ]);
 
 /** A webhook redelivery of the newest entry — same kind and the same facts. */
@@ -460,7 +515,30 @@ export function parsePrActivityState(body: string): PrActivityEntry[] {
 
 export type AppendResult =
   | { action: 'created' | 'updated' | 'unchanged'; commentId: number }
+  /** The PR is kernel-owned: the entry became a fact and the kernel's render writes the comment. */
+  | { action: 'diverted'; deliveryId: string }
   | { action: 'failed' };
+
+/**
+ * A kernel-owned PR's comment has one writer, the kernel's `render_activity`
+ * (docs/specs/workflow-state-kernel.md §12.1). Returns the delivery the entry
+ * was diverted to, or null when the PR is legacy-owned (or the lookup failed,
+ * which degrades to today's write rather than losing the entry).
+ */
+async function divertIfKernelOwned(p: { repoFullName: string; prNumber: number; entry: PrActivityEntry; workspaceId?: string | null }): Promise<string | null> {
+  try {
+    const { divertActivityNote } = await import('@/lib/workflow/pr-activity-effects');
+    const deliveryId = await divertActivityNote({ ...p, entry: normalize(p.entry) });
+    if (deliveryId) {
+      const { drainDelivery } = await import('@/lib/workflow/seam');
+      await drainDelivery(deliveryId).catch(() => null);
+    }
+    return deliveryId;
+  } catch (err) {
+    console.warn(`[pr-activity] kernel ownership check failed for ${p.repoFullName}#${p.prNumber}; writing the legacy comment:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
 
 async function getGithubApi() {
   const { githubApi } = await import('@/lib/github');
@@ -527,6 +605,8 @@ export async function appendPrActivity(params: {
   workspaceId?: string | null;
 }): Promise<AppendResult> {
   const { installationId, repoFullName, prNumber, entry, onlyIfPresent, workspaceId } = params;
+  const diverted = await divertIfKernelOwned({ repoFullName, prNumber, entry, workspaceId });
+  if (diverted) return { action: 'diverted', deliveryId: diverted };
   try {
     const githubApi = await getGithubApi();
     const timezone = await resolveCommentTimezone(workspaceId);

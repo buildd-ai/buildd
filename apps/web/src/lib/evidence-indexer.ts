@@ -155,9 +155,13 @@ function toUpsertChunks(c: EvidenceIndexCandidate, chunks: EvidenceChunk[]): Ups
   const { row } = c;
   const redact = createSecretRedactor([]);
   const redactedTitle = c.taskTitle ? redact(c.taskTitle).slice(0, 160) : null;
+  // Only task-run objects reach here (a Scout run's object is skipped in
+  // indexEvidenceObject), so the task triple is set; the fallbacks only narrow the type.
+  const taskId = row.taskId ?? '';
+  const rootTaskId = row.rootTaskId ?? taskId;
   const lineage = [
-    `task ${short(row.taskId)}`,
-    row.rootTaskId !== row.taskId ? `root ${short(row.rootTaskId)}` : null,
+    `task ${short(taskId)}`,
+    rootTaskId !== taskId ? `root ${short(rootTaskId)}` : null,
     row.prNumber ? `PR #${row.prNumber}` : null,
     redactedTitle ? `"${redactedTitle}"` : null,
   ].filter(Boolean).join(' · ');
@@ -176,7 +180,7 @@ function toUpsertChunks(c: EvidenceIndexCandidate, chunks: EvidenceChunk[]): Ups
       content: [header, labels, chunk.content].filter(Boolean).join('\n'),
       sourceType: EVIDENCE_SOURCE_TYPE,
       sourcePath: evidenceSourcePath(row.id),
-      sourceUrl: `/app/tasks/${row.taskId}`,
+      sourceUrl: `/app/tasks/${taskId}`,
       sourceTs: row.createdAt ? new Date(row.createdAt) : null,
       metadata: {
         evidenceId: row.id,
@@ -239,6 +243,14 @@ export async function indexEvidenceObject(
       // workspace's class is now: the object is never opened for indexing.
       return { outcome: 'skipped', chunks: 0 };
     }
+  }
+
+  if (row.scoutRunId) {
+    // A Scout run's command log is read with read_evidence, not searched: it
+    // has no task for a hit to link back to. Written `skipped`; this only
+    // holds the line if a row ever arrives queued.
+    await record({ indexState: 'skipped' });
+    return { outcome: 'skipped', chunks: 0 };
   }
 
   if (c.dataClass === 'sensitive') {

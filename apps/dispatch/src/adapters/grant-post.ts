@@ -1,5 +1,5 @@
-// POST a resolved payload to a grant. Shared by the http and
-// github-repository-dispatch adapters. Error messages are fixed strings:
+// POST a resolved payload to a grant, for the http adapter. Error messages
+// are fixed strings:
 // never the URL (it can carry a capability) and never a header.
 
 import type { ResolvedDeliver, FetchFn } from './types';

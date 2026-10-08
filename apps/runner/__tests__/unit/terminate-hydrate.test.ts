@@ -13,8 +13,10 @@
  * Run: bun test apps/runner/__tests__/unit/terminate-hydrate.test.ts
  */
 
-import { describe, test, expect, beforeEach, mock, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, mock, afterEach, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
@@ -101,13 +103,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -217,11 +219,16 @@ function successMessages(sessionId = 'sess-resumed') {
 describe('WorkerManager — terminate and hydrate (resume layers)', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
+  afterAll(() => {
+    cleanupTestWorkspace();
+  });
+
   afterEach(() => {
     manager?.destroy();
   });
 
   beforeEach(() => {
+    initTestWorkspace();
     queryCallCount = 0;
     lastQueryOpts = null;
     allQueryOpts = [];
@@ -709,7 +716,10 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       defaultQueryBehavior = { type: 'success', messages: successMessages() };
 
       await manager.sendMessage('w-th-1', 'One more thing');
-      await new Promise(r => setTimeout(r, 300));
+      // Poll rather than sleep a fixed time: loaded CI runners are slower than 300ms
+      for (let i = 0; i < 100 && statuses[statuses.length - 1] !== 'done'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       // Should have transitioned through working
       expect(statuses).toContain('working');
@@ -738,7 +748,9 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       ];
 
       await manager.sendMessage('w-th-1', 'Follow up');
-      await new Promise(r => setTimeout(r, 500));
+      for (let i = 0; i < 100 && statuses[statuses.length - 1] !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       expect(statuses).toContain('working');
       expect(statuses[statuses.length - 1]).toBe('error');

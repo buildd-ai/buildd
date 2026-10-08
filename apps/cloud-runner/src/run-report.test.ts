@@ -8,8 +8,12 @@ import {
   RUN_METRICS,
   RUN_PHASES,
   parseMetricLine,
+  parseWorktreeModeLine,
   parseRepoSourceLine,
   parseWarmUploadLine,
+  parseCacheSkippedLine,
+  CACHE_SKIPPED_LINE_PREFIX,
+  CACHE_SKIP_PARTS,
   WARM_UPLOAD_LINE_PREFIX,
   WARM_UPLOAD_SKIP_REASONS,
   recordMetric,
@@ -51,6 +55,7 @@ describe('phase line contract with apps/runner', () => {
       expect(parseMetricLine(runnerPhases.formatMetricLine(m, 4096))).toEqual({ metric: m, value: 4096 });
     }
     expect(parseRepoSourceLine(runnerPhases.formatRepoSourceLine('warm'))).toEqual({ source: 'warm' });
+    expect(parseRepoSourceLine(runnerPhases.formatRepoSourceLine('reuse'))).toEqual({ source: 'reuse' });
     for (const r of runnerPhases.REPO_FALLBACK_REASONS) {
       expect(parseRepoSourceLine(runnerPhases.formatRepoSourceLine('clone', r))).toEqual({ source: 'clone', reason: r });
     }
@@ -81,6 +86,75 @@ describe('warm upload skip line (a repo over the warm snapshot cap)', () => {
     expect(none.repo.warmUploadSkipReason).toBeNull();
     const hostile = assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { warmUpload: { skipped: 'sk-ant-leak' } } } as unknown as RunReportInput);
     expect(hostile.repo.warmUploadSkipReason).toBeNull();
+  });
+
+  test('a lease run that deferred its upload says so', () => {
+    expect(parseWarmUploadLine('BUILDD_WARM_UPLOAD=deferred')).toEqual({ deferred: true });
+    expect(parseWarmUploadLine('BUILDD_WARM_UPLOAD=deferred later')).toBeNull();
+    const r = assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { warmUpload: { deferred: true } } });
+    expect(r.repo.warmUploadDeferred).toBe(true);
+    expect(r.repo.warmUploadSkipReason).toBeNull();
+  });
+});
+
+describe('a reused container\'s seed on the report', () => {
+  test('what the fetch brought, and whether it was skipped; never the kept packs as clone bytes', () => {
+    const r = assembleRunReport({
+      taskId: 'task-1', attempt: 1,
+      timings: { repoSource: { source: 'reuse' }, runnerMetrics: { restore_reuse_bytes: 12_288, reuse_fetch_skipped: 0 } },
+    });
+    expect(r.repo.bytes.reuseFetch).toBe(12_288);
+    expect(r.repo.reuseFetchSkipped).toBe(false);
+    expect(r.repo.bytes.clone).toBeNull();
+    const skipped = assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { repoSource: { source: 'reuse' }, runnerMetrics: { restore_reuse_bytes: 0, reuse_fetch_skipped: 1 } } });
+    expect(skipped.repo.reuseFetchSkipped).toBe(true);
+    // Not a seed: no answer.
+    expect(assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { repoSource: { source: 'warm' } } }).repo.reuseFetchSkipped).toBeNull();
+  });
+
+  test('the wait for a lease in its tail', () => {
+    expect(assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { leaseWaitMs: 4_200 } }).durationsMs.leaseWait).toBe(4_200);
+    expect(assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { leaseWaitMs: -1 } }).durationsMs.leaseWait).toBeNull();
+  });
+});
+
+describe('cache skipped line (a cache subtree left out of the warm upload for size)', () => {
+  test('matches phase-lines.ts and parses back', () => {
+    expect(CACHE_SKIPPED_LINE_PREFIX).toBe(runnerPhases.CACHE_SKIPPED_LINE_PREFIX);
+    expect([...CACHE_SKIP_PARTS]).toEqual([...runnerPhases.CACHE_SKIP_PARTS]);
+    for (const part of runnerPhases.CACHE_SKIP_PARTS) {
+      expect(parseCacheSkippedLine(runnerPhases.formatCacheSkippedLine(part, 2_100_000_000, 1024 ** 3))).toEqual({ part, bytes: 2_100_000_000, cap: 1024 ** 3 });
+    }
+  });
+
+  test.each([
+    'BUILDD_CACHE_SKIPPED=pnpm-store',
+    'BUILDD_CACHE_SKIPPED=pnpm-store 1',
+    'BUILDD_CACHE_SKIPPED=node_modules 1 2',
+    'BUILDD_CACHE_SKIPPED=pnpm-store -1 2',
+    'BUILDD_CACHE_SKIPPED=pnpm-store 1 2 extra',
+    '[warm] BUILDD_CACHE_SKIPPED=pnpm-store 1 2',
+  ])('rejects %p', (line) => {
+    expect(parseCacheSkippedLine(line)).toBeNull();
+  });
+
+  test('the report names the skipped part, its size and the cap, and times the cache restore', () => {
+    const r = assembleRunReport({
+      taskId: 'task-1', attempt: 1,
+      timings: {
+        cacheSkipped: { part: 'pnpm-store', bytes: 2_100_000_000, cap: 1024 ** 3 },
+        runnerMetrics: { cache_raw_bytes: 900 },
+        runnerPhases: { restore_cache_start: 1_000, restore_cache_end: 4_500 },
+      },
+    });
+    expect(r.repo.cacheSkipped).toEqual({ part: 'pnpm-store', bytes: 2_100_000_000, cap: 1024 ** 3 });
+    expect(r.repo.bytes.cacheRaw).toBe(900);
+    expect(r.durationsMs.restoreCache).toBe(3_500);
+    const none = assembleRunReport({ taskId: 'task-1', attempt: 1 });
+    expect(none.repo.cacheSkipped).toBeNull();
+    expect(none.durationsMs.restoreCache).toBeNull();
+    const hostile = assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { cacheSkipped: { part: 'sk-ant-x', bytes: 1, cap: 1 } } } as unknown as RunReportInput);
+    expect(hostile.repo.cacheSkipped).toBeNull();
   });
 });
 
@@ -297,7 +371,7 @@ describe('assembleRunReport', () => {
     const r = assembleRunReport(FULL);
     expect(r).toMatchObject({
       kind: 'cloud-run-report',
-      version: 4,
+      version: 14,
       taskId: 'task-1',
       attempt: 2,
       workerId: 'worker-9',
@@ -305,7 +379,7 @@ describe('assembleRunReport', () => {
       runLabel: 'task-1.2',
       instanceType: 'standard-1',
       timestamps: { dispatchReceivedAt: 1_000, containerRunningAt: 4_000, claimedAt: 6_000, firstModelRequestAt: 9_000, exitedAt: 60_000 },
-      durationsMs: { containerStart: 3_000, toClaim: 2_000, clone: 500, install: 1_000, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, toFirstModelRequest: 3_000, total: 59_000 },
+      durationsMs: { containerStart: 3_000, toClaim: 2_000, clone: 500, install: 1_000, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, restoreCache: null, restoreReuse: null, worktree: null, leaseWait: null, toFirstModelRequest: 3_000, total: 59_000 },
       exitCode: 0,
       outcome: 'done',
       crashReport: null,
@@ -322,15 +396,43 @@ describe('assembleRunReport', () => {
     expect(assembleRunReport({ ...FULL, dispatchReceivedAt: 9_000, timings: { scheduledFor: 10_000 } }).schedule.lateMs).toBeNull();
   });
 
+  test('depsOverlap: what the background deps work cost the session, and what it hid', () => {
+    // The session started at 10 s, the deps were ready at 100 s, the agent
+    // first needed them at 40 s and waited 20 s in total: 70 s of the 90 s hidden.
+    const r = assembleRunReport({ ...FULL, timings: { ...FULL.timings,
+      runnerPhases: { ...FULL.timings!.runnerPhases, session_start: 10_000, deps_ready: 100_000, first_gated_tool: 40_000 },
+      runnerMetrics: { gate_wait_ms: 20_000, gate_holds: 2 },
+    } });
+    expect(r.depsOverlap).toEqual({ sessionStartAt: 10_000, depsReadyAt: 100_000, firstGatedToolAt: 40_000, gateWaitMs: 20_000, gateHolds: 2, hiddenMs: 70_000 });
+    // The agent never needed deps: nothing held, the whole span hidden.
+    const quiet = assembleRunReport({ ...FULL, timings: { ...FULL.timings, runnerPhases: { session_start: 10_000, deps_ready: 50_000 } } });
+    expect(quiet.depsOverlap).toEqual({ sessionStartAt: 10_000, depsReadyAt: 50_000, firstGatedToolAt: null, gateWaitMs: 0, gateHolds: 0, hiddenMs: 40_000 });
+    // Deps ready before the session started: nothing to hide.
+    expect(assembleRunReport({ ...FULL, timings: { runnerPhases: { session_start: 50_000, deps_ready: 40_000 } } }).depsOverlap?.hiddenMs).toBe(0);
+    // No deps_ready: the run did not overlap (host runner, declared env.yaml, older image).
+    expect(assembleRunReport(FULL).depsOverlap).toBeNull();
+  });
+
   test('missing pieces are null, never guessed', () => {
     const r = assembleRunReport({ taskId: 'task-1', attempt: 1, dispatchReceivedAt: 1_000, timings: { exitedAt: 2_000, runnerPhases: { clone_start: 5 } }, exitCode: null, outcome: 'crashed', crashReport: 'no_worker_id' });
     expect(r.workerId).toBeNull();
-    expect(r.durationsMs).toEqual({ containerStart: null, toClaim: null, clone: null, install: null, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, toFirstModelRequest: null, total: 1_000 });
+    expect(r.durationsMs).toEqual({ containerStart: null, toClaim: null, clone: null, install: null, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, restoreCache: null, restoreReuse: null, worktree: null, leaseWait: null, toFirstModelRequest: null, total: 1_000 });
     expect(r.resume).toEqual({ resumed: false, gapMs: null, layer: null, parkBytes: null });
-    expect(r.repo).toEqual({ source: null, fallbackReason: null, snapshotAgeMs: null, warmUploadSkipReason: null, bytes: { clone: null, restore: null, fetch: null, cache: null, upload: null, warmRepo: null } });
+    expect(r.repo).toEqual({ source: null, fallbackReason: null, snapshotAgeMs: null, warmUploadSkipReason: null, cacheSkipped: null, warmUploadDeferred: false, reuseFetchSkipped: null, bytes: { clone: null, restore: null, fetch: null, reuseFetch: null, cache: null, cacheRaw: null, upload: null, warmRepo: null } });
     expect(r.exitCode).toBeNull();
     expect(r.crashReport).toBe('no_worker_id');
     expect(r.egress.model).toEqual({ requests: 0, rejected: 0, responseBytes: 0 });
+  });
+
+  test('deferredRetry: present only when an outcome actually deferred, sanitized and null-backoff past the cap', () => {
+    expect(assembleRunReport(FULL).deferredRetry).toBeNull();
+    expect(assembleRunReport({ ...FULL, outcome: 'deferred', deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'workspace_cap' } }).deferredRetry)
+      .toEqual({ retryNumber: 1, backoffMs: 30_000, reason: 'workspace_cap' });
+    expect(assembleRunReport({ ...FULL, outcome: 'start_deferred', deferredRetry: { retryNumber: 6, backoffMs: null, reason: 'container_capacity' } }).deferredRetry)
+      .toEqual({ retryNumber: 6, backoffMs: null, reason: 'container_capacity' });
+    // A reason that is not a short identifier (stray prose, a credential-shaped string) is dropped, not passed through.
+    expect(assembleRunReport({ ...FULL, outcome: 'deferred', deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'not a valid reason!' } }).deferredRetry)
+      .toEqual({ retryNumber: 1, backoffMs: 30_000, reason: null });
   });
 
   test('a secret-looking value passed in any field cannot end up in the report', () => {
@@ -370,9 +472,54 @@ describe('assembleRunReport', () => {
 
   test('only allowlisted top-level keys', () => {
     expect(Object.keys(assembleRunReport({ ...FULL, extra: 'x' } as RunReportInput)).sort()).toEqual([
-      'attempt', 'containerInstanceId', 'crashReport', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'kind',
-      'outcome', 'repo', 'resume', 'runLabel', 'runnerPhases', 'schedule', 'taskId', 'timestamps', 'version', 'workerId',
+      'agentRestarts', 'attempt', 'containerInstanceId', 'crashReport', 'deferredRetry', 'depsOverlap', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'interruption', 'kind',
+      'modelAuth', 'outcome', 'repo', 'resources', 'resume', 'reusedContainer', 'runLabel', 'runnerPhases', 'runnerSize', 'schedule', 'taskId', 'timestamps', 'version', 'workerId', 'worktreeMode',
     ]);
+  });
+
+  test('modelAuth: a label only, null when unknown, and no token shape can get in', () => {
+    expect(assembleRunReport(FULL).modelAuth).toBeNull();
+    expect(assembleRunReport({ ...FULL, modelAuth: 'owner_seat' }).modelAuth).toBe('owner_seat');
+    expect(assembleRunReport({ ...FULL, modelAuth: 'metered' }).modelAuth).toBe('metered');
+    const hostile = assembleRunReport({ ...FULL, modelAuth: 'sk-ant-oat01-owner-seat-secret' } as unknown as RunReportInput);
+    expect(hostile.modelAuth).toBeNull();
+    expect(JSON.stringify(hostile)).not.toContain('sk-ant-oat01');
+  });
+
+  test('agentRestarts: sanitized, capped, empty by default', () => {
+    expect(assembleRunReport(FULL).agentRestarts).toEqual([]);
+    const ok = { at: 5_000, recovery: 'reattached', containerRunning: true, runningForMs: 900, versionChanged: false } as const;
+    const r = assembleRunReport({
+      ...FULL,
+      agentRestarts: [ok, { ...ok, recovery: 'oom' as never }, { ...ok, at: -1 }, { ...ok, versionChanged: 'yes' as never, containerRunning: 'x' as never }],
+    });
+    expect(r.agentRestarts).toEqual([ok, { at: 5_000, recovery: 'reattached', containerRunning: false, runningForMs: 900, versionChanged: null }]);
+  });
+
+  test('resources: memory peak and limit, disk minimum and total, from the runner metric lines', () => {
+    const r = assembleRunReport({ ...FULL, timings: { ...FULL.timings, runnerMetrics: { mem_peak_bytes: 4_000_000_000, mem_limit_bytes: 4_294_967_296, disk_free_min_bytes: 2_500_000_000, disk_total_bytes: 8_000_000_000 } } });
+    expect(r.resources).toEqual({ memoryPeakBytes: 4_000_000_000, memoryLimitBytes: 4_294_967_296, diskFreeMinBytes: 2_500_000_000, diskTotalBytes: 8_000_000_000 });
+    expect(assembleRunReport(FULL).resources).toEqual({ memoryPeakBytes: null, memoryLimitBytes: null, diskFreeMinBytes: null, diskTotalBytes: null });
+  });
+
+  test('interruption: from the closed list only', () => {
+    expect(assembleRunReport(FULL).interruption).toBeNull();
+    for (const i of ['container_stopped', 'agent_restart', 'question'] as const) {
+      expect(assembleRunReport({ ...FULL, interruption: i }).interruption).toBe(i);
+    }
+    expect(assembleRunReport({ ...FULL, interruption: 'oom' as never }).interruption).toBeNull();
+  });
+
+  test('runnerSize: the class actually used, the decision that chose it, and weighted runner-seconds', () => {
+    // FULL: container running at 4 s, exited at 60 s -> 56 runner-seconds.
+    const large = assembleRunReport({ ...FULL, runnerSize: 'large', runnerSizeDecision: { size: 'large', source: 'derived', reason: 'low_disk' } });
+    expect(large.runnerSize).toEqual({ size: 'large', source: 'derived', reason: 'low_disk', weight: 2, runnerSeconds: 56, weightedRunnerSeconds: 112 });
+    const standard = assembleRunReport({ ...FULL, runnerSize: 'standard' });
+    expect(standard.runnerSize).toEqual({ size: 'standard', source: null, reason: null, weight: 1, runnerSeconds: 56, weightedRunnerSeconds: 56 });
+    // No class given: standard (the only class before there were two).
+    expect(assembleRunReport(FULL).runnerSize.size).toBe('standard');
+    // The container never ran: no runner-seconds.
+    expect(assembleRunReport({ taskId: 'task-1', attempt: 1, runnerSize: 'large' }).runnerSize).toMatchObject({ runnerSeconds: null, weightedRunnerSeconds: null });
   });
 
   test('warm restore: source, timings and bytes for restore, fetch and upload', () => {
@@ -387,8 +534,9 @@ describe('assembleRunReport', () => {
     });
     expect(r.durationsMs).toMatchObject({ clone: null, restoreWarm: 300, fetch: 100, warmUpload: 800 });
     expect(r.repo).toEqual({
-      source: 'warm', fallbackReason: null, snapshotAgeMs: 3_600_000, warmUploadSkipReason: null,
-      bytes: { clone: null, restore: 1_000_000, fetch: 2_048, cache: 500_000, upload: 0, warmRepo: null },
+      source: 'warm', fallbackReason: null, snapshotAgeMs: 3_600_000, warmUploadSkipReason: null, cacheSkipped: null,
+      warmUploadDeferred: false, reuseFetchSkipped: null,
+      bytes: { clone: null, restore: 1_000_000, fetch: 2_048, reuseFetch: null, cache: 500_000, cacheRaw: null, upload: 0, warmRepo: null },
     });
   });
 
@@ -532,5 +680,24 @@ describe('measureResponse: GitHub and passthrough bodies are never piped through
     const out = measureResponse(new Response('hello world'), 'model', n => seen.push(n));
     expect(await out.text()).toBe('hello world');
     expect(seen).toEqual([11]);
+  });
+});
+
+test('browser time and usage are allowlisted into the run report', () => {
+  const report = assembleRunReport({ taskId: null, attempt: 1, browser: { sessionMs: 1250, sessions: 1, requests: 3, bytes: 40, relayErrors: 0 } });
+  expect(report.browser).toEqual({ provider: 'cloudflare', sessionMs: 1250, sessionSeconds: 1.25, sessions: 1, requests: 3, bytes: 40, relayErrors: 0 });
+});
+
+describe('session checkout report', () => {
+  test('worktree mode follows the runner contract and rejects unknown values', () => {
+    expect(parseWorktreeModeLine(runnerPhases.formatWorktreeModeLine('clone'))).toBe('clone');
+    expect(parseWorktreeModeLine(runnerPhases.formatWorktreeModeLine('worktree'))).toBe('worktree');
+    expect(parseWorktreeModeLine('BUILDD_WORKTREE_MODE=unknown')).toBeNull();
+    const report = assembleRunReport({ taskId: 'task-1', attempt: 1, timings: {
+      worktreeMode: 'clone', runnerPhases: { worktree_start: 100, worktree_end: 400 },
+    } });
+    expect(report.worktreeMode).toBe('clone');
+    expect(report.durationsMs.worktree).toBe(300);
+    expect(assembleRunReport({ taskId: 'task-1', attempt: 1 }).worktreeMode).toBeNull();
   });
 });

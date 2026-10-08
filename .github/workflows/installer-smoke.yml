@@ -1,0 +1,87 @@
+name: Installer Smoke
+
+# Runs the REAL one-line installer (`curl … install.sh | bash`) from the commit
+# under test, in a clean ubuntu container, as a non-root user with no sudo and an
+# empty HOME — then checks `buildd --version` and that a started runner answers
+# /health. Every unit test of install.sh greps its text; none of them ever ran
+# it, which is how a sparse checkout missing a workspace package shipped and
+# broke every new user's install.
+#
+# Path filter: anything the sparse install tree contains or resolves at runtime.
+
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - 'apps/runner/**'
+      - 'packages/core/**'
+      - 'packages/shared/**'
+      - 'packages/ai-kit/**'
+      - 'packages/dispatch-contract/**'
+      - 'scripts/stub-server-only.ts'
+      - 'bunfig.toml'
+      - '.github/workflows/installer-smoke.yml'
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - 'apps/runner/**'
+      - 'packages/core/**'
+      - 'packages/shared/**'
+      - 'packages/ai-kit/**'
+      - 'packages/dispatch-contract/**'
+      - 'scripts/stub-server-only.ts'
+      - 'bunfig.toml'
+      - '.github/workflows/installer-smoke.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: installer-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fresh-install:
+    name: Fresh install (ubuntu, non-root, no sudo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: ubuntu:26.04
+    steps:
+      - name: Base tools a fresh machine has
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl git unzip ca-certificates procps >/dev/null
+          useradd -m -s /bin/bash stranger
+
+      - uses: actions/checkout@v7
+
+      - name: Install from this commit and start the runner
+        env:
+          # The installer is fetched and cloned at the exact commit under test.
+          BUILDD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+          BUILDD_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+        run: |
+          cp apps/runner/scripts/installer-smoke.sh /tmp/installer-smoke.sh
+          chmod 755 /tmp/installer-smoke.sh
+          su stranger -s /bin/bash -c "BUILDD_REF='$BUILDD_REF' BUILDD_REPO='$BUILDD_REPO' bash /tmp/installer-smoke.sh"
+
+  fresh-install-client:
+    name: Fresh install --client (ubuntu, non-root, no sudo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: ubuntu:26.04
+    steps:
+      - name: Base tools a fresh machine has
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl git unzip ca-certificates procps >/dev/null
+          useradd -m -s /bin/bash stranger
+
+      - uses: actions/checkout@v7
+
+      - name: Client install, then upgrade to the full runner, then --client over it
+        env:
+          BUILDD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+          BUILDD_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+        run: |
+          cp apps/runner/scripts/installer-smoke-client.sh /tmp/installer-smoke-client.sh
+          chmod 755 /tmp/installer-smoke-client.sh
+          su stranger -s /bin/bash -c "BUILDD_REF='$BUILDD_REF' BUILDD_REPO='$BUILDD_REPO' bash /tmp/installer-smoke-client.sh"

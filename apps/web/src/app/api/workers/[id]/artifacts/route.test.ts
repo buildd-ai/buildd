@@ -27,6 +27,12 @@ const mockWorkersUpdate = mock(() => ({
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockShouldNotifyOnArtifact = mock(async () => false);
 const mockNotifyArtifactReady = mock(async () => {});
+const mockRecordRunnerUsage = mock(async (_input: any) => true);
+
+mock.module('@/lib/hosted-runner-usage-store', () => ({
+  isRunReportKey: (key: unknown) => typeof key === 'string' && key.startsWith('cloud-run-report:'),
+  recordRunnerUsageFromReport: mockRecordRunnerUsage,
+}));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -317,6 +323,32 @@ describe('POST /api/workers/[id]/artifacts', () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toContain('url is required for link artifacts');
+  });
+
+  it('a cloud run report records the attempt\'s hosted runner time', async () => {
+    mockRecordRunnerUsage.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({ id: WORKER_ID, accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1', task: { id: 'task-1' } });
+    const report = { attempt: 1, runnerSize: { size: 'large', runnerSeconds: 60, weightedRunnerSeconds: 120 } };
+
+    const res = await POST(createMockPostRequest(
+      { type: 'data', title: 'Cloud run report', key: `cloud-run-report:${WORKER_ID}`, metadata: { kind: 'cloud-run-report', report } },
+      'bld_test',
+    ), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(mockRecordRunnerUsage).toHaveBeenCalledTimes(1);
+    expect(mockRecordRunnerUsage.mock.calls[0][0]).toEqual({ workspaceId: 'ws-1', workerId: WORKER_ID, taskId: 'task-1', report });
+  });
+
+  it('any other artifact records no runner time', async () => {
+    mockRecordRunnerUsage.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({ id: WORKER_ID, accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1', task: { id: 'task-1' } });
+
+    await POST(createMockPostRequest({ type: 'data', title: 'Other', key: 'summary', metadata: {} }, 'bld_test'), { params: mockParams });
+
+    expect(mockRecordRunnerUsage).not.toHaveBeenCalled();
   });
 
   it('creates artifact successfully', async () => {

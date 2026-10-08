@@ -8,6 +8,7 @@
  */
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import type { GateCallerOrigin } from '@buildd/core/gate-events';
+import { PATH_SIGNAL_REASONS } from '@buildd/core/path-coordination-signal';
 
 export type DeclarationResult = 'succeeded' | 'denied' | 'degraded';
 export type DeclarationProvenance = 'creation' | 'plan_step' | 'doc_fix' | 'check_path_claim' | 'observed' | 'hook';
@@ -17,8 +18,12 @@ const OUTCOME = { succeeded: 'accepted', denied: 'deferred', degraded: 'warned' 
 const REASON = {
   succeeded: 'path declaration recorded',
   denied: 'path declaration denied by a live holder',
-  degraded: 'path declaration degraded: coordination unavailable, edits proceeded',
+  // `coordination_unavailable` on the sentinel vocabulary: a real timeout /
+  // network / 5xx reaching the coordinator, never a cap or a live holder.
+  degraded: PATH_SIGNAL_REASONS.coordination_unavailable,
 } as const;
+/** The sentinel signal each result carries in `detail.signal` (path-coordination-signal.ts). */
+const SIGNAL = { succeeded: null, denied: 'claim_blocked', degraded: 'coordination_unavailable' } as const;
 
 export function manifestShape(manifest: unknown): ManifestShape {
   if (!Array.isArray(manifest) || manifest.length === 0) return 'none';
@@ -51,7 +56,11 @@ export function recordPathDeclaration(input: {
       taskId: input.taskId,
       workerId: input.workerId ?? null,
       callerOrigin: input.callerOrigin,
-      detail: { provenance: input.provenance, result: input.result, pathCount: input.pathCount, ...(input.detail ?? {}) },
+      detail: {
+        provenance: input.provenance, result: input.result, pathCount: input.pathCount,
+        ...(SIGNAL[input.result] ? { signal: SIGNAL[input.result] } : {}),
+        ...(input.detail ?? {}),
+      },
     });
   } catch {
     // A counter is never what fails a declaration.

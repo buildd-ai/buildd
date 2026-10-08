@@ -9,7 +9,7 @@ import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { isValidTimezone } from '@buildd/core/timezone';
 import { isUuid } from '@/lib/uuid';
 import { isChatTierName } from '@buildd/shared';
-import { roleHas, type Permission, type TeamRole } from '@/lib/permissions';
+import { roleHas, sanitizeOverrides, type Permission, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
 
 /** Fits numeric(10, 2) with room to spare; anything above is a typo. */
 const MAX_CHAT_BUDGET_USD = 100_000;
@@ -31,7 +31,7 @@ async function verifyTeamAccess(
 
   const role = membership.role as TeamRole;
 
-  if (permission && !roleHas(role, permission)) {
+  if (permission && !roleHas(role, permission, await getTeamPermissionOverrides(teamId))) {
     return null;
   }
 
@@ -97,6 +97,7 @@ export async function GET(
         chatDefaultTier: true,
         chatCapNewSessionTier: true,
         timezone: true,
+        permissionOverrides: true,
       },
     });
 
@@ -122,7 +123,8 @@ export async function GET(
     }));
 
     return NextResponse.json({
-      team,
+      // Sanitized, so a client's roleHas() answers what the server will enforce.
+      team: { ...team, permissionOverrides: sanitizeOverrides(team.permissionOverrides) },
       members: memberList,
       currentUserRole,
     });

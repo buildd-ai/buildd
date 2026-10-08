@@ -57,12 +57,18 @@ const PERSISTED_FIELDS = [
   // Read by history-store's backfill so an archived session keeps its usage,
   // model and PR URL. Not restored onto live workers by loadAllWorkers.
   'resultMeta', 'prUrl', 'reportedModel',
+  // So a restored worker's reconciliation report keeps its cost basis.
+  'costBasis',
   // Enforce-mode path claims: the collision a deferral was based on, kept with
   // the record so the local history shows why the session ended.
   'pathClaimMode', 'pathCollision',
   // The refs a checkpoint sweep measures against. Without them a restored
   // worker sweeps with an empty committed half.
   'worktreeBaseRef', 'prBaseRef',
+  // Authoritative working set: what the server acknowledged holding for this
+  // session, so a restart replays deltas instead of starting from nothing.
+  // Bounded by the task's own change set, never the repo.
+  'workingSet', 'pendingShipReports',
 ] as const;
 
 // Bounds to keep files reasonable

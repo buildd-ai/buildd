@@ -4,6 +4,7 @@
  * show one question the same way (knowledge-base: buildd/design/agent-chat.md, "The respond page
  * folds in").
  */
+import { isOpenAsk } from '@/lib/open-ask';
 import { db } from '@buildd/core/db';
 import { tasks, workers, missionNotes } from '@buildd/core/db/schema';
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
@@ -31,6 +32,7 @@ export interface QuestionWorkerRow {
   id: string;
   waitingFor: unknown;
   status?: string | null;
+  error?: string | null;
   updatedAt?: Date | string | null;
 }
 
@@ -57,13 +59,13 @@ export interface ShapedQuestion {
 /**
  * The question part of the view, from rows already in hand. Pure.
  *
- * Open: the newest worker still holding a `waitingFor` (status-agnostic, since
- * inputAsRetry leaves the worker in error), unified with its open question note.
+ * Open: a waiting worker on a nonterminal task, unified with its open note.
  * Closed: the newest question note, with its reply as the answer, else the task
  * title — so a card reopened after the answer still says what was asked.
  */
 export function shapeQuestion(input: {
   taskTitle: string;
+  taskStatus: string;
   /** Newest first. */
   workers: readonly QuestionWorkerRow[];
   /** Question notes for the task, oldest first, any status. */
@@ -71,14 +73,14 @@ export function shapeQuestion(input: {
   /** Reply notes for the task, oldest first. */
   replies?: readonly ReplyNoteRow[];
 }): ShapedQuestion {
-  const pending = input.workers.find(w => w.waitingFor);
+  const pending = input.workers.find(w => w.waitingFor && isOpenAsk(input.taskStatus, w.status));
   if (pending) {
     const openNotes = input.notes.filter(n => n.type === 'question' && n.status === 'open') as QuestionNoteRow[];
     const note = linkQuestionNote(openNotes, pending.id);
     return {
       open: true,
       workerId: pending.id,
-      question: unifyWorkerQuestion(pending.waitingFor as WorkerWaitingFor, note),
+      question: unifyWorkerQuestion(pending.waitingFor as WorkerWaitingFor, note, { workerError: pending.error }),
       askedAt: epoch(note?.createdAt) ?? epoch(pending.updatedAt),
       answer: null,
       awaitingAgent: false,
@@ -92,7 +94,7 @@ export function shapeQuestion(input: {
     question: last ? unifyNoteQuestion(last) : { headline: input.taskTitle, body: null, options: [], noteId: null },
     askedAt: epoch(last?.createdAt),
     answer: reply?.title ?? null,
-    awaitingAgent: input.workers[0]?.status === 'waiting_input',
+    awaitingAgent: isOpenAsk(input.taskStatus, input.workers[0]?.status),
   };
 }
 
@@ -131,7 +133,7 @@ export async function loadQuestionContext(taskId: string, userId: string): Promi
     db.query.workers.findMany({
       where: eq(workers.taskId, taskId),
       orderBy: desc(workers.createdAt),
-      columns: { id: true, waitingFor: true, status: true, updatedAt: true },
+      columns: { id: true, waitingFor: true, status: true, updatedAt: true, error: true },
     }),
     db
       .select({
@@ -154,6 +156,7 @@ export async function loadQuestionContext(taskId: string, userId: string): Promi
 
   const shaped = shapeQuestion({
     taskTitle: task.title,
+    taskStatus: task.status,
     workers: taskWorkers,
     notes: noteRows.filter(n => n.type === 'question'),
     replies: noteRows.filter(n => n.type === 'reply'),

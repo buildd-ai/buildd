@@ -122,7 +122,7 @@ export function NeedsYouStack({
         {questions.map(q => <QuestionCard key={q.workerId} q={q} />)}
         {held.map(m => <HeldMissionCard key={m.id} m={m} />)}
         {(empty || (nothingNeedsYou && hasChildren)) && (
-          <p data-testid="needs-you-empty" className="font-mono text-[13px] text-text-muted">Nothing waiting on you.</p>
+          <p data-testid="needs-you-empty" className="font-mono text-[13px] text-text-muted">Nothing needs input.</p>
         )}
         {children}
       </div>

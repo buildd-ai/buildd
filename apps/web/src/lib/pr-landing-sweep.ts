@@ -60,6 +60,12 @@ export const LANDING_CI_WAIT_MS = 10 * 60_000;
 export const LANDING_FIX_PICKUP_MS = 30 * 60_000;
 /** Look again after a transient failure (GitHub unreadable, landing error). */
 export const LANDING_RETRY_MS = 10 * 60_000;
+/**
+ * How long a spent refresh cycle rests before `landPr` starts a new one. A PR
+ * that lost the race to a busy base is paged once and then retried on this
+ * cadence, so it lands in the next quiet window instead of waiting for a person.
+ */
+export const LANDING_CYCLE_COOLDOWN_MS = 60 * 60_000;
 
 export type LandingSweepSource = 'floor' | 'due';
 
@@ -169,7 +175,9 @@ export function parseDueMember(member: string): PrRef | null {
  *
  * needs_human leaves the queue because a person owns it and re-driving it every
  * few minutes only repeats the ledger row; the hourly floor still re-checks it.
- * The two causes that mean "we could not tell" are transient and retry soon.
+ * The two causes that mean "we could not tell" are transient and retry soon,
+ * and a spent refresh cycle comes back when it has cooled down — that one is
+ * still the platform's to land, the page is only a heads-up.
  */
 export function nextLookAt(outcome: LandingOutcome, nowMs: number): number | null {
   switch (outcome.kind) {
@@ -182,8 +190,15 @@ export function nextLookAt(outcome: LandingOutcome, nowMs: number): number | nul
     case 'needs_fix':
       return nowMs + LANDING_FIX_PICKUP_MS;
     case 'needs_human':
-      return isTransientHuman(outcome) ? nowMs + LANDING_RETRY_MS : null;
+      if (isTransientHuman(outcome)) return nowMs + LANDING_RETRY_MS;
+      if (isRefreshCycleSpent(outcome)) return nowMs + LANDING_CYCLE_COOLDOWN_MS;
+      return null;
   }
+}
+
+/** The refresh cycle ran out; `landPr` starts a new one after the cooldown. */
+export function isRefreshCycleSpent(outcome: LandingOutcome): boolean {
+  return outcome.kind === 'needs_human' && (outcome.cause === 'refresh_exhausted' || outcome.cause === 'refresh_unsafe');
 }
 
 function isTransientHuman(outcome: Extract<LandingOutcome, { kind: 'needs_human' }>): boolean {

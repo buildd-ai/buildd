@@ -22,6 +22,7 @@ import { intersectPaths } from '@buildd/core/path-overlap';
 import type { MissionStateView, WaitingOnDescriptor } from './mission-state-view';
 import { suggestionRef } from './mission-state-view';
 import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
+import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 
 const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 
@@ -57,6 +58,7 @@ export interface StateBecauseExtras {
     title: string | null;
     status: string;
     live?: boolean;
+    missingBrowser?: boolean;
     /**
      * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
      * is described as waiting on them (and ref'd to the first), never as
@@ -193,6 +195,13 @@ function openTaskLinks(
           ? `Task "${t.title ?? t.id}" is pending, waiting for a local session to claim it (runners never pick up this mission's tasks).`
           : `Task "${t.title ?? t.id}" is ${t.status} in a local session.`,
         'mission.executor',
+        { ...base, taskId: t.id },
+      );
+    }
+    if (t.missingBrowser && orphaned(t)) {
+      return link(
+        `Task "${t.title ?? t.id}" is waiting for a runner with the missing browser capability. No eligible runner advertises a working browser provider for this workspace.`,
+        'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor',
         { ...base, taskId: t.id },
       );
     }
@@ -511,4 +520,113 @@ export function buildConflictBecause(
     commitsBehindBase: baseSide.length,
     conflictingPaths,
   };
+}
+
+// ─── Dispatch wake (a pending task's latest outbox row) ──────────────────────
+
+/** A wake still inside this window is in flight, not stuck. */
+export const DISPATCH_WAKE_GRACE_MS = 5 * 60_000;
+
+/** The newest `task_dispatch_outbox` row of a task, as core latestDispatchForTask returns it. */
+export interface LatestDispatchRow {
+  id?: unknown;
+  status?: unknown;
+  cause?: unknown;
+  transport?: unknown;
+  attempt_count?: unknown;
+  not_before?: unknown;
+  handed_off_at?: unknown;
+  last_error?: unknown;
+}
+
+const isoOf = (v: unknown): string | null => {
+  if (v === null || v === undefined) return null;
+  const d = new Date(v as string);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
+
+/**
+ * Why a pending task has not started, when the reason is its wake: the
+ * latest intent is due and undelivered, handed off to Dispatch past due with
+ * no receipt, or failed. Null when the wake is fine (still inside its window,
+ * scheduled for later, or delivered); the claim gates then explain the rest.
+ */
+export function dispatchWakeLink(row: LatestDispatchRow | null | undefined, subject: BecauseSubjectRefs, nowMs: number): Link | null {
+  if (!row || typeof row.id !== 'string') return null;
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+    outboxId: row.id,
+  };
+  const due = isoOf(row.not_before);
+  const pastDue = due !== null && nowMs - Date.parse(due) > DISPATCH_WAKE_GRACE_MS;
+  const attempts = Number(row.attempt_count ?? 0);
+  const cause = typeof row.cause === 'string' ? row.cause : 'wake';
+  const transport = typeof row.transport === 'string' ? row.transport : 'in_app';
+  const err = typeof row.last_error === 'string' && row.last_error ? `; last error: ${row.last_error.slice(0, 200)}` : '';
+  switch (row.status) {
+    case 'pending':
+      if (!pastDue) return null;
+      return link(`Latest wake (${cause}) has been due since ${due} and is undelivered (${transport}, ${attempts} attempt${attempts === 1 ? '' : 's'}${err}).`, 'task_dispatch_outbox.status', refs);
+    case 'handed_off':
+      if (!pastDue) return null;
+      return link(`Latest wake (${cause}) was handed off to Dispatch at ${isoOf(row.handed_off_at) ?? 'an unknown time'}, has been due since ${due}, and has no delivery receipt${err}.`, 'task_dispatch_outbox.status', refs);
+    case 'failed':
+      return link(`Latest wake (${cause}) failed after ${attempts} attempt${attempts === 1 ? '' : 's'}${err}. It is parked; the next state change writes a new wake.`, 'task_dispatch_outbox.status', refs);
+    default:
+      return null;
+  }
+}
+
+/**
+ * Slice E (§17.5): for a kernel-owned delivery, the transition that put it
+ * where it is, read from `workflow_transitions` (the newest row). It is the
+ * cause the chain's conclusion rests on, so it goes just before it.
+ */
+export function deliveryTransitionLink(
+  d: { state: string; headline: string; detail: string | null; prNumber: number | null; attemptLine: string | null; lastTransition: { command: string; fromState: string | null; toState: string; createdAt: string } | null } | null | undefined,
+  subject: BecauseSubjectRefs,
+): Link | null {
+  if (!d?.lastTransition) return null;
+  const t = d.lastTransition;
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+    ...(d.prNumber != null ? { prNumber: d.prNumber } : {}),
+  };
+  const moved = t.fromState ? `${t.fromState} → ${t.toState}` : t.toState;
+  const detail = d.detail ? `; ${d.detail}` : '';
+  const attempts = d.attemptLine ? ` (${d.attemptLine})` : '';
+  return link(`Delivery is ${d.state} (${d.headline}${detail})${attempts}: ${t.command} moved it ${moved} at ${t.createdAt}.`, 'DeliveryView.lastTransition', refs);
+}
+
+/**
+ * Why a pending task waits on a plan limit: the hold the claim stamped on it
+ * (`tasks.context.entitlementBlock`). Null when there is none.
+ */
+export function entitlementHoldLink(context: unknown, subject: BecauseSubjectRefs): Link | null {
+  const block = parseEntitlementBlock((context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY]);
+  if (!block) return null;
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+  };
+  switch (block.kind) {
+    case 'hosted_runner':
+      return link(
+        `Hosted runner allowance used: ${block.used} of ${block.limit} counted hours this month. New cloud runs wait until it refills (${block.resetsAt}) or grows; a runner of your own can take the task now.`,
+        'tasks.context.entitlementBlock', refs);
+    case 'usage':
+      return link(`Monthly managed runner-hours used: ${block.used} of ${block.limit}. It starts when the allowance refills (${block.resetsAt}) or grows.`, 'tasks.context.entitlementBlock', refs);
+    case 'concurrency':
+      return link(`${block.active} of ${block.limit} managed runs are active. It starts when one finishes.`, 'tasks.context.entitlementBlock', refs);
+  }
+}
+
+/** Insert the wake link before the chain's closing conclusion, renumbered. */
+export function withDispatchLink(chain: CausalLink[], wake: Link | null): CausalLink[] {
+  if (!wake) return chain;
+  const links: Link[] = chain.map(({ order: _order, ...l }) => l);
+  links.splice(Math.max(0, links.length - 1), 0, wake);
+  return orderChain(links);
 }

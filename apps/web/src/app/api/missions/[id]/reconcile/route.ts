@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { reconcileMissionPrState } from '@/lib/pr-state-reconcile';
+import { importMissionPrFacts } from '@/lib/pr-fact-import';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
@@ -55,7 +55,7 @@ export async function POST(
     }
 
     const dryRun = req.nextUrl.searchParams.get('dryRun') === 'true';
-    const result = await reconcileMissionPrState(id, { dryRun });
+    const result = await importMissionPrFacts(id, { dryRun });
 
     if (result.fixes.length > 0) {
       console.log(

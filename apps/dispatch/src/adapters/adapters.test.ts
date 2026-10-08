@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { envelope, FakeProducer, recordingFetch, T0 } from '../test-support';
+import { parseDryRunTypes } from '../config';
 import { createAdapters, targetTypeFromId, type DeliveryContext } from '.';
 
 const ctx = (over: Partial<DeliveryContext> = {}): DeliveryContext => ({ id: 'i-1', attempt: 1, target: 'buildd:ws:w:webhook', envelope: envelope(), options: {}, ...over });
@@ -9,11 +10,25 @@ const grant = (over = {}) => ({ decision: 'deliver' as const, payload: { dispatc
 describe('target types', () => {
   test.each([
     ['buildd:ws:w:webhook', 'http'],
-    ['buildd:ws:w:github-actions', 'github-repository-dispatch'],
+    // Removed: an old queued step naming it declines as unknown_target.
+    ['buildd:ws:w:github-actions', null],
+    ['buildd:ws:w:github-repository-dispatch', null],
     ['buildd:ws:w:runner-wake', 'runner-wake'],
     ['buildd:ws:w:constructor', null],
     ['buildd:ws:w:slack', null],
   ])('%s -> %s', (id, type) => expect(targetTypeFromId(id)).toBe(type as never));
+});
+
+describe('registry', () => {
+  test('has exactly the http and runner-wake adapters', () => {
+    expect(Object.keys(createAdapters({ fetch: recordingFetch().fn, producer: new FakeProducer() })).sort()).toEqual(['http', 'runner-wake']);
+  });
+
+  test('DRY_RUN_TYPES: absent is the http default, empty is none, a removed type is ignored', () => {
+    expect([...parseDryRunTypes(undefined)]).toEqual(['http']);
+    expect([...parseDryRunTypes('')]).toEqual([]);
+    expect([...parseDryRunTypes('github-repository-dispatch')]).toEqual([]);
+  });
 });
 
 describe('http adapter', () => {

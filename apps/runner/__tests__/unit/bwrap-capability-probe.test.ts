@@ -75,6 +75,38 @@ describe('checkBwrapMountIsolationSupport', () => {
     expect(probe).not.toContain('--unshare-net');
   });
 
+  it('mounts the ELF loader dirs, so the probe binary can exec on a merged-usr host', () => {
+    // On merged-usr distros (Ubuntu, Debian 12+, GitHub's runners) /lib and
+    // /lib64 are symlinks into /usr, and every binary's PT_INTERP names the
+    // loader by its /lib or /lib64 path. With only /usr bound, execvp fails
+    // ENOENT, so the probe reported "no namespaces" on hosts that have them:
+    // the mount-isolation e2e and every Scout host gate read false.
+    const calls: string[] = [];
+    mockExecSync.mockImplementation((cmd: string) => {
+      calls.push(cmd);
+      return Buffer.from('ok\n');
+    });
+    checkBwrapMountIsolationSupport();
+    const probe = calls.find(c => c.includes('bwrap') && c.includes('echo'))!;
+    for (const dir of ['/bin', '/lib', '/lib64']) {
+      expect(probe).toContain(`--ro-bind-try ${dir} ${dir}`);
+    }
+  });
+
+  it('inner-sandbox probe also mounts the ELF loader dirs (merged-usr hosts)', () => {
+    const calls: string[] = [];
+    mockExecSync.mockImplementation((cmd: string) => {
+      calls.push(cmd);
+      return Buffer.from('ok\n');
+    });
+    checkBwrapSupport();
+    const probe = calls.find(c => c.includes('bwrap') && c.includes('echo'))!;
+    expect(probe).toContain('--unshare-net');
+    for (const dir of ['/bin', '/lib', '/lib64']) {
+      expect(probe).toContain(`--ro-bind-try ${dir} ${dir}`);
+    }
+  });
+
   it('is true on a host that refuses net namespaces but allows user + pid', () => {
     netNamespaceRefused();
     // The strict probe correctly reports false for Claude Code's inner sandbox…

@@ -1,13 +1,11 @@
 import type { BuilddTask, LocalUIConfig } from './types';
-import { CBM_WITHHOLD_RUNNER_FEATURE } from '@buildd/core/cbm-access-experiment';
 import { AGENT_ENDPOINT_RUNNER_FEATURE } from '@buildd/core/agent-endpoint';
 import { AGENT_GITHUB_TOKEN_RUNNER_FEATURE } from '@buildd/core/agent-github-credentials';
-import type { CbmInjectionDecisionReply, CbmInjectionFacts } from '@buildd/core/cbm-injection';
 import { QUESTION_GATE_RUNNER_FEATURE, type QuestionGateReply } from '@buildd/core/question-gate';
 import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { PromptBundlesPayload } from './session-prompt-bundles';
-import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
+import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule } from '@buildd/shared';
 import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
@@ -175,8 +173,6 @@ export class BuilddClient {
   async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
     const body: Record<string, unknown> = {
       maxTasks, workspaceId, taskId, runner: runner || 'runner',
-      // This build honours cbmExperiment.withheld (workers.ts); without the flag
-      // the server does not enrol this runner's tasks in the CBM experiment.
       // AGENT_ENDPOINT_RUNNER_FEATURE: this build applies modelEndpoint
       // (workers.ts); without it the server keeps sending Anthropic credentials.
       // QUESTION_GATE_RUNNER_FEATURE: this build routes AskUserQuestion
@@ -184,7 +180,7 @@ export class BuilddClient {
       // AGENT_GITHUB_TOKEN_RUNNER_FEATURE: this build applies
       // githubCredentials (agent-github-credentials.ts); without it the
       // server never asks this runner to scope the agent's GitHub access.
-      runnerFeatures: [CBM_WITHHOLD_RUNNER_FEATURE, AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE],
+      runnerFeatures: [AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE],
       // A per-machine model provider beats the team's agent model endpoint
       // (docs/design/agent-model-endpoint.md §2.1). Reported as a boolean so
       // the server can skip sending an endpoint key this machine won't use.
@@ -299,6 +295,13 @@ export class BuilddClient {
      */
     costUsd?: number;
     /**
+     * How this session's usage was charged: `real` (per token: API key, team
+     * endpoint) or `virtual` (a subscription login, valued at list price).
+     * Sent with every report that carries usage; the server records `unknown`
+     * when it is absent (docs/specs/real-and-virtual-cost.md).
+     */
+    costBasis?: 'real' | 'virtual' | 'unknown';
+    /**
      * The model the session actually ran on. Feeds task_outcomes.actual_model.
      * Optional: an older runner simply omits it and the server falls back to
      * deriving it from resultMeta.
@@ -342,6 +345,15 @@ export class BuilddClient {
      * session's deliverables (charged) or about the request (exempt).
      */
     refusal?: { status: number; method: string; endpoint: string; gate?: string; hint?: string };
+    /**
+     * S30 (workflow-state-kernel.md §6.6): a hand-off failure after work — the
+     * output gate refused the completion, or the session ended with an unmet
+     * output requirement. The work is not on GitHub; that is not the same as
+     * the work having failed. Sent with `status: 'failed'`, beside the local
+     * head and commit count the worktree had. An older server ignores them.
+     */
+    outcome?: 'unproven';
+    localHeadSha?: string | null;
     // Deliberate resume of a terminal worker (sendMessage follow-up). The server
     // reactivates a completed/failed/error worker ONLY when this is true — the
     // periodic keepalive sync sends an identical status:'running' payload and
@@ -352,6 +364,9 @@ export class BuilddClient {
     verificationEvidence?: Record<string, unknown>;
     // Structured output (for structured_predicate evaluation by server)
     structuredOutput?: Record<string, unknown>;
+    // A conflict retry the runner finished with no agent (merge-drivers.ts finishDerivedMerge).
+    derivedMergeFinish?: import('@buildd/shared').DerivedMergeFinishReport;
+    summarySource?: 'agent' | 'fallback';
     // Subagent spans — terminal-only flush (completed/failed/error). Never sent on hot path.
     subagentSpans?: Array<{
       taskId: string;
@@ -372,15 +387,28 @@ export class BuilddClient {
     subagentSpansObserved?: number;
     // Sum of durationMs for isBackground=true spans.
     backgroundAgentMs?: number;
-    // Paths written while path-claim endpoint was unreachable; server registers them retroactively.
-    pendingPaths?: string[];
-    // Incremental file paths touched since last check-in (from git diff --name-only).
-    // Server accumulates into workers.observedTouches for passive collision detection (§6d).
+    /**
+     * Authoritative working-set delta (working-set.ts): paths added to / removed
+     * from the task-owned set since the server's last ACK, one bounded chunk.
+     * The server leases `add`, releases `remove`, and answers `workingSetAck`.
+     */
+    workingSet?: import('@buildd/shared').WorkingSetDelta;
+    // Observed-touch SAMPLE for the dashboard (bounded, diagnostic): the same
+    // paths as `workingSet.add`. Also what a server predating `workingSet`
+    // leases from, so a mixed deploy never leaves a session without leases.
     touchedPaths?: string[];
     /** Path-claim calls that went ahead degraded since the last report (a delta). */
     pathClaimDegraded?: number;
-    /** Pre-push/completion sweep: the server re-offers every path in touchedPaths, not only new ones. */
+    /** Same calls split by cause, for the coordination_unavailable attribution. */
+    pathClaimDegradedByCause?: Partial<Record<'timeout' | 'error', number>>;
+    /** Ship checkpoints whose coverage could not be proven (see ship-checkpoint.ts). */
+    shipCheckpoints?: import('@buildd/shared').ShipCheckpointReport[];
+    /** Legacy pre-push/completion sweep flag (servers before `workingSet`). */
     checkpointSweep?: boolean;
+    /** This runner runs live sibling conflict probes (sibling-probe.ts); the server hands them out only then. */
+    siblingProbe?: boolean;
+    /** Results of probes the server handed out on an earlier sync. */
+    siblingProbeResults?: import('@buildd/shared').SiblingProbeResult[];
     /**
      * Sent with a `Deferred:` failure when enforce-mode path claims found a
      * collision: the colliding path, its holder and the checkpoint written. The
@@ -513,32 +541,6 @@ export class BuilddClient {
   }
 
   /**
-   * CBM search injection: which list to show, decided server-side (the team's
-   * decision key never reaches a runner). Facts only, no text. Bounded by
-   * `timeoutMs` and never throws: any failure is a `{ ok: false }` reply, on
-   * which the injector shows callers anyway.
-   */
-  async decideCbmInjection(workerId: string, facts: CbmInjectionFacts, timeoutMs: number): Promise<CbmInjectionDecisionReply> {
-    const started = Date.now();
-    try {
-      const body = await this.fetch(`/api/workers/${workerId}/cbm-injection`, {
-        method: 'POST',
-        body: JSON.stringify({ facts }),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (body && typeof body === 'object' && typeof (body as { ok?: unknown }).ok === 'boolean') {
-        return body as CbmInjectionDecisionReply;
-      }
-      return { ok: false, error: 'bad_reply', latencyMs: Date.now() - started, version: null };
-    } catch (err: any) {
-      const error = isServerRefusal(err)
-        ? `http_${(err as ServerRefusalError).status}`
-        : err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'transport';
-      return { ok: false, error, latencyMs: Date.now() - started, version: null };
-    }
-  }
-
-  /**
    * The task-scoped GitHub token for a worker whose claim said
    * `githubCredentials.mode = 'scoped'` (agent-github-credentials.ts). Throws
    * on failure; the error carries `permanent: true` when asking again cannot
@@ -644,6 +646,9 @@ export class BuilddClient {
       maxBudgetUsd?: number;
       /** Workspace opt-in; absent = advisory. See path-claim-enforcement.ts. */
       pathClaimEnforcement?: 'advisory' | 'enforce' | null;
+      /** See merge-drivers.ts. */
+      derivedFiles?: DerivedFileRule[];
+      mergiraf?: boolean;
     };
     configStatus: 'unconfigured' | 'admin_confirmed';
   }> {
@@ -705,6 +710,21 @@ export class BuilddClient {
    * (403 sensitive / 409 already uploaded / 503 storage off / 413 too big) is a
    * normal outcome, not an error — we return null and the caller skips quietly.
    */
+  /**
+   * Mint a per-task token (`bldt_…`) for the agent session of `taskId`, using
+   * this client's runner key. Returns the raw JSON body; parse it with
+   * parseAgentTaskTokenResponse (agent-task-token.ts). A non-2xx rejects with
+   * a ServerRefusalError carrying `status`. Never queued to the outbox.
+   */
+  /** `level: 'admin'` asks for an orchestration session's token; omitted, the server mints a worker token. */
+  async mintTaskToken(taskId: string, ttlMs: number, signal?: AbortSignal, level?: 'admin'): Promise<unknown> {
+    return this.fetch('/api/runner/task-token', {
+      method: 'POST',
+      body: JSON.stringify(level === 'admin' ? { taskId, ttlMs, level } : { taskId, ttlMs }),
+      ...(signal ? { signal } : {}),
+    });
+  }
+
   async requestSessionUploadUrl(
     workerId: string,
     kind: 'transcript' | 'session-log',

@@ -1,1 +1,0 @@
-ALTER TABLE "workers" ADD COLUMN "mcp_calls" jsonb DEFAULT '[]'::jsonb;

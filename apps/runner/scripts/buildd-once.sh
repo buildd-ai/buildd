@@ -7,6 +7,13 @@
 #   buildd-once --task <task-id>
 set -eu
 
+# Between two tasks in one reused cloud container (apps/runner/src/
+# container-reset.ts). Before anything below writes to /tmp or HOME.
+if [ "${1:-}" = --reset-container ]; then
+  cd "${BUILDD_REPO_ROOT:-/opt/buildd}"
+  exec bun run apps/runner/src/container-reset-cli.ts
+fi
+
 # Cloudflare egress interception re-signs HTTPS for the credentialed hosts
 # (api.anthropic.com, github.com, ...) with a per-container CA that appears at
 # this path once the container starts. Trust it alongside the system roots:
@@ -26,6 +33,14 @@ if [ -s "$CF_CA" ]; then
   cat /etc/ssl/certs/ca-certificates.crt "$CF_CA" > "$bundle"
   export NODE_EXTRA_CA_CERTS="$CF_CA" SSL_CERT_FILE="$bundle" GIT_SSL_CAINFO="$bundle" \
     CURL_CA_BUNDLE="$bundle" REQUESTS_CA_BUNDLE="$bundle"
+fi
+
+# A lease container's deferred warm snapshot upload (apps/runner/src/
+# warm-upload-cli.ts), just before the cloud agent releases the container.
+# After the CA setup: the upload goes to an intercepted HTTPS pseudo-host.
+if [ "${1:-}" = --upload-warm ]; then
+  cd "${BUILDD_REPO_ROOT:-/opt/buildd}"
+  exec bun run apps/runner/src/warm-upload-cli.ts
 fi
 
 # Local runs pass GH_TOKEN; make git use it for https clones and pushes. On

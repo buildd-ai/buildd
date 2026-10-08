@@ -7,7 +7,7 @@ import { isValidTimezone } from '@buildd/core/timezone';
 import { getTeamTimezoneSetting } from './team-timezone';
 import { isUuid } from './uuid';
 import { accountReachesWorkspace } from './workspace-reach';
-import { teamIdsWithAdminTier, type TeamScopeCaller } from './permissions';
+import { teamIdsWithAdminTier, getTeamPermissionOverrides, roleHas, type Permission, type TeamScopeCaller } from './permissions';
 
 /**
  * Builds the two scope subqueries below without a db handle, so the predicate
@@ -471,3 +471,12 @@ export const getUserTeamsWithDetails = cache(async (userId: string): Promise<Use
       memberCount: countMap.get(m.teamId) || 1,
     }));
 });
+
+/**
+ * Whether a signed-in user holds `permission` in the team that owns
+ * `workspaceId`, with that team's overrides applied. No workspace access = false.
+ */
+export async function holdsInWorkspace(userId: string, workspaceId: string, permission: Permission): Promise<boolean> {
+  const access = await verifyWorkspaceAccess(userId, workspaceId);
+  return !!access && roleHas(access.role, permission, await getTeamPermissionOverrides(access.teamId));
+}

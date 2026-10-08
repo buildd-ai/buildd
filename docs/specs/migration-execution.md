@@ -2,12 +2,12 @@
 title: DB Migration Execution
 status: active
 owner: max
-last_verified: 2026-09-12
+last_verified: 2026-10-06
 summary: Every committed migration MUST execute exactly once and only while its journal `when` exceeds the applied high-water mark; a missing tracking row below that mark MUST be backfilled, never replayed.
 domain: releases
 surfaces: [packages/core/db/migrate.ts, packages/core/db/migrate-plan.ts, packages/core/db/migrate-drift.ts, scripts/check-schema-drift.ts]
 related: [db-migration-gates, release-flow]
-verified_by: [packages/core/__tests__/migrate-plan.test.ts, packages/core/__tests__/migration-journal.test.ts, packages/core/__tests__/migration-journal-ordering.test.ts, packages/core/__tests__/migrate-drift.test.ts, packages/core/__tests__/drizzle-kit-patch.test.ts]
+verified_by: [packages/core/__tests__/migrate-plan.test.ts, apps/web/tests/db/migration-baseline.test.ts, packages/core/__tests__/migration-journal.test.ts, packages/core/__tests__/migration-journal-ordering.test.ts, packages/core/__tests__/migrate-drift.test.ts, packages/core/__tests__/drizzle-kit-patch.test.ts]
 keywords: [__drizzle_migrations, planMigrations, high-water mark, _journal.json, last_migration_number, schema drift, 42703, backfill, toRun, toBackfill, forked snapshot chain, prevId, snapshot gap, resolveSnapshotSelection]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
@@ -69,6 +69,34 @@ directions reached production:
   string or a number (`Number(r.created_at)`); a string/number mismatch would
   make every row look unapplied and put the entire history into `toRun`.
 
+### Baseline (squashed history)
+
+- Every migration released up to and including `0250_shallow_bushwacker`
+  (release `v0.284.0`) is squashed into `packages/core/drizzle/0000_baseline.sql`:
+  a schema-only `pg_dump` of a fresh database migrated through that history,
+  one statement per `--> statement-breakpoint`. The individual files live in git
+  history before the squash.
+- The baseline's journal entry carries `"baseline": true` and the `when` of the
+  last migration it absorbed. A database that applied that migration already
+  holds the tracking row, so the baseline is skipped like any applied migration.
+- At most one entry may be flagged baseline, and it MUST be the first entry
+  (`findBaselineMillis`).
+- The baseline runs **only on an empty tracking table**. A database at or past
+  its `when` skips it even if its own row is missing. The baseline is **never**
+  a backfill candidate: introspecting a whole-schema dump proves nothing.
+- A database with tracking rows whose high-water mark is **below** the
+  baseline's `when` stopped partway through the squashed history. Planning
+  MUST throw `PreBaselineDatabaseError`, naming `LAST_RELEASE_BEFORE_SQUASH`, and
+  nothing runs. Running the dump there would fail on the first object that
+  already exists, after creating everything before it. The operator upgrades
+  through that release first, then runs this one. **Self-hosted deployments
+  must reach `v0.284.0` (or any later release before the squash) before
+  upgrading past the squash.**
+- The drift gate attributes every object the baseline creates to the baseline,
+  which a migrated database records as applied. `createTableColumns` and
+  `deriveAssertions` read pg_dump's spelling (`public.` qualifiers, unquoted
+  identifiers, `ALTER TABLE ONLY`) as well as drizzle-kit's.
+
 ### Journal
 
 - The newest journal entry MUST have a `when` greater than every prior entry.
@@ -83,7 +111,7 @@ directions reached production:
   what is applied, so one missing file throws and **nothing** runs — a missing
   file is a total failure, not a partial one.
 - Every `.sql` file in `packages/core/drizzle/` MUST be referenced by a journal
-  entry, except the grandfathered inert stub `0024_numerous_firebird.sql`. An
+  entry, with no exceptions. An
   orphan is DDL that exists but is never applied — the same divergence, other
   half.
 - `idx` and `tag` MUST be unique across entries.
@@ -195,10 +223,10 @@ directions reached production:
   satisfied. The gate is therefore a *step*-level condition: the job always
   runs, exits 0 immediately when `base_ref != main`, and performs the real check
   only for dev→main.
-- Any change under `packages/core/` other than a `package.json` makes
-  `affected-tests.sh` emit `ALL`. A new migration is by definition such a change
-  (`packages/core/drizzle/NNNN_*.sql` + `meta/_journal.json`), so the journal
-  tests always run on a PR that adds one.
+- A PR that adds a migration (`packages/core/drizzle/NNNN_*.sql` +
+  `meta/_journal.json`) selects the journal tests: `scripts/affected-tests.ts`
+  selects every test that names `_journal.json` or lists the `drizzle`
+  directory, and pushes to `dev` and PRs into `main` run the full suite anyway.
 
 ## Acceptance criteria
 
@@ -210,6 +238,18 @@ directions reached production:
 - AC-3: GIVEN a tracking row whose `created_at` is the string `'100'` and a
   migration with `folderMillis` `100` WHEN `planMigrations` runs THEN both
   `toRun` and `toBackfill` are empty.
+- AC-B1: GIVEN a tree whose first entry is the baseline and an empty tracking
+  table WHEN `planMigrations` runs THEN the baseline and every later entry are
+  in `toRun`.
+- AC-B2: GIVEN tracking rows whose maximum equals the baseline's `when` WHEN
+  `planMigrations` runs THEN the baseline is neither run nor backfilled and only
+  later entries run.
+- AC-B3 (failure path): GIVEN tracking rows whose maximum is below the
+  baseline's `when` WHEN `planMigrations` runs THEN it throws
+  `PreBaselineDatabaseError` naming `LAST_RELEASE_BEFORE_SQUASH`, and nothing runs.
+- AC-B4: GIVEN a fresh database migrated through the pre-squash tree and another
+  migrated through the squashed tree WHEN both schemas are fingerprinted THEN
+  they are identical.
 - AC-4 (failure path): GIVEN a new migration appended to `_journal.json` whose
   `when` is not greater than the max `when` of all prior entries WHEN the core
   journal tests run THEN they fail with a message naming the offending tag and
@@ -219,7 +259,7 @@ directions reached production:
   `packages/core/drizzle/` WHEN `readMigrationFiles` is invoked THEN it throws
   and zero migrations are applied, including ones that would have succeeded.
 - AC-6 (failure path): GIVEN a `.sql` file in `packages/core/drizzle/` that no
-  journal entry references and that is not `0024_numerous_firebird.sql` WHEN the
+  journal entry references WHEN the
   journal tests run THEN they fail listing that orphan.
 - AC-7 (failure path): GIVEN a migration statement fails with an error not in
   the transient list WHEN `db:migrate` runs THEN it prints the message plus any
@@ -290,9 +330,10 @@ directions reached production:
 | preview-branch migrate | `.github/workflows/build.yml:409-411` |
 | deploy ordering (`db:migrate && next build`) | `apps/web/package.json:7` |
 | `migrations:lint` | `package.json:42` |
-| core-change → ALL tests fan-out | `scripts/affected-tests.sh:40-46` |
-| tracking-table repair (one-off) | `packages/core/scripts/fix-migration-tracking.ts` |
-| historical reconciliation migration | `packages/core/drizzle/0074_reconcile_missions_secret_refs_drift.sql` |
+| migration change → journal tests selected | `scripts/affected-tests.ts` (`referenceNeedles`) |
+| squashed baseline (released history up to the cut) | `packages/core/drizzle/0000_baseline.sql` |
+| `findBaselineMillis`, `PreBaselineDatabaseError`, `LAST_RELEASE_BEFORE_SQUASH` | `packages/core/db/migrate-plan.ts` |
+| squash equivalence proof (old tree vs new tree, real Postgres) | `apps/web/tests/db/migration-baseline.test.ts` |
 
 ## Out of scope
 
@@ -371,6 +412,6 @@ code; do not read any of them as enforced.
     `next build`. CI builds with `build:only`, so dropping the migrate step
     would go green and ship code against an un-migrated database.
 12. **`migrations:lint` is not wired into CI.** No workflow references it;
-    journal coverage depends entirely on `affected-tests.sh` fanning out to
-    `ALL` for `packages/core/` changes. It also runs only the ordering test, not
+    journal coverage on a PR depends on `affected-tests.ts` selecting the
+    journal tests for a migration change. It also runs only the ordering test, not
     the broader `migration-journal.test.ts`.

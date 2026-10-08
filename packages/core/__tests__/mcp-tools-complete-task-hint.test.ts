@@ -120,6 +120,14 @@ describe('MCP complete_task — self-reported usage', () => {
   });
 });
 
+describe('MCP complete_task — marks the PATCH as the agent\'s own call', () => {
+  it('sends viaCompleteTask so the server can refuse (not fail) a fixable verdict', async () => {
+    const api = mock(async () => ({ status: 'completed', turns: 1 }));
+    await handleBuilddAction(api as unknown as ApiFn, 'complete_task', { summary: 'done' }, context);
+    expect(patchBody(api).viaCompleteTask).toBe(true);
+  });
+});
+
 describe('MCP complete_task — server overrode the completion', () => {
   it('reports a worker the server wrote back as failed instead of "completed successfully"', async () => {
     const api = mock(async (_path: string, init?: { method?: string }) =>
@@ -172,5 +180,42 @@ describe('MCP update_progress — self-reported cost', () => {
     expect(body.inputTokens).toBe(500);
     expect(body.outputTokens).toBe(100);
     expect(body.costUsd).toBe(0.05);
+  });
+
+  // docs/specs/real-and-virtual-cost.md: a self-report may say how it was charged.
+  it('forwards costBasis on both usage actions, and omits it when not given', async () => {
+    for (const [action, params] of [
+      ['update_progress', { progress: 50, inputTokens: 500, costBasis: 'real' }],
+      ['complete_task', { summary: 'done', inputTokens: 500, costBasis: 'virtual' }],
+    ] as const) {
+      const api = mock(async () => ({ status: 'running', turns: 1 }));
+      await handleBuilddAction(api as unknown as ApiFn, action, params, context);
+      expect(patchBody(api).costBasis).toBe(params.costBasis);
+    }
+    const api = mock(async () => ({ turns: 1 }));
+    await handleBuilddAction(api as unknown as ApiFn, 'complete_task', { summary: 'done', inputTokens: 5 }, context);
+    expect(patchBody(api).costBasis).toBeUndefined();
+  });
+});
+
+describe('MCP complete_task — 409 on a worker the server already finished', () => {
+  it('a completed task whose local slot was released is not reported as an error', async () => {
+    const api = mock(async () => {
+      throw new Error('API error: 409 - {"error":"Worker already completed","abort":true,"reason":"completed","actualStatus":"completed"}');
+    });
+    const result = await handleBuilddAction(api as unknown as ApiFn, 'complete_task', { summary: 'done' }, context);
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain('slot was released');
+  });
+
+  it('a terminated worker still gets the warning', async () => {
+    const api = mock(async () => {
+      throw new Error('API error: 409 - {"error":"Worker was terminated - task may have been reassigned","abort":true}');
+    });
+    const result = await handleBuilddAction(api as unknown as ApiFn, 'complete_task', { summary: 'done' }, context);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('already terminated');
   });
 });

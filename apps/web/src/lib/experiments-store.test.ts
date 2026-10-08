@@ -13,9 +13,6 @@ mock.module('@buildd/core/db', () => ({
 mock.module('@buildd/core/model-routing-experiment-source', () => ({
   invalidateModelRoutingExperimentCache: () => {},
 }));
-mock.module('@buildd/core/cbm-access-experiment-source', () => ({
-  invalidateCbmAccessExperimentCache: () => {},
-}));
 
 const store = await import('./experiments-store');
 

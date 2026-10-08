@@ -45,41 +45,54 @@ export interface RouteSpec {
   attribution: boolean;
   /** Returns the call's cost itself (so receipts carry `costUsd`). */
   reportsCost: boolean;
+  /** Public key-management hints; never credentials. */
+  key?: {
+    prefix: string;
+    placeholder: string;
+    consoleUrl: string;
+    envVar: string;
+    legacyPurposes?: readonly string[];
+    rejectedPrefixes?: readonly string[];
+  };
 }
 
-export const ROUTES: Readonly<Record<RouteId, RouteSpec>> = {
+export const ROUTES = {
   anthropic: {
     id: 'anthropic', label: 'Anthropic', wire: 'anthropic-messages',
     baseURL: 'https://api.anthropic.com/v1', agentBaseURL: 'https://api.anthropic.com',
     auth: 'x-api-key', headers: { 'anthropic-version': '2023-06-01' }, verifyPath: '/models?limit=1',
+    key: { prefix: 'sk-ant-api', placeholder: 'sk-ant-api03-…', consoleUrl: 'https://console.anthropic.com/settings/keys', envVar: 'ANTHROPIC_API_KEY', legacyPurposes: ['anthropic_api_key'], rejectedPrefixes: ['sk-ant-oat'] },
     vendors: ['anthropic'], personalKeys: true, attribution: false, reportsCost: false,
   },
   openai: {
     id: 'openai', label: 'OpenAI', wire: 'openai-chat',
     baseURL: 'https://api.openai.com/v1', agentBaseURL: null,
     auth: 'bearer', headers: {}, verifyPath: '/models',
+    key: { prefix: 'sk-', placeholder: 'sk-proj-…', consoleUrl: 'https://platform.openai.com/api-keys', envVar: 'OPENAI_API_KEY' },
     vendors: ['openai'], personalKeys: true, attribution: false, reportsCost: false,
   },
   openrouter: {
     id: 'openrouter', label: 'OpenRouter', wire: 'openai-chat',
     baseURL: 'https://openrouter.ai/api/v1', agentBaseURL: 'https://openrouter.ai/api',
     auth: 'bearer', headers: {}, verifyPath: '/key',
+    key: { prefix: 'sk-or-', placeholder: 'sk-or-v1-…', consoleUrl: 'https://openrouter.ai/settings/keys', envVar: 'OPENROUTER_API_KEY', legacyPurposes: ['decision_key'] },
     vendors: 'any', personalKeys: true, attribution: true, reportsCost: true,
   },
   litellm: {
+    key: undefined,
     id: 'litellm', label: 'LiteLLM gateway', wire: 'openai-chat',
     baseURL: null, agentBaseURL: null,
     auth: 'bearer', headers: {}, verifyPath: '/models',
     vendors: 'any', personalKeys: false, attribution: false, reportsCost: false,
   },
-};
+} satisfies Readonly<Record<RouteId, RouteSpec>>;
 
 export function isRouteId(value: unknown): value is RouteId {
   return typeof value === 'string' && (ROUTE_IDS as readonly string[]).includes(value);
 }
 
 export function routeServes(route: RouteId, vendor: KitProvider): boolean {
-  const v = ROUTES[route].vendors;
+  const v: RouteSpec['vendors'] = ROUTES[route].vendors;
   return v === 'any' || v.includes(vendor);
 }
 
@@ -91,7 +104,7 @@ export function routeServes(route: RouteId, vendor: KitProvider): boolean {
 export function routeOrder(vendor: KitProvider): RouteId[] {
   const order: RouteId[] = [];
   if ((ROUTE_IDS as readonly string[]).includes(vendor)) order.push(vendor as RouteId);
-  for (const r of ['openrouter', 'litellm'] as const) {
+  for (const r of ROUTE_IDS) {
     if (!order.includes(r) && routeServes(r, vendor)) order.push(r);
   }
   return order;

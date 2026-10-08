@@ -5,13 +5,15 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { dagBoard, dagId, DAG_SPECS, type DagSpec } from '@/app/app/dev/fixtures/mission-task-strip-fixtures';
+import { dagBoard, dagId, DAG_SPECS, missionTaskStripFixture, type DagSpec } from '@/app/app/dev/fixtures/mission-task-strip-fixtures';
 import type { MissionBoardModel } from './mission-board';
 import {
-  activeIndices, defaultStripSelection, heldCount, nextOpenIndex, slotMarks, stepIndex, stripBlockerCount,
-  stripCaretLeft, stripKeyTarget, stripMarks, stripOrder, stripOrdinal, stripSelectionReason, stripSlots, stripState,
-  stripTick, type StripMark,
+  activeIndices, defaultStripSelection, errorIndices, heldCount, nextOpenIndex, openIndices, slotMarks, stepIndex,
+  stripBlockerCount, stripCaretLeft, stripKeyTarget, stripMarks, stripOrder, stripOrdinal, stripSelectionReason,
+  stripBucket, stripCountsLabel, stripSlotCounts, stripSlots, stripState, stripTick, stripTone, type StripMark,
 } from './mission-task-strip';
+
+const isErrorTone = (s: Parameters<typeof stripTone>[0]) => stripTone(s) === 'error';
 
 /** The strip order as task tokens. */
 function names(spec: DagSpec, model: MissionBoardModel): string[] {
@@ -270,6 +272,18 @@ describe('Next open and the default selection (§9)', () => {
     expect(defaultStripSelection(done)).toBe(done[1].id);
     expect(defaultStripSelection([])).toBeNull();
   });
+  it('NX-2: the Next-open cycle set is exactly the set the header counts as "open" (states fixture)', () => {
+    const slots = stripSlots(missionTaskStripFixture('states').model);
+    const label = stripCountsLabel(stripSlotCounts(slots));
+    const counted = Number(/(\d+) open/.exec(label)?.[1] ?? 0);
+    const open = openIndices(slots);
+    expect(label).toContain('1 failed');
+    expect(open.length).toBe(counted);
+    // A failed cell is never a Next-open stop: cycling from the only open cell returns to it.
+    for (const i of open) expect(isErrorTone(slots[i].state)).toBe(false);
+    const from = open[0];
+    expect(nextOpenIndex(open, from)).toBe(from);
+  });
   it('next open wraps, and is the selection itself when it is the only one', () => {
     expect(nextOpenIndex([2, 4], 2)).toBe(4);
     expect(nextOpenIndex([2, 4], 4)).toBe(2);
@@ -333,5 +347,77 @@ describe('one adjacency derivation (AC-20, AC-21)', () => {
   it('the progress bar compacts by state in one place', () => {
     const bar = src('../components/MissionProgressBar.tsx');
     expect(bar.split('{ solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 }').length - 1).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('TONE-1: failed is its own tone, not "open" (the chip-vs-outline gotcha one layer up)', () => {
+  it('stripTone: error, ok, held (gray), open (ready), active (in motion)', () => {
+    expect(stripTone('failed')).toBe('error');
+    expect(stripTone('ci_failed')).toBe('error');
+    expect(stripTone('fixing')).toBe('error');
+    expect(stripTone('landed')).toBe('ok');
+    for (const s of ['review', 'running', 'waiting'] as const) expect(stripTone(s)).toBe('active');
+    for (const s of ['blocked', 'queued'] as const) expect(stripTone(s)).toBe('held');
+    expect(stripTone('ready')).toBe('open');
+  });
+
+  it('a failed task counts as active (it still needs a look) but not as "open": the header must split them', () => {
+    const spec: DagSpec = { tasks: ['A', 'B', 'C'], states: { A: 'landed', B: 'failed' } };
+    const model = dagBoard(spec);
+    const slots = stripSlots(model);
+    const active = activeIndices(slots);
+    const failed = errorIndices(slots);
+    // B (failed) and C (pending/ready) are both active; only B is the error bucket.
+    expect(active.length).toBe(2);
+    expect(failed.length).toBe(1);
+    expect(failed.every(i => slots[i].kind === 'task' && stripTone(slots[i].state) === 'error')).toBe(true);
+    // The count a header shows as "open" must exclude the failed one.
+    expect(active.length - failed.length).toBe(1);
+  });
+});
+
+const EIGHT: DagSpec = {
+  tasks: ['01', '02', '03', '04', '05', '06', '07', '08'],
+  edges: { '06': ['05'], '07': ['06'], '08': ['07'] },
+  states: { '01': 'landed', '02': 'failed', '03': 'failed', '04': 'failed' },
+};
+
+describe('the 8-node mission: one projection for every surface', () => {
+  const model = dagBoard(EIGHT);
+  const slots = stripSlots(model);
+  const buckets = slots.map(s => stripBucket(s.state));
+
+  it('projects 1 landed, 3 failed, 1 open, 3 held', () => {
+    const count = (b: string) => buckets.filter(x => x === b).length;
+    expect([count('landed'), count('failed'), count('open'), count('held')]).toEqual([1, 3, 1, 3]);
+    expect(errorIndices(slots).length).toBe(3);
+    expect(heldCount(slots)).toBe(3);
+  });
+
+  it('a held task keeps its raw status separate from its held projection', () => {
+    const id = dagId(EIGHT, '08');
+    expect(model.tasks[id].status).toBe('blocked');
+    expect(stripBucket(stripState(model, id))).toBe('held');
+    expect(stripTone(stripState(model, id))).toBe('held');
+  });
+});
+
+describe('strip order is stable under state changes (ORD-3, stepping)', () => {
+  const peers: DagSpec = { tasks: ['A', 'B', 'C', 'D', 'E'], states: {} };
+  const before = dagBoard(peers);
+  const after = dagBoard({ ...peers, states: { A: 'failed', B: 'running', C: 'landed', D: 'review', E: 'pending' } });
+
+  it('same-level peers do not reorder when their states change', () => {
+    expect(stripOrder(after)).toEqual(stripOrder(before));
+  });
+
+  it('› from a selected cell lands on the cell to its right, before and after', () => {
+    for (const m of [before, after]) {
+      const slots = stripSlots(m);
+      const sel = slots.findIndex(s => s.id === dagId(peers, 'B'));
+      expect(slots[stepIndex(sel, 1, slots.length)].id).toBe(dagId(peers, 'C'));
+      expect(slots[stripKeyTarget('ArrowRight', sel, slots.length)!].id).toBe(dagId(peers, 'C'));
+      expect(slots[stripKeyTarget('ArrowLeft', sel, slots.length)!].id).toBe(dagId(peers, 'A'));
+    }
   });
 });

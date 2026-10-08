@@ -7,7 +7,7 @@ import { readFileSync } from 'fs';
 import { saveWorker as storeSaveWorker } from './worker-store';
 import type { BuilddClient } from './buildd';
 import { exchangeAssertionConnector, isAuthError } from './assertion-exchange.js';
-import { BUILDD_MCP_TOOL_NAME } from './action-events';
+import { isBuilddActionTool } from '@buildd/shared';
 import { asksAQuestion, EMPTY_QUESTION_DENY_REASON } from './ask-user-question.js';
 import { runnerDenial } from './runner-denial.js';
 import { questionFromToolInput, runQuestionGate } from './question-gate.js';
@@ -25,8 +25,20 @@ import {
   type CollisionSource,
 } from './path-claim-enforcement.js';
 
+import type { ShipCheckpointResult } from './ship-checkpoint';
+
 /** Re-exported: the hook's backstop deadline lives beside the request timeout it must exceed. */
 export { PATH_CLAIM_HOOK_DEADLINE_MS };
+
+/** One line on why a ship checkpoint could not prove coverage. */
+function describeUnknown(r: Extract<ShipCheckpointResult, { kind: 'unknown' }>): string {
+  const cause = r.cause === 'sweep_incomplete'
+    ? 'the task-owned file set could not be computed from git'
+    : r.cause === 'server_rejected'
+      ? 'the coordinator did not acknowledge the file set'
+      : `the coordinator was unreachable: ${r.cause}`;
+  return `${cause}${r.attempts > 0 ? ` after ${r.attempts} attempt(s)` : ''}${r.detail ? `; ${r.detail}` : ''}`;
+}
 
 /**
  * Deny-reason parts once a checkpoint collision is recorded, spread into
@@ -256,6 +268,11 @@ export class HookFactory {
   private recordDegraded(worker: LocalWorker, paths: string[], reason: string) {
     const first = !worker.pathClaimDegraded;
     worker.pathClaimDegraded = (worker.pathClaimDegraded ?? 0) + 1;
+    // Attributed by cause so the ledger can tell a timeout from a network/5xx
+    // error (PR #3487's distinction) instead of one "unavailable" bucket.
+    const byCause = worker.pathClaimDegradedByCause ?? { timeout: 0, error: 0 };
+    byCause[reason === 'timeout' ? 'timeout' : 'error'] += 1;
+    worker.pathClaimDegradedByCause = byCause;
     console.log(`[Worker ${worker.id}] Path-claim unavailable (${reason}) for ${paths.join(', ')} — queued; enforcement degraded`);
     if (first) {
       this.ctx.addMilestone(worker, {
@@ -267,48 +284,92 @@ export class HookFactory {
   }
 
   /**
-   * Checkpoint guard (enforce mode, Claude only): before a ship — `git push`,
-   * `gh pr create`, buildd `create_pr` or a non-error `complete_task` — sweep
-   * the worktree against the task's PR base and offer it to the server. A
-   * collision found there refuses the ship and starts the deferral; a sweep
-   * that could not reach the server lets it through (bounded fail-open).
+   * Ship checkpoint guard (Claude only, both modes): before a ship — `git
+   * push`, `gh pr create`, buildd `create_pr` or a non-error `complete_task` —
+   * recompute the task's whole owned file set and reconcile it with the server
+   * (ship-checkpoint.ts). The ship goes ahead only on a server ACK proving
+   * complete coverage.
+   *
+   * Enforce mode fails CLOSED: a blocked path refuses the ship and starts the
+   * deferral; coverage the server could not confirm (timeout, network error,
+   * an unresolvable base) refuses the ship too, with the cause, and the agent
+   * retries once coordination is back. Nothing ships on unknown coverage.
+   *
+   * Advisory mode still reconciles — the leases it leaves behind are what
+   * protect every sibling — but reports rather than refuses: a blocked path is
+   * logged, unknown coverage is recorded as `coverage_unknown_at_ship` on the
+   * ledger via the next sync.
    *
    * This is checkpoint enforcement, not a pre-edit guarantee: a Bash write is
    * found here after it happened.
    */
   createPathCheckpointGuardHook(
     worker: LocalWorker,
-    sweep: (worker: LocalWorker, source: CollisionSource) => Promise<PathCollision | null>,
+    checkpoint: (worker: LocalWorker, source: CollisionSource) => Promise<ShipCheckpointResult>,
   ): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PreToolUse') return {};
-      if (worker.pathClaimMode !== 'enforce') return {};
       const toolName = (input as any).tool_name as string;
       const toolInput = ((input as any).tool_input ?? {}) as Record<string, any>;
+      const enforce = worker.pathClaimMode === 'enforce';
 
       let source: CollisionSource | null = null;
       let what = '';
       if (toolName === 'Bash' && isShipCommand(toolInput.command)) {
         source = 'pre_push'; what = 'this push';
-      } else if (toolName === BUILDD_MCP_TOOL_NAME) {
+      } else if (isBuilddActionTool(toolName)) {
         if (toolInput.action === 'create_pr') { source = 'pre_push'; what = 'create_pr'; }
         else if (toolInput.action === 'complete_task' && !toolInput.params?.error) { source = 'completion'; what = 'complete_task'; }
       }
       if (!source) return {};
 
-      if (!worker.pathCollision) {
-        let found: PathCollision | null = null;
-        try {
-          found = await sweep(worker, source);
-        } catch (err) {
-          console.warn(`[Worker ${worker.id}] Checkpoint sweep failed (${source}) — allowing: ${err instanceof Error ? err.message : String(err)}`);
+      if (enforce && worker.pathCollision) {
+        return denyPreToolUse(runnerDenial(...collisionDenial(worker.pathCollision, what)));
+      }
+
+      let result: ShipCheckpointResult;
+      try {
+        result = await checkpoint(worker, source);
+      } catch (err) {
+        // A checkpoint that crashed proved nothing. Same as unreachable.
+        result = { kind: 'unknown', cause: 'error', attempts: 1, detail: err instanceof Error ? err.message.split('\n')[0] : String(err) };
+      }
+
+      if (result.kind === 'complete') return {};
+
+      if (result.kind === 'blocked') {
+        if (!enforce) {
+          console.log(`[Worker ${worker.id}] Ship checkpoint advisory (${source}): ${result.collision.path} is held by ${result.collision.blockingTaskId}`);
           return {};
         }
-        if (!found) return {};
-        worker.pathCollision = found;
-        this.ctx.onPathCollision?.(worker, found);
+        worker.pathCollision = result.collision;
+        this.ctx.onPathCollision?.(worker, result.collision);
+        return denyPreToolUse(runnerDenial(...collisionDenial(worker.pathCollision, what)));
       }
-      return denyPreToolUse(runnerDenial(...collisionDenial(worker.pathCollision, what)));
+
+      // Coverage unknown. Record it for the server (it was unreachable, so the
+      // next sync that lands carries the report), milestone it once per cause,
+      // and in enforce mode refuse the ship — fail closed.
+      const checkpointSource = source === 'completion' ? 'completion' : 'pre_push';
+      worker.pendingShipReports = [
+        ...(worker.pendingShipReports ?? []).slice(-19),
+        { source: checkpointSource, result: 'unknown', cause: result.cause, refused: enforce, attempts: result.attempts, at: Date.now() },
+      ];
+      const label = `Ship checkpoint: path coverage unknown (${result.cause}) — ${enforce ? 'ship refused until coordination answers' : 'allowed; advisory mode'}`;
+      worker.shipCoverageMilestones ??= [];
+      if (!worker.shipCoverageMilestones.includes(label)) {
+        worker.shipCoverageMilestones.push(label);
+        this.ctx.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      }
+      storeSaveWorker(worker);
+      if (!enforce) {
+        console.log(`[Worker ${worker.id}] ${label}`);
+        return {};
+      }
+      return denyPreToolUse(runnerDenial(
+        `${what} is refused: buildd could not confirm that every file this task changed is coordinated (${describeUnknown(result)}). Nothing ships on unknown coverage`,
+        'wait a moment and retry the same call; the runner re-checks with the coordinator each time. Do not work around it with --no-verify or by skipping create_pr',
+      ));
     };
   }
 
@@ -338,7 +399,7 @@ export class HookFactory {
   ): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PreToolUse') return {};
-      if ((input as any).tool_name !== BUILDD_MCP_TOOL_NAME) return {};
+      if (!isBuilddActionTool((input as any).tool_name)) return {};
       const toolInput = ((input as any).tool_input ?? {}) as { action?: string; params?: Record<string, unknown> };
       if (toolInput.action !== 'complete_task') return {};
       if (toolInput.params?.error) return {};

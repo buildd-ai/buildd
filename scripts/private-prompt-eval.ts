@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 /**
- * Run the decision benchmarks against a deployment's own prompt text.
+ * Run the decision benchmarks against a deployment's own prompt text, from a
+ * checkout. buildd's own deployment runs the same eval server-side
+ * (apps/web/src/lib/prompt-evals/run.ts: on a push to the prompts repo, for the
+ * ids whose text changed, and on demand); this CLI is for a local run or a self-hosted deployment.
  *
  * Public CI only ever exercises the public defaults compiled into this repo. A
  * deployment that replaces them (docs/prompts.md) needs its replacement text
@@ -40,231 +43,21 @@
  *   --model <id>      decision model override
  *   --concurrency <n> parallel requests (default 4)
  */
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { dirPromptReader, loadPromptSeed, sha256Hex, type PromptSeedEntry } from '../packages/core/prompt-seed';
-import { activePromptFingerprints, installPrompts, type RegisteredPrompt } from '../packages/core/prompts';
-import { parseLabeledJsonl, summarizeBenchmark, type LabeledExample } from '../packages/core/decision-benchmark';
-import type { decisionCall } from '../packages/core/decision-client';
-import { SETS, runBenchmarkSet, type QuestionSet } from './decision-benchmark-sets';
+import { dirPromptReader, loadPromptSeed, type PromptSeedEntry } from '../packages/core/prompt-seed';
+import { installPrompts, type RegisteredPrompt } from '../packages/core/prompts';
+import { MISSING_KEY_SECRET, findPromptLeaks, formatEvalSummary, runPrivatePromptEval } from '../apps/web/src/lib/prompt-evals/eval-core';
 
-export const MISSING_KEY_SECRET = 'OPENROUTER_API_KEY';
-
-export interface PromptFingerprint {
-  id: string;
-  source: 'private' | 'public default';
-  /** Row version; null for a public default. */
-  version: number | null;
-  /** First 12 hex of the sha256 of the text in effect. */
-  hash: string;
-}
-
-export interface SetReport {
-  set: string;
-  promptId: string;
-  promptVersion: string;
-  fingerprint: PromptFingerprint;
-  status: 'scored' | 'dry_run' | 'no_cases';
-  cases: number;
-  skippedLines: number;
-  accuracy: number | null;
-  baselineAccuracy: number | null;
-  /** At confidence >= 0.9: share of cases covered and accuracy among them. */
-  coverageAt90: number | null;
-  accuracyAt90: number | null;
-  errors: number;
-  costUsd: number;
-}
-
-export interface EvalReport {
-  source: 'private' | 'public defaults';
-  loadedPrompts: number;
-  dryRun: boolean;
-  sets: SetReport[];
-  /** Active prompt ids with no benchmark set: loaded, not measured. */
-  unbenchmarked: PromptFingerprint[];
-  problems: string[];
-}
-
-const short = (hex: string) => hex.slice(0, 12);
-
-export function fingerprintOf(id: string, catalog: readonly RegisteredPrompt[]): PromptFingerprint {
-  const active = activePromptFingerprints().find(f => f.id === id);
-  if (active) return { id, source: 'private', version: active.version, hash: short(active.contentHash) };
-  const reg = catalog.find(r => r.id === id);
-  return { id, source: 'public default', version: null, hash: reg ? short(sha256Hex(reg.publicDefault)) : '-' };
-}
+// The core moved to apps/web/src/lib/prompt-evals/eval-core.ts, where the
+// server-side eval runs it too; re-exported for callers of this script.
+export * from '../apps/web/src/lib/prompt-evals/eval-core';
 
 /** Load a prompts directory with the deploy seed's checks and make it the text in effect. */
 export async function installPromptsDir(dir: string, catalog: readonly RegisteredPrompt[]): Promise<PromptSeedEntry[]> {
   const entries = await loadPromptSeed(dirPromptReader(dir), catalog);
   installPrompts(entries);
   return entries;
-}
-
-export interface EvalOptions {
-  catalog: readonly RegisteredPrompt[];
-  /** Null: score the public defaults. */
-  entries: readonly PromptSeedEntry[] | null;
-  casesDir: string | null;
-  dryRun: boolean;
-  require: boolean;
-  apiKey: string | null;
-  model?: string;
-  concurrency?: number;
-  decide?: typeof decisionCall;
-  sets?: Record<string, QuestionSet>;
-}
-
-export async function runPrivatePromptEval(opts: EvalOptions): Promise<EvalReport> {
-  const sets = opts.sets ?? SETS;
-  const problems: string[] = [];
-  if (opts.require && !opts.entries?.length) problems.push('no private prompt text was loaded');
-  if (opts.require && !opts.dryRun && !opts.apiKey) problems.push(`${MISSING_KEY_SECRET} is not set, so no decision call can be made (set the repo secret ${MISSING_KEY_SECRET})`);
-
-  const reports: SetReport[] = [];
-  for (const [name, set] of Object.entries(sets)) {
-    const file = opts.casesDir ? join(opts.casesDir, `${name.replace(/_/g, '-')}.jsonl`) : null;
-    const base = {
-      set: name,
-      promptId: set.promptId,
-      promptVersion: set.promptVersion(),
-      fingerprint: fingerprintOf(set.promptId, opts.catalog),
-      accuracy: null,
-      baselineAccuracy: null,
-      coverageAt90: null,
-      accuracyAt90: null,
-      errors: 0,
-      costUsd: 0,
-    };
-    if (!file || !existsSync(file)) {
-      reports.push({ ...base, status: 'no_cases', cases: 0, skippedLines: 0 });
-      continue;
-    }
-    const { examples, skipped } = parseLabeledJsonl(readFileSync(file, 'utf8'), { labelField: set.labelField });
-    if (examples.length === 0) {
-      reports.push({ ...base, status: 'no_cases', cases: 0, skippedLines: skipped });
-      continue;
-    }
-    if (opts.dryRun || !opts.apiKey) {
-      // Exercise the resolve path for every case, so a dry run still proves the
-      // questions in effect can be built for the labelled data.
-      examples.forEach((ex: LabeledExample) => set.questionsFor(ex.fields));
-      reports.push({ ...base, status: 'dry_run', cases: examples.length, skippedLines: skipped });
-      continue;
-    }
-    const run = await runBenchmarkSet(set, examples, { apiKey: opts.apiKey, model: opts.model, concurrency: opts.concurrency, decide: opts.decide });
-    const s = summarizeBenchmark(run.scored);
-    const at90 = s.thresholds.find(t => t.threshold === 0.9);
-    reports.push({
-      ...base,
-      status: 'scored',
-      cases: examples.length,
-      skippedLines: skipped,
-      accuracy: s.accuracy,
-      baselineAccuracy: s.baselineAccuracy,
-      coverageAt90: at90?.coverage ?? null,
-      accuracyAt90: at90?.accuracy ?? null,
-      errors: s.errors,
-      costUsd: run.costUsd,
-    });
-  }
-
-  if (opts.require && !reports.some(r => r.cases > 0)) {
-    problems.push(`no labelled cases found${opts.casesDir ? ' under the cases directory' : ''} (expected <set>.jsonl, e.g. task-category.jsonl)`);
-  }
-  if (opts.require && reports.some(r => r.cases > 0 && r.fingerprint.source !== 'private')) {
-    problems.push(`a benchmarked prompt is not in the private text: ${reports.filter(r => r.cases > 0 && r.fingerprint.source !== 'private').map(r => r.promptId).join(', ')}`);
-  }
-  if (opts.require && !opts.dryRun && reports.some(r => r.status === 'scored' && r.errors === r.cases)) {
-    problems.push(`every decision call failed for: ${reports.filter(r => r.status === 'scored' && r.errors === r.cases).map(r => r.set).join(', ')}`);
-  }
-
-  const benchmarked = new Set(Object.values(sets).map(s => s.promptId));
-  const unbenchmarked = (opts.entries ?? [])
-    .filter(e => !benchmarked.has(e.id))
-    .map(e => fingerprintOf(e.id, opts.catalog))
-    .sort((a, b) => a.id.localeCompare(b.id));
-
-  return {
-    source: opts.entries ? 'private' : 'public defaults',
-    loadedPrompts: opts.entries?.length ?? 0,
-    dryRun: opts.dryRun,
-    sets: reports,
-    unbenchmarked,
-    problems,
-  };
-}
-
-const pct = (v: number | null) => (v == null ? '-' : `${(v * 100).toFixed(1)}%`);
-const fp = (f: PromptFingerprint) => (f.version == null ? `public \`${f.hash}\`` : `v${f.version} \`${f.hash}\``);
-
-export function formatEvalSummary(r: EvalReport): string {
-  const lines: string[] = [];
-  lines.push(`## Private prompt eval${r.dryRun ? ' (dry run)' : ''}`);
-  lines.push('');
-  lines.push(`Text scored: ${r.source}${r.source === 'private' ? ` (${r.loadedPrompts} prompt(s) loaded)` : ''}. Scores are over every labelled case; prompt text and case content are never printed.`);
-  lines.push('');
-  lines.push('| set | prompt id | fingerprint | prompt version | status | cases | accuracy | baseline | coverage @0.9 | accuracy @0.9 | errors | cost |');
-  lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|');
-  for (const s of r.sets) {
-    lines.push(`| ${s.set} | \`${s.promptId}\` | ${fp(s.fingerprint)} | \`${s.promptVersion}\` | ${s.status} | ${s.cases} | ${pct(s.accuracy)} | ${pct(s.baselineAccuracy)} | ${pct(s.coverageAt90)} | ${pct(s.accuracyAt90)} | ${s.errors} | $${s.costUsd.toFixed(4)} |`);
-  }
-  if (r.unbenchmarked.length > 0) {
-    lines.push('');
-    lines.push(`<details><summary>${r.unbenchmarked.length} loaded prompt(s) with no benchmark set</summary>`);
-    lines.push('');
-    for (const f of r.unbenchmarked) lines.push(`- \`${f.id}\` ${fp(f)}`);
-    lines.push('');
-    lines.push('</details>');
-  }
-  if (r.problems.length > 0) {
-    lines.push('');
-    lines.push('### Failed');
-    for (const p of r.problems) lines.push(`- ${p}`);
-  }
-  return `${lines.join('\n')}\n`;
-}
-
-// ── Leak guard ────────────────────────────────────────────────────────────────
-
-const MIN_FRAGMENT = 24;
-/**
- * Windows of WINDOW chars every STEP chars: any excerpt of WINDOW + STEP chars
- * or more cut from anywhere in a longer piece contains one whole window.
- */
-const WINDOW = 32;
-const STEP = 8;
-
-/** Distinctive pieces of a body: JSON string leaves or text lines, plus overlapping windows of long ones. */
-function fragmentsOf(body: string): string[] {
-  let pieces: string[];
-  try {
-    const leaves: string[] = [];
-    const walk = (v: unknown) => {
-      if (typeof v === 'string') leaves.push(v);
-      else if (Array.isArray(v)) v.forEach(walk);
-      else if (v && typeof v === 'object') Object.values(v).forEach(walk);
-    };
-    walk(JSON.parse(body));
-    pieces = leaves.flatMap(l => l.split(/\r?\n/));
-  } catch {
-    pieces = body.split(/\r?\n/);
-  }
-  const out = new Set<string>();
-  for (const raw of pieces) {
-    const p = raw.trim().replace(/\s+/g, ' ');
-    if (p.length < MIN_FRAGMENT) continue;
-    out.add(p);
-    for (let i = 0; i + WINDOW <= p.length; i += STEP) out.add(p.slice(i, i + WINDOW));
-  }
-  return [...out];
-}
-
-/** The ids whose body text appears in `output`. Empty means the output is safe to publish. */
-export function findPromptLeaks(output: string, bodies: ReadonlyArray<{ id: string; body: string }>): string[] {
-  const hay = output.replace(/\s+/g, ' ');
-  return bodies.filter(b => fragmentsOf(b.body).some(f => hay.includes(f))).map(b => b.id);
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────

@@ -169,7 +169,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     const waitingMinutes = Math.round(waitingMs / 60000);
     void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
       title: `PR #${worker.prNumber} waiting ${waitingMinutes}m`,
-      message: `PR #${worker.prNumber} on ${ws.repo ?? worker.workspaceId} has been waiting ${waitingMinutes} minutes for your review`,
+      message: `PR #${worker.prNumber} on ${ws.repo ?? worker.workspaceId} has waited ${waitingMinutes} minutes for review`,
       url: worker.prUrl ?? undefined,
       urlTitle: 'View PR',
     });

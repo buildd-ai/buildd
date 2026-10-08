@@ -16,6 +16,10 @@
  *   3b. Retries exhausted → stamp prLifecycleStatus='conflict'; escalation inbox
  *       surfaces it as a BLOCKED card.
  *
+ * Kernel-owned PRs (workflow-state-kernel §13.4, §14): step 3 is the kernel's.
+ * A dirty one goes through `dispatchConflictRetry` (T12); a red one is left to
+ * the kernel CI family. Steps 3a/3b and the insert below are legacy-only.
+ *
  * Dedup:
  *   - Active-retry check prevents filing while one is in flight.
  *   - The (workspaceId, conflictRetryPrNumber, conflictRetryHeadSha) unique index
@@ -29,8 +33,11 @@ import { and, eq, isNotNull, isNull, sql, desc } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import {
   buildConflictRetryTask,
+  dispatchConflictRetry,
   isAutoResolveMergeConflictsEnabled,
+  releaseSpentConflictRetryKey,
 } from '@/lib/conflict-retry';
+import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { policyValue } from '@/lib/policy-overrides';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
@@ -40,6 +47,7 @@ import {
   installationIdForRepo,
 } from '@/lib/workspace-installation';
 import { resolvePrRepo } from '@/lib/repo-scope';
+import { recordPrFact } from '@buildd/core/pr-facts';
 
 // ── Pure predicates ───────────────────────────────────────────────────────────
 
@@ -262,15 +270,12 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
 
         // PR closed or merged — stamp and skip
         if (pr.state === 'closed') {
-          if (pr.merged && pr.merged_at) {
-            await db.update(workers)
-              .set({ mergedAt: new Date(pr.merged_at), prLifecycleStatus: 'merged', prLastCheckedAt: now, updatedAt: now })
-              .where(eq(workers.id, worker.id));
-          } else {
-            await db.update(workers)
-              .set({ prLifecycleStatus: 'closed', prLastCheckedAt: now, updatedAt: now })
-              .where(eq(workers.id, worker.id));
-          }
+          // A fact for the fact cache (recordPrFact): terminal wins, GitHub's merged_at.
+          await recordPrFact(
+            { workerId: worker.id },
+            pr.merged && pr.merged_at ? { kind: 'merged', mergedAt: pr.merged_at } : { kind: 'closed' },
+          );
+          await db.update(workers).set({ prLastCheckedAt: now, updatedAt: now }).where(eq(workers.id, worker.id));
           result.skipped++;
           continue;
         }
@@ -296,23 +301,41 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           continue;
         }
 
-        // Dirty or red — stamp prLifecycleStatus='conflict' + conflictDetectedAt (if new)
-        if (worker.prLifecycleStatus !== 'conflict') {
-          await db.update(workers)
-            .set({
-              prLifecycleStatus: 'conflict',
-              conflictDetectedAt: now,
-              prLastCheckedAt: now,
-              updatedAt: now,
-            })
-            .where(eq(workers.id, worker.id));
-        } else {
-          await db.update(workers)
-            .set({ prLastCheckedAt: now, updatedAt: now })
-            .where(eq(workers.id, worker.id));
-        }
+        // Dirty is a conflict; red CI is a CI fact, not a conflict (§18.2: the
+        // old write mapped both to `conflict`). conflictDetectedAt is first-seen.
+        await recordPrFact(
+          { workerId: worker.id },
+          isDirty ? { kind: 'conflict' } : { kind: 'ci', status: 'ci_failed', headSha: pr.head.sha, currentHeadSha: pr.head.sha },
+        );
+        await db.update(workers).set({ prLastCheckedAt: now, updatedAt: now }).where(eq(workers.id, worker.id));
 
         const headSha = pr.head.sha;
+
+        // A kernel-owned PR (workflow-state-kernel §14: no two authorities). Its
+        // owner task is normally `completed` while the delivery is live, so it
+        // reaches here, but the conflict decision is the kernel's (T12): it goes
+        // through the one conflict door, which applies ConflictObserved against
+        // the delivery's own budget and ledger. Red CI is the kernel's CI family
+        // (T10), not a conflict, so nothing is filed for it here. An authority
+        // read error throws into the per-PR catch below: nothing is filed.
+        if (await kernelDeliveryForPr(wsId, repo, worker.prNumber)) {
+          if (!isDirty) { result.skipped++; continue; }
+          const out = await dispatchConflictRetry({
+            workerId: worker.id,
+            taskId: task.id,
+            prNumber: worker.prNumber,
+            headSha,
+            repoFullName: repo,
+            workspaceId: wsId,
+          });
+          if (out.dispatched) result.sparked++;
+          else if (out.exhausted || out.refreshExhausted) result.exhausted++;
+          else result.skipped++;
+          console.log(
+            `[dead-zone-sweep] PR #${worker.prNumber}@${headSha.slice(0, 7)} is kernel-owned — routed through the conflict door (${out.dispatched ? 'dispatched' : 'not dispatched'}${out.kernel?.state ? `, ${out.kernel.state}` : ''})`,
+          );
+          continue;
+        }
 
         // Count conflict retry tasks for this PR (active and completed)
         const allRetries = await db.query.tasks.findMany({
@@ -383,7 +406,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
         // of the task it re-attempts — same as conflict-retry.ts's own insert.
         const identity = await inheritAttemptIdentity(retryTask.parentTaskId);
 
-        const [newTask] = await db
+        const insertRetry = () => db
           .insert(tasks)
           .values({
             workspaceId: retryTask.workspaceId,
@@ -403,9 +426,16 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           .onConflictDoNothing()
           .returning();
 
+        let [newTask] = await insertRetry();
+        // An earlier retry that ended on this same head without pushing still
+        // holds the key. The PR is still dirty, so spark the next attempt. The
+        // retry count above caps how many attempts can run.
+        if (!newTask && await releaseSpentConflictRetryKey(wsId, worker.prNumber, headSha)) {
+          [newTask] = await insertRetry();
+        }
+
         if (!newTask) {
-          // Unique index hit: same (workspaceId, prNumber, headSha) already exists.
-          // A previous sweep already sparked for this head SHA.
+          // Unique index hit: a concurrent caller sparked for this head SHA.
           result.skipped++;
           continue;
         }

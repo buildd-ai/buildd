@@ -114,4 +114,24 @@ describe('GET /api/releases', () => {
       sinceDays: 7, withTasks: true,
     });
   });
+
+  describe('per-task token', () => {
+    const scoped = (workspaceId: string) => ({
+      id: 'acc-1', level: 'worker', teamId: TEAM_ID, taskScope: { taskId: 't-1', workspaceId, expiresAt: Date.now() + 60_000 },
+    });
+
+    it('lists releases of its own task’s workspace', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(scoped(WORKSPACE_ID));
+      const res = await GET(makeRequest(`?workspaceId=${WORKSPACE_ID}`));
+      expect(res.status).toBe(200);
+      expect(mockListReleasesQuery).toHaveBeenCalled();
+    });
+
+    it('refuses another workspace of its own team, without listing it', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(scoped('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'));
+      const res = await GET(makeRequest(`?workspaceId=${WORKSPACE_ID}`));
+      expect(res.status).toBe(403);
+      expect(mockListReleasesQuery).not.toHaveBeenCalled();
+    });
+  });
 });

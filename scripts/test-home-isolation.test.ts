@@ -88,6 +88,10 @@ const MAY_REFERENCE_THE_REAL_HOME: Array<[path: string, why: string]> = [
     'apps/runner/__tests__/unit/buildd-home-single-resolver.test.ts',
     "pure path-math: its own INLINE_HOME regex is tested against string literals naming the homedir helper's call form, never touches the filesystem",
   ],
+  [
+    'apps/runner/__tests__/unit/container-reuse-worktree.test.ts',
+    'only ever ASSIGNS a temp dir to HOME (saving the old value as a string): the redirect is what keeps its planted global git config and ~/PLANTED_* files out of the real home; nothing is read or written under the original value',
+  ],
 ];
 
 function trackedTestFiles(): string[] {

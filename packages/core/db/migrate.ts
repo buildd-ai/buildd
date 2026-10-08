@@ -6,9 +6,16 @@ import { hostname } from 'os';
 import { config } from '../config';
 import { applyNeonLocalOverride } from './neon-local';
 import { dirname, join } from 'path';
+import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { planMigrations } from './migrate-plan';
-import { backfillTrackingRows } from './migrate-backfill';
+import {
+  executionOrder,
+  findBaselineMillis,
+  planMigrations,
+  type JournalLike,
+  type MigrationFile,
+} from './migrate-plan';
+import { backfillTrackingRows, ciCloneApplyAbsentEnabled, CI_CLONE_APPLY_ABSENT_ENV } from './migrate-backfill';
 import { withMigrationLock } from './migrate-lock';
 import {
   ensureTrackingTable,
@@ -20,7 +27,11 @@ import {
 } from './migrate-client';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsFolder = join(__dirname, '..', 'drizzle');
+// BUILDD_MIGRATIONS_DIR points the migrator at another migration tree. It exists
+// for the squash-equivalence proof (scripts/ci/migration-squash-equivalence.ts and
+// apps/web/tests/db/migration-baseline.test.ts), which replays the pre-squash tree
+// from git history through this same migrator. Nothing in a deploy sets it.
+const migrationsFolder = process.env.BUILDD_MIGRATIONS_DIR || join(__dirname, '..', 'drizzle');
 
 async function applyMigrations(session: MigrateSession): Promise<void> {
   // Fetch ALL applied migration timestamps (not just the last). This read now
@@ -35,9 +46,25 @@ async function applyMigrations(session: MigrateSession): Promise<void> {
   // high-water mark are safe to execute blind; anything older with a missing row
   // is a backfill CANDIDATE, and must prove its DDL is already present before a
   // tracking row is written. See migrate-plan.ts and migrate-backfill.ts.
-  const { toRun, toBackfill } = planMigrations(migrations, rows);
+  //
+  // The squashed baseline (if this tree has one) runs only on an empty tracking
+  // table; planMigrations throws PreBaselineDatabaseError for a database that
+  // stopped partway through the history it absorbed.
+  const journal = JSON.parse(
+    readFileSync(join(migrationsFolder, 'meta', '_journal.json'), 'utf8')
+  ) as JournalLike;
+  const baselineMillis = findBaselineMillis(journal);
+  const { toRun, toBackfill } = planMigrations(migrations, rows, { baselineMillis });
 
   let backfilled = 0;
+  let toApply: MigrationFile[] = [];
+  const applyAbsent = ciCloneApplyAbsentEnabled(process.env);
+  if (applyAbsent) {
+    console.log(
+      `${CI_CLONE_APPLY_ABSENT_ENV}=1 (CI prod clone): an untracked migration below the high-water ` +
+        `mark whose DDL is wholly absent will be executed instead of refused`
+    );
+  }
   if (toBackfill.length > 0) {
     console.log(
       `${toBackfill.length} untracked migration(s) predate the high-water mark — ` +
@@ -52,10 +79,12 @@ async function applyMigrations(session: MigrateSession): Promise<void> {
       toBackfill,
       shape,
       allowUnverified: process.env.MIGRATION_BACKFILL_ALLOW_UNVERIFIED === '1',
+      applyAbsent,
       log: (message) => console.log(message),
       record: (migration) => recordApplied(session, migration),
     });
     backfilled = result.recorded;
+    toApply = result.toApply;
     if (result.unverified > 0) {
       console.log(
         `  ${result.unverified} migration(s) were recorded WITHOUT DDL evidence via ` +
@@ -64,7 +93,8 @@ async function applyMigrations(session: MigrateSession): Promise<void> {
     }
   }
 
-  for (const migration of toRun) {
+  const toExecute = executionOrder(migrations, toRun, toApply);
+  for (const migration of toExecute) {
     for (const stmt of migration.sql) {
       await session.execute(sql.raw(stmt));
     }
@@ -77,7 +107,11 @@ async function applyMigrations(session: MigrateSession): Promise<void> {
     console.log(`Applied: ${migration.folderMillis} (${migration.sql.length} statement(s))`);
   }
 
-  console.log(`Migrations complete! (${toRun.length} applied, ${backfilled} backfilled)`);
+  console.log(
+    `Migrations complete! (${toExecute.length} applied` +
+      (toApply.length > 0 ? `, ${toApply.length} of them below the mark on a CI clone` : '') +
+      `, ${backfilled} backfilled)`
+  );
 }
 
 async function main() {

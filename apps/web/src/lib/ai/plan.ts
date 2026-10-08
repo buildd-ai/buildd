@@ -4,7 +4,7 @@
  * An app asks "for tier X, surface Y, task kind Z, with these provider keys,
  * which model do I call, and may I spend?". buildd answers from the same
  * economy its own chat uses — the team's tier registry (workspace row → team
- * row → catalog → TIER_DEFAULTS, `resolveTierEntry`), the tier's chat pool
+ * row → policy service → catalog → bundled policy, `resolveTierEntry`), the tier's chat pool
  * when one takes draws (`drawChatPoolArm`), list prices (`model-prices.ts` /
  * the OpenRouter catalog) and the account's daily AI cap — and the app makes
  * the call itself, with its own key. buildd never sees prompts or replies.
@@ -17,7 +17,7 @@
  * kit honours; the hard ceiling is the app's own provider-key limit.
  */
 
-import { TIER_DEFAULTS, TIERS, type Tier, type TierEntry } from '@buildd/core/model-tier-defaults';
+import { TIERS, bundledTierEntry, type Tier, type TierEntry } from '@buildd/core/model-tier-defaults';
 import type { CatalogEntry, TokenPrice } from '@buildd/core/model-catalog';
 import { chatModelVerdict } from '@buildd/core/chat-model-eligibility';
 import { openRouterModelId } from '@/lib/chat/openrouter-id';
@@ -168,7 +168,8 @@ export interface RoutedModel {
 }
 
 function entrySource(source: TierEntry['source']): PlanSource {
-  if (source === 'workspace' || source === 'team') return 'registry';
+  // A policy-service answer is configured policy, like a registry row.
+  if (source === 'workspace' || source === 'team' || source === 'policy') return 'registry';
   if (source === 'catalog') return 'catalog';
   return 'default';
 }
@@ -213,7 +214,7 @@ export function routeEntry(
  * - A pool challenger that isn't chat-capable is dropped: the incumbent is
  *   served, with no pool link (the arm never ran).
  * - A registry (or catalog) pick that isn't chat-capable is replaced by the
- *   tier's built-in default (`TIER_DEFAULTS`, source `default`), routed the
+ *   tier's bundled policy default (`bundledTierEntry`, source `default`), routed the
  *   same way. `entry` is what was served, for effort and turn limits.
  */
 export function routeChatEntry(
@@ -233,7 +234,7 @@ export function routeChatEntry(
   if (!routed || routed.source === 'pool' || chatModelVerdict(routed.provider, routed.model, catalog).ok) {
     return { entry, routed, excluded };
   }
-  const fallback = TIER_DEFAULTS[tier];
+  const fallback = bundledTierEntry(tier, 'chat');
   return { entry: fallback, routed: routeEntry(fallback, null, providers), excluded: routed.model };
 }
 

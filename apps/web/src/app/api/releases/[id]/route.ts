@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { tasks, missions, workspaces, githubRepos } from '@buildd/core/db/schema';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { getReleaseWithTaskEdges } from '@/lib/release-queries';
 import { isUuid } from '@/lib/uuid';
@@ -17,7 +17,8 @@ export async function GET(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token reads releases only in its own task's workspace.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount && process.env.NODE_ENV !== 'development') {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -44,7 +45,7 @@ export async function GET(
   }
 
   if (apiAccount) {
-    if (apiAccount.teamId !== ws.teamId) {
+    if (apiAccount.teamId !== ws.teamId || !taskScopeAllowsWorkspace(apiAccount, ws.id)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
   } else if (user) {

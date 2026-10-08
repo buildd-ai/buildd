@@ -17,10 +17,11 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/primary-clone-exposure.test.ts
  */
 import { describe, test, expect, beforeAll, afterAll, mock } from 'bun:test';
+import { tmpdir } from 'os';
 import type { LocalUIConfig } from '../../src/types';
 import * as realRoles from '../../src/roles';
 import * as realGitOps from '../../src/git-operations';
-import * as realBootstrap from '../../src/cbm-bootstrap';
+import { cleanupTestWorkspace } from '../test-workspace';
 
 const PRIMARY = '/tmp/test-primary-clone';
 const WORKTREE = `${PRIMARY}/.buildd-worktrees/buildd-w-conf`;
@@ -136,11 +137,6 @@ mock.module('../../src/env-scan', () => ({
   checkBwrapMountIsolationSupport: () => true,
 }));
 
-mock.module('../../src/cbm-bootstrap.js', () => ({
-  ...realBootstrap,
-  runCbmBootstrap: async () => ({ ok: true, durationMs: 1 }),
-}));
-
 const { WorkerManager } = await import('../../src/workers');
 
 /** Everything the runner itself hands the agent, with the worktree path blanked out. */
@@ -197,6 +193,7 @@ describe('worker session never exposes the primary clone', () => {
   });
 
   afterAll(() => {
+    cleanupTestWorkspace();
     manager?.destroy?.();
     for (const [k, v] of Object.entries(savedEnv)) {
       if (v === undefined) delete process.env[k];

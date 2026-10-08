@@ -42,7 +42,7 @@ mock.module('@/lib/dispatch-authority', () => ({
   enqueueTaskDispatch: async () => {},
   drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
   deliverTaskDispatch: async () => 'pusher',
-  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
   webhookWants: () => false,
   primaryCause: (_causes: string[], fallback: string) => fallback,
   DISPATCH_DUE_QUEUE: 'dispatch',
@@ -57,6 +57,13 @@ mock.module('@/lib/task-cancel', () => ({
 
 const mockPostVisualReviewEvent = mock((_i: any) => Promise.resolve(true));
 mock.module('@/lib/chat/mission-events', () => ({ postVisualReviewEvent: mockPostVisualReviewEvent }));
+
+// Current mission membership of the audit's dependencies. Default: every id is still a member.
+let nonMembers = new Set<string>();
+mock.module('@/lib/mission-surface-audit-membership', () => ({
+  missionMemberIds: async (_missionId: string, ids: readonly string[]) => ids.filter(id => !nonMembers.has(id)),
+  detachTaskFromMissionSurfaceAudits: async () => [],
+}));
 
 const { ensureMissionSurfaceAudit, detachFixFromPendingAudit } = await import('./mission-surface-audit');
 
@@ -151,6 +158,23 @@ describe('ensureMissionSurfaceAudit', () => {
     expect(tasksInsertValues).not.toHaveBeenCalled();
     expect(tasksUpdateSet).toHaveBeenCalledTimes(1);
     expect(tasksUpdateSet.mock.calls[0][0].dependsOn).toEqual(['builder-1', 'builder-2']);
+  });
+
+  it('extending drops a dependency that has since left the mission', async () => {
+    nonMembers = new Set(['unlinked-1']);
+    try {
+      tasksFindFirst.mockResolvedValue({ id: 'audit-1', dependsOn: ['builder-1', 'unlinked-1'] });
+      await ensureMissionSurfaceAudit({
+        missionId: MISSION_ID,
+        workspaceId: WORKSPACE_ID,
+        createdTask: uiTask('builder-2'),
+        targetWorkspace,
+      });
+      expect(tasksUpdateSet).toHaveBeenCalledTimes(1);
+      expect(tasksUpdateSet.mock.calls[0][0].dependsOn).toEqual(['builder-1', 'builder-2']);
+    } finally {
+      nonMembers = new Set();
+    }
   });
 
   it('does not extend dependsOn twice for the same task id (idempotent)', async () => {

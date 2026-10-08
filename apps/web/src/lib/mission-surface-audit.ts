@@ -19,6 +19,7 @@ import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
+import { missionMemberIds } from '@/lib/mission-surface-audit-membership';
 import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 
 export interface EnsureSurfaceAuditParams {
@@ -116,10 +117,16 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
     // Rule 3: any later builder task extends the existing audit's dependsOn
     // (not just UI-touching ones — the audit reviews the mission's whole
     // shipped surface, which a backend-only task can still change).
+    // The rewrite also drops a dependency that has left the mission since it
+    // was added (an unlink that predates detachTaskFromMissionSurfaceAudits),
+    // so the stored list is current membership, not a filing-time record.
     const currentDeps = Array.isArray(existingAudit.dependsOn) ? existingAudit.dependsOn : [];
-    if (!currentDeps.includes(createdTask.id)) {
+    const members = await missionMemberIds(missionId, currentDeps);
+    const nextDeps = members.includes(createdTask.id) ? members : [...members, createdTask.id];
+    const changed = nextDeps.length !== currentDeps.length || nextDeps.some((d, i) => d !== currentDeps[i]);
+    if (changed) {
       await db.update(tasks)
-        .set({ dependsOn: [...currentDeps, createdTask.id], updatedAt: new Date() })
+        .set({ dependsOn: nextDeps, updatedAt: new Date() })
         .where(eq(tasks.id, existingAudit.id));
     }
     return;
@@ -180,18 +187,36 @@ export type RequestSurfaceAuditResult =
 
 const finishedWithoutLooking = (status: string) => status === 'failed' || status === 'cancelled';
 
+type PlanMission = { id: string; title: string; status: string; workspaceId: string | null; autoSurfaceAudit: boolean | null; workingBranch: string | null; integrationBranchEnabled: boolean | null; executor: string | null };
+
+export type SurfaceAuditPlan =
+  | { ok: false; reason: 'mission_not_found' | 'mission_closed' | 'no_workspace' }
+  /** An audit that is open or done already: it is the answer, nothing is derived. */
+  | { ok: true; mission: PlanMission; live: { id: string; status: string }; targetWorkspace?: undefined; builderIds?: undefined; scopedPaths?: undefined; requiredRoutes?: undefined }
+  | {
+      ok: true;
+      mission: PlanMission;
+      live: null;
+      targetWorkspace: typeof workspaces.$inferSelect;
+      builderIds: string[];
+      scopedPaths: string[];
+      requiredRoutes: string[];
+    };
+
 /**
- * A person asked for the mission's visual audit (the decision sheet's "Run
- * visual audit"). Idempotent: an audit that is open or finished is returned,
- * never duplicated; only a failed or cancelled one is replaced. The audit is
- * scoped to the files the mission actually changed (the completion gate's
- * diff read), because declared manifests are often the advisory wildcard.
+ * What a person's "Run visual review" would do, without doing it: the live
+ * audit it would return, or the dependencies, files and routes a new one would
+ * carry. `requestMissionSurfaceAudit` acts on this and the mission page's
+ * Visual review sheet previews it, so the two cannot describe different audits.
  */
-export async function requestMissionSurfaceAudit(missionId: string): Promise<RequestSurfaceAuditResult> {
+export async function planMissionSurfaceAudit(missionId: string): Promise<SurfaceAuditPlan> {
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
-    columns: { id: true, title: true, status: true, workspaceId: true, autoSurfaceAudit: true },
-  });
+    columns: {
+      id: true, title: true, status: true, workspaceId: true, autoSurfaceAudit: true,
+      workingBranch: true, integrationBranchEnabled: true, executor: true,
+    },
+  }) as PlanMission | undefined;
   if (!mission) return { ok: false, reason: 'mission_not_found' };
   if (mission.status === 'completed' || mission.status === 'archived') return { ok: false, reason: 'mission_closed' };
   if (!mission.workspaceId) return { ok: false, reason: 'no_workspace' };
@@ -202,7 +227,7 @@ export async function requestMissionSurfaceAudit(missionId: string): Promise<Req
     orderBy: [desc(tasks.createdAt)],
   });
   const live = audits.find(a => !finishedWithoutLooking(a.status));
-  if (live) return { ok: true, created: false, taskId: live.id, status: live.status };
+  if (live) return { ok: true, mission, live: { id: live.id, status: live.status } };
 
   const [targetWorkspace, missionTasks] = await Promise.all([
     db.query.workspaces.findFirst({ where: eq(workspaces.id, mission.workspaceId) }),
@@ -217,19 +242,42 @@ export async function requestMissionSurfaceAudit(missionId: string): Promise<Req
     ...(gate?.required ? gate.uiPaths : []),
     ...builders.flatMap(t => (Array.isArray(t.pathManifest) ? t.pathManifest : [])).filter(p => p !== '**'),
   ]));
+  return {
+    ok: true,
+    mission,
+    live: null,
+    targetWorkspace,
+    builderIds: builders.map(t => t.id),
+    scopedPaths,
+    requiredRoutes: visualQaRequiredRoutes(scopedPaths),
+  };
+}
+
+/**
+ * A person asked for the mission's visual audit (the decision sheet's "Run
+ * visual audit"). Idempotent: an audit that is open or finished is returned,
+ * never duplicated; only a failed or cancelled one is replaced. The audit is
+ * scoped to the files the mission actually changed (the completion gate's
+ * diff read), because declared manifests are often the advisory wildcard.
+ */
+export async function requestMissionSurfaceAudit(missionId: string): Promise<RequestSurfaceAuditResult> {
+  const plan = await planMissionSurfaceAudit(missionId);
+  if (!plan.ok) return plan;
+  const { mission, live, targetWorkspace, builderIds, scopedPaths, requiredRoutes } = plan;
+  if (live) return { ok: true, created: false, taskId: live.id, status: live.status };
 
   const [auditTask] = await db.insert(tasks).values({
-    workspaceId: mission.workspaceId,
+    workspaceId: targetWorkspace.id,
     missionId,
     title: surfaceAuditTitle(mission.title),
     description: buildSurfaceAuditDescription({
       missionTitle: mission.title,
       scopedPaths,
-      requiredRoutes: visualQaRequiredRoutes(scopedPaths),
+      requiredRoutes,
     }),
     taskClass: 'work',
     kind: 'observation',
-    dependsOn: builders.map(t => t.id),
+    dependsOn: builderIds,
     outputRequirement: 'artifact_required',
     context: { surfaceAuditTrigger: 'auto' },
     roleSlug: VISUAL_AUDITOR_ROLE_SLUG,

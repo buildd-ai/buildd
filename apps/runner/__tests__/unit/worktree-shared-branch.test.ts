@@ -12,7 +12,7 @@
  *   [Worker e564ef64] Worktree setup failed, falling back to main repo
  *
  * The fallback runs the agent in the SHARED role-clone root: no filesystem
- * isolation between concurrent workers, and no CBM (worktreePath unset).
+ * isolation between concurrent workers.
  *
  * Fix: never check a worktree out onto the default branch or onto a branch that
  * another worktree already holds — use the task's own branch instead. Resuming a

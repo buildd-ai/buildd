@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { WaitingOnYouReviewCard } from './WaitingOnYouReviewCard';
+import { WaitingOnYouReviewCard, overrideConfirmCopy } from './WaitingOnYouReviewCard';
 import type { ActionQueueItem } from '@/lib/action-queue';
 
 function item(partial: Partial<ActionQueueItem> = {}): ActionQueueItem {
@@ -456,5 +456,29 @@ describe('WaitingOnYouReviewCard mission-PR merge gate', () => {
     );
     expect(html).not.toContain('cursor-not-allowed');
     expect(html).toContain('>Merge<');
+  });
+});
+
+describe('WaitingOnYouReviewCard — a kernel reviewer escalation is a verdict', () => {
+  const kernelEscalated = item({
+    escalationReason: 'The reviewer escalated this PR · Changes the token scope check; a person should confirm the new boundary.',
+    hasEscalationNote: true,
+    reviewerEscalated: true,
+    delivery: { owner: 'human', state: 'ESCALATED', headline: 'The reviewer escalated this PR', detail: 'Changes the token scope check; a person should confirm the new boundary.', cta: null, compositionVerified: false },
+  });
+
+  it('offers the escalation actions, not the no-verdict Merge + Re-review set', () => {
+    const html = renderToStaticMarkup(<WaitingOnYouReviewCard item={kernelEscalated} />);
+    expect(html).toContain('>Dispatch fix<');
+    expect(html).toContain('Merge anyway');
+    expect(html).not.toContain('>Re-review<');
+  });
+
+  it("asks to merge past the reviewer's escalation, never 'without a reviewer verdict'", () => {
+    expect(overrideConfirmCopy(kernelEscalated)).toBe("Merge past the reviewer's escalation?");
+    expect(overrideConfirmCopy(item({}))).toBe('Merge without a reviewer verdict?');
+    expect(overrideConfirmCopy(item({ verdictSummary: 'LGTM' }))).toBe('Merge this approved PR?');
+    expect(overrideConfirmCopy(item({ recommendation: 'Guard it.' }))).toBe('Merge despite escalation?');
+    expect(overrideConfirmCopy(item({ hasEscalationNote: true, escalationReason: 'No migration' }))).toBe('Merge despite the reported defect?');
   });
 });

@@ -4,7 +4,7 @@
  * It did not. `overlayRoleFiles` skipped CLAUDE.md on the grounds that "role
  * instructions come via the system prompt", and nothing ever put them there:
  * `systemPrompt.append` carried skills, retry continuity, connector notices,
- * the tool-channel policy and the CBM block — never the role. The only code
+ * and the tool-channel policy — never the role. The only code
  * that read a persona at all was the Codex path, which read the role dir's
  * CLAUDE.md off disk, so a role with no packaged bundle had no persona on
  * either backend.
@@ -13,13 +13,14 @@
  * this file pins that the call site actually appends it, exactly once, on both
  * backends and with or without a bundle.
  */
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import { join } from 'path';
 import type { LocalUIConfig } from '../../src/types';
 
 import * as realRoles from '../../src/roles';
 import * as realGitOps from '../../src/git-operations';
-import * as realBootstrap from '../../src/cbm-bootstrap';
 import { buildRoleSystemPromptSection } from '../../src/roles';
 
 // ─── Pure: the rendered section ─────────────────────────────────────────────
@@ -90,13 +91,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -151,7 +152,7 @@ mock.module('../../src/roles', () => ({
 // cwd-CLAUDE.md cases below read the same directory either way.
 mock.module('../../src/git-operations', () => ({
   ...realGitOps,
-  setupWorktree: async (_repo: string, branch: string) => ({ path: '/tmp/test-workspace', branch, base: 'origin/main' }),
+  setupWorktree: async (_repo: string, branch: string) => ({ path: getTestWorkspace(), branch, base: 'origin/main' }),
 }));
 
 mock.module('../../src/worker-store', () => ({
@@ -170,11 +171,6 @@ mock.module('../../src/env-scan', () => ({
   scanMcpServersRich: () => [],
   checkBwrapSupport: () => true,
   checkBwrapMountIsolationSupport: () => true,
-}));
-
-mock.module('../../src/cbm-bootstrap.js', () => ({
-  ...realBootstrap,
-  runCbmBootstrap: async () => ({ ok: true, durationMs: 1 }),
 }));
 
 const { WorkerManager } = await import('../../src/workers');
@@ -217,7 +213,7 @@ async function runTask(
   mockClaimTask.mockImplementation(async () => ({ workers: [{
     id: workerId,
     branch: `buildd/${workerId}`,
-    worktreePath: '/tmp/test-workspace',
+    worktreePath: getTestWorkspace(),
     task,
     ...claimExtra,
   }] }));
@@ -236,7 +232,19 @@ function countOccurrences(haystack: string, needle: string): number {
 describe('assembled system prompt: role persona', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     lastQueryOpts = null;
     claudeMdInCwd = null;
     mockUpdateWorker.mockClear();

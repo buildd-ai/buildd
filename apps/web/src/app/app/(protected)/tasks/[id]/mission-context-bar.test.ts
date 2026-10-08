@@ -6,7 +6,9 @@
  * Fixtures are illustrative.
  */
 import { describe, expect, it } from 'bun:test';
-import type { MissionCardRow, MissionCardTaskRow } from '@/lib/mission-card-view';
+import { buildMissionCardView, toFeedTask, type MissionCardRow, type MissionCardTaskRow } from '@/lib/mission-card-view';
+import { deriveDeliveryView } from '@/lib/workflow/projections';
+import { feedStripOrder } from '@/lib/mission-strip-order';
 import { buildPulseSegments } from '@/lib/mission-pulse';
 import { buildMissionContextBar, missionContextBarFor } from './mission-context-bar';
 
@@ -55,10 +57,12 @@ describe('buildMissionContextBar', () => {
 
   it('the pulse is the same builder output every surface draws, ringed on this task', () => {
     const bar = buildMissionContextBar(mission(tasks), 'b2');
-    expect(bar.segments.map(s => s.taskId)).toEqual(['a1', 'b1', 'b2', 'b3']);
+    // Dependency-first strip order (#3775): same ids, same order as every other surface.
+    const feed = tasks.map(toFeedTask);
     expect(bar.segments.map(s => s.taskId)).toEqual(
-      buildPulseSegments(tasks.map(x => ({ ...x, createdAt: x.createdAt as Date }))).map(s => s.taskId),
+      buildPulseSegments(feed, { order: feedStripOrder(feed) }).map(s => s.taskId),
     );
+    expect([...bar.segments.map(s => s.taskId)].sort()).toEqual(['a1', 'b1', 'b2', 'b3']);
     expect(bar.selectedTaskId).toBe('b2');
   });
 
@@ -92,5 +96,32 @@ describe('missionContextBarFor — the page gate (AC-13: absent for non-mission 
 
   it('returns the same bar the builder does for a mission task', () => {
     expect(missionContextBarFor(mission(tasks), 'b2')).toEqual(buildMissionContextBar(mission(tasks), 'b2'));
+  });
+});
+
+describe('S35: the bar\'s chip reads the kernel delivery, as the mission card does', () => {
+  it('a failed fix whose delivery is still live does not turn the chip FAILED', () => {
+    const row = mission([t('own', { status: 'completed' }), t('fix1', { status: 'failed' }), t('fix2')]);
+    const v = deriveDeliveryView({
+      view: {
+        delivery: {
+          id: 'd1', workspaceId: 'w1', ownerTaskId: 'own', repoFullName: 'acme/widgets', prNumber: 7, baseRef: 'dev',
+          state: 'CHANGES_REQUESTED', stateReason: null, version: 3, currentHeadSha: 'H1', currentRound: 1, maxRounds: 3,
+          boundAttemptId: null, resumeState: null, trunkIncidentId: null, approvedHeads: [], approvalBasis: null,
+          compositionHeads: [], ci: null, ciHeadSha: null, mergeable: null, mergeableHeadSha: null, mergedAt: null,
+          mergeCommitSha: null, supersededByPr: null,
+        },
+        rounds: [], attempts: [],
+      },
+      attemptTasks: [
+        { taskId: 'own', role: 'owner', status: 'completed', createdAt: '2026-10-06T00:00:00Z' },
+        { taskId: 'fix1', role: 'fix', status: 'failed', createdAt: '2026-10-06T01:00:00Z' },
+        { taskId: 'fix2', role: 'fix', status: 'pending', createdAt: '2026-10-06T02:00:00Z' },
+      ],
+    })!;
+    const views = new Map([['own', v], ['fix1', v], ['fix2', v]]);
+    const withViews = missionContextBarFor(row, 'fix2', views)!;
+    expect(withViews.chip).toEqual(buildMissionCardView(row, { from: 'missions', deliveryViews: views }).chip);
+    expect(withViews.chip).not.toEqual(missionContextBarFor(row, 'fix2')!.chip);
   });
 });

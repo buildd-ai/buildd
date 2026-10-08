@@ -17,6 +17,8 @@
  * both drive it with messages and callbacks.
  */
 import Link from 'next/link';
+import { createPortal } from 'react-dom';
+import { MOBILE_TOP_BAR_SLOT_ID } from '@/components/MobileTopBar';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import type { ChatTierName } from '@buildd/shared';
 import BottomSheet from '@/components/BottomSheet';
@@ -148,11 +150,20 @@ function lastReplyText(root: Element): Element | null {
   return texts && texts.length > 0 ? texts[texts.length - 1] : null;
 }
 
-/** The first new text block after an approval's card or row: the reply to Confirm or Discard. */
-function replyAfterApproval(root: Element, approvalId: string, before: ReadonlySet<Element>): Element | null {
+/** The text blocks after an approval's card or row. */
+function textsAfterApproval(root: Element, approvalId: string): Element[] {
   const card = [...root.querySelectorAll<HTMLElement>('[data-approval-id]')].find(c => c.dataset.approvalId === approvalId);
-  if (!card) return null;
-  return [...root.querySelectorAll(REPLY_TEXT)].find(t => !before.has(t) && !!(card.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING)) ?? null;
+  if (!card) return [];
+  return [...root.querySelectorAll(REPLY_TEXT)].filter(t => !!(card.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING));
+}
+
+/**
+ * The first text block after an approval's card or row that wasn't there at
+ * Confirm or Discard: the reply. A turn has one answer region, so the reply
+ * can be the turn's earlier answer node, moved below the card with new prose.
+ */
+function replyAfterApproval(root: Element, approvalId: string, before: ReadonlySet<Element>): Element | null {
+  return textsAfterApproval(root, approvalId).find(t => !before.has(t)) ?? null;
 }
 
 /** Desktop is 1024px and up: the docked panel. Below it, phone and tablet share the phone layout. */
@@ -335,7 +346,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const respondToApproval = useCallback((approvalId: string, approved: boolean, reason?: string) => {
     const inner = content.current;
     if (inner) {
-      const before = new Set(inner.querySelectorAll(REPLY_TEXT));
+      const before = new Set(textsAfterApproval(inner, approvalId));
       follow.current = { mode: 'anchor', find: () => replyAfterApproval(inner, approvalId, before) };
     }
     onApproval(approvalId, approved, reason);
@@ -375,6 +386,17 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   // reads the same.
   const phoneCrumbs = !overlay && !crumbs;
   const isNew = !title && messages.length === 0;
+  // On a phone the crumbs live in the shared top bar (MobilePageHeader's slot),
+  // so Chat's bar has the same geometry and banners sit under it like any route.
+  const [barSlot, setBarSlot] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (!phoneCrumbs || typeof window.matchMedia !== 'function') { setBarSlot(null); return; }
+    const mq = window.matchMedia('(max-width: 767px)');
+    const sync = () => setBarSlot(mq.matches ? document.getElementById(MOBILE_TOP_BAR_SLOT_ID) : null);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, [phoneCrumbs]);
   // The v3 peek header (knowledge-base: buildd/design/chat-v3-desktop.md, "Peek"): ASK / what,
   // FULL SCREEN, close. The mission sheet wears it at every width; any other
   // summoned canvas wears it on desktop only.
@@ -408,8 +430,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const sheetHeader = missionSheet && peekHeader('This mission', { header: 'chat-header', crumbs: 'sheet-crumbs', full: 'canvas-full-chat', close: 'canvas-close' }, 'flex', 'mission');
   const deskPeekHeader = overlay && !missionSheet && !crumbs
     && peekHeader(focusRef?.kind === 'task' && !focusOpensSheet ? 'This task' : 'Chat', { header: 'chat-header-peek', crumbs: 'peek-crumbs', full: 'peek-full-chat', close: 'peek-close' }, 'hidden lg:flex');
-  const header = sheetHeader || (
-    <header data-testid="chat-header" className={`flex min-h-14 items-center gap-2.5 border-b border-[var(--convo-line)] bg-[var(--chat-bar)] px-4 py-2.5 lg:border-[var(--chat-rule)] lg:bg-[var(--chat-bar)] lg:px-7 ${deskPeekHeader ? 'lg:hidden' : ''}`}>
+  const headerInner = (
+    <>
       {!overlay && crumbs && <Link href="/app/chat" aria-label="All chats" className="grid h-11 w-8 place-items-center font-mono text-[18px] text-text-secondary lg:hidden">←</Link>}
       {crumbs ?? (
       <nav aria-label="Conversation" data-testid="canvas-crumbs" className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[12.5px]">
@@ -485,8 +507,13 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         )}
         </>
       )}
-    </header>
+    </>
   );
+  const header = sheetHeader || (barSlot ? createPortal(headerInner, barSlot) : (
+    <header data-testid="chat-header" className={`flex min-h-14 items-center gap-2.5 border-b border-[var(--convo-line)] bg-[var(--chat-bar)] px-4 py-2.5 lg:border-[var(--chat-rule)] lg:bg-[var(--chat-bar)] lg:px-7 ${deskPeekHeader ? 'lg:hidden' : ''}`}>
+      {headerInner}
+    </header>
+  ));
 
   // The live object at the top of the canvas. On desktop, only when the pane
   // isn't already showing it.
