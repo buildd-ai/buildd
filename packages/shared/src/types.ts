@@ -1975,12 +1975,13 @@ export interface PathDeclaration {
   overlapPolicy?: 'v2';
   /**
    * Soft overlap evidence: in-flight tasks whose declared scope overlapped this
-   * one's only by directory prefix (or, `legacy_inferred`, an inferred edge
+   * one's by directory prefix or on the same ordinary file (`same_file`; a
+   * generated, hotspot or migration file stays a hard edge), or, `legacy_inferred`, an inferred edge
    * minted before the hard/soft rule, reclassified against current manifests
    * at claim). Never a dependsOn edge: the claim route defers on it only while
    * the other task is in flight, and the HOLD/START decision may start it.
    */
-  softOverlaps?: Array<{ taskId: string; paths: string[]; kind: 'prefix' | 'legacy_inferred' }>;
+  softOverlaps?: Array<{ taskId: string; paths: string[]; kind: 'prefix' | 'same_file' | 'legacy_inferred' }>;
   /** Most recent narrowings, oldest first, capped. */
   narrowings?: PathNarrowing[];
   /**
@@ -2062,6 +2063,38 @@ export interface WorkingSetAck {
   applied: boolean;
   /** `complete`: nothing blocked and the runner said the set was fully offered. `blocked`: a holder stands in the way. `partial`: more chunks to come. */
   coverage: 'complete' | 'blocked' | 'partial';
+}
+
+/**
+ * Server → runner, on the PATCH response: run `git merge-tree` between this
+ * worker's HEAD and a live sibling's pushed branch (sibling-conflict-probe).
+ */
+export interface SiblingProbeRequest {
+  probeId: string;
+  /** The sibling's branch on `origin`. */
+  otherBranch: string;
+  /** Files both workers touched; a conflict outside them still counts. */
+  sharedFiles: string[];
+  /** Workspace `gitConfig.mergiraf`: try mergiraf on each conflicted file before calling it real. */
+  mergiraf: boolean;
+}
+
+/** One conflicted file, with its conflict regions (line ranges in the merged result). */
+export interface SiblingProbeConflict {
+  path: string;
+  hunks: Array<{ startLine: number; endLine: number }>;
+}
+
+/** Runner → server, on the next PATCH: what the merge-tree found. */
+export interface SiblingProbeResult {
+  probeId: string;
+  outcome: 'clean' | 'conflict' | 'mergiraf_resolved' | 'error';
+  conflicts?: SiblingProbeConflict[];
+  /** Files mergiraf merged cleanly (counted out of `conflicts`). */
+  resolvedByMergiraf?: string[];
+  error?: string;
+  headSha?: string | null;
+  otherSha?: string | null;
 }
 
 /** Cap on `heldPaths` in an ACK; above it the runner re-offers from its own sweep instead. */
