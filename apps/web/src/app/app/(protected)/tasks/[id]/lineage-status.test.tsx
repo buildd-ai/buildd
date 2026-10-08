@@ -94,7 +94,7 @@ describe('lineageWorkerHistory', () => {
 });
 
 describe('HeaderStatusPill — kernel DeliveryView', () => {
-  const d = (o: Partial<{ headline: string; owner: string; needsYou: boolean; stage: string; detail: string | null }>) => ({ headline: 'Review queued', owner: 'reviewer', needsYou: false, stage: 'review', detail: null, ...o });
+  const d = (o: Partial<{ headline: string; owner: string; needsYou: boolean; stage: string; detail: string | null; state: string | null }>) => ({ headline: 'Review queued', owner: 'reviewer', needsYou: false, stage: 'review', detail: null, state: 'WORKING', ...o });
   it('reads the kernel headline instead of the raw task status', () => {
     const html = renderToStaticMarkup(<HeaderStatusPill status="waiting_on_you" merged={false} delivery={d({ headline: 'Waiting for the fix to reach GitHub', owner: 'platform', stage: 'awaiting_push' })} />);
     expect(html).toContain('Waiting for the fix to reach GitHub');
@@ -106,15 +106,21 @@ describe('HeaderStatusPill — kernel DeliveryView', () => {
     expect(html).toContain('bg-accent');
     expect(html).toContain('data-owner="human"');
   });
-  it('shows approved PRs in live tone, not success, even when landing', () => {
-    const html = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'Approved · merging', owner: 'landing', stage: 'approved' })} />);
+  it('maps approved PRs owned by platform to live tone with label from deliveryReading', () => {
+    const html = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'APPROVED', owner: 'landing', stage: 'approved' })} />);
     expect(html).toContain('Approved · merging');
     expect(html).toContain('text-accent-text');
     expect(html).toContain('bg-accent-soft');
     expect(html).not.toContain('text-status-success');
   });
+  it('shows approved PRs owned by human as needs tone with Ready to merge label', () => {
+    const html = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'APPROVED', owner: 'human', stage: 'approved' })} />);
+    expect(html).toContain('Ready to merge');
+    expect(html).toContain('text-[var(--on-accent)]');
+    expect(html).toContain('bg-accent');
+  });
   it('shows merged PRs in success tone', () => {
-    const html = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'Merged', owner: 'landing', stage: 'merged' })} />);
+    const html = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'MERGED', owner: 'landing', stage: 'merged' })} />);
     expect(html).toContain('Merged');
     expect(html).toContain('text-status-success');
   });

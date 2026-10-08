@@ -591,7 +591,7 @@ export interface ActionQueueItem {
    * next move, its headline and evidence (workflow-state-kernel §17.5). The
    * card's chip was taken from it, not from raw worker/reviewer columns.
    */
-  delivery?: Pick<DeliveryView, 'owner' | 'state' | 'headline' | 'detail' | 'cta' | 'compositionVerified'> | null;
+  delivery?: Pick<DeliveryView, 'owner' | 'state' | 'stage' | 'headline' | 'detail' | 'cta' | 'compositionVerified'> | null;
 }
 
 // Chip display order: lower index = shown first.
