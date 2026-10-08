@@ -37,14 +37,14 @@ export interface ClaimPlannerConfig {
 const isUnit = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1;
 
 /**
- * The workspace's planner mode and thresholds. No mode set is `record`
- * (2026-10-04 owner decision: plans are logged by default, claim order is
- * unchanged); an explicit `off` or an unrecognised mode is `off`. Absent or
+ * The workspace's planner mode and thresholds. No mode set is `apply`
+ * (planning is soft: every hard rail still runs on each pick, so an explicit
+ * `record` or `off` is the per-workspace rollback); an explicit `off` or an unrecognised mode is `off`. Absent or
  * malformed thresholds fall back to the pinned calibration.
  */
 export function resolveClaimPlannerConfig(gitConfig: unknown): ClaimPlannerConfig {
   const g = (gitConfig && typeof gitConfig === 'object' ? gitConfig : {}) as Record<string, unknown>;
-  const mode: ClaimPlannerMode = g.claimPlanner == null ? 'record'
+  const mode: ClaimPlannerMode = g.claimPlanner == null ? 'apply'
     : g.claimPlanner === 'record' || g.claimPlanner === 'apply' ? g.claimPlanner : 'off';
   const t = g.claimPlannerThresholds as Record<string, unknown> | null | undefined;
   const thresholds = t && isUnit(t.thetaOrder) && isUnit(t.thetaSoft) && isUnit(t.thetaIdle)
