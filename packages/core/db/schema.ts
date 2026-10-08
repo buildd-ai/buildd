@@ -4350,10 +4350,14 @@ export const connectors = pgTable('connectors', {
   // Assertion-mode fields (authMode='assertion')
   assertionAudience: text('assertion_audience'),
   assertionTokenEndpoint: text('assertion_token_endpoint'),
-  // Display icon, resolved best-effort at create time (catalog entry → MCP
-  // serverInfo.icons → site favicon). NULL renders a letter avatar.
+  // Display icon as a `data:` URL, resolved best-effort at create time, after
+  // OAuth connect, and lazily on list (catalog entry → MCP serverInfo.icons →
+  // websiteUrl / site favicon). NULL renders a letter avatar. Legacy rows may
+  // still hold a remote URL until the next lazy refresh inlines it.
   // See apps/web/src/lib/connector-icon.ts.
   iconUrl: text('icon_url'),
+  // Last icon lookup attempt; gates the lazy refresh to once per TTL.
+  iconCheckedAt: timestamp('icon_checked_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

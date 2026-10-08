@@ -3,6 +3,7 @@ import { choice, defineDecision, JEV_MODEL } from '@builddai/ai-kit/decide';
 import type { OrchestrationDecisionDeps, OrchestrationDecisionRow } from '@buildd/core/orchestration-decision';
 import {
   ClaimHoldCollector,
+  openPrStartVerdict,
   acquireGatedStartPaths,
   gatedStartApplies,
   gatedStartReachable,
@@ -92,6 +93,60 @@ function harness(over: Partial<ClaimHoldDeps> = {}, dd = decisionDeps()) {
 }
 
 beforeEach(() => resetClaimHoldMemos());
+
+describe('ClaimHoldCollector.noteOpenPrOverlap: risk evidence', () => {
+  const scope = (paths: string[], headSha = 'h1', currentHeadSha = headSha) => ({ paths, headSha, currentHeadSha, observedAt: '2026-09-30T11:55:00.000Z' });
+  const note = (prs: any[], evidence: any) => new ClaimHoldCollector().noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], prs, new Map(), evidence);
+
+  it('a current disjoint diff is no_effective_overlap: a deterministic START with the reason recorded', async () => {
+    const n = note([pr()], { prScopes: new Map([[7, scope(['apps/web/src/other.ts'])]]) });
+    expect(n?.candidate.risk).toMatchObject({ tier: 'no_effective_overlap', route: 'deterministic_start', reasons: ['effective_scope_disjoint'] });
+    expect(await openPrStartVerdict(n, false)).toBe('rule_start');
+  });
+
+  it('a diff that still touches the file, a missing diff or an older head stay uncertain (Jev)', async () => {
+    for (const prScopes of [
+      new Map([[7, scope(['apps/web/src/widget.ts'])]]),
+      new Map<number, any>(),
+      new Map([[7, scope(['apps/web/src/other.ts'], 'h1', 'h2')]]),
+    ]) {
+      const n = note([pr()], { prScopes });
+      expect(n?.candidate.risk).toMatchObject({ tier: 'uncertain', route: 'ask_model' });
+      expect(await openPrStartVerdict(n, false)).toBe('HOLD');
+    }
+  });
+
+  it('with no evidence at all nothing changes', async () => {
+    const n = new ClaimHoldCollector().noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
+    expect(n?.candidate.risk).toMatchObject({ tier: 'uncertain', reasons: expect.arrayContaining(['open_pr_scope_unknown']) });
+  });
+
+  it('every blocker needs a current diff: one unknown PR keeps the whole scope unknown', () => {
+    const prs = [pr(), pr({ taskId: '00000000-0000-4000-8000-000000000003', prNumber: 8 })];
+    const n = note(prs, { prScopes: new Map([[7, scope(['apps/web/src/other.ts'])]]) });
+    expect(n?.candidate.risk?.route).toBe('ask_model');
+    const both = note(prs, { prScopes: new Map([[7, scope(['apps/web/src/other.ts'])], [8, scope(['apps/web/src/else.ts'])]]) });
+    expect(both?.candidate.risk?.route).toBe('deterministic_start');
+  });
+
+  it('a real conflict probe holds in code and names the files; a clean one is low', async () => {
+    const at = '2026-09-30T11:50:00.000Z';
+    const hot = note([pr()], { probe: { outcome: 'conflict', conflictFiles: ['apps/web/src/widget.ts'], probedAt: at, headsCurrent: true } });
+    expect(hot?.candidate.risk).toMatchObject({ tier: 'high', route: 'deterministic_hold' });
+    expect(hot?.candidate.risk?.rationale).toContain('apps/web/src/widget.ts');
+    expect(await openPrStartVerdict(hot, true)).toBe('HOLD');
+    for (const outcome of ['clean', 'mergiraf_resolved'] as const) {
+      const n = note([pr()], { probe: { outcome, conflictFiles: [], probedAt: at, headsCurrent: true } });
+      expect(n?.candidate.risk?.tier).toBe('low');
+    }
+    expect(note([pr()], { probe: { outcome: 'conflict', conflictFiles: [], probedAt: at, headsCurrent: false } })?.candidate.risk?.tier).toBe('uncertain');
+  });
+
+  it('a disjoint diff never relaxes a hard rail', () => {
+    const live = note([pr({ workerStatus: 'running' })], { prScopes: new Map([[7, scope(['apps/web/src/other.ts'])]]) });
+    expect(live).toBeNull();
+  });
+});
 
 describe('ClaimHoldCollector.noteOpenPrOverlap: deterministic rails', () => {
   it('records an eligible advisory PR overlap with its digest', () => {

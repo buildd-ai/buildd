@@ -226,6 +226,11 @@ async function runTask(manager: InstanceType<typeof WorkerManager>, workerId: st
   }] }));
   await manager.claimAndStart(task as any);
   await new Promise(r => setTimeout(r, 250));
+  // Slow CI runners can need longer than the fixed settle above; wait for the backend to start.
+  const deadline = Date.now() + 5000;
+  while (backend === 'codex' && !backendRuns.some(r => r.backend === 'codex') && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 50));
+  }
   return task;
 }
 
@@ -341,7 +346,7 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     mintImpl = async () => { throw Object.assign(new Error('x'), { status: 503 }); };
     await runTask(manager, 'w-tt-codex-fail', 'codex');
     expect(backendRuns.find(r => r.backend === 'codex')!.env?.BUILDD_MCP_BEARER_TOKEN).toBe(RUNNER_KEY);
-  });
+  }, 30_000);
 
   test('BUILDD_AGENT_TASK_TOKEN=0 → runner key, no mint call, no warning', async () => {
     process.env.BUILDD_AGENT_TASK_TOKEN = '0';
@@ -421,13 +426,13 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     await runTask(manager, 'w-tt-orch-codex', 'codex', { roleSlug: 'organizer' });
     expect(mintCalls.every(c => c.level === 'admin')).toBe(true);
     expect(backendRuns.find(r => r.backend === 'codex')!.env?.BUILDD_MCP_BEARER_TOKEN).toBe(TOKEN_A);
-  });
+  }, 30_000);
 
   test('organizer on Codex, admin mint refused → BUILDD_MCP_BEARER_TOKEN is the runner key', async () => {
     mintImpl = async () => { throw Object.assign(new Error('x'), { status: 403 }); };
     await runTask(manager, 'w-tt-orch-codex-refused', 'codex', { roleSlug: 'organizer' });
     expect(backendRuns.find(r => r.backend === 'codex')!.env?.BUILDD_MCP_BEARER_TOKEN).toBe(RUNNER_KEY);
-  });
+  }, 30_000);
 
   test('builder role (execution mode) → the task token', async () => {
     await runTask(manager, 'w-tt-builder', undefined, { roleSlug: 'builder', mode: 'execution' });
