@@ -25,7 +25,7 @@ export function failedChecks(runs: readonly (CheckRunInput | null | undefined)[]
   const asCheckRunState = complete.map(r => ({
     name: r.name!,
     status: r.status || '',
-    conclusion: r.conclusion,
+    conclusion: r.conclusion ?? null,
     id: r.id,
     started_at: r.started_at,
   }));
