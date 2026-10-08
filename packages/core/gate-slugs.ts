@@ -241,7 +241,6 @@ export const GATE_SLUGS = {
    * already open and nothing new was dispatched.
    */
   MISSION_BRANCH_REFRESH: 'mission_branch_refresh',
-||||||| parent of 2d9060af2 (feat(schema): dependency_releases ledger and early_release gate slug)
   /**
    * Early release of a dependent task before its upstream PR merges
    * (docs/design/early-release.md). Fires on every release decision — a
