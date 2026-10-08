@@ -652,8 +652,13 @@ export async function runOnceFromCli(opts: {
 
   const isolationRoot = config.workspaceIsolationRoot || join(opts.builddHome, 'once-workspaces');
   // Warm repos (BUILDD_WARM_REPO=1, set only by the cloud Worker): restore the
-  // workspace snapshot before cloning, refresh it after the run.
-  const warm = warmRepoEnabled(opts.env) ? createWarmRepoSession(opts.env, join(opts.builddHome, 'warm-tmp')) : null;
+  // workspace snapshot before cloning, refresh it after the run. A fresh run
+  // restores the dependency cache behind the agent session (deps-gate.ts); a
+  // resumed one adopts its session directly, with no install to gate, so it
+  // restores the cache inline as before.
+  const warm = warmRepoEnabled(opts.env)
+    ? createWarmRepoSession(opts.env, join(opts.builddHome, 'warm-tmp'), { deferCache: !opts.resumeWorkerId })
+    : null;
   const onceResolver = createOnceResolver(
     opts.resolver,
     isolationRoot,
