@@ -70,6 +70,7 @@ export type CiRetrySkipReason =
   | 'head_already_retried'
   | 'retries_exhausted'
   | 'retries_disabled'
+  | 'advisory_only'
   | 'duplicate';
 
 /** Fixed text per code: the ledger coalesces on (gate, outcome, reason), so the PR number lives in `detail`. */
@@ -84,6 +85,7 @@ const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
   head_already_retried: 'no CI retry: an attempt already ran on this head',
   retries_exhausted: 'no CI retry: the PR used its whole CI retry budget',
   retries_disabled: 'no CI retry: CI retries are disabled for this workspace',
+  advisory_only: 'no CI retry: all failed checks are advisory only (Visual QA)',
   duplicate: 'no CI retry: a retry for this PR and head was filed concurrently',
 };
 
@@ -456,10 +458,11 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   // Visual QA is advisory-only: it never gates merge (conclusion: 'neutral').
   // Don't create CI-fix tasks when it fails, since failures are non-blocking
   // and often due to expected reasons (e.g., mission branch migrations not in prod).
-  if (ciLogs.failedJobNames.some(name => name.includes('Visual QA'))) {
+  // Only skip if ALL failures are Visual QA; a real failure alongside it must proceed.
+  if (ciLogs.failedJobNames.length > 0 && ciLogs.failedJobNames.every(name => name.startsWith('Visual QA'))) {
     console.log(`[ci-retry] Skipping CI-fix task for advisory Visual QA failure on ${repoFullName}#${prNumber}`);
-    recordSkip(skipCtx, 'retries_disabled', { reason: 'visual_qa_advisory' });
-    return { kind: 'skipped', reason: 'retries_disabled' };
+    recordSkip(skipCtx, 'advisory_only');
+    return { kind: 'skipped', reason: 'advisory_only' };
   }
 
   // Schema drift is diagnose-only — never a fix agent, automatic or manual.

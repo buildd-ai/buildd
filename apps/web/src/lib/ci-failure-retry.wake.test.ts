@@ -115,4 +115,26 @@ describe('retryCiFailureForPr wakes', () => {
     const id = (out as { taskId: string }).taskId;
     expect(mockWakeTask.mock.calls).toEqual([[id, 'ci.retry']]);
   });
+
+  it('Visual QA-only failure is skipped and does not create a CI-fix task', async () => {
+    failedJobNames = ['Visual QA — spec-driven page audit'];
+    const out = await retryCiFailureForPr(input);
+    expect(out.kind).toBe('skipped');
+    expect((out as { reason: string }).reason).toBe('advisory_only');
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('non-Visual-QA failure still creates a CI-fix task', async () => {
+    failedJobNames = ['Build'];
+    const out = await retryCiFailureForPr(input);
+    expect(out.kind).toBe('dispatched');
+    expect(mockWakeTask.mock.calls.length).toBe(1);
+  });
+
+  it('Visual QA mixed with non-Visual-QA failure creates a CI-fix task', async () => {
+    failedJobNames = ['Visual QA — spec-driven page audit', 'Build'];
+    const out = await retryCiFailureForPr(input);
+    expect(out.kind).toBe('dispatched');
+    expect(mockWakeTask.mock.calls.length).toBe(1);
+  });
 });
