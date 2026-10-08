@@ -111,7 +111,7 @@ export function MobileHome({ items: serverItems, ask, counts, milestones, quietM
   const m = shipped[0];
   const agents = `${counts.liveAgents} agent${counts.liveAgents === 1 ? '' : 's'} working`;
   return <div data-testid="phone-home" className="md:hidden text-text-primary">
-    <p data-testid="phone-home-counts" className="mb-5 text-body text-text-muted">{agents} · {counts.slots.used}/{counts.slots.total} slots · {counts.openMissions} open mission{counts.openMissions === 1 ? '' : 's'}</p>
+    <p data-testid="phone-home-counts" className="mb-5 text-body text-text-muted">{agents}{counts.slots.total > 0 ? ` · ${counts.slots.used}/${counts.slots.total} slots` : ''} · {counts.openMissions} open mission{counts.openMissions === 1 ? '' : 's'}</p>
     {copy.count === 0
       ? <div className="mb-6"><h1 className="sr-only">Home</h1><p data-testid="phone-all-clear" role="status" className="flex flex-wrap items-baseline gap-x-2 border-b border-border-default py-3 font-voice text-lede"><span aria-hidden="true" className="font-bold text-status-success">✓</span>All clear.<span className="font-convo text-meta text-text-muted">Buildd will ask if a decision comes up.</span></p></div>
       : <><h1 className="font-voice text-display font-medium normal-case tracking-normal">{copy.headline}</h1>
