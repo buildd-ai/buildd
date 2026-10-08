@@ -483,8 +483,9 @@ export function HealthClient({
     const costAbsent = consumption.perTask.costUsd.kind === 'unavailable';
     const divergenceAbsent = consumption.modelDivergence.kind === 'unavailable';
     if (!perModelAbsent && !costAbsent && !divergenceAbsent) return null;
-    return 'Seat-based (OAuth) auth reports no per-model usage and no cost, so some numbers below '
-      + 'are blank. Each blank shows its reason in place.';
+    // Plan (subscription) usage does report cost now, valued at list price
+    // (docs/specs/real-and-virtual-cost.md), so the cause is not an auth type.
+    return 'Some usage figures were not recorded in this window, so they are blank. Each blank shows why.';
   }, [consumption]);
 
   const failedSchedules = schedules.filter(isScheduleErrorLive);

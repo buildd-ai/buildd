@@ -202,6 +202,8 @@ measure.
   on it as today, so the cutover changes nothing until bases are reported.
 - A `mixed` row draws only its virtual part, when a split exists; without a
   split it draws its whole cost, as today.
+- The forecast's pool burn rate (`getBudgetForecast`) excludes `real` rows for
+  the same reason.
 - The mission `costBudgetUsd` gate (`getMissionSpendUsd`, and the mission
   block of `getBudgetForecast`) guards money: `virtual` rows never count toward
   it, so plan usage, including interactive sessions on a subscription, is not

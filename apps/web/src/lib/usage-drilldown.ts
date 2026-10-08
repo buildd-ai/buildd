@@ -253,10 +253,10 @@ export function buildShellPanel(current: UsageStats): ShellPanel {
 /**
  * The de-emphasised stand-in for dollar cost: median input tokens per task.
  *
- * Under seat/OAuth auth cost is not approximate, it is ABSENT — `costUsd` comes
- * back `unavailable` with a reason and renders an em-dash. A page whose stated
- * purpose is "what does a task cost" needs something cost-SHAPED for that auth
- * mode, and tokens are measured there. It is a proxy and is labelled as one; it
+ * When no worker recorded a cost, cost is not approximate, it is ABSENT —
+ * `costUsd` comes back `unavailable` with a reason. A page whose stated
+ * purpose is "what does a task cost" needs something cost-SHAPED for that
+ * case, and tokens are measured there. It is a proxy and is labelled as one; it
  * never appears as a dollar figure with a hedge word attached, because that
  * would imply a number exists when none does.
  */
@@ -370,6 +370,8 @@ export interface UsageDrilldownView {
   totals: MetricBlock;
   perTask: PerTaskBlock;
   costProxyTokens: number | null;
+  /** Real and virtual cost side by side, per executor (docs/specs/real-and-virtual-cost.md). */
+  byBasis: UsageStats['byBasis'];
   scan: ScanBounds;
   codeNavigation: CodeNavigationPanel;
   shell: ShellPanel;
@@ -397,6 +399,7 @@ export function buildUsageDrilldownView(input: {
     totals: current.totals,
     perTask: current.perTask,
     costProxyTokens: costProxyTokens(current.perTask.inputTokens),
+    byBasis: current.byBasis,
     scan,
     codeNavigation: buildCodeNavigationPanel(current, previous, resolution.window),
     shell: buildShellPanel(current),
