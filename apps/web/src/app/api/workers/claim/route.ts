@@ -748,9 +748,9 @@ export async function POST(req: NextRequest) {
   // window: a page whose candidates no channel can deliver secrets to fetches
   // the next page, until the window holds candidateLimit runnable candidates
   // (bounded by ROLE_ENV_WINDOW_MAX_PAGES). Without this a backlog of
-  // undeliverable high-priority tasks (2026-10-05: 49 cue email-agent tasks
-  // whose TENANT_ID/DISPATCH_API_KEY lived on another team) fills every window
-  // and the runner never sees the work behind it. Gapped tasks stay in the
+  // undeliverable high-priority tasks (e.g. a role whose secrets live on
+  // another team) fills every window and the runner never sees the work
+  // behind it. Gapped tasks stay in the
   // list so the loop still defers and reports them; the authoritative
   // pre-filter below re-runs after backend flips.
   const candidateLimit = Math.min(Math.max(availableSlots * 5, 25), 100);

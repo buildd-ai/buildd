@@ -6708,9 +6708,9 @@ describe('entity catalog injection at claim time', () => {
       expect(data.diagnostics.deferrals.connector_mismatch).toBe(2);
     });
 
-    // 2026-10-05: 49 cue email-agent tasks whose role secrets lived on another
-    // team filled every window; the over-fetch above does not help once the
-    // undeliverable prefix is longer than the window itself.
+    // A backlog of tasks whose role secrets live on another team can fill
+    // every window; the over-fetch above does not help once the undeliverable
+    // prefix is longer than the window itself.
     it('fetches past a full window of role-env-gapped tasks and claims the runnable task behind them', async () => {
       mockAuthenticateApiKey.mockResolvedValue({
         id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api',
