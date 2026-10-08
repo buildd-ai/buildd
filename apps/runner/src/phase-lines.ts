@@ -30,6 +30,9 @@ export const RUN_PHASES = [
   // A reused container: the clone grown from the packs the reset kept (container-reset.ts).
   'restore_reuse_start', 'restore_reuse_end',
   'worktree_start', 'worktree_end',
+  // Deps in the background (deps-gate.ts): when the agent session started, when
+  // the deps work finished, when the agent first ran a command that needs it.
+  'session_start', 'deps_ready', 'first_gated_tool',
   // The worker's outcome is known (done or failed, not parked): what is left
   // is the runner's tail. A lease waits briefly for a container in its tail
   // rather than starting a fresh one (apps/cloud-runner container-lease.ts).
@@ -47,6 +50,8 @@ export const RUN_METRICS = [
   // A reused container's seed (container-reset.ts): what its fetch brought,
   // and 1 when origin's tip was already kept and no fetch ran.
   'restore_reuse_bytes', 'reuse_fetch_skipped',
+  // deps-gate.ts: total time deps-needing commands were held, and how many were. Last wins.
+  'gate_wait_ms', 'gate_holds',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 

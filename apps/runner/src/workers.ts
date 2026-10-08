@@ -8,7 +8,9 @@ import { BuilddClient } from './buildd';
 import type { Outbox } from './outbox';
 import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch } from './git-clone';
+import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch, isCloudExecutor } from './git-clone';
+import { DepsJob, createDepsGateHook, depsPrelude, DEPS_GATE_HOOK_TIMEOUT_S, type DepsGateStats } from './deps-gate';
+import { emitPhase } from './phase-lines';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -695,6 +697,15 @@ function claimDiagnosticDetail(
     ...(typeof diagnostics.matchedTasks === 'number' ? { matchedTasks: diagnostics.matchedTasks } : {}),
   };
 }
+
+/** The install running behind a cloud session, its gate's numbers, and a structural failure once known. */
+interface DepsEntry {
+  job: DepsJob;
+  stats: DepsGateStats;
+  block?: string;
+}
+/** Keyed by the worker object: never persisted, gone with the worker. */
+const depsJobs = new WeakMap<LocalWorker, DepsEntry>();
 
 export class WorkerManager {
   private config: LocalUIConfig;
@@ -2242,6 +2253,9 @@ export class WorkerManager {
             parentTaskId: fullTask.parentTaskId ?? null,
             onHolderReleased: (holderId) => this.markWorktreeReleased(holderId, worker.id),
           },
+          // Cloud: the install runs behind the agent session (deps-gate.ts).
+          // A host runner installs inline, as before.
+          { deferInstall: isCloudExecutor(process.env) },
         );
       } finally {
         const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
@@ -2352,48 +2366,34 @@ export class WorkerManager {
             }],
           }).catch(() => {});
         }
-        // Dependency install outcome. This used to be unobservable —
-        // installWorkspaceDeps returned void — so a worker could run a full
-        // budget and report `done` with an empty node_modules and nothing
-        // anywhere saying so.
-        //
-        // Fail-vs-degrade splits on whether the runner GUESSED that install
-        // mattered. `skipped` means it did not matter (no manifest, non-bun
-        // toolchain, or a declared manifest the provision gate owns) and raises
-        // nothing at all — that is the population that produced the old
-        // false-alarm noise.
-        const install = setupResult.install;
-        if (install?.status === 'failed') {
-          const where = formatInstallDir(install.dir);
-          const label = `Dependency install failed (${install.failure}) at ${where} — imports may fail`;
-          console.warn(`[Worker ${worker.id}] ${label}`);
-          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
-          this.buildd.updateWorker(worker.id, {
-            appendErrorTraces: [{
-              pattern: 'worktree_install_failed',
-              excerpt: `${install.failure} installing at ${where}: ${install.message}`,
-              source: 'git-operations',
-            }],
-          }).catch(() => {});
-
-          if (install.failure === 'registry-auth' || install.failure === 'toolchain-missing') {
-            // Structural and host-level: not fixable by the agent, and it will
-            // hit every task on this runner. Fail before a budget is spent
-            // rather than producing a `done` with broken imports. The trace
-            // above still lands, so this dedupes into one friction report per
-            // host fault instead of one per worker. Raised through the
-            // session-start boundary below so it gets the same server report
-            // and worktree cleanup as any other start failure.
-            // registry-auth names host, package and the env var the repo's
-            // registry config reads, so the fix is readable off the task card.
-            installBlock = describeInstallFailure(install);
-          } else {
-            // Drift / timeout / unknown: proceed, but visibly. The banner goes
-            // in the prompt (see startSession) and the flag rides the worker
-            // record so a `done` carrying it is machine-visible rather than
-            // invisible.
-            worker.envDegraded = { phase: 'install', failure: install.failure, dir: install.dir };
-          }
+        // Dependency install outcome (surfaceInstallOutcome). Cloud: the
+        // install (and the cache restore it needs) runs behind the session;
+        // its outcome is surfaced the same way when it lands, and a
+        // structural failure then aborts the session instead of blocking its
+        // start. Everywhere else: inline, before the session, as before.
+        if (setupResult.deferredInstall) {
+          const runInstall = setupResult.deferredInstall;
+          const entry: DepsEntry = {
+            job: new DepsJob(async () => { await depsPrelude(); return runInstall(); }),
+            stats: { firstGatedToolAt: null, gateWaitMs: 0, holds: 0, denials: 0 },
+          };
+          depsJobs.set(worker, entry);
+          this.addMilestone(worker, { type: 'status', label: 'Installing dependencies in the background', ts: Date.now() });
+          void entry.job.promise.then((outcome) => {
+            const block = this.surfaceInstallOutcome(worker, outcome);
+            if (outcome.status === 'ok') {
+              this.addMilestone(worker, { type: 'status', label: `Dependencies installed (${Math.round((Date.now() - entry.job.startedAt) / 1000)} s)`, ts: Date.now() });
+            }
+            if (!block) return;
+            entry.block = block;
+            // Not yet started: the start boundary below throws it instead.
+            if (this.sessions?.has(worker.id)) void this.abort(worker.id, block);
+          });
+        } else {
+          // A warm restore's cache extract may still be running (deferCache);
+          // a declared manifest's provision gate installs from it.
+          await depsPrelude();
+          installBlock = this.surfaceInstallOutcome(worker, setupResult.install);
         }
         this.addMilestone(worker, { type: 'status', label: 'Worktree ready', ts: Date.now() });
       } else {
@@ -2466,6 +2466,11 @@ export class WorkerManager {
       // blocks here, inside the error boundary, so it is reported and cleaned up
       // like any other session-start failure — with zero agent budget spent.
       if (installBlock) throw new Error(installBlock);
+      const deps = depsJobs.get(worker);
+      // Codex has no PreToolUse seam to gate on: it waits for the install here.
+      if (deps && (fullTask.backend || 'claude') === 'codex') await deps.job.promise;
+      // A background install that already failed structurally blocks like an inline one.
+      if (deps?.block) throw new Error(deps.block);
       // A cwd that cannot host the task blocks on the same rail, for the same
       // reason: reported, cleaned up, zero agent budget spent.
       if (startBlock) throw new Error(startBlock);
@@ -3189,6 +3194,15 @@ export class WorkerManager {
     // Store session state for sendMessage and abort
     const generation = ++this.sessionGeneration;
     this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath, generation, sessionId: invocationSessionId });
+    // Run report (cloud only): how much of the background deps work this start hid.
+    emitPhase('session_start');
+    // A background install can fail structurally between the start check and
+    // this registration; after it, the install's own handler aborts the session.
+    const depsBlock = depsJobs.get(worker)?.block;
+    if (depsBlock) {
+      this.sessions.delete(worker.id);
+      throw new Error(depsBlock);
+    }
 
     // The agent's buildd MCP auth: a per-task token minted for this session
     // (fresh start, resume and follow-up all pass through here), falling back
@@ -4495,6 +4509,16 @@ export class WorkerManager {
             ? [{ hooks: [this.hookFactory.createClaudeAiArtifactHook(worker, worker.claudeAiArtifacts ?? 'off')] }]
             : []),
           { hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] },
+          // Deps gate (cloud): while the install runs behind the session,
+          // hold the Bash commands that need it. After the permission hook,
+          // so a command it refuses never waits. See deps-gate.ts.
+          ...(!isCodexTask && depsJobs.get(worker)
+            ? [{
+                matcher: 'Bash',
+                timeout: DEPS_GATE_HOOK_TIMEOUT_S,
+                hooks: [createDepsGateHook(depsJobs.get(worker)!.job, depsJobs.get(worker)!.stats)],
+              }]
+            : []),
           // Path-claim hook: auto-claims file paths on Edit/Write/MultiEdit (§6c).
           // Advisory + fail-open — never blocks the edit; Codex tasks have no PreToolUse hooks.
           ...(!isCodexTask
@@ -6749,6 +6773,56 @@ export class WorkerManager {
       label: CHECKPOINT_LABELS[event],
       ts: Date.now(),
     });
+  }
+
+  /**
+   * Surface the runner's own dependency install outcome. Returns the start
+   * block for a structural failure (the caller fails or aborts the worker
+   * with it), undefined otherwise.
+   *
+   * This used to be unobservable — installWorkspaceDeps returned void — so a
+   * worker could run a full budget and report `done` with an empty
+   * node_modules and nothing anywhere saying so.
+   *
+   * Fail-vs-degrade splits on whether the runner GUESSED that install
+   * mattered. `skipped` means it did not matter (no manifest, non-bun
+   * toolchain, a declared manifest the provision gate owns, or deferred) and
+   * raises nothing at all — that is the population that produced the old
+   * false-alarm noise.
+   */
+  private surfaceInstallOutcome(worker: LocalWorker, install: gitOperations.InstallOutcome | undefined): string | undefined {
+    if (install?.status !== 'failed') return undefined;
+    const where = formatInstallDir(install.dir);
+    const label = `Dependency install failed (${install.failure}) at ${where} — imports may fail`;
+    console.warn(`[Worker ${worker.id}] ${label}`);
+    this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+    this.buildd.updateWorker(worker.id, {
+      appendErrorTraces: [{
+        pattern: 'worktree_install_failed',
+        excerpt: `${install.failure} installing at ${where}: ${install.message}`,
+        source: 'git-operations',
+      }],
+    }).catch(() => {});
+
+    if (install.failure === 'registry-auth' || install.failure === 'toolchain-missing') {
+      // Structural and host-level: not fixable by the agent, and it will
+      // hit every task on this runner. Fail before a budget is spent
+      // rather than producing a `done` with broken imports. The trace
+      // above still lands, so this dedupes into one friction report per
+      // host fault instead of one per worker. Raised through the
+      // session-start boundary so it gets the same server report
+      // and worktree cleanup as any other start failure.
+      // registry-auth names host, package and the env var the repo's
+      // registry config reads, so the fix is readable off the task card.
+      return describeInstallFailure(install);
+    }
+    // Drift / timeout / unknown: proceed, but visibly. The banner goes
+    // in the prompt (see startSession; a background install that lands
+    // later tells the agent through the deps gate instead) and the flag
+    // rides the worker record so a `done` carrying it is machine-visible
+    // rather than invisible.
+    worker.envDegraded = { phase: 'install', failure: install.failure, dir: install.dir };
+    return undefined;
   }
 
   async abort(workerId: string, reason?: string, cancelQueued?: boolean) {
