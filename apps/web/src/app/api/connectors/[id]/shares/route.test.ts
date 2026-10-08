@@ -169,6 +169,19 @@ describe('POST /api/connectors/[id]/shares', () => {
     expect(insertCalls).toHaveLength(0);
   });
 
+  // "All my teams" means teams the actor manages: sharing an OAuth connector
+  // into a team where the actor is only a member puts their identity into
+  // that team's agents without that team's admins choosing it.
+  it('returns 403 when the actor is only a member of the target team', async () => {
+    mockTeamMembersFindFirst.mockImplementation(async ({ where }: any) => {
+      const teamId = where.args.find((c: any) => c.a === 'teamId')?.b;
+      return { role: teamId === 'team-2' ? 'member' : 'owner' };
+    });
+    const res = await POST(makeReq('POST', { teamId: 'team-2' }), { params: PARAMS });
+    expect(res.status).toBe(403);
+    expect(insertCalls).toHaveLength(0);
+  });
+
   it('is idempotent: duplicate share returns 200 with the existing row and does not insert', async () => {
     const existing = { connectorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', sharedWithTeamId: 'team-2', grantedByAccountId: null, createdAt: new Date('2026-01-01') };
     mockSharesFindFirst.mockResolvedValue(existing);

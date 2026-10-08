@@ -152,3 +152,67 @@ describe('Claude: the model key is the primary path, the subscription sign-in is
     expect((document.activeElement as HTMLElement | null)?.id).toBe('agent-key');
   });
 });
+
+// A subscription sign-in's refresh token rotates on every use, so a copy per
+// team dies on the first refresh. "All my teams" stays for keys only, and
+// counts only the teams the user manages.
+describe('"All my teams"', () => {
+  async function mountTeams() {
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <AgentBackendsSection
+          workspaces={[
+            { id: 'w1', name: 'One', teamId: 't1' },
+            { id: 'w2', name: 'Two', teamId: 't2' },
+            { id: 'w3', name: 'Three', teamId: 't3' },
+          ]}
+          currentTeamId="t1"
+          manageableTeamIds={['t1', 't2']}
+        />,
+      );
+    });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  }
+  const button = (id: string, text: string) =>
+    [...row(id).querySelectorAll('button')].find((b) => b.textContent?.includes(text));
+  async function openWithAllTeams(id: string) {
+    await act(async () => { row(id).querySelector<HTMLButtonElement>('button[aria-expanded]')!.click(); });
+    await act(async () => { button(id, 'All my teams')!.click(); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  }
+
+  it('counts only managed teams and keeps the API key fan-out', async () => {
+    installFetch({ claude: false, codex: false });
+    window.location.hash = '';
+    await mountTeams();
+    await openWithAllTeams('claude-row');
+    expect(row('claude-row').textContent).toContain('every team you manage (2)');
+    expect(button('claude-row', 'Apply to all 2 teams')).toBeDefined();
+  });
+
+  it('offers no Claude subscription sign-in for all teams', async () => {
+    installFetch({ claude: false, codex: false });
+    window.location.hash = '';
+    await mountTeams();
+    await openWithAllTeams('claude-row');
+    await act(async () => { button('claude-row', 'self-hosted runner only')!.click(); });
+    const text = row('claude-row').textContent ?? '';
+    expect(text).not.toContain('Connect with Claude');
+    expect(text).not.toContain('Paste .credentials.json');
+    expect(text).toContain('can’t be copied to all your teams');
+  });
+
+  it('offers no Codex sign-in for all teams', async () => {
+    installFetch({ claude: false, codex: false });
+    window.location.hash = '';
+    await mountTeams();
+    await openWithAllTeams('codex-row');
+    const text = row('codex-row').textContent ?? '';
+    expect(text).not.toContain('Connect for all');
+    expect(text).not.toContain('auth.json');
+    expect(text).toContain('can’t be copied to all your teams');
+  });
+});
