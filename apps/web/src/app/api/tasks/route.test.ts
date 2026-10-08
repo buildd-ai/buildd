@@ -2624,7 +2624,7 @@ describe('POST /api/tasks', () => {
     expect(capturedValues.pathManifest).toContain('apps/runner/src/env-scan.ts');
   });
 
-  it('inferred manifest overlapping a sibling pending task → auto-dependsOn edge created', async () => {
+  it('inferred manifest overlapping a sibling pending task on the same file → soft same_file evidence, no edge', async () => {
     frictionSetup();
     mockTasksFindFirst.mockResolvedValue(null); // dedup miss
 
@@ -2663,8 +2663,11 @@ describe('POST /api/tasks', () => {
       'apps/runner/src/env-scan.ts',
       'apps/runner/src/workers.ts',
     ]);
-    // The overlap with the sibling task triggered the auto-dependsOn edge
-    expect(capturedValues.dependsOn).toContain('sibling-task-99');
+    // The same-file overlap is decided at claim (HOLD/START), not a stored edge
+    expect(capturedValues.dependsOn ?? []).not.toContain('sibling-task-99');
+    expect(capturedValues.pathDeclaration.softOverlaps).toEqual([
+      { taskId: 'sibling-task-99', paths: ['apps/runner/src/workers.ts'], kind: 'same_file' },
+    ]);
   });
 
   it('manifest inference skipped when caller already provides pathManifest', async () => {
@@ -2987,7 +2990,7 @@ describe('POST /api/tasks', () => {
     expect(captured().pathDeclaration.softOverlaps).toHaveLength(8);
   });
 
-  it('an exact same-file overlap with a queued writer is still a hard inferred edge', async () => {
+  it('an exact same-file overlap with a queued writer is soft same_file evidence, not an edge', async () => {
     const captured = missionPathManifestSetup();
     mockTasksFindMany.mockResolvedValue([
       { id: 'sibling-same-file', pathManifest: ['apps/web/src/lib/shared.ts'] },
@@ -3001,12 +3004,28 @@ describe('POST /api/tasks', () => {
     }));
 
     expect(response.status).toBe(200);
-    expect(captured().dependsOn).toEqual(['sibling-same-file']);
+    expect(captured().dependsOn).toBeUndefined();
     expect(captured().pathDeclaration).toMatchObject({
-      inferredDependsOn: ['sibling-same-file'],
       overlapPolicy: 'v2',
-      softOverlaps: [{ taskId: 'sibling-dir' }],
+      softOverlaps: [
+        { taskId: 'sibling-same-file', kind: 'same_file' },
+        { taskId: 'sibling-dir', kind: 'prefix' },
+      ],
     });
+  });
+
+  it('a same-file overlap on a generated file stays a hard inferred edge', async () => {
+    const captured = missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([{ id: 'sibling-index', pathManifest: ['docs/specs/INDEX.md'] }]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Mission task S', missionId: 'mission-1', pathManifest: ['docs/specs/INDEX.md'] },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().dependsOn).toEqual(['sibling-index']);
   });
 
   it('a migration-namespace overlap stays hard even when prefix-only', async () => {

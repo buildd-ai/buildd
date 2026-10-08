@@ -11,6 +11,7 @@ import {
   isHardOverlapKind,
   isMigrationPath,
   partitionOverlapEdges,
+  readSoftOverlaps,
 } from '../path-overlap';
 
 describe('classifyManifestOverlap', () => {
@@ -24,7 +25,7 @@ describe('classifyManifestOverlap', () => {
     expect(classifyManifestOverlap(['apps/web/src/lib/'], ['apps/web/src/lib']).kind).toBe('prefix');
   });
 
-  it('the same file on both sides is an exact-file overlap (hard)', () => {
+  it('the same file on both sides is an exact-file overlap (soft since task 1141e62e)', () => {
     const o = classifyManifestOverlap(
       ['apps/web/src/lib/explain.ts', 'apps/web/src/lib/other.ts'],
       ['apps/web/src/lib/explain.ts'],
@@ -46,8 +47,8 @@ describe('classifyManifestOverlap', () => {
     expect(classifyManifestOverlap(['b/y.ts', '**'], ['b/y.ts']).kind).toBe('none');
   });
 
-  it('isHardOverlapKind is true only for exact files and migrations', () => {
-    expect(isHardOverlapKind('exact_file')).toBe(true);
+  it('isHardOverlapKind is true only for migrations: same-file overlap is decided at claim', () => {
+    expect(isHardOverlapKind('exact_file')).toBe(false);
     expect(isHardOverlapKind('migration')).toBe(true);
     expect(isHardOverlapKind('prefix')).toBe(false);
     expect(isHardOverlapKind('none')).toBe(false);
@@ -92,10 +93,21 @@ describe('partitionOverlapEdges', () => {
     expect(r.soft).toEqual([{ taskId: 'same-file', paths: ['scripts', 'scripts/run-unit-tests.ts'], kind: 'prefix' }]);
   });
 
-  it('an exact-file overlap with a live or queued writer stays a hard edge', () => {
+  it('an exact-file overlap is soft same_file evidence; a migration path stays a hard edge', () => {
     const r = partitionOverlapEdges(['scripts/run-unit-tests.ts', 'packages/core/drizzle/0400_y.sql'], others);
-    expect([...r.hard].sort()).toEqual(['migration', 'same-file']);
-    expect(r.soft).toEqual([{ taskId: 'dir-owner', paths: ['scripts/run-unit-tests.ts', 'scripts'], kind: 'prefix' }]);
+    expect(r.hard).toEqual(['migration']);
+    expect(r.soft).toEqual([
+      { taskId: 'dir-owner', paths: ['scripts/run-unit-tests.ts', 'scripts'], kind: 'prefix' },
+      { taskId: 'same-file', paths: ['scripts/run-unit-tests.ts'], kind: 'same_file' },
+    ]);
+  });
+
+  it('a same-file overlap on a hard surface (hotspot, generated, serialized) stays a hard edge', () => {
+    const r = partitionOverlapEdges(['scripts/run-unit-tests.ts'], [{ id: 'same-file', pathManifest: ['scripts/run-unit-tests.ts'] }], {
+      isSerialized: (paths) => paths.includes('scripts/run-unit-tests.ts'),
+    });
+    expect(r.hard).toEqual(['same-file']);
+    expect(r.soft).toEqual([]);
   });
 
   it('a workspace-serialized surface is hard even when the overlap is prefix-only', () => {
@@ -107,7 +119,7 @@ describe('partitionOverlapEdges', () => {
   });
 
   it('skip() excludes candidates (already declared, or a deadlock veto)', () => {
-    const r = partitionOverlapEdges(['scripts/run-unit-tests.ts'], others, { skip: (id) => id === 'same-file' });
+    const r = partitionOverlapEdges(['scripts/run-unit-tests.ts'], others, { skip: (id) => id === 'same-file' || id === 'migration' });
     expect(r.hard).toEqual([]);
     expect(r.soft.map(s => s.taskId)).toEqual(['dir-owner']);
   });
@@ -121,5 +133,16 @@ describe('partitionOverlapEdges', () => {
     const many = Array.from({ length: 40 }, (_, i) => ({ id: `t${i}`, pathManifest: [`lib/f${i}.ts`] }));
     const r = partitionOverlapEdges(['lib/'], many, { maxSoft: 5 });
     expect(r.soft).toHaveLength(5);
+  });
+});
+
+describe('readSoftOverlaps', () => {
+  it('keeps the same_file kind; anything unknown reads as prefix', () => {
+    const decl = { softOverlaps: [
+      { taskId: 'a', paths: ['x.ts'], kind: 'same_file' },
+      { taskId: 'b', paths: ['lib'], kind: 'legacy_inferred' },
+      { taskId: 'c', paths: ['lib'], kind: 'weird' },
+    ] };
+    expect(readSoftOverlaps(decl).map(e => e.kind)).toEqual(['same_file', 'legacy_inferred', 'prefix']);
   });
 });

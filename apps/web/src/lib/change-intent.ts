@@ -19,6 +19,8 @@ import { fireGateEvent, GATE_SLUGS } from './gate-ledger';
 
 export { matchesSurface } from './surface-ordering-config';
 import { matchesSurface, resolveSerializedSurfaces } from './surface-ordering-config';
+import { overlapIsHard } from './hard-overlap-surfaces';
+import type { ManifestOverlapKind } from '@buildd/core/path-overlap';
 
 /**
  * Given a list of file paths and the workspace gitConfig, returns the surfaces
@@ -46,17 +48,14 @@ export function resolveMatchedSurfaces(
 // ── Sequence-namespace anchor injection ──────────────────────────────────────
 
 /**
- * Do these overlapping paths touch a workspace serialized surface? Used by the
- * creation-time hard/soft overlap split (`partitionOverlapEdges`): a
- * serialized surface makes even a prefix-only overlap a hard edge. A
- * malformed surface config reads as serialized (fail toward the hard edge).
+ * Is this overlap a hard edge for the workspace? Used by the creation-time
+ * hard/soft overlap split (`partitionOverlapEdges`): a serialized surface makes
+ * even a prefix-only overlap a hard edge; a generated file or explicit hotspot
+ * makes a same-file overlap hard (lib/hard-overlap-surfaces.ts). A malformed
+ * config reads as hard (fail toward the edge).
  */
-export function overlapTouchesSerializedSurface(paths: string[], gitConfig: WorkspaceGitConfig | null | undefined): boolean {
-  try {
-    return resolveSerializedSurfaces(paths, gitConfig).length > 0;
-  } catch {
-    return true;
-  }
+export function overlapTouchesSerializedSurface(paths: string[], gitConfig: WorkspaceGitConfig | null | undefined, kind: ManifestOverlapKind = 'prefix'): boolean {
+  return overlapIsHard(paths, kind, gitConfig, resolveSerializedSurfaces);
 }
 
 /**

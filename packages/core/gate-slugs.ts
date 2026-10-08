@@ -230,6 +230,16 @@ export const GATE_SLUGS = {
    * The denominator for "do notified workers conflict less".
    */
   BASE_ADVANCE_NOTICE: 'base_advance_notice',
+  /**
+   * Live sibling conflict probe (`lib/sibling-conflict-probe.ts`): two live
+   * workers' observed touches share a file, so one runner ran `git merge-tree`
+   * between the two branch heads (mergiraf on the conflicted files when the
+   * workspace enables it). ADVISORY: nothing is blocked. `warned` = a real
+   * conflict, both workers told once per pair inside the debounce
+   * (`detail.notified`); `accepted` = clean, or resolved structurally by
+   * mergiraf. Compared against conflict retries to measure early warning.
+   */
+  SIBLING_CONFLICT_PROBE: 'sibling_conflict_probe',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

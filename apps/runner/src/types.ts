@@ -307,6 +307,11 @@ export interface LocalWorker {
    * Drained by the next successful sync.
    */
   pendingShipReports?: import('@buildd/shared').ShipCheckpointReport[];
+  /** Live sibling conflict probes handed out by the server, waiting to run (sibling-probe.ts). Transient. */
+  siblingProbeQueue?: import('@buildd/shared').SiblingProbeRequest[];
+  siblingProbeRunning?: boolean;
+  /** Probe results not yet reported; drained by the next successful sync. */
+  pendingSiblingProbeResults?: import('@buildd/shared').SiblingProbeResult[];
   /** Coverage-unknown milestones already posted, so a retried ship does not repeat them. Transient. */
   shipCoverageMilestones?: string[];
   /**

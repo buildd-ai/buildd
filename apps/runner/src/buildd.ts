@@ -395,6 +395,10 @@ export class BuilddClient {
     shipCheckpoints?: import('@buildd/shared').ShipCheckpointReport[];
     /** Legacy pre-push/completion sweep flag (servers before `workingSet`). */
     checkpointSweep?: boolean;
+    /** This runner runs live sibling conflict probes (sibling-probe.ts); the server hands them out only then. */
+    siblingProbe?: boolean;
+    /** Results of probes the server handed out on an earlier sync. */
+    siblingProbeResults?: import('@buildd/shared').SiblingProbeResult[];
     /**
      * Sent with a `Deferred:` failure when enforce-mode path claims found a
      * collision: the colliding path, its holder and the checkpoint written. The

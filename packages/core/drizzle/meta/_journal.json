@@ -128,6 +128,13 @@
       "when": 1791427055443,
       "tag": "0267_soft_overlap_legacy_edges",
       "breakpoints": true
+    },
+    {
+      "idx": 268,
+      "version": "7",
+      "when": 1791430906284,
+      "tag": "0268_freezing_hellcat",
+      "breakpoints": true
     }
   ]
 }
