@@ -46,7 +46,7 @@ const TONE_TEXT: Record<StripTone, string> = {
 };
 
 function Cell({ cell, size }: { cell: ListCell; size: 'lg' | 'sm' }) {
-  const h = size === 'lg' ? 'h-[26px]' : 'h-[18px]';
+  const h = size === 'lg' ? 'h-11 md:h-[26px]' : 'h-[18px]';
   return (
     <Link
       href={cell.href}

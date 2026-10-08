@@ -24,6 +24,7 @@ import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
 import FailureKindsFixture from './FailureKindsFixture';
 import DeliveryStatesFixture from './DeliveryStatesFixture';
+import DeliveryActionsFixture, { DELIVERY_ACTION_FIXTURE_STATES, type DeliveryActionFixtureState } from './DeliveryActionsFixture';
 import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
 import EntitlementBlockedFixture from './EntitlementBlockedFixture';
@@ -141,6 +142,10 @@ export default function DevFixturesPage() {
 
     if (state === DELIVERY_STATES_FIXTURE_STATE) {
         return <DeliveryStatesFixture />;
+    }
+
+    if ((DELIVERY_ACTION_FIXTURE_STATES as readonly string[]).includes(state)) {
+        return <DeliveryActionsFixture state={state as DeliveryActionFixtureState} />;
     }
 
     if (state === ANSWER_STATES_FIXTURE_STATE) {

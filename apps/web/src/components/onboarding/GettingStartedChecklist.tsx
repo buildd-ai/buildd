@@ -69,12 +69,16 @@ function StepBody({ id, taskState }: { id: GettingStartedStepId; taskState?: Fir
  * a first task that succeeded, in order. A done step folds to its title and a Done chip; the
  * current step shows how. The host renders nothing once `visible` is false.
  */
-export default function GettingStartedChecklist({ checklist, chatSetupHref }: { checklist: Checklist; chatSetupHref?: string | null }) {
+export default function GettingStartedChecklist({ checklist, chatSetupHref, headingId = 'getting-started-h' }: {
+  checklist: Checklist; chatSetupHref?: string | null;
+  /** Unique per instance: Home renders a phone and a desktop copy in one document. */
+  headingId?: string;
+}) {
   const total = checklist.steps.length;
   return (
-    <section className="card mb-8 p-0" data-testid="getting-started" aria-labelledby="getting-started-h">
+    <section className="card mb-8 p-0" data-testid="getting-started" aria-labelledby={headingId}>
       <div className="px-4 pt-4 pb-3 md:px-5">
-        <Eyebrow as="h2" id="getting-started-h" tone="accent">
+        <Eyebrow as="h2" id={headingId} tone="accent">
           Get started · {checklist.doneCount} of {total}
         </Eyebrow>
       </div>
