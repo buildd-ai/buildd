@@ -6454,6 +6454,72 @@ describe('subscriptions ledger: the webhook records the right event', () => {
     expect(recorded()).toContainEqual({ type: 'task.completed', taskId: 't1', workerId: 'w1', workspaceId: 'ws1' });
   });
 
+  describe('stacked PRs on one task', () => {
+    const mergePayload = (n: number, head = `buildd/abc-x${n}`) => createWebhookRequest('pull_request', {
+      action: 'closed',
+      pull_request: {
+        number: n, merged: true, draft: false,
+        head: { ref: head, sha: `sha-${n}` }, base: { ref: 'main' },
+        html_url: `https://github.com/test-org/test-repo/pull/${n}`,
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    });
+    const worker = (n: number, extra: any = {}) => ({
+      id: 'w1', workspaceId: 'ws1', taskId: 't1', prNumber: n, mergedAt: null,
+      task: { id: 't1', status: 'in_progress', workspaceId: 'ws1', release: 'false', title: 'T', missionId: null },
+      ...extra,
+    });
+    const row = (n: number, extra: any = {}) => ({
+      prUrl: `https://github.com/test-org/test-repo/pull/${n}`, prNumber: n, mergedAt: null, prLifecycleStatus: 'pr_open', ...extra,
+    });
+    const flippedToCompleted = () => updateCalls.some((c) => (c.setValues as any).status === 'completed');
+
+    it('first merge keeps the task in progress while another PR is open', async () => {
+      mockWorkersFindFirst.mockReturnValue(worker(1));
+      selectTableResults = (t: any) => (t === schemaMock.workers ? [row(1), row(2)] : null);
+      await POST(mergePayload(1));
+      expect(flippedToCompleted()).toBe(false);
+      expect(recorded().filter((e: any) => e.type === 'task.completed')).toEqual([]);
+      expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+    });
+
+    it('last merge completes the task and wakes dependents', async () => {
+      mockWorkersFindFirst.mockReturnValue(worker(2));
+      selectTableResults = (t: any) => (t === schemaMock.workers ? [row(1, { mergedAt: new Date(), prLifecycleStatus: 'merged' }), row(2)] : null);
+      await POST(mergePayload(2));
+      expect(flippedToCompleted()).toBe(true);
+      expect(mockResolveCompletedTask).toHaveBeenCalledWith('t1', 'ws1');
+    });
+
+    it('a sibling PR closed unmerged (superseded) does not hold the task open', async () => {
+      mockWorkersFindFirst.mockReturnValue(worker(2));
+      selectTableResults = (t: any) => (t === schemaMock.workers ? [row(1, { prLifecycleStatus: 'closed' }), row(2)] : null);
+      await POST(mergePayload(2));
+      expect(mockResolveCompletedTask).toHaveBeenCalledWith('t1', 'ws1');
+    });
+
+    it('a redelivered first merge, after the sibling landed, does not complete the task twice', async () => {
+      mockWorkersFindFirst.mockReturnValue(worker(1, {
+        mergedAt: new Date(),
+        task: { id: 't1', status: 'completed', workspaceId: 'ws1', release: 'false', title: 'T', missionId: null },
+      }));
+      selectTableResults = (t: any) => (t === schemaMock.workers ? [row(1, { mergedAt: new Date() }), row(2, { mergedAt: new Date() })] : null);
+      await POST(mergePayload(1));
+      expect(flippedToCompleted()).toBe(false);
+      expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+    });
+
+    it('branch-match fallback: a merged PR no worker row owns does not complete a task with another PR open', async () => {
+      mockWorkersFindFirst.mockReturnValue(undefined);
+      mockTasksFindFirst.mockReturnValue({ id: 'abc12345-0000', status: 'in_progress', workspaceId: 'ws1', missionId: null });
+      selectTableResults = (t: any) => (t === schemaMock.workers ? [row(2)] : null);
+      await POST(mergePayload(1, 'buildd/abc12345-x1'));
+      expect(flippedToCompleted()).toBe(false);
+      expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+    });
+  });
+
   it('a closed-unmerged PR records nothing', async () => {
     await POST(createWebhookRequest('pull_request', {
       action: 'closed',
