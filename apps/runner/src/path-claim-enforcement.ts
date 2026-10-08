@@ -349,7 +349,7 @@ export function resolvePrBaseRef(opts: {
 
   const r = resolveTaskPrBase({
     mission,
-    task: { title: task.title, taskClass: task.taskClass, context },
+    task: { title: task.title, taskClass: task.taskClass, context, dependsOn: task.dependsOn },
     head: opts.head ?? null,
     integrationBaseMissing: missingIntegration,
   });

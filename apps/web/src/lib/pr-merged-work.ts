@@ -31,6 +31,7 @@ import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { workerOwnsPr, workerOwnsPrUrl } from '@/lib/repo-scope';
+import { otherOpenPrsOfTask } from '@/lib/task-open-prs';
 
 export interface MergedPrTask {
   id: string;
@@ -166,7 +167,13 @@ export async function runMergedPrWork(p: MergedPrWorkInput): Promise<void> {
   // finished the task); everything after it belongs to the MERGE, and is true
   // whatever the task row already said.
   let transition: 'flipped' | 'already_completed' | 'not_flipped' = 'already_completed';
-  if (task.status !== 'completed') {
+  // A stacked series: the task owns more PRs than this one. Its first merge
+  // must not complete the task; the last one does.
+  const openSiblingPrs = task.status !== 'completed' ? await otherOpenPrsOfTask(task.id, { prUrl: p.prUrl }) : [];
+  if (openSiblingPrs.length > 0) {
+    transition = 'not_flipped';
+    console.log(`Task ${task.id} stays open after PR #${p.prNumber} merged: ${openSiblingPrs.length} other PR(s) still open`);
+  } else if (task.status !== 'completed') {
     // Guarded on the row: the worker's own completion can land between the
     // read and this write, and only the writer that flips it resolves it.
     const [flipped] = await db

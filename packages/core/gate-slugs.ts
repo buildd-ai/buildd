@@ -190,6 +190,8 @@ export const GATE_SLUGS = {
    * `warned` = shadow semantic verdict or a moved head; `rejected` = attempts
    * exhausted, with an operational diagnostic posted. A textual conflict is
    * never recorded here as an operational failure — it goes to the conflict agent.
+   * Also `accepted` with `detail.stage: 'derived_merge'`: a conflict retry the
+   * runner finished itself because every conflict was in a derived file.
    */
   BASE_REFRESH: 'base_refresh',
   /**
@@ -230,6 +232,25 @@ export const GATE_SLUGS = {
    * The denominator for "do notified workers conflict less".
    */
   BASE_ADVANCE_NOTICE: 'base_advance_notice',
+  /**
+   * Keeping a mission's integration branch current with dev
+   * (`lib/mission-branch-refresh.ts`, docs/design/mission-delivery-arc.md P5,
+   * superseded). `accepted` = GitHub's merges API landed dev cleanly (a merge
+   * commit, no agent); `deferred` = the single-flight lease is already held
+   * (debounced) or dev has not moved past the last recorded refresh
+   * (`detail.reason`); `stranded` = a 409 conflict dispatched the
+   * conflict-resolution task named in `detail.conflictTaskId`, or one was
+   * already open and nothing new was dispatched.
+   */
+  MISSION_BRANCH_REFRESH: 'mission_branch_refresh',
+  /**
+   * Early release of a dependent task before its upstream PR merges
+   * (docs/design/early-release.md). Fires on every release decision — a
+   * deterministic rule or the decision model choosing `start_now`,
+   * `start_stacked` or `wait` (each a `dependency_releases` row) — and on every
+   * reconciler action that later revokes or re-bases such a release.
+   */
+  EARLY_RELEASE: 'early_release',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];
