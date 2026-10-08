@@ -105,8 +105,10 @@ mock.module('@/lib/ci-failure-excerpts', () => ({
 }));
 
 // Mock github
+const mockGithubGraphQL = mock(async (..._args: unknown[]) => ({}));
 mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
+  githubGraphQL: mockGithubGraphQL,
   mergePullRequest: mockMergePullRequest,
   githubAppBotLogin: () => 'buildd[bot]',
 }));
@@ -3297,6 +3299,27 @@ describe('PATCH /api/github/pr', () => {
     expect(res.status).toBe(404);
     const data = await res.json();
     expect(data.error).toBe('GitHub repo not found');
+  });
+
+  it('draft:false marks a draft PR ready via GraphQL without closing it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', accountId: 'account-1', prNumber: 42, workspace: WORKSPACE_OK });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubGraphQL.mockClear();
+    mockGithubApi.mockResolvedValue({
+      number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'T', draft: true, node_id: 'PR_node',
+    });
+
+    const res = await PATCH(createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, draft: false },
+    }));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).pr.state).toBe('open');
+    expect(mockGithubGraphQL).toHaveBeenCalledTimes(1);
+    expect(String(mockGithubGraphQL.mock.calls[0][1])).toContain('markPullRequestReadyForReview');
+    expect(mockGithubApi).toHaveBeenCalledTimes(1); // read only, no state:closed PATCH
   });
 
   it('closes PR successfully and returns closed PR data', async () => {
