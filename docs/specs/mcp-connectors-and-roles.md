@@ -36,6 +36,11 @@ assertions:
     type: "symbol"
     name: "mergeCatalog"
     path: "apps/web/src/lib/connector-catalog-merge.ts"
+  - id: "resolve-capability"
+    type: "route"
+    method: "GET"
+    path: "/api/connectors/capabilities"
+    file: "apps/web/src/app/api/connectors/capabilities/route.ts"
   - id: "set-catalog-policy"
     type: "route"
     method: "PUT"
@@ -624,6 +629,60 @@ reconnect. Approaching expiry is deliberately silent.
 - Refresh: `apps/web/src/lib/mcp-connector-refresh.ts`
 - Schema: `packages/core/db/schema.ts` (`secrets.expiryNotifiedAt`,
   `secrets.lastRefreshSucceededAt`)
+
+---
+
+## 6c. Capability discovery (read-only)
+
+**Contract**: An agent or the organizer MAY ask what could satisfy a semantic
+need (`resolve_capability`, `GET /api/connectors/capabilities`) before choosing
+a role. The answer is computed from the rows this spec already defines:
+connectors owned by or shared to the workspace's team, workspace enablement,
+role `connectorRefs`, credential health (§6b), the team's catalog policy (§5b)
+and, for deployment needs, the role's Operator grant. It changes nothing:
+installing, enabling, granting and connecting stay admin/human acts.
+
+- A need is `domain:verb`: domain one of `observability | deployment | database |
+  analytics | work_tracking | docs | source_control`, verb `read | query | write`.
+  A bare domain means `read`. Anything else is rejected, never guessed.
+- Provider coverage comes from a short per-catalog-slug profile
+  (`PROVIDER_PROFILES`), else the catalog entry's category. Provider tools are
+  not modelled: tool names and schemas stay the provider's own.
+- Each candidate reports, separately: `access` (`permitted | auto_grant |
+  ask_admin | forbidden | reconnect | unhealthy`), `health`, `workspace`
+  enablement, the roles that mount it, `compatibility`, `risk` and
+  `runtimeNeeds`. `auto_grant` means "route the task to a role that already
+  mounts it"; no admin action and no runtime toggle happens.
+- `availableNow` is true only when access is `permitted`, health is `ok`, and
+  the provider's compatibility is not `unknown_until_tested`. An expired token
+  awaiting refresh, an unchecked (stdio/assertion) connector, and a provider that
+  may refuse a Buildd-run client (Vercel admits only clients it has approved)
+  are never reported available.
+- "Read" does not mean read-only: mounting a connector exposes every native
+  tool. `risk.writeToolsExposed` says whether that includes writes.
+- A team catalog policy of `blocked` is `forbidden`, installed or not.
+- Runtime needs (browser, Docker, a CLI) stay with task `requiredCapabilities`;
+  a candidate lists only what its own connector needs to start (a stdio binary).
+- No credential value and no owner team id appears in the response. A per-task
+  token reaches only its task's workspace and defaults `roleSlug` to its task's role.
+
+**Acceptance criteria**:
+- AC-1: GIVEN Axiom and Vercel both connected and mounted by the role WHEN
+  `observability:query` is resolved THEN Axiom is first, `exact` and available,
+  and Vercel is `partial` (logs only).
+- AC-2: GIVEN a role that does not mount a connector another role mounts THEN
+  the candidate is `auto_grant` naming that role; GIVEN no role mounts it THEN
+  `ask_admin`.
+- AC-3: GIVEN a credential past the refresh grace, or with a failed refresh, or
+  revoked THEN `reconnect`; GIVEN one just expired THEN not available.
+- AC-4: GIVEN nothing in the team or its catalog serves the need THEN
+  `candidates` is empty and the summary says so.
+
+**Code surface**:
+- Rules: `apps/web/src/lib/capability-discovery.ts`
+- Loader: `apps/web/src/lib/capability-discovery-store.ts`
+- Route: `apps/web/src/app/api/connectors/capabilities/route.ts`
+- MCP: `packages/core/mcp-tools.ts` (`resolve_capability`)
 
 ---
 

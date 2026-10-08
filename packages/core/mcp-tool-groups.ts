@@ -58,6 +58,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   get_path_claim_stats: 'workers',
   get_decision_stats: 'workers',
   list_connectors: 'workers',
+  resolve_capability: 'workers',
   list_runners: 'workers',
   read_evidence: 'workers',
   // PRs, reviews, releases
@@ -229,7 +230,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   runners: {
     parts: [
-      { text: 'connector health', actions: ['list_connectors'] },
+      { text: 'connectors', actions: ['list_connectors', 'resolve_capability'] },
       { text: 'message a running agent', actions: ['send_agent_message'] },
     ],
   },
@@ -297,6 +298,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_path_claim_stats: 'path-claim outcomes',
   get_decision_stats: 'decision-shadow counts',
   list_connectors: 'mounted connectors and their health',
+  resolve_capability: 'what serves a need',
   list_runners: 'slots, branch, build, heartbeat',
   read_evidence: 'stored run logs',
   get_pr: 'PR state, CI, reviews, body',
@@ -355,6 +357,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
+  resolve_capability: '{capability?, roleSlug?}',
   register_skill: '{name, content, slug?, workspaceId?, description?, isRole?, model?, allowedTools?, connectorRefs?, defaultBackend?, …}',
   update_skill: '{slug, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, connectorRefs?, defaultBackend?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
@@ -527,7 +530,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('capability', str, [{ text: 'Ledger rows, e.g. question_gate', actions: ['get_decision_stats'] }]),
   ],
   runners: [
-    param('workspaceId', str, [{ text: WS, actions: ['list_connectors'] }]),
+    param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
   ],
   prs: [

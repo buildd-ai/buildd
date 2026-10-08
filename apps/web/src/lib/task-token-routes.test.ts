@@ -25,6 +25,7 @@ const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Init
 const OPTED_IN = [
   'apps/web/src/app/api/artifacts/[artifactId]/route.ts',
   'apps/web/src/app/api/artifacts/upload-url/route.ts',
+  'apps/web/src/app/api/connectors/capabilities/route.ts',
   'apps/web/src/app/api/connectors/mounted/route.ts',
   'apps/web/src/app/api/decisions/route.ts',
   'apps/web/src/app/api/discrepancies/[id]/route.ts',
