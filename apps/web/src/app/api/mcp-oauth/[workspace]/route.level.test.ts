@@ -142,4 +142,22 @@ describe('mcp-oauth route: interactive worker liveness', () => {
     await callTool('buildd', { action: 'list_tasks', params: {} });
     expect(mockTouchInteractiveWorkers).not.toHaveBeenCalled();
   });
+
+  // Two OAuth sessions of one user must not share an identity: the busy one
+  // kept every abandoned claim of the other alive.
+  it('mints a session id, and a later request echoing it touches as that session only', async () => {
+    process.env.AUTH_SECRET = 'test-secret';
+    sessionAt('admin');
+    const first = await POST(rpc('tools/call', { name: 'buildd', arguments: { action: 'list_tasks', params: {} } }), {
+      params: Promise.resolve({ workspace: WORKSPACE_ID }),
+    });
+    const sid = first.headers.get('mcp-session-id');
+    expect(sid).toMatch(/^s1\./);
+    expect(mockTouchInteractiveWorkers.mock.calls[0][0]).toMatchObject({ sessionKey: null });
+
+    const req = rpc('tools/call', { name: 'buildd', arguments: { action: 'list_tasks', params: {} } });
+    req.headers.set('mcp-session-id', sid!);
+    await POST(req, { params: Promise.resolve({ workspace: WORKSPACE_ID }) });
+    expect(mockTouchInteractiveWorkers.mock.calls[1][0]).toMatchObject({ sessionKey: sid!.split('.')[1] });
+  });
 });

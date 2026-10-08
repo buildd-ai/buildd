@@ -153,3 +153,42 @@ describe('AddConnectionModal catalog', () => {
     await unmount();
   });
 });
+
+describe('AddConnectionModal "All my teams"', () => {
+  // The server refuses a share into a team the actor only belongs to, so the
+  // modal must count and target the teams the actor manages — not every team.
+  function stubTeams() {
+    const calls: Call[] = [];
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      calls.push({ url: String(url), body });
+      const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/workspaces') return json({ workspaces: [{ id: 'w1', name: 'One' }] });
+      if (url === '/api/teams') return json({ teams: [
+        { id: 't1', name: 'Owned', role: 'owner', permissionOverrides: null },
+        { id: 't2', name: 'Admined', role: 'admin', permissionOverrides: null },
+        { id: 't3', name: 'Joined', role: 'member', permissionOverrides: null },
+      ] });
+      if (url === '/api/connectors' && init?.method === 'POST') {
+        return json({ connector: { id: 'c1', teamId: 't1', name: 'Neon', url: 'https://mcp.neon.tech/mcp', authMode: 'oauth', discoveredMetadata: { authMode: 'oauth' } } }, 201);
+      }
+      return json({ entries: CONNECTOR_CATALOG.map(e => ({ ...e, id: null, source: 'builtin', policy: 'available' })) });
+    }) as typeof fetch;
+    return calls;
+  }
+
+  it('shares only into the other teams the actor manages', async () => {
+    const calls = stubTeams();
+    const { el, unmount } = await mount();
+    await click(q(el, 'connector-catalog-neon'));
+    const allTeams = Array.from(el.querySelectorAll('button')).find(b => b.textContent === 'All my teams');
+    expect(allTeams).toBeDefined();
+    await click(allTeams!);
+    expect(el.textContent).toContain('every team you manage (2)');
+    await click(el.querySelector('button[type="submit"]'));
+    await flush();
+    const shared = calls.filter(c => c.url === '/api/connectors/c1/shares').map(c => (c.body as { teamId: string }).teamId);
+    expect(shared).toEqual(['t2']);
+    await unmount();
+  });
+});

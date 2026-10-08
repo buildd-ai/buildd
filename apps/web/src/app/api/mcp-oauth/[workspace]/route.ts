@@ -48,6 +48,7 @@ import { memoryDeciderFor } from '@/lib/memory-decisions';
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
+import { MCP_SESSION_ID_HEADER, mintMcpSessionId, verifyMcpSessionId } from '@/lib/interactive-session';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { scheduleInteractiveTouch } from '@/lib/interactive-worker-liveness';
 import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from '@/lib/interactive-session';
@@ -297,9 +298,16 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   const level = (account.level as SessionLevel) || 'worker';
   // Liveness for this session's interactive (claim_task) workers; see
   // lib/interactive-worker-liveness.ts. After the response; best-effort.
+  // Same session echo as /api/mcp: a request carrying an id we minted is that
+  // session, so its touch reaches only its own claims; any other gets a fresh
+  // id to echo. Without this every OAuth session of a user was one identity
+  // and the busiest kept every abandoned claim alive.
+  const sessionKey = verifyMcpSessionId(req.headers.get(MCP_SESSION_ID_HEADER), account.id);
+  const sessionIdToReturn = sessionKey ? req.headers.get(MCP_SESSION_ID_HEADER) : mintMcpSessionId(account.id);
   scheduleInteractiveTouch({
     accountId: account.id,
     userId: (account as { sessionUserId?: string }).sessionUserId ?? claims.sub ?? null,
+    sessionKey,
     level,
   });
 
@@ -313,6 +321,7 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   const api = createApi(jwt, signInteractiveSession({
     accountId: account.id,
     userId: (account as { sessionUserId?: string }).sessionUserId ?? claims.sub ?? null,
+    sessionKey,
   }));
   const isSensitive = (ws.dataClass as string) === 'sensitive';
   // Same project key /api/mcp resolves, so `learn` writes land in the same
@@ -339,7 +348,11 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   await server.connect(transport);
 
   try {
-    return await transport.handleRequest(req);
+    const res = await transport.handleRequest(req);
+    if (!sessionIdToReturn) return res;
+    const headers = new Headers(res.headers);
+    headers.set(MCP_SESSION_ID_HEADER, sessionIdToReturn);
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
   } finally {
     await transport.close();
     await server.close();
