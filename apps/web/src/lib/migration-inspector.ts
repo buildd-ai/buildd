@@ -1,6 +1,7 @@
 import { githubApi } from '@/lib/github';
 import {
   classifyPullRequestMigrations,
+  getMigrationNumber,
   isGeneratedMigrationPath,
   type MigrationSafety,
   type OpenPullRequestMigration,
@@ -45,8 +46,38 @@ async function readFileAtRef(
 }
 
 /**
+ * Resolve the PR target's CURRENT tip to an immutable SHA, so every "already on
+ * the base" read in one inspection sees the same snapshot. Not the merge base:
+ * a mission branch refreshed from trunk carries trunk's migrations, and GitHub's
+ * three-dot diff still lists them as added until the fork point moves.
+ * Undefined when the base can't be resolved — callers then exclude nothing.
+ */
+async function resolveBaseSha(
+  installationId: number,
+  repoFullName: string,
+  prNumber: number,
+  baseRef: string | null | undefined,
+): Promise<string | undefined> {
+  try {
+    let ref = baseRef ?? undefined;
+    if (!ref) {
+      const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+      ref = typeof pr?.base?.ref === 'string' ? pr.base.ref : undefined;
+    }
+    if (!ref) return undefined;
+    const encodedRef = ref.split('/').map(encodeURIComponent).join('/');
+    const data = await githubApi(installationId, `/repos/${repoFullName}/git/ref/heads/${encodedRef}`);
+    return typeof data?.object?.sha === 'string' ? data.object.sha : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Load executable SQL and compare migration slots in PRs targeting the same
- * base. Identical files inherited by stacked PRs do not claim a second slot.
+ * base. Identical files inherited by stacked PRs do not claim a second slot,
+ * and SQL the target already carries byte-for-byte is not this PR's to
+ * classify — see `resolveBaseSha`.
  */
 export async function inspectPullRequestMigrations(params: {
   installationId: number;
@@ -55,13 +86,14 @@ export async function inspectPullRequestMigrations(params: {
   headSha: string;
   files: GitHubPullRequestFile[];
   /**
-   * This PR's base branch (e.g. `dev`) — when given, a path that already
-   * exists on the base with that exact name and content is dropped from the collision
-   * candidate list before number-matching. Both open PRs inheriting the same
-   * already-merged migration byte-for-byte from the base (because their diff
-   * is computed against a stale fork point) is not a collision — see the
-   * PR #2540 gotcha. Omit only when the base branch genuinely can't be
-   * determined; the check then fails closed exactly as before.
+   * This PR's base branch (e.g. `dev`). Resolved to its current tip SHA; a
+   * migration that exists there at the exact path with identical bytes is
+   * inherited, so it is dropped from both this PR's own classification and
+   * the collision candidate list. Both open PRs inheriting the same
+   * already-merged migration from the base (because their diff is computed
+   * against a stale fork point) is not a collision — see the PR #2540
+   * gotcha. When omitted it is read from the PR; if that fails nothing is
+   * excluded and the check fails closed exactly as before.
    */
   baseRef?: string | null;
 }): Promise<MigrationSafety> {
@@ -78,6 +110,8 @@ export async function inspectPullRequestMigrations(params: {
   const allMigrationFiles = completeFiles.filter((file) =>
     isGeneratedMigrationPath(file.filename),
   );
+  // Deleting or renaming a migration rewrites lineage; no base comparison can
+  // make that inherited.
   const removedMigration = allMigrationFiles.find((file) => file.status === 'removed');
   if (removedMigration) {
     return {
@@ -86,26 +120,15 @@ export async function inspectPullRequestMigrations(params: {
       reason: `deletes generated migration ${removedMigration.filename}`,
     };
   }
-  const changedExistingMigration = allMigrationFiles.find(
-    (file) => file.status !== 'added',
-  );
-  if (changedExistingMigration) {
-    return {
-      safe: false,
-      operationClass: 'CONTRACT',
-      reason: `modifies existing migration ${changedExistingMigration.filename}`,
-    };
-  }
-  const migrationFiles = allMigrationFiles;
   const touchesSchema = completeFiles.some(
     (file) => file.filename === 'packages/core/db/schema.ts',
   );
-  if (!touchesSchema && migrationFiles.length === 0) return { safe: true, operationClass: 'EXPAND' };
+  if (!touchesSchema && allMigrationFiles.length === 0) return { safe: true, operationClass: 'EXPAND' };
 
   const filesWithContent: PullRequestMigrationFile[] = completeFiles.map((file) => ({
     filename: file.filename,
   }));
-  for (const migration of migrationFiles) {
+  for (const migration of allMigrationFiles) {
     try {
       const target = filesWithContent.find((file) => file.filename === migration.filename)!;
       target.content = await readFileAtRef(
@@ -117,6 +140,47 @@ export async function inspectPullRequestMigrations(params: {
     } catch {
       // Missing content is intentionally passed to the classifier, which fails closed.
     }
+  }
+
+  const baseSha = allMigrationFiles.length > 0
+    ? await resolveBaseSha(params.installationId, params.repoFullName, params.prNumber, params.baseRef)
+    : undefined;
+  const readOnBase = (path: string) =>
+    baseSha
+      ? readFileAtRef(params.installationId, params.repoFullName, path, baseSha).catch(() => undefined)
+      : Promise.resolve(undefined);
+
+  const inherited = new Set<string>();
+  for (const migration of allMigrationFiles) {
+    if (migration.status !== 'added' && migration.status !== 'modified') continue;
+    const own = filesWithContent.find((file) => file.filename === migration.filename)!;
+    if (own.content === undefined) continue;
+    if ((await readOnBase(migration.filename)) === own.content) inherited.add(migration.filename);
+  }
+
+  const changedExistingMigration = allMigrationFiles.find(
+    (file) => file.status !== 'added' && !inherited.has(file.filename),
+  );
+  if (changedExistingMigration) {
+    return {
+      safe: false,
+      operationClass: 'CONTRACT',
+      reason: `modifies existing migration ${changedExistingMigration.filename}`,
+    };
+  }
+
+  // Novel SQL must sort after everything it inherits, or drizzle would apply
+  // it out of order on the target.
+  const highestInherited = Math.max(-1, ...[...inherited].map((path) => Number(getMigrationNumber(path))));
+  const outOfOrder = allMigrationFiles.find(
+    (file) => !inherited.has(file.filename) && Number(getMigrationNumber(file.filename)) <= highestInherited,
+  );
+  if (outOfOrder) {
+    return {
+      safe: false,
+      operationClass: 'CONTRACT',
+      reason: `migration ${outOfOrder.filename} is ordered before migrations already on the base`,
+    };
   }
 
   const openPullRequestMigrations: OpenPullRequestMigration[] = [];
@@ -154,12 +218,7 @@ export async function inspectPullRequestMigrations(params: {
         }
         // A path alone cannot prove inheritance: changed SQL in the same file
         // still occupies the same slot.
-        if (params.baseRef) {
-          const onBase = await readFileAtRef(params.installationId, params.repoFullName, path, params.baseRef).catch(
-            () => undefined,
-          );
-          if (own?.content !== undefined && onBase === own.content) continue;
-        }
+        if (own?.content !== undefined && (await readOnBase(path)) === own.content) continue;
         openPullRequestMigrations.push({ path, prNumber: pull.number as number });
       }
     }
@@ -167,5 +226,9 @@ export async function inspectPullRequestMigrations(params: {
     return { safe: false, operationClass: 'CONTRACT', reason: 'could not check migration number collisions' };
   }
 
-  return classifyPullRequestMigrations(filesWithContent, openPullRequestMigrations, params.prNumber);
+  return classifyPullRequestMigrations(
+    filesWithContent.filter((file) => !inherited.has(file.filename)),
+    openPullRequestMigrations,
+    params.prNumber,
+  );
 }
