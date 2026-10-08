@@ -151,6 +151,12 @@ export interface WorkerUsageWrite {
   /** Per-model usage for priced sessions; null when unpriced (see priceSessionUsage). */
   modelUsage: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number }> | null;
   totalUsage: { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number };
+  /**
+   * Per-tool counts, written as resultMeta.toolCounts: the histogram usage stats
+   * read (toolCountsForWorker), same field a runner worker fills. Null when the
+   * hook sent none.
+   */
+  toolCounts: Record<string, number> | null;
   /** Effort and provenance, kept under resultMeta.localSessionUsage. */
   effort: {
     source: 'local-session';
@@ -191,6 +197,7 @@ export function usageWrite(
       cacheReadInputTokens: priced.cacheReadInputTokens,
       cacheCreationInputTokens: priced.cacheCreationInputTokens,
     },
+    toolCounts: w.toolCounts && Object.keys(w.toolCounts).length > 0 ? { ...w.toolCounts } : null,
     effort: {
       source: 'local-session',
       requests: priced.requests,
@@ -600,6 +607,7 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
     const meta = {
       ...(u.modelUsage ? { modelUsage: u.modelUsage } : {}),
       totalUsage: u.totalUsage,
+      ...(u.toolCounts ? { toolCounts: u.toolCounts } : {}),
       localSessionUsage: u.effort,
     };
     const rows = await db
