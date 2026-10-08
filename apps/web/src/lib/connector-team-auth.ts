@@ -45,3 +45,19 @@ export async function resolveConnectorTeam(req: NextRequest): Promise<ConnectorT
 }
 
 export const forbidden = () => NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+
+/**
+ * May this signed-in user change connectors (and their credentials) for
+ * `teamId`? Same rule as /api/connectors writes: the user must belong to the
+ * team, and then hold `manage_connectors` — or have no team_members row, which
+ * for a team they belong to means their personal team.
+ */
+export async function canManageTeamConnectors(userId: string, teamId: string): Promise<boolean> {
+  if (!(await getUserTeamIds(userId)).includes(teamId)) return false;
+  const membership = await db.query.teamMembers.findFirst({
+    where: and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, teamId)),
+    columns: { role: true },
+  });
+  if (!membership) return true;
+  return roleHas(membership.role, 'manage_connectors', await getTeamPermissionOverrides(teamId));
+}

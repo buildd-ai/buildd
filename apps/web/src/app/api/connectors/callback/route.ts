@@ -12,6 +12,9 @@ import {
   OAUTH_STATE_COOKIE,
 } from '@/lib/mcp-oauth';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { getCurrentUser } from '@/lib/auth-helpers';
+import { canManageTeamConnectors } from '@/lib/connector-team-auth';
+import { checkConnectorBlocked } from '@/lib/connector-access-policy';
 
 export const dynamic = 'force-dynamic';
 
@@ -72,6 +75,21 @@ export async function GET(req: NextRequest) {
 
   if (connector.authMode !== 'oauth') {
     return errorRedirect(req, 'connector_not_oauth');
+  }
+
+  // Team binding. The state cookie proves this browser started the flow; the
+  // credential written below is the whole team's, so also require that the
+  // same person is still signed in and still a team admin, and that the team
+  // has not blocked the connector since the flow started.
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser || sessionUser.id !== userId) {
+    return errorRedirect(req, 'session_mismatch');
+  }
+  if (!(await canManageTeamConnectors(userId, connector.teamId))) {
+    return errorRedirect(req, 'forbidden');
+  }
+  if (await checkConnectorBlocked(connector, connector.teamId)) {
+    return errorRedirect(req, 'blocked_by_policy');
   }
 
   // Resolve token endpoint from discoveredMetadata
