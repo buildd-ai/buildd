@@ -400,6 +400,8 @@ UPDATE initiatives i SET
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM initiatives) s WHERE i.id = s.id;
 
 UPDATE missions m SET
+  branch_refresh_lease_token = NULL,
+  branch_refresh_lease_until = NULL,
   title = pg_temp.qa_title('Mission', s.n, m.title),
   description = pg_temp.qa_text(m.description),
   working_branch = CASE WHEN m.working_branch IS NULL THEN NULL ELSE 'buildd/' || left(md5(m.id::text), 8) || '-mission-' || s.n END,
@@ -591,6 +593,10 @@ UPDATE surface_reservations SET
   surface = pg_temp.qa_hash('path/', surface),
   repo_full_name = pg_temp.qa_hash('org-1/repo-', repo_full_name),
   base_ref = pg_temp.qa_branch(base_ref);
+
+UPDATE dependency_releases SET
+  base_branch = pg_temp.qa_branch(base_branch),
+  revoked_reason = pg_temp.qa_text(revoked_reason);
 
 UPDATE path_claims SET
   path = pg_temp.qa_hash('path/', path);
