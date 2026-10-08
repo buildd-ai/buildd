@@ -202,11 +202,24 @@ describe('session usage', () => {
     expect(Number(r.cost_usd)).toBeCloseTo((100 * 2 + 10_000 * 0.2 + 1000 * 2.5 + 500 * 10) / 1e6, 6);
     expect(r.result_meta.modelUsage['claude-sonnet-5']).toMatchObject({ inputTokens: 100, outputTokens: 500, cacheReadInputTokens: 10_000, cacheCreationInputTokens: 1000 });
     expect(r.result_meta.localSessionUsage).toMatchObject({ source: 'local-session', toolCalls: 7, subagents: 1, costUnknown: false });
+    // No per-tool counts from this (older-shape) report: no histogram is written.
+    expect(r.result_meta.toolCounts).toBeUndefined();
     // An older, smaller report (replayed or out of order) does not lower anything.
     await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: usage(workerId, [m({ input: 1, cacheRead: 0, cacheWrite5m: 0, output: 1, requests: 1 })]) } as LocalSessionEvent);
     const again = await row(workerId);
     expect(again.input_tokens).toBe(11_100);
     expect(Number(again.cost_usd)).toBeCloseTo(Number(r.cost_usd), 6);
+  });
+
+  test('per-tool counts become the worker\'s tool histogram, the one usage stats read', async () => {
+    const s = sid();
+    const { workerId } = await seedClaim(account);
+    await send(account, { event: 'start', client: 'claude', clientSessionId: s });
+    await send(account, { event: 'bind', client: 'claude', clientSessionId: s, workerId });
+    const u = usage(workerId);
+    u.workers[0] = { ...u.workers[0], toolCounts: { Bash: 4, mcp__buildd__buildd: 3 } } as any;
+    await send(account, { event: 'touch', client: 'claude', clientSessionId: s, usage: u } as LocalSessionEvent);
+    expect((await row(workerId)).result_meta.toolCounts).toEqual({ Bash: 4, mcp__buildd__buildd: 3 });
   });
 
   test('an unpriced model writes tokens but no cost, flagged unknown', async () => {
