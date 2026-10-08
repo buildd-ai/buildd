@@ -72,7 +72,7 @@ const LIVE_WORKER = new Set(['running', 'starting', 'idle']);
 const DOCK_FOR_DELIVERY_TONE: Record<DeliveryTone, { tone: DockTone; stopped: boolean }> = {
   needs: { tone: 'needs', stopped: false },
   live: { tone: 'live', stopped: false },
-  stalled: { tone: 'live', stopped: false },
+  stalled: { tone: 'needs', stopped: false },
   landed: { tone: 'landed', stopped: false },
   closed: { tone: 'idle', stopped: false },
   failed: { tone: 'needs', stopped: true },

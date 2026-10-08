@@ -66,7 +66,9 @@ describe('S17: every surface agrees with the one DeliveryView', () => {
       expect(tile === 'waiting').toBe(false);
       if (yours) expect(tile).toBe('review');
       expect(feed.state === 'needs_you' && feed.needsYou === 'pr').toBe(yours);
-      expect(dock.tone === 'needs' && dock.label !== 'Failed').toBe(yours);
+      // Dock tone 'needs' is used for both "yours" and "stalled" states.
+      const isStalled = card === 'STALLED';
+      expect(dock.tone === 'needs' && dock.label !== 'Failed').toBe(yours || isStalled);
       expect(chat.tone === 'attention').toBe(yours);
 
       const shipped = deliveryShipped(d);
@@ -84,7 +86,12 @@ describe('S17: every surface agrees with the one DeliveryView', () => {
         expect(['FIXING', 'STALLED']).toContain(card);
         expect(tile).toBe('running');
         expect(feed.state).toBe('moving');
-        expect(dock.tone).toBe('live');
+        // Stalled states (BLOCKED_ON_TRUNK, or REPAIRING with certain CTAs) use warning tone in the dock.
+        if (card === 'STALLED') {
+          expect(dock.tone).toBe('needs');
+        } else {
+          expect(dock.tone).toBe('live');
+        }
       }
       if (deliverySettled(d)) expect(feed.state === 'done' || failed).toBe(true);
     });
@@ -168,7 +175,7 @@ const TABLE: Row[] = [
 
 // Each surface's palette, read back to the canonical tone.
 const CARD_STAGE: Record<DeliveryTone, string> = { needs: 'WAITING_INPUT', live: 'FIXING', stalled: 'STALLED', landed: 'DONE', closed: 'DONE', failed: 'FAILED' };
-const DOCK_TONE: Record<DeliveryTone, string> = { needs: 'needs', live: 'live', stalled: 'live', landed: 'landed', closed: 'idle', failed: 'needs' };
+const DOCK_TONE: Record<DeliveryTone, string> = { needs: 'needs', live: 'live', stalled: 'needs', landed: 'landed', closed: 'idle', failed: 'needs' };
 const CHAT_TONE: Record<DeliveryTone, string> = { needs: 'attention', live: 'live', stalled: 'neutral', landed: 'ok', closed: 'idle', failed: 'bad' };
 
 // Unrelated titles, so the board never folds one row into another as its retry.
