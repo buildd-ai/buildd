@@ -104,7 +104,6 @@ interface Worker {
   instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response'; deliveryState?: 'pending' | 'delivered' }>;
   pendingInstructions: string | null;
   updatedAt: string | null;
-  account?: { authType: string } | null;
   resultMeta?: {
     stopReason: string | null;
     terminalReason?: string | null;

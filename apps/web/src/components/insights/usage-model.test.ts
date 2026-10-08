@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { usageByRole, summarizeBand, bandTaskListHref, parseBandFilter } from './usage-model';
+import { usageByRole, usageByBasis, summarizeBand, bandTaskListHref, parseBandFilter } from './usage-model';
 import { sampleFlowSeries } from '@/app/app/(protected)/health/insights/sample-series';
 it('attributes worker totals to their own role and tier, excludes outside-window workers and keeps unknown tiers', () => {
   const rows = [
@@ -56,4 +56,52 @@ it('builds usage from worker rows once, preserving retry roles and all recorded 
   expect(groups[0].tiers.map(t => t.tier)).toEqual(['standard', 'premium-plus', 'budget', 'unknown']);
   expect(groups[1].role).toBe('reviewer');
   expect(groups[1].tokens).toBe(120);
+});
+
+// docs/specs/real-and-virtual-cost.md: real and virtual dollars are separate
+// columns; mixed and unknown are kept out of both.
+it('splits each role and tier into real and virtual cost', () => {
+  const rows = [
+    { role: 'builder', tier: 'standard', tokens: 10, costUsd: 2, hours: 1, basis: 'real' as const, executor: 'runner' as const },
+    { role: 'builder', tier: 'standard', tokens: 10, costUsd: 5, hours: 1, basis: 'virtual' as const, executor: 'interactive' as const },
+    { role: 'builder', tier: 'standard', tokens: 10, costUsd: 1, hours: 1, basis: 'unknown' as const, executor: 'runner' as const },
+  ];
+  const [g] = usageByRole(rows);
+  expect(g).toMatchObject({ realUsd: 2, virtualUsd: 5, costUsd: 8 });
+  expect(g.tiers[0]).toMatchObject({ realUsd: 2, virtualUsd: 5 });
+});
+it('totals usage per basis and per executor, and names unknown on its own', () => {
+  const rows = [
+    { role: 'a', tier: null, tokens: 10, costUsd: 2, hours: 0, basis: 'real' as const, executor: 'runner' as const },
+    { role: 'a', tier: null, tokens: 30, costUsd: 5, hours: 0, basis: 'virtual' as const, executor: 'interactive' as const },
+    { role: 'a', tier: null, tokens: 5, costUsd: 1, hours: 0, basis: 'unknown' as const, executor: 'runner' as const },
+    { role: 'a', tier: null, tokens: 0, costUsd: 0, hours: 3, basis: null, executor: 'runner' as const },
+  ];
+  const s = usageByBasis(rows);
+  expect(s.total.real).toEqual({ workers: 1, tokens: 10, costUsd: 2 });
+  expect(s.total.virtual).toEqual({ workers: 1, tokens: 30, costUsd: 5 });
+  expect(s.total.unknown).toEqual({ workers: 1, tokens: 5, costUsd: 1 });
+  expect(s.total.mixed.workers).toBe(0);
+  expect(s.byExecutor.interactive.virtual.costUsd).toBe(5);
+  expect(s.byExecutor.runner.real.costUsd).toBe(2);
+  expect(s.combinedUsd).toBe(8);
+});
+it('carries each worker\'s basis and executor from the fold', async () => {
+  const { buildFlowSeries } = await import('@/lib/insights-flow');
+  const from = 0, to = 7 * 86400000;
+  const base = {
+    parentTaskId: null, roleSlug: 'builder', tier: 'standard', taskTitle: 'x', taskStatus: 'completed', workspaceId: 'ws', missionId: null,
+    status: 'completed', startedAt: 3600000, completedAt: 7200000, updatedAt: 7200000,
+    prNumber: null, mergedAt: null, prLifecycleStatus: null, prLastCheckedAt: null, prSupersededAt: null, prAbandonedAt: null,
+    inputTokens: 100, outputTokens: 20, costUsd: 1,
+  };
+  const s = buildFlowSeries({ window: { from, to }, now: to, bucketMs: 3600000,
+    workers: [
+      { ...base, workerId: 'a', taskId: 'a', costBasis: 'real', runner: 'http://localhost:8766' },
+      { ...base, workerId: 'b', taskId: 'b', costBasis: 'virtual', runner: 'mcp' },
+      { ...base, workerId: 'c', taskId: 'c', costBasis: null, runner: null },
+    ],
+    releases: [], releaseTasks: [], releaseWorkspaceIds: [],
+  });
+  expect(s.usage!.map(u => [u.basis, u.executor]).sort()).toEqual([['real', 'runner'], ['unknown', 'runner'], ['virtual', 'interactive']]);
 });
