@@ -618,10 +618,12 @@ cell's tick slot, minimum 1px, at every n ≤ 64. At 4.1px a direct mark is a
 
 ## 9. Next open
 
-**Rule NX-1**: Next open cycles through **active** cells only, in strip order
-(§2.1), starting after the selection and wrapping. Held cells are skipped:
-there is nothing to do on a held task except look at its blockers, which the
-marks already show.
+**Rule NX-1**: Next open cycles through **open** cells only (active and not
+failed, `openIndices`), in strip order (§2.1), starting after the selection
+and wrapping. Held cells are skipped: there is nothing to do on a held task
+except look at its blockers, which the marks already show. Failed cells are
+skipped too: the header counts them apart (TONE-1), so the cycle must not
+visit a cell the count does not call open.
 
 Readiness decides membership (active vs held); topology decides sequence
 (strip order). The two are not alternatives: Next open uses both, and because
@@ -634,7 +636,9 @@ which counts held cells the button then visits; after this change the count
 and the cycle set are the same set.
 
 **Rule NX-3**: label states: `Next open · 06` / `Only open task · 06` /
-`All tasks landed` (unchanged) / **new** `Nothing open · 3 held` when a = 0
+`All tasks landed` (unchanged) / `Nothing open · 2 failed` when a = 0 and a
+cell has failed (it selects the leftmost failed cell) / **new**
+`Nothing open · 3 held` when a = 0, nothing failed
 and h > 0 — enabled, and it selects the leftmost held cell (whose blocker is
 off-strip or in a cycle; there is no other way for every non-landed cell to
 be held).
