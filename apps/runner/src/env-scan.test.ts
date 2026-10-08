@@ -22,6 +22,7 @@ mock.module('fs', () => ({
 }));
 
 import { scanEnvironment, checkBrowserCapability, checkBwrapSupport, type ScanConfig } from './env-scan';
+import { CAPABILITY_MCP_GROUP_TOOLS } from '@buildd/shared';
 import { resetBrowserCapabilityCache } from './browser-capability';
 
 describe('checkBwrapSupport', () => {
@@ -209,6 +210,12 @@ describe('scanEnvironment', () => {
     expect(env.labels.arch).toBeDefined();
     expect(env.labels.hostname).toBeDefined();
     expect(env.scannedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('always advertises the MCP group-tools capability', () => {
+    // The MCP server serves a worker session the group tools only when its
+    // runner advertised this; this build matches buildd actions on them.
+    expect(scanEnvironment().envKeys).toContain(CAPABILITY_MCP_GROUP_TOOLS);
   });
 
   it('includes "browser" in envKeys when headless Chromium is available', () => {
