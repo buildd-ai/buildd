@@ -11,6 +11,7 @@ import { normalizeBackend } from '@/lib/normalize-backend';
 import { isUuid } from '@/lib/uuid';
 import { parseOperatorGrantInput, withOperatorGrantMetadata, type OperatorGrantConfig } from '@/lib/operator-capability';
 import { AGENT_CAPABILITY_NAMES, roleMayHold } from '@/lib/permission-registry';
+import { can } from '@/lib/permissions';
 
 function computeContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -74,6 +75,11 @@ export async function POST(
       if (!hasAccess) {
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
       }
+    }
+
+    // manage_agent_roles in the role's team (a plain skill stays member-writable).
+    if (teamDefault.isRole && !(await can({ kind: 'user', userId: user.id }, 'manage_agent_roles', teamDefault.teamId))) {
+      return NextResponse.json({ error: 'Managing agent roles requires team admin' }, { status: 403 });
     }
 
     // Agent capability grant (docs/specs/agent-capabilities.md): same rule as
