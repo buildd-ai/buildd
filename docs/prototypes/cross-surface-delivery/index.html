@@ -544,7 +544,7 @@ function missions() {
         <dt>Agent slots</dt><dd>Agents working / agent seats your runners offer. Replaces “11 running · 1 agent on it”.</dd>
       </dl></div>
     <div class="tools">
-      <div class="row"><input class="search" type="search" placeholder="Search missions" aria-label="Search missions" value="${esc(STATE.q)}" id="q">
+      <div class="row"><input class="search" type="search" placeholder="Search" aria-label="Search missions" value="${esc(STATE.q)}" id="q">
         <label class="sr" for="sort">Sort</label>
         <select class="sort" id="sort">${[['attention', 'Needs attention'], ['advanced', 'Recently advanced'], ['closest', 'Closest to landing'], ['name', 'Name']].map(([k, l]) => `<option value="${k}" ${STATE.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="filters" role="group" aria-label="Filter missions">
@@ -628,7 +628,7 @@ function transitions() {
       ${f('1 · 10:02', 'audit', 0, 'PR opened at a1b2c3', 'Review and CI start on a1b2c3.', 'Home: unchanged. Nothing to ask.')}
       ${f('2 · 10:20', 'repair', 1, 'Review asked for changes', 'Two blocking notes. A fix is dispatched automatically.', 'Not a Needs you item. Activity shows the notes.')}
       ${f('3 · 10:48', 'repair', 1, 'Fix pushed: d4e5f6', 'a1b2c3’s CI pass and any verdict for it are marked superseded.', 'Mission row keeps ↻1; progress does not move.')}
-      ${f('4 · 10:55', 'audit', 2, 'Renewed audit on d4e5f6', 'Re-review and CI both bound to d4e5f6.', 'Audit ↻2 = second audit round, not a second task.')}
+      ${f('4 · 10:55', 'audit', 1, 'Renewed audit on d4e5f6', 'Re-review and CI both bound to d4e5f6.', '↻N counts repairs on this task (here 1), the same N on every surface. The audit now running is its second round, not a second task.')}
       ${f('5 · 11:03', 'landing', 0, 'Approved and green on d4e5f6', 'Merge into the mission branch requested.', '')}
       ${f('6 · 11:04', 'landed', 0, 'Landed on the mission branch', 'Landed count goes 33 → 34; 35 starts.', 'Trunk release is a separate, later milestone.')}
     </div></section>
