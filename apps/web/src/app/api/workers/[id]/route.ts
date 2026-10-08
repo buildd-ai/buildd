@@ -70,6 +70,7 @@ import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
+import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
@@ -823,6 +824,10 @@ export async function PATCH(
     // success exit for the 'auto' output-requirement gate below, distinct from
     // the `error` param (which marks the task failed).
     discardEdits,
+    // complete_task's claim that a pr_required task's work already landed in
+    // a merged PR it does not own. Checked against GitHub by the
+    // outputRequirement gate below, never trusted as given.
+    alreadyShippedIn,
     // SDK result metadata
     resultMeta,
     // Transient subagent progress (not persisted — forwarded via Pusher only)
@@ -1278,6 +1283,9 @@ export async function PATCH(
   // release gate so a branch-merge workspace config does not flip the task to
   // failed because the worker branch was never pushed to the remote.
   let skipRelease = false;
+  // Set by the pr_required gate when `alreadyShippedIn` names a PR GitHub
+  // confirms merged; snapshotted onto tasks.result for audit.
+  let alreadyShipped: { prNumber: number; prUrl: string } | null = null;
   // Lifted out of the outputRequirement block below (which only runs when
   // outputReq !== 'none') so the planning-contract guard can see a PR that was
   // auto-detected from GitHub even on a task with no output requirement.
@@ -1777,6 +1785,7 @@ export async function PATCH(
                     taskClass: terminalTaskRow[0].taskClass,
                     missionId: terminalTaskRow[0].missionId,
                     context: terminalTaskRow[0].context,
+                    dependsOn: terminalTaskRow[0].dependsOn,
                   }
                 : null,
               head: worker.branch,
@@ -1906,6 +1915,42 @@ export async function PATCH(
         }
       }
 
+      // pr_required, already shipped: the work the task asks for landed in a
+      // merged PR the task neither owns nor names (another task got there
+      // first). The caller names it with `alreadyShippedIn`; it counts only if
+      // GitHub says it is merged in the linked repo. It is recorded on the
+      // task result, not adopted onto this worker: the PR belongs to another
+      // task, and this worker taking it over would confuse that PR's own
+      // merge, supersession and shutdown handling.
+      let alreadyShippedRefusal: string | null = null;
+      const shippedPrNumber = alreadyShippedIn == null
+        ? null
+        : Number(String(alreadyShippedIn).trim().replace(/^#/, ''));
+      if (outputReq === 'pr_required' && !hasPR && shippedPrNumber !== null) {
+        if (!Number.isInteger(shippedPrNumber) || shippedPrNumber <= 0) {
+          alreadyShippedRefusal = `alreadyShippedIn must be a PR number, got ${JSON.stringify(alreadyShippedIn)}.`;
+        } else if (!repoWithInstallation) {
+          alreadyShippedRefusal = `PR #${shippedPrNumber} cannot be verified: this workspace has no linked GitHub repo with the app installed.`;
+        } else {
+          try {
+            const pr = await githubApi(
+              repoWithInstallation.installation.installationId,
+              `/repos/${repoWithInstallation.fullName}/pulls/${shippedPrNumber}`,
+            );
+            if (pr?.merged) {
+              alreadyShipped = {
+                prNumber: shippedPrNumber,
+                prUrl: typeof pr.html_url === 'string' ? pr.html_url : `https://github.com/${repoWithInstallation.fullName}/pull/${shippedPrNumber}`,
+              };
+            } else {
+              alreadyShippedRefusal = `PR #${shippedPrNumber} in ${repoWithInstallation.fullName} is not merged, so it does not show the work shipped.`;
+            }
+          } catch {
+            alreadyShippedRefusal = `PR #${shippedPrNumber} could not be read from ${repoWithInstallation.fullName}.`;
+          }
+        }
+      }
+
       // Standing ask from the outputRequirement-rejection bug: a gate-rejected
       // completion used to discard the agent's summary/structuredOutput with
       // zero persistence — a 60-turn run's only record was a 400 in the
@@ -2013,7 +2058,7 @@ export async function PATCH(
         filesChanged: Math.max(filesChanged ?? 0, worker.filesChanged ?? 0),
         dirtyWorktree: effectiveDirtyWorktree,
         observedTouches: sessionObservedTouches,
-        hasPR, mergedAt: worker.mergedAt, discardEdits,
+        hasPR: hasPR || !!alreadyShipped, mergedAt: worker.mergedAt, discardEdits,
         summary: body.summary, summarySource: body.summarySource,
       }) && !(await hasDeliverableArtifact(true))) {
         const frictionSignature = await persistRejectedCompletionPayload('silent_completion');
@@ -2096,17 +2141,48 @@ export async function PATCH(
 
       // pr_required: always require a PR (regardless of commits)
       if (outputReq === 'pr_required' && !hasPR && !evidenceIsDeliverable) {
-        const frictionSignature = await persistRejectedCompletionPayload('pr_required');
-        return NextResponse.json({
-          error: 'This task requires a pull request before completing. Use create_pr to open one.',
-          hint: 'create_pr',
-          // Machine-readable identity of the refusal, so the runner reports
-          // this as the output-gate decision it is instead of unwinding into
-          // its crash handler. Same slug the gate_events row above carries —
-          // one vocabulary, not two.
+        // A merged PR elsewhere does not ship this worker's own edits, so they
+        // need the same explicit discard the `auto` arm asks for.
+        const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
+        const strandsOwnEdits = (effectiveCommits > 0 || effectiveDirtyWorktree) && !discardReason;
+        if (!alreadyShipped || strandsOwnEdits) {
+          const frictionSignature = await persistRejectedCompletionPayload('pr_required');
+          const error = alreadyShipped
+            ? `PR #${alreadyShipped.prNumber} is merged, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
+            : alreadyShippedRefusal
+              ? `This task requires a pull request before completing. ${alreadyShippedRefusal}`
+              : 'This task requires a pull request before completing. Use create_pr to open one. If the work already landed in a merged PR this task does not own, call complete_task with `alreadyShippedIn` set to that PR number.';
+          return NextResponse.json({
+            error,
+            hint: 'create_pr',
+            // Machine-readable identity of the refusal, so the runner reports
+            // this as the output-gate decision it is instead of unwinding into
+            // its crash handler. Same slug the gate_events row above carries —
+            // one vocabulary, not two.
+            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+            frictionSignature,
+          }, { status: 400 });
+        }
+        fireGateEvent({
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
-          frictionSignature,
-        }, { status: 400 });
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'accepted',
+          reason: 'completion accepted under pr_required: work already shipped in a merged PR',
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: {
+            outputRequirement: 'pr_required',
+            alreadyShippedIn: alreadyShipped.prNumber,
+            commits: effectiveCommits,
+            dirtyWorktree: effectiveDirtyWorktree,
+            ...(discardReason ? { discardEdits: discardReason.slice(0, 500) } : {}),
+          },
+        });
+        // Nothing of this worker's own branch is meant to ship.
+        skipRelease = true;
       }
 
       // artifact_required: require PR or artifact (regardless of commits)
@@ -3638,6 +3714,9 @@ export async function PATCH(
           ...(typeof discardEdits === 'string' && discardEdits.trim() && {
             discardedEdits: isSensitive ? 'edits discarded' : discardEdits.trim(),
           }),
+          // The merged PR the pr_required gate accepted as carrying this
+          // task's work (see `alreadyShippedIn` above).
+          ...(alreadyShipped && { alreadyShippedIn: alreadyShipped }),
         };
 
         // Snapshot unique MCP servers into task result
@@ -4231,6 +4310,16 @@ export async function PATCH(
       summaryProvenance: body.summarySource === 'agent' || body.summarySource === 'fallback' ? body.summarySource : null,
     });
   }
+
+  // A conflict retry the runner finished itself (derived files only, no agent).
+  // After the write landed, so a refused completion is never counted.
+  const derivedMergeEvent = derivedMergeGateEvent(status, body.derivedMergeFinish, {
+    workspaceId: worker.workspaceId,
+    missionId: taskMissionId,
+    taskId: worker.taskId,
+    workerId: worker.id,
+  });
+  if (derivedMergeEvent) fireGateEvent(derivedMergeEvent);
 
   // The worker's terminal write landed. Module reactions: memory use labels
   // (lib/knowledge-subscribers.ts), scheduled after the response. The first

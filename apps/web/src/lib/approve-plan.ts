@@ -389,7 +389,6 @@ export async function approvePlan(
           ...(emitsPlanSpecPath
             ? { specSource: { specPath: emitsPlanSpecPath, planningTaskId } satisfies SpecSourceContext }
             : {}),
-          ...(mission?.integrationBranchEnabled && mission?.workingBranch ? { headBranch: mission.workingBranch } : {}),
           ...(integrationBase ? { baseBranch: integrationBase } : {}),
         },
       })
@@ -501,15 +500,7 @@ async function wakeReadyChildren(
  *     the claim route's shared mission branch, or the runner's
  *     `<branch>-w<workerId8>` fallback when the requested branch was already
  *     held by another worktree (`git-operations.ts` shared-branch guard).
- *  2. `context.headBranch` — the shared mission working branch (seeded from
- *     `missions.workingBranch`). The claim route uses it verbatim and never
- *     consults the generator, so reading the dependency's persisted context is
- *     how the mission branch is honoured. When a mission has opted into an
- *     integration branch (integrationBranchEnabled=true), all child tasks are
- *     created with headBranch set to the mission's working branch so they all
- *     work on the shared branch. The organizer's planning task does not get
- *     headBranch set (even for A′ missions) — it stays on its own task branch.
- *  3. Only if neither exists: predict, via the SAME generator the claim route
+ *  2. Only if no worker exists yet: predict, via the SAME generator the claim route
  *     calls. This is genuinely unavoidable here — pass 1 has only just created
  *     the dependency, so no worker can exist yet — but it is now one function,
  *     not a copy that can drift.

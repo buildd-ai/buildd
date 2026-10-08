@@ -84,6 +84,14 @@ mock.module('@/lib/mission-integration-branch', () => ({
   reportMissionBranchUnresolved: mockReportMissionBranchUnresolved,
 }));
 
+// Early release's stacking mechanics: does a start_stacked release exist for
+// this (dependent, base) pair? Default: no — the module's own tests cover the
+// lookup itself; here only whether create_pr acts on the answer.
+const mockFindStackedReleaseForBase = mock(() => Promise.resolve(false));
+mock.module('@/lib/early-release-stacking', () => ({
+  findStackedReleaseForBase: mockFindStackedReleaseForBase,
+}));
+
 // Mocks for the mission-integration-branch auto-review feature
 const mockCreateReviewerTask = mock(() => Promise.resolve({ id: 'reviewer-task-1' }) as any);
 const mockFindLiveReviewerTaskForHead = mock(() => Promise.resolve(null) as any);
@@ -342,6 +350,8 @@ describe('POST /api/github/pr', () => {
     mockPickReviewerRole.mockReturnValue({ role: 'reviewer', source: 'policy' });
     mockListWorkspaceRoles.mockReset();
     mockListWorkspaceRoles.mockResolvedValue([{ slug: 'reviewer', isRole: true }]);
+    mockFindStackedReleaseForBase.mockReset();
+    mockFindStackedReleaseForBase.mockResolvedValue(false);
 
     // Restore default chain mock for update
     mockWorkersUpdate.mockReturnValue({
@@ -1114,6 +1124,45 @@ describe('POST /api/github/pr', () => {
         expect(body.base).toBe('mission/checkout-arc-1a2b3c4d');
       });
     });
+
+    // Having the mission integration branch as the task's base proves nothing
+    // about a head. A worker provisioned onto that branch itself (before claim
+    // stopped handing it out) must not claim an arbitrary head, and create_pr
+    // must not rebind workers.branch to a head it never proved.
+    describe('worker sitting on its mission integration branch', () => {
+      const INTEGRATION = 'mission/checkout-arc-1a2b3c4d';
+      const UNRELATED = 'task/no-id-in-name';
+      const onIntegration = () => agentWorker({
+        branch: INTEGRATION,
+        task: { id: TASK_ID, title: 'feat: own thing', description: '', context: { baseBranch: INTEGRATION }, dependsOn: [], missionId: 'obj-1', taskClass: 'work' },
+      });
+
+      beforeEach(() => {
+        mockMissionsFindFirst.mockResolvedValue({ workingBranch: INTEGRATION, integrationBranchEnabled: true });
+        mockWorkersFindMany.mockReturnValue([]);
+      });
+
+      it('fresh create: refuses an unrelated head as head_not_owned and leaves workers.branch alone', async () => {
+        mockWorkersFindFirst.mockResolvedValue(onIntegration());
+        const payloads = captureUpdatePayloads();
+        const res = await post({ head: UNRELATED });
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+        expect(opened()).toBe(false);
+        expect(payloads.some(p => 'branch' in p)).toBe(false);
+      });
+
+      it('adoption: refuses a PR whose real head is unrelated and leaves workers.branch alone', async () => {
+        mockWorkersFindFirst.mockResolvedValue(onIntegration());
+        mockGithubApi.mockImplementation((_i: number, path: string) =>
+          Promise.resolve(path === '/repos/owner/repo/pulls/9' ? { number: 9, head: { ref: UNRELATED }, base: { ref: INTEGRATION } } : null));
+        const payloads = captureUpdatePayloads();
+        const res = await post({ head: UNRELATED, prUrl: 'https://github.com/owner/repo/pull/9' });
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+        expect(payloads.some(p => 'branch' in p)).toBe(false);
+      });
+    });
   });
 
   describe('Option A′ — derive, don’t accept (P1)', () => {
@@ -1408,10 +1457,18 @@ describe('POST /api/github/pr', () => {
     });
 
     it('respects a stacked-phase task’s predecessor base instead of forcing the integration branch', async () => {
-      const predecessorBranch = 'buildd/predecessor00-earlier-thing';
+      const predecessorId = '9f8e7d6c-1111-2222-3333-444444444444';
+      const predecessorBranch = `buildd/${predecessorId.slice(0, 8)}-earlier-thing`;
       mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
       mockWorkersFindFirst.mockResolvedValue(taskWorker({
-        task: { id: 't-2', missionId: 'obj-1', title: 'Second phase', taskClass: 'work', context: { baseBranch: predecessorBranch } },
+        task: {
+          id: 't-2',
+          missionId: 'obj-1',
+          title: 'Second phase',
+          taskClass: 'work',
+          context: { baseBranch: predecessorBranch },
+          dependsOn: [predecessorId],
+        },
       }));
       mockGithubReposFindFirst.mockResolvedValue(REPO);
       optedInMission();
@@ -1428,6 +1485,80 @@ describe('POST /api/github/pr', () => {
       const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
       const body = JSON.parse((createCall as any[])[2].body);
       expect(body.base).toBe(predecessorBranch);
+    });
+
+    // Early release's stacking mechanics (docs/design/early-release.md): a
+    // `start_stacked` dependent opens its PR as a draft against the upstream's
+    // branch, since the upstream might still change before it merges. The
+    // base itself resolves exactly like the plan-step stacked-phase case
+    // above (f965170a's dependsOn verification covers both); this test is
+    // about the one thing early release adds — forcing draft: true.
+    it('opens the dependent’s PR as a draft when its base is an early-release stacked branch', async () => {
+      const upstreamId = 'ab12cd34-5555-6666-7777-888899990000';
+      const upstreamBranch = `buildd/${upstreamId.slice(0, 8)}-upstream-thing`;
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({
+        taskId: 't-2',
+        task: {
+          id: 't-2',
+          missionId: 'obj-1',
+          title: 'Dependent thing',
+          taskClass: 'work',
+          context: { baseBranch: upstreamBranch },
+          dependsOn: [upstreamId],
+        },
+      }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockFindStackedReleaseForBase.mockImplementation((taskId: string, base: string) =>
+        Promise.resolve(taskId === 't-2' && base === upstreamBranch));
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+      const body = JSON.parse((createCall as any[])[2].body);
+      expect(body.base).toBe(upstreamBranch);
+      expect(body.draft).toBe(true);
+    });
+
+    it('does not force a draft when no early-release release matches the resolved base', async () => {
+      const predecessorId = '9f8e7d6c-1111-2222-3333-444444444444';
+      const predecessorBranch = `buildd/${predecessorId.slice(0, 8)}-earlier-thing`;
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({
+        task: {
+          id: 't-2',
+          missionId: 'obj-1',
+          title: 'Second phase',
+          taskClass: 'work',
+          context: { baseBranch: predecessorBranch },
+          dependsOn: [predecessorId],
+        },
+      }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      // Default mock already resolves false — this is a plan-step stack, not
+      // an early-release one.
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+      const body = JSON.parse((createCall as any[])[2].body);
+      expect(body.draft).toBe(false);
     });
 
     it('resolves a recovery task (context.baseBranch === head) to the integration base', async () => {

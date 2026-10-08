@@ -3585,14 +3585,24 @@ describe('POST /api/workers/claim', () => {
         });
       });
 
-      it("executor 'cloud': the endpoint is never resolved or attached", async () => {
+      it("executor 'cloud': the endpoint is never attached; only a non-secret toolSearchDisabled marker", async () => {
         await withEncryptionKey(async () => {
           setupTeamWithEveryCredential();
           mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint }));
           const data = await claimWith({ executor: 'cloud' });
-          expect(mockResolveAgentModelRoute).not.toHaveBeenCalled();
           expect(data.workers[0].modelEndpoint).toBeUndefined();
+          expect(data.workers[0].toolSearchDisabled).toBe(true);
           expect(JSON.stringify(data)).not.toContain('sk-endpoint-example');
+        });
+      });
+
+      it("executor 'cloud': an endpoint that passes ToolSearch through adds no marker", async () => {
+        await withEncryptionKey(async () => {
+          setupTeamWithEveryCredential();
+          mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint: { ...endpoint, toolSearch: true } }));
+          const data = await claimWith({ executor: 'cloud' });
+          expect(data.workers[0].modelEndpoint).toBeUndefined();
+          expect('toolSearchDisabled' in data.workers[0]).toBe(false);
         });
       });
     });

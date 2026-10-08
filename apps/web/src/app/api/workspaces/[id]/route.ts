@@ -15,6 +15,7 @@ import { findRemovedPathFieldInGitConfig, isRunnerSize, isWorkspaceExecutor, rem
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 import { AGENT_GITHUB_CREDENTIALS_OPT_OUT } from '@buildd/core/agent-github-credentials';
+import { validateEarlyReleaseConfig } from '@/lib/early-release-mode';
 
 const RUNNER_PREFERENCES = new Set(['any', 'user', 'service', 'action']);
 const WEBHOOK_EVENTS = new Set(['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled']);
@@ -341,6 +342,12 @@ export async function PATCH(
             { status: 400 },
           );
         }
+      }
+      // Early-release opt-in: exact modes only, so a typo can never quietly
+      // release dependents before their upstream merges (or appear to and not).
+      if ('earlyRelease' in gitConfig) {
+        const error = validateEarlyReleaseConfig((gitConfig as Record<string, unknown>).earlyRelease);
+        if (error) return NextResponse.json({ error }, { status: 400 });
       }
       // Derived files: refuse any rule the runner would drop on read (repo-wide
       // pattern, migration chain, malformed), so what is stored is what runs.

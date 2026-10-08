@@ -357,6 +357,9 @@ export class BuilddClient {
     verificationEvidence?: Record<string, unknown>;
     // Structured output (for structured_predicate evaluation by server)
     structuredOutput?: Record<string, unknown>;
+    // A conflict retry the runner finished with no agent (merge-drivers.ts finishDerivedMerge).
+    derivedMergeFinish?: import('@buildd/shared').DerivedMergeFinishReport;
+    summarySource?: 'agent' | 'fallback';
     // Subagent spans — terminal-only flush (completed/failed/error). Never sent on hot path.
     subagentSpans?: Array<{
       taskId: string;

@@ -592,7 +592,12 @@ export async function POST(req: NextRequest) {
     // A per-task token files work only onto its own task's mission, never
     // another mission on the team, whatever its level.
     if (missionId && apiAccount && !(await taskScopeAllowsMission(apiAccount, missionId))) {
-      return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+      return NextResponse.json(
+        {
+          error: "A task token may create tasks only in its own task's mission. This mission exists on your team but is outside your token's scope; ask a person or an organizer to file the task.",
+        },
+        { status: 403 },
+      );
     }
     const subjectPolicy = resolveSubjectPolicy(targetWorkspace.gitConfig?.subjectPolicy);
 

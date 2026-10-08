@@ -19,7 +19,7 @@ import { describeProseFindings, scanPrProse } from '@buildd/core/no-prod-data-pr
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { agentRunMayActOnPr, authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
-import { needsHeadHolders, ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict, type InteractiveHeadHolder } from '@/lib/agent-capabilities/pr-ownership';
+import { ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict, type InteractiveHeadHolder } from '@/lib/agent-capabilities/pr-ownership';
 import { INTERACTIVE_RUNNER } from '@/lib/interactive-session';
 import { repoProtectedBranches } from '@/lib/agent-capabilities/github';
 import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
@@ -66,6 +66,7 @@ import { ATTEMPT_FOOTER_PATTERN, checkFreshRetryPr, freshRetryPrRefusal, retryAt
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
+import { findStackedReleaseForBase } from '@/lib/early-release-stacking';
 
 
 /**
@@ -459,13 +460,13 @@ export async function POST(req: NextRequest) {
           task: worker.task,
           protectedBranches: repoProtectedBranches(worker.workspace ?? {}, ownRepo?.defaultBranch),
           interactiveWorker: isInteractiveWorker,
-          otherHeadHolders: needsHeadHolders(isInteractiveWorker, worker.branch, worker.task) ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, observedHead) : undefined,
+          otherHeadHolders: isInteractiveWorker ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, observedHead) : undefined,
         }, collectRetryLineage);
         if (!ownership.owned) return refusePrOwnership(worker, ownership, 'pr.adopt');
         // Record what was actually adopted: later lookups (get_pr, merge_pr,
         // CI attribution) key off workers.branch, and the generated name
         // claim_task handed this worker was never the real one.
-        if ((ownership.basis === 'interactive_head' || ownership.basis === 'cut_from_assigned_base') && worker.branch !== observedHead) {
+        if (ownership.basis === 'interactive_head' && worker.branch !== observedHead) {
           await db.update(workers).set({ branch: observedHead, updatedAt: new Date() }).where(eq(workers.id, workerId));
           worker.branch = observedHead;
         }
@@ -696,7 +697,7 @@ export async function POST(req: NextRequest) {
           task: worker.task,
           protectedBranches: repoProtectedBranches(workspace, repo.defaultBranch),
           interactiveWorker: isInteractiveWorker,
-          otherHeadHolders: needsHeadHolders(isInteractiveWorker, worker.branch, worker.task) ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, head) : undefined,
+          otherHeadHolders: isInteractiveWorker ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, head) : undefined,
         }
       : null;
     const headOwnership = ownershipInput
@@ -707,7 +708,7 @@ export async function POST(req: NextRequest) {
     // attribution, and the DERIVE-DON'T-ACCEPT mission-base check just below)
     // all key off workers.branch, and the generated name claim_task handed
     // this worker was never the real one.
-    if (headOwnership && headOwnership.owned && (headOwnership.basis === 'interactive_head' || headOwnership.basis === 'cut_from_assigned_base') && worker.branch !== head) {
+    if (headOwnership && headOwnership.owned && headOwnership.basis === 'interactive_head' && worker.branch !== head) {
       await db.update(workers).set({ branch: head, updatedAt: new Date() }).where(eq(workers.id, workerId));
       worker.branch = head;
     }
@@ -1030,10 +1031,7 @@ export async function POST(req: NextRequest) {
     // stacked-plan phase (`isStackedPhaseBase` — its correct base is a
     // sibling task's own branch, not the integration branch).
     if (integrationBase && !isMissionPrOwner && !isStackedPhase) {
-      // A worker assigned the integration branch itself pushed its real work to a
-      // task branch cut from it; that head is legitimate (ownership checked above).
-      const assignedIntegrationBranch = worker.branch === integrationBase && head !== integrationBase;
-      if (worker.branch && head !== worker.branch && !assignedIntegrationBranch) {
+      if (worker.branch && head !== worker.branch) {
         const error = `Task PR head '${head}' does not match this worker's own branch ('${worker.branch}'). A task PR's head must be the branch this worker actually committed to.`;
         // The embedded branch names are exactly what normalizeErrorSignature
         // collapses, so four workers hitting this refusal land on one row
@@ -1100,6 +1098,13 @@ export async function POST(req: NextRequest) {
 
     // Create the PR via GitHub API
     const effectiveBase = prBase.base ?? 'main';
+    // Early release's stacking mechanics (docs/design/early-release.md): a
+    // `start_stacked` dependent's PR targets its upstream's own branch, not a
+    // merge candidate yet, so it opens as a draft regardless of what the
+    // caller asked for — the upstream might still change before it merges.
+    // The webhook un-drafts it once the upstream actually lands
+    // (`undraftStackedDependents`, called from the merge handler).
+    const earlyReleaseStacked = await findStackedReleaseForBase(worker.taskId, effectiveBase);
     let prData: any;
     try {
       prData = await githubApi(
@@ -1113,7 +1118,7 @@ export async function POST(req: NextRequest) {
             body: effectivePrBody,
             head,
             base: effectiveBase,
-            draft: draft || false,
+            draft: draft || earlyReleaseStacked || false,
           }),
         }
       );

@@ -196,7 +196,13 @@ async function startWorkerWithTask(
   }] }));
 
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 200));
+  // Wait for the session (and its closing turn) to finish, not a fixed sleep:
+  // on a loaded CI host a still-running session leaks its skill syncs and
+  // query options into the next test.
+  const deadline = Date.now() + 5000;
+  while (manager.getWorker(workerId)?.status === 'working' && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 20));
+  }
   return manager.getWorker(workerId);
 }
 

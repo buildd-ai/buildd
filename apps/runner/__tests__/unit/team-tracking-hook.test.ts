@@ -209,7 +209,10 @@ async function startWorkerWithMessages(
 
   await manager.claimAndStart(task);
   // Wait for async session to process all messages
-  await new Promise(r => setTimeout(r, 300));
+  const deadline = Date.now() + 5000;
+  while (manager.getWorker(workerId)?.status === 'working' && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 20));
+  }
   return manager.getWorker(workerId);
 }
 
