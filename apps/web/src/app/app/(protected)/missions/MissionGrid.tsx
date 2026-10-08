@@ -14,6 +14,7 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { MissionReleaseFooter, type ReleaseFooterData } from '@/components/MissionReleaseFooter';
 import { SlotMeter } from '@/components/fleet/SlotMeter';
+import { Select } from '@/components/ui/Select';
 import {
   DELIVERY_KIND, DELIVERY_STAGES, deliveryStageIndex, repairBadge,
   type DeliveryTone,
@@ -44,6 +45,8 @@ const TONE_EDGE: Record<DeliveryTone, string> = {
   success: 'border-l-status-success', info: 'border-l-status-info', warning: 'border-l-status-warning',
   ink: 'border-l-accent', muted: 'border-l-border-default', error: 'border-l-status-error',
 };
+
+const SORT_OPTIONS = PORTFOLIO_SORTS.map(s => ({ value: s.key, label: s.label, description: s.title }));
 
 /** Shared column template: the header and every row line up from lg. */
 const COLUMNS = 'lg:grid-cols-[164px_minmax(0,1.3fr)_190px_minmax(0,1fr)_48px]';
@@ -98,16 +101,18 @@ export function MissionGrid({
             onChange={e => setQ(e.target.value)}
             className="min-h-11 min-w-0 flex-1 border-2 border-border-strong bg-card px-3 font-mono text-[16px] text-text-primary placeholder:text-text-muted md:min-h-9 md:text-[13px]"
           />
-          <label className="sr-only" htmlFor="portfolio-sort">Sort</label>
-          <select
+          {/* Short labels keep the trigger whole at phone width; the full meaning is each option's second line. */}
+          <Select<PortfolioSort>
             id="portfolio-sort"
-            data-testid="portfolio-sort"
+            aria-label="Sort"
+            testId="portfolio-sort"
             value={sort}
-            onChange={e => setSort(e.target.value as PortfolioSort)}
-            className="min-h-11 shrink-0 border-2 border-border-strong bg-card px-2 font-mono text-[13px] text-text-primary md:min-h-9"
-          >
-            {PORTFOLIO_SORTS.map(s => <option key={s.key} value={s.key} title={s.title}>{s.label}</option>)}
-          </select>
+            onChange={setSort}
+            options={SORT_OPTIONS}
+            menuMinWidth={200}
+            align="end"
+            className="shrink-0"
+          />
         </div>
         <div className="relative min-w-0">
           <div
@@ -136,19 +141,17 @@ export function MissionGrid({
               );
             })}
             {workspaces.length > 1 && (
-              <>
-                <label className="sr-only" htmlFor="portfolio-workspace">Workspace</label>
-                <select
-                  id="portfolio-workspace"
-                  data-testid="portfolio-workspace"
-                  value={workspaceId}
-                  onChange={e => setWorkspaceId(e.target.value)}
-                  className="min-h-9 max-w-[180px] shrink-0 border border-border-default bg-card px-2 font-mono text-[12px] text-text-secondary"
-                >
-                  <option value="">All workspaces</option>
-                  {workspaces.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
-                </select>
-              </>
+              <Select
+                id="portfolio-workspace"
+                aria-label="Workspace"
+                testId="portfolio-workspace"
+                size="sm"
+                value={workspaceId}
+                onChange={setWorkspaceId}
+                options={[{ value: '', label: 'All workspaces' }, ...workspaces.map(w => ({ value: w.id, label: w.name }))]}
+                menuMinWidth={200}
+                className="w-[180px] shrink-0"
+              />
             )}
           </div>
           {/* The chips scroll sideways on phones; the fade says there is more past the edge. */}
