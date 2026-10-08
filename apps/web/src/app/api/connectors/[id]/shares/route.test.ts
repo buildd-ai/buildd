@@ -20,6 +20,14 @@ const mockDeleteReturning = mock(() => [] as any[]);
 const insertCalls: { table: any; values: any }[] = [];
 const deleteCalls: { table: any; where: any }[] = [];
 
+import { fakeCan } from '@/lib/connector-team-auth.fixtures';
+
+// can() runs against the registry defaults with the caller's role read from
+// the teamMembers mock; no row (undefined) = no membership, which holds nothing.
+mock.module('@/lib/permissions', () => ({
+  can: fakeCan(async (userId, teamId) =>
+    (await (mockTeamMembersFindFirst as any)({ where: { op: 'and', args: [{ a: 'userId', b: userId }, { a: 'teamId', b: teamId }] } }))?.role),
+}));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: mockGetUserTeamIds }));
@@ -152,6 +160,23 @@ describe('POST /api/connectors/[id]/shares', () => {
     expect(insertCalls).toHaveLength(0);
   });
 
+  it('returns 403 when the actor has no membership row in the owner team (fails closed)', async () => {
+    mockTeamMembersFindFirst.mockResolvedValue(undefined);
+    const res = await POST(makeReq('POST', { teamId: 'team-2' }), { params: PARAMS });
+    expect(res.status).toBe(403);
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('returns 403 when the actor has no membership row in the target team (fails closed)', async () => {
+    mockTeamMembersFindFirst.mockImplementation(async ({ where }: any) => {
+      const teamId = where.args.find((c: any) => c.a === 'teamId')?.b;
+      return teamId === 'team-2' ? undefined : { role: 'admin' };
+    });
+    const res = await POST(makeReq('POST', { teamId: 'team-2' }), { params: PARAMS });
+    expect(res.status).toBe(403);
+    expect(insertCalls).toHaveLength(0);
+  });
+
   it('returns 400 when sharing to the owner team itself (no self-share)', async () => {
     const res = await POST(makeReq('POST', { teamId: 'team-1' }), { params: PARAMS });
     expect(res.status).toBe(400);
@@ -217,6 +242,13 @@ describe('DELETE /api/connectors/[id]/shares', () => {
   // §1b AC-4: only an admin of the OWNER team may revoke a share.
   it('returns 403 when the actor is a non-admin member of the owner team', async () => {
     mockTeamMembersFindFirst.mockResolvedValue({ role: 'member' });
+    const res = await DELETE(makeReq('DELETE', { teamId: 'team-2' }), { params: PARAMS });
+    expect(res.status).toBe(403);
+    expect(deleteCalls).toHaveLength(0);
+  });
+
+  it('returns 403 on revoke when the actor has no membership row in the owner team (fails closed)', async () => {
+    mockTeamMembersFindFirst.mockResolvedValue(undefined);
     const res = await DELETE(makeReq('DELETE', { teamId: 'team-2' }), { params: PARAMS });
     expect(res.status).toBe(403);
     expect(deleteCalls).toHaveLength(0);

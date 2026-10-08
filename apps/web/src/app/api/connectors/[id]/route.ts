@@ -12,6 +12,12 @@ import { discoverOAuthMetadata, registerClient, getCallbackUrl } from '@/lib/mcp
 import { registrationRefusalBody } from '@/lib/connector-provision';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { isUuid } from '@/lib/uuid';
+import { canWriteTeamConnectors } from '@/lib/connector-team-auth';
+
+const refuseWrite = () => NextResponse.json(
+  { error: 'forbidden', message: 'Changing or deleting a connector requires the manage_connectors permission in its team.' },
+  { status: 403 },
+);
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -92,6 +98,7 @@ export async function PATCH(
   if (!connector) {
     return NextResponse.json({ error: 'Connector not found' }, { status: 404 });
   }
+  if (!(await canWriteTeamConnectors(auth, connector.teamId))) return refuseWrite();
 
   let body: {
     name?: string;
@@ -197,6 +204,7 @@ export async function DELETE(
   if (!connector) {
     return NextResponse.json({ error: 'Connector not found' }, { status: 404 });
   }
+  if (!(await canWriteTeamConnectors(auth, connector.teamId))) return refuseWrite();
 
   try {
     // Delete associated secrets first (cascade handles connectorWorkspaces)
