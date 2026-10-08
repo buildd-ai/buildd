@@ -133,7 +133,7 @@ describe('POST /api/quality-scout/runs/[id]/evidence', () => {
     expect(signed[0].key).toMatch(new RegExp(`^evidence/${WS}/scout-runs/${run.id}/command_output/\\d+-0\\.log\\.gz$`));
     expect(rows[0]).toMatchObject({ scoutRunId: run.id, workspaceId: WS, taskId: null, workerId: null, bytes: 1200, backendId: 'backend-one' });
     // Nothing about the backend beyond the signed URL itself.
-    expect(JSON.stringify(body)).not.toContain('b-1');
+    expect(JSON.stringify(body)).not.toContain('backend-one');
   });
 
   it('a non-holder gets no URL: wrong lease id 409, another team 404, no key 401', async () => {
