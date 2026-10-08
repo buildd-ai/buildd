@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { ScopeSelector, type ShareScope } from '@/components/ScopeSelector';
 import { ConnectorIcon } from '@/components/ConnectorIcon';
+import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 import { CONNECTOR_CATALOG, catalogEntryForUrl, normalizeConnectorUrl, type ConnectorCatalogEntry, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
 
 interface CreatedConnector {
@@ -102,8 +103,9 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
         if (wsList.length > 0) setSelectedWorkspaceId(wsList[0].id);
       }
       if (teamsRes.ok) {
-        const data = await teamsRes.json() as { teams?: { id: string; name: string }[] };
-        setTeams(data.teams ?? []);
+        const data = await teamsRes.json() as { teams?: { id: string; name: string; role?: string | null; permissionOverrides?: PermissionOverrides | null }[] };
+        // "All my teams" = teams the user manages; the shares route refuses the rest.
+        setTeams((data.teams ?? []).filter((t) => roleHas(t.role, 'manage_connectors', t.permissionOverrides ?? null)));
       }
     }
     void loadScopeData();
