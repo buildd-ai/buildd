@@ -27,13 +27,22 @@ describe('ciRedFloorWhere', () => {
 });
 
 describe('checksFromSuites', () => {
-  it('red since the newest failed suite completed', () => {
+  it('only the newest suite determines verdict: old failures are superseded by new passes', () => {
     const r = checksFromSuites([
       { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:59:00Z' },
       { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:00:00Z' },
       { status: 'completed', conclusion: 'timed_out', updated_at: '2026-10-02T11:30:00Z' },
     ]);
-    expect(r).toEqual({ lifecycle: 'ci_failed', redSinceMs: Date.parse('2026-10-02T11:30:00Z') });
+    expect(r).toEqual({ lifecycle: 'ci_green', redSinceMs: null });
+  });
+
+  it('red since the newest failed suite completed', () => {
+    const r = checksFromSuites([
+      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:59:00Z' },
+      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:00:00Z' },
+      { status: 'completed', conclusion: 'timed_out', updated_at: '2026-10-02T11:30:00Z' },
+    ]);
+    expect(r).toEqual({ lifecycle: 'ci_failed', redSinceMs: Date.parse('2026-10-02T11:59:00Z') });
   });
 
   it('a running suite is running, with no red-since', () => {
