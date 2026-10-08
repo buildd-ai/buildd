@@ -220,7 +220,9 @@ Rules that need no permission, enforced in the same routes:
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
-| `apps/web/src/app/api/secrets/route.ts:103` | team model key | owner, admin, personal team | admin | `manage_team_model_keys` |
+| `apps/web/src/app/api/secrets/route.ts:134` | team model key, Cloudflare token | owner, admin, personal team | admin | `manage_team_model_keys` |
+| `apps/web/src/app/api/secrets/route.ts:134` | any other team-, workspace- or account-wide secret | owner, admin, personal team | admin | `manage_team_credentials` |
+| `apps/web/src/lib/team-credential-access.ts:13` | connect, replace or delete a workspace Claude/Codex credential (refresh stays open to members) | owner, admin, personal team | — | `manage_team_credentials` |
 | `apps/web/src/app/api/inference-keys/route.ts:37` | team-scope inference keys | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/app/api/inference-keys/verify/route.ts:29` | verify a team-scope key | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/app/api/inference-keys/openrouter/start/route.ts:37` | start OpenRouter link | owner, admin, personal team | — | `manage_inference_providers` |
@@ -283,7 +285,6 @@ route moves onto the permission. All are overridable.
 | Permission | Covers | Session | Key |
 |---|---|---|---|
 | `assign_team_roles` | move a member between member and admin (owner moves stay `assign_team_owner`) | owner, admin | — |
-| `manage_team_credentials` | write or delete a team- or workspace-wide agent credential not covered by `manage_team_model_keys`, incl. workspace Claude/Codex credentials | owner, admin | admin |
 | `manage_team_notifications` | team notification settings (Pushover, notify webhook) | owner, admin | admin |
 | `create_workspace` | create a workspace in the team | owner, admin | admin |
 | `manage_agent_roles` | create, edit and delete agent roles and their workspace overrides (operator grant, MCP servers, required env vars, connectors) | owner, admin | admin |
@@ -317,9 +318,8 @@ route moves onto the permission. All are overridable.
    so it is not in the registry; noted because it reads `role = 'owner'`.
 6. **Writes with no role gate.** For a session, these need only membership:
    deleting an API key (`apps/web/src/app/api/accounts/[id]/route.ts`), editing
-   or deleting a connector, deleting a memory, secrets other than the team
-   model key, a workspace's name/repo/branch, and the mission, task, schedule
-   and skill admin routes (those hold API keys to admin, but not sessions).
+   or deleting a connector, deleting a memory, a workspace's name/repo/branch,
+   and the mission, task, schedule and skill admin routes (those hold API keys to admin, but not sessions).
    They are not permission decisions today, so they are not in the registry.
 7. **Owner-only where admin may be intended.** Deleting a workspace (an admin
    gets 404) and changing any member's role (an admin cannot even move

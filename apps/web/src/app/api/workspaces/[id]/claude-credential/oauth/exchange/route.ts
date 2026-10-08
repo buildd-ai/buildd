@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { refuseWithoutTeamCredentialAccess } from '@/lib/team-credential-access';
 import { ROTATING_CREDENTIAL_ALL_TEAMS_ERROR } from '@/lib/rotating-credential-scope';
 import { exchangeClaudeOAuthCode } from '@/lib/claude-oauth-login';
 import { storeClaudeCredential, getClaudeStatus, type ClaudeScope } from '@/lib/claude-credential';
@@ -24,6 +25,8 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
 
   const access = await verifyWorkspaceAccess(user.id, id);
   if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  const refused = await refuseWithoutTeamCredentialAccess(user.id, access.teamId);
+  if (refused) return refused;
 
   const body = await req.json().catch(() => ({}));
   const { code, verifier, state, scope: scopeParam } = body as { code?: string; verifier?: string; state?: string; scope?: string };
