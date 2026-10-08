@@ -95,8 +95,8 @@ never has — and says so rather than reporting a false green.
 - **PRs**: Target `dev` for features, `main` for hotfixes only. Use conventional PR titles (e.g., `feat:`, `fix:`, `ci:`, `refactor:`, `docs:`)
 - **Release**: `bun run release` (or `release.yml` / `trigger_release` MCP) opens a `Release vX.Y.Z` PR (dev→main); merge tags + deploys. `release:hotfix` = branch→main, patch bump.
 - **CI**: `.github/workflows/build.yml` is the gating test workflow (push to `dev`; PRs to `main`/`dev`). Jobs: `build` (lints + type check + unit tests + build), `sandbox-isolation`, `schema-drift`, and `changes` → `integration`. The integration job body lives in the reusable `integration.yml`.
-- **Integration/E2E gate only hotfix PRs** (PRs into `main` whose head is not `dev`) — never a `dev` PR or a release PR. There is no `preview-tests.yml`.
-- **Post-merge integration** (`post-merge-integration.yml`) runs the API integration tests on every push to `dev`, **advisory only**: its check-runs (prefix `post-merge integration`) are ignored by the release gate and the health watcher, and reported separately as `postMergeIntegration` in `release_status`.
+- **Integration/E2E gate only hotfix PRs** (PRs into `main` whose head is not `dev`) — never a `dev` PR or a dev→main release PR. Release candidate PRs (`release/vX.Y.Z` → `main`) get `candidate integration / integration` instead: full API + runner tests on the exact head SHA, counted in `ciState`. There is no `preview-tests.yml`.
+- **Post-merge integration** (`post-merge-integration.yml`) runs the API integration tests on a `dev` push carrying server code no earlier passing run verified (`scripts/ci/post-merge-coverage.ts`), **advisory only**: its check-runs (prefix `post-merge integration`) are ignored by the release gate and the health watcher, and reported separately as `postMergeIntegration` in `release_status`.
 - **Vercel**: Only deploys from `main` (dev deploys disabled)
 
 Do NOT commit directly to `main` unless it's an emergency hotfix.
