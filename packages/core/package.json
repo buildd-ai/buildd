@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.296.0",
+  "version": "0.297.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -214,6 +214,7 @@
     "./dispatch-handoff": "./dispatch-handoff.ts",
     "./path-claim-ttl": "./path-claim-ttl.ts",
     "./surface-audit": "./surface-audit.ts",
+    "./member-scoped-deps": "./member-scoped-deps.ts",
     "./visual-qa-routes": "./visual-qa-routes.ts",
     "./visual-qa-page-source": "./visual-qa-page-source.ts",
     "./visual-qa-capture-ref": "./visual-qa-capture-ref.ts",

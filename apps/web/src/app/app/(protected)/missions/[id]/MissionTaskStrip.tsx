@@ -31,6 +31,7 @@
  *   task page mount, from the board model already loaded (no fetch on select).
  */
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
+import { SurfaceAuditWaiverTile } from './MissionSurfaceAuditWaiver';
 import { memo, useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatAge, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
@@ -312,6 +313,11 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
             hideQueuedNote={!!why}
             onChanged={onChanged}
           />
+        )}
+        {/* The audit has not started: a person may waive it here (and, on a
+            mission branch, learn why it can't run). */}
+        {!landed && isSurfaceAuditTask(t.title) && t.taskStatus === 'pending' && (
+          <SurfaceAuditWaiverTile missionId={link.missionId} />
         )}
         <div className="flex flex-wrap gap-2">
           {action && (

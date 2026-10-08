@@ -19,6 +19,7 @@ import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
+import { missionMemberIds } from '@/lib/mission-surface-audit-membership';
 import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 
 export interface EnsureSurfaceAuditParams {
@@ -116,10 +117,16 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
     // Rule 3: any later builder task extends the existing audit's dependsOn
     // (not just UI-touching ones — the audit reviews the mission's whole
     // shipped surface, which a backend-only task can still change).
+    // The rewrite also drops a dependency that has left the mission since it
+    // was added (an unlink that predates detachTaskFromMissionSurfaceAudits),
+    // so the stored list is current membership, not a filing-time record.
     const currentDeps = Array.isArray(existingAudit.dependsOn) ? existingAudit.dependsOn : [];
-    if (!currentDeps.includes(createdTask.id)) {
+    const members = await missionMemberIds(missionId, currentDeps);
+    const nextDeps = members.includes(createdTask.id) ? members : [...members, createdTask.id];
+    const changed = nextDeps.length !== currentDeps.length || nextDeps.some((d, i) => d !== currentDeps[i]);
+    if (changed) {
       await db.update(tasks)
-        .set({ dependsOn: [...currentDeps, createdTask.id], updatedAt: new Date() })
+        .set({ dependsOn: nextDeps, updatedAt: new Date() })
         .where(eq(tasks.id, existingAudit.id));
     }
     return;
