@@ -12,6 +12,9 @@
  * question's sheet or pane, e.g. with `answered`), `&feedback=1` (the thumbs,
  * one turn already voted down), `?steer=1` (steering a running agent),
  * `&settled=1` (a streaming state's turn as it lands: folded, ready).
+ * `?state=revised` plays a turn whose early hypothesis the tools disprove: the
+ * early prose, the tools under it, the final answer in its place, settled
+ * (`&frame=0..3` holds one frame, for screenshots; `&settled=1` is frame 3).
  * Confirm, Discard and the question options work against the fixture.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -28,7 +31,7 @@ import type { ChatMessage, ChatToolPart } from '@/components/chat/chat-contract'
 import { isToolPart } from '@/components/chat/chat-contract';
 import {
   CHAT_FIXTURE_STATES, ORGANIZER, TEAM_NAME, VIEWER, WORKSPACES, WS, chatFixture, fixtureViews, isChatFixtureState,
-  missionRef, questionRef, type ChatFixtureState, VISUAL_FIXTURE_OPTS, VISUAL_FIXTURE_PHASE,
+  missionRef, questionRef, revisedFrames, type ChatFixtureState, VISUAL_FIXTURE_OPTS, VISUAL_FIXTURE_PHASE,
   FIXTURE_TIERS, FIXTURE_TOOL_ROWS, STEER_MESSAGES, STEER_TASK_ID, STEER_WORKER_ID, steerTaskView,
 } from './chat-fixtures';
 import SteerConversation from '@/components/chat/SteerConversation';
@@ -88,6 +91,18 @@ function useParams() {
   return p;
 }
 
+/** `revised`: which frame is on screen. Held at `held`, else played through once, a few seconds apart. */
+function useRevisedPlayback(frames: readonly unknown[] | null, held: number | null): number {
+  const [at, setAt] = useState(held ?? 0);
+  useEffect(() => {
+    if (!frames || held != null) { setAt(held ?? 0); return; }
+    setAt(0);
+    const timers = [1_500, 5_000, 8_000].map((ms, i) => setTimeout(() => setAt(i + 1), ms));
+    return () => timers.forEach(clearTimeout);
+  }, [frames, held]);
+  return at;
+}
+
 function approve(messages: ChatMessage[], approvalId: string, approved: boolean): ChatMessage[] {
   return messages.map(m => ({
     ...m,
@@ -117,10 +132,14 @@ export default function DevChatPage() {
     : moodParam === 'calm' ? { needsYou: [], live: 0 } : null;
 
   const settled = params?.get('settled') === '1';
+  const frames = useMemo(() => (state === 'revised' ? revisedFrames() : null), [state]);
+  const heldFrame = settled ? 3 : params?.get('frame') != null ? Math.min(3, Math.max(0, Number(params.get('frame')) || 0)) : null;
+  const frameAt = useRevisedPlayback(frames, heldFrame);
   const fixture = useMemo(() => {
+    if (frames) return { ...frames[frameAt], title: null };
     const f = chatFixture(state);
     return settled ? { ...f, status: 'ready' as const } : f;
-  }, [state, settled]);
+  }, [state, settled, frames, frameAt]);
   const [messages, setMessages] = useState<ChatMessage[]>(fixture.messages);
   useEffect(() => setMessages(fixture.messages), [fixture]);
   const views = useMemo(() => fixtureViews(state), [state]);

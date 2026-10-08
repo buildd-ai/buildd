@@ -10,11 +10,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL('/app/auth/signin', req.url));
   }
 
+  // Every caller is a link a person clicked ("Connect GitHub"), so a missing
+  // App lands them on a page that says what to do instead of a JSON body.
+  // The operator-facing detail (which env vars) stays in the server log.
   if (!isGitHubAppConfigured()) {
-    return NextResponse.json(
-      { error: 'GitHub App not configured. Set GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_CLIENT_ID.' },
-      { status: 500 }
-    );
+    console.warn('[github/install] GitHub App not configured: set GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY and GITHUB_APP_CLIENT_ID');
+    return NextResponse.redirect(new URL('/app/settings/github?github=unavailable', req.url));
   }
 
   const config = getGitHubAppConfig();

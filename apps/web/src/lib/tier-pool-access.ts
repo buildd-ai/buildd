@@ -7,7 +7,7 @@
 import { NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamRole } from '@/lib/team-access';
-import { roleHas } from '@/lib/permissions';
+import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 
 export type PoolAccess =
   | { ok: true; userId: string; teamId: string; isAdmin: boolean }
@@ -20,7 +20,7 @@ export async function tierPoolAccess(teamId: unknown, write: boolean): Promise<P
   if (typeof teamId !== 'string' || !teamId) return fail(400, 'teamId is required');
   const role = await getUserTeamRole(user.id, teamId);
   if (!role) return fail(404, 'Team not found');
-  const isAdmin = roleHas(role, 'manage_model_tiers');
+  const isAdmin = roleHas(role, 'manage_model_tiers', await getTeamPermissionOverrides(teamId));
   if (write && !isAdmin) return fail(403, 'Only a team owner or admin can change model traffic');
   return { ok: true, userId: user.id, teamId, isAdmin };
 }

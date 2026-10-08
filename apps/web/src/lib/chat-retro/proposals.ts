@@ -4,6 +4,7 @@
  * model call runs anywhere in this pass.
  */
 import type { CauseLabel, FixClassLabel } from './vocab';
+import { FIRST_OCCURRENCE_CAUSES, VISIBLE_HIGH_CONF } from './visible-answer';
 
 /** Clustering window. */
 export const PROPOSAL_WINDOW_DAYS = 14;
@@ -29,6 +30,11 @@ export interface Cluster {
   satisfiedYes: number;
   satisfiedPartly: number;
   satisfiedNo: number;
+  /**
+   * Sessions carrying a visible-answer finding code is sure of (evidence
+   * conf >= VISIBLE_HIGH_CONF on a no_output or render_gap entry).
+   */
+  highConfidence: number;
   /** The workspace most of the cluster's conversations ran in; null = team-wide chats only. */
   workspaceId: string | null;
   lessonIds: string[];
@@ -57,10 +63,21 @@ export function clusterScore(c: Cluster): number {
   return c.wastedTokens * (1 + unsatisfied);
 }
 
-/** Eligible clusters, best first. One bad afternoon is not a pattern. */
-export function rankClusters(clusters: Cluster[]): Cluster[] {
+/**
+ * A dogfood team's high-confidence visible-answer failure is a pattern on its
+ * first occurrence: an answer the person never saw is the defect itself.
+ * Ordinary teams never take this path.
+ */
+export function filesOnFirstOccurrence(c: Cluster, opts: { dogfood?: boolean } = {}): boolean {
+  return opts.dogfood === true
+    && (FIRST_OCCURRENCE_CAUSES as readonly string[]).includes(c.primaryCause)
+    && (c.highConfidence ?? 0) >= 1;
+}
+
+/** Eligible clusters, best first. One bad afternoon is not a pattern, except as above. */
+export function rankClusters(clusters: Cluster[], opts: { dogfood?: boolean } = {}): Cluster[] {
   return clusters
-    .filter(c => c.sessions >= PROPOSAL_MIN_SESSIONS && c.days >= PROPOSAL_MIN_DAYS)
+    .filter(c => (c.sessions >= PROPOSAL_MIN_SESSIONS && c.days >= PROPOSAL_MIN_DAYS) || filesOnFirstOccurrence(c, opts))
     .sort((a, b) => clusterScore(b) - clusterScore(a) || a.signature.localeCompare(b.signature));
 }
 
@@ -95,9 +112,20 @@ export function planProposals(
   return actions;
 }
 
+const VISIBLE_TITLE: Partial<Record<CauseLabel, string>> = {
+  no_answer: 'a turn ended with no answer saved',
+  render_gap: 'a saved answer was never shown',
+  blank_retry: 'people re-asked after a blank answer',
+};
+
 export function proposalTitle(c: Cluster): string {
+  const visible = VISIBLE_TITLE[c.primaryCause];
+  if (visible) return `[chat-retro] ${visible} (${c.primaryCause}): ${c.fixClass}`;
   return `[chat-retro] ${c.primaryCause} via ${c.toolName ?? 'no tool'}: ${c.fixClass}`;
 }
+
+/** Re-exported for the store's SQL: the evidence confidence that counts as high. */
+export const HIGH_CONFIDENCE_EVIDENCE = VISIBLE_HIGH_CONF;
 
 /** Labels, counts and refs only. The worker reads the windows through the team's own access. */
 export function proposalDescription(c: Cluster, lessonsUrl: string): string {
@@ -110,6 +138,9 @@ export function proposalDescription(c: Cluster, lessonsUrl: string): string {
     `- Sessions affected: ${c.sessions} over ${c.days} days (last ${PROPOSAL_WINDOW_DAYS} days)`,
     `- Tokens wasted: ${c.wastedTokens}`,
     `- Satisfied: yes ${c.satisfiedYes}, partly ${c.satisfiedPartly}, no ${c.satisfiedNo}`,
+    ...(VISIBLE_TITLE[c.primaryCause] ? [
+      `- Visible-answer failure, found by code from saved turns and the browser's turn signal (no message text). High-confidence sessions: ${c.highConfidence}`,
+    ] : []),
     `- Lesson refs: ${c.lessonIds.slice(0, PROPOSAL_MAX_REFS).join(', ')}`,
     `- Conversation refs: ${c.conversationIds.slice(0, PROPOSAL_MAX_REFS).join(', ')}`,
     '',

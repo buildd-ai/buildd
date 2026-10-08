@@ -15,8 +15,8 @@
 // a serverless bundle graph. Reach it only via dynamic import() from the runner.
 
 import * as childProcess from 'node:child_process';
-const { execFileSync } = childProcess;
-import { existsSync, mkdirSync, readFileSync, statSync } from 'fs';
+import { promisify } from 'node:util';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { decodeScipIndex, buildScipGraph, type ScipGraph } from './scip-parser';
@@ -29,11 +29,11 @@ export interface ScipRunnerOptions {
   workspaceId: string;
   /** "owner/name" or similar — namespaces the on-disk cache. */
   repoSlug?: string;
-  /** Hard cap on the indexer run (default 5 min). */
+  /** Hard cap on the indexer run (default 10 min). */
   timeoutMs?: number;
   cacheDir?: string;
   /** Test hook: produce the SCIP index at `outputPath`, throwing on failure. */
-  invoke?: (args: { repoPath: string; outputPath: string; timeoutMs: number }) => void;
+  invoke?: (args: { repoPath: string; outputPath: string; timeoutMs: number }) => void | Promise<void>;
   /** Test hook: read a produced index file (null when unreadable). */
   readIndexFile?: (path: string) => Buffer | null;
   log?: (msg: string) => void;
@@ -47,7 +47,9 @@ export interface ScipRunResult {
   skippedReason?: string;
 }
 
-const DEFAULT_TIMEOUT_MS = 5 * 60_000;
+// A full buildd index takes ~3 min on the Coder host; 5 min left no headroom
+// under load. The run is async (see defaultInvoke), so a longer cap blocks nothing.
+const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const MAX_INDEX_BYTES = 128 * 1024 * 1024; // sanity cap on the .scip blob
 
 /**
@@ -74,7 +76,7 @@ export async function runScipGraph(opts: ScipRunnerOptions): Promise<ScipRunResu
       } catch {
         // best-effort — invoke may still succeed with an existing dir
       }
-      invoke({ repoPath: opts.repoPath, outputPath, timeoutMs });
+      await invoke({ repoPath: opts.repoPath, outputPath, timeoutMs });
     }
 
     const buf = readIndex(outputPath);
@@ -112,7 +114,7 @@ interface InvokeAttempt {
  * Every way `defaultInvoke` will try to run scip-typescript, in resolution
  * order. Pure and exported so the fallback chain — previously untested,
  * since every existing test injects `invoke` directly — is unit-testable
- * without mocking `execFileSync`.
+ * without mocking `execFile`.
  */
 export function invokeAttempts(
   env: NodeJS.ProcessEnv,
@@ -150,22 +152,72 @@ export function formatInvokeFailure(attempts: InvokeAttempt[], failures: string[
   return `scip-typescript unavailable after ${attempts.length} resolution attempt(s): ${failures.join(' | ')}`;
 }
 
-function defaultInvoke(args: { repoPath: string; outputPath: string; timeoutMs: number }): void {
-  const indexArgs = ['index', '--output', args.outputPath];
+/**
+ * The TypeScript projects to hand scip-typescript, relative to `repoPath`.
+ * Empty means "index the root" — right when the root has a tsconfig.json.
+ *
+ * A bun/npm workspace monorepo usually has none at its root, and
+ * scip-typescript run bare there reports "missing tsconfig.json" and indexes
+ * nothing, so every ingest of such a repo silently lost its SCIP graph. For
+ * that case, list the workspace packages (package.json `workspaces`, array or
+ * `{ packages }` form; `dir/*` globs expanded one level) that carry their own
+ * tsconfig.json. Never throws: anything unreadable falls back to [].
+ */
+export function scipProjectArgs(repoPath: string): string[] {
+  try {
+    if (existsSync(join(repoPath, 'tsconfig.json'))) return [];
+    const pkg = JSON.parse(readFileSync(join(repoPath, 'package.json'), 'utf8')) as {
+      workspaces?: string[] | { packages?: string[] };
+    };
+    const patterns = Array.isArray(pkg.workspaces) ? pkg.workspaces : pkg.workspaces?.packages ?? [];
+    const dirs = new Set<string>();
+    for (const pattern of patterns) {
+      if (typeof pattern !== 'string') continue;
+      if (pattern.endsWith('/*')) {
+        const parent = pattern.slice(0, -2);
+        let entries: string[];
+        try {
+          entries = readdirSync(join(repoPath, parent));
+        } catch {
+          continue;
+        }
+        for (const entry of entries) dirs.add(`${parent}/${entry}`);
+      } else if (!pattern.includes('*')) {
+        dirs.add(pattern.replace(/\/$/, ''));
+      }
+    }
+    return [...dirs].filter((d) => existsSync(join(repoPath, d, 'tsconfig.json'))).sort();
+  } catch {
+    return [];
+  }
+}
+
+const execFileAsync = promisify(childProcess.execFile);
+
+/**
+ * Async on purpose: indexing a monorepo takes minutes, and this runs inside the
+ * runner process. A synchronous exec would freeze its event loop for the whole
+ * run — HTTP API, heartbeats and Pusher included.
+ */
+async function defaultInvoke(args: { repoPath: string; outputPath: string; timeoutMs: number }): Promise<void> {
+  const indexArgs = ['index', '--output', args.outputPath, ...scipProjectArgs(args.repoPath)];
   const attempts = invokeAttempts(process.env, findLocalBin(), indexArgs);
 
   const failures: string[] = [];
   for (const attempt of attempts) {
     try {
-      execFileSync(attempt.cmd, attempt.argv, {
+      await execFileAsync(attempt.cmd, attempt.argv, {
         cwd: args.repoPath,
         timeout: args.timeoutMs,
-        stdio: ['ignore', 'ignore', 'pipe'],
         maxBuffer: 16 * 1024 * 1024,
       });
       return; // succeeded
     } catch (err) {
-      failures.push(`${attempt.label}: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
+      // The first line of an exec error is only "Command failed: <argv>"; the
+      // indexer's own reason (e.g. "no files got indexed") is on stderr.
+      const head = err instanceof Error ? err.message.split('\n')[0] : String(err);
+      const stderr = String((err as { stderr?: unknown })?.stderr ?? '').trim().split('\n').filter(Boolean).pop();
+      failures.push(`${attempt.label}: ${head}${stderr ? ` — ${stderr.slice(0, 200)}` : ''}`);
     }
   }
   throw new Error(formatInvokeFailure(attempts, failures));

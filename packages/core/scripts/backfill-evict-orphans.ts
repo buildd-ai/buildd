@@ -13,8 +13,9 @@
  * Without --apply (default): prints orphaned paths per corpus, makes no changes.
  * With --apply: deletes the orphaned chunks from the database.
  *
- * The script walks the standard source directories used by knowledge-ingest.yml
- * (packages/, apps/, docs/) and compares them against stored source paths in the
+ * The script walks the standard source directories (packages/, apps/, docs/),
+ * filtered by the same rules as full-scope ingest (knowledge-store/ingest-filter.ts,
+ * which knowledge-store/full-ingest.ts applies), and compares them against stored source paths in the
  * workspace's code, docs, and spec namespaces. Any stored path absent from the
  * current filesystem is treated as an orphan.
  *
@@ -66,7 +67,8 @@ async function walk(dirOrFile: string, out: string[]): Promise<void> {
 
 /**
  * Build a set of repo-relative paths for a given corpus by walking the
- * provided directories. Mirrors the walk done by knowledge-ingest.yml.
+ * provided directories, with the extension and skip-dir rules full-scope ingest
+ * uses (knowledge-store/ingest-filter.ts).
  *
  * Files are included regardless of size — a large file that exists on disk
  * should not have its (possibly pre-existing) chunks pruned.

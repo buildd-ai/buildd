@@ -36,6 +36,17 @@ export interface StaleApprovalReReviewInput {
   taskId: string | null;
   workerId: string | null;
   policy: Pick<MergePolicy, 'agentReview'>;
+  /**
+   * Set when the stale thing is a blocking verdict rather than an approval
+   * (the landing function's revalidation): why it no longer holds. Labels the
+   * PR activity entry; the dispatch is otherwise identical.
+   */
+  staleReason?: string;
+  /**
+   * Nothing was stale: the PR was ready and no review was ever requested (a
+   * lost or never-sent request). Labels the PR activity entry only.
+   */
+  firstReview?: boolean;
 }
 
 export type StaleApprovalReReviewResult =
@@ -150,10 +161,14 @@ async function run(input: StaleApprovalReReviewInput, deps: StaleApprovalReRevie
       repoFullName: input.repoFullName,
       prNumber,
       entry: {
-        kind: 'reviewing',
-        detail: plan.kind === 'delta'
-          ? `approval went stale · since \`${plan.priorVerdict.headSha.slice(0, 7)}\``
-          : 'approval went stale',
+        kind: 'review_queued',
+        detail: input.firstReview
+          ? 'review requested · the PR was ready and no review was on file'
+          : input.staleReason
+            ? `verdict went stale · ${input.staleReason}`
+            : plan.kind === 'delta'
+              ? `approval went stale · since \`${plan.priorVerdict.headSha.slice(0, 7)}\``
+              : 'approval went stale',
       },
       workspaceId,
     })

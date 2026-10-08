@@ -1,4 +1,4 @@
-import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG, isBuilddActionTool } from '@buildd/shared';
 
 /**
  * The in-session output-requirement nudge (workers.ts, turn_complete): which
@@ -23,11 +23,11 @@ export function outputRequirementNudge(opts: {
   if (outputReq !== 'pr_required' && outputReq !== 'artifact_required') return null;
   if (opts.roleSlug === VISUAL_AUDITOR_ROLE_SLUG) return null;
   const hasArtifact = (opts.toolCalls ?? []).some((tc) =>
-    tc.name === 'mcp__buildd__buildd'
+    isBuilddActionTool(tc.name)
       && (tc.input?.action === 'create_artifact' || tc.input?.action === 'upload_artifact'));
   const unmet = outputReq === 'pr_required' ? !opts.hasPR : !opts.hasPR && !hasArtifact;
   if (!unmet) return null;
   return outputReq === 'pr_required'
-    ? 'You are not done yet — this task requires a pull request. Create one using `buildd` action: create_pr, then call complete_task.'
+    ? 'You are not done yet — this task requires a pull request. Create one with the buildd create_pr action (on `buildd_work`), then call complete_task.'
     : 'You are not done yet — this task requires a deliverable. Create a PR (create_pr) or artifact (create_artifact), then call complete_task.';
 }

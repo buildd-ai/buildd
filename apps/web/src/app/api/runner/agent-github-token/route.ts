@@ -22,6 +22,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveWorkerPrincipal } from '@/lib/agent-capabilities/worker-principal';
 import { authorizeGithubRepoGrant, mintGithubRepoGrant } from '@/lib/agent-capabilities/github';
+import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const NO_STORE = { 'Cache-Control': 'no-store' };
@@ -49,19 +50,29 @@ export async function POST(req: NextRequest) {
   // Claim authority is re-checked, not assumed from the claim: access revoked
   // mid-session stops the next refresh.
   const resolved = await resolveWorkerPrincipal(account, { workerId });
-  if (!resolved.ok) return fail(resolved.status, resolved.error, resolved.status === 409 ? resolved.reasonCode : undefined);
+  if (!resolved.ok) {
+    void recordCapabilityDecision({ capability: 'github.repo_grant', decision: 'refused', accountId: account.id, principalVia: 'runner_key', resource: `worker:${workerId}`, reasonCode: resolved.reasonCode });
+    return fail(resolved.status, resolved.error, resolved.status === 409 ? resolved.reasonCode : undefined);
+  }
+  const p = resolved.principal;
+  const audit = { capability: 'github.repo_grant' as const, workspaceId: p.workspaceId, taskId: p.taskId, workerId: p.workerId, accountId: p.accountId, principalVia: p.via };
 
   const decision = authorizeGithubRepoGrant(resolved.principal, resolved.workspace);
-  if (!decision.allowed) return fail(decision.status, decision.error, decision.reasonCode);
+  if (!decision.allowed) {
+    void recordCapabilityDecision({ ...audit, decision: 'refused', reasonCode: decision.reasonCode });
+    return fail(decision.status, decision.error, decision.reasonCode);
+  }
 
   try {
     const minted = await mintGithubRepoGrant(decision);
+    void recordCapabilityDecision({ ...audit, decision: 'allowed', resource: `github_repo:${decision.resource.id}`, expiresAt: minted.expiresAt });
     return NextResponse.json({
       token: minted.token,
       expiresAt: minted.expiresAt.toISOString(),
       repository: { owner: decision.repo.owner, name: decision.repo.name, fullName: decision.repo.fullName },
     }, { headers: NO_STORE });
   } catch (err) {
+    void recordCapabilityDecision({ ...audit, decision: 'refused', resource: `github_repo:${decision.resource.id}`, reasonCode: 'mint_failed' });
     console.error(`[agent-github-token] mint failed for worker ${workerId}:`, err instanceof Error ? err.message : String(err));
     return fail(502, 'Could not mint a GitHub token', 'mint_failed');
   }

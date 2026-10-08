@@ -7,6 +7,7 @@ import { invalidateAccountCacheByHash } from '@/lib/api-auth';
 import { getUserTeamIds, getUserTeamRole } from '@/lib/team-access';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { isUuid } from '@/lib/uuid';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 /**
  * PUT /api/accounts/[id]/host-runner  { hostRunner: boolean }
@@ -47,7 +48,7 @@ export async function PUT(
   }
 
   const role = await getUserTeamRole(user.id, account.teamId);
-  if (!canAdministerTeamKeys(role)) {
+  if (!canAdministerTeamKeys(role, await getTeamPermissionOverrides(account.teamId))) {
     return NextResponse.json(
       { error: 'Only team owners and admins can flag a host runner key' },
       { status: 403 },

@@ -135,8 +135,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
   if (schedules.length === 0) {
     return (
       <div className="text-center py-12 text-text-muted">
-        <p className="text-lg mb-2">No schedules</p>
-        <p className="text-sm">A schedule creates a task on a cron cadence.</p>
+        <p className="text-lg">No schedules</p>
       </div>
     );
   }

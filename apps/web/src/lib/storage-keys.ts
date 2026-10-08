@@ -217,6 +217,30 @@ export function buildEvidenceObjectKey(
 }
 
 /**
+ * `{prefix}/{workspaceId}/scout-runs/{runId}/{kind}/{filename}`
+ *
+ * Evidence object key for a runner-hosted Quality Scout run's command log. A
+ * Scout run has no task or worker, so its objects live under their own
+ * `scout-runs` segment, still under the workspace: a lifecycle rule or a
+ * workspace purge by `{prefix}/{workspaceId}/` reaches them like any other.
+ * Every segment is validated, as in buildEvidenceObjectKey.
+ */
+export function buildScoutRunEvidenceObjectKey(
+  prefix: unknown,
+  workspaceId: unknown,
+  runId: unknown,
+  kind: unknown,
+  filename: unknown,
+): string {
+  const safePrefix = assertSafeKeySegment(prefix, 'prefix');
+  const ws = assertSafeKeySegment(workspaceId, 'workspaceId');
+  const run = assertSafeKeySegment(runId, 'runId');
+  const safeKind = assertSafeKeySegment(kind, 'kind');
+  const safeFilename = assertSafeKeySegment(filename, 'filename');
+  return assertNormalizedObjectKey(`${safePrefix}/${ws}/scout-runs/${run}/${safeKind}/${safeFilename}`);
+}
+
+/**
  * `{prefix}/.buildd-probe/{probeId}`
  *
  * The object a backend verification writes, reads back and deletes. The

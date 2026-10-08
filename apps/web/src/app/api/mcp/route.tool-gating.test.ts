@@ -31,6 +31,7 @@ const mockHandleMemoryAction = mock(async () => ({ content: [{ type: 'text', tex
 const mockHandleRecallAction = mock(async () => ({ content: [{ type: 'text', text: '{"recalled":true}' }] }));
 const mockHandleLearnAction = mock(async () => ({ content: [{ type: 'text', text: '{"learned":true}' }] }));
 const mockHandleBuilddAction = mock(async () => ({ content: [{ type: 'text', text: '{"dispatched":true}' }] }));
+const mockWorkersFindFirst = mock(() => Promise.resolve(null as any));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -45,7 +46,7 @@ mock.module('@buildd/core/db', () => ({
         findMany: mock(() => Promise.resolve([])),
       },
       teams: { findFirst: mock(() => Promise.resolve(null)) },
-      workers: { findFirst: mock(() => Promise.resolve(null)) },
+      workers: { findFirst: mockWorkersFindFirst },
       tasks: { findFirst: mock(() => Promise.resolve(null)) },
     },
     update: mock(() => ({ set: mock(() => ({ where: mock(() => Promise.resolve([])) })) })),
@@ -131,6 +132,17 @@ function authenticateAs({ level, authType, teamId = TEAM_ID }: Account) {
 
 const KNOWLEDGE_TOOLS = ['buildd_memory', 'recall', 'learn'];
 
+const LEGACY_WORKER_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+/**
+ * The legacy surface is served only to a runner worker whose runner predates
+ * group tools. This file's db mock has no heartbeat table, so any worker
+ * session here is one whose runner cannot be shown to support them.
+ */
+function legacySurfaceQuery(): string {
+  mockWorkersFindFirst.mockResolvedValue({ accountId: 'acc-1' });
+  return `?workspace=${WORKSPACE_ID}&worker=${LEGACY_WORKER_ID}`;
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('MCP tool gating — workspace data class', () => {
@@ -144,10 +156,10 @@ describe('MCP tool gating — workspace data class', () => {
   it('offers the knowledge tools for a standard workspace', async () => {
     mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard', teamId: TEAM_ID });
 
-    const names = await listTools(`?workspace=${WORKSPACE_ID}&tools=legacy`);
+    const names = await listTools(legacySurfaceQuery());
     for (const tool of KNOWLEDGE_TOOLS) expect(names).toContain(tool);
     // The groups surface lists recall/learn; deprecated buildd_memory is callable, not listed.
-    const groups = await listTools(`?workspace=${WORKSPACE_ID}&tools=groups`);
+    const groups = await listTools(`?workspace=${WORKSPACE_ID}`);
     expect(groups).toContain('recall');
     expect(groups).toContain('learn');
   });
@@ -156,7 +168,7 @@ describe('MCP tool gating — workspace data class', () => {
     mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'sensitive', teamId: TEAM_ID });
 
     for (const surface of ['legacy', 'groups']) {
-      const names = await listTools(`?workspace=${WORKSPACE_ID}&tools=${surface}`);
+      const names = await listTools(surface === 'legacy' ? legacySurfaceQuery() : `?workspace=${WORKSPACE_ID}`);
       for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
       // Task coordination is unaffected — the data class gates knowledge only.
       expect(names).toContain(surface === 'legacy' ? 'buildd' : 'buildd_tasks');
@@ -176,7 +188,7 @@ describe('MCP tool gating — workspace data class', () => {
 
     const names = await listTools(`?workspace=${WORKSPACE_ID}`);
     for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
-    expect(names).toContain('buildd');
+    expect(names).toContain('buildd_tasks');
   });
 
   it('refuses a knowledge tool call in a sensitive workspace even if it was somehow invoked', async () => {
@@ -248,6 +260,79 @@ describe('MCP tool gating — admin-only knowledge management', () => {
     const result = await callTool('buildd', { action: 'consolidate_knowledge', params: {} }, `?workspace=${WORKSPACE_ID}`);
     expect(result.isError).toBeUndefined();
     expect(mockHandleMemoryAction.mock.calls[0][1]).toBe('consolidate_knowledge');
+  });
+});
+
+describe("MCP tool gating — an orchestration task's admin per-task token", () => {
+  const OWN_WORKER = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const taskScope = { taskId: 'task-own', workspaceId: WORKSPACE_ID, expiresAt: Date.now() + 60_000 };
+  const q = `?worker=${OWN_WORKER}`;
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard', teamId: TEAM_ID, repo: 'owner/repo', name: 'workspace' });
+    mockWorkersFindFirst.mockReset();
+    mockWorkersFindFirst.mockResolvedValue({ accountId: 'acc-1', taskId: 'task-own', workspaceId: WORKSPACE_ID });
+    mockGetMemoryStoreForTeam.mockReset();
+    mockGetMemoryStoreForTeam.mockResolvedValue({ id: 'store-1' });
+    mockHandleBuilddAction.mockClear();
+    mockHandleMemoryAction.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin', teamId: TEAM_ID, authType: 'api', scopes: null, workspaceIds: null, taskScope });
+  });
+
+  for (const action of ['memory_delete', 'consolidate_knowledge']) {
+    it(`refuses ${action} before its in-process handler`, async () => {
+      const result = await callTool('buildd', { action, params: {} }, q);
+      expect(JSON.parse(result.content[0].text).error).toBe('forbidden');
+      expect(mockHandleMemoryAction).not.toHaveBeenCalled();
+    });
+  }
+
+  for (const action of ['manage_secrets', 'manage_workspaces', 'trigger_release', 'create_schedule', 'register_skill', 'manage_initiatives', 'correct_task_result']) {
+    it(`refuses the team-wide admin action ${action}`, async () => {
+      const result = await callTool('buildd', { action, params: { action: 'list' } }, q);
+      const payload = JSON.parse(result.content[0].text);
+      expect(payload.error).toBe('forbidden');
+      expect(payload.reason).toContain('team-wide');
+      expect(mockHandleBuilddAction).not.toHaveBeenCalled();
+    });
+  }
+
+  it('refuses manage_missions sub-actions outside its own mission', async () => {
+    for (const sub of ['list', 'create', 'delete', 'link_task', 'unlink_task']) {
+      const result = await callTool('buildd', { action: 'manage_missions', params: { action: sub } }, q);
+      expect(JSON.parse(result.content[0].text).error).toBe('forbidden');
+    }
+    expect(mockHandleBuilddAction).not.toHaveBeenCalled();
+  });
+
+  it('passes its own-mission admin actions and every worker action through to the handler', async () => {
+    for (const [action, params] of [
+      ['manage_missions', { action: 'get', missionId: 'm' }],
+      ['manage_missions', { action: 'update', missionId: 'm', description: 'x' }],
+      ['approve_plan', { taskId: 't' }],
+      ['reject_plan', { taskId: 't', feedback: 'f' }],
+      ['send_agent_message', { taskId: 't', message: 'm' }],
+      ['create_task', { title: 't' }],
+    ] as const) {
+      const result = await callTool('buildd', { action, params }, q);
+      expect(result.isError).toBeUndefined();
+    }
+    expect(mockHandleBuilddAction).toHaveBeenCalledTimes(6);
+  });
+
+  it('refuses the same way through a grouped tool', async () => {
+    const result = await callTool('buildd_admin', { action: 'manage_secrets', params: { action: 'list' } }, q);
+    expect(JSON.parse(result.content[0].text).reason).toContain('team-wide');
+    expect(mockHandleBuilddAction).not.toHaveBeenCalled();
+  });
+
+  it('leaves an admin account key exactly as before', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin', teamId: TEAM_ID, authType: 'api', scopes: null, workspaceIds: null });
+    const result = await callTool('buildd', { action: 'manage_secrets', params: { action: 'list' } }, `?workspace=${WORKSPACE_ID}`);
+    expect(result.isError).toBeUndefined();
+    expect(mockHandleBuilddAction).toHaveBeenCalledTimes(1);
   });
 });
 

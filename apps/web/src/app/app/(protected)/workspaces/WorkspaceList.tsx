@@ -14,7 +14,6 @@ export interface WorkspaceWithRunners {
     /** Admin on this workspace's team and at least one other (see moveTargets). */
     canMove: boolean;
     runners: {
-        action: boolean;
         service: boolean;
         user: boolean;
     };
@@ -28,12 +27,16 @@ function CheckIcon({ className }: { className?: string }) {
     );
 }
 
-function XIcon({ className }: { className?: string }) {
-    return (
-        <svg className={className} viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
-            <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-        </svg>
-    );
+/**
+ * Which kinds of runner can take this workspace's tasks, in plain words. Only
+ * the connected ones are listed: a new workspace shows nothing rather than a
+ * row of unexplained crosses.
+ */
+export function runnerMarkers(runners: WorkspaceWithRunners['runners']): { key: string; label: string; title: string }[] {
+    const out: { key: string; label: string; title: string }[] = [];
+    if (runners.service) out.push({ key: 'service', label: 'Server runner', title: 'A runner on an always-on server can take this workspace\'s tasks.' });
+    if (runners.user) out.push({ key: 'user', label: 'Personal runner', title: 'A runner on a team member\'s own computer can take this workspace\'s tasks.' });
+    return out;
 }
 
 export default function WorkspaceList({
@@ -78,10 +81,7 @@ export default function WorkspaceList({
                             <line x1="9" y1="14" x2="15" y2="14" />
                         </svg>
                     </div>
-                    <h2 className="text-[15px] font-semibold mb-1">No workspaces</h2>
-                    <p className="text-[13px] text-text-muted mb-5">
-                        A workspace maps to a repository. Agents work on its tasks in that repo.
-                    </p>
+                    <h2 className="text-[15px] font-semibold mb-5">No workspaces</h2>
                     <Link
                         href="/app/workspaces/new"
                         className="px-5 py-2 bg-primary text-white hover:bg-primary-hover text-[13px] font-medium"
@@ -119,20 +119,21 @@ export default function WorkspaceList({
                                     </Link>
 
                                     <div className="flex flex-col md:items-end gap-3 md:w-64 shrink-0">
-                                        <div className="flex gap-3 items-center text-xs w-full justify-between md:justify-end">
-                                            <div className={`flex items-center gap-1 ${workspace.runners.action ? 'text-status-success' : 'text-text-muted'}`} title="GitHub Actions">
-                                                {workspace.runners.action ? <CheckIcon /> : <XIcon />}
-                                                <span>GH Action</span>
+                                        {runnerMarkers(workspace.runners).length > 0 && (
+                                            <div className="flex gap-3 items-center text-xs w-full md:justify-end">
+                                                {runnerMarkers(workspace.runners).map((m) => (
+                                                    <span
+                                                        key={m.key}
+                                                        data-testid="workspace-runner-marker"
+                                                        title={m.title}
+                                                        className="flex items-center gap-1 text-status-success"
+                                                    >
+                                                        <CheckIcon />
+                                                        <span>{m.label}</span>
+                                                    </span>
+                                                ))}
                                             </div>
-                                            <div className={`flex items-center gap-1 ${workspace.runners.service ? 'text-status-success' : 'text-text-muted'}`} title="Service Worker">
-                                                {workspace.runners.service ? <CheckIcon /> : <XIcon />}
-                                                <span>Service</span>
-                                            </div>
-                                            <div className={`flex items-center gap-1 ${workspace.runners.user ? 'text-status-success' : 'text-text-muted'}`} title="User Worker">
-                                                {workspace.runners.user ? <CheckIcon /> : <XIcon />}
-                                                <span>User</span>
-                                            </div>
-                                        </div>
+                                        )}
 
                                         {workspace.canMove && workspace.teamId && (
                                             <button

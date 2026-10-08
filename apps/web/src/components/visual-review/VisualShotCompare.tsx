@@ -43,7 +43,7 @@ export function FixStatus({ fix, stillPresent }: { fix: VisualReviewFixTask; sti
   const { text, tone } = fixStatusLabel(fix, { stillPresent });
   const cls = tone === 'success' ? 'text-status-success' : tone === 'muted' ? 'text-text-muted' : 'text-status-warning';
   return (
-    <span className={`font-mono text-[11px] uppercase tracking-[1px] ${cls}`}>
+    <span className={`font-mono text-eyebrow ${cls}`}>
       {text}
     </span>
   );
@@ -68,7 +68,7 @@ function capturedBeforeFix(entry: VisualReviewCellEntry, fix: VisualReviewFixTas
 function Frame({ entry, label, eager, plain }: { entry: VisualReviewCellEntry; label: string; eager?: boolean; plain?: boolean }) {
   return (
     <figure className="flex min-w-0 flex-col gap-2">
-      <figcaption className="flex items-center gap-2 font-mono text-[12px] text-text-secondary">
+      <figcaption className="flex items-center gap-2 font-mono text-meta text-text-secondary">
         <i aria-hidden="true" className={`inline-block h-2.5 w-2.5 ${VERDICT_DOT[entry.agentVerdict]}`} />
         <span className="font-semibold uppercase tracking-[1px] text-text-primary">{label}</span>
         {!plain && <span>Round {entry.round}</span>}
@@ -76,7 +76,7 @@ function Frame({ entry, label, eager, plain }: { entry: VisualReviewCellEntry; l
       <div className="border-2 border-border-strong bg-surface-3">
         <ShotImage shot={entry.shot} alt={plain ? label : `${label}: round ${entry.round}`} large eager={eager} className="mx-auto block h-auto max-h-[62vh] w-auto max-w-full" />
       </div>
-      <p className="text-[13px] leading-[1.45] text-text-secondary">{entry.finding}</p>
+      <p className="text-body leading-[1.45] text-text-secondary">{entry.finding}</p>
     </figure>
   );
 }
@@ -89,23 +89,23 @@ function FixStrip({ cell, before, fixTaskHref, fixCheck }: { cell: VisualReviewC
       <p className="section-label">{fixCheck ? 'The fix' : `Round ${before.round} to ${cell.current.round}`}</p>
       {fix ? (
         <>
-          <p className="text-[13px] leading-[1.4] text-text-primary">
+          <p className="text-body leading-[1.4] text-text-primary">
             {fixTaskHref ? <a href={fixTaskHref(fix.id)} className="underline decoration-border-strong underline-offset-2 hover:text-accent-text">{fixTitleText(fix.title, cell.route)}</a> : fixTitleText(fix.title, cell.route)}
           </p>
           <p className="flex flex-wrap items-center gap-2">
             <FixStatus fix={fix} stillPresent={stillPresent} />
             {fix.prUrl && (
-              <a href={fix.prUrl} target="_blank" rel="noreferrer" className="font-mono text-[12px] text-accent-text underline underline-offset-2">
+              <a href={fix.prUrl} target="_blank" rel="noreferrer" className="font-mono text-meta text-accent-text underline underline-offset-2">
                 PR #{fix.prNumber ?? ''}
               </a>
             )}
           </p>
           {capturedBeforeFix(cell.current, fix) && (
-            <p data-testid="compare-pre-fix" className="font-mono text-[11px] uppercase tracking-[1px] text-text-muted">captured before the fix</p>
+            <p data-testid="compare-pre-fix" className="font-mono text-eyebrow text-text-muted">captured before the fix</p>
           )}
         </>
       ) : (
-        <p className="text-[13px] text-text-secondary">Re-shot with no linked fix.</p>
+        <p className="text-body text-text-secondary">Re-shot with no linked fix.</p>
       )}
     </div>
   );
@@ -141,7 +141,7 @@ export default function VisualShotCompare({ cell, fixTaskHref, fixCheck, classNa
                 data-testid={`compare-round-${h.round}`}
                 aria-pressed={h.round === before.round}
                 onClick={() => setBeforeRound(h.round)}
-                className={`min-h-9 px-3 font-mono text-[12px] ${h.round === before.round ? 'bg-text-primary text-surface-1' : 'bg-surface-2 text-text-secondary hover:text-text-primary'}`}
+                className={`min-h-9 px-3 font-mono text-chip ${h.round === before.round ? 'bg-text-primary text-surface-1' : 'bg-surface-2 text-text-secondary hover:text-text-primary'}`}
               >
                 R{h.round}
               </button>
@@ -160,8 +160,8 @@ export default function VisualShotCompare({ cell, fixTaskHref, fixCheck, classNa
       {/* Phone: what changed first, then hold for before */}
       <div data-testid="compare-phone" className="flex flex-col gap-3 md:hidden">
         <FixStrip cell={cell} before={before} fixTaskHref={fixTaskHref} fixCheck={check} />
-        <p className="text-[14px] leading-[1.45] text-text-primary">
-          <span className="mr-1.5 font-mono text-[11px] uppercase tracking-[1px] text-text-muted">{check ? (holding ? 'Before' : 'After') : `Round ${shown.round}`}</span>
+        <p className="text-body leading-[1.45] text-text-primary">
+          <span className="mr-1.5 font-mono text-eyebrow text-text-muted">{check ? (holding ? 'Before' : 'After') : `Round ${shown.round}`}</span>
           {shown.finding}
         </p>
         <button
@@ -171,13 +171,13 @@ export default function VisualShotCompare({ cell, fixTaskHref, fixCheck, classNa
           {...hold}
           onKeyDown={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setHolding(true); } }}
           onKeyUp={() => setHolding(false)}
-          className={`${BTN_BASE} ${holding ? 'border-text-primary bg-text-primary text-surface-1' : BTN_SECONDARY} min-h-12 w-full select-none text-[13px]`}
+          className={`${BTN_BASE} ${holding ? 'border-text-primary bg-text-primary text-surface-1' : BTN_SECONDARY} min-h-12 w-full select-none text-body`}
         >
           {holding ? (check ? 'Showing before' : `Showing before, round ${before.round}`) : 'Press and hold to see before'}
         </button>
         {/* The round chip sits above the frame: headers and titles live at the top left of most screens. */}
         <p className="-mb-1.5 flex items-center gap-2">
-          <span data-testid="compare-showing" className={`inline-flex items-center border px-1.5 py-px font-mono text-[11px] uppercase tracking-[1px] ${holding ? 'border-text-primary bg-text-primary text-surface-1' : 'border-border-strong bg-surface-1 text-text-primary'}`}>
+          <span data-testid="compare-showing" className={`inline-flex items-center border px-1.5 py-px font-mono text-chip ${holding ? 'border-text-primary bg-text-primary text-surface-1' : 'border-border-strong bg-surface-1 text-text-primary'}`}>
             {check ? (holding ? 'Before' : 'After') : holding ? `Before, round ${before.round}` : `After, round ${after.round}`}
           </span>
         </p>

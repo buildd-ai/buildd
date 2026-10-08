@@ -7,10 +7,11 @@
 import type { ReactNode } from 'react';
 import type { BuilddObjectRef } from '../chat-contract';
 
-export type Tone = 'live' | 'attention' | 'ok' | 'bad' | 'idle';
+export type Tone = 'live' | 'neutral' | 'attention' | 'ok' | 'bad' | 'idle';
 
 const TONE_CLS: Record<Tone, string> = {
   live: 'border-accent text-accent-text',
+  neutral: 'border-border-strong text-text-primary',
   attention: 'border-status-warning text-status-warning',
   ok: 'border-status-success text-status-success',
   bad: 'border-status-error text-status-error',
@@ -29,11 +30,11 @@ export function StateChip({ label, tone, pulse = false }: { label: string; tone:
 /** A mission's chip label → its tone. */
 export function missionTone(stateLabel: string, status: string): Tone {
   const s = `${stateLabel} ${status}`.toLowerCase();
-  if (/need|waiting on you|question|decision/.test(s)) return 'attention';
+  if (/need|question|decision|awaiting verification|stalled/.test(s)) return 'attention';
   if (/fail|error|blocked|stalled|budget/.test(s)) return 'bad';
   if (/complete|done|shipped|verified/.test(s)) return 'ok';
   if (/held|paused|queued|archived|draft/.test(s)) return 'idle';
-  return 'live';
+  return 'neutral';
 }
 
 export function Eyebrow({ children, className = '' }: { children: ReactNode; className?: string }) {
@@ -73,7 +74,7 @@ export function ObjectPlaceholder({ objRef, error }: { objRef: BuilddObjectRef; 
 
 /** "◂ In the pane" / "Expand ↑" / "Open" — the card's way to the full view. */
 export function OpenButton({ inPane, onOpen, label }: { inPane: boolean; onOpen: () => void; label?: string }) {
-  const cls = 'font-mono text-[11px] font-bold uppercase tracking-[1.5px] text-accent-text';
+  const cls = 'font-mono text-[11px] font-bold uppercase tracking-[1.5px] text-text-primary';
   return (
     <>
       {/* Phone: there is no pane, the full view opens as a sheet. */}

@@ -82,9 +82,9 @@ describe('applyPrMutationDeny', () => {
     const result = applyPrMutationDeny(undefined, {
       roleSlug: 'builder',
       hasApiKey: true,
-      mountedServerNames: ['buildd', 'some-github-connector', 'codebase-memory'],
+      mountedServerNames: ['buildd', 'some-github-connector', 'another-connector'],
     });
-    for (const server of ['some-github-connector', 'codebase-memory']) {
+    for (const server of ['some-github-connector', 'another-connector']) {
       for (const tool of GITHUB_MCP_PR_WRITE_TOOLS) {
         expect(result).toContain(`mcp__${server}__${tool}`);
       }
@@ -115,12 +115,12 @@ describe('applyPrMutationDeny', () => {
     expect(twice.length).toBe(once.length);
   });
 
-  test('preserves an unrelated existing disallowedTools entry (e.g. CBM blocklist)', () => {
-    const result = applyPrMutationDeny(['mcp__codebase-memory__delete_project'], {
+  test('preserves an unrelated existing disallowedTools entry (e.g. a role deny list)', () => {
+    const result = applyPrMutationDeny(['mcp__another-connector__delete_project'], {
       roleSlug: 'builder',
       hasApiKey: true,
       mountedServerNames: ['buildd'],
     });
-    expect(result).toContain('mcp__codebase-memory__delete_project');
+    expect(result).toContain('mcp__another-connector__delete_project');
   });
 });

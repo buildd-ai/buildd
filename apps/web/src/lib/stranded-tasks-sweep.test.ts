@@ -109,6 +109,47 @@ describe('sweepStrandedTasks', () => {
     expect(firedEvents[0].taskId).toBe(TASK);
   });
 
+  it('names the required and reported Claude Code versions when a runner_capability deferral strands a task', async () => {
+    candidateRows = [{
+      id: TASK,
+      title: 'Needs a newer runner',
+      workspaceId: 'ws-1',
+      missionId: 'mission-1',
+      startAt: null,
+      reason: 'runner_capability',
+      detail: {
+        consecutiveDeferrals: 5,
+        firstDeferredAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+        model: 'claude-sonnet-5-5',
+        requiredVersion: '2.1.284',
+        runnerVersion: '2.1.200',
+      },
+    }];
+
+    await sweepStrandedTasks();
+
+    const body = String(insertedNotes[0].body);
+    expect(body).toContain('runner_capability');
+    expect(body).toContain('2.1.284');
+    expect(body).toContain('2.1.200');
+    expect(body).toContain('claude-sonnet-5-5');
+    expect((firedEvents[0].detail as Record<string, unknown>)).toMatchObject({
+      requiredVersion: '2.1.284',
+      runnerVersion: '2.1.200',
+      model: 'claude-sonnet-5-5',
+    });
+  });
+
+  it('says the runner reported no version when a runner_capability deferral carries none', async () => {
+    candidateRows = [{
+      id: TASK, title: 't', workspaceId: 'ws-1', missionId: null, startAt: null,
+      reason: 'runner_capability',
+      detail: { consecutiveDeferrals: 5, firstDeferredAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(), requiredVersion: '2.1.284', runnerVersion: null },
+    }];
+    await sweepStrandedTasks();
+    expect(String(insertedNotes[0].body)).toMatch(/reported no version/);
+  });
+
   it('does not insert a second note for a task already flagged (re-detected on the next sweep)', async () => {
     candidateRows = [{
       id: TASK,

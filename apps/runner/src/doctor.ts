@@ -5,12 +5,12 @@
  * to diagnose and fix issues it can't resolve with built-in logic.
  */
 
+import { pruneLocalBranches } from './branch-prune';
 import { execSync, spawnSync } from 'child_process';
 import { existsSync, readdirSync, statSync, readFileSync, copyFileSync, truncateSync } from 'fs';
 import { join } from 'path';
 import { resolveBuilddHome } from './buildd-home';
 import { checkBwrapSupport } from './env-scan';
-import { cbmSeedLogPath, parseSeedOutcomes } from './cbm-enforcement';
 import {
   parseWorktreeList,
   isRunnerWorktreePath,
@@ -429,44 +429,6 @@ function checkBwrap(): CheckResult {
   };
 }
 
-/**
- * Reads back the structured `SEED_OUTCOME` lines `spawnCbmSeedRefresh`
- * (cbm-enforcement.ts) appends to `seed.log` and reports the most recent run.
- * Previously nothing collected this at all — a failed seed was only a
- * `console.warn` on the runner's own stdout, and a successful one left no
- * trace anywhere.
- */
-export function checkCbmSeedHealth(): CheckResult {
-  const path = cbmSeedLogPath();
-  if (!existsSync(path)) {
-    return { name: 'cbm-seed', status: 'ok', message: 'no CBM seed activity recorded yet' };
-  }
-  let outcomes;
-  try {
-    outcomes = parseSeedOutcomes(readFileSync(path, 'utf-8'));
-  } catch {
-    return { name: 'cbm-seed', status: 'warn', message: `could not read ${path}` };
-  }
-  if (outcomes.length === 0) {
-    return { name: 'cbm-seed', status: 'ok', message: 'no structured CBM seed outcomes recorded yet' };
-  }
-  const latest = outcomes[outcomes.length - 1];
-  const failed = outcomes.filter(o => o.code !== 0).length;
-  if (latest.code !== 0) {
-    return {
-      name: 'cbm-seed',
-      status: 'warn',
-      message: `latest CBM seed for ${latest.repoPath} exited ${latest.code} at ${latest.exitedAt} (${failed}/${outcomes.length} recent run(s) failed)`,
-      detail: path,
-    };
-  }
-  return {
-    name: 'cbm-seed',
-    status: 'ok',
-    message: `latest CBM seed for ${latest.repoPath} succeeded at ${latest.exitedAt} (${outcomes.length - failed}/${outcomes.length} recent run(s) succeeded)`,
-  };
-}
-
 function checkScreenSession(): CheckResult {
   try {
     const screens = execSync('screen -ls 2>&1', { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
@@ -704,10 +666,34 @@ export function fixStaleWorktrees(liveWorkers?: LiveWorkerView): FixResult {
   scan.telemetry.reaped = cleaned;
 
   // Prune dangling worktree refs (covers rm -rf fallback + externally deleted dirs).
-  for (const repoDir of discoverMainRepos()) {
+  const repoDirs = discoverMainRepos();
+  for (const repoDir of repoDirs) {
     try {
       execSync('git worktree prune', { cwd: repoDir, encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
     } catch { /* skip */ }
+  }
+
+  // Delete stale local buildd/* branches (bloated .git/config makes parallel
+  // worker starts lose the config lock race). Branches of any non-terminal
+  // worker, persisted or in memory, are protected.
+  const protectedBranches = new Set<string>();
+  for (const r of loadOwnerRecords()) {
+    if (r.branch && r.status !== 'done' && r.status !== 'error') protectedBranches.add(r.branch);
+  }
+  if (liveWorkers) {
+    for (const [, w] of liveWorkers) {
+      const b = (w as { branch?: string }).branch;
+      if (b && w.status !== 'done' && w.status !== 'error') protectedBranches.add(b);
+    }
+  }
+  scan.telemetry.branchesPruned = 0;
+  scan.telemetry.seedRemoved = 0;
+  for (const repoDir of repoDirs) {
+    try {
+      const r = pruneLocalBranches(repoDir, { protectedBranches });
+      scan.telemetry.branchesPruned += r.branchesPruned;
+      scan.telemetry.seedRemoved += r.seedWorktreesRemoved;
+    } catch { /* best effort */ }
   }
 
   return {
@@ -830,7 +816,6 @@ export function runDiagnostics(): DoctorReport {
     checkDiskUsage(),
     checkStaleWorktrees(),
     checkHistoryDb(),
-    checkCbmSeedHealth(),
   ];
 
   const summary = {

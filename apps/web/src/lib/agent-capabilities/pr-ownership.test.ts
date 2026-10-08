@@ -88,6 +88,36 @@ describe('verifyPrOwnership — shapes a task owns', () => {
 
 // ── refused shapes ────────────────────────────────────────────────────────────
 
+// A mission task's worker branch is its own generated head; the integration
+// branch is only its base. Having the right base proves nothing about a head,
+// so a worker that somehow sits on the integration branch itself (provisioned
+// before claim stopped handing it out) gets no blanket exception: it owns the
+// heads every other worker owns, and nothing else.
+describe('verifyPrOwnership — mission task on an integration base', () => {
+  const missionTask = { context: { baseBranch: 'mission/integration' } };
+
+  it('owns its generated task head', async () => {
+    const v = await verify(input({ head: 'buildd/aaaa1111-fix-thing', task: missionTask }));
+    expect(v).toEqual({ owned: true, basis: 'own_branch' });
+  });
+
+  it('refuses an unrelated head with no task id, even when no other worker holds it', async () => {
+    const v = await verify(input({ head: 'task/no-id-in-name', task: missionTask, otherHeadHolders: [] }));
+    expect(v).toMatchObject({ owned: false, reasonCode: 'head_not_owned' });
+  });
+
+  it('a worker sitting on the integration branch itself gains no ownership of other heads', async () => {
+    const onBase = (head: string) => input({ head, workerBranch: 'mission/integration', task: missionTask, otherHeadHolders: [] });
+    expect(await verify(onBase('task/no-id-in-name'))).toMatchObject({ owned: false, reasonCode: 'head_not_owned' });
+    expect(await verify(onBase('buildd/dddd4444-someone-else'))).toMatchObject({ owned: false, reasonCode: 'head_not_owned' });
+  });
+
+  it('a worker sitting on the integration branch still owns a head carrying its own task id', async () => {
+    const v = await verify(input({ head: 'buildd/aaaa1111-cut', workerBranch: 'mission/integration', task: missionTask }));
+    expect(v).toEqual({ owned: true, basis: 'task_lineage' });
+  });
+});
+
 describe('verifyPrOwnership — refused', () => {
   it('another, unrelated task’s branch', async () => {
     const v = await verify(input({ head: 'buildd/dddd4444-someone-else', prNumber: 9 }));
@@ -122,6 +152,61 @@ describe('verifyPrOwnership — refused', () => {
   it('carries a reason a worker can act on', async () => {
     const v = await verify(input({ head: 'buildd/dddd4444-someone-else' }));
     expect(!v.owned && v.error).toContain("Open the PR from the task's own branch");
+  });
+});
+
+describe('verifyPrOwnership — interactive session, custom head', () => {
+  it('a head nobody else holds', async () => {
+    const v = await verify(input({ head: 'ci/private-prompt-evals', interactiveWorker: true, otherHeadHolders: [] }));
+    expect(v).toEqual({ owned: true, basis: 'interactive_head' });
+  });
+
+  it('refused when a live worker on another task already sits on that branch', async () => {
+    const v = await verify(input({
+      head: 'ci/private-prompt-evals',
+      interactiveWorker: true,
+      otherHeadHolders: [{ workerId: 'w-1', taskId: 'other-task-id', status: 'running', hasPr: false }],
+    }));
+    expect(v.owned).toBe(false);
+    expect(!v.owned && v.reasonCode).toBe('head_claimed');
+    expect(!v.owned && v.error).toContain('other-task-id'.slice(0, 8));
+  });
+
+  it('refused when a dead worker on another task already has its own PR on that branch', async () => {
+    const v = await verify(input({
+      head: 'ci/private-prompt-evals',
+      interactiveWorker: true,
+      otherHeadHolders: [{ workerId: 'w-1', taskId: 'other-task-id', status: 'completed', hasPr: true }],
+    }));
+    expect(!v.owned && v.reasonCode).toBe('head_claimed');
+  });
+
+  it('allowed when the only other holder is a dead worker on the SAME task with no PR of its own', async () => {
+    const v = await verify(input({
+      head: 'ci/private-prompt-evals',
+      interactiveWorker: true,
+      otherHeadHolders: [{ workerId: 'w-1', taskId: TASK_ID, status: 'completed', hasPr: false }],
+    }));
+    expect(v).toEqual({ owned: true, basis: 'interactive_head' });
+  });
+
+  it('allowed when the only other holder is dead, on a different task, and never shipped a PR', async () => {
+    const v = await verify(input({
+      head: 'ci/private-prompt-evals',
+      interactiveWorker: true,
+      otherHeadHolders: [{ workerId: 'w-1', taskId: 'other-task-id', status: 'failed', hasPr: false }],
+    }));
+    expect(v).toEqual({ owned: true, basis: 'interactive_head' });
+  });
+
+  it('a non-interactive worker still refuses the same unmatched head as head_not_owned', async () => {
+    const v = await verify(input({ head: 'ci/private-prompt-evals', otherHeadHolders: [] }));
+    expect(!v.owned && v.reasonCode).toBe('head_not_owned');
+  });
+
+  it('a protected head is refused even for an interactive worker with a free name', async () => {
+    const v = await verify(input({ head: 'dev', interactiveWorker: true, otherHeadHolders: [] }));
+    expect(!v.owned && v.reasonCode).toBe('protected_head');
   });
 });
 

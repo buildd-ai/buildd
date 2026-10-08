@@ -3,6 +3,7 @@ import { choice, defineDecision } from '@builddai/ai-kit/decide';
 import {
   CLAIM_HOLD_APPLYING_FRACTION,
   CLAIM_HOLD_DECISION,
+  CLAIM_HOLD_MIN_CONFIDENCE,
   buildClaimHoldState,
   claimHoldCandidatePolicyVersion,
   claimHoldStateDigest,
@@ -79,6 +80,32 @@ describe('classifyClaimHoldEligibility: deterministic rails', () => {
   });
 });
 
+describe('classifyClaimHoldEligibility: soft_overlap (prefix-only declared overlap)', () => {
+  const soft = (over: Partial<ClaimHoldEligibilityInput> = {}) => base({
+    gate: 'soft_overlap',
+    concretePaths: ['scripts/'],
+    overlapPaths: ['scripts', 'scripts/run-unit-tests.ts'],
+    holder: { taskId: 't-h', prNumber: null, workerStatus: 'running', prLifecycle: null },
+    ...over,
+  });
+
+  it('is eligible even while the holder is live: the overlap is only by directory', () => {
+    expect(classifyClaimHoldEligibility(soft())).toEqual({ eligible: true });
+  });
+
+  it('a live lease, a serialized surface, a migration or unknown state still wins', () => {
+    expect(classifyClaimHoldEligibility(soft({ overlapsLiveLease: true }))).toEqual({ eligible: false, rail: 'live_lease' });
+    expect(classifyClaimHoldEligibility(soft({ serializedSurfaces: ['x'] }))).toEqual({ eligible: false, rail: 'serialized_surface' });
+    expect(classifyClaimHoldEligibility(soft({ overlapPaths: ['packages/core/drizzle'] }))).toEqual({ eligible: false, rail: 'migration' });
+    expect(classifyClaimHoldEligibility(soft({ leaseReadFailed: true }))).toEqual({ eligible: false, rail: 'state_unresolved' });
+    expect(classifyClaimHoldEligibility(soft({ forced: true }))).toEqual({ eligible: false, rail: 'forced' });
+  });
+
+  it('with no overlapping paths there is nothing to ask about', () => {
+    expect(classifyClaimHoldEligibility(soft({ overlapPaths: [] }))).toEqual({ eligible: false, rail: 'no_overlap_data' });
+  });
+});
+
 describe('isMigrationPath', () => {
   it.each([
     ['packages/core/drizzle/0001_a.sql', true],
@@ -93,18 +120,25 @@ describe('isMigrationPath', () => {
   });
 });
 
-describe('gated START is unreachable by default', () => {
-  it('ships in shadow with a zero applying fraction', () => {
-    expect(CLAIM_HOLD_DECISION.policyOf('action').mode).toBe('shadow');
-    expect(CLAIM_HOLD_APPLYING_FRACTION).toBe(0);
-    expect(isGatedStartReachable()).toBe(false);
+describe('gated START is live, with a single rollback switch', () => {
+  it('ships gated at a conservative threshold with every eligible deferral in the applying arm', () => {
+    expect(CLAIM_HOLD_DECISION.policyOf('action').mode).toBe('gated');
+    expect(CLAIM_HOLD_DECISION.policyOf('action').minConfidence).toBe(CLAIM_HOLD_MIN_CONFIDENCE);
+    expect(CLAIM_HOLD_MIN_CONFIDENCE).toBeGreaterThanOrEqual(0.8);
+    expect(CLAIM_HOLD_APPLYING_FRACTION).toBe(1);
+    expect(isGatedStartReachable()).toBe(true);
+  });
+
+  it('rolling back is a zero fraction: deterministic HOLD everywhere', () => {
+    expect(isGatedStartReachable(CLAIM_HOLD_DECISION, 0)).toBe(false);
   });
 
   it('needs BOTH a non-shadow policy and a positive fraction', () => {
     const q = { action: choice({ question: 'q' }, { HOLD: 'h', START: 's' }) };
     const gated = defineDecision({ id: 'buildd.t_claim', promptVersion: 't', questions: q, mode: 'gated', minConfidence: 0.9 });
+    const shadow = defineDecision({ id: 'buildd.t_claim', promptVersion: 't', questions: q, mode: 'shadow' });
     expect(isGatedStartReachable(gated, 0)).toBe(false);
-    expect(isGatedStartReachable(CLAIM_HOLD_DECISION, 0.5)).toBe(false);
+    expect(isGatedStartReachable(shadow, 0.5)).toBe(false);
     expect(isGatedStartReachable(gated, 0.1)).toBe(true);
     expect(isGatedStartReachable(gated, Number.NaN)).toBe(false);
   });

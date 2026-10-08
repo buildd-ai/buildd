@@ -40,7 +40,26 @@ The authoritative entity set is the 30 tables in `schema.ts`. Core entities:
 Multi-tenancy root. Owns accounts, workspaces, missions. Tracks an **aggregate
 monthly budget** (`monthlyBudgetUsd` / `monthlyCostUsd` / `budgetAlertsSent`) across
 all token-accounts — a single SDK credit pool regardless of which API token ran.
-Plans: `free | pro | team`.
+Plans: `free | pro | team` (`teams.plan`, default `free`, plus Stripe customer /
+subscription ids, `billingStatus` and `paidSeats`). Gates read only
+`entitlements(team)` (`packages/core/entitlements.ts`): members, knowledge-base
+document cap, and whether decision calls run on buildd's key. The `BILLING_ENFORCED`
+env switch is off by default, and while off every team is unlimited.
+Stripe is the billing system: the signed, event-id-idempotent webhook
+(`POST /api/webhooks/stripe`, ledger `stripe_events`) is the only writer of plan,
+billing status, subscription id and paid seats. Owners/admins (`manage_billing`,
+locked) open Checkout, the customer portal, or change Team seats under
+`/api/teams/[id]/billing/*`; Settings → Billing renders it. Team is per seat,
+minimum 5; adding, inviting (pending invitations hold a seat) or accepting a member
+past the paid seats is refused with a 402 that points the owner at adding seats,
+never charged silently. Rules: `packages/core/billing.ts`.
+When on (`packages/core/billing-limits.ts`): new `docs`-corpus documents past
+`knowledgeBaseCap` (distinct files across the team's workspaces) are not ingested,
+while updates to stored documents, the code index and recall are unaffected and
+nothing stored is ever removed. Decision calls (not chat, not agent work) for a team
+with no OpenRouter key of its own run on `BUILDD_PLATFORM_DECISION_KEY` (with Jev, or
+`BUILDD_PLATFORM_DECISION_MODEL`) when `decisionCallsIncluded`; a team's own key
+always wins.
 
 ### User
 SSO identity (`googleId`, `githubId`, `email`). Belongs to teams via `team_members`
@@ -71,6 +90,18 @@ picks workspaces itself (claim candidates, reach lists, ingest jobs) is bounded
 by the token's list. An unrestricted token is auto-linked to open workspaces
 only; linking a token to a restricted workspace takes a team owner or admin. `account_workspaces` is the
 M2M grant of which workspaces an account `canClaim` / `canCreate` from.
+
+A per-task token (`bldt_`) is confined to its own task's workspace. The one
+exception is a **schedule delegation** (`task_schedules.delegation`,
+`packages/core/token-delegation.ts`): a team owner or admin may grant the tasks
+one schedule spawns `analytics:read` (decision ledger, decision/coordination stats,
+gate ledger, workspace name resolution) and/or `tasks:create` (the normal create
+path, no mission, dependencies or foreign parent) on named workspaces of the same
+team. It is stored on the schedule, never the task, records who granted it and
+when, is re-read on every request, and never exceeds the minting account's reach.
+Analytics reads a reviewer depends on report `status` — `OK` / `NO_DATA` reached
+the data; `FORBIDDEN` / `UNAUTHORIZED` / `TOOL_UNAVAILABLE` did not and are never
+evidence of zero rows.
 
 > **Deprecated:** the `accounts.oauthToken` column — credentials now live in the
 > `secrets` table. Kept for back-compat, slated for removal. The parallel
@@ -124,15 +155,24 @@ Notable fields:
   branch** (shape `mission/<slug>-<id8>`, generated lazily once the mission's workspace
   has a repo) and the mission-level PR that tracks it. Mission tasks do **not** share a
   branch: every task gets its own branch and its own PR, always. `workingBranch` is the
-  **base** those task PRs are cut from only for a mission that opted in
-  (`missions.integrationBranchEnabled`, default **false**). For an opted-in mission the
+  **base** those task PRs are cut from only for a mission with
+  `missions.integrationBranchEnabled` set. That flag is resolved once, when the mission is
+  created (`POST /api/missions`, which every creation path goes through: dashboard, MCP
+  `manage_missions`, chat, discrepancy promotion), from the request's `branchStrategy`
+  or else the workspace's `gitConfig.branchStrategy` via `resolveBranchStrategy`, which
+  resolves an unconfigured workspace to **`mission-branch`** — so a new mission is on the
+  integration branch by default, and `direct` is the opt-out. (The column's own DB default
+  of `false` is never what a new mission gets; it only describes rows created before the
+  workspace default existed.) An existing mission's flag is the runtime truth from then
+  on; changing the workspace default never retargets it. For a mission-branch mission the
   task PRs merge into the integration branch, and the mission's work reaches trunk
   through a single PR from that branch — the mission integration PR, which is the
   mission's one human gate. That PR is opened automatically: when a task PR merges,
   the `pull_request` webhook calls `maybeOpenMissionIntegrationPr`, which opens it
   (via `openMissionIntegrationPr`) once no deliverable task of the mission is left
-  unfinished or unmerged. A mission that has not opted in — the default — behaves as it always
-  has: each task PR targets the workspace's trunk branch and nothing retargets it.
+  unfinished or unmerged. A `direct` mission (`integrationBranchEnabled` false) behaves as
+  missions did before the integration branch existed: each task PR targets the workspace's
+  trunk branch and nothing retargets it.
   `primaryPrNumber`/`primaryPrUrl` are reserved for a **trunk-based** PR under the
   mission, i.e. the mission integration PR where one exists; a PR based on the mission
   branch never claims the slot. Both fields stay null for workspace-less missions.
@@ -176,7 +216,9 @@ pending → claimed/assigned → in_progress → review → completed/failed). K
 - **`mode`**: `execution | planning` (planning tasks produce a plan, not code).
 - **`outputRequirement`**: `pr_required | artifact_required | none | auto` — enforced
   on completion. `outputSchema` drives SDK structured output.
-- **`runnerPreference`** (`any | user | service | action`) +
+- **`runnerPreference`** (`any | user | service`, plus the legacy stored value
+  `action` from the removed GitHub Actions runner, which the dashboard no
+  longer offers) +
   **`roleSlug`** — claim-time routing constraints. `roleSlug` is nullable: when
   set, only runners that advertise this skill in `availableSkills` can claim the
   task; when null, any runner with workspace access can claim it. **Null is the
@@ -371,6 +413,11 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   silently falling back to local Codex auth. Host-runner only; cloud-runner
   Codex support is a separate, unimplemented gap (`POST
   /api/runner/model-endpoint` 404s a Codex task outright).
+  **Deferred tool loading**: the row's `capabilities.toolSearch` (OpenRouter
+  on by default, gateway and custom URL off unless set) tells a host runner
+  to set `ENABLE_TOOL_SEARCH=true` for a Claude run through the winning
+  endpoint — per run, never runner-global (`effectiveToolSearch`,
+  `applyModelEnv`).
 - **Decision model** — `teams.decision_model` (`packages/core/decision-model.ts`):
   null = Jev on OpenRouter; otherwise any chat model via OpenRouter or the gateway,
   with confidence from token logprobs (`@builddai/ai-kit/decide` chat endpoint).
@@ -455,8 +502,18 @@ when `artifactId` + `artifactTitle` are present. This contract is tested in
 ## 4a. Merge policy — who is allowed to end a PR
 
 The single primitive governing every route to a merge. Resolved by `resolvePolicy`
-from, in precedence order: `task.requiresReview` → `mission.mergePolicy` →
-`workspace.gitConfig.mergePolicy` → legacy `gitConfig` auto-merge flags.
+from, in precedence order: `task.requiresReview` → a task PR based on its mission's
+integration branch (forced `auto-threshold`) → `mission.mergePolicy` →
+`mission.requiresReview` → `workspace.gitConfig.mergePolicy` → the default
+(`auto-threshold`).
+
+The legacy `gitConfig` flags `autoMergePR` / `autoMergeOnGreenCI` are **not** part of
+that chain: migration `0113` converted them to a `mergePolicy` and nothing reads them
+since. The dashboard no longer offers an "Auto-merge on green CI" checkbox (it wrote
+`autoMergeOnGreenCI` and changed nothing); "merge on green CI" is the `auto-threshold`
+tier, set on the workspace merge policy page. The config route ignores the flag if a
+client still sends it, and the PR-create response's `autoMergeEnabled` is derived from
+the resolved policy.
 
 | Tier | Who ends the PR |
 |------|-----------------|

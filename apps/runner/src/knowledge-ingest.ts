@@ -205,7 +205,7 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
       const allPaths = await reader.listFiles();
 
       const codeFiles: Array<{ path: string; content: string }> = [];
-      const docsFiles: Array<{ path: string; content: string }> = [];
+      let docsFiles: Array<{ path: string; content: string }> = [];
       let skipped = 0;
 
       for (const filePath of allPaths) {
@@ -216,6 +216,16 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
         if (!content) { skipped++; continue; }
         if (corpus === 'code') codeFiles.push({ path: filePath, content });
         else docsFiles.push({ path: filePath, content });
+      }
+
+      // Plan knowledge-base cap (no-op while BILLING_ENFORCED is off): new docs
+      // past it are not written; docs already stored are refreshed as usual.
+      const { admitDocsWithinCap } = await import('@buildd/core/billing-limits');
+      const admission = await admitDocsWithinCap(job.workspaceId, docsFiles.map(f => f.path));
+      if (admission.refused.length > 0) {
+        const refused = new Set(admission.refused);
+        docsFiles = docsFiles.filter(f => !refused.has(f.path));
+        log(`[knowledge-ingest:local] job ${job.id}: ${admission.message}`);
       }
 
       log(`[knowledge-ingest:local] job ${job.id}: ${codeFiles.length} code, ${docsFiles.length} docs, ${skipped} filtered`);
@@ -256,6 +266,8 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
         filesListed: allPaths.length,
         filesSent: codeFiles.length + docsFiles.length,
         filesSkipped: skipped,
+        filesRefusedByPlan: admission.refused.length,
+        ...(admission.message ? { planLimitMessage: admission.message } : {}),
         chunksUpserted: totalChunks,
         skippedUnchanged,
         prunedCode: codePruned.length,

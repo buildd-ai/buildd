@@ -12,7 +12,9 @@
  * Run: bun test apps/runner/__tests__/unit/codex-last-assistant-message.test.ts
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock, setDefaultTimeout } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock, setDefaultTimeout , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import { mapCodexEventToSdkMessages } from '../../src/backends/codex-events';
 
 // WorkerManager construction starts several background intervals; give setup/
@@ -52,13 +54,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -154,7 +156,19 @@ describe('R1 — Codex agent_message populates worker.lastAssistantMessage', () 
   let manager: any;
   let worker: any;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     manager = new WorkerManager(makeConfig());
     worker = makeWorker();
   });

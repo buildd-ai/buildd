@@ -268,6 +268,9 @@ watching GitHub can see an agent is on it without opening the dashboard.
   or pushing. "Fixing" (`fix_started`) is written only by the claim route,
   after a worker has atomically claimed a fix attempt (`reviewerRetryPrNumber`
   or `ciRetryPrNumber` set).
+- Likewise a filed reviewer task MUST read as queued ("Review queued · waiting
+  for a worker", no spinner). "Reviewing" is written only by the claim route,
+  after a worker has claimed a task whose context carries `reviewerFor`.
 - The header MUST carry an animated spinner only while an agent is working
   right now (reviewing, fixing), and a static glyph otherwise — queued, waiting
   on checks, approved and every terminal state are not motion, and movement
@@ -295,7 +298,9 @@ watching GitHub can see an agent is on it without opening the dashboard.
 
 **Acceptance criteria**:
 - AC-10: WHEN a reviewer task is dispatched for a PR THEN a comment containing
-  the marker and "Reviewing" exists on that PR.
+  the marker and "Review queued" (no spinner) exists on that PR; WHEN a worker
+  then claims that reviewer task THEN the header reads "Reviewing" with the
+  spinner, appended once.
 - AC-11: WHEN CI fails on a worker PR and a fix task is dispatched THEN the
   existing comment is PATCHed with a "CI failed · fix N of M queued" entry
   linking the fix task, with no spinner, and no second comment is created.
@@ -322,7 +327,8 @@ watching GitHub can see an agent is on it without opening the dashboard.
   `apps/web/src/app/api/workers/[id]/route.ts` (reviewer verdicts),
   `apps/web/src/app/api/github/pr/review/route.ts` (on-demand review requests),
   `apps/web/src/app/api/workers/claim/route.ts` via
-  `apps/web/src/lib/pr-activity-fix-claimed.ts` (fix claimed → "Fixing")
+  `apps/web/src/lib/pr-activity-fix-claimed.ts` (fix claimed → "Fixing",
+  reviewer claimed → "Reviewing")
 - Copy style guide: `apps/web/src/lib/pr-activity-comment.STYLE.md`
 - Timezone resolution: `packages/core/timezone.ts`,
   `apps/web/src/lib/team-timezone.ts`

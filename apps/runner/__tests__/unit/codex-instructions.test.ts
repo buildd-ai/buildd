@@ -9,7 +9,6 @@ import {
   BUILDD_AGENTS_BEGIN,
   BUILDD_AGENTS_END,
 } from '../../src/codex-instructions';
-import { buildCbmGuidanceBody } from '../../src/cbm-enforcement';
 
 // Use fs/promises throughout: the sync `fs` exports (notably rmSync) trip a Bun
 // aggregate-run module-loading quirk; fs/promises is unaffected and is also what
@@ -78,40 +77,9 @@ describe('buildCodexInstructionDoc', () => {
     expect(doc).not.toContain('Project Instructions');
   });
 
-  test('produces an empty doc when there is no persona, skills, project instructions, or CBM guidance', () => {
+  test('produces an empty doc when there is no persona, skills, or project instructions', () => {
     const doc = buildCodexInstructionDoc({ skillBundles: [] });
     expect(doc.trim().length).toBe(0);
-  });
-
-  test('carries the codebase-graph guidance when CBM is mounted for this task', () => {
-    // AGENTS.md is Codex's only standing-instruction channel: no systemPrompt
-    // seam, and (through the SDK) no hook seam either. CBM was mounted but
-    // unmentioned on Claude once, and every worker then ignored it.
-    const doc = buildCodexInstructionDoc({
-      skillBundles: [],
-      cbmGuidance: buildCbmGuidanceBody({ dialect: 'codex' }),
-    });
-    expect(doc).toContain('# Codebase graph (codebase-memory)');
-    expect(doc).toContain('make a graph call your FIRST navigation step');
-    expect(doc).toContain('mcp__codebase-memory__get_architecture');
-    // Codex has no Read/Grep/Glob tools — naming them would describe tools it
-    // does not have, the same class of error as describing an absent server.
-    expect(doc).not.toContain('Read/Grep/Glob');
-  });
-
-  test('omits the graph section entirely when CBM is not mounted', () => {
-    const doc = buildCodexInstructionDoc({ skillBundles: [] });
-    expect(doc).not.toContain('Codebase graph');
-    expect(doc).not.toContain('codebase-memory');
-  });
-
-  test('the graph section follows the project instructions section', () => {
-    const doc = buildCodexInstructionDoc({
-      skillBundles: [],
-      projectInstructions: '# Project Rules\nAlways run bun test before finishing.',
-      cbmGuidance: buildCbmGuidanceBody({ dialect: 'codex' }),
-    });
-    expect(doc.indexOf('Project Instructions')).toBeLessThan(doc.indexOf('# Codebase graph'));
   });
 });
 

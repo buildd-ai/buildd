@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { listMountedConnectors } from '@/lib/connector-queries';
 
@@ -9,12 +9,13 @@ import { listMountedConnectors } from '@/lib/connector-queries';
 // Worker-level connector health for a workspace — unlike
 // /api/workspaces/[id]/connectors (admin API-key level only), this is reachable
 // by any authenticated worker/API-key account with access to the workspace.
-// Backs the list_connectors MCP action across all transports.
+// Backs the list_connectors MCP action across all transports. A per-task
+// token sees only its own task's workspace.
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -29,6 +30,7 @@ export async function GET(req: NextRequest) {
     const access = await verifyWorkspaceAccess(user.id, workspaceId);
     if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   } else if (apiAccount) {
+    if (!taskScopeAllowsWorkspace(apiAccount, workspaceId)) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId);
     if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }

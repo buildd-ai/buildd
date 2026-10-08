@@ -14,23 +14,47 @@ import MissionBoardVisualFixture from './MissionBoardVisualFixture';
 import MissionListExecutorFixture from './MissionListExecutorFixture';
 import MissionTaskStripFixture from './MissionTaskStripFixture';
 import MissionCheckInsFixture from './MissionCheckInsFixture';
+import GoalCriteriaFixture from './GoalCriteriaFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
+import OperatorAccessFixture from './OperatorAccessFixture';
+import ModelProvidersFixture from './ModelProvidersFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
+import FailureKindsFixture from './FailureKindsFixture';
+import DeliveryStatesFixture from './DeliveryStatesFixture';
+import AgentAccessFixture from './AgentAccessFixture';
+import ToolBreakdownFixture from './tool-breakdown-fixture';
+import EntitlementBlockedFixture from './EntitlementBlockedFixture';
+import RunnerSizeFixture from './RunnerSizeFixture';
+import WorkspacesListFixture from './WorkspacesListFixture';
+import HostedRunnerFixture from './HostedRunnerFixture';
+import InteractiveSessionsFixture from './InteractiveSessionsFixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
+    OPERATOR_ACCESS_FIXTURE_STATE,
+    RUNNER_SIZE_FIXTURE_STATE,
+    WORKSPACES_LIST_FIXTURE_STATE,
+    HOSTED_RUNNER_FIXTURE_STATE,
+    INTERACTIVE_SESSIONS_FIXTURE_STATE,
+    MODEL_PROVIDERS_FIXTURE_STATE,
+    TOOL_BREAKDOWN_FIXTURE_STATE,
     FIXTURE_VIEWS,
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
     MISSION_LIST_EXECUTOR_FIXTURE_STATE,
     MISSION_TASK_STRIP_FIXTURE_STATE,
     MISSION_CHECK_INS_FIXTURE_STATE,
+    GOAL_CRITERIA_FIXTURE_STATE,
     ONBOARDING_FIXTURE_STATE,
     TASK_EVIDENCE_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     ANSWER_STATES_FIXTURE_STATE,
+    AGENT_ACCESS_FIXTURE_STATE,
+    ENTITLEMENT_BLOCKED_FIXTURE_STATE,
+    FAILURE_KINDS_FIXTURE_STATE,
+    DELIVERY_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
@@ -97,12 +121,54 @@ export default function DevFixturesPage() {
         return <MissionCheckInsFixture />;
     }
 
+    if (state === GOAL_CRITERIA_FIXTURE_STATE) {
+        return <GoalCriteriaFixture />;
+    }
+
+    if (state === AGENT_ACCESS_FIXTURE_STATE) {
+        return <AgentAccessFixture />;
+    }
+
+    if (state === FAILURE_KINDS_FIXTURE_STATE) {
+        return <FailureKindsFixture />;
+    }
+
+    if (state === DELIVERY_STATES_FIXTURE_STATE) {
+        return <DeliveryStatesFixture />;
+    }
+
     if (state === ANSWER_STATES_FIXTURE_STATE) {
         return <AnswerStatesFixture />;
     }
+    if (state === ENTITLEMENT_BLOCKED_FIXTURE_STATE) {
+        return <EntitlementBlockedFixture />;
+    }
 
+    if (state === TOOL_BREAKDOWN_FIXTURE_STATE) {
+        return <ToolBreakdownFixture />;
+    }
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
+    }
+    if (state === INTERACTIVE_SESSIONS_FIXTURE_STATE) {
+        return <InteractiveSessionsFixture />;
+    }
+
+    if (state === RUNNER_SIZE_FIXTURE_STATE) {
+        return <RunnerSizeFixture />;
+    }
+    if (state === WORKSPACES_LIST_FIXTURE_STATE) {
+        return <WorkspacesListFixture />;
+    }
+    if (state === HOSTED_RUNNER_FIXTURE_STATE) {
+        return <HostedRunnerFixture />;
+    }
+    if (state === MODEL_PROVIDERS_FIXTURE_STATE) {
+        return <ModelProvidersFixture />;
+    }
+
+    if (state === OPERATOR_ACCESS_FIXTURE_STATE) {
+        return <OperatorAccessFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {

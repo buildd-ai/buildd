@@ -18,7 +18,13 @@ export function validateCronExpression(expr: string): string | null {
 export function computeNextRunAt(expr: string, timezone: string = 'UTC'): Date | null {
   try {
     const cron = new Cron(expr, { timezone });
-    const next = cron.nextRun();
+    const now = new Date();
+    let next = cron.nextRun(now);
+    // croner works at second granularity, so within the first ms of a matching
+    // second it can return a time that is already in the past.
+    if (next && next.getTime() <= now.getTime()) {
+      next = cron.nextRun(new Date(next.getTime() + 1000));
+    }
     return next || null;
   } catch {
     return null;

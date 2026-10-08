@@ -3,12 +3,6 @@ import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 // Route policy and the publish client for the Dispatch transport. The ack
 // statements and the drain's exclusion are real-SQL: apps/web/tests/db/dispatch-handoff.test.ts.
 
-let githubConfigured = true;
-mock.module('@/lib/github', () => ({
-  isGitHubAppConfigured: () => githubConfigured,
-  dispatchToGitHubActions: async () => true,
-  repositoryDispatchBody: () => ({}),
-}));
 mock.module('@/app/api/workers/claim/held-gate', () => ({ isTaskNotHeldOrLocal: async () => true }));
 mock.module('@/lib/pusher', () => ({
   triggerEvent: async () => {},
@@ -46,25 +40,20 @@ describe('routeFor', () => {
     expect(r!.payload!.targetLocalUiUrl).toBe('http://r.test');
   });
 
-  it('a wanted webhook goes first with resolve; GitHub Actions rides along for a legacy cause; the wake is last', () => {
+  it('a wanted webhook goes first with resolve and the wake is last; a GitHub-linked repo adds no step', () => {
     const r = routeFor(row(), task() as never, ws({ webhookConfig: HOOK, githubInstallationId: 'i', githubRepoId: 'r' }) as never);
     expect(r!.steps).toEqual([
       { target: T('webhook'), mode: 'first', resolve: true },
-      { target: T('github-actions'), mode: 'also', resolve: true },
       { target: T('runner-wake'), mode: 'first' },
     ]);
   });
 
-  it('no webhook step when the policy rules it out; no GitHub Actions for a non-legacy cause or a retried row', () => {
+  it('no webhook step when the policy rules it out; a linked repo without a webhook is the wake alone', () => {
     const r1 = routeFor(row({ cause: 'path_claim.released', causes: ['path_claim.released'] }), task() as never,
-      ws({ webhookConfig: { ...HOOK, events: ['task.created'] }, githubInstallationId: 'i', githubRepoId: 'r' }) as never);
+      ws({ webhookConfig: { ...HOOK, events: ['task.created'] } }) as never);
     expect(r1!.steps.map(s => s.target)).toEqual([T('runner-wake')]);
-    const r2 = routeFor(row({ attemptCount: 1 }), task() as never, ws({ githubInstallationId: 'i', githubRepoId: 'r' }) as never);
-    expect(r2!.steps.map(s => s.target)).toEqual([T('runner-wake')]);
-    githubConfigured = false;
-    const r3 = routeFor(row(), task() as never, ws({ githubInstallationId: 'i', githubRepoId: 'r' }) as never);
-    githubConfigured = true;
-    expect(r3!.steps.map(s => s.target)).toEqual([T('runner-wake')]);
+    const r2 = routeFor(row(), task() as never, ws({ githubInstallationId: 'i', githubRepoId: 'r' }) as never);
+    expect(r2!.steps).toEqual([{ target: T('runner-wake'), mode: 'first' }]);
   });
 
   it('a scheduled row keeps its webhook step: startAt is judged at resolve time, not publish time', () => {

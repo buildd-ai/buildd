@@ -13,7 +13,7 @@ function deps(keys: Partial<Record<string, string>>, gateway: { apiKey: string; 
     resolveInferenceCredential: async o => {
       asked.push(String(o.provider));
       const key = keys[String(o.provider)];
-      return key ? { key, scope: 'team', secretId: 's', purpose: 'inference_key' } : null;
+      return key ? { provider: o.provider as 'anthropic' | 'openai' | 'openrouter', key, scope: 'team', secretId: 's', purpose: 'inference_key' } : null;
     },
     resolveLiteLLMGateway: async () => { asked.push('litellm'); return gateway; },
   };
@@ -72,5 +72,26 @@ describe('resolveInferenceRoute', () => {
   it('knows which tier providers are vendors a route can serve', () => {
     expect(['anthropic', 'openai', 'openrouter'].every(isRouteVendor)).toBe(true);
     expect(isRouteVendor('openai-codex')).toBe(false);
+  });
+});
+
+describe('single-provider compatible inference', () => {
+  for (const [provider, vendor, model] of [
+    ['anthropic', 'anthropic', 'claude-haiku-4-5-20251001'],
+    ['openai', 'openai', 'gpt-5'],
+    ['openrouter', 'anthropic', 'claude-haiku-4-5-20251001'],
+  ] as const) {
+    it(`serves compatible inference with only ${provider} configured`, async () => {
+      const { d } = deps({ [provider]: 'example-key' });
+      const result = await resolveInferenceRoute({ teamId: 't', vendor, model }, d);
+      expect(result).toMatchObject({ route: provider, vendor, keyScope: 'team' });
+    });
+  }
+  it('keeps the actual route separate from personal credential scope', async () => {
+    const result = await resolveInferenceRoute({ ...base, vendor: 'anthropic', userId: 'u' }, {
+      resolveInferenceCredential: async o => o.provider === 'openrouter' ? { provider: 'openrouter', key: 'example-key', scope: 'user', purpose: 'inference_key', secretId: 'mine' } : null,
+      resolveLiteLLMGateway: async () => null,
+    });
+    expect(result).toMatchObject({ route: 'openrouter', vendor: 'anthropic', keyScope: 'user' });
   });
 });

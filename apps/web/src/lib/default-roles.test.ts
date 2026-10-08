@@ -1,17 +1,27 @@
 import { describe, it, expect } from 'bun:test';
 import { createHash } from 'crypto';
 import { mcpToolSurfaceFor, listMcpTools } from '../app/api/mcp/tools';
+import { BUILDD_ACTION_TOOL_NAMES, LEGACY_BUILDD_ACTION_TOOL } from '@buildd/shared';
 import { DEFAULT_ROLES, defaultRoleMetadata, planDefaultRoleResync, planDefaultRoleRoutingBackfill, roleContentHash } from './default-roles';
 import { EXPLICIT_ROLE_SLUGS, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
 describe('DEFAULT_ROLES', () => {
   const bySlug = Object.fromEntries(DEFAULT_ROLES.map(r => [r.slug, r]));
 
+  it('a role that may call any buildd action permits every group tool, not only the legacy name', () => {
+    const broad = DEFAULT_ROLES.filter(r => r.slug !== 'analyst' && r.allowedTools.includes(LEGACY_BUILDD_ACTION_TOOL));
+    expect(broad.length).toBeGreaterThan(0);
+    for (const r of broad) {
+      for (const tool of BUILDD_ACTION_TOOL_NAMES) expect(r.allowedTools, `${r.slug} ${tool}`).toContain(tool);
+    }
+  });
+
   // docs/design/role-routing.md §2: whenToUse/notFor ARE the routing prompt.
   // A role with no text is never a candidate, so every seeded role must say
   // either what it is for or, explicitly, that it is not routable.
   describe('routing text (role-routing.md §2)', () => {
-    const EXCLUDED = ['reviewer', VISUAL_AUDITOR_ROLE_SLUG];
+    // operator: filed with the slug on purpose, never inferred (deploy authority).
+    const EXCLUDED = ['reviewer', VISUAL_AUDITOR_ROLE_SLUG, 'operator'];
 
     it('every role has routing text or an explicit exclusion', () => {
       for (const role of DEFAULT_ROLES) {
@@ -71,9 +81,9 @@ describe('DEFAULT_ROLES', () => {
     });
   });
 
-  it('seeds the full eight-role set', () => {
+  it('seeds the full nine-role set', () => {
     expect(Object.keys(bySlug).sort()).toEqual([
-      'analyst', 'builder', 'organizer', 'researcher', 'reviewer', 'spec-validator', 'visual-auditor', 'writer',
+      'analyst', 'builder', 'operator', 'organizer', 'researcher', 'reviewer', 'spec-validator', 'visual-auditor', 'writer',
     ]);
   });
 
@@ -98,7 +108,8 @@ describe('DEFAULT_ROLES', () => {
     });
 
     it('is read-only: can look and capture, cannot edit files or delegate', () => {
-      expect([...role().allowedTools].sort()).toEqual(['AskUserQuestion', 'Bash', 'Glob', 'Grep', 'Read', 'mcp__buildd__buildd']);
+      expect([...role().allowedTools].filter(t => !t.startsWith('mcp__buildd__')).sort()).toEqual(['AskUserQuestion', 'Bash', 'Glob', 'Grep', 'Read']);
+      expect(role().allowedTools.filter(t => t.startsWith('mcp__buildd__')).sort()).toEqual([...BUILDD_ACTION_TOOL_NAMES].sort());
       for (const t of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) expect(role().allowedTools).not.toContain(t);
       expect(role().canDelegateTo).toEqual([]);
     });
@@ -288,19 +299,21 @@ describe('DEFAULT_ROLES', () => {
       for (const tool of ['mcp__buildd__buildd_analytics', 'mcp__buildd__buildd_work', 'mcp__buildd__recall', 'mcp__buildd__learn']) {
         expect(role().allowedTools).toContain(tool);
       }
-      expect(role().allowedTools).not.toContain('mcp__buildd__buildd');
+      // The legacy name keeps it working on a runner that predates group tools.
+      expect(role().allowedTools).toContain(LEGACY_BUILDD_ACTION_TOOL);
+      expect(role().allowedTools).not.toContain('mcp__buildd__buildd_admin');
       expect(bySlug.builder.allowedTools).not.toContain('mcp__buildd__buildd_analytics');
     });
 
-    it('advertises its declared tools from its configured URL with worker context', () => {
-      const config = role().mcpServers.buildd as { url: string };
-      const url = new URL(config.url);
-      url.searchParams.set('worker', 'test-worker');
-      const surface = mcpToolSurfaceFor({ toolsParam: url.searchParams.get('tools'), workerParam: url.searchParams.get('worker') });
+    it('its declared group tools resolve on a worker session from a current runner', () => {
+      const surface = mcpToolSurfaceFor({ workerParam: 'test-worker', runnerSupportsGroupTools: true });
       const names = listMcpTools({ accountLevel: 'worker', isSensitive: false, surface }).map(tool => tool.name);
       for (const name of ['buildd_analytics', 'buildd_work']) expect(names).toContain(name);
-      for (const other of DEFAULT_ROLES.filter(r => r.slug !== 'analyst')) {
-        expect((other.mcpServers.buildd as { url: string }).url).toBe('https://buildd.dev/api/mcp');
+    });
+
+    it('no role pins a surface in its MCP URL: the server picks it', () => {
+      for (const r of DEFAULT_ROLES) {
+        expect((r.mcpServers.buildd as { url: string }).url).toBe('https://buildd.dev/api/mcp');
       }
     });
 

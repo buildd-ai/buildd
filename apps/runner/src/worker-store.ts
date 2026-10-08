@@ -63,6 +63,10 @@ const PERSISTED_FIELDS = [
   // The refs a checkpoint sweep measures against. Without them a restored
   // worker sweeps with an empty committed half.
   'worktreeBaseRef', 'prBaseRef',
+  // Authoritative working set: what the server acknowledged holding for this
+  // session, so a restart replays deltas instead of starting from nothing.
+  // Bounded by the task's own change set, never the repo.
+  'workingSet', 'pendingShipReports',
 ] as const;
 
 // Bounds to keep files reasonable

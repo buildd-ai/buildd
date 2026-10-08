@@ -10,6 +10,7 @@ import { db } from '@buildd/core/db';
 import { tasks, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
+import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { notifyTeamOf } from '@/lib/notify';
 import type { MergePolicy } from '@buildd/shared';
@@ -76,6 +77,36 @@ export function classifyAutoMergeRefusal(reason: string): AutoMergeRefusalClass 
 
 /** Refusal classes a later webhook re-evaluates on its own: a wait, not a no. */
 const TRANSIENT_REFUSALS: ReadonlySet<AutoMergeRefusalClass> = new Set(['ci', 'stale_head', 'github_read']);
+
+
+/**
+ * `pulls/{n}/files` is GitHub's cached PR diff: after the head is refreshed
+ * onto a newer base it can keep the older merge base and an expanded file
+ * list (files that only differ because the base moved). A live compare of the
+ * current base tip against the head is the diff a merge would produce. Returns
+ * null when it cannot be read, so callers keep the snapshot verdict.
+ */
+async function fetchLiveChangedFilenames(
+  installationId: number,
+  repoFullName: string,
+  prNumber: number,
+  headSha: string,
+): Promise<Set<string> | null> {
+  try {
+    const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+    const baseRef = pr?.base?.ref;
+    if (!baseRef) return null;
+    const cmp = await githubApi(
+      installationId,
+      `/repos/${repoFullName}/compare/${encodeURIComponent(baseRef)}...${headSha}?per_page=300`,
+    );
+    if (!Array.isArray(cmp?.files) || cmp.files.length >= 300) return null;
+    return new Set(cmp.files.map((f: { filename: string }) => f.filename));
+  } catch (err) {
+    console.warn(`[auto-merge] live compare failed for ${repoFullName}#${prNumber}:`, err);
+    return null;
+  }
+}
 
 /**
  * Check CI status, deny paths, and diff size for a PR before merging.
@@ -271,7 +302,16 @@ export async function evaluateAutoMergeSafety(
     // not by an unconditional path block. Ordinary paths still block hard.
     const schemaSpecific = (path: string) =>
       path.includes('drizzle/') || path === 'packages/core/db/schema.ts';
-    const ordinaryHit = hits.find((hit) => !schemaSpecific(hit.path));
+    let ordinaryHit = hits.find((hit) => !schemaSpecific(hit.path));
+    if (ordinaryHit) {
+      // Re-check against the live diff before refusing: a stale PR snapshot
+      // must not flag a protected path the head no longer differs on.
+      const live = await fetchLiveChangedFilenames(installationId, repoFullName, prNumber, headSha);
+      if (live) {
+        files = files.filter((f) => live.has(f.filename));
+        ordinaryHit = hits.find((hit) => !schemaSpecific(hit.path) && live.has(hit.file.filename));
+      }
+    }
     if (ordinaryHit) {
       return { ok: false, reason: `touches protected path (${ordinaryHit.file.filename})` };
     }
@@ -529,6 +569,8 @@ export async function tryAutoMergeWorkerPr(params: {
    * decision itself is `policy`). Omitted, the ordering check loads it.
    */
   surfaceOrderingConfig?: WorkspaceGitConfig | null;
+  /** The kernel's landing (T15/T16); null = not the kernel's PR. Defaults to the seam's. Injected by tests. */
+  landThroughKernel?: (input: LandingInput) => Promise<KernelLanding | null>;
 }): Promise<{ merged: boolean; reason?: string }> {
   const { installationId, repoFullName, prNumber, headSha, worker, policy, bound } = params;
 
@@ -752,7 +794,7 @@ export async function tryAutoMergeWorkerPr(params: {
   const mergingTask = worker.taskId
     ? await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
-        columns: { id: true, title: true, taskClass: true, missionId: true },
+        columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
       })
     : null;
   const mergeGate = await guardMissionPrMerge(mergingTask);
@@ -773,14 +815,34 @@ export async function tryAutoMergeWorkerPr(params: {
     return { merged: false, reason: mergeGate.reason };
   }
 
-  const slotted = await mergeInSurfaceSlot(surfaceOrder, () =>
-    mergePullRequest(installationId, repoFullName, prNumber, 'squash', headSha),
-  );
+  // mission-branch-refresh.ts marks its conflict-resolution task's PR this way:
+  // it IS the merge commit that catches the integration branch up with dev, so
+  // squashing it would drop that ancestry and the same conflict would reappear
+  // on the very next refresh.
+  const requireMergeCommit = (mergingTask?.context as Record<string, unknown> | null)?.requireMergeCommit === true;
+  const mergeMethod = requireMergeCommit ? 'merge' : 'squash';
+  // Every rail passed. For a kernel-owned PR this door is only an adapter: the
+  // kernel lands it (LandingRequested → merge_call → MergeCallResult) and owns
+  // what follows — the post-merge work, and the refresh or conflict repair a
+  // refusal is owed. Any other PR merges here as before.
+  const kernelLand = params.landThroughKernel ?? (await import('@/lib/workflow/seam')).landThroughKernel;
+  const landingWorkspaceId = await workspaceIdOnce();
+  const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
+    const kernel = landingWorkspaceId
+      ? await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod })
+      : null;
+    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, headSha) };
+  });
   if ('refused' in slotted) {
     console.log(`Auto-merge deferred for ${repoFullName}#${prNumber}: ${slotted.refused}`);
     return { merged: false, reason: slotted.refused };
   }
-  const result = slotted.result;
+  if (slotted.result.kernel) {
+    const k = slotted.result.kernel;
+    console.log(`[auto-merge] ${repoFullName}#${prNumber}: kernel landing ${k.outcome} (${k.reason})`);
+    return k.merged ? { merged: true } : { merged: false, reason: k.message };
+  }
+  const result = slotted.result.legacy;
   if (result.merged) {
     console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
     await finalizeMissionPrMerge(mergingTask, installationId, repoFullName);

@@ -44,7 +44,7 @@ export interface ProviderKeyCardProps {
   onTest: () => Promise<{ ok: boolean; error: string | null }>;
   /** Marks the provider to pick first (OpenRouter). */
   recommended?: boolean;
-  /** Replaces the add button when there is no key (Connect OpenRouter); pasting stays a quiet option. */
+  /** Another way to add a key (Connect OpenRouter), shown after the add button when there is no key. */
   addAction?: React.ReactNode;
   /** Soft shape check before saving. Default: the chat-provider prefix check. */
   checkShape?: (raw: string) => KeyShapeResult;
@@ -223,17 +223,13 @@ export function ProviderKeyCard({
                   </button>
                 )}
               </>
-            ) : addAction ? (
-              <>
-                {addAction}
-                <button className="btn btn-quiet" onClick={() => { setEditing(true); setMsg(null); }} disabled={loading}>
-                  Paste a key
-                </button>
-              </>
             ) : (
-              <button className="btn" onClick={() => { setEditing(true); setMsg(null); }} disabled={loading}>
-                {addLabel}
-              </button>
+              <>
+                <button className="btn" onClick={() => { setEditing(true); setMsg(null); }} disabled={loading}>
+                  {addLabel}
+                </button>
+                {addAction}
+              </>
             )}
           </div>
         )}

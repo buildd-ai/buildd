@@ -36,7 +36,8 @@ export const TIER_POOL_EXPERIMENT_KIND = 'tier_pool' as const;
 export type PoolSurface = TierSurface;
 export const POOL_SURFACES: readonly PoolSurface[] = TIER_SURFACES;
 
-export type PoolMode = 'pinned' | 'split' | 'explore';
+/** `dial`: traffic follows the cell's dial and its learning state (`./tier-dial.ts`). */
+export type PoolMode = 'pinned' | 'split' | 'explore' | 'dial';
 
 /** Where an arm's calls go and which credential pays for them. */
 export type ArmRoute = 'anthropic' | 'openai' | 'openrouter' | 'runner:claude' | 'runner:codex';
@@ -287,9 +288,13 @@ export function poolEligibility(input: PoolEligibilityInput): { eligible: true }
   return { eligible: true };
 }
 
-/** Split and explore pools draw; pinned and frozen pools serve the incumbent. */
+/**
+ * Split, explore and dial pools draw; pinned and frozen pools serve the
+ * incumbent. A dial pool draws so that a learning cell records its shadow
+ * pick; it serves the incumbent until the cell has shifted.
+ */
 export function poolTakesDraws(mode: PoolMode, frozen: boolean): boolean {
-  return (mode === 'split' || mode === 'explore') && !frozen;
+  return (mode === 'split' || mode === 'explore' || mode === 'dial') && !frozen;
 }
 
 /** A role floor names a tier, not a model, so it does not pin one. */

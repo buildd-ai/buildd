@@ -23,9 +23,13 @@
  *                     `deferred` gate event. No edge.
  *   nothing         → the scan is stamped so the sweep does not re-ask hourly.
  *
- * Two doors: the pull_request.closed webhook (merged=false), and the hourly
+ * Three doors: the pull_request.closed webhook (merged=false) for a legacy PR;
+ * the workflow kernel's `scan_supersession` effect for a PR it owns (T18), so
+ * the scan is owed durably rather than run in a request; and the hourly
  * pr-reconcile backfill (`sweepClosedUnsupersededPrs`) for webhook misses and
- * PRs that closed before this existed.
+ * PRs that closed before this existed. Whichever door finds the proof, the
+ * edge is written by `recordPrSupersession`, which hands a kernel-owned PR to
+ * T20 (docs/specs/workflow-state-kernel.md §13.8).
  */
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
@@ -38,7 +42,8 @@ import { verifyByContent, verifyByPatchId, mapPath, parseSupersessionClaims, sig
 import { normalizeRepoFullName, prUrlFor, repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { installationIdForRepo } from '@/lib/workspace-installation';
 
-export type DetectVia = 'webhook' | 'sweep';
+/** `kernel`: the workflow kernel's `scan_supersession` effect for a PR it owns (T18). */
+export type DetectVia = 'webhook' | 'sweep' | 'kernel';
 
 export type SupersessionMethod = 'patch-id' | 'content';
 
@@ -91,6 +96,12 @@ interface GhPr {
   commits?: number;
   title?: string;
 }
+
+const SURFACE: Record<DetectVia, string> = {
+  webhook: 'webhook pull_request.closed',
+  sweep: 'cron pr-reconcile',
+  kernel: 'workflow scan_supersession',
+};
 
 const key = (repo: string, n: number) => `${repo.toLowerCase()}#${n}`;
 
@@ -200,7 +211,13 @@ async function verifyCandidate(opts: {
  * content proves it. Never throws for GitHub trouble — a failed read is a
  * `skipped` result and the sweep tries again later.
  */
-export async function detectPrSupersession(opts: { workerId: string; via: DetectVia; now?: Date }): Promise<DetectResult> {
+export async function detectPrSupersession(opts: {
+  workerId: string;
+  via: DetectVia;
+  now?: Date;
+  /** The kernel's delivery for the PR, when it owns it: its state, not the (possibly lagging) columns, says whether the PR is closed. */
+  delivery?: { state: string } | null;
+}): Promise<DetectResult> {
   const now = opts.now ?? new Date();
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, opts.workerId),
@@ -215,7 +232,7 @@ export async function detectPrSupersession(opts: { workerId: string; via: Detect
   });
   if (!worker) return { outcome: 'skipped', reason: 'worker not found' };
   // Already merged, superseded, abandoned or still open: nothing to find.
-  if (prShipState(worker) !== 'closed_unsuperseded') return { outcome: 'skipped', reason: 'not closed-unsuperseded' };
+  if (prShipState({ ...worker, delivery: opts.delivery ?? null }) !== 'closed_unsuperseded') return { outcome: 'skipped', reason: 'not closed-unsuperseded' };
 
   const closedRepo = repoFullNameFromPrUrl(worker.prUrl);
   const prNumber = worker.prNumber;
@@ -346,7 +363,7 @@ export async function detectPrSupersession(opts: { workerId: string; via: Detect
   if (suggestion) {
     fireGateEvent({
       gate: GATE_SLUGS.AUTO_PR_SUPERSESSION,
-      surface: opts.via === 'sweep' ? 'cron pr-reconcile' : 'webhook pull_request.closed',
+      surface: SURFACE[opts.via],
       outcome: 'deferred',
       reason: 'supersession candidate found but not content-verified: suggestion only, no edge',
       workspaceId: worker.workspaceId ?? null,
@@ -396,7 +413,7 @@ async function recordVerified(opts: {
   }
   fireGateEvent({
     gate: GATE_SLUGS.AUTO_PR_SUPERSESSION,
-    surface: opts.via === 'sweep' ? 'cron pr-reconcile' : 'webhook pull_request.closed',
+    surface: SURFACE[opts.via],
     outcome: 'accepted',
     reason: `closed PR auto-recorded as superseded: content verified (${opts.method})`,
     workspaceId: opts.workspaceId,

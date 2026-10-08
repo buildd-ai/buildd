@@ -19,6 +19,7 @@ import {
   mergedPrJobsQuery,
   promoteCandidatesSql,
   promotionCandidatesQuery,
+  deferPromotionSql,
   applyPendingSupersedesSql,
   clearPendingSupersedesSql,
   flipSupersededChunkSql,
@@ -35,7 +36,13 @@ import {
   MEMORY_PROMOTE_MAX_PER_RUN,
   MEMORY_PROMOTE_SHADOW_MAX_PER_RUN,
 } from '../memory-candidates';
-import type { MemoryDecider, PromoteShadowItem } from '../memory-decisions';
+import {
+  KEEP_NOT_DURABLE_TAG,
+  PROMOTE_DEFERRED_TAG,
+  type MemoryDecider,
+  type PromoteItem,
+  type PromoteVerdict,
+} from '../memory-decisions';
 
 const dialect = new PgDialect();
 const render = (q: any) => {
@@ -111,16 +118,39 @@ describe('promotionCandidatesQuery', () => {
   it('superseded_by is not evidence of anything (explicit and band supersedes set it)', () => {
     expect(sql).not.toContain('superseded_by = m.id');
   });
+
+  it('reads the keep tag, the deferral tag, and whether an agent pulled or used it (expiry\'s test, same team)', () => {
+    expect(sql).toMatch(/\$\d+ = ANY\(m\.tags\)\) AS not_durable/);
+    expect(sql).toMatch(/\$\d+ = ANY\(m\.tags\)\) AS promote_deferred/);
+    expect(params).toEqual(expect.arrayContaining([KEEP_NOT_DURABLE_TAG, PROMOTE_DEFERRED_TAG]));
+    expect(sql).toContain("u.team_id = m.team_id AND u.memory_id = m.id::text AND (u.via = 'pull' OR u.outcome = 'used') ) AS pulled");
+  });
 });
 
 describe('promoteCandidatesSql', () => {
   it('re-checks team, state and the external floor in the UPDATE, and binds ids as one array', () => {
     const { sql, params } = render(promoteCandidatesSql(TEAM, ['m1', 'm2']));
     expect(sql).toContain("SET state = 'active', valid_from = now()");
-    expect(sql).toContain('WHERE team_id = $1');
-    expect(sql).toContain('id IN ($2::uuid, $3::uuid)');
+    expect(sql).toContain('WHERE team_id = $2');
+    expect(sql).toContain('id IN ($3::uuid, $4::uuid)');
     expect(sql).toContain("AND state = 'candidate' AND external = false AND superseded_by IS NULL");
-    expect(params).toEqual([TEAM, 'm1', 'm2']);
+    expect(params).toEqual([PROMOTE_DEFERRED_TAG, TEAM, 'm1', 'm2']);
+  });
+
+  it('clears the deferral tag on promotion', () => {
+    const { sql } = render(promoteCandidatesSql(TEAM, ['m1']));
+    expect(sql).toContain('tags = array_remove(tags, $1)');
+  });
+});
+
+describe('deferPromotionSql', () => {
+  it('tags only current non-external candidates of this team, once; never changes state', () => {
+    const { sql, params } = render(deferPromotionSql(TEAM, ['m1']));
+    expect(sql).toContain('SET tags = array_append(tags, $1)');
+    expect(sql).toContain('WHERE team_id = $2 AND id IN ($3::uuid)');
+    expect(sql).toContain("AND state = 'candidate' AND external = false AND superseded_by IS NULL AND NOT ($4 = ANY(tags))");
+    expect(sql).not.toContain('SET state');
+    expect(params).toEqual([PROMOTE_DEFERRED_TAG, TEAM, 'm1', PROMOTE_DEFERRED_TAG]);
   });
 });
 
@@ -235,21 +265,35 @@ describe('re-verify', () => {
 
 // ── Orchestration ────────────────────────────────────────────────────────────
 
-const cand = (id: string, over: Partial<PromotionCandidateRow['evidence']> = {}, teamId = TEAM): PromotionCandidateRow => ({
-  id, teamId, project: 'p', type: 'gotcha', title: `t ${id}`, content: `c ${id}`, sourceKind: 'learn',
+const cand = (id: string, over: Partial<PromotionCandidateRow['evidence']> = {}, teamId = TEAM, promoteDeferred = false): PromotionCandidateRow => ({
+  id, teamId, project: 'p', type: 'gotcha', title: `t ${id}`, content: `c ${id}`, sourceKind: 'learn', promoteDeferred,
   evidence: { external: false, sourcePrMergedPastWindow: false, sourcePrReverted: false, corroborated: false, ...over },
 });
+
+/** A decider that vetoes the live items named, and records what it was asked. */
+function vetoing(veto: string[] = []) {
+  const asked: PromoteItem[][] = [];
+  const decider = {
+    judgePromote: async ({ items }: { items: PromoteItem[] }): Promise<PromoteVerdict[]> => {
+      asked.push(items);
+      return items.map(i => ({ memoryId: i.memoryId, veto: i.live && veto.includes(i.memoryId) }));
+    },
+  } as unknown as MemoryDecider;
+  return { decider, asked };
+}
 
 function fakeDeps(over: Partial<LifecycleDeps> = {}) {
   const calls = {
     promote: [] as Array<{ teamId: string; ids: string[] }>, written: [] as any[], flagged: [] as any[], expire: [] as any[],
     applied: [] as Array<{ teamId: string; ids: string[] }>, attempts: [] as any[],
+    deferred: [] as Array<{ teamId: string; ids: string[] }>,
   };
   const deps: LifecycleDeps = {
     flaggedWorkspaces: async () => [],
     findPromotionCandidates: async () => [],
     promote: async (teamId, ids) => { calls.promote.push({ teamId, ids }); return ids; },
     applyPendingSupersedes: async (teamId, ids) => { calls.applied.push({ teamId, ids }); return 0; },
+    deferPromotion: async (teamId, ids) => { calls.deferred.push({ teamId, ids }); return ids; },
     recordAttempt: async (a) => { calls.attempts.push(a); },
     expire: async (d, l) => { calls.expire.push({ d, l }); return 0; },
     findFailedTasks: async () => [],
@@ -291,20 +335,86 @@ describe('runMemoryLifecycle', () => {
     expect(r.held).toBe(3);
   });
 
-  it('asks Jev promote in shadow for non-external candidates, capped, and never acts on it', async () => {
-    const asked: PromoteShadowItem[][] = [];
-    const decider = { shadowPromote: async ({ items }: { items: PromoteShadowItem[] }) => { asked.push(items); } } as unknown as MemoryDecider;
+  it('asks Jev promote for non-external candidates, capped; a challenger the rule held never promotes', async () => {
+    const { decider, asked } = vetoing();
     const many = Array.from({ length: MEMORY_PROMOTE_SHADOW_MAX_PER_RUN + 3 }, (_, i) => cand(`c${i}`));
-    const { deps, calls } = fakeDeps({ findPromotionCandidates: async () => [cand('ext', { external: true }), cand('m', { sourcePrMergedPastWindow: true }), ...many] });
+    const { deps, calls } = fakeDeps({ findPromotionCandidates: async () => [cand('ext', { external: true }), ...many, cand('m', { sourcePrMergedPastWindow: true })] });
     const r = await runMemoryLifecycle({ deps, decider });
     const items = asked.flat();
     expect(items).toHaveLength(MEMORY_PROMOTE_SHADOW_MAX_PER_RUN);
     expect(items.some(i => i.memoryId === 'ext')).toBe(false);
-    expect(items.find(i => i.memoryId === 'm')!.rule).toBe('promote');
-    expect(items.find(i => i.memoryId === 'c0')!.rule).toBe('hold:no_evidence');
-    expect(r.shadowed).toBe(MEMORY_PROMOTE_SHADOW_MAX_PER_RUN);
+    // The rule-promoted item is asked first (live), even though it came last.
+    expect(items[0]).toMatchObject({ memoryId: 'm', rule: 'promote', live: true });
+    expect(items.find(i => i.memoryId === 'c0')).toMatchObject({ rule: 'hold:no_evidence', live: false });
+    expect(r.shadowed).toBe(MEMORY_PROMOTE_SHADOW_MAX_PER_RUN - 1);
+    expect(r.vetoAsked).toBe(1);
     // Only the deterministic rule promoted.
     expect(calls.promote).toEqual([{ teamId: TEAM, ids: ['m'] }]);
+  });
+
+  it('Jev saying promote never promotes what the rule held', async () => {
+    const decider = {
+      judgePromote: async ({ items }: { items: PromoteItem[] }) => items.map(i => ({ memoryId: i.memoryId, veto: false })),
+    } as unknown as MemoryDecider;
+    const { deps, calls } = fakeDeps({ findPromotionCandidates: async () => [cand('none'), cand('rev', { sourcePrMergedPastWindow: true, sourcePrReverted: true })] });
+    const r = await runMemoryLifecycle({ deps, decider });
+    expect(calls.promote).toHaveLength(0);
+    expect(r.held).toBe(2);
+  });
+
+  it('a confident veto defers a rule-promoted candidate one cycle: tagged, held, not promoted', async () => {
+    const { decider } = vetoing(['vetoed']);
+    const { deps, calls } = fakeDeps({ findPromotionCandidates: async () => [
+      cand('vetoed', { sourcePrMergedPastWindow: true }),
+      cand('kept', { corroborated: true }),
+    ] });
+    const r = await runMemoryLifecycle({ deps, decider });
+    expect(calls.promote).toEqual([{ teamId: TEAM, ids: ['kept'] }]);
+    expect(calls.deferred).toEqual([{ teamId: TEAM, ids: ['vetoed'] }]);
+    expect(r).toMatchObject({ promoted: 1, deferred: 1, held: 1 });
+  });
+
+  it('the next cycle does not veto again: a deferred candidate is asked in shadow and promotes by the rule', async () => {
+    const { decider, asked } = vetoing(['vetoed']);
+    const { deps, calls } = fakeDeps({ findPromotionCandidates: async () => [cand('vetoed', { sourcePrMergedPastWindow: true }, TEAM, true)] });
+    const r = await runMemoryLifecycle({ deps, decider });
+    expect(asked.flat()).toEqual([expect.objectContaining({ memoryId: 'vetoed', live: false, rule: 'promote' })]);
+    expect(calls.promote).toEqual([{ teamId: TEAM, ids: ['vetoed'] }]);
+    expect(calls.deferred).toHaveLength(0);
+    expect(r).toMatchObject({ promoted: 1, deferred: 0 });
+  });
+
+  it('no decider or a failing one: the rule alone decides (fails open)', async () => {
+    const boom = { judgePromote: async () => { throw new Error('down'); } } as unknown as MemoryDecider;
+    for (const decider of [null, boom]) {
+      const { deps, calls } = fakeDeps({ findPromotionCandidates: async () => [cand('m', { sourcePrMergedPastWindow: true })] });
+      const r = await runMemoryLifecycle({ deps, decider });
+      expect(calls.promote).toEqual([{ teamId: TEAM, ids: ['m'] }]);
+      expect(r.errors).toBe(0);
+    }
+  });
+
+  it('rollback: with the veto off, every item is a challenger and a veto is ignored', async () => {
+    const { decider, asked } = vetoing(['m']);
+    const { deps, calls } = fakeDeps({ findPromotionCandidates: async () => [cand('m', { sourcePrMergedPastWindow: true })] });
+    await runMemoryLifecycle({ deps, decider, promoteVetoLive: false });
+    expect(asked.flat().every(i => !i.live)).toBe(true);
+    expect(calls.promote).toEqual([{ teamId: TEAM, ids: ['m'] }]);
+    expect(calls.deferred).toHaveLength(0);
+  });
+
+  it('keep reader: a not-durable candidate is held, unless an agent pulled it', async () => {
+    const { decider, asked } = vetoing();
+    const { deps, calls } = fakeDeps({ findPromotionCandidates: async () => [
+      cand('summary', { sourcePrMergedPastWindow: true, notDurable: true }),
+      cand('pulled', { sourcePrMergedPastWindow: true, notDurable: true, pulled: true }),
+    ] });
+    const r = await runMemoryLifecycle({ deps, decider });
+    expect(calls.promote).toEqual([{ teamId: TEAM, ids: ['pulled'] }]);
+    expect(r.held).toBe(1);
+    expect(asked.flat().find(i => i.memoryId === 'summary')).toMatchObject({ rule: 'hold:not_durable', live: false });
+    // Held, it is left to the normal unpulled-candidate expiry.
+    expect(calls.expire).toHaveLength(1);
   });
 
   it('extracts failed tasks then reviews, only in flagged workspaces, within one budget', async () => {

@@ -17,6 +17,9 @@ const CALL = new RegExp(`${RESOLVE.source}|${REGISTER.source}`, 'm');
 /** A module that resolves ids another module registers (it imports the ids and defaults from there). */
 const REGISTERED_ELSEWHERE: Record<string, string> = {
   'apps/web/src/lib/mission-context.ts': 'apps/web/src/lib/mission-prompts.ts',
+  // The eval's benchmark sets resolve the ids their decision modules register
+  // (task-category-decision, heartbeat-triage, task-role-decision); one stands in.
+  'apps/web/src/lib/prompt-evals/benchmark-sets.ts': 'apps/web/src/lib/task-category-decision.ts',
 };
 const IMPORTS_PROMPTS = /from ['"](@buildd\/core\/(prompts|prompted-decision|decision-kinds)|\.\/(prompts|prompted-decision|decision-kinds))['"]/;
 

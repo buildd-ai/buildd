@@ -309,10 +309,6 @@ describe('get_usage_stats — fine-grained breakdowns', () => {
       totalCalls: 40, workersWithEvents: 6, workers: 15, capturedSince: '2026-09-03',
       windowPredatesCapture: false, truncated: false,
     },
-    cbmTools: {
-      sessions: 7, totalCalls: 20,
-      tools: [{ tool: 'search_graph', calls: 20, sessions: 5, share: 1 }],
-    },
   };
 
   const run = async (payload: any) => {
@@ -334,7 +330,7 @@ describe('get_usage_stats — fine-grained breakdowns', () => {
     expect(out).toMatch(/code_search: 180 \(50%\)/);
     expect(out).toMatch(/gh: 0 \(0%\)/);
     expect(out).toMatch(/360\/400 Bash calls classified, over 9 task\(s\) with an exact histogram only; no cross-window delta/);
-    expect(out).toMatch(/Search shapes \(of 180 code_search call\(s\); identifier = answerable by a structural index\)/);
+    expect(out).toMatch(/Search shapes \(of 180 code_search call\(s\); identifier = a bare symbol name\)/);
     expect(out).toMatch(/identifier: 90 \(50%\)/);
   });
 
@@ -345,24 +341,16 @@ describe('get_usage_stats — fine-grained breakdowns', () => {
     expect(out).toMatch(/6\/15 worker\(s\) recorded; actions recorded since 2026-09-03, no backfill/);
   });
 
-  it('renders codebase-graph tools as session-keyed', async () => {
-    const out = await run({ ...statsPayload, ...breakdowns });
-    expect(out).toMatch(/search_graph: 20 \(100%\) in 5 session\(s\)/);
-    expect(out).toMatch(/over 7 CBM-enabled completed worker session\(s\); session-keyed/);
-  });
-
   it('says why a breakdown is missing instead of dropping it', async () => {
     const out = await run({
       ...statsPayload,
       bashBuckets: { histogramTasks: 3, classifiedTasks: 0, bashCalls: 12, classifiedCalls: 0, buckets: [] },
       searchShapes: { codeSearchCalls: 0, shapes: [] },
       buildActions: { ...breakdowns.buildActions, actions: [], totalCalls: 0, windowPredatesCapture: true },
-      cbmTools: null,
     });
     expect(out).toMatch(/Bash buckets: none classified/);
     expect(out).toMatch(/buildd actions: none recorded in this window/);
     expect(out).toMatch(/may mean not yet recorded/);
-    expect(out).toMatch(/Codebase-graph tools: no completed session in this window had the graph available/);
   });
 
   it('documents the breakdowns in the action description', () => {

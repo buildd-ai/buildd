@@ -4,9 +4,11 @@ import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } fro
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { TeamSwitcher } from './TeamSwitcher';
+import { useTheme } from './ThemeProvider';
 import UserAvatarMenu from './UserAvatarMenu';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { mobileBackHref, mobilePageTitle, showsWorkspaceFilter } from '@/lib/nav-config';
+import MobileTopBar, { MOBILE_TOP_BAR_CONTROL_CLASS, MOBILE_TOP_BAR_SLOT_ID } from './MobileTopBar';
 import { isAccountRoute } from '@/lib/nav-active';
 
 interface HeaderTeam {
@@ -34,6 +36,9 @@ export default function MobilePageHeader({
   banners?: ReactNode;
 }) {
   const pathname = usePathname();
+  const { resolved, setTheme } = useTheme();
+  const phoneHome = pathname === '/app/home';
+  const chatRoute = pathname === '/app/chat';
   const title = mobilePageTitle(pathname);
   const backHref = mobileBackHref(pathname);
   const currentTeam = teams.find(t => t.id === currentTeamId) ?? teams[0] ?? null;
@@ -64,41 +69,45 @@ export default function MobilePageHeader({
 
   if (!title) return <>{desktopBar}{banners}</>;
 
-  const headerRow = (
-    <div ref={headerRef} data-testid="mobile-page-header" className="md:hidden flex items-center justify-between gap-2 px-4 py-1 bg-surface-2 border-b border-border-default">
+  const leading = (
+    <>
       {/* Breadcrumb cluster: `Page · Team ⌄`, where the team segment is itself the
           switcher (turbopuffer/Vercel pattern) rather than a separate glyph in the
-          right-hand cluster. Anchoring the menu here also keeps it on-screen. */}
-      <div className="flex-1 min-w-0 flex items-center gap-1.5 text-[13px] font-normal">
-        {/* The page name never truncates: it is the shortest string in the
-            cluster and the one that says where you are. A long team name is the
-            segment that gives way (TeamSwitcher caps itself at 140px), which is
-            why this is `shrink-0` — as a flex sibling it used to surrender
-            characters first and render `Initiativ…`. */}
-        {backHref && (
-          <Link
-            href={backHref}
-            aria-label={`Back to ${mobilePageTitle(backHref) ?? 'the previous page'}`}
-            className="-ml-2 w-11 h-11 shrink-0 flex items-center justify-center text-text-secondary hover:text-text-primary"
-          >
-            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <polyline points="15,5 8,12 15,19" />
-            </svg>
-          </Link>
-        )}
-        <span className="shrink-0 font-semibold text-text-primary">{title}</span>
-        {currentTeam && (
-          <>
-            <span className="text-text-muted shrink-0" aria-hidden="true">·</span>
-            <TeamSwitcher teams={teams} currentTeamId={currentTeamId} />
-          </>
-        )}
-      </div>
-      <div className="flex items-center gap-2 shrink-0">
-        {showSwitcher && <WorkspaceSwitcher workspaces={workspaces} teamName={currentTeam?.name ?? null} />}
-        <UserAvatarMenu userInitial={userInitial} direction="down" active={isAccountRoute(pathname)} />
-      </div>
-    </div>
+          right-hand cluster. Anchoring the menu here also keeps it on-screen.
+          The page name never truncates; a long team name gives way first
+          (TeamSwitcher caps itself at 140px). */}
+      {backHref && (
+        <Link
+          href={backHref}
+          aria-label={`Back to ${mobilePageTitle(backHref) ?? 'the previous page'}`}
+          className="-ml-2 w-11 h-11 shrink-0 flex items-center justify-center text-text-secondary hover:text-text-primary"
+        >
+          <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <polyline points="15,5 8,12 15,19" />
+          </svg>
+        </Link>
+      )}
+      {phoneHome && showSwitcher ? <WorkspaceSwitcher showMobileLabel workspaces={workspaces} teamName={currentTeam?.name ?? null} /> : <span className="shrink-0 font-semibold text-text-primary">{phoneHome ? 'buildd' : title}</span>}
+      {currentTeam && !phoneHome && (
+        <>
+          <span className="text-text-muted shrink-0" aria-hidden="true">·</span>
+          <TeamSwitcher teams={teams} currentTeamId={currentTeamId} />
+        </>
+      )}
+    </>
+  );
+  const trailing = (
+    <>
+      {showSwitcher && !phoneHome && <WorkspaceSwitcher workspaces={workspaces} teamName={currentTeam?.name ?? null} />}
+      {phoneHome && <button type="button" onClick={() => setTheme(resolved === 'dark' ? 'light' : 'dark')} aria-label={resolved === 'dark' ? 'Switch to Day' : 'Switch to Night'} className={MOBILE_TOP_BAR_CONTROL_CLASS}>{resolved === 'dark' ? '☀' : '☾'}</button>}
+      <UserAvatarMenu neutral={phoneHome} userInitial={userInitial} direction="down" active={isAccountRoute(pathname)} />
+    </>
+  );
+  // Chat owns its crumbs (title, History) — they portal into the shell's slot.
+  const headerRow = chatRoute ? (
+    <MobileTopBar barRef={headerRef}><div id={MOBILE_TOP_BAR_SLOT_ID} className="flex min-w-0 flex-1 items-center gap-2 empty:before:font-mono empty:before:text-[13px] empty:before:font-bold empty:before:uppercase empty:before:tracking-[.12em] empty:before:text-[var(--chat-text)] empty:before:content-['Chat']" /></MobileTopBar>
+  ) : (
+    <MobileTopBar barRef={headerRef} leading={leading} trailing={trailing} />
   );
 
 
@@ -113,13 +122,14 @@ export default function MobilePageHeader({
             scrolling content they would let the page show through. */}
         <div ref={bannersRef} className="max-md:bg-surface-1">{banners}</div>
       </div>
-      {/* Pages clear the header with their own pt-14; this pushes <main> down by
+      {/* Pages clear the header with their own pt-14 (Chat has none, so its spacer
+          also covers the bar); this pushes <main> down by
           the banners' height so a banner never covers page content. */}
       <div
         data-testid="mobile-banner-spacer"
         aria-hidden="true"
         className="md:hidden shrink-0"
-        style={{ height: bannerHeight }}
+        style={{ height: bannerHeight + (chatRoute ? headerHeight : 0) }}
       />
     </>
   );

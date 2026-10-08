@@ -80,7 +80,7 @@ export default function ChatContextPanel({ audience, needsYou, missions, mission
       data-testid="chat-context-fleet-idle"
       className="inline-flex min-h-9 items-center font-mono text-[12px] text-text-muted hover:text-text-primary"
     >
-      Fleet idle →
+      No agents working →
     </Link>
   ) : null;
 

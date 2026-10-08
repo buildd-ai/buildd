@@ -12,7 +12,7 @@ describe('attachQuestionGate', () => {
 
   it('an older runner with no feature gets no marker', () => {
     const cws = claimed();
-    attachQuestionGate(cws, { features: ['cbm_withhold'] });
+    attachQuestionGate(cws, { features: ['agent_endpoint'] });
     expect(cws[0].questionGate).toBeUndefined();
   });
 

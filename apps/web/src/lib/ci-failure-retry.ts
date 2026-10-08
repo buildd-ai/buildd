@@ -36,12 +36,9 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask, summarizePrFixAttempts } from '@/lib/ci-retry';
 import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
-import {
-  fetchPrRetryGate,
-  fetchCIFailureLogs,
-  fetchCommitAuthor,
-  isBuilddWorkerCommit,
-} from '@/lib/ci-failure-inspect';
+import { fetchPrRetryGate, fetchCIFailureLogs } from '@/lib/ci-failure-inspect';
+import { policyValue } from '@/lib/policy-overrides';
+import { observeCiFailure } from '@/lib/workflow/seam';
 import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-diagnose';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { prepareSubjectFiling, recordSubjectMatchObserved } from '@/lib/subject-anchor-observer';
@@ -71,7 +68,11 @@ export type CiRetrySkipReason =
   | 'head_already_retried'
   | 'retries_exhausted'
   | 'retries_disabled'
-  | 'duplicate';
+  | 'duplicate'
+  /** The workflow kernel owns this PR and decided not to dispatch now (its state is the reason). */
+  | 'kernel_owned'
+  /** The kernel blocked the delivery on a trunk incident (§6.10): the base branch fails the same checks. */
+  | 'blocked_on_trunk';
 
 /** Fixed text per code: the ledger coalesces on (gate, outcome, reason), so the PR number lives in `detail`. */
 const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
@@ -86,6 +87,8 @@ const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
   retries_exhausted: 'no CI retry: the PR used its whole CI retry budget',
   retries_disabled: 'no CI retry: CI retries are disabled for this workspace',
   duplicate: 'no CI retry: a retry for this PR and head was filed concurrently',
+  kernel_owned: 'no CI retry: the workflow kernel owns this PR and its state owes no CI fix now',
+  blocked_on_trunk: 'no CI retry: the base branch fails the same checks; one trunk fix runs for every blocked PR',
 };
 
 export type CiRetryOutcome =
@@ -318,6 +321,16 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     return { kind: 'not_ours' };
   }
 
+  // Workflow kernel (docs/specs/workflow-state-kernel.md §5.7, T10): a PR whose
+  // delivery the kernel owns gets its CI attempt from the ledger, and the
+  // legacy decision below MUST NOT run beside it (one authority per delivery).
+  const kernel = await observeKernelCiFailure(input, task.workspaceId);
+  if (kernel) {
+    if (kernel.kind === 'skipped') recordSkip(skipCtx, kernel.reason, { kernel: kernel.detail });
+    if (kernel.kind === 'skipped' && kernel.reason === 'fix_in_flight') await lookAgain(skipCtx);
+    return kernel.kind === 'skipped' ? { kind: 'skipped', reason: kernel.reason } : kernel;
+  }
+
   // A failed or cancelled owner must not spawn retry children: failed is what
   // the exhaustion path below sets, and cancelled is a human stopping the
   // work. Surface the failure to the mission feed instead (AC-5) — from the
@@ -406,6 +419,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
       outputRequirement: tasks.outputRequirement,
       ciRetryPrNumber: tasks.ciRetryPrNumber,
       ciRetryHeadSha: tasks.ciRetryHeadSha,
+      conflictRetryPrNumber: tasks.conflictRetryPrNumber,
       context: tasks.context,
       createdAt: tasks.createdAt,
     })
@@ -448,11 +462,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     return { kind: 'skipped', reason: 'head_already_retried', priorAttemptTaskId: priorOnHead.id };
   }
 
-  // Fetch CI failure logs and commit authorship in parallel to minimise latency.
-  const [ciLogs, commitAuthor] = await Promise.all([
-    fetchCIFailureLogs(installationId, repoFullName, headSha),
-    fetchCommitAuthor(installationId, repoFullName, headSha),
-  ]);
+  const ciLogs = await fetchCIFailureLogs(installationId, repoFullName, headSha);
   const failureContext = ciLogs.summary ||
     `CI check suite failed on ${repoFullName} PR #${prNumber} (SHA: ${headSha})`;
 
@@ -523,31 +533,12 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     return { kind: 'diagnose_dispatched', taskId: newDiagnoseTask.id };
   }
 
-  // Non-worker commits (human pushes, GitHub Actions, etc.) still need a fix
-  // task — the PR is red — but must NOT consume a retry attempt against
-  // maxCiRetries. Only buildd-agent-authored SHAs burn the budget.
-  const isWorkerCommit = isBuilddWorkerCommit(commitAuthor);
-  const foreignHeadSha = !isWorkerCommit;
-  const foreignCommitAuthor = foreignHeadSha
-    ? (commitAuthor.login ?? commitAuthor.name ?? commitAuthor.email ?? 'unknown')
-    : undefined;
-
-  if (foreignHeadSha) {
-    console.log(
-      `[ci-retry] PR #${prNumber} on ${repoFullName}: head SHA ${headSha} ` +
-      `was NOT committed by the buildd worker (author: ${foreignCommitAuthor}). ` +
-      `Creating retry task without consuming an attempt.`
-    );
-  }
-
-  // The owner's own counter is only trustworthy while it is the live
-  // attempt; the filed retries are the floor either way.
+  // Allocation is consumption (§5.7): every filed CI retry spends one attempt,
+  // whoever authored the failing commit (§6.9 — commit author is a diagnostic,
+  // never the budget). The count comes from the filed rows, never from a
+  // task's `context.iteration`.
+  const currentIteration = ciRetriesUsed;
   const ownerCtx = (task.context as Record<string, unknown>) || {};
-  const currentIteration = Math.max(
-    typeof ownerCtx.iteration === 'number' ? ownerCtx.iteration : 0,
-    ciRetriesUsed,
-  );
-  const taskCtx = { ...ownerCtx, iteration: currentIteration };
 
   const retryTask = buildCIRetryTask({
     originalTask: {
@@ -555,40 +546,34 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
       title: task.title,
       description: task.description,
       workspaceId: task.workspaceId,
-      context: taskCtx,
+      context: ownerCtx,
       missionId: task.missionId ?? null,
     },
     worker: { id: worker.id, branch: worker.branch, prNumber: worker.prNumber },
+    attemptsUsed: currentIteration,
     failureContext,
     repoFullName,
     ciRunId: ciLogs.runId,
     ciFailedJobId: ciLogs.failedJobId,
     ciRunUrl: ciLogs.runUrl,
     workspaceMaxCiRetries: workspace.gitConfig?.maxCiRetries,
-    foreignHeadSha,
-    foreignCommitAuthor,
+    prRefs: prGate.headRef ? { headRef: prGate.headRef, baseRef: prGate.baseRef ?? null } : null,
   });
 
   if (!retryTask) {
     // Retries exhausted or disabled — fail the task and escalate to a human.
-    // Two distinct causes need different human responses:
-    //   • foreignHeadSha: retries disabled (0); a non-worker commit triggered CI failure.
-    //   • !foreignHeadSha: the buildd agent genuinely exhausted its N attempts.
-    const exhaustionDetail = foreignHeadSha
-      ? `CI retries are disabled for this workspace. A non-worker commit by ${foreignCommitAuthor ?? 'an external contributor'} triggered a CI failure on PR #${prNumber}.`
+    const disabled = workspace.gitConfig?.maxCiRetries === 0;
+    const exhaustionDetail = disabled
+      ? `CI retries are disabled for this workspace; CI is failing on PR #${prNumber}.`
       : `The buildd agent failed ${currentIteration} time(s) and has exhausted its retry budget on PR #${prNumber}.`;
-    const missionTitle = foreignHeadSha
-      ? 'CI failing — retries disabled (non-worker push)'
-      : 'CI failing — agent retries exhausted';
-    const missionMessage = foreignHeadSha
-      ? `${task.title} — CI failed after a non-worker push by ${foreignCommitAuthor ?? 'external'}. Retries are disabled. Needs a human.`
+    const missionTitle = disabled ? 'CI failing — retries disabled' : 'CI failing — agent retries exhausted';
+    const missionMessage = disabled
+      ? `${task.title} — CI failed and CI retries are disabled. Needs a human.`
       : `${task.title} — CI still failing after ${currentIteration} agent attempt(s). Needs a human.`;
 
     console.log(`CI retries exhausted/disabled for task ${task.id} on ${repoFullName}#${prNumber}. ${exhaustionDetail}`);
-    const reason: CiRetrySkipReason = foreignHeadSha || workspace.gitConfig?.maxCiRetries === 0
-      ? 'retries_disabled'
-      : 'retries_exhausted';
-    recordSkip(skipCtx, reason, { attemptsUsed: currentIteration, foreignHeadSha });
+    const reason: CiRetrySkipReason = disabled ? 'retries_disabled' : 'retries_exhausted';
+    recordSkip(skipCtx, reason, { attemptsUsed: currentIteration });
     await escalateCiRedHead({
       installationId,
       repoFullName,
@@ -702,4 +687,54 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   // If the fix finishes without pushing, no CI event will bring this PR back.
   await lookAgain(skipCtx);
   return { kind: 'dispatched', taskId: newTask.id };
+}
+
+type KernelCiOutcome =
+  | { kind: 'dispatched'; taskId: string }
+  | { kind: 'skipped'; reason: CiRetrySkipReason; detail: string };
+
+/**
+ * The kernel door of a CI failure: T10 through the seam, mapped onto the
+ * outcomes the webhook and the red-PR sweep already understand. Null = the
+ * kernel does not own this PR (no delivery, released, or switched off).
+ */
+async function observeKernelCiFailure(input: CiFailureInput, workspaceId: string): Promise<KernelCiOutcome | null> {
+  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { gitConfig: true } });
+  const configured = (ws?.gitConfig as { maxCiRetries?: number } | null)?.maxCiRetries;
+  const seen = await observeCiFailure({
+    workspaceId,
+    repoFullName: input.repoFullName,
+    prNumber: input.prNumber,
+    installationId: input.installationId,
+    headSha: input.headSha,
+    // The seam replaces the placeholder with the failing checks' signature (§6.10).
+    signature: 'ci_failed',
+    maxAttempts: typeof configured === 'number' ? configured : policyValue('maxCiRetries'),
+    source: input.surface,
+  });
+  if (!seen.handled) return null;
+  return kernelCiOutcome(seen);
+}
+
+/** Exported for tests: what a kernel T10 result means to the CI doors. */
+export function kernelCiOutcome(seen: { result: { result: string; reason?: string; current?: { state: string | null } | null; decision?: { toState: string } }; attemptTaskId?: string | null }): KernelCiOutcome {
+  const r = seen.result;
+  if (r.result === 'applied') {
+    const to = r.decision?.toState;
+    if (to === 'REPAIRING') {
+      return seen.attemptTaskId
+        ? { kind: 'dispatched', taskId: seen.attemptTaskId }
+        // The dispatch effect is durable; it files the task on the next drain.
+        : { kind: 'skipped', reason: 'fix_in_flight', detail: 'ci_attempt_queued' };
+    }
+    if (to === 'ESCALATED') return { kind: 'skipped', reason: 'retries_exhausted', detail: 'ci_exhausted' };
+    if (to === 'BLOCKED_ON_TRUNK') return { kind: 'skipped', reason: 'blocked_on_trunk', detail: 'trunk_incident' };
+    return { kind: 'skipped', reason: 'fix_in_flight', detail: `recorded:${to}` };
+  }
+  const state = r.current?.state ?? null;
+  if (state === 'BLOCKED_ON_TRUNK') return { kind: 'skipped', reason: 'blocked_on_trunk', detail: `${r.result}:${r.reason ?? ''}` };
+  if (r.reason === 'fix_in_flight' || state === 'REPAIRING' || state === 'FIXING' || state === 'WORKING' || state === 'AWAITING_PUSH') {
+    return { kind: 'skipped', reason: 'fix_in_flight', detail: `${r.result}:${r.reason ?? ''}:${state ?? ''}` };
+  }
+  return { kind: 'skipped', reason: 'kernel_owned', detail: `${r.result}:${r.reason ?? ''}:${state ?? ''}` };
 }

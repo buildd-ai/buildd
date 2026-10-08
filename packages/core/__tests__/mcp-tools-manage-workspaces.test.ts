@@ -156,6 +156,36 @@ describe('manage_workspaces — hand-written merge-policy paths removed', () => 
     const result = await handleBuilddAction(api as unknown as ApiFn, 'manage_workspaces', { action: 'init', workspaceId: WORKSPACE_ID }, createContext());
     expect(result.content[0].text).not.toMatch(REMOVED);
   });
+
+  it('init proposes detected lockfiles as derived files, and says nothing when there are none', async () => {
+    const scan = (derivedFiles: unknown) => mock(async () => ({
+      proposed: { preset: 'balanced', riskClasses: [] },
+      repoFullName: 'acme/app',
+      fileCount: 10,
+      detectedClassCount: 0,
+      hint: '',
+      derivedFiles,
+      specConformance: {
+        detected: { specsRoot: null, designRoot: null },
+        proposed: { specsRoot: 'docs/specs', designRoot: 'docs/design' },
+        hint: '',
+        tier3Schedule: { params: { name: 'n', cronExpression: '0 0 * * 0', timezone: 'UTC', title: 't' }, hint: '' },
+      },
+    }));
+    const withLock = await handleBuilddAction(
+      scan({ proposed: [{ glob: '/bun.lock', regenerate: 'bun install' }], hint: '' }) as unknown as ApiFn,
+      'manage_workspaces', { action: 'init', workspaceId: WORKSPACE_ID }, createContext(),
+    );
+    const out = withLock.content[0].text;
+    expect(out).toContain('## Proposed Derived Files');
+    expect(out).toContain('/bun.lock → `bun install`');
+    expect(out).toContain('gitConfig={ "derivedFiles": [{"glob":"/bun.lock","regenerate":"bun install"}] }');
+
+    for (const none of [undefined, { proposed: [], hint: '' }]) {
+      const r = await handleBuilddAction(scan(none) as unknown as ApiFn, 'manage_workspaces', { action: 'init', workspaceId: WORKSPACE_ID }, createContext());
+      expect(r.content[0].text).not.toContain('Derived Files');
+    }
+  });
 });
 
 describe('manage_workspaces update — team changes go through the checked move', () => {

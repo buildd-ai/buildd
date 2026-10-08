@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 
 import { parseArgs } from 'util';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, hostname } from 'os';
 import { writeSecretJsonFile } from './secure-file';
+import { refreshBuilddMcpEntries } from './claude-json-mcp';
 
 const CONFIG_DIR = join(homedir(), '.buildd');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
@@ -34,8 +35,26 @@ const { values } = parseArgs({
       type: 'boolean',
       default: false,
     },
+    help: {
+      type: 'boolean',
+      short: 'h',
+      default: false,
+    },
   },
 });
+
+if (values.help) {
+  console.log([
+    'Usage: buildd login [--device] [--server <url>] [--name <key name>] [--no-mcp]',
+    '',
+    "Sign in and save an API key (and this machine's session presence token) to ~/.buildd/config.json.",
+    '  --device        Sign in on another device with a code (no browser on this machine)',
+    '  --server <url>  buildd server (default: the saved one, else https://buildd.dev)',
+    '  --name <name>   Name for the new API key',
+    '  --no-mcp        Do not update the buildd MCP entries in ~/.claude.json',
+  ].join('\n'));
+  process.exit(0);
+}
 
 // Load existing config
 function loadConfig(): Record<string, unknown> {
@@ -60,31 +79,27 @@ function saveConfig(data: Record<string, unknown>) {
   writeSecretJsonFile(CONFIG_FILE, merged);
 }
 
+/**
+ * The person's presence token for the agent plugin's hooks (one per machine,
+ * labelled with this hostname). Only a well-formed one is kept; a login that
+ * returns none clears an old one, which may belong to another server.
+ */
+function presenceTokenOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value.startsWith('bldp_') ? value : undefined;
+}
+
 function configureMcp(apiKey: string, server: string) {
   if (values['no-mcp']) return;
 
   try {
-    let config: Record<string, unknown> = {};
-    if (existsSync(CLAUDE_JSON)) {
-      config = JSON.parse(readFileSync(CLAUDE_JSON, 'utf-8'));
-    }
-
-    if (!config.mcpServers || typeof config.mcpServers !== 'object') {
-      config.mcpServers = {};
-    }
-
-    (config.mcpServers as Record<string, unknown>).buildd = {
-      type: 'http',
-      url: `${server}/api/mcp`,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-    };
-
-    writeFileSync(CLAUDE_JSON, JSON.stringify(config, null, 2) + '\n');
-    console.log(`MCP server configured in ${CLAUDE_JSON}`);
+    // Re-key what `buildd install` set up; never add a user-wide entry, so the
+    // workspace-folder scope survives a new login.
+    const n = refreshBuilddMcpEntries(CLAUDE_JSON, apiKey, server);
+    console.log(n > 0
+      ? `Updated the key in ${n} buildd MCP entr${n === 1 ? 'y' : 'ies'} in ${CLAUDE_JSON}.`
+      : 'To use buildd from Claude Code in your workspace folders, run: buildd install --global');
   } catch (err) {
-    console.error('Failed to configure MCP:', err);
+    console.error('Failed to update the buildd MCP entries:', err);
   }
 }
 
@@ -144,12 +159,12 @@ if (values.device) {
       const pollRes = await fetch(`${serverUrl}/api/auth/device/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_token: data.device_token }),
+        body: JSON.stringify({ device_token: data.device_token, machine: hostname() }),
       });
 
       if (pollRes.status === 200) {
-        const tokenData = await pollRes.json() as { api_key: string; email?: string; pusherKey?: string; pusherCluster?: string; pusherChannelPrefix?: string };
-        const configData: Record<string, unknown> = { apiKey: tokenData.api_key, builddServer: serverUrl };
+        const tokenData = await pollRes.json() as { api_key: string; presence_token?: string; email?: string; pusherKey?: string; pusherCluster?: string; pusherChannelPrefix?: string };
+        const configData: Record<string, unknown> = { apiKey: tokenData.api_key, presenceToken: presenceTokenOf(tokenData.presence_token), builddServer: serverUrl };
         if (tokenData.pusherKey) configData.pusherKey = tokenData.pusherKey;
         if (tokenData.pusherCluster) configData.pusherCluster = tokenData.pusherCluster;
         if (tokenData.pusherChannelPrefix) configData.pusherChannelPrefix = tokenData.pusherChannelPrefix;
@@ -159,6 +174,7 @@ if (values.device) {
         console.log('');
         console.log(`Authenticated${tokenData.email ? ` as ${tokenData.email}` : ''}`);
         console.log(`API key saved to ${CONFIG_FILE}`);
+        if (configData.presenceToken) console.log('Session presence token saved (used only by the buildd install hooks).');
         process.exit(0);
       } else if (pollRes.status === 428) {
         // Still pending — keep polling
@@ -222,6 +238,7 @@ const tempServer = Bun.serve({
         const pusherCluster = url.searchParams.get('pusherCluster') || '';
         const pusherChannelPrefix = url.searchParams.get('pusherChannelPrefix') || '';
         if (pusherKey) saveConfig({ pusherKey, pusherCluster, ...(pusherChannelPrefix && { pusherChannelPrefix }) });
+        saveConfig({ presenceToken: presenceTokenOf(url.searchParams.get('presenceToken')) });
         resolveCallback!(token, email);
         return new Response(`
           <!DOCTYPE html>
@@ -249,6 +266,7 @@ const callbackUrl = `http://localhost:${tempServer.port}/callback`;
 const authParams = new URLSearchParams();
 authParams.set('callback', callbackUrl);
 authParams.set('client', 'cli');
+authParams.set('machine', hostname());
 if (values.name) authParams.set('account_name', values.name);
 if (values.level) authParams.set('level', values.level);
 
@@ -274,9 +292,6 @@ try {
   console.log('');
   console.log(`Authenticated${email ? ` as ${email}` : ''}`);
   console.log(`API key saved to ${CONFIG_FILE}`);
-  if (!values['no-mcp']) {
-    console.log(`MCP server configured in ${CLAUDE_JSON}`);
-  }
   console.log('');
 } catch (err: any) {
   console.error(`\nLogin failed: ${err.message}`);
