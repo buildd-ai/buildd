@@ -21,6 +21,7 @@ import { resolvePolicy } from '@/lib/merge-policy';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
+import { resumeAfterInstallationChange } from '@/lib/github-repo-access-store';
 import { workerOwnsPr, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
 import { emit } from '@/lib/core-emit';
 import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
@@ -154,6 +155,8 @@ async function handleInstallationEvent(event: GitHubInstallationEvent) {
           },
         });
       await backLinkInstallationRepos(installation.id, 'installation.created');
+      // Tasks that failed waiting for this access resume once it is verified.
+      await resumeAfterInstallationChange(installation.id);
       break;
     }
 
@@ -178,6 +181,18 @@ async function handleInstallationEvent(event: GitHubInstallationEvent) {
         .update(githubInstallations)
         .set({ suspendedAt: null, updatedAt: new Date() })
         .where(eq(githubInstallations.installationId, installation.id));
+      await resumeAfterInstallationChange(installation.id);
+      break;
+    }
+
+    case 'new_permissions_accepted': {
+      // An admin accepted the App's permission request. Record what was
+      // granted, then resume tasks that were refused for lacking it.
+      await db
+        .update(githubInstallations)
+        .set({ permissions: installation.permissions, updatedAt: new Date() })
+        .where(eq(githubInstallations.installationId, installation.id));
+      await resumeAfterInstallationChange(installation.id);
       break;
     }
   }
@@ -204,6 +219,7 @@ async function handleInstallationReposEvent(event: {
     // keeps one idempotent code path and picks up metadata the payload omits
     // (default_branch, description).
     await backLinkInstallationRepos(event.installation.id, 'installation_repositories.added');
+    await resumeAfterInstallationChange(event.installation.id);
   }
 }
 
