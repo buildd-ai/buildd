@@ -96,3 +96,35 @@ export async function attachAgentEndpoints(
   }
   return won;
 }
+
+/**
+ * Cloud claim: the container never gets `modelEndpoint` (the dispatcher's egress
+ * applies it), so Claude Code there thinks it talks to Anthropic and keeps
+ * ToolSearch on. For a Claude task whose winning endpoint does not pass
+ * `tool_reference` through, mark the worker `toolSearchDisabled` so the runner
+ * sets ENABLE_TOOL_SEARCH=false. Same `resolveAgentModelRoute` result as the
+ * host path, per run; a marker only, no credential. Lookup failures write nothing.
+ */
+export async function attachCloudToolSearchHint(
+  claimedWorkers: ClaimTasksResponse['workers'],
+  claimedTasks: readonly ClaimedTask[],
+  accountId: string,
+  deps: AgentEndpointDeps = { resolve: resolveAgentModelRoute },
+): Promise<void> {
+  if (claimedWorkers.length === 0 || !process.env.ENCRYPTION_KEY) return;
+  for (const cw of claimedWorkers) {
+    const task = (claimedTasks.find(t => t.id === cw.taskId) ?? cw.task) as any;
+    if (!task || task.backend === 'codex') continue;
+    const teamId = task.workspace?.teamId as string | undefined;
+    const workspaceId = task.workspaceId as string | undefined;
+    if (!teamId || !workspaceId) continue;
+    try {
+      const decision = await deps.resolve({ teamId, workspaceId, accountId, backend: 'claude' });
+      if (decision?.winner === 'endpoint' && !decision.endpoint.toolSearch) {
+        (cw as typeof cw & { toolSearchDisabled?: boolean }).toolSearchDisabled = true;
+      }
+    } catch (err) {
+      console.warn(`[claim] cloud tool-search lookup failed for worker ${cw.id}:`, err);
+    }
+  }
+}
