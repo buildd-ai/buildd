@@ -261,3 +261,20 @@ describe('ownerOfNextMove: APPROVED follows the merge policy', () => {
     expect(ownerOfNextMove('LANDING', { approvedNeedsPerson: true })).toBe('landing');
   });
 });
+
+describe('policy evidence (T28) in the view', () => {
+  test('ESCALATED(policy_human) is the human\'s and carries the finding as its detail', () => {
+    const v = view({
+      view: V(D({ state: 'ESCALATED', stateReason: 'policy_human' })),
+      lastTransition: { command: 'PolicyEvidenceRecorded', fromState: 'AWAITING_REVIEW', toState: 'ESCALATED', evidence: { reason: 'drops column a.b' }, createdAt: '2026-10-08T00:00:00Z' },
+    });
+    expect(v.owner).toBe('human');
+    expect(v.needsYou).toBe(true);
+  });
+
+  test('a safe split under repair is the platform\'s: not needsYou', () => {
+    const v = view({ view: V(D({ state: 'REPAIRING', stateReason: 'migration', boundAttemptId: 'a1' }), [], [A({ family: 'migration', status: 'running' })]) });
+    expect(v.owner).not.toBe('human');
+    expect(v.needsYou).toBe(false);
+  });
+});
