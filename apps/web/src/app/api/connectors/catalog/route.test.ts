@@ -17,7 +17,7 @@ mock.module('@/lib/connector-catalog-store', () => ({
 }));
 // Real parser/verifier; only the network edges are stubbed.
 mock.module('@/lib/mcp-oauth', () => ({ discoverOAuthMetadata: mockDiscover }));
-mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: async () => 'https://i/x.png' }));
+mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: async () => 'https://i/x.png', resolveConnectorIconData: async () => null }));
 mock.module('@buildd/core/db/schema', () => ({ connectorCatalogEntries: {} }));
 mock.module('@buildd/core/db', () => ({
   db: { insert: () => ({ values: (v: any) => { inserts.push(v); return { onConflictDoNothing: () => ({ returning: async () => insertReturns ?? [{ id: 'e1', ...v }] }) }; } }) },

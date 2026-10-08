@@ -15,6 +15,7 @@ import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { canManageTeamConnectors } from '@/lib/connector-team-auth';
 import { checkConnectorBlocked } from '@/lib/connector-access-policy';
+import { scheduleAuthedIconRefresh } from '@/lib/connector-icon-refresh';
 
 export const dynamic = 'force-dynamic';
 
@@ -196,6 +197,8 @@ export async function GET(req: NextRequest) {
       tokenExpiresAt,
     });
   }
+
+  try { scheduleAuthedIconRefresh(connector, tokenResponse.access_token); } catch { /* best effort */ }
 
   // Clear the state cookie
   const response = NextResponse.redirect(
