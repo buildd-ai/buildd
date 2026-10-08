@@ -109,6 +109,9 @@ and URL.
   advisory: it counts toward `ciState`, and only a `success` conclusion counts
   as passing (skipped, neutral and cancelled are failing). A green from any
   other SHA, including the dev SHA it was cut from, is not evidence for it.
+  It is the only job that tests a candidate; `release candidate verified`
+  (also `build.yml`, reported on every PR into `prodBranch`) aggregates it
+  with the candidate's shape check and is the check to require on main.
 
 **Acceptance criteria**:
 - AC-5: GIVEN a properly configured `workflow_dispatch` workspace WHEN
