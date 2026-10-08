@@ -206,10 +206,10 @@ NOT silently become a claim gate.
   task ran on Codex, or whose task carries a tenant credential, MUST NOT move
   `teams.monthlyCostUsd` or fire its alerts (`countsTowardAgentSdkCreditPool`,
   `packages/core/budget-alerts.ts`). The worker row's `costUsd` is still
-  written for every session. API-key (metered) Claude spend is still counted:
-  `accounts.authType` records CLI-login accounts as `api` even on a seat, so
-  it cannot exclude metered work without silently dropping seat spend. That
-  exclusion waits on a per-worker billing mode.
+  written for every session. `accounts.authType` records CLI-login accounts as
+  `api` even on a seat, so it is not used; the worker's own `costBasis` is
+  (`real-and-virtual-cost.md`): a `real` row does not draw on the pool, every
+  other basis does.
 - The charge is `costUsd` when the worker reported a positive cost, otherwise
   `estimateCostUsd(resultMeta.modelUsage)` at published list prices
   (`packages/core/model-prices.ts:28-72`,

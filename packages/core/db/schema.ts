@@ -1855,6 +1855,10 @@ export const workers = pgTable('workers', {
   status: text('status').default('idle').notNull().$type<WorkerStatusValue>(),
   waitingFor: jsonb('waiting_for').$type<WorkerWaitingFor | null>(),
   costUsd: decimal('cost_usd', { precision: 10, scale: 6 }).default('0').notNull(),
+  // How costUsd and the tokens were charged: real (per token) | virtual (plan
+  // usage at list price) | mixed | unknown. Reported by whoever picked the
+  // credential (packages/core/cost-basis.ts). NULL = no usage recorded.
+  costBasis: text('cost_basis').$type<import('../cost-basis').CostBasis | null>(),
   // Token usage (for seat-based accounts where cost isn't meaningful)
   inputTokens: integer('input_tokens').default(0).notNull(),
   outputTokens: integer('output_tokens').default(0).notNull(),

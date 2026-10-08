@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.294.0",
+  "version": "0.295.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -46,6 +46,7 @@
     "./billing": "./billing.ts",
     "./branch-names": "./branch-names.ts",
     "./budget-alerts": "./budget-alerts.ts",
+    "./cost-basis": "./cost-basis.ts",
     "./oauth-budget": "./oauth-budget.ts",
     "./inference-client": "./inference-client.ts",
     "./inference-policy": "./inference-policy.ts",
