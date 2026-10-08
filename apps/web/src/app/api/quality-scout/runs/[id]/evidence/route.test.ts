@@ -119,7 +119,7 @@ describe('POST /api/quality-scout/runs/[id]/evidence', () => {
     dataClass = null;
     signFails = false;
     signed.length = 0;
-    backend = { provider: 's3', usable: true, prefix: 'evidence', backendId: 'b-1', maxBytesPerTask: 8 * 1024 * 1024, retentionDays: 30 };
+    backend = { provider: 's3', usable: true, prefix: 'evidence', backendId: 'backend-sentinel', maxBytesPerTask: 8 * 1024 * 1024, retentionDays: 30 };
   });
 
   it('the lease holder gets a presigned PUT for a server-derived key under the run, and a pending row', async () => {
@@ -131,9 +131,9 @@ describe('POST /api/quality-scout/runs/[id]/evidence', () => {
     expect(signed).toHaveLength(1);
     expect(signed[0].size).toBe(1200);
     expect(signed[0].key).toMatch(new RegExp(`^evidence/${WS}/scout-runs/${run.id}/command_output/\\d+-0\\.log\\.gz$`));
-    expect(rows[0]).toMatchObject({ scoutRunId: run.id, workspaceId: WS, taskId: null, workerId: null, bytes: 1200, backendId: 'b-1' });
+    expect(rows[0]).toMatchObject({ scoutRunId: run.id, workspaceId: WS, taskId: null, workerId: null, bytes: 1200, backendId: 'backend-sentinel' });
     // Nothing about the backend beyond the signed URL itself.
-    expect(JSON.stringify(body)).not.toContain('b-1');
+    expect(JSON.stringify(body)).not.toContain('backend-sentinel');
   });
 
   it('a non-holder gets no URL: wrong lease id 409, another team 404, no key 401', async () => {
