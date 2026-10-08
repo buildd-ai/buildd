@@ -85,6 +85,8 @@ mock.module('@buildd/core/db', () => ({
       connectors: { findMany: mockConnectorsFindMany },
       connectorShares: { findMany: mockConnectorSharesFindMany },
       connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
+      // No team blocks a catalog entry here (blocked_by_policy: connector-gate.test.ts).
+      connectorCatalogTeamPolicies: { findMany: async () => [] },
     },
     update: mock(() => mockDbUpdate),
   },
@@ -110,6 +112,7 @@ mock.module('@buildd/core/db/schema', () => ({
   connectors: { id: 'id', teamId: 'teamId', name: 'name' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
   connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
+  connectorCatalogTeamPolicies: { teamId: 'teamId', policy: 'policy' },
   accountWorkspaces: {},
   workspaces: {},
 }));

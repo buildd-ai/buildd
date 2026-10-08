@@ -6,7 +6,7 @@
  *
  * Connectors are the single source of truth for MCP servers. A connector reaches
  * the agent for a task iff:
- *   role.connectorRefs  ∩  enabledForWorkspace  ∩  teamConnectors
+ *   role.connectorRefs  ∩  enabledForWorkspace  ∩  teamConnectors  −  catalogBlocked
  * where the role is resolved from the task's roleSlug (workspace override > team
  * default). No role or empty connectorRefs → mount nothing (least-privilege).
  *
@@ -27,6 +27,7 @@ import type { ClaimTasksResponse } from '@buildd/shared';
 import type { SecretsProvider } from '@buildd/core/secrets';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
 
 // Slugify a connector name into the MCP server key used in queryOptions.mcpServers.
 // Connector names are already slug-shaped (uniqueness is on (teamId, name)), but we
@@ -124,7 +125,15 @@ export async function resolveMcpConnectorsForTask(
     ),
   });
   const cwMap = new Map(cwRows.map(r => [r.connectorId, r.enabled]));
-  const activeConnectors = referencedConnectors.filter(c => cwMap.get(c.id) !== false);
+  const enabledConnectors = referencedConnectors.filter(c => cwMap.get(c.id) !== false);
+  if (enabledConnectors.length === 0) return [];
+
+  // Team catalog policy (§5a): a blocked entry's connector stays installed with
+  // its credential, but is never mounted — and its credential never decrypted
+  // or refreshed for an agent. Throws on DB failure; attachMcpConnectors then
+  // mounts nothing rather than mounting unchecked.
+  const blockedCatalogs = await loadBlockedCatalogs([workspaceTeamId, ...enabledConnectors.map(c => c.teamId)]);
+  const activeConnectors = enabledConnectors.filter(c => !connectorBlock(c, workspaceTeamId, blockedCatalogs));
   if (activeConnectors.length === 0) return [];
 
   const ownerTeamIds = [...new Set(activeConnectors.map(c => c.teamId))];
