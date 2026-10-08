@@ -1848,6 +1848,14 @@ export const workers = pgTable('workers', {
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  // The person whose OAuth session claimed this worker (the session's JWT
+  // subject, a users.id). An OAuth session acts as an account its whole team
+  // shares, so accountId alone cannot tell one member's claim from another's;
+  // the worker owner check (lib/worker-owner.ts) requires this to match the
+  // caller's session user. NULL: claimed by a bld_ key, which owns by account.
+  // No FK on purpose: a deleted user must not turn the claim back into an
+  // account-owned (NULL) one.
+  claimedByUserId: uuid('claimed_by_user_id'),
   name: text('name').notNull(),
   runner: text('runner').notNull(),
   branch: text('branch').notNull(),

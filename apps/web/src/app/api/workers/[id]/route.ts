@@ -11,7 +11,8 @@ import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -619,7 +620,9 @@ export async function GET(
     return NextResponse.json(redacted());
   }
 
-  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
+  // Only the claiming principal: the account for a bld_ key, the session user
+  // for an OAuth session (lib/worker-owner.ts). No team fallback; fails closed.
+  if (!callerOwnsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -654,7 +657,9 @@ export async function PATCH(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
+  // Only the claiming principal: the account for a bld_ key, the session user
+  // for an OAuth session (lib/worker-owner.ts). No team fallback; fails closed.
+  if (!callerOwnsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 

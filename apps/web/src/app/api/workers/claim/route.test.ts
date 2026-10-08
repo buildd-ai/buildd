@@ -9263,6 +9263,32 @@ describe('claim route: interactive session marker', () => {
     await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
     expect(insertedRunner()).toBe('mcp');
   });
+
+  /** The claimed_by_user_id the conditional worker INSERT carried. */
+  function insertedClaimer(): unknown {
+    const insert = (mockDbExecute.mock.calls as any[]).map(c => c[0]).find((q: any) =>
+      Array.isArray(q?.strings) && q.strings.join('').includes('INSERT INTO'));
+    expect(insert.strings.join('')).toContain('claimed_by_user_id');
+    // values: workers, task_id, workspace_id, account_id, name, runner, branch, claimed_by_user_id
+    return insert?.values?.[7];
+  }
+
+  // An OAuth session resolves to its team's shared account, so the worker
+  // records the authenticated person who claimed it: PATCH /api/workers/[id]
+  // lets only that person's session act as the worker.
+  it('a claim by an OAuth session records the authenticated session user on the worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth', sessionUserId: 'user-1' });
+    // The signed marker is not the source: a marker naming someone else changes nothing.
+    const marker = signInteractiveSession({ accountId: 'account-1', userId: 'user-2' });
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer eyJ.a.b', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
+    expect(insertedClaimer()).toBe('user-1');
+  });
+
+  it('a bld_ key claim records no session user, even with a marker that names one', async () => {
+    const marker = signInteractiveSession({ accountId: 'account-1', userId: 'user-1' });
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
+    expect(insertedClaimer()).toBeNull();
+  });
 });
 
 describe('hold/start at claim (§5b): decided after the response, applied on the next claim', () => {

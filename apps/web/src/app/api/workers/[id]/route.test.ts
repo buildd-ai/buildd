@@ -5194,7 +5194,9 @@ describe('PATCH /api/workers/[id]', () => {
       });
 
       it('records a person’s session report as given', async () => {
-        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', sessionUserId: 'user-1' });
+        // A session acts only as a worker it claimed (lib/worker-owner.ts).
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', sessionUserId: 'user-1' });
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, claimedByUserId: 'user-1' });
         const res = await patch({ prUrl: 'https://github.com/org/repo/pull/50' });
         expect(res.status).toBe(200);
         expect(workerSets.some(u => u.prUrl === 'https://github.com/org/repo/pull/50')).toBe(true);
@@ -16858,5 +16860,102 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
     expect(runnerOutcomes()).toEqual(['completed']);
     expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached completed' }]]);
     expect(evidenceWrites()).toHaveLength(1);
+  });
+});
+
+// An OAuth MCP session resolves to an account its whole team shares, so the
+// account alone cannot say which member claimed a worker. The claim records the
+// session user (workers.claimedByUserId) and only that user's session, on that
+// account, passes the owner check. Nothing here widens who may write a worker:
+// no team-membership fallback, and a missing team or workspace id is a 403.
+describe('PATCH /api/workers/[id] — OAuth session owner check', () => {
+  const sessionWorker = {
+    id: 'worker-1',
+    accountId: 'account-1',
+    taskId: 'task-1',
+    workspaceId: 'ws-1',
+    runner: 'mcp',
+    status: 'running',
+    claimedByUserId: 'user-a',
+    milestones: [],
+    pendingInstructions: 'Rebase onto the new base',
+    instructionHistory: [],
+    supportsInstructionAck: false,
+  };
+  const session = (userId: string, extra: Record<string, unknown> = {}) => ({
+    id: 'account-1', teamId: 'team-1', type: 'user', authType: 'oauth', level: 'worker', sessionUserId: userId, ...extra,
+  });
+
+  function setup(account: any, worker: any = sessionWorker) {
+    mockAuthenticateApiKey.mockResolvedValue(account);
+    mockWorkersFindFirst.mockResolvedValue(worker);
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+        })),
+      })),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockWorkersFindMany.mockResolvedValue([]);
+  }
+
+  function patch() {
+    return PATCH(
+      createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer eyJ.session.jwt' }, body: { status: 'running', progress: 10 } }),
+      { params: mockParams },
+    );
+  }
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockMissionNotesFindMany.mockReset();
+    mockMissionNotesFindMany.mockResolvedValue([]);
+  });
+
+  it('the OAuth session that claimed gets 200 and its pending instructions', async () => {
+    setup(session('user-a'));
+    const res = await patch();
+    expect(res.status).toBe(200);
+    expect((await res.json()).instructions).toBe('Rebase onto the new base');
+  });
+
+  it('another OAuth user in the same team, resolving to the same account, gets 403', async () => {
+    setup(session('user-b'));
+    const res = await patch();
+    expect(res.status).toBe(403);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('an admin OAuth session that did not claim gets 403', async () => {
+    setup(session('user-b', { level: 'admin' }));
+    expect((await patch()).status).toBe(403);
+  });
+
+  it('an admin bld_ key that did not claim gets 403, on another account or the shared one', async () => {
+    setup({ id: 'account-2', teamId: 'team-1', authType: 'api', level: 'admin' });
+    expect((await patch()).status).toBe(403);
+    setup({ id: 'account-1', teamId: 'team-1', authType: 'api', level: 'admin' });
+    expect((await patch()).status).toBe(403);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('a session with no team id gets 403', async () => {
+    setup(session('user-a', { teamId: null }));
+    expect((await patch()).status).toBe(403);
+  });
+
+  it('a session on a worker with no workspace id gets 403', async () => {
+    setup(session('user-a'), { ...sessionWorker, workspaceId: null });
+    expect((await patch()).status).toBe(403);
+  });
+
+  it('the bld_ key path is unchanged: the claiming account gets 200', async () => {
+    setup({ id: 'account-1', authType: 'api', level: 'worker' }, { ...sessionWorker, runner: 'runner-1', claimedByUserId: null });
+    expect((await patch()).status).toBe(200);
   });
 });
