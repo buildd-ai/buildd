@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buildd · cross-surface delivery prototype</title>
+<!--
+  Self-contained design prototype for the Delivery UX mission. Not production
+  code: no build step, no app imports. Tokens are copied verbatim from
+  apps/web/src/app/globals.css (see docs/design/design-system.md §2); every
+  figure on screen is fabricated fixture data.
+
+  Routes (hash): #home  #activity  #activity/history  #missions
+                 #mission/billing  #transitions
+  Query: ?theme=light|dark  &needs=0|1  &chrome=0 (hide the prototype bar)
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
+<style>
+/* ── Tokens: copied from globals.css ───────────────────────────────── */
+:root, [data-theme="dark"] {
+  --surface-1:#1a1816; --surface-2:#211f1c; --surface-3:#2a2724; --surface-4:#302c28;
+  --card:#2a2724; --card-hover:#302c28; --card-rightnow:#1f1d1a;
+  --chrome-bg:rgba(26,24,22,0.92); --chrome-sidebar:#15130f;
+  --text-primary:#ede8e2; --text-secondary:#a89f96; --text-muted:#968e86; --text-desc:#9f978e;
+  --border:rgba(255,245,230,0.14); --border-strong:rgba(255,245,230,0.55);
+  --accent:#f4811f; --accent-soft:rgba(244,129,31,0.14); --accent-text:#f59b4e; --on-accent:#1a1512;
+  --status-success:#5ec495; --status-running:#f4811f; --status-warning:#e0b35a; --status-error:#d97a71; --status-info:#7aacca;
+  --card-shadow:5px 5px 0 0 rgba(0,0,0,0.55);
+  --fleet-border-mid:color-mix(in srgb, var(--text-primary) 28%, transparent);
+  --fleet-hatch:color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+[data-theme="light"] {
+  --surface-1:#e7e3db; --surface-2:#eee9e3; --surface-3:#e5dfd8; --surface-4:#dbd4cc;
+  --card:#ffffff; --card-hover:#fdfcfa; --card-rightnow:#f5f2ee;
+  --chrome-bg:rgba(247,244,240,0.92); --chrome-sidebar:#f7f4f0;
+  --text-primary:#1f1b17; --text-secondary:#423c35; --text-muted:#6a625a; --text-desc:#5f5850;
+  --border:rgba(0,0,0,0.42); --border-strong:#1a1512;
+  --accent-soft:rgba(244,129,31,0.12); --accent-text:#aa410b;
+  --status-success:#3a9864; --status-running:#d96e12; --status-warning:#9a7a20; --status-error:#9e3b34; --status-info:#5088b0;
+  --card-shadow:5px 5px 0 0 rgba(26,21,18,0.95);
+  --fleet-border-mid:color-mix(in srgb, var(--border-strong) 42%, transparent);
+  --fleet-hatch:color-mix(in srgb, var(--border-strong) 8%, transparent);
+}
+:root {
+  --fleet-ok-soft:color-mix(in srgb, var(--status-success) 14%, transparent);
+  --fleet-err-soft:color-mix(in srgb, var(--status-error) 16%, transparent);
+  --mono:'IBM Plex Mono', ui-monospace, monospace;
+  --sans:'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --voice:'Newsreader', Georgia, serif;
+  /* Type roles, design-system.md §3 (mobile values; desktop overrides below) */
+  --t-chip:11px; --t-eyebrow:11px; --t-meta:12px; --t-body:13px; --t-title:14px; --t-lede:16px; --t-heading:20px;
+}
+@media (min-width: 48rem) { :root { --t-chip:10px; --t-lede:15px; --t-heading:24px; } }
+.fleet-hatch { background-image: repeating-linear-gradient(135deg, var(--fleet-hatch) 0 2px, transparent 2px 6px); }
+.fleet-hatch-future { background-image: repeating-linear-gradient(135deg, var(--fleet-hatch) 0 1px, transparent 1px 7px); }
+.fleet-hatch-accent { background-image: repeating-linear-gradient(135deg, var(--accent) 0 2px, transparent 2px 4px); }
+.fleet-hatch-ok { background-image: repeating-linear-gradient(90deg, var(--fleet-ok-soft) 0 3px, transparent 3px 5px); }
+.fleet-hatch-err { background-image: repeating-linear-gradient(135deg, var(--fleet-err-soft) 0 3px, transparent 3px 5px); }
+
+/* ── Base ──────────────────────────────────────────────────────────── */
+* { box-sizing: border-box; border-radius: 0 !important; }
+[hidden] { display: none !important; }
+html, body { margin: 0; background: var(--surface-1); color: var(--text-primary); font-family: var(--mono); font-size: var(--t-body); line-height: 1.5; }
+a { color: inherit; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+.voice { font-family: var(--voice); }
+.convo { font-family: var(--sans); }
+.eyebrow { font-size: var(--t-eyebrow); font-weight: 700; text-transform: uppercase; letter-spacing: 2px; line-height: 1.2; }
+.meta { font-size: var(--t-meta); color: var(--text-muted); line-height: 1.4; }
+.title { font-size: var(--t-title); font-weight: 600; line-height: 1.35; }
+.lede { font-size: var(--t-lede); line-height: 1.45; }
+.heading { font-size: var(--t-heading); font-weight: 700; line-height: 1.25; margin: 0; }
+.muted { color: var(--text-muted); }
+.sec { color: var(--text-secondary); }
+.mono-num { font-variant-numeric: tabular-nums; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* ── Prototype bar (not product UI) ────────────────────────────────── */
+.proto { position: sticky; top: 0; z-index: 60; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 10px; background: repeating-linear-gradient(135deg, var(--surface-4) 0 6px, var(--surface-3) 6px 12px); border-bottom: 1px dashed var(--border-strong); font-size: 11px; }
+.proto b { margin-right: 4px; }
+.proto button, .proto a { border: 1px solid var(--border); padding: 2px 6px; text-decoration: none; background: var(--surface-2); }
+.proto .on { border-color: var(--accent); color: var(--accent-text); }
+.no-chrome .proto { display: none; }
+
+/* ── Shell: rail on desktop, bottom nav on mobile ──────────────────── */
+.shell { display: grid; grid-template-columns: 1fr; min-height: 100vh; }
+.rail { display: none; }
+.main { padding: 16px 16px 24px; min-width: 0; max-width: 1080px; width: 100%; margin: 0 auto; }
+.bottomnav { position: sticky; bottom: 0; left: 0; right: 0; z-index: 20; display: grid; grid-template-columns: repeat(4, 1fr); background: var(--chrome-bg); border-top: 2px solid var(--border-strong); }
+.bottomnav a { min-height: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; text-decoration: none; font-size: 11px; color: var(--text-muted); }
+.bottomnav a.on { color: var(--text-primary); font-weight: 700; box-shadow: inset 0 3px 0 var(--accent); }
+.bottomnav .badge, .rail .badge { font-size: 10px; padding: 0 4px; border: 1px solid var(--border-strong); }
+.topbar { display: flex; align-items: center; justify-content: space-between; margin: -4px 0 12px; }
+.topbar .logo { font-weight: 700; letter-spacing: 1px; }
+@media (min-width: 48rem) {
+  .shell { grid-template-columns: 200px 1fr; }
+  .rail { display: flex; flex-direction: column; gap: 2px; padding: 16px 0; background: var(--chrome-sidebar); border-right: 1px solid var(--border); position: sticky; top: 0; height: 100vh; }
+  .rail .logo { padding: 0 16px 16px; font-weight: 700; letter-spacing: 1px; }
+  .rail a { padding: 9px 16px; text-decoration: none; color: var(--text-secondary); display: flex; justify-content: space-between; }
+  .rail a.on { color: var(--text-primary); font-weight: 700; box-shadow: inset 3px 0 0 var(--accent); background: var(--surface-2); }
+  .bottomnav, .topbar { display: none; }
+  .main { padding: 28px 32px 48px; }
+}
+.no-chrome .rail, .no-chrome .shell { height: auto; }
+.shot .bottomnav { position: static; }
+@media (max-width: 47.99rem) { .allclear .meta { display: none; } }
+
+/* ── Primitives ────────────────────────────────────────────────────── */
+.chip { display: inline-flex; align-items: center; gap: 5px; font-size: var(--t-chip); font-weight: 600; line-height: 1; padding: 3px 7px; border: 1px solid currentColor; white-space: nowrap; }
+.chip .g { font-size: 10px; }
+.tone-success { color: var(--status-success); } .tone-error { color: var(--status-error); }
+.tone-warning { color: var(--status-warning); } .tone-info { color: var(--status-info); }
+.tone-running { color: var(--accent-text); } .tone-ink { color: var(--text-primary); } .tone-muted { color: var(--text-muted); }
+.live { width: 7px; height: 7px; background: var(--accent); display: inline-block; border-radius: 50% !important; }
+.card { background: var(--card); border: 1px solid var(--border); }
+.card-act { background: var(--card); border: 2px solid var(--border-strong); box-shadow: var(--card-shadow); }
+.btn { min-height: 44px; padding: 0 14px; border: 2px solid var(--border-strong); background: var(--card); font-weight: 600; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+.btn-primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+@media (min-width: 48rem) { .btn { min-height: 36px; } }
+.seg { display: inline-flex; border: 2px solid var(--border-strong); }
+.seg button { min-height: 40px; padding: 0 12px; font-weight: 600; color: var(--text-muted); }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface-1); }
+.filters { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding: 2px 2px 4px; margin: 0 -2px; }
+.filters button { flex: none; min-height: 36px; padding: 0 10px; border: 1px solid var(--border); font-size: 12px; white-space: nowrap; }
+.filters button[aria-pressed="true"] { border: 2px solid var(--border-strong); font-weight: 700; }
+.disclose { width: 100%; min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; }
+.disclose .chev { transition: transform .15s; }
+.disclose[aria-expanded="true"] .chev { transform: rotate(90deg); }
+section { margin-top: 24px; }
+.sechead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; gap: 8px; }
+.rowlink { display: block; text-decoration: none; }
+.rowlink:hover .title { text-decoration: underline; text-decoration-thickness: 1px; }
+
+/* Stage track: Build › Audit › Land. Words and glyphs, not squares. */
+.track { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
+.track .st { padding: 1px 0; color: var(--text-muted); }
+.track .st.done { color: var(--status-success); }
+.track .st.cur { color: var(--text-primary); font-weight: 700; border-bottom: 2px solid var(--cur, var(--text-primary)); }
+.track .sep { color: var(--text-muted); opacity: .6; }
+
+/* Landed bar for portfolio rows: one continuous run, no per-task squares. */
+.lbar { position: relative; height: 6px; background: var(--surface-3); border: 1px solid var(--border); flex: 1; min-width: 48px; overflow: hidden; }
+.lbar .l { position: absolute; inset: 0 auto 0 0; background: var(--status-success); }
+.lbar .a { position: absolute; top: 0; bottom: 0; }
+
+/* ── Home ──────────────────────────────────────────────────────────── */
+.allclear { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.allclear .tick { color: var(--status-success); font-weight: 700; }
+.needs { padding: 14px; margin-top: 12px; }
+.needs .choice { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.outcome { padding: 12px 14px; display: grid; gap: 6px; border-left: 4px solid var(--edge, var(--border)); }
+.outcome + .outcome { margin-top: 10px; }
+.outcome .top { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+.outcome .t { font-size: var(--t-title); font-weight: 600; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+
+/* ── Activity ──────────────────────────────────────────────────────── */
+.group { margin-top: 18px; }
+.group > .gh { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; padding-bottom: 6px; border-bottom: 1px solid var(--border-strong); }
+.trow { border-bottom: 1px solid var(--border); }
+.trow .head { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 10px 0; min-height: 56px; width: 100%; text-align: left; }
+.trow .head .t { font-weight: 600; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.trow .head .sub { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.trow .body { padding: 0 0 12px; }
+.rev { border: 1px solid var(--border); padding: 10px 12px; margin-top: 8px; background: var(--card-rightnow); }
+.rev.current { border: 2px solid var(--border-strong); }
+.rev.stale { opacity: .78; }
+.rev .rh { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.gate { display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; padding: 4px 0; align-items: baseline; }
+.gate .why { grid-column: 2 / -1; }
+.gate.void .name, .gate.void .res { text-decoration: line-through; text-decoration-thickness: 1px; }
+.repair { margin: 8px 0 0 10px; padding: 6px 10px; border-left: 2px dashed var(--status-warning); }
+.episode { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.episode ol { list-style: none; margin: 8px 0 0; padding: 0 0 0 14px; border-left: 1px solid var(--border-strong); }
+.episode li { position: relative; padding: 3px 0 3px 4px; display: grid; grid-template-columns: 50px 1fr; gap: 8px; }
+.episode li::before { content: ''; position: absolute; left: -18px; top: 10px; width: 7px; height: 7px; background: var(--dot, var(--text-muted)); }
+.episode li.void .what { text-decoration: line-through; color: var(--text-muted); }
+
+/* ── Missions portfolio ────────────────────────────────────────────── */
+.counters { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); border: 1px solid var(--border-strong); margin-top: 12px; }
+.counters > div { padding: 8px 10px; min-width: 0; }
+.counters > div + div { border-left: 1px solid var(--border); }
+.counters .n { font-size: 20px; font-weight: 700; line-height: 1.1; }
+.counters .lab { font-size: 12px; color: var(--text-secondary); }
+.defs { margin-top: 6px; }
+.defs dl { margin: 6px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; }
+.defs dt { font-weight: 700; } .defs dd { margin: 0; color: var(--text-secondary); }
+.tools { display: grid; gap: 8px; margin-top: 14px; grid-template-columns: minmax(0, 1fr); }
+.tools > * { min-width: 0; }
+.tools .row { display: flex; gap: 8px; }
+.search { flex: 1; min-height: 44px; padding: 0 12px; background: var(--card); border: 2px solid var(--border-strong); color: var(--text-primary); font: inherit; font-size: 16px; min-width: 0; }
+@media (min-width: 48rem) { .search { font-size: 13px; min-height: 36px; } .tools { grid-template-columns: 1fr auto; align-items: center; } }
+select.sort { min-height: 44px; background: var(--card); color: var(--text-primary); border: 2px solid var(--border-strong); font: inherit; padding: 0 8px; }
+.mrow { display: grid; grid-template-columns: minmax(0,1fr) auto; grid-template-areas: "t pn" "st st" "nx nx" "ex ex"; gap: 4px 10px; padding: 10px 12px; border: 1px solid var(--border); border-left: 4px solid var(--edge, var(--border)); background: var(--card); text-decoration: none; }
+.mrow + .mrow { margin-top: -1px; }
+.mrow .t { font-weight: 600; font-size: var(--t-title); line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.mrow .l2 { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+.mrow .l3 { display: flex; justify-content: space-between; gap: 8px; }
+.mrow .l3 .next { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pin { min-width: 44px; min-height: 32px; color: var(--text-muted); font-size: 16px; text-align: right; }
+.pin[aria-pressed="true"] { color: var(--text-primary); }
+@media (min-width: 64rem) {
+  .mrow { grid-template-columns: 150px minmax(0,1.3fr) 200px minmax(0,1fr) 44px; grid-template-areas: "st t ld nx pn" "ex ex ex ex ex"; align-items: center; gap: 4px 12px; }
+  .mrow .t { -webkit-line-clamp: 1; }
+  .mhead { display: grid !important; grid-template-columns: 150px minmax(0,1.3fr) 200px minmax(0,1fr) 44px; gap: 12px; padding: 0 12px 6px 16px; }
+}
+.mhead { display: none; }
+.mrow { position: relative; } .mrow a.stretch { text-decoration: none; } .mrow a.stretch::after { content: ''; position: absolute; inset: 0; } .mrow .pin { position: relative; z-index: 1; }
+.exc { grid-area: ex; font-size: 12px; }
+.mrow > .t { grid-area: t; } .mrow > .pin { grid-area: pn; } .mrow > .status { grid-area: st; } .mrow > .d-only { grid-area: ld; } .mrow > .l3 { grid-area: nx; }
+.d-only { display: none !important; } .lbar-w { display: flex; flex: 0 1 72px; min-width: 40px; }
+@media (min-width: 64rem) { .d-only { display: flex !important; } .m-only { display: none !important; } }
+
+/* ── Mission detail: the existing Landed strip, kept ───────────────── */
+.mdh { display: grid; gap: 6px; }
+.strip { margin-top: 18px; }
+.strip .hdr { display: flex; justify-content: space-between; align-items: baseline; }
+.cells { --strip-gap: 4px; display: flex; gap: var(--strip-gap); margin-top: 6px; }
+.cells.dense { --strip-gap: 1px; }
+.cell { flex: 1 1 0; height: 44px; border: 1.5px solid var(--fleet-border-mid); background: var(--card); transition: transform .12s; min-width: 0; }
+@media (min-width: 48rem) { .cell { height: 56px; } .cells { --strip-gap: 6px; } .cells.dense { --strip-gap: 2px; } }
+.cell.landed { background: var(--status-success); border-color: var(--status-success); }
+.cell.running { border-color: var(--accent); }
+.cell.fixing { border-color: var(--status-error); }
+.cell.blocked { border-color: var(--fleet-border-mid); }
+.cell.sel { transform: translateY(-4px); outline: 2px solid var(--selc, var(--accent)); outline-offset: 2px; }
+.ticks { display: flex; gap: var(--strip-gap); margin-top: 4px; }
+.ticks span { flex: 1 1 0; text-align: center; font-size: 10px; color: var(--text-muted); min-width: 0; overflow: hidden; }
+.ticks span.dir { background: var(--accent); color: var(--surface-1); font-weight: 700; }
+.ticks span.dot::before { content: ''; display: inline-block; width: 1px; height: 6px; background: var(--text-muted); }
+.ticks span.dot.rel::before { width: 100%; height: 4px; background: var(--accent); }
+.ticks span.dot.me::before { width: 100%; height: 4px; background: var(--text-primary); }
+.drawer { position: relative; margin-top: 12px; border: 2px solid var(--border-strong); background: var(--surface-2); padding: 14px; }
+.drawer .caret { position: absolute; top: -8px; width: 12px; height: 12px; background: var(--surface-2); border-left: 2px solid var(--border-strong); border-top: 2px solid var(--border-strong); transform: translateX(-50%) rotate(45deg); }
+.drawer .ord { font-size: 11px; color: var(--text-muted); letter-spacing: 1px; }
+.stepper { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+.stepper .btn { justify-content: center; }
+.stepper .grow { flex: 1; }
+.dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin-top: 12px; border: 1px solid var(--border); }
+.dl > div { padding: 8px 10px; min-width: 0; }
+.dl > div + div { border-left: 1px solid var(--border); }
+.dl .k { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }
+.dl .v { font-size: 12px; }
+.dl .cur { box-shadow: inset 0 -3px 0 var(--cur, var(--text-primary)); }
+
+/* ── Transitions storyboard ────────────────────────────────────────── */
+.frames { display: grid; gap: 10px; grid-template-columns: 1fr; }
+@media (min-width: 48rem) { .frames { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.frame { padding: 12px; border: 1px solid var(--border); background: var(--card); display: grid; gap: 6px; align-content: start; }
+.frame .n { font-size: 11px; color: var(--text-muted); }
+.note { padding: 10px 12px; border-left: 3px solid var(--status-info); background: var(--surface-2); margin-top: 10px; }
+.cmp { display: grid; gap: 10px; grid-template-columns: 1fr; }
+@media (min-width: 48rem) { .cmp { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="proto" role="toolbar" aria-label="Prototype controls">
+  <b>PROTOTYPE</b>
+  <a href="#home" data-r="home">Home</a>
+  <a href="#activity" data-r="activity">Activity</a>
+  <a href="#missions" data-r="missions">Missions</a>
+  <a href="#mission/billing" data-r="mission">Mission detail</a>
+  <a href="#transitions" data-r="transitions">Transitions</a>
+  <span class="muted">·</span>
+  <button id="tgTheme">Night / Day</button>
+  <button id="tgNeeds">Needs you: 0</button>
+</div>
+<div class="shell">
+  <nav class="rail" aria-label="Primary">
+    <div class="logo">BUILDD</div>
+    <a href="#home" data-nav="home">Home <span class="badge needs-badge" hidden>1</span></a>
+    <a href="#activity" data-nav="activity">Activity</a>
+    <a href="#missions" data-nav="missions">Missions</a>
+    <a href="#transitions" data-nav="transitions">Chat</a>
+  </nav>
+  <main class="main" id="main" tabindex="-1"></main>
+</div>
+<nav class="bottomnav" aria-label="Primary">
+  <a href="#home" data-nav="home"><span>Home</span><span class="badge needs-badge" hidden>1</span></a>
+  <a href="#activity" data-nav="activity"><span>Activity</span></a>
+  <a href="#missions" data-nav="missions"><span>Missions</span></a>
+  <a href="#transitions" data-nav="transitions"><span>Chat</span></a>
+</nav>
+
+<script>
+/* ── Fixture data (fabricated) ─────────────────────────────────────── */
+// Delivery phase is a projection of the workflow-state-kernel state
+// (docs/specs/workflow-state-kernel.md §4), never a self-reported percent:
+//   WORKING, AWAITING_PUSH                          -> build
+//   AWAITING_REVIEW, APPROVED (gates outstanding)   -> audit
+//   CHANGES_REQUESTED, FIXING, REPAIRING            -> repair (shown inside Audit)
+//   BLOCKED_ON_TRUNK                                -> audit, "waiting on trunk"
+//   LANDING                                         -> land
+//   MERGED                                          -> landed
+//   ESCALATED                                       -> needs (only kernel state that asks a person)
+//   CLOSED_UNMERGED                                 -> notlanded (exception, not a human ask until supersession scan gives up)
+const KIND = {
+  landed:     { label: 'Landed',          g: '■', tone: 'success', edge: 'var(--status-success)' },
+  landing:    { label: 'Landing',         g: '▲', tone: 'success', edge: 'var(--status-success)' },
+  audit:      { label: 'In audit',        g: '◐', tone: 'info',    edge: 'var(--status-info)' },
+  repair:     { label: 'Repairing',       g: '↻', tone: 'warning', edge: 'var(--status-warning)' },
+  build:      { label: 'Building',        g: '▶', tone: 'ink', edge: 'var(--accent)' },
+  waiting:    { label: 'Waiting',         g: '◇', tone: 'muted',   edge: 'var(--border)' },
+  held:       { label: 'Held',            g: '‖', tone: 'muted',   edge: 'var(--border)' },
+  planning:   { label: 'Planning',        g: '○', tone: 'muted',   edge: 'var(--border)' },
+  unavailable:{ label: 'Audit can’t run', g: '⊘', tone: 'warning', edge: 'var(--status-warning)' },
+  notlanded:  { label: 'Not landed',      g: '✕', tone: 'error',   edge: 'var(--status-error)' },
+  needs:      { label: 'Needs input',     g: '!', tone: 'ink',     edge: 'var(--border-strong)' },
+};
+const STAGE_OF = { build: 0, audit: 1, repair: 1, unavailable: 1, landing: 2, landed: 3, waiting: -1, held: -1, planning: -1, notlanded: 2, needs: 1 };
+
+const MISSIONS = [
+  { id: 'billing', title: 'Billing exports: CSV and scheduled email', kind: 'repair', round: 2, landed: 33, total: 35, inAudit: 1, agents: 1, ws: 'web', updated: 2, advanced: 2,
+    outcome: 'Teams can schedule a CSV export and get it by email.',
+    evidence: 'Review asked for changes on 34; the agent pushed a fix. Re-review and CI are running on the new revision.',
+    next: 'Re-review passes on 34, then 35 starts', pinned: true },
+  { id: 'search', title: 'Typo-tolerant workspace search', kind: 'audit', landed: 6, total: 9, inAudit: 1, agents: 0, ws: 'web', updated: 6, advanced: 6,
+    outcome: 'Search finds tasks and missions even with a misspelled word.',
+    evidence: 'Review approved revision 9f2c1e. CI is running on the same revision.',
+    next: 'CI green, then it lands' },
+  { id: 'onboard', title: 'First-run checklist for new workspaces', kind: 'landing', landed: 14, total: 14, inAudit: 0, agents: 0, ws: 'web', updated: 11, advanced: 11,
+    outcome: 'A new workspace walks its owner through the first mission.',
+    evidence: 'All 14 tasks landed on the mission branch. The mission PR to trunk is approved and green.',
+    next: 'Mission PR merges to dev', exc: { tone: 'info', text: 'All tasks done, not yet on trunk' } },
+  { id: 'i18n', title: 'Locale-aware date formats across the dashboard', kind: 'landing', landed: 5, total: 6, inAudit: 1, agents: 0, ws: 'web', updated: 14, advanced: 14,
+    outcome: 'Dates read the way each owner’s locale writes them.',
+    evidence: 'Task 06 approved and green; merge in progress.',
+    next: '06 lands, then the mission PR opens' },
+  { id: 'flaky', title: 'Quarantine flaky integration tests', kind: 'repair', round: 1, landed: 10, total: 12, inAudit: 1, agents: 0, ws: 'core', updated: 22, advanced: 22,
+    next: 'Repair starts when a slot frees up', exc: { tone: 'muted', text: 'CI failed on 11; fix queued for a free agent slot' } },
+  { id: 'vqa', title: 'Visual audit on preview deployments', kind: 'unavailable', landed: 2, total: 5, inAudit: 1, agents: 0, ws: 'web', updated: 31, advanced: 31,
+    next: 'Retrying in 8 min', exc: { tone: 'warning', text: 'No browser runner online; audit retries every 10 min, asks you after 6 h' } },
+  { id: 'audit', title: 'Export the audit log as CSV', kind: 'notlanded', landed: 7, total: 8, inAudit: 0, agents: 0, ws: 'web', updated: 48, advanced: 48,
+    next: 'Checking whether another PR carries 08', exc: { tone: 'error', text: '08 finished but its PR closed without merging' } },
+  { id: 'arm', title: 'Runner install on arm64 Linux', kind: 'waiting', landed: 4, total: 7, inAudit: 0, agents: 0, ws: 'runner', updated: 60, advanced: 180,
+    next: 'Starts when a slot frees up', exc: { tone: 'muted', text: 'Waiting on capacity, not on you' } },
+  { id: 'docs', title: 'API reference refresh', kind: 'waiting', landed: 2, total: 5, inAudit: 0, agents: 0, ws: 'docs', updated: 95, advanced: 300,
+    next: 'After 04 in Typo-tolerant search lands', exc: { tone: 'muted', text: 'Waiting on another mission' } },
+  { id: 'quota', title: 'Per-team rate limits and quotas', kind: 'held', landed: 3, total: 10, inAudit: 0, agents: 0, ws: 'core', updated: 200, advanced: 1440,
+    next: 'Held by its owner', exc: { tone: 'muted', text: 'Paused by its owner on Monday' } },
+  { id: 'digest', title: 'Daily digest email', kind: 'planning', landed: 0, total: 6, inAudit: 0, agents: 0, ws: 'web', updated: 240, advanced: 240,
+    next: 'Plan review' },
+];
+const DONE = [
+  { id: 'tabs', title: 'Workspace settings split into tabs', landed: 9, total: 9, when: 'yesterday' },
+  { id: 'cli', title: 'CLI login without a browser', landed: 4, total: 4, when: 'Tue' },
+];
+
+// Mission detail: 35 tasks, 33 landed, 34 repairing, 35 held behind it.
+const STRIP = Array.from({ length: 35 }, (_, i) => {
+  const n = i + 1;
+  const lvl = n <= 4 ? 1 : n <= 9 ? 2 : n <= 14 ? 3 : n <= 19 ? 4 : n <= 24 ? 5 : n <= 28 ? 6 : n <= 33 ? 7 : n === 34 ? 8 : 9;
+  const state = n <= 33 ? 'landed' : n === 34 ? 'fixing' : 'blocked';
+  return { n, lvl, state };
+});
+const TASK_TITLES = { 33: 'feat: export scheduler', 34: 'feat: scheduled export email', 35: 'feat: export settings UI', 32: 'feat: CSV writer streams large exports' };
+
+const STATE = { route: 'home', needs: 0, theme: 'dark', sel: 34, filt: 'open', sort: 'attention', q: '', pins: new Set(['billing']), open: { t34: true }, hist: 'all' };
+
+/* ── Small renderers ───────────────────────────────────────────────── */
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function chip(kind, extra) {
+  const k = KIND[kind];
+  return `<span class="chip tone-${k.tone}"><span class="g" aria-hidden="true">${k.g}</span>${k.label}${extra ? ` <span class="muted">${extra}</span>` : ''}</span>`;
+}
+function track(kind, round) {
+  const s = STAGE_OF[kind];
+  const names = ['Build', 'Audit', 'Land'];
+  const curColor = KIND[kind].edge;
+  return `<span class="track" aria-label="Stage: ${names[Math.max(0, Math.min(2, s))]}">` + names.map((nm, i) => {
+    let cls = 'st', txt = nm;
+    if (s > i || s === 3) { cls += ' done'; txt = '✓ ' + nm; }
+    else if (s === i) { cls += ' cur'; if (i === 1 && round) txt = nm + ' ↻' + round; }
+    return `<span class="${cls}" style="--cur:${curColor}">${txt}</span>`;
+  }).join('<span class="sep" aria-hidden="true">›</span>') + '</span>';
+}
+function lbar(m) {
+  const l = (m.landed / m.total) * 100, a = (m.inAudit / m.total) * 100;
+  return `<span class="lbar" role="img" aria-label="${m.landed} of ${m.total} tasks landed"><span class="l" style="width:${l}%"></span><span class="a fleet-hatch-ok" style="left:${l}%;width:${a}%"></span></span>`;
+}
+const ago = m => m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`;
+
+/* ── Home ──────────────────────────────────────────────────────────── */
+function home() {
+  const movers = ['billing', 'search', 'onboard'].map(id => MISSIONS.find(m => m.id === id));
+  const needs = STATE.needs
+    ? `<section aria-labelledby="ny">
+        <div class="sechead"><h2 class="eyebrow" id="ny">Needs you <span class="chip tone-ink">1</span></h2></div>
+        <article class="card-act needs">
+          <div class="meta">Export the audit log as CSV · task 08</div>
+          <div class="title" style="margin-top:4px">Keep the old export route, or remove it?</div>
+          <p class="convo sec" style="margin:6px 0 0">The change is approved and green, but it deletes a route two integrations still call. The reviewer won’t decide a breaking change for you.</p>
+          <div class="choice"><button class="btn btn-primary">Keep it, deprecate later</button><button class="btn">Remove it now</button></div>
+        </article>
+        <p class="meta" style="margin-top:8px">Not listed here: 2 missions waiting on capacity or another mission. Those move on their own.</p>
+      </section>`
+    : `<div class="allclear" role="status"><span class="tick" aria-hidden="true">✓</span><span class="voice lede">Nothing needs you.</span><span class="meta" style="margin-left:auto">Buildd will ask if a decision comes up.</span></div>`;
+  return `
+    <div class="topbar"><span class="logo">BUILDD</span><span class="meta">1 agent working</span></div>
+    <h1 class="heading voice" style="font-weight:500">${STATE.needs ? 'One thing needs you.' : 'Good morning.'}</h1>
+    ${needs}
+    <section aria-labelledby="mv">
+      <div class="sechead"><h2 class="eyebrow" id="mv">Moving toward delivery</h2><a class="meta" href="#missions">11 open missions ›</a></div>
+      ${movers.map(m => `
+        <a class="card outcome rowlink" href="#mission/${m.id}" style="--edge:${KIND[m.kind].edge}">
+          <div class="top"><span class="t">${esc(m.title)}</span>${chip(m.kind)}</div>
+          <div class="convo sec" style="font-size:13px">${esc(m.evidence)}</div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${track(m.kind, m.round)}<span class="meta mono-num">${m.landed} of ${m.total} landed</span></div>
+          <div class="meta">Next: ${esc(m.next)}</div>
+        </a>`).join('')}
+    </section>
+    <section><a class="meta" href="#activity">See everything in motion in Activity ›</a></section>`;
+}
+
+/* ── Activity ──────────────────────────────────────────────────────── */
+const NOW = [
+  { mission: 'billing', tasks: [
+    { id: 't34', n: '34', title: 'feat: scheduled export email', kind: 'repair', round: 2, live: true,
+      line: 'Agent pushed a fix for the review notes. Re-review and CI running on d4e5f6.', age: '2m' },
+    { id: 't35', n: '35', title: 'feat: export settings UI', kind: 'waiting', line: 'Starts when 34 lands.', age: '' } ] },
+  { mission: 'search', tasks: [
+    { id: 't07', n: '07', title: 'feat: trigram index for task titles', kind: 'audit', line: 'Review approved 9f2c1e. CI 6 of 9 checks done.', age: '6m' } ] },
+  { mission: 'i18n', tasks: [
+    { id: 't06', n: '06', title: 'feat: locale date formatter', kind: 'landing', line: 'Approved and green on 2b7d90. Merging into the mission branch.', age: '14m' } ] },
+  { mission: 'flaky', tasks: [
+    { id: 't11', n: '11', title: 'fix: quarantine list loader', kind: 'repair', round: 1, line: 'CI failed: 2 tests. Automatic fix queued for a free slot (1 of 4 in use, others reserved).', age: '22m' } ] },
+  { mission: 'vqa', tasks: [
+    { id: 't03', n: '03', title: 'feat: preview URL capture', kind: 'unavailable', line: 'Visual audit can’t run: no browser runner online. Retrying in 8 min; asks you after 6 h.', age: '31m' } ] },
+  { mission: null, tasks: [
+    { id: 'sa', n: '', title: 'chore: bump Playwright to the current minor', kind: 'build', line: 'Queued for a slot.', age: '4m' },
+    { id: 'sb', n: '', title: 'research: compare CI cache hit rates', kind: 'audit', line: 'Report written; artifact check running.', age: '9m' } ] },
+];
+function revisions() {
+  return `
+    <div class="rev current">
+      <div class="rh"><span class="title">Revision d4e5f6 <span class="meta">current head</span></span><span class="meta">audit round 2</span></div>
+      <div class="gate"><span class="tone-info">◐</span><span class="name">Code review</span><span class="res meta">reviewing</span></div>
+      <div class="gate"><span class="tone-info">◐</span><span class="name">CI</span><span class="res meta">7 of 11 checks</span></div>
+      <div class="gate"><span class="muted">–</span><span class="name muted">Visual audit</span><span class="res meta">not applicable</span><span class="why meta">No rendered UI changed in this task.</span></div>
+    </div>
+    <div class="repair meta"><b class="tone-warning">↻ Repair 1</b> · automatic · agent fixed 2 review notes, pushed d4e5f6 · 18 min</div>
+    <div class="rev stale">
+      <div class="rh"><span class="title">Revision a1b2c3 <span class="meta">older head</span></span><span class="meta">audit round 1</span></div>
+      <div class="gate"><span class="tone-error">✕</span><span class="name">Code review</span><span class="res tone-error">changes requested</span><span class="why meta">Blocking: retries not idempotent; missing unsubscribe link.</span></div>
+      <div class="gate void"><span class="muted">✓</span><span class="name">CI</span><span class="res meta">passed</span><span class="why meta">Superseded: CI on a1b2c3 does not count for d4e5f6.</span></div>
+      <div class="gate void"><span class="muted">✓</span><span class="name">Late approval</span><span class="res meta">arrived 10:51</span><span class="why meta">Stale head: verdict was for a1b2c3, received after d4e5f6. Recorded, not counted.</span></div>
+    </div>`;
+}
+function trow(t) {
+  const open = !!STATE.open[t.id];
+  const expandable = t.id === 't34';
+  const sub = `<div class="sub">${chip(t.kind, t.round ? 'round ' + t.round : '')}${track(t.kind, t.round)}${t.live ? '<span class="meta"><span class="live" aria-hidden="true"></span> agent live</span>' : ''}</div>`;
+  const head = `<span class="t">${t.n ? `<span class="muted">${t.n}</span> ` : ''}${esc(t.title)}</span><span class="meta">${t.age}</span>${sub}<span class="convo sec" style="grid-column:1/-1;font-size:13px">${esc(t.line)}</span>`;
+  return `<div class="trow">${expandable
+    ? `<button class="head" aria-expanded="${open}" aria-controls="b-${t.id}" data-toggle="${t.id}">${head}</button>
+       <div class="body" id="b-${t.id}" ${open ? '' : 'hidden'}>${revisions()}<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><a class="btn" href="#mission/billing">Open in mission ›</a><a class="btn" href="#transitions">Task page ›</a></div></div>`
+    : `<a class="head rowlink" href="#mission/${'billing'}">${head}</a>`}</div>`;
+}
+function activity(mode) {
+  const seg = `<div class="seg" role="group" aria-label="Activity mode"><button aria-pressed="${mode === 'now'}" data-go="#activity">Now</button><button aria-pressed="${mode === 'history'}" data-go="#activity/history">History</button></div>`;
+  if (mode === 'history') return `<h1 class="heading">Activity</h1><div style="margin-top:12px">${seg}</div>${history()}`;
+  const groups = NOW.map(g => {
+    const m = g.mission && MISSIONS.find(x => x.id === g.mission);
+    return `<div class="group"><div class="gh"><span class="title">${m ? esc(m.title) : 'Standalone'}</span>${m ? `<a class="meta" href="#mission/${m.id}">${m.landed}/${m.total} landed ›</a>` : `<span class="meta">${g.tasks.length} tasks</span>`}</div>${g.tasks.map(trow).join('')}</div>`;
+  }).join('');
+  return `<h1 class="heading">Activity</h1>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:12px;flex-wrap:wrap">${seg}<span class="meta">8 deliveries in motion · 1 agent working</span></div>
+    ${groups}`;
+}
+const EPISODES = [
+  { mission: 'Billing exports', task: '33 feat: export scheduler', end: 'landed', time: '11:04', steps: [
+    ['10:02', 'Built; PR opened at a1f0e2', 'var(--accent)'],
+    ['10:20', 'Review requested changes', 'var(--status-error)'],
+    ['10:21', 'Automatic repair started', 'var(--status-warning)'],
+    ['10:48', 'New head 7c11ab; earlier review superseded', 'var(--status-info)'],
+    ['10:55', 'CI passed on 7c11ab', 'var(--status-success)'],
+    ['11:03', 'Review approved 7c11ab', 'var(--status-success)'],
+    ['11:04', 'Landed on the mission branch', 'var(--status-success)'] ] },
+  { mission: 'Locale-aware dates', task: '05 feat: relative time helper', end: 'landed', time: '09:40', steps: [
+    ['09:12', 'Built; PR opened', 'var(--accent)'], ['09:31', 'Review approved; CI passed', 'var(--status-success)'], ['09:40', 'Landed on the mission branch', 'var(--status-success)'] ] },
+  { mission: 'Quarantine flaky tests', task: '10 fix: retry wrapper', end: 'repair', time: '08:55', steps: [
+    ['08:10', 'CI failed: 1 test', 'var(--status-error)'], ['08:11', 'Automatic repair 1', 'var(--status-warning)'],
+    ['08:40', 'CI failed again on the fix', 'var(--status-error)'], ['08:41', 'Automatic repair 2', 'var(--status-warning)'],
+    ['08:55', 'CI passed; waiting on review', 'var(--status-info)'] ] },
+  { mission: 'Export the audit log', task: '08 feat: CSV route', end: 'notlanded', time: 'Yday', steps: [
+    ['16:30', 'Approved and green', 'var(--status-success)'], ['16:44', 'PR closed without merging (base branch deleted)', 'var(--status-error)'], ['16:45', 'Looking for a merged PR that carries it', 'var(--status-info)'] ] },
+];
+function history() {
+  const f = STATE.hist;
+  const keep = e => f === 'all' || (f === 'landed' && e.end === 'landed') || (f === 'repairs' && e.steps.some(s => /repair/i.test(s[1]))) || (f === 'exceptions' && e.end === 'notlanded');
+  const list = EPISODES.filter(keep);
+  return `<div class="filters" role="group" aria-label="Filter history" style="margin-top:12px">
+      ${[['all', 'All'], ['landed', 'Landed'], ['repairs', 'Had repairs'], ['exceptions', 'Exceptions']].map(([k, l]) => `<button aria-pressed="${f === k}" data-hist="${k}">${l}</button>`).join('')}
+      <button>Mission: any ▾</button></div>
+    <p class="meta">Newest transition first. Each delivery is one episode; its steps never reorder.</p>
+    ${list.map(e => `<article class="episode">
+      <div style="display:flex;justify-content:space-between;gap:8px"><a class="title rowlink" href="#mission/billing">${esc(e.task)}</a><span class="meta">${e.time}</span></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">${chip(e.end)}<span class="meta">${esc(e.mission)}</span></div>
+      <ol>${e.steps.map(s => `<li style="--dot:${s[2]}"><span class="meta mono-num">${s[0]}</span><span class="what">${esc(s[1])}</span></li>`).join('')}</ol>
+    </article>`).join('') || '<p class="meta">No episodes match.</p>'}`;
+}
+
+/* ── Missions portfolio ────────────────────────────────────────────── */
+const ATTN = { notlanded: 0, unavailable: 1, repair: 2, audit: 3, landing: 4, build: 5, waiting: 6, held: 7, planning: 8 };
+function missions() {
+  let list = MISSIONS.slice();
+  const f = STATE.filt;
+  if (f === 'executing') list = list.filter(m => m.agents > 0);
+  if (f === 'exceptions') list = list.filter(m => ['notlanded', 'unavailable'].includes(m.kind));
+  if (f === 'landing') list = list.filter(m => ['landing'].includes(m.kind) || m.landed === m.total);
+  if (f === 'waiting') list = list.filter(m => ['waiting', 'held'].includes(m.kind));
+  if (STATE.q) list = list.filter(m => m.title.toLowerCase().includes(STATE.q.toLowerCase()));
+  const tie = (a, b) => a.id < b.id ? -1 : 1;
+  const sorts = {
+    attention: (a, b) => (ATTN[a.kind] - ATTN[b.kind]) || tie(a, b),
+    advanced: (a, b) => (a.advanced - b.advanced) || tie(a, b),
+    closest: (a, b) => ((b.landed / b.total) - (a.landed / a.total)) || tie(a, b),
+    name: (a, b) => a.title.localeCompare(b.title),
+  };
+  list.sort(sorts[STATE.sort]);
+  const pinned = list.filter(m => STATE.pins.has(m.id)), rest = list.filter(m => !STATE.pins.has(m.id));
+  const row = m => `<div class="mrow" style="--edge:${KIND[m.kind].edge}">
+      <a class="t stretch" href="#mission/${m.id}">${esc(m.title)}</a>
+      <button class="pin" aria-pressed="${STATE.pins.has(m.id)}" aria-label="Pin ${esc(m.title)}" data-pin="${m.id}">${STATE.pins.has(m.id) ? '◆' : '◇'}</button>
+      <span class="l2 status">${chip(m.kind, m.round ? '↻' + m.round : '')}${m.agents ? '<span class="meta" style="white-space:nowrap"><span class="live" aria-hidden="true"></span> 1 agent</span>' : ''}<span class="meta mono-num m-only" style="white-space:nowrap;margin-left:auto">${m.landed}/${m.total}</span><span class="m-only lbar-w">${lbar(m)}</span></span>
+      <span class="l2 d-only"><span class="meta mono-num" style="white-space:nowrap">${m.landed}/${m.total} landed</span>${lbar(m)}</span>
+      <span class="l3"><span class="meta next">Next: ${esc(m.next)}</span><span class="meta">${ago(m.advanced)}</span></span>
+      ${m.exc ? `<span class="exc tone-${m.exc.tone}">${esc(m.exc.text)}</span>` : ''}
+    </div>`;
+  const n = k => MISSIONS.filter(k).length;
+  return `<h1 class="heading">Missions</h1>
+    <div class="counters" role="group" aria-label="Mission counts">
+      <div><div class="n mono-num">11</div><div class="lab">open</div></div>
+      <div><div class="n mono-num">1</div><div class="lab">executing</div></div>
+      <div><div class="n mono-num">1/4</div><div class="lab">agent slots</div></div>
+    </div>
+    <div class="defs"><button class="disclose meta" aria-expanded="${!!STATE.open.defs}" data-toggle="defs"><span>What these count</span><span class="chev" aria-hidden="true">›</span></button>
+      <dl ${STATE.open.defs ? '' : 'hidden'}>
+        <dt>Open</dt><dd>Missions not yet landed on trunk or archived, whatever they are doing.</dd>
+        <dt>Executing</dt><dd>Open missions with at least one agent working right now. Audits, CI and merges run without an agent and don’t count.</dd>
+        <dt>Agent slots</dt><dd>Agents working / agent seats your runners offer. Replaces “11 running · 1 agent on it”.</dd>
+      </dl></div>
+    <div class="tools">
+      <div class="row"><input class="search" type="search" placeholder="Search missions" aria-label="Search missions" value="${esc(STATE.q)}" id="q">
+        <label class="sr" for="sort">Sort</label>
+        <select class="sort" id="sort">${[['attention', 'Needs attention'], ['advanced', 'Recently advanced'], ['closest', 'Closest to landing'], ['name', 'Name']].map(([k, l]) => `<option value="${k}" ${STATE.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="filters" role="group" aria-label="Filter missions">
+        ${[['open', 'Open', 11], ['executing', 'Executing', n(m => m.agents > 0)], ['exceptions', 'Exceptions', n(m => ['notlanded', 'unavailable'].includes(m.kind))], ['landing', 'Landing', n(m => m.kind === 'landing' || m.landed === m.total)], ['waiting', 'Waiting', n(m => ['waiting', 'held'].includes(m.kind))]].map(([k, l, c]) => `<button aria-pressed="${f === k}" data-filt="${k}">${l} <span class="muted">${c}</span></button>`).join('')}
+        <button>Workspace: all ▾</button>
+      </div>
+    </div>
+    <div class="mhead meta" style="margin-top:14px"><span>Status</span><span>Mission</span><span>Landed</span><span>Next</span><span></span></div>
+    ${pinned.length ? `<div class="eyebrow muted" style="margin:14px 0 6px">Pinned</div>${pinned.map(row).join('')}` : ''}
+    ${rest.length ? `<div class="eyebrow muted" style="margin:14px 0 6px">${pinned.length ? 'Everything else' : 'Open'}</div>${rest.map(row).join('')}` : ''}
+    ${!list.length ? '<p class="meta">No missions match.</p>' : ''}
+    <section><button class="disclose" aria-expanded="${!!STATE.open.done}" data-toggle="done"><span class="eyebrow">Landed this week <span class="muted">${DONE.length}</span></span><span class="chev" aria-hidden="true">›</span></button>
+      <div ${STATE.open.done ? '' : 'hidden'}>${DONE.map(d => `<div class="mrow" style="--edge:var(--status-success)"><span class="t">${esc(d.title)}</span><span class="meta pin">${d.when}</span><span class="l2 status">${chip('landed')}<span class="meta">${d.landed}/${d.total}</span></span></div>`).join('')}</div></section>`;
+}
+
+/* ── Mission detail ────────────────────────────────────────────────── */
+function cellInfo(n) {
+  const c = STRIP[n - 1];
+  const title = TASK_TITLES[n] || `feat: export step ${String(n).padStart(2, '0')}`;
+  if (c.state === 'landed') return { c, title, chipK: 'landed', reason: n === 33 ? 'Unblocks 34 email.' : `After ${String(n - 1).padStart(2, '0')}.`, stage: 3, land: 'Merged into the mission branch.', audit: 'Review approved · CI green' + (n % 4 === 0 ? ' · visual passed' : '') };
+  if (c.state === 'fixing') return { c, title, chipK: 'repair', reason: 'Unblocks 35 settings UI.', stage: 1, round: 2 };
+  return { c, title, chipK: 'waiting', reason: 'After 34 email. Not your decision: it starts when 34 lands.', stage: -1 };
+}
+function detail() {
+  const m = MISSIONS[0];
+  const sel = STATE.sel, info = cellInfo(sel);
+  const dense = STRIP.length > 24;
+  const cls = s => s === 'landed' ? 'landed' : s === 'fixing' ? 'fixing fleet-hatch-err' : 'blocked fleet-hatch';
+  const selColor = info.chipK === 'landed' ? 'var(--status-success)' : info.chipK === 'repair' ? 'var(--status-error)' : 'var(--accent)';
+  const caretLeft = ((sel - 0.5) / STRIP.length) * 100;
+  const pad = n => String(n).padStart(2, '0');
+  const tick = c => {
+    const rel = (sel === 34 && c.n === 35) || (sel === 35 && c.n === 34) || (sel === 33 && c.n === 34);
+    if (dense) return `<span class="dot ${rel ? 'rel' : ''} ${c.n === sel ? 'me' : ''}"></span>`;
+    if (rel) return `<span class="dir">${pad(c.n)}</span>`;
+    return `<span>${pad(c.n)}</span>`;
+  };
+  const stageBox = (i, k, v) => `<div class="${info.stage === i ? 'cur' : ''}" style="--cur:${selColor}"><div class="k ${info.stage > i ? 'tone-success' : info.stage === i ? '' : 'muted'}">${info.stage > i ? '✓ ' : ''}${k}</div><div class="v ${info.stage < i ? 'muted' : 'sec'}">${v}</div></div>`;
+  return `
+    <a class="meta" href="#missions">‹ Missions</a>
+    <div class="mdh" style="margin-top:8px">
+      <h1 class="heading" style="font-size:var(--t-title);font-weight:700">${esc(m.title)}</h1>
+      <p class="lede voice" style="margin:0">33 of 35 landed. Review asked for changes on 34; the fix is being re-checked, and 35 starts when it lands.</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">${chip('repair', '↻2')}${track('repair', 2)}<span class="meta"><span class="live" aria-hidden="true"></span> 1 agent</span></div>
+    </div>
+    <div class="strip">
+      <div class="hdr"><span class="eyebrow">Landed</span><a class="meta tone-running" href="#activity" style="color:var(--accent-text)">1 open · 1 held ›</a></div>
+      <div class="meta mono-num">33 of 35</div>
+      <div class="cells ${dense ? 'dense' : ''}" role="listbox" aria-label="Tasks in dependency order" id="cells">
+        ${STRIP.map(c => `<button class="cell ${cls(c.state)} ${c.n === sel ? 'sel' : ''}" style="--selc:${selColor}" role="option" aria-selected="${c.n === sel}" aria-label="${pad(c.n)} ${c.state}" data-cell="${c.n}" tabindex="${c.n === sel ? 0 : -1}"></button>`).join('')}
+      </div>
+      <div class="ticks" aria-hidden="true">${STRIP.map(tick).join('')}</div>
+      ${dense ? `<div class="meta" style="margin-top:4px;display:flex;justify-content:space-between"><span>01</span><span><b class="tone-ink">${pad(sel)}</b> selected · <span style="color:var(--accent-text)">▬</span> ${sel === 34 ? 'unblocks 35' : sel === 35 ? 'after 34' : sel === 33 ? 'unblocks 34' : 'no open relation'}</span><span>${pad(STRIP.length)}</span></div>` : ''}
+      <div class="drawer" aria-live="polite">
+        <span class="caret" style="left:${caretLeft}%"></span>
+        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><span class="ord">${pad(sel)} · LEVEL ${info.c.lvl} OF 9</span>${chip(info.chipK, info.round ? 'round ' + info.round : '')}</div>
+        <div class="lede" style="margin-top:6px">${esc(info.title)}</div>
+        <div class="sec" style="margin-top:2px">${info.reason}</div>
+        <div class="dl" aria-label="Delivery stages">
+          ${stageBox(0, 'Build', info.stage >= 1 || info.stage === 3 ? 'PR opened' : 'not started')}
+          ${stageBox(1, 'Audit', info.stage === 3 ? info.audit : info.stage === 1 ? 'Re-review + CI on d4e5f6' : 'after Build')}
+          ${stageBox(2, 'Land', info.stage === 3 ? 'Merged' : 'after Audit')}
+        </div>
+        ${info.chipK === 'repair' ? `<button class="disclose" aria-expanded="${!!STATE.open.dr}" data-toggle="dr" style="margin-top:6px"><span class="title">Audit and repair <span class="meta">2 revisions · 1 repair</span></span><span class="chev" aria-hidden="true">›</span></button>
+          <div ${STATE.open.dr ? '' : 'hidden'}>${revisions()}</div>` : ''}
+        ${info.stage === 3 ? `<div class="meta" style="margin-top:8px">${info.land} PR #4${100 + sel} · Task ›</div>` : ''}
+        <div style="display:flex;justify-content:space-between;margin-top:10px;gap:8px;flex-wrap:wrap">${info.chipK === 'repair' ? '<button class="btn">Message agent</button>' : info.chipK === 'waiting' ? '<button class="btn">Run now anyway</button>' : '<span></span>'}<a class="meta" href="#activity">Task ›</a></div>
+      </div>
+      <div class="stepper"><button class="btn" data-step="-1" aria-label="Previous task">‹</button><button class="btn grow" data-step="next">Next open · 34</button><button class="btn" data-step="1" aria-label="Next task">›</button></div>
+      <p class="meta" style="margin-top:6px">← → to move between tasks</p>
+    </div>`;
+}
+
+/* ── Transitions storyboard ────────────────────────────────────────── */
+function transitions() {
+  const f = (n, k, round, title, body, foot) => `<div class="frame"><span class="n">${n}</span><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${chip(k, round ? '↻' + round : '')}${track(k, round)}</div><div class="title">${title}</div><div class="convo sec">${body}</div>${foot ? `<div class="meta">${foot}</div>` : ''}</div>`;
+  return `<h1 class="heading">Transitions</h1>
+    <p class="lede voice" style="margin:6px 0 0">How one task row reads on every surface as it moves. Same chip, same track, same words on Home, Activity, Missions and Mission detail.</p>
+    <section><h2 class="eyebrow">Audit failed → automatic repair → renewed audit → land</h2>
+    <div class="frames" style="margin-top:8px">
+      ${f('1 · 10:02', 'audit', 0, 'PR opened at a1b2c3', 'Review and CI start on a1b2c3.', 'Home: unchanged. Nothing to ask.')}
+      ${f('2 · 10:20', 'repair', 1, 'Review asked for changes', 'Two blocking notes. A fix is dispatched automatically.', 'Not a Needs you item. Activity shows the notes.')}
+      ${f('3 · 10:48', 'repair', 1, 'Fix pushed: d4e5f6', 'a1b2c3’s CI pass and any verdict for it are marked superseded.', 'Mission row keeps ↻1; progress does not move.')}
+      ${f('4 · 10:55', 'audit', 2, 'Renewed audit on d4e5f6', 'Re-review and CI both bound to d4e5f6.', 'Audit ↻2 = second audit round, not a second task.')}
+      ${f('5 · 11:03', 'landing', 0, 'Approved and green on d4e5f6', 'Merge into the mission branch requested.', '')}
+      ${f('6 · 11:04', 'landed', 0, 'Landed on the mission branch', 'Landed count goes 33 → 34; 35 starts.', 'Trunk release is a separate, later milestone.')}
+    </div></section>
+    <section><h2 class="eyebrow">Stale-head verdict</h2>
+      <div class="cmp" style="margin-top:8px">
+        <div class="frame"><span class="n">Wrong (what must not happen)</span><div>${chip('landing')}</div><div class="title">Late “approved” flips the row to Landing</div><div class="convo sec">An approval for a1b2c3 arrives at 10:51, after d4e5f6 was pushed. If applied, an unreviewed revision would land.</div></div>
+        <div class="frame" style="border:2px solid var(--border-strong)"><span class="n">Right</span><div>${chip('repair', '↻1')}</div><div class="title">Verdict recorded, not counted</div><div class="convo sec">Shown struck-through in the revision history: “Stale head: verdict was for a1b2c3, received after d4e5f6.” The row stays in audit for d4e5f6.</div></div>
+      </div></section>
+    <section><h2 class="eyebrow">Auditor unavailable</h2>
+      <div class="cmp" style="margin-top:8px">
+        <div class="frame"><span class="n">Retrying (first 6 h)</span><div>${chip('unavailable')}</div><div class="title">Visual audit can’t run</div><div class="convo sec">No browser runner online. Retrying every 10 min. Other gates already passed.</div><div class="meta">Not on Home. Mission row shows the reason in warning.</div></div>
+        <div class="frame"><span class="n">Escalated (kernel ESCALATED · review_unavailable)</span><div>${chip('needs')}</div><div class="title">Visual audit still can’t run</div><div class="convo sec">Bring a browser runner online, or land without the visual audit this time.</div><div class="meta">Only now does it appear in Needs you, with both choices.</div></div>
+      </div></section>
+    <section><h2 class="eyebrow">Counter semantics</h2>
+      <div class="cmp" style="margin-top:8px">
+        <div class="frame"><span class="n">Today</span><div class="title">11 running · 1 agent on it · 1/4 slots</div><div class="convo sec">“Running” counts open missions, so 11 running with 1 agent reads as a stall.</div></div>
+        <div class="frame" style="border:2px solid var(--border-strong)"><span class="n">Proposed</span><div class="title">11 open · 1 executing · 1/4 agent slots</div><div class="convo sec">Open = not landed or archived. Executing = has a live agent. Slots = live agents / runner seats. Audits, CI and merges never count as agents.</div></div>
+      </div></section>`;
+}
+
+/* ── Router + events ───────────────────────────────────────────────── */
+function render() {
+  const h = location.hash.slice(1) || 'home';
+  const [r, sub] = h.split('/');
+  STATE.route = r;
+  const main = document.getElementById('main');
+  main.innerHTML = r === 'activity' ? activity(sub === 'history' ? 'history' : 'now')
+    : r === 'missions' ? missions()
+    : r === 'mission' ? detail()
+    : r === 'transitions' ? transitions()
+    : home();
+  document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav === (r === 'mission' ? 'missions' : r)));
+  document.querySelectorAll('[data-r]').forEach(a => a.classList.toggle('on', a.dataset.r === r));
+  document.querySelectorAll('.needs-badge').forEach(b => b.hidden = !STATE.needs);
+  document.getElementById('tgNeeds').textContent = 'Needs you: ' + STATE.needs;
+  const q = document.getElementById('q');
+  if (q) q.oninput = e => { STATE.q = e.target.value; const pos = e.target.selectionStart; render(); const n = document.getElementById('q'); n.focus(); n.setSelectionRange(pos, pos); };
+  const s = document.getElementById('sort');
+  if (s) s.onchange = e => { STATE.sort = e.target.value; render(); };
+}
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-toggle],[data-filt],[data-pin],[data-cell],[data-step],[data-go],[data-hist]');
+  if (!t) return;
+  if (t.dataset.pin) { e.preventDefault(); e.stopPropagation(); STATE.pins.has(t.dataset.pin) ? STATE.pins.delete(t.dataset.pin) : STATE.pins.add(t.dataset.pin); return render(); }
+  if (t.dataset.toggle) { STATE.open[t.dataset.toggle] = !STATE.open[t.dataset.toggle]; return render(); }
+  if (t.dataset.filt) { STATE.filt = t.dataset.filt; return render(); }
+  if (t.dataset.hist) { STATE.hist = t.dataset.hist; return render(); }
+  if (t.dataset.go) { location.hash = t.dataset.go; return; }
+  if (t.dataset.cell) { STATE.sel = +t.dataset.cell; render(); document.querySelector('.cell.sel')?.focus(); return; }
+  if (t.dataset.step) { STATE.sel = t.dataset.step === 'next' ? 34 : Math.max(1, Math.min(35, STATE.sel + +t.dataset.step)); return render(); }
+});
+document.addEventListener('keydown', e => {
+  if (STATE.route !== 'mission' || !['ArrowLeft', 'ArrowRight'].includes(e.key) || e.target.closest('input,select')) return;
+  STATE.sel = Math.max(1, Math.min(35, STATE.sel + (e.key === 'ArrowRight' ? 1 : -1)));
+  render(); document.querySelector('.cell.sel')?.focus();
+});
+document.getElementById('tgTheme').onclick = () => { STATE.theme = STATE.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = STATE.theme; };
+document.getElementById('tgNeeds').onclick = () => { STATE.needs = STATE.needs ? 0 : 1; render(); };
+const P = new URLSearchParams(location.search);
+if (P.get('theme')) document.documentElement.dataset.theme = STATE.theme = P.get('theme');
+if (P.get('needs') === '1') STATE.needs = 1;
+if (P.get('chrome') === '0') document.body.classList.add('no-chrome');
+if (P.get('shot') === '1') document.body.classList.add('shot');
+if (P.get('open')) P.get('open').split(',').forEach(k => STATE.open[k] = true);
+if (P.get('sel')) STATE.sel = +P.get('sel');
+window.addEventListener('hashchange', () => { render(); document.getElementById('main').focus({ preventScroll: true }); window.scrollTo(0, 0); });
+render();
+</script>
+</body>
+</html>
