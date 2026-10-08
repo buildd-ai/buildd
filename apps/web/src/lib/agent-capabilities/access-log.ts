@@ -41,7 +41,6 @@ export interface AccessItem {
 const LABEL: Record<string, string> = {
   'github.repo_grant': 'GitHub repo access',
   'model.endpoint': 'Model endpoint',
-  'model.inference': 'Model call',
   'task_token.mint': 'buildd token',
   'runner.size': 'Runner size',
   'pr.create': 'Open PR',
