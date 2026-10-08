@@ -24,6 +24,10 @@ hook reads the new lines of the session's own local transcript files and keeps
 only each API call's message id, model id, token counts, timestamp and number
 of tool calls; message text and tool inputs and outputs are never kept or sent.
 A subagent that claimed a task has its usage counted on that task.
+The usage also says how it was charged, as one word: `real` (an API key, bearer
+token, cloud provider or gateway), `virtual` (a subscription login) or
+`unknown`, worked out from your environment and Claude Code config in Claude
+Code's own credential order; no key or config value is sent.
 `BUILDD_HOOK_USAGE=0` turns this off.
 
 The contract and server behaviour are specified in
