@@ -99,7 +99,7 @@ import {
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
-import { attachAgentEndpoints, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
+import { attachAgentEndpoints, attachCloudToolSearchHint, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
 import { resolveClaudeModelRoute, routeUsesOauthSeat, type ClaudeModelRoute } from './claude-model-route';
 import { attachGitHubCredentialModes } from './github-credential-injection';
 import { AGENT_GITHUB_TOKEN_ROLLOUT_ENV, parseAgentGitHubRollout } from '@buildd/core/agent-github-credentials';
@@ -3160,6 +3160,7 @@ export async function POST(req: NextRequest) {
         codexBaseUrlOverride: body.codexBaseUrlOverride === true,
         runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
       });
+  if (cloudExecutor) await attachCloudToolSearchHint(claimedWorkers, filteredTasks, account.id);
   if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, endpointWorkers);
 
   // Which GitHub credentials the agent gets: a mode marker only, gated on the
