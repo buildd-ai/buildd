@@ -19,7 +19,8 @@ mock.module('@/lib/mcp-oauth', () => ({
   getCallbackUrl: (o: string) => `${o}/api/connectors/callback`,
 }));
 mock.module('@buildd/core/secrets', () => ({ encrypt: (v: string) => `enc:${v}` }));
-mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: async () => 'https://resolved/icon.png' }));
+const mockIconData = mock(async (_url: string, opts?: { preferred?: string | null }) => (opts?.preferred ? 'data:image/png;base64,PREF' : 'data:image/png;base64,RES'));
+mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: async () => 'https://resolved/icon.png', resolveConnectorIconData: mockIconData }));
 mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ op: 'eq', a, b }),
   and: (...args: any[]) => ({ op: 'and', args }),
@@ -108,7 +109,8 @@ describe('ensureCatalogConnector', () => {
     owned.push({ id: 'c-other', teamId: 't2', name: 'Neon', url: 'https://mcp.neon.tech/mcp' });
     const c = await ensureCatalogConnector('t1', entry() as any, 'https://buildd.dev');
     expect(c.id).toBe('conn-new');
-    expect(inserted[0]).toMatchObject({ teamId: 't1', name: 'Neon', authMode: 'oauth', clientId: 'cid', iconUrl: 'https://neon/icon.ico' });
+    expect(inserted[0]).toMatchObject({ teamId: 't1', name: 'Neon', authMode: 'oauth', clientId: 'cid', iconUrl: 'data:image/png;base64,PREF' });
+    expect(mockIconData.mock.calls.at(-1)?.[1]).toEqual({ preferred: 'https://neon/icon.ico' });
   });
 
   it('creates a no-auth entry without discovery', async () => {
