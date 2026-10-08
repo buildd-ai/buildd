@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { roleHas } from '@/lib/permission-registry';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
@@ -10,6 +11,10 @@ const mockSkillsUpdate = mock(() => null as any);
 const mockSkillsDelete = mock(() => null as any);
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(false));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(false));
+const ADMIN_ACCESS: any = { teamId: 'team-123', role: 'admin' };
+
+// Session role checks run through the real registry with no team overrides.
+mock.module('@/lib/permissions', () => ({ roleHas, getTeamPermissionOverrides: async () => ({}) }));
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -166,7 +171,7 @@ describe('GET /api/workspaces/[id]/skills/[skillId]', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspaceSkillsFindFirst.mockResolvedValue(mockSkill);
 
     const request = createMockRequest();
@@ -235,7 +240,7 @@ describe('GET /api/workspaces/[id]/skills/[skillId]', () => {
   it('returns 404 when skill not found in workspace or team', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     // Both workspace-scoped lookup and team-level fallback return null
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
     mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-123' });
@@ -262,7 +267,7 @@ describe('GET /api/workspaces/[id]/skills/[skillId]', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     // First call (workspace-scoped) returns null; second call (team-level) returns the skill
     mockWorkspaceSkillsFindFirst
       .mockResolvedValueOnce(null)
@@ -389,7 +394,7 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
 
     const mockReturning = mock(() => [updatedSkill]);
@@ -500,7 +505,7 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
 
     let capturedUpdates: any = null;
@@ -533,7 +538,7 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
     async function patch(body: Record<string, unknown>) {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
       mockAuthenticateApiKey.mockResolvedValue(null);
-      mockVerifyWorkspaceAccess.mockResolvedValue(true);
+      mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
       mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
       let captured: any = null;
       const mockWhere = mock(() => ({ returning: mock(() => [{ ...existingSkill, ...captured }]) }));
@@ -578,7 +583,7 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
     async function patch(body: Record<string, unknown>) {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
       mockAuthenticateApiKey.mockResolvedValue(null);
-      mockVerifyWorkspaceAccess.mockResolvedValue(true);
+      mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
       mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
       let captured: any = null;
       const mockWhere = mock(() => ({ returning: mock(() => [{ ...existingSkill, ...captured }]) }));
@@ -621,7 +626,7 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
 
     let capturedUpdates: any = null;
@@ -649,7 +654,7 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
   it('returns 404 when skill not found', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
 
     const request = createMockRequest({
@@ -679,7 +684,7 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
 
     const mockReturning = mock(() => [updatedSkill]);
@@ -733,7 +738,7 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
 
     let capturedUpdates: any = null;
@@ -814,7 +819,7 @@ describe('DELETE /api/workspaces/[id]/skills/[skillId]', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
 
     const mockWhere = mock(() => Promise.resolve());
@@ -890,7 +895,7 @@ describe('DELETE /api/workspaces/[id]/skills/[skillId]', () => {
   it('returns 404 when skill not found', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
 
     const request = createMockRequest({
@@ -919,4 +924,67 @@ describe('DELETE /api/workspaces/[id]/skills/[skillId]', () => {
     const data = await response.json();
     expect(data.error).toBe('Workspace not found');
   });
+});
+
+// manage_agent_roles (docs/specs/team-permissions.md): roles need it, plain skills do not.
+describe('/api/workspaces/[id]/skills/[skillId]: manage_agent_roles', () => {
+  const ROLE = { id: 'skill-1', workspaceId: 'ws-1', teamId: 'team-123', isRole: true, name: 'R', content: '# R', metadata: {} };
+  const params = Promise.resolve({ id: 'ws-1', skillId: 'skill-1' });
+  let set: ReturnType<typeof mock>;
+  let where: ReturnType<typeof mock>;
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkspaceSkillsFindFirst.mockReset();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(ROLE);
+    set = mock(() => ({ where: mock(() => ({ returning: mock(() => [{ ...ROLE, isRole: false }]) })) }));
+    mockSkillsUpdate.mockReset();
+    mockSkillsUpdate.mockReturnValue({ set });
+    where = mock(() => Promise.resolve());
+    mockSkillsDelete.mockReset();
+    mockSkillsDelete.mockReturnValue({ where });
+  });
+
+  const asRole = (role: string) => mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-123', role } as any);
+  const patch = (body: Record<string, unknown>) => PATCH(createMockRequest({ method: 'PATCH', body }), { params });
+  const del = () => DELETE(createMockRequest({ method: 'DELETE' }), { params });
+
+  it('refuses a team member editing a role, and writes nothing', async () => {
+    asRole('member');
+    expect((await patch({ name: 'x' })).status).toBe(403);
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('refuses a team member deleting a role, and deletes nothing', async () => {
+    asRole('member');
+    expect((await del()).status).toBe(403);
+    expect(where).not.toHaveBeenCalled();
+  });
+
+  it('refuses a team member promoting a plain skill into a role', async () => {
+    asRole('member');
+    mockWorkspaceSkillsFindFirst.mockResolvedValue({ ...ROLE, isRole: false });
+    expect((await patch({ isRole: true })).status).toBe(403);
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('leaves a plain skill member-writable', async () => {
+    asRole('member');
+    mockWorkspaceSkillsFindFirst.mockResolvedValue({ ...ROLE, isRole: false });
+    expect((await patch({ name: 'x' })).status).toBe(200);
+    expect(set).toHaveBeenCalledTimes(1);
+    expect((await del()).status).toBe(200);
+    expect(where).toHaveBeenCalledTimes(1);
+  });
+
+  for (const role of ['owner', 'admin']) {
+    it(`lets a team ${role} edit and delete a role`, async () => {
+      asRole(role);
+      expect((await patch({ name: 'x' })).status).toBe(200);
+      expect(set).toHaveBeenCalledTimes(1);
+      expect((await del()).status).toBe(200);
+      expect(where).toHaveBeenCalledTimes(1);
+    });
+  }
 });

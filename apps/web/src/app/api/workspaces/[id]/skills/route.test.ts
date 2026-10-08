@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { roleHas } from '@/lib/permission-registry';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
@@ -12,6 +13,10 @@ const mockSkillsUpdate = mock(() => null as any);
 const mockExecute = mock(() => Promise.resolve({ rows: [] }));
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(false));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(false));
+const ADMIN_ACCESS: any = { teamId: 'team-123', role: 'admin' };
+
+// Session role checks run through the real registry with no team overrides.
+mock.module('@/lib/permissions', () => ({ roleHas, getTeamPermissionOverrides: async () => ({}) }));
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -261,7 +266,7 @@ describe('GET /api/workspaces/[id]/skills', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     setupSkillsSelect(mockSkills);
 
     const request = createMockRequest();
@@ -280,7 +285,7 @@ describe('GET /api/workspaces/[id]/skills', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     setupSkillsSelect(mockSkills);
 
     const request = createMockRequest({
@@ -303,7 +308,7 @@ describe('GET /api/workspaces/[id]/skills', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     setupSkillsSelect(allRows);
 
     const request = createMockRequest();
@@ -331,7 +336,7 @@ describe('GET /api/workspaces/[id]/skills', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     setupSkillsSelect(allRows);
 
     const request = createMockRequest();
@@ -443,7 +448,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
   it('returns 400 when name is missing', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
 
     const request = createMockRequest({
       method: 'POST',
@@ -460,7 +465,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
   it('returns 400 when content is missing', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
 
     const request = createMockRequest({
       method: 'POST',
@@ -477,7 +482,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
   it('returns 400 when slug format is invalid', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
 
     const request = createMockRequest({
       method: 'POST',
@@ -504,7 +509,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null); // No existing skill
 
@@ -539,7 +544,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
 
@@ -645,7 +650,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
     mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
 
@@ -678,7 +683,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
 
@@ -701,7 +706,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
   it('returns 404 when workspace not found', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspacesFindFirst.mockResolvedValue(null);
 
     const request = createMockRequest({
@@ -731,7 +736,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockVerifyWorkspaceAccess.mockResolvedValue(ADMIN_ACCESS);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
 
@@ -758,4 +763,57 @@ describe('POST /api/workspaces/[id]/skills', () => {
     expect(data.skill.description).toBe('Test description');
     expect(data.skill.enabled).toBe(false);
   });
+});
+
+// manage_agent_roles (docs/specs/team-permissions.md): roles need it, plain skills do not.
+describe('POST /api/workspaces/[id]/skills: manage_agent_roles', () => {
+  let values: ReturnType<typeof mock>;
+  let set: ReturnType<typeof mock>;
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-123' });
+    mockWorkspaceSkillsFindFirst.mockReset();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
+    values = mock(() => ({ returning: mock(() => [{ id: 's1', isRole: false }]) }));
+    mockSkillsInsert.mockReset();
+    mockSkillsInsert.mockReturnValue({ values });
+    set = mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 's1', isRole: false }]) })) }));
+    mockSkillsUpdate.mockReset();
+    mockSkillsUpdate.mockReturnValue({ set });
+  });
+
+  const post = (body: Record<string, unknown>) => POST(createMockRequest({ method: 'POST', body: { name: 'R', content: '# R', ...body } }), { params: Promise.resolve({ id: 'ws-1' }) });
+
+  it('refuses a team member creating a role, and writes nothing', async () => {
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-123', role: 'member' } as any);
+    const res = await post({ isRole: true });
+    expect(res.status).toBe(403);
+    expect(values).not.toHaveBeenCalled();
+  });
+
+  it('refuses a team member upserting over an existing role, and writes nothing', async () => {
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-123', role: 'member' } as any);
+    mockWorkspaceSkillsFindFirst.mockResolvedValue({ id: 's1', isRole: true, metadata: {} });
+    const res = await post({});
+    expect(res.status).toBe(403);
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('leaves a plain skill member-writable', async () => {
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-123', role: 'member' } as any);
+    const res = await post({});
+    expect(res.status).toBe(201);
+    expect(values).toHaveBeenCalledTimes(1);
+  });
+
+  for (const role of ['owner', 'admin']) {
+    it(`lets a team ${role} create a role`, async () => {
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-123', role } as any);
+      const res = await post({ isRole: true });
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledTimes(1);
+    });
+  }
 });
