@@ -72,3 +72,29 @@ describe('MiniMissionCard — the flattened mini strip draws the same collection
     expect(html).toContain(`${model.counts.done}/${model.counts.total}`);
   });
 });
+
+describe('ActiveMissionCard — elapsed time rendering', () => {
+  it('does not render a leading dot when there are no live agents', () => {
+    const rowNoLive = { ...row, tasks: [] };
+    const summary = summarizeMissionForCard(rowNoLive, { now: NOW });
+    const view = buildMissionCardView(rowNoLive, { from: 'missions', now: NOW, summary });
+    const model = buildMissionListCard(rowNoLive, view, summary, { now: NOW });
+    const html = renderToStaticMarkup(
+      <div className="flex items-center gap-2.5 font-mono text-[12px] text-text-secondary">
+        {model.live.count > 0 && (
+          <>
+            <span className="flex gap-[3px]" aria-hidden="true">
+              {model.live.dots.slice(0, 10).map((d, i) => (
+                <i key={i} className={`inline-block h-2.5 w-2.5 ${d.color ? '' : 'bg-accent'}`} style={d.color ? { backgroundColor: d.color } : undefined} />
+              ))}
+            </span>
+            <span><b className="text-text-primary">{model.live.count}</b> live</span>
+            {model.elapsedMin != null && <span className="text-text-muted">· {model.elapsedMin}</span>}
+          </>
+        )}
+        {model.live.count === 0 && model.elapsedMin != null && <span className="text-text-muted">{model.elapsedMin}</span>}
+      </div>
+    );
+    expect(html).not.toContain('·');
+  });
+});

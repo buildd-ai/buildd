@@ -165,13 +165,14 @@ export function ActiveMissionCard({ view, model, workspaceName }: ListCardProps)
             <>
               <LiveDots dots={model.live.dots} />
               <span><b className="text-text-primary">{model.live.count}</b> live</span>
+              {model.elapsedMin != null && <span className="text-text-muted">· {shortDuration(model.elapsedMin * 60_000)}</span>}
             </>
           )}
-          {model.elapsedMin != null && <span className="text-text-muted">· {shortDuration(model.elapsedMin * 60_000)}</span>}
+          {model.live.count === 0 && model.elapsedMin != null && <span className="text-text-muted">{shortDuration(model.elapsedMin * 60_000)}</span>}
         </div>
       </div>
       {(model.sentence || workspaceName) && (
-        <p className="mt-1.5 truncate font-mono text-[11.5px] text-text-muted md:pl-[136px]">
+        <p className="mt-1.5 line-clamp-2 font-mono text-[11.5px] text-text-muted md:truncate md:pl-[136px]">
           {workspaceName && <span className="text-text-secondary">{workspaceName}</span>}
           {workspaceName && model.sentence && ' · '}
           {model.sentence}
@@ -280,7 +281,7 @@ export function MiniMissionCard({ view, model, workspaceName }: ListCardProps) {
         ) : null}
       </div>
       <div className="min-w-0">
-        <h3 className="truncate font-mono text-[15px] font-semibold text-text-primary">
+        <h3 className="line-clamp-1 md:line-clamp-none font-mono text-[15px] font-semibold text-text-primary">
           <Link href={view.href} className="hover:underline">{view.title}</Link>
         </h3>
         <p className="mt-1 line-clamp-2 font-mono text-[11.5px] text-text-muted">
