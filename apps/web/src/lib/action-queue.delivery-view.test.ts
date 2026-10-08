@@ -148,3 +148,24 @@ describe('S36 — Needs You membership follows DeliveryView.needsYou', () => {
     expect(kernelInboxMembership(undefined, false)).toBe(false);
   });
 });
+
+describe('a kernel reviewer escalation is a verdict on the Home REVIEW card', () => {
+  const escalated = (stateReason: 'review_escalated' | 'review_exhausted' | 'push_undeliverable' | 'review_unavailable') => viewOf({ state: 'ESCALATED', stateReason }, {
+    lastTransition: { command: 'ReviewVerdictRecorded', fromState: 'AWAITING_REVIEW', toState: 'ESCALATED', evidence: { reason: 'Changes the token scope check; a person should confirm the new boundary.' }, createdAt: NOW.toISOString() },
+  });
+
+  it('ESCALATED by a reviewer verdict carries the escalation even with no legacy note or verdict summary', () => {
+    for (const reason of ['review_escalated', 'review_exhausted'] as const) {
+      const [card] = build([esc({ policyTier: 'agent-review', escalationReason: null, hasEscalationNote: false, verdictSummary: null })], [['t-1', escalated(reason)]]);
+      expect(card.chip).toBe('REVIEW');
+      expect({ reason, note: card.hasEscalationNote, kernel: card.reviewerEscalated }).toEqual({ reason, note: true, kernel: true });
+    }
+  });
+
+  it('an escalation with no reviewer verdict behind it keeps the legacy no-verdict reading', () => {
+    for (const reason of ['push_undeliverable', 'review_unavailable'] as const) {
+      const [card] = build([esc({ policyTier: 'agent-review', escalationReason: null, hasEscalationNote: false })], [['t-1', escalated(reason)]]);
+      expect({ reason, note: card.hasEscalationNote, kernel: card.reviewerEscalated ?? false }).toEqual({ reason, note: false, kernel: false });
+    }
+  });
+});
