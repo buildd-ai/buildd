@@ -270,7 +270,7 @@ export function mcpGroupPurpose(group: McpToolGroup, actions: readonly string[])
 
 /** One short line per action. The long form is `help`. */
 export const ACTION_SUMMARY: Record<BuilddAction, string> = {
-  manage_missions: 'list, create, edit, arm, delete missions; link tasks; criteria',
+  manage_missions: 'list, create, edit, arm, delete; link tasks; criteria',
   manage_initiatives: 'initiatives: containers above missions',
   link_tracker: 'link a mission to a Linear project or issue',
   get_visual_review: "per-screen visual QA and shots; workspaceId alone: missions awaiting review",
@@ -298,7 +298,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_path_claim_stats: 'path-claim outcomes',
   get_decision_stats: 'decision-shadow counts',
   list_connectors: 'connector health',
-  resolve_capability: 'who can serve a need',
+  resolve_capability: 'who serves a need',
   list_runners: 'slots, branch, build, heartbeat',
   read_evidence: 'stored run logs',
   get_pr: 'PR state, CI, reviews, body',
@@ -335,7 +335,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   manage_secrets: 'encrypted MCP credential secrets',
   consolidate_knowledge: 'find duplicate or stale knowledge; archive',
   memory_delete: 'permanently delete a memory',
-  claim_task: 'claim your assignment, the next, or a named pending task',
+  claim_task: 'claim your assignment, the next, or a named task',
   update_progress: 'report progress; returns messages for you',
   complete_task: 'finish your task (error marks it failed)',
   create_pr: 'open the PR for your branch',
