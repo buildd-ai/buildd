@@ -29,6 +29,9 @@ export const RUN_PHASES = [
   // A reused container: the clone grown from the packs the reset kept (container-reset.ts).
   'restore_reuse_start', 'restore_reuse_end',
   'worktree_start', 'worktree_end',
+  // Deps in the background (deps-gate.ts): when the agent session started, when
+  // the deps work finished, when the agent first ran a command that needs it.
+  'session_start', 'deps_ready', 'first_gated_tool',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 
@@ -39,6 +42,8 @@ export const RUN_METRICS = [
   // resource-sampler.ts: working-set peak, the memory it is measured against,
   // lowest free disk and the disk's size. Re-printed as they move; last wins.
   'mem_peak_bytes', 'mem_limit_bytes', 'disk_free_min_bytes', 'disk_total_bytes',
+  // deps-gate.ts: total time deps-needing commands were held, and how many were. Last wins.
+  'gate_wait_ms', 'gate_holds',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 
