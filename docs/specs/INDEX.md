@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (61)
+## Active (62)
 
 ### auth (8)
 
@@ -32,10 +32,12 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Usage & Cost Accounting](./usage-and-cost-accounting.md) · @max — verified 2026-08-30
   Worker usage MUST be recorded only from the worker's own report and attributed to one task, team-month and provider pool, and a budget-blocked claim MUST answer budget_exhausted with a reset time, not race_lost.
 
-### integrations (5)
+### integrations (6)
 
 - [External Cron Triggers](./external-cron-triggers.md) · @max — verified 2026-10-05
   Every /api/cron/* route MUST have exactly one trigger whose cadence is declared in version control, so a route that never fires is a reviewable diff rather than a silent production gap.
+- [GitHub Repository Access Remediation](./github-repo-access.md) · @max — verified 2026-10-08
+  When Buildd's GitHub App cannot act on a workspace's existing repo, every PR door MUST refuse with a typed reason and fix, surface it once to whoever can fix it, and resume the waiting task once access is verified.
 - [Model Policy Cells and the Dial](./model-policy-cells.md) · @max — verified 2026-10-07
   Each tier x surface cell MUST serve its primary until the team's own graded coding outcomes show an alternate keeps up within the dial's tolerance, and MUST revert, recorded, when it slips.
 - [Standalone Model Policy](./model-policy.md) · @max — verified 2026-10-05
@@ -58,7 +60,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-10-07
   /api/mcp MUST serve the buildd_<group> action tools (legacy buildd only to runners predating them), recall and learn over stateless Streamable HTTP, Bearer-authenticate every call and gate actions by privilege.
-- [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-09-05
+- [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-10-08
   Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 
 ### missions (3)

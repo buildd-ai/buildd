@@ -1084,7 +1084,13 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll for the session to finish rather than sleeping a fixed 200ms: on a loaded CI
+      // runner it can still be running, and eviction only removes finished workers.
+      for (let i = 0; i < 100; i++) {
+        const w = manager.getWorker('w-evict');
+        if (w && (w.status === 'done' || w.status === 'error')) break;
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       const worker = manager.getWorker('w-evict');
       expect(worker).toBeDefined();

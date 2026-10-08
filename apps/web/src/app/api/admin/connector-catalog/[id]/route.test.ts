@@ -10,7 +10,7 @@ const matches = (w: any, r: any): boolean =>
 
 mock.module('@/lib/platform-admin', () => ({ authorizePlatformAdmin: async () => ({ account: { id: 'platform-acct' } }) }));
 mock.module('@/lib/mcp-oauth', () => ({ discoverOAuthMetadata: async () => ({ authMode: 'oauth' }) }));
-mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: async () => null }));
+mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: async () => null, resolveConnectorIconData: async () => null }));
 mock.module('drizzle-orm', () => ({ eq: (a: any, b: any) => ({ op: 'eq', a, b }), and: (...args: any[]) => ({ op: 'and', args }), isNull: (a: any) => ({ op: 'isNull', a }) }));
 mock.module('@buildd/core/db/schema', () => ({ connectorCatalogEntries: { id: 'id', teamId: 'teamId' } }));
 mock.module('@buildd/core/db', () => ({

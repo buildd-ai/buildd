@@ -113,6 +113,13 @@ mock.module('@/lib/github-repo-link', () => ({
   syncInstallationReposById: mockSyncInstallationReposById,
 }));
 
+// Resume of tasks waiting on GitHub access — idempotency lives in the store
+// (github-repo-access-store.test.ts); here only which deliveries trigger it.
+const mockResumeAfterInstallationChange = mock(async (_installationId: number) => [] as string[]);
+mock.module('@/lib/github-repo-access-store', () => ({
+  resumeAfterInstallationChange: mockResumeAfterInstallationChange,
+}));
+
 mock.module('@/lib/repo-scope', () => ({
   workerOwnsPr: mockWorkerOwnsPr,
   workerOwnsPrUrl: mockWorkerOwnsPrUrl,
@@ -631,6 +638,7 @@ mock.module('@/lib/workflow/seam', () => ({
   observeHead: mockObserveHead,
   observePrState: mockObservePrState,
   observeCiFailure: mock(async () => ({ handled: false })),
+  policyFindingFor: (p: any) => ({ outcome: 'human', reason: p.reason, destructive: false }),
 }));
 const mockKernelDeliveryForPr = mock(async (..._a: any[]): Promise<string | null> => null);
 mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr }));
@@ -1034,6 +1042,35 @@ describe('POST /api/github/webhook', () => {
     expect(res.status).toBe(200);
     expect(mockSyncInstallationReposById).toHaveBeenCalledWith(5000);
     expect(deleteCalls.length).toBe(0);
+  });
+
+  it('resumes waiting tasks after access-granting deliveries, every time they arrive', async () => {
+    mockResumeAfterInstallationChange.mockClear();
+    mockSyncInstallationReposById.mockReturnValue(Promise.resolve({ synced: 1, linked: 0, linkedWorkspaceIds: [] }));
+    const added = { action: 'added', installation: { id: 5000 }, repositories_added: [{ id: 400, full_name: 'acme/web' }] };
+    // GitHub may redeliver; each delivery re-verifies, the store's status
+    // guard makes the second one a no-op.
+    await POST(createWebhookRequest('installation_repositories', added));
+    await POST(createWebhookRequest('installation_repositories', added));
+    await POST(createWebhookRequest('installation', { action: 'unsuspend', installation: makeInstallation() }));
+    expect(mockResumeAfterInstallationChange).toHaveBeenCalledTimes(3);
+    expect(mockResumeAfterInstallationChange.mock.calls[0]?.[0]).toBe(5000);
+  });
+
+  it('records accepted permissions and resumes on new_permissions_accepted', async () => {
+    mockResumeAfterInstallationChange.mockClear();
+    const installation = { ...makeInstallation(), permissions: { pull_requests: 'write', contents: 'write' } };
+    const res = await POST(createWebhookRequest('installation', { action: 'new_permissions_accepted', installation }));
+    expect(res.status).toBe(200);
+    expect(updateCalls.at(-1)?.setValues.permissions).toEqual({ pull_requests: 'write', contents: 'write' });
+    expect(mockResumeAfterInstallationChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not resume on removal or suspension', async () => {
+    mockResumeAfterInstallationChange.mockClear();
+    await POST(createWebhookRequest('installation_repositories', { action: 'removed', installation: { id: 5000 }, repositories_removed: [{ id: 300 }] }));
+    await POST(createWebhookRequest('installation', { action: 'suspend', installation: makeInstallation() }));
+    expect(mockResumeAfterInstallationChange).not.toHaveBeenCalled();
   });
 
   it('handles installation_repositories removed', async () => {
@@ -4332,7 +4369,23 @@ describe('POST /api/github/webhook', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
-    it('workflow kernel: a pre-flight human escalation releases any kernel delivery and opens none', async () => {
+    it('workflow kernel: a pre-flight human escalation is imported as policy evidence, with no legacy note or release', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockOpenKernelDelivery.mockClear();
+      mockReleaseKernelDeliveryForPr.mockClear();
+      mockOpenKernelDelivery.mockResolvedValueOnce({ owned: true, deliveryId: 'delivery-42' });
+      mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: true, reason: 'touches schema' });
+
+      await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(mockOpenKernelDelivery).toHaveBeenCalledWith(expect.objectContaining({
+        prNumber: 42,
+        policy: { outcome: 'human', reason: 'touches schema', destructive: false },
+      }));
+      expect(mockReleaseKernelDeliveryForPr).not.toHaveBeenCalled();
+    });
+
+    it('legacy authority: a pre-flight human escalation the kernel does not take releases any kernel delivery', async () => {
       withAgentReviewWorkspaceAndWorker();
       mockOpenKernelDelivery.mockClear();
       mockReleaseKernelDeliveryForPr.mockClear();
@@ -4341,7 +4394,6 @@ describe('POST /api/github/webhook', () => {
       await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
 
       expect(mockReleaseKernelDeliveryForPr).toHaveBeenCalledWith('ws1', 'test-org/test-repo', 42, expect.stringContaining('pre-flight'));
-      expect(mockOpenKernelDelivery).not.toHaveBeenCalled();
     });
 
     it('announces on the PR that a review is queued — not Reviewing until claimed', async () => {

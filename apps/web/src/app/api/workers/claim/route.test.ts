@@ -145,6 +145,9 @@ mock.module('@buildd/core/db', () => ({
       connectors: { findMany: mockConnectorsFindMany },
       connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
       connectorShares: { findMany: mockConnectorSharesFindMany },
+      // No team blocks a catalog entry here; blocked_by_policy is covered in
+      // connector-prefilter / connector-gate / mcp-connector-injection tests.
+      connectorCatalogTeamPolicies: { findMany: async () => [] },
       missions: { findMany: mockMissionsFindMany, findFirst: mockMissionsFindFirst },
       oauthBudgetEpisodes: { findMany: mockOauthEpisodesFindMany },
     },
@@ -238,6 +241,7 @@ mock.module('@buildd/core/db/schema', () => ({
   connectors: { id: 'id', teamId: 'teamId', name: 'name', url: 'url', authMode: 'authMode', headerName: 'headerName', transport: 'transport', command: 'command', args: 'args', envMapping: 'envMapping' },
   connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId', grantedByAccountId: 'grantedByAccountId' },
+  connectorCatalogTeamPolicies: { teamId: 'teamId', slug: 'slug', policy: 'policy' },
 }));
 
 // Agent model endpoint ranking (docs/design/agent-model-endpoint.md §2).
@@ -441,9 +445,23 @@ mock.module('./hold-start-shadow', () => ({
   }),
   gatedStartReachable: () => realHoldStart.gatedStartReachable(holdStartTest.deps),
   gatedStartApplies: (n: any) => realHoldStart.gatedStartApplies(n, holdStartTest.deps),
+  openPrStartVerdict: (n: any, g: boolean) => realHoldStart.openPrStartVerdict(n, g, holdStartTest.deps),
   acquireGatedStartPaths: (i: any) => realHoldStart.acquireGatedStartPaths(i, holdStartTest.deps),
   releaseGatedStartPaths: (i: any) => realHoldStart.releaseGatedStartPaths(i, holdStartTest.deps),
 }));
+
+// The holders' PR diffs at head and the pair probe are read before the
+// synchronous collector runs. Default: nothing known, so no other test here
+// sees any change.
+const riskEvidenceTest = { prScopes: new Map<number, any>(), probe: null as any, scopeCalls: [] as number[][] };
+mock.module('@/lib/claim-pr-diff-scope', () => ({
+  defaultPrDiffScopeDeps: async () => ({}),
+  prefetchPrDiffScopes: async (input: { prNumbers: number[] }) => {
+    riskEvidenceTest.scopeCalls.push(input.prNumbers);
+    return new Map(input.prNumbers.flatMap(n => (riskEvidenceTest.prScopes.has(n) ? [[n, riskEvidenceTest.prScopes.get(n)] as const] : [])));
+  },
+}));
+mock.module('@/lib/sibling-pair-probe', () => ({ loadPairProbeEvidence: async () => riskEvidenceTest.probe }));
 
 // Soft-overlap holders (./soft-overlap-store): read only when a candidate
 // carries pathDeclaration.softOverlaps. Default: none known.
@@ -1088,7 +1106,7 @@ describe('POST /api/workers/claim', () => {
       workspaceId: 'ws-mine',
       title: 'First task',
       dependsOn: [],
-      workspace: { id: 'ws-mine', gitConfig: null, teamId: 'team-personal' },
+      workspace: { id: 'ws-mine', gitConfig: { claimPlanner: 'record' }, teamId: 'team-personal' },
     });
     const linksFor = (account: { id: string; type: string; teamId: string }) =>
       planPersonalWorkspaceLinks({
@@ -1219,7 +1237,7 @@ describe('POST /api/workers/claim', () => {
       title: 'Blocked task',
       backend: 'claude',
       dependsOn: [],
-      workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+      workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' },
     });
 
     function setupClaim() {
@@ -1639,7 +1657,7 @@ describe('POST /api/workers/claim', () => {
     });
     const claudeTask = (context: Record<string, unknown> = {}) => ({
       id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context,
-      workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+      workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' },
     });
     const claim = (body: Record<string, unknown> = {}) => POST(createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1819,7 +1837,7 @@ describe('POST /api/workers/claim', () => {
       return { id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'api' as const, teamId: 'team-1' };
     }
     function task(backend: 'claude' | 'codex') {
-      return { id: 'task-1', workspaceId: 'ws-1', title: 'T', backend, dependsOn: [], workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } };
+      return { id: 'task-1', workspaceId: 'ws-1', title: 'T', backend, dependsOn: [], workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } };
     }
     function setupClaim() {
       mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
@@ -1983,7 +2001,7 @@ describe('POST /api/workers/claim', () => {
         title: 'Codex task',
         backend: 'codex',
         requiredCapabilities: [],
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
     mockDbExecute.mockReturnValue(Promise.resolve({
@@ -2034,7 +2052,7 @@ describe('POST /api/workers/claim', () => {
           title: 'Codex task',
           backend: 'codex',
           requiredCapabilities: [],
-          workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+          workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' },
         },
       ]);
       mockHasCodexCredential.mockResolvedValue(false); // no ChatGPT/OAuth connect
@@ -2082,7 +2100,7 @@ describe('POST /api/workers/claim', () => {
       mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
       mockAccountWorkspacesFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValue([
-        { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } },
+        { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } },
       ]);
       mockHasCodexCredential.mockResolvedValue(false);
       mockHasOpenAiApiKey.mockResolvedValue(false);
@@ -2117,7 +2135,7 @@ describe('POST /api/workers/claim', () => {
       mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
       mockAccountWorkspacesFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValue([
-        { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } },
+        { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } },
       ]);
       mockHasCodexCredential.mockResolvedValue(false);
       mockHasOpenAiApiKey.mockResolvedValue(false);
@@ -2150,7 +2168,7 @@ describe('POST /api/workers/claim', () => {
     mockTasksFindMany.mockResolvedValue([
       {
         id: 'task-1', workspaceId: 'ws-1', title: 'T', requiredCapabilities: [],
-        workspace: { id: 'ws-1', gitConfig: null, webhookConfig: { url: 'https://dispatch.example.invalid/dispatch', token: 'dispatch-secret', enabled: true } },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, webhookConfig: { url: 'https://dispatch.example.invalid/dispatch', token: 'dispatch-secret', enabled: true } },
       },
     ]);
     mockDbExecute.mockReturnValue(Promise.resolve({
@@ -2169,7 +2187,7 @@ describe('POST /api/workers/claim', () => {
     const experimentTask = () => ({
       id: 'task-1', workspaceId: 'ws-1', title: 'T', kind: 'engineering', complexity: 'normal',
       priority: 0, dependsOn: [], requiredCapabilities: [], context: {},
-      workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+      workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' },
     });
     const claimReq = () => createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -2436,7 +2454,7 @@ describe('POST /api/workers/claim', () => {
         dependsOn: [],
         requiredCapabilities: [],
         context: { model: 'claude-fable-5-1' },
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
 
@@ -2485,7 +2503,7 @@ describe('POST /api/workers/claim', () => {
         dependsOn: [],
         requiredCapabilities: [],
         context: { model: 'claude-fable-5-1' },
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
     mockDbExecute.mockReturnValue(Promise.resolve({
@@ -2527,7 +2545,7 @@ describe('POST /api/workers/claim', () => {
 
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-repo', accessMode: 'open', teamId: 'team-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
-    const repoWs = { id: 'ws-repo', repo: 'org/repo', maxConcurrentTasks: 3, teamId: 'team-1', gitConfig: null };
+    const repoWs = { id: 'ws-repo', repo: 'org/repo', maxConcurrentTasks: 3, teamId: 'team-1', gitConfig: { claimPlanner: 'record' } };
     mockTasksFindMany.mockResolvedValue(
       [1, 2, 3, 4, 5].map((n) => ({
         id: `task-${n}`,
@@ -2572,7 +2590,7 @@ describe('POST /api/workers/claim', () => {
     ]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-repo', accessMode: 'open', teamId: 'team-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
-    const repoWs = { id: 'ws-repo', repo: 'org/repo', maxConcurrentTasks: 3, teamId: 'team-1', gitConfig: null };
+    const repoWs = { id: 'ws-repo', repo: 'org/repo', maxConcurrentTasks: 3, teamId: 'team-1', gitConfig: { claimPlanner: 'record' } };
     mockTasksFindMany.mockResolvedValue(
       [1, 2, 3].map((n) => ({
         id: `task-${n}`,
@@ -2610,7 +2628,7 @@ describe('POST /api/workers/claim', () => {
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-coord', accessMode: 'open', teamId: 'team-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
     // No repo → cap must not apply even with maxConcurrentTasks set.
-    const coordWs = { id: 'ws-coord', repo: null, maxConcurrentTasks: 3, teamId: 'team-1', gitConfig: null };
+    const coordWs = { id: 'ws-coord', repo: null, maxConcurrentTasks: 3, teamId: 'team-1', gitConfig: { claimPlanner: 'record' } };
     mockTasksFindMany.mockResolvedValue(
       [1, 2, 3, 4, 5].map((n) => ({
         id: `task-${n}`,
@@ -2683,7 +2701,7 @@ describe('POST /api/workers/claim', () => {
         workspaceId: 'ws-1',
         title: 'Test task',
         dependsOn: ['dep-1'],
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
 
@@ -2747,7 +2765,7 @@ describe('POST /api/workers/claim', () => {
         workspaceId: 'ws-1',
         missionId: 'mission-1',
         title: 'Test task',
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
     mockTasksUpdate.mockReturnValue({
@@ -2794,7 +2812,7 @@ describe('POST /api/workers/claim', () => {
         workspaceId: 'ws-1',
         title: 'Test task',
         dependsOn: ['dep-1'],
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
 
@@ -3021,7 +3039,7 @@ describe('POST /api/workers/claim', () => {
         id: 'task-retry',
         workspaceId: 'ws-1',
         title: 'Retried task',
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
 
@@ -3074,7 +3092,7 @@ describe('POST /api/workers/claim', () => {
         workspaceId: 'ws-1',
         title: 'Test task',
         dependsOn: [],
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
 
@@ -3129,7 +3147,7 @@ describe('POST /api/workers/claim', () => {
         workspaceId: 'ws-1',
         title: 'Test task',
         dependsOn: [],
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
 
@@ -3201,7 +3219,7 @@ describe('POST /api/workers/claim', () => {
         workspaceId: 'ws-1',
         title: 'Test task',
         dependsOn: [],
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
 
@@ -3283,7 +3301,7 @@ describe('POST /api/workers/claim', () => {
         workspaceId: 'ws-1',
         title: 'Test task',
         dependsOn: [],
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
 
@@ -3350,7 +3368,7 @@ describe('POST /api/workers/claim', () => {
         workspaceId: 'ws-1',
         title: 'Test task',
         dependsOn: [],
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
     mockTasksUpdate.mockReturnValue({
@@ -3417,7 +3435,7 @@ describe('POST /api/workers/claim', () => {
           workspaceId: 'ws-1',
           title: 'Test task',
           dependsOn: [],
-          workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+          workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
         },
       ]);
       mockTasksUpdate.mockReturnValue({
@@ -3662,7 +3680,7 @@ describe('POST /api/workers/claim', () => {
         workspaceId: 'ws-1',
         title: 'Test task',
         dependsOn: [],
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
 
@@ -3732,7 +3750,7 @@ describe('POST /api/workers/claim', () => {
         title: 'Codex task',
         backend: 'codex',
         dependsOn: [],
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
 
@@ -3797,7 +3815,7 @@ describe('POST /api/workers/claim', () => {
         workspaceId: 'ws-1',
         title: 'Test task',
         dependsOn: [],
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
 
@@ -3861,7 +3879,7 @@ describe('POST /api/workers/claim', () => {
         workspaceId: 'ws-1',
         title: 'Test task',
         dependsOn: [],
-        workspace: { id: 'ws-1', teamId: 'team-A', gitConfig: null },
+        workspace: { id: 'ws-1', teamId: 'team-A', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
 
@@ -3949,7 +3967,7 @@ describe('POST /api/workers/claim', () => {
         complexity: 'simple',
         priority: 0,
         dependsOn: [],
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       }]);
       mockClaimSuccess();
 
@@ -3990,7 +4008,7 @@ describe('POST /api/workers/claim', () => {
         complexity: 'simple',
         priority: 0,
         dependsOn: [],
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       }]);
       mockClaimSuccess();
 
@@ -4026,7 +4044,7 @@ describe('POST /api/workers/claim', () => {
         complexity: 'complex',
         priority: 0,
         dependsOn: [],
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       }]);
       mockClaimSuccess();
 
@@ -4069,7 +4087,7 @@ describe('POST /api/workers/claim', () => {
         complexity: 'normal',
         priority: 0,
         dependsOn: [],
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       }]);
       mockClaimSuccess();
 
@@ -4106,7 +4124,7 @@ describe('POST /api/workers/claim', () => {
         priority: 0,
         dependsOn: [],
         context: { model: 'claude-opus-4-8' },
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       }]);
       mockClaimSuccess();
 
@@ -4145,7 +4163,7 @@ describe('POST /api/workers/claim', () => {
         complexity: 'simple',
         priority: 0,
         dependsOn: [],
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
         ...taskRow,
       }]);
       lastTaskSetPayload = null;
@@ -4160,7 +4178,7 @@ describe('POST /api/workers/claim', () => {
     }
 
     it('a requeued task re-routes on its new tier instead of replaying the first claim model', async () => {
-      const workspace = { id: 'ws-1', gitConfig: null, teamId: 'team-1' };
+      const workspace = { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' };
       const first = await claimOnce({ workspace, tier: null });
       expect(first.context.routingReason).toBe('baseline');
       expect(first.predictedModel).toBe(TIER_DEFAULTS.budget.model);
@@ -4174,7 +4192,7 @@ describe('POST /api/workers/claim', () => {
 
     it('resolves the tier for the agent surface', async () => {
       tierLookups.length = 0;
-      await claimOnce({ workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' }, tier: 'premium' });
+      await claimOnce({ workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' }, tier: 'premium' });
       expect(tierLookups.length).toBeGreaterThan(0);
       for (const args of tierLookups) expect(args[3]).toBe('agent');
     });
@@ -4208,7 +4226,7 @@ describe('POST /api/workers/claim', () => {
     });
 
     it('a shorthand pin is a tier request: the policy resolves which model it is, and the pin stays sticky', async () => {
-      const workspace = { id: 'ws-1', gitConfig: null, teamId: 'team-1' };
+      const workspace = { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' };
       tierLookups.length = 0;
       const res = await claimOnce({ workspace, complexity: 'simple', context: { model: 'opus', modelPinned: true } });
       expect(res.predictedModel).toBe(TIER_DEFAULTS.premium.model);
@@ -4219,7 +4237,7 @@ describe('POST /api/workers/claim', () => {
     });
 
     it('an exact-id pin is the escape hatch: no tier lookup, no policy decision', async () => {
-      const workspace = { id: 'ws-1', gitConfig: null, teamId: 'team-1' };
+      const workspace = { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' };
       tierLookups.length = 0;
       const res = await claimOnce({ workspace, context: { model: 'claude-opus-4-8', modelPinned: true } });
       expect(res.predictedModel).toBe('claude-opus-4-8');
@@ -4257,7 +4275,7 @@ describe('POST /api/workers/claim', () => {
         complexity: 'complex',
         priority: 0,
         dependsOn: [],
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       }]);
       mockClaimSuccess();
 
@@ -4299,7 +4317,7 @@ describe('POST /api/workers/claim', () => {
         roleSlug: 'builder',
         priority: 0,
         dependsOn: [],
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       }]);
 
       // Workspace role configures builder with a sonnet floor.
@@ -4320,7 +4338,7 @@ describe('POST /api/workers/claim', () => {
 
     // --- Role model precedence (docs/design/role-routing.md §3.1, §4) ---
     describe('role model precedence', () => {
-      const workspace = { id: 'ws-1', gitConfig: null, teamId: 'team-1' };
+      const workspace = { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' };
 
       it('an explicit tasks.tier beats a role pinned to an exact model id (email-agent)', async () => {
         mockWorkspaceSkillsFindMany.mockResolvedValue([
@@ -4423,7 +4441,7 @@ describe('POST /api/workers/claim', () => {
         workspaceId: 'ws-1',
         title: 'Test task',
         dependsOn: [],
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
       },
     ]);
 
@@ -4524,7 +4542,7 @@ describe('POST /api/workers/claim', () => {
         context: {},
         workspace: {
           id: 'ws-1',
-          gitConfig: null,
+          gitConfig: { claimPlanner: 'record' },
           projects: [{ name: 'dispatch-family' }],
         },
       },
@@ -4576,7 +4594,7 @@ describe('POST /api/workers/claim', () => {
         context: {},
         workspace: {
           id: 'ws-1',
-          gitConfig: null,
+          gitConfig: { claimPlanner: 'record' },
           projects: [{ name: 'dispatch-family' }, { name: 'other-project' }],
         },
       },
@@ -4631,7 +4649,7 @@ describe('POST /api/workers/claim', () => {
         title: 'Test task',
         dependsOn: [],
         roleSlug,
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
       }]);
       mockTasksUpdate.mockReturnValue({
         set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })),
@@ -5105,7 +5123,7 @@ describe('POST /api/workers/claim', () => {
         title: 'Classify emails',
         dependsOn: [],
         roleSlug: 'builder',
-        workspace: { id: 'ws-task', teamId: 'team-task', gitConfig: null },
+        workspace: { id: 'ws-task', teamId: 'team-task', gitConfig: { claimPlanner: 'record' } },
       }]);
       mockTasksUpdate.mockReturnValue({
         set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-cue' }]) })) })),
@@ -5171,7 +5189,7 @@ describe('POST /api/workers/claim', () => {
         title: 'Cross-team task',
         dependsOn: [],
         roleSlug: 'builder',
-        workspace: { id: 'ws-task', teamId: 'team-task', gitConfig: null },
+        workspace: { id: 'ws-task', teamId: 'team-task', gitConfig: { claimPlanner: 'record' } },
       }]);
       mockTasksUpdate.mockReturnValue({
         set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-cross' }]) })) })),
@@ -5226,7 +5244,7 @@ describe('POST /api/workers/claim', () => {
         project: 'whatever',
         requiredCapabilities: [],
         context: {},
-        workspace: { id: 'ws-1', gitConfig: null, projects: [] },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, projects: [] },
       },
     ]);
 
@@ -5264,7 +5282,7 @@ describe('POST /api/workers/claim', () => {
         title: `Task ${id}`,
         backend: 'claude' as const,
         dependsOn: [],
-        workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' },
       };
     }
     function setupClaimBase() {
@@ -5613,7 +5631,7 @@ describe('path-overlap claim guard', () => {
       pathManifest,
       requiredCapabilities: [],
       context: {},
-      workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+      workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' },
     };
   }
 
@@ -5666,7 +5684,7 @@ describe('path-overlap claim guard', () => {
     const MISSION_BRANCH = 'mission/example-integration-1a2b3c4d';
     const trunkTask = () => ({
       ...taskWithManifest(['apps/web/src/app/api/workers/claim/route.ts']),
-      workspace: { id: 'ws-1', gitConfig: { defaultBranch: 'dev' }, teamId: 'team-1' },
+      workspace: { id: 'ws-1', gitConfig: { defaultBranch: 'dev', claimPlanner: 'record' }, teamId: 'team-1' },
     });
     const refreshManifest = ['apps/web/src/app/api/workers/claim/route.ts', 'apps/web/src/lib/pr-landing.ts', 'packages/core/mcp-tools.ts'];
 
@@ -6424,7 +6442,7 @@ describe('entity catalog injection at claim time', () => {
         dependsOn: [],
         requiredCapabilities: [],
         context: {},
-        workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' },
       },
     ]);
     mockTeamsFindFirst.mockReset();
@@ -6564,13 +6582,13 @@ describe('entity catalog injection at claim time', () => {
           workspaceId: 'ws-A',
           title: 'Email task',
           roleSlug: 'email-agent',
-          workspace: { id: 'ws-A', teamId: 'team-1', gitConfig: null },
+          workspace: { id: 'ws-A', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
         },
         {
           id: 'task-2',
           workspaceId: 'ws-A',
           title: 'Regular task',
-          workspace: { id: 'ws-A', gitConfig: null },
+          workspace: { id: 'ws-A', gitConfig: { claimPlanner: 'record' } },
         },
       ])
       .mockResolvedValue([]); // sibling/parent queries
@@ -6642,7 +6660,7 @@ describe('entity catalog injection at claim time', () => {
           workspaceId: 'ws-A',
           title: 'Email task',
           roleSlug: 'email-agent',
-          workspace: { id: 'ws-A', teamId: 'team-1', gitConfig: null },
+          workspace: { id: 'ws-A', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
         },
       ])
       .mockResolvedValue([]);
@@ -6704,13 +6722,13 @@ describe('entity catalog injection at claim time', () => {
         {
           id: 'task-1', workspaceId: 'ws-1', title: 'Email task',
           roleSlug: 'email-agent', priority: 5,
-          workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+          workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
         },
         // task-2: no role → clean (lower priority, beyond window at limit=1)
         {
           id: 'task-2', workspaceId: 'ws-1', title: 'Clean task',
           roleSlug: null, priority: 4,
-          workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+          workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
         },
       ];
 
@@ -6767,12 +6785,12 @@ describe('entity catalog injection at claim time', () => {
           {
             id: 'task-1', workspaceId: 'ws-1', title: 'Email task 1',
             roleSlug: 'email-agent',
-            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
           },
           {
             id: 'task-2', workspaceId: 'ws-1', title: 'Email task 2',
             roleSlug: 'email-agent',
-            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
           },
         ])
         .mockResolvedValue([]);
@@ -6813,12 +6831,12 @@ describe('entity catalog injection at claim time', () => {
       const gapped = Array.from({ length: 25 }, (_, i) => ({
         id: `gapped-${i}`, workspaceId: 'ws-1', title: `Email task ${i}`,
         roleSlug: 'email-agent', priority: 9,
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
       }));
       const clean = {
         id: 'task-clean', workspaceId: 'ws-1', title: 'Clean task',
         roleSlug: null, priority: 1,
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
       };
       const allTasks = [...gapped, clean];
       // Candidate pages honour limit/offset like the DB; every other tasks query is empty.
@@ -6911,7 +6929,7 @@ describe('entity catalog injection at claim time', () => {
         complexity: 'normal',
         priority: 0,
         dependsOn: [],
-        workspace: { id: 'ws-1', gitConfig: null },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
         ...over,
       };
     }
@@ -7059,7 +7077,7 @@ describe('entity catalog injection at claim time', () => {
       it('claims a failed-over task on Codex even when the Claude seat is at its cap', async () => {
         mockCountLiveSeatWorkers.mockResolvedValue(3);
         mockTasksFindMany.mockResolvedValue([
-          pendingTask({ backend: 'claude', workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } }),
+          pendingTask({ backend: 'claude', workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } }),
         ]);
 
         const res = await POST(createMockRequest({
@@ -7215,7 +7233,7 @@ describe('entity catalog injection at claim time', () => {
           {
             id: 'task-1', workspaceId: 'ws-1', title: 'Role task',
             roleSlug: 'researcher', requiredConnectors: null,
-            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, connectorAdvisoryMode: false },
+            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' }, connectorAdvisoryMode: false },
           },
         ])
         .mockResolvedValue([]);
@@ -7251,7 +7269,7 @@ describe('entity catalog injection at claim time', () => {
           {
             id: 'task-1', workspaceId: 'ws-1', title: 'Role task',
             roleSlug: 'researcher', requiredConnectors: null,
-            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, connectorAdvisoryMode: true },
+            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' }, connectorAdvisoryMode: true },
           },
         ])
         .mockResolvedValue([]);
@@ -7306,7 +7324,7 @@ describe('entity catalog injection at claim time', () => {
           {
             id: 'task-1', workspaceId: 'ws-1', title: 'Role task',
             roleSlug: 'researcher', requiredConnectors: null,
-            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, connectorAdvisoryMode: true },
+            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' }, connectorAdvisoryMode: true },
           },
         ])
         .mockResolvedValue([]);
@@ -7342,7 +7360,7 @@ describe('entity catalog injection at claim time', () => {
           {
             id: 'task-1', workspaceId: 'ws-1', title: 'Role task',
             roleSlug: 'researcher', requiredConnectors: ['conn-A'],
-            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, connectorAdvisoryMode: true },
+            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' }, connectorAdvisoryMode: true },
           },
         ])
         .mockResolvedValue([]);
@@ -7463,7 +7481,7 @@ describe('claim gate overrides', () => {
       backend: 'claude' as const,
       dependsOn: [],
       context,
-      workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, repo: 'org/repo', maxConcurrentTasks: 1 },
+      workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' }, repo: 'org/repo', maxConcurrentTasks: 1 },
     };
   }
 
@@ -7525,7 +7543,7 @@ describe('claim gate overrides', () => {
       return { ...apiAccount(), managedRunner: true };
     }
     function managedTask(context: Record<string, unknown> = {}) {
-      return { ...cappedTask(context), workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, repo: 'org/repo', maxConcurrentTasks: 20 } };
+      return { ...cappedTask(context), workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' }, repo: 'org/repo', maxConcurrentTasks: 20 } };
     }
     /** Every status a tasks UPDATE in this request wrote. */
     function statusesWritten(): unknown[] {
@@ -7821,7 +7839,7 @@ describe('claim gate overrides', () => {
         backend: 'claude' as const,
         dependsOn: [],
         context,
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
       };
     }
     const exhaustedMission = [{
@@ -7887,7 +7905,7 @@ describe('claim gate overrides', () => {
         pathManifest: manifest,
         category,
         context: {},
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
       };
     }
     const activeMission = [{
@@ -8190,7 +8208,7 @@ describe('claim gate overrides', () => {
         dependsOn: [],
         context: {},
         project: 'other-repo',
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, projects: [{ name: 'this-repo' }] },
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' }, projects: [{ name: 'this-repo' }] },
       }]).mockResolvedValue([]);
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
@@ -8228,7 +8246,7 @@ describe('claim insert — atomic duplicate-worker guard', () => {
       dependsOn: [],
       requiredCapabilities: [],
       context: {},
-      workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+      workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' },
     };
   }
 
@@ -8558,7 +8576,7 @@ describe('claim response — top-level pendingCredentialRefreshes', () => {
       backend: 'claude',
       dependsOn: [],
       context: {},
-      workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, repo: 'org/repo' },
+      workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' }, repo: 'org/repo' },
     }]);
     mockTasksUpdate.mockReturnValue({
       set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })),
@@ -8599,7 +8617,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
   function task(overrides: Record<string, unknown> = {}) {
     return {
       id: 'task-1', workspaceId: 'ws-1', title: 'Build it', backend: 'claude', dependsOn: [],
-      pathManifest: null, context: {}, workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+      pathManifest: null, context: {}, workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' },
       ...overrides,
     };
   }
@@ -9238,7 +9256,7 @@ describe('claim route: interactive session marker', () => {
     mockWorkersFindMany.mockResolvedValue([]);
     mockMissionsFindMany.mockResolvedValue([]);
     mockTasksFindMany.mockResolvedValue([]);
-    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context: {}, workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } }]);
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context: {}, workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } }]);
     mockDbSelect.mockReturnValue(makeSelectChain([]));
     mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })) });
     mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'b', status: 'idle' }] }));
@@ -9284,7 +9302,7 @@ describe('claim route: interactive session marker', () => {
 
     mockTasksFindMany.mockReset();
     mockTasksFindMany.mockResolvedValue([]);
-    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context: { interactiveClaimSessionKey: 'sess-old' }, workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } }]);
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context: { interactiveClaimSessionKey: 'sess-old' }, workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } }]);
     const ctx2 = claimedContext();
     await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: signInteractiveSession({ accountId: 'account-1', userId: null }) }, body: { runner: 'mcp' } }));
     expect('interactiveClaimSessionKey' in ctx2()).toBe(false);
@@ -9293,7 +9311,7 @@ describe('claim route: interactive session marker', () => {
   it('a claim without a verified session user drops a stale stamp', async () => {
     mockTasksFindMany.mockReset();
     mockTasksFindMany.mockResolvedValue([]);
-    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context: { interactiveClaimUserId: 'user-old' }, workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } }]);
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context: { interactiveClaimUserId: 'user-old' }, workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } }]);
     const ctx = claimedContext();
     await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'mcp' } }));
     expect('interactiveClaimUserId' in ctx()).toBe(false);
@@ -9390,7 +9408,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       pathManifest: ['apps/web/src/lib/widget.ts'],
       context: {},
       createdAt: new Date('2026-09-30T11:00:00Z'),
-      workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
       ...over,
     };
   }
@@ -9500,7 +9518,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     const prManifests = [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }];
     const baseline = await claimWith(holdStartOn(), () => arm({ tasks: [task()], openPrs, prManifests }));
     const malformed = await claimWith(holdStartOn(), () => arm({
-      tasks: [task({ workspace: { id: 'ws-1', teamId: 'team-1', gitConfig } })], openPrs, prManifests,
+      tasks: [task({ workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record', ...gitConfig } } })], openPrs, prManifests,
     }));
     expect(malformed.status).toBe(200);
     expect(malformed.body).toEqual(baseline.body);
@@ -9612,6 +9630,82 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       expect(on.body.workers).toHaveLength(1);
     });
 
+    // The stale mission-refresh shape: the holder's task manifest was inherited
+    // (older or broader than what its PR changes), so layer 1 lists a file the
+    // PR's diff at head does not touch.
+    describe('open PR whose current diff is disjoint (pr_diff_at_head)', () => {
+      const NOW = new Date().toISOString();
+      const diff = (paths: string[], headSha = 'head-1', currentHeadSha = headSha) => ({ paths, headSha, currentHeadSha, observedAt: NOW });
+      beforeEach(() => { riskEvidenceTest.prScopes = new Map(); riskEvidenceTest.probe = null; riskEvidenceTest.scopeCalls = []; });
+      afterEach(() => { riskEvidenceTest.prScopes = new Map(); riskEvidenceTest.probe = null; });
+
+      it('starts in code: no ledger lookup, no model call, paths acquired exclusively first', async () => {
+        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/unrelated.ts']));
+        let lookups = 0;
+        const on = await claimWith(gated({ findAppliedStart: async () => { lookups++; return false; } }), scenarios.openPrAfterWorkerEnded);
+        expect(on.body.workers).toHaveLength(1);
+        expect(lookups).toBe(0);
+        expect(on.rows).toHaveLength(0);
+        expect(riskEvidenceTest.scopeCalls).toEqual([[41]]);
+        expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
+      });
+
+      it('goes back to Jev once the head moves: the diff read at the old head no longer counts', async () => {
+        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/unrelated.ts'], 'head-1', 'head-2'));
+        const on = await claimWith(gated({ findAppliedStart: async () => false }), scenarios.openPrAfterWorkerEnded);
+        expect(on.body.workers).toHaveLength(0);
+        expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+        expect(on.rows).toHaveLength(1);
+        expect(acquired).toHaveLength(0);
+      });
+
+      it('holds for Jev when the diff is unknown (nothing cached, read failed)', async () => {
+        const on = await claimWith(gated({ findAppliedStart: async () => false }), scenarios.openPrAfterWorkerEnded);
+        expect(on.body.workers).toHaveLength(0);
+        expect(on.rows).toHaveLength(1);
+      });
+
+      it('holds when the current diff still touches the candidate\'s file', async () => {
+        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/widget.ts']));
+        const on = await claimWith(gated({ findAppliedStart: async () => false }), scenarios.openPrAfterWorkerEnded);
+        expect(on.body.workers).toHaveLength(0);
+        expect(on.rows).toHaveLength(1);
+      });
+
+      it('a failed exclusive acquisition keeps the hold, like the soft path', async () => {
+        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/unrelated.ts']));
+        const on = await claimWith(gated({ acquire: async () => ({ kind: 'conflict', conflict: {}, blocked: [] }) }), scenarios.openPrAfterWorkerEnded);
+        expect(on.body.workers).toHaveLength(0);
+        expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+      });
+
+      it('a live lease on the actual files still wins over a disjoint diff', async () => {
+        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/unrelated.ts']));
+        const on = await claimWith(gated(), () => arm({
+          tasks: [task()],
+          openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+          prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+          leases: new Map([['task-9', ['apps/web/src/lib/widget.ts']]]),
+        }));
+        expect(on.body.workers).toHaveLength(0);
+        expect(acquired).toHaveLength(0);
+      });
+
+      it('a real conflict probe of the pair holds in code, naming the files, even with a disjoint-looking record', async () => {
+        riskEvidenceTest.probe = { outcome: 'conflict', conflictFiles: ['apps/web/src/lib/widget.ts'], probedAt: NOW, headsCurrent: true };
+        const on = await claimWith(gated({ findAppliedStart: async () => true }), () => arm({
+          tasks: [task({ conflictRetryPrNumber: 99 })],
+          openPrs: [
+            { workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', branch: 'holder', status: 'completed', prLifecycleStatus: 'ci_green' },
+            { workspaceId: 'ws-1', taskId: 'task-1', prNumber: 99, prUrl: 'https://example.test/pull/99', branch: 'own', status: 'completed', prLifecycleStatus: 'ci_green' },
+          ],
+          prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }, { id: 'task-1', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+        }));
+        expect(on.body.workers).toHaveLength(0);
+        expect(on.rows).toHaveLength(0);
+      });
+    });
+
     it('a shadow definition never applies: no lookup, the hold stands', async () => {
       let lookups = 0;
       const on = await claimWith(gated({ decision: SHADOW, findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
@@ -9718,6 +9812,23 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/'], declare: true }]);
       const started = (mockFireGateEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap_start');
       expect(started).toMatchObject({ outcome: 'accepted', detail: { decidedBy: 'rule', riskTier: 'low' } });
+    });
+
+    it('a retry whose branch conflicts with the live holder in a pair probe holds in code: Jev is not asked, the files are named', async () => {
+      mockFireDeferralEvent.mockClear();
+      riskEvidenceTest.probe = { outcome: 'conflict', conflictFiles: ['apps/web/src/lib/widget.ts'], probedAt: new Date().toISOString(), headsCurrent: true };
+      try {
+        const on = await claimWith(withStart(true), () => arm({
+          tasks: [{ ...soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts']), conflictRetryPrNumber: 99 }],
+          openPrs: [{ workspaceId: 'ws-1', taskId: 'task-1', prNumber: 99, prUrl: 'https://example.test/pull/99', branch: 'own-branch', status: 'completed', prLifecycleStatus: 'ci_green' }],
+          prManifests: [{ id: 'task-1', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+        }));
+        expect(on.body.workers).toHaveLength(0);
+        expect(on.rows).toHaveLength(0);
+        const ledger = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap');
+        expect(ledger).toMatchObject({ detail: { riskTier: 'high' } });
+        expect(ledger.detail.rationale).toContain('apps/web/src/lib/widget.ts');
+      } finally { riskEvidenceTest.probe = null; }
     });
 
     it('a holder that never started does not strand the candidate, even on the same file', async () => {
@@ -9898,23 +10009,23 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
     expect(mockFireOrderedBehind).not.toHaveBeenCalled();
   });
 
-  it('absent: no mode set records, with the same response as an explicit \'off\'', async () => {
-    const off = await claim(overlappingTrio({ claimPlanner: 'off' }));
+  it('absent: no mode set applies, like an explicit \'apply\'', async () => {
+    const explicit = await claim(overlappingTrio({ claimPlanner: 'apply' }));
+    mockFireClaimPlanRecord.mockClear();
+    mockFireOrderedBehind.mockClear();
     const absent = await claim(overlappingTrio(null));
-    expect(withoutGitConfig(absent)).toEqual(withoutGitConfig(off));
-    expect(mockFireClaimPlanRecord).toHaveBeenCalledTimes(1);
-    expect(mockFireClaimPlanRecord.mock.calls[0][0].mode).toBe('record');
-    expect(mockFireOrderedBehind).not.toHaveBeenCalled();
+    expect(pickedIds(absent.data)).toEqual(['a', 'c']);
+    expect(pickedIds(absent.data)).toEqual(pickedIds(explicit.data));
+    expect(mockFireClaimPlanRecord.mock.calls[0][0].mode).toBe('apply');
+    expect(mockFireOrderedBehind).toHaveBeenCalledTimes(1);
   });
 
-  it('off: a deferral-only poll is identical too, diagnostics included', async () => {
+  it('off: a deferral-only poll keeps the legacy advisory_manifest deferral', async () => {
     const mission = [{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }];
     mockMissionsFindMany.mockResolvedValue(mission);
     mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] }]));
-    const absent = await claim([plannedTask('a', { missionId: 'mission-A', pathManifest: ['**'] }, null)]);
     const off = await claim([plannedTask('a', { missionId: 'mission-A', pathManifest: ['**'] }, { claimPlanner: 'off' })]);
-    expect(withoutGitConfig(off)).toEqual(withoutGitConfig(absent));
-    expect(absent.data.diagnostics.deferrals).toEqual({ advisory_manifest: 1 });
+    expect(off.data.diagnostics.deferrals).toEqual({ advisory_manifest: 1 });
   });
 
   it('record: same picks as off, and the plan is recorded beside them', async () => {
@@ -9974,7 +10085,7 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
   it('apply: never claims past the free slots, where the legacy walk would', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 2, type: 'user', authType: 'api', teamId: 'team-1' });
     const four = (g: Record<string, unknown> | null) => ['p', 'q', 'r', 's'].map((id, i) => plannedTask(id, { priority: 9 - i, pathManifest: [`src/${id}.ts`] }, g));
-    const legacy = await claim(four(null));
+    const legacy = await claim(four({ claimPlanner: 'off' }));
     expect(pickedIds(legacy.data)).toHaveLength(4);
     const applied = await claim(four({ claimPlanner: 'apply' }));
     expect(pickedIds(applied.data)).toEqual(['p', 'q']);

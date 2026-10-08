@@ -318,3 +318,60 @@ describe('inspectPullRequestMigrations', () => {
     });
   });
 });
+
+describe('inspectPullRequestMigrations — integration-refresh PR (deltaBase)', () => {
+  beforeEach(() => mockGithubApi.mockReset());
+
+  /**
+   * The PR's own file list (stale fork point) shows trunk deleting an old
+   * migration — the incident shape. The trunk...head delta holds only what the
+   * mission adds on top of trunk.
+   */
+  function refreshGithub(delta: Array<{ filename: string; status: string }> | Error, headSql: Record<string, string>) {
+    mockGithubApi.mockImplementation(async (_i, url) => {
+      if (url.includes('/compare/dev...abc123')) {
+        if (delta instanceof Error) throw delta;
+        return { files: delta };
+      }
+      if (url.includes('/pulls/42/files')) {
+        return [
+          { filename: `${DIR}/0000_old_name.sql`, status: 'removed' },
+          { filename: `${DIR}/0000_baseline.sql`, status: 'added' },
+        ];
+      }
+      if (url.includes('/git/ref/heads/')) return { object: { sha: BASE_SHA } };
+      if (url.includes('/pulls?')) return [{ number: 42 }];
+      const contents = /\/contents\/(.+)\?ref=(.+)$/.exec(url);
+      if (contents) {
+        const sql = contents[2] === 'abc123' ? headSql[decodeURIComponent(contents[1])] : undefined;
+        if (sql === undefined) throw new Error('Not Found');
+        return blob(sql);
+      }
+      throw new Error(`unexpected GitHub call ${url}`);
+    });
+  }
+  const inspectRefresh = () => inspectPullRequestMigrations({
+    installationId: 1, repoFullName: 'acme/app', prNumber: 42, headSha: 'abc123', files: [],
+    baseRef: 'mission/x', deltaBase: 'dev',
+  });
+
+  it('does not blame the refresh for trunk rewriting its own migration history', async () => {
+    refreshGithub([{ filename: 'apps/web/src/lib/sentinel.ts', status: 'modified' }], {});
+    expect(await inspectRefresh()).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('still classifies a migration the mission itself authored', async () => {
+    refreshGithub(
+      [{ filename: `${DIR}/0300_sentinel.sql`, status: 'added' }, { filename: 'packages/core/db/schema.ts', status: 'modified' }],
+      { [`${DIR}/0300_sentinel.sql`]: DROP_CONSTRAINT },
+    );
+    const verdict = await inspectRefresh();
+    expect(verdict.safe).toBe(false);
+    expect(verdict.operationClass).toBe('CONTRACT');
+  });
+
+  it('falls back to the full PR file list when the delta cannot be read', async () => {
+    refreshGithub(new Error('GitHub API error: 502'), {});
+    expect(await inspectRefresh()).toMatchObject({ safe: false, reason: `deletes generated migration ${DIR}/0000_old_name.sql` });
+  });
+});
