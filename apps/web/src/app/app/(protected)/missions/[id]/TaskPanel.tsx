@@ -58,6 +58,8 @@ export interface TaskPanelData {
     linesAdded: number | null;
     linesRemoved: number | null;
     costUsd: string | null;
+    /** Absent from older responses. */
+    costBasis?: string | null;
     inputTokens: number;
     outputTokens: number;
     startedAt: string | null;
@@ -337,7 +339,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
           costUsd={w.costUsd}
           inputTokens={w.inputTokens}
           outputTokens={w.outputTokens}
-          authType={w.account?.authType}
+          costBasis={w.costBasis ?? null}
           milestones={(w.milestones ?? []) as never}
           onWorkerEvent={onChanged}
         />
@@ -369,7 +371,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
           costUsd={w.costUsd}
           inputTokens={w.inputTokens}
           outputTokens={w.outputTokens}
-          authType={w.account?.authType}
+          costBasis={w.costBasis ?? null}
           branch={w.branch}
         />
       )}

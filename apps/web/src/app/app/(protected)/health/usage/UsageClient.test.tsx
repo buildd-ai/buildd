@@ -30,7 +30,7 @@ const worker = (over: Partial<UsageWorkerRow> & { counts?: Record<string, number
     roleSlug: 'builder',
     inputTokens: 120_000,
     outputTokens: 4_000,
-    // Seat/OAuth auth: no cost is reported at all.
+    // No cost recorded for this worker.
     costUsd: null,
     turns: 12,
     resultMeta: { toolCounts: counts ?? { Read: 10, Grep: 3, Bash: 8 } } as any,
@@ -159,6 +159,29 @@ describe('UsageClient — per-task cost', () => {
     const html = render();
     expect(html).toContain('data-testid="usage-cost-proxy-note"');
     expect(html).toContain('input tokens / task');
+  });
+
+  it('does not blame an auth type when no cost was recorded', () => {
+    const html = render();
+    expect(html).not.toMatch(/seat|oauth/i);
+  });
+
+  // docs/specs/real-and-virtual-cost.md "Reporting".
+  it('shows real cost and plan usage at list price as separate figures, and a labelled combined total', () => {
+    const html = render({ rows: [
+      worker({ workerId: 'a', taskId: 'a', costUsd: '2', costBasis: 'real' }),
+      worker({ workerId: 'b', taskId: 'b', costUsd: '5', costBasis: 'virtual', runner: 'mcp' }),
+    ] });
+    expect(html).toContain('data-testid="usage-cost-basis"');
+    expect(html).toContain('Real cost');
+    expect(html).toContain('Plan usage at list price');
+    expect(html).toContain('Combined');
+    expect(html).not.toContain('Basis not reported');
+  });
+
+  it('names cost that arrived without a basis on its own line', () => {
+    const html = render({ rows: [worker({ costUsd: '1', costBasis: null })] });
+    expect(html).toContain('Basis not reported');
   });
 
   it('drops the proxy entirely once cost is actually measured', () => {
