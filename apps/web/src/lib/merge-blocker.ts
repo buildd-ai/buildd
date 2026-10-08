@@ -54,24 +54,27 @@ export interface MergeBlockerView {
 export function describeMergeBlocker(item: ActionQueueItem): MergeBlockerView | null {
   if (!item.mergeConflict) return null;
   const reason = item.conflictReason ?? GENERIC_CONFLICT_REASON;
-  const details: string[] = [];
-  if (item.conflictRetryIteration != null) details.push(`Automatic fix attempt ${item.conflictRetryIteration}`);
-  if (item.escalationReason) details.push(item.escalationReason);
-  if (item.recommendation) details.push(`Agent's suggestion: ${item.recommendation}`);
-  details.push('GitHub reports the branch conflicts with its base, so the merge cannot go through as is.');
+  const baseDetails: string[] = [];
+  if (item.conflictRetryIteration != null) baseDetails.push(`Automatic fix attempt ${item.conflictRetryIteration}`);
+  if (item.escalationReason) baseDetails.push(item.escalationReason);
+  if (item.recommendation) baseDetails.push(`Agent's suggestion: ${item.recommendation}`);
+  baseDetails.push('GitHub reports the branch conflicts with its base, so the merge cannot go through as is.');
 
   // S37: the live fix exists but stalled. Say so, and offer to run THAT fix
   // (its task page carries Start / retry), never to file a second one.
   if (item.chip === 'RESOLVING' && item.remediationStalled && item.conflictRetryTaskId) {
+    const shown = item.remediationStalled;
+    const details = [reason, ...baseDetails].filter(l => l !== shown && !l.includes(shown));
     return {
       needsYou: false,
       state: 'Conflict fix stalled',
-      reason: item.remediationStalled,
+      reason: shown,
       action: { kind: 'view_task', label: 'Run fix', taskId: item.conflictRetryTaskId },
-      details: [reason, ...details],
+      details,
     };
   }
   if (item.chip === 'RESOLVING') {
+    const details = [reason, ...baseDetails].filter(l => l !== reason && !l.includes(reason));
     return {
       needsYou: false,
       state: 'Resolving merge conflict',
@@ -82,6 +85,7 @@ export function describeMergeBlocker(item: ActionQueueItem): MergeBlockerView | 
       details,
     };
   }
+  const details = [reason, ...baseDetails].filter(l => l !== reason && !l.includes(reason));
   return {
     needsYou: true,
     state: item.deadZoneExhausted ? 'Merge blocked · automatic fixes ran out' : 'Merge blocked · automatic fixes are off',
