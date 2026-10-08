@@ -3,6 +3,7 @@ import Spinner from './Spinner';
 import { ActionCardContextLine } from './ActionCardContextLine';
 import { describePendingGates, type ActionQueueItem } from '@/lib/action-queue';
 import { actionCardTaskLink } from '@/lib/action-card-context';
+import { deliveryReading } from '@/lib/workflow/delivery-display';
 
 /**
  * Informational card for work an agent already owns — a live CI fix, a check
@@ -17,7 +18,12 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
   // A kernel-owned delivery states its own reading (workflow-state-kernel
   // §17.5): the headline, then the evidence below the title.
   const delivery = item.delivery ?? null;
-  const label = delivery
+  const deliveryReads = delivery
+    ? deliveryReading({ stage: delivery.stage, state: delivery.state, headline: delivery.headline, owner: delivery.owner })
+    : null;
+  const label = delivery && deliveryReads
+    ? deliveryReads.label
+    : delivery
     ? delivery.headline
     : item.pendingGates
     ? describePendingGates(item.pendingGates)
