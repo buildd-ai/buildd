@@ -11,7 +11,7 @@
  */
 import { useId, useState } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
-import Switch from '@/components/ui/Switch';
+import Switch, { SWITCH_HIT_AREA } from '@/components/ui/Switch';
 import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
 import { useMissionVisualReview } from './MissionVisualReview';
 
@@ -81,6 +81,7 @@ export default function MissionVisualReviewSetting({
           onChange={next => void toggle(next)}
           disabled={saving || readonly}
           label={VISUAL_REVIEW_SETTING_LABEL}
+          className={SWITCH_HIT_AREA}
         />
       </div>
       {error && <p role="alert" className="mt-2 font-mono text-[12px] text-status-error">{error}</p>}
