@@ -5781,6 +5781,43 @@ export const orchestrationTouchLabels = pgTable('orchestration_touch_labels', {
 export type OrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferSelect;
 export type NewOrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferInsert;
 
+// Live sibling conflict probes (apps/web/src/lib/sibling-conflict-probe.ts).
+// One row per pair of live workers whose observed touches share a file. The
+// cron finds the pair and asks the prober; the prober's runner, which has the
+// clone, runs `git merge-tree` against the other branch on its next heartbeat
+// and reports the result. The row is the request and the per-pair debounce;
+// each result is also a `sibling_conflict_probe` gate event.
+export type SiblingProbeStatus = 'requested' | 'dispatched' | 'done';
+export type SiblingProbeOutcome = 'clean' | 'conflict' | 'mergiraf_resolved' | 'error';
+
+export const siblingProbes = pgTable('sibling_probes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // `${lowerWorkerId}:${higherWorkerId}`: one row per pair, whichever side found it.
+  pairKey: text('pair_key').notNull(),
+  workerAId: uuid('worker_a_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  workerBId: uuid('worker_b_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  // The worker whose runner runs the merge-tree: the one asked to rebase on a conflict.
+  proberWorkerId: uuid('prober_worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  sharedFiles: jsonb('shared_files').$type<string[]>().notNull(),
+  status: text('status').$type<SiblingProbeStatus>().notNull().default('requested'),
+  requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow().notNull(),
+  dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+  probedAt: timestamp('probed_at', { withTimezone: true }),
+  outcome: text('outcome').$type<SiblingProbeOutcome | null>(),
+  conflictFiles: jsonb('conflict_files').$type<string[] | null>(),
+  // Last time both workers were told.
+  notifiedAt: timestamp('notified_at', { withTimezone: true }),
+  // The two branch heads (sorted, `sha:sha`) of the conflict both workers were
+  // last told about. The same heads conflicting again are never re-sent.
+  notifiedHeads: text('notified_heads'),
+}, (t) => ({
+  pairIdx: uniqueIndex('sibling_probes_pair_idx').on(t.workspaceId, t.pairKey),
+  proberStatusIdx: index('sibling_probes_prober_status_idx').on(t.proberWorkerId, t.status),
+}));
+
+export type SiblingProbe = typeof siblingProbes.$inferSelect;
+
 // Creation-time manifest predictions (knowledge-base: buildd/design/conflict-aware-orchestration.md
 // §5a, packages/core/manifest-prediction.ts). One row per task per candidate
 // policy, written in shadow AFTER the creation response for teams that opted in

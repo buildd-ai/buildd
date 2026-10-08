@@ -1,6 +1,6 @@
 {
-  "id": "e0317815-e7e2-45a6-903f-663078863dec",
-  "prevId": "877f3256-7d00-42e9-86dd-ab2209f3a14a",
+  "id": "25176165-3d7c-44f1-a804-0578ae09834d",
+  "prevId": "e0317815-e7e2-45a6-903f-663078863dec",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -21531,6 +21531,12 @@
         },
         "account_id": {
           "name": "account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claimed_by_user_id": {
+          "name": "claimed_by_user_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
