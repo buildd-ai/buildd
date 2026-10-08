@@ -74,6 +74,11 @@ export interface LocalSessionWorkerUsage {
   models: LocalSessionModelUsage[];
   /** tool_use blocks the session (and its subagents) issued for this task. */
   toolCalls: number;
+  /**
+   * The same calls by tool name (`Bash`, `mcp__buildd__buildd`; `other` for a
+   * name the hook would not send). Names and counts only. Absent from an older hook.
+   */
+  toolCounts?: Record<string, number>;
   /** Subagents whose usage is counted here. */
   subagents: number;
   /** ISO timestamps of the first and last counted API call. */
@@ -123,7 +128,10 @@ const MAX_VERSION = 64;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ALLOWED_KEYS = new Set(['event', 'client', 'clientSessionId', 'clientVersion', 'repo', 'interactive', 'workerId', 'reason', 'usage']);
 const USAGE_KEYS = new Set(['workers', 'costBasis']);
-const WORKER_USAGE_KEYS = new Set(['workerId', 'models', 'toolCalls', 'subagents', 'firstAt', 'lastAt']);
+const WORKER_USAGE_KEYS = new Set(['workerId', 'models', 'toolCalls', 'toolCounts', 'subagents', 'firstAt', 'lastAt']);
+/** Same rule as the hook's TOOL_NAME_RE. */
+const TOOL_NAME_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+const MAX_TOOL_NAMES = 64;
 const MODEL_USAGE_KEYS = new Set(['model', 'input', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h', 'output', 'requests']);
 const MODEL_ID_RE = /^[A-Za-z0-9._:/@\[\]-]{1,100}$/;
 const MAX_USAGE_WORKERS = 20;
@@ -151,6 +159,16 @@ function parseUsage(v: unknown): LocalSessionUsage | string {
     for (const t of [w.firstAt, w.lastAt]) {
       if (t !== undefined && (typeof t !== 'string' || !ISO_RE.test(t))) return 'usage.workers[].firstAt/lastAt must be ISO timestamps';
     }
+    let toolCounts: Record<string, number> | undefined;
+    if (w.toolCounts !== undefined) {
+      if (!isObject(w.toolCounts)) return 'usage.workers[].toolCounts must map tool names to counts';
+      const entries = Object.entries(w.toolCounts);
+      if (entries.length > MAX_TOOL_NAMES) return `usage.workers[].toolCounts holds at most ${MAX_TOOL_NAMES} tool names`;
+      for (const [name, n] of entries) {
+        if (!TOOL_NAME_RE.test(name) || !isCount(n)) return 'usage.workers[].toolCounts must map tool names to non-negative integers';
+      }
+      toolCounts = Object.fromEntries(entries) as Record<string, number>;
+    }
     const models: LocalSessionModelUsage[] = [];
     for (const m of w.models) {
       if (!isObject(m) || !onlyKeys(m, MODEL_USAGE_KEYS)) return 'usage.workers[].models[] has an unknown field';
@@ -165,6 +183,7 @@ function parseUsage(v: unknown): LocalSessionUsage | string {
     }
     workers.push({
       workerId: w.workerId.toLowerCase(), models, toolCalls: w.toolCalls, subagents: w.subagents,
+      ...(toolCounts ? { toolCounts } : {}),
       ...(w.firstAt !== undefined ? { firstAt: w.firstAt as string } : {}),
       ...(w.lastAt !== undefined ? { lastAt: w.lastAt as string } : {}),
     });

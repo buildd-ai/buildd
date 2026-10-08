@@ -61,7 +61,7 @@ describe('client adapters', () => {
       ...base, hook_event_name: 'PostToolUse', tool_name: 'mcp__buildd__buildd',
       tool_input: { action: 'claim_task', params: { taskId: 'x' } },
       tool_response: [{ type: 'text', text: CLAIM_TEXT }],
-    })).toEqual({ clientSessionId: 'cc-1', cwd: '/repo', event: 'bind', workerId: WORKER });
+    }, {})).toEqual({ clientSessionId: 'cc-1', cwd: '/repo', event: 'bind', workerId: WORKER, interactive: true });
     expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'SessionEnd', reason: 'prompt_input_exit' })?.reason).toBe('exit');
     expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'SessionEnd', reason: 'clear' })?.reason).toBe('clear');
     expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'SessionEnd', reason: 'other' })?.reason).toBe('other');
@@ -131,7 +131,8 @@ describe('privacy', () => {
     expect(s).not.toContain('TOP SECRET');
     expect(s).not.toContain('t.jsonl');
     expect(s).not.toContain('REPLY');
-    expect(Object.keys(body).sort()).toEqual(['client', 'clientSessionId', 'event']);
+    // `interactive` is a boolean the client derives from its own env, not payload content.
+    expect(Object.keys(body).sort()).toEqual(['client', 'clientSessionId', 'event', 'interactive']);
   });
 
   it('repo slugs drop credentials, and match the server normalizer', () => {
@@ -253,6 +254,21 @@ describe('Claude Code: attended vs headless', () => {
     expect(interactive({ CLAUDE_CODE_SESSION_ATTENDED: '0', CLAUDE_CODE_ENTRYPOINT: 'cli' })).toBe(false);
   });
 
+  it('bind and touch carry the same flag, so a presence first created by a bind is right', () => {
+    // A session outside a workspace repo sends no start; its first event is the
+    // bind, and the server creates the presence from it.
+    const headless = { CLAUDE_CODE_SESSION_ATTENDED: '0' };
+    const bind = {
+      session_id: 'cc-1', cwd: '/repo', hook_event_name: 'PostToolUse', tool_name: 'mcp__buildd__buildd',
+      tool_input: { action: 'claim_task', params: {} }, tool_response: [{ type: 'text', text: CLAIM_TEXT }],
+    };
+    expect(normalizeHookEvent('claude', bind, headless)?.interactive).toBe(false);
+    expect(normalizeHookEvent('claude', { ...start, hook_event_name: 'UserPromptSubmit' }, headless)?.interactive).toBe(false);
+    expect(normalizeHookEvent('claude', { ...start, hook_event_name: 'Stop' }, {})?.interactive).toBe(true);
+    // SessionEnd never needs it.
+    expect(normalizeHookEvent('claude', { ...start, hook_event_name: 'SessionEnd', reason: 'other' }, headless)?.interactive).toBeUndefined();
+  });
+
   it('run() reads the hook environment, so the POSTed start says interactive: false', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'buildd-hook-'));
     workspaceCheckout(dir);
@@ -337,8 +353,8 @@ describe('workspace scope', () => {
       agent_id: 'a0123456789abcdef', agent_type: 'general-purpose',
       tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task', params: {} }, tool_response: claim(W2),
     }) });
-    expect(parent.body).toEqual({ event: 'bind', client: 'claude', clientSessionId: 'scope-1', workerId: W1 });
-    expect(sub.body).toEqual({ event: 'bind', client: 'claude', clientSessionId: 'scope-1', workerId: W2 });
+    expect(parent.body).toEqual({ event: 'bind', client: 'claude', clientSessionId: 'scope-1', workerId: W1, interactive: expect.any(Boolean) });
+    expect(sub.body).toEqual({ event: 'bind', client: 'claude', clientSessionId: 'scope-1', workerId: W2, interactive: expect.any(Boolean) });
     expect(readSessionState({ BUILDD_HOME: dir }, 'claude', 'scope-1').claims).toEqual({ [W1]: null, [W2]: 'a0123456789abcdef' });
   });
 
@@ -440,7 +456,9 @@ describe('session usage', () => {
     type: 'assistant', timestamp: o.at, requestId: `req_${o.id}`, isSidechain: !!o.agentId, ...(o.agentId ? { agentId: o.agentId } : {}),
     message: {
       id: o.id, model: o.model ?? 'claude-sonnet-5', role: 'assistant',
-      content: (o.blocks ?? ['text']).map(t => t === 'tool_use' ? { type: 'tool_use', name: 'Bash', input: { command: SECRET } } : { type: 'text', text: SECRET }),
+      content: (o.blocks ?? ['text']).map((t, i) => t.startsWith('tool_use')
+        ? { type: 'tool_use', id: `toolu_${o.id}_${i}`, name: t.split(':')[1] ?? 'Bash', input: { command: SECRET } }
+        : { type: 'text', text: SECRET }),
       usage: {
         input_tokens: o.input ?? 2, cache_read_input_tokens: o.read ?? 0, output_tokens: o.out ?? 10,
         cache_creation_input_tokens: (o.w5m ?? 0) + (o.w1h ?? 0),
@@ -487,9 +505,35 @@ describe('session usage', () => {
     expect(body.usage.workers).toEqual([{
       workerId: W1,
       models: [{ model: 'claude-sonnet-5', input: 4, cacheRead: 2200, cacheWrite5m: 200, cacheWrite1h: 50, output: 60, requests: 2 }],
-      toolCalls: 2, subagents: 0, firstAt: '2026-10-07T12:01:00.000Z', lastAt: '2026-10-07T12:02:00.000Z',
+      toolCalls: 2, toolCounts: { Bash: 2 }, subagents: 0, firstAt: '2026-10-07T12:01:00.000Z', lastAt: '2026-10-07T12:02:00.000Z',
     }]);
     expect(JSON.stringify(bodies)).not.toContain(SECRET);
+  });
+
+  it('counts tool calls by tool name, once per tool_use block even when Claude Code repeats the record', async () => {
+    // Real Claude Code transcripts write one assistant record per content block,
+    // each with the API message id; a tool_use block has its own id.
+    const call = (id: string, at: string, name: string) => rec({ id, at, blocks: [`tool_use:${name}`] });
+    write(transcript(), [
+      call('m1', '2026-10-07T12:01:00Z', 'mcp__buildd__buildd'),
+      call('m1', '2026-10-07T12:01:00Z', 'mcp__buildd__buildd'), // the same record again: same tool_use id
+      call('m2', '2026-10-07T12:01:30Z', 'Bash'),
+      call('m3', '2026-10-07T12:01:40Z', 'mcp__buildd__buildd'),
+      rec({ id: 'm4', at: '2026-10-07T12:01:50Z', blocks: ['text'] }),
+    ]);
+    await claim(W1);
+    await stop(Date.parse('2026-10-07T12:03:00Z'));
+    const w = bodies.at(-1).usage.workers[0];
+    expect(w.toolCalls).toBe(3);
+    expect(w.toolCounts).toEqual({ mcp__buildd__buildd: 2, Bash: 1 });
+    expect(w.models[0].requests).toBe(4);
+  });
+
+  it('a tool name the contract would refuse is counted under "other", never sent raw', async () => {
+    write(transcript(), [rec({ id: 'm1', at: '2026-10-07T12:01:00Z', blocks: ['tool_use:rm -rf /; echo'] })]);
+    await claim(W1);
+    await stop(Date.parse('2026-10-07T12:02:00Z'));
+    expect(bodies.at(-1).usage.workers[0].toolCounts).toEqual({ other: 1 });
   });
 
   it('sends cumulative totals, reading only new bytes since the last report', async () => {
@@ -515,7 +559,7 @@ describe('session usage', () => {
     const byWorker = Object.fromEntries(bodies.at(-1).usage.workers.map((w: any) => [w.workerId, w]));
     // The subagent's whole run is its task's, even the call before its claim landed.
     expect(byWorker[W2].models[0]).toMatchObject({ output: 100, requests: 1 });
-    expect(byWorker[W2]).toMatchObject({ toolCalls: 1, subagents: 1 });
+    expect(byWorker[W2]).toMatchObject({ toolCalls: 1, toolCounts: { Bash: 1 }, subagents: 1 });
     // A subagent that claimed nothing counts toward the session's own claim.
     expect(byWorker[W1].models[0]).toMatchObject({ output: 8, requests: 2 });
     expect(byWorker[W1].subagents).toBe(1);
