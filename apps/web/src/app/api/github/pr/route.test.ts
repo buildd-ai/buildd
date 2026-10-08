@@ -121,6 +121,24 @@ mock.module('@/lib/github', () => ({
   githubAppBotLogin: () => 'buildd[bot]',
 }));
 
+// Repo-access diagnosis — lib/github-repo-access*.test.ts cover it; here only
+// that every PR door refuses through it. The fast path (linked repo with a
+// live installation) never reaches these.
+const mockResolveRepoAccess = mock(async (..._args: unknown[]) => ({
+  diagnosis: {
+    ok: false,
+    problem: { reason: 'installation_missing', operation: 'pr.create', repoFullName: 'owner/repo', installation: null, missingPermissions: [], repoRow: null },
+  },
+  healed: false,
+  teamId: 'team-1',
+}) as any);
+const mockRecordRepoAccessBlock = mock(async (..._args: unknown[]) => ({ alreadyReported: false }));
+mock.module('@/lib/github-repo-access-store', () => ({
+  resolveWorkspaceRepoAccess: mockResolveRepoAccess,
+  recordRepoAccessBlock: mockRecordRepoAccessBlock,
+  getGitHubAppIdentity: async () => null,
+}));
+
 // Mock team-access
 const mockVerifyWorkspaceAccess = mock(async (_userId: string, _workspaceId: string) => null as { teamId: string; role: string } | null);
 const mockGetUserTeamIds = mock(async (_userId: string) => [] as string[]);
@@ -596,7 +614,7 @@ describe('POST /api/github/pr', () => {
     expect(res.status).not.toBe(403);
   });
 
-  it('returns 400 when workspace not linked to GitHub repo', async () => {
+  it('returns a typed 409 repo-access refusal when the workspace is not linked to a GitHub repo', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
@@ -611,12 +629,13 @@ describe('POST /api/github/pr', () => {
     });
     const res = await POST(req);
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409);
     const data = await res.json();
-    expect(data.error).toBe('Workspace not linked to GitHub repo');
+    expect(data.code).toBe('github_repo_access_required');
+    expect(data.reason).toBe('installation_missing');
   });
 
-  it('returns 404 when GitHub repo not found', async () => {
+  it('returns a typed 409 repo-access refusal when the linked GitHub repo row is gone', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
@@ -632,12 +651,13 @@ describe('POST /api/github/pr', () => {
     });
     const res = await POST(req);
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(409);
     const data = await res.json();
-    expect(data.error).toBe('GitHub repo not found');
+    expect(data.code).toBe('github_repo_access_required');
+    expect(data.reason).toBe('installation_missing');
   });
 
-  it('returns 404 when GitHub repo has no installation', async () => {
+  it('returns a typed 409 repo-access refusal when the linked GitHub repo has no installation', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
@@ -658,9 +678,10 @@ describe('POST /api/github/pr', () => {
     });
     const res = await POST(req);
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(409);
     const data = await res.json();
-    expect(data.error).toBe('GitHub repo not found');
+    expect(data.code).toBe('github_repo_access_required');
+    expect(data.reason).toBe('installation_missing');
   });
 
   it('creates PR successfully and returns PR data', async () => {
@@ -692,6 +713,127 @@ describe('POST /api/github/pr', () => {
     expect(data.pr.url).toBe('https://github.com/owner/repo/pull/42');
     expect(data.pr.state).toBe('open');
     expect(data.pr.title).toBe('My PR');
+  });
+
+  describe('repository access (existing repo the App cannot act on)', () => {
+    const OK_WORKER = { id: 'w-1', accountId: 'account-1', name: 'test-worker', taskId: 'task-1', workspaceId: 'ws-1' };
+    // No task: these cases are about repo access, not PR head ownership.
+    const NO_TASK_WORKER = { id: 'w-1', accountId: 'account-1', name: 'test-worker', workspaceId: 'ws-1' };
+    const PR_CREATED = { number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' };
+
+    beforeEach(() => {
+      mockResolveRepoAccess.mockClear();
+      mockRecordRepoAccessBlock.mockReset();
+      mockRecordRepoAccessBlock.mockResolvedValue({ alreadyReported: false });
+    });
+
+    it('opens the PR when the repo-mediated installation is live, even with the legacy installation FK empty', async () => {
+      // Regression: the guard used to require workspaces.githubInstallationId,
+      // a legacy column, and refused "Workspace not linked" whenever it was null.
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({ ...NO_TASK_WORKER, workspace: { ...WORKSPACE_OK, githubInstallationId: null } });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValue(PR_CREATED);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+      }));
+      expect(res.status).toBe(200);
+      expect(mockResolveRepoAccess).not.toHaveBeenCalled();
+    });
+
+    it('heals a synced-but-unlinked repo and opens the PR instead of refusing', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({ ...NO_TASK_WORKER, workspace: { teamId: 'team-1', githubRepoId: null, githubInstallationId: null } });
+      mockResolveRepoAccess.mockResolvedValueOnce({
+        diagnosis: { ok: true, repo: { id: 'repo-1', fullName: 'owner/repo', defaultBranch: 'main', installation: { installationId: 12345 } }, installationId: 12345 },
+        healed: true,
+        teamId: 'team-1',
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValue(PR_CREATED);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+      }));
+      expect(res.status).toBe(200);
+      expect(mockResolveRepoAccess.mock.calls[0]?.[1]).toBe('pr.create');
+      expect(mockResolveRepoAccess.mock.calls[0]?.[2]).toEqual({ heal: true });
+      expect(mockRecordRepoAccessBlock).not.toHaveBeenCalled();
+    });
+
+    it('refuses with remediation and agent guidance, stamps the task for resume, and never calls GitHub', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({ ...OK_WORKER, workspace: { teamId: 'team-1', githubRepoId: null, githubInstallationId: null } });
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+      }));
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.code).toBe('github_repo_access_required');
+      expect(data.error).toStartWith('Repository access required:');
+      expect(data.error).not.toContain('Workspace not linked');
+      expect(data.remediation.action.label).toBe('Ask a GitHub administrator');
+      expect(data.agentGuidance).toContain('do not create one');
+      expect(data.agentGuidance).toContain('Do not open the PR with gh');
+      expect(data.alreadyReported).toBe(false);
+      expect(mockGithubApi).not.toHaveBeenCalled();
+      expect(mockRecordRepoAccessBlock).toHaveBeenCalledTimes(1);
+      expect(mockRecordRepoAccessBlock.mock.calls[0]?.[0]).toMatchObject({ taskId: 'task-1', workerId: 'w-1', workspaceId: 'ws-1', head: 'feature-branch' });
+    });
+
+    it('tells a second agent the admins already have it, so it does not ask anyone again', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({ ...OK_WORKER, workspace: { teamId: 'team-1', githubRepoId: null } });
+      mockRecordRepoAccessBlock.mockResolvedValue({ alreadyReported: true });
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+      }));
+      const data = await res.json();
+      expect(data.alreadyReported).toBe(true);
+      expect(data.agentGuidance).toContain('already on the workspace admins');
+    });
+
+    it('maps GitHub 403 "Resource not accessible by integration" on create to a typed permission refusal, not a 500', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({ ...NO_TASK_WORKER, workspace: WORKSPACE_OK });
+      mockGithubReposFindFirst.mockResolvedValue({
+        ...REPO,
+        installation: { id: 'inst-1', installationId: 12345, accountLogin: 'owner', accountType: 'Organization', accountId: 7, permissions: { pull_requests: 'write' } },
+      });
+      mockGithubApi.mockImplementation(async (_i: number, path: string, opts?: { method?: string }) => {
+        if (opts?.method === 'POST' && path.endsWith('/pulls')) {
+          throw new Error('GitHub API error: 403 {"message":"Resource not accessible by integration"}');
+        }
+        return [];
+      });
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+      }));
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.reason).toBe('permission_missing');
+      expect(data.remediation.githubUrl).toBe('https://github.com/organizations/owner/settings/installations/12345');
+    });
+
+    it('get_pr refuses with the same typed body but does not stamp the task (nothing to resume)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({ ...OK_WORKER, prNumber: 42, workspace: { teamId: 'team-1', githubRepoId: null } });
+      mockResolveRepoAccess.mockResolvedValueOnce({
+        diagnosis: { ok: false, problem: { reason: 'repo_not_selected', operation: 'pr.read', repoFullName: 'owner/repo', installation: null, missingPermissions: [], repoRow: null } },
+        healed: false,
+        teamId: 'team-1',
+      });
+      const req = new NextRequest('http://localhost:3000/api/github/pr?workerId=w-1', { headers: { Authorization: 'Bearer bld_test' } });
+      const res = await GET(req);
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.reason).toBe('repo_not_selected');
+      expect(mockRecordRepoAccessBlock).not.toHaveBeenCalled();
+    });
   });
 
   // `autoMergeEnabled` in the response must say what the merge gate will do,
@@ -3418,7 +3560,7 @@ describe('PATCH /api/github/pr', () => {
     expect(data.error).toBe('Worker belongs to different account');
   });
 
-  it('returns 400 when workspace not linked to GitHub repo', async () => {
+  it('returns a typed 409 repo-access refusal when the workspace is not linked to a GitHub repo', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
@@ -3431,12 +3573,13 @@ describe('PATCH /api/github/pr', () => {
       body: { workerId: 'w-1', prNumber: 42 },
     });
     const res = await PATCH(req);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409);
     const data = await res.json();
-    expect(data.error).toBe('Workspace not linked to GitHub repo');
+    expect(data.code).toBe('github_repo_access_required');
+    expect(data.reason).toBe('installation_missing');
   });
 
-  it('returns 404 when GitHub repo not found', async () => {
+  it('returns a typed 409 repo-access refusal when the linked GitHub repo row is gone', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
@@ -3450,9 +3593,10 @@ describe('PATCH /api/github/pr', () => {
       body: { workerId: 'w-1', prNumber: 42 },
     });
     const res = await PATCH(req);
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(409);
     const data = await res.json();
-    expect(data.error).toBe('GitHub repo not found');
+    expect(data.code).toBe('github_repo_access_required');
+    expect(data.reason).toBe('installation_missing');
   });
 
   it('draft:false marks a draft PR ready via GraphQL without closing it', async () => {
@@ -3740,7 +3884,7 @@ describe('PUT /api/github/pr', () => {
     expect(data.error).toBe('Worker belongs to different account');
   });
 
-  it('returns 400 when workspace not linked to GitHub repo', async () => {
+  it('returns a typed 409 repo-access refusal when the workspace is not linked to a GitHub repo', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
@@ -3752,12 +3896,13 @@ describe('PUT /api/github/pr', () => {
       body: { workerId: 'w-1', prNumber: 42 },
     });
     const res = await PUT(req);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409);
     const data = await res.json();
-    expect(data.error).toBe('Workspace not linked to GitHub repo');
+    expect(data.code).toBe('github_repo_access_required');
+    expect(data.reason).toBe('installation_missing');
   });
 
-  it('returns 404 when GitHub repo not found', async () => {
+  it('returns a typed 409 repo-access refusal when the linked GitHub repo row is gone', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
@@ -3770,9 +3915,10 @@ describe('PUT /api/github/pr', () => {
       body: { workerId: 'w-1', prNumber: 42 },
     });
     const res = await PUT(req);
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(409);
     const data = await res.json();
-    expect(data.error).toBe('GitHub repo not found');
+    expect(data.code).toBe('github_repo_access_required');
+    expect(data.reason).toBe('installation_missing');
   });
 
   describe('merge-policy gate', () => {
@@ -5295,7 +5441,7 @@ describe('GET /api/github/pr', () => {
     expect(res.status).not.toBe(403);
   });
 
-  it('returns 400 when workspace not linked to GitHub repo', async () => {
+  it('returns a typed 409 repo-access refusal when the workspace is not linked to a GitHub repo', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
@@ -5303,12 +5449,13 @@ describe('GET /api/github/pr', () => {
       workspace: { teamId: 'team-1', githubRepoId: null, githubInstallationId: null },
     });
     const res = await GET(createGetRequest('w-1', 42));
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409);
     const data = await res.json();
-    expect(data.error).toBe('Workspace not linked to GitHub repo');
+    expect(data.code).toBe('github_repo_access_required');
+    expect(data.reason).toBe('installation_missing');
   });
 
-  it('returns 404 when GitHub repo not found', async () => {
+  it('returns a typed 409 repo-access refusal when the linked GitHub repo row is gone', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
@@ -5318,9 +5465,10 @@ describe('GET /api/github/pr', () => {
     });
     mockGithubReposFindFirst.mockResolvedValue(null);
     const res = await GET(createGetRequest('w-1', 42));
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(409);
     const data = await res.json();
-    expect(data.error).toBe('GitHub repo not found');
+    expect(data.code).toBe('github_repo_access_required');
+    expect(data.reason).toBe('installation_missing');
   });
 
   it('returns 400 when prNumber cannot be resolved', async () => {

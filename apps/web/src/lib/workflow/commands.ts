@@ -13,6 +13,7 @@ import type {
   ApprovalBasis,
   CloseCause,
   CompositionAttestation,
+  PolicyEvidence,
   ConstituentEvidence,
   DeliveryState,
   RoundKind,
@@ -262,6 +263,14 @@ export type Command =
       maxContractRetries: number;
     })
   | (Base & {
+      /**
+       * T28: a preflight finding for ONE head. Head-bound: a finding for any
+       * other head than the delivery's current one is stale and changes nothing.
+       */
+      type: 'PolicyEvidenceRecorded';
+      evidence: PolicyEvidence;
+    })
+  | (Base & {
       type: 'CompositionAttested';
       attestation: CompositionAttestation;
       /** Resolved per constituent by the caller; keyed by roundId. */
@@ -317,6 +326,7 @@ export interface DeliveryPatch {
   supersededByUrl?: string | null;
   supersededReason?: string | null;
   recordedBy?: string | null;
+  policyEvidence?: PolicyEvidence | null;
 }
 
 export type RoundOp =

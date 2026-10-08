@@ -35,6 +35,8 @@ mock.module('@buildd/core/db/schema', () => ({
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
   connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
   secrets: { teamId: 'teamId', purpose: 'purpose', label: 'label' },
+  connectorCatalogTeamPolicies: { teamId: 'teamId', policy: 'policy' },
+  teamMembers: { userId: 'userId', teamId: 'teamId' },
 }));
 
 const mockWorkspaceSkillsFindMany = mock(async (_args?: any) => [] as any[]);
@@ -42,6 +44,8 @@ const mockConnectorsFindMany = mock(async (_args?: any) => [] as any[]);
 const mockConnectorSharesFindMany = mock(async (_args?: any) => [] as any[]);
 const mockConnectorWorkspacesFindMany = mock(async (_args?: any) => [] as any[]);
 const mockSecretsFindMany = mock(async (_args?: any) => [] as any[]);
+const mockPoliciesFindMany = mock(async (_args?: any) => [] as any[]);
+const mockLoadTeamCatalog = mock(async (_teamId: string) => [] as any[]);
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -51,9 +55,11 @@ mock.module('@buildd/core/db', () => ({
       connectorShares: { findMany: mockConnectorSharesFindMany },
       connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
       secrets: { findMany: mockSecretsFindMany },
+      connectorCatalogTeamPolicies: { findMany: mockPoliciesFindMany },
     },
   },
 }));
+mock.module('@/lib/connector-catalog-store', () => ({ loadTeamCatalog: mockLoadTeamCatalog }));
 
 const mockRefresh = mock(async (_secretId: string) => 'refreshed' as string);
 mock.module('@/lib/mcp-connector-refresh', () => ({
@@ -162,6 +168,57 @@ beforeEach(() => {
   stageSecrets();
   mockRefresh.mockReset();
   mockRefresh.mockResolvedValue('refreshed');
+  mockPoliciesFindMany.mockReset();
+  mockPoliciesFindMany.mockResolvedValue([]);
+  mockLoadTeamCatalog.mockReset();
+  mockLoadTeamCatalog.mockResolvedValue([]);
+});
+
+// --- team catalog policy (§5a) --------------------------------------------
+
+describe('resolveMcpConnectorsForTask — blocked by team catalog policy', () => {
+  function blockUrl(teamId: string, url: string) {
+    mockPoliciesFindMany.mockResolvedValue([{ teamId }]);
+    mockLoadTeamCatalog.mockImplementation(async (t: string) =>
+      t === teamId ? [{ slug: 'axiom', name: 'Axiom', url, policy: 'blocked' }] : []);
+  }
+
+  it('never mounts or decrypts an installed connector the team has blocked', async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-oauth', 'conn-1'])]);
+    stageConnectors([
+      connector({ id: 'conn-oauth', name: 'axiom', authMode: 'oauth', url: 'https://mcp.axiom.co/mcp' }),
+      connector(),
+    ]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    stageSecrets({ credentials: [{ id: 'cs-1', label: 'conn-oauth', tokenExpiresAt: new Date(NOW.getTime() - 1) }] });
+    blockUrl(TEAM, 'https://mcp.axiom.co/mcp');
+    const p = provider({ 'cs-1': JSON.stringify({ access_token: 'tok' }) });
+
+    const result = await resolve(task(), p);
+
+    expect(result.map(c => c.name)).toEqual(['my-mcp']);
+    expect(p.get).not.toHaveBeenCalled();
+    expect(mockRefresh).not.toHaveBeenCalled();
+  });
+
+  it("drops a shared-in connector its owner team blocked", async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-shared'])]);
+    stageConnectors([connector({ id: 'conn-shared', teamId: OTHER_TEAM, url: 'https://mcp.axiom.co/mcp' })]);
+    mockConnectorSharesFindMany.mockResolvedValue([{ connectorId: 'conn-shared' }]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    blockUrl(OTHER_TEAM, 'https://mcp.axiom.co/mcp');
+
+    expect(await resolve()).toEqual([]);
+  });
+
+  it('mounts nothing when the policy cannot be read (fails closed)', async () => {
+    mockPoliciesFindMany.mockRejectedValue(new Error('db down'));
+    const workers = [{ id: 'w1', task: task() } as any];
+
+    await attachMcpConnectors(workers, NOW, provider());
+
+    expect(workers[0].mcpConnectors).toBeUndefined();
+  });
 });
 
 // --- §2: the opt-in intersection -----------------------------------------
