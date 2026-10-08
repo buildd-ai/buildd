@@ -602,6 +602,25 @@ fi
 # fails those tests even though nothing else here needs it. Best-effort and
 # idempotent: a missing package manager or a failed install just leaves those
 # tests failing, same as today, rather than aborting the rest of the install.
+zstd_userspace_provision() {
+  command -v dpkg-deb >/dev/null 2>&1 || return 1
+  local work apt_opts
+  work="$(mktemp -d)" || return 1
+  mkdir -p "$work/lists/partial" "$work/cache/archives/partial" "$work/dl"
+  apt_opts=(-o "Dir::State::Lists=$work/lists" -o "Dir::Cache=$work/cache" -o Debug::NoLocking=1)
+  if (apt-get "${apt_opts[@]}" update -qq && cd "$work/dl" && apt-get "${apt_opts[@]}" download -qq zstd) >/dev/null 2>&1 \
+     && dpkg-deb -x "$work"/dl/zstd_*.deb "$work/root" 2>/dev/null \
+     && [ -x "$work/root/usr/bin/zstd" ]; then
+    mkdir -p "$HOME/.local/bin"
+    install -m 0755 "$work/root/usr/bin/zstd" "$HOME/.local/bin/zstd"
+    rm -rf "$work"
+    "$HOME/.local/bin/zstd" --version >/dev/null 2>&1
+    return $?
+  fi
+  rm -rf "$work"
+  return 1
+}
+
 zstd_provision() {
   if command -v zstd >/dev/null 2>&1; then
     return 0
@@ -617,6 +636,9 @@ zstd_provision() {
           sudo -n true 2>/dev/null && sudo apt-get update -qq && sudo apt-get install -y -qq zstd
           return $?
         fi
+        # Not root and no passwordless escalation (the usual worker sandbox):
+        # fetch the .deb with a user-owned apt state dir, unpack into ~/.local.
+        zstd_userspace_provision && return 0
       fi
       ;;
     Darwin)
