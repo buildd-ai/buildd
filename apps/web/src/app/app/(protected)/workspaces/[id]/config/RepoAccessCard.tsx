@@ -70,7 +70,9 @@ export function RepoAccessCard({ workspaceId, initialView, canCheck }: Props) {
         }
     }
 
-    const checkButton = canCheck && (
+    // Re-reading GitHub cannot fix a server with no App; don't offer it there.
+    const checkable = canCheck && view.remediation?.reason !== 'app_not_configured';
+    const checkButton = checkable && (
         <button type="button" className={BUTTON} onClick={checkConnection} disabled={checking} data-testid="repo-access-check">
             {checking ? 'Checking…' : 'Check connection'}
         </button>
@@ -158,7 +160,7 @@ export function RepoAccessCard({ workspaceId, initialView, canCheck }: Props) {
                     </a>
                 </p>
             )}
-            {canCheck && action.kind !== 'check_connection' && (
+            {checkable && action.kind !== 'check_connection' && action.kind !== 'operator' && action.kind !== 'link_repo' && (
                 <p className="text-xs text-text-muted mt-2">After the change on GitHub, Buildd usually notices on its own. If not, press Check connection.</p>
             )}
             {result && <p className="text-xs text-text-muted mt-2" role="status">{result}</p>}

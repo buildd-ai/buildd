@@ -89,4 +89,14 @@ describe('RepoAccessCard', () => {
     expect(container.textContent).toContain('Connected. 2 waiting tasks resumed.');
     expect(container.textContent).toContain('Buildd can open pull requests on');
   });
+
+  it('a server with no GitHub App names the operator and offers no GitHub step or Check connection', () => {
+    act(() => root.render(<RepoAccessCard workspaceId="ws-1" canCheck initialView={view(
+      { kind: 'operator', label: 'Contact your Buildd operator', url: null },
+      { reason: 'app_not_configured', title: 'Connection required', adminInstructions: null, githubUrl: null },
+    )} />));
+    expect(container.textContent).toContain('Contact your Buildd operator');
+    expect(q('repo-access-check')).toBeNull();
+    expect(container.textContent).not.toContain('After the change on GitHub');
+  });
 });
