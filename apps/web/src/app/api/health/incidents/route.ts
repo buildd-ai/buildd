@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
 import { db } from '@buildd/core/db';
@@ -106,7 +106,8 @@ function parseCsvEnum<T extends string>(raw: string | null, allowed: readonly T[
  *
  *   teamId      — dashboard session only: pin to one of the user's teams.
  *
- * Auth: API key (scope = the key's team) or the dashboard session (scope = the
+ * Auth: API key (scope = the key's team; a per-task token reads only its own
+ * task's workspace) or the dashboard session (scope = the
  * user's teams, or the pinned one).
  *
  * Response: { incidents: FailureIncident[], counts: { total, bySeverity } }
@@ -118,7 +119,7 @@ export async function GET(req: NextRequest) {
   try {
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') ?? null;
-    const account = await authenticateApiKey(apiKey, req);
+    const account = await authenticateTaskScopedCaller(apiKey, req);
     const sessionUser = account ? null : await getCurrentUser();
     if (!account && !sessionUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -153,10 +154,12 @@ export async function GET(req: NextRequest) {
         where: eq(workspaces.id, workspaceId),
         columns: { id: true, teamId: true },
       });
-      if (!ws || !teamIds.includes(ws.teamId)) {
+      if (!ws || !teamIds.includes(ws.teamId) || (account && !taskScopeAllowsWorkspace(account, ws.id))) {
         return NextResponse.json({ error: 'Workspace not found or not in your team' }, { status: 404 });
       }
       scopedWsIds = [workspaceId];
+    } else if (account?.taskScope) {
+      scopedWsIds = [account.taskScope.workspaceId];
     } else if (account) {
       const wsRows = await db.query.workspaces.findMany({
         where: eq(workspaces.teamId, account.teamId),

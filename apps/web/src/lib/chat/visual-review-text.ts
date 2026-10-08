@@ -67,7 +67,7 @@ export function visualReviewEventText(
       const n = model.summary.awaitingHuman;
       const tail = n > 0
         ? `${n} ${n === 1 ? 'needs' : 'need'} you.`
-        : model.summary.openFixes > 0 ? `${plural(model.summary.openFixes, 'fix', 'fixes')} running.` : 'Nothing needs you.';
+        : model.summary.openFixes > 0 ? `${plural(model.summary.openFixes, 'fix', 'fixes')} running.` : 'Nothing to review.';
       return `Round ${round} done: ${counts}. ${tail}`;
     }
     case 'fixes_filed': {
@@ -78,7 +78,7 @@ export function visualReviewEventText(
     case 'all_clear':
       return `All clear after round ${round}: ${counts}.`;
     case 'round_cap':
-      return `Issues remain after ${plural(Math.max(model.summary.rounds, round), 'round')}: your call. ${counts}.`;
+      return `Issues remain after ${plural(Math.max(model.summary.rounds, round), 'round')}: decision needed. ${counts}.`;
   }
 }
 

@@ -75,10 +75,11 @@ mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: async () => (hasAccess ? { teamId: TEAM } : null),
   verifyAccountWorkspaceAccess: async () => (hasAccess ? { teamId: TEAM } : null),
   canCallerAdminTeam: async () => false,
+  holdsInWorkspace: async () => false,
 }));
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       accounts: { findFirst: async () => null },
       workspaces: { findFirst: async () => ({ repo: 'https://github.com/acme/widgets', name: 'widgets' }) },
     },

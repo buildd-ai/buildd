@@ -12,6 +12,8 @@ import { MobileSaveBar, HeaderSaveButton } from '@/components/MobileSaveBar';
 import { ColorSwatches } from '@/components/ColorSwatches';
 import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 import { NOT_FOR_MAX, WHEN_TO_USE_MAX, WHEN_TO_USE_MIN, readRoleRouting } from '@/lib/role-routing';
+import { OPERATOR_ROLE_SLUG } from '@/lib/permission-registry';
+import { OperatorAccessSection } from './OperatorAccessSection';
 
 type Scope = 'team' | 'workspace';
 
@@ -819,7 +821,18 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
           </div>
         </div>
 
+        {/* Platform Operator access: a distinct admin surface, not a content/tools/mcp override. */}
+        {role.slug === OPERATOR_ROLE_SLUG && (
+          <OperatorAccessSection
+            roleId={role.id}
+            teamMetadata={role.metadata}
+            overrides={overrideList}
+            workspaces={userWorkspaces}
+          />
+        )}
+
         {/* Workspace Overrides Section */}
+        {role.slug !== OPERATOR_ROLE_SLUG && (
         <div className="border-t border-border-default pt-8">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
             <div className="min-w-0">
@@ -923,6 +936,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             </div>
           )}
         </div>
+        )}
 
         {/* Sits below Workspace Overrides but saves the team role above, so it
             says so; overrides keep their own "Save override" buttons. */}

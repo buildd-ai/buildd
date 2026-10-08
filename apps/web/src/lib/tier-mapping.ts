@@ -59,6 +59,9 @@ export function tierSourceState(source: TierEntry['source']): TierSourceState {
   if (source === 'team' || source === 'workspace') {
     return { pinned: true, label: 'pinned', explain: 'You chose this model. buildd won’t move it.' };
   }
+  if (source === 'policy') {
+    return { pinned: false, label: 'auto', explain: 'Set by the model policy service. Pin a model to override it.' };
+  }
   return {
     pinned: false,
     label: 'auto',

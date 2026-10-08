@@ -4,6 +4,7 @@ import { teamInvitations, teamMembers } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { isUuid } from '@/lib/uuid';
+import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 
 // DELETE /api/teams/[id]/invitations/[invitationId] — revoke invitation
 export async function DELETE(
@@ -30,7 +31,7 @@ export async function DELETE(
     ),
   });
 
-  if (!membership || membership.role === 'member') {
+  if (!membership || !roleHas(membership.role, 'manage_team_members', await getTeamPermissionOverrides(id))) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 

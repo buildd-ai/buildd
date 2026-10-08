@@ -1,1 +1,0 @@
-ALTER TABLE "ai_usage" ALTER COLUMN "tier" DROP NOT NULL;

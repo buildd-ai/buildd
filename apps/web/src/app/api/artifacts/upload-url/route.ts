@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { workers, artifacts, workspaces, tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { isStorageConfigured, generateSizedUploadUrl } from '@/lib/storage';
 import { buildArtifactKey, buildAuditScreenshotKey } from '@/lib/storage-keys';
 import { ARTIFACT_TYPES, ArtifactType, isArtifactType, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
@@ -28,7 +28,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey, req);
+  // A per-task token uploads only for its own task's worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -88,7 +89,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id) {
+  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 

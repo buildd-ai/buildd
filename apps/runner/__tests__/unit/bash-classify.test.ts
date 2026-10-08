@@ -223,7 +223,7 @@ describe('classifyBashCommand — code_search pattern shape', () => {
   test('regex / metacharacter pattern', () => {
     expect(shape('grep -E "^(a|b)$" file')).toBe('regex');
     expect(shape('rg "foo.bar"')).toBe('regex');
-    expect(shape('rg "cbm(Tool|File)Counts"')).toBe('regex');
+    expect(shape('rg "bash(Command|Tool)Counts"')).toBe('regex');
   });
 
   test('quoted string containing spaces', () => {
@@ -323,7 +323,7 @@ describe('recordBashCommand', () => {
   });
 });
 
-describe('classifyBashSearch — the CBM search injection trigger', () => {
+describe('classifyBashSearch — identifier-shaped searches', () => {
   test('returns the identifier only for an identifier-shaped code search', () => {
     expect(classifyBashSearch('rg -n recordToolCall apps/runner').identifier).toBe('recordToolCall');
     expect(classifyBashSearch('cd apps && grep -rn --include=*.ts recordToolCall .').identifier).toBe('recordToolCall');

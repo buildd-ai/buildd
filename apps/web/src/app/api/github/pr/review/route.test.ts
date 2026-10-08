@@ -1,6 +1,6 @@
 process.env.NODE_ENV = 'production';
 
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ mock.module('@/lib/dispatch-authority', () => ({
   enqueueTaskDispatch: async () => {},
   drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
   deliverTaskDispatch: async () => 'pusher',
-  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
   webhookWants: () => false,
   primaryCause: (_causes: string[], fallback: string) => fallback,
   DISPATCH_DUE_QUEUE: 'dispatch',
@@ -79,6 +79,15 @@ mock.module('@/lib/pr-review-request', () => ({
 // contract this route is judged on, and stubbing them would only assert that
 // the route calls its own stubs.
 
+// The PR fact funnel (recordPrFact): the adoption records what GitHub says
+// about the PR as a fact after the insert.
+const recordedFacts: Array<{ target: unknown; fact: unknown }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: unknown) => { recordedFacts.push({ target, fact }); return []; },
+  recordPrFactSql: () => null,
+  prFactApplies: () => true,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -98,6 +107,11 @@ mock.module('@buildd/core/db', () => ({
     }),
   },
 }));
+
+// Workflow kernel (lib/workflow/seam.ts): a kernel-owned PR's review request is
+// T5. Default: not a kernel PR, so every legacy case below runs unchanged.
+const mockRequestKernelReview = mock(async (_p: any): Promise<any> => ({ handled: false }));
+mock.module('@/lib/workflow/seam', () => ({ requestReview: mockRequestKernelReview }));
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
@@ -307,8 +321,9 @@ describe('POST /api/github/pr/review — adoption', () => {
       prNumber: 42,
       prUrl: OPEN_PR.html_url,
       branch: 'fix/spinner',
-      prLifecycleStatus: 'pr_open',
     });
+    expect(workerInsert.values.prLifecycleStatus).toBeUndefined();
+    expect(recordedFacts.at(-1)).toMatchObject({ fact: { kind: 'open' } });
     // Diff stats come from the PR so policy thresholds see real numbers.
     expect(workerInsert.values.linesAdded).toBe(40);
     expect(workerInsert.values.filesChanged).toBe(2);
@@ -399,7 +414,7 @@ describe('POST /api/github/pr/review — adoption', () => {
     expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
     expect(mockAppendPrActivity.mock.calls[0][0]).toMatchObject({
       prNumber: 42,
-      entry: { kind: 'reviewing' },
+      entry: { kind: 'review_queued' },
     });
   });
 
@@ -468,6 +483,50 @@ describe('POST /api/github/pr/review — idempotency', () => {
     expect(json.alreadyRequested).toBe(true);
     expect(json.status.state).toBe('approved');
     expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  describe('workflow kernel PR', () => {
+    const current = { state: 'AWAITING_REVIEW', version: 3, head: 'h', round: 1 };
+    afterEach(() => { mockRequestKernelReview.mockReset(); mockRequestKernelReview.mockResolvedValue({ handled: false }); });
+
+    it('is T5 on the live head and never creates a legacy reviewer', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't', deliveryId: 'd', version: 4, decision: {} } });
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      expect(res.status).toBe(201);
+      const json = await res.json();
+      expect(json).toMatchObject({ ok: true, kernel: true, alreadyRequested: false });
+      expect(mockRequestKernelReview.mock.calls[0][0]).toMatchObject({ prNumber: 42, forced: false });
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('answers from the round\'s reviewer at the live head, never the newest reviewer row (task 1ebce52a)', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current }, reviewTaskId: 'round-reviewer' });
+      mockFindReviewTaskForPr.mockClear();
+      mockFindReviewTaskForPr.mockReturnValue({ id: 'newest-legacy-row', status: 'completed', result: { structuredOutput: { verdict: 'request-changes', confidence: 0.9 } }, context: { prNumber: 42, headSha: 'other' } });
+      mockTasksFindFirst.mockImplementation(async () => ({ id: 'round-reviewer', status: 'in_progress', result: null, context: { prNumber: 42 } }));
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json).toMatchObject({ kernel: true, reviewTaskId: 'round-reviewer' });
+      expect(mockFindReviewTaskForPr).not.toHaveBeenCalled();
+      mockFindReviewTaskForPr.mockReturnValue(null);
+    });
+
+    it('force is a recorded bypass actor, never a second reviewer on a running round', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current } });
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
+      expect(res.status).toBe(200);
+      expect((await res.json()).alreadyRequested).toBe(true);
+      expect(mockRequestKernelReview.mock.calls[0][0]).toMatchObject({ forced: true, actor: 'force' });
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('a request the table refuses is a 409 with the current view', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'state_not_allowed', current } });
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      expect(res.status).toBe(409);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
   });
 
   it('force re-reviews a PR whose review already finished', async () => {
@@ -690,5 +749,84 @@ describe('GET /api/github/pr/review — dashboard session', () => {
   it('does not accept a session on POST', async () => {
     const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }, {}));
     expect(res.status).toBe(401);
+  });
+});
+
+describe('per-task token', () => {
+  const SCOPED = { ...ACCOUNT, level: 'worker', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+  const owner = (taskId: string) => ({ id: 'w-1', taskId, branch: 'buildd/abc', prUrl: OPEN_PR.html_url, prLifecycleStatus: 'pr_open', mergedAt: null });
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReturnValue(SCOPED);
+  });
+
+  it('requests review of its own task’s PR', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-1'));
+    mockWorkersFindFirst.mockReturnValue({
+      ...owner('task-1'),
+      task: { id: 'task-1', title: 'Original work', description: null, backend: 'claude', missionId: null, pathManifest: null, context: {} },
+    });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(201);
+  });
+
+  it('refuses review of another task’s PR, without creating a reviewer', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  it('requests review of a PR its own task names, even though a different task’s worker owns it', async () => {
+    // A coordination/cleanup task ("resolve conflicts on #42") repairing a PR
+    // it never opened — same fallback pr/route.ts already applies to close/merge.
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({
+      id: 'task-1', title: 'Repair stale PRs', description: 'resolve conflicts on #42', context: {}, workspaceId: 'ws-1',
+    });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(201);
+  });
+
+  it('still refuses when neither its own worker nor its task names the PR', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({
+      id: 'task-1', title: 'Unrelated work', description: 'nothing about PRs here', context: {}, workspaceId: 'ws-1',
+    });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  // S21 (§17.1): the rule is the caller's task. The owner's task naming its own PR gives a
+  // sibling's token nothing; the lookup reads the caller's task only.
+  it('S21: a sibling task is refused even though the PR owner\'s task names the PR', async () => {
+    mockFindPrOwningWorker.mockReturnValue({ ...owner('task-2'), task: { id: 'task-2', title: 'Fix #42', description: 'land #42', context: {} } });
+    mockTasksFindFirst.mockImplementation(((..._a: unknown[]) => ({ id: 'task-1', title: 'Sibling work', description: 'touches the same files', context: {}, workspaceId: 'ws-1' })) as never);
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  it('does not trust another task naming the PR when the task row has drifted out of its own workspace', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({
+      id: 'task-1', title: 'Repair stale PRs', description: 'resolve conflicts on #42', context: {}, workspaceId: 'ws-2',
+    });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses review of a PR buildd does not own, rather than adopting it', async () => {
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('sees only its own workspace, even when the team has others', async () => {
+    mockGetTeamWorkspaceIds.mockReturnValue(['ws-1', 'ws-2']);
+    mockResolveWorkspace.mockReturnValue({ ...WORKSPACE, id: 'ws-2', name: 'other' });
+    const res = await GET(get('?prNumber=42&workspaceId=other'));
+    expect(res.status).toBe(404);
   });
 });

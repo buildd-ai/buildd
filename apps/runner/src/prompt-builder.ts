@@ -2,6 +2,7 @@ import type { query } from '@anthropic-ai/claude-agent-sdk';
 import { QUESTION_BRIEF_GUIDANCE } from '@buildd/core/question-brief';
 import type { LocalWorker, BuilddTask } from './types';
 import { sessionLog } from './session-logger';
+import { isCloudExecutor } from './git-clone';
 import { shouldDenyPrMutation } from './pr-mutation-enforcement.js';
 import { resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { HEARTBEAT_PROTOCOL_BLOCK, shippedPromptText, taskShippedPromptText, designSourceFromContext, type ClaudeAiArtifactAccess } from '@buildd/shared';
@@ -316,6 +317,10 @@ export interface PromptBuildResult {
  * and worked in the checkout every worker shares.
  */
 export function worktreeLocationLine(worktreePath: string): string {
+  if (isCloudExecutor(process.env)) {
+    return `- Your session clone is \`${worktreePath}\` — run every command, test and git operation from there, `
+      + 'and edit only files under it.';
+  }
   return `- Your worktree is \`${worktreePath}\` — run every command, test and git operation from there, `
     + 'and edit only files under it. Do not `cd` into the directories that contain it: they are a checkout '
     + 'shared with other workers, and the runner refuses commands and edits there.';
@@ -438,7 +443,9 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
           + `\`create_pr\` re-creates it from trunk (or falls back to trunk) and records which on the mission feed.`,
         );
       }
-      gitContext.push(`- You are working in an isolated worktree — commit and push directly, do NOT switch branches`);
+      gitContext.push(isCloudExecutor(process.env)
+        ? '- You are working in the session clone — commit and push directly, do NOT switch branches'
+        : '- You are working in an isolated worktree — commit and push directly, do NOT switch branches');
       gitContext.push(worktreeLocationLine(worker.worktreePath));
     }
 
@@ -466,7 +473,7 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
         // access is actually denied (pr-mutation-enforcement.ts), say so here rather
         // than let the agent discover it as an unexplained tool failure mid-task.
         if (shouldDenyPrMutation(task.roleSlug, hasApiKey)) {
-          gitContext.push(`- \`gh pr create/edit/merge/close/reopen/ready/review\` are blocked for this role — use \`create_pr\`/\`merge_pr\`/\`close_pr\`/\`request_pr_review\` instead. Read-only \`gh pr view/list/checks\` and \`gh api <GET>\` still work.`);
+          gitContext.push(`- \`gh pr create/edit/merge/close/reopen/ready/review\` are blocked for this role — use \`create_pr\`/\`merge_pr\`/\`close_pr\`/\`update_pr\`/\`request_pr_review\` instead. Read-only \`gh pr view/list/checks\` and \`gh api <GET>\` still work.`);
         }
       } else {
         gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);

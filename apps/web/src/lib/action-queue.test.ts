@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
-import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, partitionEscalations, isActionableChip, isDocFixClaimStale, summariseActionQueueAge, DOC_FIX_RECHECK_GRACE_MS } from './action-queue';
-import type { WaitingOnYouRawItem, EscalationRawItem, ResolvedEscalationItem, EscalatedMissionCandidate, DiscrepancyCandidate } from './action-queue';
+import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, partitionEscalations, isActionableChip, isDocFixClaimStale, summariseActionQueueAge, DOC_FIX_RECHECK_GRACE_MS } from './action-queue';
+import type { WaitingOnYouRawItem, EscalationRawItem, ResolvedEscalationItem, EscalatedMissionCandidate, DiscrepancyCandidate, FailedTaskCandidate } from './action-queue';
 
 const PR_URL_A = 'https://github.com/org/repo/pull/1480';
 const PR_URL_B = 'https://github.com/org/repo/pull/1481';
@@ -1423,3 +1423,65 @@ describe('buildActionQueue — missionMergeBlockedReason pass-through', () => {
     expect(result[0].missionMergeBlockedReason).toBeNull();
   });
 })
+
+describe('buildFailedTaskItems — a failed task whose cause the owner can fix', () => {
+  const failed = (over: Partial<FailedTaskCandidate> = {}): FailedTaskCandidate => ({
+    taskId: 't-1',
+    title: 'Write a haiku about onboarding into hello.md',
+    status: 'failed',
+    backend: 'claude',
+    workerError: 'Not logged in · Please run /login',
+    missionId: null,
+    missionTitle: null,
+    ...over,
+  });
+
+  it('a task that failed on a missing agent key becomes a FAILED card under Needs you', () => {
+    const queue = buildActionQueue(buildFailedTaskItems([failed()]), []);
+    expect(queue).toHaveLength(1);
+    const [item] = queue;
+    expect(item.chip).toBe('FAILED');
+    expect(isActionableChip(item.chip)).toBe(true);
+    expect(item.subjectKey).toBe('task:t-1');
+    expect(item.taskId).toBe('t-1');
+    expect(item.taskTitle).toBe('Write a haiku about onboarding into hello.md');
+    expect(item.failureMessage).toContain('no working model key');
+    expect(item.failureMessage).not.toContain('/login');
+    expect(item.fixHref).toBe('/app/settings/runners#agent-key');
+    expect(item.fixLabel).toBe('Add an agent key');
+  });
+
+  it('re-derives from the task row: a task no longer failed (retried, completed) drops out', () => {
+    for (const status of ['pending', 'in_progress', 'completed', 'cancelled']) {
+      expect(buildFailedTaskItems([failed({ status })])).toEqual([]);
+    }
+  });
+
+  it('a failure with no owner-fixable cause stays off the queue', () => {
+    expect(buildFailedTaskItems([failed({ workerError: 'Tests failed: 3 of 12' })])).toEqual([]);
+    expect(buildFailedTaskItems([failed({ workerError: null })])).toEqual([]);
+  });
+
+  it('a Codex sign-in failure points at the Codex row', () => {
+    const [item] = buildFailedTaskItems([failed({ backend: 'codex', workerError: 'No Codex auth found' })]);
+    expect(item.fixHref).toBe('/app/settings/runners#agent-backends');
+    expect(item.failureMessage).toContain('Codex');
+  });
+
+  it('ranks with RECONNECT: below MERGE, above QUESTION', () => {
+    const queue = buildActionQueue(
+      [
+        { kind: 'answer', workerId: 'w-1', taskId: 't-2', taskTitle: 'q', question: 'why?' },
+        ...buildFailedTaskItems([failed()]),
+        { kind: 'merge', prUrl: 'https://github.com/x/y/pull/1', prNumber: 1, prOpenedAt: new Date(), prLifecycleVerifiedAt: new Date() },
+      ],
+      [],
+    );
+    expect(queue.map(i => i.chip)).toEqual(['MERGE', 'FAILED', 'QUESTION']);
+  });
+
+  it('one card per task', () => {
+    const items = buildFailedTaskItems([failed(), failed()]);
+    expect(buildActionQueue(items, [])).toHaveLength(1);
+  });
+});

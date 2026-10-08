@@ -1,1 +1,0 @@
-ALTER TABLE "notification_preferences" ADD COLUMN "connector_blocked" boolean DEFAULT true NOT NULL;

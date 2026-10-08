@@ -8,7 +8,7 @@ domain: auth
 surfaces: [apps/web/src/lib/permissions.ts, apps/web/src/lib/permission-registry.ts, apps/web/src/lib/team-access.ts, apps/web/src/lib/key-level-policy.ts]
 related: [team-namespace-scoping, auth-oauth-boundaries]
 keywords: [owner, admin, member, team role, api key level, ADMIN_ROLES, canCallerAdminTeam, permission registry, rbac]
-verified_by: [apps/web/src/lib/permissions.test.ts, apps/web/src/lib/team-access-team-scope.test.ts]
+verified_by: [apps/web/src/lib/permissions.test.ts, apps/web/src/lib/permission-overrides.test.ts, apps/web/src/app/api/teams/[id]/permissions/route.test.ts, apps/web/src/lib/team-access-team-scope.test.ts]
 supersedes: []
 assertions:
   - id: "permission-registry"
@@ -30,6 +30,17 @@ assertions:
   - id: "permissions-test"
     type: "test_file"
     path: "apps/web/src/lib/permissions.test.ts"
+  - id: "team-overrides-loader"
+    type: "symbol"
+    name: "getTeamPermissionOverrides"
+    path: "apps/web/src/lib/permissions.ts"
+  - id: "locked-permissions"
+    type: "symbol"
+    name: "LOCKED_PERMISSIONS"
+    path: "apps/web/src/lib/permission-registry.ts"
+  - id: "overrides-test"
+    type: "test_file"
+    path: "apps/web/src/lib/permission-overrides.test.ts"
 ---
 # Team Permissions
 
@@ -101,7 +112,32 @@ it (or none).
   owner/admin may mint admin keys.
 - Platform admin (`apps/web/src/lib/platform-admin.ts`), a cross-team operator
   allowlist, not a team role.
-- Per-team overrides and their storage.
+
+## Overrides
+
+A team owner MAY change which team roles hold a permission. The grants live in
+`teams.permission_overrides` (permission → team roles; an absent key is the
+registry default) and are read through `getTeamPermissionOverrides(teamId)`,
+cached per request.
+
+- Every decision passes the team's overrides: `roleHas(role, permission, overrides)`
+  takes them as a required argument, so a call site cannot silently use the
+  defaults. `null` is for locked permissions or a context with no team.
+- `owner` always holds every permission, so a team cannot lock itself out.
+- `assign_team_owner`, `delete_team`, `manage_team_permissions`,
+  `seed_team_timezone`, `activate_chat_retro_dogfood` and `manage_billing` are
+  locked: overrides for them are ignored on read and refused on write, so an
+  admin can never widen their own power and no team can hand a member the card.
+- Only `manage_team_permissions` (owner) writes, by signing in:
+  `PUT /api/teams/[id]/permissions` replaces the whole set; an entry equal to
+  the default is not stored and `{}` resets everything. Unknown or locked names
+  and unknown roles are a 400 that names the problem. Any member may `GET`.
+- Stored JSON is sanitized on every read; anything unknown is dropped, never
+  trusted. A failed read is an error, not "defaults": an override can take a
+  permission away, so guessing would widen access.
+- Overrides govern signed-in sessions. API keys and OAuth sessions act at
+  their key level (`minKeyLevel`; an owner's or admin's OAuth session acts as an
+  admin-level key), which overrides do not change.
 
 ## Inventory
 
@@ -136,9 +172,12 @@ this spec's `last_verified` date.
 | `apps/web/src/app/app/(protected)/settings/TimezoneSection.tsx:62` | UI: edit team timezone | owner, admin | — | `manage_team_settings` |
 | `apps/web/src/app/app/(protected)/settings/_lib/settings-context.ts:53` | UI: settings admin sections | owner, admin, personal team | — | `manage_team_settings` |
 | `apps/web/src/lib/team-timezone.ts:99` | own timezone change seeds owned teams | owner | — | `seed_team_timezone` |
-| `apps/web/src/app/api/teams/[id]/chat-retro/route.ts:40` | read/write chat retro settings | owner, admin | admin (`:30`) | `manage_chat_retro` |
+| `apps/web/src/app/api/teams/[id]/chat-retro/route.ts:52` | read/write chat retro settings | owner, admin | admin (`:42`) | `manage_chat_retro` |
+| `apps/web/src/app/api/teams/[id]/chat-retro/route.ts:110` | turn on chat retro account dogfood (every team the caller owns) | owner | — | `activate_chat_retro_dogfood` |
 | `apps/web/src/app/app/(protected)/home/home-view.ts:114` | UI: operator Home | owner, admin | — | `view_team_usage` |
 | `apps/web/src/app/app/(protected)/settings/budgets/page.tsx:61` | UI: per-person spend | via settings-context | — | `view_team_usage` |
+| `apps/web/src/lib/billing/team-billing-access.ts:64` | open Checkout / the billing portal / change seats | owner, admin | — | `manage_billing` |
+| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:55` | UI: billing actions | owner, admin, personal team | — | `manage_billing` |
 
 ### API keys and runners
 

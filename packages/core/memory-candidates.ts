@@ -81,7 +81,14 @@ export const PROMOTION_REVERT_WINDOW_HOURS = 72;
 /** Candidates judged per lifecycle run. */
 export const MEMORY_PROMOTE_MAX_PER_RUN = 25;
 
-/** Shadow `promote` verdicts asked per run (each is one decision call). */
+/**
+ * Rollback for the `keep` decision's act (see memory-decisions.ts header):
+ * false and the candidate step ignores the "not durable" tag. Lives next to
+ * its reader so this module keeps no import of the decisions module.
+ */
+export const KEEP_DEMOTES_LIVE = true;
+
+/** `promote` verdicts asked per run, veto and shadow together (each is one decision call). */
 export const MEMORY_PROMOTE_SHADOW_MAX_PER_RUN = 10;
 
 /** Unpromoted candidates with no pull or used outcome expire after this long. */
@@ -112,23 +119,35 @@ export interface PromotionEvidence {
   sourcePrReverted: boolean;
   /** A different task's learn, near-duplicate, in the same project, was folded into it. */
   corroborated: boolean;
+  /** learn's `keep` decision tagged it a task summary (KEEP_NOT_DURABLE_TAG). */
+  notDurable?: boolean;
+  /** An agent pulled it, or a task's use was labelled `used` (the same test expiry uses). */
+  pulled?: boolean;
 }
 
 export type PromotionVerdict =
   | { promote: true; reason: 'verified_outcome' | 'corroborated' }
-  | { promote: false; reason: 'external' | 'no_evidence' | 'reverted' };
+  | { promote: false; reason: 'external' | 'no_evidence' | 'reverted' | 'not_durable' };
 
 /**
- * The rule that decides while Jev is in shadow. Hard floors first: external
- * content never auto-promotes, and a candidate with neither a verified outcome
- * nor a corroborating episode stays a candidate.
+ * The deterministic rule; the `promote` Jev decision can only veto it (defer
+ * one cycle), never promote past it. Hard floors first: external content
+ * never auto-promotes, and a candidate with neither a verified outcome nor a
+ * corroborating episode stays a candidate. A candidate `keep` tagged "not
+ * durable" is held too, until an agent pulls it; held, it expires on the
+ * normal unpulled-candidate expiry. `keepDemotes` is the rollback
+ * (KEEP_DEMOTES_LIVE).
  */
-export function decidePromotion(e: PromotionEvidence): PromotionVerdict {
+export function decidePromotion(
+  e: PromotionEvidence,
+  opts: { keepDemotes?: boolean } = {},
+): PromotionVerdict {
   if (e.external) return { promote: false, reason: 'external' };
   const verified = e.sourcePrMergedPastWindow && !e.sourcePrReverted;
-  if (verified) return { promote: true, reason: 'verified_outcome' };
-  if (e.corroborated) return { promote: true, reason: 'corroborated' };
-  return { promote: false, reason: e.sourcePrMergedPastWindow && e.sourcePrReverted ? 'reverted' : 'no_evidence' };
+  const reason = verified ? 'verified_outcome' as const : e.corroborated ? 'corroborated' as const : null;
+  if (!reason) return { promote: false, reason: e.sourcePrMergedPastWindow && e.sourcePrReverted ? 'reverted' : 'no_evidence' };
+  if ((opts.keepDemotes ?? KEEP_DEMOTES_LIVE) && e.notDurable && !e.pulled) return { promote: false, reason: 'not_durable' };
+  return { promote: true, reason };
 }
 
 // ── Extraction ───────────────────────────────────────────────────────────────

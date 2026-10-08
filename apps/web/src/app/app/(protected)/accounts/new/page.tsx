@@ -7,8 +7,9 @@ import { TOKEN_PRESETS, TOKEN_SCOPE_DEFINITIONS, type TokenScope } from '@buildd
 import { Select } from '@/components/ui/Select';
 import ApiKeyModal from '@/components/ApiKeyModal';
 import { defaultTeamId, readActiveTeamCookie } from '@/lib/active-team-client';
+import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 
-interface Team { id: string; name: string; slug: string; role: string }
+interface Team { id: string; name: string; slug: string; role: string; permissionOverrides?: PermissionOverrides }
 interface Workspace { id: string; name: string; repo: string | null }
 type Preset = keyof typeof TOKEN_PRESETS;
 const inputClass = 'w-full min-h-11 px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm';
@@ -30,7 +31,7 @@ export default function NewAccountPage() {
   const [accountType, setAccountType] = useState('user');
   const [maxConcurrent, setMaxConcurrent] = useState('5');
   const selectedTeam = teams.find(team => team.id === selectedTeamId);
-  const canAdmin = selectedTeam?.role === 'owner' || selectedTeam?.role === 'admin';
+  const canAdmin = roleHas(selectedTeam?.role, 'manage_team_keys', selectedTeam?.permissionOverrides ?? null);
 
   useEffect(() => {
     fetch('/api/teams').then(async res => {
@@ -58,7 +59,7 @@ export default function NewAccountPage() {
   function choosePreset(value: Preset) {
     setPreset(value);
     setScopes([...TOKEN_PRESETS[value].scopes]);
-    setAccountType(value === 'ci' ? 'action' : 'user');
+    setAccountType(value === 'ci' ? 'service' : 'user');
   }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -97,7 +98,7 @@ export default function NewAccountPage() {
         <form onSubmit={handleSubmit} className="space-y-5">
           {error && <p role="alert" className="border border-status-error p-3 text-sm text-status-error">{error}</p>}
           <div className="card p-4 space-y-4">
-            {teams.length > 1 && <div><label htmlFor="team" className="block text-sm mb-2">Team</label><Select id="team" value={selectedTeamId} onChange={id => { setSelectedTeamId(id); if (!['owner', 'admin'].includes(teams.find(team => team.id === id)?.role || '')) { setScopes(current => current.filter(scope => !scope.endsWith(':admin') && !['admin','secrets','releases','schedules:write'].includes(scope))); if (preset === 'admin') choosePreset('runner'); } }} options={teams.map(team => ({ value: team.id, label: team.name }))} /></div>}
+            {teams.length > 1 && <div><label htmlFor="team" className="block text-sm mb-2">Team</label><Select id="team" value={selectedTeamId} onChange={id => { setSelectedTeamId(id); if (!roleHas(teams.find(team => team.id === id)?.role, 'manage_team_keys', teams.find(team => team.id === id)?.permissionOverrides ?? null)) { setScopes(current => current.filter(scope => !scope.endsWith(':admin') && !['admin','secrets','releases','schedules:write'].includes(scope))); if (preset === 'admin') choosePreset('runner'); } }} options={teams.map(team => ({ value: team.id, label: team.name }))} /></div>}
             <div><label htmlFor="name" className="block text-sm mb-2">Token name</label><input id="name" name="name" required placeholder="release-ci" className={inputClass} /></div>
             <fieldset><legend className="section-label mb-3">Preset</legend><div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {(Object.keys(TOKEN_PRESETS) as Preset[]).map(key => <label key={key} className={`min-h-11 p-3 border cursor-pointer ${preset === key ? 'border-primary bg-surface-3' : 'border-border-default'} ${key === 'admin' && !canAdmin ? 'opacity-50' : ''}`}>
@@ -121,7 +122,7 @@ export default function NewAccountPage() {
             <div><label htmlFor="expiry" className="block text-sm mb-2">Expiry</label><Select id="expiry" value={expiry} onChange={setExpiry} options={[{ value: '7', label: '7 days' }, { value: '30', label: '30 days' }, { value: '90', label: '90 days' }, { value: 'custom', label: 'Choose date and time' }, { value: 'never', label: 'No expiry' }]} />
               {expiry === 'custom' && <input aria-label="Expiry date and time" type="datetime-local" required value={customExpiry} onChange={e => setCustomExpiry(e.target.value)} className={`${inputClass} mt-2`} />}
             </div>
-            <details><summary className="min-h-11 flex items-center text-sm cursor-pointer">Runner options</summary><div className="space-y-3"><label className="block text-sm">Account type<Select value={accountType} onChange={setAccountType} options={[{ value: 'user', label: 'Personal runner' }, { value: 'service', label: 'Always-on service' }, { value: 'action', label: 'GitHub Actions' }]} /></label><label className="block text-sm">Concurrent workers<input type="number" min="1" max="10" required value={maxConcurrent} onChange={e => setMaxConcurrent(e.target.value)} className={inputClass} /></label></div></details>
+            <details><summary className="min-h-11 flex items-center text-sm cursor-pointer">Runner options</summary><div className="space-y-3"><label className="block text-sm">Account type<Select value={accountType} onChange={setAccountType} options={[{ value: 'user', label: 'Personal runner' }, { value: 'service', label: 'Always-on service' }]} /></label><label className="block text-sm">Concurrent workers<input type="number" min="1" max="10" required value={maxConcurrent} onChange={e => setMaxConcurrent(e.target.value)} className={inputClass} /></label></div></details>
           </div>
           <section aria-label="Permission preview" className="card p-4">
             {limited && <p className="text-xs text-text-secondary mb-3">Workspace restrictions also apply to admin access. Team-wide credentials, account administration and reports without workspace filters are unavailable.</p>}

@@ -20,8 +20,9 @@
  *      turn). `/chat/react` is the one entry that needs its peers to load
  *      (react, react-dom, @ai-sdk/react, ai); bare, it must fail to load by naming one of
  *      them, not crash on something else,
- *   4. PEERS: installs every declared peer at its declared range, as a consumer
- *      would, and imports every
+ *   4. PEERS: installs every declared peer, at the version the monorepo's
+ *      bun.lock resolved when that is inside the declared range (else the
+ *      range, as a consumer would; see pinned-peers.mjs), and imports every
  *      entry again; `decide` must now reach the SDK; a `createChatTurn` turn
  *      runs on a mock model over the real SSE wire and gates a write behind
  *      one approval card; and `/chat/react` renders on the server.
@@ -30,13 +31,15 @@
  * Set KEEP_SMOKE_DIR=1 to keep the temp project.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isRetryableNpmError, pinnedPeerSpecs } from './pinned-peers.mjs';
 
 const REGISTRY = 'https://registry.npmjs.org/';
 const here = dirname(fileURLToPath(import.meta.url));
+const LOCKFILE = join(here, '..', '..', '..', 'bun.lock');
 const dist = join(here, '..', 'dist');
 const work = mkdtempSync(join(tmpdir(), 'ai-kit-consumer-'));
 const project = join(work, 'app');
@@ -62,6 +65,31 @@ delete env.NODE_PATH;
 
 const run = (cmd, args, cwd) => execFileSync(cmd, args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
 
+/**
+ * `npm install`, retried once when npm fails on the registry or the network
+ * (see isRetryableNpmError). stderr is captured to classify it and then
+ * echoed, so the log reads the same as an uncaptured run.
+ */
+const npmInstall = (args, cwd) => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const out = execFileSync('npm', ['install', ...args], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      process.stdout.write(out);
+      return;
+    } catch (e) {
+      const stderr = String(e.stderr ?? '');
+      process.stderr.write(stderr);
+      if (attempt === 1 && isRetryableNpmError(`${stderr}\n${e.message}`)) {
+        const code = stderr.match(/\b(E[A-Z0-9]{3,})\b/)?.[1] ?? 'network error';
+        console.log(`npm install failed with ${code} (registry or network, not the kit); retrying once in 5s`);
+        execFileSync('sleep', ['5']);
+        continue;
+      }
+      throw e;
+    }
+  }
+};
+
 let failed = false;
 try {
   writeFileSync(npmrc, `registry=${REGISTRY}\n`);
@@ -77,7 +105,7 @@ try {
   execFileSync('mkdir', ['-p', project]);
   writeFileSync(join(project, '.npmrc'), `registry=${REGISTRY}\n`);
   writeFileSync(join(project, 'package.json'), JSON.stringify({ name: 'ai-kit-consumer', private: true, type: 'module' }, null, 2));
-  run('npm', ['install', '--no-package-lock', tarball], project);
+  npmInstall(['--no-package-lock', tarball], project);
 
   const pkg = JSON.parse(readFileSync(join(project, 'node_modules', '@builddai', 'ai-kit', 'package.json'), 'utf8'));
   const peers = pkg.peerDependencies ?? {};
@@ -198,10 +226,16 @@ process.exit(bad ? 1 : 0);
 
   phase('bare');
   // react-dom is a peer since 0.3.0 (the phone menu sheet portals with it).
-  const specs = Object.entries(peers).map(([n, range]) => `${n}@${range}`);
+  // Pinned to the monorepo's bun.lock where it resolves inside the declared
+  // range (see pinned-peers.mjs): a range alone flaked on a version npm had
+  // just published but could not serve yet.
+  const pinned = pinnedPeerSpecs(peers, existsSync(LOCKFILE) ? readFileSync(LOCKFILE, 'utf8') : null);
+  const specs = pinned.map(p => p.spec);
   if (specs.length) {
-    console.log(`\ninstalling declared peers: ${specs.join(' ')}`);
-    run('npm', ['install', '--no-package-lock', ...specs], project);
+    console.log('\npeer versions:');
+    for (const p of pinned) console.log(`  ${p.note}`);
+    console.log(`installing declared peers: ${specs.join(' ')}`);
+    npmInstall(['--no-package-lock', ...specs], project);
   }
   phase('peers');
 } finally {

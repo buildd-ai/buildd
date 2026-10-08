@@ -276,6 +276,7 @@ describe('runTaskRoleShadow', () => {
       loadRoles: async () => [role('builder'), role('writer', { metadata: {} })],
     });
     expect(res.outcome).toBe('too_few_candidates');
+    expect(res.applyEnabled).toBe(true);
     expect(decide).not.toHaveBeenCalled();
   });
 
@@ -284,8 +285,16 @@ describe('runTaskRoleShadow', () => {
     const resolveAccess = mock(ALLOWED);
     const res = await runTaskRoleShadow({ ...INPUT, dataClass: 'sensitive' }, { resolveAccess, decide: decide as never, loadRoles: ROLES, log: () => {} });
     expect(res.outcome).toBe('sensitive');
-    expect(resolveAccess).not.toHaveBeenCalled();
+    expect(res.applyEnabled).toBe(true);
     expect(decide).not.toHaveBeenCalled();
+  });
+
+  it('a missing key is its own outcome, distinct from a capability that is off', async () => {
+    const res = await runTaskRoleShadow(INPUT, {
+      resolveAccess: async () => ({ ok: false, error: { kind: 'missing_key' } }) as never,
+      decide: mock(async () => okResult('Builder')) as never, loadRoles: ROLES, log: () => {},
+    });
+    expect(res).toMatchObject({ outcome: 'no_key', applyEnabled: true });
   });
 
   it('asks role and kind in one call with a 3s deadline, and logs slugs and numbers only', async () => {

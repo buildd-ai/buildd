@@ -201,6 +201,40 @@ export function inDispatchCustody(row: Pick<CustodyRow, 'status' | 'handedOffAt'
   return row.status === 'handed_off' || (row.status === 'pending' && row.handedOffAt != null);
 }
 
+/**
+ * A callback that outran its own ack. Publish POSTs, Dispatch stores the
+ * intent and may fire its alarm at once, and its resolve/relay can reach us
+ * before the ack UPDATE below commits. The row is then `pending` with
+ * `published_at` set and no `handed_off_at`: Dispatch has it, we just have
+ * not written that down. Write it down here, the same way the ack does
+ * (`dispatch` workspace: handed off; `shadow`: only marked), so the callback
+ * proceeds instead of answering not_in_custody and losing the wake. The ack
+ * that lands later then matches no row and changes nothing.
+ *
+ * Never for a row the repair floor took back (fallback mark), a row never
+ * published, a workspace on `in_app`, or a row the in-app drain already took
+ * (status is no longer `pending`).
+ */
+export function claimCustodySql(id: string): SQL {
+  return sql`-- dispatch_handoff:claim_custody
+UPDATE task_dispatch_outbox o
+SET status = CASE WHEN w.dispatch_transport = 'dispatch' THEN 'handed_off' ELSE o.status END,
+    transport = CASE WHEN w.dispatch_transport = 'dispatch' THEN 'dispatch' ELSE o.transport END,
+    handed_off_at = now(), updated_at = now()
+FROM workspaces w
+WHERE o.id = ${id}::uuid AND w.id = o.workspace_id
+  AND o.status = 'pending' AND o.handed_off_at IS NULL AND o.published_at IS NOT NULL
+  AND w.dispatch_transport IN ('dispatch', 'shadow')
+  AND NOT ${sql.raw(FALLEN_BACK_SQL)}
+RETURNING o.id`;
+}
+
+/** True when this call took custody (see claimCustodySql). */
+export async function claimCustody(id: string): Promise<boolean> {
+  if (!isUuid(id)) return false;
+  return rowsOf(await db.execute(claimCustodySql(id))).length > 0;
+}
+
 export async function loadCustodyRow(id: string): Promise<CustodyRow | null> {
   if (!isUuid(id)) return null;
   const result = await db.execute(sql`-- dispatch_handoff:custody
@@ -298,14 +332,44 @@ upd AS (
     AND (p.event <> 'attempted'
       OR p.max_attempt > o.attempt_count
       OR (p.last_at IS NOT NULL AND (o.last_attempt_at IS NULL OR p.last_at > o.last_attempt_at)))
-  RETURNING 1
+  RETURNING o.id, o.workspace_id, o.status, o.last_error
 )
-SELECT count(*) AS n FROM upd`;
+SELECT count(*) AS n,
+  COALESCE(jsonb_agg(jsonb_build_object('id', u.id, 'workspaceId', u.workspace_id, 'error', u.last_error))
+    FILTER (WHERE u.status = 'failed'), '[]'::jsonb) AS failed
+FROM upd u`;
+}
+
+/** A row a receipt batch moved to `failed`: Dispatch gave up on it. Only rows this batch moved, so a resend reports none. */
+export interface FailedReceiptRow {
+  id: string;
+  workspaceId: string;
+  error: string | null;
+}
+
+export interface AppliedReceipts {
+  applied: number;
+  failed: FailedReceiptRow[];
+}
+
+/** Parse the one row applyReceiptsSql returns. */
+export function parseAppliedReceipts(r: Record<string, unknown> | undefined): AppliedReceipts {
+  if (!r) return { applied: 0, failed: [] };
+  const raw = typeof r.failed === 'string' ? JSON.parse(r.failed) : r.failed;
+  const failed = (Array.isArray(raw) ? raw : [])
+    .filter((f): f is Record<string, unknown> => !!f && typeof f === 'object' && typeof (f as { id?: unknown }).id === 'string')
+    .map(f => ({ id: String(f.id), workspaceId: String(f.workspaceId), error: typeof f.error === 'string' ? f.error : null }));
+  return { applied: Number(r.n ?? 0), failed };
+}
+
+/** applyReceipts, plus which rows the batch moved to `failed` (for the receipts route's alert). */
+export async function applyReceiptsDetailed(receipts: readonly Receipt[]): Promise<AppliedReceipts> {
+  if (receipts.length === 0) return { applied: 0, failed: [] };
+  return parseAppliedReceipts(rowsOf(await db.execute(applyReceiptsSql(receipts)))[0]);
 }
 
 export async function applyReceipts(receipts: readonly Receipt[]): Promise<number> {
-  if (receipts.length === 0) return 0;
-  return Number(rowsOf(await db.execute(applyReceiptsSql(receipts)))[0]?.n ?? 0);
+  return (await applyReceiptsDetailed(receipts)).applied;
 }
 
 // ── Orphan reconcile (the hourly floor) ───────────────────────────────────

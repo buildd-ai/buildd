@@ -47,6 +47,8 @@ export interface SlotLaneBar {
   /** Extra attributes for the link, e.g. `data-task-id` for a sheet handler. */
   linkData?: Readonly<Record<`data-${string}`, string>>;
   title?: string;
+  /** Extra facts for the hover card ("done · Builder · PR #12"), one per line. */
+  details?: readonly string[];
 }
 
 export interface SlotLane {
@@ -92,9 +94,36 @@ export interface SlotLanesProps {
   bare?: boolean;
   /** Axis tick text for a tick at epoch `at`. Default: minutes from `from` ("5m"). */
   tickLabel?: (at: number) => string;
+  /**
+   * Hovering a bar opens a card (full title, when, how long, `details`) in
+   * place of the native tooltip, which a row of thin ticks made useless.
+   */
+  hoverCard?: boolean;
+}
+
+function formatSpan(ms: number): string {
+  const m = Math.round(ms / 60_000);
+  if (m < 1) return '<1m';
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}`;
+}
+
+/** What a bar's hover card says, as text: pure, so it is testable without a DOM. */
+export function barCard(
+  bar: Pick<SlotLaneBar, 'label' | 'title' | 'start' | 'end' | 'details'>,
+  opts: { now: number | null; clock?: (at: number) => string },
+): { title: string | null; when: string; details: readonly string[] } {
+  const clock = opts.clock ?? ((at: number) => new Date(at).toISOString().slice(11, 16));
+  const end = bar.end ?? opts.now ?? bar.start;
+  const span = formatSpan(end - bar.start);
+  return {
+    title: bar.title && bar.title !== bar.label ? bar.title : null,
+    when: bar.end == null ? `${clock(bar.start)} → now · ${span} so far` : `${clock(bar.start)} → ${clock(bar.end)} · ${span}`,
+    details: bar.details ?? [],
+  };
 }
 
 const LABEL_COL_PX = 104;
+const CARD_PX = 288;
 const ROW_PX = SLOT_LANE_ROW_PX;
 /** Below this share of the axis a live bar's label goes beside it. */
 const OUTSIDE_LABEL_FRACTION = 0.06;
@@ -141,7 +170,7 @@ const END_MARK: Record<'ok' | 'fail' | 'ci', { glyph: string; cls: string }> = {
 export default function SlotLanes({
   lanes, from, to, now = null, nowLabel, phases, phasesLabel = 'Phase', marks, marksLabel,
   onHover, pinnedId = null, testId = 'slot-lanes', className = '',
-  labels = true, bare = false, tickLabel,
+  labels = true, bare = false, tickLabel, hoverCard = false,
 }: SlotLanesProps) {
   const labelPx = labels ? LABEL_COL_PX : 0;
   const pct = (t: number) => `${axisFraction(t, from, to) * 100}%`;
@@ -188,6 +217,32 @@ export default function SlotLanes({
     }
     setEdges(out);
   }, [active]);
+  // The hover card is viewport-fixed, so the overflow-clipped table it sits
+  // in cannot cut it: under the bar, or above it when the viewport has no
+  // room below. Measured after it renders, so its real height decides.
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [card, setCard] = useState<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const root = chartRef.current;
+    if (!hoverCard || !root || !hovered) {
+      setCard(c => (c ? null : c));
+      return;
+    }
+    const target = root.querySelector<HTMLElement>(`[data-bar-id="${CSS.escape(hovered.id)}"]`);
+    if (!target) return;
+    const t = target.getBoundingClientRect();
+    const h = cardRef.current?.offsetHeight ?? 140;
+    const left = Math.max(8, Math.min(t.left, window.innerWidth - CARD_PX - 8));
+    const below = t.bottom + 6;
+    setCard({ left, top: below + h > window.innerHeight - 8 && t.top - h - 6 > 8 ? t.top - h - 6 : below });
+  }, [hovered, hoverCard]);
+  // A scroll moves the bar out from under a fixed card; drop it.
+  useLayoutEffect(() => {
+    if (!hoverCard || !hovered) return;
+    const drop = () => setHovered(null);
+    window.addEventListener('scroll', drop, { passive: true, capture: true });
+    return () => window.removeEventListener('scroll', drop, { capture: true });
+  }, [hovered, hoverCard]);
   const activeGroups = new Set([...(active?.deps ?? []), ...(active?.group ? [active.group] : [])]);
 
   const grid = (
@@ -210,7 +265,7 @@ export default function SlotLanes({
         <div />
         <div className="relative">
           {ticks.filter(m => axisFraction(from + m * 60_000, from, to) < 0.97).map(m => (
-            <span key={m} className="absolute top-[9px] -translate-x-1/2 font-mono text-[11px] md:text-[10.5px] text-[var(--fleet-faint)] tabular-nums" style={{ left: pct(from + m * 60_000) }}>
+            <span key={m} className="absolute top-[9px] -translate-x-1/2 font-mono text-meta text-[var(--fleet-faint)] tabular-nums" style={{ left: pct(from + m * 60_000) }}>
               {tickLabel ? tickLabel(from + m * 60_000) : formatAxisMinutes(m)}
             </span>
           ))}
@@ -220,12 +275,12 @@ export default function SlotLanes({
 
       {phases && phases.length > 0 && (
         <div className="grid h-[26px] border-b border-border-default" style={{ gridTemplateColumns: `${labelPx}px 1fr` }}>
-          <div className="flex items-center border-r border-border-default pl-3 font-mono text-[11px] md:text-[9.5px] font-semibold uppercase tracking-[1.6px] text-text-muted">{phasesLabel}</div>
+          <div className="flex items-center border-r border-border-default pl-3 font-mono text-meta font-semibold uppercase tracking-[1.6px] text-text-muted">{phasesLabel}</div>
           <div className="relative overflow-hidden">
             {phases.map(p => (
               <span
                 key={p.id}
-                className="absolute top-[7px] h-3 truncate border-b-[1.5px] border-l-2 border-b-[var(--fleet-faint)] border-l-text-secondary pl-1 font-mono text-[11px] md:text-[9.5px] font-semibold uppercase leading-[9px] tracking-[0.8px] text-text-muted"
+                className="absolute top-[7px] h-3 truncate border-b-[1.5px] border-l-2 border-b-[var(--fleet-faint)] border-l-text-secondary pl-1 font-mono text-meta font-semibold uppercase leading-[9px] tracking-[0.8px] text-text-muted"
                 style={{ left: pct(p.start), width: width(p.start, p.end) }}
               >
                 {p.label}
@@ -243,8 +298,8 @@ export default function SlotLanes({
           style={{ gridTemplateColumns: `${labelPx}px 1fr`, height: ROW_PX }}
         >
           {labels ? (
-          <div className="flex items-center gap-[7px] border-r border-border-default pl-3 font-mono text-[11.5px] text-text-secondary">
-            <span className={`grid h-5 w-5 shrink-0 place-items-center border-[1.5px] border-border-strong bg-surface-1 text-[11px] md:text-[10.5px] font-bold uppercase text-text-primary ${slot ? 'invisible' : ''}`}>
+          <div className="flex items-center gap-[7px] border-r border-border-default pl-3 font-mono text-meta text-text-secondary">
+            <span className={`grid h-5 w-5 shrink-0 place-items-center border-[1.5px] border-border-strong bg-surface-1 text-meta font-bold uppercase text-text-primary ${slot ? 'invisible' : ''}`}>
               {lane.badge ?? lane.label.slice(0, 1)}
             </span>
             {slot === 0 && <span className="min-w-0 truncate">{lane.label}</span>}
@@ -280,7 +335,7 @@ export default function SlotLanes({
               const content = short || claimed ? null : (
                 <>
                   <BarLabel bar={b} />
-                  {b.endMark && <span className={`ml-auto shrink-0 text-[11px] font-bold ${END_MARK[b.endMark].cls}`}>{END_MARK[b.endMark].glyph}</span>}
+                  {b.endMark && <span className={`ml-auto shrink-0 text-meta font-bold ${END_MARK[b.endMark].cls}`}>{END_MARK[b.endMark].glyph}</span>}
                 </>
               );
               const tickTone = TICK_TONE[b.tone] ?? (b.endMark === 'fail' ? 'border-status-error bg-status-error' : b.endMark === 'ok' ? 'border-status-success bg-status-success' : 'border-text-muted bg-text-muted');
@@ -289,7 +344,7 @@ export default function SlotLanes({
                 : tick
                   // The short-run marker: a solid tick at the run's start, never an empty box.
                   ? `absolute top-[9px] z-[1] block h-8 w-1.5 border-[1.5px] ${tickTone} ${isActive ? 'z-[3] shadow-[2px_2px_0_0_var(--border-strong)]' : ''}`
-                  : `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] ${short ? 'px-0' : 'px-[7px]'} font-mono text-[11.5px] text-text-secondary ${TONE_CLASS[b.tone]} ${isActive ? 'z-[3] shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`;
+                  : `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] ${short ? 'px-0' : 'px-[7px]'} font-mono text-meta text-text-secondary ${TONE_CLASS[b.tone]} ${isActive ? 'z-[3] shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`;
               const nowRight = (1 - axisFraction(end, from, to)) * 100;
               // An open bar is anchored by its right edge at NOW: a box has a
               // minimum drawn width, and anchored at its start a fresh bar
@@ -310,11 +365,13 @@ export default function SlotLanes({
                 'data-tone': b.tone,
                 ...(short ? { 'data-shape': 'short', 'aria-label': shortTitle } : {}),
                 ...(claimed ? { 'data-shape': 'claimed', 'aria-label': claimedTitle } : {}),
-                title: claimed ? claimedTitle : short ? shortTitle : b.title,
+                // The card replaces the native tooltip; two at once is noise.
+                title: hoverCard ? undefined : claimed ? claimedTitle : short ? shortTitle : b.title,
                 className: cls,
                 style,
                 onMouseEnter: () => hover(b),
                 onFocus: () => hover(b),
+                ...(hoverCard ? { onMouseLeave: () => hover(null), onBlur: () => hover(null) } : {}),
               } as const;
               return (
                 <span key={b.id}>
@@ -331,19 +388,19 @@ export default function SlotLanes({
                     // long enough to hold it, else just the word.
                     <span
                       data-testid="lane-claimed-label"
-                      className="pointer-events-none absolute top-[9px] z-[7] flex h-8 items-center justify-end gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[11.5px]"
+                      className="pointer-events-none absolute top-[9px] z-[7] flex h-8 items-center justify-end gap-1.5 overflow-hidden whitespace-nowrap font-mono text-meta"
                       style={{ right: `calc(${nowRight}% + 18px)`, ...(gap >= OUTSIDE_LABEL_FRACTION ? { maxWidth: `calc(${gap * 100}% - 24px)` } : {}) }}
                     >
                       {gap >= OUTSIDE_LABEL_FRACTION && <BarLabel bar={b} />}
-                      <span className="shrink-0 bg-card px-1 text-[11px] md:text-[10.5px] font-semibold uppercase tracking-[0.8px] text-accent-text">claimed</span>
+                      <span className="shrink-0 bg-card px-1 text-meta font-semibold uppercase tracking-[0.8px] text-accent-text">claimed</span>
                     </span>
                   )}
                   {b.tone === 'waiting' && (
-                    <span aria-hidden="true" className="absolute top-[9px] z-[5] grid h-8 w-[22px] place-items-center bg-accent text-[13px] font-bold text-white" style={{ left: `calc(${pct(end)} - 22px)` }}>?</span>
+                    <span aria-hidden="true" className="absolute top-[9px] z-[5] grid h-8 w-[22px] place-items-center bg-accent text-body font-bold text-white" style={{ left: `calc(${pct(end)} - 22px)` }}>?</span>
                   )}
                   {outside && (
                     <span
-                      className="pointer-events-none absolute top-[9px] flex h-8 items-center justify-end gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[11.5px]"
+                      className="pointer-events-none absolute top-[9px] flex h-8 items-center justify-end gap-1.5 overflow-hidden whitespace-nowrap font-mono text-meta"
                       style={{ right: `calc(${(1 - startFrac) * 100}% + 8px)`, maxWidth: `calc(${gap * 100}% - 16px)` }}
                     >
                       <BarLabel bar={b} />
@@ -366,7 +423,7 @@ export default function SlotLanes({
 
       {marks && (
         <div className="grid h-10 border-t-2 border-border-strong" style={{ gridTemplateColumns: `${labelPx}px 1fr` }}>
-          <div className="flex items-center border-r border-border-default pl-3 font-mono text-[11px] md:text-[9.5px] font-semibold uppercase tracking-[1.6px] text-status-success">
+          <div className="flex items-center border-r border-border-default pl-3 font-mono text-meta font-semibold uppercase tracking-[1.6px] text-status-success">
             {marksLabel ?? ''}
           </div>
           <div className="relative overflow-hidden">
@@ -375,7 +432,7 @@ export default function SlotLanes({
               <span
                 key={m.id}
                 data-testid="slot-lanes-mark"
-                className={`absolute top-2.5 flex -translate-x-1/2 flex-col items-center gap-[3px] font-mono text-[11px] md:text-[9.5px] font-semibold ${m.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}
+                className={`absolute top-2.5 flex -translate-x-1/2 flex-col items-center gap-[3px] font-mono text-meta font-semibold ${m.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}
                 style={{ left: pct(m.at) }}
               >
                 <i className={`block h-2.5 w-2.5 ${m.tone === 'ok' ? 'bg-status-success' : 'border-2 border-status-error'}`} />
@@ -398,12 +455,32 @@ export default function SlotLanes({
             className="pointer-events-none absolute inset-y-0 z-[6] w-0.5 bg-accent"
             style={{ left: `calc(${labelPx}px + (100% - ${labelPx}px) * ${axisFraction(now, from, to)})` }}
           >
-            <span className="absolute -left-px -top-[22px] whitespace-nowrap bg-accent px-[5px] py-0.5 font-mono text-[11px] md:text-[10px] font-bold tracking-[0.5px] text-white">
+            <span className="absolute -left-px -top-[22px] whitespace-nowrap bg-accent px-[5px] py-0.5 font-mono text-meta font-bold tracking-[0.5px] text-white">
               {nowLabel ?? 'NOW'}
             </span>
           </div>
         </>
       )}
+
+      {hoverCard && hovered && (() => {
+        const c = barCard(hovered, { now, clock: tickLabel });
+        return (
+          <div
+            ref={cardRef}
+            data-testid="lane-bar-card"
+            role="tooltip"
+            className="pointer-events-none fixed z-50 flex flex-col gap-1 border-2 border-border-strong bg-card px-3 py-2.5 font-mono text-meta leading-snug shadow-[var(--card-shadow)]"
+            // First paint is unpositioned and hidden: it exists to be measured.
+            style={card ? { left: card.left, top: card.top, width: CARD_PX } : { left: 0, top: 0, width: CARD_PX, visibility: 'hidden' }}
+          >
+            <span className="flex min-w-0 items-center gap-1.5 font-semibold text-text-primary"><BarLabel bar={hovered} /></span>
+            {c.title && <span className="line-clamp-3 text-text-secondary">{c.title}</span>}
+            <span className="tabular-nums text-text-muted">{c.when}</span>
+            {c.details.map(d => <span key={d} className="text-text-secondary">{d}</span>)}
+            {hovered.href && <span className="text-meta text-[var(--fleet-faint)]">Click to open</span>}
+          </div>
+        );
+      })()}
 
       <svg aria-hidden="true" className="pointer-events-none absolute inset-0 z-[4] h-full w-full overflow-visible">
         {edges.map((e, i) => (
@@ -422,7 +499,7 @@ function BarLabel({ bar }: { bar: SlotLaneBar }): ReactNode {
   return (
     <>
       {(bar.prefix || bar.scope) && (
-        <span className={`shrink-0 text-[11px] md:text-[10.5px] font-semibold ${tone}`}>
+        <span className={`shrink-0 text-meta font-semibold ${tone}`}>
           {bar.prefix ? `${bar.prefix} ` : ''}{bar.scope ?? ''}
         </span>
       )}

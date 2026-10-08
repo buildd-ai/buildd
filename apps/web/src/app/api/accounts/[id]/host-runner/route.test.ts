@@ -16,11 +16,11 @@ mock.module('@/lib/team-access', () => ({
 mock.module('@/lib/api-auth', () => ({ invalidateAccountCacheByHash: mockInvalidate }));
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: { accounts: { findFirst: mockAccountsFindFirst } },
+    query: { teams: { findFirst: async () => null }, accounts: { findFirst: mockAccountsFindFirst } },
     update: () => ({ set: mockUpdateSet }),
   },
 }));
-mock.module('@buildd/core/db/schema', () => ({ accounts: { id: 'id', teamId: 'teamId' } }));
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' }, accounts: { id: 'id', teamId: 'teamId' } }));
 mock.module('drizzle-orm', () => ({
   eq: (f: unknown, v: unknown) => ({ f, v }),
   and: (...a: unknown[]) => ({ a }),

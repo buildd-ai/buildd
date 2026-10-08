@@ -7,12 +7,14 @@
 import type { ConversationRow } from './store';
 
 export type RetitleMode = 'off' | 'shadow' | 'live';
-export const RETITLE_MODE: RetitleMode = 'shadow';
+export const RETITLE_MODE: RetitleMode = 'live';
 /** Ask on every Nth user turn (N, 2N, ...): drift is slow, and each ask adds tokens to routing. */
 export const RETITLE_EVERY_USER_TURNS = 3;
 /** A rename is visible and replaces something the person has been reading, so it is gated high. */
 export const RETITLE_MIN_CONFIDENCE = 0.9;
 export const RETITLE_LOG_PREFIX = '[chat-retitle-shadow]';
+/** Prompt version for the retitle decision ledger. Increment when the question or context changes. */
+export const RETITLE_PROMPT_VERSION = 'rt1';
 
 /** The title to ask about on this turn, or null. `userTurn` counts the incoming message (1-based). */
 export function titleToCheck(

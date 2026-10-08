@@ -18,6 +18,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { decisionRecords } from '@buildd/core/db/schema';
 import { recordHumanOverride } from '@buildd/core/decision-ledger';
+import { labelDecisionOutcome } from '@buildd/core/decision-outcomes';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
@@ -53,6 +54,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     ...(typeof reason === 'string' && reason.trim() ? { reason: reason.trim() } : {}),
   };
   await recordHumanOverride(record.id, override, overriddenBy);
+  // Observational label only: a person changed the answer, which is not proof
+  // the original was wrong. Never throws; a failed label costs the label.
+  await labelDecisionOutcome({ teamId: record.teamId, decisionRecordId: record.id, source: 'human', label: 'overridden' });
 
   return NextResponse.json({ ok: true, decisionId: record.id, override });
 }

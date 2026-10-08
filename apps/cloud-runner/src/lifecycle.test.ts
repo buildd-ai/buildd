@@ -4,18 +4,25 @@ import {
   ANTHROPIC_API_KEY_PLACEHOLDER,
   DEFAULT_INACTIVITY_TIMEOUT_MS,
   EXIT_CLAIM_REFUSED,
+  EXIT_CLAIM_DEFERRED,
   EXIT_COMPLETED,
   EXIT_FAILED,
   EXIT_PARKED,
   EXIT_USAGE,
+  CLAIM_DEFERRED_LINE_PREFIX,
   PARKED_LINE_PREFIX,
   resumableRunsEnabled,
+  parseClaimDeferredLine,
   parseParkedLine,
   orphanParkCommand,
   INITIAL_STATE,
   WORKER_ID_LINE_PREFIX,
   appendTail,
   buildContainerEnv,
+  deferredRetryBackoffMs,
+  RUNNER_CAPABILITY_RETRY_BACKOFF_S,
+  MAX_DEFERRED_RETRIES,
+  isContainerStartCapacityError,
   warmMaxBundleBytes,
   IMAGE_ENV,
   warmReposEnabled,
@@ -48,11 +55,14 @@ describe('exit code contract with run-once.ts', () => {
     expect(EXIT_COMPLETED).toBe(runOnce.EXIT_COMPLETED);
     expect(EXIT_FAILED).toBe(runOnce.EXIT_FAILED);
     expect(EXIT_CLAIM_REFUSED).toBe(runOnce.EXIT_CLAIM_REFUSED);
+    expect(EXIT_CLAIM_DEFERRED).toBe(runOnce.EXIT_CLAIM_DEFERRED);
     expect(EXIT_USAGE).toBe(runOnce.EXIT_USAGE);
     expect(EXIT_PARKED).toBe(runOnce.EXIT_PARKED);
     expect(EXIT_PARKED).toBe(4);
+    expect(EXIT_CLAIM_DEFERRED).toBe(5);
     expect(WORKER_ID_LINE_PREFIX).toBe(runOnce.WORKER_ID_LINE_PREFIX);
     expect(PARKED_LINE_PREFIX).toBe(runOnce.PARKED_LINE_PREFIX);
+    expect(CLAIM_DEFERRED_LINE_PREFIX).toBe(runOnce.CLAIM_DEFERRED_LINE_PREFIX);
   });
 });
 
@@ -62,6 +72,7 @@ describe('outcomeForExitCode', () => {
     [1, 'failed'],
     [3, 'refused'],
     [4, 'parked'],
+    [5, 'deferred'],
     [64, 'usage'],
     [137, 'crashed'], // SIGKILL / OOM
     [143, 'crashed'], // SIGTERM
@@ -75,6 +86,49 @@ describe('outcomeForExitCode', () => {
   test('no exit code at all is a crash', () => {
     expect(outcomeForExitCode(null)).toBe('crashed');
     expect(outcomeForExitCode(undefined)).toBe('crashed');
+  });
+});
+
+describe('parseClaimDeferredLine', () => {
+  test('parses a well-formed reason, rejects garbage and other prefixes', () => {
+    expect(parseClaimDeferredLine(`${CLAIM_DEFERRED_LINE_PREFIX}workspace_cap`)).toBe('workspace_cap');
+    expect(parseClaimDeferredLine(`  ${CLAIM_DEFERRED_LINE_PREFIX}no_slots  `)).toBe('no_slots');
+    expect(parseClaimDeferredLine('BUILDD_WORKER_ID=w-1')).toBeNull();
+    expect(parseClaimDeferredLine(`${CLAIM_DEFERRED_LINE_PREFIX}`)).toBeNull();
+    expect(parseClaimDeferredLine(`${CLAIM_DEFERRED_LINE_PREFIX}has spaces`)).toBeNull();
+    expect(parseClaimDeferredLine(`${CLAIM_DEFERRED_LINE_PREFIX}${'x'.repeat(65)}`)).toBeNull();
+  });
+});
+
+describe('isContainerStartCapacityError', () => {
+  test('matches Cloudflare\'s container-instance-ceiling message, not an unrelated error', () => {
+    expect(isContainerStartCapacityError('There is no container instance that can be provided to this Durable Object, try again later.')).toBe(true);
+    expect(isContainerStartCapacityError('NO CONTAINER INSTANCE available, try again later')).toBe(true);
+    expect(isContainerStartCapacityError('container did not start within 20s')).toBe(false);
+    expect(isContainerStartCapacityError('network error')).toBe(false);
+    expect(isContainerStartCapacityError(null)).toBe(false);
+    expect(isContainerStartCapacityError(undefined)).toBe(false);
+  });
+});
+
+describe('deferredRetryBackoffMs for runner_capability', () => {
+  test('uses the longer rollout schedule, bounded, and other reasons keep the default', () => {
+    expect(deferredRetryBackoffMs(1, 'runner_capability')).toBe(60_000);
+    const n = RUNNER_CAPABILITY_RETRY_BACKOFF_S.length;
+    expect(deferredRetryBackoffMs(n, 'runner_capability')).toBeGreaterThan(deferredRetryBackoffMs(1, 'runner_capability')!);
+    expect(deferredRetryBackoffMs(n + 1, 'runner_capability')).toBeNull();
+    expect(deferredRetryBackoffMs(1, 'workspace_cap')).toBe(30_000);
+  });
+});
+
+describe('deferredRetryBackoffMs', () => {
+  test('increasing backoff for each attempt in a row, null past the cap', () => {
+    expect(deferredRetryBackoffMs(1)).toBe(30_000);
+    expect(deferredRetryBackoffMs(2)).toBeGreaterThan(deferredRetryBackoffMs(1)!);
+    expect(deferredRetryBackoffMs(MAX_DEFERRED_RETRIES)).toBeGreaterThan(0);
+    expect(deferredRetryBackoffMs(MAX_DEFERRED_RETRIES + 1)).toBeNull();
+    expect(deferredRetryBackoffMs(0)).toBeNull();
+    expect(deferredRetryBackoffMs(-1)).toBeNull();
   });
 });
 
@@ -354,5 +408,40 @@ describe('IMAGE_ENV: the image ENV, passed explicitly (a Cloudflare exec does no
     const env = buildContainerEnv({ BUILDD_SERVER: 'https://buildd.example' }, 'bldt_x');
     for (const [k, v] of Object.entries(IMAGE_ENV)) expect(env[k]).toBe(v);
     expect(env.BUILDD_API_KEY).toBe('bldt_x');
+  });
+});
+
+// Remote browser access is a per-run capability, never an account credential.
+describe('browser container environment', () => {
+  test('passes only the enabled bridge and ephemeral token', () => {
+    const env = buildContainerEnv({ BUILDD_SERVER: 'https://buildd.example', BROWSER_BRIDGE: '1', browserSessionToken: 'browser-run-token' }, 'bldt_test');
+    expect(env.BUILDD_BROWSER_BRIDGE_URL).toBe('https://buildd-browser.invalid');
+    expect(env.BUILDD_BROWSER_SESSION_TOKEN).toBe('browser-run-token');
+    expect(Object.keys(env).some(k => /cloudflare|^CF_|API_TOKEN/i.test(k))).toBe(false);
+  });
+  test('does not advertise a bridge without its run token', () => {
+    expect(buildContainerEnv({ BUILDD_SERVER: 'https://buildd.example', BROWSER_BRIDGE: '1' }, 'bldt_test').BUILDD_BROWSER_BRIDGE_URL).toBeUndefined();
+  });
+});
+
+describe('deferredRetryBackoffMs for the owner seat', () => {
+  test('cap and wall reasons use the longer seat schedule, then give up', () => {
+    for (const reason of ['owner_seat_cap', 'owner_seat_wall']) {
+      expect(deferredRetryBackoffMs(1, reason)).toBe(60_000);
+      expect(deferredRetryBackoffMs(8, reason)).toBe(1_800_000);
+      expect(deferredRetryBackoffMs(9, reason)).toBeNull();
+    }
+  });
+});
+
+describe('buildContainerEnv never carries the owner seat', () => {
+  test('a Worker with CLAUDE_CODE_OAUTH_TOKEN hands the container neither it nor any OAuth variable', () => {
+    const env = buildContainerEnv(
+      { BUILDD_SERVER: 'https://buildd.example', BUILDD_API_KEY: 'bld_runner', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-owner-seat-secret' } as Parameters<typeof buildContainerEnv>[0],
+      'bldt_task_token',
+    );
+    expect(JSON.stringify(env)).not.toContain('sk-ant-oat01');
+    expect(Object.keys(env).filter(k => /OAUTH/i.test(k))).toEqual([]);
+    expect(env.ANTHROPIC_API_KEY).toBeDefined();
   });
 });

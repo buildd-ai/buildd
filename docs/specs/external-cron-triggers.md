@@ -2,7 +2,7 @@
 title: External Cron Triggers
 status: active
 owner: max
-last_verified: 2026-08-28
+last_verified: 2026-10-05
 summary: Every /api/cron/* route MUST have exactly one trigger whose cadence is declared in version control, so a route that never fires is a reviewable diff rather than a silent production gap.
 domain: integrations
 surfaces: [cron-manifest.json, scripts/sync-crons.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/lib/cron-cadence.ts]
@@ -14,6 +14,15 @@ assertions:
     method: GET
     path: /api/cron/schedules
     file: apps/web/src/app/api/cron/schedules/route.ts
+  - id: maintenance-route-get
+    type: route
+    method: GET
+    path: /api/cron/maintenance
+    file: apps/web/src/app/api/cron/maintenance/route.ts
+  - id: sync-crons-select-jobs
+    type: symbol
+    name: selectJobs
+    path: scripts/sync-crons.ts
   - id: sync-crons-build-job
     type: symbol
     name: buildJob
@@ -100,6 +109,16 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
   untouched, including under `--prune`.
 - Deleting a managed job absent from the manifest requires an explicit
   `--prune`; the deploy workflow MUST NOT pass it.
+- Every manifest job declares a `profile`: `core` (the coordination loop needs
+  it), `ops` (operator alarms) or `module:<name>` (optional; a no-op while the
+  module is dormant). `cron:sync --profile core,ops` (or `CRON_PROFILES`, the
+  workflow's repo variable) reconciles only those jobs; `module:*` selects every
+  module. An unknown profile name is an error, never an empty selection. With no
+  list every job is scheduled, which is what buildd.dev runs.
+- Core work MUST NOT ride a module job. Stale-worker cleanup and abandoned
+  path-claim release run on `/api/cron/maintenance` (`core`), not on
+  `/api/cron/schedules` (`module:schedules`), at the same `0 * * * *` minute so
+  they share its wake window.
 
 ## Acceptance criteria
 
@@ -129,6 +148,11 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
 - AC-6 (failure path): GIVEN the provider account also holds jobs on an
   unrelated origin WHEN `bun run cron:sync --prune` runs THEN those jobs are
   neither updated nor deleted.
+- AC-11: GIVEN `--profile core,ops` WHEN sync plans THEN only `core` and `ops`
+  jobs are desired, a live module job is left alone (deleted only with
+  `--prune`), and `/api/cron/maintenance` is among the desired jobs.
+- AC-12 (failure path): GIVEN `--profile core,opps` WHEN sync runs THEN it
+  exits non-zero naming `opps` and performs no provider writes.
 - AC-7: GIVEN a cron expression that is not 5 fields WHEN the manifest is
   parsed THEN sync rejects it with an error naming the expression, rather than
   silently coercing it.
@@ -146,6 +170,8 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
 - `apps/web/src/app/api/cron/routing-calibration/route.ts` — the probe target.
   Chosen because it is read-only, so a liveness check has no side effects.
 - `vercel.json` — the disjoint Vercel-native cron set.
+- `apps/web/src/app/api/cron/maintenance/route.ts` — core maintenance
+  (stale workers, abandoned path claims), split out of the schedules tick.
 - `apps/web/src/app/api/cron/schedules/route.ts` — the tick; `GET`, rejects a
   mismatched bearer with HTTP 401.
 - `apps/web/src/lib/schedule-helpers.ts` — `computeNextRunAt` advances from

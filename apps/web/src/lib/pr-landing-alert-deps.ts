@@ -5,6 +5,7 @@
  *
  *   pagedKeys  – dedupe keys already paged
  *   observed   – named clocks (ISO), first-seen times the alert policy compares against now
+ *   progress   – { fp, since }: the current landing-progress fingerprint and when it became current
  *   actions    – signed-link nonces → { status: 'claimed' | 'done', ... }
  *
  * Every write is one atomic UPDATE ... WHERE ... RETURNING (neon-http has no
@@ -58,6 +59,31 @@ export async function observeClock(taskId: string, key: string, nowIso: string, 
     .where(and(eq(tasks.id, taskId), sql`(${tasks.context}->'landing'->'observed'->>${key}) IS NULL`));
   // A concurrent first observer may have won; its time is the clock.
   return (await read()) ?? nowIso;
+}
+
+/** Record `fingerprint` as the current landing state; returns when it became current. */
+export async function markProgress(taskId: string, fingerprint: string, nowIso: string): Promise<string> {
+  await db
+    .update(tasks)
+    .set({
+      context: sql`jsonb_set(COALESCE(${tasks.context}, '{}'::jsonb), '{landing}', COALESCE(${tasks.context}->'landing', '{}'::jsonb) || jsonb_build_object('progress', jsonb_build_object('fp', ${fingerprint}::text, 'since', ${nowIso}::text)), true)`,
+    })
+    .where(and(eq(tasks.id, taskId), sql`(${tasks.context}->'landing'->'progress'->>'fp') IS DISTINCT FROM ${fingerprint}::text`));
+  const progress = (await readLanding(taskId)).progress;
+  // A concurrent caller with another fingerprint may have just written: either way the state moved now.
+  return isObj(progress) && progress.fp === fingerprint && typeof progress.since === 'string' ? progress.since : nowIso;
+}
+
+async function readLiveHead(input: LandingAlertInput): Promise<string | null> {
+  if (!input.installationId) return null;
+  const { githubApi } = await import('@/lib/github');
+  const pr = (await githubApi(input.installationId, `/repos/${input.repoFullName}/pulls/${input.prNumber}`)) as { head?: { sha?: string } } | null;
+  return pr?.head?.sha ?? null;
+}
+
+async function lastReviewAt(workspaceId: string, prNumber: number): Promise<number | null> {
+  const { readReviewApprovedAt } = await import('@/lib/pr-landing-clock');
+  return readReviewApprovedAt(workspaceId, prNumber);
 }
 
 export async function hasPagedHead(taskId: string, prefix: string): Promise<boolean> {
@@ -123,6 +149,9 @@ export async function resetRefreshBudget(taskId: string): Promise<void> {
 export const landingAlertDeps: LandingAlertDeps = {
   now: () => Date.now(),
   observe: observeClock,
+  markProgress,
+  lastReviewAt,
+  readLiveHead,
   hasPagedHead,
   claimKey: claimPageKey,
   send: (subject, payload) => notifyTeamOf(subject, 'needsAttention', payload),

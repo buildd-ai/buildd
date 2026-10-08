@@ -35,6 +35,13 @@ describe('buildReadJailDeniedPrefixes', () => {
     expect(DENIED).toContain(normalize(`${HOME}/.buildd`));
   });
 
+  test('denies ~/.claude.json (buildd login writes the key into it)', () => {
+    expect(isPathDeniedByReadJail(`${HOME}/.claude.json`, WORKTREE, DENIED)).toBe(true);
+    expect(isPathDeniedByReadJail('~/.claude.json', WORKTREE, DENIED)).toBe(true);
+    // Not a prefix rule for siblings: ~/.claude/ settings stay readable.
+    expect(isPathDeniedByReadJail(`${HOME}/.claude/settings.json`, WORKTREE, DENIED)).toBe(false);
+  });
+
   test('includes repo/.buildd-worktrees', () => {
     expect(DENIED).toContain(normalize(`${REPO_PATH}/.buildd-worktrees`));
   });

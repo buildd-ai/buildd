@@ -11,8 +11,17 @@ import type { LoopConfig, LoopState } from '@buildd/shared';
 /** Non-terminal task statuses — still counted as "remaining work" for a mission. */
 const NON_TERMINAL_STATUSES = new Set<string>(OPEN_TASK_STATUSES);
 
-/** Bounded default resume window for a wait with no known resolve time (e.g. a queued reviewer). */
+/** Bounded default resume window for a wait with no known resolve time (e.g. a loop in backoff). */
 const DEFAULT_WAIT_MS = 30 * 60 * 1000;
+
+/**
+ * How long a queued reviewer/retry attempt with no worker still counts as
+ * "about to start". Filing it wakes the runners, and an idle one claims it in
+ * seconds; the runner's fallback poll is only a backstop. Past this, nothing
+ * is about to pick it up — a claim gate refused it — and it must read as
+ * stalled, not as a wait that resolves itself.
+ */
+export const QUEUED_ATTEMPT_GRACE_MS = 15 * 60 * 1000;
 
 export interface WaitClassifiableTask {
   status: string;
@@ -22,6 +31,8 @@ export interface WaitClassifiableTask {
   startAt: Date | null;
   loopConfig: LoopConfig | null;
   loopState: LoopState | null;
+  /** Bounds the queued-attempt wait. Every loader passes it; absent, the wait is unbounded (legacy). */
+  createdAt?: Date | null;
 }
 
 export interface MissionWaitResult {
@@ -69,9 +80,15 @@ function classifySingleTaskWait(t: WaitClassifiableTask, now: Date): MissionWait
   // Reviewer / CI-retry attempt task queued but not yet claimed by a worker.
   // taskClass='attempt' already means "collapses under its parent" (schema.ts) —
   // these are exactly the review-pass / retry tasks that pile up behind a
-  // capacity wall elsewhere in the mission.
+  // capacity wall elsewhere in the mission. Only within QUEUED_ATTEMPT_GRACE_MS
+  // of filing: the deadline is fixed at createdAt + grace, never rolled forward
+  // from `now`, so a reviewer nobody claims stops reading as a wait.
   if (t.taskClass === 'attempt' && (t.status === 'pending' || t.status === 'assigned')) {
-    return { reason: 'reviewer/retry task queued', waitUntil: new Date(now.getTime() + DEFAULT_WAIT_MS) };
+    if (!t.createdAt) {
+      return { reason: 'reviewer/retry task queued', waitUntil: new Date(now.getTime() + DEFAULT_WAIT_MS) };
+    }
+    const waitUntil = new Date(new Date(t.createdAt).getTime() + QUEUED_ATTEMPT_GRACE_MS);
+    return waitUntil > now ? { reason: 'reviewer/retry task queued', waitUntil } : null;
   }
 
   return null;

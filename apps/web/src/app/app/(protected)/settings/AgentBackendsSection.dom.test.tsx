@@ -20,9 +20,9 @@ afterEach(() => { act(() => root.unmount()); host.remove(); });
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
 
-function installFetch(opts: { claude: boolean; codex: boolean; enabled?: string[] | null }) {
+function installFetch(opts: { claude: boolean; codex: boolean; enabled?: string[] | null; secrets?: Array<{ purpose: string }> }) {
   globalThis.fetch = mock(async (url: string) => {
-    if (url.startsWith('/api/secrets')) return json({ secrets: [] });
+    if (url.startsWith('/api/secrets')) return json({ secrets: opts.secrets ?? [] });
     if (url.includes('/backend-readiness')) return json({ backends: [] });
     if (url === '/api/teams/t1') return json({ team: { enabledBackends: opts.enabled ?? null } });
     if (url.endsWith('/backends')) return json({ backends: [{ id: 'claude', available: true }, { id: 'codex', available: opts.codex }] });
@@ -32,7 +32,8 @@ function installFetch(opts: { claude: boolean; codex: boolean; enabled?: string[
   }) as unknown as typeof fetch;
 }
 
-async function mount() {
+async function mount(hash = '') {
+  window.location.hash = hash;
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
@@ -65,7 +66,7 @@ describe('AgentBackendsSection rows', () => {
     await act(async () => { toggle('claude-row').click(); });
     expect(row('claude-row').getAttribute('data-open')).toBe('true');
     expect(row('claude-row').textContent).toContain('Applies to');
-    expect(row('claude-row').textContent).toContain('Other ways to connect Claude');
+    expect(row('claude-row').textContent).toContain('self-hosted runner only');
     await act(async () => { toggle('codex-row').click(); });
     expect(row('claude-row').getAttribute('data-open')).toBe('false');
     expect(row('codex-row').getAttribute('data-open')).toBe('true');
@@ -76,5 +77,78 @@ describe('AgentBackendsSection rows', () => {
     installFetch({ claude: true, codex: true, enabled: ['claude'] });
     await mount();
     expect(chips('routing-row')).toEqual(['Codex off']);
+  });
+});
+
+describe('stored subscription login notice', () => {
+  const notice = () => host.querySelector<HTMLElement>('[data-testid="stored-seat-notice"]');
+
+  it('warns a team that stores a Claude and a Codex login, and links the runner setup doc', async () => {
+    installFetch({ claude: true, codex: true, secrets: [{ purpose: 'oauth_token' }, { purpose: 'codex_credential' }] });
+    await mount();
+    const n = notice();
+    expect(n).not.toBeNull();
+    expect(n!.textContent).toContain('a Claude login and a ChatGPT (Codex) login');
+    expect(n!.textContent).toContain('will be removed');
+    expect(n!.textContent).toContain('BUILDD_HOST_SEAT=prefer');
+    expect(n!.querySelector('a')!.getAttribute('href')).toContain('apps/runner/README.md#model-login-on-the-runner-machine');
+  });
+
+  it('names only what is stored', async () => {
+    installFetch({ claude: true, codex: false, secrets: [{ purpose: 'claude_credential' }] });
+    await mount();
+    expect(notice()!.textContent).toContain('stores a Claude login in buildd');
+    expect(notice()!.textContent).not.toContain('codex login');
+  });
+
+  it('stays hidden for metered keys only', async () => {
+    installFetch({ claude: true, codex: true, secrets: [{ purpose: 'anthropic_api_key' }, { purpose: 'openai_api_key' }, { purpose: 'agent_endpoint' }] });
+    await mount();
+    expect(notice()).toBeNull();
+  });
+});
+
+describe('Claude: the model key is the primary path, the subscription sign-in is demoted', () => {
+  it('a team with no Claude credential is offered Add key, not the subscription sign-in', async () => {
+    installFetch({ claude: false, codex: false });
+    await mount();
+    const buttons = [...row('claude-row').querySelectorAll('button')].map((b) => b.textContent);
+    expect(buttons).toContain('Add key');
+    expect(buttons).not.toContain('Connect');
+    expect(row('claude-row').textContent).toContain('OpenRouter');
+  });
+
+  it('the open row leads with the API key field; the sign-in is folded and labelled self-hosted runner only', async () => {
+    installFetch({ claude: false, codex: false });
+    await mount();
+    await act(async () => { row('claude-row').querySelector<HTMLButtonElement>('button[aria-expanded]')!.click(); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const input = row('claude-row').querySelector<HTMLInputElement>('#agent-key');
+    expect(input).not.toBeNull();
+    expect(input!.placeholder).toContain('sk-ant-api03');
+    const text = row('claude-row').textContent ?? '';
+    expect(text).toContain('self-hosted runner only');
+    expect(text).not.toContain('Connect with Claude');
+    expect(text.indexOf('API key')).toBeLessThan(text.indexOf('self-hosted runner only'));
+    // OpenRouter and LiteLLM are named with where they live.
+    expect(row('claude-row').querySelector('a[href="/app/settings/providers#agent-endpoint-h"]')).not.toBeNull();
+  });
+
+  it('the sign-in is still there, one tap away', async () => {
+    installFetch({ claude: false, codex: false });
+    await mount();
+    await act(async () => { row('claude-row').querySelector<HTMLButtonElement>('button[aria-expanded]')!.click(); });
+    const seat = [...row('claude-row').querySelectorAll('button')].find((b) => b.textContent?.includes('self-hosted runner only'))!;
+    await act(async () => { seat.click(); });
+    expect(row('claude-row').textContent).toContain('Connect with Claude');
+    expect(row('claude-row').textContent).toContain('Setup token');
+  });
+
+  it('#agent-key opens the Claude row on the key field', async () => {
+    installFetch({ claude: false, codex: false });
+    await mount('#agent-key');
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(row('claude-row').getAttribute('data-open')).toBe('true');
+    expect((document.activeElement as HTMLElement | null)?.id).toBe('agent-key');
   });
 });

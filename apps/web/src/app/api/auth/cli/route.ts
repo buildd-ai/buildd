@@ -6,6 +6,8 @@ import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { getUserTeamIds, getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
 import { clampKeyLevel, parseKeyLevel } from '@/lib/key-level-policy';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { linkAccountToPersonalWorkspaces } from '@/lib/personal-workspace-links';
 
 // Generalized CLI OAuth flow:
 // 1. CLI redirects here with ?callback=http://localhost:PORT/callback&client=cli&level=admin
@@ -111,12 +113,12 @@ export async function GET(req: NextRequest) {
       errorUrl.searchParams.set('error', 'Not a member of the target team');
       return NextResponse.redirect(errorUrl.toString());
     }
-    const grantedLevel = clampKeyLevel(role, requestedLevel);
+    const grantedLevel = clampKeyLevel(role, requestedLevel, await getTeamPermissionOverrides(teamId));
 
     // Generate a fresh plaintext key for this auth flow
     const plaintextKey = generateApiKey();
 
-    await db
+    const [created] = await db
       .insert(accounts)
       .values({
         name: resolvedName,
@@ -129,11 +131,24 @@ export async function GET(req: NextRequest) {
       })
       .returning();
 
+    // A personal team's workspace starts restricted; without a link this
+    // login's runner could never claim the user's own tasks.
+    if (created?.id) await linkAccountToPersonalWorkspaces({ accountId: created.id, userId: session.user.id });
+
     // Redirect back to CLI with the plaintext token (shown once)
     const successUrl = new URL(callback);
     successUrl.searchParams.set('token', plaintextKey);
     successUrl.searchParams.set('level', grantedLevel);
     successUrl.searchParams.set('email', session.user.email || '');
+    // The person's presence token for the agent plugin's hooks (lib/presence-token.ts),
+    // one per machine. Best effort: a login without one still works.
+    try {
+      const { issuePresenceToken } = await import('@/lib/presence-token');
+      const presenceToken = await issuePresenceToken(session.user.id, req.nextUrl.searchParams.get('machine'));
+      if (presenceToken) successUrl.searchParams.set('presenceToken', presenceToken);
+    } catch (err) {
+      console.warn('[auth/cli] presence token not issued:', err instanceof Error ? err.message : err);
+    }
     if (process.env.NEXT_PUBLIC_PUSHER_KEY) successUrl.searchParams.set('pusherKey', process.env.NEXT_PUBLIC_PUSHER_KEY);
     if (process.env.NEXT_PUBLIC_PUSHER_CLUSTER) successUrl.searchParams.set('pusherCluster', process.env.NEXT_PUBLIC_PUSHER_CLUSTER);
     if (process.env.PUSHER_CHANNEL_PREFIX) successUrl.searchParams.set('pusherChannelPrefix', process.env.PUSHER_CHANNEL_PREFIX);

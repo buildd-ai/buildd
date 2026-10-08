@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.293.0] - 2026-10-08
+
+### Added
+
+- `update_pr` with `draft: false` marks a draft PR ready for review
+- `record_pr_supersession` can act on PRs a task names (#3754)
+- Coordination: path overlap no longer mints `dependsOn`; Jev HOLD/START decides prefix-only overlap
+
+### Fixed
+
+- A task with other open PRs stays in progress when one of them merges (#3952)
+- Role-env-gapped tasks no longer fill the claim candidate window (#3708)
+
+## [0.276.1] - 2026-10-05
+
+### Added
+
+- Standalone model policy: apps can ask which model to use by surface (chat or coding) and tier, with no buildd account and a safe fallback when the policy service is down (#3605)
+
+### Fixed
+
+- Approved, green PRs converge instead of stalling on a moving base or a stale reviewer verdict; landing re-drives them or requests a fresh review and reports its next step (#3606)
+- `request_pr_review` accepts a task token when the task itself names the PR (#3607)
+- `create_pr` accepts the branch an interactive session actually pushed (#3603)
+- Interactive MCP sessions bypass account budget exhaustion checks at claim, since they bring their own credentials (#3599)
+- Warm snapshots refresh a size-skipped pnpm store when the snapshot cap is raised, instead of waiting 24 hours (#3600)
+- Insights: failed and abandoned work gets its own labelled strip and scale under the flow chart (#3601)
+
 ## [0.260.0] - 2026-10-01
 
 ### Added
@@ -1096,7 +1124,9 @@ _Release PR._
 - E2E dogfood tests for dashboard dispatch, lifecycle, and concurrent limits
 [0.36.2]: https://github.com/buildd-ai/buildd/compare/v0.36.1...v0.36.2[0.36.0]: https://github.com/buildd-ai/buildd/compare/v0.35.0...v0.36.0[0.34.1]: https://github.com/buildd-ai/buildd/compare/v0.34.0...v0.34.1[0.33.0]: https://github.com/buildd-ai/buildd/compare/v0.32.1...v0.33.0[0.32.0]: https://github.com/buildd-ai/buildd/compare/v0.31.0...v0.32.0[0.30.0]: https://github.com/buildd-ai/buildd/compare/v0.29.0...v0.30.0[0.28.0]: https://github.com/buildd-ai/buildd/compare/v0.27.0...v0.28.0[0.26.0]: https://github.com/buildd-ai/buildd/compare/v0.25.0...v0.26.0[0.24.0]: https://github.com/buildd-ai/buildd/compare/v0.23.0...v0.24.0[0.22.1]: https://github.com/buildd-ai/buildd/compare/v0.22.0...v0.22.1[0.21.1]: https://github.com/buildd-ai/buildd/compare/v0.21.0...v0.21.1[0.20.0]: https://github.com/buildd-ai/buildd/compare/v0.19.0...v0.20.0[0.18.2]: https://github.com/buildd-ai/buildd/compare/v0.18.1...v0.18.2[0.18.0]: https://github.com/buildd-ai/buildd/compare/v0.17.0...v0.18.0[0.16.0]: https://github.com/buildd-ai/buildd/compare/v0.15.0...v0.16.0[0.14.0]: https://github.com/buildd-ai/buildd/compare/v0.13.0...v0.14.0[0.12.0]: https://github.com/buildd-ai/buildd/compare/v0.11.0...v0.12.0[0.10.0]: https://github.com/buildd-ai/buildd/compare/v0.9.0...v0.10.0[0.8.0]: https://github.com/buildd-ai/buildd/compare/v0.7.0...v0.8.0[0.6.0]: https://github.com/buildd-ai/buildd/compare/v0.5.0...v0.6.0[0.4.0]: https://github.com/buildd-ai/buildd/compare/v0.3.2...v0.4.0[0.3.1]: https://github.com/buildd-ai/buildd/compare/v0.3.0...v0.3.1[0.2.0]: https://github.com/buildd-ai/buildd/compare/v0.1.1...v0.2.0
 
-[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.260.0...HEAD
+[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.293.0...HEAD
+[0.293.0]: https://github.com/buildd-ai/buildd/compare/v0.292.2...v0.293.0
+[0.276.1]: https://github.com/buildd-ai/buildd/compare/v0.276.0...v0.276.1
 [0.260.0]: https://github.com/buildd-ai/buildd/compare/v0.259.0...v0.260.0
 [0.244.0]: https://github.com/buildd-ai/buildd/compare/v0.243.3...v0.244.0
 [0.191.0]: https://github.com/buildd-ai/buildd/compare/v0.190.0...v0.191.0

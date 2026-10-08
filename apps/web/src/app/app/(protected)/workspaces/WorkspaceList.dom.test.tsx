@@ -32,7 +32,7 @@ type Props = Parameters<typeof WorkspaceList>[0];
 const ws = (id: string, name: string, canMove: boolean) => ({
   id, name, repo: null, localPath: null, createdAt: new Date('2026-01-01T00:00:00Z'),
   teamId: 'team-a', teamName: 'Team A', canMove,
-  runners: { action: false, service: false, user: false },
+  runners: { service: false, user: false },
 });
 const props: Props = {
   workspaces: [ws('ws-1', 'Example Workspace', true), ws('ws-2', 'Read Only Workspace', false)],
@@ -132,3 +132,22 @@ describe('WorkspaceList move-to-team', () => {
     expect(document.querySelector('[data-testid="move-toast"]')?.textContent).toContain('Moved Example Workspace to Team B');
   });
 });
+
+describe('runner markers', () => {
+  it('shows no unexplained crosses for a workspace with no runner yet', () => {
+    act(() => root.render(<WorkspaceList {...props} />));
+    const text = container.textContent ?? '';
+    expect(text).not.toContain('Service');
+    expect(text).not.toContain('GH Action');
+    expect(container.querySelector('[data-testid="workspace-runner-marker"]')).toBeNull();
+  });
+
+  it('names a connected runner in plain words and explains it on hover', () => {
+    const withRunner = { ...ws('ws-3', 'Busy Workspace', false), runners: { service: true, user: false } };
+    act(() => root.render(<WorkspaceList workspaces={[withRunner]} moveTeams={[]} />));
+    const markers = [...container.querySelectorAll('[data-testid="workspace-runner-marker"]')];
+    expect(markers.map((m) => m.textContent)).toEqual(['Server runner']);
+    expect(markers[0].getAttribute('title')).toMatch(/always-on server/);
+  });
+});
+

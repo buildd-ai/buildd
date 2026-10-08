@@ -14,6 +14,8 @@ import {
   gateUse,
   gateChatMemoryTier,
   gateDirectiveScope,
+  gatePromoteVeto,
+  gateRelevanceDemote,
   promoteState,
   learnState,
   KEEP_NOT_DURABLE_TAG,
@@ -21,7 +23,14 @@ import {
   MAX_RELEVANCE_SHADOW_HITS,
   MEMORY_DECISIONS,
   MEMORY_PROMOTE_DECISION,
+  MAX_PROMOTE_SHADOW_ITEMS,
+  PROMOTE_VETO_MIN_CONFIDENCE,
+  MEMORY_RELEVANCE_DECISION,
+  RELEVANCE_DEMOTE_MIN_CONFIDENCE,
+  RELEVANCE_LIVE_BUDGET_MS,
+  MEMORY_DECISION_TIMEOUT_MS,
   STATE_CHARS,
+  type PromoteItem,
   type MemoryDecisionRow,
   type MemoryDecisionScope,
 } from '../memory-decisions';
@@ -70,9 +79,11 @@ describe('definitions', () => {
     for (const [k, d] of Object.entries(MEMORY_DECISIONS)) expectDecisionPinned(d, { fingerprint: PINNED[k as keyof typeof PINNED] });
   });
 
-  it('relevance and promote are shadow-only; the rest act', () => {
-    expect(MEMORY_DECISIONS.relevance.policyOf('relevant').mode).toBe('shadow');
-    expect(MEMORY_DECISIONS.promote.policyOf('promote').mode).toBe('shadow');
+  it('relevance gates a demotion; promote gates a veto; the rest act', () => {
+    expect(MEMORY_DECISIONS.relevance.policyOf('relevant').mode).toBe('gated');
+    expect(MEMORY_DECISIONS.relevance.policyOf('relevant').minConfidence).toBe(RELEVANCE_DEMOTE_MIN_CONFIDENCE);
+    expect(MEMORY_DECISIONS.promote.policyOf('promote').mode).toBe('gated');
+    expect(MEMORY_DECISIONS.promote.policyOf('promote').minConfidence).toBe(PROMOTE_VETO_MIN_CONFIDENCE);
     expect(MEMORY_DECISIONS.learn.policyOf('keep').minConfidence).toBe(0.8);
     expect(MEMORY_DECISIONS.learn.policyOf('type').minConfidence).toBe(0.9);
     expect(MEMORY_DECISIONS.update.policyOf('action').minConfidence).toBe(0.9);
@@ -126,6 +137,15 @@ describe('pure gates', () => {
     expect(gateChatMemoryTier(choiceAns('knowledge', 0.5) as any)).toBeNull();
     expect(gateDirectiveScope(choiceAns('workspace', 0.9) as any)).toBe('workspace');
     expect(gateDirectiveScope(choiceAns('everywhere', 0.7) as any)).toBeNull();
+  });
+
+  it('promote vetoes only on a confident "do not promote"', () => {
+    expect(PROMOTE_VETO_MIN_CONFIDENCE).toBe(0.8);
+    expect(gatePromoteVeto(noulAns(0.1) as any)).toBe(true);
+    expect(gatePromoteVeto(noulAns(0.2) as any)).toBe(true);
+    expect(gatePromoteVeto(noulAns(0.3) as any)).toBe(false);
+    expect(gatePromoteVeto(noulAns(0.95) as any)).toBe(false);
+    expect(gatePromoteVeto(null)).toBe(false);
   });
 });
 
@@ -263,11 +283,132 @@ describe('shadowRelevance', () => {
   });
 });
 
-describe('promote (shadow, definition only)', () => {
-  it('is a yes/no over bounded evidence and never gates to applied', () => {
+describe('relevance live', () => {
+  const hit = (memoryId: string, extra: Record<string, unknown> = {}) => ({ memoryId, content: memoryId, gatedBy: null, ...extra });
+  const byContent = (p: Record<string, number>) => (req: any) => ({ relevant: noulAns(p[String(req.state.memory.content)] ?? 0.5) });
+
+  it('the threshold is at least 0.85 and the budget well under the 5s deadline', () => {
+    expect(RELEVANCE_DEMOTE_MIN_CONFIDENCE).toBeGreaterThanOrEqual(0.85);
+    expect(RELEVANCE_LIVE_BUDGET_MS).toBeLessThanOrEqual(MEMORY_DECISION_TIMEOUT_MS / 2);
+  });
+
+  it('versioned apart from the md1 shadow, so readouts split shadow from live', () => {
+    expect(MEMORY_RELEVANCE_DECISION.promptVersion).toBe('md2');
+  });
+
+  it('demotes only on a confident "not relevant"', () => {
+    expect(gateRelevanceDemote(noulAns(0.1) as any)).toBe(true);
+    expect(gateRelevanceDemote(noulAns(0.2) as any)).toBe(false);
+    expect(gateRelevanceDemote(noulAns(0.95) as any)).toBe(false);
+    expect(gateRelevanceDemote(null)).toBe(false);
+  });
+
+  it('returns the confident not-relevant hits; rows are live and applied only once recorded as applied', async () => {
+    const h = harness(byContent({ noise: 0.05, unsure: 0.3, useful: 0.95 }));
+    const j = await h.decider.judgeRelevance!({ scope, task: 'fix the claim route', caller: 'claim_context', hits: [hit('noise'), hit('unsure'), hit('useful')] });
+    expect([...j.demote]).toEqual(['noise']);
+    expect(h.rows).toHaveLength(0);
+    j.record(true);
+    j.record(true);
+    expect(h.rows.map(r => [r.memoryId, r.mode, r.verdict, r.applied, r.rule, r.caller])).toEqual([
+      ['noise', 'live', 'false', true, 'shown', 'claim_context'],
+      ['unsure', 'live', 'false', false, 'shown', 'claim_context'],
+      ['useful', 'live', 'true', false, 'shown', 'claim_context'],
+    ]);
+    expect(h.rows.every(r => r.decision === 'relevance' && r.version.startsWith('md2|'))).toBe(true);
+  });
+
+  it('a mandatory hit is judged and logged but never demoted', async () => {
+    const h = harness({ relevant: noulAns(0.01) });
+    const j = await h.decider.judgeRelevance!({ scope, task: 't', caller: 'claim_context', hits: [hit('pinned', { mandatory: true }), hit('other')] });
+    expect([...j.demote]).toEqual(['other']);
+    j.record(true);
+    expect(h.rows.find(r => r.memoryId === 'pinned')).toMatchObject({ rule: 'mandatory', applied: false, verdict: 'false' });
+  });
+
+  it('recorded as not applied (the caller fell back to the rule order): every row applied=false', async () => {
+    const h = harness({ relevant: noulAns(0.01) });
+    const j = await h.decider.judgeRelevance!({ scope, task: 't', caller: 'claim_context', hits: [hit('a'), hit('b')] });
+    j.record(false);
+    expect(h.rows.every(r => !r.applied && r.mode === 'live')).toBe(true);
+  });
+
+  it('a hang is bounded by the live budget, not the 5s deadline, and demotes nothing', async () => {
+    const h = harness('hang');
+    const started = Date.now();
+    const j = await h.decider.judgeRelevance!({ scope, task: 't', caller: 'claim_context', hits: [hit('a'), hit('b')], budgetMs: 40 });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(j.demote.size).toBe(0);
+    j.record(true);
+    expect(h.rows.every(r => r.error === 'timeout' && !r.applied)).toBe(true);
+  });
+
+  it('no key or no task text: nothing demoted, nothing logged', async () => {
+    const none = harness({}, { key: null });
+    const j = await none.decider.judgeRelevance!({ scope, task: 't', caller: 'claim_context', hits: [hit('a')] });
+    j.record(true);
+    expect(j.demote.size).toBe(0);
+    expect(none.rows).toHaveLength(0);
+    const blank = harness({ relevant: noulAns(0.01) });
+    const k = await blank.decider.judgeRelevance!({ scope, task: '  ', caller: 'claim_context', hits: [hit('a')] });
+    expect(k.demote.size).toBe(0);
+    expect(blank.requests).toHaveLength(0);
+  });
+});
+
+describe('judgePromote', () => {
+  const item = (memoryId: string, live: boolean, rule = live ? 'promote' : 'hold:no_evidence'): PromoteItem => ({
+    memoryId, title: `t ${memoryId}`, content: memoryId, type: 'gotcha', evidence: { corroborated: true }, rule, live,
+  });
+  const byContent = (p: Record<string, number>) => (req: any) => ({ promote: noulAns(p[String(req.state.memory.content)] ?? 0.5) });
+
+  it('is a yes/no over bounded evidence', () => {
     expect(MEMORY_PROMOTE_DECISION.questions.promote.type).toBe('noul');
     const state = promoteState({ title: 't', content: 'c', type: 'pattern' }, { usedBy: 3, contradicted: 0 });
     expect(state.evidence).toEqual({ usedBy: 3, contradicted: 0 });
+  });
+
+  it('versioned apart from the md1 decisions, so readouts split pre/post veto', () => {
+    expect(MEMORY_PROMOTE_DECISION.promptVersion).toBe('md2');
+    expect(MEMORY_DECISIONS.learn.promptVersion).toBe('md1');
+  });
+
+  it('a live item vetoes on a confident no: logged live and applied', async () => {
+    const h = harness(byContent({ veto: 0.1, unsure: 0.3, yes: 0.95 }));
+    const out = await h.decider.judgePromote({ scope: { teamId: TEAM }, items: [item('veto', true), item('unsure', true), item('yes', true)] });
+    expect(out).toEqual([{ memoryId: 'veto', veto: true }, { memoryId: 'unsure', veto: false }, { memoryId: 'yes', veto: false }]);
+    expect(h.rows.map(r => [r.memoryId, r.mode, r.verdict, r.applied, r.rule])).toEqual([
+      ['veto', 'live', 'false', true, 'promote'],
+      ['unsure', 'live', 'false', false, 'promote'],
+      ['yes', 'live', 'true', false, 'promote'],
+    ]);
+    expect(h.rows.every(r => r.decision === 'promote' && r.version.startsWith('md2|'))).toBe(true);
+  });
+
+  it('a challenger (the rule held it) never acts, whatever Jev says: logged shadow', async () => {
+    const h = harness(byContent({ promote: 0.99, no: 0.01 }));
+    const out = await h.decider.judgePromote({ scope: { teamId: TEAM }, items: [item('promote', false), item('no', false)] });
+    expect(out.every(v => !v.veto)).toBe(true);
+    expect(h.rows.every(r => r.mode === 'shadow' && !r.applied)).toBe(true);
+    expect(h.rows.map(r => r.verdict)).toEqual(['true', 'false']);
+  });
+
+  it('fails open: an error or no key vetoes nothing', async () => {
+    const err = harness('error');
+    expect(await err.decider.judgePromote({ scope: { teamId: TEAM }, items: [item('a', true)] })).toEqual([{ memoryId: 'a', veto: false }]);
+    expect(err.rows[0]).toMatchObject({ mode: 'live', applied: false, error: 'provider_error' });
+    const none = harness({}, { key: null });
+    expect(await none.decider.judgePromote({ scope: { teamId: TEAM }, items: [item('a', true)] })).toEqual([{ memoryId: 'a', veto: false }]);
+    expect(none.rows).toHaveLength(0);
+  });
+
+  it('asks at most MAX_PROMOTE_SHADOW_ITEMS per call', async () => {
+    const h = harness({ promote: noulAns(0.9) });
+    const many = Array.from({ length: MAX_PROMOTE_SHADOW_ITEMS + 2 }, (_, i) => item(`m${i}`, true));
+    const out = await h.decider.judgePromote({ scope: { teamId: TEAM }, items: many });
+    expect(h.requests).toHaveLength(MAX_PROMOTE_SHADOW_ITEMS);
+    expect(out).toHaveLength(MAX_PROMOTE_SHADOW_ITEMS + 2);
+    expect(out.every(v => !v.veto)).toBe(true);
   });
 });
 
@@ -337,6 +478,17 @@ describe('judgeChatDirective', () => {
     expect(h.rows[0]).toMatchObject({ decision: 'chat_tier', applied: false, rule: 'neither' });
   });
 
+  it('chat_tier is applied only when a confident directive proposed a card, not for a confident neither or knowledge', async () => {
+    for (const tier of ['neither', 'knowledge'] as const) {
+      const h = harness(byState(choiceAns(tier, 0.97), null));
+      await h.decider.judgeChatDirective({ scope, message: 'The billing service runs on port 4000.', workspace: null, rule: false });
+      expect(h.rows[0]).toMatchObject({ decision: 'chat_tier', verdict: tier, applied: false });
+    }
+    const low = harness(byState(choiceAns('directive', 0.6), null));
+    await low.decider.judgeChatDirective({ scope, message: 'Always x', workspace: null, rule: true });
+    expect(low.rows[0]).toMatchObject({ verdict: 'directive', applied: false });
+  });
+
   it('no key: null, nothing logged', async () => {
     const h = harness({}, { key: null });
     expect(await h.decider.judgeChatDirective({ scope, message: 'Always x', workspace: null, rule: true })).toBeNull();
@@ -363,8 +515,8 @@ const PINNED = {
   learn: '614834af489d',
   update: '3f167883df52',
   use: '41f06ea424cc',
-  relevance: '083fa541e7d0',
-  promote: '62a19f63dcf1',
+  relevance: '92eb47fc6823',
+  promote: 'a8bc20d757de',
   chat_tier: '9a7353f294b1',
   directive_scope: '5a0801087fd0',
 };

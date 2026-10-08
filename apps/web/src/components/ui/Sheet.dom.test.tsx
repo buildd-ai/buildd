@@ -106,6 +106,58 @@ describe('Sheet', () => {
     expect(q('sheet')).toBeNull();
   });
 
+  it('contextual peek keeps the chart interactive and scroll unlocked, without a backdrop (below md, the viewport-fixed overlay)', () => {
+    const realMatchMedia = window.matchMedia;
+    (window as unknown as { matchMedia: typeof window.matchMedia }).matchMedia = ((query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+    })) as typeof window.matchMedia;
+    try {
+      act(() => root.render(<Sheet open contextual height="peek" onClose={() => {}} title="Tasks" testId="sheet">x</Sheet>));
+      const dialog = q('sheet')!;
+      expect(dialog.getAttribute('aria-modal')).toBe('false');
+      expect(dialog.className).toContain('h-[35dvh]');
+      expect(dialog.parentElement!.className).toContain('pointer-events-none');
+      expect(dialog.className).toContain('pointer-events-auto');
+      expect(dialog.parentElement!.querySelector('.bg-black\\/50')).toBeNull();
+      expect(main.style.overflow).toBe('auto');
+    } finally {
+      (window as unknown as { matchMedia: typeof window.matchMedia }).matchMedia = realMatchMedia;
+    }
+  });
+
+  it('contextual renders inline at desktop width instead of a viewport-fixed overlay, so it can never cover sibling content below its anchor', () => {
+    const realMatchMedia = window.matchMedia;
+    (window as unknown as { matchMedia: typeof window.matchMedia }).matchMedia = ((query: string) => ({
+      matches: query.includes('min-width'),
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+    })) as typeof window.matchMedia;
+    try {
+      act(() => root.render(<Sheet open contextual height="peek" onClose={() => {}} title="Tasks" testId="sheet">x</Sheet>));
+      const dialog = q('sheet')!;
+      expect(container.contains(dialog)).toBe(true);
+      expect(dialog.closest('.fixed')).toBeNull();
+      expect(dialog.className).toContain('max-h-[35vh]');
+      expect(dialog.className).not.toContain('h-[35dvh]');
+    } finally {
+      (window as unknown as { matchMedia: typeof window.matchMedia }).matchMedia = realMatchMedia;
+    }
+  });
+
+  it('full-screen evidence uses the phone viewport and a centered desktop panel', () => {
+    act(() => root.render(<Sheet open onClose={() => {}} title="Evidence" testId="sheet" height="full">output</Sheet>));
+    const dialog = q('sheet')!;
+    expect(dialog.className).toContain('h-[100dvh]');
+    expect(dialog.className).toContain('md:max-h-[90dvh]');
+    expect(dialog.parentElement!.className).toContain('md:items-center');
+    expect(dialog.className).toContain('md:max-w-4xl');
+    expect(main.style.overflow).toBe('hidden');
+  });
+
   it('wide + tall sizes', () => {
     act(() => root.render(<Sheet open onClose={() => {}} title="A" testId="sheet" width="wide" height="tall">x</Sheet>));
     expect(q('sheet')!.className).toContain('max-w-3xl');

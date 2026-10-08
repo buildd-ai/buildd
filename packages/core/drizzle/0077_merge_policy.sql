@@ -1,1 +1,0 @@
-ALTER TABLE "missions" ADD COLUMN "merge_policy" jsonb;

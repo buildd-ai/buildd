@@ -11,6 +11,7 @@ import { parseModelRoutingConfig } from '@buildd/core/model-routing-experiment';
 import { canViewExperiment, isExperimentAdmin, toExperimentDTO, type TeamRole } from './experiments';
 import { listTeamExperiments } from './experiments-store';
 import type { HealthExperiments } from './health-experiments-shared';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 /** At most this many are shown; the ordering below keeps live ones in. */
 const MAX_ITEMS = 10;
@@ -23,7 +24,8 @@ export async function loadHealthExperiments(teamId: string, userId: string): Pro
   const role = (membership?.role as TeamRole | undefined) ?? null;
   if (!role) return null;
 
-  const rows = (await listTeamExperiments(teamId)).filter(r => canViewExperiment(r.visibility, role));
+  const overrides = await getTeamPermissionOverrides(teamId);
+  const rows = (await listTeamExperiments(teamId)).filter(r => canViewExperiment(r.visibility, role, overrides));
   // Live experiments first, then drafts, then the most recent conclusions.
   const rank = (s: string) => (s === 'running' ? 0 : s === 'paused' ? 1 : s === 'draft' ? 2 : 3);
   rows.sort((a, b) => rank(a.status) - rank(b.status));
@@ -37,5 +39,5 @@ export async function loadHealthExperiments(teamId: string, userId: string): Pro
     return { experiment, readout };
   }));
 
-  return { canManage: isExperimentAdmin(role), items };
+  return { canManage: isExperimentAdmin(role, overrides), items };
 }

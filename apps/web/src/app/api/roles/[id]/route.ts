@@ -10,6 +10,8 @@ import { isStorageConfigured } from '@/lib/storage';
 import { normalizeBackend } from '@/lib/normalize-backend';
 import { isUuid } from '@/lib/uuid';
 import { applyRoutingPatch, parseRoutingPatch } from '@/lib/role-routing';
+import { parseOperatorGrantInput, withOperatorGrantMetadata, type OperatorGrantConfig } from '@/lib/operator-capability';
+import { AGENT_CAPABILITY_NAMES, roleMayHold } from '@/lib/permission-registry';
 
 function computeContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -90,8 +92,28 @@ export async function PATCH(
     const routing = parseRoutingPatch(body);
     if (!routing.ok) return NextResponse.json({ error: routing.error }, { status: 400 });
 
+    // Agent capability grant (docs/specs/agent-capabilities.md): only a role
+    // with a capability ceiling can hold one at all — writing it on any other
+    // role would be inert, so reject it rather than silently storing dead config.
+    let operatorConfig: OperatorGrantConfig | null = null;
+    let hasOperatorGrant = false;
+    if ('operatorGrant' in body) {
+      hasOperatorGrant = true;
+      if (!AGENT_CAPABILITY_NAMES.some(c => roleMayHold(existing.slug, c))) {
+        return NextResponse.json({ error: `Role "${existing.slug}" holds no agent capabilities; operatorGrant has no effect for it` }, { status: 400 });
+      }
+      if (body.operatorGrant !== null) {
+        const parsed = parseOperatorGrantInput(body.operatorGrant);
+        if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+        operatorConfig = parsed.config;
+      }
+    }
+
     const updates: Record<string, unknown> = { updatedAt: new Date() };
-    if (routing.patch) updates.metadata = applyRoutingPatch(existing.metadata, routing.patch);
+    let metadata = existing.metadata;
+    if (routing.patch) metadata = applyRoutingPatch(metadata, routing.patch);
+    if (hasOperatorGrant) metadata = withOperatorGrantMetadata(metadata, operatorConfig);
+    if (routing.patch || hasOperatorGrant) updates.metadata = metadata;
     if (name !== undefined) updates.name = name;
     if (description !== undefined) updates.description = description;
     if (content !== undefined) {

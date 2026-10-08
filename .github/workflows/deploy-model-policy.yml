@@ -1,0 +1,112 @@
+name: Deploy Model Policy
+
+# Deploys the standalone model-policy Worker (apps/model-policy, `model-policy`)
+# to https://policy.buildd.dev. Same shape as deploy-dispatch.yml.
+#
+# Ships with the release that contains the change: a push to `main` touching
+# the Worker or the policy protocol deploys it. `dev` merges are inert.
+# `workflow_dispatch` is the manual path (first deploy, redeploy, rollback).
+#
+# Auth is the env token only (wrangler reads CLOUDFLARE_API_TOKEN before any
+# stored profile, and CLOUDFLARE_ACCOUNT_ID since wrangler.jsonc has no
+# account_id on purpose).
+#
+# Requires repo SECRETS (never vars; Actions logs here are world-readable):
+#   CF_MODEL_POLICY_API_TOKEN, CF_MODEL_POLICY_ACCOUNT_ID
+# Each falls back to the Dispatch Worker's (CF_DISPATCH_API_TOKEN,
+# CF_DISPATCH_ACCOUNT_ID) when unset: same account, and the token needs the
+# same "Workers Scripts: Edit" + "Workers Routes: Edit" on the buildd.dev zone.
+#
+# The Worker's runtime secrets (POLICY_TOKENS, MODEL_POLICY) are set once with
+# `wrangler secret put` (apps/model-policy/README.md, Deploy). A deploy keeps
+# them; this workflow never sets them and never sees a provider key.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/model-policy/**'
+      - 'packages/ai-kit/src/policy/**'
+      - 'packages/ai-kit/src/models/types.ts'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to deploy (branch, tag or SHA). Defaults to the ref the run was started on.'
+        required: false
+        default: ''
+
+concurrency:
+  group: deploy-model-policy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy model-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_MODEL_POLICY_API_TOKEN || secrets.CF_DISPATCH_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_MODEL_POLICY_ACCOUNT_ID || secrets.CF_DISPATCH_ACCOUNT_ID }}
+    steps:
+      # Before checkout, so a missing secret fails in seconds with a clear
+      # message. Tested through env, never echoed.
+      - name: Check deploy secrets are set
+        run: |
+          missing=""
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing="$missing CF_MODEL_POLICY_API_TOKEN"
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing CF_MODEL_POLICY_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repo secret(s):$missing (or the CF_DISPATCH_* fallbacks). Push them from Doppler buildd/dev_ci with gh-secret-push (see apps/model-policy/README.md, Deploy)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Worker and protocol tests
+        run: bun run scripts/run-unit-tests.ts apps/model-policy/src packages/ai-kit/src/policy
+
+      - name: Type check
+        working-directory: apps/model-policy
+        run: bunx tsc --noEmit
+
+      - name: Deploy
+        working-directory: apps/model-policy
+        run: bunx wrangler deploy
+
+      # `ok:false` means the Worker is up but has no valid MODEL_POLICY: every
+      # resolve answers 503 and clients (buildd included) serve their own
+      # fallback. Deployed but not configured is a failure here, so it is seen.
+      - name: Smoke test /health
+        run: |
+          url="https://policy.buildd.dev/health"
+          body=""
+          for i in 1 2 3 4 5 6; do
+            if body=$(curl -fsS -m 15 "$url"); then
+              break
+            fi
+            body=""
+            echo "Attempt $i: $url not reachable yet, retrying in 10s"
+            sleep 10
+          done
+          if [ -z "$body" ]; then
+            echo "::error::$url did not answer after the deploy."
+            exit 1
+          fi
+          echo "Health: $body"
+          if ! printf '%s' "$body" | jq -e '.ok == true' > /dev/null; then
+            echo "::error::Deployed, but /health is not ok:true. Set MODEL_POLICY (and POLICY_TOKENS) with wrangler secret put; see apps/model-policy/README.md."
+            exit 1
+          fi
