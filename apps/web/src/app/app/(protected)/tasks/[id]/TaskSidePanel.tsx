@@ -23,8 +23,8 @@ export interface DeliveryPillState {
 }
 
 export function HeaderStatusPill({ status, merged, delivery = null }: { status: string; merged: boolean; delivery?: DeliveryPillState | null }) {
-  const base = 'inline-flex items-center gap-2 px-2.5 min-h-8 font-mono text-[11px] font-semibold uppercase tracking-[1.2px] border';
-  const dot = (extra = '') => <span className={`w-[7px] h-[7px] bg-current ${extra}`} aria-hidden="true" />;
+  const base = 'inline-flex items-center gap-2 px-2.5 min-h-8 font-mono text-[11px] font-semibold uppercase tracking-[1.2px] border flex-wrap';
+  const dot = (extra = '') => <span className={`w-[7px] h-[7px] flex-shrink-0 bg-current ${extra}`} aria-hidden="true" />;
 
   if (delivery && !merged) {
     // Use deliveryReading for canonical tone and label mapping.
