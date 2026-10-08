@@ -1538,6 +1538,60 @@ describe('PATCH /api/workers/[id]', () => {
       expect(written.lastCommitSha).toBe('abc1234');
     });
 
+    // docs/specs/real-and-virtual-cost.md: the basis is whatever the reporter
+    // says, combined atomically in SQL; absent reads as unknown.
+    describe('cost basis', () => {
+      const metricsWorker = {
+        id: 'worker-1', accountId: 'account-1', status: 'completed', error: null,
+        workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null, resultMeta: null,
+        costUsd: '0', inputTokens: 0, outputTokens: 0, turns: 3, costBasis: null,
+      };
+      const send = (body: Record<string, unknown>) => PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body,
+      }), { params: mockParams });
+      const basisValues = (v: any) => (v?.costBasis?.values ?? []).filter((x: unknown) => typeof x === 'string');
+
+      beforeEach(() => {
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockWorkersFindFirst.mockResolvedValue(metricsWorker);
+        captureUpdates();
+      });
+
+      it('writes the reported basis with usage', async () => {
+        const res = await send({ metricsOnly: true, inputTokens: 10, outputTokens: 2, costUsd: 0.5, costBasis: 'real' });
+        expect(res.status).toBe(200);
+        expect(basisValues(metricsSets[0])).toContain('real');
+      });
+
+      it('records unknown when usage arrives with no basis', async () => {
+        await send({ metricsOnly: true, inputTokens: 10, outputTokens: 2 });
+        expect(basisValues(metricsSets[0])[0]).toBe('unknown');
+      });
+
+      it('leaves the basis alone when the report carries no usage', async () => {
+        await send({ metricsOnly: true, lastCommitSha: 'abc1234' });
+        expect(metricsSets[0]?.costBasis).toBeUndefined();
+      });
+
+      it('rejects a basis that is not one of the four with 400 and writes nothing', async () => {
+        const res = await send({ metricsOnly: true, inputTokens: 10, costBasis: 'oauth' });
+        expect(res.status).toBe(400);
+        expect(metricsSets.length).toBe(0);
+      });
+
+      it('marks a server-estimated cost as estimated without changing the basis', async () => {
+        await send({
+          metricsOnly: true, costUsd: 0, inputTokens: 1_000_000, outputTokens: 100_000, costBasis: 'virtual',
+          actualModel: 'claude-sonnet-4-20250514',
+          resultMeta: { totalUsage: { inputTokens: 1_000_000, outputTokens: 100_000 } },
+        });
+        const written = metricsSets[0];
+        expect(Number(written.costUsd)).toBeGreaterThan(0);
+        expect((written.resultMeta as any).costEstimated).toBe(true);
+        expect(basisValues(written)).toContain('virtual');
+      });
+    });
+
     it('does not revive status, error or turns through a metrics-only PATCH', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({
@@ -7829,6 +7883,32 @@ describe('PATCH /api/workers/[id]', () => {
         const getSet = setupCompletion({}, POOL, {}, { context: { tenantContext: { tenantId: 'tenant-a' } } });
         await PATCH(completion(), { params: mockParams });
         expect(getSet()).toBeNull();
+      });
+
+      // Real usage was charged per token, not drawn from the plan.
+      it('does not count a session that reports a real basis', async () => {
+        const getSet = setupCompletion({}, POOL);
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', costUsd: 10, costBasis: 'real' },
+        }), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect(getSet()).toBeNull();
+      });
+
+      it('does not count a worker already recorded as real when the terminal report has no basis', async () => {
+        const getSet = setupCompletion({}, POOL, { costBasis: 'real' });
+        await PATCH(completion(), { params: mockParams });
+        expect(getSet()).toBeNull();
+      });
+
+      it('counts a session that reports a virtual basis, as before', async () => {
+        const getSet = setupCompletion({}, POOL);
+        await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', costUsd: 10, costBasis: 'virtual' },
+        }), { params: mockParams });
+        expect(parseFloat(getSet().monthlyCostUsd)).toBeCloseTo(55, 6);
       });
 
       it('still writes the cost onto the worker row for an excluded session', async () => {

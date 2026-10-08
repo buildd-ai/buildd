@@ -194,7 +194,7 @@ export default function DeliveryStatesFixture() {
             const v = views.get(c.input.view.delivery!.ownerTaskId)!;
             return (
               <span key={c.key} data-testid="delivery-pill">
-                <HeaderStatusPill status="running" merged={false} delivery={{ headline: v.headline, owner: v.owner, needsYou: v.needsYou, stage: v.stage, detail: v.detail }} />
+                <HeaderStatusPill status="running" merged={false} delivery={{ headline: v.headline, owner: v.owner, needsYou: v.needsYou, stage: v.stage, detail: v.detail, state: v.state }} />
               </span>
             );
           })}
@@ -207,7 +207,7 @@ export default function DeliveryStatesFixture() {
           taskId="fixture-task"
           taskStatus="in_progress"
           initialWorker={mockWorkers['waiting-input'] as never}
-          delivery={{ headline: awaiting.headline, owner: awaiting.owner, needsYou: awaiting.needsYou, detail: awaiting.detail, prState: awaiting.prState }}
+          delivery={{ headline: awaiting.headline, owner: awaiting.owner, needsYou: awaiting.needsYou, detail: awaiting.detail, prState: awaiting.prState, state: awaiting.state }}
         />
       </section>
 

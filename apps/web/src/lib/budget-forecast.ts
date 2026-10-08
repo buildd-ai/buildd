@@ -426,7 +426,7 @@ export async function getBudgetForecast(
         .select({ spend: sql<string>`COALESCE(SUM(${workers.costUsd}), '0')` })
         .from(workers)
         .innerJoin(tasks, eq(tasks.id, workers.taskId))
-        .where(eq(tasks.missionId, m.id));
+        .where(and(eq(tasks.missionId, m.id), sql`${workers.costBasis} IS DISTINCT FROM ${'virtual'}`));
       const spentMUsd = parseFloat(result[0]?.spend ?? '0');
       missionForecasts.push({ missionId: m.id, missionTitle: m.title, spentUsd: spentMUsd, budgetUsd: budgetMUsd, status: m.status });
     } catch {

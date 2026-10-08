@@ -624,7 +624,7 @@ export default async function TaskDetailPage({
   // or PR-less tasks get null and keep today's status.
   const deliveryView = (await getDeliveryViewsForTasks([task.id])).get(task.id) ?? null;
   const deliveryPill: DeliveryPillState | null = deliveryView
-    ? { headline: deliveryView.headline, owner: deliveryView.owner, needsYou: deliveryView.needsYou, stage: deliveryView.stage, detail: deliveryView.detail, prState: deliveryView.prState }
+    ? { headline: deliveryView.headline, owner: deliveryView.owner, needsYou: deliveryView.needsYou, stage: deliveryView.stage, detail: deliveryView.detail, prState: deliveryView.prState, state: deliveryView.state }
     : null;
 
   // Derive canonical display status from task + active worker state.

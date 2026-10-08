@@ -29,6 +29,7 @@ import { recordOrchestrationTouchLabel } from '@buildd/core/orchestration-ledger
 import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-prices';
 import { applyBudgetUsage, countsTowardAgentSdkCreditPool } from '@buildd/core/budget-alerts';
+import { combineCostBasis, costBasisWrite, parseCostBasis, type CostBasis } from '@buildd/core/cost-basis';
 import { lineageStamp } from '@/lib/attempt-lineage';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
@@ -250,10 +251,24 @@ async function workerConflictResponse(id: string, extra?: Record<string, unknown
  *  - The write is a compare-and-swap on the status that was read, so a row
  *    moving underneath it yields a retryable conflict rather than a stale write.
  */
+/**
+ * Does this report carry usage? Only then does it say anything about the
+ * worker's cost basis (docs/specs/real-and-virtual-cost.md).
+ */
+function reportCarriesUsage(body: Record<string, any>): boolean {
+  const pos = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+  if (pos(body.costUsd) || pos(body.inputTokens) || pos(body.outputTokens)) return true;
+  const meta = body.resultMeta;
+  if (!meta || typeof meta !== 'object') return false;
+  if (meta.totalUsage && typeof meta.totalUsage === 'object') return true;
+  return !!meta.modelUsage && typeof meta.modelUsage === 'object' && Object.keys(meta.modelUsage).length > 0;
+}
+
 async function applyMetricsOnlyPatch(
   id: string,
   worker: typeof workers.$inferSelect,
   body: Record<string, any>,
+  reportedBasis: CostBasis | null,
 ) {
   if (isNonReactivatableError(worker.error)) {
     const artifactCount = await getWorkerDeliverableArtifactCount(id);
@@ -321,6 +336,13 @@ async function applyMetricsOnlyPatch(
   }
   const cost = raise(effectiveCost, Number(worker.costUsd ?? 0));
   if (cost !== null) updates.costUsd = cost.toString();
+  if (cost !== null && !(reportedCost > 0)) {
+    mergedMeta = { ...mergedMeta, costEstimated: true };
+    updates.resultMeta = mergedMeta as unknown as typeof updates.resultMeta;
+  }
+  if (reportCarriesUsage(body)) {
+    updates.costBasis = costBasisWrite(reportedBasis ?? 'unknown') as unknown as CostBasis;
+  }
   const inTokens = raise(body.inputTokens, worker.inputTokens);
   if (inTokens !== null) updates.inputTokens = inTokens;
   const outTokens = raise(body.outputTokens, worker.outputTokens);
@@ -688,13 +710,23 @@ export async function PATCH(
   const rawWorkerMessagesDelivered: unknown = body.workerMessagesDelivered;
   body = redactSecretsInBody(body, secretValues);
 
+  const basisParse = parseCostBasis(body.costBasis);
+  if (!basisParse.ok) {
+    return NextResponse.json({
+      error: 'invalid_cost_basis',
+      message: 'costBasis must be one of real, virtual, mixed, unknown.',
+    }, { status: 400 });
+  }
+  const reportedBasis = basisParse.basis;
+  const carriesUsage = reportCarriesUsage(body);
+
   // Metrics-only write: measurement about a session, no state transition. Must
   // be handled BEFORE the terminal guard below — a terminal worker is exactly
   // the case it exists for (the agent completed the task itself via the MCP, so
   // the runner's terminal PATCH lands on an already-completed row). See
   // applyMetricsOnlyPatch for what it may and may not write.
   if (body.metricsOnly === true) {
-    return await applyMetricsOnlyPatch(id, worker, body);
+    return await applyMetricsOnlyPatch(id, worker, body, reportedBasis);
   }
 
   // Check if worker was already terminated (reassigned/failed)
@@ -928,6 +960,7 @@ export async function PATCH(
   if (status) updates.status = status;
   if (error !== undefined) updates.error = error;
   if (typeof costUsd === 'number') updates.costUsd = costUsd.toString();
+  if (carriesUsage) updates.costBasis = costBasisWrite(reportedBasis ?? 'unknown') as unknown as CostBasis;
   if (typeof inputTokens === 'number') updates.inputTokens = inputTokens;
   if (typeof outputTokens === 'number') updates.outputTokens = outputTokens;
   if (typeof turns === 'number') updates.turns = turns;
@@ -1327,6 +1360,8 @@ export async function PATCH(
         // positive cost (reportedCost > 0 means line 387 already set the right value).
         if (effectiveCost > 0 && reportedCost <= 0) {
           updates.costUsd = effectiveCost.toString();
+          const metaBase = (updates.resultMeta ?? worker.resultMeta ?? {}) as Record<string, unknown>;
+          updates.resultMeta = { ...metaBase, costEstimated: true } as unknown as typeof updates.resultMeta;
         }
 
         // Codex and tenant-credential spend are billed elsewhere, so they do
@@ -1337,6 +1372,11 @@ export async function PATCH(
           backend: poolTaskRow?.backend ?? null,
           authType: account.authType,
           tenantId: ((poolTaskRow?.context as Record<string, unknown> | null)?.tenantContext as { tenantId?: string } | undefined)?.tenantId ?? null,
+          // The basis the row holds after this report, by the same rule the
+          // SQL write applies.
+          costBasis: carriesUsage
+            ? combineCostBasis((worker.costBasis as CostBasis | null) ?? null, reportedBasis ?? 'unknown')
+            : (worker.costBasis as CostBasis | null) ?? null,
         });
 
         if (effectiveCost > 0 && countsTowardPool) {
@@ -1680,7 +1720,7 @@ export async function PATCH(
         return null;
       });
       if (refusal) {
-        await applyMetricsOnlyPatch(id, worker, body).catch(() => null);
+        await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
         const frictionSignature = fireGateEvent({
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
@@ -1966,7 +2006,7 @@ export async function PATCH(
         // refusal. `applyMetricsOnlyPatch` writes measurement only (see its own
         // doc) — it cannot resurrect this worker or rewrite its outcome, so
         // running it ahead of a hard refusal is safe.
-        await applyMetricsOnlyPatch(id, worker, body).catch(() => null);
+        await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
 
         // The gate row and the preserved payload are written from the same
         // place on purpose: every arm of this gate refuses through here, so a
