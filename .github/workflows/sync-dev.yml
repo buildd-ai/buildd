@@ -1,9 +1,9 @@
 name: Sync dev from main
 
-# Keeps `dev` fast-forwardable from `main` after a release, and recreates `dev`
-# if it is ever deleted outright.
+# Brings `main` back into `dev` after anything merges to `main`, and recreates
+# `dev` if it is ever deleted outright.
 #
-# Two things this workflow must never do, both learned the hard way:
+# Three things this workflow must never do, all learned the hard way:
 #
 # 1. It must not force-push `dev`. The old version reset `dev` to `main`
 #    whenever the two had diverged, justified by "dev→main PRs mean all dev
@@ -12,8 +12,7 @@ name: Sync dev from main
 #    anything merged to `dev` between a release PR's head SHA and the merge
 #    click. It fired on 2026-08-29 after a hotfix went straight to main and
 #    flattened `dev`, which is what produces the "phantom upstream commits,
-#    every PR suddenly conflicts" symptom. Divergence is now a loud failure
-#    for a human to resolve, never a silent rewrite.
+#    every PR suddenly conflicts" symptom.
 #
 # 2. It must not act on unrelated branch deletions. GitHub's `delete` event
 #    does NOT support a `branches:` filter — it is accepted and silently
@@ -21,11 +20,28 @@ name: Sync dev from main
 #    in the repo. Because merged PRs auto-delete their head branch, that was
 #    87 of the last 100 runs of this workflow. The ref is therefore checked in
 #    an `if:`, which is the only place the filter actually works.
+#
+# 3. It must not drop work from either side. Divergence is now the normal case:
+#    a frozen release candidate (release/vX.Y.Z, see release.yml) carries its
+#    version + CHANGELOG commit on the candidate branch only, and `dev` keeps
+#    moving while it is reviewed, so after it merges `main` has a commit `dev`
+#    lacks and `dev` has commits `main` lacks. A hotfix does the same. The
+#    reconciliation is an ordinary merge of `main` into `dev`, pushed without
+#    force, so every commit on both sides survives. The only conflict resolved
+#    automatically is CHANGELOG.md's [Unreleased] section (main promoted it,
+#    dev kept adding to it), by scripts/release-candidate.ts reconcile-changelog,
+#    which itself refuses if dev touched anything else in that file. Any other
+#    conflict is a loud failure for a human, never a guess.
 
 on:
   push:
     branches: [main]
   delete:
+
+# One reconciliation at a time; a newer main push re-checks from scratch.
+concurrency:
+  group: sync-dev
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -38,40 +54,94 @@ jobs:
     if: github.event_name != 'delete' || (github.event.ref_type == 'branch' && github.event.ref == 'dev')
     runs-on: ubuntu-latest
     steps:
+      # The merge commit is pushed to dev; with the release App it triggers
+      # Build & Test on dev like any other push. GITHUB_TOKEN pushes do not.
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        if: ${{ vars.RELEASE_APP_ID != '' }}
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token || github.token }}
 
-      - name: Ensure dev exists and is fast-forwardable from main
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Bring main into dev without rewriting it
         run: |
           set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
           if ! git ls-remote --exit-code origin refs/heads/dev >/dev/null 2>&1; then
             echo "dev branch missing, recreating from main..."
-            git checkout -b dev
-            git push origin dev
+            git push origin HEAD:refs/heads/dev
             exit 0
           fi
 
-          echo "dev exists, syncing from main..."
-          git fetch origin dev
-          git checkout dev
+          report_divergence() {
+            echo ""
+            echo "Commits on dev that are NOT on main:"
+            git log --oneline origin/main..origin/dev || true
+            echo ""
+            echo "Commits on main that are NOT on dev:"
+            git log --oneline origin/dev..origin/main || true
+            echo ""
+            echo "To reconcile by hand: git checkout dev && git merge origin/main && (resolve) && git push origin dev"
+          }
 
-          if git merge --ff-only origin/main; then
-            echo "Fast-forwarded dev to main"
-            git push origin dev
-            exit 0
-          fi
+          # dev can move while this runs; a rejected (non-force) push just means
+          # "start over from the new dev".
+          for attempt in 1 2 3; do
+            git fetch --quiet origin +refs/heads/dev:refs/remotes/origin/dev +refs/heads/main:refs/remotes/origin/main
+            git checkout -q -B dev origin/dev
 
-          # Diverged. Report what is at risk and stop — do NOT rewrite dev.
-          echo "::error title=dev has diverged from main::dev cannot be fast-forwarded from main. Resolve this by hand; this workflow will not rewrite dev."
-          echo ""
-          echo "Commits on dev that are NOT on main (these are what a force-reset would have destroyed):"
-          git log --oneline origin/main..origin/dev || true
-          echo ""
-          echo "Commits on main that are NOT on dev:"
-          git log --oneline origin/dev..origin/main || true
-          echo ""
-          echo "To reconcile: git checkout dev && git merge origin/main && git push origin dev"
+            if git merge-base --is-ancestor origin/main HEAD; then
+              echo "dev already contains main; nothing to do."
+              exit 0
+            fi
+
+            if git merge --ff-only -q origin/main 2>/dev/null; then
+              echo "Fast-forwarding dev to main"
+            elif git merge --no-ff --no-edit -m "Merge branch 'main' into dev" origin/main; then
+              echo "Merged main into dev"
+            else
+              CONFLICTS=$(git diff --name-only --diff-filter=U)
+              if [ "$CONFLICTS" != "CHANGELOG.md" ]; then
+                git merge --abort
+                echo "::error title=dev and main conflict::Merging main into dev conflicts in: ${CONFLICTS//$'\n'/, }. Resolve this by hand; this workflow never rewrites dev or picks a side."
+                report_divergence
+                exit 1
+              fi
+              BASE=$(git merge-base HEAD origin/main)
+              TMP=$(mktemp -d)
+              git show "$BASE:CHANGELOG.md" > "$TMP/base"
+              git show "HEAD:CHANGELOG.md" > "$TMP/ours"
+              git show "origin/main:CHANGELOG.md" > "$TMP/theirs"
+              if ! bun scripts/release-candidate.ts reconcile-changelog --base "$TMP/base" --ours "$TMP/ours" --theirs "$TMP/theirs" > "$TMP/merged"; then
+                git merge --abort
+                echo "::error title=CHANGELOG.md needs a human::main's release promoted CHANGELOG.md and dev changed it in a way that cannot be merged automatically (see above)."
+                report_divergence
+                exit 1
+              fi
+              cp "$TMP/merged" CHANGELOG.md
+              git add CHANGELOG.md
+              git commit -q --no-edit
+              echo "Merged main into dev (CHANGELOG [Unreleased] reconciled)"
+            fi
+
+            # Never --force: a rejection means dev moved, and the loop retries.
+            if git push origin HEAD:refs/heads/dev; then
+              exit 0
+            fi
+            echo "::notice::dev moved during the sync (attempt $attempt); retrying from the new head."
+          done
+          echo "::error::dev kept moving; gave up after 3 attempts without rewriting it. Re-run this workflow."
           exit 1

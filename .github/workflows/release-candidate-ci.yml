@@ -1,0 +1,123 @@
+name: Release Candidate Verification
+
+# The authoritative pre-merge test of a frozen release candidate
+# (release/vX.Y.Z → main, cut by release.yml): the full API integration suite,
+# on the shared test machine, at the candidate's exact head SHA. Build & Test
+# still runs `build` (and schema drift) on the same PR; this adds the server
+# tests a release used to skip, because a candidate's head no longer moves under
+# them.
+#
+# It triggers on EVERY PR into main and reports `release candidate verified` on
+# all of them, so that check can be made required on main without blocking
+# hotfixes: for a non-candidate PR it passes as "not a candidate"; for a
+# candidate it passes only when the integration run at that SHA passed. It is
+# never Skipped (a Skipped check satisfies branch protection without running).
+#
+# An amendment pushes a new candidate SHA, which is a `synchronize` event: the
+# old run is cancelled and the new SHA is tested from scratch. An unreachable or
+# unconfigured test machine fails integration.yml, which fails this check.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: release-candidate-verification-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  identify:
+    name: candidate verification / identify
+    runs-on: ubuntu-latest
+    outputs:
+      candidate: ${{ steps.id.outputs.candidate }}
+      sha: ${{ steps.id.outputs.sha }}
+    steps:
+      - id: id
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Only a same-repo release/vX.Y.Z head is a candidate: a fork cannot
+          # name a branch into this path (and receives no secrets anyway).
+          if [[ "$HEAD_REF" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$HEAD_REPO" = "$REPO" ]; then
+            echo "candidate=true" >> "$GITHUB_OUTPUT"
+            echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release candidate $HEAD_REF at $HEAD_SHA: full API integration will run at exactly this SHA."
+          else
+            echo "candidate=false" >> "$GITHUB_OUTPUT"
+            echo "Not a release candidate ($HEAD_REF); nothing to verify here."
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.id.outputs.candidate == 'true'
+        with:
+          ref: ${{ steps.id.outputs.sha }}
+          fetch-depth: 2
+
+      # The candidate must be what release.yml builds: one release-only commit
+      # whose version matches the branch. Anything pushed on top by hand is
+      # reported here instead of being tested as if it were the candidate.
+      - name: Check the candidate's shape
+        if: steps.id.outputs.candidate == 'true'
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          VERSION="${HEAD_REF#release/v}"
+          SUBJECT=$(git log -1 --format=%s HEAD)
+          PKG=$(jq -r .version apps/web/package.json)
+          echo "head subject: $SUBJECT"
+          echo "apps/web/package.json: $PKG"
+          if [ "$SUBJECT" != "chore: bump version to v${VERSION}" ] || [ "$PKG" != "$VERSION" ]; then
+            echo "::error::$HEAD_REF head is not the release commit for v${VERSION}. Re-cut or amend the candidate through the Release workflow instead of pushing to it."
+            exit 1
+          fi
+
+  integration:
+    # Check-run name: "candidate integration / integration".
+    name: candidate integration
+    needs: identify
+    if: needs.identify.outputs.candidate == 'true'
+    uses: ./.github/workflows/integration.yml
+    secrets: inherit
+    with:
+      api: true
+      runner: false
+      e2e: false
+      neon_branch: ci/candidate-pr-${{ github.event.pull_request.number }}
+      checkout_sha: ${{ needs.identify.outputs.sha }}
+
+  verified:
+    # The check to require on main.
+    name: release candidate verified
+    needs: [identify, integration]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CANDIDATE: ${{ needs.identify.outputs.candidate }}
+          IDENTIFY: ${{ needs.identify.result }}
+          INTEGRATION: ${{ needs.integration.result }}
+          SHA: ${{ needs.identify.outputs.sha }}
+        run: |
+          echo "identify=$IDENTIFY candidate=${CANDIDATE:-?} integration=$INTEGRATION sha=${SHA:-n/a}"
+          if [ "$IDENTIFY" != "success" ]; then
+            echo "::error::Could not identify or validate the PR head."
+            exit 1
+          fi
+          if [ "$CANDIDATE" != "true" ]; then
+            echo "Not a release candidate: nothing to verify."
+            exit 0
+          fi
+          if [ "$INTEGRATION" != "success" ]; then
+            echo "::error::Full API integration did not pass at candidate SHA $SHA (result: $INTEGRATION)."
+            exit 1
+          fi
+          echo "Release candidate verified at $SHA."

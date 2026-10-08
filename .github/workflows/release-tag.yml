@@ -150,10 +150,11 @@ jobs:
           bun-version: "1.4.2"
 
       - name: Warn on a semver under-bump
-        # A release PR's version is computed at cut time; release-refresh.yml
-        # keeps it current as dev moves, but a PR merged before a refresh ran
-        # (or a hotfix, which is always a patch) can still ship a feat as a
-        # patch. The tag is already pushed and stays; this makes the miss
+        # A release PR's version is computed at cut time. A frozen candidate
+        # (release/vX.Y.Z) never gains commits after that, so it cannot
+        # under-bump; the legacy dev → main PR can (release-refresh.yml keeps it
+        # current, but a PR merged before a refresh ran can slip), and a hotfix
+        # is always a patch and can still ship a feat as a patch. The tag is already pushed and stays; this makes the miss
         # visible instead of silent. Never fails the job.
         if: steps.version.outputs.needs_tag == 'true'
         continue-on-error: true
