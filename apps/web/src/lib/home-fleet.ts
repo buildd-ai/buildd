@@ -136,6 +136,17 @@ export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: s
   return buildFleetSnapshot(heartbeatRows, rows, { now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS });
 }
 
+/** Interactive sessions online now in these workspaces, or null when the read fails. */
+async function loadSessionsOnline(wsIds: string[], now: number): Promise<number | null> {
+  try {
+    const { listLocalSessions, countInteractiveSessions } = await import('./local-session-view');
+    return countInteractiveSessions(await listLocalSessions({ workspaceIds: wsIds, now: new Date(now) }));
+  } catch (err) {
+    console.warn('[home-fleet] sessions online read failed:', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 export async function loadHomeFleet(input: {
   teamId: string | null;
   wsIds: string[];
@@ -148,7 +159,7 @@ export async function loadHomeFleet(input: {
   const windowStart = new Date(Math.max(now - FLEET_WINDOW_MS, Math.min(dayStart, now - 30 * 60_000)));
   const dayStartDate = new Date(dayStart);
 
-  const [heartbeatRows, workerRows, ciRows, healedRows, doneMissions] = await Promise.all([
+  const [heartbeatRows, workerRows, ciRows, healedRows, doneMissions, sessionsOnline] = await Promise.all([
     loadFleetHeartbeats({ teamId, wsIds, now }),
     // No cap on live workers (every one is a slot); the history half is windowed.
     db
@@ -209,6 +220,9 @@ export async function loadHomeFleet(input: {
           .where(and(eq(missions.teamId, teamId), eq(missions.status, 'completed'), gte(missions.completedAt, windowStart)))
           .limit(10)
       : Promise.resolve([] as Array<{ id: string; title: string; completedAt: Date | null }>),
+    // The sessions lane's "N online" caption. Best effort: the lane still
+    // draws its live claims without it.
+    loadSessionsOnline(wsIds, now),
   ]);
 
   const rows: FleetWorkerRow[] = workerRows.map(r => ({
@@ -225,11 +239,13 @@ export async function loadHomeFleet(input: {
   // from an older run feeds the counts, not the lanes.
   const laneRows = rows.filter(r => r.startedAt && new Date(r.startedAt).getTime() >= windowStart.getTime() || (LIVE_WORKER_STATUSES as readonly string[]).includes(r.status));
   const fleet = buildFleetSnapshot(heartbeatRows as FleetHeartbeatRow[], laneRows, {
-    now, roles, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS,
+    now, roles, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS, sessionsOnline,
   });
 
   const runnerNameById = new Map<string, string>();
-  for (const runner of fleet.runners) for (const slot of runner.slots) for (const bar of slot.lane.bars) runnerNameById.set(bar.id, runner.name);
+  for (const runner of fleet.sessions ? [...fleet.runners, fleet.sessions] : fleet.runners) {
+    for (const slot of runner.slots) for (const bar of slot.lane.bars) runnerNameById.set(bar.id, runner.name);
+  }
   const ticker = buildTickerEvents(
     workerRows.map(r => ({
       id: r.id, status: r.status, startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt,
