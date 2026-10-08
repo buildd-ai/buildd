@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@buildd/core/db';
-import { teamMembers } from '@buildd/core/db/schema';
-import { and, eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
-import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
+import { can } from '@/lib/permissions';
 
 export interface ConnectorTeamCaller {
   teamId: string;
@@ -18,8 +15,7 @@ export interface ConnectorTeamCaller {
 /**
  * Resolve which team a connector-catalog request acts on, mirroring
  * /api/connectors: an admin-level API key acts on its own team; a session
- * user on the active-team cookie (else their first team). Personal teams have
- * no team_members row and are owned by the caller.
+ * user on the active-team cookie (else their first team).
  */
 export async function resolveConnectorTeam(req: NextRequest): Promise<ConnectorTeamCaller | NextResponse> {
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
@@ -36,11 +32,7 @@ export async function resolveConnectorTeam(req: NextRequest): Promise<ConnectorT
   if (teamIds.length === 0) return NextResponse.json({ error: 'No team found' }, { status: 400 });
   const cookieTeamId = req.cookies.get('buildd-team')?.value;
   const teamId = cookieTeamId && teamIds.includes(cookieTeamId) ? cookieTeamId : teamIds[0];
-  const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.userId, user.id), eq(teamMembers.teamId, teamId)),
-    columns: { role: true },
-  });
-  const canManage = !membership || roleHas(membership.role, 'manage_connectors', await getTeamPermissionOverrides(teamId));
+  const canManage = await canManageTeamConnectors(user.id, teamId);
   return { teamId, canManage, accountId: null };
 }
 
@@ -48,16 +40,33 @@ export const forbidden = () => NextResponse.json({ error: 'Forbidden' }, { statu
 
 /**
  * May this signed-in user change connectors (and their credentials) for
- * `teamId`? Same rule as /api/connectors writes: the user must belong to the
- * team, and then hold `manage_connectors` — or have no team_members row, which
- * for a team they belong to means their personal team.
+ * `teamId`? They must hold `manage_connectors` there, with the team's
+ * overrides applied. Fails closed: a user with no membership row in the team
+ * holds nothing, unless it is their own personal team (which the registry
+ * treats as owned).
  */
 export async function canManageTeamConnectors(userId: string, teamId: string): Promise<boolean> {
-  if (!(await getUserTeamIds(userId)).includes(teamId)) return false;
-  const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, teamId)),
-    columns: { role: true },
-  });
-  if (!membership) return true;
-  return roleHas(membership.role, 'manage_connectors', await getTeamPermissionOverrides(teamId));
+  return can({ kind: 'user', userId }, 'manage_connectors', teamId);
+}
+
+/** The callers connector write routes accept once authenticated. */
+export type ConnectorWriteCaller =
+  | { type: 'session'; user: { id: string } }
+  | { type: 'api'; account: { id: string; teamId: string } };
+
+/**
+ * May this caller write connectors owned by `teamId`? A session needs
+ * `manage_connectors` in that team. An API key reaches only its own team, and
+ * only once the route has established admin access through the token route
+ * policy (`hasTokenRouteAdminAccess`), so it is asked at admin level.
+ */
+export async function canWriteTeamConnectors(caller: ConnectorWriteCaller, teamId: string): Promise<boolean> {
+  if (caller.type === 'api') {
+    return can(
+      { kind: 'account', accountId: caller.account.id, teamId: caller.account.teamId, level: 'admin' },
+      'manage_connectors',
+      teamId,
+    );
+  }
+  return canManageTeamConnectors(caller.user.id, teamId);
 }

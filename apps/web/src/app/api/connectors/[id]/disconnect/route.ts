@@ -9,6 +9,7 @@ import { getUserTeamIds } from '@/lib/team-access';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { isUuid } from '@/lib/uuid';
+import { canWriteTeamConnectors } from '@/lib/connector-team-auth';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -57,6 +58,16 @@ export async function POST(
   });
   if (!connector || !teamIds.includes(connector.teamId)) {
     return NextResponse.json({ error: 'Connector not found' }, { status: 404 });
+  }
+
+  // Disconnecting deletes the ONE credential the whole team's agents use
+  // (connectors have no per-user credential), so it is a manage_connectors
+  // act, like connecting.
+  if (!(await canWriteTeamConnectors(auth, connector.teamId))) {
+    return NextResponse.json(
+      { error: 'forbidden', message: 'Disconnecting a team connector requires the manage_connectors permission in its team.' },
+      { status: 403 },
+    );
   }
 
   try {
