@@ -175,7 +175,18 @@ export async function loadOrchestrationOutcomeInput(opts: {
     .from(orchestrationDecisions)
     .where(decisionsWhere(opts))
     .limit(OUTCOME_JOIN_MAX_DECISIONS)) as OutcomeJoinInput['decisions'];
+  return loadOutcomeJoinFor(decisions, opts);
+}
 
+/**
+ * The outcome-join input for decisions the caller already has: a ledger row,
+ * or any other recorded start (a `soft_overlap_start` gate event is shaped
+ * into a `DecisionForJoin`), so every cohort is graded by the same labeller.
+ */
+export async function loadOutcomeJoinFor(
+  decisions: OutcomeJoinInput['decisions'],
+  opts: { workspaceId: string; since: Date },
+): Promise<OutcomeJoinInput> {
   const empty: OutcomeJoinInput = { decisions, tasks: [], labels: [], prs: [], conflictTasks: [], gateEvents: [] };
   const taskIds = [...new Set(decisions.map(d => d.taskId).filter((t): t is string => !!t))];
   if (taskIds.length === 0) return empty;
