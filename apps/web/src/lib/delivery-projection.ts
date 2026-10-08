@@ -383,7 +383,7 @@ export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTa
   else if (tasks.length === 0 || progress.totalTasks === 0) kind = 'planning';
   else if (allLanded && m.integrationBranch) {
     kind = 'landing';
-    exception = { tone: 'info', text: 'All tasks landed on the mission branch, not yet on trunk' };
+    exception = { tone: 'info', text: 'All tasks done, not yet on trunk' };
   } else kind = focus?.delivery.kind ?? 'landed';
 
   if (!exception && focus) {
