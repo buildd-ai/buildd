@@ -757,8 +757,9 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         };
 
         // Deliver via the shared atomic jsonb append (capped), the same path
-        // REST and releaseAndNotify use. Served by the recipient's next
-        // update_progress check-in and removed only when acked by id.
+        // REST and releaseAndNotify use. Served to the recipient's one
+        // consumer (its runner's sync, or an interactive session's own
+        // receive_messages / update_progress) and removed only when acked by id.
         const delivered = await enqueueWorkerMessage(recipientTaskId, workerMessage);
         if (!delivered) {
           return {

@@ -32,6 +32,8 @@ import RunnerSizeFixture from './RunnerSizeFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
 import HostedRunnerFixture from './HostedRunnerFixture';
 import InteractiveSessionsFixture from './InteractiveSessionsFixture';
+import RunActivityFixture from './RunActivityFixture';
+import { RUN_ACTIVITY_FIXTURE_STATE } from './run-activity-fixtures';
 import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -178,6 +180,10 @@ export default function DevFixturesPage() {
         return <ModelProvidersFixture />;
     }
 
+    if (state === RUN_ACTIVITY_FIXTURE_STATE) {
+        return <RunActivityFixture />;
+    }
+
     if (state === OPERATOR_ACCESS_FIXTURE_STATE) {
         return <OperatorAccessFixture />;
     }
@@ -193,7 +199,7 @@ export default function DevFixturesPage() {
     return (
         <KeyHintsProvider value={hints}>
         <div className="min-h-screen bg-surface-1 p-8">
-            <div className="max-w-4xl mx-auto">
+            <div className="max-w-4xl mx-auto min-w-0">
                 <div className="mb-6">
                     <h1 className="text-2xl font-bold mb-2">Dev Fixtures: Worker States</h1>
                     <p className="text-text-secondary mb-4">
@@ -236,9 +242,10 @@ export default function DevFixturesPage() {
                             />
                         </div>
 
-                        <div className="mt-6 p-4 bg-surface-3 rounded-lg">
+                        <div className="mt-6 p-4 bg-surface-3 rounded-lg min-w-0">
                             <h3 className="font-medium mb-2">Raw Worker Data</h3>
-                            <pre className="text-xs overflow-auto max-h-64 p-2 bg-surface-1 text-status-success rounded">
+                            {/* Wrap long lines (the prompt) so the block never widens the page at phone width. */}
+                            <pre className="text-xs overflow-auto max-h-64 min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] p-2 bg-surface-1 text-status-success rounded">
                                 {JSON.stringify(worker, null, 2)}
                             </pre>
                         </div>

@@ -350,7 +350,8 @@ export async function POST(req: NextRequest) {
     const integrationBase = missionBaseGuard.integrationBase;
     const isMissionPrOwner = missionBaseGuard.isMissionPrOwner;
     const taskContext = worker.task?.context as Record<string, unknown> | null;
-    const isStackedPhase = missionBaseGuard.isStackedPhase;
+    let isStackedPhase = missionBaseGuard.isStackedPhase;
+    let stackedBaseMissing = false;
 
     // §6.10 tier 1 (S31): a workspace that opts in has the body and title it is
     // about to open scanned with CI's own prose rule, and a body CI would fail
@@ -986,6 +987,24 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
+    // A stacked phase's predecessor branch is deleted when its PR merges into
+    // the integration branch (often under a differently-named head). The phase
+    // then belongs on the integration branch like any other mission task, so
+    // check the ref live rather than 400 on a base that no longer exists.
+    if (isStackedPhase && integrationBase && typeof taskContext?.baseBranch === 'string') {
+      try {
+        await githubApi(
+          repo.installation.installationId,
+          `/repos/${repo.fullName}/git/ref/heads/${taskContext.baseBranch}`,
+        );
+      } catch (err) {
+        if (/GitHub API error: 404/.test(err instanceof Error ? err.message : String(err))) {
+          stackedBaseMissing = true;
+          isStackedPhase = false;
+        }
+      }
+    }
+
     // ── PART 2: the integration branch may already be GONE ──────────────────
     //
     // A merging mission PR deletes the integration branch by design
@@ -1098,6 +1117,7 @@ export async function POST(req: NextRequest) {
         'main',
       ],
       integrationBaseMissing,
+      stackedBaseMissing,
     });
 
     // Create the PR via GitHub API

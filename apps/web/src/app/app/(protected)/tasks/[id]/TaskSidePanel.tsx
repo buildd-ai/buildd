@@ -94,12 +94,12 @@ export interface PeerTask {
   title: string;
   /** The raw title, for the hover tooltip. */
   fullTitle?: string;
-  pct: number | null;
+  phase: string;
   href: string;
   waiting?: boolean;
 }
 
-/** Other live agents in the same mission (or workspace), with their progress. */
+/** Other live agents in the same mission (or workspace), with their lifecycle phase. */
 export function AlsoRunning({ title, peers, testId = 'task-also-running' }: { title: string; peers: PeerTask[]; testId?: string }) {
   if (peers.length === 0) return null;
   return (
@@ -114,9 +114,7 @@ export function AlsoRunning({ title, peers, testId = 'task-also-running' }: { ti
                 {p.scope && <span className="shrink-0 px-1.5 border border-border-strong text-[11px] text-text-secondary">{p.scope}</span>}
                 <span className="min-w-0 truncate">{p.title}</span>
               </span>
-              <span className="w-20 h-[6px] shrink-0 bg-surface-4" aria-label={p.pct != null ? `${p.pct}%` : 'no progress reported'}>
-                <span className="block h-full bg-accent" style={{ width: `${Math.max(2, p.pct ?? 0)}%` }} />
-              </span>
+              <span className="shrink-0 font-mono text-chip uppercase text-text-muted">{p.phase}</span>
             </Link>
           </li>
         ))}

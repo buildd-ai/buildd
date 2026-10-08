@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import { buildTape, countToolCalls } from './task-activity';
-import { buildMilestoneLog, type LogEntry } from './milestone-log';
+import { buildMilestoneLog, isNarrationMilestone, type LogEntry } from './milestone-log';
 
 // `label` is optional on purpose: workspaces with dataClass 'sensitive' have their
 // milestone labels stripped server-side (apps/web/src/app/api/workers/[id]/route.ts),
@@ -14,6 +14,7 @@ type Milestone = WorkerMilestone;
 const TYPE_FALLBACK_LABELS: Record<Milestone['type'], string> = {
   phase: 'Phase',
   status: 'Status update',
+  plan: 'Plan',
   checkpoint: 'Checkpoint',
   action: 'Action',
 };
@@ -98,19 +99,20 @@ export function ActivityTape({
     <div data-testid="worker-activity-tape" className="relative pt-12">
       {tape.flags.map((f, i) => {
         const isLast = f === lastFlag;
-        // Labels are wide: the latest always gets one, the one before only when
-        // it sits far enough left not to run into it.
-        const labelled = isLast || (i === tape.flags.length - 2 && lastFlag.pos - f.pos > 0.62);
         const flip = f.pos > 0.6;
+        // A marker and its time, not the reported percent (a stream of them,
+        // 40 70 30 90, is noise) and not the label: a label wide enough to read
+        // ran over the neighbouring markers, and the Now strip names the latest.
+        // Narration ("Now I'll…") gets no hover text, as it gets no log row.
         return (
           <div
             key={`${f.pos}-${i}`}
+            title={f.label && !isNarrationMilestone(f.label) ? f.label : undefined}
             className="absolute top-0 font-mono text-[11px] whitespace-nowrap"
             style={{ left: `${f.pos * 100}%`, transform: flip ? 'translateX(-100%)' : undefined }}
           >
-            <div className={`flex items-center gap-2 ${flip ? 'flex-row-reverse' : ''}`}>
-              <span className={`px-1 font-semibold tabular-nums ${isLast ? 'bg-accent text-[var(--on-accent)]' : 'bg-text-primary text-surface-1'}`}>{f.pct}%</span>
-              {labelled && <span className="text-text-secondary max-w-[40vw] md:max-w-[360px] truncate">{f.label}</span>}
+            <div className={`flex ${flip ? 'justify-end' : ''}`}>
+              <span aria-hidden="true" className={`w-2 h-2 ${isLast ? 'bg-accent' : 'bg-text-primary'}`} />
             </div>
             <div className={`text-text-muted tabular-nums ${flip ? 'text-right' : ''}`}>{f.at}</div>
           </div>
@@ -134,7 +136,8 @@ export function ActivityTape({
       </div>
       <div className="relative h-5 mt-1 font-mono text-[11px] text-text-muted tabular-nums">
         {tape.axis.map((a, i) => (
-          <span key={i} className="absolute" style={{ left: `${i * 25}%` }}>{a}</span>
+          // At phone width the 75% label runs into the end label; it gives way there.
+          <span key={i} data-axis={i} className={i === 3 ? 'absolute hidden md:inline' : 'absolute'} style={{ left: `${i * 25}%` }}>{a}</span>
         ))}
         {/* The right edge prints the time it stands for, so the axis visibly
             reaches ELAPSED instead of stopping at the last labelled quarter. */}
@@ -175,7 +178,7 @@ export default function WorkerActivityTimeline({
   const visibleEntries = expanded ? entries : entries.slice(0, maxVisible);
   const hasMore = entries.length > maxVisible;
 
-  const hasTape = milestones.some(m => m.type === 'action' || (m.type === 'status' && typeof m.progress === 'number'));
+  const hasTape = milestones.some(m => m.type === 'action' || (m.type === 'status' && !!m.label?.trim()));
 
   return (
     <div className="mt-6" data-testid="worker-activity-timeline">
@@ -226,7 +229,7 @@ export default function WorkerActivityTimeline({
 type EntryTone = 'error' | 'success' | 'warning' | 'neutral';
 
 /** The glyph and tone for a log entry, by type and (for status rows) label. */
-export function entryGlyph(m: { type: string; label?: string; event?: string; progress?: number; pending?: boolean }): { ch: string; tone: EntryTone } {
+export function entryGlyph(m: { type: string; label?: string; event?: string; pending?: boolean }): { ch: string; tone: EntryTone } {
   if (m.type === 'checkpoint') {
     if (m.event === 'task_error') return { ch: '!', tone: 'error' };
     if (m.event === 'task_completed') return { ch: '+', tone: 'success' };
@@ -241,7 +244,6 @@ export function entryGlyph(m: { type: string; label?: string; event?: string; pr
   if (lower.includes('question') || lower.includes('user:')) return { ch: '?', tone: 'neutral' };
   if (lower.includes('config changed')) return { ch: 'c', tone: 'warning' };
   if (lower.includes('skill')) return { ch: '*', tone: 'neutral' };
-  if (typeof m.progress === 'number') return { ch: '%', tone: 'neutral' };
   return { ch: '-', tone: 'neutral' };
 }
 
@@ -265,7 +267,6 @@ function LogEntryRow({ entry, currentAction }: { entry: LogEntry; currentAction?
   const label = milestoneLabel(m);
   const open = entry.endMs == null;
   const glyph = entryGlyph(m as Parameters<typeof entryGlyph>[0]);
-  const progress = m.type === 'status' && typeof m.progress === 'number' ? m.progress : null;
   const canOpenTools = entry.tools.length > 0;
 
   return (
@@ -277,10 +278,11 @@ function LogEntryRow({ entry, currentAction }: { entry: LogEntry; currentAction?
         <button
           type="button"
           onClick={() => setRowExpanded(!rowExpanded)}
-          className={`flex-1 min-w-0 text-left ${rowExpanded ? 'break-words' : 'line-clamp-2'} ${TONE_TEXT[glyph.tone]}`}
+          className={`flex-1 min-w-0 min-h-11 md:min-h-0 text-left ${rowExpanded ? 'break-words' : 'line-clamp-2'} ${TONE_TEXT[glyph.tone]}`}
         >
+          {/* The label only: a self-reported percent per row read as a field of
+              numbers that went backwards (40, 70, 30, 90) on older agents. */}
           {label}
-          {progress != null && <span className="ml-2 text-xs text-text-muted">{progress}%</span>}
         </button>
         {entry.toolCount > 0 && (
           canOpenTools ? (

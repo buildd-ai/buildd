@@ -10,6 +10,7 @@
   },
   "exports": {
     "./db": "./db/index.ts",
+    "./run-evidence": "./run-evidence.ts",
     "./db/*": "./db/*.ts",
     "./config": "./config.ts",
     "./token-scopes": "./token-scopes.ts",

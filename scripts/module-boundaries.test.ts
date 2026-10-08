@@ -238,3 +238,8 @@ describe('scanner mechanics', () => {
     expect(prune(base, now)).toEqual({ backend: { a: { m1: 'missions' } }, ui: {} });
   });
 });
+
+test('run lifecycle facts belong to coordination core, not stored knowledge', () => {
+  expect(moduleOf('packages/core/run-evidence.ts')).toBe('core');
+  expect(moduleOf('packages/core/evidence-chunker.ts')).toBe('knowledge');
+});

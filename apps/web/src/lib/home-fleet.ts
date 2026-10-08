@@ -18,7 +18,7 @@ import { FLEET_ONLINE_WINDOW_MS, buildFleetSnapshot, fleetCapacity, type FleetHe
 import { buildTickerEvents, type TickerEvent } from './home-ticker';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
-import { workerProgressSql } from './worker-progress';
+import { deriveRunEvidence } from '@buildd/core/run-evidence';
 import { noRowOfPrMerged } from './pr-merge-stamp';
 import { homeQuestionView } from './home-attention';
 import type { UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
@@ -170,7 +170,10 @@ export async function loadHomeFleet(input: {
         // Only beside a question: the context fallback for a card whose brief was lost.
         error: sql<string | null>`case when ${workers.waitingFor} is not null then ${workers.error} end`,
         linesAdded: workers.linesAdded, linesRemoved: workers.linesRemoved,
-        progress: workerProgressSql,
+        createdAt: workers.createdAt, milestones: workers.milestones, dirtyWorktree: workers.dirtyWorktree,
+        observedTouches: workers.observedTouches, lastCommitSha: workers.lastCommitSha, commitCount: workers.commitCount,
+        prUrl: workers.prUrl, prIsDraft: workers.prIsDraft, prLifecycleStatus: workers.prLifecycleStatus,
+        outputRequirement: tasks.outputRequirement,
         taskStatus: tasks.status, taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
         roleSlug: tasks.roleSlug, missionId: tasks.missionId, taskClass: tasks.taskClass,
       })
@@ -225,7 +228,8 @@ export async function loadHomeFleet(input: {
   const rows: FleetWorkerRow[] = workerRows.map(r => ({
     id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
     startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
-    waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'], progress: r.progress == null ? null : Number(r.progress),
+    waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'],
+    phase: deriveRunEvidence(r).phases.filter(p => p.state === 'done' || p.state === 'current' || p.state === 'failed').at(-1)?.label ?? 'Claimed',
     task: r.taskId ? {
       id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode,
       roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,

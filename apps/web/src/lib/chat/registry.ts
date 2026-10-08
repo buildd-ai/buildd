@@ -293,6 +293,7 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   },
   claim_task: { reason: 'worker-only', note: 'Claims work for a runner; a person in chat is not a worker.' },
   update_progress: { reason: 'worker-only', note: 'A running worker reports its own progress.' },
+  receive_messages: { reason: 'worker-only', note: 'A running worker collects the messages sent to it.' },
   complete_task: { reason: 'worker-only', note: 'A worker completes its own task.' },
   create_pr: { reason: 'worker-only', note: 'PRs are opened by the worker that wrote the branch.' },
   emit_event: { reason: 'worker-only', note: 'Worker milestone events.' },

@@ -138,7 +138,7 @@ export async function GET(
     if (include.has('workers') || include.has('artifacts')) {
       taskWorkers = await db.query.workers.findMany({
         where: eq(workers.taskId, id),
-        orderBy: [desc(workers.createdAt)],
+        orderBy: [desc(workers.createdAt), desc(workers.id)],
         columns: {
           id: true,
           status: true,
