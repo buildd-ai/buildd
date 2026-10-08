@@ -77,6 +77,15 @@ export async function DELETE(
       return NextResponse.json({ error: 'Account not found' }, { status: 404 });
     }
 
+    // Deleting a key is a manage_team_keys act, like editing or regenerating it.
+    const role = await getUserTeamRole(user.id, account.teamId);
+    if (!canAdministerTeamKeys(role, await getTeamPermissionOverrides(account.teamId))) {
+      return NextResponse.json(
+        { error: 'Only team members holding manage_team_keys can delete API keys' },
+        { status: 403 },
+      );
+    }
+
     // Invalidate caches before deleting
     invalidateAccountCacheByHash(account.apiKey);
     invalidateAccountWorkspaceCache(account.id);

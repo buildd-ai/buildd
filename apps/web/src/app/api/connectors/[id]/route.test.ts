@@ -23,6 +23,11 @@ const mockRegistrationRefusalBody = mock((err: unknown) =>
     ? { error: 'needs_approved_client' as const, message: 'Vercel only lets MCP clients it has reviewed sign in.', actionUrl: 'https://vercel.com/docs' }
     : null);
 
+import { fakeCan } from '@/lib/connector-team-auth.fixtures';
+
+// The caller's role in the connector's team; null = no membership row.
+let actorRole: string | null = 'owner';
+mock.module('@/lib/permissions', () => ({ can: fakeCan(() => actorRole) }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: mockGetUserTeamIds }));
@@ -133,6 +138,8 @@ describe('GET /api/connectors/[id]', () => {
 describe('PATCH /api/connectors/[id]', () => {
   beforeEach(() => {
     process.env.NODE_ENV = 'production';
+    actorRole = 'owner';
+    mockSecretsProviderSet.mockClear();
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockConnectorsFindFirst.mockReset();
@@ -216,9 +223,81 @@ describe('PATCH /api/connectors/[id]', () => {
   });
 });
 
+describe('PATCH /api/connectors/[id] requires manage_connectors', () => {
+  const HEADER_CONNECTOR = { ...CONNECTOR, authMode: 'header' as const };
+  const patchReq = (body: any, headers: Record<string, string> = {}) =>
+    makeReq('PATCH', { 'content-type': 'application/json', ...headers }, body);
+
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockConnectorsFindFirst.mockReset();
+    mockSecretsFindFirst.mockReset();
+    mockSecretsProviderSet.mockClear();
+    mockConnectorsUpdate.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockConnectorsFindFirst.mockResolvedValue(HEADER_CONNECTOR);
+    mockSecretsFindFirst.mockResolvedValue({ id: 'secret-1' });
+    mockConnectorsUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [HEADER_CONNECTOR]) })) })),
+    });
+  });
+  afterAll(() => { process.env.NODE_ENV = originalNodeEnv; });
+
+  it('a member is refused 403 and neither the connector nor its credential is written', async () => {
+    actorRole = 'member';
+    const res = await PATCH(patchReq({ name: 'Renamed', headerValue: 'new-token' }), { params: PARAMS });
+    expect(res.status).toBe(403);
+    expect(mockConnectorsUpdate).not.toHaveBeenCalled();
+    expect(mockSecretsProviderSet).not.toHaveBeenCalled();
+  });
+
+  it('a user with no membership row in the owning team is refused (fails closed)', async () => {
+    actorRole = null;
+    const res = await PATCH(patchReq({ headerValue: 'new-token' }), { params: PARAMS });
+    expect(res.status).toBe(403);
+    expect(mockConnectorsUpdate).not.toHaveBeenCalled();
+    expect(mockSecretsProviderSet).not.toHaveBeenCalled();
+  });
+
+  for (const role of ['admin', 'owner']) {
+    it(`an ${role} may update the connector and replace its credential`, async () => {
+      actorRole = role;
+      const res = await PATCH(patchReq({ name: 'Renamed', headerValue: 'new-token' }), { params: PARAMS });
+      expect(res.status).toBe(200);
+      expect(mockConnectorsUpdate).toHaveBeenCalled();
+      expect(mockSecretsProviderSet).toHaveBeenCalledWith('secret-1', 'new-token', expect.objectContaining({ teamId: 'team-1' }));
+    });
+  }
+
+  it('an admin-level API key of the owning team may update', async () => {
+    actorRole = null;
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+    const res = await PATCH(patchReq({ headerValue: 'new-token' }, { authorization: 'Bearer bld_key' }), { params: PARAMS });
+    expect(res.status).toBe(200);
+    expect(mockSecretsProviderSet).toHaveBeenCalled();
+  });
+
+  it('a worker-level API key is refused and nothing is written', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'worker' });
+    const res = await PATCH(patchReq({ headerValue: 'new-token' }, { authorization: 'Bearer bld_key' }), { params: PARAMS });
+    expect(res.status).toBe(401);
+    expect(mockConnectorsUpdate).not.toHaveBeenCalled();
+    expect(mockSecretsProviderSet).not.toHaveBeenCalled();
+  });
+});
+
 describe('DELETE /api/connectors/[id]', () => {
   beforeEach(() => {
     process.env.NODE_ENV = 'production';
+    actorRole = 'owner';
+    mockSecretsProviderDelete.mockClear();
+    mockConnectorsDelete.mockClear();
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockConnectorsFindFirst.mockReset();
@@ -252,5 +331,41 @@ describe('DELETE /api/connectors/[id]', () => {
     const data = await res.json();
     expect(data.success).toBe(true);
     expect(mockSecretsProviderDelete).toHaveBeenCalledWith('secret-1');
+  });
+
+  it('a member is refused 403 and neither the connector nor its credential is deleted', async () => {
+    actorRole = 'member';
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockSecretsFindMany.mockResolvedValue([{ id: 'secret-1' }]);
+    const res = await DELETE(makeReq('DELETE'), { params: PARAMS });
+    expect(res.status).toBe(403);
+    expect(mockConnectorsDelete).not.toHaveBeenCalled();
+    expect(mockSecretsProviderDelete).not.toHaveBeenCalled();
+  });
+
+  it('a user with no membership row in the owning team is refused (fails closed)', async () => {
+    actorRole = null;
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await DELETE(makeReq('DELETE'), { params: PARAMS });
+    expect(res.status).toBe(403);
+    expect(mockConnectorsDelete).not.toHaveBeenCalled();
+  });
+
+  for (const role of ['admin', 'owner']) {
+    it(`an ${role} may delete`, async () => {
+      actorRole = role;
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      const res = await DELETE(makeReq('DELETE'), { params: PARAMS });
+      expect(res.status).toBe(200);
+      expect(mockConnectorsDelete).toHaveBeenCalled();
+    });
+  }
+
+  it('an admin-level API key of the owning team may delete', async () => {
+    actorRole = null;
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+    const res = await DELETE(makeReq('DELETE', { authorization: 'Bearer bld_key' }), { params: PARAMS });
+    expect(res.status).toBe(200);
+    expect(mockConnectorsDelete).toHaveBeenCalled();
   });
 });

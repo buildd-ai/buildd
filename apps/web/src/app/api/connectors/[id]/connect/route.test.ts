@@ -8,14 +8,18 @@ const CONNECTOR_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 const mockGetCurrentUser = mock(async () => ({ id: 'user-admin' }) as any);
 const mockUserTeamIds = mock(async (_u: string) => ['team-1']);
-const mockCanManage = mock(async (_u: string, _t: string) => true);
 const mockCheckBlocked = mock(async (_c: any, _t: string) => null as any);
 const mockConnectorFindFirst = mock(async () => null as any);
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => null }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: mockUserTeamIds }));
-mock.module('@/lib/connector-team-auth', () => ({ canManageTeamConnectors: mockCanManage }));
+import { fakeCan } from '@/lib/connector-team-auth.fixtures';
+
+// The caller's role in the connector's team; null = no membership row. The
+// real connector-team-auth gate runs against the registry defaults.
+let actorRole: string | null = 'admin';
+mock.module('@/lib/permissions', () => ({ can: fakeCan(() => actorRole) }));
 mock.module('@/lib/connector-access-policy', () => ({
   checkConnectorBlocked: mockCheckBlocked,
   blockedBody: (b: any) => ({ error: 'blocked_by_policy', slug: b.slug, message: `${b.name} is blocked` }),
@@ -54,8 +58,7 @@ beforeEach(() => {
   mockGetCurrentUser.mockResolvedValue({ id: 'user-admin' });
   mockUserTeamIds.mockReset();
   mockUserTeamIds.mockResolvedValue(['team-1']);
-  mockCanManage.mockReset();
-  mockCanManage.mockResolvedValue(true);
+  actorRole = 'admin';
   mockCheckBlocked.mockReset();
   mockCheckBlocked.mockResolvedValue(null);
   mockConnectorFindFirst.mockReset();
@@ -78,14 +81,27 @@ describe('POST /api/connectors/[id]/connect', () => {
     const cookie = res.cookies.get(OAUTH_STATE_COOKIE)?.value;
     const claims = await verifyOAuthState(cookie!);
     expect(claims).toMatchObject({ connectorId: CONNECTOR_ID, userId: 'user-admin', state: url.searchParams.get('state') });
-    expect(mockCanManage).toHaveBeenCalledWith('user-admin', 'team-1');
   });
 
   it('refuses a plain team member: connecting writes the team-wide credential', async () => {
-    mockCanManage.mockResolvedValue(false);
+    actorRole = 'member';
     const res = await call();
     expect(res.status).toBe(403);
     expect(res.cookies.get(OAUTH_STATE_COOKIE)).toBeUndefined();
+  });
+
+  it('refuses a user with no membership row in the owning team (fails closed)', async () => {
+    actorRole = null;
+    const res = await call();
+    expect(res.status).toBe(403);
+    expect(res.cookies.get(OAUTH_STATE_COOKIE)).toBeUndefined();
+  });
+
+  it('lets an owner start the flow', async () => {
+    actorRole = 'owner';
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect(res.cookies.get(OAUTH_STATE_COOKIE)).toBeDefined();
   });
 
   it("hides another team's connector", async () => {
