@@ -9,15 +9,18 @@ import {
 import { eq, and, or, isNull, inArray, ne } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
 
 // ── Typed connector failure taxonomy ─────────────────────────────────────────
 
-export type ConnectorFailureMode = 'never_mounted' | 'expired_or_revoked' | 'transient';
+export type ConnectorFailureMode = 'never_mounted' | 'blocked_by_policy' | 'expired_or_revoked' | 'transient';
 
 /**
  * A typed failure for a single connector that a role requires.
  *
  * - never_mounted:      connector doesn't exist, belongs to a different team, or is disabled
+ * - blocked_by_policy:  the task's team (or the connector's owner team) blocked its catalog entry;
+ *                       the connector and its credential are kept, agents just may not use it
  * - expired_or_revoked: connector exists but its credential is missing, expired, or corrupt
  * - transient:          connector is visible and credentialed but unreachable via HTTP probe
  */
@@ -46,6 +49,7 @@ const PROBE_BUDGET_MS = 5000;
  *
  * Failure modes (in evaluation order):
  * 1. never_mounted      — connector not in DB / wrong team / disabled for this workspace
+ *    blocked_by_policy  — team catalog policy blocks it (lib/connector-access-policy.ts)
  * 2. expired_or_revoked — credential missing, expired (oauth), or undecryptable (header/stdio)
  * 3. transient          — HTTP HEAD probe failed within budget; skips stdio connectors
  *
@@ -107,7 +111,9 @@ export async function checkConnectorRouting(
     cwEnabled.set(row.connectorId, (row as any).enabled !== false);
   }
 
-  // ── Pass 1: visibility checks → never_mounted ─────────────────────────────
+  const blockedCatalogs = await loadBlockedCatalogs([teamId, ...connectorRows.map(c => c.teamId)]);
+
+  // ── Pass 1: visibility checks → never_mounted, then blocked_by_policy ─────
 
   const failures: ConnectorFailure[] = [];
   type ConnectorRow = (typeof connectorRows)[number];
@@ -125,6 +131,10 @@ export async function checkConnectorRouting(
     }
     if (cwEnabled.has(refId) && !cwEnabled.get(refId)) {
       failures.push({ connectorId: refId, connectorName: connector.name, mode: 'never_mounted' });
+      continue;
+    }
+    if (connectorBlock(connector, teamId, blockedCatalogs)) {
+      failures.push({ connectorId: refId, connectorName: connector.name, mode: 'blocked_by_policy' });
       continue;
     }
     visibleConnectors.push(connector);
