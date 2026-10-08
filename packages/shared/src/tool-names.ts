@@ -34,3 +34,44 @@ export function canonicalToolName(name: string): string {
   }
   return name;
 }
+
+/**
+ * The buildd MCP server's group tools (`buildd_<group>`), one per action area.
+ * @buildd/core/mcp-tool-groups places each action in one of these; it is
+ * declared here so the runner and client bundles can match tool names without
+ * importing the action registry.
+ */
+export const BUILDD_MCP_TOOL_GROUPS = ['missions', 'tasks', 'work', 'prs', 'runners', 'analytics', 'artifacts', 'schedules', 'admin'] as const;
+
+/**
+ * The legacy one-tool surface's SDK name. Only a runner that predates group
+ * tools is still served it. Remove with the legacy surface (apps/web/src/app/api/mcp/tools.ts).
+ */
+export const LEGACY_BUILDD_ACTION_TOOL = 'mcp__buildd__buildd';
+
+/**
+ * Every SDK tool name that takes `{action, params}` and dispatches a buildd
+ * action: the legacy `mcp__buildd__buildd` and each `mcp__buildd__buildd_<group>`.
+ * Not `buildd_memory`, `recall` or `learn`.
+ */
+export const BUILDD_ACTION_TOOL_NAMES: readonly string[] = [
+  LEGACY_BUILDD_ACTION_TOOL,
+  ...BUILDD_MCP_TOOL_GROUPS.map(g => `mcp__buildd__buildd_${g}`),
+];
+
+const BUILDD_ACTION_TOOL_SET: ReadonlySet<string> = new Set(BUILDD_ACTION_TOOL_NAMES);
+
+/**
+ * Is this tool call a buildd action call, whichever surface served it? Match a
+ * buildd action by this plus `input.action`, never by one exact tool name: the
+ * action `create_pr` arrives as `mcp__buildd__buildd_work` on the group surface.
+ */
+export function isBuilddActionTool(name: string | undefined | null): boolean {
+  return !!name && BUILDD_ACTION_TOOL_SET.has(canonicalToolName(name));
+}
+
+/**
+ * SDK hook matcher for every buildd action tool. Word characters and `|` only,
+ * so it reads as an exact-name list (and as a regex alternation).
+ */
+export const BUILDD_ACTION_TOOL_MATCHER = BUILDD_ACTION_TOOL_NAMES.join('|');

@@ -14,7 +14,9 @@ const tool = (name: string, calls: number) => ({ name, calls, share: calls / TOT
 
 const ROWS = buildToolBreakdown({
   tools: [
-    tool('Bash', 24_700), tool('Read', 3_900), tool('mcp__buildd__buildd', 3_740),
+    tool('Bash', 24_700), tool('Read', 3_900),
+    // One buildd row: group tool calls fold in with the legacy tool's.
+    tool('mcp__buildd__buildd_work', 2_400), tool('mcp__buildd__buildd', 1_040), tool('mcp__buildd__buildd_tasks', 300),
     tool('Edit', 2_300), tool('ToolSearch', 900), tool('Write', 600),
   ],
   bashBuckets: {

@@ -451,6 +451,14 @@ describe('createPathCheckpointGuardHook — ship checkpoint, fail closed', () =>
     expect(checkpoint.mock.calls.map((c: any[]) => c[1])).toEqual(['pre_push', 'completion']);
   });
 
+  test('enforce: create_pr and complete_task on the group tool buildd_work are checkpoints', async () => {
+    const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
+    const { hook, checkpoint } = guard(worker, COMPLETE);
+    await hook(makeInput('mcp__buildd__buildd_work', { action: 'create_pr', params: {} }) as any);
+    await hook(makeInput('mcp__buildd__buildd_work', { action: 'complete_task', params: { summary: 'x' } }) as any);
+    expect(checkpoint.mock.calls.map((c: any[]) => c[1])).toEqual(['pre_push', 'completion']);
+  });
+
   test('a failure report (complete_task with error) and ordinary Bash are not gated', async () => {
     const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
     const { hook, checkpoint } = guard(worker, BLOCKED);

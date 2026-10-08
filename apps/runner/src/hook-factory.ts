@@ -7,7 +7,7 @@ import { readFileSync } from 'fs';
 import { saveWorker as storeSaveWorker } from './worker-store';
 import type { BuilddClient } from './buildd';
 import { exchangeAssertionConnector, isAuthError } from './assertion-exchange.js';
-import { BUILDD_MCP_TOOL_NAME } from './action-events';
+import { isBuilddActionTool } from '@buildd/shared';
 import { asksAQuestion, EMPTY_QUESTION_DENY_REASON } from './ask-user-question.js';
 import { runnerDenial } from './runner-denial.js';
 import { questionFromToolInput, runQuestionGate } from './question-gate.js';
@@ -317,7 +317,7 @@ export class HookFactory {
       let what = '';
       if (toolName === 'Bash' && isShipCommand(toolInput.command)) {
         source = 'pre_push'; what = 'this push';
-      } else if (toolName === BUILDD_MCP_TOOL_NAME) {
+      } else if (isBuilddActionTool(toolName)) {
         if (toolInput.action === 'create_pr') { source = 'pre_push'; what = 'create_pr'; }
         else if (toolInput.action === 'complete_task' && !toolInput.params?.error) { source = 'completion'; what = 'complete_task'; }
       }
@@ -399,7 +399,7 @@ export class HookFactory {
   ): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PreToolUse') return {};
-      if ((input as any).tool_name !== BUILDD_MCP_TOOL_NAME) return {};
+      if (!isBuilddActionTool((input as any).tool_name)) return {};
       const toolInput = ((input as any).tool_input ?? {}) as { action?: string; params?: Record<string, unknown> };
       if (toolInput.action !== 'complete_task') return {};
       if (toolInput.params?.error) return {};
