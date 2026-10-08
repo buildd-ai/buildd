@@ -1611,8 +1611,8 @@ export async function POST(req: NextRequest) {
   // ── Claim-time batch planner (./claim-plan-input, knowledge-base: buildd/design/jev-scheduling.md §5) ──
   // Per workspace, gitConfig.claimPlanner: 'off' leaves everything below
   // exactly as it was — no extra read, no extra write, same walk. 'record'
-  // (the default when unset) plans beside the legacy walk and records both. 'apply' claims in
-  // plan order: every gate in the loop still runs on each pick, and a pick
+  // plans beside the legacy walk and records both. 'apply' (the default when
+  // unset) claims in plan order: every gate in the loop still runs on each pick, and a pick
   // that is refused or loses its race is dropped and the rest re-planned.
   // Never for an explicit taskId claim (which includes every force claim). A
   // gated START (now live) is just another gate on each pick: it can only
