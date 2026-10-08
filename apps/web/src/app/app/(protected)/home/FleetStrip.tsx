@@ -130,6 +130,11 @@ function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
   );
 }
 
+/** The board's lanes: the runners, then (only while a claim is live) your sessions. */
+function fleetBoardRows(fleet: FleetSnapshot): FleetRunner[] {
+  return fleet.sessions ? [...fleet.runners, fleet.sessions] : fleet.runners;
+}
+
 /** Runner column + slot column; each row is exactly one SlotLanes row tall. */
 // Below md the runner is a full-width header row above its slots (a 120px
 // column cut every real hostname); from md it is the left column the chart's
@@ -160,6 +165,7 @@ function RunnerBlock({ runner, rows, first, now }: { runner: FleetRunner; rows: 
     <div
       data-testid="fleet-runner"
       data-elastic={runner.elastic ? 'true' : undefined}
+      data-interactive={runner.interactive ? 'true' : undefined}
       className={`grid ${TABLE_COLS} ${first ? '' : 'border-t-[1.5px] border-t-[var(--fleet-border-mid)]'}`}
     >
       <div
@@ -170,7 +176,15 @@ function RunnerBlock({ runner, rows, first, now }: { runner: FleetRunner; rows: 
         <span title={runner.elastic && !roomy && runner.machine ? `${runner.name} · ${runner.machine}` : runner.name} className="min-w-0 font-mono text-title font-semibold leading-tight text-text-primary [overflow-wrap:anywhere] md:line-clamp-2">
           {runner.name}
         </span>
-        {runner.elastic ? (
+        {runner.interactive ? (
+          // People's own coding sessions: one row per task they claimed. No
+          // slot meter (they take no runner capacity) and no "offline": the
+          // lane exists only while a claim is live.
+          <span className={`flex flex-wrap gap-x-2 font-mono text-meta ${roomy ? '' : 'md:hidden'}`}>
+            <b data-testid="fleet-sessions-working" className="font-semibold tabular-nums text-accent-text">{runner.interactive.running} working</b>
+            {runner.interactive.online != null && <span className="text-text-muted">{runner.interactive.online} online</span>}
+          </span>
+        ) : runner.elastic ? (
           // An elastic group has no fixed size to draw: its slots are its live
           // runs. The column is too narrow for "Cloudflare · elastic · 2
           // running" on one line, so the count gets its own. A one-run group
@@ -186,7 +200,7 @@ function RunnerBlock({ runner, rows, first, now }: { runner: FleetRunner; rows: 
             <span className={roomy ? '' : 'md:hidden'}><SlotMeterSquares runner={runner} rows={rows} /></span>
           </>
         )}
-        {!runner.online && <span className="font-mono text-meta text-status-warning">offline</span>}
+        {!runner.online && !runner.interactive && <span className="font-mono text-meta text-status-warning">offline</span>}
       </div>
       {rows.map((row) => row.kind === 'slot' ? (
         <div
@@ -230,7 +244,7 @@ function FleetTable({ fleet, now, timeZone }: { fleet: FleetSnapshot; now: numbe
           <span className="flex items-center px-5">Runner</span>
           <span className="flex items-center px-4">Slot</span>
         </div>
-        {fleet.runners.map((r, i) => (
+        {fleetBoardRows(fleet).map((r, i) => (
           <RunnerBlock key={r.id} runner={r} rows={fleetDisplayRows(r, { since: fleet.window.from })} first={i === 0} now={now} />
         ))}
       </div>
@@ -262,6 +276,9 @@ function SummaryLine({ fleet, now }: { fleet: FleetSnapshot; now: number }) {
           last: <b className={`font-semibold ${s.last.failed ? 'text-status-error' : 'text-text-secondary'}`}>{s.last.label}</b> {s.last.failed ? '✕' : '✓'} {ago(s.last.at, now)}
         </span>
       )}
+      {fleet.sessions?.interactive && (
+        <span className="text-text-muted">· {fleet.sessions.interactive.running} in your sessions</span>
+      )}
       {s.online < fleet.runners.length && <span className="text-status-warning">{fleet.runners.length - s.online} offline</span>}
     </span>
   );
@@ -281,11 +298,11 @@ export function FleetStrip({
   /** Always start as the one-line summary (a member's Home). */
   compact?: boolean;
 }) {
-  const busy = fleet.runners.some(r => r.slots.some(s => s.worker));
+  const busy = fleetBoardRows(fleet).some(r => r.slots.some(s => s.worker));
   const collapsed = compact || !busy;
   const label = <span className="section-label text-text-muted">{fleetLabel(fleet)}</span>;
 
-  if (fleet.runners.length === 0) {
+  if (fleet.runners.length === 0 && !fleet.sessions) {
     return (
       <section data-testid="home-fleet" className="mb-8">
         <div className="mb-3">{label}</div>

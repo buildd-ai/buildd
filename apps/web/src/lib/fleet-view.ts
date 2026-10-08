@@ -8,7 +8,7 @@
  * with `SlotLanes`' own `assignSlots` (components/fleet/slot-lanes-layout.ts),
  * so the slot a row describes here is the slot the lanes chart draws.
  */
-import { RUNNER_LIVE_WINDOW_MS, executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
+import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
 import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
@@ -70,7 +70,12 @@ export interface BuildFleetOptions {
   onlineThresholdMs?: number;
   /** Earliest the timeline reaches back. */
   maxWindowMs?: number;
+  /** Interactive sessions online now (lib/local-session-view.ts), for the sessions lane's caption. */
+  sessionsOnline?: number | null;
 }
+
+/** The sessions lane's name on the board. */
+export const SESSIONS_LANE_NAME = 'Your sessions';
 
 /**
  * How fresh a runner's last beat must be for the fleet to count it online.
@@ -149,7 +154,16 @@ export function buildFleetSnapshot(
   };
   const gidByHb = new Map<string, string>();
   for (const hb of heartbeats) gidByHb.set(hb.id, groupOf(hb));
+  // A claim from a person's own coding session (claim_task over MCP) is not on
+  // any runner: no heartbeat, no slot of runner capacity. Its live ones get
+  // the sessions lane below; finished ones are not drawn (like a finished
+  // elastic run, there is no slot left to show them in).
+  const sessionWorkers: FleetWorkerRow[] = [];
   for (const w of workerRows) {
+    if (w.runner === INTERACTIVE_WORKER_RUNNER && !w.localUiUrl) {
+      if (LIVE.has(w.status)) sessionWorkers.push(w);
+      continue;
+    }
     const key = w.localUiUrl || w.runner;
     const candidates = hbByUrl.get(key) ?? [];
     const hb = candidates.find(h => !w.accountId || h.accountId === w.accountId) ?? null;
@@ -254,6 +268,24 @@ export function buildFleetSnapshot(
   }
 
   runners.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
+
+  // One row per live session claim, oldest first. A claim whose start time was
+  // never stamped starts at its last activity (it is still a working row, not
+  // an empty slot).
+  let sessions: FleetRunner | null = null;
+  if (sessionWorkers.length > 0) {
+    const liveBefore = live;
+    const running = sessionWorkers
+      .map(w => ({ w, start: [ms(w.startedAt), ms(w.updatedAt)].find(Number.isFinite) ?? now }))
+      .sort((a, b) => a.start - b.start || a.w.id.localeCompare(b.w.id));
+    const slots: FleetSlot[] = running.map((_, index) => ({ index, worker: null, last: null, lane: { id: `sessions:${index}`, bars: [] } }));
+    running.forEach(({ w, start }, i) => place(slots[i], w, { start, end: null }));
+    live = liveBefore; // session claims are not runner slots
+    sessions = {
+      id: 'sessions', name: SESSIONS_LANE_NAME, machine: null, maxSlots: slots.length, online: true, slots,
+      interactive: { running: running.length, online: opts.sessionsOnline ?? null },
+    };
+  }
   // The window frames the current burst: from just before the earliest run
   // still live or ended in the last hour (so an idle-since-lunch fleet does
   // not stretch the axis to breakfast), at least `LANE_WINDOW_MIN_SPAN_MS`,
@@ -261,11 +293,11 @@ export function buildFleetSnapshot(
   const maxWindow = opts.maxWindowMs ?? 8 * 3_600_000;
   const recentCut = now - 60 * 60_000;
   let earliest: number | null = null;
-  for (const r of runners) for (const sl of r.slots) for (const b of sl.lane.bars) {
+  for (const r of sessions ? [...runners, sessions] : runners) for (const sl of r.slots) for (const b of sl.lane.bars) {
     if (b.end == null || b.end >= recentCut) earliest = earliest == null ? b.start : Math.min(earliest, b.start);
   }
   const from = fitLaneWindowStart({ earliest, now, maxSpanMs: maxWindow });
-  return { runners, live, capacity, window: { from, to: now } };
+  return { runners, sessions, live, capacity, window: { from, to: now } };
 }
 
 /** One row of a runner's slot table: a slot, or every quiet slot folded into a count. */

@@ -121,6 +121,9 @@ export function sortLocalSessions(views: LocalSessionView[]): LocalSessionView[]
   return [...views].sort((a, b) => rank[a.state] - rank[b.state] || b.lastSeenAt.localeCompare(a.lastSeenAt));
 }
 
+// Activity's collapse rules live in a client-safe module (this one imports db).
+export { SESSION_TASK_PREVIEW, groupSessionsForDisplay, sessionTaskPreview, type SessionDisplayGroups } from './local-session-display';
+
 /** Sessions with any activity in the last day, in these workspaces or of these accounts. */
 export async function listLocalSessions(opts: {
   workspaceIds: string[];
