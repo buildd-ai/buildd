@@ -33,7 +33,7 @@ const textArray = (v: string[]): SQL => sql`ARRAY(SELECT jsonb_array_elements_te
 
 // ── Patch → column assignments ──────────────────────────────────────────────
 
-type Cast = 'text' | 'int' | 'uuid' | 'timestamptz' | 'text[]';
+type Cast = 'text' | 'int' | 'uuid' | 'timestamptz' | 'text[]' | 'jsonb';
 const PATCH_COLUMNS: Record<keyof DeliveryPatch, [string, Cast]> = {
   repoFullName: ['repo_full_name', 'text'],
   prNumber: ['pr_number', 'int'],
@@ -58,6 +58,7 @@ const PATCH_COLUMNS: Record<keyof DeliveryPatch, [string, Cast]> = {
   supersededByUrl: ['superseded_by_url', 'text'],
   supersededReason: ['superseded_reason', 'text'],
   recordedBy: ['recorded_by', 'text'],
+  policyEvidence: ['policy_evidence', 'jsonb'],
 };
 
 function castValue(v: unknown, cast: Cast): SQL {
@@ -66,6 +67,7 @@ function castValue(v: unknown, cast: Cast): SQL {
     case 'int': return sql`${v ?? null}::int`;
     case 'uuid': return sql`${v ?? null}::uuid`;
     case 'timestamptz': return sql`${v ?? null}::timestamptz`;
+    case 'jsonb': return jsonb(v);
     default: return sql`${v ?? null}::text`;
   }
 }
@@ -322,6 +324,7 @@ export function toDeliverySnapshot(r: J): DeliverySnapshot {
     supersededByUrl: s(r.superseded_by_url),
     supersededReason: s(r.superseded_reason),
     recordedBy: s(r.recorded_by),
+    policyEvidence: (r.policy_evidence as DeliverySnapshot['policyEvidence']) ?? null,
     authority: r.authority === 'legacy' ? 'legacy' : 'kernel',
     pushPendingLocalHead: s(r.push_pending_local_head),
   };
