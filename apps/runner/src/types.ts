@@ -344,6 +344,8 @@ export interface LocalWorker {
    * carry usage, whereas the SDK result's per-model map is empty on seat auth.
    */
   tokenTally?: { inputTokens: number; outputTokens: number };
+  /** How this run's usage is charged (cost-basis.ts); set when the agent env is built. */
+  costBasis?: 'real' | 'virtual' | 'unknown';
   // Set when sandbox_mount_gap abort fires; signals server to exempt from retry cap.
   // Currently never set — the abort was disabled after it fired on file content
   // (test titles, fixture strings) rather than real denials. Detection now only

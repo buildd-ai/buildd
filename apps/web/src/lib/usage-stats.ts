@@ -12,6 +12,7 @@
  */
 
 import type { ResultMeta } from '@buildd/core/db/schema';
+import { addToSplit, basisOfRow, emptySplit, type BasisSplit } from './cost-basis-split';
 import { canonicalToolName } from '@buildd/shared';
 import { derivedValue, derivedUnavailable, type DerivedMetric } from '@buildd/core/derived-metric';
 import { compareAssignedActual, primaryModelFromUsage } from '@buildd/core/model-display';
@@ -95,6 +96,8 @@ export interface UsageWorkerRow {
   mcpCalls: Array<{ server: string; tool: string; ok?: boolean }> | null;
   /** `workers.runner` — see `executorOf`. Optional so older callers still type-check. */
   runner?: string | null;
+  /** `workers.cost_basis` (docs/specs/real-and-virtual-cost.md). NULL = no usage recorded. */
+  costBasis?: string | null;
 }
 
 export interface Distribution {
@@ -304,6 +307,13 @@ export interface UsageStats {
    * `resultMeta.fileToolAreas`. Same population as `bashBuckets`.
    */
   fileAreas: FileAreasBlock;
+  /**
+   * Tokens and cost per basis (real, virtual, mixed, unknown), per worker, and
+   * the same split per executor so interactive work stays apart from runner
+   * work. `unknown` is reported on its own so a window shows whether any usage
+   * still arrives without a basis (docs/specs/real-and-virtual-cost.md).
+   */
+  byBasis: { total: BasisSplit; byExecutor: Record<Executor, BasisSplit> };
 }
 
 /** Bounds of what a capped scan actually read. */
@@ -317,26 +327,8 @@ export interface ScanBounds {
 
 export type GroupDimension = 'role' | 'workspace' | 'creationSource' | 'none' | 'executor';
 
-/**
- * Who ran a worker, for `groupBy: 'executor'`. `workers.runner` is `'mcp'` when
- * the worker was minted by `claim_task` from an MCP session — a person working
- * interactively in Claude Code (or any MCP client) — and a runner instance id
- * for everything a background runner claimed. A few rows are placeholders that
- * no runner executed: server-inserted bookkeeping workers (`'system'` in
- * lib/mission-pr.ts, `'external'` in lib/pr-review-request.ts) and the
- * retired OpenClaw skill's claims (`'openclaw'`, kept for old rows); those go to `other` so they don't
- * inflate `runner`. Exact match only: a runner whose id merely contains "mcp"
- * is still a runner.
- */
-export type Executor = 'interactive' | 'runner' | 'other';
-export const INTERACTIVE_RUNNER_ID = 'mcp';
-export const NON_RUNNER_EXECUTOR_IDS: readonly string[] = ['system', 'external', 'openclaw'];
-
-export function executorOf(runner: string | null | undefined): Executor {
-  if (runner === INTERACTIVE_RUNNER_ID) return 'interactive';
-  if (runner && NON_RUNNER_EXECUTOR_IDS.includes(runner)) return 'other';
-  return 'runner';
-}
+export { executorOf, INTERACTIVE_RUNNER_ID, NON_RUNNER_EXECUTOR_IDS, type Executor } from './executor';
+import { executorOf, type Executor } from './executor';
 
 const ZERO_DISTRIBUTION: Distribution = { mean: 0, median: 0, p90: 0, max: 0 };
 
@@ -632,12 +624,7 @@ function perTaskBlock(tasks: TaskAgg[]): PerTaskBlock {
     },
     inputTokens: measuredDistribution(inputTokens, 'No task in this window recorded input tokens'),
     outputTokens: measuredDistribution(outputTokens, 'No task in this window recorded output tokens'),
-    // The overwhelmingly common cause, worth naming in the tooltip: seat-based
-    // (OAuth) accounts are billed per seat and report costUSD 0 on every result.
-    costUsd: measuredDistribution(
-      costUsd,
-      'No cost recorded — seat-based (OAuth) accounts report no per-task cost',
-    ),
+    costUsd: measuredDistribution(costUsd, 'No task in this window recorded a cost'),
     turns: measuredDistribution(turns, 'No task in this window recorded turns'),
     toolCalls: toolCalls.length > 0
       ? derivedValue(distribution(toolCalls))
@@ -984,7 +971,21 @@ export function computeUsageStats(
         .map(t => ({ bash: t.bash, bashCalls: t.counts.Bash ?? 0 })),
     ),
     fileAreas: buildFileAreas(tasks.filter(t => t.toolSource === 'histogram')),
+    byBasis: buildBasisSplit(rows),
   };
+}
+
+/** Per worker: the basis is a worker's, not a task's (a retry can differ). */
+export function buildBasisSplit(rows: UsageWorkerRow[]): UsageStats['byBasis'] {
+  const total = emptySplit();
+  const byExecutor: Record<Executor, BasisSplit> = { interactive: emptySplit(), runner: emptySplit(), other: emptySplit() };
+  for (const r of rows) {
+    const basis = basisOfRow(r.costBasis, r);
+    if (!basis) continue;
+    addToSplit(total, basis, r);
+    addToSplit(byExecutor[executorOf(r.runner)], basis, r);
+  }
+  return { total, byExecutor };
 }
 
 export interface FileAreasBlock {

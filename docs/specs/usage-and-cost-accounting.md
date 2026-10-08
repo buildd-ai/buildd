@@ -144,8 +144,8 @@ metric read as a measured zero.
   (`apps/web/src/lib/usage-stats.ts:343-354`).
 - A zero is never presented as a measurement. `measuredDistribution` drops
   non-positive values and returns `derivedUnavailable('no_scope', detail)` when
-  nothing recorded the metric — seat/OAuth windows therefore read "no cost
-  recorded", never `$0.00 per task` (`apps/web/src/lib/usage-stats.ts:199-206`,
+  nothing recorded the metric — a window with no recorded cost therefore reads
+  "no cost recorded", never `$0.00 per task` (`apps/web/src/lib/usage-stats.ts:199-206`,
   `:430-442`).
 - Every tool number is published alongside `tools.coverage`
   (`histogram | derived | none`, plus `truncated`). A task's source is the
@@ -166,8 +166,8 @@ metric read as a measured zero.
   its tokens are the sum of both workers.
 - AC-5: GIVEN a window in which every worker reported `costUsd = 0` WHEN the
   rollup is computed THEN `perTask.costUsd` is
-  `{ kind: 'unavailable', reason: 'no_scope' }` with a `detail` naming seat-based
-  auth, and no `$0.00` distribution is returned.
+  `{ kind: 'unavailable', reason: 'no_scope' }` with a `detail` stating that
+  no task recorded a cost, and no `$0.00` distribution is returned.
 - AC-6: GIVEN a caller whose teams do not include workspace `W` WHEN
   `GET /api/stats/usage?workspace=W` is called THEN the server returns HTTP 404
   and no usage figures for `W`.

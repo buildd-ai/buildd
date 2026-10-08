@@ -104,7 +104,15 @@ charged on, as reported by the party that picked the credential, and MUST say
   reports the new basis on the next PATCH, which makes the row `mixed` when the
   two differ.
 - The cloud runner's reported basis MUST agree with the `modelAuth` in its own
-  run report for the same run.
+  run report for the same run. The container only holds a placeholder key, so
+  its env cannot tell: the supervisor plans the route with the same resolution
+  egress applies (`plannedModelAuth`) and passes it as `BUILDD_CLOUD_MODEL_AUTH`;
+  the in-container runner reports `virtual` for `owner_seat` and `real` for
+  `metered` (`cloudCostBasis`), ahead of anything its own env suggests. No hint
+  (the team endpoint lookup was unavailable) falls back to the env.
+- A runner derives the basis when it builds the agent env (`claudeCostBasis`,
+  `codexCostBasis` in `apps/runner/src/cost-basis.ts`), keeps it on the local
+  worker, and sends it on every terminal and metrics-only report.
 
 **Interactive sessions** (`apps/runner/plugin/`). Rollout order matters: the
 event endpoint refuses unknown fields, and the plugin installs from the
@@ -202,6 +210,8 @@ measure.
   on it as today, so the cutover changes nothing until bases are reported.
 - A `mixed` row draws only its virtual part, when a split exists; without a
   split it draws its whole cost, as today.
+- The forecast's pool burn rate (`getBudgetForecast`) excludes `real` rows for
+  the same reason.
 - The mission `costBudgetUsd` gate (`getMissionSpendUsd`, and the mission
   block of `getBudgetForecast`) guards money: `virtual` rows never count toward
   it, so plan usage, including interactive sessions on a subscription, is not

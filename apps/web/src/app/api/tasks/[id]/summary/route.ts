@@ -107,6 +107,7 @@ export async function GET(
         linesAdded: true,
         linesRemoved: true,
         costUsd: true,
+        costBasis: true,
         inputTokens: true,
         outputTokens: true,
         startedAt: true,

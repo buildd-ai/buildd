@@ -112,6 +112,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   pathSweepBaseFetchedAt: true,
   lastAssistantMessage: true,
   tokenTally: true,
+  costBasis: true,
   sandboxMountGap: true,
   bwrapRetryPending: true,
   phaseText: true,
