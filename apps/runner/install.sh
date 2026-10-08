@@ -666,13 +666,21 @@ mergiraf_provision() {
   MERGIRAF_VERSION="0.20.0"
   case "$(uname -s)" in
     Linux)
-      # x86_64 only; other architectures are not provisioned here (tested on container or CI)
-      if [ "$(uname -m)" != "x86_64" ]; then
-        return 1
-      fi
-      MERGIRAF_SHA256="4341127da8d1da29eced669fbacc1e5d6e530115098de0b82cc9dc551a1acf37"
+      case "$(uname -m)" in
+        x86_64)
+          MERGIRAF_TARGET="x86_64-unknown-linux-gnu"
+          MERGIRAF_SHA256="4341127da8d1da29eced669fbacc1e5d6e530115098de0b82cc9dc551a1acf37"
+          ;;
+        aarch64|arm64)
+          MERGIRAF_TARGET="aarch64-unknown-linux-gnu"
+          MERGIRAF_SHA256="1bb78ef3612f3eb92bdfb803131259a3d6761b93d00d4bdba905edebf913e96b"
+          ;;
+        *)
+          return 1
+          ;;
+      esac
       TMPDIR_MERGIRAF="$(mktemp -d)"
-      if curl -fsSL "https://codeberg.org/mergiraf/mergiraf/releases/download/v${MERGIRAF_VERSION}/mergiraf_x86_64-unknown-linux-gnu.tar.gz" -o "${TMPDIR_MERGIRAF}/mergiraf.tar.gz" 2>/dev/null; then
+      if curl -fsSL "https://codeberg.org/mergiraf/mergiraf/releases/download/v${MERGIRAF_VERSION}/mergiraf_${MERGIRAF_TARGET}.tar.gz" -o "${TMPDIR_MERGIRAF}/mergiraf.tar.gz" 2>/dev/null; then
         if echo "${MERGIRAF_SHA256}  ${TMPDIR_MERGIRAF}/mergiraf.tar.gz" | sha256sum -c 2>/dev/null >/dev/null; then
           if tar -xzf "${TMPDIR_MERGIRAF}/mergiraf.tar.gz" -C "${TMPDIR_MERGIRAF}" 2>/dev/null; then
             if [ -f "${TMPDIR_MERGIRAF}/mergiraf" ]; then

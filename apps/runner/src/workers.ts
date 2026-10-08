@@ -59,7 +59,7 @@ import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
 import { toolActionMilestone, appendMilestone } from './tool-milestones';
-import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
+import { extractBuilddAction, BUILDD_MCP_TOOL_MATCHER, withBuilddActionTools } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
 import { buildAgentBaseEnv, withWorkerResourceAttribute } from './agent-env';
@@ -506,23 +506,14 @@ export interface ResolvedMcpConnector {
 }
 
 /**
- * Explicitly opt grouped consumers in even with worker context. Legacy roles
- * retain their surface; legacy calls remain callable in mixed skill sessions.
+ * The worker's buildd MCP URL. The server picks the tool surface (group tools,
+ * since this runner advertises CAPABILITY_MCP_GROUP_TOOLS); the URL only names
+ * the workspace and the worker.
  */
-export function buildWorkerMcpUrl(
-  server: string,
-  workspaceId: string,
-  workerId: string,
-  roleSlug?: string | null,
-  agents?: Record<string, { tools: string[] }>,
-): string {
+export function buildWorkerMcpUrl(server: string, workspaceId: string, workerId: string): string {
   const url = new URL(`${server}/api/mcp`);
   url.searchParams.set('workspace', workspaceId);
   url.searchParams.set('worker', workerId);
-  const needsGroups = roleSlug === 'analyst' || Object.values(agents ?? {}).some(
-    agent => agent.tools.some(tool => tool.startsWith('mcp__buildd__buildd_')),
-  );
-  if (needsGroups) url.searchParams.set('tools', 'groups');
   return url.toString();
 }
 
@@ -4073,7 +4064,7 @@ export class WorkerManager {
           agents[bundle.slug] = {
             description: bundle.description || bundle.name,
             prompt: bundle.content,
-            tools: [...tools, ...delegationTools],
+            tools: [...withBuilddActionTools(tools), ...delegationTools],
             model: bundle.model || 'inherit',
             // SDK v0.2.49+: run subagent in isolated git worktree to prevent file conflicts
             ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
@@ -4276,7 +4267,7 @@ export class WorkerManager {
       queryOptions.mcpServers = {
         buildd: {
           type: 'http',
-          url: buildWorkerMcpUrl(this.config.builddServer, task.workspaceId, worker.id, task.roleSlug, agents),
+          url: buildWorkerMcpUrl(this.config.builddServer, task.workspaceId, worker.id),
           // The agent's own per-task token (or the runner key on fallback).
           headers: {
             Authorization: `Bearer ${agentBuilddToken}`,
@@ -4481,7 +4472,7 @@ export class WorkerManager {
           // still reaches the server without evidence.
           ...(!isCodexTask && task.loopConfig?.exitCondition?.type === 'command'
             ? [{
-                matcher: BUILDD_MCP_TOOL_NAME,
+                matcher: BUILDD_MCP_TOOL_MATCHER,
                 timeout: Math.ceil(VERIFICATION_COMMAND_TIMEOUT_MS / 1000) + 30,
                 hooks: [this.hookFactory.createLoopVerificationHook(worker, () => this.runLoopVerification(worker, task, cwd))],
               }]
