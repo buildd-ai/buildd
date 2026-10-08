@@ -34,6 +34,7 @@ import {
   type DeliverySnapshot,
   type DeliveryState,
   type KernelView,
+  type PolicyEvidence,
   type RoundKind,
   type RoundSnapshot,
 } from './types';
@@ -203,6 +204,7 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'TrunkRedObserved': return d ? `trunk:${cmd.incidentId}:${d.id}` : null;
     case 'TrunkRecovered': return d ? `trunkok:${cmd.incidentId}:${d.id}` : null;
     case 'CompositionAttested': return d ? `compose:${d.id}:${cmd.attestation.aggregateHeadSha}` : null;
+    case 'PolicyEvidenceRecorded': return d ? `policy:${d.id}:${cmd.evidence.headSha}:${cmd.evidence.outcome}` : null;
     default: return null;
   }
 }
@@ -1035,6 +1037,27 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       });
     }
 
+    // T28: a preflight finding for one head, imported as policy evidence.
+    case 'PolicyEvidenceRecorded': {
+      const dd = d!;
+      const ev = cmd.evidence;
+      if (isTerminal(dd.state)) return c.stale('terminal');
+      // Head-bound: a finding about an older head never escalates the head now current.
+      if (ev.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
+      const prior = dd.policyEvidence;
+      if (prior && prior.headSha === ev.headSha && prior.outcome === ev.outcome) return c.duplicate('evidence_recorded');
+      const key = `policy:${dd.id}:${ev.headSha}:${ev.outcome}`;
+      // Only a delivery waiting on nobody's work can act on it now. Everywhere else the platform
+      // (a running owner, an open repair, a queued fix, a landing) already owns the PR: record the
+      // finding on the head and let that work's own hand-off apply it (WORKING), or let the head
+      // move make it stale. Landing's rails still gate the merge.
+      if (!QUIESCENT_FOR_POLICY.has(dd.state) || c.openAttempt(['review_fix', 'ci', 'conflict', 'migration', 'trunk'])) {
+        const owner = c.openAttempt(['review_fix', 'ci', 'conflict', 'migration', 'trunk']);
+        return c.apply(key, dd.state, { guardHead: true, patch: { policyEvidence: ev }, evidence: { policyEvidence: ev, recordedOnly: true, mergedIntoAttempt: owner?.id ?? null } });
+      }
+      return policyDecision(c, key, ev, {});
+    }
+
     // Composition attestation (release / integration PR built from reviewed changes)
     case 'CompositionAttested': {
       const dd = d!;
@@ -1247,6 +1270,10 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
     // §6.5 row 1 (§15 step 2): the owner attempt ended and its head is on
     // GitHub, so the worker no longer owns the next move — hand it on.
     const handOn = (h: string): Decision => {
+      // T28: a finding recorded for exactly this head while the owner worked decides the hand-off.
+      if (d.policyEvidence && d.policyEvidence.headSha === h) {
+        return policyDecision(c, key, d.policyEvidence, { currentHeadSha: h }, evidence);
+      }
       if (cmd.reviewRequired === false) {
         // The policy needs no review: approved BY POLICY. No round, no verdict,
         // approved_heads untouched (§8 exact-head binding); T15's rails still gate landing.
@@ -1381,6 +1408,46 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
     patch: { boundAttemptId: id },
     attempts: [end('failed'), { op: 'insert', id, family: a.family, attemptNo: n, mode: a.mode, boundHeadSha: a.boundHeadSha, triggerReason: a.triggerReason, taskId: null, trigger: 'automatic', status: 'queued', maxAttempts: max }],
     effects: [{ kind, dedupeKey: `${kind}:${d.id}:${a.boundHeadSha}:${a.mode}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: a.boundHeadSha, signature: a.triggerReason } }],
+    evidence,
+  });
+}
+
+const QUIESCENT_FOR_POLICY = new Set<DeliveryState>(['AWAITING_REVIEW', 'APPROVED']);
+const POLICY_MAX_SPLIT_ATTEMPTS = 2;
+
+/**
+ * T28 acting on a finding for the current head, from a state that owes nobody's work.
+ *  - `human`: ESCALATED(policy_human). Open review rounds are superseded: a reviewer would be
+ *    judging a head a person has to decide on first.
+ *  - `agent_split`: a safe EXPAND-then-CONTRACT split is agent work, not a human decision. One
+ *    `migration` repair row (agent mode) bound to the head, through the same ledger and
+ *    dispatch_conflict_fix as every other repair, so it spends the family's budget and can never
+ *    race a second branch writer (the caller already found no open repair).
+ */
+function policyDecision(c: Ctx, key: string, ev: PolicyEvidence, patch: DeliveryPatch, extra: Record<string, unknown> = {}): Decision {
+  const d = c.d!;
+  const rounds: RoundOp[] = c.openRounds().map((r) => ({ op: 'update', roundId: r.id, whenStatus: ['queued', 'reviewing'], set: { status: 'superseded' } }));
+  const evidence = { ...extra, policyEvidence: ev, reason: ev.reason };
+  if (ev.outcome === 'agent_split') {
+    const n = c.nextNo('migration', 'agent');
+    if (n <= POLICY_MAX_SPLIT_ATTEMPTS) {
+      const id = c.newId();
+      return c.apply(key, 'REPAIRING', {
+        guardHead: true,
+        patch: { ...patch, policyEvidence: ev, stateReason: 'migration', boundAttemptId: id },
+        rounds,
+        attempts: [{ op: 'insert', id, family: 'migration', attemptNo: n, mode: 'agent', boundHeadSha: ev.headSha, triggerReason: 'migration_split', taskId: null, trigger: 'automatic', status: 'queued', maxAttempts: POLICY_MAX_SPLIT_ATTEMPTS }],
+        effects: [{ kind: 'dispatch_conflict_fix', dedupeKey: `dispatch_conflict_fix:${d.id}:${ev.headSha}:split${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: POLICY_MAX_SPLIT_ATTEMPTS, headSha: ev.headSha, repairKind: 'migration_split', detail: { reason: ev.reason } } }],
+        evidence,
+      });
+    }
+    // The agent could not split it: now it is a person's decision.
+  }
+  return c.apply(key, 'ESCALATED', {
+    guardHead: true,
+    patch: { ...patch, policyEvidence: ev, stateReason: 'policy_human', boundAttemptId: null },
+    rounds,
+    effects: [{ kind: 'notify', dedupeKey: `notify:${d.id}:policy_human:${ev.headSha}`, payload: { event: 'policy_human', reason: ev.reason, headSha: ev.headSha, destructive: ev.destructive } }],
     evidence,
   });
 }

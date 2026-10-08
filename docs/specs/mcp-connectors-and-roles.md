@@ -2,7 +2,7 @@
 title: MCP Connectors & Roles
 status: active
 owner: max
-last_verified: 2026-09-05
+last_verified: 2026-10-08
 summary: Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 domain: mcp
 surfaces: [apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/connectors/route.ts, apps/web/src/lib/connector-status.ts, apps/web/src/lib/mcp-connector-refresh.ts]
@@ -41,6 +41,14 @@ assertions:
     method: "PUT"
     path: "/api/connectors/catalog/policy"
     file: "apps/web/src/app/api/connectors/catalog/policy/route.ts"
+  - id: "connector-block"
+    type: "symbol"
+    name: "connectorBlock"
+    path: "apps/web/src/lib/connector-access-policy.ts"
+  - id: "registration-refusal"
+    type: "symbol"
+    name: "ClientRegistrationRejectedError"
+    path: "apps/web/src/lib/mcp-oauth.ts"
 ---
 # MCP Connectors & Roles (unified model)
 
@@ -412,7 +420,10 @@ custom URL uses. Every http connector SHOULD carry a display icon.
 - The catalog is static code (`CONNECTOR_CATALOG`), not a table. An entry is a
   preset (name, url, expected authMode, icon), never a second connector store.
 - An entry is listed only if its URL completes `discoverOAuthMetadata` (+ DCR)
-  or serves anonymously; servers that fail discovery stay out.
+  or serves anonymously; servers that fail discovery stay out. Exception: an
+  official server whose vendor admits only reviewed MCP clients stays listed
+  with `clientSupport: { status: 'needs_approved_client', … }` (Vercel today,
+  §5a), so the UI says why instead of omitting it.
 - Creation stays team-admin only (`manage_connectors`, §6); the catalog does
   not widen who can add a connector.
 - `connectors.iconUrl` is resolved best-effort at create time — catalog icon,
@@ -492,6 +503,106 @@ custom URL uses. Every http connector SHOULD carry a display icon.
 
 **Out of scope**: managing platform rows from the dashboard (API key only for
 now); the agent access-request flow (task `d5a27699`).
+
+---
+
+## 5a. Catalog policy at runtime + provider compatibility
+
+**Capability statement**: A team's `blocked` catalog policy MUST deny agents
+every connector at that entry's URL — including one installed and connected
+before the block — at every boundary that hands a connector to an agent,
+without deleting the connector or its provider credential. Connecting a team
+connector MUST be a team-admin act bound to that team. A provider that will
+not register buildd as an OAuth client MUST surface as `needs_approved_client`,
+never as a generic failure and never worked around.
+
+**Invariants**:
+- A connector is *blocked for a task* when its normalized URL equals a
+  `blocked` entry in the merged catalog of EITHER the task's workspace team
+  (consumer) OR the connector's owner team (`connectorBlock`,
+  `apps/web/src/lib/connector-access-policy.ts`). One team's block never
+  affects another team's own connectors.
+- Enforced at: the claim pre-filter and `checkConnectorRouting` (failure mode
+  `blocked_by_policy`, ordered after `never_mounted`, before
+  `expired_or_revoked`; a blocked connector is never HTTP-probed); claim-time
+  injection (never mounted; its credential never decrypted or refreshed); the
+  assertion mint (`403 blocked_by_policy`, re-checked on every mint); the
+  mounted list (`status: 'blocked'`); OAuth connect (`403`) and callback
+  (redirect `error=blocked_by_policy`, nothing stored).
+- Loading policy fails closed: a DB error fails the claim / mounts nothing.
+- Blocking never deletes. `PUT …/policy` with `blocked` returns
+  `retainedConnectorIds`; `GET /api/connectors` keeps the row with
+  `blockedByPolicy: true`. Unblocking restores access with no reconnect.
+- `preinstalled` ≠ agent permission: it creates and enables the connector per
+  workspace; only a role's `connectorRefs` (§2) mounts it for an agent.
+- `POST /api/connectors/[id]/connect` requires `manage_connectors` on the
+  connector's team (`canManageTeamConnectors`); the callback re-checks that
+  the signed-in user is the one who started the flow (`session_mismatch`),
+  still holds `manage_connectors` there (`forbidden`), and the connector is not
+  blocked — all before the code exchange.
+- The assertion mint additionally requires the connector to be owned by or
+  shared to the task's team (cross-team isolation; else 404).
+- DCR requests the `refresh_token` grant when the AS advertises it in
+  `grant_types_supported`; otherwise an AS that enforces registered grants
+  refuses the claim-time refresh at first expiry.
+- A DCR refusal that means "client not approved" (`invalid_redirect_uri`,
+  `invalid_client_metadata`, software-statement errors, 401/403) is
+  `ClientRegistrationRejectedError.needsApprovedClient`; create and preinstall
+  answer `422 needs_approved_client` with the catalog's `detail`/`actionUrl`.
+  buildd MUST NOT reuse another client's id, a global admin token, or a copied
+  credential to get past it.
+
+**Provider compatibility (live-probed 2026-10-08, buildd as client)**:
+
+| Provider | Discovery | DCR with buildd's web callback | State |
+|---|---|---|---|
+| Axiom `https://mcp.axiom.co/mcp` | RFC 9728 → `authorization.axiom.co` (S256, `refresh_token`, `offline_access`) | 201, client issued | Supported (OAuth) |
+| Vercel `https://mcp.vercel.com` | RFC 9728 → `vercel.com` (S256, DCR endpoint) | 400 `invalid_redirect_uri` ("not approved for use by this authorization server"); loopback redirects accepted | `needs_approved_client` — owner submits Vercel's client review |
+
+No supported server-side alternative exists for Vercel today: buildd's
+Operator `deploy` covers Cloudflare only, and pasting a token minted for an
+approved client would be impersonation. Re-run the probe with
+`BUILDD_LIVE_PROVIDER_PROBE=1 bun test apps/web/tests/integration/mcp-provider-discovery.test.ts`.
+
+**Acceptance criteria**:
+- AC-1: GIVEN a connected Axiom connector in a role's `connectorRefs` WHEN the
+  team blocks `axiom` THEN the next claim holds the task with
+  `blocked_by_policy` (or, advisory mode with other connectors healthy,
+  claims without Axiom mounted) AND the credential row is unchanged.
+- AC-2: WHEN the owner team of a shared connector blocks it THEN grantee
+  teams' tasks lose it too; WHEN an unrelated team blocks it THEN nothing changes.
+- AC-3: WHEN a member without `manage_connectors` calls connect THEN 403 and
+  no state cookie.
+- AC-4: WHEN Vercel is added or preinstalled THEN `422 needs_approved_client`
+  with Vercel's review link, and no connector row is created.
+
+**Code surface**:
+- Policy: `apps/web/src/lib/connector-access-policy.ts`, `apps/web/src/lib/connector-team-auth.ts`
+- Boundaries: `apps/web/src/app/api/workers/claim/connector-prefilter.ts`,
+  `apps/web/src/app/api/workers/claim/connector-gate.ts`,
+  `apps/web/src/app/api/workers/claim/mcp-connector-injection.ts`,
+  `apps/web/src/lib/connector-queries.ts`,
+  `apps/web/src/app/api/connectors/[id]/assertion/route.ts`,
+  `apps/web/src/app/api/connectors/[id]/connect/route.ts`,
+  `apps/web/src/app/api/connectors/callback/route.ts`
+- DCR: `apps/web/src/lib/mcp-oauth.ts`, `apps/web/src/lib/connector-provision.ts`
+
+**Verified by**:
+- `apps/web/src/lib/connector-access-policy.test.ts`, `apps/web/src/lib/connector-team-auth.test.ts`
+- `apps/web/src/app/api/workers/claim/connector-prefilter.test.ts`,
+  `apps/web/src/app/api/workers/claim/connector-gate.test.ts`,
+  `apps/web/src/app/api/workers/claim/mcp-connector-injection.test.ts`
+- `apps/web/src/lib/connector-queries.test.ts`
+- `apps/web/src/app/api/connectors/[id]/assertion/route.test.ts`,
+  `apps/web/src/app/api/connectors/[id]/connect/route.test.ts`,
+  `apps/web/src/app/api/connectors/callback/route.test.ts`
+- `apps/web/src/lib/mcp-oauth.test.ts`, `apps/web/src/lib/connector-provision.test.ts`
+- `apps/web/tests/integration/mcp-provider-discovery.test.ts` (opt-in, live)
+
+**Out of scope**: per-tool / per-call checks inside a running agent session
+for http connectors whose bearer token was injected at claim (the runtime
+grant work, task `d6b7501a`, consumes `status: 'blocked'` from the mounted
+list); the access-request UI (task `a35d01f0`).
 
 ---
 

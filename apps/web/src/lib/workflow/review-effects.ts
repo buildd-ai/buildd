@@ -490,6 +490,21 @@ const DEAD_EFFECT_COPY: Record<string, string> = {
 };
 
 const notify: EffectHandler = async (e) => {
+  if (e.payload.event === 'policy_human') {
+    // T28: the one admission point for a pre-flight finding. The delivery is ESCALATED(policy_human)
+    // at this head, so Home (needsYou) and this notice agree; a finding for an older head never gets here.
+    const view = await viewFor(e);
+    const d = view.delivery;
+    if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
+    if (d.state !== 'ESCALATED' || d.currentHeadSha !== e.payload.headSha) return { outcome: 'skipped:state_moved' };
+    void notifyTeamOf({ workspaceId: d.workspaceId }, 'needsAttention', {
+      title: `PR #${d.prNumber} needs a person`,
+      message: String(e.payload.reason ?? 'workspace policy requires human review'),
+      url: `https://github.com/${d.repoFullName}/pull/${d.prNumber}`,
+      urlTitle: 'View PR',
+    });
+    return { outcome: 'ok' };
+  }
   if (e.payload.event !== 'push_undeliverable' && e.payload.event !== 'effect_dead') return { outcome: 'skipped:no_channel' };
   const view = await viewFor(e);
   const d = view.delivery;

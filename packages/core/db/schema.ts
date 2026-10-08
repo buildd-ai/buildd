@@ -4974,6 +4974,10 @@ export const workflowDeliveries = pgTable('workflow_deliveries', {
   supersededByUrl: text('superseded_by_url'),
   supersededReason: text('superseded_reason'),
   recordedBy: text('recorded_by'),
+  // The newest head-bound policy finding (PolicyEvidenceRecorded, §6.3 T28):
+  // { headSha, outcome, reason, destructive }. Evidence for ONE head; a
+  // delivery on any other head ignores it.
+  policyEvidence: jsonb('policy_evidence').$type<{ headSha: string; outcome: 'human' | 'agent_split'; reason: string; destructive: boolean } | null>(),
   // Who decides for this delivery (§14 cutover): 'kernel', or 'legacy' once the
   // gitConfig.workflowKernel kill switch handed it back. Sticky: a delivery
   // released to legacy finishes there even if the switch is turned on again,

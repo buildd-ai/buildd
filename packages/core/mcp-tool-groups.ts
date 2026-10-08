@@ -363,7 +363,7 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
   manage_evidence_backends: '{action, backendId?, …}',
   read_evidence: '{taskId?|prNumber?, grep?, …}',
-  list_incidents: '{status?, …}',
+  list_incidents: '{}',
   record_pr_supersession: '{prNumber?, supersedingPrNumber, supersedingRepo?, reason, …}',
 };
 

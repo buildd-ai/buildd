@@ -196,3 +196,16 @@ describe('a no-diff attempt', () => {
     expect(html).not.toContain('Attempt 2 (fix) · +0 −0 · 0 files');
   });
 });
+
+describe('PrCard primary action when the PR cannot merge yet', () => {
+  const o = outcome([{ add: 10, rem: 1, files: 1 }]);
+  it('does not offer Review & merge on an unmergeable PR', () => {
+    const html = render({ prLifecycleStatus: 'pr_open', mergeable: false, mergeableState: 'dirty', outcome: o });
+    expect(html).not.toContain('Review &amp; merge');
+    expect(html).toContain('View PR');
+  });
+  it('does not offer Review & merge while CI is pending', () => {
+    const html = render({ prLifecycleStatus: 'pr_open', ciChecks: { total: 2, passed: 1, failed: 0, pending: 1, runs: [] }, outcome: o });
+    expect(html).not.toContain('Review &amp; merge');
+  });
+});
