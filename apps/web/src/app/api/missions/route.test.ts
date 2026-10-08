@@ -54,6 +54,7 @@ const mockSchedulesInsert = mock(() => ({
   }),
 }));
 let updatedMissionValues: any = null;
+let deletedTables: any[] = [];
 let scheduleLinkValues: any = null;
 const mockMissionsUpdate = mock(() => ({
   set: mock((vals: any) => {
@@ -129,6 +130,7 @@ mock.module('@buildd/core/db', () => ({
       return mockMissionsInsert();
     },
     update: () => mockMissionsUpdate(),
+    delete: (table: any) => ({ where: () => { deletedTables.push(table); return Promise.resolve(); } }),
     $count: (...args: any[]) => (mockMissionsCount as any)(...args),
   },
 }));
@@ -172,6 +174,7 @@ describe('POST /api/missions', () => {
     mockPostMissionFeedEvent.mockReset();
     insertedMissionValues = null;
     insertedScheduleValues = null;
+    deletedTables = [];
     updatedMissionValues = null;
     scheduleLinkValues = null;
 
@@ -201,6 +204,26 @@ describe('POST /api/missions', () => {
         };
       }),
     }));
+  });
+
+  it('rolls back the mission and fires no side effects when the schedule insert fails', async () => {
+    mockSchedulesInsert.mockImplementation(() => ({
+      values: mock(() => ({
+        returning: mock(() => Promise.reject(new Error('null value in column violates not-null constraint'))),
+      })),
+    }));
+
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Doomed', workspaceId: 'ws-1', branchStrategy: 'mission-branch' }),
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(500);
+    expect(deletedTables).toContain('missions');
+    expect(mockEnsureMissionIntegrationBranch).not.toHaveBeenCalled();
+    expect(mockPostMissionFeedEvent).not.toHaveBeenCalled();
+    expect(mockRunMission).not.toHaveBeenCalled();
   });
 
   it('creates a mission with schedule containing heartbeat config', async () => {
