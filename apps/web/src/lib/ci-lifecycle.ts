@@ -19,12 +19,21 @@
 
 export type CiLifecycle = 'ci_green' | 'ci_failed' | 'ci_running';
 
-interface Suite { status: string; conclusion: string | null; latest_check_runs_count?: number; updated_at?: string | null; app?: { id?: number } | null }
+interface Suite {
+  status: string;
+  conclusion: string | null;
+  latest_check_runs_count?: number;
+  updated_at?: string | null;
+  app?: { id?: number } | null;
+  workflow_run?: { id?: number } | null;
+}
 
 const PASSED = new Set(['success', 'skipped', 'neutral']);
 
 function isNewer(a: Suite, b: Suite): boolean | null {
-  if (typeof a.app?.id === 'number' && typeof b.app?.id === 'number' && a.app.id !== b.app.id) return null;
+  const aWorkflowId = a.workflow_run?.id;
+  const bWorkflowId = b.workflow_run?.id;
+  if (typeof aWorkflowId === 'number' && typeof bWorkflowId === 'number' && aWorkflowId !== bWorkflowId) return null;
   if (a.updated_at && b.updated_at) return Date.parse(a.updated_at) > Date.parse(b.updated_at);
   return null;
 }
@@ -32,8 +41,8 @@ function isNewer(a: Suite, b: Suite): boolean | null {
 export function latestSuitePerApp<T extends Suite>(suites: T[]): T[] {
   const kept: T[] = [];
   for (const suite of suites) {
-    const appId = suite.app?.id;
-    const i = kept.findIndex((k) => k.app?.id === appId);
+    const workflowId = suite.workflow_run?.id;
+    const i = kept.findIndex((k) => k.workflow_run?.id === workflowId);
     if (i === -1) {
       kept.push(suite);
       continue;
