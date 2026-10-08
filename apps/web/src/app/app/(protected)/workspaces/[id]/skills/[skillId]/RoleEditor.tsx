@@ -376,7 +376,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   // Used to validate that a role only mounts connectors in scope for its workspace.
   const [wsEnabledIds, setWsEnabledIds] = useState<Set<string>>(new Set());
 
-  // Live connector health: connectorId → 'ok' | 'auth_expired' | 'server_unreachable' | 'not_configured'
+  // Live connector health: connectorId → 'ok' | 'auth_expired' | 'server_unreachable' | 'not_configured' | 'blocked'
   const [healthStatus, setHealthStatus] = useState<Map<string, string>>(new Map());
   const [healthChecking, setHealthChecking] = useState(false);
 
@@ -850,6 +850,9 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                             );
                             if (hs === 'auth_expired') return (
                               <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">auth expired</span>
+                            );
+                            if (hs === 'blocked') return (
+                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-error/10 text-status-error border border-status-error/30" title="Blocked by your team's connector policy. Agents cannot use it; the saved connection is kept.">blocked</span>
                             );
                             if (hs === 'server_unreachable') return (
                               <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-error/10 text-status-error border border-status-error/30">unreachable</span>

@@ -133,6 +133,7 @@ function primaryAction(
   state: PrDisplayState,
   ciChecks: PrCardProps['ciChecks'],
   openAttempt?: OpenAttemptInfo | null,
+  mergeable?: boolean | null,
 ) {
   if (state === 'merged') return { label: 'Open PR', href: prUrl };
   if (isCiRed(state, ciChecks)) return { label: 'View failing checks', href: `${prUrl.replace(/\/+$/, '')}/checks` };
@@ -140,6 +141,9 @@ function primaryAction(
   // "Review & merge" would offer the exact action guardReviewVerdict is going
   // to refuse. Fall back to a neutral link, same as the merged case.
   if (openAttempt) return { label: 'View PR', href: prUrl };
+  // Merge is never the main fix for a PR GitHub says cannot merge, or whose CI has not finished:
+  // the platform (or the PR page) has to settle that first.
+  if (mergeable === false || (ciChecks?.pending ?? 0) > 0) return { label: 'View PR', href: prUrl };
   return { label: 'Review & merge', href: prUrl };
 }
 
@@ -195,7 +199,7 @@ export default function PrCard(props: PrCardProps) {
 
   const isMerged = state === 'merged';
   const failingRuns = ciChecks?.runs.filter(isFailingRun) ?? [];
-  const action = primaryAction(prUrl, state, ciChecks, openAttempt);
+  const action = primaryAction(prUrl, state, ciChecks, openAttempt, mergeable);
 
   const reviewLine = reviews && (reviews.approved + reviews.changesRequested + reviews.pending > 0)
     ? [
@@ -539,7 +543,7 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, 
   const lifecycle = PR_PILL[state];
   const merged = state === 'merged';
   const ciRed = isCiRed(state, ciChecks);
-  const action = primaryAction(prUrl, state, ciChecks, openAttempt);
+  const action = primaryAction(prUrl, state, ciChecks, openAttempt, mergeable);
   const { totals, attempts } = outcome;
   const total = attempts.reduce((s, a) => s + a.add + a.rem, 0);
   const reviewLine = reviews && reviews.approved + reviews.changesRequested + reviews.pending > 0

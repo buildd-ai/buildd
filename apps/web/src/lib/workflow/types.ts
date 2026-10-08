@@ -63,6 +63,18 @@ export type AttemptOutcome = 'delivered' | 'unproven' | 'failed' | 'noop';
 
 // ── Snapshots the reducer reads ─────────────────────────────────────────────
 
+/** What a preflight finding asks of the platform (§6.3 T28). */
+export type PolicyOutcome = 'human' | 'agent_split';
+
+/** Head-bound policy evidence: true for `headSha` only. */
+export interface PolicyEvidence {
+  headSha: string;
+  outcome: PolicyOutcome;
+  reason: string;
+  /** Truly destructive SQL (or an uninspectable migration): the human rail, never auto-routed. */
+  destructive: boolean;
+}
+
 export interface DeliverySnapshot {
   id: string;
   workspaceId: string;
@@ -93,6 +105,7 @@ export interface DeliverySnapshot {
   supersededByUrl?: string | null;
   supersededReason?: string | null;
   recordedBy?: string | null;
+  policyEvidence?: PolicyEvidence | null;
   /** §14 cutover: who decides for this delivery. Absent in fixtures = 'kernel'. */
   authority?: 'kernel' | 'legacy';
   /**

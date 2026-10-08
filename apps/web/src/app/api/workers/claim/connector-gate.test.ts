@@ -10,6 +10,8 @@ const mockConnectorWorkspacesFindMany = mock(() => [] as any[]);
 const mockSecretsFindMany = mock(() => [] as any[]);
 const mockMissionsFindFirst = mock(() => null as any);
 const mockWorkersFindMany = mock(() => [] as any[]);
+const mockPoliciesFindMany = mock(() => [] as any[]);
+const mockLoadTeamCatalog = mock((_teamId: string) => Promise.resolve([] as any[]));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -21,9 +23,11 @@ mock.module('@buildd/core/db', () => ({
       secrets: { findMany: mockSecretsFindMany },
       missions: { findFirst: mockMissionsFindFirst },
       workers: { findMany: mockWorkersFindMany },
+      connectorCatalogTeamPolicies: { findMany: mockPoliciesFindMany },
     },
   },
 }));
+mock.module('@/lib/connector-catalog-store', () => ({ loadTeamCatalog: mockLoadTeamCatalog }));
 
 const mockSecretsProviderGet = mock((_id: string) => Promise.resolve(null as string | null));
 mock.module('@buildd/core/secrets', () => ({
@@ -95,6 +99,10 @@ beforeEach(() => {
   mockSecretsFindMany.mockReset();
   mockSecretsProviderGet.mockReset();
   mockFetch.mockReset();
+  mockPoliciesFindMany.mockReset();
+  mockPoliciesFindMany.mockResolvedValue([]);
+  mockLoadTeamCatalog.mockReset();
+  mockLoadTeamCatalog.mockResolvedValue([]);
 
   // Default: no shares, all workspaces enabled
   mockConnectorSharesFindMany.mockResolvedValue([]);
@@ -102,6 +110,36 @@ beforeEach(() => {
   mockSecretsProviderGet.mockResolvedValue('decrypted-secret');
   mockFetch.mockResolvedValue({ ok: true, status: 200 });
   process.env.ENCRYPTION_KEY = 'test-key-32-chars-padding-here!!';
+});
+
+// ── blocked_by_policy ─────────────────────────────────────────────────────────
+
+describe('checkConnectorRouting — blocked_by_policy', () => {
+  function blockEntry(teamId: string, url: string) {
+    mockPoliciesFindMany.mockResolvedValue([{ teamId }]);
+    mockLoadTeamCatalog.mockImplementation(async (t: string) =>
+      t === teamId ? [{ slug: 'axiom', name: 'Axiom', url, policy: 'blocked' }] : []);
+  }
+
+  it('classifies an installed, credentialed connector whose catalog entry the team blocked', async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([makeRole()]);
+    mockConnectorsFindMany.mockResolvedValue([makeConnector({ authMode: 'oauth', url: 'https://mcp.axiom.co/mcp' })]);
+    mockSecretsFindMany.mockResolvedValue([makeSecret()]);
+    blockEntry(TEAM_ID, 'https://mcp.axiom.co/mcp');
+
+    const result = await checkConnectorRouting(ROLE_SLUG, WORKSPACE_ID, TEAM_ID);
+    expect(result).toEqual([{ connectorId: CONNECTOR_ID, connectorName: CONNECTOR_NAME, mode: 'blocked_by_policy' }]);
+    // Never probed: a blocked connector is not contacted on the team's behalf.
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("ignores a block set by an unrelated team", async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([makeRole()]);
+    mockConnectorsFindMany.mockResolvedValue([makeConnector({ url: 'https://mcp.axiom.co/mcp' })]);
+    blockEntry('team-unrelated', 'https://mcp.axiom.co/mcp');
+
+    expect(await checkConnectorRouting(ROLE_SLUG, WORKSPACE_ID, TEAM_ID)).toBeNull();
+  });
 });
 
 // ── never_mounted ─────────────────────────────────────────────────────────────
