@@ -10,6 +10,9 @@
  * Failure taxonomy (evaluated in order — the order IS the contract, because the
  * mode reported to the caller is the first one that matches):
  *   never_mounted      — dangling ref / wrong team / disabled for workspace
+ *   blocked_by_policy  — the consuming or owning team blocked the connector's
+ *                        catalog entry (connector + credential kept; see
+ *                        lib/connector-access-policy.ts)
  *   expired_or_revoked — credential missing, oauth token expired, or undecryptable
  *   transient          — HTTP HEAD probe failed (transport=http only; 5s budget)
  *
@@ -28,6 +31,7 @@ import {
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
 
 /** One connector that failed availability, with the first taxonomy mode that matched. */
 export type ConnectorFailure = { connectorId: string; connectorName: string; mode: string };
@@ -121,6 +125,13 @@ export async function runConnectorPreFilter(
         columns: { id: true, teamId: true, name: true, authMode: true, transport: true, url: true, envMapping: true },
       });
       const connectorById = new Map(preFilterConnectors.map(c => [c.id, c]));
+
+      // Catalog blocks for every consuming and owning team in play. Throws on
+      // DB failure, failing the claim rather than mounting an unchecked connector.
+      const blockedCatalogs = await loadBlockedCatalogs([
+        ...teamIdsToFetch,
+        ...preFilterConnectors.map(c => c.teamId),
+      ]);
 
       // Batch-fetch cross-team share grants so shared connectors are treated
       // as visible even when teamId differs.
@@ -288,6 +299,11 @@ export async function runConnectorPreFilter(
           const cwKey = `${pair.taskWorkspaceId}|${refId}`;
           if (cwEnabled.has(cwKey) && !cwEnabled.get(cwKey)) {
             failures.push({ connectorId: refId, connectorName: connector.name, mode: 'never_mounted' });
+            continue;
+          }
+          // Team catalog policy: blocked after install still means blocked.
+          if (connectorBlock(connector, pair.teamId, blockedCatalogs)) {
+            failures.push({ connectorId: refId, connectorName: connector.name, mode: 'blocked_by_policy' });
             continue;
           }
           // Credential check

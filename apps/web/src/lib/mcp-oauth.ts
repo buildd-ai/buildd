@@ -23,6 +23,7 @@ export interface ASMetadata {
   token_endpoint: string;
   registration_endpoint?: string;
   scopes_supported?: string[];
+  grant_types_supported?: string[];
   code_challenge_methods_supported?: string[];
   [key: string]: unknown;
 }
@@ -262,17 +263,56 @@ async function fetchASMetadata(asBaseUrl: string): Promise<ASMetadata> {
 // ─── Dynamic Client Registration ─────────────────────────────────────────────
 
 /**
+ * The authorization server refused to register buildd as a client.
+ * `needsApprovedClient` separates "this provider only admits MCP clients it
+ * has reviewed" (Vercel today: it rejects any non-loopback redirect URI it has
+ * not approved) from an outage: the first is an owner/vendor decision and
+ * must not be retried or worked around by impersonating an approved client.
+ */
+export class ClientRegistrationRejectedError extends Error {
+  constructor(
+    readonly status: number,
+    readonly oauthError: string | null,
+    readonly description: string | null,
+    body: string,
+  ) {
+    super(`DCR failed (${status}): ${body}`);
+    this.name = 'ClientRegistrationRejectedError';
+  }
+
+  get needsApprovedClient(): boolean {
+    if (this.status === 401 || this.status === 403) return true;
+    return this.oauthError !== null && APPROVAL_ERRORS.has(this.oauthError);
+  }
+}
+
+// RFC 7591 §3.2.2 errors that mean "not this client", not "try again".
+const APPROVAL_ERRORS = new Set([
+  'invalid_redirect_uri',
+  'invalid_client_metadata',
+  'invalid_software_statement',
+  'unapproved_software_statement',
+  'access_denied',
+  'unauthorized_client',
+]);
+
+/**
  * Perform RFC 7591 Dynamic Client Registration.
- * Returns { client_id, client_secret? }.
+ * Returns { client_id, client_secret? }. Requests the refresh_token grant
+ * when the AS advertises it, so the connection survives access-token expiry.
+ * Throws ClientRegistrationRejectedError on any non-2xx.
  */
 export async function registerClient(
   registrationEndpoint: string,
   callbackUrl: string,
+  opts: { grantTypesSupported?: string[] } = {},
 ): Promise<DCRResult> {
   const body = {
     client_name: 'buildd',
     redirect_uris: [callbackUrl],
-    grant_types: ['authorization_code'],
+    grant_types: opts.grantTypesSupported?.includes('refresh_token')
+      ? ['authorization_code', 'refresh_token']
+      : ['authorization_code'],
     response_types: ['code'],
     token_endpoint_auth_method: 'client_secret_basic',
     code_challenge_method: 'S256',
@@ -286,7 +326,14 @@ export async function registerClient(
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`DCR failed (${res.status}): ${text}`);
+    let oauthError: string | null = null;
+    let description: string | null = null;
+    try {
+      const parsed = JSON.parse(text) as { error?: unknown; error_description?: unknown };
+      if (typeof parsed.error === 'string') oauthError = parsed.error;
+      if (typeof parsed.error_description === 'string') description = parsed.error_description;
+    } catch { /* non-JSON error body */ }
+    throw new ClientRegistrationRejectedError(res.status, oauthError, description, text);
   }
 
   return (await res.json()) as DCRResult;
