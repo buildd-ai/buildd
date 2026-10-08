@@ -240,7 +240,8 @@ describe('deterministic attempt order — tasks/[id]/page.tsx', () => {
     expect(pageSource).not.toMatch(/orderBy:\s*desc\(workers\.createdAt\)\s*[,}]/);
     expect(pageSource).not.toMatch(/orderBy:\s*\[\s*desc\(workers\.createdAt\)\s*\]/);
     const withTiebreak = pageSource.match(/orderBy:\s*\[desc\(workers\.createdAt\), desc\(workers\.id\)\]/g) ?? [];
-    expect(withTiebreak.length).toBeGreaterThanOrEqual(5);
+    // Four reads: the PR-fact refresh no longer re-fetches workers inline (it runs in after()).
+    expect(withTiebreak.length).toBeGreaterThanOrEqual(4);
   });
 
   it('never orders tasks by createdAt without an id tiebreak', () => {

@@ -1476,6 +1476,8 @@ describe('POST /api/github/pr', () => {
       noExistingPr();
       mockFindStackedReleaseForBase.mockImplementation((taskId: string, base: string) =>
         Promise.resolve(taskId === 't-2' && base === upstreamBranch));
+      // live ref check on the upstream branch: still exists
+      mockGithubApi.mockResolvedValueOnce({ ref: `refs/heads/${upstreamBranch}` });
       mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
 
       const req = createMockRequest({
@@ -1510,6 +1512,8 @@ describe('POST /api/github/pr', () => {
       noExistingPr();
       // Default mock already resolves false — this is a plan-step stack, not
       // an early-release one.
+      // live ref check on the predecessor branch: still exists
+      mockGithubApi.mockResolvedValueOnce({ ref: `refs/heads/${predecessorBranch}` });
       mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
 
       const req = createMockRequest({
