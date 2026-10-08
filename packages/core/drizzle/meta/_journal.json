@@ -149,6 +149,13 @@
       "when": 1791465395959,
       "tag": "0270_dark_falcon",
       "breakpoints": true
+    },
+    {
+      "idx": 271,
+      "version": "7",
+      "when": 1791466844125,
+      "tag": "0271_curly_crystal",
+      "breakpoints": true
     }
   ]
 }
