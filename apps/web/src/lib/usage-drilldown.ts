@@ -429,7 +429,7 @@ export function formatTokens(n: number): string {
 
 export function formatUsd(n: number): string {
   if (!Number.isFinite(n)) return '';
-  return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`;
+  return n >= 1 || n === 0 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`;
 }
 
 /** One decimal below 10, whole numbers above — a per-task rate of 0.3 is a real reading. */

@@ -128,7 +128,7 @@ export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
                   label="Cost / task"
                   metric={perTask.costUsd}
                   render={(d) => formatUsd(d.median)}
-                  sub={() => `${formatUsd(totals.costUsd)} total · ${sampleNote('costUsd')}`}
+                  sub={() => `${formatUsd(totals.costUsd)} combined total · ${sampleNote('costUsd')}`}
                   extra={
                     view.costProxyTokens === null
                       ? null
