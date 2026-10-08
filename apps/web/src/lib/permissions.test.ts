@@ -58,6 +58,11 @@ const EXPECTED: Record<Permission, Row> = {
   manage_connectors: { roles: OA, keys: ADMIN_KEY },
   manage_evidence_backends: { roles: OA, keys: ADMIN_KEY },
   run_experiments: { roles: OA, keys: ADMIN_KEY },
+  assign_team_roles: { roles: OA, keys: NONE },
+  manage_team_credentials: { roles: OA, keys: ADMIN_KEY },
+  manage_team_notifications: { roles: OA, keys: ADMIN_KEY },
+  create_workspace: { roles: OA, keys: ADMIN_KEY },
+  manage_agent_roles: { roles: OA, keys: ADMIN_KEY },
 };
 
 const ALL = Object.keys(PERMISSIONS) as Permission[];
