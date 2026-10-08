@@ -122,7 +122,7 @@ function normalizeClaudeLike(client, p, env) {
     // The end of the agent's turn: the last chance to hand it a waiting
     // message this turn, so it is never throttled.
     case 'Stop':
-      return { ...base, event: 'touch', force: true };
+      return { ...base, event: 'touch', force: true, interactive: attended(client, env) };
     case 'PostToolUse': {
       // A successful buildd claim binds. Any other tool call is a turn
       // boundary: a (throttled) touch, whose answer says whether a message waits.
