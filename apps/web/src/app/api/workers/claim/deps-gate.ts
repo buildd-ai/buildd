@@ -6,6 +6,7 @@ import {
   DEP_UNBLOCKING_PR_LIFECYCLE,
   EARLY_RELEASE_SATISFYING_DECISIONS,
 } from '@/lib/dep-gate-contract';
+import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
 
 /**
  * Re-exported for callers already importing the contract from the gate module.
@@ -43,6 +44,29 @@ export function dependenciesSatisfied(): SQL {
   return sql`NOT EXISTS (
     SELECT 1 FROM jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
     WHERE NOT ${dependencySatisfied(sql`dep_id::uuid`)}
+    AND NOT ${outsideSurfaceAuditMission(sql`dep_id::uuid`)}
+  )`;
+}
+
+/**
+ * TRUE when the dependent (the outer `tasks` row) is a mission's
+ * `[surface audit]` and `depId` is not a task of that mission any more. The
+ * audit waits on the mission's builder work as it is now: its dependsOn was
+ * extended as tasks were filed, and a task unlinked or moved since must not
+ * hold it (`dependencyHoldsTask` in @buildd/core/member-scoped-deps is the
+ * same rule in TS). A dependency row that no
+ * longer exists is not a member either. Every other task keeps waiting on
+ * every dependency it names, in any mission.
+ */
+export function outsideSurfaceAuditMission(depId: SQL): SQL {
+  return sql`(
+    ${tasks.missionId} IS NOT NULL
+    AND ${tasks.title} LIKE ${`${SURFACE_AUDIT_TITLE_PREFIX}%`}
+    AND NOT EXISTS (
+      SELECT 1 FROM ${tasks} t3
+      WHERE t3.id = ${depId}
+      AND t3.mission_id = ${tasks.missionId}
+    )
   )`;
 }
 

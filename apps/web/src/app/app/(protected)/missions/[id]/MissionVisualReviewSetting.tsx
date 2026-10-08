@@ -14,6 +14,7 @@ import type { VisualReviewModel } from '@buildd/shared';
 import Switch from '@/components/ui/Switch';
 import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
 import { useMissionVisualReview } from './MissionVisualReview';
+import MissionSurfaceAuditWaiver, { type MissionSurfaceAuditWaiverProps } from './MissionSurfaceAuditWaiver';
 
 export const VISUAL_REVIEW_SETTING_LABEL = 'Audit UI changes automatically';
 
@@ -22,6 +23,7 @@ export default function MissionVisualReviewSetting({
   initialEnabled,
   visual,
   readonly = false,
+  auditWaiver = null,
 }: {
   missionId: string;
   /** `missions.autoSurfaceAudit`; the column defaults to on. */
@@ -29,6 +31,8 @@ export default function MissionVisualReviewSetting({
   /** The server's model; the page's live one wins when it is mounted. */
   visual: VisualReviewModel | null | undefined;
   readonly?: boolean;
+  /** The person-only "Waive visual audit" action; null hides it (no audit on the mission). */
+  auditWaiver?: Omit<MissionSurfaceAuditWaiverProps, 'variant'> | null;
 }) {
   const live = useMissionVisualReview(missionId);
   const model = live?.model ?? visual ?? null;
@@ -91,6 +95,11 @@ export default function MissionVisualReviewSetting({
           <p className="font-mono text-[12px] text-text-muted">No visual audit.</p>
         )}
       </div>
+      {auditWaiver && (
+        <div className="mt-3 border-t border-border-default pt-3">
+          <MissionSurfaceAuditWaiver {...auditWaiver} variant="setting" />
+        </div>
+      )}
     </section>
   );
 }
