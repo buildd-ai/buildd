@@ -26,8 +26,6 @@ import type {
   ExperimentVisibility,
   UpdateExperimentInput,
 } from '@buildd/shared';
-import { defaultHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
-import { defaultQuestionGateConfig } from '@buildd/core/question-gate';
 import { stripNonDrawConfig, validateDurationCap } from '@buildd/core/experiment-health';
 import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 
@@ -35,6 +33,18 @@ export type TeamRole = 'owner' | 'admin' | 'member';
 
 export const EXPERIMENT_STATUSES: readonly ExperimentStatus[] = ['draft', 'running', 'paused', 'concluded'];
 export const EXPERIMENT_VISIBILITIES: readonly ExperimentVisibility[] = ['admins', 'team'];
+/**
+ * Kinds that existing rows may still carry but that can no longer enrol anything:
+ * the heartbeat triage call site was removed with event-driven replanning, and
+ * the question gate is unconditional (packages/core/question-gate.ts). Rows stay
+ * listable and readable; creating or starting one is refused.
+ */
+export const RETIRED_EXPERIMENT_KINDS = ['heartbeat_triage', 'question_gate'] as const;
+
+export function retiredKindMessage(kind: string): string {
+  return `experiment kind ${kind} is retired and no longer enrols anything; existing ${kind} experiments stay readable and can be concluded`;
+}
+
 export const EXPERIMENT_KINDS = ['model_routing', 'heartbeat_triage', 'question_gate'] as const satisfies readonly ExperimentKind[];
 
 /** Legal status moves. `concluded` is terminal. */
@@ -118,14 +128,8 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
     return { ok: false, status: 400, error: `kind must be one of ${EXPERIMENT_KINDS.join(', ')}` };
   }
 
-  // No implicit share: skipping organizer cycles is the intervention, so its
-  // share is named explicitly, or the create is refused.
-  if (kind === 'heartbeat_triage' && b.treatmentFraction === undefined) {
-    return { ok: false, status: 400, error: 'treatmentFraction is required for kind heartbeat_triage (the share of missions whose confident waits skip the organizer, e.g. 0.3)' };
-  }
-  // Same rule: pushing questions back to agents is the intervention.
-  if (kind === 'question_gate' && b.treatmentFraction === undefined) {
-    return { ok: false, status: 400, error: 'treatmentFraction is required for kind question_gate (the share of tasks whose unclear questions are pushed back to the agent, e.g. 0.5)' };
+  if ((RETIRED_EXPERIMENT_KINDS as readonly string[]).includes(kind)) {
+    return { ok: false, status: 400, error: retiredKindMessage(kind) };
   }
   const fraction = b.treatmentFraction ?? 0.5;
   if (!validFraction(fraction)) return { ok: false, status: 400, error: 'treatmentFraction must be a number strictly between 0 and 1' };
@@ -148,9 +152,7 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
       kind: kind as ExperimentKind,
       treatmentFraction: fraction,
       config: (b.config as Record<string, unknown> | undefined)
-        ?? (kind === 'heartbeat_triage' ? defaultHeartbeatTriageConfig()
-          : kind === 'question_gate' ? defaultQuestionGateConfig()
-          : defaultModelRoutingConfig()),
+        ?? defaultModelRoutingConfig(),
       visibility,
     },
   };
@@ -158,6 +160,8 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
 
 /** The fields of the stored row a patch is planned against. */
 export interface ExperimentState {
+  /** Stored kind; when given, a retired kind cannot be started. */
+  kind?: string;
   status: ExperimentStatus;
   treatmentFraction: number;
   policyVersion: number;
@@ -239,6 +243,9 @@ export function planExperimentPatch(current: ExperimentState, body: unknown, now
     if (!EXPERIMENT_STATUSES.includes(b.status)) return { ok: false, status: 400, error: `status must be one of ${EXPERIMENT_STATUSES.join(', ')}` };
     if (!EXPERIMENT_TRANSITIONS[current.status].includes(b.status)) {
       return { ok: false, status: 409, error: `Cannot move an experiment from ${current.status} to ${b.status}` };
+    }
+    if (b.status === 'running' && current.kind && (RETIRED_EXPERIMENT_KINDS as readonly string[]).includes(current.kind)) {
+      return { ok: false, status: 400, error: retiredKindMessage(current.kind) };
     }
     transition = b.status;
   }
