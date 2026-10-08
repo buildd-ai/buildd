@@ -290,7 +290,7 @@ function nextLine(r: PortfolioRow): string {
 function PortfolioRowView({ row, now, showWorkspace }: { row: PortfolioRow; now: number; showWorkspace: boolean }) {
   const d = row.delivery;
   const tone = DELIVERY_KIND[d.kind].tone;
-  const fraction = d.total > 0 ? `${d.landed}/${d.total}` : '—';
+  const fraction = d.total > 0 ? `${d.landed}/${d.total}` : null;
   return (
     <div
       data-testid="portfolio-row"
@@ -317,14 +317,14 @@ function PortfolioRowView({ row, now, showWorkspace }: { row: PortfolioRow; now:
           </span>
         )}
         <span className="ml-auto flex min-w-0 flex-[0_1_128px] items-center justify-end gap-2 lg:hidden">
-          <span className="whitespace-nowrap font-mono text-meta tabular-nums text-text-secondary">{fraction}</span>
+          {fraction && <span className="whitespace-nowrap font-mono text-meta tabular-nums text-text-secondary">{fraction}</span>}
           {d.total > 0 && <LandedBar landed={d.landed} inAudit={d.inAudit} total={d.total} />}
         </span>
       </span>
 
       <span className="hidden min-w-0 items-center gap-2 lg:col-start-3 lg:row-start-1 lg:flex">
         <span data-testid="portfolio-landed" className="whitespace-nowrap font-mono text-meta tabular-nums text-text-secondary">
-          {d.total > 0 ? `${fraction} landed` : 'not planned'}
+          {fraction ? `${fraction} landed` : 'not planned'}
         </span>
         {d.total > 0 && <LandedBar landed={d.landed} inAudit={d.inAudit} total={d.total} />}
       </span>
