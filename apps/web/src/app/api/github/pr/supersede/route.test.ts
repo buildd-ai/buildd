@@ -5,15 +5,16 @@ const mockAuthenticateApiKey = mock(() => Promise.resolve(null as any));
 const mockResolveWorkerByPrNumber = mock((..._args: any[]) => Promise.resolve({ error: 'PR not found', status: 404 } as any));
 const mockRecordPrSupersession = mock((..._args: any[]) => Promise.resolve({ ok: false, error: 'not called', status: 500 } as any));
 const mockWorkersFindFirst = mock(() => Promise.resolve(null as any));
+const mockTasksFindFirst = mock((..._args: any[]) => Promise.resolve(null as any));
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/pr-resolve', () => ({ resolveWorkerByPrNumber: mockResolveWorkerByPrNumber }));
 mock.module('@/lib/pr-supersession', () => ({ recordPrSupersession: mockRecordPrSupersession }));
 mock.module('@buildd/core/db', () => ({
-  db: { query: { workers: { findFirst: mockWorkersFindFirst } } },
+  db: { query: { workers: { findFirst: mockWorkersFindFirst }, tasks: { findFirst: mockTasksFindFirst } } },
 }));
-mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'id' } }));
-mock.module('drizzle-orm', () => ({ eq: (a: any, b: any) => ({ type: 'eq', a, b }) }));
+mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'id' }, tasks: { id: 'tid', workspaceId: 'twsid' } }));
+mock.module('drizzle-orm', () => ({ eq: (a: any, b: any) => ({ type: 'eq', a, b }), and: (...c: any[]) => ({ type: 'and', c }) }));
 
 import { POST } from './route';
 
@@ -42,6 +43,8 @@ function reset() {
   } as any));
   mockWorkersFindFirst.mockReset();
   mockWorkersFindFirst.mockImplementation(() => Promise.resolve({ id: 'w-1', workspace: { teamId: 'team-1' } } as any));
+  mockTasksFindFirst.mockReset();
+  mockTasksFindFirst.mockImplementation(() => Promise.resolve(null as any));
 }
 
 describe('POST /api/github/pr/supersede', () => {
@@ -216,5 +219,70 @@ describe('per-task token', () => {
     mockAuthenticateApiKey.mockImplementation(() => Promise.resolve({ id: 'acc-1', teamId: 'team-1', name: 'Agent Bob' } as any));
     await POST(makeRequest({ prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
     expect(mockRecordPrSupersession.mock.calls[0][0]).not.toHaveProperty('targetRepoWithinWorkspace');
+  });
+
+  describe('caller task names the target PR', () => {
+    const sibling = () => worker({ id: 'w-2', taskId: 't-2', prNumber: 3744 });
+    const callerTask = (over: Record<string, unknown> = {}) => ({ id: 't-1', workspaceId: 'ws-1', title: 'Fix goal criterion', description: '', context: null, ...over });
+
+    beforeEach(() => {
+      mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(sibling() as any));
+    });
+
+    it('allows a PR named in the CALLER task title, loading the caller task by its token scope', async () => {
+      mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask({ title: 'Fix goal criterion (#3744)' }) as any));
+      const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'named' }));
+      expect(res.status).toBe(200);
+      const where = (mockTasksFindFirst.mock.calls[0][0] as any).where;
+      expect(JSON.stringify(where)).toContain('t-1');
+      expect(JSON.stringify(where)).toContain('ws-1');
+      expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w-2', targetRepoWithinWorkspace: true }));
+    });
+
+    it('allows a PR named in the caller task context', async () => {
+      mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask({ context: { prNumber: 3744 } }) as any));
+      const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'named' }));
+      expect(res.status).toBe(200);
+    });
+
+    it('refuses when only the PR OWNER’s task names the PR, not the caller’s', async () => {
+      mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(
+        { ...sibling(), task: { title: 'Ship #3744', description: '' } } as any));
+      mockWorkersFindFirst.mockImplementation(() => Promise.resolve(
+        { ...sibling(), task: { title: 'Ship #3744', description: '' } } as any));
+      mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask() as any));
+      const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'x' }));
+      expect(res.status).toBe(403);
+      expect(mockRecordPrSupersession).not.toHaveBeenCalled();
+    });
+
+    it('refuses a different PR than the one the caller task names', async () => {
+      mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask({ title: 'Fix #3000' }) as any));
+      const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'x' }));
+      expect(res.status).toBe(403);
+      expect(mockRecordPrSupersession).not.toHaveBeenCalled();
+    });
+
+    it('refuses a PR in a foreign workspace even if the caller task names it', async () => {
+      mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(
+        { ...sibling(), workspaceId: 'ws-9', workspace: { id: 'ws-9', teamId: 'team-1' } } as any));
+      mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask({ title: 'Fix #3744' }) as any));
+      const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'x' }));
+      expect(res.status).toBe(403);
+      expect(mockRecordPrSupersession).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the caller task is not found in its workspace', async () => {
+      mockTasksFindFirst.mockImplementation(() => Promise.resolve(null as any));
+      const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'x' }));
+      expect(res.status).toBe(403);
+    });
+
+    it('does not let workerId alone use naming (no explicit prNumber)', async () => {
+      mockWorkersFindFirst.mockImplementation(() => Promise.resolve(sibling() as any));
+      mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask({ title: 'Fix #3744' }) as any));
+      const res = await POST(makeRequest({ workerId: 'w-2', supersedingPrNumber: 3748, reason: 'x' }));
+      expect(res.status).toBe(403);
+    });
   });
 });
