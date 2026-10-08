@@ -19,6 +19,7 @@ import { resolveActualModel } from './prompt-builder';
  */
 export function buildTerminalAttributionPayload(worker: LocalWorker): {
   costUsd?: number;
+  costBasis?: LocalWorker['costBasis'];
   actualModel?: string;
   inputTokens?: number;
   outputTokens?: number;
@@ -35,6 +36,8 @@ export function buildTerminalAttributionPayload(worker: LocalWorker): {
   return {
     ...(typeof reportedCost === 'number' && reportedCost > 0 ? { costUsd: reportedCost } : {}),
     ...(actualModel ? { actualModel } : {}),
+    // How the usage was charged; the server records `unknown` when absent.
+    ...(worker.costBasis ? { costBasis: worker.costBasis } : {}),
     ...(tally && typeof tally.inputTokens === 'number' ? { inputTokens: tally.inputTokens } : {}),
     ...(tally && typeof tally.outputTokens === 'number' ? { outputTokens: tally.outputTokens } : {}),
   };

@@ -524,7 +524,8 @@ describe('Error Handling', () => {
         lastQueryOptions = null;
         manager = new WorkerManager(makeConfig({ maxBudgetUsd: 5 } as any));
         await manager.claimAndStart(makeTask());
-        await new Promise(r => setTimeout(r, 200));
+        // Poll rather than sleep a fixed 200ms: session setup is slower on loaded CI runners.
+        for (let i = 0; i < 100 && lastQueryOptions === null; i++) await new Promise(r => setTimeout(r, 50));
         expect(lastQueryOptions).not.toBeNull();
         return lastQueryOptions;
       }
@@ -633,7 +634,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than a fixed sleep: a loaded CI runner can take >200ms
+      for (let i = 0; i < 50 && manager.getWorker('w-auth-fail')?.currentAction !== 'Auth failed'; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-auth-fail');
       expect(worker?.status).toBe('error');

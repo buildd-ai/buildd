@@ -133,6 +133,33 @@ export function missionTaskStripFixture(variant: MissionTaskStripVariant, now = 
   };
 }
 
+/**
+ * `?state=surface-audit-waiver`: a mission whose `[surface audit]` waits on a
+ * running builder task, the audit's drawer open. The audit is task 3.
+ */
+export const SURFACE_AUDIT_FIXTURE_TASK = stripFixtureId(3);
+export function surfaceAuditStripFixture(now = min(60)): MissionTaskStripFixture {
+  return {
+    model: buildMissionBoard({
+      now,
+      missionCreatedAt: T0,
+      missionStatus: 'active',
+      tasks: [
+        landed(1, 'feat(app): mission card layout'),
+        task(2, 'feat(app): task list polish', {
+          status: 'in_progress',
+          workers: [worker('w2', { status: 'running', completedAt: null, currentAction: 'Editing files' })],
+        }),
+        task(3, '[surface audit] Fixture mission', {
+          roleSlug: 'visual-auditor', outputRequirement: 'artifact_required', kind: 'observation',
+          dependsOn: [stripFixtureId(2)],
+        }),
+      ],
+    }),
+    executor: 'runner',
+  };
+}
+
 // ── Dependency shapes (docs/specs/mission-progress-strip-ordering.md §7) ─────
 
 export type DagState = 'landed' | 'review' | 'running' | 'pending' | 'failed';

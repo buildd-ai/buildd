@@ -36,6 +36,8 @@
 
 import type { InsightsUsageRow } from '../../../../packages/shared/src/insights';
 import { LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import { basisOfRow } from './cost-basis-split';
+import { executorOf } from './executor';
 
 export type FlowWindow = '7d' | '30d';
 export const FLOW_WINDOWS: readonly FlowWindow[] = ['7d', '30d'];
@@ -61,6 +63,10 @@ export interface FlowWorkerRow {
   inputTokens?: number;
   outputTokens?: number;
   costUsd?: number;
+  /** `workers.cost_basis`; null when the worker recorded no usage. */
+  costBasis?: string | null;
+  /** `workers.runner`, for the interactive / runner split. */
+  runner?: string | null;
   tier?: string | null;
   workerId: string;
   taskId: string | null;
@@ -405,6 +411,8 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
       tokens: w.startedAt! >= window.from ? (w.inputTokens ?? 0) + (w.outputTokens ?? 0) : 0,
       costUsd: w.startedAt! >= window.from ? w.costUsd ?? 0 : 0,
       hours: overlap(w.startedAt!, runEnd(w, now), window.from, window.to) / HOUR,
+      basis: basisOfRow(w.costBasis, w),
+      executor: executorOf(w.runner),
     })),
     buckets,
     releases: windowReleases.map(r => ({ at: r.at, version: r.version, state: r.state })),

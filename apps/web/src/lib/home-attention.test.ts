@@ -19,6 +19,16 @@ describe('phone Home attention', () => {
     expect(items).toEqual([]);
     expect(homeAttentionCopy(items)).toEqual({ count: 0, headline: 'Nothing needs you.', subline: 'The fleet is working without you.' });
   });
+  // Surface audit: a team with no runner was told "The fleet is working without you."
+  it('with no runner connected, the empty sub-line says so instead of claiming the fleet is working', () => {
+    const copy = homeAttentionCopy([], { runnerConnected: false });
+    expect(copy.headline).toBe('Nothing needs you.');
+    expect(copy.subline).not.toContain('working without you');
+    expect(copy.subline).toBe('No runner is connected yet, so nothing is running.');
+    expect(homeAttentionCopy([], { runnerConnected: true }).subline).toBe('The fleet is working without you.');
+    // Something to act on: the counts lead, whatever the capacity.
+    expect(homeAttentionCopy([one({})[0]], { runnerConnected: false }).subline).toBe('1 merge');
+  });
   it('suppresses an older merge ask when a fix owns the same PR, in either order', () => {
     for (const queue of [[pr('ready'), pr('fix', undefined, 'FIXING_CI')], [pr('fix', undefined, 'FIXING_CI'), pr('ready')]]) {
       expect(deriveHomeAttention({ queue, missions: [], questions: [], held: [] })).toEqual([]);

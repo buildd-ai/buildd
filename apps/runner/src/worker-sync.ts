@@ -24,6 +24,7 @@ import {
   readWorkingSetAck,
 } from './working-set';
 import { blockedToCollision } from './ship-checkpoint';
+import { enqueueSiblingProbes } from './sibling-probe';
 
 /**
  * Grace period after a worker's own completion/failure before checkStale()
@@ -439,6 +440,9 @@ export class WorkerSync {
       // was unreachable: drained here, restored below if this PATCH fails too.
       const drainedShipReports = worker.pendingShipReports?.length ? worker.pendingShipReports : null;
       if (drainedShipReports) worker.pendingShipReports = [];
+      // Live sibling conflict probe results (sibling-probe.ts), same drain/restore.
+      const drainedProbeResults = worker.pendingSiblingProbeResults?.length ? worker.pendingSiblingProbeResults : null;
+      if (drainedProbeResults) worker.pendingSiblingProbeResults = [];
       // Refresh an unresolvable base ref outside the hot hook, throttled and
       // async (never blocks this loop); the next tick measures against it.
       if (touched && !touched.baseResolved && worker.prBaseRef && worker.worktreePath
@@ -483,6 +487,9 @@ export class WorkerSync {
         ...(workingSetDelta ? { workingSet: workingSetDelta } : {}),
         ...(touchedPaths && touchedPaths.length > 0 ? { touchedPaths } : {}),
         ...(drainedShipReports ? { shipCheckpoints: drainedShipReports } : {}),
+        ...(drainedProbeResults ? { siblingProbeResults: drainedProbeResults } : {}),
+        // This runner can run a merge-tree probe against a live sibling's branch.
+        siblingProbe: true,
         ...(dirtyWorktree !== undefined ? { dirtyWorktree } : {}),
         ...(degradedDelta > 0 ? { pathClaimDegraded: degradedDelta } : {}),
         ...(byCauseDelta.timeout > 0 || byCauseDelta.error > 0
@@ -515,6 +522,7 @@ export class WorkerSync {
         if (drainedActionEvents) worker.pendingActionEvents = [...drainedActionEvents, ...(worker.pendingActionEvents ?? [])];
         if (drainedPromptCompositionEvents) worker.pendingPromptCompositionEvents = [...drainedPromptCompositionEvents, ...(worker.pendingPromptCompositionEvents ?? [])];
         if (drainedShipReports) worker.pendingShipReports = [...drainedShipReports, ...(worker.pendingShipReports ?? [])];
+        if (drainedProbeResults) worker.pendingSiblingProbeResults = [...drainedProbeResults, ...(worker.pendingSiblingProbeResults ?? [])];
         throw err;
       }
 
@@ -589,6 +597,10 @@ export class WorkerSync {
         await this.ctx.abort(worker.id);
         return;
       }
+
+      // Probes the server handed this runner: run in the background, reported next sync.
+      void enqueueSiblingProbes(worker, response?.siblingProbes)?.catch(err =>
+        console.warn(`[Worker ${worker.id}] sibling probe failed:`, err));
 
       // Report human text that reached the session through another path (Pusher
       // command, local /message endpoint) so the server can mark it delivered.

@@ -14,8 +14,13 @@
 
 import { isAdvisoryManifest } from './path-overlap';
 
-/** Marks the auto-appended audit task so it is both findable and self-excluding. */
-export const SURFACE_AUDIT_TITLE_PREFIX = '[surface audit] ';
+/**
+ * Marks the auto-appended audit task so it is both findable and self-excluding.
+ * Defined in core (member-scoped-deps.ts), which owns the rule that an audit
+ * waits on its mission's current members only (`dependencyHoldsTask`).
+ */
+import { SURFACE_AUDIT_TITLE_PREFIX } from './member-scoped-deps';
+export { SURFACE_AUDIT_TITLE_PREFIX, dependencyHoldsTask } from './member-scoped-deps';
 
 /**
  * UI surface directories. A concrete pathManifest entry under either of these

@@ -15,6 +15,7 @@ import { findRemovedPathFieldInGitConfig, isRunnerSize, isWorkspaceExecutor, rem
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 import { AGENT_GITHUB_CREDENTIALS_OPT_OUT } from '@buildd/core/agent-github-credentials';
+import { validateEarlyReleaseConfig } from '@/lib/early-release-mode';
 
 const RUNNER_PREFERENCES = new Set(['any', 'user', 'service', 'action']);
 const WEBHOOK_EVENTS = new Set(['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled']);
@@ -342,6 +343,12 @@ export async function PATCH(
           );
         }
       }
+      // Early-release opt-in: exact modes only, so a typo can never quietly
+      // release dependents before their upstream merges (or appear to and not).
+      if ('earlyRelease' in gitConfig) {
+        const error = validateEarlyReleaseConfig((gitConfig as Record<string, unknown>).earlyRelease);
+        if (error) return NextResponse.json({ error }, { status: 400 });
+      }
       // Derived files: refuse any rule the runner would drop on read (repo-wide
       // pattern, migration chain, malformed), so what is stored is what runs.
       if ('derivedFiles' in gitConfig) {
@@ -357,6 +364,12 @@ export async function PATCH(
               { status: 400 },
             );
           }
+        }
+      }
+      if ('overlapHotspots' in gitConfig) {
+        const hs = (gitConfig as Record<string, unknown>).overlapHotspots;
+        if (hs !== null && (!Array.isArray(hs) || hs.length > 200 || !hs.every((h) => typeof h === 'string' && h.trim().length > 0 && h.trim() !== '**'))) {
+          return NextResponse.json({ error: 'gitConfig.overlapHotspots must be null or a list (at most 200) of non-empty paths or dir/** patterns; a repo-wide pattern is not a hotspot' }, { status: 400 });
         }
       }
       if ('mergiraf' in gitConfig) {

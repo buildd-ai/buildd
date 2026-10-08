@@ -866,6 +866,8 @@ export interface Worker {
   status: WorkerStatusType;
   waitingFor: WaitingFor | null;
   costUsd: number;
+  /** How costUsd and the tokens were charged (docs/specs/real-and-virtual-cost.md). NULL = no usage. */
+  costBasis?: 'real' | 'virtual' | 'mixed' | 'unknown' | null;
   turns: number;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -1550,6 +1552,11 @@ export interface ClaimDiagnostics {
     path_overlap?: number;
     /** Scope-undeclared ('**') task held behind a sibling in the same mission. */
     advisory_manifest?: number;
+    /**
+     * Declared scope overlaps an in-flight task's only softly (directory
+     * prefix, or a pre-v2 inferred edge): held unless HOLD/START said START.
+     */
+    soft_overlap?: number;
     mission_budget?: number;
     mission_concurrent?: number;
     mission_paced?: number;
@@ -1564,6 +1571,12 @@ export interface ClaimDiagnostics {
      * retry family is already open (one open retry per subject).
      */
     sibling_retry_open?: number;
+    /**
+     * Workflow-kernel review fix skipped at claim: its target was resolved
+     * while it queued (approved, merged, head moved, round superseded), or the
+     * live revalidation could not run and the claim was rolled back.
+     */
+    fix_not_needed?: number;
     /**
      * Claim planner in `apply` mode ordered this task behind a picked, in-flight
      * or open-PR node it would collide with. Replaces the per-poll
@@ -1721,6 +1734,15 @@ export interface ClaimTasksResponse {
      * bypassed.
      */
     modelEndpointIgnored?: boolean;
+    /**
+     * Cloud claims only: the team's agent model endpoint won for this task but
+     * does not pass deferred tool loading (ToolSearch / `tool_reference`)
+     * through. The container's Claude Code believes it talks to Anthropic (the
+     * dispatcher's egress rewrites the traffic), so the runner sets
+     * ENABLE_TOOL_SEARCH=false. A per-run marker, not a credential; absent
+     * means "leave Claude Code's default".
+     */
+    toolSearchDisabled?: boolean;
     /**
      * Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
      * `scoped`: the runner strips inherited GitHub tokens and host git/gh
@@ -1944,6 +1966,22 @@ export interface PathDeclaration {
    * to caller-supplied edges. Only these may ever be removed on narrowing.
    */
   inferredDependsOn?: string[];
+  /**
+   * `v2`: `inferredDependsOn` holds only HARD inferred edges (same file,
+   * migration, serialized surface). Prefix-only overlap is never a dependsOn
+   * edge; it is recorded in `softOverlaps` and decided at claim time. Absent on
+   * rows written before the rule; migration 0267 converted the pending ones.
+   */
+  overlapPolicy?: 'v2';
+  /**
+   * Soft overlap evidence: in-flight tasks whose declared scope overlapped this
+   * one's by directory prefix or on the same ordinary file (`same_file`; a
+   * generated, hotspot or migration file stays a hard edge), or, `legacy_inferred`, an inferred edge
+   * minted before the hard/soft rule, reclassified against current manifests
+   * at claim). Never a dependsOn edge: the claim route defers on it only while
+   * the other task is in flight, and the HOLD/START decision may start it.
+   */
+  softOverlaps?: Array<{ taskId: string; paths: string[]; kind: 'prefix' | 'same_file' | 'legacy_inferred' }>;
   /** Most recent narrowings, oldest first, capped. */
   narrowings?: PathNarrowing[];
   /**
@@ -2025,6 +2063,38 @@ export interface WorkingSetAck {
   applied: boolean;
   /** `complete`: nothing blocked and the runner said the set was fully offered. `blocked`: a holder stands in the way. `partial`: more chunks to come. */
   coverage: 'complete' | 'blocked' | 'partial';
+}
+
+/**
+ * Server → runner, on the PATCH response: run `git merge-tree` between this
+ * worker's HEAD and a live sibling's pushed branch (sibling-conflict-probe).
+ */
+export interface SiblingProbeRequest {
+  probeId: string;
+  /** The sibling's branch on `origin`. */
+  otherBranch: string;
+  /** Files both workers touched; a conflict outside them still counts. */
+  sharedFiles: string[];
+  /** Workspace `gitConfig.mergiraf`: try mergiraf on each conflicted file before calling it real. */
+  mergiraf: boolean;
+}
+
+/** One conflicted file, with its conflict regions (line ranges in the merged result). */
+export interface SiblingProbeConflict {
+  path: string;
+  hunks: Array<{ startLine: number; endLine: number }>;
+}
+
+/** Runner → server, on the next PATCH: what the merge-tree found. */
+export interface SiblingProbeResult {
+  probeId: string;
+  outcome: 'clean' | 'conflict' | 'mergiraf_resolved' | 'error';
+  conflicts?: SiblingProbeConflict[];
+  /** Files mergiraf merged cleanly (counted out of `conflicts`). */
+  resolvedByMergiraf?: string[];
+  error?: string;
+  headSha?: string | null;
+  otherSha?: string | null;
 }
 
 /** Cap on `heldPaths` in an ACK; above it the runner re-offers from its own sweep instead. */
@@ -3688,9 +3758,53 @@ export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCall
   bySurface: Array<PathClaimCallCounts & { surface: string; firstRecordedAt: string | null }>;
   coverage: { completeHistoricalCalls: boolean; note: string };
 }
+/** n / p50 / p90 over a set of durations, in milliseconds; null quantiles when n = 0. */
+export interface DurationSummary {
+  n: number;
+  p50Ms: number | null;
+  p90Ms: number | null;
+}
+/**
+ * Early-release rollout measure (knowledge-base: buildd/design/early-release.md
+ * "Failure modes & the measure"), read off `dependency_releases` rows and the
+ * `early_release` gate ledger. Served as `earlyRelease` on
+ * `GET /api/stats/coordination` (or alone with `?metric=earlyRelease`).
+ */
+export interface EarlyReleaseStats extends CoordinationMetricFilters {
+  /** Each workspace's resolved `gitConfig.earlyRelease.mode`, so zero releases can be told apart from "never opted in". */
+  modes: Array<{ workspaceId: string; mode: 'off' | 'rule_only' | 'rule_and_jev' }>;
+  /** Release decisions made in the window, by decision. */
+  decisions: { start_now: number; start_stacked: number; wait: number };
+  /**
+   * Of the dependents released (start_now / start_stacked) in the window, how
+   * many the reconciler later had to refresh or escalate, or whose release was
+   * revoked or whose task was cancelled. A dependent counts once in `reworked`
+   * even if several apply; the per-cause counts may overlap.
+   */
+  rework: {
+    released: number;
+    reworked: number;
+    rate: number | null;
+    refreshed: number;
+    escalated: number;
+    cancelled: number;
+  };
+  /**
+   * Upstream PR raised → dependent's own PR merged, over dependents whose PR
+   * merged in the window. `released` = dependents with a start_now/start_stacked
+   * release; `notOptedIn` = dependents in workspaces whose mode is 'off' and that
+   * were never released (today's merge-gated path). Opted-in dependents held at
+   * `wait` are in neither cohort.
+   */
+  chainDuration: { released: DurationSummary; notOptedIn: DurationSummary };
+  /** Release decision (≈ upstream PR raised) → dependent's first claim, for dependents released in the window. */
+  raisedToClaimed: DurationSummary;
+  coverage: { note: string };
+}
 export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
+  earlyRelease?: EarlyReleaseStats;
 }
 /**
  * Aggregate counts over the orchestration decision ledger

@@ -238,7 +238,8 @@ chromium` — just never type the literal word `sudo` in a Bash command, it's bl
 by the harness safety policy even though the underlying escalation works. This also means
 root `bun run build` fails in a sandbox (it runs `db:migrate` first) — use `cd apps/web &&
 bun run build:only` (same command CI's `Build` step uses) to verify compilation with no DB
-and no extra flags. See `docs/testing.md` → "Worker Sandbox Constraints".
+and no extra flags. A local build or `next dev` rewrites `apps/web/next-env.d.ts`; never commit
+that (pre-commit refuses it, `scripts/next-env-canonical.test.ts` pins it). See `docs/testing.md` → "Worker Sandbox Constraints".
 Workers get screenshots by dispatching the Visual QA workflow (`gh workflow run visual-qa.yml
 --ref <branch> -f routes=… -f viewport=mobile`), not from a local DB. See `/visual-review`.
 Workspaces with Vercel previews can audit the preview instead (`gitConfig.visualQa.pageSource`

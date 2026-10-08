@@ -245,6 +245,15 @@ DELETE FROM stripe_events;
 DELETE FROM agent_capability_decisions;
 -- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.
 DELETE FROM task_dispatch_outbox;
+-- Workflow kernel ledger: facts, transitions and effects carry repo names, PR
+-- heads and evidence payloads. Children first (effects reference transitions).
+DELETE FROM workflow_effects;
+DELETE FROM workflow_transitions;
+DELETE FROM workflow_facts;
+DELETE FROM workflow_review_rounds;
+DELETE FROM workflow_attempts;
+DELETE FROM workflow_deliveries;
+DELETE FROM trunk_incidents;
 DELETE FROM watcher_events;
 -- Watches and their ledger: payloads carry task/PR titles and repo names.
 DELETE FROM notification_deliveries;
@@ -260,6 +269,8 @@ DELETE FROM orchestration_manifest_predictions;
 DELETE FROM orchestration_touch_labels;
 DELETE FROM orchestration_decisions;
 DELETE FROM orchestration_overlap_answers;
+-- Live sibling conflict probes: shared and conflicted file paths.
+DELETE FROM sibling_probes;
 -- Model decision ledger: reasons can be prose and human overrides free-form.
 DELETE FROM decision_outcomes;
 DELETE FROM decision_challenger_runs;
@@ -391,6 +402,8 @@ UPDATE initiatives i SET
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM initiatives) s WHERE i.id = s.id;
 
 UPDATE missions m SET
+  branch_refresh_lease_token = NULL,
+  branch_refresh_lease_until = NULL,
   title = pg_temp.qa_title('Mission', s.n, m.title),
   description = pg_temp.qa_text(m.description),
   working_branch = CASE WHEN m.working_branch IS NULL THEN NULL ELSE 'buildd/' || left(md5(m.id::text), 8) || '-mission-' || s.n END,
@@ -582,6 +595,10 @@ UPDATE surface_reservations SET
   surface = pg_temp.qa_hash('path/', surface),
   repo_full_name = pg_temp.qa_hash('org-1/repo-', repo_full_name),
   base_ref = pg_temp.qa_branch(base_ref);
+
+UPDATE dependency_releases SET
+  base_branch = pg_temp.qa_branch(base_branch),
+  revoked_reason = pg_temp.qa_text(revoked_reason);
 
 UPDATE path_claims SET
   path = pg_temp.qa_hash('path/', path);

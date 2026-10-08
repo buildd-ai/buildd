@@ -37,6 +37,8 @@ import {
   githubTokenRequest,
   lookupGithubGrant,
   modelEndpointRequest,
+  needsServerModelEndpoint,
+  plannedModelAuth,
   parseGithubGrant,
   parseServerModelEndpoint,
   type GithubGrant,
@@ -68,6 +70,8 @@ import {
   resolveReuseWindowMs,
   routeToLease,
   taskStateOnLease,
+  waitForTailLease,
+  type Routed,
   type LeaseHandle,
   type LeaseKey,
   type LeasedDispatchRequest,
@@ -181,6 +185,11 @@ export class WorkerAgent extends Agent<Env, RunState> {
       },
       // Only with the seat secret on the Worker (owner-seat.ts); otherwise runs start as before.
       ...(ownerSeatEnabled(env) ? { ownerSeat: this.ownerSeatRun } : {}),
+      // The route its egress will take, so the runner reports the matching
+      // cost basis. Without the seat every route is metered: no lookup.
+      plannedModelAuth: async () => ownerSeatEnabled(env)
+        ? plannedModelAuth(env, needsServerModelEndpoint(env) ? await this.modelEndpoints.get() : null)
+        : 'metered',
       mintTaskToken: () => this.mintTaskToken(),
       // One-shot alarms only (Agents SDK schedule, backed by the Durable
       // Object alarm), for task.scheduled. The callback is runScheduledDispatch.
@@ -201,6 +210,12 @@ export class WorkerAgent extends Agent<Env, RunState> {
   async onStart(): Promise<void> {
     if (!this.ctx.container) return;
     await this.supervisor.recoverOrphan();
+    // A dispatch held for a lease's tail when the agent restarted: route it now, no more waiting.
+    const held = !this.lease ? this.state.routePending : undefined;
+    if (held && !this.routing) {
+      this.routing = true;
+      this.ctx.waitUntil(this.keepAliveWhile(() => this.routeAfterTail(held.request, [], 0)).finally(() => { this.routing = false; }));
+    }
   }
 
   /**
@@ -234,23 +249,71 @@ export class WorkerAgent extends Agent<Env, RunState> {
     if (req.resumeWorkerId || !req.workspaceId || !containerReuseEnabled(this.env) || live || this.supervisor.hasLiveRun) {
       return this.supervisor.dispatch(req);
     }
-    if (this.routing) return { accepted: false, reason: 'already_live', attempt: this.state.attempt, status: this.state.status };
+    if (this.routing || this.state.routePending) return { accepted: false, reason: 'already_live', attempt: this.state.attempt, status: this.state.status };
     this.routing = true;
+    let held = false;
     try {
-      const routed = await routeToLease(
-        { getLease: (name) => this.leaseAgent(name), log: (m) => console.log(m) },
-        { taskId: this.name, workspaceId: req.workspaceId, size: this.runnerSize, slots: resolveReuseSlots(this.env, this.runnerSize), request: req },
-      );
-      if (routed) {
-        this.setState({ ...this.state, leasedTo: routed.lease });
-        console.log(`[cloud-runner] task ${this.name}: running in ${routed.lease}${routed.result.reused ? ' (warm container)' : ''}`);
-        return { accepted: true, attempt: routed.result.attempt };
+      const routed = await routeToLease(this.routeDeps(), this.routeArgs(req));
+      if (routed.lease !== null) return this.ranOnLease(routed);
+      if (routed.tails.length) {
+        // A lease is in its tail: wait for it to go warm, in the background.
+        // buildd's webhook is answered now (it must be fast); a duplicate
+        // meanwhile is a duplicate, and a restart routes the held dispatch at
+        // once (onStart). The attempt number is the one this agent would use.
+        held = true;
+        this.setState({ ...this.state, routePending: { since: Date.now(), request: req } });
+        this.ctx.waitUntil(this.keepAliveWhile(() => this.routeAfterTail(req, routed.tails)).finally(() => { this.routing = false; }));
+        return { accepted: true, attempt: this.state.attempt + 1 };
       }
     } finally {
-      this.routing = false;
+      if (!held) this.routing = false;
     }
     // Every slot busy: run here, as without reuse. The fresh state drops `leasedTo`.
     return this.supervisor.dispatch(req);
+  }
+
+  private routeDeps() {
+    return { getLease: (name: string) => this.leaseAgent(name), log: (m: string) => console.log(m), sleep: (ms: number) => new Promise<void>(r => setTimeout(r, ms)), now: () => Date.now() };
+  }
+
+  private routeArgs(req: DispatchRequest & { workspaceId?: string }) {
+    return { taskId: this.name, workspaceId: req.workspaceId!, size: this.runnerSize, slots: resolveReuseSlots(this.env, this.runnerSize), request: req };
+  }
+
+  private ranOnLease(routed: Routed): DispatchResult {
+    const { routePending: _held, ...rest } = this.state;
+    this.setState({ ...rest, leasedTo: routed.lease });
+    console.log(`[cloud-runner] task ${this.name}: running in ${routed.lease}${routed.result.reused ? ' (warm container)' : ''}`);
+    return { accepted: true, attempt: routed.result.attempt };
+  }
+
+  /**
+   * The held dispatch: the lease in its tail if it goes warm in time, else
+   * any warm or idle lease, else this agent. Never throws.
+   */
+  private async routeAfterTail(req: DispatchRequest, tails: string[], maxWaitMs?: number): Promise<void> {
+    const start = this.state.routePending?.since ?? Date.now();
+    try {
+      const args = this.routeArgs(req);
+      let routed: Routed | null = await waitForTailLease(this.routeDeps(), { ...args, tails, since: start, ...(maxWaitMs !== undefined ? { maxWaitMs } : {}) });
+      const leaseWaitMs = Date.now() - start;
+      if (!routed) {
+        const again = await routeToLease(this.routeDeps(), { ...args, request: { ...req, leaseWaitMs } });
+        routed = again.lease !== null ? again : null;
+      }
+      if (routed) { this.ranOnLease(routed); return; }
+      const { routePending: _held, ...rest } = this.state;
+      this.setState(rest);
+      const r = this.supervisor.dispatch({ ...req, leaseWaitMs });
+      console.log(`[cloud-runner] task ${this.name}: no lease after ${Math.round(leaseWaitMs / 1000)}s; running here (${JSON.stringify(r)})`);
+    } catch (err) {
+      console.log(`[cloud-runner] task ${this.name}: routing the held dispatch failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (this.state.routePending) {
+        const { routePending: _held, ...rest } = this.state;
+        this.setState(rest);
+        this.supervisor.dispatch({ ...req, leaseWaitMs: Date.now() - start });
+      }
+    }
   }
 
   /** RPC from a task agent: run its task in this lease (container-lease.ts). */
@@ -390,11 +453,21 @@ export class WorkerAgent extends Agent<Env, RunState> {
    */
   async getSnapshotScope(): Promise<SnapshotScope | null> {
     if (!warmReposEnabled(this.env) && !resumableRunsEnabled(this.env)) return null;
+    const lease = this.lease;
+    // A lease's deferred warm upload, after its run: the lease's own
+    // workspace (from buildd's runner-size answer), warm keys only (no worker,
+    // so no park bundle), with the cap the run's grant carried.
+    if (lease && this.state.warmUploadSince !== undefined && this.state.status !== 'starting' && this.state.status !== 'running') {
+      return { workspaceId: lease.workspaceId, ...(this.state.snapshotMaxBytes ? { maxBytes: this.state.snapshotMaxBytes } : {}) };
+    }
     if (this.state.status !== 'starting' && this.state.status !== 'running') return null;
     const grant = await this.githubTokens.get();
     if (!grant?.workspaceId) return null;
-    const lease = this.lease;
     if (lease && grant.workspaceId !== lease.workspaceId) return null;
+    if (lease && grant.warmSnapshotMaxBytes !== this.state.snapshotMaxBytes) {
+      const { snapshotMaxBytes: _old, ...rest } = this.state;
+      this.setState({ ...rest, ...(grant.warmSnapshotMaxBytes ? { snapshotMaxBytes: grant.warmSnapshotMaxBytes } : {}) });
+    }
     // The worker is the one this agent is running (its claim line, or the
     // task.resume it was dispatched with), so a park bundle is only ever
     // this run's own.

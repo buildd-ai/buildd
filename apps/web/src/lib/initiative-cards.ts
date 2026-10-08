@@ -1,7 +1,8 @@
 import { db } from '@buildd/core/db';
 import { initiatives, missions } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, ne, type SQL } from 'drizzle-orm';
-import { buildMissionCardView, summarizeMissionForCard, type BlockingTask, type MissionCardRow } from './mission-card-view';
+import { getDeliveryViewsForTasks } from './workflow/delivery-view';
+import { buildMissionCardView, failedDeliverableTaskIds, summarizeMissionForCard, type BlockingTask, type MissionCardRow } from './mission-card-view';
 import { buildMissionListCard, type ListMissionRow } from './mission-list-card';
 import { MISSION_BASE_COLUMNS, MISSION_TASK_BASE_COLUMNS, MISSION_WORKER_BASE_COLUMNS } from './missions-query';
 import { buildMissionWithInitiativeUrl } from './initiative-breadcrumb';
@@ -81,11 +82,14 @@ export async function loadInitiativeCards(opts: {
   const taskIndex = new Map<string, BlockingTask>();
   for (const m of missionRows) for (const t of m.tasks ?? []) taskIndex.set(t.id, t as BlockingTask);
 
+  // S35: one DeliveryView load, so a replaced failed attempt is not a failure.
+  const deliveryViews = await getDeliveryViewsForTasks(failedDeliverableTaskIds(missionRows as MissionCardRow[]));
+
   const byInitiative = new Map<string, InitiativeMissionInput[]>();
   for (const m of missionRows) {
     const row = m as MissionCardRow;
-    const summary = summarizeMissionForCard(row, { now });
-    const view = buildMissionCardView(row, { from: 'missions', now, summary, taskIndex });
+    const summary = summarizeMissionForCard(row, { now, deliveryViews });
+    const view = buildMissionCardView(row, { from: 'missions', now, summary, taskIndex, deliveryViews });
     const list = buildMissionListCard(m as ListMissionRow, view, summary, { now, taskIndex });
     const input: InitiativeMissionInput = {
       id: m.id,

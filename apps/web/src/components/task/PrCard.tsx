@@ -1,6 +1,6 @@
 import { Fragment } from 'react';
 import Link from 'next/link';
-import { derivePrLifecycle, isPrMerged } from '@/lib/pr-presentation';
+import { PR_PILL, resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
 import { countOf } from '@/lib/plural';
 import Disclosure from '@/components/ui/Disclosure';
 import { buildCommitChecksView, checkOutcome } from './commit-checks-view';
@@ -61,6 +61,11 @@ export interface PrCardProps {
   prUrl: string;
   prNumber: number | null;
   prLifecycleStatus?: string | null;
+  /**
+   * The PR's display state when the workflow kernel owns it
+   * (`DeliveryView.prState`, §17.5). Wins over `prLifecycleStatus`.
+   */
+  prState?: PrDisplayState | null;
   linesAdded?: number | null;
   linesRemoved?: number | null;
   filesChanged?: number | null;
@@ -112,20 +117,25 @@ const isPassingRun = (r: CiCheckRun) =>
  * failing checks is. Either the stored lifecycle says so or GitHub reported a
  * failed run on the head commit.
  */
-export function isCiRed(prLifecycleStatus: string | null | undefined, ciChecks: PrCardProps['ciChecks']): boolean {
-  if (isPrMerged(prLifecycleStatus)) return false;
-  return prLifecycleStatus === 'ci_failed' || (ciChecks?.failed ?? 0) > 0;
+export function isCiRed(state: PrDisplayState, ciChecks: PrCardProps['ciChecks']): boolean {
+  if (state === 'merged') return false;
+  return state === 'ci_failed' || (ciChecks?.failed ?? 0) > 0;
+}
+
+/** The card's one PR state: the delivery's when the kernel owns the PR, else the column's. */
+function cardPrState(props: Pick<PrCardProps, 'prState' | 'prLifecycleStatus'>): PrDisplayState {
+  return resolvePrDisplayState({ delivery: { prState: props.prState ?? null }, prLifecycleStatus: props.prLifecycleStatus });
 }
 
 /** The card's primary link: label and target. */
 function primaryAction(
   prUrl: string,
-  prLifecycleStatus: string | null | undefined,
+  state: PrDisplayState,
   ciChecks: PrCardProps['ciChecks'],
   openAttempt?: OpenAttemptInfo | null,
 ) {
-  if (isPrMerged(prLifecycleStatus)) return { label: 'Open PR', href: prUrl };
-  if (isCiRed(prLifecycleStatus, ciChecks)) return { label: 'View failing checks', href: `${prUrl.replace(/\/+$/, '')}/checks` };
+  if (state === 'merged') return { label: 'Open PR', href: prUrl };
+  if (isCiRed(state, ciChecks)) return { label: 'View failing checks', href: `${prUrl.replace(/\/+$/, '')}/checks` };
   // A fix attempt is already open — the branch is about to change, so
   // "Review & merge" would offer the exact action guardReviewVerdict is going
   // to refuse. Fall back to a neutral link, same as the merged case.
@@ -170,7 +180,6 @@ export default function PrCard(props: PrCardProps) {
   const {
     prUrl,
     prNumber,
-    prLifecycleStatus,
     linesAdded,
     linesRemoved,
     filesChanged,
@@ -180,12 +189,13 @@ export default function PrCard(props: PrCardProps) {
     mergeableState,
     openAttempt,
   } = props;
-  const lifecycle = derivePrLifecycle(prLifecycleStatus, true);
+  const state = cardPrState(props);
+  const lifecycle = PR_PILL[state];
   const hasDiff = linesAdded != null || linesRemoved != null || (filesChanged != null && filesChanged > 0);
 
-  const isMerged = isPrMerged(prLifecycleStatus);
+  const isMerged = state === 'merged';
   const failingRuns = ciChecks?.runs.filter(isFailingRun) ?? [];
-  const action = primaryAction(prUrl, prLifecycleStatus, ciChecks, openAttempt);
+  const action = primaryAction(prUrl, state, ciChecks, openAttempt);
 
   const reviewLine = reviews && (reviews.approved + reviews.changesRequested + reviews.pending > 0)
     ? [
@@ -524,11 +534,12 @@ function DiffBar({ attempts }: { attempts: PrOutcome['attempts'] }) {
   );
 }
 
-function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, ciChecks, mergeable, mergeableState, reviews, outcome, hideAction = false, openAttempt }: PrCardProps & { outcome: PrOutcome }) {
-  const lifecycle = derivePrLifecycle(prLifecycleStatus, true);
-  const merged = isPrMerged(prLifecycleStatus);
-  const ciRed = isCiRed(prLifecycleStatus, ciChecks);
-  const action = primaryAction(prUrl, prLifecycleStatus, ciChecks, openAttempt);
+function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, mergeable, mergeableState, reviews, outcome, hideAction = false, openAttempt }: PrCardProps & { outcome: PrOutcome }) {
+  const state = cardPrState({ prState, prLifecycleStatus });
+  const lifecycle = PR_PILL[state];
+  const merged = state === 'merged';
+  const ciRed = isCiRed(state, ciChecks);
+  const action = primaryAction(prUrl, state, ciChecks, openAttempt);
   const { totals, attempts } = outcome;
   const total = attempts.reduce((s, a) => s + a.add + a.rem, 0);
   const reviewLine = reviews && reviews.approved + reviews.changesRequested + reviews.pending > 0

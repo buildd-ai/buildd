@@ -85,8 +85,12 @@ function AttentionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key
   </article>;
 }
 
-export function MobileHome({ items: serverItems, ask, counts, milestones, quietMissions, shipped, timeZone }: {
+export function MobileHome({ items: serverItems, ask, counts, milestones, quietMissions, shipped, setup = null, runnerConnected, timeZone }: {
   items: HomeAttentionItem[]; ask: ReactNode;
+  /** The getting-started checklist while it applies: the phone's next step for a new team. */
+  setup?: ReactNode;
+  /** false when the team has no runner: there is no fleet to be working without you. */
+  runnerConnected?: boolean;
   /** The count contracts (lib/delivery-projection.ts `deliveryCounts`). */
   counts: DeliveryCounts;
   /** 2–3 missions moving toward delivery (`selectHomeMilestones`). */
@@ -104,7 +108,7 @@ export function MobileHome({ items: serverItems, ask, counts, milestones, quietM
   const items = useMemo(() => admitWaitingTasks(serverItems, waiting, needsInputTaskHref), [serverItems, waiting]);
   useHideNeedsInputBannerOnPhone(true);
   const open = items.filter(i => !done[i.key]);
-  const copy = homeAttentionCopy(open);
+  const copy = homeAttentionCopy(open, { runnerConnected });
   useEffect(() => { publishHomeAttentionCount(copy.count); }, [copy.count]);
   // Systemic causes first and apart: one problem behind many tasks is not a per-task decision.
   const ordered = [...items.filter(i => i.systemic), ...items.filter(i => !i.systemic)];
@@ -112,11 +116,12 @@ export function MobileHome({ items: serverItems, ask, counts, milestones, quietM
   const agents = `${counts.liveAgents} agent${counts.liveAgents === 1 ? '' : 's'} working`;
   return <div data-testid="phone-home" className="md:hidden text-text-primary">
     <p data-testid="phone-home-counts" className="mb-5 text-body text-text-muted">{agents}{counts.slots.total > 0 ? ` · ${counts.slots.used}/${counts.slots.total} slots` : ''} · {counts.openMissions} open mission{counts.openMissions === 1 ? '' : 's'}</p>
-    {copy.count === 0
+    {copy.count === 0 && !setup
       ? <div className="mb-6"><h1 className="sr-only">Home</h1><p data-testid="phone-all-clear" role="status" className="flex flex-wrap items-baseline gap-x-2 border-b border-border-default py-3 font-voice text-lede"><span aria-hidden="true" className="font-bold text-status-success">✓</span>All clear.<span className="font-convo text-meta text-text-muted">Buildd will ask if a decision comes up.</span></p></div>
       : <><h1 className="font-voice text-display font-medium normal-case tracking-normal">{copy.headline}</h1>
         <p className="mb-6 mt-2 font-voice text-lede italic text-text-secondary">{copy.subline}</p></>}
     {ask}
+    {setup}
     {items.length > 0 && <section className="mb-8"><div className="mb-3 flex items-center justify-between"><h2 className="section-label">Needs you</h2><span data-testid="phone-needs-you-count" className="text-meta text-text-muted">{copy.count} open</span></div>
       <div className="space-y-4">{ordered.map(item => done[item.key] ? <p key={item.key} className="flex gap-2 border-b border-border-default py-3 text-body"><i className="mt-1 h-2 w-2 shrink-0 bg-status-success" /><Link href={item.href}>{done[item.key]} · {item.title}</Link></p> : <AttentionCard key={item.key} item={item} onDone={(key, label) => setDone(prev => ({ ...prev, [key]: label }))} />)}</div>
       {quietMissions > 0 && <p data-testid="phone-not-listed" className="mt-2 text-meta text-text-muted">Not listed here: {quietMissions} mission{quietMissions === 1 ? '' : 's'} waiting on capacity, another mission or an owner. {quietMissions === 1 ? 'It moves' : 'Those move'} on {quietMissions === 1 ? 'its' : 'their'} own.</p>}

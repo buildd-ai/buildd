@@ -369,6 +369,8 @@ describe('HealthClient — Trend', () => {
   it('states the shared seat-auth cause once, without removing the per-stat markers', () => {
     const html = render({ consumption: consumption() });
     expect((html.match(/data-testid="seat-auth-confession"/g) ?? []).length).toBe(1);
+    expect(html).toContain('Some usage figures were not recorded');
+    expect(html).not.toContain('Seat-based (OAuth) auth reports');
     // Per-stat reachability is a separate contract
     // (docs/design/derived-metric-availability.md): the per-model block still
     // renders its own absence with its own reason where it sits.

@@ -1,4 +1,5 @@
 import { Suspense } from 'react';
+import { after } from 'next/server';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
@@ -22,6 +23,9 @@ import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { resolvePrDisplayState } from '@/lib/pr-presentation';
+import type { DeliveryPillState } from './TaskSidePanel';
 import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
 
@@ -74,7 +78,7 @@ import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { getTeamPermissionOverrides } from '@/lib/permissions';
 import TaskOverflowMenu from './TaskOverflowMenu';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
-import { missionContextBarFor, type MissionContextBarData } from './mission-context-bar';
+import { missionContextBarFor, missionContextDeliveryTaskIds, type MissionContextBarData } from './mission-context-bar';
 import { truncateExcerpt } from './error-excerpt';
 import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, isMeaningfulPlan, partitionChildTasks, selectExecutionPlan } from './execution-plan';
 import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
@@ -163,7 +167,7 @@ export default async function TaskDetailPage({
       workspace: true,
       // Explicit allowlist, like every sibling relation in this shape: the two
       // fields the page reads off an account rather than the whole row.
-      account: { columns: { name: true, authType: true } },
+      account: { columns: { name: true } },
       mission: {
         columns: { id: true, title: true, status: true },
         with: { initiative: { columns: { id: true, title: true } } },
@@ -242,7 +246,7 @@ export default async function TaskDetailPage({
     db.query.workers.findMany({
       where: eq(workers.taskId, id),
       orderBy: desc(workers.createdAt),
-      with: { account: { columns: { name: true, authType: true } } },
+      with: { account: { columns: { name: true } } },
     }),
     // Mission context bar (W6): the mission row and its tasks' light columns —
     // the same selection a Home card makes, so no result/context/artifact
@@ -273,13 +277,20 @@ export default async function TaskDetailPage({
   const authFailure = task.status === 'failed'
     ? explainProviderAuthFailure(taskWorkers[0]?.error ?? null, taskBackend)
     : null;
+  // S35: the mission's failed deliverables read through the kernel, as its card does.
+  const missionContextDeliveryViews = missionContextRow
+    ? await getDeliveryViewsForTasks(missionContextDeliveryTaskIds(missionContextRow as unknown as MissionCardRow))
+    : null;
   const missionContextBar: MissionContextBarData | null = missionContextBarFor(
     missionContextRow as unknown as MissionCardRow | null,
     task.id,
+    missionContextDeliveryViews,
   );
 
-  // Read-through refresh: if the latest worker is completed with an open PR,
-  // check GitHub in case the merged webhook was missed.
+  // Read-through PR fact import: if the latest worker is completed with an
+  // open PR, check GitHub in case the merged webhook was missed. Enqueued after
+  // the response, never written during the render (spec workflow-state-kernel
+  // §11): this render shows what is stored, the next one what the import found.
   if (task.status === 'completed' && task.workspaceId) {
     const latestWorker = taskWorkers[0];
     if (latestWorker?.prNumber && !latestWorker?.mergedAt && latestWorker?.prUrl) {
@@ -290,19 +301,9 @@ export default async function TaskDetailPage({
       });
       const installId = wsWithInstall?.githubInstallation?.installationId;
       if (installId) {
-        const refreshed = await refreshWorkerMergeStateIfStale(
-          { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl },
-          installId,
-        );
-        if (refreshed) {
-          const updatedWorkers = await db.query.workers.findMany({
-            where: eq(workers.taskId, id),
-            orderBy: desc(workers.createdAt),
-            // Must match the shape above: these rows replace the ones there.
-            with: { account: { columns: { name: true, authType: true } } },
-          });
-          taskWorkers.splice(0, taskWorkers.length, ...updatedWorkers);
-        }
+        const stale = { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl };
+        after(() => refreshWorkerMergeStateIfStale(stale, installId).catch((err) =>
+          console.error('[task-page] PR fact import failed (non-fatal):', err)));
       }
     }
   }
@@ -391,7 +392,7 @@ export default async function TaskDetailPage({
             // Full rows, same shape as taskWorkers: Worker history lists them.
             workers: {
               orderBy: desc(workers.createdAt),
-              with: { account: { columns: { name: true, authType: true } } },
+              with: { account: { columns: { name: true } } },
             },
           },
           orderBy: asc(tasks.createdAt),
@@ -617,6 +618,14 @@ export default async function TaskDetailPage({
     ? { ...activeWorkerRow, waitingFor: null } : activeWorkerRow;
 
   const openQuestionCount = openQuestionRows.filter(n => isOpenQuestionNote(n, task.status, activeWorker)).length;
+
+  // A kernel-owned delivery's header reads the kernel's DeliveryView, not the
+  // raw task/worker columns below (workflow-state-kernel §17.5). Legacy-owned
+  // or PR-less tasks get null and keep today's status.
+  const deliveryView = (await getDeliveryViewsForTasks([task.id])).get(task.id) ?? null;
+  const deliveryPill: DeliveryPillState | null = deliveryView
+    ? { headline: deliveryView.headline, owner: deliveryView.owner, needsYou: deliveryView.needsYou, stage: deliveryView.stage, detail: deliveryView.detail, prState: deliveryView.prState, state: deliveryView.state }
+    : null;
 
   // Derive canonical display status from task + active worker state.
   // If the worker is running, the chip shows "Running" not "Assigned".
@@ -874,6 +883,8 @@ export default async function TaskDetailPage({
     openAttempt,
     openQuestion: openQuestionCount > 0,
     inRelease: !!shippedRelease,
+    // §17.5: a kernel-owned PR's state is the delivery's, not the columns'.
+    deliveryPrState: deliveryView?.prState ?? null,
   }));
   const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;
   // What each agent error means for the outcome. Every trace stays inspectable;
@@ -1170,14 +1181,17 @@ export default async function TaskDetailPage({
                       <div className="flex items-center gap-3 mt-1 font-mono text-[11px] text-text-muted">
                         <span>{worker.startedAt ? timeAgo(worker.startedAt) : '-'}</span>
                         <span>{worker.turns} turns</span>
-                        {worker.account?.authType === 'oauth'
-                          ? ((worker.inputTokens || 0) + (worker.outputTokens || 0)) > 0 && (
-                              <span>{((worker.inputTokens || 0) + (worker.outputTokens || 0)).toLocaleString()} tokens</span>
-                            )
-                          : parseFloat(worker.costUsd?.toString() || '0') > 0 && (
-                              <span>${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
-                            )
-                        }
+                        {((worker.inputTokens || 0) + (worker.outputTokens || 0)) > 0 && (
+                          <span>{((worker.inputTokens || 0) + (worker.outputTokens || 0)).toLocaleString()} tokens</span>
+                        )}
+                        {/* The worker's own basis, not the account's authType
+                            (docs/specs/real-and-virtual-cost.md). */}
+                        {parseFloat(worker.costUsd?.toString() || '0') > 0 && (
+                          <span>
+                            ${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}
+                            {(worker as { costBasis?: string | null }).costBasis === 'virtual' ? ' list price' : ''}
+                          </span>
+                        )}
                         {(worker.resultMeta as any)?.terminalReason && (worker.resultMeta as any).terminalReason !== 'completed' && (
                           <span className="text-status-warning">stop: {((worker.resultMeta as any).terminalReason as string).replace(/_/g, ' ')}</span>
                         )}
@@ -1338,6 +1352,7 @@ export default async function TaskDetailPage({
                   <HeaderStatusPill
                     status={displayStatus}
                     merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
+                    delivery={deliveryPill}
                   />
                 </span>
               )}
@@ -1764,6 +1779,7 @@ export default async function TaskDetailPage({
         {activeWorker && (
           <div className="mb-8 order-first" data-testid="task-active-worker">
             <RealTimeWorkerView
+              delivery={deliveryPill}
               taskStatus={task.status}
               taskId={task.id}
               initialWorker={{
@@ -1792,7 +1808,6 @@ export default async function TaskDetailPage({
                 instructionHistory: (activeWorker.instructionHistory as any[]) || [],
                 pendingInstructions: activeWorker.pendingInstructions,
                 updatedAt: activeWorker.updatedAt?.toISOString() || null,
-                account: activeWorker.account ? { authType: activeWorker.account.authType } : null,
                 resultMeta: activeWorker.resultMeta as any,
               }}
               modelTier={modelSummary.tierLabel}
@@ -1807,11 +1822,14 @@ export default async function TaskDetailPage({
             CI → retry → merge) and checks per commit (AC-4). Shown for an open
             PR and for one that landed. */}
         {(() => {
-          if (!prWorker?.prUrl || !prWorker.prNumber || prWorker.prLifecycleStatus === 'closed') return null;
+          if (!prWorker?.prUrl || !prWorker.prNumber) return null;
+          const prState = resolvePrDisplayState({ delivery: deliveryView, prLifecycleStatus: prWorker.prLifecycleStatus, mergedAt: prWorker.mergedAt });
+          if (prState === 'closed') return null;
           const storedPrFacts = {
             prUrl: prWorker.prUrl,
             prNumber: prWorker.prNumber,
             prLifecycleStatus: prWorker.mergedAt ? 'merged' : prWorker.prLifecycleStatus,
+            prState,
             linesAdded: prWorker.linesAdded,
             linesRemoved: prWorker.linesRemoved,
             filesChanged: prWorker.filesChanged,

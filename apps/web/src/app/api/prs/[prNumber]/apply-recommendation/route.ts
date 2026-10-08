@@ -17,6 +17,10 @@
  * `recommendation` — that text is still a valid instruction to hand an agent,
  * so it is used as the fallback instruction when no recommendation exists.
  *
+ * On a PR the workflow kernel owns, none of the above runs: Apply is T23
+ * HumanResolve(apply_recommendation) and the kernel's own dispatch_fix files
+ * the fix (docs/specs/workflow-state-kernel.md §6.3 T23, §5.7 rule 5).
+ *
  * Auth: session user who has access to the workspace.
  */
 
@@ -33,6 +37,7 @@ import { applyRecommendationTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { performLandingAction } from '@/lib/landing-action-run';
+import { applyRecommendationThroughKernel, kernelDeliveryOfPr } from '@/lib/workflow/seam';
 
 // A human choosing to apply a fix is a deliberate one-off, not another lap of
 // the bounded agent-only request-changes loop — it gets its own fresh budget
@@ -69,6 +74,83 @@ function buildApplyDescription(
   return sections.join('\n');
 }
 
+/** The reviewer's open escalation for a task, as the card shows it, or null. */
+async function openEscalation(taskId: string) {
+  const notes = await db.query.missionNotes.findMany({
+    where: and(
+      eq(missionNotes.taskId, taskId),
+      inArray(missionNotes.type, ['reviewer_escalated', 'reviewer_approved']),
+    ),
+    columns: { taskId: true, type: true, body: true, title: true, status: true, createdAt: true },
+  });
+  return selectReviewerEvidence(notes).escalationMap.get(taskId) ?? null;
+}
+
+/** T23 on a kernel-owned PR: the kernel dispatches the fix; this door only reports it. */
+async function applyOnKernel(p: {
+  prNumber: number;
+  workspaceId: string;
+  originalTask: { id: string; missionId: string | null };
+  user: { id: string; email?: string | null };
+  corrections: string | null;
+  expectedVersion: number | undefined;
+}) {
+  // The person's corrections are the authoritative instruction; without them the card's
+  // own recommendation (or free-text defect) is. The kernel adds the reviewer's round
+  // output as context either way, so neither is required.
+  const evidence = await openEscalation(p.originalTask.id);
+  const fromNote = evidence ? (evidence.recommendation ?? evidence.reason) : null;
+  const instructions = p.corrections ?? fromNote ?? null;
+  const out = await applyRecommendationThroughKernel({
+    workspaceId: p.workspaceId,
+    prNumber: p.prNumber,
+    actor: `human:${p.user.id}`,
+    expectedVersion: p.expectedVersion,
+    instructions,
+  });
+  if (!out) return NextResponse.json({ error: 'PR is no longer owned by the workflow kernel; retry' }, { status: 409 });
+  const r = out.result;
+  if (r.result === 'stale') {
+    return NextResponse.json({
+      error: `This PR changed since the card was loaded (now ${out.current.state ?? 'unknown'}, version ${out.current.version}); nothing was dispatched. Reload and try again.`,
+      stale: true, reason: r.reason, kernel: true, current: out.current,
+    }, { status: 409 });
+  }
+  if (r.result === 'rejected') {
+    return NextResponse.json({
+      error: `PR #${p.prNumber} cannot take a fix right now (${r.reason}; delivery ${out.current.state ?? 'unknown'})`,
+      reason: r.reason, kernel: true, current: out.current,
+    }, { status: 409 });
+  }
+  if (r.result === 'duplicate') {
+    return NextResponse.json({ ok: true, dispatched: false, kernel: true, taskId: out.attempt?.taskId ?? null, current: out.current });
+  }
+
+  // The escalation is resolved: close its card the same way the legacy path does.
+  await supersedeAncestorEscalations(db, p.originalTask.id, p.prNumber);
+  if (p.originalTask.missionId) {
+    const who = p.user.email ?? p.user.id;
+    await db.insert(missionNotes).values({
+      missionId: p.originalTask.missionId,
+      taskId: p.originalTask.id,
+      authorType: 'user',
+      actorLabel: who,
+      type: 'decision',
+      title: `PR #${p.prNumber}: fix dispatched from the escalation by ${who}`,
+      body: p.corrections
+        ? `Applied with corrections:\n\n${p.corrections}${fromNote ? `\n\nReviewer's escalation (context):\n\n${fromNote}` : ''}`
+        : `Applied verbatim:\n\n${instructions ?? "the reviewer's escalation"}`,
+      status: 'open',
+    });
+  }
+  return NextResponse.json({
+    ok: true, dispatched: true, kernel: true,
+    taskId: out.attempt?.taskId ?? null,
+    attempt: out.attempt,
+    current: out.current,
+  });
+}
+
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ prNumber: string }> }
@@ -88,11 +170,15 @@ export async function POST(
   let corrections: string | undefined;
   let landingToken: string | undefined;
   let landingAction: string | undefined;
+  let expectedVersion: number | undefined;
   try {
     const body = await req.json().catch(() => ({}));
     if (typeof body?.workspaceId === 'string') workspaceId = body.workspaceId;
     if (typeof body?.token === 'string' && body.token) landingToken = body.token;
     if (typeof body?.action === 'string') landingAction = body.action;
+    // The kernel delivery version the card was rendered at (§7.2); absent = the version read now.
+    const v = body?.version ?? body?.expectedVersion;
+    if (typeof v === 'number' && Number.isInteger(v)) expectedVersion = v;
     if (typeof body?.corrections === 'string' && body.corrections.trim().length > 0) {
       corrections = body.corrections.trim();
     }
@@ -151,6 +237,18 @@ export async function POST(
     }
   }
 
+  // A PR the workflow kernel owns has one authority over its review family
+  // (docs/specs/workflow-state-kernel.md §14), so Apply is T23
+  // HumanResolve(apply_recommendation) there: the kernel records this person and
+  // the bypass, allocates a trigger=human review_fix ledger row, revalidates
+  // against a live read (§10.5) and files the fix through its own dispatch_fix,
+  // carrying the instructions. Only the escalation at the version the person saw
+  // is resolved (§7): a stale one is a 409 with the current view.
+  const kernel = await kernelDeliveryOfPr({ workspaceId: worker.workspaceId, prNumber });
+  if (kernel) {
+    return applyOnKernel({ prNumber, workspaceId: worker.workspaceId, originalTask, user, corrections: corrections ?? null, expectedVersion });
+  }
+
   const headSha = worker.lastCommitSha;
   if (!headSha) {
     return NextResponse.json({ error: 'PR has no recorded head commit yet' }, { status: 422 });
@@ -158,15 +256,7 @@ export async function POST(
 
   // The reviewer's recommendation, read the same way the escalation card
   // itself is built — never re-derived or re-summarised.
-  const notes = await db.query.missionNotes.findMany({
-    where: and(
-      eq(missionNotes.taskId, originalTask.id),
-      inArray(missionNotes.type, ['reviewer_escalated', 'reviewer_approved']),
-    ),
-    columns: { taskId: true, type: true, body: true, title: true, status: true, createdAt: true },
-  });
-  const { escalationMap } = selectReviewerEvidence(notes);
-  const evidence = escalationMap.get(originalTask.id);
+  const evidence = await openEscalation(originalTask.id);
   if (!evidence) {
     return NextResponse.json(
       { error: 'No open reviewer escalation to apply for this PR' },
