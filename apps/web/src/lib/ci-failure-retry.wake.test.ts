@@ -165,14 +165,21 @@ describe('retryCiFailureForPr on a kernel-owned PR (§5.7, T10)', () => {
 });
 
 describe('legacy CI budget: allocation is consumption, never author or context.iteration', () => {
-  it('an owner context.iteration does not shorten or extend the budget; the filed rows do', async () => {
-    kernelSeen = { handled: false };
+  beforeEach(() => {
+    mockWakeTask.mockClear();
+    mockAnnounceTaskCreated.mockClear();
     insertedRows = [];
     failedJobNames = ['Build'];
+    kernelSeen = { handled: false };
+    mockObserveCiFailure.mockClear();
+    gateEvents.length = 0;
     workerRow = {
       id: 'w1', branch: 'buildd/x', prNumber: 7, prLifecycleStatus: 'open',
       task: { id: 't1', title: 'Do it', description: null, workspaceId: 'ws1', missionId: null, status: 'completed', context: { iteration: 9 }, result: null },
     };
+  });
+
+  it('an owner context.iteration does not shorten or extend the budget; the filed rows do', async () => {
     const out = await retryCiFailureForPr(input);
     expect(out.kind).toBe('dispatched');
     expect(insertedRows[0].context).toMatchObject({ iteration: 1 });
