@@ -1,3 +1,9 @@
+import { isOpenAsk } from '@/lib/open-ask';
+import { after } from 'next/server';
+import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
+import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
+import { readGithubApproval } from '@/lib/github-approval';
+import { resolveHumanPrReview, isCurrentReviewApproved, type HumanPrReview } from '@/lib/reviewer-gate';
 import { db } from '@buildd/core/db';
 import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, teams as teamsTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes, specDiscrepancies } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
@@ -9,6 +15,10 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamRole, resolveActiveTeamScope } from '@/lib/team-access';
+import { teamHostedRunnerBanner } from '@/lib/hosted-runner-usage-store';
+import { HostedRunnerBanner } from '@/components/hosted-runner/HostedRunnerBanner';
+import ModelUpgradeNotice from '@/components/models/ModelUpgradeNotice';
+import { roleHas as roleHasPermission } from '@/lib/permission-registry';
 import { splitWaitingOnYou, rightNowState, recordBestEffort, groupInFlight, homeAudience, type HomeAudience } from './home-view';
 import { InFlightGroupCard } from './InFlightGroupCard';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
@@ -17,7 +27,9 @@ import { workerNotDependencyBotPr } from '@/lib/dependency-bot-pr';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
-import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
+import { isActionableChip, kernelInboxMembership, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { actionCardTaskLink } from '@/lib/action-card-context';
@@ -46,6 +58,7 @@ import type { BlockingTask } from '@/lib/mission-card-view';
 export const dynamic = 'force-dynamic';
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
 import {
+  failedDeliverableTaskIds,
   summarizeMissionForCard,
   type MissionCardRow,
   type MissionCardSummary,
@@ -54,11 +67,13 @@ import {
 import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
-import { resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
+import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { ActionQueueCard } from './ActionQueueCard';
 import { StatStrip } from './StatStrip';
+import { MobileHome, type HomeFlightRow } from './MobileHome';
+import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
 import { FleetStrip } from './FleetStrip';
 import { ActivityTicker } from './ActivityTicker';
 import { NeedsYouStack, type HomeShippedMission } from './NeedsYouStack';
@@ -140,6 +155,10 @@ export default async function HomePage({
   let firstTask: FirstTaskState = 'none';
   // Getting-started: does the team hold an agent key? null = not looked up.
   let hasAgentCredential: boolean | null = null;
+  // Hosted runner allowance at 80% / used; null below that or without one.
+  let hostedRunnerBanner: { level: 'warn' | 'used'; text: string } | null = null;
+  // Team whose admin sees the stale/deprecated tier-model notice (fetched client-side).
+  let modelUpgradeTeamId: string | null = null;
   let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
 
   let pendingSuggestions: {
@@ -177,6 +196,8 @@ export default async function HomePage({
   const waitingOnYou: WaitingOnYouRawItem[] = [];
 
   let escalationInbox: {
+    humanReview?: HumanPrReview | null;
+    reviewApproved?: boolean;
     workerId: string;
     taskId: string;
     taskTitle: string;
@@ -266,6 +287,7 @@ export default async function HomePage({
   // the compact missions rows and the Needs-you stack's own cards.
   let fleetData: HomeFleetData | null = null;
   let homeMissionRows: HomeMissionRow[] = [];
+  let phoneMissionRows: HomeMissionRow[] = [];
   let heldMissions: HomeHeldMission[] = [];
   let shippedMissions: HomeShippedMission[] = [];
   let missionTotal = 0;
@@ -299,15 +321,18 @@ export default async function HomePage({
       if (activeTeamId) {
         // Role and chat availability are independent: one wait. Availability
         // stops at one column read for a team that hasn't turned chat on.
-        const [role, chatAvail, recent, overrides, agentKey] = await Promise.all([
+        const [role, chatAvail, recent, overrides, agentKey, hostedBanner] = await Promise.all([
           getUserTeamRole(user.id, activeTeamId).catch(() => null),
           getChatAvailability(user.id, activeTeamId).catch(() => null),
           listConversations(user.id, activeTeamId, 3).catch(() => [] as ConversationListItem[]),
           getTeamPermissionOverrides(activeTeamId),
           // A failed lookup reads as "has a key": never nag a working team.
           teamHasAgentCredential(activeTeamId).catch(() => true),
+          teamHostedRunnerBanner(activeTeamId).catch(() => null),
         ]);
         hasAgentCredential = agentKey;
+        hostedRunnerBanner = hostedBanner;
+        if (roleHasPermission(role, 'manage_model_tiers', overrides)) modelUpgradeTeamId = activeTeamId;
         audience = homeAudience(role, overrides);
         chatPlacement = homeChatPlacement(audience, chatAvail);
         chatRecent = recent;
@@ -489,11 +514,13 @@ export default async function HomePage({
           };
         });
 
-        // Read-through PR state refresh: catch missed merge webhooks before
-        // querying openPrWorkers (Waiting on You) and the fleet ticker.
-        await refreshStaleWorkersForWorkspaces(wsIds).catch(err =>
+        // Read-through PR fact import: catch missed merge webhooks. Enqueued
+        // after the response, never written during the render (spec
+        // workflow-state-kernel §11): this render shows what is stored, the
+        // next one shows what the import found.
+        after(() => refreshStaleWorkersForWorkspaces(wsIds).catch(err =>
           console.error('[home] pr-state-refresh failed (non-fatal):', err),
-        );
+        ));
 
         // 30-day recency window for the resolved-escalations group below.
         const activityWindowStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -555,11 +582,14 @@ export default async function HomePage({
             for (const r of liveRows) if (r.missionId) liveWorkerCounts.set(r.missionId, r.n);
           }
 
+          // S35: one DeliveryView load for every failed deliverable, so a
+          // failed attempt the kernel already replaced does not read FAILED.
+          const missionDeliveryViews = await getDeliveryViewsForTasks(failedDeliverableTaskIds(allMissions as MissionCardRow[]));
           const nowMs = Date.now();
           const summaries = new Map<string, MissionCardSummary>();
           for (const m of allMissions) {
             summaries.set(m.id, summarizeMissionForCard(m as MissionCardRow, {
-              now: nowMs, liveWorkers: liveWorkerCounts.get(m.id) ?? 0,
+              now: nowMs, liveWorkers: liveWorkerCounts.get(m.id) ?? 0, deliveryViews: missionDeliveryViews,
             }));
           }
           missions = allMissions.map(m => ({
@@ -596,8 +626,8 @@ export default async function HomePage({
                 .sort((a, b) => new Date(b.createdAt as any).getTime() - new Date(a.createdAt as any).getTime())[0];
               if (last && lastTick) (lastTick as any).result = { summary: last };
             }
-            const view = buildHomeCardView(row, { from: 'home', now: nowMs, summary, taskIndex: homeMissionTaskMap });
-            const model = buildMissionListCard(row, view, summary, { now: nowMs });
+            const view = buildHomeCardView(row, { from: 'home', now: nowMs, summary, taskIndex: homeMissionTaskMap, deliveryViews: missionDeliveryViews });
+            const model = buildMissionListCard(row, view, summary, { now: nowMs, taskIndex: homeMissionTaskMap });
             return [{ view, model, completedAt: m.completedAt, row }];
           });
           // Stranded local missions: the decision shadow looks after the
@@ -606,6 +636,7 @@ export default async function HomePage({
             listed.flatMap(r => (r.model.strand ? [{ row: r.row as unknown as MissionCardRow & { teamId?: string | null }, strand: r.model.strand }] : [])),
             { now: nowMs, userId: user.id },
           );
+          phoneMissionRows = listed.map(({ view, model }) => ({ view, model }));
           homeMissionRows = listed
             .filter(r => r.model.kind === 'active' || r.model.kind === 'recurring' || r.model.kind === 'done')
             .sort((a, b) => ({ active: 0, recurring: 1, done: 2 } as Record<string, number>)[a.model.kind] - ({ active: 0, recurring: 1, done: 2 } as Record<string, number>)[b.model.kind])
@@ -908,7 +939,8 @@ export default async function HomePage({
 
             const wsRowsForInbox = await db.query.workspaces.findMany({
               where: inArray(workspacesTable.id, [...new Set(openPrWorkers.map(w => w.workspaceId))]),
-              columns: { id: true, name: true, gitConfig: true, teamId: true, maxConcurrentTasks: true },
+              columns: { id: true, name: true, repo: true, gitConfig: true, teamId: true, maxConcurrentTasks: true },
+              with: WORKSPACE_INSTALLATION_WITH,
             });
             const wsInboxMap = new Map(wsRowsForInbox.map(ws => [ws.id, ws]));
 
@@ -917,6 +949,46 @@ export default async function HomePage({
             // agent still owns the next move or it has genuinely fallen to the
             // human. Both the in-flight cards and the escalation inbox below read
             // from this one map so they can never disagree.
+            const reviewApprovedTaskIds = new Set<string>();
+            const approvedAutoMergeTaskIds = new Set<string>();
+            const humanReviewByTaskId = new Map<string, HumanPrReview>();
+            const githubApprovalByWorkerId = new Map<string, import('@/lib/reviewer-gate').GithubApprovalFacts>();
+            const installationByRepo = new Map<string, Promise<number | null>>();
+            // Bounded batches avoid an unbounded fan-out on large Home inboxes.
+            for (let offset = 0; offset < openPrWorkers.length; offset += 8) {
+              await Promise.all(openPrWorkers.slice(offset, offset + 8).map(async w => {
+                const repo = repoFullNameFromPrUrl(w.prUrl);
+                if (!repo || !w.prNumber) return;
+                try {
+                  const identity = pickWorkspaceRepoIdentity(wsInboxMap.get(w.workspaceId));
+                  if (!installationByRepo.has(repo)) {
+                    installationByRepo.set(repo, identity.fullName?.toLowerCase() === repo.toLowerCase() && identity.installationId
+                      ? Promise.resolve(identity.installationId) : installationIdForRepo(repo));
+                  }
+                  const installationId = await installationByRepo.get(repo);
+                  if (!installationId) return;
+                  githubApprovalByWorkerId.set(w.id, await readGithubApproval(installationId, repo, w.prNumber));
+                } catch {
+                  // Unknown approval must never erase a canonical human handoff.
+                  console.warn('[home] GitHub approval state unavailable');
+                }
+              }));
+            }
+            // Landing's own record per PR (marker + handoff), read as one thing:
+            // the platform-owned reading must come from the same data landPr writes.
+            const landingStateByTaskId = new Map<string, { landing: unknown; handoff: unknown }>();
+            const landingTaskIds = openPrWorkers.map(w => w.taskId).filter((id): id is string => !!id);
+            if (landingTaskIds.length > 0) {
+              try {
+                const rows = await db
+                  .select({ id: tasks.id, landing: sql<unknown>`${tasks.context}->'landing'`, handoff: sql<unknown>`${tasks.context}->'landingHandoff'` })
+                  .from(tasks)
+                  .where(inArray(tasks.id, landingTaskIds));
+                for (const r of rows) landingStateByTaskId.set(r.id, { landing: r.landing, handoff: r.handoff });
+              } catch {
+                console.warn('[home] landing state unavailable');
+              }
+            }
             const gateNow = new Date();
             const stallFactsLoader = createReviewerStallFactsLoader(gateNow);
             // The mission-aware tier each gate was resolved with, so the card
@@ -951,6 +1023,28 @@ export default async function HomePage({
               });
               if (fallback.escalationReason != null) escalatedMap.set(w.taskId, fallback.escalationReason);
               if (fallback.approvalSummary != null) approvedMap.set(w.taskId, fallback.approvalSummary);
+              const humanReview = resolveHumanPrReview({
+                reviewerTask: rt ? { status: rt.status as ReviewerTaskStatus, result: rt.result, context: rt.context } : null,
+                currentHeadSha: w.lastCommitSha ?? null,
+                escalationReason: escalatedMap.get(w.taskId) ?? null,
+                hasEscalationNote: escalationNoteTaskIds.has(w.taskId),
+                policyTier: policy.tier,
+                github: githubApprovalByWorkerId.get(w.id) ?? null,
+              });
+              if (humanReview) humanReviewByTaskId.set(w.taskId, humanReview);
+              if (!humanReview && isCurrentReviewApproved({
+                reviewerTask: rt ? { status: rt.status as ReviewerTaskStatus, result: rt.result, context: rt.context } : null,
+                currentHeadSha: w.lastCommitSha ?? null,
+                github: githubApprovalByWorkerId.get(w.id) ?? null,
+              })) {
+                reviewApprovedTaskIds.add(w.taskId);
+                if (isCurrentReviewApproved({
+                  reviewerTask: rt ? { status: rt.status as ReviewerTaskStatus, result: rt.result, context: rt.context } : null,
+                  currentHeadSha: w.lastCommitSha ?? null,
+                }) && (policy.tier === 'auto-threshold' || (policy.tier === 'agent-review' && policy.agentReview?.gateCondition !== 'approve-only'))) {
+                  approvedAutoMergeTaskIds.add(w.taskId);
+                }
+              }
               const reviewInFlight = resolveReviewInFlight({
                 reviewerTask: rt
                   ? { status: rt.status as ReviewerTaskStatus, hasLiveWorker: rt.hasLiveWorker, createdAt: rt.createdAt, result: rt.result, context: rt.context }
@@ -960,6 +1054,19 @@ export default async function HomePage({
                 queuedThresholdMinutes: policy.stallNotifyMinutes,
               });
               if (reviewInFlight) reviewInFlightByTaskId.set(w.taskId, reviewInFlight);
+              // Who owns the landing: one derivation, consumed by the gate. An
+              // actual human review request is a different ask and is left alone.
+              const landing = !humanReview && w.prNumber != null
+                ? resolveLandingOwnership({
+                    policy,
+                    landingMode: landingModeOf(ws?.gitConfig),
+                    landing: landingStateByTaskId.get(w.taskId)?.landing ?? null,
+                    handoff: landingStateByTaskId.get(w.taskId)?.handoff ?? null,
+                    prNumber: w.prNumber,
+                  })
+                : undefined;
+              // A handed-over PR is no longer the platform's, whatever the approval snapshot says.
+              if (landing?.owner === 'human') approvedAutoMergeTaskIds.delete(w.taskId);
               reviewerGateMap.set(w.taskId, resolveReviewerGate({
                 policyTier: policy.tier,
                 escalationReason: escalatedMap.get(w.taskId) ?? null,
@@ -987,6 +1094,8 @@ export default async function HomePage({
                   baseRef: w.prBaseRef,
                   mission,
                 }),
+                landing,
+                reviewApproved: reviewApprovedTaskIds.has(w.taskId),
               }));
             }
             // ─────────────────────────────────────────────────────────────────────
@@ -1019,6 +1128,8 @@ export default async function HomePage({
             // The newest conflict retry per PR, live or not: its failure context
             // names the conflict in one line (describeConflictReason).
             const conflictReasonMap = new Map<string, string>();
+            // S37: live conflict fixes that stalled, with why.
+            const conflictStalledMap = new Map<string, string>();
             const openPrNumbers = [...new Set(
               openPrWorkers.map(w => w.prNumber).filter((n): n is number => n != null),
             )];
@@ -1029,7 +1140,7 @@ export default async function HomePage({
                   sql`${tasks.creationSource} = 'conflict'`,
                   inArray(tasks.conflictRetryPrNumber, openPrNumbers),
                 ),
-                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true, status: true },
+                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true, status: true, createdAt: true, claimedAt: true },
                 orderBy: [desc(tasks.createdAt)],
               });
               for (const t of conflictRetryTasks) {
@@ -1044,6 +1155,11 @@ export default async function HomePage({
                 if (conflictRetryMap.has(key)) continue;
                 const iteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 1;
                 conflictRetryMap.set(key, { taskId: t.id, iteration });
+                // S37: a live fix that stalled is still the canonical remediation
+                // (the card stays RESOLVING and its CTA repairs it), but it must
+                // say so instead of reading as work in progress forever.
+                const liveness = classifyConflictFix({ status: t.status, createdAt: t.createdAt, claimedAt: t.claimedAt, lastRecoveryAt: (ctx.conflictRecovery as { at?: string } | undefined)?.at ?? null });
+                if (liveness.stalled && liveness.reason) conflictStalledMap.set(key, liveness.reason);
               }
             }
             // ───────────────────────────────────────────────────────────────────
@@ -1208,11 +1324,17 @@ export default async function HomePage({
                 };
               });
 
+            // Kernel-owned deliveries decide membership themselves (S36).
+            const inboxDeliveryViews = await getDeliveryViewsForTasks(
+              openPrWorkers.flatMap(w => (w.taskId ? [w.taskId] : [])),
+            );
             escalationInbox = openPrWorkers
               .filter(w => {
                 const taskTitle = (w.task as any)?.title ?? '';
                 if (taskTitle.startsWith('[smoke-test')) return false;
                 if (w.taskId && supersededTaskIds.has(w.taskId)) return false;
+                const kernelView = w.taskId ? inboxDeliveryViews.get(w.taskId) : undefined;
+                if (kernelView && kernelView.owner !== 'landing') return kernelInboxMembership(kernelView, false);
                 // Include if a conflict retry is live (renders as RESOLVING)
                 if (w.prNumber != null && conflictRetryMap.has(`${w.workspaceId}:${w.prNumber}`)) return true;
                 // Dead zone exhausted — all retries failed, PR needs human action (BLOCKED)
@@ -1229,7 +1351,7 @@ export default async function HomePage({
                   return !!ws && resolvePolicy(ws).tier === 'human';
                 }
                 // Human-owned PRs, plus auto-merge PRs as in-flight cards.
-                return gateReachesActionQueue(reviewerGateMap.get(w.taskId));
+                return humanReviewByTaskId.has(w.taskId) || gateReachesActionQueue(reviewerGateMap.get(w.taskId));
               })
               .map(w => {
                 const ws = wsInboxMap.get(w.workspaceId);
@@ -1282,8 +1404,10 @@ export default async function HomePage({
                   workspaceName: ws?.name ?? '',
                   prNumber: w.prNumber,
                   prUrl: w.prUrl,
+                  reviewApproved: !!w.taskId && reviewApprovedTaskIds.has(w.taskId),
+                  humanReview: w.taskId ? humanReviewByTaskId.get(w.taskId) ?? null : null,
                   policyTier: policy.tier,
-                  autoMerge: gate?.platformState === 'auto_merge',
+                  autoMerge: gate?.platformState === 'auto_merge' || (!!w.taskId && approvedAutoMergeTaskIds.has(w.taskId)),
                   missionId: (w.task as any)?.missionId ?? null,
                   missionTitle: (w.task as any)?.mission?.title ?? null,
                   ciGate,
@@ -1295,7 +1419,7 @@ export default async function HomePage({
                   leaseState,
                   escalationReason: deadZoneInfo
                     ? `Agents failed ${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts. Resolve the conflict yourself.`
-                    : (gate?.reason ?? null),
+                    : (gate?.reason ?? (w.taskId ? inboxDeliveryViews.get(w.taskId)?.detail ?? inboxDeliveryViews.get(w.taskId)?.headline : null) ?? null),
                   // Dead-zone (conflict retries exhausted) has its own dedicated
                   // CTA set below and is never sourced from a reviewer note —
                   // keep it out of the fix-dispatch branch even if a stale
@@ -1311,6 +1435,7 @@ export default async function HomePage({
                   deadZoneLastRetryTaskId: deadZoneInfo?.lastRetryTaskId ?? null,
                   conflictAutoResolve: isAutoResolveMergeConflictsEnabled(ws?.gitConfig),
                   conflictReason: w.prNumber != null ? conflictReasonMap.get(`${w.workspaceId}:${w.prNumber}`) ?? null : null,
+                  remediationStalled: w.prNumber != null ? conflictStalledMap.get(`${w.workspaceId}:${w.prNumber}`) ?? null : null,
                   // Read from persisted columns only (I-9): the sweep owns all
                   // GitHub resolution, this layer only judges how old that
                   // resolution is.
@@ -1324,17 +1449,16 @@ export default async function HomePage({
                 };
               })
               .sort((a, b) => {
-                // In-flight cards sort last so the slice below never drops a
-                // card that needs the human in favour of one that does not.
-                const handled = (i: { ciGate?: { kind: string } | null; autoMerge?: boolean; reviewInFlight?: string | null }) =>
-                  (i.ciGate?.kind === 'fixing' || i.ciGate?.kind === 'running' || i.reviewInFlight || (i.autoMerge && !i.ciGate) ? 1 : 0);
+                // Human review actions lead even while machine work continues.
+                // Keep every action: an inbox cap silently hides requested reviews.
+                const handled = (i: { humanReview?: HumanPrReview | null; ciGate?: { kind: string } | null; autoMerge?: boolean; reviewInFlight?: string | null }) =>
+                  (!i.humanReview && (i.ciGate?.kind === 'fixing' || i.ciGate?.kind === 'running' || i.reviewInFlight || (i.autoMerge && !i.ciGate)) ? 1 : 0);
                 const handledDiff = handled(a) - handled(b);
                 if (handledDiff !== 0) return handledDiff;
                 const arcDiff = Number(!!b.missionId) - Number(!!a.missionId);
                 if (arcDiff !== 0) return arcDiff;
                 return (a.waitingMinutes ?? 0) - (b.waitingMinutes ?? 0);
-              })
-              .slice(0, 10);
+              });
           }
 
           // Resolved escalations: workers whose PR has since merged or closed.
@@ -1569,7 +1693,7 @@ export default async function HomePage({
             columns: { id: true, taskId: true, waitingFor: true },
             with: {
               task: {
-                columns: { id: true, title: true, missionId: true },
+                columns: { id: true, title: true, status: true, missionId: true },
                 with: { mission: { columns: { id: true, title: true } } },
               },
             },
@@ -1577,7 +1701,7 @@ export default async function HomePage({
           });
           for (const w of waitingInputWorkers) {
             const wf = w.waitingFor as { type: string; prompt: string } | null;
-            if (!wf?.prompt) continue;
+            if (!wf?.prompt || !isOpenAsk(w.task?.status, 'waiting_input')) continue;
             waitingOnYou.push({
               kind: 'answer',
               workerId: w.id,
@@ -1817,7 +1941,13 @@ export default async function HomePage({
         const snoozedSubjectKeys = new Set(activeSnoozes.map((s) => s.subjectKey));
 
         // Merge waitingOnYou + escalationInbox into one deduplicated action queue
-        actionQueue = buildActionQueue(waitingOnYou, escalationInbox, { snoozedSubjectKeys });
+        // Kernel-owned deliveries project the kernel's owner of the next move
+        // (workflow-state-kernel §17.5); every other task keeps today's chip.
+        const deliveryViews = await getDeliveryViewsForTasks([
+          ...escalationInbox.map((e) => e.taskId),
+          ...waitingOnYou.flatMap((w) => (w.kind === 'failed' && w.taskId ? [w.taskId] : [])),
+        ]);
+        actionQueue = buildActionQueue(waitingOnYou, escalationInbox, { snoozedSubjectKeys, deliveryViews });
 
         // Age telemetry. Four MERGE cards up to 90 days old were visible here
         // for months with nothing in the system counting them — the regression
@@ -1963,7 +2093,7 @@ export default async function HomePage({
   // ── Fleet redesign ──
   const questions: HomeQuestion[] = (fleetData?.questions ?? []).map(q => ({
     workerId: q.workerId, taskId: q.taskId, label: q.label, runnerName: q.runnerName,
-    askedAt: q.askedAt, prompt: q.prompt, options: q.options,
+    askedAt: q.askedAt, question: q.question,
     href: q.taskId ? homeTaskHref({ missionId: q.missionId, taskId: q.taskId, from: 'home', mode: 'sheet' }) : null,
   }));
   // A parked worker's question renders once, as the one-tap card.
@@ -1988,11 +2118,42 @@ export default async function HomePage({
     .filter(r => lanesRoles.size === 0 || lanesRoles.has(r.slug))
     .map(r => ({ slug: r.slug, name: r.name, color: r.color ?? null }));
 
+  const { items: phoneAttention } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
+  const phoneFlight = new Map<string, HomeFlightRow>();
+  const flightLabels: Record<string, string> = { FIXING_CI: 'fixing tests', CI_RUNNING: 'tests running', FIXING_SPEC: 'updating docs', RESOLVING: 'resolving conflicts', FIXING_REVIEW: 'applying review', REVIEW_RUNNING: 'reviewing', AUTO_MERGE: 'merging' };
+  for (const item of inFlightItems) {
+    const key = item.taskId ?? item.subjectKey;
+    phoneFlight.set(key, { key, title: item.taskTitle ?? item.missionTitle ?? 'Work in progress', agent: flightLabels[item.chip] ?? 'agent working', href: actionCardTaskLink(item), age: '', fixing: item.chip === 'FIXING_CI' });
+  }
+  for (const item of activeItems) {
+    if (item.workerStatus === 'waiting_input') continue;
+    const key = item.taskId;
+    if (!phoneFlight.has(key)) phoneFlight.set(key, { key, title: item.taskTitle, agent: item.roleSlug ?? 'agent', href: homeTaskHref({ missionId: item.missionId, taskId: item.taskId, from: 'home', mode: 'sheet' }), age: item.startedAt ? timeAgo(item.startedAt) : '', fixing: false });
+  }
+  for (const item of [...agentReviewingPrs, ...reviewQueuedPrs]) {
+    const key = item.taskId;
+    if (!phoneFlight.has(key)) phoneFlight.set(key, { key, title: item.taskTitle ?? 'Changes in review', agent: 'reviewing', href: actionCardTaskLink(item), age: '', fixing: false });
+  }
+  const phoneAsk = chatPlacement.kind === 'chat' && chatTeamId
+    ? <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={[]} initialWorkspaceId={wsFilter ?? null} phoneInbox />
+    : <Link href={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : '/app/chat'} className="mb-7 flex min-h-12 items-center justify-between border border-border-strong bg-[var(--chat-surface)] pl-3 font-convo text-lede text-text-muted"><span>Describe the work, or ask…</span><span className="flex min-h-12 w-14 items-center justify-center border-l border-border-strong bg-accent text-[var(--on-accent)]">↑</span></Link>;
+
   return (
     <SwipeProvider>
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <HomeAutoRefresh workspaceIds={refreshWorkspaceIds} />
-      <div className="mx-auto max-w-[1320px]">
+      {hostedRunnerBanner && (
+        <div className="mx-auto max-w-[1320px]">
+          <HostedRunnerBanner level={hostedRunnerBanner.level} text={hostedRunnerBanner.text} />
+        </div>
+      )}
+      {modelUpgradeTeamId && (
+        <div className="mx-auto max-w-[1320px]">
+          <ModelUpgradeNotice teamId={modelUpgradeTeamId} />
+        </div>
+      )}
+      <MobileHome items={phoneAttention} ask={phoneAsk} live={live} capacity={fleetData?.fleet.capacity ?? 0} mergedToday={stats?.mergedToday ?? 0} inCi={stats?.prsInCi.length ?? 0} shipped={shippedMissions} flight={[...phoneFlight.values()]} timeZone={teamTz} />
+      <div className="mx-auto hidden max-w-[1320px] md:block">
         <header className="mb-5 flex flex-col gap-3 md:mb-6 md:flex-row md:items-end md:justify-between">
           <div className="min-w-0">
             <div className="section-label hidden text-text-muted md:block">Home{teamName ? ` · ${teamName}` : ''}</div>

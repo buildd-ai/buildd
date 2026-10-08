@@ -6,7 +6,9 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
-import { CLOUD_EXECUTOR, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
+import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
+import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
+import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
@@ -38,6 +40,7 @@ import { readModelPin, shorthandPinTier } from '@buildd/core/model-pin';
 import type { TierPolicyMeta } from '@buildd/core/model-policy';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
 import { getCachedOpenRouterCatalog } from '@buildd/core/model-catalog-cache';
+import { getModelCertifications } from '@buildd/core/model-certification-store';
 import {
   checkDispatchModel, guardDispatchModel, describeDispatchModelRejection, tierForModelId,
   DISPATCH_MODEL_REJECTED_PATTERN,
@@ -45,7 +48,7 @@ import {
 } from '@buildd/core/dispatch-model-guard';
 import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment } from '@buildd/core/model-routing-experiment-source';
 import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type AgentPoolDraw } from '@buildd/core/tier-pool-source';
-import { BACKEND_ROUTING_KEY, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
+import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
 import { findBlockingPr, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -53,7 +56,6 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
   BYPASS_MISSION_BUDGET_KEY,
   CAP_EXEMPT_KEY,
-  bypassFlagCondition,
   hasBypassFlag,
 } from '@/lib/bypass-flags';
 import { getActiveClaimsByWorkspace, registerClaimDeferralWaiters, type ClaimDeferralWaiter } from '@buildd/core/path-claim';
@@ -66,11 +68,16 @@ import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { describeExplicitDeferral } from './explicit-deferral';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { missionNotHeld, missionNotLocal, taskNotHeld, checkTaskMissionLocal } from './held-gate';
-import { diagnoseExplicitTaskExclusion, evaluateForcedGates, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
+import { diagnoseExplicitTaskExclusion, evaluateForcedGates, explicitExclusionGateEvent, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
+// The workspace concurrency cap as a claim predicate (see the call site for the
+// rules). A function so a force claim can evaluate it for the audit without
+// applying it.
+import { workspaceCapGate } from './workspace-cap-gate';
 import { workspaceExecutorGate } from './workspace-executor-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
+import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
@@ -97,7 +104,7 @@ import { resolveClaudeModelRoute, routeUsesOauthSeat, type ClaudeModelRoute } fr
 import { attachGitHubCredentialModes } from './github-credential-injection';
 import { AGENT_GITHUB_TOKEN_ROLLOUT_ENV, parseAgentGitHubRollout } from '@buildd/core/agent-github-credentials';
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
-import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
+import { announceFixClaimed, announceReviewClaimed } from '@/lib/pr-activity-fix-claimed';
 import { isDispatchedReview } from '@/lib/read-only-review';
 import { planClaimBatch, type ClaimPlan, type PlannerThresholds } from '@buildd/core/claim-planner';
 import {
@@ -118,8 +125,11 @@ import {
   gatedStartReachable,
   releaseGatedStartPaths,
   scheduleClaimHoldShadow,
+  touchesSerializedSurface,
   type ClaimHoldTaskContext,
 } from './hold-start-shadow';
+import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from './soft-overlap-gate';
+import { loadSoftOverlapHolders } from './soft-overlap-store';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
@@ -140,36 +150,6 @@ const ROLE_ENV_WINDOW_MAX_PAGES = 4;
  */
 function producesNoFileEdits(outputRequirement: unknown): boolean {
   return outputRequirement === 'artifact_required' || outputRequirement === 'none';
-}
-
-/**
- * The workspace concurrency cap as a claim predicate (see the call site for the
- * rules). A function so a force claim can evaluate it for the audit without
- * applying it.
- */
-function workspaceCapGate() {
-  return or(
-      bypassFlagCondition(tasks.context, CAP_EXEMPT_KEY),
-      sql`(
-      SELECT COUNT(*) FROM ${workers} w2
-      JOIN ${tasks} t3 ON t3.id = w2.task_id
-      WHERE t3.workspace_id = ${tasks.workspaceId}
-      AND w2.status IN ('running', 'starting', 'idle')
-      AND t3.id != ${tasks.id}
-      AND EXISTS (
-        SELECT 1 FROM ${workspaces} ws
-        WHERE ws.id = t3.workspace_id
-        AND ws.repo IS NOT NULL
-      )
-    ) < GREATEST(
-      (SELECT COALESCE(ws2.max_concurrent_tasks, 3) FROM ${workspaces} ws2
-       WHERE ws2.id = ${tasks.workspaceId}),
-      COALESCE(
-        (SELECT m.max_concurrent_tasks FROM ${missions} m WHERE m.id = ${tasks.missionId}),
-        0
-      )
-    )`,
-    )!;
 }
 
 export async function POST(req: NextRequest) {
@@ -364,14 +344,27 @@ export async function POST(req: NextRequest) {
     if (taskId && payload.diagnostics.reason !== 'race_lost') {
       const stampTaskId = taskId;
       const deferrals = payload.diagnostics.deferrals as Record<string, number> | undefined;
+      const exclusion = payload.diagnostics.taskExclusion;
       resolveClaimableWorkspaceIds()
-        .then((ids) => stampLastClaimAttempt({
-          taskId: stampTaskId,
-          workspaceIds: ids,
-          reason: payload.diagnostics.reason,
-          ...(deferrals ? { deferrals } : {}),
-          now: new Date(),
-        }))
+        .then((ids) => {
+          // A WHERE-clause gate that dropped the named task (a runner's wake
+          // claim) otherwise leaves no gate-ledger row — the task's gate
+          // history stays empty and explain can only call it a wait.
+          const event = exclusion
+            ? explicitExclusionGateEvent({ taskId: stampTaskId, exclusion, workspaceId: ids.length === 1 ? ids[0] : null })
+            : null;
+          if (event) fireDeferralEvent(event);
+          return stampLastClaimAttempt({
+            taskId: stampTaskId,
+            workspaceIds: ids,
+            reason: payload.diagnostics.reason,
+            ...(deferrals ? { deferrals } : {}),
+            ...(exclusion ? { exclusion } : {}),
+            browserProvider: body.environment?.browserProvider,
+            runnerGroup: body.environment?.fleet?.group,
+            now: new Date(),
+          });
+        })
         .catch((err) => console.warn(`[claim] failed to stamp lastClaimAttempt for task ${stampTaskId}:`, err));
     }
     // A cloud container has no credential broker and must not learn secret ids.
@@ -1186,6 +1179,7 @@ export async function POST(req: NextRequest) {
     subject_dead: 0,
     path_overlap: 0,
     advisory_manifest: 0,
+    soft_overlap: 0,
     mission_budget: 0,
     mission_concurrent: 0,
     mission_paced: 0,
@@ -1195,11 +1189,15 @@ export async function POST(req: NextRequest) {
     routing_paused: 0,
     duplicate_worker: 0,
     sibling_retry_open: 0,
+    fix_not_needed: 0,
     runner_capability: 0,
     codex_single_flight: 0,
     oauth_parallelism: 0,
     role_env_unsatisfied: 0,
     ordered_behind: 0,
+    managed_concurrency: 0,
+    managed_runner_hours: 0,
+    hosted_runner_hours: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
@@ -1268,6 +1266,11 @@ export async function POST(req: NextRequest) {
   // workers per workspace and stop claiming once a repo workspace reaches its cap.
   const DEFAULT_MAX_CONCURRENT_TASKS = 3;
   const activeByWorkspace = new Map<string, number>();
+  // Managed runs this batch started, per team: not yet visible to the
+  // entitlement's live-worker count.
+  const managedClaimedByTeam = new Map<string, number>();
+  // Hosted runner allowance per team, read once per request (cloud claims only).
+  const hostedAllowanceByTeam = new Map<string, Awaited<ReturnType<typeof checkHostedRunnerAllowance>>>();
   for (const w of activeWorkers) {
     if (!['running', 'starting', 'idle'].includes(w.status)) continue;
     activeByWorkspace.set(w.workspaceId, (activeByWorkspace.get(w.workspaceId) || 0) + 1);
@@ -1282,12 +1285,16 @@ export async function POST(req: NextRequest) {
   const codexFlippedWorkspaces = new Set<string>();
   const activeTaskIds = activeWorkers.map(w => w.taskId).filter(Boolean) as string[];
   if (activeTaskIds.length > 0) {
-    const activeCodexTasks = await db.query.tasks.findMany({
-      where: and(inArray(tasks.id, activeTaskIds), eq(tasks.backend, 'codex')),
-      columns: { workspaceId: true },
+    // Not filtered on the stored column: a budget-failover flip leaves the row
+    // on 'claude' and records the Codex run only in the claim stamp, so a
+    // `backend = 'codex'` WHERE missed every failover-started Codex worker and
+    // the next claim request flipped another task onto the same window.
+    const activeTasks = await db.query.tasks.findMany({
+      where: inArray(tasks.id, activeTaskIds),
+      columns: { workspaceId: true, backend: true, context: true },
     });
-    for (const t of activeCodexTasks) {
-      if (t.workspaceId) codexBusyWorkspaces.add(t.workspaceId);
+    for (const t of activeTasks) {
+      if (t.workspaceId && claimedBackendOf(t.backend, t.context) === 'codex') codexBusyWorkspaces.add(t.workspaceId);
     }
   }
   // Flip a task to Codex in-memory, respecting runner-side Codex auth
@@ -1408,6 +1415,20 @@ export async function POST(req: NextRequest) {
     }));
   }
 
+  // Soft overlap holders (./soft-overlap-gate). Read only when a candidate
+  // carries `pathDeclaration.softOverlaps`; null = the read failed, and every
+  // soft entry then holds as unknown state (fail closed).
+  let softHolders: Map<string, SoftHolderRow> | null = new Map();
+  const softHolderIds = softOverlapHolderIds(filteredTasks as Array<{ id: string; pathDeclaration?: unknown }>);
+  if (softHolderIds.size > 0) {
+    try {
+      softHolders = await loadSoftOverlapHolders([...softHolderIds]);
+    } catch (err) {
+      softHolders = null;
+      console.warn('[claim] soft overlap holder read failed (holding every soft overlap):', err);
+    }
+  }
+
   // ── Mission-level gates (pacing, concurrency, budget) ─────────────────────────
   // Batch-fetch mission rows and active worker counts for all tasks that reference
   // a mission. Used by three claim-loop guards:
@@ -1518,9 +1539,9 @@ export async function POST(req: NextRequest) {
   // Hold/start at claim (knowledge-base: buildd/design/conflict-aware-orchestration.md §5b).
   // The collector only remembers advisory deferrals that pass every
   // deterministic rail (no I/O); the decisions run after the response. The
-  // gated START path is unreachable as shipped (shadow definition, zero
-  // applying fraction), so `holdStartGated` is false and the loop below never
-  // awaits anything new.
+  // gated START path is live (task 7eb191b9): an advisory deferral looks up an
+  // applied Jev START for its exact state, one indexed ledger read, and holds
+  // on any miss or error. `CLAIM_HOLD_APPLYING_FRACTION = 0` turns it off.
   const holdStart = new ClaimHoldCollector();
   const holdStartGated = gatedStartReachable();
   // Every hold/start call in the loop is non-throwing: the collector methods,
@@ -1561,8 +1582,9 @@ export async function POST(req: NextRequest) {
   // (the default when unset) plans beside the legacy walk and records both. 'apply' claims in
   // plan order: every gate in the loop still runs on each pick, and a pick
   // that is refused or loses its race is dropped and the rest re-planned.
-  // Never for an explicit taskId claim (which includes every force claim), and
-  // never 'apply' while a gated START is reachable — that path keeps its walk.
+  // Never for an explicit taskId claim (which includes every force claim). A
+  // gated START (now live) is just another gate on each pick: it can only
+  // relax an advisory deferral the pick reaches, so 'apply' keeps its order.
   const plannerConfigs = new Map<string, ReturnType<typeof resolveClaimPlannerConfig>>();
   const plannerModeOf = (t: { workspaceId: string }): ClaimPlannerMode => {
     if (taskId) return 'off';
@@ -1571,7 +1593,7 @@ export async function POST(req: NextRequest) {
       cfg = resolveClaimPlannerConfig((t as any).workspace?.gitConfig);
       plannerConfigs.set(t.workspaceId, cfg);
     }
-    return cfg.mode === 'apply' && holdStartGated ? 'record' : cfg.mode;
+    return cfg.mode;
   };
   // A candidate a pre-filter already refuses (connector, role env) is not
   // planned: it would only hold a slot it can never take. It still walks the
@@ -1638,6 +1660,9 @@ export async function POST(req: NextRequest) {
     // Set only by a gated START that relaxed the open-PR overlap: these
     // declared paths are acquired exclusively right before the atomic claim.
     let gatedStartPaths: string[] | null = null;
+    // Soft overlaps a force claim went past: recorded with its outcome as
+    // calibration data (human force, not a model label).
+    const softOverlapForced: Array<Record<string, unknown>> = [];
     // Captured before any provider-toggle/budget-failover flip below can mutate
     // (task as any).backend, so the Codex single-flight check further down tests
     // what this task WAS ASSIGNED, not what it may have just been flipped to.
@@ -1729,8 +1754,8 @@ export async function POST(req: NextRequest) {
       // PR) and PRs stacked on them never block it — see splitOwnOpenPrs.
       const filterOpenPrTasks = splitOwnOpenPrs(task, openPrTasks).others;
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
-      // Shadow-only by default: note the deferral (no I/O). A gated START
-      // (unreachable as shipped) relaxes ONLY this layer; layer 2 and every
+      // Note the deferral (no I/O). An applied gated START for this exact
+      // state relaxes ONLY this layer; layer 2 and every
       // later gate still run, and the paths are acquired exclusively below.
       const holdCtx = blocking && !forced ? holdStartContext(task, forced) : null;
       const holdNote = holdCtx ? holdStart.noteOpenPrOverlap(holdCtx, taskManifest, filterOpenPrTasks, activePathClaimsByWorkspace.get(task.workspaceId)) : null;
@@ -1802,6 +1827,54 @@ export async function POST(req: NextRequest) {
           if (blockedByActiveClaim) continue;
         }
       }
+
+      // Soft overlap (./soft-overlap-gate): an in-flight task whose declared
+      // scope overlaps this one's only by directory prefix, or a pre-v2
+      // inferred edge. Never a dependsOn edge. A same-file / migration /
+      // serialized / unknown-state entry holds deterministically; a prefix-only
+      // one holds unless an applied Jev START exists for this exact state, and
+      // the START's declared paths are then acquired exclusively before the
+      // claim (a live lease wins). Forced: bypassed and recorded.
+      const softVerdicts = softHolderIds.size > 0
+        ? evaluateSoftOverlaps(task as any, softHolders, {
+            isSerialized: (paths) => touchesSerializedSurface(paths, (task as any).workspace?.gitConfig ?? null),
+          })
+        : [];
+      let softHeld = false;
+      for (const v of softVerdicts) {
+        // The rule's verdict: deterministic for a hard overlap, HOLD for a
+        // prefix-only one until an applied Jev START says otherwise.
+        let verdict: 'deterministic_hold' | 'HOLD' | 'START' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
+        if (v.kind === 'advisory' && !forced) {
+          const holdCtx = holdStartContext(task, forced);
+          const note = holdCtx
+            ? holdStart.noteSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId))
+            : null;
+          verdict = holdStartGated && note && await gatedStartApplies(note) ? 'START' : 'HOLD';
+        }
+        if (verdict === 'START') {
+          console.log(`[claim] gated_start: task ${task.id} past soft overlap with ${v.holderTaskId}; acquiring its paths`);
+          gatedStartPaths = concreteManifest;
+          continue;
+        }
+        const detail = {
+          holderTaskId: v.holderTaskId,
+          paths: v.paths.slice(0, 10),
+          verdict,
+          overlapKind: v.kind === 'deterministic' ? v.overlapKind : 'prefix',
+        };
+        if (forced) {
+          softOverlapForced.push(detail);
+          bypassOrDefer('soft_overlap', detail);
+          continue;
+        }
+        console.log(`[claim] soft_overlap_held: task ${task.id} deferred behind ${v.holderTaskId} (${verdict})`);
+        bypassOrDefer('soft_overlap', detail);
+        noteDeferralWaiter(task.workspaceId, task.id, v.holderTaskId, v.paths);
+        softHeld = true;
+        break;
+      }
+      if (softHeld) continue;
     }
 
     // ── Mission-level gates ──────────────────────────────────────────────────────
@@ -1923,7 +1996,7 @@ export async function POST(req: NextRequest) {
           const blockingPeer = advisoryPeers
             ? [...advisoryPeers].find(id => id !== task.id)
             : undefined;
-          // Shadow-only by default (see layer 1 above). A gated START relaxes
+          // Noted like layer 1 above. An applied gated START relaxes
           // only this serialization; there are no declared paths to acquire,
           // and observed touches are leased by the exclusive primitive later.
           const holdCtx = blockingPeer ? holdStartContext(task, forced) : null;
@@ -1956,6 +2029,49 @@ export async function POST(req: NextRequest) {
       const cap = Math.max(workspaceCap, missionCap);
       if ((activeByWorkspace.get(task.workspaceId) || 0) >= cap) {
         if (bypassOrDefer('workspace_cap', { active: activeByWorkspace.get(task.workspaceId) || 0, cap })) continue;
+      }
+    }
+
+    // Commercial entitlement: Buildd-managed runner keys only (packages/shared/
+    // src/entitlements.ts). A self-hosted runner never gets here, and the
+    // operational caps above stay as they are. Not forceable and not an error:
+    // the task stays pending with the block stamped on it for the dashboard,
+    // and a managed run ending (or the hourly sweep) wakes it.
+    if (account.managedRunner) {
+      const entitlementTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (entitlementTeamId) {
+        const block = await checkManagedRunnerEntitlement(entitlementTeamId, {
+          claimedInBatch: managedClaimedByTeam.get(entitlementTeamId) ?? 0,
+          now,
+        });
+        if (block) {
+          deferTask(task, entitlementDeferralKey(block), { ...block });
+          await stampEntitlementBlock(task.id, block, now);
+          continue;
+        }
+      }
+    }
+
+    // Hosted runner allowance (teams.hostedRunnerHours, counted hours this
+    // month): cloud claims only, and only when the team has one. A host
+    // runner may still take the task. Same queued-not-failed treatment as the
+    // managed entitlement above; the hourly sweep wakes it once the month
+    // resets or the allowance grows. Running tasks are never touched.
+    if (cloudExecutor) {
+      const hostedTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (hostedTeamId) {
+        if (!hostedAllowanceByTeam.has(hostedTeamId)) {
+          hostedAllowanceByTeam.set(hostedTeamId, await checkHostedRunnerAllowance(hostedTeamId, { now }).catch((err) => {
+            console.error(`[claim] hosted runner allowance check failed for team ${hostedTeamId}:`, err);
+            return null;
+          }));
+        }
+        const block = hostedAllowanceByTeam.get(hostedTeamId) ?? null;
+        if (block) {
+          deferTask(task, entitlementDeferralKey(block), { ...block });
+          await stampEntitlementBlock(task.id, block, now);
+          continue;
+        }
       }
     }
 
@@ -2019,7 +2135,11 @@ export async function POST(req: NextRequest) {
     }
     // Walls recorded against Claude in the pause log (e.g. a team running on a
     // managed Claude credential rather than this account's own session).
-    const pauses = await teamPauses(taskTeamId);
+    // An interactive session is exempt for the same reason as the account flag
+    // above: the wall was hit by a runner's seat, and the session runs the task
+    // on its own credentials. Without this, a task whose runner just died on a
+    // session limit could not be claimed (even with force) until the reset.
+    const pauses = interactiveSession ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
     if (pauses.has('claude')) claudePoolBlocked = true;
 
     // Does a Claude run of THIS task draw on that walled pool? Only when its
@@ -2223,12 +2343,16 @@ export async function POST(req: NextRequest) {
     const modelRejections: Omit<DispatchModelRejection, 'fallback'>[] = [];
     const runnerCliVersion = body.environment?.claudeCliVersion;
     const dispatchCatalog = await getCachedOpenRouterCatalog();
+    // Central certification (model-certification.ts): floors learned by the
+    // probe, so a model certified after this build shipped is served and gated
+    // like one in the static table. Empty on any failure: the static table only.
+    const certifications = await getModelCertifications();
     // A challenger or treatment the runner cannot launch is not served; the
     // incumbent is. Same fallback accounting as a CLI-floor miss, plus a record
     // of the id so a bad arm cannot go on silently losing its draws.
     const clientCanServe = (source: DispatchModelSource) => (m: string): boolean => {
-      if (!checkModelClientCapability(m, runnerCliVersion).ok) return false;
-      const verdict = checkDispatchModel(m, dispatchCatalog);
+      if (!checkModelClientCapability(m, runnerCliVersion, certifications).ok) return false;
+      const verdict = checkDispatchModel(m, dispatchCatalog, certifications);
       if (!verdict.ok) modelRejections.push({ rejected: m, reason: verdict.reason, source });
       return verdict.ok;
     };
@@ -2311,7 +2435,7 @@ export async function POST(req: NextRequest) {
     // rejected id and where it came from.
     {
       let fallbacks = tierEntryModel ? [tierEntryModel] : [];
-      if (!tierEntryModel && taskTeamId && !checkDispatchModel(resolvedModel, dispatchCatalog).ok) {
+      if (!tierEntryModel && taskTeamId && !checkDispatchModel(resolvedModel, dispatchCatalog, certifications).ok) {
         // A rejected pin: fall back to the workspace default for its family.
         const entry = await resolveTierEntry(guardTier, taskTeamId, task.workspaceId, 'agent', runnerCliVersion);
         fallbacks = [{ model: entry.model, source: tierModelSource(entry.source) }];
@@ -2323,6 +2447,7 @@ export async function POST(req: NextRequest) {
         tier: guardTier,
         fallbacks,
         catalog: dispatchCatalog,
+        certifications,
       });
       if (guarded.rejection) {
         modelRejections.push({ rejected: guarded.rejection.rejected, reason: guarded.rejection.reason, source: guarded.rejection.source });
@@ -2354,7 +2479,7 @@ export async function POST(req: NextRequest) {
     // version A.B.C or newer is required") is otherwise deterministic and
     // identical on every retry, burning a full worker session each time. See
     // packages/core/model-capability-requirements.ts.
-    const capabilityCheck = checkModelClientCapability(resolvedModel, body.environment?.claudeCliVersion);
+    const capabilityCheck = checkModelClientCapability(resolvedModel, body.environment?.claudeCliVersion, certifications);
     if (!capabilityCheck.ok) {
       deferTask(task, 'runner_capability', {
         model: resolvedModel,
@@ -2401,6 +2526,8 @@ export async function POST(req: NextRequest) {
     // Why this claim's backend differs from the stored one — or nothing, so a
     // previous attempt's flip never reads as this one's.
     delete (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY];
+    // Claimed: it no longer waits on an entitlement.
+    delete (patchedContext as Record<string, unknown>)[ENTITLEMENT_BLOCK_CONTEXT_KEY];
     const routing = backendRouting.get(task.id);
     if (routing && routing.backend === (task as any).backend) {
       (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY] = routing;
@@ -2459,6 +2586,35 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
+    // Workflow kernel T9 (docs/specs/workflow-state-kernel.md §10.5): a review
+    // or CI fix is revalidated against a live read at claim. One whose target was
+    // resolved while it queued (approved, merged, head moved, round superseded)
+    // is cancelled as skipped — never started, and not a worker failure.
+    if (isRepairRole((task as any).deliveryRole) && (task as any).deliveryId) {
+      const fixDecision = await claimKernelFix({
+        id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: (task as any).deliveryRole, context: task.context,
+      }).catch((err): { action: 'defer'; reason: string } => {
+        console.error(`[claim] workflow kernel FixClaimed failed for task ${task.id}:`, err);
+        return { action: 'defer', reason: 'kernel_error' };
+      });
+      if (fixDecision.action !== 'proceed') {
+        if (gatedStartLeaseIds.length > 0) {
+          await releaseGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, insertedIds: gatedStartLeaseIds });
+        }
+        if (fixDecision.action === 'cancel') {
+          console.log(`[claim] task ${task.id} skipped: ${fixDecision.reason}`);
+          await cancelSkippedTask(task.id, fixDecision.reason);
+        } else {
+          await withDispatchHint({ suppress: 'claim_rollback' }, db
+            .update(tasks)
+            .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
+            .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id))));
+        }
+        deferTask(task, 'fix_not_needed', { reason: fixDecision.reason });
+        continue;
+      }
+    }
+
     if (experimentDraw) {
       await recordModelRoutingAssignment(experimentDraw, { taskId: task.id, runnerCliVersion: body.environment?.claudeCliVersion, resolvedModel });
     }
@@ -2468,6 +2624,10 @@ export async function POST(req: NextRequest) {
 
     // Count this claim toward the per-workspace cap for the rest of the batch.
     activeByWorkspace.set(task.workspaceId, (activeByWorkspace.get(task.workspaceId) || 0) + 1);
+    if (account.managedRunner) {
+      const entitlementTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (entitlementTeamId) managedClaimedByTeam.set(entitlementTeamId, (managedClaimedByTeam.get(entitlementTeamId) ?? 0) + 1);
+    }
 
     // Mirror into the Codex single-flight tracker so a second originally-Codex
     // task for this workspace, later in the same batch, hits the defer above
@@ -2673,6 +2833,24 @@ export async function POST(req: NextRequest) {
         callerOrigin: gateCallerOrigin({ apiAccount: account }),
         detail: { bypassed: [...forceBypassed], accountId: account.id, userId: interactiveSession?.userId ?? null },
       });
+      // A force past a soft overlap is calibration data for the HOLD/START
+      // decision: a human START, labelled later by the same outcome join
+      // (clean, collision, conflict task) as a model START, never counted as
+      // a model answer. One row per holder it went past.
+      for (const s of softOverlapForced) {
+        fireGateEvent({
+          gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+          surface: 'POST /api/workers/claim',
+          outcome: 'bypassed',
+          reason: 'force_soft_overlap',
+          taskId: task.id,
+          workspaceId: task.workspaceId,
+          missionId: (task as any).missionId ?? null,
+          workerId: worker.id,
+          callerOrigin: gateCallerOrigin({ apiAccount: account }),
+          detail: { ...s, calibration: 'human_force', startedAt: now.toISOString() },
+        });
+      }
     }
     if (usesOauthSeat && oauthSeatSlotsLeft !== null) oauthSeatSlotsLeft--;
   }
@@ -2829,9 +3007,10 @@ export async function POST(req: NextRequest) {
           worker: { id: cw.id, name: account.name, status: 'idle' },
         }
       );
-      // A fix attempt just got a worker: the PR's activity comment may now say
-      // "Fixing" instead of "fix queued". No-op for any other task.
+      // A fix attempt or reviewer just got a worker: the PR's activity comment
+      // may now say "Fixing" / "Reviewing" instead of queued. No-op otherwise.
       await announceFixClaimed(claimedTask);
+      await announceReviewClaimed(claimedTask);
     }
   }
 

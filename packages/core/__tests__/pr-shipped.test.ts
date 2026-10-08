@@ -6,6 +6,7 @@ import {
   deriveLineageSupersession,
   summarizePrShipStates,
   countDistinctPrs,
+  withDeliveryShip,
 } from '../pr-shipped';
 
 const pr = (n: number) => `https://github.com/org/repo/pull/${n}`;
@@ -51,6 +52,80 @@ describe('prShipState — the one shipped predicate', () => {
     for (const s of ['pr_open', 'ci_failed', 'conflict', null]) {
       expect(prShipState({ prUrl: pr(1), prLifecycleStatus: s })).toBe('open');
     }
+  });
+});
+
+// Slice D of the workflow kernel (docs/specs/workflow-state-kernel.md §17.3, S16): for a PR
+// the kernel owns, the delivery is the authority and the worker columns are only its
+// projection, which can lag (the projection is an effect). Absent delivery = today's answer.
+describe('prShipState — reads the delivery when the kernel owns the PR', () => {
+  const open = { prUrl: pr(1), prLifecycleStatus: 'pr_open' };
+
+  it('maps every delivery state onto the same five answers', () => {
+    expect(prShipState({ ...open, delivery: { state: 'MERGED' } })).toBe('merged');
+    expect(prShipState({ ...open, delivery: { state: 'SUPERSEDED' } })).toBe('superseded');
+    expect(prShipState({ ...open, delivery: { state: 'ABANDONED' } })).toBe('abandoned');
+    expect(prShipState({ ...open, delivery: { state: 'CLOSED_UNMERGED' } })).toBe('closed_unsuperseded');
+    for (const s of ['WORKING', 'AWAITING_PUSH', 'AWAITING_REVIEW', 'CHANGES_REQUESTED', 'FIXING', 'REPAIRING', 'BLOCKED_ON_TRUNK', 'APPROVED', 'LANDING', 'ESCALATED']) {
+      expect(prShipState({ ...open, delivery: { state: s } })).toBe('open');
+    }
+  });
+
+  it('the delivery wins over a projection that has not caught up, in both directions', () => {
+    // Merged by the kernel; stamp_pr_rows not run yet.
+    expect(prShipState({ ...open, mergedAt: null, delivery: { state: 'MERGED' } })).toBe('merged');
+    // A stray supersession column on a delivery the kernel still reads as closed is not an edge.
+    const stray = { prUrl: pr(1), prLifecycleStatus: 'closed', supersededByPrNumber: 2, delivery: { state: 'CLOSED_UNMERGED' } };
+    expect(prShipState(stray)).toBe('closed_unsuperseded');
+    expect(isPrUnshipped(stray)).toBe(true);
+  });
+
+  it('lineage-derived supersession still applies to a kernel-closed PR (a read-time proof, not a write)', () => {
+    const tasks = [
+      { id: 'root', taskClass: 'work', parentTaskId: null },
+      { id: 'retry', taskClass: 'attempt', parentTaskId: 'root' },
+    ];
+    const [derived] = deriveLineageSupersession(tasks, [
+      { taskId: 'root', prUrl: pr(10), prNumber: 10, prLifecycleStatus: 'closed', delivery: { state: 'CLOSED_UNMERGED' } },
+      { taskId: 'retry', prUrl: pr(11), prNumber: 11, mergedAt: '2026-01-03' },
+    ]);
+    expect(derived.supersessionDerived).toBe(true);
+    expect(prShipState(derived)).toBe('superseded');
+  });
+
+  it('no delivery (legacy, released, or never opened): identical to the column answer', () => {
+    for (const w of [
+      { prUrl: pr(1), mergedAt: '2026-01-01' },
+      { prUrl: pr(1), prLifecycleStatus: 'closed', supersededByPrNumber: 2 },
+      { prUrl: pr(1), prLifecycleStatus: 'closed', abandonedAt: '2026-01-02' },
+      { prUrl: pr(1), prLifecycleStatus: 'closed' },
+      { prUrl: pr(1), prLifecycleStatus: 'ci_failed' },
+    ]) {
+      expect(prShipState({ ...w, delivery: null })).toBe(prShipState(w));
+    }
+  });
+
+  it('a FAILED delivery carries no PR: the columns answer', () => {
+    expect(prShipState({ prUrl: pr(1), mergedAt: '2026-01-01', delivery: { state: 'FAILED' } })).toBe('merged');
+  });
+});
+
+describe('withDeliveryShip — the delivery onto the row a mission reader judges', () => {
+  const row = { prUrl: pr(1), prNumber: 1, prLifecycleStatus: 'closed', supersededByPrNumber: null, supersededByPrUrl: null, supersededReason: null, abandonedReason: null };
+
+  it('no delivery: the row, untouched', () => {
+    expect(withDeliveryShip(row, null)).toBe(row);
+  });
+
+  it('a superseded delivery whose projection has not run yet still names its PR', () => {
+    const w = withDeliveryShip(row, { state: 'SUPERSEDED', supersededByPr: 9, supersededByUrl: pr(9), supersededReason: 'landed in #9' });
+    expect(prShipState(w)).toBe('superseded');
+    expect(w).toMatchObject({ supersededByPrNumber: 9, supersededByPrUrl: pr(9), supersededReason: 'landed in #9' });
+  });
+
+  it('an abandoned delivery carries the person\'s reason; an open one reads open whatever the columns say', () => {
+    expect(withDeliveryShip(row, { state: 'ABANDONED', stateReason: 'plan changed' })).toMatchObject({ abandonedReason: 'plan changed' });
+    expect(prShipState(withDeliveryShip(row, { state: 'AWAITING_REVIEW' }))).toBe('open');
   });
 });
 

@@ -34,6 +34,7 @@
  * Client-safe: no imports with runtime side effects.
  */
 
+import type { InsightsUsageRow } from '../../../../packages/shared/src/insights';
 import { LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 
 export type FlowWindow = '7d' | '30d';
@@ -57,6 +58,10 @@ export function isFlowWindow(value: unknown): value is FlowWindow {
 
 /** One worker, with the task fields the fold needs. Times are epoch ms. */
 export interface FlowWorkerRow {
+  inputTokens?: number;
+  outputTokens?: number;
+  costUsd?: number;
+  tier?: string | null;
   workerId: string;
   taskId: string | null;
   parentTaskId: string | null;
@@ -124,6 +129,7 @@ export interface FlowTask {
   segments: FlowSegment[];
   shippedAt: number | null;
   lostAt: number | null;
+  outcome?: 'In flight' | 'Completed';
   agentHours: number;
 }
 
@@ -163,10 +169,12 @@ export interface FlowSeries {
   releases: { at: number; version: string | null; state: string }[];
   tasks: FlowTask[];
   roles: string[];
+  usage?: InsightsUsageRow[];
+  workspaceNames?: Record<string, string>;
   headline: FlowHeadline;
 }
 
-export const UNASSIGNED_ROLE = 'unassigned';
+export const UNASSIGNED_ROLE = 'general-purpose';
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 const SHIPPED_RELEASE_STATES = new Set(['healthy', 'degraded']);
 const CLOSED_PR = new Set(['closed', 'unresolvable']);
@@ -357,6 +365,7 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
       segments,
       shippedAt,
       lostAt,
+      outcome: (settledQuietly || !latestPr) && !rows.some(r => LIVE.has(r.status)) ? 'Completed' : 'In flight',
       agentHours,
     });
   }
@@ -389,6 +398,14 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
   return {
     window,
     bucketMs,
+    // Token/cost counters are lifetime totals, attributed to workers started in
+    // the window; time is clipped to the window, including runs already active.
+    usage: [...groups.values()].flat().filter(w => w.startedAt! < window.to && runEnd(w, now) > window.from).map(w => ({
+      role: w.roleSlug ?? UNASSIGNED_ROLE, tier: w.tier ?? null,
+      tokens: w.startedAt! >= window.from ? (w.inputTokens ?? 0) + (w.outputTokens ?? 0) : 0,
+      costUsd: w.startedAt! >= window.from ? w.costUsd ?? 0 : 0,
+      hours: overlap(w.startedAt!, runEnd(w, now), window.from, window.to) / HOUR,
+    })),
     buckets,
     releases: windowReleases.map(r => ({ at: r.at, version: r.version, state: r.state })),
     tasks,

@@ -5,7 +5,7 @@ import { QUESTION_GATE_RUNNER_FEATURE, type QuestionGateReply } from '@buildd/co
 import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { PromptBundlesPayload } from './session-prompt-bundles';
-import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
+import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule } from '@buildd/shared';
 import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
@@ -338,6 +338,15 @@ export class BuilddClient {
      * session's deliverables (charged) or about the request (exempt).
      */
     refusal?: { status: number; method: string; endpoint: string; gate?: string; hint?: string };
+    /**
+     * S30 (workflow-state-kernel.md §6.6): a hand-off failure after work — the
+     * output gate refused the completion, or the session ended with an unmet
+     * output requirement. The work is not on GitHub; that is not the same as
+     * the work having failed. Sent with `status: 'failed'`, beside the local
+     * head and commit count the worktree had. An older server ignores them.
+     */
+    outcome?: 'unproven';
+    localHeadSha?: string | null;
     // Deliberate resume of a terminal worker (sendMessage follow-up). The server
     // reactivates a completed/failed/error worker ONLY when this is true — the
     // periodic keepalive sync sends an identical status:'running' payload and
@@ -368,14 +377,23 @@ export class BuilddClient {
     subagentSpansObserved?: number;
     // Sum of durationMs for isBackground=true spans.
     backgroundAgentMs?: number;
-    // Paths written while path-claim endpoint was unreachable; server registers them retroactively.
-    pendingPaths?: string[];
-    // Incremental file paths touched since last check-in (from git diff --name-only).
-    // Server accumulates into workers.observedTouches for passive collision detection (§6d).
+    /**
+     * Authoritative working-set delta (working-set.ts): paths added to / removed
+     * from the task-owned set since the server's last ACK, one bounded chunk.
+     * The server leases `add`, releases `remove`, and answers `workingSetAck`.
+     */
+    workingSet?: import('@buildd/shared').WorkingSetDelta;
+    // Observed-touch SAMPLE for the dashboard (bounded, diagnostic): the same
+    // paths as `workingSet.add`. Also what a server predating `workingSet`
+    // leases from, so a mixed deploy never leaves a session without leases.
     touchedPaths?: string[];
     /** Path-claim calls that went ahead degraded since the last report (a delta). */
     pathClaimDegraded?: number;
-    /** Pre-push/completion sweep: the server re-offers every path in touchedPaths, not only new ones. */
+    /** Same calls split by cause, for the coordination_unavailable attribution. */
+    pathClaimDegradedByCause?: Partial<Record<'timeout' | 'error', number>>;
+    /** Ship checkpoints whose coverage could not be proven (see ship-checkpoint.ts). */
+    shipCheckpoints?: import('@buildd/shared').ShipCheckpointReport[];
+    /** Legacy pre-push/completion sweep flag (servers before `workingSet`). */
     checkpointSweep?: boolean;
     /**
      * Sent with a `Deferred:` failure when enforce-mode path claims found a
@@ -614,6 +632,9 @@ export class BuilddClient {
       maxBudgetUsd?: number;
       /** Workspace opt-in; absent = advisory. See path-claim-enforcement.ts. */
       pathClaimEnforcement?: 'advisory' | 'enforce' | null;
+      /** See merge-drivers.ts. */
+      derivedFiles?: DerivedFileRule[];
+      mergiraf?: boolean;
     };
     configStatus: 'unconfigured' | 'admin_confirmed';
   }> {

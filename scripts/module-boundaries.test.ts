@@ -119,6 +119,36 @@ describe('seams that have shipped stay cut', () => {
     ]);
   });
 
+  test('the GitHub webhook reaches the review reactions to a PR closing and to a GitHub review only through emit()', () => {
+    // Verdict flows: review capture and the GitHub verdict note, the merge-vs-
+    // verdict telemetry, supersession detection and reconcile, dead-PR
+    // shutdown, and the on-close activity comment and review callback.
+    const imported = Object.keys(current.backend['apps/web/src/app/api/github/webhook/route.ts'] ?? {});
+    expect(imported.filter(f => [
+      'apps/web/src/lib/review-feedback.ts',
+      'apps/web/src/lib/supersession.ts',
+      'apps/web/src/lib/pr-supersession-detect.ts',
+      'apps/web/src/lib/dead-pr-shutdown.ts',
+    ].includes(f))).toEqual([]);
+  });
+
+  test('the GitHub webhook reaches reviewer dispatch, re-review and the CI-fix retry only through emit() and the PR-opened slot', () => {
+    // What is left is core: landing, auto-merge safety, the merge-policy chain,
+    // the verdict reads the check_suite merge door and the release door gate
+    // on, and the PR's claim-scope reconcile.
+    const imported = Object.entries(current.backend['apps/web/src/app/api/github/webhook/route.ts'] ?? {});
+    expect(imported.filter(([, mod]) => mod === 'reviews-merge').map(([f]) => f).sort()).toEqual([
+      'apps/web/src/lib/auto-merge.ts',
+      'apps/web/src/lib/merge-policy.ts',
+      'apps/web/src/lib/pr-landing.ts',
+      'apps/web/src/lib/pr-review-request.ts',
+      'apps/web/src/lib/pr-review-status.ts',
+      'apps/web/src/lib/pr-scope-reconcile-trigger.ts',
+      'apps/web/src/lib/review-verdict-gate.ts',
+    ]);
+    expect(imported.map(([f]) => f)).not.toContain('apps/web/src/lib/migration-inspector.ts');
+  });
+
   test('no core file writes the subscriptions ledger directly; it is a notifications subscriber', () => {
     const writers = pairs(current, 'backend').filter(p => p.endsWith('-> apps/web/src/lib/subscriptions.ts'));
     expect(writers).toEqual([]);
@@ -155,9 +185,19 @@ describe('the guard sees the files it polices', () => {
     expect(moduleOf('apps/web/src/lib/subscriptions.ts')).toBe('notifications');
     expect(moduleOf('apps/web/src/lib/path-claim-release.ts')).toBe('core');
     expect(moduleOf('apps/web/src/lib/credential-health.ts')).toBe('core');
+    // Trace parsing and task-page error presentation belong to the core run record,
+    // rather than the knowledge retrieval or health analytics modules.
+    expect(moduleOf('packages/core/bash-failure-trace.ts')).toBe('core');
+    expect(moduleOf('apps/web/src/app/app/(protected)/tasks/[id]/error-evidence.ts')).toBe('core');
     // Ops paging is core infrastructure every layer uses, not the health module.
     expect(moduleOf('packages/core/report-ops.ts')).toBe('core');
     expect(moduleOf('apps/web/src/app/api/cron/maintenance/route.ts')).toBe('core');
+    // The hosted-runner allowance gates the claim, so its store is core; usage analytics is not.
+    expect(moduleOf('apps/web/src/lib/hosted-runner-usage-store.ts')).toBe('core');
+    expect(moduleOf('apps/web/src/lib/usage-stats.ts')).toBe('health-quality');
+    // The question gate is core; the repair filer it recovers through is a decisions module behind a slot.
+    expect(moduleOf('apps/web/src/lib/question-gate-check.ts')).toBe('core');
+    expect(moduleOf('apps/web/src/lib/recoverable-blocker-repair.ts')).toBe('jev-decisions');
   });
 
   test('the scan finds the hot spot it exists to shrink', () => {

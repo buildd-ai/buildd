@@ -1,9 +1,11 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import Sheet from '@/components/ui/Sheet';
+import { Select } from '@/components/ui/Select';
+import { summarizeBand, bandTaskListHref } from './usage-model';
 import type { FlowSeries } from '@/lib/insights-flow';
 import {
-  BAND_HINT,
   BAND_LABEL,
   STACK,
   bandValue,
@@ -11,14 +13,6 @@ import {
   tasksInBand,
   type BandKey,
 } from './flow-chart-model';
-
-/**
- * Stacked bands of a team's tasks by stage over time. Colours are chart-local
- * steps (`--flow-*` in globals.css) validated as a set for both themes: the
- * status tokens alone collide (orange beside yellow), so the bands use their
- * own steps while "waiting on you" keeps its emphasis through order, label and
- * the legend. Lost work hangs below the axis in the error colour.
- */
 
 /** Drawn at the container's own pixel width, so axis text never scales below 11px on a phone. */
 const DEFAULT_W = 640;
@@ -66,7 +60,9 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
   const svgRef = useRef<SVGSVGElement>(null);
   const [hover, setHover] = useState<number | null>(null);
   // Touch has no pointerleave: a tap picks a time instead of hovering one.
-  const [touch, setTouch] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [releaseIndex, setReleaseIndex] = useState<number | null>(null);
+  const detailTrigger = useRef<HTMLButtonElement>(null);
   const [picked, setPicked] = useState<{ i: number; band: BandKey } | null>(null);
   const last = series.buckets.length - 1;
 
@@ -96,24 +92,35 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
 
   const onKey = (e: KeyboardEvent<SVGSVGElement>) => {
     if (last < 0) return;
-    const cur = hover ?? last;
-    if (e.key === 'ArrowLeft') { e.preventDefault(); setHover(Math.max(0, cur - 1)); }
-    if (e.key === 'ArrowRight') { e.preventDefault(); setHover(Math.min(last, cur + 1)); }
+    const cur = hover ?? picked?.i ?? last;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      const i = Math.max(0, Math.min(last, cur + (e.key === 'ArrowLeft' ? -1 : 1)));
+      setHover(i);
+      setReleaseIndex(null);
+      if (picked) setPicked({ ...picked, i });
+    }
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       const b = series.buckets[cur];
       const band = [...BANDS].sort((x, y) => bandValue(b, y) - bandValue(b, x))[0];
+      setReleaseIndex(null);
       setPicked({ i: cur, band });
     }
   };
 
-  const ri = readoutIndex(hover, picked?.i ?? null, last);
-  const rb = ri != null ? series.buckets[ri] : null;
   // The crosshair follows the pointer, or marks the picked time on touch.
-  const markIndex = hover ?? (touch && picked ? picked.i : null);
+  const markIndex = picked?.i ?? hover;
   const mb = markIndex != null ? series.buckets[markIndex] : null;
   const pickedTasks = picked ? tasksInBand(series, picked.i, picked.band) : [];
+  const summary = picked ? summarizeBand(series, picked.i, picked.band) : null;
   const pickedBucket = picked ? series.buckets[picked.i] : null;
+  const selectedX = pickedBucket ? (releaseIndex != null ? geo.releases[releaseIndex]?.x : geo.xOf((pickedBucket.start + pickedBucket.end) / 2)) ?? 0 : 0;
+  const selectedY = picked && pickedBucket ? picked.band === 'lost'
+    ? geo.lostTop + (geo.plot.bottom - geo.lostTop) * pickedBucket.lost / Math.max(1, geo.maxDown) / 2
+    : geo.zeroY - (STACK.slice(0, STACK.indexOf(picked.band as typeof STACK[number])).reduce((n, k) => n + bandValue(pickedBucket, k), 0) + bandValue(pickedBucket, picked.band) / 2) * (geo.zeroY - geo.plot.top) / geo.maxUp
+    : 0;
+  const summaryY = releaseIndex != null ? geo.plot.top : selectedY;
 
   return (
     <div data-testid="flow-chart">
@@ -121,13 +128,12 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
         <svg
           ref={svgRef}
           viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
-          className="w-full h-auto block touch-none select-none"
+          className="w-full h-auto block touch-pan-y select-none"
           role="img"
-          aria-label="Tasks by stage over time. Use left and right arrows to move, Enter to list the tasks."
+          aria-label="Tasks by stage over time. Use left and right arrows to move, Enter to inspect."
           tabIndex={0}
           onPointerMove={e => {
             if (e.pointerType === 'touch') return;
-            setTouch(false);
             setHover(indexFromPointer(e));
           }}
           onPointerLeave={() => setHover(null)}
@@ -135,7 +141,7 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
             const i = indexFromPointer(e);
             if (i < 0) return;
             const isTouch = e.pointerType === 'touch';
-            setTouch(isTouch);
+            setReleaseIndex(null);
             setHover(isTouch ? null : i);
             setPicked({ i, band: bandAt(e, i) });
           }}
@@ -151,14 +157,7 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
               </text>
             </g>
           ))}
-          {/* Lost work is its own small chart under the main one: its own name and
-              its own 0..max, so its numbers never sit on the stages' axis. */}
-          {geo.maxDown > 0 && (
-            <text x={geo.plot.left} y={geo.lostTop - 5} className="fill-text-muted" fontSize={AXIS_FONT}>
-              {BAND_LABEL.lost}
-            </text>
-          )}
-          {geo.lostTicks.map(t => (
+          {geo.lostTicks.filter(t => t.value > 0).map(t => (
             <g key={`lost-${t.value}`}>
               <line x1={geo.plot.left} x2={geo.plot.right} y1={t.y} y2={t.y} stroke="var(--border)" strokeWidth={1} />
               <text x={geo.plot.left - 6} y={t.y + 3} textAnchor="end" className="fill-text-muted" fontSize={AXIS_FONT} style={{ fontVariantNumeric: 'tabular-nums' }}>
@@ -173,100 +172,74 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
           ))}
 
           {/* Bands, then a 2px surface separator along each top edge (the gap, not a stroke). */}
-          {BANDS.map(k => geo.paths[k] && <path key={k} d={geo.paths[k]} fill={fill(k)} fillOpacity={k === 'released' ? 0.55 : 0.85} />)}
-          {BANDS.map(k => geo.edges[k] && <path key={`e-${k}`} d={geo.edges[k]} fill="none" stroke="var(--card)" strokeWidth={2} strokeLinejoin="round" />)}
+          {BANDS.map(k => geo.paths[k] && <path key={k} d={geo.paths[k]} fill={fill(k)} fillOpacity={k === 'released' ? 0.85 : k === 'waiting' || k === 'lost' ? 0.75 : 0.45} />)}
+          {(['merged', 'waiting', 'released', 'lost'] as const).map(k => geo.edges[k] && <path key={`e-${k}`} d={geo.edges[k]} fill="none" stroke="var(--card)" strokeWidth={2} strokeLinejoin="round" />)}
           <line x1={geo.plot.left} x2={geo.plot.right} y1={geo.zeroY} y2={geo.zeroY} stroke="var(--border-strong)" strokeWidth={1} />
           {geo.maxDown > 0 && (
             <line x1={geo.plot.left} x2={geo.plot.right} y1={geo.lostTop} y2={geo.lostTop} stroke="var(--border-strong)" strokeWidth={1} />
           )}
 
-          {/* Releases: a hairline and a tick at the top. */}
-          {geo.releases.map(r => (
-            <g key={`${r.at}-${r.version}`} aria-hidden>
-              <line x1={r.x} x2={r.x} y1={geo.plot.top} y2={geo.plot.bottom} stroke="var(--text-muted)" strokeWidth={1} strokeOpacity={r.shipped ? 0.8 : 0.35} />
-              <rect x={r.x - 3} y={geo.plot.top - 1} width={6} height={6} fill={r.shipped ? 'var(--flow-released)' : 'var(--flow-lost)'} />
+          {/* Release ticks are annotations; only the selected event gets a hairline. */}
+          {geo.releases.map((r, n) => (
+            <g key={`${r.at}-${r.version}-${n}`} data-testid="flow-release" role="button" tabIndex={0}
+              aria-label={`Release ${r.version ?? ''}, ${r.state}`}
+              onPointerDown={e => e.stopPropagation()}
+              onClick={() => { setReleaseIndex(n); setPicked({ i: geo.bucketIndexAt(r.x), band: 'released' }); }}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setReleaseIndex(n); setPicked({ i: geo.bucketIndexAt(r.x), band: 'released' }); } }}>
+              <rect x={r.x - 11} y={0} width={22} height={26} fill="transparent" />
+              <line x1={r.x} x2={r.x} y1={geo.plot.top} y2={geo.plot.top + 7}
+                stroke={r.state === 'failed' ? 'var(--flow-lost)' : 'var(--text-muted)'} strokeWidth={releaseIndex === n ? 3 : 1.5} />
+              {releaseIndex === n && <line data-testid="flow-release-line" x1={r.x} x2={r.x} y1={geo.plot.top} y2={geo.plot.bottom} stroke="var(--text-primary)" strokeWidth={1} />}
             </g>
           ))}
 
-          {mb && (
-            <line x1={geo.xOf((mb.start + mb.end) / 2)} x2={geo.xOf((mb.start + mb.end) / 2)} y1={geo.plot.top} y2={geo.plot.bottom} stroke="var(--text-primary)" strokeWidth={1} />
+          {mb && releaseIndex == null && (
+            <line data-testid="flow-selection" x1={geo.xOf((mb.start + mb.end) / 2)} x2={geo.xOf((mb.start + mb.end) / 2)} y1={geo.plot.top} y2={geo.plot.bottom} stroke="var(--text-primary)" strokeWidth={1} />
           )}
+          {picked && releaseIndex == null && <circle cx={selectedX} cy={selectedY} r={4} fill={fill(picked.band)} stroke="var(--text-primary)" strokeWidth={2} />}
         </svg>
+        {picked && pickedBucket && (
+          <div data-testid="flow-summary" className="absolute z-10 border border-border-strong bg-surface-1 px-2 py-1 text-meta max-w-[220px]"
+            style={{ left: Math.max(4, Math.min(VIEW_W - 224, selectedX - 110)), top: summaryY > VIEW_H / 2 ? Math.max(22, summaryY - 108) : Math.min(VIEW_H - 100, summaryY + 12) }} aria-live="polite">
+            <div className="text-text-muted">{fmtWhen(releaseIndex != null ? geo.releases[releaseIndex].at : pickedBucket.start, series.bucketMs)}</div>
+            <div className="font-semibold text-text-primary">{releaseIndex != null ? `Release ${geo.releases[releaseIndex].version ?? ''} · ${geo.releases[releaseIndex].state}` : `${BAND_LABEL[picked.band]} · ${fmtCount(bandValue(pickedBucket, picked.band))}`}</div>
+            <button ref={detailTrigger} data-testid="flow-details-trigger" type="button" className="min-h-[44px] text-accent-text" onClick={() => { boxRef.current?.scrollIntoView?.({ block: 'start', behavior: 'instant' }); setDetailOpen(true); }}>View tasks ({pickedTasks.length})</button>
+          </div>
+        )}
       </div>
 
-      {/* Readout under the plot, never over it: the hovered time, else the
-          tapped one, else the latest. */}
-      {rb && (
-        <div data-testid="flow-readout" className="mt-2 border-t border-border-default pt-2 text-meta" aria-live="polite">
-          <div className="text-text-muted">{fmtWhen(rb.start, series.bucketMs)}</div>
-          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-            {[...BANDS].reverse().map(k => (
-              <span key={k} className="inline-flex items-center gap-1.5">
-                <span aria-hidden className="inline-block w-3 h-0.5" style={{ background: fill(k) }} />
-                <span className="font-semibold text-text-primary" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtCount(bandValue(rb, k))}</span>
-                <span className="text-text-secondary">{BAND_LABEL[k]}</span>
-              </span>
-            ))}
-          </div>
-          {Object.keys(rb.running).length > 0 && (
-            <div className="mt-1 text-text-muted">
-              {Object.entries(rb.running).sort((a, b) => b[1] - a[1]).map(([role, v]) => `${role} ${fmtCount(v)}`).join(' · ')}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Legend: always present, swatch beside text-token labels. */}
-      <ul className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5" data-testid="flow-legend">
-        {BANDS.map(k => (
-          <li key={k} className="flex items-start gap-2 text-meta">
-            <span aria-hidden className="mt-1 inline-block w-3 h-3 shrink-0" style={{ background: fill(k), opacity: k === 'released' ? 0.55 : 0.85 }} />
-            <span>
-              <span className={k === 'waiting' ? 'font-semibold text-text-primary' : 'text-text-secondary'}>{BAND_LABEL[k]}</span>
-              <span className="text-text-muted"> · {BAND_HINT[k]}</span>
-            </span>
-          </li>
+      <ul className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-meta text-text-secondary" data-testid="flow-legend">
+        {([['released', 'Released'], ['running', 'In flight'], ['waiting', 'Needs input'], ['lost', 'Failed / abandoned']] as const).map(([k, label]) => (
+          <li key={k} className="flex items-center gap-1.5"><span aria-hidden className="w-3 h-2 shrink-0" style={{ background: fill(k) }} />{label}</li>
         ))}
       </ul>
-
       {/* The tapped band at the tapped time: the tasks behind the area. */}
       {picked && pickedBucket && (
-        <section className="mt-4 border-2 border-border-strong bg-surface-2 p-3" data-testid="flow-picked" aria-live="polite">
-          <div className="flex items-baseline justify-between gap-3">
-            <h3 className="text-title font-semibold">
-              {BAND_LABEL[picked.band]} <span className="font-normal text-text-muted">· {fmtWhen(pickedBucket.start, series.bucketMs)}</span>
-            </h3>
-            <button type="button" className="btn btn-sm shrink-0" onClick={() => setPicked(null)}>Close</button>
+        <Sheet open={detailOpen} onClose={() => setDetailOpen(false)} title={releaseIndex != null ? `Release ${geo.releases[releaseIndex]?.version ?? ''}` : BAND_LABEL[picked.band]}
+          contextual height="auto" testId="flow-picked" returnFocusRef={detailTrigger}
+>
+          <p className="text-meta text-text-muted">{fmtWhen(pickedBucket.start, series.bucketMs)}</p>
+          <div className="mt-2 flex items-center gap-2 text-meta text-text-secondary">
+            <span>Stage</span>
+            <Select<BandKey> aria-label="Stage" className="min-w-0 flex-1" value={picked.band}
+              options={BANDS.map(k => ({ value: k, label: BAND_LABEL[k] }))}
+              onChange={band => { setReleaseIndex(null); setPicked({ i: picked.i, band }); }} />
           </div>
-          <div className="mt-2 flex flex-wrap gap-1" role="group" aria-label="Stage">
-            {BANDS.map(k => (
-              <button
-                key={k}
-                type="button"
-                aria-pressed={picked.band === k}
-                onClick={() => setPicked({ i: picked.i, band: k })}
-                className={`px-2 min-h-[32px] border border-border-strong text-chip uppercase tracking-wider ${picked.band === k ? 'bg-surface-3 text-text-primary' : 'text-text-muted'}`}
-              >
-                {BAND_LABEL[k]}
-              </button>
-            ))}
-          </div>
-          {pickedTasks.length === 0 ? (
-            <p className="mt-3 text-body text-text-muted">No tasks in this stage then.</p>
-          ) : (
-            <ul className="mt-3 divide-y divide-border-default">
-              {pickedTasks.slice(0, 25).map(t => (
-                <li key={t.key} className="py-2">
-                  <a href={taskHref(t.key)} className="block min-h-[44px] md:min-h-0 text-body text-text-primary hover:text-accent-text">
-                    {t.title}
-                    <span className="block text-meta text-text-muted">{t.role}</span>
-                  </a>
-                </li>
+          {summary && <>
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3" data-testid="flow-breakdown">
+              {([['Role', summary.roles], ['Workspace', summary.workspaces], ['Outcome', summary.outcomes]] as const).map(([label, rows]) => (
+                <div key={label}><h3 className="text-meta font-semibold">{label}</h3>
+                  <ul className="mt-1 text-meta text-text-secondary">{rows.map(r => <li key={r.label} className="flex justify-between gap-3"><span className="min-w-0 break-words">{r.label}</span><span>{r.count}</span></li>)}</ul>
+                </div>
               ))}
-              {pickedTasks.length > 25 && <li className="py-2 text-meta text-text-muted">and {pickedTasks.length - 25} more</li>}
+            </div>
+            <h3 className="mt-4 text-meta font-semibold">Recent tasks</h3>
+            <ul className="divide-y divide-border-default">
+              {summary.recent.map(t => <li key={t.key} className="py-2"><a href={taskHref(t.key)} className="block min-h-[44px] text-body text-text-primary hover:text-accent-text">{t.title}<span className="block text-meta text-text-muted">{t.role}</span></a></li>)}
             </ul>
-          )}
-        </section>
+            <a data-testid="flow-task-list" className="block min-h-[44px] mt-2 text-body text-accent-text" href={bandTaskListHref(series, picked.i, picked.band)}>View all tasks ({summary.total})</a>
+          </>}
+        </Sheet>
       )}
 
       {/* Table view: the same numbers without the chart, per day. */}
@@ -289,7 +262,7 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
               ))}
             </tbody>
           </table>
-          <p className="mt-1 text-meta text-text-muted">Work stages are the day's average; released and failed are running totals at the end of the day.</p>
+
         </div>
       </details>
     </div>

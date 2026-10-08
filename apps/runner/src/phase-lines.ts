@@ -6,7 +6,7 @@
  * and of the runner's own dependency install, and of the warm-repo steps
  * (restore, the post-restore fetch, the snapshot upload; warm-repo.ts).
  * Alongside them: `BUILDD_METRIC=<name> <integer>` for byte counts and ages,
- * and `BUILDD_REPO_SOURCE=warm` or `BUILDD_REPO_SOURCE=clone <reason>` saying
+ * and `BUILDD_REPO_SOURCE=warm`, `BUILDD_REPO_SOURCE=reuse` or `BUILDD_REPO_SOURCE=clone <reason>` saying
  * how the repo got onto the disk, and `BUILDD_WARM_UPLOAD=skipped <reason>`
  * when a warm upload was skipped. apps/cloud-runner reads them all into its
  * per-run report (src/run-report.ts parses the same formats; a test there
@@ -14,6 +14,9 @@
  *
  * Off everywhere else, so a long-lived runner's log is unchanged.
  */
+
+export const WORKTREE_MODE_LINE_PREFIX = 'BUILDD_WORKTREE_MODE=';
+export type WorktreeMode = 'clone' | 'worktree';
 
 export const PHASE_LINE_PREFIX = 'BUILDD_PHASE=';
 
@@ -23,6 +26,9 @@ export const RUN_PHASES = [
   'warm_upload_start', 'warm_upload_end',
   'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
   'restore_cache_start', 'restore_cache_end',
+  // A reused container: the clone grown from the packs the reset kept (container-reset.ts).
+  'restore_reuse_start', 'restore_reuse_end',
+  'worktree_start', 'worktree_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 
@@ -30,6 +36,9 @@ export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
 export const RUN_METRICS = [
   'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
   'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes',
+  // resource-sampler.ts: working-set peak, the memory it is measured against,
+  // lowest free disk and the disk's size. Re-printed as they move; last wins.
+  'mem_peak_bytes', 'mem_limit_bytes', 'disk_free_min_bytes', 'disk_total_bytes',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 
@@ -74,7 +83,8 @@ export const REPO_SOURCE_LINE_PREFIX = 'BUILDD_REPO_SOURCE=';
 /** Why the repo was cloned rather than restored from a warm snapshot. */
 export const REPO_FALLBACK_REASONS = ['disabled', 'no_snapshot', 'unavailable', 'disk', 'restore_failed'] as const;
 export type RepoFallbackReason = typeof REPO_FALLBACK_REASONS[number];
-export type RepoSource = 'warm' | 'clone';
+/** `reuse`: grown from the packs a container reset kept (container-reset.ts). */
+export type RepoSource = 'warm' | 'clone' | 'reuse';
 
 export function formatMetricLine(name: RunMetric, value: number): string {
   const v = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
@@ -82,7 +92,7 @@ export function formatMetricLine(name: RunMetric, value: number): string {
 }
 
 export function formatRepoSourceLine(source: RepoSource, reason?: RepoFallbackReason): string {
-  return source === 'warm' ? `${REPO_SOURCE_LINE_PREFIX}warm` : `${REPO_SOURCE_LINE_PREFIX}clone ${reason ?? 'disabled'}`;
+  return source === 'clone' ? `${REPO_SOURCE_LINE_PREFIX}clone ${reason ?? 'disabled'}` : `${REPO_SOURCE_LINE_PREFIX}${source}`;
 }
 
 export function formatPhaseLine(phase: RunPhase, at: number): string {
@@ -129,11 +139,20 @@ export function emitWarmRefresh(reason: WarmRefreshReason, opts: EmitOpts = {}):
 }
 
 /** Run `fn` between `<step>_start` and `<step>_end`; the end is printed even if it throws. */
-export function timedPhase<T>(step: 'clone' | 'install' | 'restore_warm' | 'fetch' | 'warm_upload' | 'park' | 'restore_park' | 'restore_cache', fn: () => T, opts?: EmitOpts): T {
+export function timedPhase<T>(step: 'worktree' | 'clone' | 'install' | 'restore_warm' | 'fetch' | 'warm_upload' | 'park' | 'restore_park' | 'restore_cache', fn: () => T, opts?: EmitOpts): T {
   emitPhase(`${step}_start`, opts);
   try {
     return fn();
   } finally {
     emitPhase(`${step}_end`, opts);
   }
+}
+
+export function formatWorktreeModeLine(mode: WorktreeMode): string {
+  return `${WORKTREE_MODE_LINE_PREFIX}${mode}`;
+}
+
+export function emitWorktreeMode(mode: WorktreeMode, opts: EmitOpts = {}): void {
+  if (!phaseLinesEnabled(opts?.env ?? process.env)) return;
+  (opts?.log ?? console.log)(formatWorktreeModeLine(mode));
 }

@@ -5,7 +5,8 @@ import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mis
 import { evaluateMissionWorkState, findMissionPrOwner } from '@/lib/mission-pr';
 import { eq, and, gte, desc } from 'drizzle-orm';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
-import { deriveLineageSupersession, isPrUnshipped, prShipState, type SupersessionScan, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
+import { deriveLineageSupersession, isPrUnshipped, prShipState, withDeliveryShip, type SupersessionScan, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
+import { deliveryShipsForPrs, shipKey } from '@/lib/workflow/delivery-ship';
 import { MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import type { CriterionVerdict, GoalCriteriaState, GoalCriterion } from '@buildd/shared';
@@ -442,13 +443,19 @@ export async function canCompleteMission(
   // closed PR followed by a merged PR from its own retry attempt is shipped
   // without a manual record. Derived over every task's latest worker, attempts
   // included, since the successor PR usually sits on the attempt row.
+  //
+  // For a PR the workflow kernel owns, its delivery is the authority and the row's
+  // columns are only its projection (docs/specs/workflow-state-kernel.md §17.3,
+  // Slice D): `withDeliveryShip` makes `prShipState` answer from the delivery.
+  const latestRows = allTasks.flatMap(t => {
+    const w = (t as unknown as { workers?: WorkerRow[] }).workers?.[0];
+    return w ? [{ ...w, taskId: t.id, workspaceId: t.workspaceId }] : [];
+  });
+  const ships = await deliveryShipsForPrs(latestRows);
   const derivedByTask = new Map(
     deriveLineageSupersession(
       allTasks,
-      allTasks.flatMap(t => {
-        const w = (t as unknown as { workers?: WorkerRow[] }).workers?.[0];
-        return w ? [{ ...w, taskId: t.id }] : [];
-      }),
+      latestRows.map(w => withDeliveryShip(w, ships.get(shipKey(w.workspaceId, w.prUrl) ?? ''))),
     ).map(w => [w.taskId, w as WorkerRow]),
   );
   const latestWorker = (t: { id: string }) => derivedByTask.get(t.id);

@@ -9,6 +9,7 @@ import {
   OPENROUTER_AGENT_BASE_URL,
   agentBaseUrlFromGateway,
   agentEndpointProbeModel,
+  effectiveToolSearch,
   endpointAppliesTo,
   mapAgentModel,
   parseAgentEndpointBlob,
@@ -124,6 +125,7 @@ describe('gateway reference → agent base', () => {
       kind: 'gateway', baseUrl: 'https://litellm.example.com', apiKey: 'sk-gw', authHeader: 'authorization', models: {},
       // The OpenAI-compatible root for Codex is the gateway's own root, unaffected by the Anthropic-side derivation above.
       openAiBaseUrl: 'https://litellm.example.com/v1',
+      toolSearch: false,
     });
     expect(resolveEndpointFromBlob({ kind: 'gateway', agentBaseUrl: 'https://litellm.example.com/anthropic' }, gw)?.baseUrl)
       .toBe('https://litellm.example.com/anthropic');
@@ -138,6 +140,7 @@ describe('gateway reference → agent base', () => {
     expect(r).toEqual({
       kind: 'openrouter', baseUrl: OPENROUTER_AGENT_BASE_URL, apiKey: 'sk-or', authHeader: 'authorization', models: {},
       openAiBaseUrl: `${OPENROUTER_AGENT_BASE_URL}/v1`,
+      toolSearch: true,
     });
   });
 
@@ -149,6 +152,51 @@ describe('gateway reference → agent base', () => {
   it('openrouter\'s OpenAI-compatible root is its Anthropic-compatible root plus /v1', () => {
     const r = resolveEndpointFromBlob({ kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', apiKey: 'sk-or', authHeader: 'authorization' }, null);
     expect(r?.openAiBaseUrl).toBe('https://openrouter.ai/api/v1');
+  });
+});
+
+describe('capabilities.toolSearch (deferred tool loading)', () => {
+  const gw = { baseURL: 'https://litellm.example.com/v1', apiKey: 'sk-gw' };
+  const custom = { kind: 'anthropic-compatible' as const, baseUrl: 'https://litellm.example.com', apiKey: 'k', authHeader: 'authorization' as const };
+  const or = { kind: 'openrouter' as const, baseUrl: OPENROUTER_AGENT_BASE_URL, apiKey: 'k', authHeader: 'authorization' as const };
+
+  it('kind defaults: openrouter on, gateway and anthropic-compatible off', () => {
+    expect(effectiveToolSearch('openrouter')).toBe(true);
+    expect(effectiveToolSearch('gateway')).toBe(false);
+    expect(effectiveToolSearch('anthropic-compatible')).toBe(false);
+  });
+
+  it('an explicit value wins either way, including the OpenRouter escape hatch', () => {
+    expect(effectiveToolSearch('openrouter', { toolSearch: false })).toBe(false);
+    expect(effectiveToolSearch('gateway', { toolSearch: true })).toBe(true);
+    expect(effectiveToolSearch('anthropic-compatible', { toolSearch: true })).toBe(true);
+  });
+
+  it('resolves into the route for every kind', () => {
+    expect(resolveEndpointFromBlob({ kind: 'gateway', capabilities: { toolSearch: true } }, gw)?.toolSearch).toBe(true);
+    expect(resolveEndpointFromBlob({ kind: 'gateway' }, gw)?.toolSearch).toBe(false);
+    expect(resolveEndpointFromBlob(custom, null)?.toolSearch).toBe(false);
+    expect(resolveEndpointFromBlob({ ...custom, capabilities: { toolSearch: true } }, null)?.toolSearch).toBe(true);
+    expect(resolveEndpointFromBlob(or, null)?.toolSearch).toBe(true);
+    expect(resolveEndpointFromBlob({ ...or, capabilities: { toolSearch: false } }, null)?.toolSearch).toBe(false);
+  });
+
+  it('validates, stores only what was set, and round-trips', () => {
+    const g = validateAgentEndpointInput({ kind: 'gateway', capabilities: { toolSearch: true } });
+    expect(g.ok && g.blob).toEqual({ kind: 'gateway', capabilities: { toolSearch: true } });
+    const o = validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'k', capabilities: { toolSearch: false } });
+    expect(o.ok && o.blob.capabilities).toEqual({ toolSearch: false });
+    if (o.ok) expect(parseAgentEndpointBlob(serializeAgentEndpoint(o.blob))).toEqual(o.blob);
+    for (const capabilities of [null, {}, { toolSearch: null }]) {
+      const v = validateAgentEndpointInput({ kind: 'gateway', capabilities });
+      expect(v.ok && 'capabilities' in v.blob).toBe(false);
+    }
+  });
+
+  it('refuses a non-boolean flag or an unknown capability', () => {
+    for (const capabilities of [{ toolSearch: 'yes' }, { toolSearch: 1 }, { other: true }, [], 'on']) {
+      expect(validateAgentEndpointInput({ kind: 'gateway', capabilities }).ok).toBe(false);
+    }
   });
 });
 

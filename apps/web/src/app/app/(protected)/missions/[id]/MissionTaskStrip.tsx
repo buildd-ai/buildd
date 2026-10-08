@@ -30,20 +30,21 @@
  * - The actions are `TaskActionZone`, the renderer the task sheet and the
  *   task page mount, from the board model already loaded (no fetch on select).
  */
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { memo, useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatAge, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
 import { taskPageHref } from '@/lib/mission-task-href';
 import { taskActionPhase, type MissionExecutor } from '@/lib/task-actions';
 import {
-  activeIndices, DENSE_STRIP_CELLS, defaultStripSelection, heldCount, heldIndices, nextOpenIndex, slotIndexOf, slotMarks,
-  stepIndex, stripBlockerCount, stripCaretLeft, stripMarks, stripOrdinal, stripSelectionReason, stripSlots, stripTick,
-  type StripSlot, type StripState,
+  DENSE_STRIP_CELLS, defaultStripSelection, errorIndices, heldIndices, nextOpenIndex, openIndices,
+  slotIndexOf, slotMarks, stepIndex, stripBlockerCount, stripCaretLeft, stripMarks, stripOrdinal, stripSelectionReason,
+  stripCountsLabel, stripSlotCounts, stripSlots, stripTick, stripTone, type StripSlot, type StripState, type StripTone,
 } from '@/lib/mission-task-strip';
 import { useMissionStrip } from '@/components/missions/mission-strip-context';
 import {
-  LandedMeter, RoleGlyph, SectionLabel, STRIP_DRAWER_ID, stripTone, taskSheetHref,
-  type BoardLinkContext, type StripTone,
+  LandedMeter, RoleGlyph, SectionLabel, STRIP_DRAWER_ID, TONE_BG, TONE_BORDER, TONE_TEXT, taskSheetHref,
+  type BoardLinkContext,
 } from './MissionBoardParts';
 import TaskActionZone from './TaskActionZone';
 
@@ -69,21 +70,14 @@ const STATUS_PILL: Record<StripState, string> = {
   ci_failed: 'CI failed', fixing: 'Fixing', failed: 'Failed', ready: 'Ready', blocked: 'Blocked', queued: 'Queued',
 };
 
-const TONE_BORDER: Record<StripTone, string> = {
-  ok: 'border-status-success',
-  error: 'border-status-error',
-  open: 'border-accent',
-};
-const TONE_BG: Record<StripTone, string> = {
-  ok: 'bg-status-success',
-  error: 'bg-status-error',
-  open: 'bg-accent',
-};
-const TONE_TEXT: Record<StripTone, string> = {
-  ok: 'text-status-success',
-  error: 'text-status-error',
-  open: 'text-accent-text',
-};
+/**
+ * The drawer's status pill: a kernel-owned delivery's canonical label (the
+ * words Home, the task list and chat say), else the strip state's own word.
+ */
+export function stripDrawerPill(t: Pick<BoardTask, 'delivery'>, state: StripState, executor: MissionExecutor | null): string {
+  if (t.delivery) return t.delivery.label;
+  return state === 'ready' && executor === 'local' ? 'Needs claim' : STATUS_PILL[state];
+}
 
 const STEP_BTN = 'inline-flex h-11 items-center justify-center border-[1.5px] border-border-default font-mono text-text-primary hover:bg-surface-3 disabled:opacity-40';
 
@@ -116,29 +110,35 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
     return s.kind === 'fold' ? `+${s.taskIds.length}` : stripTick(i);
   };
   const marks = slotMarks(slots, selection.marks, sel);
-  // Next open cycles through active cells only (NX-1); held ones are skipped.
-  const active = activeIndices(slots);
-  const held = heldCount(slots);
-  const target = active.length > 0 ? nextOpenIndex(active, sel) : (heldIndices(slots)[0] ?? null);
+  // Next open cycles through open cells only (NX-1): held ones are skipped,
+  // and so are failed ones. Failed is its own bucket (TONE-1): "N open" never
+  // counts a failed cell, so the cycle must not visit one either (NX-2).
+  const open = openIndices(slots);
+  const failedAt = errorIndices(slots);
+  const counts = stripSlotCounts(slots);
+  const held = counts.held;
+  const target = open.length > 0 ? nextOpenIndex(open, sel) : (failedAt[0] ?? heldIndices(slots)[0] ?? null);
   const tone = stripTone(slot.state);
   const caret = stripCaretLeft(sel, n);
-  const nextOpenLabel = active.length === 0
-    ? (held > 0 ? `Nothing open · ${held} held` : 'All tasks landed')
-    : target === sel ? `Only open task · ${stripTick(sel)}` : `Next open · ${stripTick(target!)}`;
+  const nextOpenLabel = open.length > 0
+    ? (target === sel ? `Only open task · ${stripTick(sel)}` : `Next open · ${stripTick(target!)}`)
+    : counts.failed > 0 ? `Nothing open · ${counts.failed} failed`
+    : held > 0 ? `Nothing open · ${held} held` : 'All tasks landed';
   const gap = n > DENSE_STRIP_CELLS ? '[--strip-gap:1px]' : `[--strip-gap:4px] ${compact ? '' : 'md:[--strip-gap:6px]'}`;
+  const openJumpLabel = stripCountsLabel(counts);
 
   return (
     <div data-testid="landed-strip-band" data-cells={n} className={`flex flex-col gap-1.5 ${gap}`}>
       <div className="flex min-h-11 items-center justify-between">
         <SectionLabel>Landed</SectionLabel>
-        {(active.length > 0 || held > 0) && (
+        {(open.length > 0 || counts.failed > 0 || held > 0) && (
           <button
             type="button"
             data-testid="landed-strip-open-jump"
             onClick={() => target != null && select(slots[target].id)}
-            className="-mr-3 inline-flex h-11 items-center px-3 font-mono text-body font-semibold text-accent-text hover:underline"
+            className={`-mr-3 inline-flex h-11 items-center px-3 font-mono text-body font-semibold hover:underline ${counts.failed > 0 && counts.open + counts.active === 0 ? TONE_TEXT.error : 'text-accent-text'}`}
           >
-            {`${active.length} open${held > 0 ? ` · ${held} held` : ''} ›`}
+            {`${openJumpLabel} ›`}
           </button>
         )}
       </div>
@@ -174,7 +174,7 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
       </div>
       {/* Phone: ‹ [Next open] ›. Desktop: ‹ › [Next open]. */}
       <div className="mt-2 flex gap-2">
-        <button type="button" data-testid="landed-strip-prev" aria-label="Previous task" onClick={() => select(slots[stepIndex(sel, -1, n)].id)} className={`${STEP_BTN} order-1 w-11 text-[18px]`}>‹</button>
+        <button type="button" data-testid="landed-strip-prev" aria-label="Previous task" onClick={() => select(slots[stepIndex(sel, -1, n)].id)} className={`${STEP_BTN} order-1 w-11 text-heading`}>‹</button>
         <button
           type="button"
           data-testid="landed-strip-next-open"
@@ -184,7 +184,7 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
         >
           {nextOpenLabel}
         </button>
-        <button type="button" data-testid="landed-strip-next" aria-label="Next task" onClick={() => select(slots[stepIndex(sel, 1, n)].id)} className={`${STEP_BTN} order-3 w-11 text-[18px] ${compact ? '' : 'md:order-2'}`}>›</button>
+        <button type="button" data-testid="landed-strip-next" aria-label="Next task" onClick={() => select(slots[stepIndex(sel, 1, n)].id)} className={`${STEP_BTN} order-3 w-11 text-heading ${compact ? '' : 'md:order-2'}`}>›</button>
       </div>
       {!compact && (
         <span className="hidden font-mono text-eyebrow text-text-muted md:block">← → to move between tasks</span>
@@ -217,6 +217,8 @@ interface StripDrawerProps {
  * held task's sentence is what holds it (`stripSelectionReason`).
  */
 export function stripReason(t: BoardTask, executor: MissionExecutor | null): string | null {
+  // A kernel-owned delivery says where it stands in its own words (§17.5).
+  if (t.kernelReason && t.status !== 'merged' && t.status !== 'done' && t.status !== 'blocked') return t.kernelReason;
   switch (t.status) {
     case 'merged':
     case 'done':
@@ -249,13 +251,16 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
     blockedByCount,
   });
   const why = landed ? null : reason ?? selectionReason ?? stripReason(t, executor);
-  const pill = state === 'ready' && executor === 'local' ? 'Needs claim' : STATUS_PILL[state];
+  const pill = stripDrawerPill(t, state, executor);
   const meta = [
     t.pr ? `PR #${t.pr.number}` : null,
     landed && t.endedAt != null ? `landed ${formatAge(now - t.endedAt)} ago` : null,
     t.id.slice(0, 8),
   ].filter(Boolean).join(' · ');
-  const twoCol = compact ? '' : 'md:grid md:grid-cols-[minmax(0,1fr)_minmax(200px,auto)] md:gap-6';
+  // One column at every width: the title and reason take the drawer's full
+  // width, and the actions sit below them (a side column squeezed the title
+  // to a word or two per line in the band's half-width Landed cell).
+  const action = !landed && t.delivery?.action ? t.delivery.action : null;
 
   return (
     <div
@@ -265,7 +270,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
       data-testid="landed-strip-drawer"
       data-task-ref={t.id}
       data-status={state}
-      className={`relative mt-2.5 border-2 bg-surface-1 p-4 outline-none transition-colors duration-200 motion-reduce:transition-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-text-primary ${TONE_BORDER[tone]} ${twoCol}`}
+      className={`relative mt-2.5 border-2 bg-surface-1 p-4 outline-none transition-colors duration-200 motion-reduce:transition-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-text-primary ${TONE_BORDER[tone]}`}
     >
       {/* The caret: the drawer's own corner, pointing at the selected cell. */}
       <span
@@ -283,11 +288,11 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
             </span>
           )}
         </div>
-        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-[15px]' : 'text-[15px] md:text-[18px]'}`}>{t.title}</p>
+        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-lede' : 'text-lede'}`}>{t.title}</p>
         {why && <p data-testid="landed-strip-drawer-reason" className="font-mono text-body leading-normal text-text-secondary [overflow-wrap:anywhere]">{why}</p>}
         <p className="font-mono text-meta text-text-muted">{meta}</p>
       </div>
-      <div className={`mt-3 flex min-w-0 flex-col gap-2 ${compact ? '' : 'md:mt-0'}`}>
+      <div className="mt-3 flex min-w-0 flex-col gap-2">
         {!landed && (
           <TaskActionZone
             key={t.id}
@@ -298,6 +303,8 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
             blockedByCount={blockedByCount}
             backend={t.backend}
             lastError={null}
+            failureKind={t.failureKind}
+            auditTaskId={t.failureKind === 'verification' && isSurfaceAuditTask(t.title) ? t.id : null}
             worker={t.workerId ? { id: t.workerId, waitingFor: t.waitingFor } : null}
             historyHref={taskPageHref({ taskId: t.id, missionId: link.missionId })}
             roleSlug={t.roleSlug}
@@ -307,6 +314,16 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
           />
         )}
         <div className="flex flex-wrap gap-2">
+          {action && (
+            // S37: the same next move Home's card offers for this delivery.
+            <a
+              href={taskPageHref({ taskId: action.taskId, missionId: link.missionId })}
+              data-testid="landed-strip-drawer-delivery-action"
+              className="inline-flex h-11 flex-1 items-center justify-center border-[1.5px] border-accent bg-accent px-3.5 font-mono text-body font-semibold text-white hover:bg-primary-hover"
+            >
+              {action.label}
+            </a>
+          )}
           {landed && t.pr?.url && (
             <a href={t.pr.url} target="_blank" rel="noopener noreferrer" className="inline-flex h-11 flex-1 items-center justify-center border-[1.5px] border-border-strong px-3.5 font-mono text-body font-semibold text-text-primary hover:bg-surface-3">
               {`PR #${t.pr.number} ↗`}
@@ -354,7 +371,7 @@ const FoldDrawer = memo(function FoldDrawer({ ref, slot, index, tone, caret, lin
         style={{ left: caret }}
       />
       <span className="font-mono text-meta font-semibold tabular-nums text-text-primary">{stripTick(index)}</span>
-      <p className="font-mono text-[15px] font-semibold text-text-primary">
+      <p className="font-mono text-lede font-semibold text-text-primary">
         {`${k} ${slot.state === 'landed' ? 'landed' : 'queued'} tasks`}
       </p>
       <a

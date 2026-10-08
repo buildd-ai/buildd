@@ -5,6 +5,7 @@ import { eq, and } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import crypto from 'crypto';
 import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
+import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
 
 // GET /api/teams/[id]/invitations — list pending invitations
 export async function GET(
@@ -115,6 +116,11 @@ export async function POST(
     if (existingInvite) {
       return NextResponse.json({ error: 'A pending invitation already exists for this email' }, { status: 409 });
     }
+
+    // A pending invite holds a seat. Past the paid seats: refuse and point the
+    // owner at Billing to add seats, never charge silently.
+    const seat = await checkSeatForNewMember(teamId, { countPending: true });
+    if (!seat.ok) return seatsExhaustedResponse(seat, 'manager');
 
     const token = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days

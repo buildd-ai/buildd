@@ -28,10 +28,12 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/task-shape-contract.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import type { LocalUIConfig } from '../../src/types';
+import { cleanupTestWorkspace } from '../test-workspace';
 import {
   type Script,
   init, say, success, errorResult, completeTask, createPr, createArtifact,
@@ -549,6 +551,10 @@ describe('task-shape contract: terminal outcome through the real completion path
   let manager: InstanceType<typeof WorkerManager>;
   let seq = 0;
 
+  afterAll(() => {
+    cleanupTestWorkspace();
+  });
+
   beforeEach(reset);
   afterEach(() => { manager?.destroy(); });
 
@@ -635,6 +641,10 @@ function sdkResultSubtypes(src: string): string[] {
 }
 
 describe('task-shape contract: every shape discriminator has a row', () => {
+  afterAll(() => {
+    cleanupTestWorkspace();
+  });
+
   const covered = {
     outputRequirement: new Set(SHAPES.map(s => (s.task.outputRequirement as string | undefined) ?? 'auto')),
     mode: new Set(SHAPES.map(s => (s.task.mode as string | undefined) ?? 'execution')),

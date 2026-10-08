@@ -11,7 +11,10 @@ import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
 import type { VisualReviewModel } from '@buildd/shared';
+import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 import { describeBackendRouting } from '@buildd/core/backend-policy';
+import { loadTaskFailureKind } from '@/lib/task-failure-kind-load';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -122,6 +125,12 @@ export async function GET(
     const worker = latestWorkers[0] || null;
     const result = task.result as { summary?: string; nextSuggestion?: string } | null;
 
+    // Slice F (§13.10): a kernel-owned PR's state is its delivery's, so the
+    // drawer's PR card never reads the worker columns for it. Null for a
+    // legacy or PR-less task: the card keeps the fact cache.
+    const kernelView = worker?.prNumber != null ? (await getDeliveryViewsForTasks([task.id])).get(task.id) : undefined;
+    const prState = kernelView && kernelView.prNumber === worker?.prNumber ? kernelView.prState : null;
+
     // Failover metadata lives on task.context (stamped when a Claude task is
     // flipped to Codex on budget exhaustion). Surface just the display bits so
     // the panel can show "ran on Codex after Claude budget hit".
@@ -219,6 +228,13 @@ export async function GET(
       ).length;
     }
 
+    let failureKind: Awaited<ReturnType<typeof loadTaskFailureKind>> = null;
+    try {
+      failureKind = await loadTaskFailureKind(task);
+    } catch (err) {
+      console.error('Task summary: failure kind load failed', err);
+    }
+
     return NextResponse.json({
       id: task.id,
       title: task.title,
@@ -232,6 +248,10 @@ export async function GET(
       missionId: task.missionId,
       // A local mission's task is claimed from a session: the sheet shows claim_task.
       missionExecutor: task.mission?.executor ?? null,
+      // Queued on a plan limit by a managed runner: the sheet shows the entitlement state.
+      entitlementBlock: task.status === 'pending'
+        ? parseEntitlementBlock((task.context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY])
+        : null,
       backend: task.backend,
       failover,
       worker: worker
@@ -244,6 +264,7 @@ export async function GET(
             prNumber: worker.prNumber,
             prLifecycleStatus: worker.prLifecycleStatus,
             mergedAt: worker.mergedAt,
+            prState,
             commitCount: worker.commitCount,
             filesChanged: worker.filesChanged,
             linesAdded: worker.linesAdded,
@@ -271,6 +292,7 @@ export async function GET(
           }
         : null,
       blockedByCount,
+      failureKind,
       records,
       origin,
       visual,

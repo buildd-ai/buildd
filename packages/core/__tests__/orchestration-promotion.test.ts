@@ -47,9 +47,11 @@ const resolve = (over: Partial<Parameters<typeof resolveApplyingFraction>[0]> = 
 });
 
 describe('shipped state', () => {
-  it('records no promotion: every cohort resolves to zero', () => {
+  it('records no promotion: every guarded cohort resolves to zero', () => {
     expect(ORCHESTRATION_PROMOTIONS).toEqual([]);
-    expect(CLAIM_HOLD_APPLYING_FRACTION).toBe(0);
+    // Claim hold/start no longer goes through this guard (owner decision,
+    // task 7eb191b9): it applies at its committed fraction, rollback = 0.
+    expect(CLAIM_HOLD_APPLYING_FRACTION).toBe(1);
     const r = resolveApplyingFraction({ decision: gated(), question: 'action', candidatePolicyVersion: 'ch1.open_pr_overlap', requestedFraction: 0.5 });
     expect(r).toEqual({ fraction: 0, refusal: 'no_evidence' });
   });
@@ -87,7 +89,8 @@ describe('resolveApplyingFraction', () => {
   });
 
   it('a shadow definition never applies, whatever the evidence says', () => {
-    expect(resolve({ decision: CLAIM_HOLD_DECISION })).toEqual({ fraction: 0, refusal: 'shadow_mode' });
+    const shadow = defineDecision({ id: CLAIM_HOLD_DECISION.id, promptVersion: 'ch1', questions: CLAIM_HOLD_QUESTIONS, mode: 'shadow' });
+    expect(resolve({ decision: shadow })).toEqual({ fraction: 0, refusal: 'shadow_mode' });
   });
 
   it('refuses without evidence for this decision and candidate policy', () => {

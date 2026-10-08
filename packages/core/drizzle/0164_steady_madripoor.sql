@@ -1,1 +1,0 @@
-ALTER TABLE "missions" ADD COLUMN "criteria_reviewer_findings" jsonb;

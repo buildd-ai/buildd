@@ -7,6 +7,7 @@ import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/li
 import type { MissionDisplayState } from '@/lib/mission-helpers';
 import Spinner from '@/components/Spinner';
 import { Select } from '@/components/ui/Select';
+import { humanPickableRoles } from '@buildd/shared';
 
 /**
  * Every way a manual orchestrator run can end. `runMission` has five distinct
@@ -38,9 +39,13 @@ export function quickAddTaskBody(input: {
   return roleSlug ? { title, workspaceId, missionId, roleSlug } : { title, workspaceId, missionId };
 }
 
-/** The quick-add picker's options: "Any role" first, then the workspace's roles. */
+/**
+ * The quick-add picker's options: "Any role" first, then the workspace's
+ * roles, without the system ones (the visual auditor is the header's "Visual
+ * review", never a hand-written task).
+ */
 export function quickAddRoleOptions(roles: { slug: string; name: string }[]): { value: string; label: string }[] {
-  return [{ value: '', label: 'Any role' }, ...roles.map(r => ({ value: r.slug, label: r.name }))];
+  return [{ value: '', label: 'Any role' }, ...humanPickableRoles(roles).map(r => ({ value: r.slug, label: r.name }))];
 }
 
 interface MissionSettingsProps {
@@ -64,6 +69,8 @@ interface MissionSettingsProps {
    * owner had to decode. When the header has a suggestion, this panel has none.
    */
   hasPrimaryAction?: boolean;
+  /** Who claims the tasks: runners, or a person's local session. Null hides the switch. */
+  executor?: 'runner' | 'local' | null;
 }
 
 export default function MissionSettings({
@@ -77,6 +84,7 @@ export default function MissionSettings({
   isHeld: initialIsHeld,
   displayState,
   hasPrimaryAction = false,
+  executor = null,
 }: MissionSettingsProps) {
   const router = useRouter();
   const [statusLoading, setStatusLoading] = useState(false);
@@ -94,6 +102,7 @@ export default function MissionSettings({
   const [cronSaving, setCronSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [executorLoading, setExecutorLoading] = useState(false);
 
   const isTerminal = ['completed', 'archived'].includes(currentStatus);
   /**
@@ -268,6 +277,34 @@ export default function MissionSettings({
     setCronSaving(false);
   }
 
+  // Local → runner re-dispatches the open tasks (the PATCH route does it), so
+  // nothing else is needed here. The route's refusal (no workspace, terminal)
+  // is shown as it is.
+  async function handleSwitchExecutor() {
+    const next = executor === 'local' ? 'runner' : 'local';
+    setExecutorLoading(true);
+    try {
+      const res = await fetch(`/api/missions/${missionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ executor: next }),
+      });
+      if (res.ok) {
+        setError(null);
+        router.refresh();
+      } else {
+        const body = await res.json().catch(() => ({}));
+        setError(typeof body?.error === 'string' ? body.error : 'Failed to update mission');
+        setTimeout(() => setError(null), 5000);
+      }
+    } catch {
+      setError('Failed to update mission');
+      setTimeout(() => setError(null), 3000);
+    }
+    setExecutorLoading(false);
+  }
+
   async function handleDelete() {
     setDeleteLoading(true);
     try {
@@ -289,7 +326,7 @@ export default function MissionSettings({
             <button
               onClick={handleArm}
               disabled={modeLoading}
-              className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-[13px] font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50"
+              className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-body font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50"
             >
               {modeLoading ? (
                 <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -311,7 +348,7 @@ export default function MissionSettings({
               <button
                 onClick={() => handleStatusChange('completed')}
                 disabled={statusLoading}
-                className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-[13px] font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50"
+                className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-body font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50"
               >
                 {statusLoading ? (
                   <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -329,7 +366,7 @@ export default function MissionSettings({
                 <button
                   onClick={handleManualRun}
                   disabled={manualRunLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-meta text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
                 >
                   {manualRunLoading ? 'Running…' : 'Send back · re-run'}
                 </button>
@@ -345,7 +382,7 @@ export default function MissionSettings({
               <button
                 onClick={handleArm}
                 disabled={modeLoading}
-                className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-[13px] font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50"
+                className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-body font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50"
               >
                 {modeLoading ? (
                   <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -364,7 +401,7 @@ export default function MissionSettings({
                   onClick={handleManualRun}
                   disabled={manualRunLoading}
                   title="Run the orchestrator once, then return to idle"
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-meta text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
                 >
                   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
@@ -389,7 +426,7 @@ export default function MissionSettings({
           question. */}
       {!isTerminal && (
         <details data-testid="mission-capability-menu" className="group">
-          <summary className="inline-flex min-h-11 items-center gap-1 md:min-h-0 cursor-pointer list-none text-[11px] text-text-muted hover:text-text-secondary transition-colors select-none">
+          <summary className="inline-flex min-h-11 items-center gap-1 md:min-h-0 cursor-pointer list-none text-meta text-text-muted hover:text-text-secondary transition-colors select-none">
             <span className="inline-block transition-transform group-open:rotate-90">›</span> More actions
           </summary>
           <div className="mt-2 flex items-center gap-2 flex-wrap">
@@ -400,7 +437,7 @@ export default function MissionSettings({
                   onClick={handleManualRun}
                   disabled={manualRunLoading}
                   title="Run the orchestrator now, ahead of the schedule"
-                  className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+                  className="inline-flex min-h-11 items-center md:min-h-0 text-meta text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
                 >
                   {manualRunLoading ? '…' : 'Plan now'}
                 </button>
@@ -415,10 +452,28 @@ export default function MissionSettings({
                 <button
                   onClick={handleToggleOrchestrationMode}
                   disabled={modeLoading}
-                  className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+                  className="inline-flex min-h-11 items-center md:min-h-0 text-meta text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
                   title="Stop scheduled runs. You run the orchestrator with Plan now."
                 >
                   {modeLoading ? '…' : 'Disarm'}
+                </button>
+                <span className="h-3 border-r border-card-border" />
+              </>
+            )}
+
+            {/* Where it runs: runners, or a person's local session. */}
+            {executor && (
+              <>
+                <button
+                  data-testid="mission-executor-toggle"
+                  onClick={handleSwitchExecutor}
+                  disabled={executorLoading}
+                  className="inline-flex min-h-11 items-center md:min-h-0 text-meta text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+                  title={executor === 'local'
+                    ? 'Hand this mission to runners: they claim its open tasks on their next poll.'
+                    : 'Work this mission from your own session: runners stop claiming its tasks.'}
+                >
+                  {executorLoading ? '…' : executor === 'local' ? 'Run on runners' : 'Run locally'}
                 </button>
                 <span className="h-3 border-r border-card-border" />
               </>
@@ -428,7 +483,7 @@ export default function MissionSettings({
             {!editingCron && (
               <button
                 onClick={() => setEditingCron(true)}
-                className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-text-muted hover:text-text-secondary transition-colors"
+                className="inline-flex min-h-11 items-center md:min-h-0 text-meta text-text-muted hover:text-text-secondary transition-colors"
               >
                 {cronExpression ? 'Edit schedule' : 'Add schedule'}
               </button>
@@ -442,7 +497,7 @@ export default function MissionSettings({
                 <button
                   onClick={() => handleStatusChange('completed')}
                   disabled={statusLoading}
-                  className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-status-success/70 hover:text-status-success transition-colors disabled:opacity-50"
+                  className="inline-flex min-h-11 items-center md:min-h-0 text-meta text-status-success/70 hover:text-status-success transition-colors disabled:opacity-50"
                 >
                   Complete
                 </button>
@@ -454,23 +509,23 @@ export default function MissionSettings({
             {!deleteConfirm ? (
               <button
                 onClick={() => setDeleteConfirm(true)}
-                className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-status-error/50 hover:text-status-error transition-colors"
+                className="inline-flex min-h-11 items-center md:min-h-0 text-meta text-status-error/50 hover:text-status-error transition-colors"
               >
                 Delete
               </button>
             ) : (
               <span className="flex items-center gap-1">
-                <span className="text-[11px] md:text-[10px] text-text-muted">Confirm?</span>
+                <span className="text-meta text-text-muted">Confirm?</span>
                 <button
                   onClick={handleDelete}
                   disabled={deleteLoading}
-                  className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-[11px] md:text-[10px] text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-50"
+                  className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-meta text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-50"
                 >
                   {deleteLoading ? '…' : 'Delete'}
                 </button>
                 <button
                   onClick={() => setDeleteConfirm(false)}
-                  className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-[11px] md:text-[10px] text-text-secondary hover:text-text-primary"
+                  className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-meta text-text-secondary hover:text-text-primary"
                 >
                   No
                 </button>
@@ -483,17 +538,17 @@ export default function MissionSettings({
       {/* Archived state */}
       {currentStatus === 'archived' && (
         <div className="flex items-center gap-3">
-          <span className="text-[12px] text-text-muted">Archived</span>
+          <span className="text-meta text-text-muted">Archived</span>
           {!deleteConfirm ? (
-            <button onClick={() => setDeleteConfirm(true)} className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-status-error/60 hover:text-status-error transition-colors">
+            <button onClick={() => setDeleteConfirm(true)} className="inline-flex min-h-11 items-center md:min-h-0 text-meta text-status-error/60 hover:text-status-error transition-colors">
               Delete
             </button>
           ) : (
             <span className="flex items-center gap-1">
-              <button onClick={handleDelete} disabled={deleteLoading} className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-[11px] md:text-[10px] text-status-error disabled:opacity-50">
+              <button onClick={handleDelete} disabled={deleteLoading} className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-meta text-status-error disabled:opacity-50">
                 {deleteLoading ? '…' : 'Delete'}
               </button>
-              <button onClick={() => setDeleteConfirm(false)} className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-[11px] md:text-[10px] text-text-secondary">No</button>
+              <button onClick={() => setDeleteConfirm(false)} className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-meta text-text-secondary">No</button>
             </span>
           )}
         </div>
@@ -505,20 +560,20 @@ export default function MissionSettings({
           <button
             onClick={() => handleStatusChange('archived')}
             disabled={statusLoading}
-            className="flex items-center gap-1.5 min-h-11 md:min-h-0 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 min-h-11 md:min-h-0 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-meta text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
           >
             Archive
           </button>
           {!deleteConfirm ? (
-            <button onClick={() => setDeleteConfirm(true)} className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-status-error/60 hover:text-status-error transition-colors">
+            <button onClick={() => setDeleteConfirm(true)} className="inline-flex min-h-11 items-center md:min-h-0 text-meta text-status-error/60 hover:text-status-error transition-colors">
               Delete
             </button>
           ) : (
             <span className="flex items-center gap-1">
-              <button onClick={handleDelete} disabled={deleteLoading} className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-[11px] md:text-[10px] text-status-error disabled:opacity-50">
+              <button onClick={handleDelete} disabled={deleteLoading} className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-meta text-status-error disabled:opacity-50">
                 {deleteLoading ? '…' : 'Delete'}
               </button>
-              <button onClick={() => setDeleteConfirm(false)} className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-[11px] md:text-[10px] text-text-secondary">No</button>
+              <button onClick={() => setDeleteConfirm(false)} className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-meta text-text-secondary">No</button>
             </span>
           )}
         </div>
@@ -532,7 +587,7 @@ export default function MissionSettings({
             value={cronValue}
             onChange={e => setCronValue(e.target.value)}
             placeholder="e.g. 0 9 * * 1"
-            className="w-40 px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-[12px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 font-mono"
+            className="w-40 px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-meta text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 font-mono"
             autoFocus
             onKeyDown={e => {
               if (e.key === 'Enter') handleSaveCron();
@@ -540,16 +595,16 @@ export default function MissionSettings({
             }}
           />
           {!workspaceId && cronValue.trim() && (
-            <span className="text-[11px] text-status-warning">Needs workspace</span>
+            <span className="text-meta text-status-warning">Needs workspace</span>
           )}
-          <button onClick={handleSaveCron} disabled={cronSaving} className="px-2 py-1 text-[11px] font-medium bg-accent/20 text-accent-text rounded-lg hover:bg-accent/30 disabled:opacity-50">
+          <button onClick={handleSaveCron} disabled={cronSaving} className="px-2 py-1 text-meta font-medium bg-accent/20 text-accent-text rounded-lg hover:bg-accent/30 disabled:opacity-50">
             {cronSaving ? 'Saving…' : 'Save'}
           </button>
-          <button onClick={() => { setCronValue(cronExpression || ''); setEditingCron(false); }} className="px-2 py-1 text-[11px] text-text-secondary hover:text-text-primary">
+          <button onClick={() => { setCronValue(cronExpression || ''); setEditingCron(false); }} className="px-2 py-1 text-meta text-text-secondary hover:text-text-primary">
             Cancel
           </button>
           {cronExpression && (
-            <button onClick={() => { setCronValue(''); handleSaveCron(); }} disabled={cronSaving} className="px-2 py-1 text-[11px] text-status-error hover:text-status-error/80">
+            <button onClick={() => { setCronValue(''); handleSaveCron(); }} disabled={cronSaving} className="px-2 py-1 text-meta text-status-error hover:text-status-error/80">
               Remove
             </button>
           )}
@@ -557,7 +612,7 @@ export default function MissionSettings({
       )}
 
       {error && (
-        <p className="text-[12px] text-status-error">{error}</p>
+        <p className="text-meta text-status-error">{error}</p>
       )}
 
       {/* Quick Task Creation — hidden for completed/archived missions */}
@@ -571,9 +626,9 @@ export default function MissionSettings({
                 value={taskTitle}
                 onChange={(e) => setTaskTitle(e.target.value)}
                 placeholder="Add a task to this mission…"
-                className="min-w-0 flex-1 px-3 py-2 rounded-lg bg-surface-3 border border-card-border text-base md:text-[13px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 transition-colors"
+                className="min-w-0 flex-1 px-3 py-2 rounded-lg bg-surface-3 border border-card-border text-base text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 transition-colors"
               />
-              {roles.length > 0 && (
+              {humanPickableRoles(roles).length > 0 && (
                 <Select
                   aria-label="Role"
                   testId="quick-task-role"
@@ -586,7 +641,7 @@ export default function MissionSettings({
               <button
                 type="submit"
                 disabled={taskLoading || !taskTitle.trim()}
-                className="px-4 py-2 rounded-lg bg-accent/20 text-accent-text text-[13px] font-medium hover:bg-accent/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className="px-4 py-2 rounded-lg bg-accent/20 text-accent-text text-body font-medium hover:bg-accent/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {taskLoading ? (
                   <span className="flex items-center gap-1.5">
@@ -600,7 +655,7 @@ export default function MissionSettings({
               </button>
             </form>
           ) : (
-            <p className="text-[12px] text-text-muted">Set a workspace to add tasks.</p>
+            <p className="text-meta text-text-muted">Set a workspace to add tasks.</p>
           )}
         </div>
       )}
@@ -625,7 +680,7 @@ function RunOutcomeStrip({
   const spinner = <Spinner size="xs" className="text-accent flex-shrink-0" aria-label="Running" />;
 
   const shell = (tone: string, children: React.ReactNode) => (
-    <div className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-[12px] ${tone}`}>
+    <div className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-meta ${tone}`}>
       {children}
     </div>
   );

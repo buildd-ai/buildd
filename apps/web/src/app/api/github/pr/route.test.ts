@@ -59,6 +59,25 @@ const mockEnsureIntegrationBaseForTaskPr = mock(
   () => Promise.resolve({ usable: true, recreated: false }) as any,
 );
 const mockReportMissionBranchUnresolved = mock(async (_input: any) => {});
+// Workflow kernel landing (lib/workflow/landing.ts; real-SQL cases in
+// apps/web/tests/db/workflow-matrix.test.ts S10/S15/S20). Default: no kernel
+// delivery, so every legacy merge case below runs unchanged.
+const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
+const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+mock.module('@/lib/workflow/landing', () => ({
+  landThroughKernel: mockLandThroughKernel,
+  kernelLandingView: mockKernelLandingView,
+  staleLandingVersion: async () => null,
+}));
+// Slice F: get_pr reads a kernel-owned PR's record from its DeliveryView.
+// Default: no kernel delivery, so every legacy case reads the columns.
+const mockGetDeliveryViewsForTasks = mock(async (..._a: any[]): Promise<Map<string, any>> => new Map());
+mock.module('@/lib/workflow/delivery-view', () => ({
+  getDeliveryViewsForTasks: mockGetDeliveryViewsForTasks,
+  getOwnerDeliveryDisplays: async () => new Map(),
+  kernelReplacedFailedTaskIds: async () => new Set(),
+  replacedFailedTaskIds: () => new Set(),
+}));
 mock.module('@/lib/mission-integration-branch', () => ({
   ensureIntegrationBaseForTaskPr: mockEnsureIntegrationBaseForTaskPr,
   missionBranchRemedy: (reason: string) => `remedy for ${reason}`,
@@ -224,6 +243,27 @@ mock.module('@/lib/surface-ordering-door', () => ({
   checkSurfaceOrder: mockCheckSurfaceOrder,
   mergeInSurfaceSlot: mockMergeInSurfaceSlot,
 }));
+
+// The PR fact funnel: the one writer of mergedAt / prLifecycleStatus.
+// Terminal-wins is proven on real Postgres (apps/web/tests/db/pr-facts.test.ts);
+// here we assert the fact this merge door hands over. drizzle-orm is stubbed
+// above, so the real module (raw SQL) is not spread in.
+const recordedFacts: Array<{ target: unknown; fact: any; opts?: unknown }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: any, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return [{ id: 'w-1', taskId: 'task-1', workspaceId: 'ws-1', previousStatus: 'pr_open' }];
+  },
+}));
+beforeEach(() => { recordedFacts.length = 0; });
+
+/** The merge door stamped exactly one merged fact on this worker, at the door's own instant. */
+function expectMergedFactFor(workerId: string) {
+  expect(recordedFacts).toHaveLength(1);
+  expect(recordedFacts[0]!.target).toEqual({ workerId });
+  expect(recordedFacts[0]!.fact.kind).toBe('merged');
+  expect(recordedFacts[0]!.fact.mergedAt).toBeInstanceOf(Date);
+}
 
 // Import handler AFTER mocks
 const mockCloseAncestorRetryPrs = mock(async (_opts: any) => [] as any[]);
@@ -432,6 +472,55 @@ describe('POST /api/github/pr', () => {
     const data = await res.json();
     expect(data.ok).toBe(true);
     expect(data.pr.number).toBe(42);
+  });
+
+  // S31 (workflow-state-kernel.md §6.10 tier 1): create_pr runs CI's prose scan
+  // before the PR exists, on workspaces that opt in, and refuses with the reason.
+  describe('preflight: the No Production Data prose scan (S31)', () => {
+    const fakeUuid = ['aaaaaaaa', 'bbbb', 'cccc', 'dddd', 'eeeeeeeeeeee'].join('-');
+    const optedIn = { ...WORKSPACE_OK, gitConfig: { preflight: { prProseScan: true } } };
+    const post = (body: Record<string, unknown>, workspace: Record<string, unknown> = optedIn) => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValueOnce({ id: 'w-1', accountId: 'account-1', taskId: null, name: 'test-worker', workspace });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce([]);
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+      return POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', head: 'feature-branch', ...body } }));
+    };
+
+    it('refuses a body CI would reject, naming the line and category, never the value; nothing reaches GitHub', async () => {
+      const res = await post({ title: 'fix: thing', lede: 'Fixes the thing.', body: `## Notes\nCloses task ${fakeUuid}.` });
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.code).toBe('preflight_failed');
+      // Scanned as CI will see it: the composed body, lede block first, so the line is the composed one.
+      expect(data.preflight.check).toBe('no_prod_data_prose');
+      expect(data.preflight.findings).toEqual([{ where: 'PR body', line: 6, category: 'UUID' }]);
+      expect(data.error).toContain('PR body line 6: possible UUID');
+      expect(JSON.stringify(data)).not.toContain(fakeUuid);
+      expect(mockGithubApi).not.toHaveBeenCalled();
+    });
+
+    it('scans the title and the lede too', async () => {
+      const res = await post({ title: `fix: ${fakeUuid}`, lede: 'This fixed it for 9 teams.' });
+      expect(res.status).toBe(400);
+      expect((await res.json()).preflight.findings.map((f: { where: string }) => f.where)).toEqual(['PR title', 'PR body']);
+    });
+
+    it('a clean body opens the PR', async () => {
+      const res = await post({ title: 'fix: thing', lede: 'Fixes the thing.', body: 'Task `8237cfa9`.' });
+      expect(res.status).toBe(200);
+    });
+
+    it('off by default: a workspace that did not opt in is not scanned', async () => {
+      const res = await post({ title: 'fix: thing', lede: 'Fixes the thing.', body: `Closes ${fakeUuid}.` }, WORKSPACE_OK);
+      expect(res.status).toBe(200);
+    });
+
+    it('honours the same allow marker CI does', async () => {
+      const res = await post({ title: 'docs', lede: 'Documents the rule.', body: `no-prod-data: allow documenting the rule\n${fakeUuid}` });
+      expect(res.status).toBe(200);
+    });
   });
 
   // Test (b): token with no access to the workspace (different team) → 403
@@ -3292,6 +3381,59 @@ describe('PATCH /api/github/pr', () => {
     const data = await res.json();
     expect(data.error).toContain('403');
   });
+
+  // update_pr: passing `body` rewrites the PR body via the GitHub App token
+  // instead of closing the PR — the sanctioned path around the GitHub
+  // connector's update_pull_request 403 (see mcp-tools.ts `update_pr`).
+  it('returns 400 when body is not a string', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, body: 123 },
+    });
+    const res = await PATCH(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('body must be a string');
+  });
+
+  it('updates PR body successfully and returns the updated PR data', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      prNumber: 42,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValue({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'open',
+      title: 'Old feature PR',
+    });
+
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, body: 'Corrected body with no screenshot URL.' },
+    });
+    const res = await PATCH(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.pr.number).toBe(42);
+    expect(data.pr.state).toBe('open');
+
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+    const [, path, options] = mockGithubApi.mock.calls[0];
+    expect(path).toBe('/repos/owner/repo/pulls/42');
+    expect(options.method).toBe('PATCH');
+    const parsedBody = JSON.parse(options.body);
+    expect(parsedBody.body).toBe('Corrected body with no screenshot URL.');
+    expect(parsedBody.state).toBeUndefined();
+  });
+
 });
 
 // ── PUT /api/github/pr (merge) ────────────────────────────────────────────────
@@ -3486,6 +3628,64 @@ describe('PUT /api/github/pr', () => {
       const res = await put();
       expect((await res.json()).merged).toBe(false);
       expect(mockWorkersUpdate).not.toHaveBeenCalled();
+      expect(recordedFacts).toHaveLength(0);
+    });
+
+    // Workflow kernel (workflow-state-kernel.md §14 Slice C): a kernel-owned PR is merged by the
+    // kernel (T15/T16) and its post-merge work is the kernel's; a stale version is a 409 (S20).
+    describe('kernel-owned PR (Slice C)', () => {
+      const current = { state: 'APPROVED', version: 7, head: 'sha-42', round: 1 };
+      const putV = (version?: number) => PUT(createPutRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', prNumber: 42, ...(version !== undefined ? { version } : {}) },
+      }));
+      beforeEach(() => {
+        mockLandThroughKernel.mockReset();
+        mockKernelLandingView.mockReset();
+        mockKernelLandingView.mockResolvedValue({ deliveryId: 'd-1', current });
+      });
+      afterAll(() => {
+        mockKernelLandingView.mockReset();
+        mockKernelLandingView.mockResolvedValue(null);
+        mockLandThroughKernel.mockReset();
+        mockLandThroughKernel.mockResolvedValue(null);
+      });
+
+      it('S20: a stale version is a 409 with the current view; no policy rail runs and nothing merges', async () => {
+        workerOk();
+        const res = await putV(6);
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ merged: false, stale: true, reason: 'version_moved', current });
+        expect(mockLandThroughKernel).not.toHaveBeenCalled();
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+        expect(mockReadPrReviewStatus).not.toHaveBeenCalled();
+      });
+
+      it('merges through the kernel, pinned to the checked head; the door stamps nothing', async () => {
+        workerOk();
+        mockLandThroughKernel.mockResolvedValue({ merged: true, outcome: 'merged', reason: 'merged', message: 'merged', mergeCommitSha: 'M1', current: { ...current, state: 'MERGED' }, result: null });
+        const res = await putV(7);
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ ok: true, merged: true, pr: { number: 42, mergeCommitSha: 'M1' } });
+        expect(mockLandThroughKernel.mock.calls[0]![0]).toMatchObject({
+          repoFullName: 'owner/repo', prNumber: 42, headSha: 'sha-42', door: 'merge_pr', actor: 'agent:w-1', mergeMethod: 'squash', expectedVersion: 7,
+        });
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+        expect(recordedFacts).toHaveLength(0);
+      });
+
+      it('a kernel refusal is a 409 carrying the current view; a refresh it queued is a 202', async () => {
+        workerOk();
+        mockLandThroughKernel.mockResolvedValue({ merged: false, outcome: 'rejected', reason: 'state_not_allowed', message: 'not approved', mergeCommitSha: null, current: { ...current, state: 'AWAITING_REVIEW' }, result: null });
+        let res = await putV();
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ merged: false, kernel: { outcome: 'rejected', reason: 'state_not_allowed' }, current: { state: 'AWAITING_REVIEW' } });
+        mockLandThroughKernel.mockResolvedValue({ merged: false, outcome: 'behind', reason: 'behind', message: 'behind', mergeCommitSha: null, current: { ...current, state: 'REPAIRING' }, result: null });
+        res = await putV();
+        expect(res.status).toBe(202);
+        expect(await res.json()).toMatchObject({ merged: false, branchUpdated: true });
+        expect(recordedFacts).toHaveLength(0);
+      });
     });
 
     describe('landing function (gitConfig.landing.mode=enforce)', () => {
@@ -3526,7 +3726,7 @@ describe('PUT /api/github/pr', () => {
         });
         // The merge is landPr's, never a second one from the route.
         expect(mockMergePullRequest).not.toHaveBeenCalled();
-        expect(mockWorkersUpdate).toHaveBeenCalled();
+        expectMergedFactFor('w-1');
       });
 
       it('behind base: the branch is refreshed with a marker; 202, nothing more asked of the caller', async () => {
@@ -3954,6 +4154,52 @@ describe('PUT /api/github/pr', () => {
         expect(calls).not.toContain('PUT /repos/owner/repo/pulls/42/update-branch');
       });
 
+      // Final kernel audit (task b6a62a4e): the refresh here pushed to a kernel-owned PR with no
+      // `refresh_branch` effect. For a kernel PR the kernel owns the refresh (T12 `behind`, or T16
+      // when its own merge call is refused as behind), so this door pushes nothing.
+      describe('kernel-owned PR', () => {
+        beforeEach(() => {
+          mockKernelLandingView.mockReset();
+          mockKernelLandingView.mockResolvedValue({ deliveryId: 'd-1', current: { state: 'APPROVED', version: 7, head: 'sha-42', round: 1 } });
+        });
+        afterAll(() => {
+          mockKernelLandingView.mockReset();
+          mockKernelLandingView.mockResolvedValue(null);
+        });
+
+        it('does not refresh the branch: no base-refresh, no update-branch, no merge', async () => {
+          workerOk();
+          mockTasksFindFirst.mockResolvedValue({ id: 'task-1', requiresReview: false, missionId: 'm-1', context: {} });
+          const calls = behindGithub(() => Promise.resolve({ message: 'Updating pull request branch.' }));
+
+          const res = await put();
+
+          expect(res.status).toBe(409);
+          const data = await res.json();
+          expect(data.error).toContain('behind');
+          expect(data.kernelOwned).toBe(true);
+          expect(data.branchUpdated).toBeUndefined();
+          expect(mockRefreshBehindPr).not.toHaveBeenCalled();
+          expect(calls).not.toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+          expect(mockMergePullRequest).not.toHaveBeenCalled();
+        });
+
+        it('a taskless worker on a kernel PR gets no direct update either', async () => {
+          workerOk();
+          mockWorkersFindFirst.mockResolvedValue({
+            id: 'w-1', accountId: 'account-1', prNumber: 42, taskId: null, prUrl: 'https://github.com/owner/repo/pull/42', workspace: WORKSPACE_OK,
+          });
+          const calls = behindGithub(() => Promise.resolve({ message: 'Updating pull request branch.' }));
+
+          const res = await put();
+
+          expect(res.status).toBe(409);
+          expect((await res.json()).branchUpdated).toBeUndefined();
+          expect(calls).not.toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+          expect(mockRefreshBehindPr).not.toHaveBeenCalled();
+        });
+      });
+
       it.each([
         [{ kind: 'in_flight' }, 'in_flight'],
         [{ kind: 'deferred', failure: 'rate_limit', attempts: 1, reason: '429' }, 'deferred'],
@@ -4171,8 +4417,7 @@ describe('PUT /api/github/pr', () => {
     expect(data.ok).toBe(true);
     expect(data.merged).toBe(true);
     expect(data.pr.number).toBe(42);
-    expect(capturedSetData.mergedAt).toBeInstanceOf(Date);
-    expect(capturedSetData.prLifecycleStatus).toBe('merged');
+    expectMergedFactFor('w-1');
     expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'squash', 'sha-42');
   });
 
@@ -4352,8 +4597,7 @@ describe('PUT /api/github/pr', () => {
     const data = await res.json();
     expect(data.merged).toBe(true);
     // mergedAt must be stamped on the resolved worker
-    expect(capturedSetData.mergedAt).toBeInstanceOf(Date);
-    expect(capturedSetData.prLifecycleStatus).toBe('merged');
+    expectMergedFactFor('w-resolved');
   });
 
   it('returns 404 when prNumber-only resolve finds no matching worker', async () => {
@@ -5320,6 +5564,37 @@ describe('GET /api/github/pr', () => {
     expect(data.pr.mergedVia).toBeNull();
   });
 
+  it('Slice F: a kernel-owned PR reads its merge and supersession from the delivery, not the worker columns', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    // The columns contradict the delivery on purpose: a stale merged lifecycle and an old edge.
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-k', accountId: 'account-1', taskId: 'task-k', prNumber: 778,
+      prUrl: 'https://github.com/owner/repo/pull/778',
+      mergedAt: null, prLifecycleStatus: 'merged',
+      supersededByPrNumber: 1, supersededByPrUrl: 'stale', supersededReason: 'stale',
+      lastCommitSha: null, workspace: WORKSPACE_OK,
+    });
+    mockGetDeliveryViewsForTasks.mockResolvedValueOnce(new Map([['task-k', {
+      prNumber: 778, state: 'SUPERSEDED', mergedAt: null,
+      supersededBy: { prNumber: 790, url: 'https://github.com/owner/repo/pull/790', reason: 'reopened on a fresh branch' },
+    }]]));
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 778, title: 'old attempt', body: null, state: 'closed', merged: false, merged_at: null,
+      closed_at: '2026-08-27T09:00:00Z', html_url: 'https://github.com/owner/repo/pull/778',
+      head: { sha: 'h' }, base: { ref: 'dev' }, additions: 1, deletions: 1, changed_files: 1,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]);
+
+    const data = await (await GET(createGetRequest('w-k', 778))).json();
+    expect(mockGetDeliveryViewsForTasks).toHaveBeenCalledWith(['task-k']);
+    // The column's 'merged' would have read merged; the delivery says superseded, so closed-unmerged.
+    expect(data.pr.state).toBe('closed_unmerged');
+    expect(data.pr.supersededByPrNumber).toBe(790);
+    expect(data.pr.supersededReason).toBe('reopened on a fresh branch');
+  });
+
   it('merged PR by prNumber (no workerId) returns 200 with merged state', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
@@ -5915,6 +6190,74 @@ describe('Retry PR body generation', () => {
     // the old "resume failed; new branch" line rather than appending beside it.
     expect(patchedBody).toBe('Original body\n\n---\n_Attempt 2/3 — updated this PR._');
   });
+
+  it('replaces a stale dedup body with freshly supplied content instead of only stamping the footer', async () => {
+    const taskId = 'ccccdddd-eeee-ffff-0000-111122223333';
+
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      taskId,
+      prUrl: null,
+      prNumber: null,
+      name: 'test-worker',
+      workspace: WORKSPACE_OK,
+      task: { missionId: null, parentTaskId: null, title: null, context: { iteration: 1, maxIterations: 3 } },
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    // An existing PR left over from the previous attempt, carrying stale
+    // verification notes and a stale attempt footer.
+    mockGithubApi.mockResolvedValueOnce([
+      {
+        number: 88,
+        html_url: 'https://github.com/owner/repo/pull/88',
+        state: 'open',
+        title: 'Fix: retry',
+        body: 'Stale verification notes from attempt 1.\n\n---\n_Attempt 1/3 — resume failed; new branch._',
+        additions: 5,
+        deletions: 2,
+        changed_files: 1,
+      },
+    ]);
+
+    let patchedBody = '';
+    mockGithubApi.mockImplementation(async (installationId: any, path: string, opts?: any) => {
+      if (path.includes('/pulls') && opts?.method === 'PATCH') {
+        patchedBody = JSON.parse(opts.body).body;
+      }
+      return {
+        number: 88,
+        html_url: 'https://github.com/owner/repo/pull/88',
+        state: 'open',
+        title: 'Fix: retry',
+        body: patchedBody,
+        base: { sha: 'basesha', ref: 'main' },
+      };
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        workerId: 'w-1',
+        title: 'Fix: retry',
+        head: 'retry-branch',
+        lede: 'Verified against the new screenshots.',
+        body: 'Fresh verification notes: screenshot at https://example.com/shot2.png',
+      },
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+
+    // The fresh body (and lede) replace the stale stored content — not
+    // appended beneath it — and the footer still advances to attempt 2/3.
+    expect(patchedBody).toContain('Fresh verification notes: screenshot at https://example.com/shot2.png');
+    expect(patchedBody).not.toContain('Stale verification notes from attempt 1.');
+    expect(patchedBody).toContain('Verified against the new screenshots.');
+    expect(patchedBody).toContain('_Attempt 2/3 — updated this PR._');
+  });
 });
 
 // ── The lede leads the PR body ───────────────────────────────────────────────
@@ -6314,6 +6657,20 @@ describe('per-task token on close / merge / get', () => {
     const res = await GET(createGetRequest('w-x', 9));
     expect(res.status).toBe(404);
   });
+
+  it('updates the body of its own PR', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker());
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 42, body: 'corrected body' } }));
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses to update another PR’s body through its own worker, before calling GitHub', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker());
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 7, body: 'corrected body' } }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('A task token may update only its own PR');
+    expect(githubWrites()).toEqual([]);
+  });
 });
 
 // An agent run on its runner's key (an orchestration-free session whose token
@@ -6387,5 +6744,20 @@ describe('agent run on the runner key — close / merge', () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'person-1', teamId: 'team-1' });
     mockWorkersFindFirst.mockResolvedValue(runWorker());
     expect((await close(7)).status).toBe(200);
+  });
+
+  const updateBody = (prNumber: number) => PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-run', prNumber, body: 'corrected body' } }));
+
+  it('refuses to update the body of a PR its task does not name, before calling GitHub', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker());
+    const res = await updateBody(7);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('may update only its own PR (#42)');
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('updates the body of a PR its task names', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'fix: PR #7 body correction' }));
+    expect((await updateBody(7)).status).toBe(200);
   });
 });

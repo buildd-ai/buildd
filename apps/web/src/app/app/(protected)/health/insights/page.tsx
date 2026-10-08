@@ -35,7 +35,7 @@ export default async function InsightsPage({
     return (
       <Shell>
         <p className="text-body text-text-muted">
-          <Link href="/app/teams/new" className="text-accent-text hover:underline">Create a team</Link> to see insights for its work.
+          <Link href="/app/teams/new" className="text-accent-text hover:underline">Create a team</Link>
         </p>
       </Shell>
     );
@@ -46,8 +46,8 @@ export default async function InsightsPage({
     return (
       <Shell>
         <div className="card p-4" data-testid="insights-not-allowed">
-          <p className="text-body text-text-primary">Insights show every member&apos;s work, so they&apos;re for team admins.</p>
-          <p className="mt-1 text-meta text-text-muted">Ask a team admin or owner if you need access.</p>
+          <p className="text-body text-text-primary">Team admins only.</p>
+
         </div>
       </Shell>
     );

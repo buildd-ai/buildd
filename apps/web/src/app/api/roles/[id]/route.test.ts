@@ -85,6 +85,18 @@ const TEAM_ROLE = {
   mcpServers: {},
 };
 
+const OPERATOR_ROLE = {
+  id: '33333333-3333-4333-8333-333333333333',
+  teamId: 'team1',
+  workspaceId: null,
+  slug: 'operator',
+  name: 'Platform Operator',
+  isRole: true,
+  content: 'You are the Operator',
+  allowedTools: [],
+  mcpServers: {},
+};
+
 const WS_ROLE = {
   id: '22222222-2222-4222-8222-222222222222',
   teamId: 'team1',
@@ -259,6 +271,79 @@ describe('PATCH /api/roles/[id]', () => {
     expect(set.metadata.defaultRoleVersion).toBe(2);
     expect(set.metadata.routing).toMatchObject({ whenToUse: 'Code changes that end in a PR.', notFor: 'Research (Researcher)' });
     expect(typeof set.metadata.routing.updatedAt).toBe('string');
+  });
+
+  // docs/specs/agent-capabilities.md: only a role with a capability ceiling
+  // (today, only 'operator') can hold metadata.operator at all.
+  it('rejects an operatorGrant on a role with no capability ceiling, without writing', async () => {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
+    mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
+    mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve(TEAM_ROLE));
+    const req = new NextRequest('http://localhost/api/roles/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      body: JSON.stringify({ operatorGrant: { enabled: true } }),
+    });
+    const res = await PATCH(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('holds no agent capabilities');
+    expect(mockWorkspaceSkillsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed operatorGrant on the operator role, without writing', async () => {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
+    mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
+    mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve(OPERATOR_ROLE));
+    const req = new NextRequest('http://localhost/api/roles/33333333-3333-4333-8333-333333333333', {
+      method: 'PATCH',
+      body: JSON.stringify({ operatorGrant: { capabilities: ['not-a-real-capability'] } }),
+    });
+    const res = await PATCH(req, { params: Promise.resolve({ id: '33333333-3333-4333-8333-333333333333' }) });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('Unknown capability');
+    expect(mockWorkspaceSkillsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('writes operatorGrant into metadata.operator on the operator role, keeping other metadata', async () => {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
+    mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
+    mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve({ ...OPERATOR_ROLE, metadata: { defaultRoleVersion: 1 } }));
+    const mockReturning = mock(() => Promise.resolve([OPERATOR_ROLE]));
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock((_v: Record<string, unknown>) => ({ where: mockWhere }));
+    mockWorkspaceSkillsUpdate.mockReturnValue({ set: mockSet });
+
+    const req = new NextRequest('http://localhost/api/roles/33333333-3333-4333-8333-333333333333', {
+      method: 'PATCH',
+      body: JSON.stringify({ operatorGrant: { enabled: false, capabilities: ['deployments:read'] } }),
+    });
+    const res = await PATCH(req, { params: Promise.resolve({ id: '33333333-3333-4333-8333-333333333333' }) });
+    expect(res.status).toBe(200);
+    const set = mockSet.mock.calls[0][0] as { metadata: Record<string, any> };
+    expect(set.metadata.defaultRoleVersion).toBe(1);
+    expect(set.metadata.operator).toEqual({ enabled: false, capabilities: ['deployments:read'] });
+  });
+
+  it('clears operatorGrant when the body sends operatorGrant: null', async () => {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
+    mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
+    mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve({ ...OPERATOR_ROLE, metadata: { operator: { enabled: true } } }));
+    const mockReturning = mock(() => Promise.resolve([OPERATOR_ROLE]));
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock((_v: Record<string, unknown>) => ({ where: mockWhere }));
+    mockWorkspaceSkillsUpdate.mockReturnValue({ set: mockSet });
+
+    const req = new NextRequest('http://localhost/api/roles/33333333-3333-4333-8333-333333333333', {
+      method: 'PATCH',
+      body: JSON.stringify({ operatorGrant: null }),
+    });
+    const res = await PATCH(req, { params: Promise.resolve({ id: '33333333-3333-4333-8333-333333333333' }) });
+    expect(res.status).toBe(200);
+    const set = mockSet.mock.calls[0][0] as { metadata: Record<string, any> };
+    expect(set.metadata.operator).toBeUndefined();
   });
 });
 

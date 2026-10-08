@@ -1,3 +1,5 @@
+import { needsYouHeadline } from './home-needs-you';
+
 /**
  * Health → Overview, as plain data: the one status sentence at the top, and the
  * short status rows (runners, credentials, budget) that link to Runners &
@@ -49,7 +51,7 @@ export function attentionCount(a: OverviewAttention): number {
 export function overviewHeadline(a: OverviewAttention): { tone: 'ok' | 'attention'; count: number; text: string } {
   const count = attentionCount(a);
   if (count === 0) return { tone: 'ok', count, text: 'All good.' };
-  return { tone: 'attention', count, text: count === 1 ? '1 thing needs you.' : `${count} things need you.` };
+  return { tone: 'attention', count, text: needsYouHeadline(count) };
 }
 
 function usd(n: number): string {

@@ -311,6 +311,43 @@ describe('setTeamAgentEndpoint with a blank key', () => {
   });
 });
 
+describe('setTeamAgentEndpoint: capabilities.toolSearch', () => {
+  const storedRow = (blob: unknown, workspaceId: string | null = null) => ({ id: 's-1', purpose: 'agent_endpoint', workspaceId, accountId: null, userId: null, encryptedValue: JSON.stringify(blob) });
+  const saved = { ...custom, baseUrl: 'https://litellm.example.com', capabilities: { toolSearch: true } };
+
+  it('stores an explicit opt-in and reports it back', async () => {
+    gateway = { baseURL: 'https://litellm.example.com/v1', apiKey: KEY };
+    const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'gateway', capabilities: { toolSearch: true } } }, { lookup: publicLookup, fetcher: fakeEndpoint(404).fetcher });
+    expect(r).toMatchObject({ ok: true, endpoint: { kind: 'gateway', toolSearch: true, toolSearchExplicit: true } });
+    expect(JSON.parse(stored[0].value).capabilities).toEqual({ toolSearch: true });
+  });
+
+  it('a gateway with nothing set is off by default; OpenRouter is on', async () => {
+    gateway = { baseURL: 'https://litellm.example.com/v1', apiKey: KEY };
+    const g = await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'gateway' } }, { lookup: publicLookup, fetcher: fakeEndpoint(404).fetcher });
+    expect(g).toMatchObject({ ok: true, endpoint: { toolSearch: false, toolSearchExplicit: false } });
+    const o = await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'openrouter', apiKey: KEY } }, { lookup: publicLookup, fetcher: ok });
+    expect(o).toMatchObject({ ok: true, endpoint: { toolSearch: true, toolSearchExplicit: false } });
+  });
+
+  it('a re-save without capabilities keeps the saved value for the same kind; null resets; another kind drops it', async () => {
+    secretRows = [storedRow(saved)];
+    await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com' } }, { lookup: publicLookup, fetcher: fakeEndpoint(404).fetcher });
+    expect(JSON.parse(stored[0].value).capabilities).toEqual({ toolSearch: true });
+    await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', capabilities: null } }, { lookup: publicLookup, fetcher: fakeEndpoint(404).fetcher });
+    expect('capabilities' in JSON.parse(stored[1].value)).toBe(false);
+    await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'openrouter', apiKey: KEY } }, { lookup: publicLookup, fetcher: ok });
+    expect('capabilities' in JSON.parse(stored[2].value)).toBe(false);
+  });
+
+  it('refuses a malformed capability without calling out', async () => {
+    const ep = fakeEndpoint(404);
+    const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: { ...custom, capabilities: { toolSearch: 'yes' } } }, { lookup: publicLookup, fetcher: ep.fetcher });
+    expect(r).toMatchObject({ ok: false, status: 400 });
+    expect(ep.calls).toHaveLength(0);
+  });
+});
+
 describe('previewAgentEndpointModels', () => {
   it('lists the endpoint\'s models and one prefilled row per model buildd asks for, without the key', async () => {
     const ep = fakeEndpoint(['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5']);
@@ -400,6 +437,19 @@ describe('listTeamAgentEndpoints', () => {
     expect(e.mapping.find((m) => m.model === 'claude-sonnet-4-5-20250929')?.tiers).toEqual(['standard']);
     expect(e.mapping.find((m) => m.model === 'claude-legacy-1')).toEqual({ model: 'claude-legacy-1', tiers: [], sent: 'team-legacy' });
     expect(JSON.stringify(e)).not.toContain(KEY);
+  });
+
+  it('a workspace copy that differs only in tool search is not "same as the team"', async () => {
+    workspaceRow = { id: 'ws-1', teamId: 't', name: 'Widgets' };
+    const base = { purpose: 'agent_endpoint', accountId: null, userId: null, healthStatus: 'healthy', lastVerifiedAt: null, lastVerificationError: null, updatedAt: new Date('2026-01-01') };
+    const blob = { ...custom, baseUrl: 'https://litellm.example.com' };
+    secretRows = [
+      { ...base, id: 't', workspaceId: null, encryptedValue: JSON.stringify(blob) },
+      { ...base, id: 'w', workspaceId: 'ws-1', encryptedValue: JSON.stringify({ ...blob, capabilities: { toolSearch: true } }) },
+    ];
+    const list = await listTeamAgentEndpoints('t');
+    expect(list.find((e) => e.id === 'w')).toMatchObject({ matchesTeam: false, toolSearch: true, toolSearchExplicit: true });
+    expect(list.find((e) => e.id === 't')).toMatchObject({ toolSearch: false, toolSearchExplicit: false });
   });
 
   it('flags a gateway reference whose gateway is gone', async () => {

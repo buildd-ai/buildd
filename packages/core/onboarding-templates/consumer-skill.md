@@ -14,20 +14,20 @@ Setting up a new workspace or making a repo buildd-ready? Load `workspace-onboar
 
 ## Tools
 
-Most sessions list one tool, `buildd`, that takes `{ action, params }` for
-every action; below, `buildd action=X` means exactly that call.
-
-A session that opted in to group tools (`?tools=groups` on the MCP URL) lists
-one tool per area instead: `buildd_work` (your own task: claim, progress,
-notes, artifacts, PR, complete), `buildd_tasks`, `buildd_missions`,
-`buildd_prs`, `buildd_analytics` (coverage, path claims, explain, errors, failures, usage, runners),
-`buildd_runners` (connectors, agent steering),
-`buildd_artifacts`, `buildd_schedules`, `buildd_admin`. Each takes the same
+The buildd MCP server lists one tool per area: `buildd_work` (your own task:
+claim, progress, notes, artifacts, PR, complete), `buildd_tasks`,
+`buildd_missions`, `buildd_prs`, `buildd_analytics` (coverage, path claims,
+explain, errors, failures, usage, runners), `buildd_runners` (connectors, agent
+steering), `buildd_artifacts`, `buildd_schedules`, `buildd_admin`. Each takes
 `{ action, params }`, lists its actions with their params, and has action
-`help` (`params={ action }`) for one action's full docs. There,
+`help` (`params={ action }`) for one action's full docs. Below,
 `buildd action=X` means: call X on the group tool that lists it (a wrong group
 tells you the right one). In a client that defers MCP tools, load only the
 group you need, e.g. `select:mcp__buildd__buildd_work`.
+
+A worker started by an older runner may instead see the single `buildd` tool,
+which takes the same `{ action, params }` for every action; there,
+`buildd action=X` is exactly that call.
 
 ## Task Lifecycle
 
@@ -73,6 +73,14 @@ Then, for each task: `claim_task params={ taskId }` from your session (it
 gets a normal tracked worker, so the PR link and cost are recorded), do the
 work, `create_pr`, and finish with `complete_task`. Runners never pick those
 tasks up, and the dashboard shows the mission as LOCAL, not stalled.
+
+With the buildd agent plugin's hooks installed (`buildd install --global`, or
+the Claude Code plugin), your session shows in buildd as an interactive
+session from the moment it starts, without holding a slot. Your
+`claim_task` binds the session to the worker it mints, and closing the session
+releases that worker (an unfinished task goes back to the queue; nothing is
+marked completed). Without the hooks everything here still works over MCP
+alone.
 
 Do **not** use `startMode: "held"` for this. Held is a pause: it blocks your
 own explicit claims too, reads as HELD / "arm to start" everywhere, and leaves

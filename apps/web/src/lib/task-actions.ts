@@ -11,10 +11,11 @@
  * and every POST to `/api/tasks/[id]/reassign` through `requestTaskRetry`.
  */
 import { deriveTaskPhase, type TaskPhase } from './task-presentation';
+import type { TaskFailureKind } from './task-failure-kind';
 
 export interface GateRefusal {
   gateReason: string;
-  blockClass?: 'policy' | 'capability';
+  blockClass?: 'policy' | 'capability' | 'entitlement';
   error?: string;
   canForce?: boolean;
   /** workspace_cap_reached: the person may start this one task past the cap. */
@@ -31,6 +32,8 @@ export interface GateRefusal {
   blockingDeps?: Array<{ taskId: string | null; taskTitle: string | null; prUrl: string | null; prNumber: number | null }>;
   /** deferred_start: the scheduled start (ISO). */
   startAt?: string | null;
+  /** entitlement_blocked: the plan limit (an EntitlementBlock, parsed by the renderer). */
+  entitlement?: unknown;
 }
 
 // ── Action set ───────────────────────────────────────────────────────────────
@@ -47,12 +50,14 @@ export const STARTABLE_PHASES: ReadonlySet<TaskPhase> = new Set<TaskPhase>([
  * What a task's state offers, in render order. The renderer draws exactly
  * these, and the parity test compares them across surfaces:
  * - `answer`: reply to the agent's open question;
- * - `retry` / `switch_backend` / `history`: a failed task;
+ * - `retry` / `switch_backend` / `history`: a task whose worker failed;
+ * - `verification_failed` / `history`: a task whose work landed and whose audit
+ *   failed — no retry of the build, the audit's own surface retries the audit;
  * - `blocked`: the dependency notice (no action, by design);
  * - `claim_hint`: `claim_task {taskId}` for a task only a local session claims;
  * - `run_now`: ask for a start now (a gate refusal becomes Force start inline).
  */
-export type TaskActionId = 'answer' | 'retry' | 'switch_backend' | 'history' | 'blocked' | 'claim_hint' | 'run_now';
+export type TaskActionId = 'answer' | 'retry' | 'switch_backend' | 'history' | 'verification_failed' | 'blocked' | 'claim_hint' | 'run_now';
 
 export interface TaskActionState {
   phase: TaskPhase;
@@ -70,6 +75,8 @@ export interface TaskActionState {
    * produces a second failure); omitted means unknown and keeps it.
    */
   otherBackendAvailable?: boolean;
+  /** `classifyTaskFailure`; `verification` swaps the build's recovery for the audit's. */
+  failureKind?: TaskFailureKind | null;
 }
 
 /** A backend as a product name: "Claude", "Codex". */
@@ -87,7 +94,10 @@ export function taskActionSet(s: TaskActionState): TaskActionId[] {
   const out: TaskActionId[] = [];
   const waiting = s.phase === 'waiting_input';
   if (waiting && s.hasQuestion) out.push('answer');
-  if (s.phase === 'failed' && !waiting) {
+  if (s.phase === 'failed' && !waiting && s.failureKind === 'verification') {
+    out.push('verification_failed');
+    if (s.hasHistory) out.push('history');
+  } else if (s.phase === 'failed' && !waiting) {
     out.push('retry');
     if (otherBackendOf(s.backend) && s.otherBackendAvailable !== false) out.push('switch_backend');
     if (s.hasHistory) out.push('history');
@@ -226,6 +236,8 @@ export function getGateReasonTitle(refusal: GateRefusal, ctx: GateCopyContext = 
       return `Blocked: no ${refusal.backend ?? 'backend'} credential available`;
     case 'workspace_cap_reached':
       return `Workspace full (${refusal.active}/${refusal.cap} running)`;
+    case 'entitlement_blocked':
+      return 'Queued: plan limit reached';
     default:
       return 'Blocked';
   }
@@ -249,6 +261,8 @@ export function getGateReasonSubtitle(refusal: GateRefusal, ctx: GateCopyContext
       return `The role requires connectors that are not available in this workspace.${refusal.missingConnectors?.length ? ` Missing: ${refusal.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${refusal.alternativeRole ? ` Or re-file it with role: ${refusal.alternativeRole}.` : ''}`;
     case 'capability_mismatch':
       return 'The configured backend has no server credentials. Switch to an available backend to start this task.';
+    case 'entitlement_blocked':
+      return 'The task starts automatically when the limit lifts.';
     case 'workspace_cap_reached':
       return `Queued. The task starts when a slot opens.${typeof refusal.queuePosition === 'number' && refusal.queuePosition > 0 ? ` ${refusal.queuePosition} other pending task${refusal.queuePosition === 1 ? '' : 's'} ahead of it.` : ''}`;
     default:

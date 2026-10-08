@@ -18,8 +18,13 @@ import WorkTrackerSection from './WorkTrackerSection';
 import KnowledgeHealthSection from './KnowledgeHealthSection';
 import SubjectPolicySection from './SubjectPolicySection';
 import ExecutorSection from './ExecutorSection';
+import RunnerSizeSection from './RunnerSizeSection';
+import CiRetrySection from './CiRetrySection';
 import ConcurrencySection from './ConcurrencySection';
-import { isWorkspaceExecutor, resolveWorkspaceExecutor } from '@buildd/shared';
+import { isRunnerSize, isWorkspaceExecutor, resolveWorkspaceExecutor } from '@buildd/shared';
+import { resolveWorkspaceRunnerSize } from '@/lib/runner-size-store';
+import { workspaceHostedRunnerMonth } from '@/lib/hosted-runner-usage-store';
+import { workspaceRunnerMonthLine } from '@/lib/hosted-runner-usage';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 import DeleteWorkspaceButton from '../DeleteWorkspaceButton';
 import { roleHas } from '@/lib/permission-registry';
@@ -67,6 +72,11 @@ export default async function WorkspaceConfigPage({
     // Where its tasks run: the stored value and the one the claim route applies.
     const storedExecutor = (workspace.gitConfig as { executor?: unknown } | null)?.executor;
     const executor = resolveWorkspaceExecutor(workspace.gitConfig as { executor?: unknown } | null, workspace.webhookConfig);
+    // Cloud container size: only where cloud runs can take its tasks. Read-only
+    // here; the dispatch route is the one that stores a fresh derivation.
+    const storedRunnerSize = (workspace.gitConfig as { runnerSize?: unknown } | null)?.runnerSize;
+    const runnerSize = executor.executor === 'host' ? null : await resolveWorkspaceRunnerSize(workspace);
+    const runnerMonth = runnerSize ? await workspaceHostedRunnerMonth(workspace.id).catch(() => null) : null;
 
     return (
         <main className="min-h-screen p-4 md:p-8">
@@ -134,6 +144,23 @@ export default async function WorkspaceConfigPage({
                     explicit={isWorkspaceExecutor(storedExecutor) ? storedExecutor : null}
                     effective={executor.executor}
                     source={executor.source}
+                />
+
+                {runnerSize && (
+                    <RunnerSizeSection
+                        workspaceId={workspace.id}
+                        explicit={isRunnerSize(storedRunnerSize) ? storedRunnerSize : null}
+                        effective={runnerSize.size}
+                        source={runnerSize.source}
+                        reason={runnerSize.reason}
+                        monthLine={runnerMonth && runnerMonth.wallSeconds > 0 ? workspaceRunnerMonthLine(runnerMonth) : null}
+                    />
+                )}
+
+                <CiRetrySection
+                    workspaceId={workspace.id}
+                    initial={(workspace.gitConfig as WorkspaceGitConfig | null)?.enforceGreenCI === true}
+                    canEdit={roleHas(access.role, 'manage_workspace_settings', overrides)}
                 />
 
                 <ConcurrencySection

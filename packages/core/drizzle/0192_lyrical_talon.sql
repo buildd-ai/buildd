@@ -1,1 +1,0 @@
-ALTER TABLE "users" ADD COLUMN "show_keyboard_hints" boolean DEFAULT false NOT NULL;

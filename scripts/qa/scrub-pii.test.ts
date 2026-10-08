@@ -2,6 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { MISSION_PR_TASK_PREFIX } from '../../packages/core/mission-integration';
+import { knownColumns, latestSnapshotPath, textColumns } from './known-columns';
 
 /**
  * scrub-pii.sql rewrites a prod clone before Visual QA screenshots it, and the
@@ -14,6 +15,10 @@ import { MISSION_PR_TASK_PREFIX } from '../../packages/core/mission-integration'
  * DELETEs or TRUNCATEs, or (c) listed below as structurally safe. A string-
  * literal-union `.$type<'a' | 'b'>()` column is an enum and counts as (c).
  * Adding a column without a decision fails here.
+ *
+ * That only covers this checkout's schema. Columns prod has and this checkout
+ * does not (a branch lagging prod) are overwritten by scrub-pii.sql's last
+ * block, from scripts/qa/known-columns.ts; see the tests for it below.
  */
 
 const root = join(__dirname, '..', '..');
@@ -157,10 +162,14 @@ const SAFE: Record<string, string[]> = {
   teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes', 'enabled_decision_shadows', 'decision_model',
     'chat_default_tier', // a chat tier name (CHAT_TIER_NAMES) or null
     'chat_retro', // { lessons, proposals } booleans (apps/web/src/lib/chat-retro/settings.ts)
-    'permission_overrides'], // permission names -> team role names, both fixed sets (lib/permission-registry.ts)
+    'permission_overrides', // permission names -> team role names, both fixed sets (lib/permission-registry.ts)
+    'plan', 'billing_status', // fixed vocabularies (packages/core/entitlements.ts); stripe ids are wiped
+    'managed_runner_plan', // { plan: fixed plan id, numeric limits, 'block'|'allow' } (lib/entitlements/plans.ts)
+    'model_upgrade_policy'], // { mode: fixed vocabulary, soakHours, ISO times, setBy: a row id } (packages/core/model-upgrade-policy.ts)
   team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
     'chat_composer_prefs'], // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
   users: ['timezone'],
+  workspaces: ['model_upgrade_policy'], // same shape as teams.model_upgrade_policy
   // Scopes are a fixed vocabulary; workspace restrictions contain only row references.
   accounts: ['monthly_cost_month', 'budget_alerts_sent', 'scopes', 'workspace_ids'],
   missions: ['status', // MissionStatusValue (@buildd/shared)
@@ -171,6 +180,9 @@ const SAFE: Record<string, string[]> = {
     'conflict_retry_head_sha', 'reviewer_retry_head_sha', 'depends_on', 'predicted_model',
     'loop_state', 'subject_head_sha',
     'category_decision', // { v, source, keyword, jev, confidence, skipped?, at }: labels, numbers, a version, a timestamp
+    // StoredVerdictDecision (lib/task-verdict.ts): fixed-vocabulary labels, a
+    // hash, row ids, a model id, a timestamp, and a cause key naming CI checks.
+    'verdict_decision',
   ],
   task_subject_reports: ['origin'],
   task_subject_claims: ['key_type', 'key_hash'],
@@ -197,7 +209,9 @@ const SAFE: Record<string, string[]> = {
     'workspace_ids', 'runner_commit', 'runner_version', 'current_commit', 'disk_commit',
     'tracked_branch',
   ],
-  task_schedules: ['cron_expression', 'timezone', 'last_heartbeat_state_hash'],
+  // delegation: workspace/user/account ids, a fixed capability vocabulary and a
+  // timestamp (packages/core/token-delegation.ts). No free text.
+  task_schedules: ['cron_expression', 'timezone', 'last_heartbeat_state_hash', 'delegation'],
   github_installations: ['permissions'],
   github_repos: ['default_branch'],
   workspace_skills: ['content_hash', 'model', 'color', 'config_hash', 'config_storage_key'],
@@ -208,8 +222,9 @@ const SAFE: Record<string, string[]> = {
   heartbeat_triage_looks: ['arm', 'prompt_version', 'model', 'pick', 'reason'],
   // Tier pools hold no text by design: shares and weight levels keyed by arm
   // id, model ids, and an audit log of those same shares plus a system actor
-  // label.
-  tier_pools: ['allocation', 'weights'],
+  // label. dial_state is a state label, arm ids, ISO times and a reason built
+  // from a fixed sentence plus rates and model ids (packages/core/tier-dial.ts).
+  tier_pools: ['allocation', 'weights', 'dial_state'],
   tier_pool_arms: ['model', 'stats'],
   tier_pool_changes: ['before', 'after', 'evidence', 'actor_system'],
   tenant_budgets: ['tenant_id'],
@@ -352,6 +367,46 @@ describe('scrub-pii.sql covers the schema', () => {
     expect(qaStr.indexOf('qa_is_ident')).toBeLessThan(qaStr.indexOf('THEN s'));
     expect(sqlSrc).toMatch(/jsonb_object_agg\(pg_temp\.qa_key\(k\)/);
     expect(cov.assigned.get('workspace_skills')?.has('allowed_tools')).toBe(true);
+  });
+
+  test('the schema parser sees every text-like column the latest Drizzle snapshot has', () => {
+    // A column declared in a shape the line regex misses would get neither a
+    // decision here nor a place on the known list, silently.
+    const seen = new Set(schema.cols.map(c => `${c.table}.${c.column}`));
+    expect(knownColumns().filter(c => !seen.has(c))).toEqual([]);
+  });
+
+  // The coverage tests above only see this checkout's schema.ts, but the clone
+  // is prod's schema plus this branch's migrations. A mission branch cut before
+  // post_session_runs reached prod had no decision for it, so post_session_runs.facts
+  // went to the guard raw. Everything this checkout doesn't know is overwritten.
+  test('text columns the checkout does not know (prod ahead of the branch) are overwritten', () => {
+    expect(cov.top).toContain("SET qa.known = :'known';");
+    const block = /DO \$unknown\$[\s\S]*?\$unknown\$;/.exec(sqlSrc)?.[0] ?? '';
+    // Fails closed on an empty or junk list, instead of wiping every column.
+    expect(block).toMatch(/IF NOT coalesce\('tasks\.title' = ANY \(known\), false\) THEN\s+RAISE EXCEPTION/);
+    // Same column types the guard scans.
+    for (const t of ["'text'", "'character varying'", "'character'", "'json'", "'jsonb'", "'_text'", "'_varchar'"]) {
+      expect(block).toContain(t);
+    }
+    expect(block).toContain("c.table_schema = 'public'");
+    expect(block).toContain('NOT ((c.table_name || \'.\' || c.column_name) = ANY (known))');
+    // Per-row placeholder for NOT NULL columns: a unique index cannot collide.
+    expect(block).toContain('md5(%I::text)');
+    expect(block).toContain('UPDATE %I SET %I = %s');
+    // Inside the one transaction.
+    expect(sqlSrc.indexOf('DO $unknown$')).toBeLessThan(sqlSrc.lastIndexOf('COMMIT;'));
+  });
+
+  test('a branch behind prod leaves the newer table off the known list', () => {
+    // Replays the incident: the snapshot a lagging branch carries has no
+    // post_session_runs, so its facts column is not "known" and gets overwritten.
+    const snap = JSON.parse(readFileSync(latestSnapshotPath(join(root, 'packages/core/drizzle')), 'utf8'));
+    expect(textColumns(snap)).toContain('post_session_runs.facts');
+    delete snap.tables['public.post_session_runs'];
+    const lagging = textColumns(snap);
+    expect(lagging).not.toContain('post_session_runs.facts');
+    expect(lagging).toContain('tasks.title');
   });
 
   test('the CI QA user is designated before the general user scrub', () => {

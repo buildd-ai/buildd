@@ -9,6 +9,7 @@ import {
   compactCardLine,
   countActiveMissions,
   countLiveWorkers,
+  failedDeliverableTaskIds,
   latestWorker,
   missionCardGroup,
   summarizeMissionForCard,
@@ -16,6 +17,10 @@ import {
   type MissionCardTaskRow,
 } from './mission-card-view';
 import { deriveMissionStateView } from './mission-state-view';
+import { deriveDeliveryView, type DeliveryView } from './workflow/projections';
+import { deliveryReading, toDeliveryDisplay } from './workflow/delivery-display';
+import { getDeliveryViewsForTasks } from './workflow/delivery-view';
+import type { DeliverySnapshot } from './workflow/types';
 
 // deriveMissionHealth reads the wall clock, so "now" is the real now.
 const NOW = Date.now();
@@ -190,7 +195,7 @@ describe('buildMissionCardView', () => {
     expect(view.chip.label).toBe('STALLED');
   });
 
-  it('the pulse is one segment per deliverable in phase order; attempts are not segments', () => {
+  it('the pulse is one segment per deliverable in strip order (creation order among independent tasks, not phase); attempts are not segments', () => {
     const row = mission({
       tasks: [
         task('b1', { ...BUILD, status: 'completed' }),
@@ -200,7 +205,7 @@ describe('buildMissionCardView', () => {
       ],
     });
     const view = buildMissionCardView(row, { from: 'home', now: NOW });
-    expect(view.segments.map(s => s.taskId)).toEqual(['t1', 'b1', 'b2']);
+    expect(view.segments.map(s => s.taskId)).toEqual(['b1', 't1', 'b2']);
     expect(view.caption).toBe('2/3');
     expect(view.total).toBe(3);
   });
@@ -343,5 +348,106 @@ describe('review fixes: live count, latest worker, payload', () => {
     const failed = task('a', { status: 'failed' });
     Object.defineProperty(failed, 'result', { get() { throw new Error('card read task.result'); } });
     expect(() => buildMissionCardView(mission({ tasks: [failed] }), { from: 'home', now: NOW })).not.toThrow();
+  });
+});
+
+// ─── S35: a failed attempt with a live kernel replacement is not a failure ───
+// The card takes the kernel's one reading per delivery (getDeliveryViewsForTasks,
+// the same load the mission page, strip and board read). A failed task counts
+// only when `deliveryReading` calls its delivery failed AND it is that
+// delivery's current attempt or owner.
+describe('S35: the card reads the kernel delivery, not the failed predecessor', () => {
+  const D = (o: Partial<DeliverySnapshot>): DeliverySnapshot => ({
+    id: 'd1', workspaceId: 'w1', ownerTaskId: 'own', repoFullName: 'acme/widgets', prNumber: 7, baseRef: 'dev',
+    state: 'WORKING', stateReason: null, version: 3, currentHeadSha: 'H1', currentRound: 1, maxRounds: 3,
+    boundAttemptId: null, resumeState: null, trunkIncidentId: null, approvedHeads: [], approvalBasis: null,
+    compositionHeads: [], ci: null, ciHeadSha: null, mergeable: null, mergeableHeadSha: null, mergedAt: null,
+    mergeCommitSha: null, supersededByPr: null, ...o,
+  });
+  const ref = (taskId: string, role: string, status: string, hour: number) => ({ taskId, role, status, createdAt: `2026-10-06T0${hour}:00:00Z` });
+  const deliveryOf = (o: Partial<DeliverySnapshot>, attemptTasks: ReturnType<typeof ref>[]) =>
+    deriveDeliveryView({ view: { delivery: D(o), rounds: [], attempts: [] }, attemptTasks })!;
+  const viewsFor = (v: DeliveryView, ids: string[]): ReadonlyMap<string, DeliveryView> => new Map(ids.map(id => [id, v] as const));
+  const failedIds = (s: ReturnType<typeof summarizeMissionForCard>): string[] =>
+    s.state.waitingOn?.kind === 'task_failed' ? [...s.state.waitingOn.taskIds] : [];
+
+  // The owner opened its PR; review requested changes; fix attempt 1 failed; attempt 2 is queued.
+  const own = () => task('own', { status: 'completed' });
+  const fix1 = () => task('fix1', { status: 'failed' });
+  const fix2 = () => task('fix2', { status: 'pending' });
+  const changesRequested = () => deliveryOf({ state: 'CHANGES_REQUESTED' }, [
+    ref('own', 'owner', 'completed', 0), ref('fix1', 'fix', 'failed', 1), ref('fix2', 'fix', 'pending', 2),
+  ]);
+
+  it('repro: CHANGES_REQUESTED with fix 1 failed and fix 2 queued is not a failing mission', () => {
+    const row = mission({ tasks: [own(), fix1(), fix2()] });
+    expect(summarizeMissionForCard(row, { now: NOW }).healthState).toBe('FAILING');
+    const s = summarizeMissionForCard(row, { now: NOW, deliveryViews: viewsFor(changesRequested(), ['own', 'fix1', 'fix2']) });
+    expect(s.healthState).not.toBe('FAILING');
+    expect(s.state.kind).not.toBe('failing');
+    expect(failedIds(s)).toEqual([]);
+  });
+
+  it('buildMissionCardView threads deliveryViews into the summary it computes', () => {
+    const row = mission({ tasks: [own(), fix1(), fix2()] });
+    const deliveryViews = viewsFor(changesRequested(), ['own', 'fix1', 'fix2']);
+    const card = buildMissionCardView(row, { from: 'missions', now: NOW, deliveryViews });
+    const precomputed = buildMissionCardView(row, { from: 'missions', now: NOW, summary: summarizeMissionForCard(row, { now: NOW, deliveryViews }) });
+    const legacy = buildMissionCardView(row, { from: 'missions', now: NOW });
+    expect(card.chip).toEqual(precomputed.chip);
+    expect(card.chip).not.toEqual(legacy.chip);
+  });
+
+  it('a FAILED delivery still counts its current attempt as the failure', () => {
+    const v = deliveryOf({ state: 'FAILED', stateReason: 'attempt_failed', prNumber: null }, [
+      ref('own', 'owner', 'completed', 0), ref('fix1', 'fix', 'failed', 1),
+    ]);
+    const s = summarizeMissionForCard(mission({ tasks: [own(), fix1()] }), { now: NOW, deliveryViews: viewsFor(v, ['own', 'fix1']) });
+    expect(s.healthState).toBe('FAILING');
+    expect(failedIds(s)).toEqual(['fix1']);
+  });
+
+  it('a FAILED delivery does not count an older superseded attempt, only the current one', () => {
+    const v = deliveryOf({ state: 'FAILED', stateReason: 'attempt_failed', prNumber: null }, [
+      ref('own', 'owner', 'completed', 0), ref('fix1', 'fix', 'failed', 1), ref('fix2', 'fix', 'failed', 2),
+    ]);
+    const row = mission({ tasks: [own(), fix1(), task('fix2', { status: 'failed' })] });
+    const s = summarizeMissionForCard(row, { now: NOW, deliveryViews: viewsFor(v, ['own', 'fix1', 'fix2']) });
+    expect(failedIds(s)).toEqual(['fix2']);
+  });
+
+  it('decided: SUPERSEDED and ABANDONED without a replacement are not failures (deliveryReading: landed / closed)', () => {
+    for (const state of ['SUPERSEDED', 'ABANDONED'] as const) {
+      const v = deliveryOf({ state }, [ref('own', 'owner', 'failed', 0)]);
+      expect(deliveryReading(toDeliveryDisplay(v))?.failed).toBe(false);
+      const s = summarizeMissionForCard(mission({ tasks: [task('own', { status: 'failed' })] }), { now: NOW, deliveryViews: viewsFor(v, ['own']) });
+      expect({ state, health: s.healthState === 'FAILING' }).toEqual({ state, health: false });
+      expect(failedIds(s)).toEqual([]);
+    }
+  });
+
+  it('a legacy task (no view in the map) keeps today\'s reading: it is a failure', () => {
+    const deliveryViews = viewsFor(changesRequested(), ['own', 'fix1', 'fix2']);
+    const s = summarizeMissionForCard(mission({ tasks: [own(), task('legacy', { status: 'failed' })] }), { now: NOW, deliveryViews });
+    expect(s.healthState).toBe('FAILING');
+    expect(failedIds(s)).toEqual(['legacy']);
+  });
+
+  it('decided: a read error degrades to the legacy reading, so the failure shows rather than hides', async () => {
+    const deliveryViews = await getDeliveryViewsForTasks(['fix1'], async () => { throw new Error('connection reset'); });
+    expect(deliveryViews.size).toBe(0);
+    const row = mission({ tasks: [own(), fix1(), fix2()] });
+    const s = summarizeMissionForCard(row, { now: NOW, deliveryViews });
+    expect(s.healthState).toBe('FAILING');
+    expect(failedIds(s)).toEqual(['fix1']);
+    expect(s.state.chip).toEqual(summarizeMissionForCard(row, { now: NOW }).state.chip);
+  });
+
+  it('failedDeliverableTaskIds names exactly the rows a caller loads views for', () => {
+    const rows = [
+      mission({ tasks: [own(), fix1(), task('rv', { status: 'failed', taskClass: 'review' })] }),
+      mission({ id: 'm2', tasks: [task('x', { status: 'failed' })] }),
+    ];
+    expect(failedDeliverableTaskIds(rows).sort()).toEqual(['fix1', 'x']);
   });
 });

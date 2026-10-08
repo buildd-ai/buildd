@@ -10,7 +10,7 @@ import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
-import { authenticateTaskScopedCaller, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, isDelegatedReach, taskScopeAllowsDelegated, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { emit } from '@/lib/core-emit';
 import { withDispatchHint } from '@buildd/core/dispatch-outbox';
@@ -24,9 +24,9 @@ import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label'
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
 import { autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
 import { listReachableWorkspaceIds, resolveWorkspaceAccess } from '@/lib/workspace-access';
-import { isAdvisoryManifest, shouldSerializeByManifest, hasConcretePathManifest } from '@buildd/core/path-overlap';
+import { isAdvisoryManifest, hasConcretePathManifest, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
-import { resolveAnchorInjections } from '@/lib/change-intent';
+import { overlapTouchesSerializedSurface, resolveAnchorInjections } from '@/lib/change-intent';
 import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { parseLoopConfig } from '@buildd/core/loop-config';
@@ -410,8 +410,8 @@ export async function POST(req: NextRequest) {
       outputRequirement: rawOutputRequirement,
       // Project scoping
       project,
-      // Mission linking
-      missionId,
+      // Mission linking (reassigned below only to drop an inherited link on a delegated follow-up)
+      missionId: requestedMissionId,
       // Workflow DAG: task IDs that must complete before this task is claimable
       dependsOn,
       // Role routing — only runners with this skill can claim the task
@@ -444,6 +444,7 @@ export async function POST(req: NextRequest) {
       subjectAnchor: rawSubjectAnchor,
       fileAnywayReason,
     } = body;
+    let missionId: string | undefined = requestedMissionId;
 
     gateCaller = gateCallerOrigin({ apiAccount, user, workerId: createdByWorkerId });
 
@@ -554,8 +555,25 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) {
       return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
     }
-    if (apiAccount && !taskScopeAllowsWorkspace(apiAccount, workspaceId)) {
-      return NextResponse.json({ error: 'A task token may create tasks only in its own workspace' }, { status: 403 });
+    // A task token files in its own workspace, or in one its schedule's
+    // delegation grants tasks:create on (packages/core/token-delegation.ts).
+    if (apiAccount && !taskScopeAllowsDelegated(apiAccount, workspaceId, 'tasks:create')) {
+      return NextResponse.json({ error: 'A task token may create tasks only in its own workspace, or one its schedule delegates tasks:create on' }, { status: 403 });
+    }
+    // A delegated follow-up is a plain task: it never joins a mission or a
+    // dependency graph in the other workspace, so it cannot steer work there.
+    // Its parent is the filing task itself (derived from the worker), which
+    // is the audit link back to the run that filed it.
+    if (apiAccount?.taskScope && isDelegatedReach(apiAccount, workspaceId)) {
+      // MCP create_task fills in the filing task's own mission by default;
+      // that link stays home rather than refusing the follow-up.
+      if (missionId && await taskScopeAllowsMission(apiAccount, missionId)) missionId = undefined;
+      if (missionId || (Array.isArray(dependsOn) && dependsOn.length > 0)) {
+        return NextResponse.json({ error: 'A delegated task cannot set missionId or dependsOn' }, { status: 400 });
+      }
+      if (parentTaskId && parentTaskId !== apiAccount.taskScope.taskId) {
+        return NextResponse.json({ error: 'A delegated task can only name its filing task as parent' }, { status: 400 });
+      }
     }
     gateWorkspaceId = workspaceId;
 
@@ -696,7 +714,7 @@ export async function POST(req: NextRequest) {
     // record the repo-wide sentinel ['**'] to mark "scope undeclared".
     //
     // The sentinel is ADVISORY ONLY. It does NOT drive dependsOn serialization —
-    // the auto-dependsOn pass below uses shouldSerializeByManifest(), which
+    // the auto-dependsOn pass below uses partitionOverlapEdges(), which
     // refuses to mint an edge when either side carries '**' (matching the
     // claim-time gates: findBlockingPr() and the path_claims layer-2 backstop
     // both skip the sentinel). Treating it as a hard dependency turned
@@ -754,20 +772,24 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Auto-add dependsOn edges for path-overlap serialization.
-    // If this task declares a CONCRETE pathManifest and other active/pending tasks
-    // in the same workspace declare concrete manifests that share paths, we must
-    // run them sequentially to prevent conflicting PRs (regression: PRs #1126/#1129).
+    // Path-overlap serialization against in-flight tasks (regression: PRs
+    // #1126/#1129), split into HARD and SOFT by `partitionOverlapEdges`:
+    //  - hard (a stored dependsOn edge): the same file on both sides, a
+    //    migration/schema path, or a workspace serialized surface;
+    //  - soft (scheduling evidence on pathDeclaration.softOverlaps, never an
+    //    edge): directory-prefix-only overlap. The claim route holds on it
+    //    while the other task is in flight unless HOLD/START says START, and
+    //    live path leases still stop simultaneous edits.
+    // Turning every prefix overlap into an edge queued honest broad scope
+    // (`scripts/`) behind every task under it, until each one merged.
     //
-    // shouldSerializeByManifest() (not pathsOverlap()) is the gate: a repo-wide
-    // sentinel on either side produces NO edge, because the claim-time gates treat
-    // '**' as advisory and would never honour such an edge anyway. Caller-supplied
-    // dependsOn is copied in first and never modified — only inferred edges are
-    // subject to this rule.
+    // A repo-wide sentinel on either side produces nothing (advisory). Caller-
+    // supplied dependsOn is copied in first and never modified.
     let resolvedDependsOn: string[] = Array.isArray(dependsOn) ? [...dependsOn] : [];
     // Recorded on pathDeclaration so a later narrowing can tell these apart
     // from caller-supplied edges, which must never be removed.
     const inferredDependsOn: string[] = [];
+    let softOverlaps: SoftOverlapEdge[] = [];
     if (pathManifest && pathManifest.length > 0 && !isAdvisoryManifest(pathManifest)) {
       const existingDepsSet = new Set(resolvedDependsOn);
       const inFlightTasks = await db.query.tasks.findMany({
@@ -778,14 +800,21 @@ export async function POST(req: NextRequest) {
         ),
         columns: { id: true, pathManifest: true },
       });
-      for (const t of inFlightTasks) {
-        if (existingDepsSet.has(t.id)) continue;
-        if (shouldSerializeByManifest(pathManifest, t.pathManifest as string[] | null)) {
-          resolvedDependsOn.push(t.id);
-          inferredDependsOn.push(t.id);
-          existingDepsSet.add(t.id);
-        }
+      const overlapGitConfig = targetWorkspace.gitConfig ?? null;
+      const split = partitionOverlapEdges(
+        pathManifest,
+        inFlightTasks.map(t => ({ id: t.id, pathManifest: t.pathManifest as string[] | null })),
+        {
+          skip: (id) => existingDepsSet.has(id),
+          isSerialized: (paths) => overlapTouchesSerializedSurface(paths, overlapGitConfig),
+        },
+      );
+      for (const id of split.hard) {
+        resolvedDependsOn.push(id);
+        inferredDependsOn.push(id);
+        existingDepsSet.add(id);
       }
+      softOverlaps = split.soft;
     }
 
     // Resolve creator context using the service
@@ -1448,6 +1477,8 @@ export async function POST(req: NextRequest) {
             source: 'creation' as const,
             snapshotAt: new Date().toISOString(),
             ...(inferredDependsOn.length > 0 ? { inferredDependsOn } : {}),
+            overlapPolicy: 'v2' as const,
+            ...(softOverlaps.length > 0 ? { softOverlaps } : {}),
           },
         } : {}),
         ...(TIERS.includes(rawTier as Tier) ? { tier: rawTier as Tier } : {}),

@@ -3,12 +3,12 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir, platform, arch, hostname } from 'os';
 import type { WorkerEnvironment, WorkerTool } from '@buildd/shared';
-import { CAPABILITY_BROWSER, CAPABILITY_SANDBOX_MOUNT_ALLOWLIST } from '@buildd/shared';
+import { CAPABILITY_BROWSER, CAPABILITY_MCP_GROUP_TOOLS, CAPABILITY_SANDBOX_MOUNT_ALLOWLIST } from '@buildd/shared';
 
 export type { McpServerInfo } from './mcp-json';
 import { extractVarReferences, parseMcpJsonContent, type McpServerInfo } from './mcp-json';
 import { resolveClaudeCliVersion } from './sdk-binary-path';
-import { checkBrowserCapability } from './browser-capability';
+import { selectedBrowserCapability, getBrowserProviderProbe } from './browser-provider';
 import { hostSeatMode, localCodexAuthPath } from './host-seat';
 
 export interface ScanConfig {
@@ -54,7 +54,7 @@ const DEFAULT_ENV_KEYS = [
  * is used by the runner to force-disable Claude Code sandboxing when namespaces are
  * unavailable — preventing every Bash tool call from failing with a bwrap error.
  */
-function probeBwrapNamespaces(unshareFlags: readonly string[]): boolean {
+function probeBwrapNamespaces(unshareFlags: readonly string[], loaderBinds = false): boolean {
   // Operator escape hatch — set when the kernel/container config is known-bad
   // and the proc-file approach below is insufficient (e.g. inside a user namespace
   // where the sysctl is not propagated correctly).
@@ -74,9 +74,13 @@ function probeBwrapNamespaces(unshareFlags: readonly string[]): boolean {
   } catch {
     return false; // not installed — sandbox won't be attempted
   }
+  // loaderBinds: on merged-usr hosts /lib and /lib64 are symlinks into /usr and
+  // a binary's ELF interpreter is named by that path, so with /usr alone the
+  // exec fails ENOENT and the probe misreads it as "no namespaces".
+  const binds = loaderBinds ? ' --ro-bind-try /bin /bin --ro-bind-try /lib /lib --ro-bind-try /lib64 /lib64' : '';
   try {
     execSync(
-      `bwrap ${unshareFlags.join(' ')} --uid 0 --gid 0 --ro-bind /usr /usr --proc /proc --dev /dev -- echo ok`,
+      `bwrap ${unshareFlags.join(' ')} --uid 0 --gid 0 --ro-bind /usr /usr${binds} --proc /proc --dev /dev -- echo ok`,
       { timeout: 5000, stdio: 'pipe' },
     );
     return true;
@@ -96,11 +100,15 @@ function probeBwrapNamespaces(unshareFlags: readonly string[]): boolean {
  * user-ns check passes. Confirmed by inspecting the Claude Code binary: it always
  * passes all three --unshare flags to bwrap.
  *
+ * Binds the ELF loader dirs too (loaderBinds): without them the probe reads
+ * false on every merged-usr host whatever the kernel allows, which forced the
+ * inner sandbox and subprocess env scrub off there.
+ *
  * This is the STRICTEST of the runner's bwrap requirements. Do not reuse it for a
  * consumer that unshares less — see checkBwrapMountIsolationSupport.
  */
 export function checkBwrapSupport(): boolean {
-  return probeBwrapNamespaces(['--unshare-user', '--unshare-pid', '--unshare-net']);
+  return probeBwrapNamespaces(['--unshare-user', '--unshare-pid', '--unshare-net'], true);
 }
 
 /**
@@ -114,7 +122,9 @@ export function checkBwrapSupport(): boolean {
  * two namespaces, which is the requirement of record.
  */
 export function checkBwrapMountIsolationSupport(): boolean {
-  return probeBwrapNamespaces(['--unshare-user', '--unshare-pid']);
+  // The wrapper's own argv binds /bin, /lib and /lib64 (SYSTEM_RO_BINDS), so the
+  // probe does too.
+  return probeBwrapNamespaces(['--unshare-user', '--unshare-pid'], true);
 }
 
 /**
@@ -268,7 +278,9 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
 
   const mcpServers = scanMcpServersRich(mcpJsonPaths);
 
-  const envKeys = [...new Set([...scanEnvKeys(config?.extraEnvKeys), 'backend:codex'])];
+  // CAPABILITY_MCP_GROUP_TOOLS: this build matches buildd actions on the group
+  // tools, so the MCP server may serve its worker sessions those.
+  const envKeys = [...new Set([...scanEnvKeys(config?.extraEnvKeys), 'backend:codex', CAPABILITY_MCP_GROUP_TOOLS])];
 
   // A plain `codex login` on this machine (~/.codex/auth.json, no CODEX_HOME
   // set) is local Codex auth too: advertise it under the same key the claim
@@ -280,7 +292,7 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
 
   // Self-check: does headless Chromium actually launch on this runner?
   // Logs one line with what was found or why not (see browser-capability.ts).
-  if (checkBrowserCapability()) {
+  if (selectedBrowserCapability()) {
     envKeys.push(CAPABILITY_BROWSER);
   }
 
@@ -309,6 +321,7 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
       hostname: hostname(),
     },
     scannedAt: new Date().toISOString(),
+    browserProvider: getBrowserProviderProbe(),
     claudeCliVersion: resolveClaudeCliVersion(),
   };
 }

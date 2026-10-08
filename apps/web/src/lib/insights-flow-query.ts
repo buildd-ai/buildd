@@ -4,6 +4,7 @@
  * which the caller resolves from one team.
  */
 
+import { deriveTaskModel } from './model-presentation';
 import { db } from '@buildd/core/db';
 import { workers, releases, releaseTasks, workspaces, missions } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, or } from 'drizzle-orm';
@@ -43,6 +44,7 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
       or(isNull(workers.completedAt), gte(workers.completedAt, since), gte(workers.mergedAt, since)),
     ),
     columns: {
+      inputTokens: true, outputTokens: true, costUsd: true,
       id: true,
       taskId: true,
       workspaceId: true,
@@ -60,13 +62,27 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
     },
     with: {
       task: {
-        columns: { id: true, title: true, status: true, roleSlug: true, parentTaskId: true, missionId: true },
+        columns: { id: true, title: true, status: true, roleSlug: true, tier: true, predictedModel: true, parentTaskId: true, missionId: true },
+        // Only the keys `deriveTaskModel` reads, never the whole context blob:
+        // across a 30-day window the full blobs overflow Neon's 64 MB response cap.
+        // The callback form: a nested relation is aliased, so the column must
+        // come from the aliased table, not the imported one.
+        extras: (t, { sql }) => ({
+          routingContext: sql<Record<string, unknown>>`jsonb_build_object(
+            'model', ${t.context} -> 'model',
+            'resolvedTier', ${t.context} -> 'resolvedTier',
+            'routingReason', ${t.context} -> 'routingReason',
+            'routingInferred', ${t.context} -> 'routingInferred',
+            'routingInferredReason', ${t.context} -> 'routingInferredReason'
+          )`.as('routing_context'),
+        }),
       },
     },
     orderBy: [desc(workers.startedAt), desc(workers.id)],
     limit: FLOW_ROW_LIMIT,
   });
   return (rows as any[]).map(w => ({
+    inputTokens: w.inputTokens, outputTokens: w.outputTokens, costUsd: Number(w.costUsd), tier: deriveTaskModel({ tier: w.task?.tier, predictedModel: w.task?.predictedModel, context: w.task?.routingContext }).tier,
     workerId: w.id,
     taskId: w.taskId ?? null,
     parentTaskId: w.task?.parentTaskId ?? null,
@@ -165,5 +181,6 @@ export async function loadFlowSeries(workspaceIds: string[], window: FlowWindow,
     ...rel,
     missionTrunkMergedAt,
   });
-  return { ...series, truncated: workerRows.length >= FLOW_ROW_LIMIT };
+  const names = workspaceIds.length ? await db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(inArray(workspaces.id, workspaceIds)) : [];
+  return { ...series, workspaceNames: Object.fromEntries(names.map(w => [w.id, w.name])), truncated: workerRows.length >= FLOW_ROW_LIMIT };
 }

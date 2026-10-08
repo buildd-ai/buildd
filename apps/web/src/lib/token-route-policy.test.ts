@@ -37,6 +37,16 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/artifacts?workspaceId=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/workspaces/ws-b/config', 'PATCH'))).toBe(false);
   });
+  test('workspace-restricted tokens can list workspaces but not create one', () => {
+    // The listing filters to the token's own workspaces, so resolving a
+    // workspace by name works; creating one would escape the restriction.
+    const reader = { scopes: ['tasks:read'], workspaceIds: ['ws-a'] };
+    expect(canAccessTokenRoute(reader, request('/api/workspaces'))).toBe(true);
+    expect(canAccessTokenRoute(reader, request('/api/workspaces', 'HEAD'))).toBe(true);
+    const workspaceAdmin = { scopes: ['workspaces:admin'], workspaceIds: ['ws-a'] };
+    expect(canAccessTokenRoute(workspaceAdmin, request('/api/workspaces', 'POST'))).toBe(false);
+    expect(canAccessTokenRoute({ scopes: ['workspaces:admin'] }, request('/api/workspaces', 'POST'))).toBe(true);
+  });
   test('evidence reads take analytics:read, matching the read_evidence action', () => {
     const token = { scopes: ['analytics:read'] };
     expect(requiredTokenScope('/api/tasks/t-1/evidence', 'GET')).toBe('analytics:read');
@@ -51,6 +61,21 @@ describe('REST token scope policy', () => {
     const restricted = { scopes: ['analytics:read'], workspaceIds: ['ws-a'] };
     expect(canAccessTokenRoute(restricted, request('/api/evidence?workspaceId=ws-b&prNumber=1'))).toBe(false);
     expect(canAccessTokenRoute(restricted, request('/api/evidence?workspaceId=ws-a&prNumber=1'))).toBe(true);
+  });
+  test('Scout runner-host routes take the runner capability, not admin', () => {
+    for (const path of [
+      '/api/quality-scout/runs/claim', '/api/quality-scout/runs/r1/probes', '/api/quality-scout/runs/r1/release',
+      '/api/quality-scout/runs/r1/evidence', '/api/quality-scout/runs/r1/evidence/e1/confirm',
+    ]) {
+      expect(requiredTokenScope(path, 'POST')).toBe('workers:write');
+      expect(canAccessTokenRoute({ scopes: TOKEN_PRESETS.runner.scopes }, request(path, 'POST'))).toBe(true);
+      expect(canAccessTokenRoute({ scopes: ['tasks:write'] }, request(path, 'POST'))).toBe(false);
+    }
+  });
+  test("reading a Scout run's evidence takes analytics:read, like the other read_evidence routes", () => {
+    expect(requiredTokenScope('/api/quality-scout/runs/r1/evidence', 'GET')).toBe('analytics:read');
+    expect(canAccessTokenRoute({ scopes: ['analytics:read'] }, request('/api/quality-scout/runs/r1/evidence?evidenceId=e&tail=5'))).toBe(true);
+    expect(canAccessTokenRoute({ scopes: ['analytics:read'] }, request('/api/quality-scout/runs/r1/evidence', 'POST'))).toBe(false);
   });
   test('MCP transport defers to its action gate without requiring admin', () => {
     expect(canAccessTokenRoute({ scopes: ['analytics:read'] }, request('/api/mcp', 'POST'))).toBe(true);

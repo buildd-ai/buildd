@@ -66,29 +66,20 @@
     },
     "apps/web/src/app/api/github/webhook/route.ts": {
       "apps/web/src/lib/auto-merge.ts": "reviews-merge",
-      "apps/web/src/lib/ci-failure-retry.ts": "reviews-merge",
-      "apps/web/src/lib/dead-pr-shutdown.ts": "reviews-merge",
       "apps/web/src/lib/knowledge-ingest.ts": "knowledge",
       "apps/web/src/lib/merge-policy.ts": "reviews-merge",
-      "apps/web/src/lib/migration-collision-retry.ts": "reviews-merge",
-      "apps/web/src/lib/migration-inspector.ts": "workspace-migration",
       "apps/web/src/lib/mission-base-guard.ts": "missions",
       "apps/web/src/lib/notify.ts": "notifications",
-      "apps/web/src/lib/pr-activity-comment.ts": "reviews-merge",
       "apps/web/src/lib/pr-landing.ts": "reviews-merge",
       "apps/web/src/lib/pr-review-request.ts": "reviews-merge",
       "apps/web/src/lib/pr-review-status.ts": "reviews-merge",
       "apps/web/src/lib/pr-scope-reconcile-trigger.ts": "reviews-merge",
-      "apps/web/src/lib/pr-supersession-detect.ts": "reviews-merge",
       "apps/web/src/lib/prompt-evals/push-trigger.ts": "experiments",
       "apps/web/src/lib/prompt-evals/run.ts": "experiments",
       "apps/web/src/lib/prompt-evals/store.ts": "experiments",
       "apps/web/src/lib/pushover.ts": "notifications",
-      "apps/web/src/lib/review-feedback.ts": "reviews-merge",
       "apps/web/src/lib/review-verdict-gate.ts": "reviews-merge",
-      "apps/web/src/lib/reviewer.ts": "reviews-merge",
       "apps/web/src/lib/spec-recheck.ts": "spec-conformance",
-      "apps/web/src/lib/supersession.ts": "reviews-merge",
       "packages/core/mission-integration.ts": "missions"
     },
     "apps/web/src/app/api/mcp-oauth/[workspace]/route.ts": {
@@ -136,6 +127,7 @@
     },
     "apps/web/src/app/api/tasks/[id]/summary/route.ts": {
       "apps/web/src/lib/mission-visual-review.ts": "visual-qa",
+      "apps/web/src/lib/task-failure-kind-load.ts": "health-quality",
       "apps/web/src/lib/visual-review-load.ts": "visual-qa",
       "apps/web/src/lib/visual-review-rounds.ts": "visual-qa"
     },
@@ -201,7 +193,6 @@
       "apps/web/src/lib/silent-completion.ts": "health-quality",
       "apps/web/src/lib/supersession.ts": "reviews-merge",
       "apps/web/src/lib/terminal-record-ledger.ts": "health-quality",
-      "packages/core/bash-failure-trace.ts": "health-quality",
       "packages/core/orchestration-ledger-source.ts": "missions",
       "packages/core/routing-analytics.ts": "health-quality",
       "packages/core/runner-health.ts": "health-quality"
@@ -227,8 +218,7 @@
       "packages/core/decision-client.ts": "jev-decisions",
       "packages/core/orchestration-claim-decision.ts": "jev-decisions",
       "packages/core/orchestration-claim-source.ts": "missions",
-      "packages/core/orchestration-decision.ts": "jev-decisions",
-      "packages/core/orchestration-promotion.ts": "missions"
+      "packages/core/orchestration-decision.ts": "jev-decisions"
     },
     "apps/web/src/app/api/workers/claim/prompt-context-pipeline.ts": {
       "apps/web/src/app/api/workers/claim/mission-handoff-injection.ts": "missions"
@@ -455,6 +445,7 @@
       "packages/core/inference-policy.ts": "jev-decisions",
       "packages/core/mission-helpers.ts": "missions",
       "packages/core/post-session-quality.ts": "health-quality",
+      "packages/core/quality-scout/types.ts": "health-quality",
       "packages/core/subject-anchor-observe.ts": "missions",
       "packages/core/visual-qa-page-source.ts": "visual-qa"
     },
@@ -649,15 +640,6 @@
       "apps/web/src/lib/spend-summary.ts": "health-quality",
       "packages/core/inference-key-policy.ts": "jev-decisions"
     },
-    "apps/web/src/app/app/(protected)/settings/models/ModelTiersClient.tsx": {
-      "apps/web/src/lib/tier-mapping.ts": "model-tiers",
-      "packages/core/model-tier-defaults.ts": "model-tiers"
-    },
-    "apps/web/src/app/app/(protected)/settings/models/TierPoolsSection.tsx": {
-      "apps/web/src/lib/tier-pools-view.ts": "model-tiers",
-      "packages/core/tier-pool.ts": "model-tiers",
-      "packages/core/tier-weights.ts": "model-tiers"
-    },
     "apps/web/src/app/app/(protected)/settings/providers/page.tsx": {
       "apps/web/src/lib/chat-availability.ts": "chat"
     },
@@ -708,6 +690,7 @@
       "apps/web/src/lib/mission-task-href.ts": "missions",
       "apps/web/src/lib/mission-visual-review.ts": "visual-qa",
       "apps/web/src/lib/task-evidence.ts": "knowledge",
+      "apps/web/src/lib/task-failure-kind-load.ts": "health-quality",
       "apps/web/src/lib/visual-review-load.ts": "visual-qa",
       "apps/web/src/lib/visual-review-rounds.ts": "visual-qa"
     },

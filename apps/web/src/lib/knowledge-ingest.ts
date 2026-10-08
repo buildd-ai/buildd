@@ -23,6 +23,7 @@ import { db } from '@buildd/core/db';
 import { knowledgeIngestJobs, githubRepos, githubInstallations, workspaces, workers, tasks } from '@buildd/core/db/schema';
 import { and, eq, inArray, or } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
+import { admitDocsWithinCap } from '@buildd/core/billing-limits';
 import {
   shouldIngestFile,
   classifyIngestCorpus,
@@ -461,16 +462,22 @@ async function executePushJob(job: IngestJob): Promise<DiffExecution> {
   for (const filePath of deletions) {
     await store.deleteBySource(docsNamespace, { sourcePath: filePath });
   }
+  // Plan knowledge-base cap: refuse new docs past it, never touch stored ones.
+  const admission = await admitDocsWithinCap(job.workspaceId, docs.map(d => d.path));
+  const refused = new Set(admission.refused);
+  const admittedDocs = refused.size > 0 ? docs.filter(d => !refused.has(d.path)) : docs;
   let chunksUpserted = 0;
-  if (docs.length > 0) {
-    const res = await ingestFiles(store, job.workspaceId, 'docs', docs);
+  if (admittedDocs.length > 0) {
+    const res = await ingestFiles(store, job.workspaceId, 'docs', admittedDocs);
     chunksUpserted = res.chunks;
   }
 
   return {
     stats: {
-      filesIngested: docs.length,
+      filesIngested: admittedDocs.length,
       filesSkipped: skipped,
+      filesRefusedByPlan: refused.size,
+      ...(admission.message ? { planLimitMessage: admission.message } : {}),
       filesDeleted: deletions.length,
       chunksUpserted,
       prChunksUpserted: 0,
@@ -580,6 +587,13 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
     filesDeleted++;
   }
 
+  // Plan knowledge-base cap: refuse new docs past it, never touch stored ones.
+  const admission = await admitDocsWithinCap(job.workspaceId, sources.docs.map(d => d.path));
+  if (admission.refused.length > 0) {
+    const refused = new Set(admission.refused);
+    sources.docs = sources.docs.filter(d => !refused.has(d.path));
+  }
+
   // Upserts via the shared ingest path (fileToChunks under the hood).
   let filesIngested = 0;
   let chunksUpserted = 0;
@@ -670,7 +684,11 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
   }
 
   return {
-    stats: { filesIngested, filesSkipped: skipped, filesDeleted, chunksUpserted, prChunksUpserted, totalBytes, backfillEnqueued },
+    stats: {
+      filesIngested, filesSkipped: skipped, filesDeleted, chunksUpserted, prChunksUpserted, totalBytes, backfillEnqueued,
+      filesRefusedByPlan: admission.refused.length,
+      ...(admission.message ? { planLimitMessage: admission.message } : {}),
+    },
     changedFiles: [...toFetch, ...deletions],
   };
 }

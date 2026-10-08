@@ -13,6 +13,13 @@ describe('agent env allowlist', () => {
     expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
   });
 
+  it('never passes browser session credentials into the agent', () => {
+    const env = buildAgentBaseEnv({ BUILDD_BROWSER_SESSION_TOKEN: 'task-secret', BUILDD_BROWSER_BRIDGE_URL: 'https://buildd-browser.invalid', CF_API_TOKEN: 'account-secret' }, NO_BROWSER);
+    expect(env.BUILDD_BROWSER_SESSION_TOKEN).toBeUndefined();
+    expect(env.BUILDD_BROWSER_BRIDGE_URL).toBeUndefined();
+    expect(env.CF_API_TOKEN).toBeUndefined();
+  });
+
   it('still drops runner coordination secrets', () => {
     const env = buildAgentBaseEnv({ HOME: '/home/bun', BUILDD_API_KEY: 'bld_x', BUILDD_SERVER: 'http://x' }, NO_BROWSER);
     expect(env.BUILDD_API_KEY).toBeUndefined();

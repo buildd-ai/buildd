@@ -12,7 +12,9 @@
  * Run: bun test apps/runner/__tests__/unit/error-handling.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
@@ -97,13 +99,13 @@ mock.module('../../src/buildd', () => ({
 // Mock workspace resolver
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -246,7 +248,19 @@ describe('Error Handling', () => {
     manager?.destroy();
   });
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     clearAllMocks();
   });
 
@@ -426,7 +440,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than a fixed sleep: a loaded CI runner can take >200ms
+      for (let i = 0; i < 50 && manager.getWorker('w-sdk-abort')?.status !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-sdk-abort');
       expect(worker?.status).toBe('error');
@@ -622,6 +639,38 @@ describe('Error Handling', () => {
       expect(worker?.status).toBe('error');
       expect(worker?.error).toBe('Agent authentication failed');
       expect(worker?.currentAction).toBe('Auth failed');
+    });
+
+    // A task ABOUT a 401 opens with the agent restating it. That session ran
+    // tools, so its credential plainly worked — calling it an auth failure
+    // threw away finished work and failed the task over to another backend.
+    test('agent text that discusses a 401 is not an auth failure once the session used tools', async () => {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-auth-topic' },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: "I'll investigate why get_usage_stats returns 401 Unauthorized for a repo-name workspace ID." }] },
+        },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'tool_use', id: 'toolu_read', name: 'Read', input: { file_path: '/tmp/route.ts' } }] },
+        },
+        { type: 'result', subtype: 'success', session_id: 'sess-auth-topic' },
+      ];
+
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
+        id: 'w-auth-topic',
+        branch: 'buildd/auth-topic',
+        task: makeTask(),
+      }] }));
+
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await new Promise(r => setTimeout(r, 200));
+
+      const worker = manager.getWorker('w-auth-topic');
+      expect(worker?.error).not.toBe('Agent authentication failed');
+      expect(worker?.currentAction).not.toBe('Auth failed');
     });
   });
 
@@ -1155,7 +1204,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than a fixed sleep: a loaded CI runner can take >200ms
+      for (let i = 0; i < 50 && manager.getWorker('w-abort-msg')?.status !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-abort-msg');
       // The catch block distinguishes abort errors by checking for "aborted" in message

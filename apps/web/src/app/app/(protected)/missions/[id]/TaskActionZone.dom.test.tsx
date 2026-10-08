@@ -258,3 +258,153 @@ describe('TaskActionZone — a failed task offers only a backend that can run it
     expect(button('Switch to Codex')).toBeDefined();
   });
 });
+
+describe('TaskActionZone — overrides carry through a chain of refusals', () => {
+  // The start route checks the local-mission gate, then the workspace cap. Each
+  // override clears one gate, so a start that needs both must send both.
+  function stubTwoGates() {
+    calls = [];
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      calls.push({ url: u, body });
+      if (u === '/api/workers/active') return { ok: true, status: 200, json: async () => ({ activeLocalUis: [] }) } as Response;
+      if (!u.endsWith('/start')) return { ok: true, status: 200, json: async () => ({}) } as Response;
+      const reply = !body?.capExempt
+        ? { gateReason: 'workspace_cap_reached', canForce: true, blockClass: 'policy', canExempt: true, cap: 10, error: 'Workspace is full' }
+        : !body?.forceOverride
+          ? { gateReason: 'mission_local', canForce: true, blockClass: 'policy' }
+          : null;
+      return reply
+        ? { ok: false, status: 422, json: async () => reply } as Response
+        : { ok: true, status: 200, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+  }
+
+  it('Start anyway, then Force start, sends both and the start lands', async () => {
+    stubTwoGates();
+    await mount({ missionExecutor: 'local' });
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    await act(async () => { button('Start anyway')!.click(); });
+    await flush();
+    expect(container.textContent).toContain('Running in a local session');
+    await act(async () => { button('Force start')!.click(); });
+    await flush();
+    expect(startCalls().at(-1)!.body).toEqual({ forceOverride: true, capExempt: true });
+    expect(container.querySelector('[data-testid="task-start-refusal"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-start-status"]')).not.toBeNull();
+  });
+
+  it('dismissing a refusal drops the overrides it collected', async () => {
+    stubTwoGates();
+    await mount({ missionExecutor: 'local' });
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    await act(async () => { button('Start anyway')!.click(); });
+    await flush();
+    await act(async () => { button('Cancel')!.click(); });
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    expect(startCalls().at(-1)!.body).toEqual({});
+  });
+});
+
+describe('TaskActionZone — managed-runner plan limit', () => {
+  const block = { kind: 'concurrency', key: 'managed_runner.concurrency', active: 3, limit: 3, scope: 'individual' } as const;
+
+  it('a queued task held on a plan limit shows the entitlement state instead of Run now, and no error', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ entitlementBlock: block });
+    const notice = container.querySelector('[data-testid="entitlement-blocked"]') as HTMLElement;
+    expect(notice).not.toBeNull();
+    expect(notice.textContent).toContain('3 managed runs already active');
+    expect(button('Run now')).toBeUndefined();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.innerHTML).not.toContain('status-error');
+  });
+
+  it('a start refused on a plan limit renders the same notice, not the gate warning, and Leave queued closes it', async () => {
+    stubFetch({ status: 422, body: { gateReason: 'entitlement_blocked', blockClass: 'entitlement', canForce: false, entitlement: { ...block, limit: 10, active: 10, scope: 'team' }, error: 'Queued' } });
+    await mount();
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-testid="task-start-refusal"]')).toBeNull();
+    const notice = container.querySelector('[data-testid="entitlement-blocked"]') as HTMLElement;
+    expect(notice.textContent).toContain('10 managed runs already active');
+    expect(button('Force start')).toBeUndefined();
+    expect(container.innerHTML).not.toMatch(/status-error|status-warning/);
+    await act(async () => { button('Leave queued')!.click(); });
+    expect(container.querySelector('[data-testid="entitlement-blocked"]')).toBeNull();
+    expect(button('Run now')).toBeDefined();
+  });
+
+  it('the workspace cap refusal is unchanged: an operational limit keeps its own controls', async () => {
+    stubFetch({ status: 422, body: { gateReason: 'workspace_cap_reached', blockClass: 'policy', active: 3, cap: 3, canExempt: true } });
+    await mount();
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-testid="entitlement-blocked"]')).toBeNull();
+    expect(container.querySelector('[data-gate="workspace_cap_reached"]')).not.toBeNull();
+    expect(button('Save & start')).toBeDefined();
+  });
+});
+
+describe('TaskActionZone — failure kind routes recovery', () => {
+  const dupes = (text: string) => {
+    const words = text.toLowerCase().match(/[a-z]+/g) ?? [];
+    return words.length - new Set(words).size;
+  };
+
+  it('a worker failure offers only execution recovery, under the worker-failure label', async () => {
+    codexConfigured = true;
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', failureKind: 'execution', lastError: { excerpt: 'Tests failed: 3 of 12' }, historyHref: '/h' });
+    await flush();
+    expect(container.textContent).toContain('Worker failed');
+    expect(button('Retry on Claude')).toBeDefined();
+    expect(button('Switch to Codex')).toBeDefined();
+    expect(container.textContent).not.toContain('verification failed');
+    expect(container.textContent).not.toMatch(/audit/i);
+    expect(dupes(container.textContent ?? '')).toBeLessThan(6);
+  });
+
+  it('landed work with a failed audit offers no build recovery, and says verification failed', async () => {
+    codexConfigured = true;
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', failureKind: 'verification', lastError: { excerpt: 'audit exploded' }, historyHref: '/h' });
+    await flush();
+    const text = container.textContent ?? '';
+    expect(text).toContain('Implementation complete, verification failed');
+    expect(button('Retry')).toBeUndefined();
+    expect(button('Switch to Codex')).toBeUndefined();
+    expect(text).not.toContain('Retry on Claude');
+    expect(text).not.toContain('Worker failed');
+    expect(text.length).toBeLessThan(120);
+    expect(dupes(text)).toBeLessThan(3);
+  });
+
+  it('a failed audit with landed work offers Retry the audit (reassign), never the build recovery', async () => {
+    codexConfigured = true;
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', failureKind: 'verification', auditTaskId: 't1', lastError: null, historyHref: '/h' });
+    await flush();
+    const text = container.textContent ?? '';
+    expect(text).toContain('Implementation complete, verification failed');
+    expect(button('Retry on Claude')).toBeUndefined();
+    expect(button('Switch to Codex')).toBeUndefined();
+    expect(text).not.toContain('Worker failed');
+    expect(text).not.toContain('Skip this audit');
+    await act(async () => { button('Retry the audit')!.click(); });
+    await flush();
+    expect(calls.some(c => c.url === '/api/tasks/t1/reassign?force=true')).toBe(true);
+  });
+
+  it('an execution failure never offers audit recovery', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', failureKind: 'execution', auditTaskId: null, lastError: { excerpt: 'boom' }, historyHref: '/h' });
+    await flush();
+    expect(button('Retry the audit')).toBeUndefined();
+    expect(container.textContent).not.toContain('Skip this audit');
+  });
+});

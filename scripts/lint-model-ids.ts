@@ -59,6 +59,8 @@ const ALLOWLIST: string[] = [
   'apps/web/src/lib/config-helpers.ts', // mission-config UI dropdown options
   'apps/web/src/app/api/models/route.ts', // filters legacy generations out of the live catalog
   'packages/core/model-capability-requirements.ts', // min-CLI-version floor per model: a registry keyed by model ID
+  'apps/web/src/app/app/dev/fixtures/ModelProvidersFixture.tsx', // dev-only Model providers fixture: shows how real tier model IDs map through an endpoint
+  'apps/web/src/app/app/(protected)/settings/models/model-tiers-fixtures.ts', // DOM-test-only fixtures for the Model tiers page (imported by its *.dom.test.tsx files): illustrative catalog rows keyed by model ID
   'scripts/lint-model-ids.ts', // this file: self-test fixtures deliberately contain literal model IDs to exercise the matcher
 ];
 

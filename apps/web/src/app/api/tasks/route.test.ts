@@ -572,8 +572,55 @@ describe('POST /api/tasks', () => {
         method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { workspaceId: 'ws-2', title: 'Elsewhere' },
       }));
       expect(response.status).toBe(403);
-      expect((await response.json()).error).toBe('A task token may create tasks only in its own workspace');
+      expect((await response.json()).error).toBe('A task token may create tasks only in its own workspace, or one its schedule delegates tasks:create on');
       expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    describe('with a schedule delegation (scheduled reviewer files a follow-up elsewhere)', () => {
+      const delegated = (capabilities: string[]) => ({
+        ...scoped,
+        taskScope: { ...scoped.taskScope, delegations: [{ workspaceId: 'ws-2', capabilities }] },
+      });
+      const elsewhere = { id: 'task-elsewhere', workspaceId: 'ws-2', title: 'Defect found', status: 'pending' };
+      const fileIn = (body: Record<string, unknown>) => POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { workspaceId: 'ws-2', title: 'Defect found', ...body },
+      }));
+
+      it('files into a workspace the delegation grants tasks:create on, through the normal path', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['analytics:read', 'tasks:create']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+        mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+        mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [elsewhere]) })) });
+        const response = await fileIn({});
+        expect(response.status).toBe(200);
+        expect((await response.json()).id).toBe('task-elsewhere');
+      });
+
+      it('an analytics-only delegation still cannot create there', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['analytics:read']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+        const response = await fileIn({});
+        expect(response.status).toBe(403);
+        expect(mockTasksInsert).not.toHaveBeenCalled();
+      });
+
+      it('a delegation for one workspace opens no other', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['tasks:create']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-3', teamId: 'team-1', accessMode: 'open' });
+        const response = await fileIn({ workspaceId: 'ws-3' });
+        expect(response.status).toBe(403);
+        expect(mockTasksInsert).not.toHaveBeenCalled();
+      });
+
+      it('a delegated follow-up cannot join a mission, a dependency graph or another parent there', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['tasks:create']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+        mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+        expect((await fileIn({ missionId: '33333333-3333-4333-8333-333333333333' })).status).toBe(400);
+        expect((await fileIn({ dependsOn: ['55555555-5555-4555-8555-555555555555'] })).status).toBe(400);
+        expect((await fileIn({ parentTaskId: '66666666-6666-4666-8666-666666666666' })).status).toBe(400);
+        expect(mockTasksInsert).not.toHaveBeenCalled();
+      });
     });
 
     for (const level of ['worker', 'admin']) {
@@ -2893,11 +2940,11 @@ describe('POST /api/tasks', () => {
     expect(captured().dependsOn).toBeUndefined();
   });
 
-  it('still auto-depends when two concrete manifests genuinely overlap', async () => {
+  it('a broad-prefix overlap mints no hard edge: it is stored as soft scheduling evidence', async () => {
     const captured = missionPathManifestSetup();
     mockTasksFindMany.mockResolvedValue([
       { id: 'sibling-wildcard', pathManifest: ['**'] },
-      { id: 'sibling-real-overlap', pathManifest: ['apps/web/src/lib'] },
+      { id: 'sibling-dir', pathManifest: ['apps/web/src/lib'] },
       { id: 'sibling-unrelated', pathManifest: ['packages/core/db/schema.ts'] },
     ]);
 
@@ -2913,13 +2960,67 @@ describe('POST /api/tasks', () => {
     }));
 
     expect(response.status).toBe(200);
-    expect(captured().dependsOn).toEqual(['sibling-real-overlap']);
-    // Provenance: the declaration as filed, and which edge was inferred.
+    expect(captured().dependsOn).toBeUndefined();
     expect(captured().pathDeclaration).toMatchObject({
       declared: ['apps/web/src/lib/shared.ts'],
       source: 'creation',
-      inferredDependsOn: ['sibling-real-overlap'],
+      overlapPolicy: 'v2',
+      softOverlaps: [{ taskId: 'sibling-dir', kind: 'prefix', paths: ['apps/web/src/lib/shared.ts', 'apps/web/src/lib'] }],
     });
+    expect(captured().pathDeclaration.inferredDependsOn).toBeUndefined();
+  });
+
+  it('declaring a whole directory does not queue behind every task under it', async () => {
+    const captured = missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ id: `under-${i}`, pathManifest: [`scripts/tool-${i}.ts`] })),
+    );
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Mission task D', missionId: 'mission-1', pathManifest: ['scripts/'] },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().dependsOn).toBeUndefined();
+    expect(captured().pathDeclaration.softOverlaps).toHaveLength(8);
+  });
+
+  it('an exact same-file overlap with a queued writer is still a hard inferred edge', async () => {
+    const captured = missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'sibling-same-file', pathManifest: ['apps/web/src/lib/shared.ts'] },
+      { id: 'sibling-dir', pathManifest: ['apps/web/src/lib'] },
+    ]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Mission task B', missionId: 'mission-1', pathManifest: ['apps/web/src/lib/shared.ts'] },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().dependsOn).toEqual(['sibling-same-file']);
+    expect(captured().pathDeclaration).toMatchObject({
+      inferredDependsOn: ['sibling-same-file'],
+      overlapPolicy: 'v2',
+      softOverlaps: [{ taskId: 'sibling-dir' }],
+    });
+  });
+
+  it('a migration-namespace overlap stays hard even when prefix-only', async () => {
+    const captured = missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([{ id: 'sibling-migration', pathManifest: ['packages/core/drizzle/'] }]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Mission task M', missionId: 'mission-1', pathManifest: ['packages/core/drizzle/0400_x.sql'] },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().dependsOn).toContain('sibling-migration');
   });
 
   it('records a caller-supplied edge as explicit, never as inferred', async () => {

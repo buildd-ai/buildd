@@ -38,6 +38,23 @@ export interface SlotFailure {
 }
 
 /**
+ * The outcome-analytics row (`@buildd/core/routing-analytics`
+ * `recordTaskOutcome`) a held release's worker report would have written,
+ * minus the outcome: the worker PATCH keeps it on `tasks.context` while the
+ * release waits on CI, and the resolution records it with the real outcome.
+ */
+export interface HeldOutcomeAnalytics {
+  accountId: string | null;
+  actualModel: string | null;
+  totalCostUsd: number | string | null;
+  totalTurns: number | null;
+  durationMs: number | null;
+  wasRetried: boolean;
+  exitCause: string | null;
+  workerId: string;
+}
+
+/**
  * The task's outcome as people are told it. The type is the task's FINAL
  * status, as core decided it, never just the status the worker reported.
  * `via: 'worker'`: settled by the worker PATCH. `via: 'release'`: a release
@@ -49,6 +66,7 @@ export interface WorkerTaskOutcome {
   taskId: string;
   workerId: string;
   workspaceId: string | null;
+  missionId: string | null;
   /** Raw title. Subscribers decide what a sensitive workspace may see. */
   title: string;
   sensitive: boolean;
@@ -58,6 +76,11 @@ export interface WorkerTaskOutcome {
   error: string | null;
   /** Set on `task.failed` when a slot, not the worker, failed the task. */
   failure?: SlotFailure | null;
+  /**
+   * `via: 'release'` only: the analytics row the PATCH kept while the release
+   * was held. Null for a task held before the PATCH kept one.
+   */
+  heldAnalytics?: HeldOutcomeAnalytics | null;
 }
 
 type WorkerOutcomeType = 'task.completed' | 'task.failed' | 'task.retrying';
@@ -66,13 +89,20 @@ type WorkerOutcomeEvent = { [T in WorkerOutcomeType]: { type: T } & WorkerTaskOu
 
 export type CoreEvent =
   /**
-   * The worker's report is on the task row and the outcome is settled: not an
-   * auto-retry, not a loop requeue.
+   * The task's terminal status is on its row: not an auto-retry, not a loop
+   * requeue, not a release still held for CI. The worker PATCH emits it when
+   * the report settles the task; for a held release, the release PR's CI
+   * resolution emits it (lib/task-outcome-event.ts). Once per settled report.
    */
   | { type: 'task.terminal'; taskId: string; workerId: string; workspaceId: string | null; sensitive: boolean }
   /**
    * A worker reported completed/failed/error and the task row is written.
-   * Fires for auto-retries and loop iterations too.
+   * Fires for auto-retries and loop iterations too. `status` is what the
+   * worker REPORTED; `finalStatus` is the terminal status core decided (a
+   * completion-policy slot or a contract guard may have failed a reported
+   * completion), null when the report did not settle the task: requeued, or
+   * `releaseHeld` (the release PR's CI settles it later and emits its
+   * outcome then, `via: 'release'`).
    */
   | {
       type: 'worker.reported';
@@ -81,6 +111,8 @@ export type CoreEvent =
       workspaceId: string | null;
       missionId: string | null;
       status: 'completed' | 'failed' | 'error';
+      finalStatus: 'completed' | 'failed' | null;
+      releaseHeld: boolean;
       structuredOutput: unknown;
       verificationEvidence: unknown;
     }
@@ -129,6 +161,8 @@ export type CoreEvent =
     }
   /** A team row and its owner membership are written. */
   | { type: 'team.created'; teamId: string }
+  /** A workspace row is written (POST /api/workspaces). `origin` is the request origin, for OAuth callbacks. */
+  | { type: 'workspace.created'; workspaceId: string; teamId: string; origin: string }
   /**
    * A PR merged. `delivery` is present when the GitHub webhook delivered the
    * merge (every delivery, redeliveries included); reconciliation emits the
@@ -185,8 +219,45 @@ export type CoreEvent =
       baseRef: string | null;
       installationId: number | null;
     }
-  /** A worker-owned PR closed, merged or not. */
-  | { type: 'pr.closed'; workspaceId: string; prNumber: number; merged: boolean }
+  /**
+   * A pull_request.closed delivery arrived, merged or not, for any PR on a
+   * linked repo: every delivery, redeliveries included. `workspaceId` is the
+   * owning worker's, when a worker owns the PR. Subscribers must be idempotent.
+   */
+  | {
+      type: 'pr.close_delivered';
+      repoFullName: string;
+      prNumber: number;
+      merged: boolean;
+      baseRef: string | null;
+      installationId: number | null;
+      workspaceId: string | null;
+    }
+  /**
+   * A worker-owned PR closed, merged or not: every delivery. `mergeIsNew`: this
+   * delivery is the first to report the merge (`workers.mergedAt` was unset);
+   * false on a redelivery and on a close without merge.
+   */
+  | {
+      type: 'pr.closed';
+      workspaceId: string;
+      prNumber: number;
+      merged: boolean;
+      mergeIsNew: boolean;
+      workerId: string;
+      taskId: string | null;
+      headSha: string;
+      repoFullName: string;
+      installationId: number | null;
+    }
+  /**
+   * A GitHub review was submitted (any state: approved, changes_requested,
+   * commented) on a PR. `owner` is the worker that owns the PR, when one does.
+   * Every delivery; subscribers must be idempotent or say why not.
+   */
+  | { type: 'pr.review_submitted'; repoFullName: string; prNumber: number; review: GitHubReviewFact; owner: PrOwnerFact | null }
+  /** An inline review comment was created on a PR (`pull_request_review_comment`). */
+  | { type: 'pr.review_comment_created'; repoFullName: string; prNumber: number; comment: GitHubReviewCommentFact; owner: PrOwnerFact | null }
   /** A worker-owned PR's base moved (`edited`), after any repair: `toBase` is where it settled. */
   | { type: 'pr.base_changed'; workspaceId: string; prNumber: number; fromBase: string; toBase: string }
   /**
@@ -205,7 +276,47 @@ export type CoreEvent =
     }
   /** A GitHub Actions workflow run completed (any workflow, any repo linked to an installation). */
   | { type: 'workflow_run.completed'; run: WorkflowRunFact; installationId: number | null }
-  | { type: 'pr.ci_failed'; repoFullName: string; prNumber: number; headSha: string };
+  /** A check suite completed red on a PR. Every delivery, once per PR in the suite. */
+  | { type: 'pr.ci_failed'; repoFullName: string; prNumber: number; headSha: string; installationId: number }
+  /** Every check suite on a worker PR's head passed (the PR's lifecycle is now ci_green). Every delivery. */
+  | { type: 'pr.ci_passed'; repoFullName: string; prNumber: number; headSha: string; installationId: number }
+  /**
+   * A push (`synchronize`) to an open PR a buildd worker owns: every delivery,
+   * redeliveries included. `worker` is the newest row owning the PR (a retry
+   * continues on the same PR). Subscribers must be idempotent.
+   */
+  | {
+      type: 'pr.synchronized';
+      installationId: number;
+      repoFullName: string;
+      pr: { number: number; headSha: string; htmlUrl: string; baseRef: string | null; body: string | null; draft: boolean };
+      worker: { id: string; workspaceId: string; taskId: string | null; branch: string };
+    };
+
+/** The worker that owns a PR, as the webhook resolved it. */
+export interface PrOwnerFact {
+  workerId: string;
+  taskId: string | null;
+  workspaceId: string | null;
+  missionId: string | null;
+}
+
+/** A GitHub `review` payload object, as delivered. */
+export interface GitHubReviewFact {
+  id?: number | string | null;
+  state?: string | null;
+  body?: string | null;
+  user?: { login?: string | null } | null;
+  [key: string]: unknown;
+}
+
+/** A GitHub review `comment` payload object, as delivered. */
+export interface GitHubReviewCommentFact {
+  id?: number | string | null;
+  body?: string | null;
+  path?: string | null;
+  [key: string]: unknown;
+}
 
 /** The fields of a GitHub `workflow_run` payload the platform reads. */
 export interface WorkflowRunFact {

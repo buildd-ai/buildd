@@ -25,6 +25,7 @@
  * billed to. Chat never runs on a subscription seat, so `openai-codex` is not
  * here — it's a runner-only backend.
  */
+/** @deprecated Server/settings use the route-backed ai-kit provider projection. Sparse runner compatibility only. */
 export const CHAT_PROVIDERS = ['anthropic', 'openai', 'openrouter'] as const;
 export type ChatProvider = (typeof CHAT_PROVIDERS)[number];
 
@@ -66,9 +67,30 @@ export interface MaskedProviderKey {
   source: 'inference_key' | 'anthropic_api_key' | 'decision_key';
 }
 
+/** Public route capability projection. Kept structural for sparse runner installs. */
+export interface ProviderKeyCapability {
+  id: string;
+  label: string;
+  personalKeys: boolean;
+  prefix: string;
+  placeholder: string;
+  consoleUrl: string;
+  rejectedPrefixes: readonly string[];
+  purposes: readonly string[];
+  validation: { minLength: number; allowWhitespace: boolean; prefixIsHint: boolean };
+  verification: {
+    baseURL: string | null;
+    path: string;
+    auth: 'x-api-key' | 'bearer';
+    method: 'GET';
+    rejectedStatuses: readonly number[];
+  };
+}
+
 /** One card per provider on the Provider keys screen. */
 export interface ProviderKeySummary {
   provider: ChatProvider;
+  capability?: ProviderKeyCapability;
   /** The team-wide key, or null. */
   team: MaskedProviderKey | null;
   /** The caller's own key, or null. */
@@ -86,12 +108,28 @@ export interface ListProviderKeysResponse {
   /** Whether the caller can set/delete team-scope keys (team owner/admin). */
   canManageTeamKeys: boolean;
   providers: ProviderKeySummary[];
+  /** All routes, including gateways that require team configuration. */
+  capabilities?: readonly ProviderKeyCapability[];
   /**
    * Whose key a person's chat turn spends (`teams.inferenceKeyPolicy`):
    * `team` = the team key for everyone, `team_or_own` = the team key or your
    * own, `own` = everyone brings their own.
    */
   keyPolicy: 'team' | 'team_or_own' | 'own';
+  /**
+   * What the caller's chat turn resolves to right now, from the same resolver a
+   * turn uses: the model vendor, whose key pays (`scope`), and `via: 'litellm'`
+   * when the team's gateway serves it. Null when no key resolves; absent from
+   * older servers.
+   */
+  chatUses?: ChatUses | null;
+}
+
+/** The provider and credential scope a chat turn actually resolves to. */
+export interface ChatUses {
+  provider: ChatProvider;
+  scope: 'user' | 'account' | 'workspace' | 'team' | 'env';
+  via?: 'litellm';
 }
 
 /** `PUT /api/inference-keys` */

@@ -1,6 +1,6 @@
 import { canonicalToolName } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
-import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
@@ -28,6 +28,10 @@ import {
 // file goes through removeWorktreeIfUnowned so no site can force-remove a
 // directory a live worker is sitting in. See git-operations.ts.
 import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
+// Namespace, not named: many tests mock.module('./git-operations') with a fixed
+// export list, and a named import missing from it fails the whole file.
+import * as gitOperations from './git-operations';
+import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
@@ -47,6 +51,7 @@ import {
   DEFAULT_AUTH_CONTEXT,
 } from './claim-breaker';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
+import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, credentialBroker } from './broker';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker, loadTerminalWorkersCached, __resetDiskWorkersCache } from './worker-store';
@@ -54,10 +59,11 @@ import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
 import { toolActionMilestone, appendMilestone } from './tool-milestones';
-import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
+import { extractBuilddAction, BUILDD_MCP_TOOL_MATCHER, withBuilddActionTools } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
 import { buildAgentBaseEnv, withWorkerResourceAttribute } from './agent-env';
+import { applyHeadlessSessionEnv, withHeadlessToolDeny } from './headless-session';
 import { advertisedRoleSlugs } from './role-advertising';
 import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
@@ -97,10 +103,18 @@ import {
 } from './prompt-builder';
 import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunnerMemoryIndex } from './memory-digest-policy';
 import { retrieveTaskMemory } from './task-memory-retrieval';
-import { resolveClaudeBinaryPath } from './sdk-binary-path';
+import { resolveClaudeBinaryPath, resolveClaudeCliVersion } from './sdk-binary-path';
+import { ModelProbePoller, createModelProbeHttpApi, sdkProbe } from './model-probe';
 import { HookFactory } from './hook-factory';
 import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
-import { runCheckpointSweep, deferOnPathCollision, CHECKPOINT_FETCH_DEADLINE_MS, CHECKPOINT_SYNC_DEADLINE_MS } from './path-collision-defer';
+import { deferOnPathCollision } from './path-collision-defer';
+import {
+  runShipCheckpoint,
+  CHECKPOINT_FETCH_DEADLINE_MS,
+  CHECKPOINT_SYNC_DEADLINE_MS,
+  SHIP_CHECKPOINT_ATTEMPTS,
+  SHIP_CHECKPOINT_BACKOFF_MS,
+} from './ship-checkpoint';
 import { HUMAN_UI_DENIAL, RUNNER_DENIAL_MARKER } from './runner-denial';
 import { scanToolResult, scanBashResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, prRequiredUnmet } from './pr-detection';
@@ -121,6 +135,8 @@ import {
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
+import { handOffUnproven, isHandOffRefusal } from './hand-off-outcome';
+import { preflightHookEntries } from './preflight-guard';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
@@ -492,23 +508,14 @@ export interface ResolvedMcpConnector {
 }
 
 /**
- * Explicitly opt grouped consumers in even with worker context. Legacy roles
- * retain their surface; legacy calls remain callable in mixed skill sessions.
+ * The worker's buildd MCP URL. The server picks the tool surface (group tools,
+ * since this runner advertises CAPABILITY_MCP_GROUP_TOOLS); the URL only names
+ * the workspace and the worker.
  */
-export function buildWorkerMcpUrl(
-  server: string,
-  workspaceId: string,
-  workerId: string,
-  roleSlug?: string | null,
-  agents?: Record<string, { tools: string[] }>,
-): string {
+export function buildWorkerMcpUrl(server: string, workspaceId: string, workerId: string): string {
   const url = new URL(`${server}/api/mcp`);
   url.searchParams.set('workspace', workspaceId);
   url.searchParams.set('worker', workerId);
-  const needsGroups = roleSlug === 'analyst' || Object.values(agents ?? {}).some(
-    agent => agent.tools.some(tool => tool.startsWith('mcp__buildd__buildd_')),
-  );
-  if (needsGroups) url.searchParams.set('tools', 'groups');
   return url.toString();
 }
 
@@ -752,6 +759,9 @@ export class WorkerManager {
   private workerSync: WorkerSync;
   // Full knowledge-ingest jobs (KM v2 A2) — claimed only when this runner is idle.
   private knowledgeIngestPoller: KnowledgeIngestPoller;
+  // Quality Scout command probes (runner-host design §6) — idle ticks only, never a worker slot.
+  private scoutHostPoller: ScoutHostPoller;
+  private modelProbePoller: ModelProbePoller;
   // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
   private recentCycleTimes: number[] = [];  // Duration in ms of last N completed workers
   private adaptiveStaleTimeout: number = 300_000;  // Start at 5 min, adapt from cycle data
@@ -909,6 +919,28 @@ export class WorkerManager {
       scanRepos: () => this.resolver.scanGitRepos(),
     });
 
+    // Quality Scout runner host. Hosts command probes only when it can wrap
+    // them in bwrap (or BUILDD_SCOUT_UNSANDBOXED=1); BUILDD_SCOUT_HOST=0 opts out.
+    this.scoutHostPoller = createScoutHostPoller({
+      builddServer: config.builddServer,
+      apiKey: config.apiKey,
+      scanRepos: () => this.resolver.scanGitRepos(),
+      bwrapSupported: isMountIsolationBwrapSupported,
+      // Busy = any worker that holds a slot, including one waiting for input.
+      isBusy: () => Array.from(this.workers.values()).some(
+        w => w.status === 'working' || w.status === 'stale' || w.status === 'waiting',
+      ),
+    });
+
+    // Model certification probe (packages/core/model-certification.ts): only
+    // runs for accounts the server trusts to certify; BUILDD_MODEL_PROBE=0 opts out.
+    this.modelProbePoller = new ModelProbePoller({
+      api: createModelProbeHttpApi({ serverUrl: config.builddServer, apiKey: config.apiKey }),
+      probe: sdkProbe,
+      cliVersion: () => resolveClaudeCliVersion(),
+      enabled: process.env.BUILDD_MODEL_PROBE !== '0',
+    });
+
     // Send heartbeat to register availability (immediate + periodic)
     // Heartbeat is now a lightweight ping (no workspace queries server-side)
     if (!config.serverless) {
@@ -937,6 +969,9 @@ export class WorkerManager {
         // the poller serializes itself and never throws).
         if (active === 0 && !this.config.singleTask) {
           this.knowledgeIngestPoller.poll().catch(() => {});
+          // Same gate for Scout runs: one at a time, no worker slot, re-checks busy before checkout.
+          this.scoutHostPoller.poll().catch(() => {});
+          this.modelProbePoller.poll().catch(() => {});
         }
       }, RUNNER_HEARTBEAT_INTERVAL_MS);
 
@@ -1057,7 +1092,10 @@ export class WorkerManager {
   /** Environment as sent on the heartbeat: the scan, post-update canary status and (`--once`) the fleet identity. */
   private heartbeatEnvironment(): WorkerEnvironment | undefined {
     const canary = getUpdateCanary();
-    const env = !this.environment || !canary ? this.environment : { ...this.environment, updateCanary: canary.report() };
+    let env = !this.environment || !canary ? this.environment : { ...this.environment, updateCanary: canary.report() };
+    // A single-task runner never polls for Scout runs, so it never advertises one.
+    const scoutHost = env && !this.config.singleTask ? this.scoutHostPoller?.advert() : undefined;
+    if (env && scoutHost) env = { ...env, scoutHost };
     return withFleetIdentity(env, this.config.fleetIdentity);
   }
 
@@ -1864,8 +1902,9 @@ export class WorkerManager {
         diagnosticReason: diagnostics?.reason,
         taskId: task.id,
         ...claimDiagnosticDetail(diagnostics),
+        ...(diagnostics?.taskExclusion?.code ? { taskExclusion: diagnostics.taskExclusion.code } : {}),
       });
-      console.log(`No tasks claimed (reason: ${reason})`);
+      console.log(`No tasks claimed (reason: ${reason}${diagnostics?.taskExclusion?.code ? `, excluded by ${diagnostics.taskExclusion.code}` : ''})`);
       throw Object.assign(
         new Error(`Server rejected claim for task "${task.title}" — ${reason === 'no_pending_tasks' ? 'task is no longer available (may already be claimed or completed)' : `reason: ${reason}`}`),
         {
@@ -1877,6 +1916,7 @@ export class WorkerManager {
           // (run-once.ts) uses to tell a temporary capacity defer from a
           // permanent refusal.
           claimTaskExclusionCode: diagnostics?.taskExclusion?.code,
+          claimTaskExclusionDetail: diagnostics?.taskExclusion?.detail,
         },
       );
     }
@@ -2149,6 +2189,8 @@ export class WorkerManager {
     let worktreeCreated = false;
     /** True when a worktree was required and `setupWorktree` returned null. */
     let worktreeSetupFailed = false;
+    /** git's reason, when setupWorktree recorded one. */
+    let worktreeSetupError: string | undefined;
     /** Set when a structural install fault must kill the session pre-budget. */
     let installBlock: string | undefined;
     /** Set when the resolved session cwd cannot host the task at all. */
@@ -2233,6 +2275,36 @@ export class WorkerManager {
         // (see startWithPersistedBranch below), since create_pr derives its head
         // from workers.branch rather than the claim-time prediction.
         worker.branch = setupResult.branch;
+        // Derived files (gitConfig.derivedFiles): drivers in this clone resolve
+        // lockfiles and generated indexes by regenerating them, for the runner's
+        // merges and the agent's alike. A conflict retry merges its base here,
+        // before the agent starts, so a derived-only conflict needs no agent work
+        // and a mixed one hands it only the real files. Best-effort throughout:
+        // any failure leaves the branch as it was and the agent merges as before.
+        const derivedRules = normalizeDerivedFiles(gitConfig?.derivedFiles);
+        if (derivedRules.length > 0 || gitConfig?.mergiraf === true) {
+          try {
+            registerMergeDrivers(setupResult.path, derivedRules, { mergiraf: gitConfig?.mergiraf === true });
+            if (derivedRules.length > 0 && worker.prBaseRef && isConflictRetryContext(fullTask.context)) {
+              const merged = mergeBaseWithDerivedFiles(setupResult.path, worker.prBaseRef, derivedRules);
+              console.log(`[Worker ${worker.id}] Pre-merged ${worker.prBaseRef}: ${merged.status}` +
+                (merged.conflicted.length ? ` (${merged.conflicted.length} real conflict(s))` : '') +
+                (merged.error ? ` — ${merged.error}` : ''));
+              worker.derivedMergeNote = formatDerivedMergeNote(merged, worker.prBaseRef) ?? undefined;
+              if (merged.status === 'merged' || merged.status === 'conflicts') {
+                this.addMilestone(worker, {
+                  type: 'status',
+                  label: merged.status === 'merged'
+                    ? `Base merged by the runner${merged.regenerated.length ? `; regenerated ${merged.regenerated.length} derived file command(s)` : ''}`
+                    : `Base merge started; ${merged.conflicted.length} file(s) left for the agent`,
+                  ts: Date.now(),
+                });
+              }
+            }
+          } catch (err) {
+            console.warn(`[Worker ${worker.id}] Derived-file merge drivers skipped: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
         // Fallback warning: the resume branch or the declared base was
         // missing/diverged — make it visible rather than silently starting
         // fresh. A missing MISSION INTEGRATION branch gets its own signature
@@ -2308,6 +2380,7 @@ export class WorkerManager {
         // checked out. Fail the worker instead
         // — the claim is retryable, a silently shared clone is not recoverable.
         worktreeSetupFailed = true;
+        worktreeSetupError = gitOperations.takeSetupWorktreeError?.(worker.id);
         console.warn(`[Worker ${worker.id}] Worktree setup failed for ${claimedWorker.branch} — failing the worker rather than running in the shared clone at ${workspacePath}`);
         this.addMilestone(worker, { type: 'status', label: 'Worktree setup failed — not running in the shared clone', ts: Date.now() });
       }
@@ -2328,7 +2401,8 @@ export class WorkerManager {
     if (hasRepo && !worktreeCreated && !existsSync(join(sessionCwd, '.git'))) {
       startBlock = `Session cwd is not a git checkout: ${sessionCwd} (workspace ${fullTask.workspace?.repo})`;
     } else if (worktreeSetupFailed) {
-      startBlock = `Worktree setup failed for branch ${claimedWorker.branch} in ${workspacePath}; refusing to run in the shared clone`;
+      startBlock = `Worktree setup failed for branch ${claimedWorker.branch} in ${workspacePath}; refusing to run in the shared clone` +
+        (worktreeSetupError ? `: ${worktreeSetupError}` : '');
     }
 
     // Role overlay — AFTER worktree setup, against the session cwd.
@@ -2752,9 +2826,18 @@ export class WorkerManager {
     worker.completedAt = Date.now();
 
     const failSpans = buildSubagentSpans(worker.subagentTasks);
+    // S30 (workflow-state-kernel.md §6.6): the output gate refused a session
+    // that ran — its work is not on GitHub, which is not the work failing.
+    const handOff = isHandOffRefusal(refusal)
+      ? handOffUnproven(
+        await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+        worker.commits.length,
+      )
+      : null;
     await this.buildd.updateWorker(worker.id, {
       status: 'failed',
       error: refusal.message,
+      ...(handOff ?? {}),
       serverRefused: true,
       refusal: {
         status: refusal.status,
@@ -3456,6 +3539,12 @@ export class WorkerManager {
       const teamEndpointApplied = modelEnv.endpoint === 'team';
       if (teamEndpointApplied) {
         console.log(`[Worker ${worker.id}] Using the team agent model endpoint (${modelEnv.baseUrlOrigin}); no ${isCodexTask ? 'Codex' : 'Anthropic'} credential given to the agent`);
+        // Effective deferred tool loading per endpoint kind, so input-token
+        // savings and ToolSearch failures can be compared by kind. Kind and
+        // on/off only: no URL, no key.
+        if (!isCodexTask && worker.modelEndpoint) {
+          sessionLog(worker.id, 'info', 'tool_search', `endpoint_kind=${worker.modelEndpoint.kind} enabled=${modelEnv.toolSearch}`, task.id);
+        }
       }
       if (modelEnv.teamEndpointIgnored) {
         console.log(`[Worker ${worker.id}] Team agent model endpoint ignored: this runner's ${isCodexTask ? 'OPENAI_BASE_URL' : "LLM_PROVIDER"} (per-machine config) takes priority`);
@@ -3751,6 +3840,11 @@ export class WorkerManager {
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
       cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+      // Keep task-tracking tools available on newer Claude models.
+      cleanEnv.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1';
+      // Nothing re-invokes a session after its turn ends, so background work
+      // and scheduled wakeups can only strand it. See headless-session.ts.
+      applyHeadlessSessionEnv(cleanEnv);
 
       // Resolve role env vars (secret labels → actual values). Not gated on
       // `roleConfig` alone: `roleEnvSecrets`/`roleEnvMissing` are delivered
@@ -3891,6 +3985,13 @@ export class WorkerManager {
       if (retryContinuitySection) {
         systemPrompt.append = (systemPrompt.append ?? '') + retryContinuitySection;
       }
+      if (worker.derivedMergeNote) {
+        systemPrompt.append = (systemPrompt.append ?? '') + worker.derivedMergeNote;
+      }
+      const derivedFilesGuidance = formatDerivedFilesGuidance(normalizeDerivedFiles(gitConfig?.derivedFiles));
+      if (derivedFilesGuidance && worker.worktreePath) {
+        systemPrompt.append = (systemPrompt.append ?? '') + derivedFilesGuidance;
+      }
 
       // Degraded connectors (advisory mode): inform the agent which connector tools
       // are unavailable so it can work around them or note the gap in its output.
@@ -3934,6 +4035,16 @@ export class WorkerManager {
       // directly) that two incidents demonstrated agents will attempt on their own.
       systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Channel Policy\nIf a required MCP tool channel is unavailable during this task, STOP IMMEDIATELY and report the failure. Never substitute direct API access using credentials found in config files, environment variables, disk, or response headers. Tool channel unavailability is a deployment issue that must surface as a task failure — not be silently worked around.';
 
+      // Tool parameter policy: prevent background tasks from hanging the session.
+      // The `run_in_background` parameter in Bash tool calls is designed for
+      // interactive CLI usage where the agent can be re-invoked after the task
+      // completes. In a non-interactive cloud runner, that re-invocation mechanism
+      // does not exist — the session ends while the background task is still
+      // running, and the agent's interim "waiting for notification" message
+      // becomes the task summary instead of actual results. Agents should not use
+      // run_in_background; they should poll synchronously or wait for results.
+      systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Parameter Policy\nDo NOT use `run_in_background: true` in Bash tool calls. This parameter expects to re-invoke you after the task completes, but that mechanism does not exist in this execution environment. Instead: poll the task status synchronously in a loop, or wait for the tool result directly. If a long-running task would exceed your tool timeout, that is a blocker you should report to the user rather than work around with background execution.';
+
       // Convert skills to subagent definitions when useSkillAgents is enabled
       // Resolve worktree isolation: task-level override > workspace-level setting
       const taskWorktreeIsolation = (task.context as any)?.useWorktreeIsolation;
@@ -3964,7 +4075,7 @@ export class WorkerManager {
           agents[bundle.slug] = {
             description: bundle.description || bundle.name,
             prompt: bundle.content,
-            tools: [...tools, ...delegationTools],
+            tools: [...withBuilddActionTools(tools), ...delegationTools],
             model: bundle.model || 'inherit',
             // SDK v0.2.49+: run subagent in isolated git worktree to prevent file conflicts
             ...(useWorktreeIsolation ? { isolation: 'worktree' } : {}),
@@ -4167,7 +4278,7 @@ export class WorkerManager {
       queryOptions.mcpServers = {
         buildd: {
           type: 'http',
-          url: buildWorkerMcpUrl(this.config.builddServer, task.workspaceId, worker.id, task.roleSlug, agents),
+          url: buildWorkerMcpUrl(this.config.builddServer, task.workspaceId, worker.id),
           // The agent's own per-task token (or the runner key on fallback).
           headers: {
             Authorization: `Bearer ${agentBuilddToken}`,
@@ -4267,11 +4378,11 @@ export class WorkerManager {
       // shell `gh pr` mutation subcommands and known connector PR-write tool names
       // for roles that have no legitimate reason to reach for them. Placed after all
       // mcpServers mounting above so mountedServerNames reflects the final set.
-      (queryOptions as any).disallowedTools = applyPrMutationDeny((queryOptions as any).disallowedTools, {
+      (queryOptions as any).disallowedTools = withHeadlessToolDeny(applyPrMutationDeny((queryOptions as any).disallowedTools, {
         roleSlug: task.roleSlug,
         hasApiKey: !!this.config.apiKey,
         mountedServerNames: Object.keys(queryOptions.mcpServers ?? {}),
-      });
+      }));
 
       // MCP pre-flight: verify all connector-required servers are mounted and
       // reachable BEFORE the agent loop starts. Connectors are servers the role
@@ -4344,15 +4455,20 @@ export class WorkerManager {
           ...(!isCodexTask
             ? [{ hooks: [this.hookFactory.createPathClaimHook(worker)] }]
             : []),
-          // Enforce mode only: sweep the worktree before a push, create_pr or
-          // completion. Checkpoint enforcement (a Bash write is found here
-          // after it happened), not a pre-edit guarantee. Codex has no seam
-          // for this either; its writes are swept on the sync tick.
-          ...(!isCodexTask && worker.pathClaimMode === 'enforce'
+          // Ship checkpoint (both modes): before a push, create_pr or
+          // completion, recompute the task's owned file set and reconcile it
+          // with the server; enforce mode refuses the ship on a blocked path
+          // or on coverage the server could not confirm (ship-checkpoint.ts).
+          // Checkpoint enforcement (a Bash write is found here after it
+          // happened), not a pre-edit guarantee. Codex has no seam for this;
+          // its writes reach the server through the sync tick's deltas.
+          // Timeout covers the base fetch plus every retried round trip.
+          ...(!isCodexTask
             ? [{
-                timeout: Math.ceil((CHECKPOINT_FETCH_DEADLINE_MS + CHECKPOINT_SYNC_DEADLINE_MS) / 1000) + 15,
+                timeout: Math.ceil((CHECKPOINT_FETCH_DEADLINE_MS + SHIP_CHECKPOINT_ATTEMPTS * CHECKPOINT_SYNC_DEADLINE_MS
+                  + SHIP_CHECKPOINT_BACKOFF_MS.reduce((a, b) => a + b, 0)) / 1000) + 15,
                 hooks: [this.hookFactory.createPathCheckpointGuardHook(worker, (w, source) =>
-                  runCheckpointSweep(w, source, {
+                  runShipCheckpoint(w, source, {
                     buildd: this.buildd,
                     addMilestone: (wk, m) => this.addMilestone(wk, m),
                     refreshBase: true,
@@ -4367,11 +4483,19 @@ export class WorkerManager {
           // still reaches the server without evidence.
           ...(!isCodexTask && task.loopConfig?.exitCondition?.type === 'command'
             ? [{
-                matcher: BUILDD_MCP_TOOL_NAME,
+                matcher: BUILDD_MCP_TOOL_MATCHER,
                 timeout: Math.ceil(VERIFICATION_COMMAND_TIMEOUT_MS / 1000) + 30,
                 hooks: [this.hookFactory.createLoopVerificationHook(worker, () => this.runLoopVerification(worker, task, cwd))],
               }]
             : []),
+          // Workspace preflight (workflow-state-kernel.md §6.10, S31): the cheap
+          // checks CI would fail on run before a push or create_pr; a failure
+          // denies that call with the output as the agent's next instruction.
+          // Off unless gitConfig.preflight.commands lists any. Codex has no seam.
+          ...preflightHookEntries({
+            gitConfig, isCodexTask, cwd,
+            milestone: (label) => this.addMilestone(worker, { type: 'status', label, ts: Date.now() }),
+          }) as unknown as Array<{ timeout: number; hooks: HookCallback[] }>,
         ],
         PostToolUse: [
           { hooks: [this.hookFactory.createTeamTrackingHook(worker)] },
@@ -4710,9 +4834,13 @@ export class WorkerManager {
 
       // Check if session actually did work or just errored
       // Only check early output (first 500 chars) to avoid false positives
-      // from agent responses that discuss auth topics
+      // from agent responses that discuss auth topics, and only for a session
+      // that never ran a tool: a rejected credential fails the first model
+      // call, so a session that used tools was authenticated. Without this, a
+      // task ABOUT a 401 ("why does X return 401 Unauthorized") was failed as
+      // an auth error after doing its work.
       const earlyOutput = worker.output.slice(0, 3).join('\n').toLowerCase();
-      const authFailed = isAuthError(earlyOutput);
+      const authFailed = worker.toolCalls.length === 0 && isAuthError(earlyOutput);
 
       if (authFailed) {
         // Auth error - mark as failed, not completed
@@ -4841,6 +4969,11 @@ export class WorkerManager {
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: errMsg,
+          // S30: an unmet output requirement after work is a hand-off failure, not a failed attempt.
+          ...handOffUnproven(
+            await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+            worker.commits.length,
+          ),
           milestones: worker.milestones,
           resultMeta: {
             closingTurnOutcome: isClosingTurn

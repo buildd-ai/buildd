@@ -8,11 +8,10 @@
  * transport is exercised against a real HTTP server in a child process at the
  * bottom (spawnSync blocks this thread, so the server cannot live in it).
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { execFileSync, spawn, spawnSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from 'fs';
 import { randomBytes } from 'crypto';
-import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   WARM_FETCH_REFRESH_BYTES,
@@ -40,6 +39,7 @@ import {
 import { ensureIsolatedClone } from '../../src/workspace';
 import { CLOUD_CLONE_DEPTH, ensureRemoteBranch } from '../../src/git-clone';
 import { makeDeepOrigin, remoteBranches } from '../fixtures/deep-origin';
+import { templateDir } from '../fixtures/template-dir';
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
@@ -158,8 +158,9 @@ let seedClone: string;
 let store: FakeStore;
 let lines: string[];
 
-function session(opts: { cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number; zstd?: boolean; log?: (m: string) => void } = {}) {
+function session(opts: { cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number; zstd?: boolean; log?: (m: string) => void; reusedContainer?: boolean } = {}) {
   return new WarmRepoSession({
+    ...(opts.reusedContainer !== undefined ? { reusedContainer: opts.reusedContainer } : {}),
     ...(opts.zstd !== undefined ? { zstd: opts.zstd } : {}),
     ...(opts.maxBundleBytes !== undefined ? { maxBundleBytes: opts.maxBundleBytes } : {}),
     ...(opts.partBytes !== undefined ? { partBytes: opts.partBytes } : {}),
@@ -195,8 +196,13 @@ function cloneThrough(s: WarmRepoSession, wsId = 'ws-1') {
   return ensureIsolatedClone({ id: wsId, repo: origin }, join(dir, 'iso'), s.cloneHooks());
 }
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'warm-repo-'));
+/**
+ * origin + seed clone (one commit) + a dependency cache, built once and
+ * copied per test (see fixtures/template-dir.ts). Every test still starts from
+ * exactly this state and owns its copy.
+ */
+const fixture = templateDir('warm-repo-', root => {
+  dir = root;
   origin = join(dir, 'origin.git');
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
   seedClone = join(dir, 'seed');
@@ -205,6 +211,14 @@ beforeEach(() => {
   pushCommit('README.md', 'hello\n');
   mkdirSync(join(dir, 'cache', 'is-number@7.0.0'), { recursive: true });
   writeFileSync(join(dir, 'cache', 'is-number@7.0.0', 'index.js'), 'module.exports = 1;\n');
+});
+
+afterAll(() => fixture.dispose());
+
+beforeEach(() => {
+  dir = fixture.setup();
+  origin = join(dir, 'origin.git');
+  seedClone = join(dir, 'seed');
   store = new FakeStore();
   lines = [];
   // Phase, metric and source lines (warm-repo.ts and the clone in
@@ -224,7 +238,7 @@ let origLog: typeof console.log;
 afterEach(() => {
   console.log = origLog;
   if (prevExecutor === undefined) delete process.env.BUILDD_EXECUTOR; else process.env.BUILDD_EXECUTOR = prevExecutor;
-  rmSync(dir, { recursive: true, force: true });
+  fixture.teardown();
 });
 
 describe('warmRepoEnabled', () => {
@@ -237,6 +251,37 @@ describe('warmRepoEnabled', () => {
 });
 
 describe('restore before clone', () => {
+  test('an in-clone task uploads only remote refs and restores the remote default branch', async () => {
+    const s = session({ zstd: false });
+    const path = cloneThrough(s);
+    const defaultTip = git(path, 'rev-parse', 'origin/main');
+    git(path, 'checkout', '-q', '-B', 'buildd/task-example', 'origin/main');
+    writeFileSync(join(path, 'task-only.txt'), 'task work\n');
+    git(path, 'add', 'task-only.txt');
+    git(path, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-qm', 'task work');
+    await s.refresh('completed');
+    expect(store.manifests[0]!.defaultBranch).toBe('main');
+    const bundle = join(dir, 'uploaded.bundle');
+    writeFileSync(bundle, store.files.get(`/warm/${store.manifests[0]!.generation}/repo`)!);
+    const refs = git(path, 'bundle', 'list-heads', bundle);
+    expect(refs).toContain(`${defaultTip} refs/remotes/origin/main`);
+    expect(refs).not.toContain('refs/heads/buildd/');
+    const restored = cloneThrough(session({ zstd: false }), 'next-task');
+    expect(git(restored, 'branch', '--show-current')).toBe('main');
+    expect(git(restored, 'rev-parse', 'HEAD')).toBe(defaultTip);
+    expect(existsSync(join(restored, 'task-only.txt'))).toBe(false);
+  });
+
+  test('missing origin HEAD never records the in-clone task branch as the warm default', async () => {
+    const s = session({ zstd: false });
+    const path = cloneThrough(s);
+    git(path, 'checkout', '-q', '-B', 'buildd/task-example', 'origin/main');
+    git(path, 'symbolic-ref', '--delete', 'refs/remotes/origin/HEAD');
+    await s.refresh('completed');
+    expect(store.manifests).toHaveLength(0);
+    expect(store.calls).not.toContain('POST /warm/begin');
+  });
+
   test('no snapshot: falls back to a normal clone, then seeds a generation even when the task failed', async () => {
     const s = session();
     const path = cloneThrough(s);
@@ -295,6 +340,39 @@ describe('restore before clone', () => {
     expect(git(path, 'rev-parse', 'origin/main')).toBe(git(seedClone, 'rev-parse', 'HEAD'));
     expect(git(path, 'rev-parse', '--abbrev-ref', 'main@{upstream}')).toBe('origin/main');
     expect(git(path, 'status', '--porcelain')).toBe('');
+    expect(readFileSync(join(cacheDir, 'is-number@7.0.0', 'index.js'), 'utf-8')).toBe('module.exports = 1;\n');
+  });
+
+  test('a reused container keeps the dependency cache it has: the repo is restored, the cache is not downloaded again', async () => {
+    const first = session();
+    cloneThrough(first, 'ws-seed');
+    await first.refresh('completed');
+    lines = [];
+    store.calls.length = 0;
+    // What the reset kept: the previous task's cache, with a package the snapshot lacks.
+    const cacheDir = join(dir, 'kept-cache');
+    mkdirSync(join(cacheDir, 'kept@1.0.0'), { recursive: true });
+    writeFileSync(join(cacheDir, 'kept@1.0.0', 'index.js'), 'kept\n');
+    const logs: string[] = [];
+    const s = session({ cacheDir, reusedContainer: true, log: (m) => logs.push(m) });
+    cloneThrough(s);
+
+    expect(sourceLine()).toBe('BUILDD_REPO_SOURCE=warm');
+    expect(phaseNames()).toEqual(['restore_warm_start', 'restore_warm_end', 'fetch_start', 'fetch_end']);
+    expect(store.calls.some(c => c.startsWith('PIPE ') && c.endsWith('/cache'))).toBe(false);
+    expect(readFileSync(join(cacheDir, 'kept@1.0.0', 'index.js'), 'utf-8')).toBe('kept\n');
+    expect(existsSync(join(cacheDir, 'is-number@7.0.0'))).toBe(false);
+    expect(logs.some(m => m.includes('reused container'))).toBe(true);
+  });
+
+  test('a reused container with no cache on disk restores the cache as usual', async () => {
+    const first = session();
+    cloneThrough(first, 'ws-seed');
+    await first.refresh('completed');
+    lines = [];
+    const cacheDir = join(dir, 'empty-cache');
+    cloneThrough(session({ cacheDir, reusedContainer: true }));
+    expect(phaseNames()).toContain('restore_cache_start');
     expect(readFileSync(join(cacheDir, 'is-number@7.0.0', 'index.js'), 'utf-8')).toBe('module.exports = 1;\n');
   });
 

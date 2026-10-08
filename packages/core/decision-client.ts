@@ -37,6 +37,18 @@
  * team-wide, and `OPENROUTER_API_KEY` **outside production only**, for local
  * development and the offline eval script.
  *
+ * ### buildd's platform key (billing)
+ *
+ * When a team has no key of its own and, with `BILLING_ENFORCED` on, its plan
+ * includes decision calls (`entitlements(team).decisionCallsIncluded`), the
+ * call runs on buildd's own OpenRouter key, `BUILDD_PLATFORM_DECISION_KEY`,
+ * with the platform's decision model (Jev, or `BUILDD_PLATFORM_DECISION_MODEL`,
+ * an open-weight chat model on OpenRouter), never the team's custom one. A
+ * team's own key always wins. Billing off, a free plan, a failed plan lookup
+ * or no platform key ⇒ today's behaviour: no key, no call. Chat (the
+ * `interactive` capability) is never routed here, and neither is agent work,
+ * which never goes through this module.
+ *
  * ## Transport
  *
  * `decide` from `@builddai/ai-kit/decide`: the official TypeSafe SDK
@@ -71,9 +83,11 @@ import {
   type DecisionEndpoint,
   type UsageSink,
 } from '@builddai/ai-kit/decide';
-import { isInferenceAllowed, type InferenceCapability } from './inference-policy';
+import { INFERENCE_CAPABILITIES, isInferenceAllowed, type InferenceCapability } from './inference-policy';
 import { isInferenceKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
-import { readDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelConfig } from './decision-model';
+import { normalizeDecisionModel, readDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelConfig } from './decision-model';
+import { entitlements, isBillingEnforced, type EntitlementTeam } from './entitlements';
+import { loadTeamEntitlements } from './billing-limits';
 
 // The question/answer types, request and response validation, `gateChoice` and
 // the transport live in `@builddai/ai-kit/decide` (knowledge-base: buildd/design/shared-ai-kit.md
@@ -154,23 +168,32 @@ export function describeDecisionError(error: DecisionError): string {
 
 // ── Key resolution ───────────────────────────────────────────────────────────
 
-/**
- * The OpenRouter key a decision call spends. Resolved through the one shared
- * resolver (`inference-keys.ts`), so the same key serves chat, inference calls
- * and decisions: an `inference_key` labelled `openrouter`, or the legacy
- * `decision_key`, which is still preferred at the same scope so a team that
- * set one keeps spending it. Precedence is the shared one: the acting user's
- * key, then the account's, then the workspace's, then the team's, then
- * `OPENROUTER_API_KEY` outside production.
- */
-export async function resolveDecisionKey(opts: {
+/** Env var holding buildd's own OpenRouter key for plans that include decision calls. */
+export const PLATFORM_DECISION_KEY_ENV = 'BUILDD_PLATFORM_DECISION_KEY' as const;
+/** Optional open-weight chat model (OpenRouter id) the platform key runs; unset ⇒ Jev. */
+export const PLATFORM_DECISION_MODEL_ENV = 'BUILDD_PLATFORM_DECISION_MODEL' as const;
+
+export interface DecisionKeyScope {
   teamId: string;
   workspaceId?: string | null;
   accountId?: string | null;
   userId?: string | null;
   /** The team's key policy, when the caller already read it (else the resolver reads it). */
   keyPolicy?: InferenceKeyPolicy;
-}): Promise<string | null> {
+  /** False for calls that must never run on buildd's key (chat). Default true. */
+  allowPlatformKey?: boolean;
+  /** The team's plan columns, when the caller already read them (else read on demand). */
+  billing?: EntitlementTeam;
+}
+
+export interface ResolvedDecisionKey {
+  key: string;
+  /** `team`: a key the team (or its people) set. `platform`: buildd's, under the plan. */
+  source: 'team' | 'platform';
+}
+
+/** The team's own OpenRouter key, through the shared resolver. */
+async function resolveOwnDecisionKey(opts: DecisionKeyScope): Promise<string | null> {
   const { resolveInferenceKey } = await import('./inference-keys');
   return resolveInferenceKey({
     provider: 'openrouter',
@@ -183,6 +206,54 @@ export async function resolveDecisionKey(opts: {
   });
 }
 
+/**
+ * buildd's platform key, when this team's plan includes decision calls. Null
+ * while billing is off (no read), without a configured key, or when the plan
+ * can't be read: a lookup failure must never start spending buildd's money.
+ */
+async function platformDecisionKey(opts: DecisionKeyScope): Promise<string | null> {
+  if (opts.allowPlatformKey === false || !isBillingEnforced()) return null;
+  const key = process.env[PLATFORM_DECISION_KEY_ENV]?.trim();
+  if (!key) return null;
+  const ent = opts.billing ? entitlements(opts.billing) : await loadTeamEntitlements(opts.teamId);
+  return ent.enforced && ent.decisionCallsIncluded ? key : null;
+}
+
+/** The platform key's route: Jev, or the configured open-weight chat model. */
+function platformDecisionRoute(apiKey: string): { apiKey: string; endpoint?: DecisionEndpoint; model: string } {
+  const configured = process.env[PLATFORM_DECISION_MODEL_ENV]?.trim();
+  if (configured) {
+    const r = normalizeDecisionModel({ endpoint: 'chat', via: 'openrouter', model: configured });
+    if (r.ok && r.value) {
+      return { apiKey, endpoint: { kind: 'chat', baseURL: OPENROUTER_CHAT_BASE_URL, provider: 'openrouter' }, model: r.value.model };
+    }
+    console.warn(`[decision] ignoring malformed ${PLATFORM_DECISION_MODEL_ENV}`);
+  }
+  return { apiKey, model: DEFAULT_DECISION_MODEL };
+}
+
+/**
+ * The OpenRouter key a decision call spends, and whose it is. The team's own
+ * key first, through the one shared resolver (`inference-keys.ts`), so the
+ * same key serves chat, inference calls and decisions: an `inference_key`
+ * labelled `openrouter`, or the legacy `decision_key`, which is still
+ * preferred at the same scope so a team that set one keeps spending it.
+ * Precedence is the shared one: the acting user's key, then the account's,
+ * then the workspace's, then the team's, then `OPENROUTER_API_KEY` outside
+ * production. Only with none of those: buildd's platform key, under the plan.
+ */
+export async function resolveDecisionCredential(opts: DecisionKeyScope): Promise<ResolvedDecisionKey | null> {
+  const own = await resolveOwnDecisionKey(opts);
+  if (own) return { key: own, source: 'team' };
+  const platform = await platformDecisionKey(opts);
+  return platform ? { key: platform, source: 'platform' } : null;
+}
+
+/** The key alone. See `resolveDecisionCredential`. */
+export async function resolveDecisionKey(opts: DecisionKeyScope): Promise<string | null> {
+  return (await resolveDecisionCredential(opts))?.key ?? null;
+}
+
 /** The team columns a decision call reads. A caller that already loaded them can pass them in. */
 export interface TeamDecisionRow {
   inferenceFeatureModes: unknown;
@@ -191,6 +262,9 @@ export interface TeamDecisionRow {
   decisionModel: unknown;
   /** The key policy the key resolver enforces; absent ⇒ it reads it. */
   inferenceKeyPolicy?: unknown;
+  /** Plan columns, for the platform-key check; absent ⇒ that check reads them itself. */
+  plan?: string | null;
+  paidSeats?: number | null;
 }
 
 /**
@@ -198,20 +272,23 @@ export interface TeamDecisionRow {
  * decision model answers. Fails closed: a failed lookup means "not enabled",
  * never "spend anyway". `row` skips the read (undefined ⇒ read it; null ⇒ no team).
  */
-async function loadTeamDecisionSettings(teamId: string, capability: InferenceCapability, row?: TeamDecisionRow | null): Promise<{ allowed: boolean; model: DecisionModelConfig | null; keyPolicy?: InferenceKeyPolicy }> {
+async function loadTeamDecisionSettings(teamId: string, capability: InferenceCapability, row?: TeamDecisionRow | null): Promise<{ allowed: boolean; model: DecisionModelConfig | null; keyPolicy?: InferenceKeyPolicy; billing?: EntitlementTeam }> {
   try {
     let team = row;
     if (team === undefined) {
       const { db } = await import('./db');
       team = await db.query.teams.findFirst({
         where: eq(teams.id, teamId),
-        columns: { inferenceFeatureModes: true, enabledDecisionShadows: true, decisionModel: true, inferenceKeyPolicy: true },
+        columns: { inferenceFeatureModes: true, enabledDecisionShadows: true, decisionModel: true, inferenceKeyPolicy: true, plan: true, paidSeats: true },
       }) ?? null;
     }
     return {
       allowed: isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes, enabledDecisionShadows: team.enabledDecisionShadows } : null),
       model: readDecisionModel(team?.decisionModel),
       ...(isInferenceKeyPolicy(team?.inferenceKeyPolicy) ? { keyPolicy: team.inferenceKeyPolicy } : {}),
+      // Only a row that carries the plan column answers for it; a caller's
+      // partial row leaves the platform-key check to read the plan itself.
+      ...(team && 'plan' in team ? { billing: { plan: team.plan ?? null, paidSeats: team.paidSeats ?? null } } : {}),
     };
   } catch (e) {
     console.warn(`[decision] capability lookup failed for team ${teamId}:`, e);
@@ -247,6 +324,9 @@ export async function resolveDecisionAccess(opts: {
     route = await resolveDecisionRoute(settings.model, {
       teamId: opts.teamId, workspaceId: opts.workspaceId, accountId: opts.accountId, userId: opts.userId,
       ...(settings.keyPolicy ? { keyPolicy: settings.keyPolicy } : {}),
+      ...(settings.billing ? { billing: settings.billing } : {}),
+      // Chat (interactive) never runs on buildd's key; decisions may.
+      allowPlatformKey: INFERENCE_CAPABILITIES[opts.capability]?.kind !== 'interactive',
     });
   } catch (e) {
     console.warn(`[decision] key lookup failed for team ${opts.teamId}:`, e);
@@ -258,24 +338,28 @@ export async function resolveDecisionAccess(opts: {
 
 /**
  * Key, endpoint and model for a team's decision model. Null key ⇒ nothing to
- * spend: no OpenRouter key, or (via the gateway) no gateway.
+ * spend: no OpenRouter key, or (via the gateway) no gateway, and no platform
+ * key under the plan either. The platform key always runs the platform's
+ * model, never the team's custom one.
  */
 export async function resolveDecisionRoute(
   config: DecisionModelConfig | null,
-  scope: { teamId: string; workspaceId?: string | null; accountId?: string | null; userId?: string | null; keyPolicy?: InferenceKeyPolicy },
+  scope: DecisionKeyScope,
 ): Promise<{ apiKey: string | null; endpoint?: DecisionEndpoint; model: string }> {
-  if (!config) return { apiKey: await resolveDecisionKey(scope), model: DEFAULT_DECISION_MODEL };
-  if (config.via === 'litellm') {
+  if (config?.via === 'litellm') {
     const { resolveLiteLLMGateway } = await import('./litellm-gateway');
     const gateway = await resolveLiteLLMGateway({ teamId: scope.teamId, workspaceId: scope.workspaceId });
-    return {
-      apiKey: gateway?.apiKey ?? null,
-      endpoint: gateway ? { kind: 'chat', baseURL: gateway.baseURL, provider: 'openai' } : undefined,
-      model: config.model,
-    };
+    if (gateway) {
+      return { apiKey: gateway.apiKey, endpoint: { kind: 'chat', baseURL: gateway.baseURL, provider: 'openai' }, model: config.model };
+    }
+    const platform = await platformDecisionKey(scope);
+    return platform ? platformDecisionRoute(platform) : { apiKey: null, model: config.model };
   }
+  const credential = await resolveDecisionCredential(scope);
+  if (credential?.source === 'platform') return platformDecisionRoute(credential.key);
+  if (!config) return { apiKey: credential?.key ?? null, model: DEFAULT_DECISION_MODEL };
   return {
-    apiKey: await resolveDecisionKey(scope),
+    apiKey: credential?.key ?? null,
     endpoint: config.endpoint === 'chat' ? { kind: 'chat', baseURL: OPENROUTER_CHAT_BASE_URL, provider: 'openrouter' } : undefined,
     model: config.model,
   };
