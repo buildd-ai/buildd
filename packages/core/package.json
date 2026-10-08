@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.294.0",
+  "version": "0.295.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
