@@ -7,7 +7,28 @@ mock.module('@buildd/core/db', () => ({ db: {} }));
 mock.module('@/lib/redis', () => ({ markDue: async () => {} }));
 mock.module('@/lib/system-instruction-queue', () => ({ queueSystemInstruction: async () => true }));
 
-const { siblingProbeHeartbeat } = await import('./sibling-conflict-probe-store');
+const { siblingProbeHeartbeat, resolveKernelStates } = await import('./sibling-conflict-probe-store');
+
+describe('resolveKernelStates', () => {
+  it('maps each owner task to its delivery state; a task with no delivery is absent', async () => {
+    const m = await resolveKernelStates(['t1', 't2', 't1'], async (ids) => {
+      expect(ids).toEqual(['t1', 't2']);
+      return [{ ownerTaskId: 't1', state: 'REPAIRING' }];
+    });
+    expect([...m]).toEqual([['t1', 'REPAIRING']]);
+  });
+
+  it('a failed read marks every task UNKNOWN (kernel-owned): fail closed', async () => {
+    const m = await resolveKernelStates(['t1'], async () => { throw new Error('db down'); });
+    expect(m.get('t1')).toBe('UNKNOWN');
+  });
+
+  it('no tasks: no read', async () => {
+    let called = 0;
+    expect((await resolveKernelStates([], async () => { called++; return []; })).size).toBe(0);
+    expect(called).toBe(0);
+  });
+});
 
 function deps() {
   const seen = { loadProbe: 0, take: 0 };

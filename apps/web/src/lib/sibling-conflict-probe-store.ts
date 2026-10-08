@@ -4,7 +4,7 @@
  * write and the `sibling_conflict_probe` gate-ledger record.
  */
 import { db } from '@buildd/core/db';
-import { siblingProbes, workers } from '@buildd/core/db/schema';
+import { siblingProbes, workers, workflowDeliveries } from '@buildd/core/db/schema';
 import { recordGateEvent, GATE_SLUGS } from '@buildd/core/gate-events';
 import { TERMINAL_WORKER_STATUSES, normalizeDerivedFiles } from '@buildd/shared';
 import { and, eq, gt, inArray, isNull, isNotNull, not } from 'drizzle-orm';
@@ -32,9 +32,39 @@ const workerColumns = {
 type WorkerRow = {
   id: string; taskId: string | null; workspaceId: string; branch: string; startedAt: Date | null; prNumber: number | null;
   observedTouches: unknown;
-  task: { title: string | null; missionId: string | null } | null;
+  task: { title: string | null; missionId: string | null; deliveryRole?: string | null } | null;
   workspace: { gitConfig: unknown; dataClass: string | null } | null;
 };
+
+/**
+ * The kernel delivery state each task owns (`workflow_deliveries.owner_task_id`).
+ * A task with no delivery is absent from the map. A failed read marks every
+ * asked task `UNKNOWN`, which `isKernelOwned` treats as kernel-owned: when we
+ * cannot tell, the kernel stays the one authority (fail closed).
+ */
+export async function resolveKernelStates(
+  taskIds: string[],
+  load: (taskIds: string[]) => Promise<Array<{ ownerTaskId: string; state: string }>>,
+): Promise<Map<string, string>> {
+  const ids = [...new Set(taskIds.filter(Boolean))];
+  if (ids.length === 0) return new Map();
+  try {
+    return new Map((await load(ids)).map(r => [r.ownerTaskId, r.state]));
+  } catch (err) {
+    console.error('[sibling-probe] kernel delivery read failed, treating as kernel-owned:', err);
+    return new Map(ids.map(id => [id, 'UNKNOWN']));
+  }
+}
+
+const loadDeliveryStates = (taskIds: string[]) =>
+  db.select({ ownerTaskId: workflowDeliveries.ownerTaskId, state: workflowDeliveries.state })
+    .from(workflowDeliveries)
+    .where(inArray(workflowDeliveries.ownerTaskId, taskIds));
+
+async function toProbeWorkers(rows: WorkerRow[]): Promise<ProbeWorker[]> {
+  const states = await resolveKernelStates(rows.flatMap(r => (r.taskId ? [r.taskId] : [])), loadDeliveryStates);
+  return rows.map(r => ({ ...toProbeWorker(r), kernelState: r.taskId ? states.get(r.taskId) ?? null : null }));
+}
 
 function derivedGlobs(gitConfig: unknown): string[] {
   try {
@@ -59,11 +89,12 @@ function toProbeWorker(r: WorkerRow): ProbeWorker {
     mergiraf: gitConfig?.mergiraf === true,
     sensitive: r.workspace?.dataClass === 'sensitive',
     generatedGlobs: derivedGlobs(gitConfig),
+    deliveryRole: r.task?.deliveryRole ?? null,
   };
 }
 
 const withTaskAndWorkspace = {
-  task: { columns: { title: true, missionId: true } },
+  task: { columns: { title: true, missionId: true, deliveryRole: true } },
   workspace: { columns: { gitConfig: true, dataClass: true } },
 } as const;
 
@@ -80,6 +111,7 @@ function toRow(r: typeof siblingProbes.$inferSelect): ProbeRowFull {
     id: r.id, pairKey: r.pairKey, workspaceId: r.workspaceId, workerAId: r.workerAId, workerBId: r.workerBId,
     proberWorkerId: r.proberWorkerId, sharedFiles: r.sharedFiles ?? [], status: r.status,
     requestedAt: r.requestedAt, dispatchedAt: r.dispatchedAt, probedAt: r.probedAt, notifiedAt: r.notifiedAt,
+    notifiedHeads: r.notifiedHeads ?? null,
   };
 }
 
@@ -91,7 +123,7 @@ export function createSiblingProbeStore(): SiblingProbeDeps {
         columns: workerColumns,
         with: withTaskAndWorkspace,
       });
-      return (rows as unknown as WorkerRow[]).map(toProbeWorker);
+      return toProbeWorkers(rows as unknown as WorkerRow[]);
     },
 
     async loadProbes(pairKeys) {
@@ -100,19 +132,19 @@ export function createSiblingProbeStore(): SiblingProbeDeps {
       return new Map(rows.map(r => [r.pairKey, toRow(r)]));
     },
 
-    async upsertRequest(pair, now) {
+    async upsertRequest(pair, now, proberWorkerId) {
       await db.insert(siblingProbes).values({
         workspaceId: pair.workspaceId,
         pairKey: pair.pairKey,
         workerAId: pair.a.workerId,
         workerBId: pair.b.workerId,
-        proberWorkerId: pair.rebaser.workerId,
+        proberWorkerId,
         sharedFiles: pair.sharedFiles,
         status: 'requested',
         requestedAt: now,
       }).onConflictDoUpdate({
         target: [siblingProbes.workspaceId, siblingProbes.pairKey],
-        set: { proberWorkerId: pair.rebaser.workerId, sharedFiles: pair.sharedFiles, status: 'requested', requestedAt: now, dispatchedAt: null },
+        set: { proberWorkerId, sharedFiles: pair.sharedFiles, status: 'requested', requestedAt: now, dispatchedAt: null },
       });
     },
 
@@ -149,7 +181,7 @@ export function createSiblingProbeStore(): SiblingProbeDeps {
         columns: workerColumns,
         with: withTaskAndWorkspace,
       });
-      return new Map((rows as unknown as WorkerRow[]).map(r => [r.id, toProbeWorker(r)]));
+      return new Map((await toProbeWorkers(rows as unknown as WorkerRow[])).map(w => [w.workerId, w]));
     },
 
     async saveResult(probeId, fields) {
@@ -160,6 +192,7 @@ export function createSiblingProbeStore(): SiblingProbeDeps {
           conflictFiles: fields.conflictFiles,
           probedAt: fields.probedAt,
           ...(fields.notifiedAt ? { notifiedAt: fields.notifiedAt } : {}),
+          ...(fields.notifiedHeads ? { notifiedHeads: fields.notifiedHeads } : {}),
         })
         .where(eq(siblingProbes.id, probeId));
     },
@@ -190,6 +223,8 @@ export function createSiblingProbeStore(): SiblingProbeDeps {
           resolvedByMergiraf: e.resolvedByMergiraf,
           notified: e.notified,
           debounced: e.debounced,
+          suppressed: e.suppressed,
+          rejectedPaths: e.rejectedPaths,
           headSha: e.headSha,
           otherSha: e.otherSha,
           ...(e.error ? { error: e.error } : {}),

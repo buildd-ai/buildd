@@ -141,7 +141,7 @@ describe('applySiblingProbeResult', () => {
     expect(f.queued).toHaveLength(2);
     const toA = f.queued.find(q => q.workerId === 'a')!.text;
     const toB = f.queued.find(q => q.workerId === 'b')!.text;
-    expect(toA).toContain('apps/web/src/lib/x.ts (lines 10-18)');
+    expect(toA).toContain('`apps/web/src/lib/x.ts` (lines 10-18)');
     expect(toA).toContain('You rebase'); // b already has a PR in review
     expect(toB).toContain('They rebase onto your work');
     expect(f.events).toHaveLength(1);
@@ -210,7 +210,7 @@ describe('requestSiblingProbes (cron) and takeSiblingProbeRequests (heartbeat)',
 
   it('skips a pair with an outstanding request', async () => {
     const f = fakeDeps();
-    f.deps.loadProbes = async () => new Map([['a:b', { status: 'requested' } as any]]);
+    f.deps.loadProbes = async () => new Map([['a:b', { status: 'requested', requestedAt: NOW, proberWorkerId: 'a' } as any]]);
     expect(await requestSiblingProbes(f.deps)).toEqual({ pairs: 1, requested: 0 });
   });
 
