@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import {
+  dependencyHoldsTask,
   MAX_SURFACE_AUDIT_ROUNDS,
   MAX_TOTAL_SURFACE_AUDIT_ROUNDS,
   SURFACE_AUDIT_TITLE_PREFIX,
@@ -74,6 +75,22 @@ describe('touchesUiSurface', () => {
       'apps/web/src/app/api/workers/[id]/route.test.ts',
       'docs/specs/mission-task-lifecycle.md',
     ])).toBe(false);
+  });
+});
+
+describe('dependencyHoldsTask — an audit waits on current mission members only', () => {
+  const audit = { title: '[surface audit] Mobile nav', missionId: 'm-1' };
+  it('a member dependency holds the audit', () => {
+    expect(dependencyHoldsTask(audit, { missionId: 'm-1' })).toBe(true);
+  });
+  it('a dependency unlinked, moved or gone does not', () => {
+    expect(dependencyHoldsTask(audit, { missionId: null })).toBe(false);
+    expect(dependencyHoldsTask(audit, { missionId: 'm-2' })).toBe(false);
+    expect(dependencyHoldsTask(audit, undefined)).toBe(false);
+  });
+  it('an ordinary task is held by every dependency it names', () => {
+    expect(dependencyHoldsTask({ title: 'Build the card', missionId: 'm-1' }, { missionId: 'm-2' })).toBe(true);
+    expect(dependencyHoldsTask({ title: '[surface audit] x', missionId: null }, { missionId: 'm-2' })).toBe(true);
   });
 });
 

@@ -212,11 +212,24 @@ jobs:
         # On a prod clone the journal is usually current and bun db:migrate is a
         # no-op, or applies this branch's pending migrations. "already exists" is
         # treated as success: the schema is already correct.
+        #
+        # A mission branch's own migration usually predates dev's newest released
+        # one, so on this clone it sits below prod's high-water mark with no
+        # tracking row and its DDL absent. The prod rule refuses that as a
+        # contradicted backfill. MIGRATION_CI_CLONE_APPLY_ABSENT=1 (honoured only
+        # in GitHub Actions, set only here; see packages/core/db/migrate-backfill.ts)
+        # executes such a migration in journal order instead. DDL that is only
+        # partly present is still refused: replaying it is unsafe on any database,
+        # and the branch needs a reconciliation migration.
         run: |
           OUTPUT=$(cd packages/core && bun db:migrate 2>&1) && echo "$OUTPUT" || {
             if echo "$OUTPUT" | grep -q "already exists"; then
               echo "::warning::Migration warning (schema already applied): ${OUTPUT##*Migration failed: }"
               echo "$OUTPUT"
+            elif echo "$OUTPUT" | grep -q "partially present, so not applied on this clone"; then
+              echo "$OUTPUT"
+              echo "::error::A migration on this branch is partly applied on prod's schema, so it cannot be replayed here. Add an idempotent reconciliation migration on the branch (see the schema-change skill)."
+              exit 1
             else
               echo "$OUTPUT"
               exit 1
@@ -224,6 +237,7 @@ jobs:
           }
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          MIGRATION_CI_CLONE_APPLY_ABSENT: "1"
 
       # --- Scrub (required before app starts, before any data is rendered) ---
       # The artifact is downloadable by anyone on this public repo, so the clone

@@ -136,6 +136,11 @@ don't turn it on by habit.
 - Each dispatch gets its own Neon branch and concurrency group, so parallel
   dispatches don't collide or cancel each other. Leaked `ci/visual-qa-*` branches
   older than 2h are swept at the start of every run.
+- A mission branch boots even when its own migration sits below prod's journal
+  mark: the clone applies migrations whose DDL is wholly absent
+  (`MIGRATION_CI_CLONE_APPLY_ABSENT`). The ref must contain that change, so a
+  branch cut before it needs a dev sync first. A red `Run migrations` saying
+  "partially present" needs a reconciliation migration on the branch.
 - A red `Guard scrubbed clone` step means the scrub missed something. No app, no
   shots, no artifact. The error names `table.column` only; fix the scrub, don't
   work around the guard.

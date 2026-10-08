@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts } from '@buildd/core/db/schema';
 import { and, eq, inArray, desc } from 'drizzle-orm';
+import { emit } from '@/lib/core-emit';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 
@@ -574,6 +575,13 @@ export async function PATCH(
     const isNowOpen = status !== undefined && !isTerminalTaskStatus(status as string);
     const missionLinkAdded = missionId !== undefined && updated?.missionId && updated.missionId !== task.missionId;
     const missionUnlinked = missionId !== undefined && !updated?.missionId && task.missionId;
+
+    // A task that left its mission (unlinked, or moved to another): modules
+    // holding per-mission state about it let go (the surface audit drops its
+    // edge; lib/surface-audit-subscribers.ts). emit never throws.
+    if (missionId !== undefined && task.missionId && updated && updated.missionId !== task.missionId) {
+      await emit({ type: 'task.left_mission', taskId: id, missionId: task.missionId, workspaceId: updated.workspaceId ?? null });
+    }
 
     // A task linked/unlinked/created against a mission is exactly the kind of
     // silent work the mission feed used to miss — attribute it whether it came
