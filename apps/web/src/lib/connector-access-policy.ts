@@ -6,8 +6,9 @@
  * module first: the claim pre-filter, claim-time MCP injection, the assertion
  * mint, the worker-facing mounted list, and the OAuth connect/callback.
  *
- * A connector matches a catalog entry by normalized URL (the same key
- * catalogEntryForUrl uses). It is blocked for a task when EITHER the team
+ * A connector matches a blocked catalog entry by host (`connectorHostKey`):
+ * any path, scheme, port or case on the entry's host is the same provider, so
+ * `/sse` beside a blocked `/mcp` is blocked too. It is blocked for a task when EITHER the team
  * consuming it (the task's workspace team) OR the team that owns it has
  * blocked that entry: the consumer decides what its agents may touch, and an
  * owner's block must not be side-stepped by sharing the connector out.
@@ -17,7 +18,7 @@
 import { db } from '@buildd/core/db';
 import { connectorCatalogTeamPolicies } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
-import { normalizeConnectorUrl, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
+import { connectorHostKey, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
 import { loadTeamCatalog } from '@/lib/connector-catalog-store';
 
 /** Why a connector is blocked: which team's policy, on which catalog entry. */
@@ -27,16 +28,16 @@ export interface ConnectorBlock {
   blockedByTeamId: string;
 }
 
-/** Per team: normalized URL → the blocked catalog entry at that URL. */
+/** Per team: host → the blocked catalog entry on that host. */
 export type BlockedCatalogs = Map<string, Map<string, { slug: string; name: string }>>;
 
-/** Index a team's merged catalog by the URLs of its blocked entries. Pure. */
+/** Index a team's merged catalog by the hosts of its blocked entries. Pure. */
 export function blockedUrlIndex(catalog: readonly ResolvedCatalogEntry[]): Map<string, { slug: string; name: string }> {
   const index = new Map<string, { slug: string; name: string }>();
   for (const e of catalog) {
     if (e.policy !== 'blocked') continue;
-    const key = normalizeConnectorUrl(e.url);
-    if (key) index.set(key, { slug: e.slug, name: e.name });
+    const key = connectorHostKey(e.url);
+    if (key && !index.has(key)) index.set(key, { slug: e.slug, name: e.name });
   }
   return index;
 }
@@ -50,7 +51,7 @@ export function connectorBlock(
   consumingTeamId: string,
   blocked: BlockedCatalogs,
 ): ConnectorBlock | null {
-  const key = connector.url ? normalizeConnectorUrl(connector.url) : null;
+  const key = connector.url ? connectorHostKey(connector.url) : null;
   if (!key) return null;
   for (const teamId of [consumingTeamId, connector.teamId]) {
     const hit = blocked.get(teamId)?.get(key);
