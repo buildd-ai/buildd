@@ -145,7 +145,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a confident Jev START to its three advisory gates only; both MUST fall back to the rule on failure.
 - [Path Claim Ownership](./path-claim-ownership.md) · @max — verified 2026-10-07
   Edit leases MUST be held exclusively per workspace, kept equal to a task's current owned file set by a delta/ACK protocol, proven complete before any ship (fail closed), and handed to the open PR when the worker ends.
-- [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-09-01
+- [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-10-07
   The PR lifecycle status shown on every surface MUST reflect live GitHub CI state within one read cycle, with terminal states (merged/closed) never overwritten by later CI events.
 - [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
@@ -158,7 +158,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-06
+- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-07
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 
 ## Superseded (2)

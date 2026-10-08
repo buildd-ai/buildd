@@ -20,7 +20,8 @@ import {
   foldMissionDeliverables,
   type MissionFeedTaskInput,
 } from './mission-pulse';
-import { taskRowsStripOrder } from './mission-strip-order';
+import { taskRowsStripProjection } from './mission-strip-order';
+import { stripCounts, stripTone, type StripBucket, type StripState, type StripTone } from './mission-task-strip';
 import {
   toFeedTask,
   latestWorker,
@@ -79,6 +80,8 @@ export interface ListCell {
   label: string;
   title: string;
   state: ListCellState;
+  /** The canonical strip tone: the only thing a surface paints from. `state` is the raw word. */
+  tone: StripTone;
   /** 0..1 — the live worker's reported progress for `running`, 1 otherwise. */
   fill: number;
   href: string;
@@ -116,7 +119,9 @@ export interface MissionListCardModel {
   kind: ListCardKind;
   status: { label: string; tone: ListTone };
   phases: ListPhase[];
-  counts: { done: number; total: number; inCi: number; running: number; needsYou: number; queued: number; failed: number };
+  counts: { done: number; total: number; inCi: number; running: number; needsYou: number; open: number; held: number; failed: number };
+  /** Per-bucket cell tally from the canonical strip projection; cancelled has no cell. */
+  buckets: Record<StripBucket, number>;
   live: { count: number; dots: Array<{ roleSlug: string | null; color: string | null }> };
   /** Minutes since the mission's first worker started. Null before any work. */
   elapsedMin: number | null;
@@ -242,11 +247,12 @@ export function buildMissionListCard(
   // cell's coarser state word is the list's own.
   const feed: MissionFeedTaskInput[] = tasks.map(toFeedTask);
   const feedRows = new Map(foldMissionDeliverables(feed).rows.map(r => [r.task.id, r]));
-  const order = taskRowsStripOrder(tasks as unknown as Parameters<typeof taskRowsStripOrder>[0], opts.taskIndex);
+  const { order, states: stripStates } = taskRowsStripProjection(tasks as unknown as Parameters<typeof taskRowsStripProjection>[0], opts.taskIndex);
   const ordered = order.flatMap(id => feedRows.get(id) ?? []);
   const phases: ListPhase[] = [];
   const phaseRuns = new Map<string, number>();
-  const counts = { done: view.done, total: view.total, inCi: 0, running: 0, needsYou: 0, queued: 0, failed: 0 };
+  const counts = { done: view.done, total: view.total, inCi: 0, running: 0, needsYou: 0, open: 0, held: 0, failed: 0 };
+  const cellStates: StripState[] = [];
   let question: ListQuestion | null = null;
 
   for (const r of ordered) {
@@ -273,11 +279,11 @@ export function buildMissionListCard(
     if (state === 'in_ci') counts.inCi++;
     else if (state === 'running') counts.running++;
     else if (state === 'needs_you') counts.needsYou++;
-    else if (state === 'queued') counts.queued++;
-    else if (state === 'failed') counts.failed++;
+    const strip = stripStates.get(r.task.id);
+    if (strip && state !== 'skipped') cellStates.push(strip);
 
     const { label } = taskShortLabel(source);
-    const cell: ListCell = { taskId: r.task.id, label, title: r.task.title, state, fill, href: link(r.task.id) };
+    const cell: ListCell = { taskId: r.task.id, label, title: r.task.title, state, tone: stripTone(strip ?? 'ready'), fill, href: link(r.task.id) };
 
     if (state === 'needs_you' && !question) {
       const candidates = [source, ...r.attempts.map(a => byId.get(a.id)!).filter(Boolean)];
@@ -314,6 +320,11 @@ export function buildMissionListCard(
       if (state === 'done') phase.done++;
     }
   }
+
+  const buckets = stripCounts(cellStates);
+  counts.failed = buckets.failed;
+  counts.held = buckets.held;
+  counts.open = buckets.open;
 
   // A phase whose every task was cancelled has nothing countable to show —
   // drop it rather than render an empty, caption-only group.
@@ -452,7 +463,7 @@ export function buildMissionListCard(
   return {
     id: row.id, kind, status, phases, counts,
     live: { count: summary.liveWorkers, dots },
-    elapsedMin, criteria, question, ask, strand, sentence, recurring, held, done,
+    buckets, elapsedMin, criteria, question, ask, strand, sentence, recurring, held, done,
   };
 }
 

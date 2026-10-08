@@ -1,5 +1,5 @@
 /**
- * Migration 0265 against real Postgres: a pending task's legacy inferred
+ * Migration 0267 against real Postgres: a pending task's legacy inferred
  * path-overlap edges leave depends_on (so the dependency gate stops blocking on
  * them) and become soft evidence the claim route decides on. Caller-supplied
  * edges, non-pending rows and already-converted rows are untouched, and a
@@ -16,7 +16,7 @@ import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
 
 const MIGRATION = readFileSync(
-  join(import.meta.dir, '../../../../packages/core/drizzle/0265_soft_overlap_legacy_edges.sql'),
+  join(import.meta.dir, '../../../../packages/core/drizzle/0267_soft_overlap_legacy_edges.sql'),
   'utf8',
 );
 const runMigration = () => db.execute(sql.raw(MIGRATION));
@@ -40,7 +40,7 @@ const row = async (id: string) =>
 const passesDepsGate = async (id: string) =>
   (await db.select({ id: tasks.id }).from(tasks).where(sql`${tasks.id} = ${id}::uuid AND ${depsGate()}`)).length === 1;
 
-describe('migration 0265: legacy inferred edges become soft', () => {
+describe('migration 0267: legacy inferred edges become soft', () => {
   test('a pending task keeps its declared edge, loses the inferred ones, and records them as soft evidence', async () => {
     const declared = await seedTask(workspaceId, { status: 'in_progress' });
     const inferredA = await seedTask(workspaceId, { status: 'in_progress', pathManifest: ['scripts/a.ts'] });

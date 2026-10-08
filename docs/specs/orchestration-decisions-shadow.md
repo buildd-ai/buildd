@@ -83,7 +83,7 @@ same-file overlap, a migration or schema path, or a workspace serialized
 surface. A prefix-only overlap is SOFT: recorded as
 `pathDeclaration.softOverlaps` (the pair, the overlapping paths, the edge
 kind), never an edge, and decided at claim by hold/start (`soft_overlap` gate).
-Migration 0265 moved the pending tasks' pre-split inferred edges into
+Migration 0267 moved the pending tasks' pre-split inferred edges into
 `softOverlaps` (kind `legacy_inferred`), reclassified at each claim against the
 current manifests.
 
@@ -217,7 +217,7 @@ current manifests.
   `evaluateSoftOverlaps`; holder read in `soft-overlap-store.ts`.
 - `apps/web/src/lib/explain-coordination.ts`: `buildCoordinationHolds`, the
   explain answer's `coordination.holds` (edge kind, holder, paths, verdict).
-- `packages/core/drizzle/0265_soft_overlap_legacy_edges.sql`: the legacy
+- `packages/core/drizzle/0267_soft_overlap_legacy_edges.sql`: the legacy
   edge conversion (pending tasks only, idempotent).
 - `apps/web/src/app/api/workers/claim/hold-start-shadow.ts`:
   `ClaimHoldCollector`, `scheduleClaimHoldShadow`, `grantedFraction`,

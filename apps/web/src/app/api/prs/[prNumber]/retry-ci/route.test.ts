@@ -7,8 +7,8 @@ const mockGithubApi = mock(() => Promise.resolve(null) as any);
 const mockResolveOrAdoptPrOwner = mock(() => Promise.resolve({}) as any);
 const mockCheckPrIsDraft = mock(() => Promise.resolve(false));
 const mockFetchCIFailureLogs = mock(() => Promise.resolve({ summary: null, runId: null, runUrl: null, failedJobId: null, failedJobNames: [] }));
-const mockFetchCommitAuthor = mock(() => Promise.resolve({ login: 'buildd-ai[bot]', email: '258464409+buildd-ai[bot]@users.noreply.github.com', name: 'buildd-ai[bot]' }));
-const mockIsBuilddWorkerCommit = mock((author: any) => !!author?.login?.includes('buildd-ai'));
+// Workflow kernel door (lib/workflow/seam.ts; real-SQL cases in tests/db/workflow-matrix.test.ts).
+const mockRequestCiRetry = mock(async (_p: any): Promise<any> => ({ handled: false }));
 const mockIsSchemaDriftFailure = mock(() => false);
 const mockBuildDriftDiagnoseTask = mock((p: any) => ({
   title: `[CI Diagnose] Schema drift on PR #${p.prNumber}`,
@@ -38,9 +38,8 @@ mock.module('@/lib/pr-review-request', () => ({ resolveOrAdoptPrOwner: mockResol
 mock.module('@/lib/ci-failure-inspect', () => ({
   checkPrIsDraft: mockCheckPrIsDraft,
   fetchCIFailureLogs: mockFetchCIFailureLogs,
-  fetchCommitAuthor: mockFetchCommitAuthor,
-  isBuilddWorkerCommit: mockIsBuilddWorkerCommit,
 }));
+mock.module('@/lib/workflow/seam', () => ({ requestCiRetry: mockRequestCiRetry }));
 mock.module('@/lib/ci-drift-diagnose', () => ({
   isSchemaDriftFailure: mockIsSchemaDriftFailure,
   buildDriftDiagnoseTask: mockBuildDriftDiagnoseTask,
@@ -54,7 +53,7 @@ mock.module('@/lib/ci-retry', () => ({
     creationSource: 'webhook',
     taskClass: 'attempt',
     missionId: p.originalTask.missionId ?? null,
-    context: { iteration: 1, maxIterations: 3, prNumber: p.worker.prNumber, foreign_head_sha: p.foreignHeadSha || undefined },
+    context: { iteration: (p.attemptsUsed ?? 0) + 1, maxIterations: 3, prNumber: p.worker.prNumber },
   }),
   DEFAULT_MAX_CI_RETRIES: 3,
 }));
@@ -169,10 +168,8 @@ describe('POST /api/prs/[prNumber]/retry-ci', () => {
     mockCheckPrIsDraft.mockResolvedValue(false);
     mockFetchCIFailureLogs.mockReset();
     mockFetchCIFailureLogs.mockResolvedValue({ summary: null, runId: null, runUrl: null, failedJobId: null, failedJobNames: [] });
-    mockFetchCommitAuthor.mockReset();
-    mockFetchCommitAuthor.mockResolvedValue({ login: 'buildd-ai[bot]', email: '258464409+buildd-ai[bot]@users.noreply.github.com', name: 'buildd-ai[bot]' });
-    mockIsBuilddWorkerCommit.mockReset();
-    mockIsBuilddWorkerCommit.mockImplementation((author: any) => !!author?.login?.includes('buildd-ai'));
+    mockRequestCiRetry.mockReset();
+    mockRequestCiRetry.mockResolvedValue({ handled: false });
     mockIsSchemaDriftFailure.mockReset();
     mockIsSchemaDriftFailure.mockReturnValue(false);
     mockAnnounceTaskCreated.mockReset();
@@ -341,5 +338,39 @@ describe('POST /api/prs/[prNumber]/retry-ci', () => {
     const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1' });
     await POST(req, ctx);
     expect(mockTasksValues.mock.calls[0][0].roleSlug).toBeNull();
+  });
+
+  describe('a kernel-owned PR (§5.7 rule 5)', () => {
+    const authed = () => mockGetCurrentUser.mockResolvedValue({ id: 'user-1' } as any);
+
+    it('goes through the kernel with the configured cap; the legacy dispatch never runs', async () => {
+      authed();
+      mockRequestCiRetry.mockResolvedValue({ handled: true, extended: false, attemptTaskId: 'ci-1', result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+      const res = await POST(...makeRequest('42', { workspaceId: 'ws-1' }));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, dispatched: true, diagnoseOnly: false, taskId: 'ci-1', budgetExtended: false });
+      expect(mockRequestCiRetry.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-1', prNumber: 42, actor: 'human:user-1', maxAttempts: 3 });
+      expect(mockResolveOrAdoptPrOwner).not.toHaveBeenCalled();
+      expect(mockTasksValues).not.toHaveBeenCalled();
+    });
+
+    it('past the cap the answer says the budget was extended', async () => {
+      authed();
+      mockRequestCiRetry.mockResolvedValue({ handled: true, extended: true, attemptTaskId: 'ci-4', result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+      const res = await POST(...makeRequest('42', { workspaceId: 'ws-1', reason: 'flaky runner' }));
+      expect((await res.json()).budgetExtended).toBe(true);
+      expect(mockRequestCiRetry.mock.calls[0][0].reason).toBe('flaky runner');
+    });
+
+    it('a fix already in flight is reported, not stacked; any other refusal is a 409 with the current view', async () => {
+      authed();
+      mockRequestCiRetry.mockResolvedValue({ handled: true, extended: false, attemptTaskId: null, result: { result: 'rejected', reason: 'fix_in_flight', current: { state: 'REPAIRING' } } });
+      expect(await (await POST(...makeRequest('42', { workspaceId: 'ws-1' }))).json()).toMatchObject({ dispatched: false, inFlight: true });
+      mockRequestCiRetry.mockResolvedValue({ handled: true, extended: false, attemptTaskId: null, result: { result: 'rejected', reason: 'state_not_allowed', current: { state: 'MERGED', version: 9, head: 'abc123', round: 1 } } });
+      const res = await POST(...makeRequest('42', { workspaceId: 'ws-1' }));
+      expect(res.status).toBe(409);
+      expect((await res.json()).current).toMatchObject({ state: 'MERGED' });
+      expect(mockTasksValues).not.toHaveBeenCalled();
+    });
   });
 });

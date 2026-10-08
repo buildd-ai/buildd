@@ -1570,6 +1570,12 @@ export interface ClaimDiagnostics {
      */
     sibling_retry_open?: number;
     /**
+     * Workflow-kernel review fix skipped at claim: its target was resolved
+     * while it queued (approved, merged, head moved, round superseded), or the
+     * live revalidation could not run and the claim was rolled back.
+     */
+    fix_not_needed?: number;
+    /**
      * Claim planner in `apply` mode ordered this task behind a picked, in-flight
      * or open-PR node it would collide with. Replaces the per-poll
      * path_overlap / advisory_manifest deferral for that task.
@@ -1953,7 +1959,7 @@ export interface PathDeclaration {
    * `v2`: `inferredDependsOn` holds only HARD inferred edges (same file,
    * migration, serialized surface). Prefix-only overlap is never a dependsOn
    * edge; it is recorded in `softOverlaps` and decided at claim time. Absent on
-   * rows written before the rule; migration 0265 converted the pending ones.
+   * rows written before the rule; migration 0267 converted the pending ones.
    */
   overlapPolicy?: 'v2';
   /**

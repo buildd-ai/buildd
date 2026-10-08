@@ -5,7 +5,7 @@
  * A task's `pathDeclaration.softOverlaps` names in-flight tasks whose declared
  * scope overlapped its own only by directory prefix at creation, plus
  * (`legacy_inferred`) dependsOn edges minted before the split, which migration
- * 0265 moved here. None of them is a dependsOn edge. At claim each is
+ * 0267 moved here. None of them is a dependsOn edge. At claim each is
  * re-evaluated against the CURRENT manifests:
  *
  *  - holder terminal, gone, or no longer overlapping → clear;
