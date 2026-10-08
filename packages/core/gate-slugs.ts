@@ -237,8 +237,9 @@ export const GATE_SLUGS = {
    * workers' observed touches share a file, so one runner ran `git merge-tree`
    * between the two branch heads (mergiraf on the conflicted files when the
    * workspace enables it). ADVISORY: nothing is blocked. `warned` = a real
-   * conflict, both workers told once per pair inside the debounce
-   * (`detail.notified`); `accepted` = clean, or resolved structurally by
+   * conflict, both workers told once per conflicting pair of heads
+   * (`detail.notified`, `detail.debounced`; `detail.suppressed` when the
+   * kernel owns a side); `accepted` = clean, or resolved structurally by
    * mergiraf. Compared against conflict retries to measure early warning.
    */
   SIBLING_CONFLICT_PROBE: 'sibling_conflict_probe',

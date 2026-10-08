@@ -96,6 +96,11 @@ the overlapping paths, kind `same_file` or `prefix`), never an edge, and
 decided at claim by hold/start (`soft_overlap` gate). Same-file overlap went
 soft because most task pairs whose merged PRs touched the same file did not
 actually conflict, so a hard hold wasted most of the wait.
+Hardness is judged on the pair's FULL intersection: a pair that shares a file
+and also a serialized directory (`seq-dir/` against `seq-dir/0042.ts`) is
+hard. At most `MAX_SOFT_OVERLAPS_PER_TASK` soft pairs are stored, same-file
+pairs first; an overlap past that budget becomes a hard edge rather than
+running unheld with no evidence (fail closed).
 Migration 0267 moved the pending tasks' pre-split inferred edges into
 `softOverlaps` (kind `legacy_inferred`), reclassified at each claim against the
 current manifests.

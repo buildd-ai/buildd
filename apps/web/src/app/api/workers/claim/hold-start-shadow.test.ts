@@ -212,15 +212,10 @@ describe('runClaimHoldShadow: same-file soft overlap', () => {
     return c;
   };
 
-  it('no conflict history: Jev sees no_history, the holder stage and the size, and a confident START applies', async () => {
-    const c = sameFileNote();
-    let seen: any = null;
-    const dd = decisionDeps({
-      call: (async (args: any) => {
-        seen = args.state;
-        return { ok: true, answers: { action: { choice: 'START', confidence: 0.95, distribution: {} } }, model: JEV_MODEL, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 1, attempts: 1 };
-      }) as any,
-    });
+  // The model's answer is not under test (a stub that says START proves
+  // nothing about the model). What is: the deterministic inputs the decision
+  // is handed, and that every failure path holds.
+  const noHistoryHarness = (call: any) => {
     const evidenceCalls: any[] = [];
     const h = harness({
       loadHolder: async () => ({ title: 'Other', workerStatus: 'running', lastActivityAt: '2026-09-30T11:59:00.000Z', prLifecycle: null, baseStale: null, stage: 'just_started' }),
@@ -228,14 +223,38 @@ describe('runClaimHoldShadow: same-file soft overlap', () => {
         evidenceCalls.push(opts);
         return { conflictHistory: { summary: 'no_history', maxRate: null, files: [{ path: 'apps/web/src/lib/x.ts', mergedPrs: 0, conflicted: 0, rate: null }] }, predictedChange: { files: 2, minutes: 15, source: 'neighbours' } };
       },
-    }, dd);
+    }, decisionDeps({ call }));
+    return { h, evidenceCalls };
+  };
+
+  it('no conflict history: the decision is handed the overlap kind, no_history, the holder stage and the predicted size', async () => {
+    const c = sameFileNote();
+    let seen: any = null;
+    const { h, evidenceCalls } = noHistoryHarness(async (args: any) => {
+      seen = args.state;
+      return { ok: true, answers: { action: { choice: 'HOLD', confidence: 0.5, distribution: {} } }, model: JEV_MODEL, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 1, attempts: 1 };
+    });
     await runClaimHoldShadow(c.candidates, h.deps);
     expect(evidenceCalls).toEqual([{ workspaceId: WS, taskId: TASK, paths: ['apps/web/src/lib/x.ts'] }]);
     expect(seen.overlap.kind).toBe('same_file');
-    expect(seen.conflictHistory.summary).toBe('no_history');
+    expect(seen.conflictHistory).toEqual({ summary: 'no_history', maxRate: null, files: [{ path: 'apps/web/src/lib/x.ts', mergedPrs: 0, conflicted: 0, rate: null }] });
     expect(seen.holder.stage).toBe('just_started');
     expect(seen.candidate.predictedChange).toEqual({ files: 2, minutes: 15, source: 'neighbours' });
-    expect(h.rows[0]).toMatchObject({ applied: true, effective: 'START', candidatePolicyVersion: 'ch1.soft_overlap' });
+    expect(h.rows[0]).toMatchObject({ candidatePolicyVersion: 'ch1.soft_overlap' });
+  });
+
+  it('no conflict history and the decision call fails: HOLD, recorded as a fallback (fail closed)', async () => {
+    const c = sameFileNote();
+    const { h } = noHistoryHarness(async () => { throw new Error('provider down'); });
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(h.rows[0]).toMatchObject({ status: 'fallback', effective: 'HOLD', applied: false });
+  });
+
+  it('no conflict history and a low-confidence START: HOLD, not applied', async () => {
+    const c = sameFileNote();
+    const { h } = noHistoryHarness(async () => ({ ok: true, answers: { action: { choice: 'START', confidence: 0.3, distribution: {} } }, model: JEV_MODEL, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 1, attempts: 1 }));
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(h.rows[0]).toMatchObject({ effective: 'HOLD', applied: false });
   });
 
   it('a failed evidence read is a decision error: HOLD, recorded as a fallback, no model call', async () => {

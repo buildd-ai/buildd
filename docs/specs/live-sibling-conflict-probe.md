@@ -53,19 +53,38 @@ This is the early warning for the ones that do not.
   workspace only. A generated file (built-in regenerable or the workspace's
   `gitConfig.derivedFiles`) and the repo-wide `**` sentinel never form a pair.
   The same worker, the same branch or the same task never pairs with itself.
+- A worker the workflow kernel owns never pairs: a repair or reviewer attempt
+  (`tasks.delivery_role` other than `owner`), or an owner whose delivery is
+  past `WORKING` (in review, repairing, fixing, awaiting push, landing, ...).
+  The kernel's own conflict retry is the one authority over that PR. An
+  unreadable delivery state counts as kernel-owned (fail closed), and a pair
+  that became kernel-owned before its result arrives notifies nobody
+  (`detail.suppressed: kernel_owned`).
 - The prober is the worker that would rebase: the one not yet in review (no
   PR) when exactly one has a PR, otherwise the later starter.
 - One `sibling_probes` row per pair (unique on workspace + pair key). A pair
   is not re-asked while a request is outstanding, nor within
   `SIBLING_PROBE_INTERVAL_MS` of its last probe; a request handed to a runner
-  and not answered within `SIBLING_PROBE_DISPATCH_TIMEOUT_MS` is re-asked.
+  and not answered within `SIBLING_PROBE_DISPATCH_TIMEOUT_MS` is re-asked, and
+  a request no runner took within `SIBLING_PROBE_REQUEST_TIMEOUT_MS` (the
+  prober's runner cannot probe) is re-asked of the OTHER worker.
 - The server never runs git. The prober's runner gets the request on its next
   heartbeat response (`siblingProbes`), only if it declared `siblingProbe`
   support, and reports the result on a later heartbeat (`siblingProbeResults`).
   A result from any worker other than the row's prober is ignored.
 - The runner probes with `git merge-tree --write-tree` between its HEAD and
   the sibling's fetched branch: no checkout, no index change, no effect on the
-  agent's worktree. It never throws; any failure is an `error` result.
+  agent's worktree. The fetch uses `--no-write-fetch-head` into a private ref
+  (`refs/buildd/probe/<probeId>`, deleted afterwards), so the agent's
+  FETCH_HEAD is untouched. The server-supplied branch name and probe id are
+  validated before any git command runs, and `--` / `--end-of-options` ends
+  option parsing before them. It never throws; any failure is an `error`
+  result.
+- The runner's report is untrusted. A conflict path is kept only when, with
+  control characters, newlines and backticks stripped and its length capped,
+  it is one of the pair's shared files or either worker's observed touches;
+  anything else is dropped and counted (`detail.rejectedPaths`). Listed files
+  and line ranges are capped and quoted in the instruction.
 - With `gitConfig.mergiraf` on and the binary installed, each conflicted file
   with all three stages is retried through `mergiraf merge`; a file it merges
   cleanly is not a conflict. If every conflicted file resolves, the outcome is
@@ -73,11 +92,15 @@ This is the early warning for the ones that do not.
 - A real conflict queues one instruction to each worker on the instruct queue
   (`workers.pending_instructions`, the base-advance-notice channel), carrying
   the files, the conflict line ranges, and the rebaser/holder role. The marker
-  `[sibling-conflict: <pairKey>]` stops a second copy while one is undelivered,
-  and the pair is not re-notified within `SIBLING_NOTICE_DEBOUNCE_MS`.
+  `[sibling-conflict: <pairKey>]` stops a second copy while one is undelivered.
+  A pair is told once per conflicting pair of branch heads
+  (`sibling_probes.notified_heads`): the same two heads conflicting again are
+  never re-sent, however much later; new heads that still conflict are told
+  once more.
 - Every result is a `sibling_conflict_probe` gate event: `warned` for a
   conflict or a probe error, `accepted` for clean or mergiraf-resolved, with
-  `detail.notified` and `detail.debounced`. This is the denominator for
+  `detail.notified`, `detail.debounced`, `detail.suppressed` and
+  `detail.rejectedPaths`. This is the denominator for
   "does early warning cut conflict retries".
 - The cron's gated tick (`?gate=due`) touches Postgres only when a heartbeat
   marked a workspace due (new touched paths); the hourly floor tick always
@@ -93,8 +116,19 @@ This is the early warning for the ones that do not.
   to the rebaser.
 - AC-2: GIVEN the runner reports a `conflict` on `x.ts` WHEN the result is
   applied THEN both workers get exactly one instruction naming `x.ts` and its
-  line range, and the same conflict reported again within the debounce
-  notifies nobody.
+  line range, and the same heads reported conflicting again notify nobody.
+- AC-7: GIVEN the runner reports a conflict path that is neither a shared file
+  nor either worker's touch (for example one carrying a newline and an
+  injected instruction) WHEN the result is applied THEN the path never reaches
+  an instruction and is counted in `detail.rejectedPaths`.
+- AC-8: GIVEN either worker's delivery is past `WORKING`, or either is a
+  repair/reviewer attempt WHEN the cron runs THEN the pair is not requested.
+- AC-9: GIVEN a requested row no runner took for
+  `SIBLING_PROBE_REQUEST_TIMEOUT_MS` WHEN the cron runs THEN it is re-asked of
+  the other worker.
+- AC-10: GIVEN a probe WHEN the runner fetches the sibling's branch THEN
+  FETCH_HEAD is unchanged and no private probe ref is left behind; an unsafe
+  branch name is an `error` result before any git command runs.
 - AC-3: GIVEN the runner reports `clean` WHEN the result is applied THEN no
   instruction is queued and the gate event is `accepted` / `clean`.
 - AC-4: GIVEN a same-file conflict that mergiraf merges (both sides adding
