@@ -11,7 +11,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, isNotNull, isNull, notInArray, or, sql, type SQL } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import { ciLifecycleFromSuites } from '@/lib/ci-lifecycle';
+import { ciLifecycleFromSuites, latestSuitePerApp } from '@/lib/ci-lifecycle';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 import {
@@ -66,20 +66,14 @@ async function listFloor(limit: number) {
 
 /** The head's verdict and when it went red, from its check suites. */
 export function checksFromSuites(
-  suites: Array<{ status: string; conclusion: string | null; latest_check_runs_count?: number; updated_at?: string | null }> | null | undefined,
+  suites: Array<{ status: string; conclusion: string | null; latest_check_runs_count?: number; updated_at?: string | null; app?: { id?: number } | null }> | null | undefined,
 ): CiRedChecks {
   const lifecycle = ciLifecycleFromSuites(suites);
   let redSinceMs: number | null = null;
   if (lifecycle === 'ci_failed') {
-    // Only consider the newest completed suites (same dedup as ciLifecycleFromSuites)
     const all = suites ?? [];
     const completed = all.filter(s => s.status === 'completed');
-    let completedToJudge = completed;
-    const timestampedCompleted = completed.filter(s => s.updated_at);
-    if (timestampedCompleted.length > 0) {
-      const maxTime = Math.max(...timestampedCompleted.map(s => Date.parse(s.updated_at!)));
-      completedToJudge = completed.filter(s => !s.updated_at || Date.parse(s.updated_at) === maxTime);
-    }
+    const completedToJudge = latestSuitePerApp(completed);
     for (const s of completedToJudge) {
       if (['success', 'skipped', 'neutral'].includes(s.conclusion ?? '')) continue;
       const at = s.updated_at ? Date.parse(s.updated_at) : NaN;

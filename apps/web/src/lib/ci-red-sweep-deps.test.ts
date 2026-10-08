@@ -27,20 +27,28 @@ describe('ciRedFloorWhere', () => {
 });
 
 describe('checksFromSuites', () => {
-  it('only the newest suite determines verdict: old failures are superseded by new passes', () => {
+  it('same workflow: newest suite determines verdict', () => {
     const r = checksFromSuites([
-      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:59:00Z' },
-      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:00:00Z' },
-      { status: 'completed', conclusion: 'timed_out', updated_at: '2026-10-02T11:30:00Z' },
+      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:59:00Z', app: { id: 1 } },
+      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:00:00Z', app: { id: 1 } },
+      { status: 'completed', conclusion: 'timed_out', updated_at: '2026-10-02T11:30:00Z', app: { id: 1 } },
     ]);
     expect(r).toEqual({ lifecycle: 'ci_green', redSinceMs: null });
   });
 
-  it('red since the newest failed suite completed', () => {
+  it('different workflows: failure in one is not masked by pass in another', () => {
     const r = checksFromSuites([
-      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:59:00Z' },
-      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:00:00Z' },
-      { status: 'completed', conclusion: 'timed_out', updated_at: '2026-10-02T11:30:00Z' },
+      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:00:00Z', app: { id: 1 } },
+      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:59:00Z', app: { id: 2 } },
+    ]);
+    expect(r).toEqual({ lifecycle: 'ci_failed', redSinceMs: Date.parse('2026-10-02T11:00:00Z') });
+  });
+
+  it('red since the newest failed suite completed (same workflow)', () => {
+    const r = checksFromSuites([
+      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:59:00Z', app: { id: 1 } },
+      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:00:00Z', app: { id: 1 } },
+      { status: 'completed', conclusion: 'timed_out', updated_at: '2026-10-02T11:30:00Z', app: { id: 1 } },
     ]);
     expect(r).toEqual({ lifecycle: 'ci_failed', redSinceMs: Date.parse('2026-10-02T11:59:00Z') });
   });
