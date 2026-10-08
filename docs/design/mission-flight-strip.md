@@ -16,7 +16,7 @@ assertions:
     entry: "apps/web/src/app/app/(protected)/missions/[id]/page.tsx"
   - id: "flight-strip-cache-migration"
     type: "migration"
-    number: "172"
+    number: "0000"
     contains: "flight_strip_cache"
   - id: "list-card-pagination-rule-p4"
     type: "symbol_reachable"

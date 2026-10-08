@@ -1,7 +1,11 @@
 'use client';
 
+import { derivePrDisplayState } from '@/lib/pr-presentation';
+import { deliveryReading, type DeliveryDisplay, type DeliveryTone } from '@/lib/workflow/delivery-display';
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
+import InteractiveSessions from './InteractiveSessions';
+import type { LocalSessionView } from '@/lib/local-session-view';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { useRouter } from 'next/navigation';
 import LocalTime from './LocalTime';
@@ -25,6 +29,8 @@ export interface GridTask {
   prUrl: string | null;
   prNumber: number | null;
   prLifecycleStatus?: string | null;
+  /** The kernel's reading when this task owns a kernel-owned delivery (§17.5); null = legacy. */
+  delivery?: DeliveryDisplay | null;
   summary: string | null;
   hasArtifact: boolean;
   filesChanged: number | null;
@@ -73,11 +79,13 @@ export function gridTaskPrProps(task: GridTask): {
   prUrl: string | null;
   prNumber: number | null;
   prLifecycleStatus: string | null;
+  delivery: DeliveryDisplay | null;
 } {
   return {
     prUrl: task.prUrl,
     prNumber: task.prNumber,
     prLifecycleStatus: task.prLifecycleStatus ?? null,
+    delivery: task.delivery ?? null,
   };
 }
 
@@ -217,6 +225,11 @@ interface MissionGroup {
 
 // ─── Stage derivation from GridTask (no new column needed) ───────────────────
 
+/** The histogram's bucket per canonical delivery tone (`deliveryReading`): only FAILED is failed. */
+const GRID_BUCKET_FOR_DELIVERY_TONE: Record<DeliveryTone, keyof StageCounts> = {
+  needs: 'REVIEW', live: 'REVIEW', stalled: 'BLOCKED', landed: 'DONE', closed: 'DONE', failed: 'FAILED',
+};
+
 /**
  * Histogram bucket for a row, or `null` for a row that belongs in no bucket.
  * Cancelled work is deliberately stopped: counting it as QUEUED (the old
@@ -224,11 +237,16 @@ interface MissionGroup {
  */
 export function deriveGridTaskStage(task: GridTask): keyof StageCounts | null {
   if (task.status === 'cancelled') return null;
+  // A kernel-owned delivery buckets by its own stage, the one the card's chip
+  // shows (§17.5), never by the fact-cache columns.
+  const workerLive = task.workerStatus === 'running' || task.workerStatus === 'starting' ||
+    task.workerStatus === 'idle' || task.workerStatus === 'waiting_input';
+  const kernel = task.delivery && !workerLive ? deliveryReading(task.delivery) : null;
+  if (kernel) return GRID_BUCKET_FOR_DELIVERY_TONE[kernel.tone];
   if (task.status === 'failed') return 'FAILED';
-  if (task.workerStatus === 'running' || task.workerStatus === 'starting' ||
-      task.workerStatus === 'idle' || task.workerStatus === 'waiting_input') return 'RUNNING';
+  if (workerLive) return 'RUNNING';
   if (task.status === 'completed') {
-    const merged = task.prLifecycleStatus === 'merged';
+    const merged = derivePrDisplayState(task.prLifecycleStatus, null) === 'merged';
     if (task.prUrl && !merged) return 'REVIEW';
     return 'DONE';
   }
@@ -269,12 +287,33 @@ export function selectMobileRunningTasks(tasks: GridTask[]): GridTask[] {
     .slice(0, 5);
 }
 
+/** Rows a band drill-down renders before asking — a band can hold hundreds. */
+export const BAND_ROW_PAGE = 50;
+
+/**
+ * Keep the first `limit` rows across `groups` in order: a group cut mid-way
+ * keeps its head, groups past the cap are dropped.
+ */
+export function capGroupedRows<G extends { [P in K]: readonly unknown[] }, K extends string = 'items'>(groups: G[], limit: number, key: K = 'items' as K): G[] {
+  if (!Number.isFinite(limit)) return groups;
+  const out: G[] = [];
+  let left = limit;
+  for (const g of groups) {
+    if (left <= 0) break;
+    const rows = g[key];
+    out.push(rows.length <= left ? g : { ...g, [key]: rows.slice(0, left) });
+    left -= rows.length;
+  }
+  return out;
+}
+
 interface StatusGroup {
   label: string;
   tasks: GridTask[];
 }
 
 interface TaskGridProps {
+  bandFilterLabel?: string;
   tasks: GridTask[];
   missionFilter?: string | null;
   missionTitle?: string | null;
@@ -283,6 +322,9 @@ interface TaskGridProps {
   initiativeFilter?: string | null;
   initiativeTitle?: string | null;
   initiativeMissionIds?: string[];
+  /** Local interactive sessions (presence). Never counted as agents. */
+  localSessions?: LocalSessionView[];
+  teamName?: string | null;
 }
 
 /**
@@ -306,7 +348,7 @@ export function splitTaskRoots(tasks: GridTask[]): { rootTasks: GridTask[]; chil
   return { rootTasks, childrenByParentId };
 }
 
-export default function TaskGrid({ tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds }: TaskGridProps) {
+export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds, localSessions = [], teamName }: TaskGridProps) {
   const router = useRouter();
 
   const visibleTasks = useMemo(() => {
@@ -327,6 +369,10 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
   const groupBy: GroupBy = missionFilter ? 'none' : groupLens;
   const [search, setSearch] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
+  // Band drill-downs page their rows; any other list renders everything.
+  const [bandRowLimit, setBandRowLimit] = useState(BAND_ROW_PAGE);
+  useEffect(() => setBandRowLimit(BAND_ROW_PAGE), [filter, contentFilter, search, groupLens]);
+  const rowCap = bandFilterLabel ? bandRowLimit : Infinity;
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Focus search input when mobile search opens
@@ -347,7 +393,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
 
   // Load persisted filter from localStorage on mount
   useEffect(() => {
-    if (missionFilter) return; // don't persist when scoped to a mission
+    if (missionFilter || bandFilterLabel) return; // scoped lists start at All
     try {
       const stored = localStorage.getItem('buildd-activity-prefs');
       if (stored) {
@@ -360,12 +406,12 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
 
   const updateFilter = useCallback((f: FilterStatus) => {
     setFilter(f);
-    if (missionFilter) return;
+    if (missionFilter || bandFilterLabel) return;
     try {
       const stored = JSON.parse(localStorage.getItem('buildd-activity-prefs') || '{}');
       localStorage.setItem('buildd-activity-prefs', JSON.stringify({ ...stored, filter: f }));
     } catch {}
-  }, [missionFilter]);
+  }, [missionFilter, bandFilterLabel]);
 
   const dismissInitiative = useCallback(() => {
     const params = new URLSearchParams(window.location.search);
@@ -528,33 +574,85 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     return sortByRecency(nonWaitingTasks);
   }, [nonWaitingTasks, effectiveGroupBy]);
 
-  if (rootTasks.length === 0 && !missionFilter) {
+  // Spend the row cap top-down: pinned Needs Input first, then the list.
+  const shownNeedsInput = Number.isFinite(rowCap) ? needsInputTasks.slice(0, rowCap) : needsInputTasks;
+  const listCap = rowCap - shownNeedsInput.length;
+  const shownTimeBands = capGroupedRows(timeBandGroups, listCap);
+  const shownMissionGroups = capGroupedRows(missionGroups, listCap, 'tasks');
+  const shownFlat = Number.isFinite(listCap) ? flatSorted.slice(0, Math.max(0, listCap)) : flatSorted;
+  const hiddenRows = Math.max(0, filtered.length - rowCap);
+
+  // A band drill-down that selected nothing is a filtered-empty result, not an
+  // empty workspace: say so, and make leaving the filter the primary action.
+  if (rootTasks.length === 0 && !missionFilter && bandFilterLabel) {
     return (
-      <div className="h-full flex items-center justify-center p-8 pt-20 md:pt-8">
-        <div className="max-w-md text-center">
-          <div className="w-16 h-16 mx-auto bg-surface-3 rounded-full flex items-center justify-center mb-4">
-            <svg className="w-8 h-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-            </svg>
-          </div>
-          <h2 className="text-xl font-semibold text-text-primary mb-4">No activity</h2>
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <NewWorkLink
-              kind="mission"
+      <div data-testid="task-band-empty" className="h-full flex flex-col p-8 pt-20 md:pt-8">
+        <h1 className="text-[28px] font-bold text-text-primary" style={{ fontFamily: 'var(--font-display, inherit)' }}>Activity</h1>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="max-w-md text-center">
+            <div className="w-16 h-16 mx-auto bg-surface-3 rounded-full flex items-center justify-center mb-4">
+              <svg className="w-8 h-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 4h18l-7 8v6l-4 2v-8L3 4z" />
+              </svg>
+            </div>
+            <p className="text-meta text-text-secondary mb-2">{bandFilterLabel}</p>
+            <h2 className="text-xl font-semibold text-text-primary mb-2">No tasks in this band</h2>
+            <p className="text-[13px] text-text-secondary mb-4">No tasks were in this band for the selected window.</p>
+            <Link
+              href="/app/tasks"
+              data-testid="task-band-empty-clear"
               className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
             >
-              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              Clear band filter
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (rootTasks.length === 0 && !missionFilter) {
+    return (
+      <div className="h-full flex flex-col">
+        <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-4">
+          <div className="flex items-baseline justify-between mb-6">
+            <div className="min-w-0">
+              <div className="section-label hidden text-text-muted md:block">
+                Activity{teamName ? ` · ${teamName}` : ''}
+              </div>
+              <h1 className="mt-1.5 font-mono text-[22px] font-semibold tracking-[-0.5px] text-text-primary md:text-[26px]">
+                No activity
+              </h1>
+            </div>
+          </div>
+        </div>
+        <InteractiveSessions sessions={localSessions} />
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="max-w-md text-center">
+            <div className="w-16 h-16 mx-auto bg-surface-3 rounded-full flex items-center justify-center mb-4">
+              <svg className="w-8 h-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
               </svg>
-              New Mission
-            </NewWorkLink>
-            <NewWorkLink
-              kind="task"
-              testId="activity-empty-new-task"
-              className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 border border-border-default text-text-primary rounded-md hover:bg-surface-3"
-            >
-              New task
-            </NewWorkLink>
+            </div>
+            <h2 className="text-xl font-semibold text-text-primary mb-4">No activity</h2>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <NewWorkLink
+                kind="mission"
+                className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                New Mission
+              </NewWorkLink>
+              <NewWorkLink
+                kind="task"
+                testId="activity-empty-new-task"
+                className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 border border-border-default text-text-primary rounded-md hover:bg-surface-3"
+              >
+                New task
+              </NewWorkLink>
+            </div>
           </div>
         </div>
       </div>
@@ -572,6 +670,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     <SwipeProvider>
     <div className="h-full overflow-y-auto">
       <div className="max-w-[1000px] mx-auto pt-14 pb-4 md:py-4">
+        <BandFilterLabel label={bandFilterLabel} total={allCount} />
         {/* Breadcrumbs */}
         {missionFilter && (
           <div className="flex items-center gap-2 px-4 mb-3 text-[12px] text-text-muted">
@@ -611,6 +710,8 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
             )}
           </div>
         </div>
+
+        {!missionFilter && !bandFilterLabel && <InteractiveSessions sessions={localSessions} />}
 
         {/* Mobile filter UI: single scrollable chip row + optional search */}
         <div className="sm:hidden">
@@ -834,13 +935,13 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                 <span className="text-[12px] text-text-desc">{needsInputTasks.length}</span>
               </div>
               <div className="px-2">
-                {needsInputTasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
+                {shownNeedsInput.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
               </div>
             </div>
           )}
 
           {/* Grouped by Time (default) — one section per calendar day */}
-          {effectiveGroupBy === 'time' && timeBandGroups.map((band) => (
+          {effectiveGroupBy === 'time' && shownTimeBands.map((band) => (
             <div key={band.label}>
               <GroupSection
                 belowMobileHeader
@@ -852,7 +953,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           ))}
 
           {/* Grouped by Mission — GroupSection sticky headers, always expanded */}
-          {effectiveGroupBy === 'mission' && missionGroups.map((group) => {
+          {effectiveGroupBy === 'mission' && shownMissionGroups.map((group) => {
             const groupId = group.id || '__no_mission__';
             const isNoMission = group.id === null;
             const groupTaskIds = new Set(group.tasks.map(t => t.id));
@@ -892,7 +993,21 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           ))}
 
           {/* Flat list (no grouping) */}
-          {effectiveGroupBy === 'none' && flatSorted.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
+          {effectiveGroupBy === 'none' && shownFlat.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
+
+          {hiddenRows > 0 && (
+            <div data-testid="task-band-more" className="flex flex-wrap items-center justify-center gap-3 px-4 py-4 border-t border-border-default text-meta text-text-secondary">
+              <span>{`Showing ${filtered.length - hiddenRows} of ${filtered.length}`}</span>
+              <button
+                type="button"
+                data-testid="task-band-show-more"
+                onClick={() => setBandRowLimit(n => n + BAND_ROW_PAGE)}
+                className="min-h-[44px] px-4 rounded-md border border-border-default text-text-primary hover:bg-surface-2"
+              >
+                {`Show ${Math.min(BAND_ROW_PAGE, hiddenRows)} more`}
+              </button>
+            </div>
+          )}
 
           {/* Empty filtered state */}
           {filtered.length === 0 && visibleTasks.length > 0 && (
@@ -905,4 +1020,9 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     </div>
     </SwipeProvider>
   );
+}
+
+function BandFilterLabel({ label, total }: { label?: string; total: number }) {
+  if (!label) return null;
+  return <div data-testid="task-band-filter" className="px-4 mb-3 flex flex-wrap items-center gap-3 text-meta text-text-secondary"><span>{label}</span><span data-testid="task-band-total" className="text-text-primary">{`${total} ${total === 1 ? 'task' : 'tasks'}`}</span><Link className="min-h-[44px] inline-flex items-center text-accent-text" href="/app/tasks">Clear band filter</Link></div>;
 }

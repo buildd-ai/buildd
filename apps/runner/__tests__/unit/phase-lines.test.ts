@@ -29,12 +29,14 @@ describe('phase lines', () => {
       'warm_upload_start', 'warm_upload_end',
       'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
       'restore_cache_start', 'restore_cache_end',
+      'restore_reuse_start', 'restore_reuse_end',
+      'worktree_start', 'worktree_end',
     ]);
   });
 
   test('metric lines: BUILDD_METRIC=<name> <non-negative integer>', () => {
     expect(METRIC_LINE_PREFIX).toBe('BUILDD_METRIC=');
-    expect(RUN_METRICS).toEqual(['clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes', 'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes']);
+    expect(RUN_METRICS).toEqual(['clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes', 'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes', 'mem_peak_bytes', 'mem_limit_bytes', 'disk_free_min_bytes', 'disk_total_bytes']);
     expect(formatMetricLine('fetch_bytes', 1234.9)).toBe('BUILDD_METRIC=fetch_bytes 1234');
     expect(formatMetricLine('fetch_bytes', -5)).toBe('BUILDD_METRIC=fetch_bytes 0');
   });

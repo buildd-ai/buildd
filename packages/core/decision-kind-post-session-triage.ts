@@ -49,6 +49,9 @@ export type PostSessionHardTrigger = (typeof POST_SESSION_HARD_TRIGGERS)[number]
 /** Reason code when no model answered. Never a model label. */
 export const TRIAGE_UNAVAILABLE = 'triage_unavailable' as const;
 
+/** The ledger subject type of a triage decision; the analyser labels the same one. */
+export const POST_SESSION_RUN_SUBJECT = 'post_session_run' as const;
+
 /** Outcome labels the analyser attaches later. */
 export const POST_SESSION_OUTCOME_SOURCE = 'post_session_analysis' as const;
 export const POST_SESSION_OUTCOME_LABELS = ['actionable', 'not_actionable'] as const;
@@ -166,7 +169,9 @@ export const postSessionTriageObjective: DecisionObjective = {
 
 /**
  * Live once its capability is on: the post-session loop is out of band and
- * its fallback is a safe `skip`. No escalation or challenger until measured.
+ * its fallback is a safe `skip`. No escalation or challenger until measured:
+ * a challenger needs a second model configured for the team, and none is, so
+ * the slot stays null. Rollback: `mode: 'shadow'`.
  */
 export const POST_SESSION_TRIAGE_BINDING: BuilddDecisionKindBinding = {
   capability: 'post_session_triage',

@@ -15,9 +15,9 @@
  * exported functions so a test can render the real dialect against a mocked
  * db, which cannot see a WHERE clause otherwise.
  */
-import { and, desc, eq, gte, isNotNull, lt, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql } from 'drizzle-orm';
 import { db } from './db/client';
-import { decisionChallengerRuns, decisionRecords } from './db/schema';
+import { decisionChallengerRuns, decisionOutcomes, decisionRecords } from './db/schema';
 import type { ChallengerRun } from '@builddai/ai-kit/decide';
 
 export interface DecisionLedgerInput {
@@ -224,4 +224,63 @@ export async function queryDecisionLedger(f: DecisionLedgerFilters, limit = DECI
     console.warn('[decision-ledger] query failed (non-fatal, empty page):', (err as Error)?.message ?? err);
     return [];
   }
+}
+
+/**
+ * The review read: one page of a window, newest first, with each row's late
+ * outcome labels. Unlike `queryDecisionLedger` this THROWS on a store error:
+ * a weekly review must tell "the read failed" from "nothing was decided", and
+ * an error that reads as an empty page is exactly the blind spot it cannot
+ * afford. `truncated` says more rows match; continue with `until` set to the
+ * oldest row's `createdAt`.
+ */
+export async function readDecisionLedgerPage(f: DecisionLedgerFilters, limit = DECISION_LEDGER_MAX_ROWS) {
+  const cap = Math.max(1, Math.min(limit, DECISION_LEDGER_MAX_ROWS));
+  const rows = await db.select().from(decisionRecords)
+    .where(decisionLedgerWhere(f))
+    .orderBy(desc(decisionRecords.createdAt))
+    .limit(cap + 1);
+  const page = rows.slice(0, cap);
+  const outcomes = page.length
+    ? await db.select({
+      decisionRecordId: decisionOutcomes.decisionRecordId,
+      source: decisionOutcomes.source,
+      label: decisionOutcomes.label,
+      value: decisionOutcomes.value,
+      observedAt: decisionOutcomes.observedAt,
+    }).from(decisionOutcomes).where(and(
+      eq(decisionOutcomes.teamId, f.teamId),
+      inArray(decisionOutcomes.decisionRecordId, page.map(r => r.id)),
+    ))
+    : [];
+  return { rows: page, outcomes, truncated: rows.length > cap };
+}
+
+type SummaryRow = Pick<typeof decisionRecords.$inferSelect, 'status' | 'verdict' | 'appliedAnswer' | 'reason' | 'humanOverride' | 'confidence'>;
+
+/**
+ * Counts a reviewer reads before the rows: by status, by the model's verdict
+ * (for the question gate, its decide / hold / ask disposition), by the answer
+ * in effect, by reason, and how many a human later overrode. Free-text
+ * applied answers (a decided option's label) count under `decided_option`, so
+ * the summary never carries question content.
+ */
+export function summarizeDecisionLedger(rows: readonly SummaryRow[], outcomeCount = 0) {
+  const tally = (key: (r: SummaryRow) => string | null | undefined) => {
+    const out: Record<string, number> = {};
+    for (const r of rows) { const k = key(r) ?? 'none'; out[k] = (out[k] ?? 0) + 1; }
+    return out;
+  };
+  const KNOWN_ANSWERS = new Set(['hold', 'ask']);
+  const confident = rows.filter(r => typeof r.confidence === 'number');
+  return {
+    total: rows.length,
+    byStatus: tally(r => r.status),
+    byVerdict: tally(r => r.verdict),
+    byAppliedAnswer: tally(r => r.appliedAnswer == null ? null : KNOWN_ANSWERS.has(r.appliedAnswer) ? r.appliedAnswer : 'decided_option'),
+    byReason: tally(r => r.reason),
+    overridden: rows.filter(r => r.humanOverride != null).length,
+    outcomeLabels: outcomeCount,
+    meanConfidence: confident.length ? Number((confident.reduce((a, r) => a + (r.confidence as number), 0) / confident.length).toFixed(3)) : null,
+  };
 }

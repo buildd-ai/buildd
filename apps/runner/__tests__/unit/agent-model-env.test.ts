@@ -9,6 +9,7 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, type ModelEnvInput } from '../../src/agent-model-env';
+import { buildAgentBaseEnv, RUNNER_ENV_PASSTHROUGH } from '../../src/agent-env';
 import type { ClaimModelEndpoint } from '@buildd/shared';
 import type { ProviderConfig } from '../../src/types';
 
@@ -414,6 +415,64 @@ describe('team endpoint — Codex', () => {
     expect(got.teamEndpointIgnored).toBe(false);
     expect(got.error).toBeUndefined();
     expect('OPENAI_BASE_URL' in got.env).toBe(false);
+  });
+});
+
+describe('deferred tool loading (ENABLE_TOOL_SEARCH) — from the delivered endpoint only', () => {
+  const on = (e: ClaimModelEndpoint): ClaimModelEndpoint => ({ ...e, toolSearch: true });
+
+  test('OpenRouter endpoint with toolSearch: set to "true"', () => {
+    const got = run({}, { modelEndpoint: on(openRouterEndpoint) });
+    expect(got.env.ENABLE_TOOL_SEARCH).toBe('true');
+    expect(got.toolSearch).toBe(true);
+  });
+
+  test('LiteLLM gateway with the flag on: set; absent or off: not set', () => {
+    expect(run({}, { modelEndpoint: on(gatewayEndpoint) }).env.ENABLE_TOOL_SEARCH).toBe('true');
+    expect('ENABLE_TOOL_SEARCH' in run({}, { modelEndpoint: gatewayEndpoint }).env).toBe(false);
+    const off = run({}, { modelEndpoint: { ...gatewayEndpoint, toolSearch: false } });
+    expect('ENABLE_TOOL_SEARCH' in off.env).toBe(false);
+    expect(off.toolSearch).toBe(false);
+  });
+
+  test('anthropic-compatible: absent → not set; explicit opt-in → set', () => {
+    expect('ENABLE_TOOL_SEARCH' in run({}, { modelEndpoint: bearerEndpoint }).env).toBe(false);
+    expect(run({}, { modelEndpoint: on(bearerEndpoint) }).env.ENABLE_TOOL_SEARCH).toBe('true');
+  });
+
+  test('native Anthropic / no endpoint: never forced, and an inherited value is dropped', () => {
+    const got = run({ ENABLE_TOOL_SEARCH: 'true' }, {});
+    expect(got.endpoint).toBe('anthropic');
+    expect('ENABLE_TOOL_SEARCH' in got.env).toBe(false);
+    expect(got.toolSearch).toBe(false);
+  });
+
+  test('an inherited value never survives an endpoint that has it off', () => {
+    expect('ENABLE_TOOL_SEARCH' in run({ ENABLE_TOOL_SEARCH: 'true' }, { modelEndpoint: gatewayEndpoint }).env).toBe(false);
+  });
+
+  test('per-machine provider wins over the endpoint: its capability does not apply', () => {
+    const got = run({}, { llmProvider: { provider: 'openrouter', apiKey: PROVIDER_KEY }, modelEndpoint: on(bearerEndpoint) });
+    expect(got.endpoint).toBe('custom');
+    expect('ENABLE_TOOL_SEARCH' in got.env).toBe(false);
+  });
+
+  test('Codex: unchanged, never set', () => {
+    const got = applyModelEnv({}, { isCodexTask: true, modelEndpoint: on(openRouterEndpoint) });
+    expect(got.env.OPENAI_BASE_URL).toBe(openRouterEndpoint.openAiBaseUrl);
+    expect('ENABLE_TOOL_SEARCH' in got.env).toBe(false);
+  });
+
+  test('two runs on one runner with different endpoints do not share the flag', () => {
+    const a = run({}, { modelEndpoint: on(openRouterEndpoint) });
+    const b = run({}, { modelEndpoint: gatewayEndpoint });
+    expect(a.env.ENABLE_TOOL_SEARCH).toBe('true');
+    expect('ENABLE_TOOL_SEARCH' in b.env).toBe(false);
+  });
+
+  test('not a runner-global passthrough', () => {
+    expect(RUNNER_ENV_PASSTHROUGH.has('ENABLE_TOOL_SEARCH')).toBe(false);
+    expect('ENABLE_TOOL_SEARCH' in buildAgentBaseEnv({ ENABLE_TOOL_SEARCH: 'true', PATH: '/bin' })).toBe(false);
   });
 });
 

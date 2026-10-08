@@ -23,6 +23,7 @@ import { useSearchParams } from 'next/navigation';
 import { isValidTaskId } from '@/lib/task-id';
 import { buildMissionFeedGroups } from '@/lib/mission-feed-groups';
 import { buildPulseSegments, type MissionFeedTaskInput } from '@/lib/mission-pulse';
+import { feedStripOrder } from '@/lib/mission-strip-order';
 import type { MissionOrigin } from '@/lib/mission-task-href';
 import type { MastheadChip } from '@/components/missions/MissionMasthead';
 import { useMissionFocusStore } from '@/components/missions/mission-focus-context';
@@ -165,7 +166,10 @@ function TaskPanelInner({
   }, [openTask]);
 
   const model = useMemo(() => (feedTasks && feedTasks.length > 0 ? buildMissionFeedGroups(feedTasks) : null), [feedTasks]);
-  const segments = useMemo(() => (feedTasks ? buildPulseSegments(feedTasks) : []), [feedTasks]);
+  const segments = useMemo(
+    () => (feedTasks ? buildPulseSegments(feedTasks, { order: feedStripOrder(feedTasks) }) : []),
+    [feedTasks],
+  );
   const mission: TaskSheetMission | null = missionId && missionTitle && chip
     ? { id: missionId, title: missionTitle, chip, segments, from, initiativeId }
     : null;

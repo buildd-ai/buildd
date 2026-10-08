@@ -24,7 +24,9 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/terminal-metrics-patch.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 
 // ─── Mocks (same shape as session-model-cost.test.ts) ────────────────────────
@@ -103,13 +105,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -181,7 +183,13 @@ async function runSession(
   const task = makeTask();
   mockClaimTask.mockImplementation(async () => ({ workers: [{ id: workerId, branch: 'buildd/test', task }] }));
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 300));
+  // Poll for the completion update rather than a fixed sleep: a loaded CI
+  // shard can take well over 300ms to finish the session.
+  const deadline = Date.now() + 5000;
+  while (!completionCall() && !metricsCall() && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 25));
+  }
+  await new Promise(r => setTimeout(r, 50));
 }
 
 /** An assistant turn that calls one MCP tool and one built-in tool. */
@@ -231,6 +239,12 @@ describe('completion payload carries the metrics built at completion time', () =
   let manager: InstanceType<typeof WorkerManager>;
 
   beforeEach(resetAll);
+  afterAll(() => {
+
+    cleanupTestWorkspace();
+
+  });
+
   afterEach(() => { manager?.destroy(); });
 
   // The regression: no SDK `result` message means the result handler never set

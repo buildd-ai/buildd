@@ -33,10 +33,10 @@ describe('plan chain — tasks/[id]/page.tsx (reviewer task navigation)', () => 
     expect(pageSource).toContain('{ id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug, taskClass: task.parentTask.taskClass, mode: task.parentTask.mode, parentTaskId: task.parentTask.parentTaskId, context: task.parentTask.context },');
   });
 
-  it('filters out self-loop chains', () => {
-    // If the chain only contains the current task, suppress it to fall back to
-    // the Related Tasks section which has more comprehensive navigation.
-    expect(pageSource).toContain('if (planChain.length === 1 && planChain[0].id === id) {');
+  it('filters out one-phase chains (a self-loop, or another task alone)', () => {
+    // A chain of one is no plan: fall back to the Related Tasks section, which
+    // has more comprehensive navigation (rule: execution-plan.ts isMeaningfulPlan).
+    expect(pageSource).toContain('if (!isMeaningfulPlan(planChain)) {');
     expect(pageSource).toContain('planChain = [];');
   });
 
@@ -120,8 +120,8 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
   });
 
   it('the error-count chip is square like its neighbours (brutalist: no radius)', () => {
-    expect(pageSource).toMatch(/className="[^"]*"\n\s*title="Pattern-matched errors/);
-    expect(pageSource).not.toMatch(/className="[^"]*\brounded[^"]*"\n\s*title="Pattern-matched errors/);
+    expect(pageSource).toMatch(/className="[^"]*"\n\s*title="Agent errors that affected the outcome/);
+    expect(pageSource).not.toMatch(/className="[^"]*\brounded[^"]*"\n\s*title="Agent errors that affected the outcome/);
   });
 
   it('the side panel follows the main column: the hero stays the first screen on mobile', () => {
@@ -222,12 +222,34 @@ describe('a sign-in failure reads in plain words — tasks/[id]/page.tsx', () =>
     expect(pageSource).not.toMatch(/>\{worker\.error\}</);
   });
 
-  it('the header error count and the red Agent errors card step back once the cause is explained', () => {
-    expect(pageSource).toMatch(/errorTraces\.length > 0 && !shippedView && !authFailure &&/);
-    expect(pageSource).toContain("authFailure ? 'Matched errors'");
+  it('the header error count counts only errors that matter, and steps back once the cause is explained', () => {
+    expect(pageSource).toMatch(/attentionErrorCount > 0 && !terminalSucceeded && !authFailure &&/);
   });
 
   it('the evidence card gets the worker error, so it can tell the cause is already explained', () => {
-    expect(pageSource).toContain('<TaskEvidenceCard status={task.status} result={task.result} workerError={taskWorkers[0]?.error ?? null} backend={taskBackend} />');
+    expect(pageSource).toContain('<TaskEvidenceCard status={task.status} result={task.result} workerError={taskWorkers[0]?.error ?? null} backend={taskBackend} failingChecks={verdict?.failingChecks ?? []} />');
+  });
+});
+
+describe('one verdict — tasks/[id]/page.tsx (lib/task-verdict.ts)', () => {
+  it('derives the verdict from the record and only applies a cached decision; it never calls the model', () => {
+    expect(pageSource).toContain('deriveTaskVerdict(buildVerdictInput({');
+    expect(pageSource).toContain('applyVerdictDecision(rulesVerdict, storedVerdictDecision)');
+    expect(pageSource).not.toMatch(/decideTaskVerdict|refreshTaskVerdict|decisionCall/);
+  });
+
+  it('the verdict block leads the main column, before the action zone', () => {
+    const v = pageSource.indexOf('<TaskVerdictBlock');
+    expect(v).toBeGreaterThan(pageSource.indexOf('data-testid="task-main"'));
+    expect(v).toBeLessThan(pageSource.indexOf('data-testid="task-page-action-zone"'));
+  });
+
+  it('no "hiccup, already handled" row and no Done/Checks failing chips on the completed header', () => {
+    expect(pageSource).not.toContain('hiccup');
+    expect(pageSource).not.toMatch(/<TaskShippedTitle[^>]*status=/);
+  });
+
+  it('every captured error stays inspectable through the full-evidence list', () => {
+    expect(pageSource).toContain('<TaskErrorEvidence items={errorEvidenceItems}');
   });
 });

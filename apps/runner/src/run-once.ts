@@ -25,10 +25,13 @@
  * lets the 10s sync drain the queued answer into a resumed session.
  * `--park-orphan <id>` is exec'd by the agent into a container it lost track
  * of after its own restart: it stops that runner and parks its worker.
+ * `--attach-orphan <id>` is the gentler alternative: it waits on that runner
+ * (run-attach.ts) and exits with its code, so the run continues undisturbed.
  *
  * The decision logic below takes its collaborators as arguments; the real
  * wiring is `runOnceFromCli` at the bottom.
  */
+import { browserRoleNeedsProbe, selectBrowserProvider, startBrowserShim, stopBrowserShim } from './browser-provider';
 import { onceFleetIdentity } from '@buildd/shared';
 import type { LocalUIConfig, WorkerStatus } from './types';
 import type { WorkspaceResolver } from './workspace';
@@ -83,6 +86,7 @@ const DEFAULT_POLL_MS = 1_000;
 export const ONCE_USAGE = 'Usage: buildd --once --task <task-id>\n' +
   '       buildd --once --resume-worker <worker-id> [--task <task-id>]\n' +
   '       buildd --once --park-orphan <worker-id> --task <task-id>\n' +
+  '       buildd --once --attach-orphan <worker-id> --task <task-id>\n' +
   '  Claims the given task (or continues a parked worker), runs it to completion, and exits.\n' +
   `  Exit codes: ${EXIT_COMPLETED} completed, ${EXIT_FAILED} failed (retryable), ` +
   `${EXIT_CLAIM_REFUSED} claim refused (do not retry), ${EXIT_CLAIM_DEFERRED} claim deferred (retry later), ` +
@@ -93,7 +97,7 @@ export const ONCE_USAGE = 'Usage: buildd --once --task <task-id>\n' +
 
 export type OnceArgs =
   | { once: false }
-  | { once: true; taskId: string; resumeWorkerId?: string; parkOrphanWorkerId?: string }
+  | { once: true; taskId: string; resumeWorkerId?: string; parkOrphanWorkerId?: string; attachOrphanWorkerId?: string }
   | { once: true; error: string };
 
 const ONCE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -115,12 +119,16 @@ export function parseOnceArgs(argv: string[]): OnceArgs {
   const taskId = flagValue(argv, '--task');
   const resume = flagValue(argv, '--resume-worker');
   const orphan = flagValue(argv, '--park-orphan');
-  if (resume !== undefined && orphan !== undefined) return { once: true, error: '--resume-worker and --park-orphan do not go together' };
-  for (const [flag, v] of [['--resume-worker', resume], ['--park-orphan', orphan]] as const) {
+  const attach = flagValue(argv, '--attach-orphan');
+  if ([resume, orphan, attach].filter(v => v !== undefined).length > 1) {
+    return { once: true, error: '--resume-worker, --park-orphan and --attach-orphan do not go together' };
+  }
+  for (const [flag, v] of [['--resume-worker', resume], ['--park-orphan', orphan], ['--attach-orphan', attach]] as const) {
     if (v === null || (typeof v === 'string' && !ONCE_ID_RE.test(v))) return { once: true, error: `${flag} needs a worker id` };
   }
   if (resume) return { once: true, taskId: taskId || '', resumeWorkerId: resume };
-  if (!taskId) return { once: true, error: orphan ? '--park-orphan needs --task <task-id>' : '--once requires --task <task-id>' };
+  if (!taskId) return { once: true, error: orphan ? '--park-orphan needs --task <task-id>' : attach ? '--attach-orphan needs --task <task-id>' : '--once requires --task <task-id>' };
+  if (attach) return { once: true, taskId, attachOrphanWorkerId: attach };
   if (orphan) return { once: true, taskId, parkOrphanWorkerId: orphan };
   return { once: true, taskId };
 }
@@ -230,6 +238,10 @@ const DEFERRED_TASK_EXCLUSION_CODES = new Set<string>([
   'provider_unavailable', 'budget_paused', 'routing_paused', 'sibling_retry_open',
   'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'ordered_behind',
   'path_overlap', 'connector_mismatch', 'role_env_unsatisfied',
+  // Commercial entitlement on a managed runner: queued until capacity frees.
+  'managed_concurrency', 'managed_runner_hours',
+  // The team's hosted runner allowance: queued until it refills or grows.
+  'hosted_runner_hours',
   // SQL-probe codes (explicit-task-exclusion.ts) — scheduled, cooling down, or
   // simply stale by the time the probe ran; none of these say "never".
   'deferred', 'deps_blocked', 'runner_cooldown', 'state_changed',
@@ -557,12 +569,19 @@ export async function runOnceFromCli(opts: {
   resumeWorkerId?: string;
   /** `--park-orphan`: stop this container's runner and park its worker. */
   parkOrphanWorkerId?: string;
+  /** `--attach-orphan`: wait on this container's still-running runner (run-attach.ts). */
+  attachOrphanWorkerId?: string;
   config: LocalUIConfig;
   resolver: WorkspaceResolver;
   builddHome: string;
   host: string;
   env: Record<string, string | undefined>;
 }): Promise<number> {
+  if (opts.attachOrphanWorkerId) {
+    const { runAttachOrphan, attachDepsFromFs } = await import('./run-attach');
+    const log = (m: string) => console.log(m);
+    return runAttachOrphan({ workerId: opts.attachOrphanWorkerId }, await attachDepsFromFs(opts.builddHome, opts.taskId, log));
+  }
   if (!opts.config.apiKey) {
     console.error('--once needs an API key (BUILDD_API_KEY or config.json apiKey).');
     return EXIT_USAGE;
@@ -614,6 +633,15 @@ export async function runOnceFromCli(opts: {
     });
   }
 
+  // What the run uses of its container (cloud only: the lines are off
+  // elsewhere): memory peak and free-disk low, for the run report, from which
+  // buildd picks the workspace's container size.
+  const { phaseLinesEnabled } = await import('./phase-lines');
+  const sampler = phaseLinesEnabled(opts.env)
+    ? await (await import('./resource-sampler')).startContainerResourceSampler(opts.builddHome, (name, value) => emitMetric(name, value))
+    : null;
+  const stopSampler = () => sampler?.stop();
+
   const { WorkerManager } = await import('./workers');
   const { Outbox, createReplayHandler } = await import('./outbox');
   const { credentialBroker } = await import('./broker');
@@ -642,6 +670,15 @@ export async function runOnceFromCli(opts: {
   const outbox = new Outbox(join(opts.builddHome, `outbox-once-${outboxTask}.json`));
   outbox.setFlushHandler(createReplayHandler(() => config));
 
+  const browserProvider = selectBrowserProvider(opts.env);
+  if (browserProvider?.name === 'cloudflare' && opts.taskId) {
+    const browserTask = await client.getTask(opts.taskId);
+    if (browserRoleNeedsProbe(browserTask?.roleSlug)) {
+      const probe = await browserProvider.probe();
+      console.log(`BUILDD_BROWSER_PROBE=${JSON.stringify(probe)}`);
+      if (probe.ok) startBrowserShim(opts.env);
+    }
+  }
   const wm = new WorkerManager(config, resolver);
   wm.attachOutbox(outbox);
   // Mid-session credential refresh for long tasks. Not in a cloud container:
@@ -655,7 +692,7 @@ export async function runOnceFromCli(opts: {
     getTask: (id) => client.getTask(id) as Promise<OnceTask | null>,
     workerManager: wm,
     flushOutbox: async () => ({ remaining: await flushOutboxWithRetry(outbox) }),
-    shutdown: () => (cloud ? Promise.resolve() : credentialBroker.shutdown()),
+    shutdown: async () => { stopBrowserShim(); if (!cloud) await credentialBroker.shutdown(); },
     afterRun: async (outcome) => warm?.refresh(outcome),
     ...(parking ? {
       park: async (workerId: string) => {
@@ -675,7 +712,7 @@ export async function runOnceFromCli(opts: {
     log,
   };
 
-  if (!opts.resumeWorkerId) return runOnce({ taskId: opts.taskId }, deps);
+  if (!opts.resumeWorkerId) return runOnce({ taskId: opts.taskId }, deps).finally(stopSampler);
 
   // ── --resume-worker ──
   const resumeWorkerId = opts.resumeWorkerId;
@@ -740,7 +777,7 @@ export async function runOnceFromCli(opts: {
     },
     discardBundle: async () => { snapshots.remove?.('/park'); },
   };
-  return runResume({ workerId: resumeWorkerId }, { ...deps, resume });
+  return runResume({ workerId: resumeWorkerId }, { ...deps, resume }).finally(stopSampler);
 }
 
 export interface ProcInfo { pid: number; ppid: number; uid: number; startTime: number }

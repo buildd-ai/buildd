@@ -18,6 +18,7 @@ import type { CondensedTaskWorker } from '@/lib/condensed-timeline';
 import type { MissionSegment, TaskType } from '@buildd/core/mission-helpers';
 import { stripTaskTypePrefix } from '@buildd/core/mission-helpers';
 import AttemptStrip from './AttemptStrip';
+import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
 import type { AttemptStrip as AttemptStripData } from '@/lib/attempt-strip';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -45,6 +46,8 @@ export type CondensedTimelineTask = {
   pathManifest?: string[] | null;
   chain: ChainPositionResult | null;
   latestWorker: CondensedTimelineWorker | null;
+  /** The kernel's reading when this task owns a kernel-owned delivery (§17.5); null = legacy. */
+  delivery?: DeliveryDisplay | null;
   taskType: TaskType | null;
   /**
    * The three `deriveWorkKind` inputs (docs/specs/mission-legibility.md §2.1).
@@ -349,6 +352,7 @@ function TaskRow({
             prUrl={latestWorker?.prUrl ?? null}
             prNumber={latestWorker?.prNumber ?? null}
             prLifecycleStatus={latestWorker?.prLifecycleStatus ?? null}
+            delivery={task.delivery ?? null}
             currentAction={latestWorker?.currentAction ?? null}
           />
         </SwipeableRow>

@@ -71,6 +71,21 @@ describe('read_evidence', () => {
     expect(res.content[0].text).toContain('1 other object');
   });
 
+  it("evidenceId alone reads a Scout run's command log through the run, not a task", async () => {
+    const RUN = '00000000-0000-0000-0000-0000000000a1';
+    api
+      .mockResolvedValueOnce({ workspaceId: WS, prNumber: null, taskIds: [], objects: [obj({ taskId: null, rootTaskId: null, workerId: null, scoutRunId: RUN, kind: 'command_output' })] })
+      .mockResolvedValueOnce(readResponse({ taskId: undefined, scoutRunId: RUN, object: obj({ taskId: null, scoutRunId: RUN, kind: 'command_output' }), text: 'FAIL probe' }));
+    const res = await call({ evidenceId: EV, tail: 20 });
+    expect(api.mock.calls[0][0]).toBe(`/api/evidence?workspaceId=${WS}&evidenceId=${EV}`);
+    const second = new URL(`http://x${api.mock.calls[1][0]}`);
+    expect(second.pathname).toBe(`/api/quality-scout/runs/${RUN}/evidence`);
+    expect(second.searchParams.get('evidenceId')).toBe(EV);
+    expect(second.searchParams.get('tail')).toBe('20');
+    expect(res.content[0].text).toContain(`scout run ${RUN}`);
+    expect(res.content[0].text).toContain('FAIL probe');
+  });
+
   it('skips objects that are not stored', async () => {
     api
       .mockResolvedValueOnce({ taskId: TASK, workspaceId: WS, objects: [obj({ id: EV_OLD, uploadState: 'failed' }), obj()] })

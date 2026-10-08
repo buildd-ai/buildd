@@ -4,11 +4,14 @@ import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import PrCard, { type CiCheckRun, type PrOutcome } from '@/components/task/PrCard';
 import type { OpenAttemptInfo } from '@/lib/explain';
+import type { PrDisplayState } from '@/lib/pr-presentation';
 
 export type StoredPrFacts = {
   prUrl: string;
   prNumber: number;
   prLifecycleStatus?: string | null;
+  /** The delivery's PR state when the kernel owns the PR (§17.5); wins over the column. */
+  prState?: PrDisplayState | null;
   linesAdded?: number | null;
   linesRemoved?: number | null;
   filesChanged?: number | null;

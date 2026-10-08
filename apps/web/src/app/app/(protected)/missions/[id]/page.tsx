@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { after } from 'next/server';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
@@ -6,6 +7,10 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { formatCompletionRecord, situationRepeatsCompletion } from '@/lib/mission-completion-record';
+import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
+import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
+import { ownerDeliveryDisplays } from '@/lib/workflow/delivery-display';
+import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE, buildReviewerRetryMap } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip } from '@buildd/core/mission-helpers';
 import { surfaceAuditHeadline } from '@buildd/core/surface-audit';
@@ -68,6 +73,7 @@ import type { VisualReviewModel } from '@buildd/shared';
 import { MissionVisualReviewProvider } from './MissionVisualReview';
 import MissionVisualReviewSetting from './MissionVisualReviewSetting';
 import MissionScreensRow from './MissionScreensRow';
+import MissionVisualReviewAction from './MissionVisualReviewAction';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionReleaseSection } from './MissionReleaseSection';
 import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionTrunkMergedAt } from '@/lib/mission-delivery';
@@ -111,10 +117,10 @@ export default async function MissionDetailPage({
 }: {
   params: Promise<{ id: string }>;
   // `?tab=` is retired: accepted and ignored, so old links still land.
-  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string }>;
 }) {
   const { id } = await params;
-  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam, layout: layoutParam } = await searchParams;
+  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam, layout: layoutParam, visualReview: visualReviewParam } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -138,8 +144,8 @@ export default async function MissionDetailPage({
     notFound();
   }
 
-  // Read-through refresh: stamp mergedAt on any completed workers whose PR
-  // webhook was missed, so the timeline renders the correct state immediately.
+  // Read-through PR fact import: any completed worker whose PR merge webhook
+  // was missed is re-checked against GitHub after this response.
   if (mission.workspaceId) {
     const staleWorkers = (mission.tasks ?? []).flatMap(t => {
       if (t.status !== 'completed') return [];
@@ -155,16 +161,10 @@ export default async function MissionDetailPage({
       });
       const installId = wsWithInstall?.githubInstallation?.installationId;
       if (installId) {
-        const refreshed = await Promise.all(
-          staleWorkers.map(w => refreshWorkerMergeStateIfStale(w, installId))
-        );
-        if (refreshed.some(Boolean)) {
-          const refreshedMission = await db.query.missions.findFirst({
-            where: eq(missions.id, id),
-            with: MISSION_DETAIL_WITH,
-          });
-          if (refreshedMission) mission = refreshedMission;
-        }
+        // Enqueued after the response, never written during the render (spec
+        // workflow-state-kernel §11): this render shows what is stored.
+        after(() => Promise.all(staleWorkers.map(w => refreshWorkerMergeStateIfStale(w, installId)))
+          .catch((err) => console.error('[mission-page] PR fact import failed (non-fatal):', err)));
       }
     }
   }
@@ -374,8 +374,28 @@ export default async function MissionDetailPage({
     ? (mission.schedule as any)?.nextRunAt ?? null
     : null;
   // Out-of-mission dependencies are loaded by id so they are judged, not guessed.
-  const foreignDeps = await loadDependencyRows(foreignDependencyIds(mission.tasks || []));
-  const healthState = deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks || [], { dependencies: foreignDeps });
+  // Same superseded rule explain uses (S35): a failed deliverable whose work
+  // shipped under another task/PR, or that the kernel already replaced, must
+  // not drive this fallback reading to FAILING.
+  const failedDeliverableRows = (mission.tasks || []).filter((t) => isDeliverableTask(t as never) && t.status === 'failed');
+  const [foreignDeps, supersededMap, deliveryViews] = await Promise.all([
+    loadDependencyRows(foreignDependencyIds(mission.tasks || [])),
+    computeSupersededFailedTasks(
+      mission.id,
+      (mission.workspaceId as string | null) ?? null,
+      failedDeliverableRows.map((t) => ({ id: t.id, title: t.title, subjectPrNumber: (t as { subjectPrNumber?: number | null }).subjectPrNumber ?? null, createdAt: t.createdAt })),
+    ).catch(() => new Map()),
+    // One DeliveryView load for the page (§17.5): the failure reading, the
+    // board/strip, the timeline cards and the structure view all read it.
+    getDeliveryViewsForTasks((mission.tasks || []).map((t) => t.id)),
+  ]);
+  const kernelReplaced = replacedFailedTaskIds(deliveryViews, failedDeliverableRows.map((t) => t.id));
+  const deliveryDisplays = ownerDeliveryDisplays(deliveryViews);
+  const healthState = deriveTaskHealthSignal(
+    { ...mission, heartbeatWaitingUntil },
+    (mission.tasks || []).map((t) => ({ ...t, superseded: supersededMap.has(t.id) || kernelReplaced.has(t.id) })),
+    { dependencies: foreignDeps },
+  );
 
   // Orchestration mode
   const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';
@@ -719,6 +739,7 @@ export default async function MissionDetailPage({
       // unclaimable task as QUEUED (rule CG-2).
       missionBudgetExhausted: missionBudgetExhausted,
       latestWorker: condensedTask.workers[0] ?? null,
+      delivery: deliveryDisplays.get(task.id) ?? null,
       taskType: deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId, mode: task.mode }),
       // The three `deriveWorkKind` inputs, plus the stored phase. Carried as
       // data on the task object so `buildRail` and `computeStructureLayout` —
@@ -1309,7 +1330,7 @@ export default async function MissionDetailPage({
   const boardModel = buildMissionBoard({
     runnerHeartbeats,
     fleetCapacity,
-    tasks: allTasks.map(t => toBoardTaskInput(t as unknown as Parameters<typeof toBoardTaskInput>[0])),
+    tasks: allTasks.map(t => toBoardTaskInput({ ...t, delivery: deliveryDisplays.get(t.id) ?? null } as unknown as Parameters<typeof toBoardTaskInput>[0])),
     roles,
     now: renderedAt,
     missionCreatedAt: new Date((mission as any).createdAt).getTime(),
@@ -1374,6 +1395,9 @@ export default async function MissionDetailPage({
   );
   // Chat is how you ask about work: opens a conversation with this mission docked.
   const askAbout = <AskAboutLink kind="mission" id={id} teamId={mission.teamId} workspaceId={mission.workspaceId} />;
+  // The mission's visual review as a mission command (never the task composer):
+  // on any open mission with a workspace to run it in.
+  const visualReviewAction = !isTerminal && mission.workspaceId ? <MissionVisualReviewAction missionId={id} initialOpen={visualReviewParam === '1'} /> : null;
   const overflowMenu = (
     <MissionOverflowMenu
       missionId={id}
@@ -1467,7 +1491,7 @@ export default async function MissionDetailPage({
       title={mission.title}
       chip={stateChip}
       verified={verifiedPill}
-      actions={<>{askAbout}{overflowMenu}</>}
+      actions={<>{askAbout}{visualReviewAction}{overflowMenu}</>}
       goal={goalLine}
       description={mission.description || !isTerminal ? <MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} defaultExpanded /> : undefined}
       serverNow={renderedAt}

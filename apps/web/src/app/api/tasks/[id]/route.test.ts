@@ -283,7 +283,7 @@ describe('GET /api/tasks/[id]', () => {
     expect(data.parentTaskId).toBe(parentTaskId);
   });
 
-  it("lets an orchestration task's admin token read the tasks on its own mission, and nothing else", async () => {
+  it("lets a task token read any task in its own workspace, and nothing outside it", async () => {
     const OWN = '22222222-2222-4222-8222-222222222222';
     const sibling = (over: Record<string, unknown>) => ({
       id: TASK_ID, title: 'Sibling', status: 'pending', workspaceId: 'ws-1', missionId: 'm-1',
@@ -297,21 +297,19 @@ describe('GET /api/tasks/[id]', () => {
     const get = () => callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
     const taskScope = { taskId: OWN, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 };
 
-    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', level: 'admin', taskScope });
-    expect((await get()).status).toBe(200);
-    row = sibling({ missionId: 'm-2' });
-    expect((await get()).status).toBe(404);
-    row = sibling({ workspaceId: 'ws-2' });
-    expect((await get()).status).toBe(404);
-    row = sibling({ missionId: null });
-    expect((await get()).status).toBe(404);
-
-    // A worker-level token is confined to its own task and child tasks.
-    // The route must fetch the task to check if it's a child task (parentTaskId match).
-    row = sibling({});
-    mockTasksFindFirst.mockClear();
-    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', level: 'worker', taskScope });
-    expect((await get()).status).toBe(404);
+    // Any task token may READ any task in its own workspace (the tasks
+    // list_tasks shows it), on its mission or not, and nothing outside it.
+    for (const level of ['admin', 'worker']) {
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', level, taskScope });
+      row = sibling({});
+      expect((await get()).status).toBe(200);
+      row = sibling({ missionId: 'm-2' });
+      expect((await get()).status).toBe(200);
+      row = sibling({ missionId: null });
+      expect((await get()).status).toBe(200);
+      row = sibling({ workspaceId: 'ws-2' });
+      expect((await get()).status).toBe(404);
+    }
     mockTasksFindFirst.mockReset();
   });
 
@@ -1076,6 +1074,24 @@ describe('PATCH /api/tasks/[id]', () => {
     expect(response.status).toBe(404);
     const data = await response.json();
     expect(data.error).toBe('Task not found');
+  });
+
+  it('explains with 403 when a task token edits a sibling task in its workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1' } });
+    const scope = (workspaceId: string) => ({
+      id: 'account-123', level: 'worker', taskScope: { taskId: 'some-other-task', workspaceId, expiresAt: Date.now() + 60_000 },
+    });
+    const req = () => createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_xxx' }, body: { status: 'cancelled' } });
+
+    mockAccountsFindFirst.mockResolvedValue(scope('ws-1'));
+    const sibling = await callHandler(PATCH, req(), TASK_ID);
+    expect(sibling.status).toBe(403);
+    expect((await sibling.json()).error).toMatch(/only edit its own task/);
+
+    mockAccountsFindFirst.mockResolvedValue(scope('ws-other'));
+    const foreign = await callHandler(PATCH, req(), TASK_ID);
+    expect(foreign.status).toBe(404);
   });
 
   it('returns 404 when session user does not own workspace', async () => {
@@ -2119,7 +2135,7 @@ describe('PATCH /api/tasks/[id] — per-task token', () => {
   it('cannot edit another task', async () => {
     mockAccountsFindFirst.mockResolvedValue(scoped('33333333-3333-3333-3333-333333333333'));
     const res = await patch({ description: 'x' });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(403);
     expect(mockTasksUpdate).not.toHaveBeenCalled();
   });
 

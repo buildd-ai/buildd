@@ -25,7 +25,11 @@ import Spinner from '@/components/Spinner';
 import ClaimTaskHint from '@/components/tasks/ClaimTaskHint';
 import RunnerPicker from '@/components/tasks/RunnerPicker';
 import Disclosure from '@/components/ui/Disclosure';
+import type { TaskFailureKind } from '@/lib/task-failure-kind';
+import { verificationFailedCopy } from '@/lib/task-failure-kind';
 import { explainProviderAuthFailure } from '@/lib/provider-auth-failure';
+import EntitlementBlockedNotice from '@/components/entitlements/EntitlementBlockedNotice';
+import { parseEntitlementBlock, type EntitlementBlock } from '@buildd/shared';
 import { useTaskStart } from '@/components/tasks/useTaskStart';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import { formatInZone } from '@/lib/zoned-time';
@@ -64,6 +68,10 @@ export interface TaskActionZoneProps {
   backend: 'claude' | 'codex' | null;
   /** `excerpt` is the line shown; `raw`, when given, is the full text it is classified from. */
   lastError: { excerpt: string; raw?: string | null } | null;
+  /** `classifyTaskFailure`: `verification` means the work landed and its audit failed. */
+  failureKind?: TaskFailureKind | null;
+  /** Set when this task IS the surface audit: a verification failure then offers "Retry the audit". */
+  auditTaskId?: string | null;
   worker: { id: string; waitingFor: { prompt: string; options?: string[]; context?: string } | null } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
@@ -74,6 +82,12 @@ export interface TaskActionZoneProps {
   runnerPicker?: boolean;
   /** The host already says why the task is waiting (the mission drawer's reason line). */
   hideQueuedNote?: boolean;
+  /**
+   * The plan limit a managed runner deferred this task on (task context
+   * `entitlementBlock`). A queued task with one shows the entitlement state in
+   * place of "Run now": it starts by itself when the limit lifts.
+   */
+  entitlementBlock?: EntitlementBlock | null;
   onChanged?: () => void | Promise<void>;
 }
 
@@ -88,12 +102,15 @@ export default function TaskActionZone({
   blockedByCount,
   backend,
   lastError,
+  failureKind = null,
+  auditTaskId = null,
   worker,
   historyHref,
   roleSlug,
   missionExecutor = null,
   runnerPicker = false,
   hideQueuedNote = false,
+  entitlementBlock = null,
   onChanged,
 }: TaskActionZoneProps) {
   const displayTz = useDisplayTimezone();
@@ -128,6 +145,7 @@ export default function TaskActionZone({
     hasHistory: !!historyHref,
     missionExecutor,
     otherBackendAvailable,
+    failureKind,
   });
   const has = (id: (typeof actions)[number]) => actions.includes(id);
   // "Not logged in · Please run /login" and kin: say what to do instead.
@@ -159,7 +177,10 @@ export default function TaskActionZone({
 
   const refusal = start.refusal;
   const starting = start.pending !== null;
-  const showRunNow = has('run_now') && (start.status === 'idle' || start.status === 'starting');
+  // A start refused on a plan limit is the same entitlement state, not a gate warning.
+  const refusalEntitlement = refusal?.gateReason === 'entitlement_blocked' ? parseEntitlementBlock(refusal.entitlement) : null;
+  const waitingOnPlan = has('run_now') && phase === 'pending' && !!entitlementBlock && start.status === 'idle';
+  const showRunNow = has('run_now') && !waitingOnPlan && (start.status === 'idle' || start.status === 'starting');
   const cap = refusal?.cap ?? 3;
   const [capTarget, setCapTarget] = useState<number | null>(null);
   const deferredLabel = refusal?.startAt
@@ -190,9 +211,37 @@ export default function TaskActionZone({
         </div>
       )}
 
+      {/* Work landed, audit failed → say so; the audit's own surface retries the audit */}
+      {has('verification_failed') && (
+        <div data-testid="task-verification-failed" className="space-y-3 border-2 border-status-warning p-4">
+          <p className="font-mono text-meta font-semibold text-status-warning">{verificationFailedCopy().state}</p>
+          <p className="font-mono text-meta text-text-secondary">{verificationFailedCopy().cause}</p>
+          {retryError && <p className="font-mono text-meta text-status-error">{retryError}</p>}
+          <div className="flex flex-wrap items-center gap-2">
+            {auditTaskId && (
+              <button
+                type="button"
+                data-action="retry-audit"
+                disabled={retrying !== null}
+                onClick={() => retry('same')}
+                className={SECONDARY_BTN}
+              >
+                {retrying ? 'Retrying…' : 'Retry the audit'}
+              </button>
+            )}
+            {has('history') && historyHref && (
+              <Link href={historyHref} data-action="history" className={QUIET_BTN}>
+                View history
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Failed → why + retry */}
       {has('retry') && (
         <div className="space-y-3 border-2 border-status-error p-4">
+          <p className="font-mono text-meta font-semibold text-status-error">Worker failed</p>
           {authFailure && lastError ? (
             <div className="space-y-2" data-testid="task-auth-failure">
               <p className="text-body text-text-primary">{authFailure.message}</p>
@@ -205,9 +254,7 @@ export default function TaskActionZone({
             </div>
           ) : lastError ? (
             <p className="break-words font-mono text-[12px] leading-relaxed text-status-error">{lastError.excerpt}</p>
-          ) : (
-            <p className="font-mono text-[12px] text-text-secondary">This task failed.</p>
-          )}
+          ) : null}
           <div className="flex flex-wrap items-center gap-2">
             {/* Single click retries on the backend it already ran on — the
                 common case. The switch is one extra click, never a menu. */}
@@ -253,6 +300,9 @@ export default function TaskActionZone({
           </p>
         </div>
       )}
+
+      {/* Queued on a plan limit → the entitlement state; it starts by itself */}
+      {waitingOnPlan && entitlementBlock && <EntitlementBlockedNotice block={entitlementBlock} />}
 
       {/* Queued → run now (a local mission's task: claim it from a session first) */}
       {showRunNow && (
@@ -307,7 +357,10 @@ export default function TaskActionZone({
       )}
 
       {/* A refused start: why, and what a person may do about it, in place. */}
-      {start.status === 'gated' && refusal && (
+      {start.status === 'gated' && refusalEntitlement && (
+        <EntitlementBlockedNotice block={refusalEntitlement} onLeaveQueued={start.dismiss} />
+      )}
+      {start.status === 'gated' && refusal && !refusalEntitlement && (
         <div data-testid="task-start-refusal" data-gate={refusal.gateReason} className="space-y-3 border border-status-warning p-4">
           <div>
             <p className="mb-1 font-mono text-meta font-medium text-status-warning">

@@ -161,6 +161,8 @@ export type CoreEvent =
     }
   /** A team row and its owner membership are written. */
   | { type: 'team.created'; teamId: string }
+  /** A workspace row is written (POST /api/workspaces). `origin` is the request origin, for OAuth callbacks. */
+  | { type: 'workspace.created'; workspaceId: string; teamId: string; origin: string }
   /**
    * A PR merged. `delivery` is present when the GitHub webhook delivered the
    * merge (every delivery, redeliveries included); reconciliation emits the
@@ -276,6 +278,8 @@ export type CoreEvent =
   | { type: 'workflow_run.completed'; run: WorkflowRunFact; installationId: number | null }
   /** A check suite completed red on a PR. Every delivery, once per PR in the suite. */
   | { type: 'pr.ci_failed'; repoFullName: string; prNumber: number; headSha: string; installationId: number }
+  /** Every check suite on a worker PR's head passed (the PR's lifecycle is now ci_green). Every delivery. */
+  | { type: 'pr.ci_passed'; repoFullName: string; prNumber: number; headSha: string; installationId: number }
   /**
    * A push (`synchronize`) to an open PR a buildd worker owns: every delivery,
    * redeliveries included. `worker` is the newest row owning the PR (a retry

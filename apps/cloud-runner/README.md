@@ -13,7 +13,8 @@ Design: [`docs/design/cloudflare-sandbox-runner.md`](../../docs/design/cloudflar
 
 | File | What it is |
 |---|---|
-| `src/index.ts` | Worker entry: `fetch` handler, re-exports `WorkerAgent` |
+| `src/index.ts` | Worker entry: `fetch` handler, re-exports `WorkerAgent` and `WorkerAgentLarge` |
+| `src/runner-class.ts` | The two container classes (standard, large), buildd's size lookup, weighted runner-seconds. Runtime-free |
 | `src/http.ts` | Routes, bearer auth, body validation. Runtime-free |
 | `src/worker-agent.ts` | `WorkerAgent`: wires the supervisor to `ctx.container`, state and keepAlive |
 | `src/supervisor.ts` | One run: start the container, exec, wait, record, stop, crash report. Runtime-free |
@@ -87,10 +88,17 @@ tick delivers the wake when due, as `task.retry` to a webhook that lists that
 event: the backstop. Only a `crashed` outcome is reported;
 the runner's own exits (1 failed, 3 refused, 4 parked, 64 usage) are not.
 
-**Restarts.** If the Durable Object is evicted mid-run (deploy, limits), the
-exec'd process cannot be re-attached. On the next start the agent finds the
-run marked live, destroys the container, and records `crashed` (and reports
-it as above).
+**Restarts.** The container outlives the Durable Object, so an agent restart
+(a deploy, an eviction, an isolate reset) does not end the run. Cloudflare
+cannot re-open the exec stream of the process the old agent started, so the
+runner leaves its pid and exit code in its home directory and the new agent
+execs `buildd-once --attach-orphan`, which waits on that runner and exits with
+its code. The run then finishes as if nothing happened (egress is re-installed
+and a fresh task token minted first). If the runner is not there (exit 6), the
+agent falls back to parking and resuming it (resumable runs), then to marking
+the run `crashed` and reporting it as above. Every restart is recorded on the
+run report as `agentRestarts` (`recovery`, `containerRunning`, `runningForMs`,
+and `versionChanged`: true is a Worker deploy, false is some other cause).
 
 ## Configuration
 
@@ -102,17 +110,52 @@ it as above).
 | `MODEL`, `PUSHER_KEY`, `PUSHER_CLUSTER`, `BUILDD_ONCE_MAX_WAIT_MS` | var | no | Passed through, same meaning as on a long-lived runner |
 | `CONTAINER_INACTIVITY_TIMEOUT_MS` | var | no | Default 30 min. A backstop: the agent holds keepAlive for the whole run |
 | `CONTAINER_START_TIMEOUT_MS` | var | no | Default 5 min, for `ctx.container.running` after `start()` |
-| `CONTAINER_INSTANCE_TYPE` | var | no | Copy of `containers[0].instance_type`, for the run report (a test keeps them equal) |
+| `CONTAINER_INSTANCE_TYPE`, `CONTAINER_INSTANCE_TYPE_LARGE` | var | no | Copies of the standard and large classes' `instance_type`, for the run report (a test keeps them equal) |
 | `RUNNER_GROUP` | var | no | The Worker name (`wrangler.jsonc`; `deploy.ts --name` rewrites it). Every container reports it as `BUILDD_RUNNER_GROUP`, so the dashboard fleet shows this deployment as one elastic group, not one runner per run. Default `buildd-cloud-runner`. Takes effect on redeploy |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
 | `WARM_REPOS` | var | no | `1` turns on warm repos (below). Default off. Needs the `SNAPSHOTS` R2 binding |
 | `WARM_MAX_BUNDLE_BYTES` | var | no | Largest warm bundle or (compressed) cache tarball, in bytes, for workspaces that set no cap of their own. Default 1 GiB. A workspace's `gitConfig.warmSnapshot.maxBytes` (bounded at 8 GiB by buildd, delivered with the GitHub grant) overrides it for that workspace. Passed to the container (which skips the upload past it) and enforced by the snapshot route |
 | `ALLOW_DEBUG_KILL` | var / secret | no | `1` enables `POST /tasks/:taskId/kill` (dispatch token required): destroys that task's container as an OOM kill or platform stop would, for recovery testing. Default off (the route is 404) |
 | `RESUMABLE_RUNS` | var | no | `1` turns on resumable runs (below). Default off. Needs the `SNAPSHOTS` R2 binding and a webhook that lists `task.resume` |
+| `CONTAINER_REUSE` | var | no | `1` turns on container reuse (below). Default off |
+| `CONTAINER_REUSE_WINDOW_MS` | var | no | How long a lease keeps a container warm after a run. Default 5 min, clamped to 30 s to 30 min |
+| `CONTAINER_REUSE_SLOTS` | var | no | Leases per workspace and size. Default 2, never above the class's `max_instances` |
 | `SNAPSHOTS` | R2 binding | for warm repos / resumable runs | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
 
 The container gets a placeholder `ANTHROPIC_API_KEY` and no GitHub token; the
 real credentials are added to its outbound requests (see Egress credentials).
+
+## Container sizes
+
+One Worker, two container classes. Cloudflare fixes the instance type per
+container class, and each class backs its own Durable Object class:
+
+| Size | Agent class | Instance type | Weight |
+|---|---|---|---|
+| `standard` | `WorkerAgent` | `standard-1` (½ vCPU, 4 GiB, 8 GB disk) | 1 |
+| `large` | `WorkerAgentLarge` | `standard-3` (2 vCPU, 8 GiB, 16 GB disk) | 2 |
+
+Each has its own `max_instances` in `wrangler.jsonc`, so the capacity retry
+(`start_deferred`, below) applies per class. `deploy.ts` lists both in its
+plan and refuses a generated config that lost one.
+
+**buildd picks the size, never the container.** On each `/dispatch` the
+Worker asks `POST <BUILDD_SERVER>/api/runner/runner-size` with the runner key
+and `X-Buildd-Dispatch-Token` (the same two credentials as the GitHub grant;
+the container holds neither) and sends the task to that class's agent. The
+answer is the workspace's `gitConfig.runnerSize` when set, otherwise derived
+from its recent run reports: `large` once any shows a working set within ~10%
+of the class memory, free disk under ~3 GB, the container stopping under the
+run (not a deploy, not a question), or a warm checkout plus cache over a few
+GB. A derivation is stored and sticks; an explicit `standard` overrides it.
+The rule is `apps/web/src/lib/runner-size.ts`; the workspace settings page
+shows the effective size and why.
+
+A `task.resume` goes to the class whose agent parked that worker (buildd's
+answer is a first guess; the other class is asked only if it does not hold
+it). `GET /tasks/:taskId` and the debug kill go to the class holding the
+task's latest run. No answer from buildd (an older server, a refusal, a
+timeout) is `standard`, reported as `runnerSize.source: fallback`.
 
 ## Measuring runs
 
@@ -139,7 +182,10 @@ any other status. The result is `report.delivery`: `sent`, `rejected`, `error`,
 | `durationsMs.*` | Derived; null when either end is missing |
 | `containerInstanceId` | The Durable Object ID (`ctx.id`). `ctx.container` exposes no instance ID; Cloudflare documents the Durable Object ID (the container's `CLOUDFLARE_DURABLE_OBJECT_ID`) as what identifies the instance on the dashboard. One agent reuses it across attempts |
 | `runLabel` | `<taskId>.<attempt>`, also set as the container label `bd_run`, so analytics can be joined per attempt |
-| `instanceType` | `CONTAINER_INSTANCE_TYPE` |
+| `instanceType` | The instance type of the class the attempt actually ran in (`CONTAINER_INSTANCE_TYPE` or `CONTAINER_INSTANCE_TYPE_LARGE`) |
+| `runnerSize` | `size` (the class used), `source` and `reason` (buildd's decision: `explicit`, `derived` with its reason, `default`, `pinned` for a resume, `fallback` when buildd did not answer), `weight` (standard 1, large 2), `runnerSeconds` (container running to exit, rounded up) and `weightedRunnerSeconds`, for hosted fair use later; nothing bills from it yet (report version 7) |
+| `resources` | `memoryPeakBytes` (working-set peak), `memoryLimitBytes`, `diskFreeMinBytes`, `diskTotalBytes`, from the runner's sampler (`apps/runner/src/resource-sampler.ts`, `BUILDD_METRIC=` lines re-printed as the extremes move). Null from an image without it |
+| `interruption` | Why the run did not end on its own exit: `container_stopped` (the container died under it), `agent_restart` (the agent restarted, a deploy, and found it orphaned), `question` (parked waiting for an answer), or null |
 | `egress.{model,github,passthrough}` | Per class: `requests`, `rejected` (refused by the handler), `responseBytes` (model: decoded body bytes the container read to the end; GitHub and passthrough: `content-length` when present, so chunked git packs are not counted — those bodies stream natively, never through JavaScript; a lower bound). Only intercepted hosts are seen; other egress is not counted |
 | `egressDetail.{model,github,passthrough}` | Why requests failed, as counts only: `rejectReasons` (`path`, `unconfigured`, `plain_http`, `port`, `unparseable`, `merge_blocked`, `other`) for refusals by the handler, `rejectedPaths` (where `path` refusals were going, as fixed labels: `api_hello`, `event_logging`, `oauth`, `claude_code_api`, `other_api`, `files`, `batches`, `other_v1`, `other`), and `errorStatuses` (upstream 4xx/5xx by code, e.g. a proxy's 403 for a model the key may not use). No URL or header is recorded |
 | `egressDetail.github.credentialed`, `.unauthenticated` | Forwarded GitHub requests that carried the injected installation token, and those that did not, by fixed reason: `no_grant` (the agent had no live run), `grant_fetch_failed` (buildd's `/api/runner/github-token` refused or failed, or the agent is backing off after that), `grant_expired`, `out_of_scope` (not the task's repo: another repo, `/user`, codeload) |
@@ -315,14 +361,23 @@ token for each run. A scoped key needs at least the **Task agent** capabilities
 `knowledge:write`) and, if limited to workspaces, the dispatching workspace;
 narrowing the key later ends the tokens it minted.
 
-`deploy.ts` fetches the saved token with the admin key
+With the token saved in buildd, `deploy.ts` runs every Cloudflare step it
+can **server-side** (`POST /api/deployments` with the admin key: the R2
+bucket, Worker secrets, secret listing, the workers.dev URL), so the token
+stays on the server and each step lands in the deployment audit trail
+(docs/specs/deployment-actions.md). Only `wrangler deploy` needs the token on
+your machine, because it builds and pushes the container image there; for that
+one step the script fetches it through the audited reveal route
 (`POST /api/cloudflare/credential/reveal`: `bld_` admin keys only, own team
-only, `no-store`). To keep the token out of buildd entirely, set
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` instead; the script then
-never calls that route. It then:
+only, `no-store`). `--secrets-only` skips the code deploy (rotate a token,
+point another workspace, change the model proxy) and needs no token here at
+all. `--credential-ref` names a labelled credential (default `cloudflare`).
+To keep the token out of buildd entirely, set `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` instead; every step then runs locally with wrangler.
+It then:
 
-1. `wrangler deploy`
-2. `wrangler secret put` `BUILDD_SERVER` (`--worker-server`, default the
+1. Ensure the snapshot bucket, then `wrangler deploy` (both skipped with `--secrets-only`)
+2. Put Worker secrets `BUILDD_SERVER` (`--worker-server`, default the
    buildd URL), `BUILDD_API_KEY` (the runner key) and a freshly generated
    `DISPATCH_TOKEN`
 3. `PATCH /api/workspaces/:id` with `webhookConfig = { url: <worker>/dispatch, token, enabled: true, events: ['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled'] }`
@@ -497,6 +552,50 @@ anything further is left to the sweep), and the agent wakes itself:
 - **Report.** A run started by a wake carries `schedule.scheduledFor`,
   `schedule.startedAt` and `schedule.lateMs` in its run report.
 
+### Container reuse
+
+Off unless `CONTAINER_REUSE=1`. A task that follows another in the same
+workspace and size class (a reviewer right after its builder) runs in the
+container the first one left warm, instead of a fresh container, snapshot
+restore and dependency cache. One task at a time per container, always.
+
+- **Leases.** Containers that may be reused belong to lease agents named
+  `lease:<size>:<workspaceId>:<slot>` (`container-lease.ts`), in the class of
+  the size. The workspace comes from buildd's runner-size answer, never the
+  webhook body. A task's own agent routes a fresh dispatch to a warm lease
+  first, then any idle one, and records it (`leasedTo`); GET, kill and resume
+  reach the lease through it. Every slot busy: the task runs in its own agent
+  as before. `task.scheduled` wakes run in the task's own agent.
+- **Warm window.** After a run that ended `done` or `failed` the lease keeps
+  the container for `CONTAINER_REUSE_WINDOW_MS`, then destroys it. Never after
+  a park (the lease holds the parked run for its resume), a crash or anything
+  else.
+- **Reset.** Before the next task, `buildd-once --reset-container`
+  (`apps/runner/src/container-reset.ts`) runs with no task token and before
+  the new task's egress is installed. It kills every process but the
+  container's own, deletes all of HOME, `/tmp`, `/var/tmp` and `/dev/shm`
+  (agent settings, git config and hooks, shell rc files and history, worktrees,
+  worker records), and keeps only git pack files and the dependency cache
+  (registry config and env files scrubbed). The next task's clone grows from
+  the kept packs: shallow boundary first, then `git index-pack` (re-hashes
+  every object, so an index the previous task wrote is never trusted; the same
+  work a warm restore does on its bundle, without the download), a fetch of
+  its refs from origin and `git fsck --connectivity-only`. No snapshot
+  restore and no cache restore: the kept cache is the cache (bun and pnpm
+  check what they take from it). If the kept packs cannot be used it restores
+  or clones as usual, still without downloading the cache over the kept one.
+  Then a new task token is minted and egress re-installed for the new task. A
+  reset that does not verify clean destroys the container and the task starts
+  in a fresh one: it never runs dirty.
+- **Report.** `reusedContainer: { fromTaskId, idleMs, resetMs, prepMs,
+  baselinePrepMs, savedMs }`, or `{ fromTaskId, idleMs, fallback:
+  'reset_failed', resetMs }`. Measured, not estimated: `prepMs` is this run's
+  dispatch to claim plus getting the repo ready (clone, warm restore with its
+  cache restore and fetch, or `restoreReuse`, the seed from kept packs);
+  `baselinePrepMs` is the same measure for the fresh run that started the
+  container; `savedMs = baselinePrepMs - prepMs`, negative when reuse was
+  slower. `repo.source` is `reuse` when the clone came from the kept packs.
+
 ### Resumable runs
 
 Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
@@ -539,9 +638,61 @@ Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
 | team's own Anthropic key (`proxy` shape) | buildd returns the task's own `anthropic_api_key` for this task — it won the same ranking a self-hosted runner applies (docs/credentials-architecture.md) | `https://api.anthropic.com/...` unchanged | `x-api-key: <the team's key>` |
 | `proxy` | `MODEL_PROXY_URL` is set | `<MODEL_PROXY_URL><original path and query>`, e.g. `https://litellm.example.com/v1/messages` | `Authorization: Bearer <MODEL_PROXY_KEY>` (default), or `x-api-key: <MODEL_PROXY_KEY>` with `MODEL_PROXY_AUTH_HEADER=x-api-key` |
 | team endpoint (`proxy` shape) | Neither of the above, and buildd returns the team's `agent_endpoint` for this task (Settings → Model providers) | `<endpoint baseUrl><original path and query>` | The endpoint's key, as `Authorization: Bearer` or `x-api-key` per its setting |
+| `owner_seat` | `CLAUDE_CODE_OAUTH_TOKEN` is set on the Worker and none of the routes above applies (see Running on your own Claude token) | `https://api.anthropic.com/...` unchanged | `Authorization: Bearer <your token>` plus the `oauth-2025-04-20` beta flag |
 | `gateway` | `AI_GATEWAY_ACCOUNT_ID`, `AI_GATEWAY_ID` and `AI_GATEWAY_TOKEN` are set | `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic/...` | `cf-aig-authorization: Bearer <AI_GATEWAY_TOKEN>`; the Anthropic key lives in AI Gateway (BYOK) or Unified Billing |
 
 If none applies, model requests get `503`.
+
+### Running on your own Claude token
+
+The self-hosted equivalent of a CI secret: your own `claude setup-token` value,
+set by you on your own Cloudflare account, used for the model calls of the
+workspaces your Worker serves.
+
+```bash
+CLAUDE_CODE_OAUTH_TOKEN=… bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> --owner-seat
+# or omit the variable in a terminal and paste it at the hidden prompt
+```
+
+Where the token lives, and where it does not:
+
+- It is stored only as the Worker secret `CLAUDE_CODE_OAUTH_TOKEN` on your
+  Cloudflare account. buildd's server never receives, stores, logs or returns
+  it: it is not in the `secrets` table, a claim response, a run report or a log.
+  The deploy script never prints it and hands it to `wrangler secret put` on
+  stdin.
+- The container never sees it. The egress handler removes whatever auth the
+  container supplied, then adds the token on model calls, exactly as it does
+  for the other model routes. A cloud claim still carries no server-side seat
+  credential.
+- **One owner, one token per Worker.** Every workspace the Worker serves runs
+  on that one subscription. There is no pooling of several people's tokens and
+  no per-member token map; give each owner their own Worker (`--name`).
+- Off by default and only active while the secret is present.
+  `wrangler secret delete CLAUDE_CODE_OAUTH_TOKEN` turns it off. A hosted
+  runner never enables it (`MANAGED_CLOUD_RUNNER=1`).
+
+Precedence: the seat applies only to workspaces whose effective model route is
+the default Anthropic one. A workspace with its own agent endpoint or Anthropic
+key keeps using it, and a `MODEL_PROXY_URL` on the Worker stays in front of the
+seat. The seat takes the place of the AI Gateway route.
+
+One subscription shared by many containers reaches its usage limits quickly, so
+seat runs are paced on the Worker:
+
+- At most `OWNER_SEAT_MAX_CONCURRENT` (default 2) runs use the seat at once. A
+  run over the cap does not start a container: it is deferred with the reason
+  `owner_seat_cap` and retried with backoff.
+- When the seat answers a model call with a usage limit (429), new seat runs wait
+  until it lifts, deferred with `owner_seat_wall`; they are not failed. Runs
+  already going continue.
+- The pacing is kept per Worker, in the Worker; buildd's server is not told about
+  the seat's usage.
+- A run claims its slot before it starts, before the Worker knows whether the
+  workspace has its own key, so a metered run holds a slot until its first model
+  call and is held back while a wall is up.
+
+The run report records `modelAuth`: `owner_seat` or `metered`, never the token.
 
 **The team's own Anthropic key jumps ahead of `MODEL_PROXY_URL`** — the one
 precedence flip here. Storing a plain API key is not an opt-in to route agents
@@ -624,6 +775,9 @@ be path-scoped and relies on the token's own scope.
 | `ALLOW_DIRECT_ANTHROPIC` | var | no | **Local development only.** `1` together with `ANTHROPIC_DIRECT_API_KEY` sends model traffic straight to Anthropic with that key instead of the gateway. Default off. Never set it on a deployed Worker |
 | `ANTHROPIC_DIRECT_API_KEY` | secret | no | **Local development only**, see above. Ignored unless `ALLOW_DIRECT_ANTHROPIC=1` |
 | `DISPATCH_TOKEN` | secret | yes | Also authenticates the GitHub token request |
+| `CLAUDE_CODE_OAUTH_TOKEN` | secret | no | Your own `claude setup-token` value, for the owner seat. Off unless set. See Running on your own Claude token |
+| `OWNER_SEAT_MAX_CONCURRENT` | var | no | Runs that may use the owner seat at once. Default 2, 1 to 20 |
+| `MANAGED_CLOUD_RUNNER` | var | no | `1` on a hosted runner: the owner seat is refused even if the secret is present |
 
 The container is started with `BUILDD_EXECUTOR=cloud`, so the claim response
 carries no credential material (`CLAIM_CREDENTIAL_FIELDS` in
@@ -706,3 +860,22 @@ The smoke's egress step checks the container env, a synthetic OTLP POST
 (credential added by fingerprint, container auth stripped, plain http refused)
 and runs a real `claude -p` in the container, whose exports are logged by the
 echoing handler.
+
+## Remote browser for visual audits
+
+Wrangler includes the `BROWSER` Browser Rendering binding. Opt in with
+`BROWSER_BRIDGE=1` on the Worker. The task-token response authorizes browser access
+only for the server-stored visual-auditor role; builder runs acquire no browser.
+The container gets an ephemeral bridge capability, never a Cloudflare account
+credential. The agent sees only a loopback CDP endpoint and service API.
+
+The remote browser reaches registered container-local HTTP services through CDP
+request fulfilment and `getTcpPort().fetch`, without public ingress. Bind the app
+to `0.0.0.0`; use `scripts/qa/serve-local.sh` with a synthetic database, then the
+usual `scripts/qa/capture.ts` commands. Synthetic database provisioning is a caller
+responsibility. Browser session milliseconds and request/byte totals appear in
+the cloud run report. Every outcome closes and revokes the session, including
+parking and keeping a warm container.
+
+The bridge remains opt-in pending live verification. Follow the test deployment
+recipe and negative checks in [the provider contract](../../docs/specs/visual-qa-browser-providers.md).

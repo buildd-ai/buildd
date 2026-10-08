@@ -168,6 +168,14 @@ describe('GET /api/tasks/waiting-input', () => {
     expect(data.tasks).toHaveLength(0);
   });
 
+  it('excludes cancelled tasks with a retained waiting worker', async () => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockReturnValue([{ taskId: 'task-1', workspaceId: 'ws-1', waitingFor: { type: 'question', prompt: 'Test?' } }]);
+    mockTasksFindMany.mockReturnValue([{ id: 'task-1', title: 'Cancelled task', status: 'cancelled', workspaceId: 'ws-1' }]);
+    expect((await (await GET()).json()).tasks).toEqual([]);
+  });
+
   it('includes actionUrl pointing to respond page', async () => {
     mockGetCurrentUser.mockReturnValue({ id: 'user-1', email: 'test@test.com' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);

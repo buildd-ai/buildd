@@ -12,7 +12,18 @@
  * one, so a stray credential passed in by mistake cannot come out the other
  * side.
  */
-import type { CrashReport, RunOutcome } from './lifecycle';
+import type { ModelAuth } from './owner-seat';
+import type { AgentRestart, CrashReport, RunOutcome } from './lifecycle';
+import { prepMsOf, type ReusedContainer } from './container-lease';
+import {
+  RUNNER_CLASSES,
+  normalizeRunnerSizeDecision,
+  runnerSeconds,
+  type RunnerSize,
+  type RunnerSizeDecision,
+  type RunnerSizeReason,
+  type RunnerSizeSource,
+} from './runner-class';
 
 /**
  * 2: adds `repo` (warm restore vs clone) and the restore/fetch/upload durations.
@@ -20,8 +31,16 @@ import type { CrashReport, RunOutcome } from './lifecycle';
  * 4: adds `schedule` (a `task.scheduled` start: when it was due, when it started).
  * 5: adds `deferredRetry` (a `deferred`/`start_deferred` outcome's self-scheduled backoff retry).
  * 6: adds `repo.cacheSkipped`, `repo.bytes.cacheRaw` and `durationsMs.restoreCache` (compressed cache tarball).
+ * 7: adds `resources` (memory peak, disk minimum), `interruption` and `runnerSize` (container class, weighted runner-seconds).
+ * 8: adds `agentRestarts` (each time the agent restarted under the attempt, and what it did about the run).
+ * 9: adds `reusedContainer` (the attempt ran in a container an earlier run of the workspace left warm).
+ * 10: adds `modelAuth` (`owner_seat` | `metered`: which kind of credential paid for the model calls; never the credential).
+ * 11: `reusedContainer` measures instead of estimating: `savedRestoreMs` (the previous run's prep) is replaced by
+ *     `resetMs`, `prepMs`, `baselinePrepMs` and `savedMs` (negative when reuse cost time); adds the `restore_reuse_*`
+ *     phases, `durationsMs.restoreReuse` and `repo.source` `reuse` (the clone grown from the packs a reset kept).
  */
-export const RUN_REPORT_VERSION = 6;
+/** 12: adds session materialisation time and clone/worktree mode. */
+export const RUN_REPORT_VERSION = 12;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -42,6 +61,9 @@ export function runLabel(taskId: string, attempt: number): string {
 // Mirrors apps/runner/src/phase-lines.ts (not imported: that would pull the
 // runner into the Worker bundle). run-report.test.ts asserts they stay equal.
 
+export const WORKTREE_MODE_LINE_PREFIX = 'BUILDD_WORKTREE_MODE=';
+export type WorktreeMode = 'clone' | 'worktree';
+
 export const PHASE_LINE_PREFIX = 'BUILDD_PHASE=';
 export const RUN_PHASES = [
   'clone_start', 'clone_end', 'install_start', 'install_end',
@@ -49,11 +71,19 @@ export const RUN_PHASES = [
   'warm_upload_start', 'warm_upload_end',
   'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
   'restore_cache_start', 'restore_cache_end',
+  'restore_reuse_start', 'restore_reuse_end',
+  'worktree_start', 'worktree_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 export type RunnerPhases = Partial<Record<RunPhase, number>>;
 
 const PHASE_LINE_RE = /^BUILDD_PHASE=([a-z_]+) (\d{1,16})$/;
+
+/** Session materialisation mode from a `BUILDD_WORKTREE_MODE=` line, or null. */
+export function parseWorktreeModeLine(line: string): WorktreeMode | null {
+  const value = line.trim().slice(WORKTREE_MODE_LINE_PREFIX.length);
+  return line.trim().startsWith(WORKTREE_MODE_LINE_PREFIX) && (value === 'clone' || value === 'worktree') ? value : null;
+}
 
 /** `{ phase, at }` from a `BUILDD_PHASE=<phase> <epoch ms>` line, or null. */
 export function parsePhaseLine(line: string): { phase: RunPhase; at: number } | null {
@@ -69,6 +99,7 @@ export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
 export const RUN_METRICS = [
   'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
   'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes',
+  'mem_peak_bytes', 'mem_limit_bytes', 'disk_free_min_bytes', 'disk_total_bytes',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 export type RunnerMetrics = Partial<Record<RunMetric, number>>;
@@ -115,10 +146,10 @@ function cacheSkipped(v: unknown): CacheSkippedLine | null {
 export const REPO_SOURCE_LINE_PREFIX = 'BUILDD_REPO_SOURCE=';
 export const REPO_FALLBACK_REASONS = ['disabled', 'no_snapshot', 'unavailable', 'disk', 'restore_failed'] as const;
 export type RepoFallbackReason = typeof REPO_FALLBACK_REASONS[number];
-export type RepoSourceLine = { source: 'warm' } | { source: 'clone'; reason: RepoFallbackReason };
+export type RepoSourceLine = { source: 'warm' } | { source: 'reuse' } | { source: 'clone'; reason: RepoFallbackReason };
 
 const METRIC_LINE_RE = /^BUILDD_METRIC=([a-z_]+) (\d{1,16})$/;
-const SOURCE_LINE_RE = /^BUILDD_REPO_SOURCE=(warm|clone [a-z_]+)$/;
+const SOURCE_LINE_RE = /^BUILDD_REPO_SOURCE=(warm|reuse|clone [a-z_]+)$/;
 
 /** `{ metric, value }` from a `BUILDD_METRIC=<name> <integer>` line, or null. */
 export function parseMetricLine(line: string): { metric: RunMetric; value: number } | null {
@@ -134,7 +165,7 @@ export function parseMetricLine(line: string): { metric: RunMetric; value: numbe
 export function parseRepoSourceLine(line: string): RepoSourceLine | null {
   const m = SOURCE_LINE_RE.exec(line.trim());
   if (!m) return null;
-  if (m[1] === 'warm') return { source: 'warm' };
+  if (m[1] === 'warm' || m[1] === 'reuse') return { source: m[1] };
   const reason = m[1]!.slice('clone '.length) as RepoFallbackReason;
   return REPO_FALLBACK_REASONS.includes(reason) ? { source: 'clone', reason } : null;
 }
@@ -602,6 +633,7 @@ export interface RunTimings {
   exitedAt?: number;
   /** From `BUILDD_PHASE=` lines: the container's clock. */
   runnerPhases?: RunnerPhases;
+  worktreeMode?: WorktreeMode;
   /** From `BUILDD_METRIC=` lines. */
   runnerMetrics?: RunnerMetrics;
   /** From the `BUILDD_REPO_SOURCE=` line. */
@@ -616,7 +648,16 @@ export interface RunTimings {
 
 // ── Assembly ──────────────────────────────────────────────────────────────────
 
+export interface BrowserRunUsage {
+  sessionMs: number;
+  sessions: number;
+  requests: number;
+  bytes: number;
+  relayErrors: number;
+}
+
 export interface RunReport {
+  browser?: BrowserRunUsage & { provider: 'cloudflare'; sessionSeconds: number };
   kind: typeof RUN_REPORT_KIND;
   version: typeof RUN_REPORT_VERSION;
   taskId: string | null;
@@ -658,16 +699,22 @@ export interface RunReport {
     restorePark: number | null;
     /** Downloading and extracting the dependency cache of a warm restore (streamed). */
     restoreCache: number | null;
+    /** A reused container: growing the clone from the packs the reset kept, fetch included (instead of `clone` / `restoreWarm`). */
+    restoreReuse: number | null;
+    /** Materialising the session checkout, whether in-clone or a worktree. */
+    worktree: number | null;
     toFirstModelRequest: number | null;
     total: number | null;
   };
   runnerPhases: RunnerPhases;
+  worktreeMode: WorktreeMode | null;
   /**
    * How the repo got onto the disk. `source` null: the runner printed no
-   * source line (warm repos off, or no clone in this run).
+   * source line (warm repos off, or no clone in this run). `reuse`: grown
+   * from the packs a container reset kept.
    */
   repo: {
-    source: 'warm' | 'clone' | null;
+    source: 'warm' | 'clone' | 'reuse' | null;
     fallbackReason: RepoFallbackReason | null;
     snapshotAgeMs: number | null;
     /**
@@ -718,9 +765,70 @@ export interface RunReport {
    * (MAX_DEFERRED_RETRIES) was hit and nothing was scheduled.
    */
   deferredRetry: { retryNumber: number; backoffMs: number | null; reason: string | null } | null;
+  /**
+   * What the run used of its container, from the runner's sampler
+   * (apps/runner/src/resource-sampler.ts): the working-set peak and the
+   * memory it was measured against, and the lowest free disk seen with the
+   * disk's size. Null when the runner printed none (an older image).
+   */
+  resources: { memoryPeakBytes: number | null; memoryLimitBytes: number | null; diskFreeMinBytes: number | null; diskTotalBytes: number | null };
+  /**
+   * Why the run did not end on its own exit, when it did not:
+   * `container_stopped` the container died under it (OOM, a platform stop);
+   * `agent_restart` the agent restarted (a deploy) and found it orphaned;
+   * `question` it parked waiting for an answer. buildd's size rule
+   * (apps/web/src/lib/runner-size.ts) counts only the first.
+   */
+  interruption: RunInterruption | null;
+  /**
+   * Each time the agent (Durable Object) restarted while this attempt was
+   * live, oldest first. `recovery`: `reattached` the runner was still going
+   * and the new agent adopted it; `parked` it parked the run and resumed it;
+   * `crashed` it could do neither. `versionChanged` true means a Worker
+   * deploy; false means the restart had another cause (eviction, an isolate
+   * limit); null when a version was unavailable.
+   */
+  agentRestarts: AgentRestart[];
+  /**
+   * The container class this attempt ran in and the decision that chose it
+   * (buildd's runner size route; `source` null when none reached the agent).
+   * `runnerSeconds`: container running to exit, rounded up;
+   * `weightedRunnerSeconds` times the class weight (standard 1, large 2), for
+   * hosted fair use. Nothing bills from it yet.
+   */
+  /**
+   * Set when the attempt was handed a container an earlier run of the same
+   * workspace and size left warm (container-lease.ts): which task's, how long
+   * it sat idle, how long the reset took, and what reuse saved, measured:
+   * this run's prep (prepMsOf: dispatch to claim, then getting the repo
+   * ready) against the fresh-container baseline, the prep of the fresh run
+   * that started the container. `savedMs` is negative when reuse was slower.
+   * `fallback: 'reset_failed'`: the reset did not verify clean, so the
+   * attempt started in a fresh container.
+   */
+  reusedContainer: ReusedContainer | null;
+  /**
+   * Who paid for this attempt's model calls: the deployer's own Claude token
+   * on this Worker (`owner_seat`) or a metered route (gateway, proxy, team
+   * endpoint or Anthropic key). Null when no model call went out. A label
+   * only; the token itself is never in a report.
+   */
+  modelAuth: ModelAuth | null;
+  runnerSize: {
+    size: RunnerSize;
+    source: RunnerSizeSource | null;
+    reason: RunnerSizeReason | null;
+    weight: number;
+    runnerSeconds: number | null;
+    weightedRunnerSeconds: number | null;
+  };
 }
 
+export const RUN_INTERRUPTIONS = ['container_stopped', 'agent_restart', 'question'] as const;
+export type RunInterruption = typeof RUN_INTERRUPTIONS[number];
+
 export interface RunReportInput {
+  browser?: BrowserRunUsage;
   taskId: string | null | undefined;
   attempt: number;
   workerId?: string | null;
@@ -738,12 +846,25 @@ export interface RunReportInput {
   parkedAt?: number;
   /** See RunReport.deferredRetry. */
   deferredRetry?: { retryNumber: number; backoffMs: number | null; reason: string | null } | null;
+  /** See RunReport.interruption. */
+  interruption?: RunInterruption | null;
+  /** See RunReport.agentRestarts. */
+  agentRestarts?: AgentRestart[];
+  /** See RunReport.reusedContainer. */
+  reusedContainer?: ReusedContainer | null;
+  /** See RunReport.modelAuth. */
+  modelAuth?: ModelAuth | null;
+  /** The class this agent is (the container class actually used). Absent: standard. */
+  runnerSize?: RunnerSize;
+  /** buildd's decision that routed the dispatch here, if one reached the agent. */
+  runnerSizeDecision?: RunnerSizeDecision | null;
 }
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const INSTANCE_TYPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'parked', 'deferred', 'start_deferred', 'crashed'];
 const CRASH_REPORTS: readonly CrashReport[] = ['sent', 'rejected', 'error', 'no_worker_id'];
+const AGENT_RECOVERIES: readonly AgentRestart['recovery'][] = ['reattached', 'parked', 'crashed'];
 const DEFERRED_REASON_RE = /^[A-Za-z0-9_]{1,64}$/;
 
 // Shapes of credentials an identifier must never be mistaken for (Anthropic,
@@ -762,6 +883,21 @@ function count(v: unknown): number {
 }
 function span(from: number | null, to: number | null): number | null {
   return from !== null && to !== null && to >= from ? to - from : null;
+}
+
+function msOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : null;
+}
+
+function reusedContainerSection(v: ReusedContainer | null | undefined, durationsMs: Partial<Record<string, number | null>>): ReusedContainer | null {
+  const fromTaskId = id(v?.fromTaskId);
+  if (!v || !fromTaskId) return null;
+  const idleMs = count(v.idleMs);
+  const resetMs = msOrNull(v.resetMs);
+  if ('fallback' in v && v.fallback === 'reset_failed') return { fromTaskId, idleMs, fallback: 'reset_failed', resetMs };
+  const baselinePrepMs = msOrNull('baselinePrepMs' in v ? v.baselinePrepMs : null);
+  const prepMs = prepMsOf(durationsMs);
+  return { fromTaskId, idleMs, resetMs, prepMs, baselinePrepMs, savedMs: prepMs !== null && baselinePrepMs !== null ? baselinePrepMs - prepMs : null };
 }
 
 export function assembleRunReport(input: RunReportInput): RunReport {
@@ -792,10 +928,26 @@ export function assembleRunReport(input: RunReportInput): RunReport {
     return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null;
   };
   const src = t.repoSource as { source?: unknown; reason?: unknown } | undefined;
-  const source = src?.source === 'warm' || src?.source === 'clone' ? src.source : null;
+  const source = src?.source === 'warm' || src?.source === 'clone' || src?.source === 'reuse' ? src.source : null;
   const fallbackReason = source === 'clone' && REPO_FALLBACK_REASONS.includes(src?.reason as RepoFallbackReason) ? src!.reason as RepoFallbackReason : null;
   const skipped = (t.warmUpload as { skipped?: unknown } | undefined)?.skipped;
   const warmUploadSkipReason = WARM_UPLOAD_SKIP_REASONS.includes(skipped as WarmUploadSkipReason) ? skipped as WarmUploadSkipReason : null;
+  const durationsMs: RunReport['durationsMs'] = {
+    containerStart: span(timestamps.dispatchReceivedAt, timestamps.containerRunningAt),
+    toClaim: span(timestamps.containerRunningAt, timestamps.claimedAt),
+    clone: span(phase('clone_start'), phase('clone_end')),
+    install: span(phase('install_start'), phase('install_end')),
+    restoreWarm: span(phase('restore_warm_start'), phase('restore_warm_end')),
+    fetch: span(phase('fetch_start'), phase('fetch_end')),
+    warmUpload: span(phase('warm_upload_start'), phase('warm_upload_end')),
+    park: span(phase('park_start'), phase('park_end')),
+    restorePark: span(phase('restore_park_start'), phase('restore_park_end')),
+    restoreCache: span(phase('restore_cache_start'), phase('restore_cache_end')),
+    restoreReuse: span(phase('restore_reuse_start'), phase('restore_reuse_end')),
+    worktree: span(phase('worktree_start'), phase('worktree_end')),
+    toFirstModelRequest: span(timestamps.claimedAt, timestamps.firstModelRequestAt),
+    total: span(timestamps.dispatchReceivedAt, timestamps.exitedAt),
+  };
   return {
     kind: RUN_REPORT_KIND,
     version: RUN_REPORT_VERSION,
@@ -806,21 +958,10 @@ export function assembleRunReport(input: RunReportInput): RunReport {
     runLabel: taskId && attempt > 0 ? runLabel(taskId, attempt) : null,
     instanceType: typeof input.instanceType === 'string' && INSTANCE_TYPE_RE.test(input.instanceType) ? input.instanceType : null,
     timestamps,
-    durationsMs: {
-      containerStart: span(timestamps.dispatchReceivedAt, timestamps.containerRunningAt),
-      toClaim: span(timestamps.containerRunningAt, timestamps.claimedAt),
-      clone: span(phase('clone_start'), phase('clone_end')),
-      install: span(phase('install_start'), phase('install_end')),
-      restoreWarm: span(phase('restore_warm_start'), phase('restore_warm_end')),
-      fetch: span(phase('fetch_start'), phase('fetch_end')),
-      warmUpload: span(phase('warm_upload_start'), phase('warm_upload_end')),
-      park: span(phase('park_start'), phase('park_end')),
-      restorePark: span(phase('restore_park_start'), phase('restore_park_end')),
-      restoreCache: span(phase('restore_cache_start'), phase('restore_cache_end')),
-      toFirstModelRequest: span(timestamps.claimedAt, timestamps.firstModelRequestAt),
-      total: span(timestamps.dispatchReceivedAt, timestamps.exitedAt),
-    },
+    durationsMs,
+    ...(input.browser ? { browser: { provider: 'cloudflare' as const, sessionMs: count(input.browser.sessionMs), sessionSeconds: count(input.browser.sessionMs) / 1000, sessions: count(input.browser.sessions), requests: count(input.browser.requests), bytes: count(input.browser.bytes), relayErrors: count(input.browser.relayErrors) } } : {}),
     runnerPhases: phases,
+    worktreeMode: t.worktreeMode === 'clone' || t.worktreeMode === 'worktree' ? t.worktreeMode : null,
     repo: {
       source,
       fallbackReason,
@@ -860,6 +1001,41 @@ export function assembleRunReport(input: RunReportInput): RunReport {
           reason: typeof input.deferredRetry.reason === 'string' && DEFERRED_REASON_RE.test(input.deferredRetry.reason) ? input.deferredRetry.reason : null,
         }
       : null,
+    resources: {
+      memoryPeakBytes: metric('mem_peak_bytes'),
+      memoryLimitBytes: metric('mem_limit_bytes'),
+      diskFreeMinBytes: metric('disk_free_min_bytes'),
+      diskTotalBytes: metric('disk_total_bytes'),
+    },
+    interruption: RUN_INTERRUPTIONS.includes(input.interruption as RunInterruption) ? input.interruption as RunInterruption : null,
+    agentRestarts: (input.agentRestarts ?? []).slice(0, 5).flatMap((r): AgentRestart[] => {
+      const at = ts(r?.at);
+      if (at === null || !AGENT_RECOVERIES.includes(r.recovery)) return [];
+      return [{
+        at,
+        recovery: r.recovery,
+        containerRunning: r.containerRunning === true,
+        runningForMs: ts(r.runningForMs),
+        versionChanged: typeof r.versionChanged === 'boolean' ? r.versionChanged : null,
+      }];
+    }),
+    reusedContainer: reusedContainerSection(input.reusedContainer, durationsMs),
+    modelAuth: input.modelAuth === 'owner_seat' || input.modelAuth === 'metered' ? input.modelAuth : null,
+    runnerSize: runnerSizeSection(input, timestamps),
+  };
+}
+
+function runnerSizeSection(input: RunReportInput, t: { containerRunningAt: number | null; exitedAt: number | null }): RunReport['runnerSize'] {
+  const size: RunnerSize = input.runnerSize === 'large' ? 'large' : 'standard';
+  const decision = normalizeRunnerSizeDecision(input.runnerSizeDecision);
+  const secs = runnerSeconds(size, t.containerRunningAt, t.exitedAt);
+  return {
+    size,
+    source: decision?.source ?? null,
+    reason: decision?.reason ?? null,
+    weight: RUNNER_CLASSES[size].weight,
+    runnerSeconds: secs?.seconds ?? null,
+    weightedRunnerSeconds: secs?.weighted ?? null,
   };
 }
 

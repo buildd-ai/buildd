@@ -413,3 +413,30 @@ describe('explicitExclusionGateEvent', () => {
     }
   });
 });
+
+
+describe('browser role claim diagnostics', () => {
+  it('names the missing browser capability for a refused visual auditor', () => {
+    const result = classifyExplicitTaskExclusion(probe({ roleSlug: 'visual-auditor', gates: { role: false } }), NOW);
+    expect(result.code).toBe('role_mismatch');
+    expect(result.detail).toContain('browser capability');
+    expect(result.detail).toContain('provider');
+  });
+  it('retains the skill explanation for non-browser roles', () => {
+    const result = classifyExplicitTaskExclusion(probe({ roleSlug: 'builder', gates: { role: false } }), NOW);
+    expect(result.detail).toContain('skill match');
+    expect(result.detail).not.toContain('browser capability');
+  });
+});
+
+
+it('records a failed browser probe within the same scoped write with a minute throttle', async () => {
+  updateCalls = [];
+  selectThrows = false;
+  await stampLastClaimAttempt({ taskId: 'task-a', workspaceIds: ['ws-a'], reason: 'no_pending_tasks', exclusion: { code: 'role_mismatch', detail: 'missing browser capability' }, browserProvider: { provider: 'cloudflare', ok: false, checkedAt: NOW.toISOString(), code: 'provider_missing' }, now: NOW });
+  const context = render(updateCalls[0].set.context);
+  expect(context.sql).toContain('lastBrowserRefusal');
+  expect(context.sql).toContain('CASE WHEN');
+  expect(context.params.join(' ')).toContain('provider_missing');
+  expect(render(updateCalls[0].where!).params).toEqual(['task-a', 'ws-a']);
+});

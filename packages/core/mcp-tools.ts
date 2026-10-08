@@ -17,7 +17,9 @@ import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-heal
 import type { DispatchHistoryEntry } from './dispatch-outbox';
 import { formatEvidenceObjects, formatTaskEvidence, formatTaskMismatch } from './task-evidence-format';
 import { runGetVisualReview, runListRunners } from './mcp-visual-review';
+import { handleModelUpgradeAction } from './mcp-model-upgrades';
 import { normalizeProject, workspaceProjectKey } from './project-scope';
+import { formatAnalyticsReadFailure, readScheduleDelegation } from './token-delegation';
 import { saveMemory, updateMemory } from './memory-write';
 import {
   LEDE_FIELD_SPEC,
@@ -338,6 +340,11 @@ export const workerActions = [
   // The visual auditor's own read: where its pages come from (sandbox or a
   // Vercel preview), resolved server-side with the workspace's GitHub App.
   'get_page_source',
+  // Worker level, not admin: authority is the TASK's role grant in its
+  // workspace (Platform Operator), checked server-side per capability and
+  // target. The caller never receives the credential; a task under any
+  // other role is refused whatever its key level.
+  'deploy',
   'emit_event', 'query_events', 'get_error_traces',
   // Deterministic read over rows the caller can already see. Worker level, not
   // admin: the agent that needs "why is this stuck?" is the one standing in it.
@@ -638,14 +645,14 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), tier? (premium-plus|premium|standard|budget, or null to clear — pins the tier; setting a tier without model also drops an existing model pin), model? (Anthropic model id such as claude-…, or null to clear — pins an exact model and outranks tier), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. tier/model take effect on the next claim or retry; they do not change a running session. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), label? (2–4 word noun-phrase shown as the task\'s chip next to its conventional-commit scope, max 48 chars — e.g. title "feat(fx): rates service with a 15-minute cache" → label "rates service"; no type prefix or filler words; derived from the title if omitted), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design|research — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, headBranch? (pins the exact git branch claim_task assigns this task\'s worker, replacing the generated buildd/<id8>-<slug> name — the same mechanism a mission\'s shared integration branch uses internally, exposed here for a one-off task whose work must land on an existing or shared branch outside mission machinery. create_pr\'s ownership check also treats a PR headed at this branch as the task\'s own. Say it here, not in the title or description: free-text branch instructions are invisible to both claim_task and create_pr, so a task that merely describes the branch in prose gets a fresh generated one anyway and then has its PR refused as head_not_owned when it tries to use the described branch instead), verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind (state it on every task — coordination|engineering|research|writing|design|analysis|observation): the SHAPE of the work, not its subject. engineering changes code or config; research reads and reports without changing anything; writing produces prose or docs; design produces a visual or interaction artifact; analysis derives a judgment from data; observation watches something and records what it saw; coordination plans, routes or reconciles other tasks. It picks the model tier at claim time AND it is the only thing any surface draws this task\'s glyph from — a task filed without it is unlabelled on every screen for the rest of its life, and nothing infers it later from the title. complexity? (simple|normal|complex), tier? (premium-plus|premium|standard|budget — hard override that skips the kind×complexity matrix; premium-plus is Fable-class and ~2x premium per token, opt-in only), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex), emitsPlan? (boolean, default false — spec-to-build opt-in: forces mode: "planning" and context.requiresPlanApproval: true, both non-overridable by the caller, and requires a non-empty pathManifest naming the spec document this task authors (400 otherwise). Use only when the task\'s entire deliverable is a breakdown that should become an approved, traceable plan — never inferred, always explicit) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped)',
     manage_experiments: '{ action (required): "list" | "get" | "readout" | "create" | "update" | "start" | "pause" | "conclude", experimentId? (required except list/create), key?, title?, kind? ("model_routing" default | "heartbeat_triage" | "question_gate"), hypothesis?, treatmentFraction? (0-1 exclusive, share of ELIGIBLE tasks sent to the treatment arm; default 0.5, REQUIRED for heartbeat_triage and question_gate), config? (model_routing: { arms: { treatment: { tier } }, eligibility: { maxBudgetPressure }, minSamplePerArm }; heartbeat_triage: { waitMinConfidence, minSamplePerArm }; question_gate: { minConfidence (default 0.7, unmeasured), maxPushbacks (default 2), minSamplePerArm }), visibility? ("admins" default | "team"), decision? (required for conclude), policyVersion? (readout of an earlier version), workspaceId? } — team experiments. model_routing compares model tiers. heartbeat_triage lets a confident "wait" from the decision model skip a heartbeat cycle of the mission organizer in the treatment share of missions (the mission is the unit); control is shadow (the organizer always runs); its readout is per arm: organizer dispatches per mission, how often the organizer acted right after a skip, and confident-wait precision against what the organizer then did. question_gate has the decision model check each AskUserQuestion before it reaches a person ("could someone with no context decide this?"); in the treatment share of tasks a confident needs_context (>= minConfidence) is sent back to the agent with what to add, at most maxPushbacks times per worker, then sent as-is; control is shadow (checked and recorded, always sent); any failure sends the question unchanged; each check is recorded on the task assignment (eligibility.questionGateChecks). create makes a draft; nothing enrolls until start. start (model_routing): from the next claim, eligible tasks (plain standard-tier routing, no pinned model, low budget pressure; the mission is the unit when there is one) are randomly split between the tier the router chose and the treatment tier, and every assignment is recorded. Only one experiment of each kind can run per team. pause stops new enrolment within a minute; conclude is final and records the decision. Changing treatmentFraction or config after the first start bumps policyVersion, and readout reports one version at a time. readout gives per-arm n, clean-completion rate with a 95% interval, the difference, and a verdict (insufficient_n until both arms reach minSamplePerArm). Every kind config also takes an optional duration cap, maxDurationDays and/or endsAt (ISO date); editing only the cap never bumps policyVersion, and a daily check pauses a running experiment once it is past its cap. list and readout also report enrolment health for running experiments: nothing enrolled for days, an arm never drawn, a split far off treatmentFraction, one unit (mission) holding most of an arm, past its cap. list/get/readout at worker level see only visibility="team" experiments; create/update/start/pause/conclude [admin]',
-    manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai"|"openai-codex"|"openrouter" — "openai" is the API-key provider for server-side calls such as chat; runners cannot use it), model? (required for set: full model ID, e.g. "claude-fable-5"), surface? (set/delete: "agent"|"chat" — scopes the row to agent runs or to chat and inference calls; omit for the row that serves both), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace+surface → workspace → team+surface → team → catalog → code fallback) with source annotation, one line per surface when a tier is split. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
+    manage_model_tiers: '{ action: "list" | "set" | "delete" | "policy" | "set_policy" | "adopt" | "model", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default; policy/set_policy/adopt: only an explicit workspaceId scopes to the workspace, omit for the team), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai"|"openai-codex"|"openrouter" — "openai" is the API-key provider for server-side calls such as chat; runners cannot use it), model? (required for set and model: full model ID, e.g. "claude-fable-5"), surface? (set/delete: "agent"|"chat" — scopes the row to agent runs or to chat and inference calls; omit for the row that serves both), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer), mode? (set_policy: "latest-compatible"|"soak"|"manual"|"inherit"), soakHours? (set_policy with soak: default 72) } — manage team model tier registry and model upgrades. list returns the effective map (workspace+surface → workspace → team+surface → team → catalog → code fallback) with source annotation, one line per surface when a tier is split. set upserts a registry row (a pin: the tier stays on that model whatever the upgrade policy) — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. policy reads the upgrade policy in effect and where it comes from (workspace/team/default), and per tier: the model, why it was chosen, any newer centrally certified model and why it is withheld (pinned/manual/soak), and deprecation. set_policy sets how catalog-resolved tiers move to newly certified models: latest-compatible adopts on certification, soak after soakHours with no compatibility incident, manual never on its own (adopt moves it); mode "inherit" clears the level. adopt (manual policy) takes every model certified so far. model shows one model\'s central certification: state, CLI floor, release/certification time, deprecation. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key?, taskId? } — workerId auto-resolved from context if omitted; for worker artifacts, taskId is auto-resolved from worker data if not provided. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context. taskId enables artifact notifications when the artifact is meant for review.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, review?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call. review: true narrows to artifacts deliberately produced for a human to read (reports, analyses, recommendations, anything named with a key or filed against a mission/initiative, anything shared publicly) and drops the captures — screenshots, diffs, uploaded files, machine markers. Same rule as the dashboard\'s "For review" view. Ignored when initiativeId is set.',
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, roleSlug? (role every spawned task runs as; applied only while that role exists in the workspace, else the task files role-less), trigger?, workspaceId? } [admin]',
-    update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
+    update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId?, delegation? ({ grants: [{ workspaceId (UUID), capabilities: (\"analytics:read\" | \"tasks:create\")[] }] } or null to clear) } [admin] — delegation lets the tasks this schedule spawns read the named workspaces\' analytics (decision ledger, decision/coordination stats, gate ledger) and/or file tasks there, and nothing else. Same team only; team admin or owner only; recorded with who granted it and when.',
     delete_schedule: '{ scheduleId (required), workspaceId? } — remove a schedule permanently; prefer pause_schedules if you might need to re-enable it. [admin]',
     list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name), type? ("heartbeat" | "workspace" | "all", default "all" — heartbeat schedules are mission-owned and not independently pausable/editable; pass "workspace" for the schedules you can actually act on) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
     trace_schedule: '{ taskId? OR minutesAgo? OR taskTitleContains?, workspaceId? } — reverse-lookup: given a stray task or a recent notification, find the schedule that spawned it. taskId is the strongest signal (uses the schedule_id FK); minutesAgo lists schedules that fired within the window; taskTitleContains matches on the task template title.',
@@ -677,12 +684,13 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude learned floor pressure (forecast, not provider usage; source, observation age, sample basis) and Codex exhaustion, monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — learned pressure is advisory and must not be treated as a hard budget wall; use provider exhaustion or monthly depletion for startAfter: "budget_reset".',
     get_manifest_coverage: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — aggregate share of tasks created in the window with concrete, wildcard-only, or missing path manifests. Includes workspace, mission and kind breakdowns; concreteShare is a fraction in [0,1], null for no tasks.',
     get_path_claim_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — check_path_claim call counts and claimed, blocked, deadlock and rejected outcomes from the decision ledger, with transport breakdown and explicit instrumentation coverage. Historical unrecorded successful calls cannot be reconstructed.',
-    get_decision_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — orchestration decision-shadow ledger counts (orchestration_decisions, orchestration_manifest_predictions): totals, applied/suggested/fallback, labelled vs unlabelled, by decision group (capability, decisionId, fingerprint, policy, arm), by UTC day and by fallback reason, plus each workspace\'s opt-in state so zero rows can be told apart from a disabled capability. The DB-free substitute for querying the ledger directly.',
+    get_decision_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d), capability?, since?, until?, limit?, overriddenOnly?, disagreementOnly? } — with capability (e.g. \"question_gate\"): the generic decision ledger for that capability in one workspace — every decision with verdict (for the question gate its decide / hold / ask disposition), confidence, reason, the answer in effect, any later human override and outcome labels, plus a summary; since/until (ISO, at most 31 days) pin a stable window, limit (max 500) bounds the page and truncated + nextUntil continue it. Every answer starts with status: OK or NO_DATA reached the data; FORBIDDEN, UNAUTHORIZED or TOOL_UNAVAILABLE did not, and is never evidence of zero decisions. A scheduled task reads another workspace only when its schedule delegates analytics:read on it. Without capability: orchestration decision-shadow ledger counts (orchestration_decisions, orchestration_manifest_predictions): totals, applied/suggested/fallback, labelled vs unlabelled, by decision group (capability, decisionId, fingerprint, policy, arm), by UTC day and by fallback reason, plus each workspace\'s opt-in state so zero rows can be told apart from a disabled capability. The DB-free substitute for querying the ledger directly.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="role" reports a routed role (one the decision model filled in) as its own "<Role> · inferred" group beside the stated one, and every role group carries median/p90 time-to-claim. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor. Also returns every tool, Bash intent buckets and code-search shapes (exact-histogram tasks only) and per-action buildd calls (recorded since capture began), each with its own coverage line.',
-    read_evidence: '{ taskId? | prNumber? | evidenceId? (one is required; taskId: full UUID or 8+ char prefix), workspaceId? (with prNumber or evidenceId; defaults to the session workspace), kind? ("command_output"|"test_report"|"ci_job_log"|"transcript"|"pr_diff"), tail? (last N lines, max 10000), grep? (case-insensitive regex, max 200 chars, at most one * or +), cursor? (from a previous truncated read) } — read the stored run evidence behind a task or PR: full failing command output, test reports, CI job logs. With no tail/grep (and no evidenceId) it lists the objects; with tail or grep it reads the newest matching object. Text is redacted and capped at 64 KB; a truncated read says so and returns a cursor. Never returns a download URL.',
+    read_evidence: '{ taskId? | prNumber? | evidenceId? (one is required; taskId: full UUID or 8+ char prefix), workspaceId? (with prNumber or evidenceId; defaults to the session workspace), kind? ("command_output"|"test_report"|"ci_job_log"|"transcript"|"pr_diff"), tail? (last N lines, max 10000), grep? (case-insensitive regex, max 200 chars, at most one * or +), cursor? (from a previous truncated read) } — read the stored run evidence behind a task or PR: full failing command output, test reports, CI job logs. evidenceId also reads a runner-hosted Quality Scout run command log (cited in a probe result as evidence:<id>). With no tail/grep (and no evidenceId) it lists the objects; with tail or grep it reads the newest matching object. Text is redacted and capped at 64 KB; a truncated read says so and returns a cursor. Never returns a download URL.',
     dispatch_health: '{ workspaceId? } — read-only Dispatch transport health for the caller\'s team (or one of its workspaces). Leads with a one-line verdict (healthy, or what is wrong), then the outbox counts (pending, due, overdue, delivering, stuck, handed off, unacked, unacked past the in-app fallback, orphaned, failed in 24h), deliveries in 24h by route (delivered_via), delivery latency p50/p95 (delivered_at minus not_before), whether the Dispatch Worker answers /health, the last hourly floor run\'s reconcile counts (platform-wide; any repair there is a bug signal), and workspaces not on the dispatch transport (the kill switch). Counts come from Postgres, which receipts keep in step with the Worker; the only Worker call is the /health probe. For one task\'s wakes use get_task include:["dispatch"]; for why a pending task has not started use explain.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. The overview also reports PR landing: p50/p90 time from approved-and-green to merged, and how many PRs are stuck past the 30-minute target, plus full knowledge-ingest jobs no runner has taken. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     get_page_source: '{ workerId?, sha? (commit to audit; default the head of captureRef.ref), prNumber? (use this PR\'s head commit instead, e.g. when that branch deploys to Production), waitSeconds? (0-45 long-poll on a preview still building) } — where the visual auditor\'s pages come from, per gitConfig.visualQa.pageSource (sandbox | vercel-preview | auto), and which branch to capture: captureRef { ref, source, integrationBase } is the mission\'s integration branch on a mission-branch mission, else trunk — dispatch the sandbox capture with --ref captureRef.ref and record it on every shot as qa.ref / qa.refSource. Reads the commit\'s GitHub deployment statuses (no Vercel credential) and returns the source, the preview URL when one is READY, or why not: "pending" (call again), "preview_unavailable" (loud: ask the owner, never pass). Also names the env vars capture reads for the two auth walls and whether each is mapped. Returns no secret.',
+    deploy: '{ workerId?, provider (required: cloudflare), project (required), environment (required), credentialRef (required — the stored credential\'s reference: its label, or the provider name when unlabelled), operation (required: status|put_secret|upload_worker|ensure_bucket), params? } — Platform Operator deployment, run server-side with a stored credential you never see. Allowed only when this task\'s role is the Platform Operator AND this workspace\'s Operator grant covers the operation\'s capabilities (deployments:read or deployments:write, plus deployment_secrets:use) for exactly this provider, project, environment and credential ref; anything else is refused with a reason (not_enabled, capability_not_granted, project_not_allowed, ...). The Cloudflare Worker is the project in production and <project>-<environment> elsewhere. params by operation — status: none (latest deployment id/versions, secret NAMES, workers.dev URL); put_secret: { name, value } (value is sent to the Worker and never echoed); upload_worker: { modules: [{ name, content }], mainModule?, compatibilityDate (YYYY-MM-DD), compatibilityFlags?, vars? } (a built module bundle, e.g. `wrangler deploy --dry-run --outdir dist`, which needs no credential; existing secrets are kept; 3 MB cap); ensure_bucket: { bucket? (default <script>-snapshots; must start with <script>-), lifecycle?: [{ id, prefix, expireDays }] }. Every call, allowed or refused, is written to the deployment audit trail with the credential reference only. Returns { auditId, target, operation, result } and never a credential.',
     list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces, last heartbeat. Cloud runs (one container per task) are one elastic group per dispatcher, "N running", with each run nested. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
     get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; each audit task (status, times, why); per route+viewport: round, agent verdict, finding, human decision, fix task, shot links; manual shots and reports; what needs you. missionTitle is team-wide unless workspaceId. No mission: missions waiting on you. [admin]',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
@@ -1375,6 +1383,16 @@ async function resolveWorkspaceId(
   if (match) return match.id;
   if (explicit) throw new Error(unknownWorkspaceMessage(explicit, workspaces));
   return null;
+}
+
+/** One audit line for a schedule's delegation, or '' when it has none. */
+export function describeScheduleDelegation(value: unknown): string {
+  const grants = readScheduleDelegation(value);
+  if (!grants.length) return '';
+  const d = value as { grantedAt?: string; grantedByUserId?: string | null; grantedByAccountId?: string | null };
+  const who = d.grantedByUserId ? `user ${d.grantedByUserId}` : d.grantedByAccountId ? `account ${d.grantedByAccountId}` : 'unknown';
+  const list = grants.map(g => `${g.workspaceId} (${g.capabilities.join(', ')})`).join('; ');
+  return `Delegates: ${list}; granted by ${who}${d.grantedAt ? ` at ${d.grantedAt}` : ''}`;
 }
 
 /** `Could not resolve workspace "x": not visible to this key. You can see: a, b.` */
@@ -2274,6 +2292,10 @@ export async function handleBuilddAction(
           method: 'PATCH',
           body: JSON.stringify({
             status: 'completed',
+            // The agent's own call, not the runner's end-of-session report: it
+            // can read a 400 and retry, so the server refuses a fixable verdict
+            // instead of failing the worker.
+            viaCompleteTask: true,
             ...(params.summary ? { summary: params.summary, summarySource: 'agent' } : {}),
             ...(params.structuredOutput ? { structuredOutput: params.structuredOutput } : {}),
             ...(params.nextSuggestion ? { nextSuggestion: params.nextSuggestion } : {}),
@@ -3428,6 +3450,8 @@ export async function handleBuilddAction(
       if (params.enabled !== undefined) updateBody.enabled = params.enabled;
       if (params.name !== undefined) updateBody.name = params.name;
       if (params.taskTemplate !== undefined) updateBody.taskTemplate = params.taskTemplate;
+      // Explicit cross-workspace reach for this schedule's tasks; null clears it (team admin only).
+      if (params.delegation !== undefined) updateBody.delegation = params.delegation;
 
       if (params.skillSlugs && Array.isArray(params.skillSlugs) && !params.taskTemplate) {
         const current = await api(`/api/workspaces/${wsId}/schedules/${params.scheduleId}`);
@@ -3442,7 +3466,7 @@ export async function handleBuilddAction(
       }
 
       if (Object.keys(updateBody).length === 0) {
-        throw new Error('At least one field (cronExpression, timezone, enabled, name, taskTemplate, skillSlugs, workspaceId) must be provided');
+        throw new Error('At least one field (cronExpression, timezone, enabled, name, taskTemplate, skillSlugs, delegation) must be provided');
       }
 
       const updated = await api(`/api/workspaces/${wsId}/schedules/${params.scheduleId}`, {
@@ -3451,7 +3475,8 @@ export async function handleBuilddAction(
       });
 
       const updSched = updated.schedule;
-      return text(`Schedule updated: "${updSched.name}" (ID: ${updSched.id})\nCron: ${updSched.cronExpression} (${updSched.timezone})\nEnabled: ${updSched.enabled}\nNext run: ${updSched.nextRunAt || 'not scheduled'}`);
+      const delegationLine = describeScheduleDelegation(updSched.delegation);
+      return text(`Schedule updated: "${updSched.name}" (ID: ${updSched.id})\nCron: ${updSched.cronExpression} (${updSched.timezone})\nEnabled: ${updSched.enabled}\nNext run: ${updSched.nextRunAt || 'not scheduled'}${delegationLine ? `\n${delegationLine}` : ''}`);
     }
 
     case 'delete_schedule': {
@@ -3498,7 +3523,9 @@ export async function handleBuilddAction(
         const err = s.lastError ? `\n  ⚠ Last error: ${String(s.lastError).slice(0, 200)}` : '';
         const channel = describeOutputChannel(s.taskTemplate);
         const channelLine = channel ? `\n  Sends: ${channel}` : '';
-        return `- **${s.name}**${status}${wsTag}\n  Cron: ${s.cronExpression} (${s.timezone})\n  Next: ${s.nextRunAt || 'N/A'} | ${last} | Runs: ${s.totalRuns}${failures}\n  Task: ${s.taskTemplate.title}${channelLine}${err}\n  ID: ${s.id}`;
+        const delegation = describeScheduleDelegation(s.delegation);
+        const delegationLine = delegation ? `\n  ${delegation}` : '';
+        return `- **${s.name}**${status}${wsTag}\n  Cron: ${s.cronExpression} (${s.timezone})\n  Next: ${s.nextRunAt || 'N/A'} | ${last} | Runs: ${s.totalRuns}${failures}\n  Task: ${s.taskTemplate.title}${channelLine}${delegationLine}${err}\n  ID: ${s.id}`;
       };
 
       // If workspace specified, list its schedules; otherwise aggregate across all workspaces
@@ -4434,40 +4461,47 @@ export async function handleBuilddAction(
       const wantsRead = !!evidenceId || [...readQs.keys()].length > 0;
       const kindQs = kind ? `kind=${encodeURIComponent(kind)}` : '';
 
-      type EvidenceRow = { id: string; taskId: string; rootTaskId: string; kind: string; bytes: number; uploadState: string; createdAt: string; prNumber: number | null };
+      type EvidenceRow = { id: string; taskId: string | null; rootTaskId: string | null; scoutRunId?: string | null; kind: string; bytes: number; uploadState: string; createdAt: string; prNumber: number | null };
       const kib = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MiB` : `${Math.max(1, Math.round(n / 1024))} KiB`);
+      const ownerLabel = (o: EvidenceRow) => (o.taskId ? `task ${o.taskId.slice(0, 8)}` : o.scoutRunId ? `scout run ${o.scoutRunId.slice(0, 8)}` : 'no owner');
       const row = (o: EvidenceRow) =>
-        `- ${o.kind} ${kib(o.bytes)} [${o.uploadState}] ${o.createdAt} task ${o.taskId.slice(0, 8)}${o.prNumber ? ` PR #${o.prNumber}` : ''} (id: ${o.id})`;
+        `- ${o.kind} ${kib(o.bytes)} [${o.uploadState}] ${o.createdAt} ${ownerLabel(o)}${o.prNumber ? ` PR #${o.prNumber}` : ''} (id: ${o.id})`;
 
       let objects: EvidenceRow[] = [];
       let scope: string;
+      // The read path of one object: its task's evidence route, or, for a
+      // runner-hosted Scout run's command log (no task), the run's.
       let readVia: (o: EvidenceRow) => string;
+      const viaTask = (taskId: string) => `/api/tasks/${encodeURIComponent(taskId)}/evidence`;
       if (evidenceId) {
         const id = requireFullUuid(evidenceId, 'evidenceId');
-        let owner = taskIdParam;
-        if (!owner) {
+        let path = taskIdParam ? viaTask(taskIdParam) : null;
+        if (!path) {
           const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
           if (!wsId) return errorResult('read_evidence with only evidenceId needs a workspace: pass workspaceId or taskId.');
           const data = await api(`/api/evidence?workspaceId=${encodeURIComponent(wsId)}&evidenceId=${encodeURIComponent(id)}`);
-          owner = data?.objects?.[0]?.taskId ?? null;
-          if (!owner) return errorResult(`Evidence object ${id} not found.`);
+          const found = data?.objects?.[0] as EvidenceRow | undefined;
+          path = found?.taskId ? viaTask(found.taskId)
+            : found?.scoutRunId ? `/api/quality-scout/runs/${encodeURIComponent(found.scoutRunId)}/evidence`
+            : null;
+          if (!path) return errorResult(`Evidence object ${id} not found.`);
         }
-        objects = [{ id, taskId: owner } as EvidenceRow];
+        objects = [{ id } as EvidenceRow];
         scope = `evidence ${id}`;
-        readVia = () => owner!;
+        readVia = () => path!;
       } else if (taskIdParam) {
         const data = await api(`/api/tasks/${encodeURIComponent(taskIdParam)}/evidence${kindQs ? `?${kindQs}` : ''}`);
         objects = (data?.objects ?? []) as EvidenceRow[];
         const resolvedTask = (data?.taskId as string) || taskIdParam;
         scope = `task ${resolvedTask}`;
-        readVia = () => resolvedTask;
+        readVia = () => viaTask(resolvedTask);
       } else {
         const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
         if (!wsId) return errorResult('read_evidence with prNumber needs a workspace: pass workspaceId.');
         const data = await api(`/api/evidence?workspaceId=${encodeURIComponent(wsId)}&prNumber=${prNumber}${kindQs ? `&${kindQs}` : ''}`);
         objects = (data?.objects ?? []) as EvidenceRow[];
         scope = `PR #${prNumber}`;
-        readVia = (o) => o.taskId;
+        readVia = (o) => viaTask(o.taskId!);
       }
 
       const kindLabel = kind ? `${kind} ` : '';
@@ -4484,7 +4518,7 @@ export async function handleBuilddAction(
       }
       const qs = new URLSearchParams(readQs);
       qs.set('evidenceId', target.id);
-      const read = await api(`/api/tasks/${encodeURIComponent(readVia(target))}/evidence?${qs}`);
+      const read = await api(`${readVia(target)}?${qs}`);
       const o = read.object as EvidenceRow;
       const span = read.fromLine ? `lines ${read.fromLine}-${read.toLine}` : 'no lines';
       const more = read.truncated
@@ -4494,7 +4528,7 @@ export async function handleBuilddAction(
         : '';
       const others = !evidenceId && objects.length > 1 ? `\n(${objects.length - 1} other object(s) for ${scope}; pass evidenceId to read one.)` : '';
       return text(
-        `${o.kind} evidence ${o.id} (task ${read.taskId}, ${span}, ${read.lineCount} line(s) returned, ${read.scannedLines} scanned)${more}${others}\n\n${read.text || '(no matching lines)'}`,
+        `${o.kind} evidence ${o.id} (${read.scoutRunId ? `scout run ${read.scoutRunId}` : `task ${read.taskId}`}, ${span}, ${read.lineCount} line(s) returned, ${read.scannedLines} scanned)${more}${others}\n\n${read.text || '(no matching lines)'}`,
       );
     }
 
@@ -4589,14 +4623,43 @@ export async function handleBuilddAction(
       if (rawWindow !== null && !(USAGE_WINDOW_VALUES as readonly string[]).includes(rawWindow)) {
         return errorResult(`Invalid window "${rawWindow}". Expected one of ${USAGE_WINDOW_VALUES.join(', ')}.`);
       }
-      const rawWsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
-      const wsId = rawWsId ? await resolveWorkspaceId(api, rawWsId, ctx) : null;
-      const query = new URLSearchParams({ metric: 'orchestrationDecisions' });
-      if (wsId) query.set('workspace', wsId);
-      if (typeof params.missionId === 'string') query.set('mission', params.missionId);
-      if (rawWindow) query.set('window', rawWindow);
-      const data = await api(`/api/stats/coordination?${query}`);
-      return text(JSON.stringify(data ?? {}, null, 2));
+      const capability = typeof params.capability === 'string' && params.capability.trim() ? params.capability.trim() : null;
+      if (!capability && ['since', 'until', 'limit', 'overriddenOnly', 'disagreementOnly'].some(k => params[k] !== undefined)) {
+        return errorResult('since, until, limit, overriddenOnly and disagreementOnly read the decision ledger: pass capability (e.g. "question_gate") with them.');
+      }
+      // Every outcome carries `status`: OK / NO_DATA reached the data; a
+      // failed read is FORBIDDEN / UNAUTHORIZED / TOOL_UNAVAILABLE and is
+      // never evidence of zero rows (a review that cannot see must say so).
+      const subject = capability ? `decision ledger (${capability})` : 'orchestration decision stats';
+      try {
+        const rawWsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
+        const wsId = rawWsId ? await resolveWorkspaceId(api, rawWsId, ctx) : null;
+        if (capability) {
+          // The generic decision ledger (decision_records): one row per decision
+          // with confidence, reason, the answer in effect, any human override
+          // and late outcome labels. For the question gate, `verdict` is the
+          // decide / hold / ask disposition and `taskId` links the question.
+          const target = wsId ?? (await ctx.getWorkspaceId());
+          if (!target) return errorResult('Could not determine workspace. Provide workspaceId.');
+          const query = new URLSearchParams({ workspaceId: target, capability });
+          if (rawWindow) query.set('window', rawWindow);
+          for (const k of ['since', 'until'] as const) if (typeof params[k] === 'string') query.set(k, params[k] as string);
+          if (params.limit !== undefined) query.set('limit', String(params.limit));
+          if (params.overriddenOnly === true) query.set('overriddenOnly', 'true');
+          if (params.disagreementOnly === true) query.set('disagreementOnly', 'true');
+          const data = await api(`/api/decisions?${query}`);
+          return text(JSON.stringify(data ?? {}, null, 2));
+        }
+        const query = new URLSearchParams({ metric: 'orchestrationDecisions' });
+        if (wsId) query.set('workspace', wsId);
+        if (typeof params.missionId === 'string') query.set('mission', params.missionId);
+        if (rawWindow) query.set('window', rawWindow);
+        const data = await api(`/api/stats/coordination?${query}`);
+        const total = Number(data?.decisions?.total ?? 0) + Number(data?.manifestPredictions?.total ?? 0);
+        return text(JSON.stringify({ status: total > 0 ? 'OK' : 'NO_DATA', ...(data ?? {}) }, null, 2));
+      } catch (err) {
+        return errorResult(formatAnalyticsReadFailure(err, subject));
+      }
     }
 
     case 'get_usage_stats': {
@@ -4726,6 +4789,21 @@ export async function handleBuilddAction(
       if (params.prNumber !== undefined && params.prNumber !== null) qs.set('prNumber', String(params.prNumber));
       if (params.waitSeconds !== undefined && params.waitSeconds !== null) qs.set('waitSeconds', String(params.waitSeconds));
       const data = await api(`/api/workers/${workerId}/page-source${qs.size ? `?${qs}` : ''}`);
+      return text(JSON.stringify(data, null, 2));
+    }
+
+    case 'deploy': {
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      // Passed through as-is: the route validates, authorizes and audits.
+      const body = {
+        provider: params.provider,
+        project: params.project,
+        environment: params.environment,
+        credentialRef: params.credentialRef,
+        operation: params.operation,
+        params: params.params ?? {},
+      };
+      const data = await api(`/api/workers/${workerId}/deployments`, { method: 'POST', body: JSON.stringify(body) });
       return text(JSON.stringify(data, null, 2));
     }
 
@@ -5581,6 +5659,7 @@ export async function handleBuilddAction(
             fileCount: number;
             detectedClassCount: number;
             hint: string;
+            derivedFiles?: { proposed: Array<{ glob: string; regenerate: string }>; hint: string };
             specConformance: {
               detected: { specsRoot: string | null; designRoot: string | null };
               proposed: { specsRoot: string; designRoot: string };
@@ -5611,7 +5690,7 @@ export async function handleBuilddAction(
             return text(`policy-init scan returned no result for workspace ${wsId}`);
           }
 
-          const { proposed, repoFullName, fileCount, detectedClassCount, specConformance } = scanResult;
+          const { proposed, repoFullName, fileCount, detectedClassCount, specConformance, derivedFiles } = scanResult;
 
           // Format proposed policy for human confirmation
           const riskClasses = (proposed as any).riskClasses ?? [];
@@ -5636,6 +5715,13 @@ export async function handleBuilddAction(
             `\`\`\`\n\n` +
             `Paths are derived from the repo — they cannot be typed. Re-run action=init after the repo changes to refresh them.\n` +
             `To change the preset: re-run with preset=cautious or preset=autonomous.\n\n` +
+            (derivedFiles && derivedFiles.proposed.length > 0
+              ? `## Proposed Derived Files\n\n` +
+                `Lockfiles runners regenerate instead of merging, so a conflict in one never needs an agent:\n` +
+                derivedFiles.proposed.map((r) => `  - ${r.glob} → \`${r.regenerate}\``).join('\n') + `\n\n` +
+                `**To apply:** manage_workspaces action=update workspaceId=${wsId} gitConfig={ "derivedFiles": ${JSON.stringify(derivedFiles.proposed)} }\n` +
+                `Add a generated index with its own generator the same way (e.g. { "glob": "docs/specs/INDEX.md", "regenerate": "bun run specs:check" }).\n\n`
+              : '') +
             `## Proposed Spec Conformance Setup (docs/design/spec-conformance.md §14)\n\n` +
             `${specRootsLine}.\n\n` +
             `**To apply:** manage_workspaces action=update workspaceId=${wsId} gitConfig={ "specConformance": ${JSON.stringify(specConformance.proposed)} }\n\n` +
@@ -6326,9 +6412,13 @@ export async function handleBuilddAction(
         ? await resolveWorkspaceId(api, params.workspaceId, ctx)
         : await ctx.getWorkspaceId();
 
-      const tierAction = params.action as 'list' | 'set' | 'delete';
-      if (!tierAction || !['list', 'set', 'delete'].includes(tierAction)) {
-        throw new Error('action must be "list", "set", or "delete"');
+      const tierAction = params.action as 'list' | 'set' | 'delete' | 'policy' | 'set_policy' | 'adopt' | 'model';
+      if (!tierAction || !['list', 'set', 'delete', 'policy', 'set_policy', 'adopt', 'model'].includes(tierAction)) {
+        throw new Error('action must be "list", "set", "delete", "policy", "set_policy", "adopt", or "model"');
+      }
+
+      if (tierAction === 'policy' || tierAction === 'set_policy' || tierAction === 'adopt' || tierAction === 'model') {
+        return text(await handleModelUpgradeAction(api, tierAction, params, ctx));
       }
 
       if (tierAction === 'list') {
@@ -6349,6 +6439,7 @@ export async function handleBuilddAction(
             ).join('\n');
           }).join('\n') +
           `\n\nChange a tier with manage_model_tiers action=set tier=<tier> model=<id> [surface=agent|chat].\n` +
+          `See why each tier runs its model, and whether a newer certified one is withheld, with action=policy.\n` +
           `A registry update takes effect on the next claim cycle (within 60s cache TTL).\n` +
           `NOTE: For provider='openrouter', the runner-side backend is not yet implemented — dispatch will fail with a clear error.`
         );

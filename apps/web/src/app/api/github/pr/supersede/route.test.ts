@@ -5,7 +5,8 @@ const mockAuthenticateApiKey = mock(() => Promise.resolve(null as any));
 const mockResolveWorkerByPrNumber = mock((..._args: any[]) => Promise.resolve({ error: 'PR not found', status: 404 } as any));
 const mockRecordPrSupersession = mock((..._args: any[]) => Promise.resolve({ ok: false, error: 'not called', status: 500 } as any));
 const mockWorkersFindFirst = mock(() => Promise.resolve(null as any));
-const mockTasksFindFirst = mock((..._args: any[]) => Promise.resolve(null as any));
+/** The CALLER's own task, as task-token-auth reads it (§17.1 (b)). */
+const mockTasksFindFirst = mock(() => Promise.resolve(null as any));
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/pr-resolve', () => ({ resolveWorkerByPrNumber: mockResolveWorkerByPrNumber }));
@@ -13,8 +14,8 @@ mock.module('@/lib/pr-supersession', () => ({ recordPrSupersession: mockRecordPr
 mock.module('@buildd/core/db', () => ({
   db: { query: { workers: { findFirst: mockWorkersFindFirst }, tasks: { findFirst: mockTasksFindFirst } } },
 }));
-mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'id' }, tasks: { id: 'tid', workspaceId: 'twsid' } }));
-mock.module('drizzle-orm', () => ({ eq: (a: any, b: any) => ({ type: 'eq', a, b }), and: (...c: any[]) => ({ type: 'and', c }) }));
+mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'id' } }));
+mock.module('drizzle-orm', () => ({ eq: (a: any, b: any) => ({ type: 'eq', a, b }) }));
 
 import { POST } from './route';
 
@@ -220,69 +221,69 @@ describe('per-task token', () => {
     await POST(makeRequest({ prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
     expect(mockRecordPrSupersession.mock.calls[0][0]).not.toHaveProperty('targetRepoWithinWorkspace');
   });
+});
 
-  describe('caller task names the target PR', () => {
-    const sibling = () => worker({ id: 'w-2', taskId: 't-2', prNumber: 3744 });
-    const callerTask = (over: Record<string, unknown> = {}) => ({ id: 't-1', workspaceId: 'ws-1', title: 'Fix goal criterion', description: '', context: null, ...over });
+// S21 (docs/specs/workflow-state-kernel.md §16, §17.1): who may record T20. The rule is the
+// CALLER's task, never the owner's (the PR #3754 case): the owner task naming a PR gives a
+// different task's token nothing.
+describe('S21: the supersede authorization matrix (§17.1)', () => {
+  const scoped = (taskId: string, workspaceId = 'ws-1') => ({ id: 'acc-1', teamId: 'team-1', name: 'Agent Bob', level: 'worker', taskScope: { taskId, workspaceId, expiresAt: Date.now() + 60_000 } });
+  /** PR #2287, opened by task t-owner, whose own description names it. */
+  const ownerWorker = { id: 'w-own', taskId: 't-owner', accountId: 'acc-1', prNumber: 2287, workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1' } };
+  const callerTask = (id: string, over: Record<string, unknown> = {}) => ({ id, workspaceId: 'ws-1', title: 'friction: fix the check', description: null, context: null, reviewerRetryPrNumber: null, ciRetryPrNumber: null, conflictRetryPrNumber: null, ...over });
+  const call = async (account: unknown) => {
+    mockAuthenticateApiKey.mockImplementation(() => Promise.resolve(account as any));
+    return POST(makeRequest({ prNumber: 2287, supersedingPrNumber: 2293, reason: 'landed under #2293' }));
+  };
 
-    beforeEach(() => {
-      mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(sibling() as any));
-    });
+  beforeEach(() => {
+    reset();
+    mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(ownerWorker as any));
+  });
 
-    it('allows a PR named in the CALLER task title, loading the caller task by its token scope', async () => {
-      mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask({ title: 'Fix goal criterion (#3744)' }) as any));
-      const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'named' }));
-      expect(res.status).toBe(200);
-      const where = (mockTasksFindFirst.mock.calls[0][0] as any).where;
-      expect(JSON.stringify(where)).toContain('t-1');
-      expect(JSON.stringify(where)).toContain('ws-1');
-      expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w-2', targetRepoWithinWorkspace: true }));
-    });
+  it('(a) the owner task\'s own token: allowed, recorded as that task', async () => {
+    const res = await call(scoped('t-owner'));
+    expect(res.status).toBe(200);
+    expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w-own', recordedBy: 'agent:t-owner', targetRepoWithinWorkspace: true }));
+  });
 
-    it('allows a PR named in the caller task context', async () => {
-      mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask({ context: { prNumber: 3744 } }) as any));
-      const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'named' }));
-      expect(res.status).toBe(200);
-    });
+  it('(b) a task token whose OWN task names the PR: allowed, recorded as the caller', async () => {
+    mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask('t-caller', { description: 'The check landed in #2293; record #2287 as superseded.' }) as any));
+    const res = await call(scoped('t-caller'));
+    expect(res.status).toBe(200);
+    expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w-own', recordedBy: 'agent:t-caller' }));
+  });
 
-    it('refuses when only the PR OWNER’s task names the PR, not the caller’s', async () => {
-      mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(
-        { ...sibling(), task: { title: 'Ship #3744', description: '' } } as any));
-      mockWorkersFindFirst.mockImplementation(() => Promise.resolve(
-        { ...sibling(), task: { title: 'Ship #3744', description: '' } } as any));
-      mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask() as any));
-      const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'x' }));
-      expect(res.status).toBe(403);
-      expect(mockRecordPrSupersession).not.toHaveBeenCalled();
-    });
+  it('(b) a retry bound to the PR names it', async () => {
+    mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask('t-retry', { reviewerRetryPrNumber: 2287 }) as any));
+    expect((await call(scoped('t-retry'))).status).toBe(200);
+  });
 
-    it('refuses a different PR than the one the caller task names', async () => {
-      mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask({ title: 'Fix #3000' }) as any));
-      const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'x' }));
-      expect(res.status).toBe(403);
-      expect(mockRecordPrSupersession).not.toHaveBeenCalled();
-    });
+  it('a sibling task whose own task does not name the PR: refused before any write, even though the owner\'s task names it', async () => {
+    mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask('t-sibling', { description: 'unrelated work on #2290' }) as any));
+    const res = await call(scoped('t-sibling'));
+    expect(res.status).toBe(403);
+    expect(mockRecordPrSupersession).not.toHaveBeenCalled();
+  });
 
-    it('refuses a PR in a foreign workspace even if the caller task names it', async () => {
-      mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(
-        { ...sibling(), workspaceId: 'ws-9', workspace: { id: 'ws-9', teamId: 'team-1' } } as any));
-      mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask({ title: 'Fix #3744' }) as any));
-      const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'x' }));
-      expect(res.status).toBe(403);
-      expect(mockRecordPrSupersession).not.toHaveBeenCalled();
-    });
+  it('a task token of another workspace: refused, even when its task names the number', async () => {
+    mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask('t-other', { workspaceId: 'ws-2', description: 'see #2287' }) as any));
+    const res = await call(scoped('t-other', 'ws-2'));
+    expect(res.status).toBe(403);
+    expect(mockRecordPrSupersession).not.toHaveBeenCalled();
+  });
 
-    it('refuses when the caller task is not found in its workspace', async () => {
-      mockTasksFindFirst.mockImplementation(() => Promise.resolve(null as any));
-      const res = await POST(makeRequest({ prNumber: 3744, supersedingPrNumber: 3748, reason: 'x' }));
-      expect(res.status).toBe(403);
-    });
+  it('a person or account key on the team: allowed, recorded under its own name, mission-wide target scope', async () => {
+    const res = await call({ id: 'acc-9', teamId: 'team-1', name: 'owner@example.com' });
+    expect(res.status).toBe(200);
+    expect(mockRecordPrSupersession.mock.calls[0][0]).toMatchObject({ recordedBy: 'owner@example.com' });
+    expect(mockRecordPrSupersession.mock.calls[0][0]).not.toHaveProperty('targetRepoWithinWorkspace');
+  });
 
-    it('does not let workerId alone use naming (no explicit prNumber)', async () => {
-      mockWorkersFindFirst.mockImplementation(() => Promise.resolve(sibling() as any));
-      mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask({ title: 'Fix #3744' }) as any));
-      const res = await POST(makeRequest({ workerId: 'w-2', supersedingPrNumber: 3748, reason: 'x' }));
-      expect(res.status).toBe(403);
-    });
+  it('another team: refused', async () => {
+    mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve({ ...ownerWorker, accountId: 'acc-x', workspace: { id: 'ws-1', teamId: 'team-2' } } as any));
+    const res = await call({ id: 'acc-9', teamId: 'team-1', name: 'owner@example.com' });
+    expect(res.status).toBe(403);
+    expect(mockRecordPrSupersession).not.toHaveBeenCalled();
   });
 });

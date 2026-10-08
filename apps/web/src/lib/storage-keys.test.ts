@@ -8,6 +8,7 @@ import {
   buildRoleConfigKey,
   buildAuditScreenshotKey,
   buildEvidenceObjectKey,
+  buildScoutRunEvidenceObjectKey,
   isAuditStorageKey,
   isOwnedStorageKey,
   assertNormalizedObjectKey,
@@ -354,5 +355,25 @@ describe('isAuditScreenshotKeyForUpload', () => {
   it('keeps isArtifactKeyForUpload to the artifacts area', async () => {
     const { isArtifactKeyForUpload } = await import('./storage-keys');
     expect(isArtifactKeyForUpload('qa/ws-1/up-1/s.png', 'ws-1', 'up-1')).toBe(false);
+  });
+});
+
+describe('buildScoutRunEvidenceObjectKey', () => {
+  const ws = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const run = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+  it('keeps the object under the workspace, in its own scout-runs segment', () => {
+    expect(buildScoutRunEvidenceObjectKey('evidence', ws, run, 'command_output', '1-0.log.gz'))
+      .toBe(`evidence/${ws}/scout-runs/${run}/command_output/1-0.log.gz`);
+  });
+  it('rejects .. or / in any segment', () => {
+    for (const args of [
+      ['..', ws, run, 'command_output', 'f.gz'],
+      ['evidence', '..', run, 'command_output', 'f.gz'],
+      ['evidence', ws, 'a/b', 'command_output', 'f.gz'],
+      ['evidence', ws, run, '..', 'f.gz'],
+      ['evidence', ws, run, 'command_output', '../x'],
+    ] as const) {
+      expect(() => buildScoutRunEvidenceObjectKey(...args)).toThrow();
+    }
   });
 });

@@ -40,6 +40,7 @@ import {
   type WarmRefreshReason,
 } from './phase-lines';
 import { fetchOriginWithRetry } from './git-clone';
+import { isReusedContainer } from './container-reset';
 
 export const WARM_ENV_FLAG = 'BUILDD_WARM_REPO';
 /**
@@ -161,6 +162,14 @@ export function defaultPnpmStoreDirEnv(env: Record<string, string | undefined>):
 }
 
 /** Bytes of every regular file under `dir`, recursively. 0 for a missing dir; never throws. */
+function dirHasEntries(dir: string): boolean {
+  try {
+    return readdirSync(dir).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function dirSizeBytes(dir: string): number {
   if (!existsSync(dir)) return 0;
   let total = 0;
@@ -471,6 +480,14 @@ export interface WarmRepoDeps {
   measureRepoBytes?(clonePath: string): number;
   /** Compress the cache tarball with zstd (and expect it on restore); probed when absent. */
   zstd?: boolean;
+  /**
+   * The run starts in a container a reset handed over (container-reset.ts
+   * isReusedContainer). Its dependency cache is already on disk: a restore
+   * leaves it as it is instead of downloading the snapshot's over it. The
+   * package managers check what they take from it (bun by integrity, pnpm
+   * against its store index).
+   */
+  reusedContainer?: boolean;
 }
 
 export interface CloneHooks {
@@ -806,7 +823,11 @@ export class WarmRepoSession {
       return this.fallback('restore_failed');
     }
 
-    this.restoreCache(manifest);
+    if (this.d.reusedContainer && dirHasEntries(this.d.cacheDir)) {
+      this.d.log('[warm] reused container: keeping the dependency cache on disk, not restoring the snapshot\'s');
+    } else {
+      this.restoreCache(manifest);
+    }
     const restoredCacheBytes = dirSizeBytes(this.d.cacheDir);
     const restoredPnpmStore = existsSync(pnpmStoreDir(this.d.cacheDir));
 
@@ -964,8 +985,10 @@ export class WarmRepoSession {
     if (reason) emitWarmRefresh(reason, this.d.lineOpts);
     assertSnapshotSafe(clonePath);
 
-    const defaultBranch = gitOut(clonePath, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).replace(/^origin\//, '')
-      || gitOut(clonePath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    // The cloud session may have checked out its task branch in this clone.
+    // Only origin's default is safe to record; absent origin/HEAD, skip upload
+    // rather than teaching the next restore to start from the task branch.
+    const defaultBranch = gitOut(clonePath, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).replace(/^origin\//, '');
     if (!BRANCH_RE.test(defaultBranch) || defaultBranch === 'HEAD') throw new Error('no default branch to record');
 
     // Measure before bundling: on a repo of gigabytes the bundle itself is
@@ -1028,6 +1051,7 @@ export class WarmRepoSession {
 /** The session the --once CLI wiring uses. */
 export function createWarmRepoSession(env: Record<string, string | undefined>, tmpDir: string): WarmRepoSession {
   const session = new WarmRepoSession({
+    reusedContainer: isReusedContainer(env),
     transport: curlTransport(env[SNAPSHOT_URL_ENV] ?? ''),
     cacheDir: bunCacheDir(env),
     tmpDir,

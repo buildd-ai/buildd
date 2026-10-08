@@ -39,6 +39,8 @@ export const ONBOARDING_FIXTURE_STATE = 'onboarding';
 /** Settings → Storage with fixture backends (EvidenceStorageFixture.tsx). */
 export const EVIDENCE_STORAGE_FIXTURE_STATE = 'evidence-storage';
 
+/** Team settings → Platform Operator access, team ceiling + per-workspace grants (OperatorAccessFixture.tsx). */
+export const OPERATOR_ACCESS_FIXTURE_STATE = 'operator-access';
 /** Settings → Model providers with a gateway, a team agent endpoint and two overrides (ModelProvidersFixture.tsx). */
 export const MODEL_PROVIDERS_FIXTURE_STATE = 'model-providers';
 
@@ -49,6 +51,10 @@ export const COMMIT_CHECKS_FIXTURE_STATE = 'commit-checks';
 /** A question's answer pending, recorded, already answered and failed (AnswerStatesFixture.tsx). */
 export const ANSWER_STATES_FIXTURE_STATE = 'answer-states';
 export const AGENT_ACCESS_FIXTURE_STATE = 'agent-access';
+/** A queued task held on a managed-runner plan limit (EntitlementBlockedFixture). */
+export const ENTITLEMENT_BLOCKED_FIXTURE_STATE = 'entitlement-blocked';
+/** A worker failure beside a landed-work, failed-audit one (FailureKindsFixture.tsx). */
+export const FAILURE_KINDS_FIXTURE_STATE = 'failure-kinds';
 
 /** Health's tool list with every row's breakdown, collapsed and open (tool-breakdown-fixture.tsx). */
 export const TOOL_BREAKDOWN_FIXTURE_STATE = 'tool-breakdown';
@@ -56,7 +62,20 @@ export const TOOL_BREAKDOWN_FIXTURE_STATE = 'tool-breakdown';
 /** The mission Board's Landed strip and its tethered drawer (mission-task-strip-fixtures.ts). */
 export const MISSION_TASK_STRIP_FIXTURE_STATE = 'mission-task-strip';
 
-export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, GOAL_CRITERIA_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, MODEL_PROVIDERS_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, AGENT_ACCESS_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE, TOOL_BREAKDOWN_FIXTURE_STATE];
+/** Workspace settings' Cloud runner size section, derived / explicit / default (RunnerSizeFixture.tsx). */
+export const RUNNER_SIZE_FIXTURE_STATE = 'runner-size';
+/** The hosted runner allowance on every surface it shows (HostedRunnerFixture.tsx). */
+export const HOSTED_RUNNER_FIXTURE_STATE = 'hosted-runner';
+/** Activity's Interactive sessions section, one session per state (InteractiveSessionsFixture.tsx). */
+export const INTERACTIVE_SESSIONS_FIXTURE_STATE = 'interactive-sessions';
+
+/** Settings → Workspaces list: differs chips, team groups, inactive fold (WorkspacesListFixture.tsx). */
+export const WORKSPACES_LIST_FIXTURE_STATE = 'workspaces-list';
+
+/** Kernel-owned deliveries on Home and the task page (DeliveryStatesFixture.tsx). */
+export const DELIVERY_STATES_FIXTURE_STATE = 'delivery-states';
+
+export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, GOAL_CRITERIA_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, MODEL_PROVIDERS_FIXTURE_STATE, OPERATOR_ACCESS_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, AGENT_ACCESS_FIXTURE_STATE, FAILURE_KINDS_FIXTURE_STATE, ENTITLEMENT_BLOCKED_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE, TOOL_BREAKDOWN_FIXTURE_STATE, RUNNER_SIZE_FIXTURE_STATE, INTERACTIVE_SESSIONS_FIXTURE_STATE, WORKSPACES_LIST_FIXTURE_STATE, HOSTED_RUNNER_FIXTURE_STATE, DELIVERY_STATES_FIXTURE_STATE];
 
 export function isFixtureView(value: string | null | undefined): value is string {
   return value != null && FIXTURE_VIEWS.includes(value);

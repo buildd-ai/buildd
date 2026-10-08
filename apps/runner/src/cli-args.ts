@@ -23,7 +23,12 @@ export const RUNNER_USAGE = [
   '  buildd status              Show whether you are signed in',
   '  buildd service <cmd>       Run in the background: install | status | logs | uninstall',
   '  buildd init <workspace-id> Write .mcp.json for this repo',
-  '  buildd install --global    Register the buildd MCP server for Claude Code',
+  '  buildd install --global    Register the buildd MCP server for your workspace folders only,',
+  '                             plus session presence hooks for Claude Code / Codex / Cursor',
+  '  buildd install --here      Register the buildd MCP server for this folder (any repo)',
+  '  buildd install --global --everywhere   Register it for every Claude Code session',
+  '  buildd install --global --oauth        Same, but each folder signs in with OAuth (no key on disk)',
+  '  buildd install [--global] --status|--uninstall   Inspect or remove those hooks',
   '  buildd env verify [--json] Check that the current repo is runnable',
   '  buildd help                Show this help',
   '',
@@ -43,7 +48,7 @@ const HELP = new Set(['--help', '-h', 'help']);
 /** Flags that stand alone. */
 const BOOLEAN_FLAGS = new Set(['--debug', '--version', '--doctor', '--fix', '--env-verify', '--json', '--once']);
 /** Flags that take the next argument (or `=value`) as their value. */
-const VALUE_FLAGS = new Set(['--task', '--resume-worker', '--park-orphan']);
+const VALUE_FLAGS = new Set(['--task', '--resume-worker', '--park-orphan', '--attach-orphan']);
 /** Positional subcommands the runner itself understands, as word sequences. */
 const SUBCOMMANDS: string[][] = [['version'], ['env', 'verify']];
 

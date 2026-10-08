@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { applyChatRetroPatch, chatRetroGloballyEnabled, CHAT_RETRO_DEFAULT, readChatRetroSettings } from './settings';
+import { applyChatRetroPatch, chatRetroGloballyEnabled, CHAT_RETRO_DEFAULT, effectiveChatRetroSettings, readChatRetroSettings } from './settings';
 
 describe('chat retro settings: opt-in, default off', () => {
   it('reads NULL, empty, malformed and truthy-but-not-true values as off', () => {
@@ -43,6 +43,36 @@ describe('applyChatRetroPatch', () => {
     for (const body of [null, [], 'x', {}, { lesson: true }, { lessons: 'yes' }, { proposals: 1 }]) {
       expect(applyChatRetroPatch(off, body).ok).toBe(false);
     }
+  });
+});
+
+describe('account dogfood: effective lessons + proposals, and no per-team off', () => {
+  const off = { lessons: false, proposals: false };
+  const on = { lessons: true, proposals: true };
+
+  it('a team with a dogfood owner is effectively fully on whatever is stored; any other team reads its stored value', () => {
+    expect(effectiveChatRetroSettings(off, true)).toEqual(on);
+    expect(effectiveChatRetroSettings(off, false)).toEqual(off);
+    expect(effectiveChatRetroSettings({ lessons: true, proposals: false }, false)).toEqual({ lessons: true, proposals: false });
+  });
+
+  it('turning lessons or proposals off is refused, locked, and deletes nothing', () => {
+    for (const body of [{ lessons: false }, { proposals: false }, { lessons: false, proposals: false }, { lessons: true, proposals: false }]) {
+      const r = applyChatRetroPatch(on, body, { dogfood: true });
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.locked).toBe(true);
+        expect(r.error).toContain('enabled by account dogfood');
+      }
+    }
+  });
+
+  it('a patch that keeps everything on is accepted as a no-op', () => {
+    expect(applyChatRetroPatch(on, { lessons: true }, { dogfood: true })).toEqual({ ok: true, next: on, deleteLessons: false });
+  });
+
+  it('without dogfood the same patch still turns things off', () => {
+    expect(applyChatRetroPatch(on, { lessons: false }, { dogfood: false })).toEqual({ ok: true, next: off, deleteLessons: true });
   });
 });
 

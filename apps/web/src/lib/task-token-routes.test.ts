@@ -6,7 +6,8 @@
  * key. So each route file that calls it must also apply a scope check
  * (`taskScopeAllowsTask` / `taskScopeAllowsWorker` / `taskScopeAllowsWorkspace` /
  * `taskScopeAllowsWorkerPr` / `taskScopeAllowsMission` / `taskScopeAllowsInitiative` /
- * `taskScopeAllowsMissionTask`,
+ * `taskScopeAllowsMissionTask` / `taskScopeAllowsMissionTaskRead` / `taskScopeAllowsDelegated` (a schedule's
+ * explicit delegation, packages/core/token-delegation.ts),
  * a direct read of `.taskScope`, or `authorizeWorkerPrCapability`, which
  * applies `taskScopeAllowsWorker` itself and is tested for it in
  * lib/agent-capabilities/worker-pr.test.ts), and each exported handler that calls it
@@ -19,15 +20,18 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 
 const REPO = join(import.meta.dir, '../../../..');
-const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative|MissionTask)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
+const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative|MissionTask|MissionTaskRead|Delegated)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
 
 const OPTED_IN = [
   'apps/web/src/app/api/artifacts/[artifactId]/route.ts',
   'apps/web/src/app/api/artifacts/upload-url/route.ts',
   'apps/web/src/app/api/connectors/mounted/route.ts',
+  'apps/web/src/app/api/decisions/route.ts',
   'apps/web/src/app/api/discrepancies/[id]/route.ts',
   'apps/web/src/app/api/discrepancies/route.ts',
   'apps/web/src/app/api/evidence/route.ts',
+  // GET only (read_evidence on a Scout run's log): the run's workspace via taskScopeAllowsWorkspace. POST is runner-key only.
+  'apps/web/src/app/api/quality-scout/runs/[id]/evidence/route.ts',
   'apps/web/src/app/api/experiments/[id]/route.ts',
   'apps/web/src/app/api/experiments/route.ts',
   'apps/web/src/app/api/explain/route.ts',
@@ -56,6 +60,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/tasks/[id]/route.ts',
   'apps/web/src/app/api/tasks/route.ts',
   'apps/web/src/app/api/workers/[id]/artifacts/route.ts',
+  'apps/web/src/app/api/workers/[id]/deployments/route.ts',
   'apps/web/src/app/api/workers/[id]/error-traces/route.ts',
   'apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts',
   'apps/web/src/app/api/workers/[id]/evidence/[evidenceId]/confirm/route.ts',
@@ -75,6 +80,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/workspaces/[id]/memory/route.ts',
   'apps/web/src/app/api/workspaces/[id]/schedules/[scheduleId]/route.ts',
   'apps/web/src/app/api/workspaces/[id]/schedules/route.ts',
+  'apps/web/src/app/api/workspaces/route.ts',
 ];
 
 function routesCallingIt(): string[] {

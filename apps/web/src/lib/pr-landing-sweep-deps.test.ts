@@ -7,6 +7,7 @@ let workspaceRow: any;
 let taskRow: any;
 let floorRows: any[];
 let floorLimit: number | null;
+let floorWhere: any;
 let reviewState: string;
 let repoInstallation: number | null;
 
@@ -19,12 +20,15 @@ mock.module('@buildd/core/db', () => ({
     },
     selectDistinct: () => ({
       from: () => ({
-        where: () => ({
-          limit: async (n: number) => {
-            floorLimit = n;
-            return floorRows;
-          },
-        }),
+        where: (w: any) => {
+          floorWhere = w;
+          return {
+            limit: async (n: number) => {
+              floorLimit = n;
+              return floorRows;
+            },
+          };
+        },
       }),
     }),
   },
@@ -59,7 +63,13 @@ mock.module('@/lib/pr-landing', () => ({
 }));
 const readLandingMarker = mock(async (..._a: any[]): Promise<any> => null);
 mock.module('@/lib/pr-landing-marker', () => ({ readLandingMarker }));
-mock.module('@/lib/pr-review-request', () => ({ readPrReviewStatus: async () => ({ state: reviewState }) }));
+const readPrReviewStatus = mock(async (..._a: any[]): Promise<any> => ({ state: reviewState }));
+mock.module('@/lib/pr-review-request', () => ({ readPrReviewStatus }));
+// The kernel delivery that owns the PR (null = legacy-owned).
+let kernelView: any;
+const kernelLandingView = mock(async (..._a: any[]): Promise<any> => kernelView);
+let kernelFloor: any[];
+mock.module('@/lib/workflow/seam', () => ({ kernelLandingView, listApprovedKernelPrs: async () => kernelFloor, notKernelOwnedPr: () => ({ type: 'notKernelOwnedPr' }) }));
 mock.module('@/lib/workspace-installation', () => ({
   WORKSPACE_INSTALLATION_WITH: {},
   pickWorkspaceRepoIdentity: (ws: any) => ({
@@ -76,7 +86,7 @@ const redis = {
 };
 mock.module('@/lib/redis', () => redis);
 
-import { createLandingSweepDeps, sweepLandingPrs } from './pr-landing-sweep-deps';
+import { createLandingSweepDeps, sweepAdmits, sweepLandingPrs } from './pr-landing-sweep-deps';
 import { PR_LANDING_DUE_QUEUE } from './pr-landing-sweep';
 
 const REF = { workspaceId: 'ws-1', prNumber: 42 };
@@ -89,7 +99,9 @@ beforeEach(() => {
   floorLimit = null;
   reviewState = 'approved';
   repoInstallation = null;
-  for (const m of [githubApi, landPr, readLandingMarker, ...Object.values(redis)]) m.mockClear();
+  kernelView = null;
+  kernelFloor = [];
+  for (const m of [githubApi, landPr, readLandingMarker, readPrReviewStatus, kernelLandingView, ...Object.values(redis)]) m.mockClear();
 });
 
 describe('resolveTarget', () => {
@@ -130,6 +142,24 @@ describe('resolveTarget', () => {
     expect(await createLandingSweepDeps().resolveTarget(REF)).toEqual({ ok: false, skip: 'not_approved' });
   });
 
+  // PR #3654's shape: green and mergeable, but the review request was lost, so
+  // nothing ever re-drove it until a person asked for the review by hand.
+  it('hands a never-reviewed PR to landPr under agent-review, so it can request the reviewer', async () => {
+    reviewState = 'not_requested';
+    workspaceRow.gitConfig = { landing: { mode: 'enforce' }, mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } };
+    const res: any = await createLandingSweepDeps().resolveTarget(REF);
+    expect(res.ok).toBe(true);
+    expect(res.target.policyFor('dev').tier).toBe('agent-review');
+  });
+
+  // PR #3502 / #3673's shape: conflicting now, whatever the review said before.
+  it.each(['not_requested', 'in_flight', 'review_failed'])('hands a conflicting PR whose review is %s to landPr for a repair', async (state) => {
+    reviewState = state;
+    workerRow.prLifecycleStatus = 'conflict';
+    const res: any = await createLandingSweepDeps().resolveTarget(REF);
+    expect(res.ok).toBe(true);
+  });
+
   // A blocking verdict may be stale (an earlier head, a sibling PR that has
   // since merged) and landPr is where it is revalidated, so the backstop must
   // reach it even when the webhook that would have re-reviewed it was missed.
@@ -137,6 +167,23 @@ describe('resolveTarget', () => {
     reviewState = state;
     const res: any = await createLandingSweepDeps().resolveTarget(REF);
     expect(res.ok).toBe(true);
+  });
+
+  // Task 57e1d5b8: on a kernel-owned PR the delivery, not the legacy reviewer row, says
+  // whether there is anything to land. A composition-approved delivery has no reviewer row.
+  it('hands a kernel PR whose delivery is APPROVED to landPr, whatever the legacy row says', async () => {
+    kernelView = { deliveryId: 'd1', current: { state: 'APPROVED', version: 3, head: 'h', round: 0 } };
+    reviewState = 'not_requested';
+    const res = await createLandingSweepDeps().resolveTarget(REF);
+    expect(res.ok).toBe(true);
+    expect(kernelLandingView).toHaveBeenCalledWith('ws-1', 'buildd-ai/buildd', 42);
+    expect(readPrReviewStatus).not.toHaveBeenCalled();
+  });
+
+  it.each(['AWAITING_REVIEW', 'CHANGES_REQUESTED', 'ESCALATED', 'LANDING'])('skips a kernel PR whose delivery is %s, even with a legacy approve row', async (state) => {
+    kernelView = { deliveryId: 'd1', current: { state, version: 3, head: 'h', round: 1 } };
+    reviewState = 'approved';
+    expect(await createLandingSweepDeps().resolveTarget(REF)).toEqual({ ok: false, skip: 'not_approved' });
   });
 
   it('skips a PR it cannot place in a repo', async () => {
@@ -185,11 +232,41 @@ describe('peek', () => {
   });
 });
 
+describe('sweepAdmits', () => {
+  it.each([
+    ['approved', 'auto-threshold', 'ci_green', true],
+    ['escalated', 'agent-review', null, true],
+    ['changes_requested', 'agent-review', 'ci_failed', true],
+    ['not_requested', 'agent-review', 'ci_green', true],
+    ['not_requested', 'auto-threshold', 'ci_green', false],
+    ['queued', 'agent-review', 'ci_green', false],
+    ['review_failed', 'agent-review', 'ci_green', false],
+    ['review_failed', 'agent-review', 'conflict', true],
+    ['queued', 'auto-threshold', 'conflict', true],
+  ] as const)('review %s, tier %s, lifecycle %s → %s', (reviewState, tier, lifecycle, want) => {
+    expect(sweepAdmits({ reviewState, tier, lifecycle })).toBe(want);
+  });
+});
+
 describe('bindings', () => {
+  it('enumerates never-reviewed and conflicting PRs on the floor, not only reviewed ones', async () => {
+    await createLandingSweepDeps().listFloor(5);
+    const where = JSON.stringify(floorWhere);
+    expect(where).toContain('NOT EXISTS (SELECT 1 FROM');
+    expect(where).toContain('"b":"conflict"');
+    expect(where).toContain("IN ('approve', 'escalate', 'request-changes')");
+  });
+
   it('lists floor candidates as workspace and PR refs, asking the database for exactly the limit', async () => {
     floorRows = [{ workspaceId: 'ws-1', prNumber: 5 }, { workspaceId: 'ws-2', prNumber: null }];
     expect(await createLandingSweepDeps().listFloor(11)).toEqual([{ workspaceId: 'ws-1', prNumber: 5 }]);
     expect(floorLimit).toBe(11);
+  });
+
+  it('adds APPROVED kernel deliveries to the floor, once each', async () => {
+    floorRows = [{ workspaceId: 'ws-1', prNumber: 5 }];
+    kernelFloor = [{ workspaceId: 'ws-1', prNumber: 5 }, { workspaceId: 'ws-1', prNumber: 9 }];
+    expect(await createLandingSweepDeps().listFloor(11)).toEqual([{ workspaceId: 'ws-1', prNumber: 5 }, { workspaceId: 'ws-1', prNumber: 9 }]);
   });
 
   it('reads the marker off the owning task, and none when no task owns the PR', async () => {

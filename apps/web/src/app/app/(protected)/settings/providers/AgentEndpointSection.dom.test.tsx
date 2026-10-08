@@ -186,6 +186,44 @@ describe('AgentEndpointSection', () => {
     expect(writes[0]).toEqual({ url: '/api/teams/t/agent-endpoint', method: 'PUT', body: { kind: 'gateway' } });
   });
 
+  it('tool search: off by default for the gateway, labelled for ToolSearch support; turning it on sends it', async () => {
+    gateway = { baseURL: 'https://litellm.example.com/v1', last4: 'abcd' };
+    await mount();
+    await click(button('Set up an endpoint'));
+    await click(kindRadio(1));
+    const toggle = () => host.querySelector<HTMLInputElement>('[data-testid="agent-endpoint-tool-search-toggle"]')!;
+    expect(toggle().checked).toBe(false);
+    const field = text('agent-endpoint-tool-search-field');
+    expect(field).toContain('deferred MCP/tool loading');
+    expect(field).toContain('ToolSearch / tool_reference');
+    await click(toggle());
+    await click(button('Save'));
+    expect(writes[0].body).toEqual({ kind: 'gateway', capabilities: { toolSearch: true } });
+  });
+
+  it('tool search: on by default for OpenRouter, sent only when turned off', async () => {
+    await mount();
+    await click(button('Set up an endpoint'));
+    await click(kindRadio(2));
+    const toggle = host.querySelector<HTMLInputElement>('[data-testid="agent-endpoint-tool-search-toggle"]')!;
+    expect(toggle.checked).toBe(true);
+    await setValue(host.querySelector('#agent-endpoint-key') as HTMLInputElement, KEY);
+    await click(toggle);
+    await click(button('Save'));
+    expect(writes[0].body).toEqual({ kind: 'openrouter', apiKey: KEY, capabilities: { toolSearch: false } });
+  });
+
+  it('tool search: the saved state shows on the card and an untouched re-save leaves it alone', async () => {
+    gateway = { baseURL: 'https://litellm.example.com/v1', last4: 'abcd' };
+    endpoints = [{ ...teamEndpoint, kind: 'gateway', toolSearch: true, toolSearchExplicit: true }];
+    await mount();
+    expect(text('agent-endpoint-tool-search')).toBe('Deferred tool loading: on');
+    await click(button('Edit'));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="agent-endpoint-tool-search-toggle"]')!.checked).toBe(true);
+    await click(button('Save'));
+    expect(writes.find((w) => w.method === 'PUT')!.body).not.toHaveProperty('capabilities');
+  });
+
   it('a gateway endpoint names the gateway instead of repeating its URL and key', async () => {
     endpoints = [{ ...teamEndpoint, kind: 'gateway', baseUrl: 'https://litellm.example.com/v1', last4: 'abcd' }];
     await mount();

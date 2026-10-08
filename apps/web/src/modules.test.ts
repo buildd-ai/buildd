@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY } from './modules';
+import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY, workflowEffectHandlers } from './modules';
+import { EFFECT_KINDS } from './lib/workflow/commands';
+import { withPrFactEffects } from './lib/workflow/pr-fact-effects';
 import { reviewerDispatchOnOpen } from './lib/reviewer-subscribers';
 import { COMPLETION_SLOTS } from './lib/completion-policy';
 import { moduleOf } from '../../../scripts/module-boundaries';
@@ -50,7 +52,8 @@ describe('composition root', () => {
   it('the rest', () => {
     expect(byEvent('team.created')).toEqual(['roles-skills:seed-default-roles']);
     expect(byEvent('task.retrying')).toEqual(['notifications:push-task-retrying']);
-    expect(byEvent('task.terminal')).toEqual(['knowledge:task-evidence']);
+    // The evidence record is written before the verdict that reads it.
+    expect(byEvent('task.terminal')).toEqual(['knowledge:task-evidence', 'jev-decisions:verdict-on-terminal']);
     expect(byEvent('worker.finished')).toEqual(['knowledge:memory-use-labels']);
     expect(byEvent('task.needs_input')).toEqual(['notifications:ledger-task-needs-input']);
     expect(byEvent('pr.merged')).toEqual(['releases:release-record-prod-merge', 'notifications:ledger-pr-merged']);
@@ -58,6 +61,7 @@ describe('composition root', () => {
     // The mission wakes and dependents unblock before the release trigger.
     expect(byEvent('task.pr_merged')).toEqual([
       'missions:mission-wake-on-merge', 'missions:unblock-dependent-missions', 'releases:release-path-b-trigger',
+      'jev-decisions:verdict-on-merge',
     ]);
     // The verdict is measured before the reviewer is superseded.
     expect(byEvent('pr.closed')).toEqual([
@@ -66,6 +70,7 @@ describe('composition root', () => {
       'reviews:supersession-detect-on-close',
       'reviews:supersession-reconcile-on-close',
       'reviews:dead-pr-shutdown',
+      'jev-decisions:verdict-on-close',
     ]);
     expect(byEvent('pr.close_delivered')).toEqual(['reviews:pr-activity-on-close', 'reviews:review-callback-on-close']);
     expect(byEvent('pr.review_submitted')).toEqual(['reviews:capture-review-feedback', 'reviews:github-verdict-mission-note']);
@@ -74,9 +79,10 @@ describe('composition root', () => {
     expect(byEvent('pr.needs_human')).toEqual(['missions:notify-mission-pr-ready']);
     expect(byEvent('workflow_run.completed')).toEqual(['releases:release-workflow-run-readback']);
     // The ledger records the red head before the CI-fix retry is asked.
-    expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed', 'reviews:ci-failure-retry']);
+    expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed', 'reviews:ci-failure-retry', 'jev-decisions:verdict-on-ci-failed']);
+    expect(byEvent('pr.ci_passed')).toEqual(['jev-decisions:verdict-on-ci-passed']);
     // The push is noted on the PR before a reviewer is re-dispatched.
-    expect(byEvent('pr.synchronized')).toEqual(['reviews:pr-activity-changes-pushed', 'reviews:reviewer-redispatch-on-push']);
+    expect(byEvent('pr.synchronized')).toEqual(['reviews:pr-activity-changes-pushed', 'reviews:reviewer-redispatch-on-push', 'jev-decisions:verdict-on-push']);
   });
 
   it('completion policies: exactly one per core-declared slot, in core\'s order', () => {
@@ -86,6 +92,15 @@ describe('composition root', () => {
 
   it('the PR-opened slot is the reviews module\'s reviewer dispatch', () => {
     expect(PR_OPENED_POLICY).toBe(reviewerDispatchOnOpen);
+  });
+
+  // An effect the kernel records with no handler throws on every drain until it goes dead:
+  // Slice C's landing effects (merge_call, verify_merge, ...) shipped composed in the tests'
+  // own handler set but not here, so a kernel-owned PR could never actually merge.
+  it('every workflow effect the kernel can record has a handler in production', () => {
+    const production = withPrFactEffects(workflowEffectHandlers()); // as seam.ts composes it
+    const missing = EFFECT_KINDS.filter(k => typeof production[k] !== 'function');
+    expect(missing).toEqual([]);
   });
 
   it('labels are unique, so a page names exactly one step', () => {

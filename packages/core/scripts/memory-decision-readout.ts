@@ -39,6 +39,7 @@ async function main(): Promise<void> {
       rule: memoryDecisions.rule,
       applied: memoryDecisions.applied,
       error: memoryDecisions.error,
+      mode: memoryDecisions.mode,
     })
     .from(memoryDecisions)
     .where(and(gte(memoryDecisions.createdAt, since), team ? eq(memoryDecisions.teamId, team) : undefined))

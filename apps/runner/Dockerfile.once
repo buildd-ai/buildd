@@ -26,6 +26,10 @@ RUN arch="$(dpkg --print-architecture)"; \
 # Debian package lags, and GitHub's apt repo only offers the latest version.
 ARG GH_VERSION=2.101.0
 ARG GH_SHA256_AMD64=9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8
+# mergiraf: structural merge driver for language-aware conflict resolution.
+# Pinned release with SHA256 verification for security. Linux x86_64 binary from Codeberg.
+ARG MERGIRAF_VERSION=0.20.0
+ARG MERGIRAF_SHA256_AMD64=4341127da8d1da29eced669fbacc1e5d6e530115098de0b82cc9dc551a1acf37
 # zstd compresses (and restores) the warm snapshot's dependency cache tarball
 # as a stream (apps/runner/src/warm-repo.ts); without it the tarball goes up
 # uncompressed.
@@ -41,6 +45,17 @@ RUN set -eux; \
     install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${arch}/bin/gh" /usr/local/bin/gh; \
     rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_${arch}"; \
     gh --version; git --version; rg --version; zstd --version
+
+# Install mergiraf (structural merge driver) with SHA256 verification
+RUN set -eux; \
+    if [ "$(dpkg --print-architecture)" = amd64 ]; then \
+      curl -fsSL "https://codeberg.org/mergiraf/mergiraf/releases/download/v${MERGIRAF_VERSION}/mergiraf_x86_64-unknown-linux-gnu.tar.gz" -o /tmp/mergiraf.tar.gz; \
+      echo "${MERGIRAF_SHA256_AMD64}  /tmp/mergiraf.tar.gz" | sha256sum -c; \
+      tar -xzf /tmp/mergiraf.tar.gz -C /tmp; \
+      install -m 0755 /tmp/mergiraf /usr/local/bin/mergiraf; \
+      rm -rf /tmp/mergiraf.tar.gz /tmp/mergiraf; \
+      mergiraf --version; \
+    fi
 
 # Corepack (ships with Node.js, not with bun) manages the exact
 # package-manager version a task repo pins in package.json's
@@ -77,7 +92,6 @@ COPY packages/core/package.json packages/core/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/ai-kit/package.json packages/ai-kit/package.json
 COPY packages/dispatch-contract/package.json packages/dispatch-contract/package.json
-COPY packages/openclaw-skill/package.json packages/openclaw-skill/package.json
 # The image is glibc (Debian), so the musl variants of native packages are dead
 # weight (the Claude Code one alone is ~200MB). The loaders prefer the glibc
 # build when it is present (sdk-binary-path.ts checks the musl linker first).

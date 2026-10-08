@@ -98,6 +98,18 @@ run the same command CI's `Build` step uses:
 cd apps/web && bun run build:only   # next build only, no migration, no DATABASE_URL needed
 ```
 
+**A fresh local database migrates through one baseline.** Every migration
+released up to `v0.284.0` was squashed into `packages/core/drizzle/0000_baseline.sql`.
+`bun db:migrate` against an empty Docker Postgres runs the baseline and then the
+later migrations. It refuses a database that stopped partway through the
+squashed history (`PreBaselineDatabaseError`). Migrate that one with `v0.284.0`
+first, or drop it and start fresh; a self-hosted deployment must reach
+`v0.284.0` before upgrading past the squash. To read an old migration, use git
+history before the squash (`git show v0.284.0:packages/core/drizzle/<file>.sql`).
+`apps/web/tests/db/migration-baseline.test.ts` (`bun run test:db`) replays the
+pre-squash tree from the `v0.284.0` tag and proves both trees build the same
+schema. Locally it needs the tag (`git fetch origin tag v0.284.0`).
+
 No dummy env vars or extra flags (`--webpack` etc.) are required — `build:only` compiles
 cleanly on its own.
 
@@ -115,7 +127,7 @@ shells out to `zstd` to compress/restore the cloud runner's cache tarball, and i
 the real binary (no mock) to exercise that path, so a sandbox without it fails only those
 assertions while the rest of the file passes. `apps/runner/install.sh` now provisions `zstd`
 on fresh installs the same best-effort way it provisions other tooling (`apt-get`/`brew`, never
-fatal to the rest of the install) — an older sandbox that predates that change, or one on a
+fatal to the rest of the install; without root or passwordless escalation it unpacks the `.deb` into `~/.local/bin` using a user-owned apt state dir) — install.sh only runs at install time, so an older sandbox that predates that change, or one on a
 platform neither package manager covers, can still be missing it. Confirm with `command -v zstd`;
 if it's absent, this is a known sandbox-provisioning gap, not a product bug — production code
 (`zstdAvailable()` in `warm-repo.ts`) already falls back to a plain, uncompressed tarball when
@@ -218,7 +230,18 @@ bun run test                   # scripts/run-unit-tests.ts — every file in its
 bun run scripts/run-unit-tests.ts apps/web/src/lib/foo.test.ts   # one or more specific files
 BUILDD_TEST_CONCURRENCY=8 bun run test                           # default 4, max 16
 BUILDD_TEST_TIMEOUT_MS=60000 bun run test                        # per-test deadline, default 30000
+bun run test --update-durations                                  # refresh scripts/test-durations.json
 ```
+
+Files run slowest first, using the per-file hints in `scripts/test-durations.json`
+(files under 2s are not listed and run afterwards, alphabetically). Every run
+prints its 25 slowest files and writes every file's duration to the end of
+`.test-report.log`. Refresh the hints with `--update-durations` when a file gets
+much slower or faster; a subset run refreshes only the files it ran.
+
+Slow runner tests are almost always real `git` work in a per-test fixture. Build
+the fixture once per file instead: `apps/runner/__tests__/fixtures/template-dir.ts`
+copies a template repo into place for each test (see `park.test.ts`).
 
 The runner passes `--timeout` to every child because Bun's 5s default assumes an
 idle machine. Running `tsc` or a production build alongside the suite can push a
@@ -339,7 +362,7 @@ run tells you nothing until you re-run that file alone.
 
 Prefer not stubbing a module that has its own unit test — inject the dependency
 instead (pass it in, or accept an override in an options bag, as
-`reconcileWorkerPrState` does with `opts.githubApi`).
+`importWorkerPrFacts` does with `opts.githubApi`).
 
 When you must stub, return the module's **whole** surface so the stub is harmless
 if it ever does leak:

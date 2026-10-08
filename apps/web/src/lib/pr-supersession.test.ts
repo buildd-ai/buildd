@@ -29,6 +29,13 @@ mock.module('@/lib/github', () => ({
 mock.module('@/lib/workspace-installation', () => ({
   installationIdForRepo: mock((repo: string) => Promise.resolve(installationForRepo[repo.toLowerCase()] ?? null)),
 }));
+/** The workflow kernel's answer for a kernel-owned PR; `{ handled: false }` = legacy PR. */
+let kernelAnswer: any = { handled: false };
+const kernelCalls: Array<{ fn: string; p: any }> = [];
+mock.module('@/lib/workflow/seam', () => ({
+  recordSupersession: mock((p: any) => { kernelCalls.push({ fn: 'recordSupersession', p }); return Promise.resolve(kernelAnswer); }),
+  abandonDelivery: mock((p: any) => { kernelCalls.push({ fn: 'abandonDelivery', p }); return Promise.resolve(kernelAnswer); }),
+}));
 
 import { recordPrSupersession, recordPrAbandonment, dismissSupersessionSuggestion } from './pr-supersession';
 
@@ -52,7 +59,9 @@ beforeEach(() => {
   missionSiblings = [];
   updates.length = 0;
   githubCalls.length = 0;
-  installationForRepo = { 'org/buildd': 22 };
+  installationForRepo = { 'org/buildd': 22, 'org/kb': 11 };
+  kernelAnswer = { handled: false };
+  kernelCalls.length = 0;
   githubResponse = (path: string) => ({ merged: true, html_url: `https://github.com${path.replace('/repos', '').replace('/pulls/', '/pull/')}` });
 });
 
@@ -162,6 +171,68 @@ describe('recordPrAbandonment', () => {
   it('refuses a PR already recorded as superseded', async () => {
     workerRow = closedWorker({ supersededByPrNumber: 9 });
     expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'x', recordedBy: 'me' })).toMatchObject({ ok: false, status: 409 });
+  });
+});
+
+// Slice D (docs/specs/workflow-state-kernel.md T20/T21): for a kernel-owned PR the kernel decides
+// and its projection writes the columns; this module only authorises and verifies the target.
+describe('a kernel-owned PR: T20/T21 decide, the direct column write never runs', () => {
+  const current = (state: string) => ({ state, version: 7, head: 'H1', round: 1 });
+
+  it('supersession is recorded through T20 with the verified target and the caller as actor', async () => {
+    workerRow = closedWorker({ workspaceId: 'ws-1' });
+    kernelAnswer = { handled: true, deliveryId: 'd1', result: { result: 'applied', transitionId: 't', deliveryId: 'd1', version: 8, decision: {} } };
+    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: ' moved ', recordedBy: 'agent:abc' });
+    expect(r).toMatchObject({ ok: true, supersededPrNumber: 6, supersedingPrNumber: 9, supersedingPrUrl: 'https://github.com/org/kb/pull/9' });
+    expect(kernelCalls).toEqual([{ fn: 'recordSupersession', p: {
+      workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 6, installationId: 11, actor: 'agent:abc', reason: 'moved',
+      target: { repoFullName: 'org/kb', prNumber: 9, url: 'https://github.com/org/kb/pull/9' },
+    } }]);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('a replay is the same answer (duplicate), not an error', async () => {
+    workerRow = closedWorker({ workspaceId: 'ws-1' });
+    kernelAnswer = { handled: true, deliveryId: 'd1', result: { result: 'duplicate', transitionId: 't', reason: 'edge_exists_same', current: current('SUPERSEDED') } };
+    expect((await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me' })).ok).toBe(true);
+  });
+
+  it('the kernel refuses an open PR and an overwrite, and the refusal says which', async () => {
+    workerRow = closedWorker({ workspaceId: 'ws-1', prLifecycleStatus: 'pr_open' });
+    kernelAnswer = { handled: true, deliveryId: 'd1', result: { result: 'rejected', reason: 'not_closed_unmerged', current: current('AWAITING_REVIEW') } };
+    const open = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'x', recordedBy: 'me' });
+    expect(open).toMatchObject({ ok: false, status: 409 });
+    expect((open as { error: string }).error).toContain('awaiting review');
+    kernelAnswer = { handled: true, deliveryId: 'd1', result: { result: 'rejected', reason: 'edge_exists', current: current('SUPERSEDED') } };
+    const over = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 10, reason: 'x', recordedBy: 'me' });
+    expect(over).toMatchObject({ ok: false, status: 409 });
+    expect((over as { error: string }).error).toContain('never overwritten');
+    expect(updates).toHaveLength(0);
+  });
+
+  it('the kernel never sees a target that is not merged: that is refused before T20', async () => {
+    workerRow = closedWorker({ workspaceId: 'ws-1' });
+    githubResponse = () => ({ merged: false, state: 'open' });
+    kernelAnswer = { handled: true, deliveryId: 'd1', result: { result: 'applied' } };
+    expect(await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'x', recordedBy: 'me' })).toMatchObject({ ok: false, status: 409 });
+    expect(kernelCalls).toHaveLength(0);
+  });
+
+  it('abandonment goes through T21 as a person, and the kernel (not a stale column) decides it is closed', async () => {
+    workerRow = closedWorker({ workspaceId: 'ws-1', prLifecycleStatus: 'pr_open' }); // the close webhook was lost
+    kernelAnswer = { handled: true, deliveryId: 'd1', result: { result: 'applied', transitionId: 't', deliveryId: 'd1', version: 9, decision: {} } };
+    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'me@example.com' })).toEqual({ ok: true });
+    expect(kernelCalls).toEqual([{ fn: 'abandonDelivery', p: {
+      workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 6, installationId: 11, actor: 'human:me@example.com', reason: 'plan changed',
+    } }]);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('a legacy PR (no kernel delivery) keeps the direct write', async () => {
+    workerRow = closedWorker({ workspaceId: 'ws-1' });
+    expect((await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me' })).ok).toBe(true);
+    expect(kernelCalls.map((c) => c.fn)).toEqual(['recordSupersession']);
+    expect(updates[0].set.supersededByPrNumber).toBe(9);
   });
 });
 

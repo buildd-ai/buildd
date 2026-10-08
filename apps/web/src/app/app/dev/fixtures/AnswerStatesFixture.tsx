@@ -8,9 +8,14 @@
  * states need a tap and a server reply, so a route screenshot never reaches
  * them.
  */
+import { ObjectStoreProvider } from '@/components/chat/objects/ObjectStoreProvider';
+import { QuestionCard } from '@/components/chat/objects/QuestionObject';
 import type { ReactNode } from 'react';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import AnswerRecorded, { AnswerOutcomeText } from '@/components/AnswerRecorded';
+import TaskQuestionFeed from '../../(protected)/tasks/[id]/TaskQuestionFeed';
+import RealTimeWorkerView from '../../(protected)/tasks/[id]/RealTimeWorkerView';
+import { mockWorkers } from './fixtures-data';
 import QuestionHero from '../../(protected)/tasks/[id]/QuestionHero';
 import type { AnswerOutcome } from '../../(protected)/tasks/[id]/respond/submit-answer';
 import type { AnswerSubmitState } from '../../(protected)/tasks/[id]/respond/use-answer-submit';
@@ -59,6 +64,18 @@ export default function AnswerStatesFixture() {
       <div className="mx-auto grid max-w-5xl gap-8 md:grid-cols-2">
         <div className="space-y-6">
           <h1 className="text-lg font-bold">Mission task sheet</h1>
+          <Panel label="Finished task with a closed PR">
+            <p className="text-body text-text-secondary">Completed · PR closed</p>
+            <TaskQuestionFeed taskId="fixture-finished-task" taskStatus="completed"
+              activeWorkerId={null} activeWorkerStatus={null}
+              initialNotes={[
+                { id: 'past-q', type: 'question', status: 'open', title: 'Park this task, or ship what is done?', defaultChoice: OPTIONS[0], createdAt: new Date('2026-01-01') },
+                { id: 'past-unanswered', type: 'question', status: 'open', title: 'Should the follow-up include the settings screen?', createdAt: new Date('2026-01-01') },
+                { id: 'past-a', type: 'reply', replyTo: 'past-q', title: 'Ship what is done', createdAt: new Date('2026-01-01') },
+              ] as any} />
+            <RealTimeWorkerView taskId="fixture-finished-task" taskStatus="completed"
+              initialWorker={{ ...mockWorkers['waiting-input'], status: 'completed', prLifecycleStatus: 'closed' } as any} />
+          </Panel>
           <Panel label="Tapped, sending">
             <SheetBox>
               <WorkerRespondInput workerId="w1" question={QUESTION} options={OPTIONS} answer={state({ sending: OPTIONS[0] })} />
@@ -86,6 +103,17 @@ export default function AnswerStatesFixture() {
         </div>
         <div className="space-y-6">
           <h1 className="text-lg font-bold">Chat card and respond page</h1>
+          <Panel label="Past question without an answer">
+            <ObjectStoreProvider>
+              <QuestionCard objRef={{ kind: 'question', id: 'fixture-worker', taskId: 'fixture-finished-task', workspaceId: 'fixture-workspace', fallbackText: 'Past question' }}
+                view={{ kind: 'question', id: 'fixture-worker', workspaceId: 'fixture-workspace',
+                  taskId: 'fixture-finished-task', taskTitle: 'Finished task', missionId: null,
+                  scope: null, workerId: 'fixture-worker', open: false, awaitingAgent: false,
+                  answer: null, askerLabel: 'The builder asks', askedAt: null,
+                  question: heroQuestion, renderedAt: 0,
+                }} />
+            </ObjectStoreProvider>
+          </Panel>
           <Panel label="Tapped, sending">
             <QuestionHero density="feed" question={heroQuestion} askerLabel="The builder asks" onAnswer={() => {}} sending={OPTIONS[0]} testId="fixture-hero-sending" />
           </Panel>
