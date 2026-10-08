@@ -1280,7 +1280,13 @@ not own keeps the legacy conflict retry unchanged:
   migration-collision dispatch) reaches `dispatchConflictRetry`, which now asks
   `observeConflict` (`seam.ts`) first. For a kernel-owned PR it takes a live read of
   `mergeable_state` now (the door's own reading is used only when GitHub says
-  `unknown`), records the head first, and applies `ConflictObserved`. The legacy
+  `unknown`), records the head first, and applies `ConflictObserved`. GitHub says
+  `behind` only under "require up to date" protection; without it a PR behind its
+  base reads `clean`. So a door that saw the PR behind (landing's freshness rail) on
+  a mergeable PR is answered by ancestry (`conflictReading`): the base tip missing
+  from the head is `behind`, and `refresh_branch` runs. Reading `clean` as
+  `not_conflicting` there stranded approved, green PRs: landing asked for a refresh
+  every sweep and was told the branch already had every base commit. The legacy
   decision does not run: no `conflictIteration` counter, no spent-key release, no
   behind-only refresh, no task insert. `kernelConflictOutcome` maps the answer onto the
   `DispatchConflictRetryResult` the doors already understand (a landed mechanical

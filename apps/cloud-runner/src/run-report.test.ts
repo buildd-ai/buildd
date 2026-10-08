@@ -371,7 +371,7 @@ describe('assembleRunReport', () => {
     const r = assembleRunReport(FULL);
     expect(r).toMatchObject({
       kind: 'cloud-run-report',
-      version: 13,
+      version: 14,
       taskId: 'task-1',
       attempt: 2,
       workerId: 'worker-9',
@@ -394,6 +394,23 @@ describe('assembleRunReport', () => {
     expect(assembleRunReport(FULL).schedule).toEqual({ scheduledFor: null, startedAt: 1_000, lateMs: null });
     // A start before the scheduled time (clock skew) is not negative lateness.
     expect(assembleRunReport({ ...FULL, dispatchReceivedAt: 9_000, timings: { scheduledFor: 10_000 } }).schedule.lateMs).toBeNull();
+  });
+
+  test('depsOverlap: what the background deps work cost the session, and what it hid', () => {
+    // The session started at 10 s, the deps were ready at 100 s, the agent
+    // first needed them at 40 s and waited 20 s in total: 70 s of the 90 s hidden.
+    const r = assembleRunReport({ ...FULL, timings: { ...FULL.timings,
+      runnerPhases: { ...FULL.timings!.runnerPhases, session_start: 10_000, deps_ready: 100_000, first_gated_tool: 40_000 },
+      runnerMetrics: { gate_wait_ms: 20_000, gate_holds: 2 },
+    } });
+    expect(r.depsOverlap).toEqual({ sessionStartAt: 10_000, depsReadyAt: 100_000, firstGatedToolAt: 40_000, gateWaitMs: 20_000, gateHolds: 2, hiddenMs: 70_000 });
+    // The agent never needed deps: nothing held, the whole span hidden.
+    const quiet = assembleRunReport({ ...FULL, timings: { ...FULL.timings, runnerPhases: { session_start: 10_000, deps_ready: 50_000 } } });
+    expect(quiet.depsOverlap).toEqual({ sessionStartAt: 10_000, depsReadyAt: 50_000, firstGatedToolAt: null, gateWaitMs: 0, gateHolds: 0, hiddenMs: 40_000 });
+    // Deps ready before the session started: nothing to hide.
+    expect(assembleRunReport({ ...FULL, timings: { runnerPhases: { session_start: 50_000, deps_ready: 40_000 } } }).depsOverlap?.hiddenMs).toBe(0);
+    // No deps_ready: the run did not overlap (host runner, declared env.yaml, older image).
+    expect(assembleRunReport(FULL).depsOverlap).toBeNull();
   });
 
   test('missing pieces are null, never guessed', () => {
@@ -455,7 +472,7 @@ describe('assembleRunReport', () => {
 
   test('only allowlisted top-level keys', () => {
     expect(Object.keys(assembleRunReport({ ...FULL, extra: 'x' } as RunReportInput)).sort()).toEqual([
-      'agentRestarts', 'attempt', 'containerInstanceId', 'crashReport', 'deferredRetry', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'interruption', 'kind',
+      'agentRestarts', 'attempt', 'containerInstanceId', 'crashReport', 'deferredRetry', 'depsOverlap', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'interruption', 'kind',
       'modelAuth', 'outcome', 'repo', 'resources', 'resume', 'reusedContainer', 'runLabel', 'runnerPhases', 'runnerSize', 'schedule', 'taskId', 'timestamps', 'version', 'workerId', 'worktreeMode',
     ]);
   });

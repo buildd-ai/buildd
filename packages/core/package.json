@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.297.1",
+  "version": "0.298.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -126,6 +126,8 @@
     "./orchestration-ledger-source": "./orchestration-ledger-source.ts",
     "./orchestration-claim-decision": "./orchestration-claim-decision.ts",
     "./orchestration-claim-readout": "./orchestration-claim-readout.ts",
+    "./orchestration-claim-risk": "./orchestration-claim-risk.ts",
+    "./orchestration-claim-risk-eval": "./orchestration-claim-risk-eval.ts",
     "./orchestration-claim-source": "./orchestration-claim-source.ts",
     "./orchestration-promotion": "./orchestration-promotion.ts",
     "./orchestration-readout": "./orchestration-readout.ts",
@@ -137,6 +139,7 @@
     "./task-size-bucket-source": "./task-size-bucket-source.ts",
     "./task-size-estimate": "./task-size-estimate.ts",
     "./decision-ledger": "./decision-ledger.ts",
+    "./orchestration-decision-ledger": "./orchestration-decision-ledger.ts",
     "./token-delegation": "./token-delegation.ts",
     "./decision-kinds": "./decision-kinds.ts",
     "./decision-policy": "./decision-policy.ts",

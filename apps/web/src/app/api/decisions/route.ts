@@ -3,6 +3,9 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { inArray } from 'drizzle-orm';
 import { readDecisionLedgerPage, summarizeDecisionLedger } from '@buildd/core/decision-ledger';
+import {
+  isOrchestrationCapability, readOrchestrationDecisionPage, summarizeOrchestrationDecisions,
+} from '@buildd/core/orchestration-decision-ledger';
 import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
@@ -70,6 +73,31 @@ export async function GET(req: NextRequest) {
   const overriddenOnly = params.get('overriddenOnly') === 'true';
   const limitParam = params.get('limit');
   const limit = limitParam ? Math.max(1, Math.min(500, Number.parseInt(limitParam, 10) || 0)) : undefined;
+
+  if (isOrchestrationCapability(capability)) {
+    // orchestration_* decisions live in orchestration_decisions, not decision_records.
+    try {
+      const page = await readOrchestrationDecisionPage({ workspaceId: match.id, capability, since, until }, limit);
+      const oldest = page.rows[page.rows.length - 1]?.createdAt;
+      return NextResponse.json({
+        status: page.rows.length ? 'OK' : 'NO_DATA',
+        workspaceId: match.id,
+        source: 'orchestration_decisions',
+        window: sinceParam || untilParam ? 'explicit' : windowParam,
+        since: since.toISOString(),
+        until: (until ?? new Date()).toISOString(),
+        capability,
+        count: page.rows.length,
+        truncated: page.truncated,
+        nextUntil: page.truncated && oldest ? new Date(oldest).toISOString() : null,
+        summary: summarizeOrchestrationDecisions(page.rows),
+        decisions: page.rows,
+      });
+    } catch (err) {
+      console.error('[decisions] orchestration ledger read failed:', (err as Error)?.message ?? err);
+      return NextResponse.json({ status: 'TOOL_UNAVAILABLE', error: 'The decision ledger could not be read. This is not an empty result.' }, { status: 503 });
+    }
+  }
 
   let page: Awaited<ReturnType<typeof readDecisionLedgerPage>>;
   try {
