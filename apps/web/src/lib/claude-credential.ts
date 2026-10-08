@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { secrets, accounts } from '@buildd/core/db/schema';
 import { encrypt, decrypt } from '@buildd/core/secrets';
+import { pickMostSpecificCredential, teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { eq, and, or, isNull, lt, sql } from 'drizzle-orm';
 import { recordCredentialAuthSuccess, recordCredentialAuthFailure } from './credential-health';
 
@@ -234,7 +235,8 @@ export async function storeClaudeCredential(
 // ── Resolution ────────────────────────────────────────────────────────────────
 
 /**
- * Resolve the most-specific Claude credential: workspace-scoped beats team-wide.
+ * Resolve the most-specific Claude credential: workspace beats account beats team-wide
+ * (docs/credentials-architecture.md). Personal (userId) rows are never returned.
  * Returns null when no credential exists OR when the best candidate is unhealthy.
  *
  * Unhealthy conditions (skipped so the claim route falls through to the setup token):
@@ -248,15 +250,24 @@ export async function storeClaudeCredential(
  */
 export async function resolveClaudeCredential(opts: {
   teamId: string;
+  /** The claiming account. Omitted: account-scoped rows are someone else's and never match. */
+  accountId?: string | null;
   workspaceId?: string | null;
 }): Promise<ClaudeCredential | null> {
   const rows = await db.query.secrets.findMany({
-    where: and(
-      eq(secrets.teamId, opts.teamId),
-      eq(secrets.purpose, PURPOSE),
+    // teamCredentialWhere pins `user_id IS NULL`: a personal row is never read
+    // as the team's Claude credential.
+    where: teamCredentialWhere(
+      { teamId: opts.teamId, purpose: PURPOSE },
+      opts.accountId
+        ? or(isNull(secrets.accountId), eq(secrets.accountId, opts.accountId))
+        : isNull(secrets.accountId),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
     ),
-    columns: { encryptedValue: true, workspaceId: true, tokenExpiresAt: true, lastRefreshedAt: true, healthStatus: true },
+    columns: {
+      encryptedValue: true, accountId: true, workspaceId: true, userId: true,
+      tokenExpiresAt: true, lastRefreshedAt: true, healthStatus: true, updatedAt: true,
+    },
   });
   if (rows.length === 0) return null;
 
@@ -268,12 +279,11 @@ export async function resolveClaudeCredential(opts: {
   const healthyRows = rows.filter(
     (r) => r.tokenExpiresAt !== null && (r.healthStatus as string) !== 'revoked',
   );
-  if (healthyRows.length === 0) return null;
 
-  // Workspace-specific row wins over team-wide.
-  const score = (r: { workspaceId: string | null }) =>
-    r.workspaceId && r.workspaceId === opts.workspaceId ? 1 : 0;
-  const best = healthyRows.reduce((a, b) => (score(b) > score(a) ? b : a));
+  // Most specific scope wins (workspace > account > team-wide), newest within a
+  // scope — the same pick the claim route uses for every agent credential.
+  const best = pickMostSpecificCredential(healthyRows, opts);
+  if (!best) return null;
 
   const blob = decodeBlob(best.encryptedValue);
   return {

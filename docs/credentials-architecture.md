@@ -37,7 +37,7 @@ implementation. If you find yourself writing `pgTable('..._credentials', ...)`, 
 | `teamId` | Required. The owning team. |
 | `accountId` | Nullable. `NULL` = applies to all accounts in the team. |
 | `workspaceId` | Nullable. `NULL` = applies to all workspaces in the team. |
-| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `openai_api_key`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `agent_endpoint`, `custom`. |
+| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `claude_credential`, `codex_credential`, `openai_api_key`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `agent_endpoint`, `custom`. |
 | `userId` | Nullable. A person's own key: `PERSONAL_SECRET_PURPOSES` in `packages/core/secrets/team-scope.ts` (`inference_key`, and `pushover_personal`, a person's Pushover user key for away-alerts; see `apps/web/src/lib/personal-pushover.ts`). `NULL` = not personal. A personal purpose is never read as a team credential, and an away-alert never falls back to the team's `pushover` row. See "API-token model keys". |
 | `label` | Optional. For `mcp_credential` it is the env-var name. |
 | `encryptedValue` | AES-256-GCM ciphertext. For multi-field credentials, encrypt a JSON blob (see Codex below). |
@@ -62,10 +62,15 @@ Then pick the **most specific** match:
 2. `accountId = A`, `workspaceId IS NULL` (account-wide)
 3. `accountId IS NULL`, `workspaceId IS NULL` (team-wide)
 
-For single-valued credentials (one Codex login per scope) the resolver returns the single
-most-specific row. The claim route already applies the team/account/workspace filter for
-`anthropic_api_key` / `oauth_token` / `mcp_credential`; `codex_credential` uses the same
-filter plus the precedence pick.
+For single-valued credentials (one Codex or Claude login per scope) the resolver returns the
+single most-specific row. Every agent-credential read — `anthropic_api_key` / `oauth_token` /
+`mcp_credential` in the claim route, `claude_credential` and `codex_credential` in their
+resolvers — applies the filter above plus the same pick: a live row before a revoked one, then
+the most specific scope, then the newest `updatedAt` within that scope. Recency never beats
+scope: a newer team-wide row does not shadow an older workspace row. `mcp_credential` is many
+rows (one per env-var `label`), so the pick runs per label. The pick is
+`pickMostSpecificCredential` in `packages/core/secrets/team-scope.ts`; the query goes through
+`teamCredentialWhere`, so a personal (`userId`) row is never returned.
 
 ### Who may write a shared credential
 
