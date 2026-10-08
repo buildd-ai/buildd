@@ -15,7 +15,8 @@ let authArgs: unknown[];
 let worker: { id: string; accountId: string; workspaceId: string; taskId: string | null } | null;
 let workspace: { id: string; teamId: string | null; dataClass: string | null; gitConfig: unknown } | null;
 let task: { title: string; pathManifest: string[] | null; missionId: string | null } | null;
-let checked: Array<{ scope: unknown; req: unknown }>;
+let checked: Array<{ scope: unknown; req: unknown; deps?: any }>;
+const repairSlot = async () => null;
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async (...args: unknown[]) => { authArgs = args; return authed; } }));
 mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'workers.id' }, workspaces: { id: 'workspaces.id' }, tasks: { id: 'tasks.id' } }));
@@ -27,9 +28,10 @@ mock.module('@buildd/core/db', () => ({
     tasks: { findFirst: async () => task },
   } },
 }));
+mock.module('@/modules', () => ({ RECOVERABLE_BLOCKER_REPAIR: repairSlot }));
 mock.module('@/lib/question-gate-check', () => ({
-  checkQuestion: async (scope: unknown, req: unknown) => {
-    checked.push({ scope, req });
+  checkQuestion: async (scope: unknown, req: unknown, deps?: any) => {
+    checked.push({ scope, req, deps });
     return { verdict: 'pushback', outcome: 'pushback', reason: 'Not sent: ...', version: 'v', latencyMs: 3 };
   },
   gateEnabledFromGitConfig: (gc: any) => gc?.jevQuestionGate !== false,
@@ -102,6 +104,8 @@ describe('POST /api/workers/[id]/question-check', () => {
       hardRail: { pathManifest: ['infra/terraform/main.tf'], protectedPaths: ['infra/'] },
     });
     expect((checked[0].req as any).question.prompt).toBe('Local or UTC?');
+    // The recover slot comes from the composition root, so a recoverable blocker can be repaired.
+    expect(checked[0].deps?.fileRepair).toBe(repairSlot);
   });
 
   it('defaults gateEnabled true and an empty hard-rail context with no gitConfig', async () => {

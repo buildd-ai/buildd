@@ -332,7 +332,7 @@ describe('golden: claim_task Relevant Memory', () => {
 
       **Worker ID:** worker-1
       **Task:** Fix the login bug
-      **Branch:** buildd/x
+      **Branch:** buildd/x (push here — create_pr's head must be this branch, or another name nobody else is using)
       **Description:** d
 
       ## Relevant Memory

@@ -189,6 +189,13 @@ mock.module('@/lib/github', () => ({
   githubApi: (installationId: number, path: string) => githubApiImpl(installationId, path),
 }));
 
+// One authority per delivery: createReviewerTask asks the workflow kernel
+// whether it owns the PR (lib/workflow/authority.ts, real-SQL tests in
+// apps/web/tests/db/workflow-seam.test.ts).
+let kernelOwner: string | null = null;
+const mockKernelDeliveryForPr = mock(async (..._a: unknown[]) => kernelOwner);
+mock.module('./workflow/authority', () => ({ kernelDeliveryForPr: mockKernelDeliveryForPr }));
+
 import {
   buildReviewerContext,
   buildDeltaReviewerContext,
@@ -207,6 +214,49 @@ import { composeBodyWithLede } from '@buildd/core/pr-lede';
 import { toReviewerCriterionRefs } from './criteria-reviewer-findings';
 import { resolvePolicy } from './merge-policy';
 import type { MergePolicy } from '@buildd/shared';
+
+describe('createReviewerTask — workflow kernel ownership', () => {
+  const base = {
+    workspaceId: 'ws-1', originalTaskId: 'original-k', worker: { branch: 'buildd/k' },
+    originalTask: { title: 'Kernel PR', description: null, backend: 'claude' as const, missionId: null },
+    prNumber: 77, prUrl: 'https://github.com/buildd-ai/buildd/pull/77', headSha: 'k1', reviewerRole: 'reviewer',
+    installationId: 1, repoFullName: 'buildd-ai/buildd',
+  };
+
+  it('refuses a legacy-door reviewer for a PR the kernel owns (no second authority)', async () => {
+    insertedTask = undefined;
+    kernelOwner = 'delivery-77';
+    try {
+      expect(await createReviewerTask(base)).toBeNull();
+      expect(insertedTask).toBeUndefined();
+      expect(mockKernelDeliveryForPr).toHaveBeenCalledWith('ws-1', 'buildd-ai/buildd', 77);
+    } finally {
+      kernelOwner = null;
+    }
+  });
+
+  it('a kernel round dispatch is linked to its delivery and round, and skips the ownership check', async () => {
+    insertedTask = undefined;
+    kernelOwner = 'delivery-77';
+    mockKernelDeliveryForPr.mockClear();
+    try {
+      await createReviewerTask({ ...base, workflowRound: { deliveryId: 'delivery-77', roundId: 'round-2', round: 2 } });
+      expect(mockKernelDeliveryForPr).not.toHaveBeenCalled();
+      expect(insertedTask).toMatchObject({ deliveryId: 'delivery-77', deliveryRole: 'review' });
+      expect((insertedTask?.context as any).workflowRoundId).toBe('round-2');
+    } finally {
+      kernelOwner = null;
+    }
+  });
+
+  it('a legacy PR (no kernel delivery) is reviewed exactly as before', async () => {
+    insertedTask = undefined;
+    await createReviewerTask(base);
+    expect(insertedTask).toBeDefined();
+    expect(insertedTask?.deliveryId).toBeUndefined();
+    expect((insertedTask?.context as any).workflowRoundId).toBeUndefined();
+  });
+});
 
 describe('createReviewerTask', () => {
   it('inherits the original task backend', async () => {

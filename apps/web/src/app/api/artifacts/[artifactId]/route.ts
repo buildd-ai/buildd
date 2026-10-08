@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { artifacts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsMission, taskScopeAllowsWorker, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { appBaseUrl } from '@/lib/app-url';
@@ -22,7 +22,8 @@ export async function GET(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey, req);
+  // A per-task token reads only artifacts in its own task's workspace.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   // The dashboard session (e.g. the in-app agent chat calling this in-process
   // as the signed-in user) is accepted on this read only. A key, when present,
   // stays authoritative so the key path is unchanged.
@@ -55,6 +56,11 @@ export async function GET(
       return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
     }
   } else {
+    // Outside its own workspace an artifact does not exist for a task token,
+    // even one its minting account's worker produced elsewhere.
+    if (!taskScopeAllowsWorkspace(account, artifact.workspaceId ?? artifact.worker?.workspaceId ?? null)) {
+      return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
+    }
     // Key: owner of the worker, or workspace member
     const isOwner = artifact.worker?.accountId === account.id;
     if (!isOwner) {
@@ -90,7 +96,9 @@ export async function PATCH(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey, req);
+  // A per-task token updates only its own task's artifacts and the
+  // mission-level artifacts of its own task's mission.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -108,6 +116,17 @@ export async function PATCH(
 
   if (!artifact) {
     return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
+  }
+
+  if (account.taskScope) {
+    if (!taskScopeAllowsWorkspace(account, artifact.workspaceId ?? artifact.worker?.workspaceId ?? null)) {
+      return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
+    }
+    const ownTaskArtifact = !!artifact.worker && artifact.worker.accountId === account.id && taskScopeAllowsWorker(account, artifact.worker);
+    const ownMissionArtifact = !artifact.workerId && !artifact.initiativeId && await taskScopeAllowsMission(account, artifact.missionId);
+    if (!ownTaskArtifact && !ownMissionArtifact) {
+      return NextResponse.json({ error: "A task token may update only its own task's or its own mission's artifacts" }, { status: 403 });
+    }
   }
 
   // Allow: worker owner, OR workspace member for artifacts without an owning worker (e.g. mission-level artifacts)

@@ -528,6 +528,51 @@ export async function findTaskEvidenceObject(task: EvidenceTaskScope, evidenceId
   return row && row.id === evidenceId && evidenceBelongsToTask(row, task) ? row : null;
 }
 
+// ── Scout run ownership ───────────────────────────────────────────────────
+
+/** The Scout run an evidence list or read is scoped to, after the caller's access to its workspace was checked. */
+export interface EvidenceScoutRunScope {
+  id: string;
+  workspaceId: string;
+}
+
+/** Checked again on the row itself: the query predicate is the scope, this is the proof. */
+export function evidenceBelongsToScoutRun(
+  row: Pick<EvidenceObjectRow, 'workspaceId' | 'scoutRunId'>,
+  run: EvidenceScoutRunScope,
+): boolean {
+  return row.workspaceId === run.workspaceId && row.scoutRunId === run.id;
+}
+
+/** A Scout run's evidence objects, newest first. */
+export async function listScoutRunEvidenceObjects(
+  run: EvidenceScoutRunScope,
+  opts: { kind?: EvidenceKind; limit?: number } = {},
+): Promise<EvidenceObjectRow[]> {
+  const rows = (await db.query.evidenceObjects.findMany({
+    where: and(
+      eq(evidenceObjects.workspaceId, run.workspaceId),
+      eq(evidenceObjects.scoutRunId, run.id),
+      ...(opts.kind ? [eq(evidenceObjects.kind, opts.kind)] : []),
+    ),
+    orderBy: [desc(evidenceObjects.createdAt)],
+    limit: opts.limit ?? 200,
+  })) as EvidenceObjectRow[];
+  return rows.filter(r => evidenceBelongsToScoutRun(r, run));
+}
+
+/** One object of the Scout run, or null when it is not the run's. */
+export async function findScoutRunEvidenceObject(run: EvidenceScoutRunScope, evidenceId: string): Promise<EvidenceObjectRow | null> {
+  const row = (await db.query.evidenceObjects.findFirst({
+    where: and(
+      eq(evidenceObjects.id, evidenceId),
+      eq(evidenceObjects.workspaceId, run.workspaceId),
+      eq(evidenceObjects.scoutRunId, run.id),
+    ),
+  })) as EvidenceObjectRow | undefined;
+  return row && row.id === evidenceId && evidenceBelongsToScoutRun(row, run) ? row : null;
+}
+
 // ── Download (dashboard only) ──────────────────────────────────────────────
 
 /**
@@ -590,9 +635,10 @@ export function toEvidenceObjectSummary(row: EvidenceObjectRow): EvidenceObjectS
   return {
     id: row.id,
     workspaceId: row.workspaceId,
-    taskId: row.taskId,
-    rootTaskId: row.rootTaskId,
-    workerId: row.workerId,
+    taskId: row.taskId ?? null,
+    rootTaskId: row.rootTaskId ?? null,
+    workerId: row.workerId ?? null,
+    scoutRunId: row.scoutRunId ?? null,
     prNumber: row.prNumber ?? null,
     kind: row.kind,
     bytes: row.bytes,

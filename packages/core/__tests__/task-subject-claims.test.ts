@@ -25,40 +25,37 @@
  * is implemented.
  */
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { taskSubjectClaims, taskSubjectReports } from '../db/schema';
 
 const DRIZZLE_DIR = join(import.meta.dir, '..', 'drizzle');
 
-// ── Locate the migration that creates task_subject_claims ─────────────────────
+// ── The migration that creates task_subject_claims ───────────────────────────
+//
+// It was squashed into drizzle/0000_baseline.sql, a pg_dump of the released
+// schema, so these read pg_dump's spelling (`public.` qualifiers, identifiers
+// quoted only when needed, constraints as `ALTER TABLE ONLY`).
 
-function findSubjectClaimsMigration(): string {
-  const files = readdirSync(DRIZZLE_DIR)
-    .filter((f) => f.endsWith('.sql'))
-    .sort();
+const baselineSql = readFileSync(join(DRIZZLE_DIR, '0000_baseline.sql'), 'utf8');
 
-  for (const file of files.reverse()) {
-    const sql = readFileSync(join(DRIZZLE_DIR, file), 'utf8');
-    if (sql.includes('CREATE TABLE "task_subject_claims"')) return sql;
-  }
-  throw new Error('No migration found that creates task_subject_claims');
+function tableBody(table: string): string {
+  const start = baselineSql.indexOf(`CREATE TABLE public.${table} (`);
+  if (start < 0) throw new Error(`baseline does not create ${table}`);
+  return baselineSql.slice(start, baselineSql.indexOf('\n);', start));
 }
 
 describe('task_subject_claims — migration SQL', () => {
-  const migrationSql = findSubjectClaimsMigration();
+  const body = tableBody('task_subject_claims');
 
   it('creates the task_subject_claims table', () => {
-    expect(migrationSql).toContain('CREATE TABLE "task_subject_claims"');
+    expect(baselineSql).toContain('CREATE TABLE public.task_subject_claims (');
   });
 
   it('includes workspace_id, key_type, key_hash, canonical_task_id, state columns', () => {
-    expect(migrationSql).toContain('"workspace_id"');
-    expect(migrationSql).toContain('"key_type"');
-    expect(migrationSql).toContain('"key_hash"');
-    expect(migrationSql).toContain('"canonical_task_id"');
-    expect(migrationSql).toContain('"state"');
-    expect(migrationSql).toContain('"generation"');
+    for (const col of ['workspace_id', 'key_type', 'key_hash', 'canonical_task_id', 'state', 'generation']) {
+      expect(body).toContain(`\n    ${col} `);
+    }
   });
 
   it('has the partial unique index that enforces single-active-row per dedupe key', () => {
@@ -66,26 +63,26 @@ describe('task_subject_claims — migration SQL', () => {
     // clause restricts it to active rows; since nothing ever retires a claim it
     // is constant-true in practice, and it is the shape, not the filtering, that
     // is load-bearing here.
-    expect(migrationSql).toContain('CREATE UNIQUE INDEX "task_subject_claims_active_unique"');
-    expect(migrationSql).toContain('"workspace_id","key_type","key_hash"');
-    expect(migrationSql).toContain(`WHERE "task_subject_claims"."state" = 'active'`);
+    expect(baselineSql).toContain(
+      "CREATE UNIQUE INDEX task_subject_claims_active_unique ON public.task_subject_claims USING btree (workspace_id, key_type, key_hash) WHERE (state = 'active'::text);",
+    );
   });
 
   it('state defaults to active so every new claim participates in dedup', () => {
     // The DEFAULT guarantees that INSERT without an explicit state still lands
     // under the unique constraint, preventing omission bugs.
-    expect(migrationSql).toContain(`"state" text DEFAULT 'active' NOT NULL`);
+    expect(body).toContain("state text DEFAULT 'active'::text NOT NULL");
   });
 
   it('has FK from canonical_task_id to tasks with cascade delete', () => {
-    expect(migrationSql).toContain(
-      'ADD CONSTRAINT "task_subject_claims_canonical_task_id_tasks_id_fk" FOREIGN KEY ("canonical_task_id") REFERENCES "public"."tasks"("id") ON DELETE cascade',
+    expect(baselineSql).toContain(
+      'ADD CONSTRAINT task_subject_claims_canonical_task_id_tasks_id_fk FOREIGN KEY (canonical_task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;',
     );
   });
 
   it('creates lookup indexes for workspace and canonical task', () => {
-    expect(migrationSql).toContain('CREATE INDEX "task_subject_claims_workspace_idx"');
-    expect(migrationSql).toContain('CREATE INDEX "task_subject_claims_canonical_task_idx"');
+    expect(baselineSql).toContain('CREATE INDEX task_subject_claims_workspace_idx ON public.task_subject_claims');
+    expect(baselineSql).toContain('CREATE INDEX task_subject_claims_canonical_task_idx ON public.task_subject_claims');
   });
 });
 
@@ -189,29 +186,24 @@ describe('task_subject_claims — schema shape', () => {
 });
 
 describe('task_subject_claims — reservation migration', () => {
-  const migrationSql = readFileSync(
-    join(DRIZZLE_DIR, '0099_slow_ben_parker.sql'),
-    'utf8',
-  );
+  const body = tableBody('task_subject_claims');
 
   it('allows an ownerless short-lived reservation before task insertion', () => {
-    expect(migrationSql).toContain('ALTER COLUMN "canonical_task_id" DROP NOT NULL');
-    expect(migrationSql).toContain('ADD COLUMN "reservation_token" uuid');
-    expect(migrationSql).toContain('ADD COLUMN "reservation_expires_at" timestamp with time zone');
+    expect(body).toContain('\n    canonical_task_id uuid,');
+    expect(body).toContain('\n    reservation_token uuid');
+    expect(body).toContain('\n    reservation_expires_at timestamp with time zone');
   });
 });
 
 describe('task_subject_reports — migration SQL', () => {
-  const migrationSql = findSubjectClaimsMigration();
-
   it('creates the task_subject_reports table with all required columns', () => {
-    expect(migrationSql).toContain('CREATE TABLE "task_subject_reports"');
-    expect(migrationSql).toContain('"task_id" uuid NOT NULL');
-    expect(migrationSql).toContain('"reporting_task_id" uuid');
-    expect(migrationSql).toContain('"origin" text NOT NULL');
-    expect(migrationSql).toContain('"reporter_id" uuid');
-    expect(migrationSql).toContain('"note" text');
-    expect(migrationSql).toContain('"anchor_snapshot" jsonb');
+    const body = tableBody('task_subject_reports');
+    expect(body).toContain('\n    task_id uuid NOT NULL');
+    expect(body).toContain('\n    reporting_task_id uuid');
+    expect(body).toContain('\n    origin text NOT NULL');
+    expect(body).toContain('\n    reporter_id uuid');
+    expect(body).toContain('\n    note text');
+    expect(body).toContain('\n    anchor_snapshot jsonb');
   });
 
   it('exports taskSubjectReports with the expected column set', () => {
@@ -228,38 +220,45 @@ describe('task_subject_reports — migration SQL', () => {
 });
 
 describe('tasks — subject anchor columns migration', () => {
-  const migrationSql = findSubjectClaimsMigration();
-
   it('adds all subject anchor columns to tasks', () => {
-    expect(migrationSql).toContain('ADD COLUMN "subject_anchor" jsonb');
-    expect(migrationSql).toContain('ADD COLUMN "subject_kind" text');
-    expect(migrationSql).toContain('ADD COLUMN "subject_pr_number" integer');
-    expect(migrationSql).toContain('ADD COLUMN "subject_head_sha" text');
-    expect(migrationSql).toContain('ADD COLUMN "subject_branch" text');
-    expect(migrationSql).toContain('ADD COLUMN "subject_error_signature" text');
-    expect(migrationSql).toContain('ADD COLUMN "subject_mission_id" uuid');
-    expect(migrationSql).toContain('ADD COLUMN "subject_dedupe_scope" text');
-    expect(migrationSql).toContain('ADD COLUMN "subject_superseded_by_task_id" uuid');
-    expect(migrationSql).toContain('ADD COLUMN "subject_resolution" text');
+    const body = tableBody('tasks');
+    for (const col of [
+      'subject_anchor jsonb',
+      'subject_kind text',
+      'subject_pr_number integer',
+      'subject_head_sha text',
+      'subject_branch text',
+      'subject_error_signature text',
+      'subject_mission_id uuid',
+      'subject_dedupe_scope text',
+      'subject_superseded_by_task_id uuid',
+      'subject_resolution text',
+    ]) {
+      expect(body).toContain(`\n    ${col}`);
+    }
   });
 
+  const subjectIndexLines = baselineSql
+    .split('\n')
+    .filter((l) => /^CREATE INDEX tasks_subject_\w+ ON public\.tasks /.test(l));
+
   it('creates all subject lookup indexes on tasks', () => {
-    expect(migrationSql).toContain('CREATE INDEX "tasks_subject_kind_idx"');
-    expect(migrationSql).toContain('CREATE INDEX "tasks_subject_pr_idx"');
-    expect(migrationSql).toContain('CREATE INDEX "tasks_subject_head_sha_idx"');
-    expect(migrationSql).toContain('CREATE INDEX "tasks_subject_error_idx"');
-    expect(migrationSql).toContain('CREATE INDEX "tasks_subject_mission_idx"');
-    expect(migrationSql).toContain('CREATE INDEX "tasks_subject_dedupe_scope_idx"');
+    const names = subjectIndexLines.map((l) => l.split(' ')[2]);
+    expect(names.sort()).toEqual([
+      'tasks_subject_dedupe_scope_idx',
+      'tasks_subject_error_idx',
+      'tasks_subject_head_sha_idx',
+      'tasks_subject_kind_idx',
+      'tasks_subject_mission_idx',
+      'tasks_subject_pr_idx',
+    ]);
   });
 
   it('all lookup indexes are on (workspace_id, subject_*) for workspace-scoped queries', () => {
     // Hot lookups always filter by workspace first — compound index prefix matches.
-    const subjectIndexLines = migrationSql
-      .split('\n')
-      .filter((l) => l.includes('tasks_subject_') && l.includes('CREATE INDEX'));
     expect(subjectIndexLines.length).toBe(6);
     for (const line of subjectIndexLines) {
-      expect(line).toContain('"workspace_id"');
+      expect(line).toContain('USING btree (workspace_id, ');
     }
   });
 });

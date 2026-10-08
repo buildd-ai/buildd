@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
-let waiverNotes: Array<{ authorType: string; body: string | null }> = [];
+let waiverNotes: Array<{ authorType: string; body: string | null; actorLabel?: string | null; createdAt?: Date }> = [];
 let repoRow: any = { githubRepo: { fullName: 'acme/app', installation: { installationId: 7 } } };
 
 mock.module('@buildd/core/db', () => ({
@@ -16,7 +16,7 @@ mock.module('@buildd/core/db', () => ({
 const mockGithubApi = mock(async (_installationId: number, _path: string): Promise<unknown> => []);
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 
-const { evaluateSurfaceAuditGate } = await import('./mission-surface-audit-gate');
+const { evaluateSurfaceAuditGate, loadSurfaceAuditWaiver } = await import('./mission-surface-audit-gate');
 
 const UI_FILE = 'apps/web/src/components/Card.tsx';
 
@@ -149,5 +149,23 @@ describe('evaluateSurfaceAuditGate', () => {
   it('a task with no PR contributes nothing', async () => {
     const gate = await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(null)]);
     expect(gate).toEqual({ required: false, why: 'no_ui_change' });
+  });
+});
+
+describe('loadSurfaceAuditWaiver', () => {
+  it("returns the newest person-set waiver's reason, actor and time", async () => {
+    waiverNotes = [
+      { authorType: 'agent', body: 'An agent tried', actorLabel: 'worker w1', createdAt: new Date('2026-10-03T00:00:00Z') },
+      { authorType: 'user', body: 'Copy-only change', actorLabel: 'owner@example.com', createdAt: new Date('2026-10-02T00:00:00Z') },
+      { authorType: 'mcp', body: 'Older call', actorLabel: 'account "k"', createdAt: new Date('2026-10-01T00:00:00Z') },
+    ];
+    expect(await loadSurfaceAuditWaiver('m1')).toEqual({
+      reason: 'Copy-only change', actorLabel: 'owner@example.com', at: '2026-10-02T00:00:00.000Z',
+    });
+  });
+
+  it('is null when no person waived it', async () => {
+    waiverNotes = [{ authorType: 'system', body: 'x', actorLabel: 'system', createdAt: new Date() }];
+    expect(await loadSurfaceAuditWaiver('m1')).toBeNull();
   });
 });

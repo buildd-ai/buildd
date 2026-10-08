@@ -12,7 +12,7 @@ interface WaitingOnYouDiscrepancyCardProps {
 type Mode = 'idle' | 'accepting' | 'flipping' | 'error';
 
 const DIRECTION_LABEL: Record<DiscrepancyDirection, string> = {
-  contradicted: 'Contradicted · needs your call',
+  contradicted: 'Contradicted · decision needed',
   spec_ahead: 'Spec ahead · unbuilt work',
   code_ahead: 'Code ahead · doc fix',
 };

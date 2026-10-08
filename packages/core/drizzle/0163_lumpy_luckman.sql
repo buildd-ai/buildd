@@ -1,1 +1,0 @@
-ALTER TABLE "missions" ADD COLUMN "completed_at" timestamp with time zone;

@@ -6,7 +6,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { verifyAccountWorkspaceAccess, holdsInWorkspace } from '@/lib/team-access';
 import { REASSIGNED_WORKER_ERROR } from '@/lib/worker-termination';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { RUNNER_RECENTLY_SEEN_MS } from '@buildd/shared';
@@ -67,8 +67,7 @@ export async function POST(
     // Check if user has workspace owner/admin access (required for force reassignment)
     let isWorkspaceOwner = false;
     if (user) {
-      const access = await verifyWorkspaceAccess(user.id, task.workspaceId, 'admin');
-      isWorkspaceOwner = !!access;
+      isWorkspaceOwner = await holdsInWorkspace(user.id, task.workspaceId, 'force_reassign_task');
     } else if (apiAccount) {
       // API accounts with workspace access can force reassign (they are service accounts)
       isWorkspaceOwner = await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId);

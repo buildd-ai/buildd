@@ -1,5 +1,8 @@
+import type { HumanPrReview } from './reviewer-gate';
 import type { CiGate } from './ci-gate';
 import { resolveStaleGate, type StaleGate } from './pr-freshness';
+import { explainProviderAuthFailure } from './provider-auth-failure';
+import { attemptFailureCounts, type DeliveryView } from './workflow/projections';
 
 /**
  * ── The queue freshness rule ────────────────────────────────────────────────
@@ -21,6 +24,9 @@ import { resolveStaleGate, type StaleGate } from './pr-freshness';
  * no stale state for it to trust. RECONNECT and APPROVE are the same shape:
  * both come from a live re-check (`needsReconnect()` against the credential
  * row; "does an approved child task exist yet") each time the queue is built.
+ * FAILED is the same shape again: built from `tasks.status === 'failed'` read
+ * fresh on every build (buildFailedTaskItems), so a retried or completed task
+ * drops out by itself.
  * Any new chip must name which of these two patterns it uses — re-derive on
  * every build, or gate a persisted flag against a second, independently-live
  * signal — before it ships.
@@ -31,9 +37,9 @@ import { resolveStaleGate, type StaleGate } from './pr-freshness';
  */
 
 export type ActionChip =
-  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
+  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'FAILED' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
   | 'STALE'
-  | 'RESOLVING' | 'FIXING_CI' | 'FIXING_REVIEW' | 'CI_RUNNING' | 'AUTO_MERGE' | 'FIXING_SPEC';
+  | 'RESOLVING' | 'FIXING_CI' | 'FIXING_REVIEW' | 'CI_RUNNING' | 'REVIEW_RUNNING' | 'AUTO_MERGE' | 'FIXING_SPEC';
 
 /** docs/design/spec-conformance.md §8 — which way a discrepancy's gap runs. */
 export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted';
@@ -44,11 +50,156 @@ export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted';
  * above work that genuinely needs a human.
  */
 const AGENT_HANDLED_CHIPS: ReadonlySet<ActionChip> = new Set<ActionChip>([
-  'RESOLVING', 'FIXING_CI', 'FIXING_REVIEW', 'CI_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
+  'RESOLVING', 'FIXING_CI', 'FIXING_REVIEW', 'CI_RUNNING', 'REVIEW_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
 ]);
 
 export function isActionableChip(chip: ActionChip): boolean {
   return !AGENT_HANDLED_CHIPS.has(chip);
+}
+
+// ── Merge readiness: who owns the next step on an open PR ──────────────────
+//
+// "Needs you" means a person can take the next meaningful action now. A MERGE
+// or REVIEW card is a claim that the merge route would accept a tap; the route
+// (lib/pr-landing.ts) answers `waiting_ci` — "checks or the review are still
+// running" — while either gate below is still open, so the card must not make
+// that claim either. Both gates are machine-owned waits: they render as
+// in-flight status, never as a merge CTA with a Retry/Dismiss escape hatch.
+
+/**
+ * A `pr_open` lifecycle (opened, no CI event recorded yet) counts as "CI not
+ * reported yet" for this long after the row last changed. A repo with no CI
+ * at all never leaves `pr_open`, and the merge route accepts it (zero check
+ * runs is not a pending check), so past the window the card falls back to the
+ * merge reading instead of claiming "CI running" forever.
+ */
+export const AWAITING_CI_WINDOW_MS = 60 * 60 * 1000;
+
+/** Where the PR's CI stands, as far as the queue can tell from persisted rows. */
+export type PendingCiState = 'running' | 'awaiting' | 'passed' | null;
+
+/**
+ * The machine-owned waits on a PR, carried on CI_RUNNING / REVIEW_RUNNING
+ * cards so they can say exactly what is pending ("CI passed · reviewer
+ * running") instead of the generic "checks or the review are still running".
+ */
+export interface PendingGates {
+  ci: PendingCiState;
+  /** A review round on this PR is queued or running (review-verdict gate `in_flight`). */
+  review: 'queued' | 'reviewing' | null;
+}
+
+export interface MergeChipInput {
+  /** Canonical current-head reviewer approval; a review action still takes precedence. */
+  reviewApproved?: boolean;
+  humanReview?: HumanPrReview | null;
+  /** Conflict-resolution retries are exhausted. */
+  deadZoneExhausted?: boolean;
+  /** A conflict-resolution retry is live. */
+  conflictRetryTaskId?: string | null;
+  /**
+   * Automatic conflict resolution is on for the PR's workspace
+   * (`isAutoResolveMergeConflictsEnabled`). Decides who owns a conflicting PR
+   * with no live retry: the conflict-retry machinery (RESOLVING), or a person
+   * (BLOCKED). Absent = on, the same default as the workspace flag.
+   */
+  conflictAutoResolve?: boolean;
+  ciGate?: CiGate | null;
+  /** Persisted `workers.prLifecycleStatus`. */
+  prLifecycleStatus?: string | null;
+  /** When the lifecycle row last changed — bounds the `pr_open` "awaiting CI" reading. */
+  prLifecycleUpdatedAt?: Date | null;
+  /** See {@link EscalationRawItem.reviewInFlight}. */
+  reviewInFlight?: 'queued' | 'reviewing' | null;
+  autoMerge?: boolean;
+  policyTier?: string;
+  now: Date;
+}
+
+/** Machine work continues independently of an available human review. */
+function describeReviewMachineState(item: EscalationRawItem, now: Date): string | null {
+  if (item.conflictRetryTaskId) return 'Conflict repair queued';
+  if (item.deadZoneExhausted) return 'Conflict repair needs help';
+  if (item.prLifecycleStatus === 'conflict') return 'Branch has conflicts';
+  if (item.ciGate?.kind === 'fixing') return item.ciGate.fixKind === 'review' ? 'Review fix queued' : 'CI fix queued';
+  if (item.ciGate?.kind === 'blocked' || item.prLifecycleStatus === 'ci_failed') return 'CI failing';
+  return describePendingGates({ ci: pendingCiState({ ...item, now }), review: item.reviewInFlight ?? null }) || null;
+}
+
+function pendingCiState(input: Pick<MergeChipInput, 'ciGate' | 'prLifecycleStatus' | 'prLifecycleUpdatedAt' | 'now'>): PendingCiState {
+  if (input.ciGate?.kind === 'running' || input.prLifecycleStatus === 'ci_running') return 'running';
+  if (input.prLifecycleStatus === 'ci_green') return 'passed';
+  if (input.prLifecycleStatus === 'pr_open') {
+    const at = input.prLifecycleUpdatedAt?.getTime();
+    if (at == null || input.now.getTime() - at < AWAITING_CI_WINDOW_MS) return 'awaiting';
+  }
+  return null;
+}
+
+/**
+ * The one precedence rule for a PR card's chip. Explicit and ordered, so a
+ * card can never read MERGE and "not mergeable yet" at once:
+ *
+ *   0. REVIEW          a canonical human review handoff, independent of merge
+ *   1. BLOCKED         conflict retries exhausted (a person must resolve)
+ *   2. RESOLVING       an agent is resolving conflicts
+ *   3. FIXING_*        an open CI or reviewer fix attempt (ci-gate `fixing`)
+ *   4. RESOLVING       the PR conflicts with its base and the conflict-retry
+ *                      machinery owns it (the landing or dead-zone sweep files
+ *                      the attempt); BLOCKED when automatic resolution is off
+ *   5. CI_RUNNING      checks running
+ *   6. BLOCKED         CI red, nobody fixing it
+ *   7. REVIEW_RUNNING  a review round is queued or running on the PR
+ *   8. CI_RUNNING      PR opened, no CI result reported yet (bounded window)
+ *   9. AUTO_MERGE      every gate has passed and the platform merges it
+ *  10. REVIEW / MERGE  every gate has passed and the policy leaves it to a person
+ *
+ * REVIEW at 0 has a GitHub review link and never a merge CTA.
+ * Only 0, the BLOCKED rows and 10 ask anything of a human. A conflicting PR never
+ * reaches 10: a merge tap on it can only be refused again, so the card must
+ * not offer one (nor the Retry that follows a refusal).
+ */
+export function resolveMergeChip(input: MergeChipInput): { chip: ActionChip; pendingGates: PendingGates | null } {
+  const ciGate = input.ciGate ?? null;
+  if (input.humanReview) return { chip: 'REVIEW', pendingGates: null };
+  if (input.deadZoneExhausted) return { chip: 'BLOCKED', pendingGates: null };
+  if (input.conflictRetryTaskId) return { chip: 'RESOLVING', pendingGates: null };
+  if (ciGate?.kind === 'fixing') {
+    return { chip: ciGate.fixKind === 'review' ? 'FIXING_REVIEW' : 'FIXING_CI', pendingGates: null };
+  }
+  if (input.prLifecycleStatus === 'conflict') {
+    return { chip: input.conflictAutoResolve === false ? 'BLOCKED' : 'RESOLVING', pendingGates: null };
+  }
+  const ci = pendingCiState(input);
+  const review = input.reviewInFlight ?? null;
+  if (ciGate?.kind === 'running') return { chip: 'CI_RUNNING', pendingGates: { ci, review } };
+  if (ciGate?.kind === 'blocked') return { chip: 'BLOCKED', pendingGates: null };
+  if (review) return { chip: 'REVIEW_RUNNING', pendingGates: { ci, review } };
+  if (ci === 'running' || ci === 'awaiting') {
+    // An auto-merge PR waiting on its first CI result is already AUTO_MERGE's
+    // own story ("Auto-merges when CI passes"), told by the reviewer gate.
+    if (input.autoMerge) return { chip: 'AUTO_MERGE', pendingGates: null };
+    return { chip: 'CI_RUNNING', pendingGates: { ci, review } };
+  }
+  if (input.autoMerge) return { chip: 'AUTO_MERGE', pendingGates: null };
+  return { chip: input.policyTier === 'agent-review' && !input.reviewApproved ? 'REVIEW' : 'MERGE', pendingGates: null };
+}
+
+/**
+ * The compact status line for a pending-gate card, e.g. "CI passed · reviewer
+ * running". Mobile-first: one line, the two gates in the order they clear.
+ */
+export function describePendingGates(gates: PendingGates): string {
+  const ci = gates.ci === 'running' ? 'CI running'
+    : gates.ci === 'awaiting' ? 'Waiting for CI'
+      : gates.ci === 'passed' ? 'CI passed'
+        : null;
+  const review = gates.review === 'reviewing' ? 'reviewer checking the latest commit'
+    : gates.review === 'queued' ? 'review queued'
+      : null;
+  if (ci && review) return `${ci} · ${review}`;
+  if (review) return review.charAt(0).toUpperCase() + review.slice(1);
+  return ci ?? 'Checks running';
 }
 
 export interface ResolvedEscalationItem {
@@ -85,7 +236,7 @@ export function partitionEscalations<T extends { prLifecycleStatus: string | nul
 }
 
 export interface WaitingOnYouRawItem {
-  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy';
+  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed';
   prUrl?: string;
   prNumber?: number;
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | 'unresolvable' | null;
@@ -101,12 +252,20 @@ export interface WaitingOnYouRawItem {
   /** kind === 'reconnect' — the connector whose credential needs re-authorising. */
   connectorId?: string;
   connectorName?: string;
+  /** kind === 'failed' — why it failed and the fix, in plain words (buildFailedTaskItems). */
+  failureMessage?: string;
+  fixHref?: string;
+  fixLabel?: string;
   /** kind === 'decide' — the fingerprint of the escalated criteria for dedup. */
   criteriaRearmFingerprint?: string;
   /** kind === 'merge' — opts this row into the freshness invariant. See EscalationRawItem. */
   prOpenedAt?: Date | null;
   /** `workers.prLastVerifiedAt` — when GitHub last CONFIRMED this row's state. */
   prLifecycleVerifiedAt?: Date | null;
+  /** kind === 'merge' — see {@link EscalationRawItem.reviewInFlight}. */
+  reviewInFlight?: 'queued' | 'reviewing' | null;
+  /** kind === 'merge' — see {@link EscalationRawItem.prLifecycleUpdatedAt}. */
+  prLifecycleUpdatedAt?: Date | null;
   /** kind === 'decide' — the open `missionNotes` row this card links back to. */
   noteId?: string;
   /** kind === 'decide' — the note's title, e.g. "Goal criteria blocked — owner decision needed". */
@@ -178,6 +337,9 @@ export interface WaitingOnYouRawItem {
 }
 
 export interface EscalationRawItem {
+  /** Canonical current-head reviewer approval; a review action still takes precedence. */
+  reviewApproved?: boolean;
+  humanReview?: HumanPrReview | null;
   workerId: string;
   taskId: string;
   taskTitle: string;
@@ -234,6 +396,16 @@ export interface EscalationRawItem {
   deadZoneExhausted?: boolean;
   /** The last conflict retry task ID — used as the CTA target on BLOCKED cards. */
   deadZoneLastRetryTaskId?: string | null;
+  /** See {@link MergeChipInput.conflictAutoResolve}. */
+  conflictAutoResolve?: boolean;
+  /**
+   * One concrete line naming the conflict, from the newest conflict retry's
+   * failure context (see `describeConflictReason`). Null falls back to a
+   * generic line.
+   */
+  conflictReason?: string | null;
+  /** S37: why the live conflict fix for this PR has stalled; null when it has not. */
+  remediationStalled?: string | null;
   /**
    * Persisted lifecycle value. `'unresolvable'` is terminal and drops the row
    * out of the queue entirely — it belongs on the health/orphans surface, not
@@ -268,9 +440,21 @@ export interface EscalationRawItem {
    * `guardMissionPrMerge` itself is a no-op for those.
    */
   missionMergeBlockedReason?: string | null;
+  /**
+   * A review round is queued or running on this PR right now: the review-
+   * verdict gate (`evaluateReviewVerdictGate`, the same rule the merge route
+   * applies) reads the latest reviewer task as `in_flight`. Re-derived from
+   * the reviewer task row on every build. Outranks the merge reading — the
+   * merge route refuses with `waiting_ci` until the verdict lands.
+   */
+  reviewInFlight?: 'queued' | 'reviewing' | null;
+  /** `workers.updatedAt` — bounds the `pr_open` "awaiting CI" reading, see AWAITING_CI_WINDOW_MS. */
+  prLifecycleUpdatedAt?: Date | null;
 }
 
 export interface ActionQueueItem {
+  humanReview?: HumanPrReview | null;
+  machineStatus?: string | null;
   subjectKey: string;
   // Set on Home when the item's mission belongs to an initiative — drives the
   // initiative filter chips (scoping only; buildActionQueue itself never sets it).
@@ -295,8 +479,20 @@ export interface ActionQueueItem {
   unblockMissionTitle?: string | null;
   waitingMinutes?: number | null;
   escalationReason?: string | null;
-  /** See {@link EscalationRawItem.hasEscalationNote} — carried through unchanged. */
+  /**
+   * See {@link EscalationRawItem.hasEscalationNote} — carried through, and also
+   * true when a kernel-owned delivery is ESCALATED by a reviewer verdict
+   * (see `reviewerEscalated`): the kernel round is the escalation, so the card
+   * must offer the escalation actions, not the no-verdict set.
+   */
   hasEscalationNote?: boolean;
+  /**
+   * True when the PR's delivery is kernel-owned and ESCALATED by the reviewer
+   * (review_escalated / review_exhausted). On those deliveries the verdict lives
+   * in the kernel round, so the legacy `verdictSummary` / note fields are null
+   * even though a reviewer did decide — the card reads this instead.
+   */
+  reviewerEscalated?: boolean;
   workerId?: string;
   question?: string;
   /** Set when the card is CI-gated — drives FIXING_CI / CI_RUNNING / CI BLOCKED copy. */
@@ -320,9 +516,23 @@ export interface ActionQueueItem {
   deadZoneExhausted?: boolean;
   /** Link target for the BLOCKED card's primary CTA. */
   deadZoneLastRetryTaskId?: string | null;
+  /**
+   * Set when the chip comes from a merge conflict (RESOLVING, or BLOCKED for a
+   * conflict rather than red CI). Renders the compact merge-blocker card; see
+   * {@link describeMergeBlocker}.
+   */
+  mergeConflict?: boolean;
+  /** See {@link EscalationRawItem.conflictReason}. */
+  conflictReason?: string | null;
+  /** S37: why the live conflict fix for this PR has stalled; null when it has not. */
+  remediationStalled?: string | null;
   /** Set when chip === 'RECONNECT' — the connector needing re-auth. */
   connectorId?: string;
   connectorName?: string;
+  /** Set when chip === 'FAILED' — the plain cause and the setting that fixes it. */
+  failureMessage?: string;
+  fixHref?: string;
+  fixLabel?: string;
   /** Set when chip === 'DECIDE' — the escalation note this card links back to. */
   noteId?: string;
   noteTitle?: string;
@@ -374,6 +584,14 @@ export interface ActionQueueItem {
   declaredStatus?: string | null;
   /** See {@link EscalationRawItem.missionMergeBlockedReason} — carried through unchanged. */
   missionMergeBlockedReason?: string | null;
+  /** Set when chip === 'CI_RUNNING' / 'REVIEW_RUNNING' — what exactly is pending. See resolveMergeChip. */
+  pendingGates?: PendingGates | null;
+  /**
+   * Set when the PR's delivery is kernel-owned: the canonical owner of the
+   * next move, its headline and evidence (workflow-state-kernel §17.5). The
+   * card's chip was taken from it, not from raw worker/reviewer columns.
+   */
+  delivery?: Pick<DeliveryView, 'owner' | 'state' | 'stage' | 'headline' | 'detail' | 'cta' | 'compositionVerified'> | null;
 }
 
 // Chip display order: lower index = shown first.
@@ -397,10 +615,12 @@ export interface ActionQueueItem {
 // been dispatched for that spec path, so the row is no longer waiting on a
 // human. It stays visible for the same reason RESOLVING does — a doc fix that
 // dies must not take the finding with it — but never counts as actionable.
+// FAILED sits with RECONNECT: both are a credential the owner has to supply
+// before anything else can run.
 const CHIP_ORDER: ActionChip[] = [
-  'MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
+  'MERGE', 'BLOCKED', 'RECONNECT', 'FAILED', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
   'STALE',
-  'RESOLVING', 'FIXING_CI', 'FIXING_REVIEW', 'CI_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
+  'RESOLVING', 'FIXING_CI', 'FIXING_REVIEW', 'CI_RUNNING', 'REVIEW_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
 ];
 
 /**
@@ -425,7 +645,63 @@ export interface BuildActionQueueOptions {
    * an expiry check the caller already ran a moment earlier.
    */
   snoozedSubjectKeys?: ReadonlySet<string>;
+  /**
+   * taskId → DeliveryView for tasks whose delivery the workflow kernel owns
+   * (`getDeliveryViewsForTasks`). For those, the chip is the kernel's owner of
+   * the next move, never an inference from worker/reviewer/task columns; a
+   * task absent from the map keeps today's projection (§14 cutover).
+   */
+  deliveryViews?: ReadonlyMap<string, DeliveryView>;
 }
+
+/**
+ * The chip a kernel-owned delivery projects. Landing (APPROVED/LANDING) keeps
+ * the legacy merge chip, because the merge rails stay legacy until Slice C;
+ * every other state is decided by who owns the next move, so a recoverable
+ * blocker (AWAITING_PUSH, a stalled conflict fix) is agent-handled, and only
+ * a human-owned state (ESCALATED) asks for a person.
+ */
+export function chipForDelivery(v: DeliveryView, legacyChip: ActionChip): ActionChip {
+  // Landing: the kernel holds an approval and the effective merge policy has
+  // the landing path merge it, so a legacy merge CTA (REVIEW: no reviewer-task
+  // approve on record; MERGE) is the auto-merge in flight it actually is, the
+  // same "merging" the board, list, strip and chat read. Every other legacy
+  // gate (BLOCKED, CI, conflict) stands.
+  if (v.owner === 'landing') return legacyChip === 'REVIEW' || legacyChip === 'MERGE' ? 'AUTO_MERGE' : legacyChip;
+  // An approved PR a person merges (human tier, approve-only, open handoff,
+  // the mission-PR gate) is the merge it actually is.
+  if (v.owner === 'human' && v.state === 'APPROVED' && legacyChip === 'REVIEW') return 'MERGE';
+  if (v.owner === 'human') return legacyChip === 'MERGE' || legacyChip === 'BLOCKED' || legacyChip === 'REVIEW' ? legacyChip : 'REVIEW';
+  if (v.cta?.action === 'repair_remediation' || v.cta?.action === 'create_conflict_fix' || v.headline === 'Resolving conflicts') return 'RESOLVING';
+  switch (v.state) {
+    case 'AWAITING_REVIEW': return 'REVIEW_RUNNING';
+    case 'REPAIRING': return v.stateReason === 'ci' ? 'FIXING_CI' : 'RESOLVING';
+    case 'BLOCKED_ON_TRUNK': return 'FIXING_CI';
+    default: return 'FIXING_REVIEW';
+  }
+}
+
+/**
+ * S36: Needs You membership for a task whose delivery the kernel owns is the
+ * kernel's `needsYou`, never the legacy reviewer gate / note / tier predicate
+ * (that only restyles rows the kernel already admits). Landing keeps the
+ * legacy predicate because the merge rails stay legacy until Slice C. A task
+ * with no view keeps today's predicate untouched.
+ */
+export function kernelInboxMembership(view: DeliveryView | undefined, legacyIncluded: boolean): boolean {
+  if (!view) return legacyIncluded;
+  if (view.owner === 'landing') return legacyIncluded;
+  return view.needsYou;
+}
+
+/** ESCALATED because a reviewer decided (escalate, or rounds spent without an approval). */
+const REVIEWER_ESCALATION_REASONS: ReadonlySet<string> = new Set(['review_escalated', 'review_exhausted']);
+const isKernelReviewerEscalation = (v: DeliveryView): boolean =>
+  v.state === 'ESCALATED' && v.stateReason != null && REVIEWER_ESCALATION_REASONS.has(v.stateReason);
+
+const deliveryCard = (v: DeliveryView): NonNullable<ActionQueueItem['delivery']> => ({
+  owner: v.owner, state: v.state, stage: v.stage, headline: v.headline, detail: v.detail, cta: v.cta, compositionVerified: v.compositionVerified,
+});
 
 /** Mission statuses under which a DECIDE card may still be a live ask. */
 const LIVE_MISSION_STATUSES = new Set(['active', 'paused']);
@@ -489,6 +765,46 @@ export function buildDecideItems(candidates: EscalatedMissionCandidate[]): Waiti
       question: c.openNote.body ?? undefined,
       criteriaFingerprint: c.criteriaRearmFingerprint ?? 'none',
       recommendation: c.recommendation ?? null,
+    });
+  }
+  return items;
+}
+
+/** A top-level task and its latest worker's error, as Home loads them. */
+export interface FailedTaskCandidate {
+  taskId: string;
+  title: string;
+  /** `tasks.status`, read on this build. */
+  status: string;
+  backend: 'claude' | 'codex' | null;
+  /** The latest worker's `error`. */
+  workerError: string | null;
+  missionId: string | null;
+  missionTitle: string | null;
+}
+
+/**
+ * FAILED cards: a task that failed for a reason the owner fixes in settings
+ * (today: the agent had no working model key). Membership is re-derived from
+ * the task's current status, never from a stored flag, so a retried task leaves
+ * the queue as soon as it is pending again. A failure with no owner-fixable
+ * cause stays on the task page; Home only asks for what the owner can act on.
+ */
+export function buildFailedTaskItems(candidates: FailedTaskCandidate[]): WaitingOnYouRawItem[] {
+  const items: WaitingOnYouRawItem[] = [];
+  for (const c of candidates) {
+    if (c.status !== 'failed') continue;
+    const cause = explainProviderAuthFailure(c.workerError, c.backend);
+    if (!cause) continue;
+    items.push({
+      kind: 'failed',
+      taskId: c.taskId,
+      taskTitle: c.title,
+      missionId: c.missionId,
+      missionTitle: c.missionTitle,
+      failureMessage: cause.message,
+      fixHref: cause.href,
+      fixLabel: cause.linkLabel,
     });
   }
   return items;
@@ -958,45 +1274,54 @@ export function buildActionQueue(
     // Draft PRs with CI failures are not actionable by the human — the owner
     // should mark ready_for_review first. Skip them entirely so they don't clutter
     // the Needs You queue.
-    if (item.prIsDraft && item.ciGate?.kind === 'blocked') continue;
+    if (!item.humanReview && item.prIsDraft && item.ciGate?.kind === 'blocked') continue;
     const key = item.prUrl ?? `task:${item.taskId}`;
-    // BLOCKED: conflict-resolution retries exhausted — human must decide.
-    // RESOLVING: conflict retry is live — agent is handling it, not the human.
-    // Otherwise: human-gate = MERGE, agent-review = REVIEW.
-    // Precedence: a conflict outranks CI (an unmergeable branch is why CI
-    // cannot pass), and any CI/review-fix gate outranks the merge policy — a
-    // red PR, or one with an open reviewer-retry attempt, is not waiting on
-    // the human until no agent is left working on it (mirrors mission-state-view.ts
-    // rule 6½: an open fix attempt outranks the merge reading).
+    // Precedence lives in resolveMergeChip: a conflict outranks CI (an
+    // unmergeable branch is why CI cannot pass), and any CI/review gate
+    // outranks the merge policy — a red PR, one with an open fix attempt, or
+    // one a reviewer is still checking is not waiting on the human until no
+    // agent is left working on it (mirrors mission-state-view.ts rule 6½: an
+    // open fix attempt outranks the merge reading).
     const ciGate = item.ciGate ?? null;
-    const baseChip: ActionChip = item.deadZoneExhausted
-      ? 'BLOCKED'
-      : item.conflictRetryTaskId
-        ? 'RESOLVING'
-        : ciGate?.kind === 'fixing'
-          ? (ciGate.fixKind === 'review' ? 'FIXING_REVIEW' : 'FIXING_CI')
-          : ciGate?.kind === 'running'
-            ? 'CI_RUNNING'
-            : ciGate?.kind === 'blocked'
-              ? 'BLOCKED'
-              : item.autoMerge
-                ? 'AUTO_MERGE'
-                : item.policyTier === 'agent-review' ? 'REVIEW' : 'MERGE';
+    const { chip: baseChip, pendingGates } = resolveMergeChip({
+      humanReview: item.humanReview,
+      reviewApproved: item.reviewApproved,
+      deadZoneExhausted: item.deadZoneExhausted,
+      conflictRetryTaskId: item.conflictRetryTaskId,
+      conflictAutoResolve: item.conflictAutoResolve,
+      ciGate,
+      prLifecycleStatus: item.prLifecycleStatus,
+      prLifecycleUpdatedAt: item.prLifecycleUpdatedAt,
+      reviewInFlight: item.reviewInFlight,
+      autoMerge: item.autoMerge,
+      policyTier: item.policyTier,
+      now,
+    });
 
     // Fail CLOSED. Only a merge CTA is gated — a BLOCKED or agent-handled card
     // makes no claim that the PR is still open, so staleness does not change
     // what it says.
-    const staleGate = MERGE_CTA_CHIPS.has(baseChip)
+    const staleGate = !item.humanReview && MERGE_CTA_CHIPS.has(baseChip)
       ? resolveStaleGate({
           prOpenedAt: item.prOpenedAt ?? null,
           prLifecycleVerifiedAt: item.prLifecycleVerifiedAt,
           now,
         })
       : null;
-    const chip: ActionChip = staleGate ? 'STALE' : baseChip;
+    const kernelView = item.taskId ? options.deliveryViews?.get(item.taskId) : undefined;
+    const chip: ActionChip = kernelView
+      ? (() => { const c = chipForDelivery(kernelView, baseChip); return c === baseChip && staleGate ? 'STALE' : c; })()
+      : staleGate ? 'STALE' : baseChip;
+    // Which RESOLVING/BLOCKED readings come from a conflict, not from red CI.
+    const mergeConflict =
+      (chip === 'RESOLVING' || chip === 'BLOCKED')
+      && (!!item.deadZoneExhausted || !!item.conflictRetryTaskId || item.prLifecycleStatus === 'conflict')
+      && ciGate?.kind !== 'blocked';
 
     map.set(key, {
       subjectKey: key,
+      humanReview: item.humanReview,
+      machineStatus: item.humanReview ? describeReviewMachineState(item, now) : null,
       chip,
       staleGate,
       cardAgeHours: staleGate?.ageHours
@@ -1019,7 +1344,7 @@ export function buildActionQueue(
       // ago is the exact lie this whole change exists to stop telling.
       escalationReason: staleGate
         ? staleGate.reason
-        : ciGate?.kind === 'blocked' ? ciGate.reason : item.escalationReason,
+        : item.humanReview?.reason ?? (ciGate?.kind === 'blocked' ? ciGate.reason : item.escalationReason),
       hasEscalationNote: item.hasEscalationNote ?? false,
       recommendation: ciGate?.kind === 'blocked'
         ? ciGate.recommendation
@@ -1031,7 +1356,20 @@ export function buildActionQueue(
       conflictRetryIteration: item.conflictRetryIteration ?? undefined,
       deadZoneExhausted: item.deadZoneExhausted ?? undefined,
       deadZoneLastRetryTaskId: item.deadZoneLastRetryTaskId ?? undefined,
+      ...(mergeConflict ? { mergeConflict: true, conflictReason: item.conflictReason ?? null, remediationStalled: item.remediationStalled ?? null } : {}),
       missionMergeBlockedReason: item.missionMergeBlockedReason ?? null,
+      pendingGates,
+      ...(kernelView ? {
+        delivery: deliveryCard(kernelView),
+        // The card's reason line is the kernel's evidence, not a raw column.
+        ...(kernelView.owner !== 'landing' || kernelView.compositionVerified
+          ? { escalationReason: kernelView.detail ? `${kernelView.headline} · ${kernelView.detail}` : kernelView.headline }
+          : {}),
+        ...(kernelView.cta?.action === 'repair_remediation' ? { mergeConflict: true, conflictReason: kernelView.detail, conflictRetryTaskId: kernelView.cta.taskId, remediationStalled: kernelView.detail } : {}),
+        // A reviewer verdict that escalated lives in the kernel round, not in a
+        // legacy note: the card has a verdict to dispatch against or merge past.
+        ...(isKernelReviewerEscalation(kernelView) ? { hasEscalationNote: true, reviewerEscalated: true } : {}),
+      } : {}),
     });
   }
 
@@ -1052,17 +1390,28 @@ export function buildActionQueue(
           prLifecycleStatus: item.prLifecycleStatus ?? existing.prLifecycleStatus,
         });
       } else {
-        // Same fail-closed rule as the escalation branch: a blocker-derived
-        // merge card is still a claim that this PR is open right now.
-        const staleGate = resolveStaleGate({
-          prOpenedAt: item.prOpenedAt ?? null,
-          prLifecycleVerifiedAt: item.prLifecycleVerifiedAt,
+        // Same rules as the escalation branch: a blocker-derived merge card is
+        // still a claim that this PR is open and mergeable right now, so the
+        // pending CI/review gates outrank it, and a merge CTA fails closed on
+        // stale input.
+        const { chip: baseChip, pendingGates } = resolveMergeChip({
+          prLifecycleStatus: item.prLifecycleStatus,
+          prLifecycleUpdatedAt: item.prLifecycleUpdatedAt,
+          reviewInFlight: item.reviewInFlight,
           now,
         });
+        const staleGate = MERGE_CTA_CHIPS.has(baseChip)
+          ? resolveStaleGate({
+              prOpenedAt: item.prOpenedAt ?? null,
+              prLifecycleVerifiedAt: item.prLifecycleVerifiedAt,
+              now,
+            })
+          : null;
         map.set(key, {
           subjectKey: key,
-          chip: staleGate ? 'STALE' : 'MERGE',
+          chip: staleGate ? 'STALE' : baseChip,
           staleGate,
+          pendingGates,
           cardAgeHours: staleGate?.ageHours ?? null,
           escalationReason: staleGate?.reason ?? null,
           prUrl: item.prUrl,
@@ -1095,6 +1444,28 @@ export function buildActionQueue(
           chip: 'RECONNECT',
           connectorId: item.connectorId,
           connectorName: item.connectorName,
+        });
+      }
+    } else if (item.kind === 'failed') {
+      const key = `task:${item.taskId}`;
+      // S35: a failed attempt of a kernel-owned delivery that is still live,
+      // or already shipped, is history, not a failure that needs you. Use
+      // attemptFailureCounts: it returns true only for the current/owner task
+      // in a FAILED delivery; past attempts or any task in a live/shipped
+      // delivery return false.
+      const fv = item.taskId ? options.deliveryViews?.get(item.taskId) : undefined;
+      if (fv && item.taskId && !attemptFailureCounts(fv, item.taskId)) continue;
+      if (!map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'FAILED',
+          taskId: item.taskId,
+          taskTitle: item.taskTitle,
+          missionId: item.missionId,
+          missionTitle: item.missionTitle,
+          failureMessage: item.failureMessage,
+          fixHref: item.fixHref,
+          fixLabel: item.fixLabel,
         });
       }
     } else if (item.kind === 'approve') {

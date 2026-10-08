@@ -54,11 +54,11 @@ export default function NeedsInputBanner() {
               >
                 {firstName}
               </Link>
-              {' '}needs your input
+              {' '}needs input
             </>
           ) : (
             <>
-              {count} tasks need your input
+              {count} tasks need input
               {': '}
               <Link
                 href={needsInputTaskHref(firstTask)}

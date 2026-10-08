@@ -7,12 +7,14 @@ import { eq, and } from 'drizzle-orm';
 // No auth required. CLI polls this with device_token.
 // Returns:
 //   428 if pending (CLI keeps polling)
-//   200 with { api_key } if approved (clears plaintext from DB)
+//   200 with { api_key, presence_token? } if approved (clears plaintext from DB).
+//   presence_token is the approving person's token for the agent plugin's
+//   hooks (lib/presence-token.ts), labelled with the body's `machine`.
 //   400 if expired or invalid
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { device_token } = body;
+    const { device_token, machine } = body;
 
     if (!device_token) {
       return NextResponse.json({ error: 'device_token required' }, { status: 400 });
@@ -54,16 +56,25 @@ export async function POST(req: NextRequest) {
 
       // Look up user email for display
       let email: string | undefined;
+      let presenceToken: string | null = null;
       if (record.userId) {
         const { users } = await import('@buildd/core/db/schema');
         const user = await db.query.users.findFirst({
           where: eq(users.id, record.userId),
         });
         email = user?.email;
+        // Best effort: a login without one still works (hooks fall back to the key).
+        try {
+          const { issuePresenceToken } = await import('@/lib/presence-token');
+          presenceToken = await issuePresenceToken(record.userId, machine);
+        } catch (err) {
+          console.warn('[device-token] presence token not issued:', err instanceof Error ? err.message : err);
+        }
       }
 
       return NextResponse.json({
         api_key: apiKey,
+        ...(presenceToken ? { presence_token: presenceToken } : {}),
         email,
         pusherKey: process.env.NEXT_PUBLIC_PUSHER_KEY,
         pusherCluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER,

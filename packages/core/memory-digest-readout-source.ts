@@ -205,8 +205,9 @@ export async function loadReadoutInput(opts: LoadOptions) {
       | null;
     const toolCounts = meta?.toolCounts;
     // Absence of the histogram is UNKNOWN, not zero — see ResultMeta.toolCounts.
-    // `cbm.readCount` is the older, narrower counter and only covers the Read
-    // tool, which is exactly this metric, so it is a legitimate fallback.
+    // `cbm.readCount` is the older, narrower counter (only on rows written while
+    // the code graph shipped) and only covers the Read tool, which is exactly
+    // this metric, so it is a legitimate fallback for those historical rows.
     const readCalls = toolCounts
       ? (toolCounts.Read ?? 0)
       : optionalCount(meta?.cbm?.readCount);

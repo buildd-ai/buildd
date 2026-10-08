@@ -169,4 +169,32 @@ describe('GET /api/evidence', () => {
     expect(audit[0]).toMatchObject({ surface: 'GET /api/evidence', workspaceId: WS, prNumber: 7, actor: { accountId: 'acct-1' } });
     expect(audit[0].evidenceIds).toEqual([EV, 'r2']);
   });
+
+  describe('per-task token', () => {
+    const scoped = { id: 'acct-1', level: 'worker', taskScope: { taskId: TASK, workspaceId: WS, expiresAt: Date.now() + 60_000 } };
+
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockResolvedValue(scoped);
+      // The minting account reaches both workspaces; only the token is narrower.
+      mockVerifyAccountWorkspaceAccess.mockImplementation(async () => true);
+    });
+
+    it('lists evidence in its own task’s workspace', async () => {
+      const res = await GET(req(`workspaceId=${WS}&prNumber=7`));
+      expect(res.status).toBe(200);
+      expect((await res.json()).objects).toHaveLength(2);
+    });
+
+    it('404s another workspace its account can reach, before any query', async () => {
+      const res = await GET(req(`workspaceId=${WS_OTHER}&evidenceId=${EV}`));
+      expect(res.status).toBe(404);
+      expect(mockObjFindFirst).not.toHaveBeenCalled();
+      expect(mockObjFindMany).not.toHaveBeenCalled();
+    });
+
+    it('leaves an account key unchanged: any workspace it can reach', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1' });
+      expect((await GET(req(`workspaceId=${WS_OTHER}&prNumber=7`))).status).toBe(200);
+    });
+  });
 });

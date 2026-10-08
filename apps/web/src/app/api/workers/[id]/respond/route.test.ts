@@ -119,7 +119,7 @@ mock.module('@/lib/dispatch-authority', () => ({
   enqueueTaskDispatch: mock(async () => {}),
   drainDispatchOutbox: mock(async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 })),
   deliverTaskDispatch: mock(async () => 'pusher'),
-  routeForCause: mock(() => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false })),
+  routeForCause: mock(() => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false })),
   webhookWants: mock(() => false),
   primaryCause: mock((_c: unknown, fallback: unknown) => fallback),
   reseedDispatchTimer: mock(async () => {}),
@@ -133,7 +133,6 @@ mock.module('@/lib/task-dispatch-delivery', () => ({
   buildTaskPayload: mock((task: any) => task),
   buildWebhookPayload: mock(() => ({})),
   dispatchToWebhook: mock(async () => false),
-  tryGitHubActionsDispatch: mock(async () => false),
   WEBHOOK_DISPATCH_TIMEOUT_MS: 10_000,
 }));
 

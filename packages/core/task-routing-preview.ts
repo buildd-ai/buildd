@@ -19,7 +19,7 @@ import {
   type TaskComplexity,
   type Tier as RouterTier,
 } from './model-router';
-import { TIER_DEFAULTS, type Tier } from './model-tier-defaults';
+import { bundledTierEntry, type Tier } from './model-tier-defaults';
 import { getModelDisplayName } from './model-display';
 import { isExactRoleModel, roleFloorTier } from './role-model-routing';
 
@@ -230,7 +230,7 @@ function computeRoutingPreviewCore(input: RoutingPreviewInput): RoutingPreview {
   }
 
   if (input.tier) {
-    const entry = TIER_DEFAULTS[input.tier];
+    const entry = bundledTierEntry(input.tier);
     return {
       tier: input.tier,
       model: entry.model,
@@ -267,8 +267,8 @@ function computeRoutingPreviewCore(input: RoutingPreviewInput): RoutingPreview {
   const floor = roleFloorTier(roleModel);
   const floorRaises = floor !== null && TIER_RANK[floor] > TIER_RANK[matrixTier];
   const tier = floorRaises ? floor : matrixTier;
-  const modelLabel = getModelDisplayName(TIER_DEFAULTS[tier].model);
-  const matrixLabel = getModelDisplayName(TIER_DEFAULTS[matrixTier].model);
+  const modelLabel = getModelDisplayName(bundledTierEntry(tier).model);
+  const matrixLabel = getModelDisplayName(bundledTierEntry(matrixTier).model);
 
   const missing = [!hasKind && 'kind', !hasComplexity && 'complexity'].filter(Boolean).join('/');
 
@@ -288,5 +288,5 @@ function computeRoutingPreviewCore(input: RoutingPreviewInput): RoutingPreview {
     reason = `${reason}; role "${input.roleSlug}" floor ${floor} raised ${matrixTier} → ${tier} (${modelLabel})`;
   }
 
-  return { tier, model: TIER_DEFAULTS[tier].model, reason, inferred };
+  return { tier, model: bundledTierEntry(tier).model, reason, inferred };
 }

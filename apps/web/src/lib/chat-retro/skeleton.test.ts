@@ -55,10 +55,11 @@ describe('eligibility pre-filter', () => {
 describe('candidate detection', () => {
   it('detects each candidate kind', () => {
     const bigOutput = 'x'.repeat((RETRO_LARGE_RESULT_TOKENS + 10) * 3);
-    const a1 = assistant([tool('list_tasks', { status: 'active' }, bigOutput)]);
+    // Every turn has an answer, so no visible-answer finding joins these (visible-answer.test.ts).
+    const a1 = assistant([tool('list_tasks', { status: 'active' }, bigOutput), { type: 'text', text: 'ok' }]);
     const a2 = assistant([tool('list_tasks', { status: 'active' }, 'small'), { type: 'text', text: TURN_STOPPED_NOTE }]);
     const u2 = user('again', { inputTokens: 5, outputTokens: 0, routing: { outcome: 'error:provider_error' } });
-    const a3 = assistant([]);
+    const a3 = assistant([{ type: 'text', text: 'ok' }]);
     const turns = buildTurns(win([user('q'), a1, u2, a2, user('x'), a3], {
       thumbsDown: new Map([[a3.id, null]]),
       deniedApprovalMessageIds: new Set([a2.id]),
@@ -82,7 +83,7 @@ describe('candidate detection', () => {
     const msgs: RetroMessage[] = [user('q')];
     const thumbs = new Map<string, string | null>();
     for (let i = 0; i < RETRO_MAX_CANDIDATES + 4; i++) {
-      const a = assistant([], { inputTokens: 100 * (i + 1), outputTokens: 0 });
+      const a = assistant([{ type: 'text', text: 'ok' }], { inputTokens: 100 * (i + 1), outputTokens: 0 });
       thumbs.set(a.id, 'too_slow');
       msgs.push(a);
     }

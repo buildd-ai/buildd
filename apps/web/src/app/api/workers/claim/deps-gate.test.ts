@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { DEP_SATISFYING_STATUSES, dependenciesSatisfied, dependencySatisfied, depsGate } from './deps-gate';
+import { DEP_SATISFYING_STATUSES, dependenciesSatisfied, dependencySatisfied, depsGate, outsideSurfaceAuditMission } from './deps-gate';
 import { sql } from 'drizzle-orm';
 import {
   DEP_SATISFYING_STATUSES as CONTRACT_STATUSES,
   DEP_UNBLOCKING_PR_LIFECYCLE,
+  EARLY_RELEASE_SATISFYING_DECISIONS,
 } from '@/lib/dep-gate-contract';
 
 // The claim dependency gate is SQL-filtered in Postgres; `dependenciesSatisfied()`
@@ -36,6 +37,26 @@ describe('claim dependency gate — satisfying statuses', () => {
 
   it('only completed and cancelled satisfy the gate — nothing else', () => {
     expect(statuses.sort()).toEqual(['cancelled', 'completed']);
+  });
+});
+
+// docs/design/early-release.md "Data model": a dependency_releases row with one
+// of these decisions unblocks a dependent ahead of the upstream's own status/PR
+// state. `wait` is a recorded decision to keep the gate closed, not a release.
+describe('early release — satisfying decisions', () => {
+  const decisions = [...EARLY_RELEASE_SATISFYING_DECISIONS] as string[];
+
+  it('treats start_now and start_stacked as satisfying', () => {
+    expect(decisions).toContain('start_now');
+    expect(decisions).toContain('start_stacked');
+  });
+
+  it('does NOT treat wait as satisfying', () => {
+    expect(decisions).not.toContain('wait');
+  });
+
+  it('only start_now and start_stacked satisfy — nothing else', () => {
+    expect(decisions.sort()).toEqual(['start_now', 'start_stacked']);
   });
 });
 
@@ -92,9 +113,24 @@ describe('dependenciesSatisfied() — emitted SQL', () => {
   it('binds exactly the contract statuses to the IN (...) list', () => {
     // The status list is a bound-param list, so the constant assertions above
     // never proved it reached the query. Params are positional: the satisfying
-    // statuses first, then the unblocking PR lifecycle.
+    // statuses first, then the unblocking PR lifecycle, then the early-release
+    // decisions.
     expect(renderGate()).toMatch(/t2\.status IN \(\$1, \$2\)/);
-    expect(renderParams()).toEqual([...CONTRACT_STATUSES, DEP_UNBLOCKING_PR_LIFECYCLE]);
+    expect(renderParams()).toEqual([
+      ...CONTRACT_STATUSES,
+      DEP_UNBLOCKING_PR_LIFECYCLE,
+      ...EARLY_RELEASE_SATISFYING_DECISIONS,
+      '[surface audit] %',
+    ]);
+  });
+
+  it("lets a surface audit ignore a dependency outside its mission, correlated to the dependent's mission", () => {
+    // Behaviour is pinned on real Postgres (tests/db/surface-audit-membership.test.ts);
+    // this pins the shape: the arm is AND NOT'd per dependency, scoped to audit
+    // titles, and compares the dependency's mission to the outer (dependent) row's.
+    const text = renderGate();
+    expect(text).toContain('AND NOT ( "tasks"."mission_id" IS NOT NULL AND "tasks"."title" LIKE $6');
+    expect(text).toContain('t3.id = dep_id::uuid AND t3.mission_id = "tasks"."mission_id"');
   });
 
   it('applies the open-PR guard ONLY to completed deps', () => {
@@ -127,6 +163,48 @@ describe('dependenciesSatisfied() — emitted SQL', () => {
   });
 });
 
+// docs/design/early-release.md "Data model": the per-dependency predicate also
+// accepts a dependency_releases row. Additive — it OR's onto the existing
+// completed/no-open-PR check (proved above), never replaces it, so this arm's
+// own SQL shape is the only thing that needs new coverage.
+describe('dependencySatisfied() — early-release arm (dependency_releases)', () => {
+  it('ORs a dependency_releases EXISTS onto the completed/no-open-PR check', () => {
+    // `AND` instead of `OR` here would mean a release row is only honoured
+    // when the upstream is ALSO already completed with no open PR — i.e. no
+    // actual early release, since that path was already satisfied on its own.
+    const text = renderGate();
+    expect(text).toMatch(/\)\s*OR EXISTS \(/);
+    expect(text).toContain('SELECT 1 FROM "dependency_releases" dr');
+  });
+
+  it('correlates the release row to THIS dependent and THIS dependency, not any pairing', () => {
+    // Both sides of the pairing are bound to the correlated identifiers already
+    // in scope: upstream_task_id to the one dep_id this call is evaluating, and
+    // dependent_task_id to the outer task row depends_on belongs to. A release
+    // row for a different (dependent, upstream) pair cannot satisfy this EXISTS,
+    // which is what makes a release scoped to one dependency leave a second,
+    // non-released dependency on the same task still blocking — the same
+    // per-element correlation the "same predicate" test below proves for the
+    // status check.
+    const text = renderGate();
+    expect(text).toContain('dr.dependent_task_id = "tasks"."id"');
+    expect(text).toContain('dr.upstream_task_id = dep_id::uuid');
+  });
+
+  it('binds exactly the early-release decisions to the IN (...) list', () => {
+    expect(renderGate()).toMatch(/dr\.decision IN \(\$4, \$5\)/);
+    expect(renderParams().slice(3, 5)).toEqual([...EARLY_RELEASE_SATISFYING_DECISIONS]);
+  });
+
+  it('excludes a revoked release row', () => {
+    // A revoked row (revoked_at set) must not satisfy the EXISTS — `IS NULL`
+    // flipped to `IS NOT NULL` would mean only revoked releases unblock, and
+    // dropping the condition entirely would mean a revoked release keeps
+    // unblocking forever instead of restoring the gate.
+    expect(renderGate()).toContain('dr.revoked_at IS NULL');
+  });
+});
+
 // Friction cad81659: the route's deps gate was
 //   depends_on IS NULL OR depends_on = '[]' OR context->>'bypassDepsGate' = 'true' OR <satisfied>
 // and the bypass arm is NULL when the key is absent, so a task with an
@@ -154,5 +232,17 @@ describe('dependencySatisfied(depId): the per-dependency predicate', () => {
   it('is the same predicate the whole-array gate applies to each element', () => {
     const one = dialect.sqlToQuery(dependencySatisfied(sql`dep_id::uuid`)).sql;
     expect(renderGate()).toContain(one.replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ').trim());
+  });
+});
+
+describe('outsideSurfaceAuditMission(): rendered', () => {
+  it("is scoped to a surface audit in a mission, and compares the dependency's mission to the dependent's", () => {
+    const q = dialect.sqlToQuery(outsideSurfaceAuditMission(sql`dep_id::uuid`));
+    const text = q.sql.replace(/\s+/g, ' ').trim();
+    expect(text).toBe(
+      '( "tasks"."mission_id" IS NOT NULL AND "tasks"."title" LIKE $1 AND NOT EXISTS ( '
+      + 'SELECT 1 FROM "tasks" t3 WHERE t3.id = dep_id::uuid AND t3.mission_id = "tasks"."mission_id" ) )',
+    );
+    expect(q.params).toEqual(['[surface audit] %']);
   });
 });

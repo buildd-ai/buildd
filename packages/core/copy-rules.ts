@@ -81,8 +81,8 @@ export const COPY_RULES: CopyRule[] = [
   {
     id: 'needs-you',
     name: 'Dramatised count or demand',
-    test: re(/\bthings? (needs?|waiting on) (you|me)\b|\bneeds? your attention\b|\bwaiting on (you|me) to\b/i),
-    why: 'State the count and the object, not the person.',
+    test: re(/\bthings? (needs?|waiting on) (you|me)\b|\bwaiting on (you|your|me)\b|\bneeds? your (attention|input|answer|decision|call|review|eyes|response|merge)\b|\bnothing needs you\b|\b(wants?|waiting for) your (answer|review|call|decision)\b|: your call\b/i),
+    why: 'Name what is needed (input, a merge, a decision), not the person. The status word is "Needs input".',
     bad: '5 things need you',
     good: '5 to review',
   },

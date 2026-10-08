@@ -73,6 +73,11 @@ only copy: wrangler secrets are write-only. `DISPATCH_URL` (the Worker's
 address) is in `prd` too. Rotation order and the other rules are in
 `apps/dispatch/README.md`.
 
+Its deploy token is separate: `CF_DISPATCH_API_TOKEN` and
+`CF_DISPATCH_ACCOUNT_ID` in `dev_ci`, pushed to GitHub Actions repo secrets
+with `gh-secret-push` and read only by `.github/workflows/deploy-dispatch.yml`.
+Never Vercel.
+
 ## Runbook
 
 `~/knowledge-base/runbooks/vercel-prod-env-restore.md` — full inventory by name,

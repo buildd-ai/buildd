@@ -14,20 +14,20 @@ Setting up a new workspace or making a repo buildd-ready? Load `workspace-onboar
 
 ## Tools
 
-Most sessions list one tool, `buildd`, that takes `{ action, params }` for
-every action; below, `buildd action=X` means exactly that call.
-
-A session that opted in to group tools (`?tools=groups` on the MCP URL) lists
-one tool per area instead: `buildd_work` (your own task: claim, progress,
-notes, artifacts, PR, complete), `buildd_tasks`, `buildd_missions`,
-`buildd_prs`, `buildd_analytics` (coverage, path claims, explain, errors, failures, usage, runners),
-`buildd_runners` (connectors, agent steering),
-`buildd_artifacts`, `buildd_schedules`, `buildd_admin`. Each takes the same
+The buildd MCP server lists one tool per area: `buildd_work` (your own task:
+claim, progress, notes, artifacts, PR, complete), `buildd_tasks`,
+`buildd_missions`, `buildd_prs`, `buildd_analytics` (coverage, path claims,
+explain, errors, failures, usage, runners), `buildd_runners` (connectors, agent
+steering), `buildd_artifacts`, `buildd_schedules`, `buildd_admin`. Each takes
 `{ action, params }`, lists its actions with their params, and has action
-`help` (`params={ action }`) for one action's full docs. There,
+`help` (`params={ action }`) for one action's full docs. Below,
 `buildd action=X` means: call X on the group tool that lists it (a wrong group
 tells you the right one). In a client that defers MCP tools, load only the
 group you need, e.g. `select:mcp__buildd__buildd_work`.
+
+A worker started by an older runner may instead see the single `buildd` tool,
+which takes the same `{ action, params }` for every action; there,
+`buildd action=X` is exactly that call.
 
 ## Task Lifecycle
 
@@ -73,6 +73,14 @@ Then, for each task: `claim_task params={ taskId }` from your session (it
 gets a normal tracked worker, so the PR link and cost are recorded), do the
 work, `create_pr`, and finish with `complete_task`. Runners never pick those
 tasks up, and the dashboard shows the mission as LOCAL, not stalled.
+
+With the buildd agent plugin's hooks installed (`buildd install --global`, or
+the Claude Code plugin), your session shows in buildd as an interactive
+session from the moment it starts, without holding a slot. Your
+`claim_task` binds the session to the worker it mints, and closing the session
+releases that worker (an unfinished task goes back to the queue; nothing is
+marked completed). Without the hooks everything here still works over MCP
+alone.
 
 Do **not** use `startMode: "held"` for this. Held is a pause: it blocks your
 own explicit claims too, reads as HELD / "arm to start" everywhere, and leaves
@@ -182,3 +190,31 @@ task's `baseBranch` / mission context to know which applies — don't assume:
 
 Do not call either of these a "feature branch" — every task PR is already a
 feature branch under both strategies, so the term doesn't distinguish them.
+
+That's the PR's *base*. The task's own *head* — the branch `claim_task`
+assigns its worker — is a separate question, and it is always the generated
+`buildd/<id8>-<slug>` name unless the task carries `context.headBranch`
+(mission machinery sets this for a shared integration branch; `create_task`'s
+`headBranch` param sets it directly for a one-off task). If a task's brief
+only *describes* a branch to continue on in prose ("work on
+`ci/some-feature`"), that is invisible to both `claim_task` and `create_pr`:
+the worker still gets assigned the generated name, and a PR opened from the
+described branch instead gets refused as `head_not_owned` — the ownership
+check only accepts the worker's own branch, a retry/dependency of it, or
+`context.headBranch`. If you are filing a task (or an organizer dispatching
+one) whose work must land on an existing or shared branch, set
+`headBranch` at `create_task` time rather than describing it in the
+title/description.
+
+One exception, and it applies only to *you* right now: a worker claimed from
+your own interactive session — `claim_task` called from this session, not a
+background runner — may open its PR from a DIFFERENT branch than the one
+`claim_task` handed you, as long as it is the branch you actually pushed to
+and no other worker already holds that exact name. A background runner's
+worker never gets this; it only ever has its own generated branch, so pin
+`headBranch` instead if its work must land somewhere else. Prefer pushing to
+the branch `claim_task` gave you — it needs no extra check — and reach for
+this only when you are continuing on a branch that already existed before you
+claimed. A name someone else is already using (still running, or carrying its
+own PR under a different task) is refused as `head_claimed`, naming whose it
+is.

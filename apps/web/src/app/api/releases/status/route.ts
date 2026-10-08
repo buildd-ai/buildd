@@ -6,7 +6,8 @@ import { isGitHubAppConfigured } from '@/lib/github';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { resolveReleaseTarget } from '@/lib/release/target';
 import { releasePreflight, deploymentOnlyPreflight } from '@/lib/release/dispatch';
-import { getCallerAdminTeamIds } from '@/lib/team-access';
+
+import { teamIdsWhere } from '@/lib/permissions';
 
 /**
  * Release preflight (read-only): what would ship, whether the source ref is
@@ -25,13 +26,13 @@ async function resolveAdminTeamIds(req: NextRequest): Promise<string[] | null> {
   if (apiKey) {
     const account = await authenticateApiKey(apiKey, req);
     if (!account) return null;
-    return getCallerAdminTeamIds({
+    return teamIdsWhere({
       kind: 'account', accountId: account.id, teamId: account.teamId, level: hasTokenRouteAdminAccess(account, req) ? 'admin' : account.level,
-    });
+    }, 'manage_releases');
   }
   const user = await getCurrentUser();
   if (!user) return null;
-  return getCallerAdminTeamIds({ kind: 'user', userId: user.id });
+  return teamIdsWhere({ kind: 'user', userId: user.id }, 'manage_releases');
 }
 
 export async function GET(req: NextRequest) {

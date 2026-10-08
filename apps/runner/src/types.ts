@@ -1,8 +1,7 @@
 import type { RoleBundle, RoleConfig, RoleInstructions } from './roles.js';
-import type { SeedRefreshOutcome } from './cbm-enforcement.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
 import type { BashCommandCounts } from './bash-classify.js';
-import type { RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
+import type { DerivedFileRule, RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -250,10 +249,9 @@ export interface LocalWorker {
   /**
    * The ref this worker's worktree was cut from, as resolved by setupWorktree —
    * `origin/<default>` on a trunk task, the mission integration branch on a
-   * mission task that opted in. Recorded because the codebase-memory seed is
-   * keyed on `(repoPath, baseRef)`: setupWorktree runs in startWorker and the
-   * CBM decision happens later in startSession, so the resolved answer has to
-   * travel on the worker rather than be re-derived and risk disagreeing.
+   * mission task that opted in. setupWorktree runs in startWorker and later
+   * steps read the base in startSession, so the resolved answer travels on the
+   * worker rather than being re-derived and risking disagreement.
    */
   worktreeBaseRef?: string;
   /**
@@ -263,6 +261,11 @@ export interface LocalWorker {
    * a restored worker does not sweep with an empty committed half.
    */
   prBaseRef?: string;
+  /**
+   * What the runner's pre-agent base merge did on a conflict retry (merged, or
+   * left in progress with the real conflicts). Appended to the system prompt.
+   */
+  derivedMergeNote?: string;
   /**
    * Set when the worker's environment was provisioned but degraded — today only
    * by a dependency install that failed for a non-structural reason (drift,
@@ -289,9 +292,28 @@ export interface LocalWorker {
   // never reset mid-worker, or two builds would collide on buildIndex.
   promptBuildIndex?: number;
   // Paths written while path-claim endpoint was unreachable (timeout/error). Flushed
-  // on the next successful claim call. Also included in update_progress PATCH body so
-  // the server can register them retroactively if the hook never recovers.
+  // on the next successful claim call. Runner-local only: the working-set
+  // tracker (below) is what tells the server about every edit, hook or not.
   pendingPaths?: string[];
+  /**
+   * Authoritative working set (working-set.ts): the task-owned file set from
+   * git with its generation, what the server has acknowledged holding, and the
+   * holders blocking the rest. Persisted so a restart replays from it.
+   */
+  workingSet?: import('./working-set').WorkingSetState;
+  /**
+   * Ship checkpoints whose coverage could not be proven, not yet reported to
+   * the server (the server was unreachable at the time, by definition).
+   * Drained by the next successful sync.
+   */
+  pendingShipReports?: import('@buildd/shared').ShipCheckpointReport[];
+  /** Live sibling conflict probes handed out by the server, waiting to run (sibling-probe.ts). Transient. */
+  siblingProbeQueue?: import('@buildd/shared').SiblingProbeRequest[];
+  siblingProbeRunning?: boolean;
+  /** Probe results not yet reported; drained by the next successful sync. */
+  pendingSiblingProbeResults?: import('@buildd/shared').SiblingProbeResult[];
+  /** Coverage-unknown milestones already posted, so a retried ship does not repeat them. Transient. */
+  shipCoverageMilestones?: string[];
   /**
    * Workspace `gitConfig.pathClaimEnforcement`, resolved at session start.
    * Absent = advisory (the default). See path-claim-enforcement.ts.
@@ -309,6 +331,10 @@ export interface LocalWorker {
   pathClaimDegraded?: number;
   /** How many of `pathClaimDegraded` the server has been told about (the next sync sends the delta). */
   pathClaimDegradedReported?: number;
+  /** `pathClaimDegraded` split by cause, so the server can tell a timeout from a network/5xx error. */
+  pathClaimDegradedByCause?: { timeout: number; error: number };
+  /** The `pathClaimDegradedByCause` totals the server has been told about. */
+  pathClaimDegradedByCauseReported?: { timeout: number; error: number };
   /** Last time the sweep refreshed the base ref with a fetch (ms epoch). */
   pathSweepBaseFetchedAt?: number;
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
@@ -318,6 +344,8 @@ export interface LocalWorker {
    * carry usage, whereas the SDK result's per-model map is empty on seat auth.
    */
   tokenTally?: { inputTokens: number; outputTokens: number };
+  /** How this run's usage is charged (cost-basis.ts); set when the agent env is built. */
+  costBasis?: 'real' | 'virtual' | 'unknown';
   // Set when sandbox_mount_gap abort fires; signals server to exempt from retry cap.
   // Currently never set — the abort was disabled after it fired on file content
   // (test titles, fixture strings) rather than real denials. Detection now only
@@ -340,13 +368,6 @@ export interface LocalWorker {
   reportedModel?: string;
   // SDK result metadata (populated on completion)
   resultMeta?: ResultMeta | null;
-  // CBM observability counters (accumulated during session, flushed into resultMeta at completion)
-  cbmOutcome?: 'enforced' | 'legacy_mcp_json' | 'disabled';
-  /**
-   * The claim put this task in the CBM-withheld arm of a running `cbm_access`
-   * experiment: no CBM mount, no steering, every CBM tool denied.
-   */
-  cbmExperimentWithheld?: boolean;
   /**
    * The claim put this task in a running `question_gate` experiment: every
    * AskUserQuestion goes through POST /api/workers/[id]/question-check before
@@ -357,49 +378,8 @@ export interface LocalWorker {
   questionPushbacks?: number;
   /** Last file the agent edited or wrote, for the question brief's `where`. */
   lastEditedFile?: string;
-  cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'experiment_withheld' | 'binary_absent' | 'mount_unavailable';
-  cbmBootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
-  cbmBootstrapFailReason?: string;
-  /**
-   * Whether a backgrounded index build finished successfully before the session
-   * ended. Only meaningful with cbmBootstrapResult='backgrounded'.
-   *
-   * This is the field that keeps the hand-off honest: without it, every
-   * overrunning build reads as 'backgrounded' and nothing distinguishes "the
-   * graph arrived a few turns in" from "the graph never arrived".
-   */
-  cbmBackgroundIndexLanded?: boolean;
-  /**
-   * Whether this session ran on the host-wide seeded graph rather than indexing
-   * its own. Lived only in a local in startSession before, so it never reached
-   * resultMeta and the shared cache's hit rate could only be inferred from
-   * bootstrapResult — which is why role-scoped workers getting no seed at all
-   * went unnoticed.
-   */
-  cbmSharedCache?: boolean;
-  /** Why the out-of-band seed refresh did or did not spawn. */
-  cbmSeedRefresh?: SeedRefreshOutcome;
-  /**
-   * Set when a seed for this repo existed but described a DIFFERENT base, so it
-   * was refused and this task indexed its own graph instead.
-   *
-   * A value, not just a log line: refusing a stale seed and silently serving one
-   * are indistinguishable from outside, and the difference is whether the agent's
-   * graph answers describe its actual base.
-   */
-  cbmSeedBaseMismatch?: { wanted: string; found: string };
-  cbmToolCounts?: Record<string, number>;
-  cbmFileAccessCounts?: { read: number; grep: number; glob: number };
-  /**
-   * CBM search injection metrics (cbm-injection.ts). Counts and labels only.
-   * Set at session start for Claude workers with CBM enforced (and Codex
-   * workers with CBM active, as unsupported_backend); refreshed from the live
-   * injector when resultMeta is built. Separate from cbmToolCounts on purpose:
-   * the runner's own graph queries are not agent CBM calls (CBM-17/18).
-   */
-  cbmInjection?: import('@buildd/core/cbm-injection').CbmInjectionMetrics;
   // Full tool-call histogram keyed by exact SDK tool name (see tool-metrics.ts).
-  // Superset of the CBM counters above — flushed into resultMeta.toolCounts at completion.
+  // Flushed into resultMeta.toolCounts at completion.
   toolCounts?: Record<string, number>;
   /**
    * Bash sub-classification (see bash-classify.ts). The histogram above can
@@ -409,6 +389,8 @@ export interface LocalWorker {
    * coarse search-pattern shapes only; no command or pattern text is retained.
    */
   bashCommandCounts?: BashCommandCounts;
+  /** File tool calls per repo area (file-area.ts): tool -> area -> calls. Area only, never a path. */
+  fileToolAreas?: Record<string, Record<string, number>>;
   // MCP credential secrets (label → value) delivered inline at claim time.
   // Injected as env vars into cleanEnv so ${VAR} refs in .mcp.json HTTP headers resolve.
   mcpSecrets?: Record<string, string>;
@@ -421,6 +403,8 @@ export interface LocalWorker {
   modelEndpoint?: import('@buildd/shared').ClaimModelEndpoint;
   // The claim withheld a winning endpoint because this runner has a per-machine provider.
   modelEndpointIgnored?: boolean;
+  // Cloud claim: the endpoint behind egress lacks ToolSearch pass-through (ENABLE_TOOL_SEARCH=false).
+  toolSearchDisabled?: boolean;
   // Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
   // 'scoped': only the task-scoped token (agent-github-credentials.ts). A mode, not a secret.
   githubCredentials?: { mode: 'scoped' | 'runner' };
@@ -518,36 +502,6 @@ export interface ModelUsage {
   costUSD: number;
 }
 
-/** CBM (Codebase Memory) observability metrics captured per task. */
-export interface CbmMetrics {
-  outcome: 'enforced' | 'legacy_mcp_json' | 'disabled';
-  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent' | 'mount_unavailable';
-  /**
-   * Whether the pre-index bootstrap ran and whether it succeeded. Only set when
-   * outcome='enforced'. `skipped_warm` means the shared seed was admitted, so no
-   * per-task index ran at all — the two extra members were written to the column
-   * for weeks while this type still claimed 'ok' | 'failed'.
-   */
-  bootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
-  bootstrapFailReason?: string;
-  /**
-   * Whether a backgrounded build landed before the session ended. Only set with
-   * bootstrapResult='backgrounded'.
-   */
-  backgroundIndexLanded?: boolean;
-  /** Whether the session ran on the host-wide seeded graph. Always emitted. */
-  sharedCache: boolean;
-  /** Why the out-of-band seed refresh did or did not spawn for this repo. */
-  seedRefresh?: SeedRefreshOutcome;
-  toolCalls: Record<string, number>;
-  totalCbmCalls: number;
-  readCount: number;
-  grepCount: number;
-  globCount: number;
-  /** CBM search injection (cbm-search-injection.md). Absent when it never ran for this session. */
-  injection?: import('@buildd/core/cbm-injection').CbmInjectionMetrics;
-}
-
 // SDK result metadata - captured from SDKResultSuccess/SDKResultError
 export interface ResultMeta {
   stopReason: string | null;
@@ -574,8 +528,6 @@ export interface ResultMeta {
   /** The model the session actually ran on (see resolveActualModel). */
   actualModel?: string | null;
   permissionDenials?: Array<{ tool: string; reason: string }>;
-  /** CBM observability metrics — present on all workers running CBM-enabled task 5+. */
-  cbm?: CbmMetrics;
   /**
    * Every tool_use in the session counted by exact tool name (`Bash`,
    * `mcp__buildd__buildd`, …). Absent on workers that predate the histogram or
@@ -588,6 +540,8 @@ export interface ResultMeta {
    * no Bash call or predates the classifier — absence is "unknown", not zero.
    */
   bashCommandCounts?: BashCommandCounts;
+  /** File tool calls per repo area (file-area.ts): tool -> area -> calls. Area only, never a path. */
+  fileToolAreas?: Record<string, Record<string, number>>;
   /**
    * Outcome of the one-shot "closing turn" a session that ends without
    * calling complete_task gets before the runner falls back to
@@ -717,6 +671,10 @@ export interface BuilddTask {
 
 // Git workflow configuration (matches server schema)
 export interface WorkspaceGitConfig {
+  /** Files regenerated instead of merged (packages/shared DerivedFileRule; see merge-drivers.ts). */
+  derivedFiles?: DerivedFileRule[];
+  /** Register mergiraf as a structural merge driver in this runner's clones. */
+  mergiraf?: boolean;
   // Branching
   defaultBranch: string;
   branchingStrategy: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
@@ -784,6 +742,10 @@ export interface WorkspaceGitConfig {
 
   // Auto-merge PRs via GitHub's auto-merge feature
   autoMergePR?: boolean;
+
+  // Policy checks before push / create_pr (workflow-state-kernel.md §6.10, S31).
+  // Only `commands` is the runner's; the server reads the rest.
+  preflight?: { commands?: string[] } | null;
 }
 
 // SSE event types

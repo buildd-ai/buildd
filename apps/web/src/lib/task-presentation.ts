@@ -1,3 +1,4 @@
+import { isOpenAsk } from './open-ask';
 /**
  * Canonical task presentation derivation layer.
  * All UI surfaces consume these pure functions — never fork display logic locally.
@@ -120,16 +121,8 @@ export function deriveTaskPhase(i: TaskPhaseInput): TaskPhase {
     return i.taskMode === 'planning' ? 'plan_review' : 'completed';
   }
 
-  // A pending question outranks a failed task status. The waiting_input
-  // timeout (cleanupStuckWaitingInput) flips the task to 'failed' as part of
-  // building its retry, and any other path that still reports needs_input as
-  // a failure does the same; either way the question itself is still the
-  // thing a human needs to see, not a generic failure badge. Checking this
-  // before taskStatus === 'failed' is what lets the waiting_input phase below
-  // actually render instead of being permanently shadowed the moment the
-  // task status flips.
-  if (i.workerWaitingFor || i.workerStatus === 'waiting_input') return 'waiting_input';
   if (i.taskStatus === 'failed') return 'failed';
+  if (isOpenAsk(i.taskStatus, i.workerStatus)) return 'waiting_input';
 
   // Live worker-derived phases.
   if (

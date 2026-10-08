@@ -37,7 +37,7 @@ describe('a red PR whose fix chain has ended', () => {
     expect(waiting.taskIds).toEqual(['task-a']);
     expect(view.situation.headline).toContain('CI red after 3 fix attempts');
     expect(view.situation.headline).toContain('build');
-    expect(view.situation.headline).not.toContain('waiting on you to merge');
+    expect(view.situation.headline).not.toContain('ready to merge');
     expect(view.nextAction).not.toContain('Resolve and merge');
     expect(missionNeedsYou(view)).toBe(true);
   });

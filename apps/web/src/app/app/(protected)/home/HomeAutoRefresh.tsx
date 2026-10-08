@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
-import { shouldRefreshOnVisible } from '@/lib/merge-outcome';
+import { demandCatchUp } from '@/lib/app-freshness';
 import {
   createThrottle,
   shouldRefreshHomeOnEvent,
@@ -26,7 +26,10 @@ import {
  * Every refresh is a full server render, and runner heartbeats publish
  * `worker:progress` every ~10s per active worker, so heartbeats that don't
  * change a worker's status are ignored and the rest are throttled — see
- * shouldRefreshHomeOnEvent. Nothing refreshes while the tab is hidden.
+ * shouldRefreshHomeOnEvent. Nothing refreshes while the tab is hidden: a
+ * skipped event is handed to the shell's freshness coordinator
+ * (lib/app-freshness.ts), which also catches up on return to the foreground and
+ * on Pusher reconnect whether or not anything was seen.
  */
 const REFRESH_EVENTS = [
   'task:created',
@@ -41,8 +44,6 @@ const REFRESH_EVENTS = [
 
 export default function HomeAutoRefresh({ workspaceIds }: { workspaceIds: string[] }) {
   const router = useRouter();
-  const lastRefreshRef = useRef<number>(Date.now());
-  const missedWhileHiddenRef = useRef(false);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const stableIds = useMemo(() => [...new Set(workspaceIds)], [workspaceIds.join(',')]);
@@ -53,10 +54,9 @@ export default function HomeAutoRefresh({ workspaceIds }: { workspaceIds: string
     const lastStatusByWorker = new Map<string, string>();
     const throttle = createThrottle(() => {
       if (document.visibilityState === 'hidden') {
-        missedWhileHiddenRef.current = true;
+        demandCatchUp('missed');
         return;
       }
-      lastRefreshRef.current = Date.now();
       router.refresh();
     }, { waitMs: HOME_THROTTLE_MS });
 
@@ -64,7 +64,7 @@ export default function HomeAutoRefresh({ workspaceIds }: { workspaceIds: string
       const decision = shouldRefreshHomeOnEvent(event, data, lastStatusByWorker);
       if (decision === 'none') return;
       if (document.visibilityState === 'hidden') {
-        missedWhileHiddenRef.current = true;
+        demandCatchUp('missed');
         return;
       }
       // Urgent transitions still wait briefly: a merge fans out several events,
@@ -87,27 +87,6 @@ export default function HomeAutoRefresh({ workspaceIds }: { workspaceIds: string
       throttle.cancel();
     };
   }, [stableIds, router]);
-
-  // Backstop: a tab that was hidden (or a laptop that was asleep) misses the
-  // events entirely. Re-render on return to visibility, rate-limited so tab
-  // flicking doesn't re-run the page's queries — unless a relevant event was
-  // actually skipped while hidden.
-  useEffect(() => {
-    function onVisible() {
-      if (document.visibilityState !== 'visible') return;
-      const missed = missedWhileHiddenRef.current;
-      if (!missed && !shouldRefreshOnVisible(lastRefreshRef.current, Date.now())) return;
-      missedWhileHiddenRef.current = false;
-      lastRefreshRef.current = Date.now();
-      router.refresh();
-    }
-    document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', onVisible);
-    return () => {
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', onVisible);
-    };
-  }, [router]);
 
   return null;
 }

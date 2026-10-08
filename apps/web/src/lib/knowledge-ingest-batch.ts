@@ -12,6 +12,7 @@ import {
   shouldIngestFile,
   classifyIngestCorpus,
 } from '@buildd/core/knowledge-store/ingest-filter';
+import { admitDocsWithinCap } from '@buildd/core/billing-limits';
 
 export interface IngestBatchFile {
   path: string;
@@ -26,6 +27,10 @@ export interface IngestBatchResult {
   filesSkipped: number;
   filesDeleted: number;
   skippedUnchanged: number;
+  /** New docs the plan's knowledge-base cap turned away (0 while BILLING_ENFORCED is off). */
+  filesRefusedByPlan: number;
+  /** The plain refusal to show the owner, when anything was refused. */
+  planLimitMessage?: string;
 }
 
 /**
@@ -95,6 +100,14 @@ export async function ingestFileBatch(
     sources[corpus].push(file);
   }
 
+  // Plan knowledge-base cap: new docs past it are refused; updates to docs
+  // already stored always go through, and nothing stored is touched.
+  const admission = await admitDocsWithinCap(workspaceId, sources.docs.map(f => f.path));
+  if (admission.refused.length > 0) {
+    const refused = new Set(admission.refused);
+    sources.docs = sources.docs.filter(f => !refused.has(f.path));
+  }
+
   let filesIngested = 0;
   let chunksUpserted = 0;
   for (const corpus of ['code', 'docs'] as const) {
@@ -105,7 +118,11 @@ export async function ingestFileBatch(
     chunksUpserted += res.chunks;
   }
 
-  return { filesIngested, chunksUpserted, filesSkipped, filesDeleted, skippedUnchanged };
+  return {
+    filesIngested, chunksUpserted, filesSkipped, filesDeleted, skippedUnchanged,
+    filesRefusedByPlan: admission.refused.length,
+    ...(admission.message ? { planLimitMessage: admission.message } : {}),
+  };
 }
 
 /**

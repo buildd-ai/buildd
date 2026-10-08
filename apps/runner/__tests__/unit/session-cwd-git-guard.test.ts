@@ -12,9 +12,10 @@
  * `resolveRoleCwd` fixes the cause (role-cwd-resolution.test.ts); this is the
  * backstop for any other way of arriving somewhere without a `.git`.
  */
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
-import * as realBootstrap from '../../src/cbm-bootstrap';
 
 let sessionStarted = false;
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
@@ -62,13 +63,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -127,11 +128,6 @@ mock.module('../../src/env-scan', () => ({
   checkBwrapMountIsolationSupport: () => true,
 }));
 
-mock.module('../../src/cbm-bootstrap.js', () => ({
-  ...realBootstrap,
-  runCbmBootstrap: async () => ({ ok: true, durationMs: 1 }),
-}));
-
 const { WorkerManager } = await import('../../src/workers');
 
 function makeConfig(): LocalUIConfig {
@@ -174,7 +170,19 @@ function failurePatch(workerId: string) {
 describe('session cwd must be a git checkout for a repo task', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     sessionStarted = false;
     cwdIsGitRepo = true;
     worktreeResult = null;
@@ -196,7 +204,7 @@ describe('session cwd must be a git checkout for a repo task', () => {
     // The error has to name the directory: the whole point is that "worktree
     // failed, using repo" told the operator nothing about where it ended up.
     expect(patch.error).toContain('not a git checkout');
-    expect(patch.error).toContain('/tmp/test-workspace');
+    expect(patch.error).toContain(getTestWorkspace());
   });
 
   // The new tree exists (and gets a dependency install) before the worker's
@@ -237,7 +245,7 @@ describe('session cwd must be a git checkout for a repo task', () => {
     expect(patch).toBeDefined();
     expect(patch.error).toContain('Worktree setup failed');
     expect(patch.error).toContain('buildd/w-wtfail');
-    expect(patch.error).toContain('/tmp/test-workspace');
+    expect(patch.error).toContain(getTestWorkspace());
   });
 
   // branchingStrategy 'none' opts out of worktrees: the shared clone is the

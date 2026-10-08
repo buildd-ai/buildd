@@ -16,7 +16,7 @@
  * Self-contained: it owns the in-flight action and its error, and calls
  * `onChanged` after a successful action so the host can refetch.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import AnswerRecorded from '@/components/AnswerRecorded';
@@ -24,6 +24,12 @@ import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-an
 import Spinner from '@/components/Spinner';
 import ClaimTaskHint from '@/components/tasks/ClaimTaskHint';
 import RunnerPicker from '@/components/tasks/RunnerPicker';
+import Disclosure from '@/components/ui/Disclosure';
+import type { TaskFailureKind } from '@/lib/task-failure-kind';
+import { verificationFailedCopy } from '@/lib/task-failure-kind';
+import { explainProviderAuthFailure } from '@/lib/provider-auth-failure';
+import EntitlementBlockedNotice from '@/components/entitlements/EntitlementBlockedNotice';
+import { parseEntitlementBlock, type EntitlementBlock } from '@buildd/shared';
 import { useTaskStart } from '@/components/tasks/useTaskStart';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import { formatInZone } from '@/lib/zoned-time';
@@ -35,6 +41,7 @@ import {
   getGateReasonSubtitle,
   getGateReasonTitle,
   otherBackendOf,
+  backendDisplayName,
   requestTaskRetry,
   taskActionSet,
 } from '@/lib/task-actions';
@@ -59,7 +66,12 @@ export interface TaskActionZoneProps {
   isBlocked: boolean;
   blockedByCount: number;
   backend: 'claude' | 'codex' | null;
-  lastError: { excerpt: string } | null;
+  /** `excerpt` is the line shown; `raw`, when given, is the full text it is classified from. */
+  lastError: { excerpt: string; raw?: string | null } | null;
+  /** `classifyTaskFailure`: `verification` means the work landed and its audit failed. */
+  failureKind?: TaskFailureKind | null;
+  /** Set when this task IS the surface audit: a verification failure then offers "Retry the audit". */
+  auditTaskId?: string | null;
   worker: { id: string; waitingFor: { prompt: string; options?: string[]; context?: string } | null } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
@@ -70,6 +82,12 @@ export interface TaskActionZoneProps {
   runnerPicker?: boolean;
   /** The host already says why the task is waiting (the mission drawer's reason line). */
   hideQueuedNote?: boolean;
+  /**
+   * The plan limit a managed runner deferred this task on (task context
+   * `entitlementBlock`). A queued task with one shows the entitlement state in
+   * place of "Run now": it starts by itself when the limit lifts.
+   */
+  entitlementBlock?: EntitlementBlock | null;
   onChanged?: () => void | Promise<void>;
 }
 
@@ -84,12 +102,15 @@ export default function TaskActionZone({
   blockedByCount,
   backend,
   lastError,
+  failureKind = null,
+  auditTaskId = null,
   worker,
   historyHref,
   roleSlug,
   missionExecutor = null,
   runnerPicker = false,
   hideQueuedNote = false,
+  entitlementBlock = null,
   onChanged,
 }: TaskActionZoneProps) {
   const displayTz = useDisplayTimezone();
@@ -98,6 +119,24 @@ export default function TaskActionZone({
   const [target, setTarget] = useState('');
   const start = useTaskStart({ taskId, workspaceId, onStarted: onChanged });
 
+  // A failed task may offer the other backend, but only one that can run it:
+  // the same availability check the start gate uses. Unknown until it answers,
+  // and unknown never offers the switch.
+  const otherBackend = otherBackendOf(backend);
+  const [otherBackendAvailable, setOtherBackendAvailable] = useState(false);
+  useEffect(() => {
+    if (phase !== 'failed' || !otherBackend || !workspaceId) return;
+    let cancelled = false;
+    fetch(`/api/workspaces/${workspaceId}/backends`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { backends?: Array<{ id: string; available: boolean }> } | null) => {
+        if (cancelled) return;
+        setOtherBackendAvailable(!!d?.backends?.some((b) => b.id === otherBackend && b.available));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [phase, otherBackend, workspaceId]);
+
   const actions = taskActionSet({
     phase,
     isBlocked,
@@ -105,9 +144,12 @@ export default function TaskActionZone({
     hasQuestion: !!worker?.waitingFor,
     hasHistory: !!historyHref,
     missionExecutor,
+    otherBackendAvailable,
+    failureKind,
   });
   const has = (id: (typeof actions)[number]) => actions.includes(id);
-  const otherBackend = otherBackendOf(backend);
+  // "Not logged in · Please run /login" and kin: say what to do instead.
+  const authFailure = lastError ? explainProviderAuthFailure(lastError.raw ?? lastError.excerpt, backend) : null;
   const local = missionExecutor === 'local';
 
   // Owned here, not by the input: the refetch below drops the question, and
@@ -135,7 +177,10 @@ export default function TaskActionZone({
 
   const refusal = start.refusal;
   const starting = start.pending !== null;
-  const showRunNow = has('run_now') && (start.status === 'idle' || start.status === 'starting');
+  // A start refused on a plan limit is the same entitlement state, not a gate warning.
+  const refusalEntitlement = refusal?.gateReason === 'entitlement_blocked' ? parseEntitlementBlock(refusal.entitlement) : null;
+  const waitingOnPlan = has('run_now') && phase === 'pending' && !!entitlementBlock && start.status === 'idle';
+  const showRunNow = has('run_now') && !waitingOnPlan && (start.status === 'idle' || start.status === 'starting');
   const cap = refusal?.cap ?? 3;
   const [capTarget, setCapTarget] = useState<number | null>(null);
   const deferredLabel = refusal?.startAt
@@ -166,14 +211,50 @@ export default function TaskActionZone({
         </div>
       )}
 
+      {/* Work landed, audit failed → say so; the audit's own surface retries the audit */}
+      {has('verification_failed') && (
+        <div data-testid="task-verification-failed" className="space-y-3 border-2 border-status-warning p-4">
+          <p className="font-mono text-meta font-semibold text-status-warning">{verificationFailedCopy().state}</p>
+          <p className="font-mono text-meta text-text-secondary">{verificationFailedCopy().cause}</p>
+          {retryError && <p className="font-mono text-meta text-status-error">{retryError}</p>}
+          <div className="flex flex-wrap items-center gap-2">
+            {auditTaskId && (
+              <button
+                type="button"
+                data-action="retry-audit"
+                disabled={retrying !== null}
+                onClick={() => retry('same')}
+                className={SECONDARY_BTN}
+              >
+                {retrying ? 'Retrying…' : 'Retry the audit'}
+              </button>
+            )}
+            {has('history') && historyHref && (
+              <Link href={historyHref} data-action="history" className={QUIET_BTN}>
+                View history
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Failed → why + retry */}
       {has('retry') && (
         <div className="space-y-3 border-2 border-status-error p-4">
-          {lastError ? (
+          <p className="font-mono text-meta font-semibold text-status-error">Worker failed</p>
+          {authFailure && lastError ? (
+            <div className="space-y-2" data-testid="task-auth-failure">
+              <p className="text-body text-text-primary">{authFailure.message}</p>
+              <Link href={authFailure.href} data-action="fix_credential" className="inline-flex min-h-11 md:min-h-9 items-center font-mono text-body font-medium text-accent-text hover:underline">
+                {authFailure.linkLabel}
+              </Link>
+              <Disclosure summary="Show raw output">
+                <pre className="max-h-60 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] bg-surface-2 p-3 font-mono text-meta text-text-secondary">{lastError.raw?.trim() || lastError.excerpt}</pre>
+              </Disclosure>
+            </div>
+          ) : lastError ? (
             <p className="break-words font-mono text-[12px] leading-relaxed text-status-error">{lastError.excerpt}</p>
-          ) : (
-            <p className="font-mono text-[12px] text-text-secondary">This task failed.</p>
-          )}
+          ) : null}
           <div className="flex flex-wrap items-center gap-2">
             {/* Single click retries on the backend it already ran on — the
                 common case. The switch is one extra click, never a menu. */}
@@ -184,7 +265,7 @@ export default function TaskActionZone({
               disabled={retrying !== null}
               className={SECONDARY_BTN}
             >
-              {retrying === 'same' ? 'Retrying…' : `Retry${backend ? ` on ${backend}` : ''}`}
+              {retrying === 'same' ? 'Retrying…' : `Retry${backend ? ` on ${backendDisplayName(backend)}` : ''}`}
             </button>
             {has('switch_backend') && otherBackend && (
               <button
@@ -192,10 +273,10 @@ export default function TaskActionZone({
                 data-action="switch_backend"
                 onClick={() => retry('switch')}
                 disabled={retrying !== null}
-                className={`${QUIET_BTN} capitalize`}
-                title={`Retry this task on the ${otherBackend} backend instead`}
+                className={QUIET_BTN}
+                title={`Retry this task on ${backendDisplayName(otherBackend)} instead`}
               >
-                {retrying === 'switch' ? 'Switching…' : `Switch to ${otherBackend}`}
+                {retrying === 'switch' ? 'Switching…' : `Switch to ${backendDisplayName(otherBackend)}`}
               </button>
             )}
             {has('history') && historyHref && (
@@ -219,6 +300,9 @@ export default function TaskActionZone({
           </p>
         </div>
       )}
+
+      {/* Queued on a plan limit → the entitlement state; it starts by itself */}
+      {waitingOnPlan && entitlementBlock && <EntitlementBlockedNotice block={entitlementBlock} />}
 
       {/* Queued → run now (a local mission's task: claim it from a session first) */}
       {showRunNow && (
@@ -273,7 +357,10 @@ export default function TaskActionZone({
       )}
 
       {/* A refused start: why, and what a person may do about it, in place. */}
-      {start.status === 'gated' && refusal && (
+      {start.status === 'gated' && refusalEntitlement && (
+        <EntitlementBlockedNotice block={refusalEntitlement} onLeaveQueued={start.dismiss} />
+      )}
+      {start.status === 'gated' && refusal && !refusalEntitlement && (
         <div data-testid="task-start-refusal" data-gate={refusal.gateReason} className="space-y-3 border border-status-warning p-4">
           <div>
             <p className="mb-1 font-mono text-meta font-medium text-status-warning">
@@ -306,9 +393,11 @@ export default function TaskActionZone({
           {refusal.gateReason === 'workspace_cap_reached' && (
             <div className="flex flex-wrap items-center gap-2 font-mono text-meta">
               <span className="text-text-secondary">Raise the workspace limit to</span>
-              <button type="button" aria-label="Lower" onClick={() => setCapTarget(t => Math.max(cap + 1, (t ?? cap + 1) - 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">−</button>
-              <span className="w-8 text-center tabular-nums text-text-primary">{capTarget ?? cap + 1}</span>
-              <button type="button" aria-label="Raise" onClick={() => setCapTarget(t => Math.min(20, (t ?? cap + 1) + 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">+</button>
+              <div className="inline-flex shrink-0 items-center gap-2">
+                <button type="button" aria-label="Lower" onClick={() => setCapTarget(t => Math.max(cap + 1, (t ?? cap + 1) - 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">−</button>
+                <span className="w-8 text-center tabular-nums text-text-primary">{capTarget ?? cap + 1}</span>
+                <button type="button" aria-label="Raise" onClick={() => setCapTarget(t => Math.min(20, (t ?? cap + 1) + 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">+</button>
+              </div>
               <button type="button" data-action="raise_cap" onClick={() => start.raiseCapAndStart(capTarget ?? cap + 1)} disabled={starting} className={SECONDARY_BTN}>
                 {start.pending === 'cap' ? 'Updating…' : 'Save & start'}
               </button>
@@ -317,7 +406,7 @@ export default function TaskActionZone({
           <div className="flex flex-wrap items-center gap-2">
             {refusal.gateReason === 'capability_mismatch' && (refusal.availableBackends ?? []).map(b => (
               <button key={b} type="button" data-action="switch_and_start" onClick={() => start.switchBackendAndStart(b)} disabled={starting} className={SECONDARY_BTN}>
-                {start.pending === 'switch' ? 'Switching…' : `Switch to ${b === 'claude' ? 'Claude (default)' : b} and start`}
+                {start.pending === 'switch' ? 'Switching…' : `Switch to ${b === 'claude' ? 'Claude (default)' : backendDisplayName(b)} and start`}
               </button>
             ))}
             {refusal.gateReason === 'workspace_cap_reached' && refusal.canExempt && (

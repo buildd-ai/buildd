@@ -19,6 +19,7 @@ const mockRegisterClient = mock(() => Promise.resolve({ client_id: 'client-1' })
 const mockGetCallbackUrl = mock(() => 'https://app.example.com/api/connectors/callback');
 const mockSecretsProviderSet = mock(() => Promise.resolve('secret-1'));
 const mockEncrypt = mock((v: string) => `enc:${v}`);
+const mockResolveConnectorIcon = mock(() => Promise.resolve(null as string | null));
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
@@ -28,6 +29,7 @@ mock.module('@/lib/mcp-oauth', () => ({
   registerClient: mockRegisterClient,
   getCallbackUrl: mockGetCallbackUrl,
 }));
+mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: mockResolveConnectorIcon }));
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({ set: mockSecretsProviderSet }),
   encrypt: mockEncrypt,
@@ -35,7 +37,7 @@ mock.module('@buildd/core/secrets', () => ({
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       connectors: { findMany: mockConnectorsFindMany, findFirst: mockConnectorsFindFirst },
       connectorShares: { findMany: mockConnectorSharesFindMany },
       secrets: { findMany: mockSecretsFindMany },
@@ -51,7 +53,7 @@ mock.module('drizzle-orm', () => ({
   inArray: (a: any, b: any) => ({ a, b, op: 'inArray' }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   connectors: { teamId: 'teamId', id: 'id', name: 'name' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
   secrets: { teamId: 'teamId', purpose: 'purpose', label: 'label' },
@@ -108,6 +110,7 @@ describe('GET /api/connectors', () => {
     const data = await res.json();
     expect(data.connectors).toHaveLength(1);
     expect(data.connectors[0].status).toBe('not_connected');
+    expect(data.connectors[0].iconUrl).toBeNull();
     // Role picker renders transport + authMode badges from the list response.
     expect(data.connectors[0].transport).toBe('http');
     expect(data.connectors[0].authMode).toBe('oauth');
@@ -244,6 +247,8 @@ describe('POST /api/connectors', () => {
     // Default: session user is an admin/owner of the team (no member row => personal team => allowed).
     mockTeamMembersFindFirst.mockResolvedValue({ role: 'owner' });
     mockSecretsProviderSet.mockResolvedValue('secret-1');
+    mockResolveConnectorIcon.mockReset();
+    mockResolveConnectorIcon.mockResolvedValue(null);
     mockConnectorsInsert.mockReturnValue({
       values: mock(() => ({
         returning: mock(() => [{ id: 'conn-new', name: 'New', url: 'https://mcp.example.com', authMode: 'oauth', teamId: 'team-1' }]),
@@ -265,6 +270,55 @@ describe('POST /api/connectors', () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toMatch(/required/);
+  });
+
+  // Regression: a URL missing its leading "h" ("ttps://…") passes the browser's
+  // type=url check, then discovery threw and the user saw a bare 500.
+  it('returns 400 invalid_url for a non-http(s) url, before any discovery', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(makePostReq({ name: 'Axiom', url: 'ttps://mcp.axiom.co/mcp' }));
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('invalid_url');
+    expect(data.message).toMatch(/https:\/\//);
+    expect(mockDiscoverOAuthMetadata).not.toHaveBeenCalled();
+  });
+
+  it('returns 422 discovery_failed with the reason when OAuth discovery throws', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockDiscoverOAuthMetadata.mockRejectedValue(new Error('Discovery probe failed: getaddrinfo ENOTFOUND'));
+    const res = await POST(makePostReq({ name: 'Broken', url: 'https://mcp.nowhere.invalid/mcp' }));
+    expect(res.status).toBe(422);
+    const data = await res.json();
+    expect(data.error).toBe('discovery_failed');
+    expect(data.message).toMatch(/ENOTFOUND/);
+  });
+
+  it('stores the resolved icon on create', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockResolveConnectorIcon.mockResolvedValue('https://custom.dev/logo.png');
+    let captured: any;
+    mockConnectorsInsert.mockReturnValue({
+      values: mock((v: any) => { captured = v; return {
+        returning: mock(() => [{ id: 'conn-icon', name: 'Custom', url: 'https://mcp.custom.dev/mcp', authMode: 'none', teamId: 'team-1', iconUrl: v.iconUrl }]),
+      }; }),
+    });
+    const res = await POST(makePostReq({ name: 'Custom', url: 'https://mcp.custom.dev/mcp' }));
+    expect(res.status).toBe(201);
+    expect(mockResolveConnectorIcon).toHaveBeenCalledWith('https://mcp.custom.dev/mcp');
+    expect(captured.iconUrl).toBe('https://custom.dev/logo.png');
+  });
+
+  it('still creates the connector when icon resolution fails', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    let captured: any;
+    mockResolveConnectorIcon.mockRejectedValue(new Error('boom'));
+    mockConnectorsInsert.mockReturnValue({
+      values: mock((v: any) => { captured = v; return { returning: mock(() => [{ id: 'c', name: 'n', url: 'u', authMode: 'none', teamId: 'team-1' }]) }; }),
+    });
+    const res = await POST(makePostReq({ name: 'Custom', url: 'https://mcp.custom.dev/mcp' }));
+    expect(res.status).toBe(201);
+    expect(captured.iconUrl).toBeNull();
   });
 
   it('creates connector with oauth auth mode', async () => {

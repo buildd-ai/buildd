@@ -53,7 +53,7 @@
  *   QA_VIEWPORT                     — "mobile" (390x844 touch phone), "desktop", or WIDTHxHEIGHT (default: 1280x900)
  */
 
-import { chromium } from 'playwright';
+import { connectReviewBrowser, exposeService } from './browser-provider';
 import type { BrowserContextOptions } from 'playwright';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
@@ -201,14 +201,22 @@ if (plan) {
 // --- Browser + context ---
 // A rejected top-level await lands in the swallow handlers above and the
 // process exits 0 with nothing captured: a silent pass. No browser is fatal.
-let browser: Awaited<ReturnType<typeof chromium.launch>>;
+let browser: Awaited<ReturnType<typeof connectReviewBrowser>>['browser'];
+let browserMetadata: { provider: string; handle?: string; probe: Record<string, unknown> };
 try {
-  browser = await chromium.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-  });
+  if (process.env.BUILDD_BROWSER_PROVIDER === 'cloudflare') {
+    const local = new URL(BASE_URL);
+    if (['127.0.0.1', 'localhost'].includes(local.hostname)) await exposeService({ port: Number(local.port || 80) });
+  }
+  const connected = await connectReviewBrowser();
+  browser = connected.browser;
+  browserMetadata = { provider: connected.provider, handle: connected.handle, probe: connected.probe };
 } catch (err) {
-  console.error(`[capture] browser did not launch: ${(err as Error).message.split('\n')[0]}`);
+  const providerError = process.env.BUILDD_BROWSER_PROVIDER === 'cloudflare'
+    ? ((err as Error).message.includes('service_') ? (err as Error).message : 'provider_handshake_failed')
+    : 'provider_missing';
+  writeFileSync(join(OUTPUT_DIR, 'captures.json'), JSON.stringify(routes.map(route => ({ id: route.id, path: route.path, providerError, error: providerError, capturedAt: new Date().toISOString(), browser: { provider: process.env.BUILDD_BROWSER_PROVIDER ?? 'local', probe: { ok: false } } })), null, 2));
+  console.error(`[capture] browser did not launch: ${providerError}`);
   process.exit(1);
 }
 
@@ -232,7 +240,13 @@ if (QA_THEME) {
 const page = await context.newPage();
 // Hydration mismatches and other client errors land in the run log, so a shot
 // that looks fine but threw on load (React #418) is still visible.
-page.on('pageerror', (err) => console.warn(`[capture] page error on ${page.url()}: ${err.message}`));
+// Counted per route as well (reset before each navigation) and recorded on the
+// capture, so a consumer can tell "rendered" from "rendered but threw".
+let pageErrors = 0;
+page.on('pageerror', (err) => {
+  pageErrors++;
+  console.warn(`[capture] page error on ${page.url()}: ${err.message}`);
+});
 page.on('console', (msg) => {
   if (msg.type() === 'error') console.warn(`[capture] console error on ${page.url()}: ${msg.text().slice(0, 2000)}`);
 });
@@ -291,6 +305,10 @@ type Capture = {
   path: string;
   url: string;
   finalUrl?: string;
+  /** HTTP status of the navigation's main response; null when none arrived. */
+  status?: number | null;
+  /** Uncaught page errors between navigation and the shot. */
+  pageErrors?: number;
   screenshotFile?: string;
   a11yFile?: string;
   redirected?: boolean;
@@ -309,6 +327,7 @@ type Capture = {
   skipped?: boolean;
   skipReason?: string;
   error?: string;
+  providerError?: string;
   capturedAt: string;
 };
 
@@ -337,7 +356,9 @@ for (const route of routes) {
 
   let guard: Awaited<ReturnType<typeof guardWrites>> | null = null;
   try {
+    pageErrors = 0;
     const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
+    const navStatus = response?.status() ?? null;
 
     if (IS_PREVIEW) {
       const status = response?.status() ?? null;
@@ -435,6 +456,8 @@ for (const route of routes) {
       path: route.path,
       url,
       finalUrl,
+      status: navStatus,
+      pageErrors,
       screenshotFile,
       a11yFile,
       redirected: finalUrl !== url && !finalUrl.startsWith(url),
@@ -453,6 +476,7 @@ for (const route of routes) {
       path: route.path,
       url,
       error: (err as Error).message,
+      ...(browserMetadata.provider === 'cloudflare' ? { providerError: /BlockedByClient|ERR_BLOCKED_BY_CLIENT/.test((err as Error).message) ? 'destination_blocked' : 'session_lost' } : {}),
       capturedAt: new Date().toISOString(),
     });
   } finally {
@@ -460,7 +484,7 @@ for (const route of routes) {
   }
 }
 
-writeFileSync(join(OUTPUT_DIR, 'captures.json'), JSON.stringify(captures, null, 2));
+writeFileSync(join(OUTPUT_DIR, 'captures.json'), JSON.stringify(captures.map(c => ({ ...c, browser: browserMetadata })), null, 2));
 await browser.close();
 console.log(`[capture] done — ${captures.length} routes → ${OUTPUT_DIR}`);
 
@@ -471,3 +495,5 @@ if (walls.length > 0) {
   for (const w of walls) console.error(`[capture] CONFIG ERROR ${w}: ${CONFIG_ERROR_MESSAGES[w]}`);
   process.exit(3);
 }
+
+if (captures.some(c => c.providerError)) process.exit(1);

@@ -12,7 +12,9 @@
  * Run: bun test apps/runner/__tests__/unit/claim-rejected.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 
 // ─── Spy on claimLog directly ─────────────────────────────────────────────────
@@ -74,13 +76,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -159,7 +161,19 @@ function collectEvents(manager: InstanceType<typeof WorkerManager>) {
 describe('claim_rejected logging', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     claimLogSpy.mockClear();
     mockClaimTask.mockReset();
     mockUpdateWorker.mockReset();
@@ -403,5 +417,27 @@ describe('idle claim polls', () => {
     const err: any = await manager.claimAndStart(makeTask()).catch(e => e);
     expect(err.claimError).toBe('server_rejected');
     expect(err.claimReason).toBe('no_pending_tasks');
+  });
+
+  // run-once.ts's classifyClaimFailure (--once's exit-code mapping) tells a
+  // temporary capacity defer from a permanent refusal by this specific field —
+  // without it, every explicit-taskId refusal looked identical regardless of
+  // whether the named gate (e.g. workspace_cap) was self-resolving.
+  test('an explicit-task exclusion carries its gate code on the error', async () => {
+    mockClaimTask.mockImplementation(async () => ({
+      workers: [],
+      diagnostics: { reason: 'no_pending_tasks', taskExclusion: { code: 'workspace_cap', detail: 'at cap' } },
+    }));
+    manager = new WorkerManager(makeConfig());
+    const err: any = await manager.claimAndStart(makeTask()).catch(e => e);
+    expect(err.claimError).toBe('server_rejected');
+    expect(err.claimTaskExclusionCode).toBe('workspace_cap');
+  });
+
+  test('no taskExclusion on the response → no claimTaskExclusionCode on the error', async () => {
+    mockClaimTask.mockImplementation(async () => ({ workers: [], diagnostics: { reason: 'no_pending_tasks' } }));
+    manager = new WorkerManager(makeConfig());
+    const err: any = await manager.claimAndStart(makeTask()).catch(e => e);
+    expect(err.claimTaskExclusionCode).toBeUndefined();
   });
 });

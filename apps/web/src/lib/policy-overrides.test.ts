@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { fileURLToPath } from 'node:url';
 import {
   POLICY_DEFAULTS,
   parsePolicyOverrides,
@@ -87,6 +88,22 @@ describe('policyValue: override → default', () => {
     policyValue('maxCiRetries');
     expect(pokes).toBe(1);
   });
+
+  // Next.js compiles instrumentation.ts (which installs the overrides at boot)
+  // separately from the route handlers that read them, so this module can exist
+  // twice in one process. A query string makes Bun load a second instance.
+  it('an override installed through one module copy is read through another', async () => {
+    const href = fileURLToPath(new URL('./policy-overrides.ts', import.meta.url));
+    const boot = (await import(`${href}?copy=boot`)) as typeof import('./policy-overrides');
+    const route = (await import(`${href}?copy=route`)) as typeof import('./policy-overrides');
+    expect(route.policyValue).not.toBe(boot.policyValue);
+    let pokes = 0;
+    boot.setPolicyRefresher(() => { pokes++; });
+    boot.installPolicyOverrides(parsePolicyOverrides({ values: { maxCiRetries: OVERRIDE.maxCiRetries } }, () => {}));
+    expect(route.policyValue('maxCiRetries')).toBe(OVERRIDE.maxCiRetries);
+    expect(pokes).toBe(1);
+    expect(policyValue('maxCiRetries')).toBe(OVERRIDE.maxCiRetries);
+  });
 });
 
 describe('parsePolicyOverrides: roles', () => {
@@ -133,11 +150,12 @@ describe('call sites read the live value', () => {
   });
 
   it('buildCIRetryTask stops at maxCiRetries when the workspace sets none', () => {
-    const at = (iteration: number) => buildCIRetryTask({
-      originalTask: { id: 't', title: 'T', description: null, workspaceId: 'w', context: { iteration }, missionId: null },
+    const at = (attemptsUsed: number) => buildCIRetryTask({
+      originalTask: { id: 't', title: 'T', description: null, workspaceId: 'w', context: {}, missionId: null },
       worker: { id: 'wk', branch: 'b', prNumber: 1 },
       failureContext: 'boom',
       repoFullName: 'o/r',
+      attemptsUsed,
     } as never);
     expect(at(POLICY_DEFAULTS.maxCiRetries)).toBeNull();
     installPolicyOverrides({ values: { maxCiRetries: OVERRIDE.maxCiRetries }, roles: {} });

@@ -44,8 +44,11 @@ describe('OAuth tokens', () => {
       clientId: 'c_test',
       scope: 'mcp',
     });
-    // Flip a character in the signature.
-    const tampered = token.slice(0, -2) + (token.slice(-2) === 'AA' ? 'AB' : 'AA');
+    // Flip a character in the middle of the signature. Not the last one: its
+    // low bits are base64url padding, so some edits there decode to the same
+    // bytes and the token still verifies.
+    const i = token.length - 10;
+    const tampered = token.slice(0, i) + (token[i] === 'A' ? 'B' : 'A') + token.slice(i + 1);
     const claims = await verifyAccessToken(tampered, '00000000-0000-0000-0000-000000000aaa');
     expect(claims).toBeNull();
   });

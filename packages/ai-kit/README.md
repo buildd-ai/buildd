@@ -28,6 +28,7 @@ to npm with provenance and is tagged `ai-kit-v<version>`. See
 | `@builddai/ai-kit/chat/styles.css` | The components' layout, reading only `--kit-*`. No Tailwind | Ready |
 | `@builddai/ai-kit/chat/schema.sql` | Reference Postgres tables for a `ChatStore` (never run by the kit) | Reference |
 | `@builddai/ai-kit/models` | Model-plan client + usage sink. No deps; Node, Bun, edge | Ready |
+| `@builddai/ai-kit/policy` | Standalone model policy: surface + tier → provider, model, effort. Local-first, optional remote service with fallback. No deps; Node, Bun, edge | Ready |
 | `@builddai/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval. Optional peer `@typesafe-ai/sdk@0.6.0`: install it to call `decide`; without it the module still loads and `decide` returns `sdk_missing` | Ready |
 | `@builddai/ai-kit/surfaces` | Jev picks the app's own chips and card: `defineSurface` (rank and choice slots in one call, shadow first, a slot gated only after an eval of at least 700 held-out rows) and the single-slot `defineRankSurface` | Ready (shadow) |
 
@@ -101,6 +102,47 @@ streamText({ model: litellm(cfg.model), ... }); // cfg.model === 'anthropic/clau
 - Chat: `modelFromPlan({ models, gateway, create })`. The gateway's `apiKey`
   pays for the turn (none ⇒ `409 no_key`); a `gateway` function returning null
   takes the direct `key` path, so one app can serve both.
+
+## Model policy (standalone)
+
+`/policy` answers "which model?" from two things the app knows structurally:
+its **surface** (`chat | coding`) and the **tier** it wants. It works with no
+service and no buildd account; a policy service is optional.
+
+```ts
+import { createPolicyClient, remotePolicy, DEFAULT_MODEL_POLICY } from '@builddai/ai-kit/policy';
+
+// Local: no network.
+const local = createPolicyClient({
+  policy: {
+    version: '1',
+    tiers: { standard: { provider: 'anthropic', model: 'claude-sonnet-5' } },
+    surfaces: { coding: { standard: { provider: 'anthropic', model: 'claude-opus-5', effort: 'high' } } },
+  },
+});
+
+// Remote, with a fallback for when the service is slow or down.
+const policy = createPolicyClient({ policy: remotePolicy({ endpoint, token }), fallback: DEFAULT_MODEL_POLICY });
+const d = await policy.resolve({ surface: 'chat', tier: 'standard', app: 'cue' });
+// d.provider / d.model / d.effort: call it with the app's own provider key.
+if (d.planId) void policy.reportOutcome({ planId: d.planId, surface: 'chat', observations: [{ type: 'explicit_feedback', value: 'up' }] });
+```
+
+- **No intent field.** What kind of request it is gets inferred behind the
+  policy, later, when useful; a request carrying `intent` is refused.
+- **Precedence:** app/workspace (+ surface) override → `surfaces[surface][tier]`
+  → `tiers[tier]` → `fallback`. `source` on the decision says which answered;
+  `cached` / `fallback` mean the service did not.
+- **Credentials are separate.** The policy `token` authorises policy calls
+  only; it is never a provider key (one is refused) and the service never
+  returns one (an answer carrying anything credential-shaped is refused).
+- **Experiments:** `pinned`, `split` (sticky per workspace/app), `shadow` (the
+  route never changes; `experiment.shadow` names the challenger for an
+  out-of-band run), `adaptive` only with a trustworthy signal for its surface
+  (coding: tests, goal criteria, review, merge, rework; chat: none yet).
+- **Outcomes** are typed observations keyed by `planId`, never one score.
+
+The service is `apps/model-policy` in the buildd repo (a Cloudflare Worker).
 
 ## Chat
 

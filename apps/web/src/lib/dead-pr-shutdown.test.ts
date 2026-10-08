@@ -105,6 +105,18 @@ mock.module('./subject-sweep', () => ({
   sweepSubjectAnchoredTasks: mock(() => Promise.resolve({ anchored: 0, reconciled: 0 })),
 }));
 
+// The PR fact funnel: the one writer of prLifecycleStatus. Terminal-wins is
+// proven on real Postgres (apps/web/tests/db/pr-facts.test.ts); here we assert
+// the fact this door hands over. drizzle-orm is stubbed above, so the real
+// module is not spread in (it builds raw SQL at import).
+const recordedFacts: Array<{ target: unknown; fact: unknown; opts?: unknown }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: unknown, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return [{ id: 'w-loser', taskId: 't-loser', workspaceId: 'ws-1', previousStatus: 'pr_open' }];
+  },
+}));
+
 // ── Import after mocks ────────────────────────────────────────────────────────
 
 import { shutdownDeadBuilddPrs } from './dead-pr-shutdown';
@@ -132,8 +144,8 @@ function makeWorkspace(overrides: Record<string, any> = {}) {
   };
 }
 
-function makeEventWorker() {
-  return { id: 'w-winner', taskId: 't-winner' };
+function makeEventWorker(overrides: Partial<{ prBaseRef: string | null }> = {}) {
+  return { id: 'w-winner', taskId: 't-winner', prBaseRef: null, ...overrides };
 }
 
 function makeEventTask() {
@@ -148,6 +160,7 @@ function makeLoserWorker(overrides: Partial<{
   prLifecycleStatus: string | null;
   conflictDetectedAt: Date | null;
   updatedAt: Date;
+  prBaseRef: string | null;
 }> = {}) {
   return {
     id: 'w-loser',
@@ -158,6 +171,7 @@ function makeLoserWorker(overrides: Partial<{
     conflictDetectedAt: null,
     workspaceId: WS_ID,
     updatedAt: new Date(),
+    prBaseRef: null,
     ...overrides,
   };
 }
@@ -172,6 +186,7 @@ function resetMocks() {
   mockMissionNotesFindFirst.mockImplementation(() => null);
   mockGithubApi.mockReset();
   mockGithubApi.mockImplementation(() => Promise.resolve({ id: 1 }));
+  recordedFacts.length = 0;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -244,6 +259,9 @@ describe('shutdownDeadBuilddPrs', () => {
       ([, path]) => path.includes(`/pulls/${LOSER_PR}`),
     );
     expect(closeCall).toBeDefined();
+
+    // Worker stamped closed through the fact funnel
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w-loser' }, fact: { kind: 'closed' }, opts: undefined }]);
   });
 
   // ── Tier 2: conflict-dead + green successor ─────────────────────────────────
@@ -378,6 +396,77 @@ describe('shutdownDeadBuilddPrs', () => {
     expect(closeCall).toBeUndefined();
   });
 
+  // ── Cross-base safety (hotfix to main vs. CI-fix to dev) ───────────────────
+
+  it('Tier 1: does NOT close a loser PR whose base differs from the winner\'s base', async () => {
+    // Reproduces: a hotfix PR to `main` from one task, and a sibling task's
+    // CI-isolation-fix PR to `dev` anchored to the same subject. The dev PR
+    // merging must never close the main-bound hotfix PR out from under it.
+    const oldUpdate = new Date(Date.now() - 60 * 60 * 1000);
+
+    mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace());
+    mockWorkersFindFirst.mockImplementation(() => makeEventWorker({ prBaseRef: 'dev' }));
+    mockTasksFindFirst.mockImplementation(() => makeEventTask());
+    mockTasksFindMany.mockImplementation(() => [makeLoserTask()]);
+    mockWorkersFindMany.mockImplementation(() => [
+      makeLoserWorker({ updatedAt: oldUpdate, prBaseRef: 'main' }),
+    ]);
+    mockMissionNotesFindFirst.mockImplementation(() => null);
+
+    // Winner PR (base dev) merges
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    expect(result.closedPrNumbers).toHaveLength(0);
+    expect(result.skippedPrNumbers).toContain(LOSER_PR);
+
+    const closeCall = mockGithubApi.mock.calls.find(
+      ([, path]) => path.includes(`/pulls/${LOSER_PR}`),
+    );
+    expect(closeCall).toBeUndefined();
+  });
+
+  it('Tier 2: does NOT close a conflict-dead loser PR whose base differs from the winner\'s base', async () => {
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+
+    mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace({ subjectPolicy: { conflictDeadDays: 7, autoCloseBuilddSupersededPrs: true } }));
+    mockWorkersFindFirst.mockImplementation(() => makeEventWorker({ prBaseRef: 'dev' }));
+    mockTasksFindFirst.mockImplementation(() => makeEventTask());
+    mockTasksFindMany.mockImplementation(() => [makeLoserTask()]);
+    mockWorkersFindMany.mockImplementation(() => [
+      makeLoserWorker({ prLifecycleStatus: 'conflict', conflictDetectedAt: eightDaysAgo, updatedAt: twoDaysAgo, prBaseRef: 'main' }),
+    ]);
+    mockMissionNotesFindFirst.mockImplementation(() => null);
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    // Not closed via Tier 2 (different base) — falls through to Tier 3 escalation instead
+    expect(result.closedPrNumbers).toHaveLength(0);
+    expect(result.escalatedPrNumbers).toContain(LOSER_PR);
+
+    const closeCall = mockGithubApi.mock.calls.find(
+      ([, path]) => path.includes(`/pulls/${LOSER_PR}`),
+    );
+    expect(closeCall).toBeUndefined();
+  });
+
+  it('Tier 1: still closes same-base losers when base refs are known and equal', async () => {
+    const oldUpdate = new Date(Date.now() - 60 * 60 * 1000);
+
+    mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace());
+    mockWorkersFindFirst.mockImplementation(() => makeEventWorker({ prBaseRef: 'dev' }));
+    mockTasksFindFirst.mockImplementation(() => makeEventTask());
+    mockTasksFindMany.mockImplementation(() => [makeLoserTask()]);
+    mockWorkersFindMany.mockImplementation(() => [
+      makeLoserWorker({ updatedAt: oldUpdate, prBaseRef: 'dev' }),
+    ]);
+    mockMissionNotesFindFirst.mockImplementation(() => null);
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    expect(result.closedPrNumbers).toContain(LOSER_PR);
+  });
+
   // ── GitHub closure failure ──────────────────────────────────────────────────
 
   it('does not stamp worker closed when GitHub close call fails', async () => {
@@ -403,6 +492,8 @@ describe('shutdownDeadBuilddPrs', () => {
     // PR NOT in closed list (failure → skipped)
     expect(result.closedPrNumbers).toHaveLength(0);
     expect(result.skippedPrNumbers).toContain(LOSER_PR);
+    // No closed fact handed to the funnel
+    expect(recordedFacts).toHaveLength(0);
   });
 
   // ── Idempotency ─────────────────────────────────────────────────────────────

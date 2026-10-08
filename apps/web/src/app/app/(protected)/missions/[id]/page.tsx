@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { after } from 'next/server';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
@@ -6,9 +7,13 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { formatCompletionRecord, situationRepeatsCompletion } from '@/lib/mission-completion-record';
+import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
+import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
+import { ownerDeliveryDisplays } from '@/lib/workflow/delivery-display';
+import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE, buildReviewerRetryMap } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip } from '@buildd/core/mission-helpers';
-import { surfaceAuditHeadline } from '@buildd/core/surface-audit';
+import { isSurfaceAuditTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
@@ -66,8 +71,11 @@ import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import type { VisualReviewModel } from '@buildd/shared';
 import { MissionVisualReviewProvider } from './MissionVisualReview';
+import { MissionSurfaceAuditWaiverProvider } from './MissionSurfaceAuditWaiver';
+import { loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import MissionVisualReviewSetting from './MissionVisualReviewSetting';
 import MissionScreensRow from './MissionScreensRow';
+import MissionVisualReviewAction from './MissionVisualReviewAction';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionReleaseSection } from './MissionReleaseSection';
 import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionTrunkMergedAt } from '@/lib/mission-delivery';
@@ -111,10 +119,10 @@ export default async function MissionDetailPage({
 }: {
   params: Promise<{ id: string }>;
   // `?tab=` is retired: accepted and ignored, so old links still land.
-  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string }>;
 }) {
   const { id } = await params;
-  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam, layout: layoutParam } = await searchParams;
+  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam, layout: layoutParam, visualReview: visualReviewParam } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -138,8 +146,8 @@ export default async function MissionDetailPage({
     notFound();
   }
 
-  // Read-through refresh: stamp mergedAt on any completed workers whose PR
-  // webhook was missed, so the timeline renders the correct state immediately.
+  // Read-through PR fact import: any completed worker whose PR merge webhook
+  // was missed is re-checked against GitHub after this response.
   if (mission.workspaceId) {
     const staleWorkers = (mission.tasks ?? []).flatMap(t => {
       if (t.status !== 'completed') return [];
@@ -155,16 +163,10 @@ export default async function MissionDetailPage({
       });
       const installId = wsWithInstall?.githubInstallation?.installationId;
       if (installId) {
-        const refreshed = await Promise.all(
-          staleWorkers.map(w => refreshWorkerMergeStateIfStale(w, installId))
-        );
-        if (refreshed.some(Boolean)) {
-          const refreshedMission = await db.query.missions.findFirst({
-            where: eq(missions.id, id),
-            with: MISSION_DETAIL_WITH,
-          });
-          if (refreshedMission) mission = refreshedMission;
-        }
+        // Enqueued after the response, never written during the render (spec
+        // workflow-state-kernel §11): this render shows what is stored.
+        after(() => Promise.all(staleWorkers.map(w => refreshWorkerMergeStateIfStale(w, installId)))
+          .catch((err) => console.error('[mission-page] PR fact import failed (non-fatal):', err)));
       }
     }
   }
@@ -374,8 +376,28 @@ export default async function MissionDetailPage({
     ? (mission.schedule as any)?.nextRunAt ?? null
     : null;
   // Out-of-mission dependencies are loaded by id so they are judged, not guessed.
-  const foreignDeps = await loadDependencyRows(foreignDependencyIds(mission.tasks || []));
-  const healthState = deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks || [], { dependencies: foreignDeps });
+  // Same superseded rule explain uses (S35): a failed deliverable whose work
+  // shipped under another task/PR, or that the kernel already replaced, must
+  // not drive this fallback reading to FAILING.
+  const failedDeliverableRows = (mission.tasks || []).filter((t) => isDeliverableTask(t as never) && t.status === 'failed');
+  const [foreignDeps, supersededMap, deliveryViews] = await Promise.all([
+    loadDependencyRows(foreignDependencyIds(mission.tasks || [])),
+    computeSupersededFailedTasks(
+      mission.id,
+      (mission.workspaceId as string | null) ?? null,
+      failedDeliverableRows.map((t) => ({ id: t.id, title: t.title, subjectPrNumber: (t as { subjectPrNumber?: number | null }).subjectPrNumber ?? null, createdAt: t.createdAt })),
+    ).catch(() => new Map()),
+    // One DeliveryView load for the page (§17.5): the failure reading, the
+    // board/strip, the timeline cards and the structure view all read it.
+    getDeliveryViewsForTasks((mission.tasks || []).map((t) => t.id)),
+  ]);
+  const kernelReplaced = replacedFailedTaskIds(deliveryViews, failedDeliverableRows.map((t) => t.id));
+  const deliveryDisplays = ownerDeliveryDisplays(deliveryViews);
+  const healthState = deriveTaskHealthSignal(
+    { ...mission, heartbeatWaitingUntil },
+    (mission.tasks || []).map((t) => ({ ...t, superseded: supersededMap.has(t.id) || kernelReplaced.has(t.id) })),
+    { dependencies: foreignDeps },
+  );
 
   // Orchestration mode
   const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';
@@ -719,6 +741,7 @@ export default async function MissionDetailPage({
       // unclaimable task as QUEUED (rule CG-2).
       missionBudgetExhausted: missionBudgetExhausted,
       latestWorker: condensedTask.workers[0] ?? null,
+      delivery: deliveryDisplays.get(task.id) ?? null,
       taskType: deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId, mode: task.mode }),
       // The three `deriveWorkKind` inputs, plus the stored phase. Carried as
       // data on the task object so `buildRail` and `computeStructureLayout` —
@@ -885,7 +908,7 @@ export default async function MissionDetailPage({
 
   // The breadcrumb initiative, the initiative-selector options, the release
   // footer and the completion note are mutually independent.
-  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow] = await Promise.all([
+  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver] = await Promise.all([
     // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
     // so users see the parent initiative even when navigating directly to the mission.
     (from === 'initiative' && initiativeId)
@@ -945,6 +968,9 @@ export default async function MissionDetailPage({
           columns: { metadata: true },
         }).then(row => row ?? null, () => null)
       : Promise.resolve(null),
+    // The person-set "Waive visual audit" record, if any. A failed read only
+    // costs the record line; the waiver action stays.
+    loadSurfaceAuditWaiver(id).catch(() => null),
   ]);
   const shippedView = mission.status === 'completed'
     ? buildShippedHeaderView((shippedRow?.metadata as { shipped?: unknown } | null)?.shipped, (mission as any).completedAt)
@@ -979,6 +1005,18 @@ export default async function MissionDetailPage({
   // "shots only" guard), so a queued, runner-less, boot-failed or stalled
   // audit is on the page. The Visual step is an adapter over the same model.
   const boardVisual: VisualReviewModel | null = visualModel && visualModel.phase !== 'off' ? visualModel : null;
+  // "Waive visual audit" (a person's call): offered beside the Visual review
+  // control and on the audit task's drawer whenever the mission has an audit,
+  // is blocked on a missing one, or already carries a waiver.
+  const auditWaiverProps = {
+    missionId: id,
+    waiver: surfaceAuditWaiver ?? null,
+    missionBranch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true,
+    readonly: isTerminal,
+  };
+  const showAuditWaiver = !!surfaceAuditWaiver
+    || (mission.tasks ?? []).some(t => isSurfaceAuditTask(t.title ?? '') || t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG)
+    || (missionAnswer?.waitingOn?.kind === 'human_decision' && missionAnswer.waitingOn.surfaceAudit === true);
   const vs = boardVisual?.summary;
   const visualReview = vs
     ? {
@@ -1138,7 +1176,7 @@ export default async function MissionDetailPage({
           <div className="mb-3 border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
             <div className="flex items-start gap-2">
               <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
-                Needs your decision
+                Decision needed
               </span>
               <span className="min-w-0 text-[12px] text-text-secondary [overflow-wrap:anywhere]">
                 {surfaceAuditBlocked ? surfaceAuditHeadline(surfaceAuditPaths.length) : readingCopy}
@@ -1230,6 +1268,7 @@ export default async function MissionDetailPage({
         initialEnabled={(mission as { autoSurfaceAudit?: boolean | null }).autoSurfaceAudit ?? null}
         visual={boardVisual}
         readonly={isTerminal}
+        auditWaiver={showAuditWaiver ? auditWaiverProps : null}
       />
 
       {/* Organizer runs, from every trigger */}
@@ -1309,7 +1348,7 @@ export default async function MissionDetailPage({
   const boardModel = buildMissionBoard({
     runnerHeartbeats,
     fleetCapacity,
-    tasks: allTasks.map(t => toBoardTaskInput(t as unknown as Parameters<typeof toBoardTaskInput>[0])),
+    tasks: allTasks.map(t => toBoardTaskInput({ ...t, delivery: deliveryDisplays.get(t.id) ?? null } as unknown as Parameters<typeof toBoardTaskInput>[0])),
     roles,
     now: renderedAt,
     missionCreatedAt: new Date((mission as any).createdAt).getTime(),
@@ -1368,11 +1407,15 @@ export default async function MissionDetailPage({
       autoVerify={autoVerifyFlag}
       readonly={isTerminal}
       failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
+      missionPrCount={prCount}
       overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
     />
   );
   // Chat is how you ask about work: opens a conversation with this mission docked.
   const askAbout = <AskAboutLink kind="mission" id={id} teamId={mission.teamId} workspaceId={mission.workspaceId} />;
+  // The mission's visual review as a mission command (never the task composer):
+  // on any open mission with a workspace to run it in.
+  const visualReviewAction = !isTerminal && mission.workspaceId ? <MissionVisualReviewAction missionId={id} initialOpen={visualReviewParam === '1'} /> : null;
   const overflowMenu = (
     <MissionOverflowMenu
       missionId={id}
@@ -1385,6 +1428,7 @@ export default async function MissionDetailPage({
       isHeld={isHeld}
       displayState={displayState}
       hasPrimaryAction={hasPrimaryAction}
+      executor={(mission as any).executor === 'local' ? 'local' : (mission as any).executor === 'runner' ? 'runner' : null}
     />
   );
   const back = mastheadBack(from, breadcrumb.links);
@@ -1465,7 +1509,7 @@ export default async function MissionDetailPage({
       title={mission.title}
       chip={stateChip}
       verified={verifiedPill}
-      actions={<>{askAbout}{overflowMenu}</>}
+      actions={<>{askAbout}{visualReviewAction}{overflowMenu}</>}
       goal={goalLine}
       description={mission.description || !isTerminal ? <MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} defaultExpanded /> : undefined}
       serverNow={renderedAt}
@@ -1507,6 +1551,7 @@ export default async function MissionDetailPage({
       <MissionReconcileOnOpen missionId={id} />
 
       <MissionVisualReviewProvider missionId={id} visual={boardVisual}>
+      <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
         board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
@@ -1530,6 +1575,7 @@ export default async function MissionDetailPage({
           />,
         )}
       />
+      </MissionSurfaceAuditWaiverProvider>
       </MissionVisualReviewProvider>
       </MissionAutoRefresh>
     </TaskPanelWrapper>

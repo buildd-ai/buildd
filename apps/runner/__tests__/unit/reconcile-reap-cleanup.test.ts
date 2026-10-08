@@ -3,17 +3,18 @@
  *
  * startSession's finally only runs its per-worker cleanup — the per-worker
  * CLAUDE_CONFIG_DIR holding the materialized access token, the Codex auth dir,
- * the broker registration, the CBM dirs — while the session's map entry is
+ * the broker registration — while the session's map entry is
  * still present, and deletes the entry itself. Aborting a session AND deleting
  * its entry (teardownSession) therefore leaked every one of those, and sent the
  * abort down the catch path's failure arm. reapSession is the right tool.
  *
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/reconcile-reap-cleanup.test.ts
  */
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 import * as realGitOps from '../../src/git-operations';
-import * as realBootstrap from '../../src/cbm-bootstrap';
 
 // An SDK stream that stays open until its abort controller fires — a session
 // that is still running when reconcile/purge reaches it.
@@ -76,13 +77,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -111,7 +112,7 @@ mock.module('fs', () => ({
 
 mock.module('../../src/git-operations', () => ({
   ...realGitOps,
-  setupWorktree: async (_repo: string, branch: string) => ({ path: '/tmp/test-workspace', branch, base: 'origin/main' }),
+  setupWorktree: async (_repo: string, branch: string) => ({ path: getTestWorkspace(), branch, base: 'origin/main' }),
   removeWorktreeIfUnowned: async () => {},
 }));
 
@@ -136,11 +137,6 @@ mock.module('../../src/env-scan', () => ({
 mock.module('../../src/history-store', () => ({
   archiveSession: () => {},
   initHistoryStore: () => {},
-}));
-
-mock.module('../../src/cbm-bootstrap.js', () => ({
-  ...realBootstrap,
-  runCbmBootstrap: async () => ({ ok: true, durationMs: 1 }),
 }));
 
 const { WorkerManager } = await import('../../src/workers');
@@ -192,7 +188,19 @@ function failedPatches(workerId: string) {
 describe('stopping a live session runs its own cleanup', () => {
   let manager: any;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     mockCleanupClaudeConfigDir.mockClear();
     mockUpdateWorker.mockClear();
     mockGetWorkerRemote.mockReset();

@@ -3,6 +3,8 @@ import type { LessonRow } from './lesson';
 import { RETRO_MAX_PER_TEAM_DAY, runChatRetroPass, type PassDeps } from './run';
 import type { RetroMessage } from './skeleton';
 import type { Cluster } from './proposals';
+import { clusterLessonsInMemory, FIXTURE_SECRET, visibleAnswerFixtures } from './visible-answer-fixtures';
+import { retroSignature } from './lesson';
 
 const U = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
 const T1 = U(901);
@@ -61,6 +63,31 @@ describe('runChatRetroPass', () => {
     expect(lessons).toEqual([]);
   });
 
+  it('kill switch wins over account dogfood: no reconciliation runs', async () => {
+    let reconciled = 0;
+    const { deps } = fakeDeps({ env: { CHAT_RETRO_ENABLED: '0' }, reconcileAccountDogfood: async () => { reconciled++; return { activatedUsers: 1, syncedTeams: 1 }; } });
+    expect((await runChatRetroPass(deps)).disabled).toBe(true);
+    expect(reconciled).toBe(0);
+  });
+
+  it('reconciles account dogfood before listing teams, and counts it', async () => {
+    const order: string[] = [];
+    const { deps } = fakeDeps({
+      reconcileAccountDogfood: async () => { order.push('reconcile'); return { activatedUsers: 1, syncedTeams: 3 }; },
+      listOptedInTeams: async () => { order.push('teams'); return []; },
+    });
+    const r = await runChatRetroPass(deps);
+    expect(order).toEqual(['reconcile', 'teams']);
+    expect([r.dogfoodActivated, r.dogfoodSynced, r.errors]).toEqual([1, 3, 0]);
+  });
+
+  it('a failed reconciliation is counted and the pass goes on', async () => {
+    const { deps, calls } = fakeDeps({ reconcileAccountDogfood: async () => { throw new Error('db'); } });
+    const r = await runChatRetroPass(deps);
+    expect(r.errors).toBe(1);
+    expect(calls.teams).toBe(1);
+  });
+
   it('judges each opted-in window once and receipts the spend', async () => {
     const { deps, calls, lessons } = fakeDeps();
     const r = await runChatRetroPass(deps);
@@ -102,7 +129,7 @@ describe('runChatRetroPass', () => {
   it('proposals run only for teams that turned them on, and record deferrals in the gate ledger', async () => {
     const c = (tool: string): Cluster => ({
       signature: `chat-retro:over_fetch-ui-${tool}-abcdef`, primaryCause: 'over_fetch', fixClass: 'ui', toolName: tool,
-      sessions: 5, days: 3, wastedTokens: 1000, satisfiedYes: 0, satisfiedPartly: 0, satisfiedNo: 5,
+      sessions: 5, days: 3, wastedTokens: 1000, satisfiedYes: 0, satisfiedPartly: 0, satisfiedNo: 5, highConfidence: 0,
       workspaceId: U(50), lessonIds: [], conversationIds: [],
     });
     const { deps, filed, gates } = fakeDeps({
@@ -114,5 +141,71 @@ describe('runChatRetroPass', () => {
     expect(filed).toHaveLength(2);
     expect(r.deferred).toBe(1);
     expect(gates.map(g => g.outcome)).toEqual(['deferred']);
+  });
+});
+
+describe('visible-answer failures through the whole pass', () => {
+  const fixtures = visibleAnswerFixtures();
+  const byName = (n: string) => fixtures.find(f => f.name === n)!;
+
+  function passOver(names: string[], over: Partial<PassDeps> = {}) {
+    const lessonsSoFar: LessonRow[] = [];
+    const harness = fakeDeps({
+      listPendingConversations: async () => names.map((_, i) => ({ id: U(300 + i), workspaceId: U(50), dataClass: null })),
+      loadWindow: async (_t, conv) => byName(names[Number(conv.slice(-3)) - 300]).input,
+      insertLessons: async rows => { lessonsSoFar.push(...rows); },
+      loadClusters: async () => clusterLessonsInMemory(lessonsSoFar),
+      ...over,
+    });
+    return { ...harness, lessons: lessonsSoFar };
+  }
+
+  it('backend-empty and render gap land as distinct, stable signatures; suppressed shapes sign nothing', async () => {
+    const { deps, lessons } = passOver(['backend_empty_first_question', 'render_gap_foreground', 'render_gap_suppressed_hidden', 'render_gap_suppressed_pagehide', 'rendered_ok']);
+    await runChatRetroPass(deps);
+    expect(lessons.map(l => l.signature)).toEqual([
+      retroSignature('no_answer', 'turn_pipeline', null),
+      retroSignature('render_gap', 'ui', null),
+      null, null, null,
+    ]);
+    // A single first question nobody saw answered is judged, not skipped as trivial.
+    expect(lessons[0].status).toBe('judged');
+  });
+
+  it('the decision failing still keeps code\'s finding', async () => {
+    const { deps, lessons } = passOver(['render_gap_foreground'], { decide: async () => ({ ok: false, error: { kind: 'timeout' }, latencyMs: 1, attempts: 1 }) as never });
+    await runChatRetroPass(deps);
+    expect(lessons[0]).toMatchObject({ status: 'failed', primaryCause: 'render_gap', signature: retroSignature('render_gap', 'ui', null) });
+  });
+
+  it('no lesson, evidence or filed proposal carries message text', async () => {
+    const { deps, lessons, filed } = passOver(fixtures.map(f => f.name), {
+      listOptedInTeams: async () => [{ teamId: T1, settings: { lessons: true, proposals: true }, dogfood: true }],
+    });
+    await runChatRetroPass(deps);
+    expect(JSON.stringify(lessons)).not.toContain(FIXTURE_SECRET);
+    expect(JSON.stringify(filed)).not.toContain(FIXTURE_SECRET);
+  });
+
+  it('a dogfood team files the first high-confidence occurrence; an ordinary team files nothing yet', async () => {
+    const dog = passOver(['render_gap_foreground'], { listOptedInTeams: async () => [{ teamId: T1, settings: { lessons: true, proposals: true }, dogfood: true }] });
+    const r1 = await runChatRetroPass(dog.deps);
+    expect(r1.filed).toBe(1);
+    expect(dog.filed[0].signature).toBe(retroSignature('render_gap', 'ui', null));
+
+    const plain = passOver(['render_gap_foreground'], { listOptedInTeams: async () => [{ teamId: T1, settings: { lessons: true, proposals: true } }] });
+    const r2 = await runChatRetroPass(plain.deps);
+    expect(r2.filed).toBe(0);
+    expect(plain.filed).toEqual([]);
+  });
+
+  it('a repeat of the same failure appends to the open proposal instead of filing a second', async () => {
+    const { deps } = passOver(['backend_empty_first_question', 'backend_empty_tools_only'], {
+      listOptedInTeams: async () => [{ teamId: T1, settings: { lessons: true, proposals: true }, dogfood: true }],
+      priorFiling: async () => ({ taskId: 'open-1', open: true, sessions: 1 }),
+    });
+    const r = await runChatRetroPass(deps);
+    expect(r.filed).toBe(0);
+    expect(r.appended).toBe(1);
   });
 });

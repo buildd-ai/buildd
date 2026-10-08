@@ -8,7 +8,6 @@ import {
 
 describe('signal-fire marker round trip', () => {
   const SLUGS = [
-    'cbm-fleet-health',
     'claim-loop-stranding',
     'model-capability-validation',
     'a',
@@ -21,8 +20,8 @@ describe('signal-fire marker round trip', () => {
   });
 
   it('parses a marker embedded in a real comment line, not just in isolation', () => {
-    const line = `  // ${formatSignalFireMarker('cbm-fleet-health')}`;
-    expect(parseSignalFireMarkers(line)).toEqual(['cbm-fleet-health']);
+    const line = `  // ${formatSignalFireMarker('claim-loop-stranding')}`;
+    expect(parseSignalFireMarkers(line)).toEqual(['claim-loop-stranding']);
   });
 
   it('parses every marker in a multi-line source, in order', () => {

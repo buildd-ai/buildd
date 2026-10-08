@@ -5,6 +5,7 @@ import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { MetricStat, Stat } from '@/components/StatTile';
 import { coverageLabel, observedAgo, sectionDenominator } from '@/lib/health-metric-grammar';
 import { scanCaveat } from '@/lib/model-presentation';
+import { countOf } from '@/lib/plural';
 import {
   DRILLDOWN_WINDOWS,
   formatDelta,
@@ -12,14 +13,14 @@ import {
   formatTokens,
   formatUsd,
   healthHref,
-  INDEX_ADOPTION_CAVEAT,
-  INDEX_ADOPTION_TOOLTIP,
-  SESSION_KEYED_NOTE,
   shortToolName,
   type DrilldownWindow,
   type UsageDrilldownView,
 } from '@/lib/usage-drilldown';
-import type { Distribution, PerTaskMetric } from '@/lib/usage-stats';
+import type { Distribution, PerTaskMetric, UsageStats } from '@/lib/usage-stats';
+import { BASIS_KEYS, BASIS_LABEL, splitTotal } from '@/lib/cost-basis-split';
+import type { HostedRunnerMeterView } from '@/lib/hosted-runner-usage';
+import { HostedRunnerUsageSection, type HostedRunnerWorkspaceRow } from '@/components/hosted-runner/HostedRunnerUsageSection';
 import {
   BASH_BUCKET_HINTS,
   formatShare,
@@ -27,20 +28,25 @@ import {
   type CountRow,
 } from '@/lib/usage-breakdowns';
 
+export interface HostedRunnerProps {
+  meter: HostedRunnerMeterView;
+  rows: HostedRunnerWorkspaceRow[];
+}
+
 interface Props {
   view: UsageDrilldownView;
   wsFilter: string | null;
+  /** The active team's month on the hosted runner; null hides the section. */
+  hostedRunner?: HostedRunnerProps | null;
 }
 
 /**
  * `/app/health/usage` — what a task costs, and where the turns go.
  *
  * TASK-KEYED throughout, which is what the header denominator claims and what
- * every section below honours. The single exception is the index adoption line,
- * which counts worker SESSIONS; it says so at the stat rather than being quietly
- * relabelled to agree with the header.
+ * every section below honours.
  */
-export function UsageClient({ view, wsFilter }: Props) {
+export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
   const { window, tasks, perTask, totals, scan } = view;
   const caveat = scanCaveat(scan, observedAgo(scan.completeSince, Date.now()) ?? 'the window start');
 
@@ -73,7 +79,7 @@ export function UsageClient({ view, wsFilter }: Props) {
 
         <div className="mt-2 flex items-baseline justify-between gap-3">
           <span data-testid="usage-header-denominator" className="text-[11px] text-text-muted">
-            {sectionDenominator(tasks, tasks === 1 ? 'task' : 'tasks')} ({window})
+            {countOf(tasks, 'task')} · last {window === '30d' ? '30 days' : '7 days'}
           </span>
           {caveat && (
             <span
@@ -92,6 +98,9 @@ export function UsageClient({ view, wsFilter }: Props) {
           </p>
         )}
       </div>
+
+      {/* Hosted runner time: month-scoped, not the window above. */}
+      {hostedRunner && <HostedRunnerUsageSection meter={hostedRunner.meter} rows={hostedRunner.rows} />}
 
       {tasks === 0 ? (
         <div data-testid="usage-empty" className="card px-4 py-3">
@@ -112,15 +121,14 @@ export function UsageClient({ view, wsFilter }: Props) {
                   render={(d) => formatTokens(d.median)}
                   sub={(d) => `p90 ${formatTokens(d.p90)} · ${sampleNote('inputTokens')}`}
                 />
-                {/* Under seat/OAuth auth cost is ABSENT, not approximate: the em-dash
-                    carries its own reason and no number is ever shown with a hedge
-                    word attached. The token proxy underneath is a different,
-                    measurable quantity — labelled as a proxy, never as cost. */}
+                {/* With no recorded cost, cost is ABSENT, not approximate: no number
+                    is shown with a hedge word attached. The token proxy underneath
+                    is a different, measurable quantity, labelled as a proxy. */}
                 <MetricStat<Distribution>
                   label="Cost / task"
                   metric={perTask.costUsd}
                   render={(d) => formatUsd(d.median)}
-                  sub={() => `${formatUsd(totals.costUsd)} total · ${sampleNote('costUsd')}`}
+                  sub={() => `${formatUsd(totals.costUsd)} combined total · ${sampleNote('costUsd')}`}
                   extra={
                     view.costProxyTokens === null
                       ? null
@@ -142,31 +150,33 @@ export function UsageClient({ view, wsFilter }: Props) {
               </div>
               {perTask.costUsd.kind === 'unavailable' && view.costProxyTokens !== null && (
                 <p data-testid="usage-cost-proxy-note" className="mt-3 text-[11px] text-text-muted">
-                  Seat-based (OAuth) auth reports no per-task cost, so this page shows no dollar
-                  figure. Median input tokens per task is the closest measurable stand-in.
+                  No cost recorded in this window. Median input tokens per task is the closest
+                  measurable stand-in.
                 </p>
               )}
             </div>
           </section>
 
-          {/* 2. Where the turns go: navigation. */}
-          <CodeNavigationPanelView view={view} />
-
-          {/* 3. Where the turns go: the shell, on its own denominator. */}
-          <ShellPanelView view={view} />
-
-          {/* 4. Index adoption — the one session-keyed line on the page. */}
-          <IndexAdoptionView view={view} />
-
-          {/* 5. Which buildd action ran. Every buildd MCP call multiplexes
-              through one SDK tool name, so the tool histogram above cannot
-              decompose it — but worker_action_events records the bare action
-              name, which this reads. The RUNTIME/WORK classification is
-              deliberately absent, not missing: it is task-conditional and its
-              contract lives in health-analytics-spec §4.3 item 1 / WU-4. */}
-          <ActionBreakdownView view={view} />
+          <CostBasisSection byBasis={view.byBasis} />
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Where the turns go: code navigation, the shell and which buildd action ran.
+ * buildd's own tuning detail, so it renders on Health → Operator, not on
+ * Usage. Each panel renders nothing without data.
+ */
+export function UsageInternals({ view }: { view: UsageDrilldownView }) {
+  if (view.tasks === 0) return null;
+  return (
+    <div data-testid="usage-internals" className="max-w-2xl mx-auto px-4 pb-24">
+      <h2 className="section-label mb-3">Where agent turns go</h2>
+      <CodeNavigationPanelView view={view} />
+      <ShellPanelView view={view} />
+      <ActionBreakdownView view={view} />
     </div>
   );
 }
@@ -174,7 +184,7 @@ export function UsageClient({ view, wsFilter }: Props) {
 // ── Code navigation ──────────────────────────────────────────────────────────
 
 /**
- * Read / Grep / Glob / codebase-graph, with cross-window deltas.
+ * Read / Grep / Glob, with cross-window deltas.
  *
  * "Navigation", not "search", and deliberately without `Bash`: nothing records
  * the command inside a shell call, so counting it here would fold every build
@@ -230,7 +240,7 @@ function CodeNavigationPanelView({ view }: { view: UsageDrilldownView }) {
               <p
                 data-testid="usage-code-nav-coverage"
                 className="text-[11px] text-text-muted"
-                title="Older tasks are reconstructed from a capped MCP call log and CBM counters. ≥ marks those counts as floors."
+                title="Older tasks are reconstructed from a capped MCP call log and legacy Read/Grep/Glob counters. ≥ marks those counts as floors."
               >
                 {coverageLabel(panel.coverage)} tasks measured exactly
               </p>
@@ -397,112 +407,6 @@ function CountRows({
   );
 }
 
-// ── Index adoption ───────────────────────────────────────────────────────────
-
-/**
- * Is the codebase graph actually queried when it is there?
- *
- * The one session-keyed line on a task-keyed page. It counts CBM-enabled
- * completed worker sessions with no dedup by task, and folding it to tasks would
- * change what it measures rather than how it is worded — so it keeps its
- * population and declares it, at the stat, in the label and in the note.
- */
-function IndexAdoptionView({ view }: { view: UsageDrilldownView }) {
-  const line = view.adoption;
-
-  return (
-    <section data-testid="usage-section-adoption" className="mb-6">
-      <h2 className="section-label mb-3">Codebase graph</h2>
-      <div className="card p-4 space-y-2">
-        <div className="flex items-baseline justify-between gap-3">
-          {/* Long form where there is room, short form where there is not —
-              neither uses the word "task", because these rows are not tasks. */}
-          <span
-            data-testid="usage-index-adoption"
-            className="text-xs text-text-secondary"
-            title={INDEX_ADOPTION_TOOLTIP}
-          >
-            <span className="hidden sm:inline">{line.available ? line.label : 'Graph adoption'}</span>
-            <span className="sm:hidden">{line.shortLabel}</span>
-          </span>
-          <span
-            className={`hidden sm:inline text-lg tabular-nums shrink-0 ${line.available ? 'text-text-primary' : 'text-text-muted'}`}
-            title={line.unavailableReason ?? undefined}
-          >
-            {line.rate === null ? '' : `${Math.round(line.rate * 100)}%`}
-          </span>
-        </div>
-
-        {line.unavailableReason && (
-          <p data-testid="usage-adoption-unavailable" className="text-[11px] text-text-muted">
-            {line.unavailableReason}
-          </p>
-        )}
-
-        <p data-testid="usage-adoption-session-keyed" className="text-[11px] text-warning/90">
-          {SESSION_KEYED_NOTE}
-        </p>
-        {/* The tooltip carries the full exclusion list; this is the half of it a
-            reader must not have to hover to find. */}
-        <p data-testid="usage-adoption-caveat" className="text-[11px] text-text-muted">
-          {INDEX_ADOPTION_CAVEAT}
-        </p>
-
-        <CbmToolsView view={view} />
-      </div>
-    </section>
-  );
-}
-
-/**
- * Every graph tool, over the adoption line's own population: CBM-enabled
- * completed SESSIONS. Placed under that line, not in the task-keyed code
- * navigation panel, so the two populations are never read as one.
- */
-function CbmToolsView({ view }: { view: UsageDrilldownView }) {
-  const t = view.cbmTools;
-  if (!t) return null;
-
-  return (
-    <div data-testid="usage-cbm-tools" className="space-y-1 pt-3 border-t border-border-default">
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="text-xs text-text-secondary">Graph calls by tool</span>
-        <span data-testid="usage-cbm-tools-denominator" className="text-[11px] text-text-muted shrink-0">
-          {sectionDenominator(t.sessions, t.sessions === 1 ? 'session' : 'sessions')}
-        </span>
-      </div>
-      {t.tools.length === 0 ? (
-        <p className="text-[11px] text-text-muted">No graph tool was called in these sessions.</p>
-      ) : (
-        <>
-          <div className="flex items-center gap-2 text-[11px] md:text-[9px] uppercase tracking-wide text-text-muted">
-            <span className="flex-1">tool</span>
-            <span className="w-14 text-right">calls</span>
-            <span className="w-14 text-right" title="Sessions that called this tool at least once">sessions</span>
-            <span className="w-10 text-right">share</span>
-          </div>
-          {t.tools.map((row) => (
-            <div key={row.tool} data-testid="usage-cbm-tool-row" className="flex items-center gap-2 min-w-0">
-              <span className="font-mono text-[11px] text-text-primary flex-1 min-w-0 truncate" title={row.tool}>
-                {row.tool}
-              </span>
-              <span className="w-14 text-right text-[11px] text-text-muted tabular-nums shrink-0">
-                {row.calls.toLocaleString('en-US')}
-              </span>
-              <span className="w-14 text-right text-[11px] text-text-muted tabular-nums shrink-0">
-                {row.sessions}
-              </span>
-              <span className="w-10 text-right text-[11px] text-text-muted tabular-nums shrink-0">
-                {formatShare(row.share)}
-              </span>
-            </div>
-          ))}
-        </>
-      )}
-    </div>
-  );
-}
-
 // ── Window ───────────────────────────────────────────────────────────────────
 
 /**
@@ -651,5 +555,49 @@ function ActionBreakdownView({ view }: { view: UsageDrilldownView }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Real dollars and plan usage at list price, never summed unlabelled
+ * (docs/specs/real-and-virtual-cost.md "Reporting"). Mixed and "basis not
+ * reported" rows appear only when the window has them.
+ */
+function CostBasisSection({ byBasis }: { byBasis: UsageStats['byBasis'] }) {
+  const { total, byExecutor } = byBasis;
+  if (BASIS_KEYS.every(k => total[k].workers === 0)) return null;
+  const shown = BASIS_KEYS.filter(k => k === 'real' || k === 'virtual' || total[k].workers > 0);
+  const cols = 'grid grid-cols-[minmax(0,1fr)_4.5rem_4.5rem_4.5rem] sm:grid-cols-[minmax(0,1fr)_5.5rem_6.5rem_5.5rem] gap-2';
+  return (
+    <section data-testid="usage-cost-basis" className="mb-6">
+      <h2 className="section-label mb-3">Cost</h2>
+      <div className="card p-4 text-sm">
+        <div className={`${cols} text-[11px] text-text-muted`}>
+          <span />
+          <span className="text-right">Runners</span>
+          <span className="text-right">Interactive</span>
+          <span className="text-right">Total</span>
+        </div>
+        <ul className="mt-2 space-y-2">
+          {shown.map(k => (
+            <li key={k} className={cols}>
+              <span>
+                {BASIS_LABEL[k]}
+                {k === 'unknown' && <span className="text-text-muted"> · {countOf(total.unknown.workers, 'worker')}</span>}
+              </span>
+              <span className="text-right">{formatUsd(byExecutor.runner[k].costUsd)}</span>
+              <span className="text-right">{formatUsd(byExecutor.interactive[k].costUsd)}</span>
+              <span className="text-right font-semibold">{formatUsd(total[k].costUsd)}</span>
+            </li>
+          ))}
+          <li className={`${cols} border-t-2 border-border pt-2 text-text-secondary`}>
+            <span>Combined</span>
+            <span />
+            <span />
+            <span className="text-right">{formatUsd(splitTotal(total).costUsd)}</span>
+          </li>
+        </ul>
+      </div>
+    </section>
   );
 }
