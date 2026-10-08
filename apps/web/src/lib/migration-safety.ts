@@ -26,6 +26,13 @@ export type MigrationSafety =
        * `classifyPullRequestMigrations`).
        */
       collision?: MigrationCollision;
+      /**
+       * Present only for a PR that mixes EXPAND and CONTRACT migrations: the
+       * additive part is safe to land on its own, so the remedy is an agent
+       * splitting the PR in two, not a human decision. Absent for a PR whose
+       * only problem is its destructive SQL.
+       */
+      mixedSplit?: true;
     };
 
 const MIGRATION_PATH = /(?:^|\/)drizzle\/(\d{4})_[^/]+\.sql$/;
@@ -329,6 +336,7 @@ export function classifyPullRequestMigrations(
       operationClass: 'CONTRACT',
       reason:
         `PR mixes EXPAND and CONTRACT migrations — split into two PRs: ship additive changes first, then land the destructive ones separately once nothing reads the old columns. Triggered by: ${firstContract.reason}`,
+      mixedSplit: true,
     };
   }
 

@@ -638,6 +638,7 @@ mock.module('@/lib/workflow/seam', () => ({
   observeHead: mockObserveHead,
   observePrState: mockObservePrState,
   observeCiFailure: mock(async () => ({ handled: false })),
+  policyFindingFor: (p: any) => ({ outcome: 'human', reason: p.reason, destructive: false }),
 }));
 const mockKernelDeliveryForPr = mock(async (..._a: any[]): Promise<string | null> => null);
 mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr }));
@@ -4368,7 +4369,23 @@ describe('POST /api/github/webhook', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
-    it('workflow kernel: a pre-flight human escalation releases any kernel delivery and opens none', async () => {
+    it('workflow kernel: a pre-flight human escalation is imported as policy evidence, with no legacy note or release', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockOpenKernelDelivery.mockClear();
+      mockReleaseKernelDeliveryForPr.mockClear();
+      mockOpenKernelDelivery.mockResolvedValueOnce({ owned: true, deliveryId: 'delivery-42' });
+      mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: true, reason: 'touches schema' });
+
+      await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(mockOpenKernelDelivery).toHaveBeenCalledWith(expect.objectContaining({
+        prNumber: 42,
+        policy: { outcome: 'human', reason: 'touches schema', destructive: false },
+      }));
+      expect(mockReleaseKernelDeliveryForPr).not.toHaveBeenCalled();
+    });
+
+    it('legacy authority: a pre-flight human escalation the kernel does not take releases any kernel delivery', async () => {
       withAgentReviewWorkspaceAndWorker();
       mockOpenKernelDelivery.mockClear();
       mockReleaseKernelDeliveryForPr.mockClear();
@@ -4377,7 +4394,6 @@ describe('POST /api/github/webhook', () => {
       await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
 
       expect(mockReleaseKernelDeliveryForPr).toHaveBeenCalledWith('ws1', 'test-org/test-repo', 42, expect.stringContaining('pre-flight'));
-      expect(mockOpenKernelDelivery).not.toHaveBeenCalled();
     });
 
     it('announces on the PR that a review is queued — not Reviewing until claimed', async () => {
