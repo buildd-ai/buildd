@@ -1,5 +1,5 @@
 /**
- * Server-side loader for capability discovery (rules: capability-discovery.ts).
+ * Server-side loader for capability discovery (rules: connector-capabilities.ts).
  * Reads only rows of the workspace's own team: connectors it owns or was
  * shared, this workspace's enablement, credential health keyed on each
  * connector's owner team, the team's roles and catalog policy. Selects no
@@ -11,7 +11,7 @@ import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { loadTeamCatalog } from './connector-catalog-store';
 import { loadOperatorGrant } from './operator-capability-source';
-import type { DiscoveryCredential, DiscoveryInput, DiscoveryRole } from './capability-discovery';
+import type { DiscoveryCredential, DiscoveryInput, DiscoveryRole } from './connector-capabilities';
 
 export async function loadDiscoveryInput(
   workspaceId: string,

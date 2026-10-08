@@ -679,8 +679,8 @@ installing, enabling, granting and connecting stay admin/human acts.
   `candidates` is empty and the summary says so.
 
 **Code surface**:
-- Rules: `apps/web/src/lib/capability-discovery.ts`
-- Loader: `apps/web/src/lib/capability-discovery-store.ts`
+- Rules: `apps/web/src/lib/connector-capabilities.ts`
+- Loader: `apps/web/src/lib/connector-capabilities-store.ts`
 - Route: `apps/web/src/app/api/connectors/capabilities/route.ts`
 - MCP: `packages/core/mcp-tools.ts` (`resolve_capability`)
 

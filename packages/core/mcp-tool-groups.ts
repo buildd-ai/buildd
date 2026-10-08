@@ -297,8 +297,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_manifest_coverage: 'coverage by scope and kind',
   get_path_claim_stats: 'path-claim outcomes',
   get_decision_stats: 'decision-shadow counts',
-  list_connectors: 'mounted connectors and their health',
-  resolve_capability: 'what serves a need',
+  list_connectors: 'connector health',
+  resolve_capability: 'who can serve a need',
   list_runners: 'slots, branch, build, heartbeat',
   read_evidence: 'stored run logs',
   get_pr: 'PR state, CI, reviews, body',
@@ -357,7 +357,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
-  resolve_capability: '{capability?, roleSlug?}',
+  resolve_capability: '{capability?, …}',
   register_skill: '{name, content, slug?, workspaceId?, description?, isRole?, model?, allowedTools?, connectorRefs?, defaultBackend?, …}',
   update_skill: '{slug, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, connectorRefs?, defaultBackend?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',

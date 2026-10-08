@@ -17,7 +17,7 @@ mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
-mock.module('@/lib/capability-discovery-store', () => ({ loadDiscoveryInput: mockLoadDiscoveryInput }));
+mock.module('@/lib/connector-capabilities-store', () => ({ loadDiscoveryInput: mockLoadDiscoveryInput }));
 mock.module('@buildd/core/db', () => ({ db: { query: { tasks: { findFirst: mockTaskFindFirst } } } }));
 
 import { GET } from './route';

@@ -5,8 +5,8 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { loadDiscoveryInput } from '@/lib/capability-discovery-store';
-import { listCapabilities, resolveCapability } from '@/lib/capability-discovery';
+import { loadDiscoveryInput } from '@/lib/connector-capabilities-store';
+import { listCapabilities, resolveCapability } from '@/lib/connector-capabilities';
 
 const ROLE_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 

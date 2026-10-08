@@ -1,7 +1,7 @@
 /**
  * Semantic capability discovery over the EXISTING connector system: "what
  * could satisfy observability:query (or deployment:read) here, and what stands
- * between this role and it?" Pure; the db read is capability-discovery-store.ts.
+ * between this role and it?" Pure; the db read is connector-capabilities-store.ts.
  *
  * Capabilities are abstract; tools stay native; credentials stay brokered;
  * runtime needs are a separate axis. So this module:

@@ -5,7 +5,7 @@ import {
   listCapabilities,
   type DiscoveryInput,
   type DiscoveryConnector,
-} from './capability-discovery';
+} from './connector-capabilities';
 import { CONNECTOR_CATALOG, type ResolvedCatalogEntry, type CatalogPolicy } from './connector-catalog';
 
 const NOW = new Date('2026-10-08T12:00:00Z');
