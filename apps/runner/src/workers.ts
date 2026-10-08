@@ -135,6 +135,7 @@ import {
 import { InstructionAckTracker } from './instruction-acks';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
+import { claudeCostBasis, cloudCostBasis, codexCostBasis } from './cost-basis';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { handOffUnproven, isHandOffRefusal } from './hand-off-outcome';
 import { preflightHookEntries } from './preflight-guard';
@@ -644,6 +645,7 @@ export const METRICS_ONLY_FIELDS = [
   'inputTokens',
   'outputTokens',
   'costUsd',
+  'costBasis',
   'actualModel',
   'lastCommitSha',
   'commitCount',
@@ -3615,6 +3617,13 @@ export class WorkerManager {
         console.log(`[Worker ${worker.id}] Injected tenant OAuth token for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);
         this.addMilestone(worker, { type: 'status', label: `Tenant: ${tenantCtx.displayName || tenantCtx.tenantId}`, ts: Date.now() });
       }
+      // How this run's usage is charged (docs/specs/real-and-virtual-cost.md),
+      // sent with every usage report. A cloud run's container only holds a
+      // placeholder key, so its supervisor's hint decides there. Codex is
+      // classified below, once its CODEX_HOME auth is in place.
+      worker.costBasis = cloudCostBasis(process.env)
+        ?? (isCodexTask ? 'unknown' : claudeCostBasis(modelEnv, { claudeCredentialUsed: shouldUseClaudeCredential(modelEnv, worker) }));
+      sessionLog(worker.id, 'info', 'cost_basis', `basis=${worker.costBasis}`, task.id);
       if (modelEnv.withheld.length > 0) {
         console.log(`[Worker ${worker.id}] Custom model endpoint (${modelEnv.baseUrlOrigin || 'unparseable ANTHROPIC_BASE_URL'}): server-managed Anthropic credentials not given to the agent (${modelEnv.withheld.join(', ')}). Set ${TRUSTED_MODEL_BASE_URL_ENV} to that origin only if it forwards to Anthropic.`);
       }
@@ -3703,6 +3712,16 @@ export class WorkerManager {
           console.log(`[Worker ${worker.id}] Codex login: the one stored in buildd; this machine's own is present but not used (set BUILDD_HOST_SEAT=prefer once it is known to work)`);
         }
         cleanEnv.CODEX_HOME = _ch;
+        if (!cloudCostBasis(process.env)) {
+          let authJson: Record<string, unknown> | null = null;
+          try { authJson = JSON.parse(readFileSync(join(_ch, 'auth.json'), 'utf-8')); } catch { /* none */ }
+          worker.costBasis = codexCostBasis({
+            teamEndpoint: modelEnv.endpoint === 'team',
+            authJson,
+            envApiKey: cleanEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY,
+          });
+          sessionLog(worker.id, 'info', 'cost_basis', `basis=${worker.costBasis}`, task.id);
+        }
         const session = this.sessions.get(worker.id);
         if (session) (session as any).codexHome = _ch;
 
@@ -5852,7 +5871,7 @@ export class WorkerManager {
    * shared, dependency-free builder in terminal-attribution.ts — see its doc
    * for why this is pulled out rather than kept private to this class.
    */
-  private terminalAttributionPayload(worker: LocalWorker): { costUsd?: number; actualModel?: string } {
+  private terminalAttributionPayload(worker: LocalWorker): ReturnType<typeof buildTerminalAttributionPayload> {
     return buildTerminalAttributionPayload(worker);
   }
 

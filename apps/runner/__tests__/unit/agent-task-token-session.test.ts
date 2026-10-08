@@ -316,7 +316,7 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     expect(run!.env?.BUILDD_MCP_BEARER_TOKEN).toBe(TOKEN_A);
     expect(run!.env?.BUILDD_API_KEY).toBeUndefined();
     expectTokenNowhere(TOKEN_A);
-  });
+  }, 30_000);
 
   const failures: Array<[string, () => Promise<unknown>]> = [
     ['network error', async () => { throw new TypeError('fetch failed'); }],

@@ -85,6 +85,9 @@ mock.module('@/lib/team-access', () => ({
 }));
 
 const mockIsMissionLinkable = mock(() => Promise.resolve(true));
+const mockEmit = mock(async (_event: any) => {});
+mock.module('@/lib/core-emit', () => ({ emit: mockEmit }));
+const leftMission = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => e.type === 'task.left_mission');
 mock.module('@/lib/mission-link-scope', () => ({
   isMissionLinkable: mockIsMissionLinkable,
 }));
@@ -727,6 +730,35 @@ describe('PATCH /api/tasks/[id]', () => {
       const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { missionId: null } }), TASK_ID);
       expect(res.status).toBe(200);
       expect(mockIsMissionLinkable).not.toHaveBeenCalled();
+    });
+
+    it('unlinking a task tells the modules it left the mission (the surface audit drops its edge)', async () => {
+      mockEmit.mockClear();
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockTasksFindFirst.mockResolvedValue({ ...task, missionId: 'm-1' });
+      const mockWhere = mock(() => ({ returning: mock(() => [{ ...task, missionId: null }]) }));
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mockWhere })) });
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { missionId: null } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(leftMission()).toEqual([{ type: 'task.left_mission', taskId: TASK_ID, missionId: 'm-1', workspaceId: 'ws-1' }]);
+    });
+
+    it('moving a task to another mission says it left the old one', async () => {
+      mockEmit.mockClear();
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockTasksFindFirst.mockResolvedValue({ ...task, missionId: 'm-old' });
+      const mockWhere = mock(() => ({ returning: mock(() => [{ ...task, missionId: 'm-1' }]) }));
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mockWhere })) });
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { missionId: 'm-1' } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(leftMission()).toEqual([{ type: 'task.left_mission', taskId: TASK_ID, missionId: 'm-old', workspaceId: 'ws-1' }]);
+    });
+
+    it('linking a task that had no mission emits no departure', async () => {
+      mockEmit.mockClear();
+      setup();
+      await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { missionId: 'm-1' } }), TASK_ID);
+      expect(leftMission()).toEqual([]);
     });
   });
 

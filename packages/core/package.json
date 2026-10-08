@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.294.0",
+  "version": "0.296.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -46,6 +46,7 @@
     "./billing": "./billing.ts",
     "./branch-names": "./branch-names.ts",
     "./budget-alerts": "./budget-alerts.ts",
+    "./cost-basis": "./cost-basis.ts",
     "./oauth-budget": "./oauth-budget.ts",
     "./inference-client": "./inference-client.ts",
     "./inference-policy": "./inference-policy.ts",
@@ -214,6 +215,7 @@
     "./dispatch-handoff": "./dispatch-handoff.ts",
     "./path-claim-ttl": "./path-claim-ttl.ts",
     "./surface-audit": "./surface-audit.ts",
+    "./member-scoped-deps": "./member-scoped-deps.ts",
     "./visual-qa-routes": "./visual-qa-routes.ts",
     "./visual-qa-page-source": "./visual-qa-page-source.ts",
     "./visual-qa-capture-ref": "./visual-qa-capture-ref.ts",

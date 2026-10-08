@@ -170,7 +170,7 @@ export default async function TaskDetailPage({
       workspace: true,
       // Explicit allowlist, like every sibling relation in this shape: the two
       // fields the page reads off an account rather than the whole row.
-      account: { columns: { name: true, authType: true } },
+      account: { columns: { name: true } },
       mission: {
         columns: { id: true, title: true, status: true },
         with: { initiative: { columns: { id: true, title: true } } },
@@ -249,7 +249,7 @@ export default async function TaskDetailPage({
     db.query.workers.findMany({
       where: eq(workers.taskId, id),
       orderBy: [desc(workers.createdAt), desc(workers.id)],
-      with: { account: { columns: { name: true, authType: true } } },
+      with: { account: { columns: { name: true } } },
     }),
     // Mission context bar (W6): the mission row and its tasks' light columns —
     // the same selection a Home card makes, so no result/context/artifact
@@ -400,7 +400,7 @@ export default async function TaskDetailPage({
             // Full rows, same shape as taskWorkers: Worker history lists them.
             workers: {
               orderBy: [desc(workers.createdAt), desc(workers.id)],
-              with: { account: { columns: { name: true, authType: true } } },
+              with: { account: { columns: { name: true } } },
             },
           },
           orderBy: [asc(tasks.createdAt), asc(tasks.id)],
@@ -1193,14 +1193,17 @@ export default async function TaskDetailPage({
                       <div className="flex items-center gap-3 mt-1 font-mono text-[11px] text-text-muted">
                         <span>{worker.startedAt ? timeAgo(worker.startedAt) : '-'}</span>
                         <span>{worker.turns} turns</span>
-                        {worker.account?.authType === 'oauth'
-                          ? ((worker.inputTokens || 0) + (worker.outputTokens || 0)) > 0 && (
-                              <span>{((worker.inputTokens || 0) + (worker.outputTokens || 0)).toLocaleString()} tokens</span>
-                            )
-                          : parseFloat(worker.costUsd?.toString() || '0') > 0 && (
-                              <span>${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
-                            )
-                        }
+                        {((worker.inputTokens || 0) + (worker.outputTokens || 0)) > 0 && (
+                          <span>{((worker.inputTokens || 0) + (worker.outputTokens || 0)).toLocaleString()} tokens</span>
+                        )}
+                        {/* The worker's own basis, not the account's authType
+                            (docs/specs/real-and-virtual-cost.md). */}
+                        {parseFloat(worker.costUsd?.toString() || '0') > 0 && (
+                          <span>
+                            ${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}
+                            {(worker as { costBasis?: string | null }).costBasis === 'virtual' ? ' list price' : ''}
+                          </span>
+                        )}
                         {(worker.resultMeta as any)?.terminalReason && (worker.resultMeta as any).terminalReason !== 'completed' && (
                           <span className="text-status-warning">stop: {((worker.resultMeta as any).terminalReason as string).replace(/_/g, ' ')}</span>
                         )}
@@ -1826,7 +1829,6 @@ export default async function TaskDetailPage({
                 instructionHistory: (activeWorker.instructionHistory as any[]) || [],
                 pendingInstructions: activeWorker.pendingInstructions,
                 updatedAt: activeWorker.updatedAt?.toISOString() || null,
-                account: activeWorker.account ? { authType: activeWorker.account.authType } : null,
                 resultMeta: activeWorker.resultMeta as any,
               }}
               modelTier={modelSummary.tierLabel}

@@ -336,7 +336,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   consolidate_knowledge: 'find duplicate or stale knowledge; archive',
   memory_delete: 'permanently delete a memory',
   claim_task: 'claim your assignment, the next, or a named pending task',
-  update_progress: 'report progress; returns messages for you',
+  update_progress: 'report progress',
   receive_messages: 'messages sent to you',
   complete_task: 'finish your task (error marks it failed)',
   create_pr: 'open the PR for your branch',

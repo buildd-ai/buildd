@@ -61,8 +61,15 @@ charged on, as reported by the party that picked the credential, and MUST say
 
 **Invariants**:
 - `workers.cost_basis` is one of `real`, `virtual`, `mixed`, `unknown`, or NULL.
-  NULL means the row predates this capability (see Historic rows); no writer
-  sets NULL after cutover.
+  NULL means the row has recorded no usage: every report that carries usage
+  sets a basis, and the migration that added the column classified every
+  earlier row that had usage (see Historic rows).
+- `unknown` means usage arrived and its reporter did not say how it was
+  charged. It is a gap to close, not a category: it comes only from a reporter
+  that predates this field (a runner or hook not yet upgraded), an interactive
+  session whose environment does not settle the basis, or a self-report
+  through the MCP that omits `costBasis`. The usage rollup reports the unknown
+  share on its own so a trailing window shows whether any remain.
 - The basis applies to the row's tokens and its cost together. A consumer MUST
   NOT split a row's tokens and its cost across bases.
 - The server MUST NOT derive the basis from `accounts.authType`, the model id,
@@ -97,22 +104,45 @@ charged on, as reported by the party that picked the credential, and MUST say
   reports the new basis on the next PATCH, which makes the row `mixed` when the
   two differ.
 - The cloud runner's reported basis MUST agree with the `modelAuth` in its own
-  run report for the same run.
+  run report for the same run. The container only holds a placeholder key, so
+  its env cannot tell: the supervisor plans the route with the same resolution
+  egress applies (`plannedModelAuth`) and passes it as `BUILDD_CLOUD_MODEL_AUTH`;
+  the in-container runner reports `virtual` for `owner_seat` and `real` for
+  `metered` (`cloudCostBasis`), ahead of anything its own env suggests. No hint
+  (the team endpoint lookup was unavailable) falls back to the env.
+- A runner derives the basis when it builds the agent env (`claudeCostBasis`,
+  `codexCostBasis` in `apps/runner/src/cost-basis.ts`), keeps it on the local
+  worker, and sends it on every terminal and metrics-only report.
 
-**Interactive sessions** (`apps/runner/plugin/`): the hook reports usage it
+**Interactive sessions** (`apps/runner/plugin/`). Rollout order matters: the
+event endpoint refuses unknown fields, and the plugin installs from the
+repository's default branch, so the hook MUST NOT send a basis until the
+server that accepts `usage.costBasis` is serving production. the hook reports usage it
 reads from the session's transcript, and the transcript does not record which
-credential served it. The hook therefore reports a basis only when its
-environment determines one, and `unknown` otherwise:
-- real: `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or another
-  cloud-provider switch is set; `ANTHROPIC_AUTH_TOKEN` or an apiKeyHelper is
-  configured; `ANTHROPIC_BASE_URL` points away from Anthropic; or
-  `ANTHROPIC_API_KEY` is set **and** approved for use in the client's own
-  config.
-- virtual: the client config shows a subscription login and none of the above
-  holds.
-- An `ANTHROPIC_API_KEY` that is set but not approved is not evidence of real
-  usage, because the client does not use it.
-- The hook sends the basis alongside `usage` on `touch` and `end`. A hook build
+credential served it. The hook (`costBasisFor`) walks Claude Code's own
+authentication precedence and stops at the first credential the client would
+use:
+1. real: managed settings require a gateway sign-in (`forceLoginMethod:
+   "gateway"` or `forceLoginGatewayUrl`).
+2. real: `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or
+   `CLAUDE_CODE_USE_FOUNDRY` is set.
+3. real: `ANTHROPIC_AUTH_TOKEN` is set.
+4. `ANTHROPIC_API_KEY` is set: real in a non-interactive (`-p`, SDK) session,
+   or when the client config records the key as approved; skipped when it
+   records it as declined; unknown when it records neither.
+5. real: an apiKeyHelper is configured in user, project or managed settings.
+6. virtual: `CLAUDE_CODE_OAUTH_TOKEN` is set.
+7. real: `ANTHROPIC_PROFILE`, or both federation variables, are set; unknown
+   when only an active profile file exists, because ranking it against the
+   login needs the file's contents.
+8. real: the client config holds a stored Console API key; virtual: it holds a
+   subscription login.
+9. otherwise unknown.
+A virtual result whose `ANTHROPIC_BASE_URL` points away from Anthropic is
+reported as unknown: the hook cannot tell how that endpoint charges. Any error
+reading config is unknown.
+- The hook sends the basis as `usage.costBasis` (`real`, `virtual` or
+  `unknown`, never `mixed`) on `touch` and `end`. A hook build
   that predates this field sends none, and the server records `unknown`.
 - The Codex and Cursor hooks report no usage today, so they report no basis.
 
@@ -130,9 +160,10 @@ environment determines one, and `unknown` otherwise:
 - AC-5: GIVEN a report with `costUsd: 0` and token usage WHEN the server prices
   the tokens THEN `costUsd` holds the estimate, `resultMeta.costEstimated` is
   true, and `cost_basis` is the reported basis.
-- AC-6: GIVEN an interactive session whose environment sets `ANTHROPIC_API_KEY`
-  that the client config has not approved, and that is logged in to a
-  subscription, WHEN the hook reports usage THEN the basis is `virtual`.
+- AC-6: GIVEN an interactive session logged in to a subscription whose
+  environment sets `ANTHROPIC_API_KEY` that the client config records as
+  declined WHEN the hook reports usage THEN the basis is `virtual`; GIVEN the
+  config records no answer for that key THEN it is `unknown`.
 - AC-7: GIVEN a hook build that sends `usage` without a basis WHEN the server
   applies it THEN `cost_basis` is `unknown`.
 - AC-8: GIVEN a report whose `costBasis` is not one of the four values WHEN the
@@ -191,10 +222,18 @@ measure.
   on it as today, so the cutover changes nothing until bases are reported.
 - A `mixed` row draws only its virtual part, when a split exists; without a
   split it draws its whole cost, as today.
-- The mission `costBudgetUsd` gate (`getMissionSpendUsd`) keeps counting every
-  basis until the owner decides otherwise (open question 2).
+- The forecast's pool burn rate (`getBudgetForecast`) excludes `real` rows for
+  the same reason.
+- The mission `costBudgetUsd` gate (`getMissionSpendUsd`, and the mission
+  block of `getBudgetForecast`) guards money: `virtual` rows never count toward
+  it, so plan usage, including interactive sessions on a subscription, is not
+  stopped by a dollar budget. `real`, `mixed`, `unknown` and NULL rows count,
+  so real spend cannot slip past it unlabelled (`countsTowardMissionBudget`).
 
 **Acceptance criteria**:
+- AC-12b: GIVEN a mission whose workers are all `virtual` WHEN its spend is
+  computed for the `costBudgetUsd` gate THEN it is 0, and GIVEN one `real`
+  worker at $2 THEN it is $2.
 - AC-13: GIVEN a terminal report with `costBasis: 'real'` and a positive cost
   WHEN it is applied THEN `teams.monthlyCostUsd` does not move and the worker
   row still carries the cost.
@@ -210,23 +249,21 @@ basis the owner has stated, by a rule, and the rule MUST NOT name observed
 values.
 
 **Invariants**:
-- Before cutover, this workspace family's usage ran on plan logins except for
-  cloud-runner runs, which were charged per token. Historic rows therefore read
-  as `virtual`, except rows the rule attributes to the cloud runner, which read
-  as `real`.
-- The rule is structural: a property every cloud-runner worker row has and no
-  other row has. A migration or read-time rule MUST NOT carry a list of runner
+- Before cutover, the deployment's usage ran on plan logins except for
+  cloud-runner runs, which were charged per token. Historic rows with usage
+  therefore read as `virtual`, except cloud-runner rows, which read as `real`.
+- The rule is structural. Cloud-runner runs are `--once` runs and register as
+  `headless://<host>/once/<taskId>` (`apps/runner/src/run-once.ts`), so the
+  migration that adds the column sets `real` on rows of that shape and
+  `virtual` on every other row with usage. It MUST NOT carry a list of runner
   names, worker ids or workspace ids (`CLAUDE.md`, "This Repo Is Public").
-- If no structural property identifies cloud-runner rows, historic rows read as
-  `virtual` and the cloud-runner share is listed as a known undercount of real
-  cost, rather than guessed.
-- The rule is applied at read time (NULL → derived basis) or by a one-time
-  migration. Either way, a NULL row and a backfilled row MUST produce the same
-  rollup.
+- Rows with no usage stay NULL, and the backfill only touches NULL rows, so a
+  re-run changes nothing.
 
 **Acceptance criteria**:
-- AC-15: GIVEN a NULL-basis row that the rule does not attribute to the cloud
-  runner WHEN it is rolled up THEN it counts as virtual.
+- AC-15: GIVEN a pre-cutover row with usage whose runner is not of the
+  `--once` shape WHEN the migration runs THEN its basis is `virtual`, and GIVEN
+  one of that shape THEN `real`.
 - AC-16: GIVEN the backfill migration's SQL WHEN `bun run no-prod-data:check`
   runs THEN it passes: the migration contains no literal ids or runner names.
 
@@ -269,14 +306,14 @@ body and the MCP usage arguments.
 
 ---
 
-## Open questions
+## Decisions
 
-1. **Cloud-runner rows in history.** Which structural property marks a
-   cloud-runner worker row? `workers.runner` holds the runner's UI URL or the
-   `'runner'` fallback, and `parkedUntil` is set only on parked runs, so neither
-   is sufficient alone. Confirm before writing the rule, and confirm no
-   cloud-runner deploy ran on an owner seat before cutover.
-2. **Mission budgets.** Should `costBudgetUsd` count real only, virtual only, or
-   both (today's behaviour)?
-3. **Unknown in the pool.** After cutover, should an `unknown` row keep drawing
-   on the credit pool (today's behaviour, chosen here) or stop?
+Recorded from the owner's review of the draft:
+
+1. Cloud-runner rows are identified by the `--once` runner shape (Historic
+   rows). No cloud-runner run before cutover used an owner seat.
+2. Mission budgets count every basis except `virtual`. The expected use is
+   teams bringing their own API key, where real dollars are what a budget is
+   for; plan usage, interactive sessions especially, is not throttled by it.
+3. `unknown` keeps drawing on the credit pool as before. The goal is that
+   `unknown` stops occurring, and the usage rollup shows whether it does.

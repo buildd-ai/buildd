@@ -59,6 +59,8 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
       supersededAt: true,
       abandonedAt: true,
       prBaseRef: true,
+      costBasis: true,
+      runner: true,
     },
     with: {
       task: {
@@ -102,6 +104,8 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
     prSupersededAt: ms(w.supersededAt),
     prAbandonedAt: ms(w.abandonedAt),
     prBaseRef: w.prBaseRef ?? null,
+    costBasis: w.costBasis ?? null,
+    runner: w.runner ?? null,
   }));
 }
 

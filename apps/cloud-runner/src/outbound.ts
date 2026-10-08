@@ -23,7 +23,7 @@
  *
  * Design: docs/design/cloudflare-sandbox-runner.md, Components 4.
  */
-import { ownerSeatToken, withOauthBeta, type OwnerSeatEnv } from './owner-seat';
+import { ownerSeatToken, withOauthBeta, type ModelAuth, type OwnerSeatEnv } from './owner-seat';
 
 export const ANTHROPIC_HOST = 'api.anthropic.com';
 export const AI_GATEWAY_HOST = 'gateway.ai.cloudflare.com';
@@ -206,6 +206,17 @@ export function needsServerModelEndpoint(env: EgressEnv): boolean {
  * refused rather than forwarded with the container's placeholder key. With
  * `server` omitted or null the result is exactly the pre-endpoint one.
  */
+/**
+ * Which credential kind the egress will pay this run's model calls with, by
+ * the same route resolution it applies per request: the owner seat route is
+ * `owner_seat`, every other route is metered. Null when the team endpoint
+ * lookup is unavailable, so no route can be planned.
+ */
+export function plannedModelAuth(env: EgressEnv, server: ServerModelEndpointState): ModelAuth | null {
+  if (server === 'unavailable') return null;
+  return resolveModelRoute(env, server ?? undefined).kind === 'owner_seat' ? 'owner_seat' : 'metered';
+}
+
 export function resolveModelRoute(env: EgressEnv, server?: ServerModelEndpointState): ModelRoute {
   if (directAllowed(env)) {
     return { kind: 'direct', apiKey: env.ANTHROPIC_DIRECT_API_KEY! };

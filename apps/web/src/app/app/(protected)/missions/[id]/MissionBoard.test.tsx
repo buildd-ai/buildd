@@ -560,3 +560,44 @@ describe('MissionBoard — a failed tile says so in words', () => {
     }
   });
 });
+
+// Surface audit: a local-executor mission's ready task waits for an
+// interactive session to claim it (runners never pick it up), so its tile
+// must not promise "the next free slot".
+describe('MissionBoard — ready tile wording follows the executor', () => {
+  const readyTile = (executor: 'runner' | 'local' | null) => {
+    const model = boardFixture('running');
+    model.tasks.guide = { ...model.tasks.guide, status: 'ready' };
+    const html = renderToStaticMarkup(<MissionBoard model={model} missionId="mission-1" executor={executor} />);
+    return (html.split('data-task-id="guide"')[1] ?? '').split('</a>')[0].replace(/<[^>]+>/g, ' ');
+  };
+  it('a runner mission keeps "next free slot"', () => {
+    expect(readyTile('runner')).toContain('next free slot');
+    expect(readyTile(null)).toContain('next free slot');
+  });
+  it('a local mission says it needs a local claim', () => {
+    const tile = readyTile('local');
+    expect(tile).not.toContain('next free slot');
+    expect(tile).toContain('needs a local claim');
+  });
+});
+
+// Surface audit (touch, 390/320): landed rows, ticker chips and the goal
+// links were 17–32px tall. Each is 44px below md and keeps desktop density.
+describe('MissionBoard — touch targets', () => {
+  const classesOf = (html: string, testid: string) =>
+    [...html.matchAll(new RegExp(`data-testid="${testid}"[^>]*class="([^"]+)"`, 'g'))].map(m => m[1]);
+  it('landed rows, ticker chips and goal criteria rows are 44px on touch', () => {
+    const complete = render('complete', { completionText: 'x' });
+    const running = render('running');
+    const groups = {
+      landed: classesOf(complete, 'board-tile').filter(c => c.includes('border-b')),
+      ticker: classesOf(running, 'mission-ticker-event'),
+      criteria: classesOf(running, 'goal-criterion'),
+    };
+    for (const [name, list] of Object.entries(groups)) {
+      expect({ name, found: list.length > 0 }).toEqual({ name, found: true });
+      for (const cls of list) expect({ name, touch: cls.includes('min-h-11') && cls.includes('md:min-h-0') }).toEqual({ name, touch: true });
+    }
+  });
+});

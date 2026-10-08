@@ -67,6 +67,7 @@ export type CiRetrySkipReason =
   | 'head_already_retried'
   | 'retries_exhausted'
   | 'retries_disabled'
+  | 'advisory_only'
   | 'duplicate'
   /** The workflow kernel owns this PR and decided not to dispatch now (its state is the reason). */
   | 'kernel_owned'
@@ -85,6 +86,7 @@ const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
   head_already_retried: 'no CI retry: an attempt already ran on this head',
   retries_exhausted: 'no CI retry: the PR used its whole CI retry budget',
   retries_disabled: 'no CI retry: CI retries are disabled for this workspace',
+  advisory_only: 'no CI retry: all failed checks are advisory only (Visual QA)',
   duplicate: 'no CI retry: a retry for this PR and head was filed concurrently',
   kernel_owned: 'no CI retry: the workflow kernel owns this PR and its state owes no CI fix now',
   blocked_on_trunk: 'no CI retry: the base branch fails the same checks; one trunk fix runs for every blocked PR',
@@ -461,6 +463,16 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   const ciLogs = await fetchCIFailureLogs(installationId, repoFullName, headSha);
   const failureContext = ciLogs.summary ||
     `CI check suite failed on ${repoFullName} PR #${prNumber} (SHA: ${headSha})`;
+
+  // Visual QA is advisory-only: it never gates merge (conclusion: 'neutral').
+  // Don't create CI-fix tasks when it fails, since failures are non-blocking
+  // and often due to expected reasons (e.g., mission branch migrations not in prod).
+  // Only skip if ALL failures are Visual QA; a real failure alongside it must proceed.
+  if (ciLogs.failedJobNames.length > 0 && ciLogs.failedJobNames.every(name => name.startsWith('Visual QA'))) {
+    console.log(`[ci-retry] Skipping CI-fix task for advisory Visual QA failure on ${repoFullName}#${prNumber}`);
+    recordSkip(skipCtx, 'advisory_only');
+    return { kind: 'skipped', reason: 'advisory_only' };
+  }
 
   // Schema drift is diagnose-only — never a fix agent, automatic or manual.
   // Classified by check name (the only reliable signal here); see

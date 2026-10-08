@@ -185,7 +185,7 @@ function BoardView({
                 <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">{`${p.done}/${p.total}`}</span>
               </div>
               {active.map(t => [
-                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popSide={lastCol === 0 ? 'below' : i === lastCol ? 'left' : 'right'} compact={compact} visualStuck={t.id === auditId && vm ? stuckVisualCaption(vm) : null} />,
+                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popSide={lastCol === 0 ? 'below' : i === lastCol ? 'left' : 'right'} compact={compact} visualStuck={t.id === auditId && vm ? stuckVisualCaption(vm) : null} executor={executor} />,
                 shotsFor(t.id),
               ])}
               {landed.length > 0 && (
@@ -389,7 +389,7 @@ export function GoalCell({ model, compact, missionId, className }: { model: Miss
   return (
     <div data-testid="goal-band" data-evaluated={unevaluated ? 'false' : undefined} className={className}>
       {/* flex, not inline: an inline link's line box sat the label lower than the other cells'. */}
-      <a href={`#${MISSION_CRITERIA_ANCHOR}`} className="flex self-start hover:underline">
+      <a href={`#${MISSION_CRITERIA_ANCHOR}`} className="flex min-h-11 md:min-h-0 items-center self-start hover:underline">
         <SectionLabel>{heading}</SectionLabel>
       </a>
       {unevaluated && (
@@ -417,7 +417,7 @@ export function GoalCell({ model, compact, missionId, className }: { model: Miss
       ) : <div className="grid gap-[5px]">
         {model.criteria.length === 0 && <span className="font-mono text-[12px] text-text-muted">No criteria set.</span>}
         {model.criteria.map((c, i) => (
-          <a key={i} href={`#${MISSION_CRITERIA_ANCHOR}`} data-testid="goal-criterion" data-state={c.state} className="flex min-w-0 items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary">
+          <a key={i} href={`#${MISSION_CRITERIA_ANCHOR}`} data-testid="goal-criterion" data-state={c.state} className="flex min-h-11 md:min-h-0 min-w-0 items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary">
             <CriterionBox c={c} />
             <span className="min-w-0 truncate">{c.label}</span>
             {/* Unevaluated: the one line above says it; a per-row "not checked" is noise. */}
@@ -483,7 +483,7 @@ const DELIVERY_TEXT: Record<DeliveryTone, string> = {
   needs: 'text-accent-text', live: 'text-text-secondary', stalled: 'text-status-warning', landed: 'text-status-success', closed: 'text-text-muted', failed: 'text-status-error',
 };
 
-function Tile({ task: t, model, now, span, link, popSide, compact = false, visualStuck = null }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popSide: PopoverSide; compact?: boolean; visualStuck?: string | null }) {
+function Tile({ task: t, model, now, span, link, popSide, compact = false, visualStuck = null, executor = null }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popSide: PopoverSide; compact?: boolean; visualStuck?: string | null; executor?: MissionExecutor | null }) {
   const href = taskSheetHref(link, t.id);
   const queued = t.status === 'ready' || t.status === 'blocked';
   // A delivery the kernel reads is never a live agent on this tile: its own worker ended.
@@ -515,7 +515,7 @@ function Tile({ task: t, model, now, span, link, popSide, compact = false, visua
       // Wraps: a task waiting on several others ran its chips past the tile and
       // the viewport on a phone.
       <div data-testid="board-tile-deps" className="flex min-h-[18px] min-w-0 flex-wrap items-center gap-[5px] font-mono text-[12px] md:text-[11.5px] text-text-muted">
-        {visualStuck ? <span data-testid="board-tile-visual-stuck" className="text-status-warning">{visualStuck}</span> : t.status === 'ready' ? 'ready · next free slot' : (
+        {visualStuck ? <span data-testid="board-tile-visual-stuck" className="text-status-warning">{visualStuck}</span> : t.status === 'ready' ? (executor === 'local' ? 'ready · needs a local claim' : 'ready · next free slot') : (
           <>
             after
             {t.deps.filter(d => !d.satisfied).concat(t.deps.filter(d => d.satisfied)).map(d => (
@@ -691,7 +691,7 @@ function LandedRow({ task: t, link, complete }: { task: BoardTask; link: BoardLi
       data-task-id={t.id}
       data-testid="board-tile"
       data-status={t.status}
-      className="flex h-8 min-w-0 items-center gap-2 border-b border-border-default font-mono text-[12.5px] text-text-secondary hover:bg-card-hover"
+      className="flex min-h-11 md:min-h-0 md:h-8 min-w-0 items-center gap-2 border-b border-border-default font-mono text-[12.5px] text-text-secondary hover:bg-card-hover"
     >
       <span className="grid h-3.5 w-3.5 shrink-0 place-items-center bg-status-success text-[11px] md:text-[10px] font-bold text-card">✓</span>
       <ScopeChip scope={t.scope} />
@@ -731,7 +731,7 @@ function Ticker({ model, now, link }: { model: MissionBoardModel; now: number; l
           href={taskSheetHref(link, e.taskId)}
           data-task-id={e.taskId}
           data-testid="mission-ticker-event"
-          className="inline-flex h-6 items-center gap-1.5 border border-border-default px-2 text-text-secondary hover:bg-card-hover"
+          className="inline-flex min-h-11 md:min-h-0 md:h-6 items-center gap-1.5 border border-border-default px-2 text-text-secondary hover:bg-card-hover"
         >
           <span className={`font-bold ${TICK[e.kind].cls}`}>{TICK[e.kind].glyph}</span>
           {e.text}

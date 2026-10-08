@@ -43,6 +43,7 @@ import { roleSubscribers } from '@/lib/default-roles-subscribers';
 import { connectorCatalogSubscribers } from '@/lib/connector-catalog-subscribers';
 import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers';
 import { verdictSubscribers } from '@/lib/verdict-decision-subscribers';
+import { surfaceAuditSubscribers } from '@/lib/surface-audit-subscribers';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -63,6 +64,8 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...connectorCatalogSubscribers,
   // A held release's outcome-analytics row, recorded when its CI resolves it.
   ...routingAnalyticsSubscribers,
+  // task.left_mission: the surface audit lets go of a task that left its mission.
+  ...surfaceAuditSubscribers,
   // Last: the verdict recompute reads the evidence record the knowledge
   // module wrote and the CI/PR state the reviews module settled.
   ...verdictSubscribers,

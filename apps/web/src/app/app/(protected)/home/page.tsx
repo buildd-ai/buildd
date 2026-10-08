@@ -2131,6 +2131,12 @@ export default async function HomePage({
     ? <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={[]} initialWorkspaceId={wsFilter ?? null} phoneInbox />
     : <Link href={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : '/app/chat'} className="mb-7 flex min-h-12 items-center justify-between border border-border-strong bg-[var(--chat-surface)] pl-3 font-convo text-lede text-text-muted"><span>Describe the work, or ask…</span><span className="flex min-h-12 w-14 items-center justify-center border-l border-border-strong bg-accent text-[var(--on-accent)]">↑</span></Link>;
 
+  // Phone: the same checklist under the ask, so a new team gets a next step
+  // instead of an empty inbox (desktop renders it below the chat card).
+  const phoneSetup = showGettingStarted && gettingStarted
+    ? <GettingStartedChecklist checklist={gettingStarted} headingId="getting-started-phone-h" chatSetupHref={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : null} />
+    : null;
+
   return (
     <SwipeProvider>
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
@@ -2145,7 +2151,7 @@ export default async function HomePage({
           <ModelUpgradeNotice teamId={modelUpgradeTeamId} />
         </div>
       )}
-      <MobileHome items={phoneAttention} ask={phoneAsk} live={live} capacity={fleetData?.fleet.capacity ?? 0} mergedToday={stats?.mergedToday ?? 0} inCi={stats?.prsInCi.length ?? 0} shipped={shippedMissions} flight={[...phoneFlight.values()]} timeZone={teamTz} />
+      <MobileHome items={phoneAttention} ask={phoneAsk} setup={phoneSetup} runnerConnected={fleetData ? fleetData.fleet.runners.length > 0 : undefined} live={live} capacity={fleetData?.fleet.capacity ?? 0} mergedToday={stats?.mergedToday ?? 0} inCi={stats?.prsInCi.length ?? 0} shipped={shippedMissions} flight={[...phoneFlight.values()]} timeZone={teamTz} />
       <div className="mx-auto hidden max-w-[1320px] md:block">
         <header className="mb-5 flex flex-col gap-3 md:mb-6 md:flex-row md:items-end md:justify-between">
           <div className="min-w-0">
