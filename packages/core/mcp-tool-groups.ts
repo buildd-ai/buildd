@@ -200,8 +200,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
     lead: 'Your own task as a worker: ',
     parts: [
       { text: 'claim', actions: ['claim_task'] },
-      { text: 'report progress', actions: ['update_progress'] },
-      { text: 'read messages', actions: ['receive_messages'] },
+      { text: 'report progress, read messages', actions: ['update_progress', 'receive_messages'] },
       { text: 'post notes', actions: ['post_note'] },
       { text: 'record events', actions: ['emit_event', 'query_events'] },
       { text: 'write artifacts', actions: ['create_artifact', 'upload_artifact'] },
@@ -336,7 +335,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   consolidate_knowledge: 'find duplicate or stale knowledge; archive',
   memory_delete: 'permanently delete a memory',
   claim_task: 'claim your assignment, the next, or a named pending task',
-  update_progress: 'report progress; returns messages for you',
+  update_progress: 'report progress',
   receive_messages: 'messages sent to you',
   complete_task: 'finish your task (error marks it failed)',
   create_pr: 'open the PR for your branch',
