@@ -138,10 +138,10 @@ describe('MissionGrid portfolio', () => {
 
   it('has search, sort, status filters with counts, and a workspace filter', () => {
     expect(html).toContain('data-testid="portfolio-search"');
-    const sort = html.slice(html.indexOf('data-testid="portfolio-sort"'), html.indexOf('</select>'));
-    for (const label of ['>Attention<', '>Recent<', '>Closest<', '>Priority<']) expect(sort).toContain(label);
-    // Full meaning survives as the option's title.
-    for (const title of ['Needs attention', 'Recently advanced', 'Closest to landing']) expect(sort).toContain(`title="${title}`);
+    // The brand Select (no native <select>): the closed trigger names the current sort.
+    const sort = html.slice(html.indexOf('data-testid="portfolio-sort"'), html.indexOf('</button>', html.indexOf('data-testid="portfolio-sort"')));
+    expect(sort).toContain('Attention');
+    expect(html).not.toContain('<select');
     const filter = (k: string) => html.match(new RegExp(`data-filter="${k}"[^>]*>[^<]*<span[^>]*>(\\d+)</span>`))?.[1];
     expect(filter('all')).toBe('11');
     expect(filter('executing')).toBe('1');
@@ -151,8 +151,9 @@ describe('MissionGrid portfolio', () => {
   });
 
   it('phone-width tools: sort select is not width-capped, chip row has a scroll fade', () => {
-    const select = html.match(/<select[^>]*data-testid="portfolio-sort"[^>]*>/)![0];
-    expect(select).not.toContain('max-w-');
+    const trigger = html.match(/<button[^>]*data-testid="portfolio-sort"[^>]*>/)![0];
+    const wrapper = html.slice(html.lastIndexOf('<div', html.indexOf('data-testid="portfolio-sort"')), html.indexOf('data-testid="portfolio-sort"'));
+    expect(trigger + wrapper).not.toContain('max-w-');
     expect(html).toContain('data-testid="portfolio-filters-fade"');
     const fade = html.match(/<div[^>]*data-testid="portfolio-filters-fade"[^>]*>/)![0];
     expect(fade).toContain('pointer-events-none');
