@@ -4968,12 +4968,14 @@ describe('PATCH /api/workers/[id]', () => {
       });
 
       it('exempts a stacked-plan phase, whose base is the predecessor branch', async () => {
-        const predecessor = 'buildd/predecessor00-earlier-thing';
+        const predecessorId = '9f8e7d6c-1111-2222-3333-444444444444';
+        const predecessor = `buildd/${predecessorId.slice(0, 8)}-earlier-thing`;
         completingWorker({
           missionId: 'mission-1',
           taskClass: 'work',
           title: 'Second phase',
           context: { baseBranch: predecessor },
+          dependsOn: [predecessorId],
         });
         optedInMission();
         detectedPr(predecessor);

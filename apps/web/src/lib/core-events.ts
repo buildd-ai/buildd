@@ -291,6 +291,18 @@ export type CoreEvent =
       repoFullName: string;
       pr: { number: number; headSha: string; htmlUrl: string; baseRef: string | null; body: string | null; draft: boolean };
       worker: { id: string; workspaceId: string; taskId: string | null; branch: string };
+    }
+  /**
+   * A buildd worker's PR became visible for review: opened ready, or taken out
+   * of draft. Every delivery, redeliveries included. Subscribers must be
+   * idempotent.
+   */
+  | {
+      type: 'pr.review_ready';
+      installationId: number;
+      repoFullName: string;
+      pr: { number: number; headRef: string; additions: number | null; deletions: number | null };
+      worker: { id: string; workspaceId: string; taskId: string };
     };
 
 /** The worker that owns a PR, as the webhook resolved it. */
