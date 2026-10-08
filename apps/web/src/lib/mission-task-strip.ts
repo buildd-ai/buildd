@@ -310,6 +310,15 @@ export function activeIndices(slots: readonly StripSlot[]): number[] {
   return slots.flatMap((s, i) => (s.kind === 'task' && isActiveState(s.state) ? [i] : []));
 }
 
+/**
+ * The Next-open cycle set (NX-1, NX-2): active cells that have not failed, in
+ * strip order. It is exactly the set `stripCountsLabel` counts as "N open", so
+ * the button never walks into a failed cell the header does not call open.
+ */
+export function openIndices(slots: readonly StripSlot[]): number[] {
+  return slots.flatMap((s, i) => (s.kind === 'task' && isActiveState(s.state) && !isErrorState(s.state) ? [i] : []));
+}
+
 /** Indices of the held task slots, in strip order. */
 export function heldIndices(slots: readonly StripSlot[]): number[] {
   return slots.flatMap((s, i) => (s.kind === 'task' && isHeldState(s.state) ? [i] : []));

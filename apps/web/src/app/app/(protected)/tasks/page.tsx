@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { getOwnerDeliveryDisplays } from '@/lib/workflow/delivery-view';
 import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
-import { tasks, workers, workspaces as workspacesTable, missions, initiatives } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces as workspacesTable, missions, initiatives, teams } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte, isNull } from 'drizzle-orm';
 import { deriveTaskType, type TaskType } from '@buildd/core/mission-helpers';
 import { deriveDisplayStatus, LIVE_WORKER_STATUSES, deriveChainPosition, isSubjectDead } from '@/lib/task-presentation';
@@ -77,6 +77,7 @@ export default async function TasksPage({
   let initiativeTitle: string | null = null;
   let initiativeMissionIds: string[] = [];
   let localSessions: LocalSessionView[] = [];
+  let teamName: string | null = null;
 
   if (!isDev && user) {
     try {
@@ -84,6 +85,15 @@ export default async function TasksPage({
       const activeTeamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
 
       if (activeTeamId) {
+        // Query team name for the header eyebrow
+        try {
+          const team = await db.query.teams.findFirst({
+            where: eq(teams.id, activeTeamId),
+            columns: { name: true },
+          });
+          teamName = team?.name || null;
+        } catch {}
+
         // Resolve initiative title early (independent of workspace/task queries)
         if (initiativeId) {
           try {
@@ -438,6 +448,7 @@ export default async function TasksPage({
       initiativeTitle={initiativeTitle}
       initiativeMissionIds={initiativeMissionIds}
       localSessions={localSessions}
+      teamName={teamName}
     />
   );
 }
