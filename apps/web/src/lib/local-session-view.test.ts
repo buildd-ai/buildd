@@ -2,7 +2,7 @@ import { describe, it, expect, mock } from 'bun:test';
 
 mock.module('@buildd/core/db', () => ({ db: {} }));
 
-const { classifyLocalSession, sortLocalSessions, countInteractiveSessions, shownInSessionList } = await import('./local-session-view');
+const { classifyLocalSession, sortLocalSessions, countInteractiveSessions, shownInSessionList, groupSessionsForDisplay, sessionTaskPreview, SESSION_TASK_PREVIEW } = await import('./local-session-view');
 type Row = import('./local-session-view').LocalSessionRow;
 type Held = Row['held'][number];
 
@@ -118,5 +118,39 @@ describe('a session holding several tasks', () => {
     expect(v.workerLive).toBe(false);
     expect(v.tasks).toHaveLength(2);
     expect(v.task?.id).toBe('t2');
+  });
+});
+
+describe('Activity collapse', () => {
+  const v = (id: string, over: Partial<Row> = {}) => classifyLocalSession(row({ id, ...over }), NOW);
+
+  it('working sessions lead; online ones without a task and earlier ones are counted apart', () => {
+    const views = sortLocalSessions([
+      v('ended', { endedAt: minsAgo(5) }),
+      v('off', { lastSeenAt: minsAgo(30) }),
+      v('idle-a'),
+      v('working', { held: [held()] }),
+      v('idle-b', { lastSeenAt: minsAgo(2) }),
+    ]);
+    const g = groupSessionsForDisplay(views);
+    expect(g.working.map(s => s.id)).toEqual(['working']);
+    expect(g.idleOnline.map(s => s.id)).toEqual(['idle-a', 'idle-b']);
+    expect(g.earlier.map(s => s.id)).toEqual(['off', 'ended']);
+  });
+
+  it('a session shows at most three tasks: live ones first, newest first; the rest are counted', () => {
+    const tasks = Array.from({ length: 6 }, (_, i) => held({
+      workerId: `w${i}`, taskId: `t${i}`, taskTitle: `task ${i}`, workerStatus: i === 1 || i === 4 ? 'running' : 'completed',
+    }));
+    const p = sessionTaskPreview(v('many', { held: tasks }));
+    expect(SESSION_TASK_PREVIEW).toBe(3);
+    expect(p.shown.map(t => t.id)).toEqual(['t4', 't1', 't5']);
+    expect(p.hidden.map(t => t.id)).toEqual(['t3', 't2', 't0']);
+  });
+
+  it('three or fewer tasks: all shown, nothing hidden', () => {
+    const p = sessionTaskPreview(v('few', { held: [held({ taskId: 'a' }), held({ workerId: 'w2', taskId: 'b', workerStatus: 'completed' })] }));
+    expect(p.shown.map(t => t.id)).toEqual(['a', 'b']);
+    expect(p.hidden).toEqual([]);
   });
 });
