@@ -527,7 +527,7 @@ now); the agent access-request flow (task `d5a27699`).
 ## 5a. Catalog policy at runtime + provider compatibility
 
 **Capability statement**: A team's `blocked` catalog policy MUST deny agents
-every connector at that entry's URL — including one installed and connected
+every connector on that entry's host — including one installed and connected
 before the block — at every boundary that hands a connector to an agent,
 without deleting the connector or its provider credential. Connecting a team
 connector MUST be a team-admin act bound to that team. A provider that will
@@ -535,11 +535,14 @@ not register buildd as an OAuth client MUST surface as `needs_approved_client`,
 never as a generic failure and never worked around.
 
 **Invariants**:
-- A connector is *blocked for a task* when its normalized URL equals a
-  `blocked` entry in the merged catalog of EITHER the task's workspace team
+- A connector is *blocked for a task* when its URL's host equals the host of
+  a `blocked` entry in the merged catalog of EITHER the task's workspace team
   (consumer) OR the connector's owner team (`connectorBlock`,
-  `apps/web/src/lib/connector-access-policy.ts`). One team's block never
-  affects another team's own connectors.
+  `apps/web/src/lib/connector-access-policy.ts`). Path, scheme, port, query
+  and case do not matter: respelling the URL never escapes a block, whether
+  the team created the connector itself or another team shared it in. A
+  different host (including a sibling subdomain) is not covered. One team's
+  block never affects another team's own connectors.
 - Enforced at: the claim pre-filter and `checkConnectorRouting` (failure mode
   `blocked_by_policy`, ordered after `never_mounted`, before
   `expired_or_revoked`; a blocked connector is never HTTP-probed); claim-time
