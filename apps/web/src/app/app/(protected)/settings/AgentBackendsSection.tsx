@@ -5,6 +5,7 @@ import { ScopeSelector } from '@/components/ScopeSelector';
 import ConnectionRow, { StatusChip } from './_components/ConnectionRow';
 import { useConfirm } from '@/components/useConfirm';
 import StoredSeatNotice, { storedSeatKinds, type StoredSeatKind } from './StoredSeatNotice';
+import { ROTATING_CREDENTIAL_ALL_TEAMS_ERROR } from '@/lib/rotating-credential-scope';
 
 /** Settings → Model providers → Agent model endpoint (OpenRouter, LiteLLM). */
 const AGENT_ENDPOINT_HREF = '/app/settings/providers#agent-endpoint-h';
@@ -149,6 +150,8 @@ interface Workspace {
 interface Props {
   workspaces: Workspace[];
   currentTeamId: string | null;
+  /** Teams the user owns or admins — the only "All my teams" targets. Omitted = every team shown. */
+  manageableTeamIds?: string[];
 }
 
 type Scope = 'team' | 'workspace' | 'all_teams';
@@ -183,21 +186,25 @@ export interface TeamTarget {
  * or — for an operator who runs one runner across several of their teams — fanned
  * out to every team they manage ("all my teams"). See docs/credentials-architecture.md.
  */
-export default function AgentBackendsSection({ workspaces, currentTeamId }: Props) {
+export default function AgentBackendsSection({ workspaces, currentTeamId, manageableTeamIds }: Props) {
   // Only workspaces in the active team can share a team-wide credential.
   const teamWorkspaces = useMemo(
     () => (currentTeamId ? workspaces.filter((w) => w.teamId === currentTeamId) : workspaces),
     [workspaces, currentTeamId],
   );
 
-  // One representative workspace per distinct team the user can see — the fan-out
-  // targets. Each write is still authorized per-team server-side, so this can only
-  // touch teams the user actually belongs to.
+  // One representative workspace per distinct team the user manages — the fan-out
+  // targets ("every team you manage"). Each write is still authorized per-team
+  // server-side, so this can only touch teams the user actually belongs to.
   const teamTargets = useMemo<TeamTarget[]>(() => {
+    const manageable = manageableTeamIds ? new Set(manageableTeamIds) : null;
     const byTeam = new Map<string, string>();
-    for (const w of workspaces) if (!byTeam.has(w.teamId)) byTeam.set(w.teamId, w.id);
+    for (const w of workspaces) {
+      if (manageable && !manageable.has(w.teamId)) continue;
+      if (!byTeam.has(w.teamId)) byTeam.set(w.teamId, w.id);
+    }
     return Array.from(byTeam, ([teamId, workspaceId]) => ({ teamId, workspaceId }));
-  }, [workspaces]);
+  }, [workspaces, manageableTeamIds]);
   const multiTeam = teamTargets.length > 1;
 
   const [scope, setScope] = useState<Scope>('team');
@@ -276,7 +283,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
   const scopeControl = (
     <div className="space-y-2">
       <p className="text-xs text-text-secondary">
-        One sign-in covers every workspace in the team{multiTeam ? <>, or copy it to all {teamTargets.length} teams you manage</> : null}.
+        One sign-in covers every workspace in the team{multiTeam ? <>, or copy a key to all {teamTargets.length} teams you manage</> : null}.
       </p>
       {/* Shared scope selector (also used by connectors/roles, see ScopeSelector). */}
       <ScopeSelector
@@ -1044,12 +1051,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       if (!res.ok) { setMsg({ type: 'error', text: data.error ?? 'Exchange failed' }); return; }
       setOauth(null);
       setOauthCode('');
-      if (typeof data.teams === 'number') {
-        setMsg({ type: 'success', text: `Claude connected via OAuth for ${data.teams} of ${data.totalTeams} teams.` });
-      } else {
-        setStatus(data);
-        setMsg({ type: 'success', text: 'Claude connected.' });
-      }
+      setStatus(data);
+      setMsg({ type: 'success', text: 'Claude connected.' });
     } catch {
       setMsg({ type: 'error', text: 'Failed to exchange code' });
     } finally {
@@ -1098,24 +1101,6 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
     setPasteError(null);
     setMsg(null);
     try {
-      if (allTeams) {
-        const results = await Promise.all(
-          teamTargets.map((t) =>
-            fetch(`/api/workspaces/${t.workspaceId}/claude-credential`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ credentialsJson: pasteValue, scope: 'team' }),
-            }).then((r) => r.ok).catch(() => false),
-          ),
-        );
-        const ok = results.filter(Boolean).length;
-        setPasteValue('');
-        setMsg({
-          type: ok > 0 ? 'success' : 'error',
-          text: `Connected account saved for ${ok} of ${teamTargets.length} teams.`,
-        });
-        return;
-      }
       const res = await fetch(base, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1269,16 +1254,16 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
               onCancel={() => { setPasteOpen(false); setPasteValue(''); setPasteError(null); }} />
           )}
         </div>
+      ) : allTeams ? (
+        <p data-testid="claude-seat-all-teams" className="text-xs text-text-muted">{ROTATING_CREDENTIAL_ALL_TEAMS_ERROR}</p>
       ) : (
         <div className="space-y-3">
-          {allTeams ? (
-            <span className="text-xs text-text-muted">Approve once to apply the same Claude login to all {teamTargets.length} teams you manage.</span>
-          ) : fallbackConnected ? (
+          {fallbackConnected ? (
             <span className="status-pill status-pill-ok">Connected via setup token / API key</span>
           ) : (
             <span className="status-pill status-pill-idle">Not connected</span>
           )}
-          {/* OAuth connect (short code) is the clean primary path — incl. all-teams fan-out. */}
+          {/* OAuth connect (short code) is the clean primary path. */}
           {oauth ? (
             <ClaudeOAuthPanel authorizeUrl={oauth.authorizeUrl} code={oauthCode} onChange={setOauthCode} busy={busy}
               onSubmit={submitOAuthCode} onCancel={() => { setOauth(null); setOauthCode(''); }} />
@@ -1290,11 +1275,9 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
               {/* Explanation sits under the button, not beside it: the label stays one
                   line at any width instead of wrapping inside the button box. */}
               <p className="text-xs text-text-muted">
-                {allTeams
-                  ? `Approve once → applied to all ${teamTargets.length} teams`
-                  : fallbackConnected
-                    ? 'Replaces the setup token. Approve in the browser, then paste the code.'
-                    : 'Approve in the browser, then paste the code.'}
+                {fallbackConnected
+                  ? 'Replaces the setup token. Approve in the browser, then paste the code.'
+                  : 'Approve in the browser, then paste the code.'}
               </p>
             </div>
           )}
@@ -1304,7 +1287,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
             </button>
           ) : (
             <ClaudeCredentialsPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect}
-              onCancel={() => { setPasteOpen(false); setPasteValue(''); setPasteError(null); }} allTeamsCount={allTeams ? teamTargets.length : undefined} />
+              onCancel={() => { setPasteOpen(false); setPasteValue(''); setPasteError(null); }} />
           )}
         </div>
       )}
@@ -1321,8 +1304,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
   );
 }
 
-function ClaudeCredentialsPasteForm({ value, onChange, error, busy, onConnect, onCancel, allTeamsCount }: {
-  value: string; onChange: (v: string) => void; error: string | null; busy: boolean; onConnect: () => void; onCancel?: () => void; allTeamsCount?: number;
+function ClaudeCredentialsPasteForm({ value, onChange, error, busy, onConnect, onCancel }: {
+  value: string; onChange: (v: string) => void; error: string | null; busy: boolean; onConnect: () => void; onCancel?: () => void;
 }) {
   return (
     <div className="space-y-2">
@@ -1339,7 +1322,7 @@ function ClaudeCredentialsPasteForm({ value, onChange, error, busy, onConnect, o
       />
       {error && <div className="text-sm text-status-error">{error}</div>}
       <button onClick={onConnect} disabled={busy || !value.trim()} className="btn btn-primary">
-        {busy ? 'Connecting…' : allTeamsCount ? `Connect for all ${allTeamsCount} teams` : 'Connect'}
+        {busy ? 'Connecting…' : 'Connect'}
       </button>
     </div>
   );
@@ -1505,27 +1488,6 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
     setPasteError(null);
     setMsg(null);
     try {
-      // Fan out across every team the operator manages — each team gets its own
-      // team-wide Codex credential (authorized via a representative workspace).
-      if (allTeams) {
-        const results = await Promise.all(
-          teamTargets.map((t) =>
-            fetch(`/api/workspaces/${t.workspaceId}/codex-credential`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ authJson: pasteValue, scope: 'team' }),
-            }).then((r) => r.ok).catch(() => false),
-          ),
-        );
-        const ok = results.filter(Boolean).length;
-        setPasteValue('');
-        setMsg({
-          type: ok > 0 ? 'success' : 'error',
-          text: `Codex connected for ${ok} of ${teamTargets.length} teams.`,
-        });
-        if (ok > 0) onCredentialChange?.();
-        return;
-      }
       const res = await fetch(base, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1673,15 +1635,13 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
               onCancel={() => { setPasteOpen(false); setPasteValue(''); setPasteError(null); }} />
           )}
         </div>
+      ) : allTeams ? (
+        <p data-testid="codex-all-teams" className="text-xs text-text-muted">{ROTATING_CREDENTIAL_ALL_TEAMS_ERROR}</p>
       ) : (
         <div className="space-y-3">
-          {allTeams ? (
-            <span className="text-xs text-text-muted">Paste once to apply the same Codex login to all {teamTargets.length} teams you manage.</span>
-          ) : (
-            <span className="status-pill status-pill-idle">Not connected</span>
-          )}
-          {/* Device login mints a buildd-owned session — no pasted file to go stale. Not for all-teams fan-out. */}
-          {!allTeams && (device ? (
+          <span className="status-pill status-pill-idle">Not connected</span>
+          {/* Device login mints a buildd-owned session — no pasted file to go stale. */}
+          {device ? (
             <DeviceLoginPanel userCode={device.userCode} verificationUri={device.verificationUri}
               onCancel={() => { if (devicePollRef.current) devicePollRef.current.cancelled = true; setDevice(null); }} />
           ) : (
@@ -1692,8 +1652,8 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
               </button>
               <p className="text-xs text-text-muted">Recommended.</p>
             </div>
-          ))}
-          <CodexPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} allTeamsCount={allTeams ? teamTargets.length : undefined} />
+          )}
+          <CodexPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} />
         </div>
       )}
 
@@ -1705,8 +1665,8 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
   );
 }
 
-function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel, allTeamsCount }: {
-  value: string; onChange: (v: string) => void; error: string | null; busy: boolean; onConnect: () => void; onCancel?: () => void; allTeamsCount?: number;
+function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel }: {
+  value: string; onChange: (v: string) => void; error: string | null; busy: boolean; onConnect: () => void; onCancel?: () => void;
 }) {
   return (
     <div className="space-y-2">
@@ -1723,7 +1683,7 @@ function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel, all
       />
       {error && <div className="text-sm text-status-error">{error}</div>}
       <button onClick={onConnect} disabled={busy || !value.trim()} className="btn btn-primary">
-        {busy ? 'Connecting…' : allTeamsCount ? `Connect for all ${allTeamsCount} teams` : 'Connect'}
+        {busy ? 'Connecting…' : 'Connect'}
       </button>
     </div>
   );
