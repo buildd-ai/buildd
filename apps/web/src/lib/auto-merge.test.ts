@@ -150,7 +150,7 @@ mock.module('@/lib/base-refresh', () => ({
   checkBaseRefreshHold: (input: any) => mockCheckBaseRefreshHold(input),
 }));
 
-import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion, escalateReviewContractFailure, classifyAutoMergeRefusal } from './auto-merge';
+import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion, escalateReviewContractFailure, classifyAutoMergeRefusal, describeUnfiledRefreshOutcome } from './auto-merge';
 import type { MergePolicy } from '@buildd/shared';
 
 // ── evaluateAutoMergeSafety ───────────────────────────────────────────────────
@@ -2775,5 +2775,31 @@ describe('tryAutoMergeWorkerPr — refresh outcomes that file nothing are record
       reasons.add(refreshRows()[0].reason);
     }
     expect(reasons.size).toBe(4);
+  });
+});
+
+// The kernel path returns no failure class: its reason must still reach the
+// ledger, and a queued refresh must not read as a failure at all.
+describe('describeUnfiledRefreshOutcome — the cause, never a bare "unknown"', () => {
+  it('a queued refresh is its own outcome, not a failure', () => {
+    const d = describeUnfiledRefreshOutcome({ dispatched: false, refreshQueued: true });
+    expect(d.refreshOutcome).toBe('refresh_queued');
+    expect(d.reason).not.toMatch(/failed|unknown/);
+    expect(d.page).toBeNull();
+  });
+  it('the treadmill bound pages refresh_exhausted, saying the base kept moving', () => {
+    const d = describeUnfiledRefreshOutcome({ dispatched: false, refreshExhausted: true, refreshTreadmill: 3, refreshReason: 'base moved 3 times under the approved PR' });
+    expect(d.page).toBe('refresh_exhausted');
+    expect(d.reason).toMatch(/base kept moving after 3 refreshes/);
+  });
+  it('an exhausted refresh with only a reason carries the reason', () => {
+    const d = describeUnfiledRefreshOutcome({ dispatched: false, refreshExhausted: true, refreshReason: 'the mechanical refresh failed (landing_needs_human)' });
+    expect(d.page).toBe('refresh_failed');
+    expect(d.reason).toContain('the mechanical refresh failed');
+    expect(d.reason).not.toMatch(/\(unknown\)/);
+  });
+  it('a deferred refresh carries the raw GitHub error next to its class', () => {
+    const d = describeUnfiledRefreshOutcome({ dispatched: false, refreshDeferred: true, refreshFailure: 'unknown', refreshReason: 'GitHub API error: 404 Not Found' });
+    expect(d.reason).toContain('unknown: GitHub API error: 404 Not Found');
   });
 });

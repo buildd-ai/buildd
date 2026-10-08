@@ -41,6 +41,7 @@ import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-do
 import { checkBaseRefreshHold } from '@/lib/base-refresh';
 import { dispatchStaleApprovalReReview } from '@/lib/stale-approval-re-review';
 import type { DispatchConflictRetryResult } from '@/lib/conflict-retry';
+import { refreshCause } from '@/lib/refresh-cause';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 
 /**
@@ -912,12 +913,19 @@ export async function tryAutoMergeWorkerPr(params: {
 export function describeUnfiledRefreshOutcome(res: DispatchConflictRetryResult): {
   refreshOutcome: string;
   reason: string;
-  page: 'refresh_failed' | 'semantic_unverified' | null;
+  page: 'refresh_failed' | 'refresh_exhausted' | 'semantic_unverified' | null;
 } {
+  if (res.refreshExhausted && res.refreshTreadmill !== undefined) {
+    return {
+      refreshOutcome: 'refresh_exhausted',
+      reason: `the base kept moving after ${res.refreshTreadmill} refreshes (${refreshCause(res)})`,
+      page: 'refresh_exhausted',
+    };
+  }
   if (res.refreshExhausted) {
     return {
       refreshOutcome: 'refresh_exhausted',
-      reason: `updating the branch kept failing (${res.refreshFailure ?? 'unknown'}), not a conflict; retries are used up`,
+      reason: `updating the branch kept failing (${refreshCause(res)}), not a conflict; retries are used up`,
       page: 'refresh_failed',
     };
   }
@@ -936,8 +944,9 @@ export function describeUnfiledRefreshOutcome(res: DispatchConflictRetryResult):
   }
   if (res.headChanged) return { refreshOutcome: 'head_changed', reason: 'the PR head moved before the refresh; the new head re-evaluates', page: null };
   if (res.refreshInFlight) return { refreshOutcome: 'refresh_in_flight', reason: 'another refresh of this PR is in flight', page: null };
+  if (res.refreshQueued) return { refreshOutcome: 'refresh_queued', reason: 'a branch refresh is queued; the new head re-evaluates', page: null };
   if (res.refreshDeferred) {
-    return { refreshOutcome: 'refresh_deferred', reason: `updating the branch failed (${res.refreshFailure ?? 'unknown'}), not a conflict; will retry`, page: null };
+    return { refreshOutcome: 'refresh_deferred', reason: `updating the branch failed (${refreshCause(res)}), not a conflict; will retry`, page: null };
   }
   if (res.semanticDeferred) return { refreshOutcome: 'semantic_deferred', reason: 'semantic overlap with the base is not yet verified; will recheck', page: null };
   if (res.alreadyUpToDate) return { refreshOutcome: 'already_up_to_date', reason: 'the branch already has every base commit', page: null };
