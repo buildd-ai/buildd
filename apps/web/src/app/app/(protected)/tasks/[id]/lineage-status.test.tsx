@@ -106,9 +106,20 @@ describe('HeaderStatusPill — kernel DeliveryView', () => {
     expect(html).toContain('bg-accent');
     expect(html).toContain('data-owner="human"');
   });
-  it('shows release composition as a landing-ready state', () => {
-    const html = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'Release composition verified', owner: 'landing', stage: 'approved' })} />);
-    expect(html).toContain('Release composition verified');
+  it('shows approved PRs in live tone, not success, even when landing', () => {
+    const html = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'Approved · merging', owner: 'landing', stage: 'approved' })} />);
+    expect(html).toContain('Approved · merging');
+    expect(html).toContain('text-accent-text');
+    expect(html).toContain('bg-accent-soft');
+    expect(html).not.toContain('text-status-success');
+  });
+  it('shows merged PRs in success tone', () => {
+    const html = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'Merged', owner: 'landing', stage: 'merged' })} />);
+    expect(html).toContain('Merged');
     expect(html).toContain('text-status-success');
+  });
+  it('wraps long headlines without truncation on normal widths', () => {
+    const html = renderToStaticMarkup(<HeaderStatusPill status="running" merged={false} delivery={d({ headline: 'Waiting for the fix to reach GitHub and for all CI checks to pass' })} />);
+    expect(html).not.toContain('whitespace-nowrap');
   });
 });

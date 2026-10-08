@@ -2,6 +2,7 @@ import Link from 'next/link';
 import type { PrDisplayState } from '@/lib/pr-presentation';
 import type { ReactNode } from 'react';
 import StatusBadge, { STATUS_LABELS } from '@/components/StatusBadge';
+import { deliveryReading, type DeliveryReadingInput } from '@/lib/workflow/delivery-display';
 
 /** The page header's status: one square pill, loud only when it's on you. */
 /**
@@ -17,18 +18,51 @@ export interface DeliveryPillState {
   detail: string | null;
   /** The delivery's PR state (§17.5): what the PR tile, card and shipped header say. */
   prState?: PrDisplayState | null;
+  /** The delivery state (WORKING, AWAITING_PUSH, etc.) for tone computation. */
+  state?: string | null;
 }
 
 export function HeaderStatusPill({ status, merged, delivery = null }: { status: string; merged: boolean; delivery?: DeliveryPillState | null }) {
-  const base = 'inline-flex items-center gap-2 px-2.5 min-h-8 font-mono text-[11px] font-semibold uppercase tracking-[1.2px] border whitespace-nowrap';
+  const base = 'inline-flex items-center gap-2 px-2.5 min-h-8 font-mono text-[11px] font-semibold uppercase tracking-[1.2px] border';
   const dot = (extra = '') => <span className={`w-[7px] h-[7px] bg-current ${extra}`} aria-hidden="true" />;
+
   if (delivery && !merged) {
-    // Loud only when the kernel says a person owns the next move.
-    if (delivery.needsYou) return <span data-owner={delivery.owner} className={`${base} text-[var(--on-accent)] border-accent bg-accent`}>{dot()}{delivery.headline}</span>;
-    if (delivery.stage === 'merged') return <span data-owner={delivery.owner} className={`${base} text-status-success border-status-success bg-status-success/10`}>{dot()}{delivery.headline}</span>;
-    if (delivery.stage === 'failed' || delivery.stage === 'closed' || delivery.stage === 'abandoned') return <span data-owner={delivery.owner} className={`${base} text-status-error border-status-error bg-status-error/10`}>{dot()}{delivery.headline}</span>;
-    if (delivery.owner === 'landing') return <span data-owner={delivery.owner} className={`${base} text-status-success border-status-success bg-status-success/10`}>{dot()}{delivery.headline}</span>;
-    return <span data-owner={delivery.owner} className={`${base} text-accent-text border-accent bg-accent-soft`}>{dot(delivery.owner === 'worker' || delivery.owner === 'reviewer' ? 'animate-status-pulse' : '')}{delivery.headline}</span>;
+    // Use deliveryReading for canonical tone, keep the provided headline.
+    const reading = deliveryReading({ stage: delivery.stage, state: delivery.state ?? 'WORKING', headline: delivery.headline, owner: delivery.owner });
+
+    let toneClasses = '';
+    let shouldPulse = false;
+
+    if (delivery.needsYou) {
+      toneClasses = 'text-[var(--on-accent)] border-accent bg-accent';
+    } else if (reading) {
+      const tone = reading.tone;
+      if (tone === 'needs') {
+        toneClasses = 'text-[var(--on-accent)] border-accent bg-accent';
+      } else if (tone === 'landed') {
+        toneClasses = 'text-status-success border-status-success bg-status-success/10';
+      } else if (tone === 'closed') {
+        toneClasses = 'text-status-error border-status-error bg-status-error/10';
+      } else if (tone === 'failed') {
+        toneClasses = 'text-status-error border-status-error bg-status-error/10';
+      } else {
+        // 'live' or 'stalled'
+        toneClasses = 'text-accent-text border-accent bg-accent-soft';
+        shouldPulse = delivery.owner === 'worker' || delivery.owner === 'reviewer';
+      }
+    } else {
+      // fallback to original logic for backward compatibility
+      if (delivery.stage === 'merged') {
+        toneClasses = 'text-status-success border-status-success bg-status-success/10';
+      } else if (delivery.stage === 'failed' || delivery.stage === 'closed' || delivery.stage === 'abandoned') {
+        toneClasses = 'text-status-error border-status-error bg-status-error/10';
+      } else {
+        toneClasses = 'text-accent-text border-accent bg-accent-soft';
+        shouldPulse = delivery.owner === 'worker' || delivery.owner === 'reviewer';
+      }
+    }
+
+    return <span data-owner={delivery.owner} className={`${base} ${toneClasses}`} title={delivery.headline}>{dot(shouldPulse ? 'animate-status-pulse' : '')}{delivery.headline}</span>;
   }
   if (merged) return <span className={`${base} text-status-success border-status-success bg-status-success/10`}>{dot()}Merged</span>;
   switch (status) {
