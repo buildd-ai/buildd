@@ -517,3 +517,19 @@ describe('MissionBoard — Steer', () => {
     expect(html).not.toContain('steer-trigger');
   });
 });
+
+describe('MissionBoard tile ↻ badge', () => {
+  it('with the shared projection it is the repair count, not every attempt (a review run is audit)', async () => {
+    const { missionTaskStripFixture, stripFixtureId, DELIVERY_REPAIRING } = await import('../../../dev/fixtures/mission-task-strip-fixtures');
+    const f = missionTaskStripFixture('delivery');
+    const badge = (html: string) => {
+      const at = html.indexOf(`data-task-id="${stripFixtureId(DELIVERY_REPAIRING)}"`);
+      return /data-testid="board-tile-retry"[^>]*>([^<]+)</.exec(html.slice(at))?.[1];
+    };
+    const withDeliveries = renderToStaticMarkup(<MissionBoard model={f.model} missionId="m" deliveries={f.deliveries} />);
+    expect(badge(withDeliveries)).toBe('↻2');
+    // Without it, the board's own attempt count, as before.
+    const without = renderToStaticMarkup(<MissionBoard model={f.model} missionId="m" />);
+    expect(badge(without)).toBe(`↻${f.model.tasks[stripFixtureId(DELIVERY_REPAIRING)].attempt}`);
+  });
+});

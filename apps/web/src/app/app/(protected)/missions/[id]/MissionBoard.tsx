@@ -43,6 +43,7 @@ import {
 import CriteriaCheckNow from './CriteriaCheckNow';
 import { describeMissionDuration } from '@/lib/mission-duration';
 import { axisTicks, formatAxisMinutes } from '@/components/fleet/slot-lanes-layout';
+import { repairBadge } from '@/lib/delivery-projection';
 
 export interface MissionBoardProps extends BoardLinkContext {
   model: MissionBoardModel;
@@ -80,6 +81,11 @@ export interface MissionBoardProps extends BoardLinkContext {
    * block points at the drawer instead of drawing a second call to action.
    */
   stripFocus?: StripFocus | null;
+  /**
+   * Each deliverable's own Build › Audit › Land and audit/repair evidence
+   * (`missionTaskDeliveries`): the drawer's stage row and disclosure.
+   */
+  deliveries?: LandedStripProps['deliveries'];
 }
 
 /** Tile order inside a column: what needs you, then red, then live, then review, then queued. */
@@ -100,7 +106,7 @@ export default function MissionBoard(props: MissionBoardProps) {
 
 function BoardView({
   model: serverModel, completionText, notice, compact = false, visual: _visual, reviewLayout: _layout, review,
-  workspaceId = null, executor = null, stripFocus = null, ...link
+  workspaceId = null, executor = null, stripFocus = null, deliveries = null, ...link
 }: MissionBoardProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   // The Landed strip's selection: a store, so selecting re-renders the strip
@@ -138,7 +144,7 @@ function BoardView({
         missionId={link.missionId}
         visual={vm}
         onReview={review ? () => review.openDeck(null) : undefined}
-        strip={stripValue && workspaceId ? { link, workspaceId, executor, focus: stripFocus } : null}
+        strip={stripValue && workspaceId ? { link, workspaceId, executor, focus: stripFocus, deliveries } : null}
       />
       {notice && <div className="mt-4">{notice}</div>}
       {model.needsYou.map(id => (
@@ -182,12 +188,12 @@ function BoardView({
                 <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">{`${p.done}/${p.total}`}</span>
               </div>
               {active.map(t => [
-                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popSide={lastCol === 0 ? 'below' : i === lastCol ? 'left' : 'right'} compact={compact} visualStuck={t.id === auditId && vm ? stuckVisualCaption(vm) : null} />,
+                <Tile key={t.id} task={t} model={model} retry={retryBadge(t, deliveries)} now={now} span={stripSpan} link={link} popSide={lastCol === 0 ? 'below' : i === lastCol ? 'left' : 'right'} compact={compact} visualStuck={t.id === auditId && vm ? stuckVisualCaption(vm) : null} />,
                 shotsFor(t.id),
               ])}
               {landed.length > 0 && (
                 <div className="mt-0.5 border-t border-border-default">
-                  {landed.map(t => [<LandedRow key={t.id} task={t} link={link} complete={model.complete} />, shotsFor(t.id)])}
+                  {landed.map(t => [<LandedRow key={t.id} task={t} retry={retryBadge(t, deliveries)} link={link} complete={model.complete} />, shotsFor(t.id)])}
                 </div>
               )}
             </div>
@@ -233,7 +239,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
   visual?: VisualReviewModel | null;
   onReview?: () => void;
   /** The interactive Landed strip (the mission page's Board); absent: the plain meter. */
-  strip?: Pick<LandedStripProps, 'link' | 'workspaceId' | 'executor' | 'focus'> | null;
+  strip?: Pick<LandedStripProps, 'link' | 'workspaceId' | 'executor' | 'focus' | 'deliveries'> | null;
 }) {
   const needs = boardNeedsYouCount(model, visual);
   const first = model.needsYou.length ? model.tasks[model.needsYou[0]] : null;
@@ -465,11 +471,22 @@ export function AskBanner({ task, now }: { task: BoardTask; now: number }) {
 
 // ── Tiles ────────────────────────────────────────────────────────────────────
 
+/**
+ * A tile's ↻ badge. With the shared projection loaded it is the repair count
+ * (`repairBadge`), the same N the drawer, Activity and Missions print; a
+ * review run is audit, not a retry. Without it, the board's attempt count.
+ */
+export function retryBadge(t: BoardTask, deliveries: MissionBoardProps['deliveries']): string {
+  const d = deliveries?.[t.id];
+  if (d) return repairBadge(d.repairRounds);
+  return t.attempt > 1 ? `↻${t.attempt}` : '';
+}
+
 const ACCENT_BAR: Partial<Record<BoardStatus, string>> = {
   running: 'bg-accent', waiting: 'bg-accent', review: 'bg-status-success', ci_failed: 'bg-status-error', fixing: 'bg-status-error', failed: 'bg-status-error',
 };
 
-function Tile({ task: t, model, now, span, link, popSide, compact = false, visualStuck = null }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popSide: PopoverSide; compact?: boolean; visualStuck?: string | null }) {
+function Tile({ task: t, retry, model, now, span, link, popSide, compact = false, visualStuck = null }: { task: BoardTask; retry: string; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popSide: PopoverSide; compact?: boolean; visualStuck?: string | null }) {
   const href = taskSheetHref(link, t.id);
   const queued = t.status === 'ready' || t.status === 'blocked';
   const live = t.status === 'running' || t.status === 'fixing';
@@ -485,8 +502,8 @@ function Tile({ task: t, model, now, span, link, popSide, compact = false, visua
         {t.label}
       </span>
       <span className="flex-1" />
-      {t.attempt > 1 && (
-        <span className={`inline-flex h-5 shrink-0 items-center border px-1.5 font-mono text-[11px] ${t.status === 'fixing' || t.status === 'ci_failed' ? 'border-status-error text-status-error' : 'border-[var(--fleet-border-mid)] text-text-secondary'}`}>{`↻${t.attempt}`}</span>
+      {retry && (
+        <span data-testid="board-tile-retry" className={`inline-flex h-5 shrink-0 items-center border px-1.5 font-mono text-[11px] ${t.status === 'fixing' || t.status === 'ci_failed' ? 'border-status-error text-status-error' : 'border-[var(--fleet-border-mid)] text-text-secondary'}`}>{retry}</span>
       )}
       {live && <SteerButton taskId={t.id} />}
       {!queued && <RunnerAvatar runner={t.runner} />}
@@ -648,7 +665,7 @@ function TilePopover({ task: t, model, now, side, href }: { task: BoardTask; mod
   );
 }
 
-function LandedRow({ task: t, link, complete }: { task: BoardTask; link: BoardLinkContext; complete: boolean }) {
+function LandedRow({ task: t, retry, link, complete }: { task: BoardTask; retry: string; link: BoardLinkContext; complete: boolean }) {
   return (
     <a
       href={taskSheetHref(link, t.id)}
@@ -660,7 +677,7 @@ function LandedRow({ task: t, link, complete }: { task: BoardTask; link: BoardLi
       <span className="grid h-3.5 w-3.5 shrink-0 place-items-center bg-status-success text-[11px] md:text-[10px] font-bold text-card">✓</span>
       <ScopeChip scope={t.scope} />
       <span className="min-w-0 truncate font-medium">{t.label}</span>
-      {t.attempt > 1 && <span className="inline-flex h-[18px] shrink-0 items-center border border-[var(--fleet-border-mid)] px-1.5 text-[11px]">{`↻${t.attempt}`}</span>}
+      {retry && <span data-testid="board-tile-retry" className="inline-flex h-[18px] shrink-0 items-center border border-[var(--fleet-border-mid)] px-1.5 text-[11px]">{retry}</span>}
       <span className="flex-1" />
       {complete && (t.lines ? (
         <span className="shrink-0 text-[11px] tabular-nums text-[var(--fleet-faint)]">

@@ -9,7 +9,10 @@
  * - the stepper's "Next open" and the header's "N open ›" jump;
  * - the situation block's single-task affordance selects that cell and moves
  *   focus to the drawer instead of rendering a second call to action;
- * - selecting a task makes no request.
+ * - selecting a task makes no request;
+ * - with per-task deliveries, the drawer adds the task's own Build › Audit ›
+ *   Land row and an "Audit and repair" disclosure, without adding a cell;
+ *   without them the drawer is exactly what it was.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
@@ -30,7 +33,7 @@ const { LandedStrip } = await import('./MissionTaskStrip');
 const { MissionStripContext, createMissionStripStore } = await import('@/components/missions/mission-strip-context');
 const { default: SituationTaskAffordance } = await import('@/components/missions/SituationTaskAffordance');
 const { stripOrder } = await import('@/lib/mission-task-strip');
-const { missionTaskStripFixture, stripFixtureId, dagBoard, dagId, DAG_SPECS } = await import('../../../dev/fixtures/mission-task-strip-fixtures');
+const { missionTaskStripFixture, stripFixtureId, dagBoard, dagId, DAG_SPECS, DELIVERY_HELD, DELIVERY_REPAIRING } = await import('../../../dev/fixtures/mission-task-strip-fixtures');
 type Fixture = import('../../../dev/fixtures/mission-task-strip-fixtures').MissionTaskStripFixture;
 type StripFocus = import('./MissionTaskStrip').StripFocus;
 
@@ -61,7 +64,7 @@ async function mount(f: Fixture, focus: StripFocus | null = null, extra: React.R
     root.render(
       <MissionStripContext.Provider value={{ store, taskIds: stripOrder(f.model) }}>
         {extra}
-        <LandedStrip model={f.model} compact={false} link={{ missionId: 'm1' }} workspaceId="ws1" executor={f.executor} focus={focus} count={null} />
+        <LandedStrip model={f.model} compact={false} link={{ missionId: 'm1' }} workspaceId="ws1" executor={f.executor} focus={focus} count={null} deliveries={f.deliveries} />
       </MissionStripContext.Provider>,
     );
   });
@@ -275,5 +278,75 @@ describe('Landed strip', () => {
     const link = container.querySelector<HTMLAnchorElement>('[data-testid="mission-primary-action"]')!;
     expect(link.getAttribute('data-task-id')).toBe('t');
     expect(link.textContent).toContain('View the open task');
+  });
+});
+
+describe('Landed strip drawer: the selected task\'s own delivery', () => {
+  const stages = () => Array.from(drawer().querySelectorAll<HTMLElement>('[data-testid="delivery-stage"]'));
+  const toggle = () => drawer().querySelector<HTMLButtonElement>('[data-testid="landed-strip-drawer-evidence-toggle"]');
+  const evidence = () => drawer().querySelector<HTMLElement>('[data-testid="landed-strip-drawer-evidence"]');
+
+  it('35 tasks, 2 remaining: one cell per task, the repairing one selected on arrival', async () => {
+    await mount(missionTaskStripFixture('delivery'));
+    expect(cells()).toHaveLength(35);
+    expect(pressed()).toBe(DELIVERY_REPAIRING - 1);
+    expect(cells()[DELIVERY_REPAIRING - 1].dataset.status).toBe('fixing');
+    expect(cells()[DELIVERY_HELD - 1].dataset.status).toBe('blocked');
+    // Mission dependency progress stays the strip's own vocabulary: a red cell
+    // under a fix is its failed bucket (TONE-1), the drawer says Repairing.
+    expect(container.querySelector('[data-testid="landed-strip-open-jump"]')?.textContent).toBe('1 failed · 1 held ›');
+    expect(drawer().querySelector('[data-testid="landed-strip-drawer-ordinal"]')?.textContent).toBe('34 · LEVEL 34 OF 35');
+  });
+
+  it('the repairing task shows Build passed, Audit current with its round, Land ahead', async () => {
+    await mount(missionTaskStripFixture('delivery'));
+    expect(stages().map(s => [s.dataset.stage, s.dataset.state])).toEqual([['build', 'done'], ['audit', 'current'], ['land', 'later']]);
+    expect(stages()[0].textContent).toBe('✓ BuildPR #434 opened');
+    expect(stages()[1].textContent).toContain('Repair 2 · CI failed');
+    expect(stages()[1].getAttribute('aria-current')).toBe('step');
+  });
+
+  it('a repairing task opens its audit and repair evidence; the toggle closes it', async () => {
+    await mount(missionTaskStripFixture('delivery'));
+    expect(toggle()?.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle()?.textContent).toContain('2 revisions · 2 repairs');
+    expect(evidence()!.querySelectorAll('[data-testid="activity-revision"]')).toHaveLength(2);
+    expect(evidence()!.querySelectorAll('[data-testid="activity-repair"]')).toHaveLength(2);
+    expect(evidence()!.querySelector('[data-testid="activity-revision"]')?.getAttribute('data-current')).toBe('true');
+    await click(toggle()!);
+    expect(evidence()).toBeNull();
+    expect(fetches).toEqual([]);
+  });
+
+  it('the held task has not started: no evidence to open, its actions unchanged', async () => {
+    await mount(missionTaskStripFixture('delivery'));
+    await click(cells()[DELIVERY_HELD - 1]);
+    expect(stages().map(s => s.dataset.state)).toEqual(['later', 'later', 'later']);
+    expect(stages()[0].textContent).toContain('Not started');
+    expect(toggle()).toBeNull();
+    expect(drawer().querySelector('[data-testid="landed-strip-drawer-reason"]')?.textContent).toMatch(/^After 34/);
+    expect(drawer().querySelector('[data-testid="task-action-zone"]')).not.toBeNull();
+  });
+
+  it('a landed task: every stage passed, Merged', async () => {
+    await mount(missionTaskStripFixture('delivery'));
+    await click(cells()[32]);
+    expect(stages().map(s => s.dataset.state)).toEqual(['done', 'done', 'done']);
+    expect(stages()[2].textContent).toContain('Merged');
+    expect(drawer().querySelector('[data-testid="task-action-zone"]')).toBeNull();
+  });
+
+  it('the disclosure closes again when another task is selected and reopens on the repair', async () => {
+    await mount(missionTaskStripFixture('delivery'));
+    await click(toggle()!);
+    await click(cells()[DELIVERY_HELD - 1]);
+    await click(cells()[DELIVERY_REPAIRING - 1]);
+    expect(toggle()?.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('without deliveries the drawer has no stage row (every older caller)', async () => {
+    await mount(missionTaskStripFixture('mid-open'));
+    expect(drawer().querySelector('[data-testid="landed-strip-drawer-delivery"]')).toBeNull();
+    expect(drawer().querySelector('[data-testid="delivery-stages"]')).toBeNull();
   });
 });
