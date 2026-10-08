@@ -632,8 +632,30 @@ export async function PATCH(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
+  // Authorization: normally require exact account match, but for interactive (MCP)
+  // workers or OAuth-authenticated accounts, also allow if the account can access
+  // the worker's workspace (team-level access is sufficient for interactive sessions).
+  const isInteractiveWorker = worker.runner === 'mcp';
+  const isOauthAccount = (account as { authType?: string }).authType === 'oauth';
+  const allowTokenMismatch = isInteractiveWorker && (isOauthAccount || account.level === 'admin');
+
+  if (!taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  if (worker.accountId !== account.id && !allowTokenMismatch) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  if (allowTokenMismatch && worker.workspaceId) {
+    // For interactive workers with OAuth, verify workspace access
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, worker.workspaceId),
+      columns: { teamId: true },
+    });
+    if (!ws || (account.teamId && ws.teamId !== account.teamId)) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
   }
 
   // Resolve workspace sensitivity once — used throughout the handler to redact prose.

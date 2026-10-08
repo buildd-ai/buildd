@@ -16780,3 +16780,126 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
     expect(evidenceWrites()).toHaveLength(1);
   });
 });
+
+describe('OAuth MCP token authorization for update_progress', () => {
+  it('allows an OAuth MCP token to update progress on a worker it claimed', async () => {
+    const oauthAccountId = 'oauth-account-1';
+    const workerId = '22222222-2222-4222-8222-222222222222';
+    const taskId = 'task-oauth-1';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: oauthAccountId,
+      authType: 'oauth',
+      teamId: 'team-1',
+      maxConcurrentSessions: 5,
+      activeSessions: 1,
+    });
+
+    mockWorkersFindFirst.mockResolvedValue({
+      id: workerId,
+      accountId: oauthAccountId,
+      taskId: taskId,
+      workspaceId: 'ws-1',
+      runner: 'mcp',
+      status: 'running',
+    });
+
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      teamId: 'team-1',
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer oauth_jwt_token' },
+      body: { status: 'running', currentAction: 'working on task' },
+    });
+
+    const params = Promise.resolve({ id: workerId });
+    const res = await PATCH(req, { params });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('allows an OAuth MCP token to update progress on a worker with mismatched accountId if in the same workspace', async () => {
+    const oauthAccountId = 'oauth-account-1';
+    const claimedByAccountId = 'oauth-account-2';  // Different account from same team
+    const workerId = '44444444-4444-4444-8444-444444444444';
+    const taskId = 'task-oauth-3';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: oauthAccountId,
+      authType: 'oauth',
+      teamId: 'team-1',
+      level: 'worker',
+      maxConcurrentSessions: 5,
+      activeSessions: 1,
+    });
+
+    mockWorkersFindFirst.mockResolvedValue({
+      id: workerId,
+      accountId: claimedByAccountId,  // Worker claimed by different account
+      taskId: taskId,
+      workspaceId: 'ws-1',
+      runner: 'mcp',  // Interactive MCP worker
+      status: 'running',
+    });
+
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      teamId: 'team-1',  // Same team, so access is allowed
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer oauth_jwt_token' },
+      body: { status: 'running', currentAction: 'working on task' },
+    });
+
+    const params = Promise.resolve({ id: workerId });
+    const res = await PATCH(req, { params });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('OAuth token fails to update progress if worker workspace is in different team', async () => {
+    const oauthAccountId = 'oauth-account-1';
+    const differentAccountId = 'oauth-account-2';
+    const workerId = '55555555-5555-4555-8555-555555555555';
+    const taskId = 'task-oauth-4';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: oauthAccountId,
+      authType: 'oauth',
+      teamId: 'team-1',
+      level: 'worker',
+    });
+
+    mockWorkersFindFirst.mockResolvedValue({
+      id: workerId,
+      accountId: differentAccountId,
+      taskId: taskId,
+      workspaceId: 'ws-2',
+      runner: 'mcp',
+      status: 'running',
+    });
+
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-2',
+      teamId: 'team-2',  // Different team, so access is denied
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer oauth_jwt_token' },
+      body: { status: 'running', currentAction: 'working on task' },
+    });
+
+    const params = Promise.resolve({ id: workerId });
+    const res = await PATCH(req, { params });
+
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.error).toBe('Forbidden');
+  });
+});
