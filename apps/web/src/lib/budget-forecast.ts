@@ -304,7 +304,7 @@ export async function getBudgetForecast(
       },
     }).catch(() => null),
 
-    // Recent worker costs (last 24h) — for burn rate across all scoped workspaces
+    // Recent worker costs (last 24h) — for the pool burn rate across all scoped workspaces
     scopedWsIds.length > 0
       ? db
           .select({ costUsd: workers.costUsd })
@@ -313,6 +313,9 @@ export async function getBudgetForecast(
             inArray(workers.workspaceId, scopedWsIds),
             gte(workers.createdAt, new Date(now.getTime() - BURN_WINDOW_MS)),
             sql`${workers.costUsd} > 0`,
+            // The burn rate projects the credit pool, which real usage never
+            // draws on (countsTowardAgentSdkCreditPool).
+            sql`${workers.costBasis} IS DISTINCT FROM ${'real'}`,
           ))
           .catch(() => [] as { costUsd: string }[])
       : Promise.resolve([] as { costUsd: string }[]),

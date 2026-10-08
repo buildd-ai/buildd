@@ -17,7 +17,8 @@ import { accounts } from '@buildd/core/db/schema';
 const pageSource = await Bun.file(new URL('./page.tsx', import.meta.url)).text();
 
 /** The only fields the page reads off an account. */
-const USED = ['name', 'authType'] as const;
+// authType left with the worker's own cost basis (docs/specs/real-and-virtual-cost.md).
+const USED = ['name'] as const;
 const ALLOWLIST = `account: { columns: { ${USED.map(c => `${c}: true`).join(', ')} } }`;
 
 /**
