@@ -13,7 +13,7 @@ import { ownerDeliveryDisplays } from '@/lib/workflow/delivery-display';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE, buildReviewerRetryMap } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip } from '@buildd/core/mission-helpers';
-import { surfaceAuditHeadline } from '@buildd/core/surface-audit';
+import { isSurfaceAuditTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
@@ -71,6 +71,8 @@ import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import type { VisualReviewModel } from '@buildd/shared';
 import { MissionVisualReviewProvider } from './MissionVisualReview';
+import { MissionSurfaceAuditWaiverProvider } from './MissionSurfaceAuditWaiver';
+import { loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import MissionVisualReviewSetting from './MissionVisualReviewSetting';
 import MissionScreensRow from './MissionScreensRow';
 import MissionVisualReviewAction from './MissionVisualReviewAction';
@@ -906,7 +908,7 @@ export default async function MissionDetailPage({
 
   // The breadcrumb initiative, the initiative-selector options, the release
   // footer and the completion note are mutually independent.
-  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow] = await Promise.all([
+  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver] = await Promise.all([
     // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
     // so users see the parent initiative even when navigating directly to the mission.
     (from === 'initiative' && initiativeId)
@@ -966,6 +968,9 @@ export default async function MissionDetailPage({
           columns: { metadata: true },
         }).then(row => row ?? null, () => null)
       : Promise.resolve(null),
+    // The person-set "Waive visual audit" record, if any. A failed read only
+    // costs the record line; the waiver action stays.
+    loadSurfaceAuditWaiver(id).catch(() => null),
   ]);
   const shippedView = mission.status === 'completed'
     ? buildShippedHeaderView((shippedRow?.metadata as { shipped?: unknown } | null)?.shipped, (mission as any).completedAt)
@@ -1000,6 +1005,18 @@ export default async function MissionDetailPage({
   // "shots only" guard), so a queued, runner-less, boot-failed or stalled
   // audit is on the page. The Visual step is an adapter over the same model.
   const boardVisual: VisualReviewModel | null = visualModel && visualModel.phase !== 'off' ? visualModel : null;
+  // "Waive visual audit" (a person's call): offered beside the Visual review
+  // control and on the audit task's drawer whenever the mission has an audit,
+  // is blocked on a missing one, or already carries a waiver.
+  const auditWaiverProps = {
+    missionId: id,
+    waiver: surfaceAuditWaiver ?? null,
+    missionBranch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true,
+    readonly: isTerminal,
+  };
+  const showAuditWaiver = !!surfaceAuditWaiver
+    || (mission.tasks ?? []).some(t => isSurfaceAuditTask(t.title ?? '') || t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG)
+    || (missionAnswer?.waitingOn?.kind === 'human_decision' && missionAnswer.waitingOn.surfaceAudit === true);
   const vs = boardVisual?.summary;
   const visualReview = vs
     ? {
@@ -1251,6 +1268,7 @@ export default async function MissionDetailPage({
         initialEnabled={(mission as { autoSurfaceAudit?: boolean | null }).autoSurfaceAudit ?? null}
         visual={boardVisual}
         readonly={isTerminal}
+        auditWaiver={showAuditWaiver ? auditWaiverProps : null}
       />
 
       {/* Organizer runs, from every trigger */}
@@ -1533,6 +1551,7 @@ export default async function MissionDetailPage({
       <MissionReconcileOnOpen missionId={id} />
 
       <MissionVisualReviewProvider missionId={id} visual={boardVisual}>
+      <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
         board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
@@ -1556,6 +1575,7 @@ export default async function MissionDetailPage({
           />,
         )}
       />
+      </MissionSurfaceAuditWaiverProvider>
       </MissionVisualReviewProvider>
       </MissionAutoRefresh>
     </TaskPanelWrapper>
