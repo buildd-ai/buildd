@@ -2694,8 +2694,9 @@ export async function POST(req: NextRequest) {
       defaultBranch?: string;
     } | null;
 
-    // Shared mission branch (set by runMission) takes precedence — all mission
-    // tasks push to the same branch so a single PR tracks the mission's work.
+    // A pinned shared head (context.headBranch) takes precedence, except one
+    // equal to the task's own base: an integration-branch mission child bases
+    // on the mission branch and works on its own generated task head.
     //
     // The rule itself lives in @buildd/core/branch-names because approve-plan
     // has to predict this exact name when it resolves a stacked baseBranch ref;
@@ -2705,6 +2706,7 @@ export async function POST(req: NextRequest) {
       title: task.title,
       gitConfig,
       sharedHeadBranch: (patchedContext as Record<string, unknown> | null)?.headBranch,
+      baseBranch: (patchedContext as Record<string, unknown> | null)?.baseBranch,
     });
 
     // Atomic conditional insert: only creates worker if under concurrency limit
