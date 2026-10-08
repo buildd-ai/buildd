@@ -135,6 +135,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   modelCapabilities: true,
   roleEnvMissing: true,
   modelEndpointIgnored: true,
+  toolSearchDisabled: true,
   githubCredentials: true, // a mode marker; the token itself is never on the worker
 
   // Withheld — see WITHHELD_WORKER_FIELDS.
