@@ -33,6 +33,7 @@ import { and, eq, isNull, or } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { normalizeRepoFullName, repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { installationIdForRepo } from '@/lib/workspace-installation';
+import type { CommandResult } from '@/lib/workflow/seam';
 
 export interface RecordPrSupersessionParams {
   workerId: string;
@@ -232,6 +233,29 @@ export async function recordPrSupersession(
   }
 
   const supersedingPrUrl = prData.html_url ?? `https://github.com/${targetRepo}/pull/${supersedingPrNumber}`;
+  const ok: RecordPrSupersessionOk = {
+    ok: true,
+    supersededPrNumber: worker.prNumber,
+    supersedingPrNumber,
+    supersedingPrUrl,
+    supersedingRepo: targetRepo,
+  };
+
+  // A kernel-owned PR (docs/specs/workflow-state-kernel.md T20, Slice D): the kernel
+  // decides, and the edge reaches these columns only through its projection.
+  const closedInstallationId: number | null = sameRepo(closedRepo, workspaceRepo) && wsRepo?.installation?.installationId
+    ? wsRepo.installation.installationId
+    : await installationIdForRepo(closedRepo).catch(() => null);
+  if (worker.workspaceId && closedInstallationId) {
+    const { recordSupersession } = await import('@/lib/workflow/seam');
+    const kernel = await recordSupersession({
+      workspaceId: worker.workspaceId, repoFullName: closedRepo, prNumber: worker.prNumber, installationId: closedInstallationId,
+      actor: recordedBy, reason: reason.trim(),
+      target: { repoFullName: targetRepo, prNumber: supersedingPrNumber, url: supersedingPrUrl },
+    });
+    if (kernel.handled) return kernelAnswer(kernel.result, worker.prNumber, ok);
+  }
+
   const now = new Date();
   await db.update(workers).set({
     supersededByPrNumber: supersedingPrNumber,
@@ -242,13 +266,23 @@ export async function recordPrSupersession(
     updatedAt: now,
   }).where(rowsOfPr(workerId, worker.prUrl));
 
-  return {
-    ok: true,
-    supersededPrNumber: worker.prNumber,
-    supersedingPrNumber,
-    supersedingPrUrl,
-    supersedingRepo: targetRepo,
+  return ok;
+}
+
+/** What the kernel's answer to T20/T21 means to a caller of these writes. */
+function kernelAnswer<T extends { ok: true }>(r: CommandResult, prNumber: number, ok: T): T | RecordPrSupersessionError {
+  if (r.result === 'applied' || r.result === 'duplicate') return ok;
+  const reason = r.reason ?? r.result;
+  const why: Record<string, [string, number]> = {
+    not_closed_unmerged: [`PR #${prNumber} is not closed unmerged (it is ${r.current?.state?.toLowerCase().replace(/_/g, ' ') ?? 'unknown'}) — only a closed, unmerged PR can be superseded or abandoned`, 409],
+    edge_exists: [`PR #${prNumber} is already recorded as superseded by another PR — an edge is never overwritten`, 409],
+    same_pr: ['supersedingPrNumber must differ from the PR being superseded', 400],
+    target_not_merged: ['a supersession claim requires the target to already be merged', 409],
+    reason_required: ['reason is required', 400],
+    human_required: ['only a person can mark a PR abandoned', 403],
   };
+  const [error, status] = why[reason] ?? [`refused by the workflow kernel: ${reason}`, 409];
+  return { ok: false, error, status };
 }
 
 export type SimpleWriteResult = { ok: true } | { ok: false; error: string; status: number };
@@ -269,11 +303,25 @@ export async function recordPrAbandonment(params: {
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, params.workerId),
-    columns: { id: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true },
+    columns: { id: true, workspaceId: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true },
   });
   if (!worker) return { ok: false, error: 'Worker not found', status: 404 };
   if (!worker.prUrl) return { ok: false, error: 'Worker has no PR', status: 400 };
   if (worker.mergedAt) return { ok: false, error: `PR #${worker.prNumber} merged — nothing to abandon`, status: 409 };
+
+  // A kernel-owned PR (T21, Slice D): the kernel decides from its own state, which a
+  // lost close webhook cannot leave stale, and projects `abandoned*` itself.
+  const repo = repoFullNameFromPrUrl(worker.prUrl);
+  const installationId = repo ? await installationIdForRepo(repo).catch(() => null) : null;
+  if (repo && worker.prNumber && worker.workspaceId && installationId) {
+    const { abandonDelivery } = await import('@/lib/workflow/seam');
+    const kernel = await abandonDelivery({
+      workspaceId: worker.workspaceId, repoFullName: repo, prNumber: worker.prNumber, installationId,
+      actor: `human:${params.recordedBy}`, reason,
+    });
+    if (kernel.handled) return kernelAnswer(kernel.result, worker.prNumber, { ok: true as const });
+  }
+
   if (worker.supersededByPrNumber) {
     return { ok: false, error: `PR #${worker.prNumber} is already recorded as superseded by #${worker.supersededByPrNumber}`, status: 409 };
   }

@@ -59,17 +59,32 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
       supersededAt: true,
       abandonedAt: true,
       prBaseRef: true,
+      costBasis: true,
+      runner: true,
     },
     with: {
       task: {
-        columns: { id: true, title: true, status: true, roleSlug: true, tier: true, predictedModel: true, context: true, parentTaskId: true, missionId: true },
+        columns: { id: true, title: true, status: true, roleSlug: true, tier: true, predictedModel: true, parentTaskId: true, missionId: true },
+        // Only the keys `deriveTaskModel` reads, never the whole context blob:
+        // across a 30-day window the full blobs overflow Neon's 64 MB response cap.
+        // The callback form: a nested relation is aliased, so the column must
+        // come from the aliased table, not the imported one.
+        extras: (t, { sql }) => ({
+          routingContext: sql<Record<string, unknown>>`jsonb_build_object(
+            'model', ${t.context} -> 'model',
+            'resolvedTier', ${t.context} -> 'resolvedTier',
+            'routingReason', ${t.context} -> 'routingReason',
+            'routingInferred', ${t.context} -> 'routingInferred',
+            'routingInferredReason', ${t.context} -> 'routingInferredReason'
+          )`.as('routing_context'),
+        }),
       },
     },
     orderBy: [desc(workers.startedAt), desc(workers.id)],
     limit: FLOW_ROW_LIMIT,
   });
   return (rows as any[]).map(w => ({
-    inputTokens: w.inputTokens, outputTokens: w.outputTokens, costUsd: Number(w.costUsd), tier: deriveTaskModel({ tier: w.task?.tier, predictedModel: w.task?.predictedModel, context: w.task?.context }).tier,
+    inputTokens: w.inputTokens, outputTokens: w.outputTokens, costUsd: Number(w.costUsd), tier: deriveTaskModel({ tier: w.task?.tier, predictedModel: w.task?.predictedModel, context: w.task?.routingContext }).tier,
     workerId: w.id,
     taskId: w.taskId ?? null,
     parentTaskId: w.task?.parentTaskId ?? null,
@@ -89,6 +104,8 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
     prSupersededAt: ms(w.supersededAt),
     prAbandonedAt: ms(w.abandonedAt),
     prBaseRef: w.prBaseRef ?? null,
+    costBasis: w.costBasis ?? null,
+    runner: w.runner ?? null,
   }));
 }
 

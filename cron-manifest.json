@@ -265,6 +265,22 @@
       "path": "/api/cron/memory-digest-guardrail",
       "schedule": "5 9 * * *",
       "method": "POST"
+    },
+    {
+      "$comment": "Live sibling conflict probe floor tick (lib/sibling-conflict-probe.ts). Finds pairs of live workers whose observed touches share a file and asks one runner of each pair to run git merge-tree against the other's branch on its next heartbeat; a real conflict tells both workers once. Hourly in the day: also re-probes pairs whose touches stayed put while their commits moved. No live pair: one query.",
+      "title": "Buildd: Sibling Conflict Probe",
+      "profile": "module:health",
+      "path": "/api/cron/sibling-probe",
+      "schedule": "0 7-23 * * *",
+      "method": "GET"
+    },
+    {
+      "$comment": "Redis-gated fast tick for the SAME route as the hourly floor above. Reads buildd:due:sibling-probe, which the worker PATCH route marks when a heartbeat reports new touched paths, and returns without querying Postgres when no workspace's touches moved, so */5 costs Redis reads and zero extra Neon wake time while no worker is editing.",
+      "title": "Buildd: Sibling Conflict Probe (gated)",
+      "profile": "module:health",
+      "path": "/api/cron/sibling-probe?gate=due",
+      "schedule": "*/5 * * * *",
+      "method": "GET"
     }
   ]
 }

@@ -150,6 +150,20 @@ mock.module('@/lib/github', () => ({
   },
 }));
 
+// The PR fact funnel: terminal-wins is proven on real Postgres in
+// tests/db/pr-facts.test.ts; here we assert the fact each write hands over.
+// Not spread from the real module: drizzle-orm above is a partial surface
+// (no `sql`), so the real pr-facts cannot load in this process.
+const recordedFacts: Array<{ target: any; fact: any; opts?: unknown }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: unknown, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return [{ id: 'w1', taskId: 't1', workspaceId: 'ws1', previousStatus: null }];
+  },
+  recordPrFactSql: () => null,
+  prFactApplies: () => true,
+}));
+
 const {
   MISSION_PR_TASK_PREFIX,
   describeMissionIntegrationTopology,
@@ -193,6 +207,7 @@ beforeEach(() => {
   missionNoteRows = [];
   inserts.length = 0;
   updates.length = 0;
+  recordedFacts.length = 0;
   githubCalls.length = 0;
   githubResponses = {};
   githubThrows = {};
@@ -626,6 +641,11 @@ describe('openMissionIntegrationPr — mission PR body topology', () => {
     expect(ownerUpdate!.setValues.filesChanged).toBe(2);
     expect(ownerUpdate!.setValues.linesAdded).toBe(17);
     expect(ownerUpdate!.setValues.linesRemoved).toBe(3);
+    // The PR's state is a fact on the fact cache, never a bare column write.
+    expect(ownerUpdate!.setValues).not.toHaveProperty('prLifecycleStatus');
+    expect(recordedFacts).toHaveLength(1);
+    expect(recordedFacts[0].fact).toEqual({ kind: 'open' });
+    expect(typeof recordedFacts[0].target.workerId).toBe('string');
   });
 
   it('files the owner task as role-less bookkeeping — a placeholder, not work (role-routing §1 row 9)', async () => {
@@ -830,8 +850,12 @@ describe('openMissionIntegrationPr — owner state', () => {
     expect(githubCalls.some(c => c.method === 'POST')).toBe(false);
     // The owner row records the merge, so every surface reads "merged".
     const stamped = updates.find(u => u.setValues?.prNumber === 71)?.setValues;
-    expect(stamped?.prLifecycleStatus).toBe('merged');
-    expect(stamped?.mergedAt).toEqual(new Date('2026-09-27T10:00:00Z'));
+    expect(stamped).toBeDefined();
+    expect(stamped).not.toHaveProperty('prLifecycleStatus');
+    expect(stamped).not.toHaveProperty('mergedAt');
+    expect(recordedFacts).toHaveLength(1);
+    expect(recordedFacts[0].fact).toEqual({ kind: 'merged', mergedAt: new Date('2026-09-27T10:00:00Z') });
+    expect(typeof recordedFacts[0].target.workerId).toBe('string');
     expect(inserts.some(i => i.values?.taskClass === 'bookkeeping')).toBe(true);
   });
 

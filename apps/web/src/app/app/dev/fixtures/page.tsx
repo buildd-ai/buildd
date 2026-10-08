@@ -23,6 +23,8 @@ import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
 import FailureKindsFixture from './FailureKindsFixture';
+import DeliveryStatesFixture from './DeliveryStatesFixture';
+import DeliveryActionsFixture, { DELIVERY_ACTION_FIXTURE_STATES, type DeliveryActionFixtureState } from './DeliveryActionsFixture';
 import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
 import EntitlementBlockedFixture from './EntitlementBlockedFixture';
@@ -31,6 +33,7 @@ import WorkspacesListFixture from './WorkspacesListFixture';
 import HostedRunnerFixture from './HostedRunnerFixture';
 import InteractiveSessionsFixture from './InteractiveSessionsFixture';
 import ActivityDeliveryFixture from './ActivityDeliveryFixture';
+import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -55,7 +58,9 @@ import {
     AGENT_ACCESS_FIXTURE_STATE,
     ENTITLEMENT_BLOCKED_FIXTURE_STATE,
     FAILURE_KINDS_FIXTURE_STATE,
+    DELIVERY_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
+    SURFACE_AUDIT_WAIVER_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
     visualReviewFixtureLinks,
@@ -101,6 +106,10 @@ export default function DevFixturesPage() {
         return <MissionTaskStripFixture />;
     }
 
+    if (state === SURFACE_AUDIT_WAIVER_FIXTURE_STATE) {
+        return <SurfaceAuditWaiverFixture />;
+    }
+
     if (state === MISSION_LIST_EXECUTOR_FIXTURE_STATE) {
         return <MissionListExecutorFixture />;
     }
@@ -135,6 +144,14 @@ export default function DevFixturesPage() {
 
     if (state === FAILURE_KINDS_FIXTURE_STATE) {
         return <FailureKindsFixture />;
+    }
+
+    if (state === DELIVERY_STATES_FIXTURE_STATE) {
+        return <DeliveryStatesFixture />;
+    }
+
+    if ((DELIVERY_ACTION_FIXTURE_STATES as readonly string[]).includes(state)) {
+        return <DeliveryActionsFixture state={state as DeliveryActionFixtureState} />;
     }
 
     if (state === ANSWER_STATES_FIXTURE_STATE) {

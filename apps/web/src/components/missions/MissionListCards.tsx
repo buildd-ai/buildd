@@ -20,7 +20,7 @@ import type { MissionCardView } from '@/lib/mission-card-view';
 import { nextRunLabel, shortAgo, shortDuration, type ListTone, type MissionListCardModel } from '@/lib/mission-list-card';
 import { STATUS_TONE_EDGE, STATUS_TONE_SQUARE, STATUS_TONE_TEXT } from '@/lib/status-tone';
 import { timeAgo } from '@/lib/mission-helpers';
-import PhaseBar, { CELL_BOX } from './PhaseBar';
+import PhaseBar, { TONE_BOX } from './PhaseBar';
 import ContinueOnRunnerCta from './ContinueOnRunnerCta';
 
 export interface ListCardProps {
@@ -157,7 +157,7 @@ export function ActiveMissionCard({ view, model, workspaceName }: ListCardProps)
     >
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1.5 md:grid-cols-[120px_minmax(0,1fr)_auto]">
         <StatusWord {...model.status} />
-        <h3 className="order-3 col-span-2 min-w-0 truncate font-mono text-[15px] font-semibold tracking-[-0.2px] text-text-primary md:order-none md:col-span-1 md:text-[17px]">
+        <h3 className="order-3 col-span-2 min-w-0 line-clamp-2 [overflow-wrap:anywhere] font-mono text-[15px] font-semibold tracking-[-0.2px] text-text-primary md:order-none md:col-span-1 md:text-[17px]">
           <Link href={view.href} className="hover:underline">{view.title}</Link>
         </h3>
         <div className="flex items-center gap-2.5 font-mono text-[12px] text-text-secondary">
@@ -167,11 +167,12 @@ export function ActiveMissionCard({ view, model, workspaceName }: ListCardProps)
               <span><b className="text-text-primary">{model.live.count}</b> live</span>
             </>
           )}
-          {model.elapsedMin != null && <span className="text-text-muted">· {shortDuration(model.elapsedMin * 60_000)}</span>}
+          {/* The dot separates "N live" from the time; with nobody live it would dangle. */}
+          {model.elapsedMin != null && <span className="text-text-muted">{model.live.count > 0 ? '· ' : ''}{shortDuration(model.elapsedMin * 60_000)}</span>}
         </div>
       </div>
       {(model.sentence || workspaceName) && (
-        <p className="mt-1.5 truncate font-mono text-[11.5px] text-text-muted md:pl-[136px]">
+        <p className="mt-1.5 line-clamp-2 [overflow-wrap:anywhere] font-mono text-[11.5px] text-text-muted md:pl-[136px]">
           {workspaceName && <span className="text-text-secondary">{workspaceName}</span>}
           {workspaceName && model.sentence && ' · '}
           {model.sentence}
@@ -201,7 +202,8 @@ export function ActiveMissionCard({ view, model, workspaceName }: ListCardProps)
             <span className="text-status-warning"><b className="font-semibold">{counts.needsYou}</b> {model.question ? 'question' : 'needs you'}</span>
           )}
           {counts.failed > 0 && <span className="text-status-error"><b className="font-semibold">{counts.failed}</b> failed</span>}
-          {counts.queued > 0 && <span className="text-text-muted">{counts.queued} queued</span>}
+          {counts.open > 0 && <span className="text-text-muted">{counts.open} open</span>}
+          {counts.held > 0 && <span className="text-text-muted">{counts.held} held</span>}
         </div>
         {model.criteria && <CriteriaPips criteria={model.criteria} />}
       </div>
@@ -279,7 +281,7 @@ export function MiniMissionCard({ view, model, workspaceName }: ListCardProps) {
         ) : null}
       </div>
       <div className="min-w-0">
-        <h3 className="truncate font-mono text-[15px] font-semibold text-text-primary">
+        <h3 className="line-clamp-2 [overflow-wrap:anywhere] font-mono text-[15px] font-semibold text-text-primary">
           <Link href={view.href} className="hover:underline">{view.title}</Link>
         </h3>
         <p className="mt-1 line-clamp-2 font-mono text-[11.5px] text-text-muted">
@@ -309,7 +311,7 @@ export function MiniMissionCard({ view, model, workspaceName }: ListCardProps) {
           <>
             <span className="flex h-2.5 w-[120px] gap-[2px]" aria-hidden="true">
               {model.phases.flatMap(p => p.cells).slice(0, 12).map(c => (
-                <span key={c.taskId} className={`flex-1 ${CELL_BOX[c.state]}`} />
+                <span key={c.taskId} className={`flex-1 ${TONE_BOX[c.tone]}`} />
               ))}
             </span>
             <span className="flex items-center gap-2">

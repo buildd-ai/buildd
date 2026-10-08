@@ -71,6 +71,7 @@ mock.module('drizzle-orm', () => ({
   or: (...args: any[]) => ({ or: args }),
   sql: (strings: any, ...values: any[]) => ({ sql: strings, values }),
   isNotNull: (field: any) => ({ isNotNull: field }),
+  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ sql: strings.join('?'), values }),
 }));
 
 // Keep real path-overlap for meaningful overlap tests
@@ -107,11 +108,22 @@ mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mockFireGateEvent,
 }));
 
+// The workflow kernel's door (spec §6.7): off by default here (no kernel delivery), so the
+// legacy cases below run exactly as before; the kernel block turns it on.
+const mockKernelDeliveryForPr = mock(async (..._a: unknown[]) => null as string | null);
+const realAuthority = await import('@/lib/workflow/authority');
+mock.module('@/lib/workflow/authority', () => ({ ...realAuthority, kernelDeliveryForPr: mockKernelDeliveryForPr }));
+const mockObserveConflict = mock(async (_p: any) => ({ handled: false }) as any);
+const realSeam = await import('@/lib/workflow/seam');
+mock.module('@/lib/workflow/seam', () => ({ ...realSeam, observeConflict: mockObserveConflict }));
+
 import {
   classifyMergeFailure,
+  kernelConflictOutcome,
   isAutoResolveMergeConflictsEnabled,
   buildConflictRetryTask,
   dispatchConflictRetry,
+  classifyConflictFix,
   DEFAULT_MAX_CONFLICT_ITERATIONS,
 } from './conflict-retry';
 import type { ConflictRetryInput } from './conflict-retry';
@@ -552,6 +564,68 @@ describe('dispatchConflictRetry', () => {
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
+  // S37: the existing remediation is canonical. A stalled one is recovered in
+  // place (keyed by the task + a throttle window), never shadowed by a second.
+  describe('S37 — a stalled live conflict fix is recovered, not duplicated', () => {
+    const OLD = new Date(Date.now() - 45 * 60_000);
+    const pendingStalled = { id: 'live-retry', conflictRetryHeadSha: 'sha-older', status: 'pending', createdAt: OLD, claimedAt: null, updatedAt: OLD, context: {} };
+
+    it('re-dispatches a pending fix no runner claimed, and files nothing new', async () => {
+      mockLiveConflictRetryProbe.mockResolvedValue(pendingStalled);
+      mockUpdateReturning.mockResolvedValueOnce([{ id: 'live-retry' }]);
+      const result = await dispatchConflictRetry({ ...BASE_PARAMS, humanInitiated: true });
+      expect(result).toMatchObject({ dispatched: false, inFlightTaskId: 'live-retry', remediationStalled: true, remediationRecovery: 'redispatch' });
+      expect(mockInsert).not.toHaveBeenCalled();
+      expect(mockWakeTask).toHaveBeenCalledWith('live-retry', 'conflict.retry');
+      expect(capturedUpdateSet.context.conflictRecovery.action).toBe('redispatch');
+      expect(capturedUpdateSet.status).toBeUndefined();
+    });
+
+    it('repairs a claimed fix whose worker already ended: back to pending, then woken', async () => {
+      mockLiveConflictRetryProbe.mockResolvedValue({ ...pendingStalled, status: 'assigned', claimedAt: OLD });
+      mockWorkerFindFirst.mockResolvedValue({ status: 'failed', updatedAt: OLD });
+      mockUpdateReturning.mockResolvedValueOnce([{ id: 'live-retry' }]);
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+      expect(result.remediationRecovery).toBe('repair');
+      expect(capturedUpdateSet.status).toBe('pending');
+      expect(capturedUpdateSet.claimedAt).toBeNull();
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
+
+    it('a concurrent caller that loses the compare-and-set applies nothing (duplicate sweep/click/webhook)', async () => {
+      mockLiveConflictRetryProbe.mockResolvedValue(pendingStalled);
+      mockUpdateReturning.mockResolvedValueOnce([]);
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+      expect(result).toMatchObject({ dispatched: false, inFlightTaskId: 'live-retry', remediationStalled: true, remediationRecovery: 'none' });
+      expect(mockWakeTask).not.toHaveBeenCalled();
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
+
+    it('a fix re-dispatched a minute ago is waiting again, not stalled: no second recovery', async () => {
+      mockLiveConflictRetryProbe.mockResolvedValue({ ...pendingStalled, context: { conflictRecovery: { at: new Date(Date.now() - 60_000).toISOString() } } });
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+      expect(result).toEqual({ dispatched: false, inFlightTaskId: 'live-retry' });
+      expect(mockUpdate).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
+    });
+
+    it('a fresh pending fix is left alone', async () => {
+      const now = new Date();
+      mockLiveConflictRetryProbe.mockResolvedValue({ ...pendingStalled, createdAt: now, updatedAt: now });
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+      expect(result).toEqual({ dispatched: false, inFlightTaskId: 'live-retry' });
+      expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
+    it('classifyConflictFix: a silent live worker is stalled but never raced', () => {
+      const now = Date.now();
+      expect(classifyConflictFix({ status: 'in_progress', createdAt: OLD, workerStatus: 'running', workerUpdatedAt: new Date(now - 30 * 60_000) }, now))
+        .toMatchObject({ stalled: true, action: 'none' });
+      expect(classifyConflictFix({ status: 'in_progress', createdAt: OLD, workerStatus: 'running', workerUpdatedAt: new Date(now - 60_000) }, now))
+        .toEqual({ stalled: false, reason: null, action: 'none' });
+    });
+  });
+
   it('scopes the in-flight probe to this workspace, this PR and live statuses', async () => {
     await dispatchConflictRetry(BASE_PARAMS);
 
@@ -689,6 +763,15 @@ describe('dispatchConflictRetry', () => {
       expect(result).toEqual({ dispatched: false, alreadyUpToDate: true, conflictFalsePositive: true });
       expect(mockInsert).not.toHaveBeenCalled();
       expect(mockFireGateEvent.mock.calls.some((c) => c[0].reason === 'conflict_false_positive')).toBe(true);
+    });
+
+    it('no GitHub installation: the recheck cannot run, so the agent is dispatched as today', async () => {
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: null });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: true, taskId: 'new-task-id' });
+      expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
     });
 
     it('a real textual conflict dispatches the conflict agent as today', async () => {
@@ -878,14 +961,13 @@ describe('dispatchConflictRetry', () => {
     expect(capturedInsertValues.dependsOn).toEqual(['unrelated-sibling']);
   });
 
-  it('populates dependsOn when a sibling task has an overlapping pathManifest', async () => {
+  it('a prefix-only overlap with a sibling is soft evidence, never a dependsOn edge', async () => {
     mockTaskFindFirst.mockResolvedValue({
       ...MOCK_TASK,
-      // Exact directory prefix — pathsOverlap does literal prefix matching, not glob expansion
       pathManifest: ['apps/web/src/lib'],
       missionId: 'mission-1',
     });
-    // Sibling declares a file inside that directory — prefix overlap fires
+    // Sibling declares a file inside that directory — prefix overlap only
     mockTaskFindMany.mockResolvedValue([
       { id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] },
     ]);
@@ -893,7 +975,33 @@ describe('dispatchConflictRetry', () => {
     const result = await dispatchConflictRetry(BASE_PARAMS);
 
     expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toBeUndefined();
+    expect(capturedInsertValues.pathDeclaration).toMatchObject({
+      overlapPolicy: 'v2',
+      softOverlaps: [{ taskId: 'sibling-task-id', kind: 'prefix' }],
+    });
+  });
+
+  it('a sibling declaring the same file is soft same_file evidence, decided at claim', async () => {
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['apps/web/src/lib/foo.ts'], missionId: 'mission-1' });
+    mockTaskFindMany.mockResolvedValue([{ id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] }]);
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toBeUndefined();
+    expect(capturedInsertValues.pathDeclaration).toMatchObject({ overlapPolicy: 'v2', softOverlaps: [{ taskId: 'sibling-task-id', kind: 'same_file' }] });
+  });
+
+  it('populates dependsOn when a sibling task declares the same migration file', async () => {
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['packages/core/drizzle/0400_x.sql'], missionId: 'mission-1' });
+    mockTaskFindMany.mockResolvedValue([{ id: 'sibling-task-id', pathManifest: ['packages/core/drizzle/0400_x.sql'] }]);
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
     expect(capturedInsertValues.dependsOn).toEqual(['sibling-task-id']);
+    expect(capturedInsertValues.pathDeclaration).toMatchObject({ inferredDependsOn: ['sibling-task-id'], overlapPolicy: 'v2' });
   });
 
   it('does not populate dependsOn when no sibling tasks overlap', async () => {
@@ -982,12 +1090,12 @@ describe('dispatchConflictRetry', () => {
   it('conflict retry with a concrete manifest ignores wildcard siblings but keeps real overlaps', async () => {
     mockTaskFindFirst.mockResolvedValue({
       ...MOCK_TASK,
-      pathManifest: ['apps/web/src/lib'],
+      pathManifest: ['packages/core/drizzle/0400_x.sql'],
       missionId: 'mission-1',
     });
     mockTaskFindMany.mockResolvedValue([
       { id: 'wildcard-sibling', pathManifest: ['**'] },
-      { id: 'overlapping-sibling', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      { id: 'overlapping-sibling', pathManifest: ['packages/core/drizzle/0400_x.sql'] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
@@ -997,17 +1105,18 @@ describe('dispatchConflictRetry', () => {
   });
 
   it('does not depend on a task that is already downstream of the original task, directly or transitively, but still depends on an unrelated overlapping task', async () => {
-    const pathManifest = ['apps/web/src/lib'];
+    // Migration files: a hard overlap, so the edges are real dependsOn candidates.
+    const pathManifest = ['packages/core/drizzle/foo.sql', 'packages/core/drizzle/bar.sql', 'packages/core/drizzle/baz.sql'];
     mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
     mockTaskFindMany.mockResolvedValue([
       { id: 'task-id', pathManifest, dependsOn: [] },
       // S: overlaps and already depends directly on the original task.
-      { id: 'downstream-direct', pathManifest: ['apps/web/src/lib/foo.ts'], dependsOn: ['task-id'] },
+      { id: 'downstream-direct', pathManifest: ['packages/core/drizzle/foo.sql'], dependsOn: ['task-id'] },
       // S2: overlaps and depends on the original task transitively, through X.
-      { id: 'downstream-transitive', pathManifest: ['apps/web/src/lib/bar.ts'], dependsOn: ['intermediate'] },
+      { id: 'downstream-transitive', pathManifest: ['packages/core/drizzle/bar.sql'], dependsOn: ['intermediate'] },
       { id: 'intermediate', pathManifest: null, dependsOn: ['task-id'] },
       // U: overlaps but has no relationship to the original task.
-      { id: 'unrelated-overlap', pathManifest: ['apps/web/src/lib/baz.ts'], dependsOn: [] },
+      { id: 'unrelated-overlap', pathManifest: ['packages/core/drizzle/baz.sql'], dependsOn: [] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
@@ -1104,5 +1213,78 @@ describe('dispatchConflictRetry', () => {
       expect(mockWakeTask.mock.calls).toEqual([['pending-repair', 'conflict.retry']]);
       expect(mockInsert).not.toHaveBeenCalled();
     });
+  });
+});
+
+
+// ── The kernel owns the conflict family for its PRs (Slice B part 2, §6.7) ────
+
+describe('dispatchConflictRetry for a kernel-owned PR', () => {
+  const KERNEL_WS = { id: 'ws-k', repo: 'acme/widgets', gitConfig: {}, githubInstallation: { installationId: 42 } };
+  const params = { workerId: 'w1', taskId: 't1', prNumber: 7, headSha: 'H1', repoFullName: 'acme/widgets', workspaceId: 'ws-k' };
+  const applied = (toState: string, stateReason: string | null, attempt: Record<string, unknown> | null) => ({
+    handled: true, mergeable: 'dirty', after: { state: toState, stateReason, headSha: 'H1' }, attempt,
+    result: { result: 'applied', transitionId: 'tr', deliveryId: 'd1', version: 2, decision: { toState, patch: { stateReason }, attempts: [] } },
+  });
+  beforeEach(() => {
+    mockWorkspaceFindFirst.mockReset();
+    mockWorkspaceFindFirst.mockResolvedValue(KERNEL_WS);
+    mockTaskFindFirst.mockReset();
+    mockTaskFindFirst.mockResolvedValue(null); // no live legacy retry; owner context empty
+    mockInsert.mockClear();
+    mockUpdate.mockClear();
+    mockUpdateBehindPrBranch.mockClear();
+    mockObserveConflict.mockReset();
+    mockKernelDeliveryForPr.mockReset();
+    mockKernelDeliveryForPr.mockResolvedValue('d1');
+  });
+
+  it('asks the kernel, and the legacy decision (counter, key release, behind refresh, insert) never runs', async () => {
+    mockObserveConflict.mockResolvedValue(applied('REPAIRING', 'conflict', { id: 'g1', family: 'conflict', mode: 'agent', status: 'queued', outcome: null, taskId: 'g1' }));
+    const res = await dispatchConflictRetry({ ...params, behindOnly: true });
+    expect(res).toMatchObject({ dispatched: true, taskId: 'g1' });
+    expect(mockObserveConflict.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-k', prNumber: 7, installationId: 42, hint: 'behind', isDependencyBot: false });
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
+  });
+
+  it('a disabled workspace still lets the platform refresh, but gives agents no budget', async () => {
+    mockWorkspaceFindFirst.mockResolvedValue({ ...KERNEL_WS, gitConfig: { autoResolveMergeConflicts: false } });
+    mockObserveConflict.mockResolvedValue(applied('ESCALATED', 'conflict_exhausted', null));
+    expect(await dispatchConflictRetry(params)).toMatchObject({ dispatched: false, exhausted: true });
+    expect(mockObserveConflict.mock.calls[0][0].maxAgentAttempts).toBe(0);
+  });
+
+  it('a migration collision is handed over as the repair subject', async () => {
+    mockObserveConflict.mockResolvedValue(applied('REPAIRING', 'migration', { id: 'm1', family: 'migration', mode: 'mechanical', status: 'ended', outcome: 'delivered', taskId: null }));
+    const collision = { file: '0007_a.sql', otherFile: '0007_b.sql', otherPrNumber: 3 };
+    expect(await dispatchConflictRetry({ ...params, migrationCollision: collision })).toMatchObject({ dispatched: true, branchUpdated: true });
+    expect(mockObserveConflict.mock.calls[0][0].migrationCollision).toEqual(collision);
+  });
+
+  it('not kernel-owned: the kernel is not asked', async () => {
+    mockKernelDeliveryForPr.mockResolvedValue(null);
+    await dispatchConflictRetry(params).catch(() => null);
+    expect(mockObserveConflict).not.toHaveBeenCalled();
+  });
+});
+
+describe('kernelConflictOutcome', () => {
+  const seen = (result: Record<string, unknown>, attempt: Record<string, unknown> | null = null, state: string | null = null) =>
+    ({ handled: true, mergeable: 'dirty', after: state ? { state, stateReason: null, headSha: 'H1' } : null, attempt, result }) as never;
+  const rej = (reason: string) => ({ result: 'rejected', reason, current: { state: 'REPAIRING', version: 3, head: 'H1', round: 1 } });
+  it('maps the kernel answer onto the shape the doors understand', () => {
+    expect(kernelConflictOutcome(seen(rej('not_conflicting')))).toMatchObject({ dispatched: false, alreadyUpToDate: true });
+    expect(kernelConflictOutcome(seen(rej('dependency_bot_pr')))).toMatchObject({ dispatched: false, dependencyBot: true });
+    expect(kernelConflictOutcome(seen({ result: 'stale', reason: 'head_not_current', current: null }))).toMatchObject({ dispatched: false, headChanged: true });
+    expect(kernelConflictOutcome(seen(rej('fix_in_flight'), { id: 'g1', mode: 'agent', taskId: 'g1' }))).toMatchObject({ dispatched: false, inFlightTaskId: 'g1' });
+    expect(kernelConflictOutcome(seen(rej('fix_in_flight'), { id: 'm1', mode: 'mechanical', taskId: null }))).toMatchObject({ dispatched: false, refreshInFlight: true });
+    const esc = (reason: string) => ({ result: 'applied', decision: { toState: 'ESCALATED', patch: { stateReason: reason }, attempts: [] } });
+    expect(kernelConflictOutcome(seen(esc('landing_needs_human')))).toMatchObject({ dispatched: false, refreshExhausted: true });
+    expect(kernelConflictOutcome(seen(esc('conflict_exhausted')))).toMatchObject({ dispatched: false, exhausted: true });
+    const rep = { result: 'applied', decision: { toState: 'REPAIRING', patch: { stateReason: 'behind' }, attempts: [] } };
+    expect(kernelConflictOutcome(seen(rep, { mode: 'mechanical', status: 'queued', outcome: null }))).toMatchObject({ dispatched: false, refreshDeferred: true });
+    expect(kernelConflictOutcome(seen(rep, { mode: 'mechanical', status: 'skipped', outcome: 'noop' }))).toMatchObject({ dispatched: false, alreadyUpToDate: true });
   });
 });

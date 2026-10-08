@@ -3,7 +3,11 @@ import { choice, defineDecision } from '@builddai/ai-kit/decide';
 import {
   CLAIM_HOLD_APPLYING_FRACTION,
   CLAIM_HOLD_DECISION,
+  CLAIM_HOLD_MIN_CONFIDENCE,
+  CLAIM_HOLD_PROMPT_VERSION,
   buildClaimHoldState,
+  deriveHolderStage,
+  summarizeFileConflictHistory,
   claimHoldCandidatePolicyVersion,
   claimHoldStateDigest,
   classifyClaimHoldEligibility,
@@ -79,6 +83,32 @@ describe('classifyClaimHoldEligibility: deterministic rails', () => {
   });
 });
 
+describe('classifyClaimHoldEligibility: soft_overlap (prefix-only declared overlap)', () => {
+  const soft = (over: Partial<ClaimHoldEligibilityInput> = {}) => base({
+    gate: 'soft_overlap',
+    concretePaths: ['scripts/'],
+    overlapPaths: ['scripts', 'scripts/run-unit-tests.ts'],
+    holder: { taskId: 't-h', prNumber: null, workerStatus: 'running', prLifecycle: null },
+    ...over,
+  });
+
+  it('is eligible even while the holder is live: the overlap is only by directory', () => {
+    expect(classifyClaimHoldEligibility(soft())).toEqual({ eligible: true });
+  });
+
+  it('a live lease, a serialized surface, a migration or unknown state still wins', () => {
+    expect(classifyClaimHoldEligibility(soft({ overlapsLiveLease: true }))).toEqual({ eligible: false, rail: 'live_lease' });
+    expect(classifyClaimHoldEligibility(soft({ serializedSurfaces: ['x'] }))).toEqual({ eligible: false, rail: 'serialized_surface' });
+    expect(classifyClaimHoldEligibility(soft({ overlapPaths: ['packages/core/drizzle'] }))).toEqual({ eligible: false, rail: 'migration' });
+    expect(classifyClaimHoldEligibility(soft({ leaseReadFailed: true }))).toEqual({ eligible: false, rail: 'state_unresolved' });
+    expect(classifyClaimHoldEligibility(soft({ forced: true }))).toEqual({ eligible: false, rail: 'forced' });
+  });
+
+  it('with no overlapping paths there is nothing to ask about', () => {
+    expect(classifyClaimHoldEligibility(soft({ overlapPaths: [] }))).toEqual({ eligible: false, rail: 'no_overlap_data' });
+  });
+});
+
 describe('isMigrationPath', () => {
   it.each([
     ['packages/core/drizzle/0001_a.sql', true],
@@ -93,18 +123,25 @@ describe('isMigrationPath', () => {
   });
 });
 
-describe('gated START is unreachable by default', () => {
-  it('ships in shadow with a zero applying fraction', () => {
-    expect(CLAIM_HOLD_DECISION.policyOf('action').mode).toBe('shadow');
-    expect(CLAIM_HOLD_APPLYING_FRACTION).toBe(0);
-    expect(isGatedStartReachable()).toBe(false);
+describe('gated START is live, with a single rollback switch', () => {
+  it('ships gated at a conservative threshold with every eligible deferral in the applying arm', () => {
+    expect(CLAIM_HOLD_DECISION.policyOf('action').mode).toBe('gated');
+    expect(CLAIM_HOLD_DECISION.policyOf('action').minConfidence).toBe(CLAIM_HOLD_MIN_CONFIDENCE);
+    expect(CLAIM_HOLD_MIN_CONFIDENCE).toBeGreaterThanOrEqual(0.8);
+    expect(CLAIM_HOLD_APPLYING_FRACTION).toBe(1);
+    expect(isGatedStartReachable()).toBe(true);
+  });
+
+  it('rolling back is a zero fraction: deterministic HOLD everywhere', () => {
+    expect(isGatedStartReachable(CLAIM_HOLD_DECISION, 0)).toBe(false);
   });
 
   it('needs BOTH a non-shadow policy and a positive fraction', () => {
     const q = { action: choice({ question: 'q' }, { HOLD: 'h', START: 's' }) };
     const gated = defineDecision({ id: 'buildd.t_claim', promptVersion: 't', questions: q, mode: 'gated', minConfidence: 0.9 });
+    const shadow = defineDecision({ id: 'buildd.t_claim', promptVersion: 't', questions: q, mode: 'shadow' });
     expect(isGatedStartReachable(gated, 0)).toBe(false);
-    expect(isGatedStartReachable(CLAIM_HOLD_DECISION, 0.5)).toBe(false);
+    expect(isGatedStartReachable(shadow, 0.5)).toBe(false);
     expect(isGatedStartReachable(gated, 0.1)).toBe(true);
     expect(isGatedStartReachable(gated, Number.NaN)).toBe(false);
   });
@@ -162,5 +199,73 @@ describe('claim-time digest and state', () => {
     const s = buildClaimHoldState(candidate({ gate: 'advisory_manifest', scope: 'undeclared', concretePaths: [], overlapPaths: [] }), null) as any;
     expect(s.baseFreshness).toBe('unknown');
     expect(s.holder.live).toBe(true);
+  });
+});
+
+describe('same-file soft overlap: the inputs Jev decides with', () => {
+  const sameFile = (over: Partial<ClaimHoldCandidate> = {}): ClaimHoldCandidate => ({
+    gate: 'soft_overlap',
+    teamId: 'team', workspaceId: 'ws', missionId: null, taskId: 'cand', accountId: null,
+    deferredAt: '2026-09-30T12:00:00.000Z', taskCreatedAt: '2026-09-30T11:00:00.000Z',
+    scope: 'declared', concretePaths: ['apps/web/src/lib/x.ts'], overlapPaths: ['apps/web/src/lib/x.ts'],
+    overlapKind: 'same_file', retryKind: null,
+    holder: { taskId: 'h', prNumber: null, workerStatus: 'running', prLifecycle: null },
+    title: 'Add a thing',
+    ...over,
+  });
+
+  it('bumps the prompt version for the new inputs', () => {
+    expect(CLAIM_HOLD_PROMPT_VERSION).toBe('ch3');
+  });
+
+  it('the digest distinguishes a same-file overlap from a prefix one on the same paths', () => {
+    expect(claimHoldStateDigest(sameFile())).not.toBe(claimHoldStateDigest(sameFile({ overlapKind: 'prefix' })));
+  });
+
+  it('deriveHolderStage reads where the holder is: queued, just started, working, in review, approved', () => {
+    const now = '2026-09-30T12:00:00.000Z';
+    expect(deriveHolderStage({ workerStatus: null, startedAt: null, prNumber: null, prLifecycle: null, approved: false, now })).toBe('queued');
+    expect(deriveHolderStage({ workerStatus: 'running', startedAt: '2026-09-30T11:55:00.000Z', prNumber: null, prLifecycle: null, approved: false, now })).toBe('just_started');
+    expect(deriveHolderStage({ workerStatus: 'running', startedAt: '2026-09-30T10:00:00.000Z', prNumber: null, prLifecycle: null, approved: false, now })).toBe('working');
+    expect(deriveHolderStage({ workerStatus: 'completed', startedAt: '2026-09-30T10:00:00.000Z', prNumber: 9, prLifecycle: 'ci_green', approved: false, now })).toBe('in_review');
+    expect(deriveHolderStage({ workerStatus: 'completed', startedAt: '2026-09-30T10:00:00.000Z', prNumber: 9, prLifecycle: 'ci_green', approved: true, now })).toBe('approved');
+  });
+
+  it('summarizeFileConflictHistory: no merged PRs on a file reads as no_history, not as safe or unsafe', () => {
+    const h = summarizeFileConflictHistory(['apps/web/src/lib/x.ts'], []);
+    expect(h.summary).toBe('no_history');
+    expect(h.files).toEqual([{ path: 'apps/web/src/lib/x.ts', mergedPrs: 0, conflicted: 0, rate: null }]);
+  });
+
+  it('summarizeFileConflictHistory reports the per-file rate and the worst file', () => {
+    const h = summarizeFileConflictHistory(['a.ts', 'b.ts'], [
+      { path: 'a.ts', mergedPrs: 10, conflicted: 1 },
+      { path: 'b.ts', mergedPrs: 4, conflicted: 2 },
+    ]);
+    expect(h.files.map(f => f.rate)).toEqual([0.1, 0.5]);
+    expect(h.maxRate).toBe(0.5);
+    expect(h.summary).toBe('high');
+    expect(summarizeFileConflictHistory(['a.ts'], [{ path: 'a.ts', mergedPrs: 20, conflicted: 1 }]).summary).toBe('low');
+  });
+
+  it('the state names the overlap kind, holder stage, conflict history and predicted change size', () => {
+    const s = buildClaimHoldState(sameFile(), {
+      title: 'Other', workerStatus: 'running', lastActivityAt: '2026-09-30T11:59:00.000Z', prLifecycle: null, baseStale: null, stage: 'just_started',
+    }, {
+      conflictHistory: summarizeFileConflictHistory(['apps/web/src/lib/x.ts'], []),
+      predictedChange: { files: 3, minutes: 20, source: 'neighbours' },
+    }) as any;
+    expect(s.overlap.kind).toBe('same_file');
+    expect(s.holder.kind).toBe('in_flight_task_editing_the_same_file');
+    expect(s.holder.stage).toBe('just_started');
+    expect(s.conflictHistory.summary).toBe('no_history');
+    expect(s.candidate.predictedChange).toEqual({ files: 3, minutes: 20, source: 'neighbours' });
+  });
+
+  it('without evidence the state says unknown rather than inventing a figure', () => {
+    const s = buildClaimHoldState(sameFile(), null) as any;
+    expect(s.conflictHistory).toEqual({ summary: 'unknown' });
+    expect(s.candidate.predictedChange).toEqual({ source: 'declared_paths', files: 1 });
+    expect(s.holder.stage).toBe('unknown');
   });
 });

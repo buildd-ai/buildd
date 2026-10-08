@@ -638,7 +638,8 @@ describe('POST /api/tasks', () => {
         const refused = await POST(createMockRequest({
           method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { title: 'Elsewhere', missionId: OTHER_MISSION },
         }));
-        expect(refused.status).toBe(404);
+        expect(refused.status).toBe(403);
+        expect((await refused.json()).error).toMatch(/only in its own task's mission/);
         expect(mockTasksInsert).not.toHaveBeenCalled();
 
         const filed = await POST(createMockRequest({
@@ -2624,7 +2625,7 @@ describe('POST /api/tasks', () => {
     expect(capturedValues.pathManifest).toContain('apps/runner/src/env-scan.ts');
   });
 
-  it('inferred manifest overlapping a sibling pending task → auto-dependsOn edge created', async () => {
+  it('inferred manifest overlapping a sibling pending task on the same file → soft same_file evidence, no edge', async () => {
     frictionSetup();
     mockTasksFindFirst.mockResolvedValue(null); // dedup miss
 
@@ -2663,8 +2664,11 @@ describe('POST /api/tasks', () => {
       'apps/runner/src/env-scan.ts',
       'apps/runner/src/workers.ts',
     ]);
-    // The overlap with the sibling task triggered the auto-dependsOn edge
-    expect(capturedValues.dependsOn).toContain('sibling-task-99');
+    // The same-file overlap is decided at claim (HOLD/START), not a stored edge
+    expect(capturedValues.dependsOn ?? []).not.toContain('sibling-task-99');
+    expect(capturedValues.pathDeclaration.softOverlaps).toEqual([
+      { taskId: 'sibling-task-99', paths: ['apps/runner/src/workers.ts'], kind: 'same_file' },
+    ]);
   });
 
   it('manifest inference skipped when caller already provides pathManifest', async () => {
@@ -2940,11 +2944,11 @@ describe('POST /api/tasks', () => {
     expect(captured().dependsOn).toBeUndefined();
   });
 
-  it('still auto-depends when two concrete manifests genuinely overlap', async () => {
+  it('a broad-prefix overlap mints no hard edge: it is stored as soft scheduling evidence', async () => {
     const captured = missionPathManifestSetup();
     mockTasksFindMany.mockResolvedValue([
       { id: 'sibling-wildcard', pathManifest: ['**'] },
-      { id: 'sibling-real-overlap', pathManifest: ['apps/web/src/lib'] },
+      { id: 'sibling-dir', pathManifest: ['apps/web/src/lib'] },
       { id: 'sibling-unrelated', pathManifest: ['packages/core/db/schema.ts'] },
     ]);
 
@@ -2960,13 +2964,83 @@ describe('POST /api/tasks', () => {
     }));
 
     expect(response.status).toBe(200);
-    expect(captured().dependsOn).toEqual(['sibling-real-overlap']);
-    // Provenance: the declaration as filed, and which edge was inferred.
+    expect(captured().dependsOn).toBeUndefined();
     expect(captured().pathDeclaration).toMatchObject({
       declared: ['apps/web/src/lib/shared.ts'],
       source: 'creation',
-      inferredDependsOn: ['sibling-real-overlap'],
+      overlapPolicy: 'v2',
+      softOverlaps: [{ taskId: 'sibling-dir', kind: 'prefix', paths: ['apps/web/src/lib/shared.ts', 'apps/web/src/lib'] }],
     });
+    expect(captured().pathDeclaration.inferredDependsOn).toBeUndefined();
+  });
+
+  it('declaring a whole directory does not queue behind every task under it', async () => {
+    const captured = missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ id: `under-${i}`, pathManifest: [`scripts/tool-${i}.ts`] })),
+    );
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Mission task D', missionId: 'mission-1', pathManifest: ['scripts/'] },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().dependsOn).toBeUndefined();
+    expect(captured().pathDeclaration.softOverlaps).toHaveLength(8);
+  });
+
+  it('an exact same-file overlap with a queued writer is soft same_file evidence, not an edge', async () => {
+    const captured = missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'sibling-same-file', pathManifest: ['apps/web/src/lib/shared.ts'] },
+      { id: 'sibling-dir', pathManifest: ['apps/web/src/lib'] },
+    ]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Mission task B', missionId: 'mission-1', pathManifest: ['apps/web/src/lib/shared.ts'] },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().dependsOn).toBeUndefined();
+    expect(captured().pathDeclaration).toMatchObject({
+      overlapPolicy: 'v2',
+      softOverlaps: [
+        { taskId: 'sibling-same-file', kind: 'same_file' },
+        { taskId: 'sibling-dir', kind: 'prefix' },
+      ],
+    });
+  });
+
+  it('a same-file overlap on a generated file stays a hard inferred edge', async () => {
+    const captured = missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([{ id: 'sibling-index', pathManifest: ['docs/specs/INDEX.md'] }]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Mission task S', missionId: 'mission-1', pathManifest: ['docs/specs/INDEX.md'] },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().dependsOn).toEqual(['sibling-index']);
+  });
+
+  it('a migration-namespace overlap stays hard even when prefix-only', async () => {
+    const captured = missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([{ id: 'sibling-migration', pathManifest: ['packages/core/drizzle/'] }]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Mission task M', missionId: 'mission-1', pathManifest: ['packages/core/drizzle/0400_x.sql'] },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().dependsOn).toContain('sibling-migration');
   });
 
   it('records a caller-supplied edge as explicit, never as inferred', async () => {
@@ -3655,6 +3729,21 @@ describe('POST /api/tasks', () => {
         method: 'POST',
         headers: { Authorization: 'Bearer bld_test' },
         body: { workspaceId: 'ws-1', title: 'Task', kind: 'enginering' },
+      }));
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('kind must be one of');
+    });
+
+    it.each([['feature'], ['test'], ['constructor']])('rejects category-shaped kind=%s with a 400 so it never reaches the router', async (kind) => {
+      setupKindAuth();
+      captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-1', title: 'Task', kind },
       }));
 
       expect(response.status).toBe(400);

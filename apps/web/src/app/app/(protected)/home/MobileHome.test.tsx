@@ -91,3 +91,16 @@ it('renders a mixed list with named actions, concrete reasons and no generic fal
   expect(html).toContain('Review required · protected migration paths');
   for (const bad of ['Open decision', 'Work needs a decision', '/app/health', 'Nothing else is blocking it']) expect(html).not.toContain(bad);
 });
+
+// Surface audit: with no runner the phone hid Get started and said
+// "The fleet is working without you." It shows the next step instead.
+it('a team with no runner sees the getting-started step, not "working without you"', () => {
+  const html = renderToStaticMarkup(<MobileHome items={[]} ask={null} setup={<section data-testid="getting-started">Connect a runner</section>} runnerConnected={false} counts={{ openMissions: 0, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 0 } }} milestones={[]} quietMissions={0} shipped={[]} />);
+  expect(html).toContain('data-testid="getting-started"');
+  expect(html).toContain('Connect a runner');
+  expect(html).not.toContain('working without you');
+  expect(html).toContain('No runner is connected yet');
+  // The checklist is the next step; the "All clear" reassurance would contradict it.
+  expect(html).not.toContain('All clear');
+  expect(html.indexOf('getting-started')).toBeLessThan(html.indexOf('See everything in motion'));
+});

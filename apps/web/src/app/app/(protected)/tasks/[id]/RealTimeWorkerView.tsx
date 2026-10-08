@@ -1,5 +1,6 @@
 'use client';
 
+import { resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
 import { isOpenAsk } from '@/lib/open-ask';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -103,7 +104,6 @@ interface Worker {
   instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response'; deliveryState?: 'pending' | 'delivered' }>;
   pendingInstructions: string | null;
   updatedAt: string | null;
-  account?: { authType: string } | null;
   resultMeta?: {
     stopReason: string | null;
     terminalReason?: string | null;
@@ -141,13 +141,20 @@ interface Props {
   roleName?: string | null;
   /** Injectable clock for deterministic renders (tests). */
   nowMs?: number;
+  /**
+   * The kernel's reading of this task's delivery, when the kernel owns it.
+   * A recoverable blocker the platform owns (e.g. a fix that has not reached
+   * GitHub yet) is never shown as "Needs input" just because the worker
+   * stopped on a question (workflow-state-kernel §17.5, S36).
+   */
+  delivery?: { headline: string; owner: string; needsYou: boolean; detail: string | null; prState?: PrDisplayState | null; state: string } | null;
 }
 
 // Entries carry optional agentId/parentAgentId (SDK v0.3.202+) so nested agent
 // trees can be reconstructed; see @/lib/agent-tree.
 type TaskProgressEntry = AgentProgressEntry;
 
-export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp }: Props) {
+export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null }: Props) {
   const router = useRouter();
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const lastStatusRef = useRef(initialWorker.status);
@@ -173,6 +180,8 @@ export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus =
   const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
   // The question is this page's hero: the global "…needs your input" banner
   // naming it above the hero only repeats it.
+  // §13.2: the needs-input banner is only for a worker-owned delivery (or a person's own move); reviewer, landing, trunk and platform owners are Buildd's.
+  const platformOwned = !!delivery && delivery.owner !== 'worker' && delivery.owner !== 'human' && !delivery.needsYou;
   useHideNeedsInputWhileOpen(worker.waitingFor && isOpenAsk(taskStatus, worker.status) ? taskId : null);
 
   // When the server component re-renders (via router.refresh()), pick up fresh
@@ -371,6 +380,20 @@ export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus =
     </div>
   );
 
+  // A kernel-owned delivery whose next move belongs to the platform: the
+  // blocker is recoverable, so it is stated with its evidence, not asked.
+  if (worker.waitingFor && isOpenAsk(taskStatus, worker.status) && platformOwned && delivery) {
+    return (
+      <div data-testid="worker-view" data-state="platform-owned" className="space-y-5">
+        <div data-testid="worker-platform-owned-banner" className="border border-border-strong px-4 py-3">
+          <p className="font-mono text-[11px] uppercase tracking-[1.2px] text-text-muted">Buildd is handling this</p>
+          <p className="mt-1 text-sm font-semibold text-text-primary">{delivery.headline}</p>
+          {delivery.detail && <p className="mt-1 text-sm text-text-secondary">{delivery.detail}</p>}
+        </div>
+      </div>
+    );
+  }
+
   // Retained questions on ended workers or terminal tasks are history.
   if (worker.waitingFor && isOpenAsk(taskStatus, worker.status)) {
     const question = unifyWorkerQuestion(worker.waitingFor, questionNote, { workerError: worker.error });
@@ -444,7 +467,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus =
         elapsed={elapsed}
         turns={worker.turns}
         tokens={tokensShown ? tokens : null}
-        pr={worker.prUrl ? { url: worker.prUrl, number: worker.prNumber, lifecycle: worker.prLifecycleStatus ?? null } : null}
+        pr={worker.prUrl ? { url: worker.prUrl, number: worker.prNumber, state: resolvePrDisplayState({ delivery, prLifecycleStatus: worker.prLifecycleStatus }) } : null}
         filesTouched={Math.max(filesEdited, worker.filesChanged ?? 0)}
         added={added}
         removed={removed}

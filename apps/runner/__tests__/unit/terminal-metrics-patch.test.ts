@@ -183,7 +183,13 @@ async function runSession(
   const task = makeTask();
   mockClaimTask.mockImplementation(async () => ({ workers: [{ id: workerId, branch: 'buildd/test', task }] }));
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 300));
+  // Poll for the completion update rather than a fixed sleep: a loaded CI
+  // shard can take well over 300ms to finish the session.
+  const deadline = Date.now() + 5000;
+  while (!completionCall() && !metricsCall() && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 25));
+  }
+  await new Promise(r => setTimeout(r, 50));
 }
 
 /** An assistant turn that calls one MCP tool and one built-in tool. */
@@ -443,6 +449,33 @@ describe('terminal metrics after a server-side completion', () => {
     expect(metrics!.payload.summary).toBeUndefined();
   });
 
+  // docs/specs/real-and-virtual-cost.md: the basis of the credential the run
+  // used rides every usage report, including the metrics-only re-send. A cloud
+  // run's supervisor hint is the deterministic way to pin it here.
+  test('sends the run\'s cost basis on the completion PATCH and its metrics-only re-send', async () => {
+    const prev = process.env.BUILDD_CLOUD_MODEL_AUTH;
+    process.env.BUILDD_CLOUD_MODEL_AUTH = 'owner_seat';
+    try {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-sonnet-4-6' },
+        toolTurn(),
+        successResult(),
+      ];
+      mockUpdateWorker.mockImplementation(async (id: string, payload: any) => {
+        updateCalls.push({ id, payload });
+        if (payload?.status === 'completed') return { error: 'Worker already completed', abort: true, reason: 'completed', actualStatus: 'completed', hasDeliverables: true };
+        return {};
+      });
+      manager = new WorkerManager(makeConfig());
+      await runSession(manager, 'w-basis-1');
+      expect(completionCall()!.payload.costBasis).toBe('virtual');
+      expect(metricsCall()!.payload.costBasis).toBe('virtual');
+    } finally {
+      if (prev === undefined) delete process.env.BUILDD_CLOUD_MODEL_AUTH;
+      else process.env.BUILDD_CLOUD_MODEL_AUTH = prev;
+    }
+  });
+
   test('does not send a metrics-only PATCH when the completion PATCH succeeded', async () => {
     mockMessages = [
       { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-sonnet-4-6' },
@@ -478,6 +511,7 @@ describe('metricsOnlyPayload', () => {
       inputTokens: 10,
       outputTokens: 20,
       costUsd: 1.5,
+      costBasis: 'virtual',
       actualModel: 'claude-sonnet-4-6',
       lastCommitSha: 'deadbee',
       commitCount: 2,
@@ -494,6 +528,7 @@ describe('metricsOnlyPayload', () => {
     expect(out.inputTokens).toBe(10);
     expect(out.outputTokens).toBe(20);
     expect(out.costUsd).toBe(1.5);
+    expect(out.costBasis).toBe('virtual');
     expect(out.actualModel).toBe('claude-sonnet-4-6');
     expect(out.lastCommitSha).toBe('deadbee');
     expect(out.commitCount).toBe(2);

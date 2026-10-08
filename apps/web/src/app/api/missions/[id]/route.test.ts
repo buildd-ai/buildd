@@ -2005,6 +2005,34 @@ describe('PATCH /api/missions/[id] — surface audit gate and waiver', () => {
     expect((await patch({ status: 'completed' })).status).toBe(200);
   });
 
+  it("the dashboard's waiver alone (no status change) records the reason and the person who set it", async () => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1', email: 'owner@example.com' } as any);
+    const res = await patch({ surfaceAuditWaiver: 'Mission branch cannot be captured by CI' });
+    expect(res.status).toBe(200);
+    const note = insertedNotes.find(n => n.title === 'Surface audit waived');
+    expect(note).toMatchObject({ body: 'Mission branch cannot be captured by CI', authorType: 'user', actorLabel: 'owner@example.com' });
+    expect(updatedSetData?.status).toBeUndefined();
+  });
+
+  it("a task's per-task token cannot set the waiver, and nothing is recorded", async () => {
+    mockGetCurrentUser.mockReturnValue(null);
+    mockAuthenticateApiKey.mockReturnValue({
+      id: 'acct-1', name: 'key', level: 'admin', teamId: 'team-1',
+      taskScope: { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 },
+    } as any);
+    const res = await PATCH(
+      new NextRequest(`http://localhost/api/missions/${MID}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ surfaceAuditWaiver: 'Not needed, nothing user-facing' }),
+        headers: { authorization: 'Bearer bld_test' },
+      }),
+      { params: makeParams(MID) },
+    );
+    expect([403, 404]).toContain(res.status);
+    expect(insertedNotes).toHaveLength(0);
+    expect(updatedSetData).toBeNull();
+  });
+
   it('rejects a waiver with no real reason', async () => {
     const res = await patch({ surfaceAuditWaiver: 'skip' });
     expect(res.status).toBe(400);

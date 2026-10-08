@@ -13,6 +13,7 @@ import Link from 'next/link';
 import LiveWorkerActivity from './LiveWorkerActivity';
 import StatusBadge from '@/components/StatusBadge';
 import PrCard from '@/components/task/PrCard';
+import type { PrDisplayState } from '@/lib/pr-presentation';
 import WorkerStats from '@/components/task/WorkerStats';
 import TaskSummary from '@/components/task/TaskSummary';
 import AiFeedback from '@/components/AiFeedback';
@@ -50,11 +51,15 @@ export interface TaskPanelData {
     prNumber: number | null;
     prLifecycleStatus: string | null;
     mergedAt: string | null;
+    /** A kernel-owned PR's state from its delivery (Slice F); wins over the columns. Absent from older responses. */
+    prState?: PrDisplayState | null;
     commitCount: number | null;
     filesChanged: number | null;
     linesAdded: number | null;
     linesRemoved: number | null;
     costUsd: string | null;
+    /** Absent from older responses. */
+    costBasis?: string | null;
     inputTokens: number;
     outputTokens: number;
     startedAt: string | null;
@@ -334,7 +339,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
           costUsd={w.costUsd}
           inputTokens={w.inputTokens}
           outputTokens={w.outputTokens}
-          authType={w.account?.authType}
+          costBasis={w.costBasis ?? null}
           milestones={(w.milestones ?? []) as never}
           onWorkerEvent={onChanged}
         />
@@ -346,6 +351,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
           prUrl={w.prUrl!}
           prNumber={w.prNumber}
           prLifecycleStatus={w.prLifecycleStatus}
+          prState={w.prState ?? null}
           linesAdded={w.linesAdded}
           linesRemoved={w.linesRemoved}
           filesChanged={w.filesChanged}
@@ -365,7 +371,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
           costUsd={w.costUsd}
           inputTokens={w.inputTokens}
           outputTokens={w.outputTokens}
-          authType={w.account?.authType}
+          costBasis={w.costBasis ?? null}
           branch={w.branch}
         />
       )}

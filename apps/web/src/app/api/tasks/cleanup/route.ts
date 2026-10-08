@@ -8,6 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers } from '@/lib/stale-workers';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
+import { kernelDeliveryById } from '@/lib/workflow/authority';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -248,7 +249,12 @@ export async function POST(req: NextRequest) {
 
     // Check if any worker completed or has deliverables (PR, artifacts, structured output, commits)
     let completedWorker = taskWorkers.find(w => w.status === 'completed');
-    if (!completedWorker) {
+    // A workflow-kernel attempt (docs/specs/workflow-state-kernel.md §9, AC-10) is never promoted to
+    // `completed` from a dead worker's local commits: a local commit is not delivery. The kernel hears
+    // the attempt's end from the reaper (AttemptEnded(lost)); here the task only falls through to the
+    // stale requeue below.
+    const kernelAttempt = task.deliveryId ? !!(await kernelDeliveryById(task.deliveryId).catch(() => null)) : false;
+    if (!completedWorker && !kernelAttempt) {
       // Check errored workers for deliverables
       for (const w of taskWorkers.filter(w => w.status === 'error' || w.status === 'failed')) {
         try {

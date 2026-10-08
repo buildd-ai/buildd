@@ -83,6 +83,12 @@ introspects the live schema and throws `BackfillContradictedError` if the DDL is
 genuinely absent. So a collision is a **loud failed deploy**, not a missing
 column. That is why it must be fixed before merging, not discovered after.
 
+One exception, on a throwaway database only: `visual-qa.yml` sets
+`MIGRATION_CI_CLONE_APPLY_ABSENT=1` (honoured only in GitHub Actions) so a
+mission branch's below-mark migration whose DDL is **wholly** absent is executed
+on the prod clone instead of refused. Partly present DDL still fails there, and
+prod deploys never see the flag.
+
 ## The squashed baseline
 
 Every migration released up to `v0.284.0` (through `0250_shallow_bushwacker`)

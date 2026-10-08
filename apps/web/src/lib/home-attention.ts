@@ -276,10 +276,15 @@ const ACTION_NOUN: Record<AttentionActionType, [string, string]> = {
   check: ['check', 'checks'], view: ['failed task', 'failed tasks'], stranded: ['stranded mission', 'stranded missions'], start: ['mission to start', 'missions to start'],
 };
 
-export function homeAttentionCopy(items: readonly HomeAttentionItem[]) {
+/**
+ * `runnerConnected: false` (a team with no runner yet) changes only the empty
+ * sub-line: there is no fleet to be "working without you".
+ */
+export function homeAttentionCopy(items: readonly HomeAttentionItem[], opts: { runnerConnected?: boolean } = {}) {
   const count = items.length;
   const counts = new Map<AttentionActionType, number>();
   for (const i of items) counts.set(i.actionType, (counts.get(i.actionType) ?? 0) + 1);
-  const subline = [...counts].map(([t, n]) => `${n} ${ACTION_NOUN[t][n === 1 ? 0 : 1]}`).join(' · ') || 'The fleet is working without you.';
+  const idle = opts.runnerConnected === false ? 'No runner is connected yet, so nothing is running.' : 'The fleet is working without you.';
+  const subline = [...counts].map(([t, n]) => `${n} ${ACTION_NOUN[t][n === 1 ? 0 : 1]}`).join(' · ') || idle;
   return { count, headline: needsYouHeadline(count, 'Nothing needs you.'), subline };
 }

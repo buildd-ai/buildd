@@ -99,6 +99,9 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   workingSet: true,
   pendingShipReports: true,
   shipCoverageMilestones: true,
+  siblingProbeQueue: true,
+  siblingProbeRunning: true,
+  pendingSiblingProbeResults: true,
   pathClaimMode: true,
   pathCollision: true,
   pathCollisionDeferring: true,
@@ -109,6 +112,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   pathSweepBaseFetchedAt: true,
   lastAssistantMessage: true,
   tokenTally: true,
+  costBasis: true,
   sandboxMountGap: true,
   bwrapRetryPending: true,
   phaseText: true,
@@ -135,6 +139,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   modelCapabilities: true,
   roleEnvMissing: true,
   modelEndpointIgnored: true,
+  toolSearchDisabled: true,
   githubCredentials: true, // a mode marker; the token itself is never on the worker
 
   // Withheld — see WITHHELD_WORKER_FIELDS.
