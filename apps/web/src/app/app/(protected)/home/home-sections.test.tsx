@@ -123,6 +123,48 @@ describe('FleetStrip', () => {
   });
 });
 
+describe('FleetStrip — your sessions lane', () => {
+  const host = { id: 'h1', accountId: 'a', localUiUrl: 'http://atlas.local:8766', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW) };
+  const claim = (id: string, startedAt: Date | null = min(6)) => ({
+    id: `w-${id}`, accountId: 'a', runner: 'mcp', status: 'running', startedAt, updatedAt: min(1),
+    task: { id: `t-${id}`, title: `feat(${id}): local work`, roleSlug: 'builder', missionId: null },
+  });
+  const f = buildFleetSnapshot([host], [claim('mine'), claim('nostart', null)], { now: NOW, sessionsOnline: 4 });
+  const html = renderToStaticMarkup(<FleetStrip fleet={f} roles={[]} now={NOW} timeZone="UTC" />);
+  const t = html.replace(/<!-- -->/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+
+  it('session claims are their own lane after the runners: one working row each, never offline or idle', () => {
+    expect(html.match(/data-testid="fleet-runner"/g)?.length).toBe(2);
+    expect(html).toContain('data-interactive="true"');
+    const lane = html.slice(html.indexOf('data-interactive="true"'));
+    expect(lane).toContain('Your sessions');
+    expect(lane.match(/data-busy="true"/g)?.length).toBe(2);
+    expect(lane).not.toContain('offline');
+    expect(lane).not.toContain('idle');
+    expect(t).toContain('2 working');
+    expect(t).toContain('4 online');
+  });
+  it('the runner count and the label stay about runners', () => {
+    expect(t).toContain('Runners · 1 runner × 2 slots');
+    expect(t).not.toContain('2 runners');
+  });
+  it('the timeline draws the sessions lane too', () => {
+    expect(html.match(/data-testid="slot-lane-row"/g)?.length).toBe(3);
+  });
+  it('no live session claim, no lane', () => {
+    const quiet = buildFleetSnapshot([host], [{ ...claim('old'), status: 'completed', completedAt: min(2) }], { now: NOW, sessionsOnline: 4 });
+    const h = renderToStaticMarkup(<FleetStrip fleet={quiet} roles={[]} now={NOW} timeZone="UTC" />);
+    expect(h).not.toContain('data-interactive="true"');
+    expect(h).not.toContain('Your sessions');
+  });
+  it('a session claim with no runner online still shows, instead of the no-runners hint', () => {
+    const solo = buildFleetSnapshot([], [claim('mine')], { now: NOW });
+    const h = renderToStaticMarkup(<FleetStrip fleet={solo} roles={[]} now={NOW} timeZone="UTC" />);
+    expect(h).toContain('Your sessions');
+    expect(h).not.toContain('No runners online');
+  });
+});
+
 describe('FleetStrip — a cloud dispatcher is one elastic group', () => {
   const onceUrl = (t: string) => `headless://container/once/${t}`;
   const cloudHb = (t: string) => ({

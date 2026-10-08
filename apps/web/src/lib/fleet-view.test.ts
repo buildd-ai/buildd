@@ -188,6 +188,51 @@ describe('buildFleetSnapshot', () => {
   });
 });
 
+describe('interactive sessions on the fleet board', () => {
+  // A claim_task worker from a person's own coding session (runner 'mcp') is
+  // not a runner and holds no runner slot: it gets its own lane, apart from
+  // fleet.runners, and never counts against runner capacity.
+  const hb: FleetHeartbeatRow = { id: 'h1', accountId: 'acct', localUiUrl: 'http://atlas.local:8766', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW - 10_000) };
+  const w = (id: string, runner: string, over: Partial<FleetWorkerRow> = {}): FleetWorkerRow => ({
+    id, accountId: 'acct', runner, status: 'running', startedAt: min(10),
+    task: { id: `t-${id}`, title: `feat(${id}): something`, roleSlug: 'builder', missionId: null }, ...over,
+  });
+
+  it('live session claims get their own lane, not a runner; runner counts and capacity are untouched', () => {
+    const snap = buildFleetSnapshot([hb], [
+      w('runner-job', 'http://atlas.local:8766'),
+      w('mine', 'mcp', { startedAt: min(5) }),
+      w('mine-sub', 'mcp', { startedAt: min(2) }),
+      w('done-earlier', 'mcp', { status: 'completed', startedAt: min(40), completedAt: min(30) }),
+    ], { now: NOW, sessionsOnline: 3 });
+    expect(snap.runners.map(r => r.name)).toEqual(['atlas']);
+    expect(snap.capacity).toBe(2);
+    expect(snap.live).toBe(1);
+    expect(snap.sessions).not.toBeNull();
+    expect(snap.sessions!.interactive).toEqual({ running: 2, online: 3 });
+    expect(snap.sessions!.slots.map(s => s.worker?.label)).toEqual(['mine', 'mine-sub']);
+    expect(snap.sessions!.online).toBe(true);
+    expect(fleetLabel(snap)).toBe('Runners · 1 runner × 2 slots');
+    expect(fleetSummary(snap)).toMatchObject({ busy: 1, slots: 2, runnerNames: ['atlas'] });
+  });
+
+  it('no live session claim, no lane (a finished one leaves nothing behind)', () => {
+    const snap = buildFleetSnapshot([hb], [w('done', 'mcp', { status: 'completed', startedAt: min(40), completedAt: min(30) })], { now: NOW, sessionsOnline: 5 });
+    expect(snap.sessions).toBeNull();
+    expect(snap.runners).toHaveLength(1);
+  });
+
+  it('a live session claim with no start time is still a working row, never an empty "idle" slot', () => {
+    const snap = buildFleetSnapshot([], [w('nostart', 'mcp', { startedAt: null, updatedAt: min(3) })], { now: NOW });
+    expect(snap.runners).toEqual([]);
+    expect(snap.sessions!.slots).toHaveLength(1);
+    expect(snap.sessions!.slots[0].worker?.label).toBe('nostart');
+    expect(snap.sessions!.slots[0].lane.bars[0].start).toBe(min(3).getTime());
+    // Online count unknown: the lane does not claim one.
+    expect(snap.sessions!.interactive).toEqual({ running: 1, online: null });
+  });
+});
+
 describe('homeHeadline', () => {
   const text = (p: ReturnType<typeof homeHeadline>) => p.map(x => x.text).join('');
   it('says how many agents work and how many things need you', () => {
