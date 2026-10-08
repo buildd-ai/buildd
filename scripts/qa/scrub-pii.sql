@@ -592,6 +592,10 @@ UPDATE surface_reservations SET
   repo_full_name = pg_temp.qa_hash('org-1/repo-', repo_full_name),
   base_ref = pg_temp.qa_branch(base_ref);
 
+UPDATE dependency_releases SET
+  base_branch = pg_temp.qa_branch(base_branch),
+  revoked_reason = pg_temp.qa_text(revoked_reason);
+
 UPDATE path_claims SET
   path = pg_temp.qa_hash('path/', path);
 
