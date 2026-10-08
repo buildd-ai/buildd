@@ -198,6 +198,9 @@ describe('the guard sees the files it polices', () => {
     // The question gate is core; the repair filer it recovers through is a decisions module behind a slot.
     expect(moduleOf('apps/web/src/lib/question-gate-check.ts')).toBe('core');
     expect(moduleOf('apps/web/src/lib/recoverable-blocker-repair.ts')).toBe('jev-decisions');
+    // An agent's brokered decide call is a Jev decision, reached by its own route, not by core.
+    expect(moduleOf('apps/web/src/lib/capability-model-inference.ts')).toBe('jev-decisions');
+    expect(moduleOf('apps/web/src/app/api/agent-capabilities/model-inference/route.ts')).toBe('jev-decisions');
   });
 
   test('the scan finds the hot spot it exists to shrink', () => {
