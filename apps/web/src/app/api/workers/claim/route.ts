@@ -137,6 +137,10 @@ import { loadSoftOverlapHolders } from './soft-overlap-store';
 // <1s). Scoped per-runner so healthy runners keep picking up tasks.
 const CLAIM_COOLDOWN_MS = 60_000;
 
+// Candidate pages fetched past role-env-gapped tasks before the window is cut
+// anyway (at most 4 × candidateLimit rows). See the candidate fetch.
+const ROLE_ENV_WINDOW_MAX_PAGES = 4;
+
 
 /**
  * True when the task's declared deliverable is not a code change
@@ -739,13 +743,39 @@ export async function POST(req: NextRequest) {
   // Without this, `limit: availableSlots` means the dispatch loop only ever sees
   // the highest-priority N tasks; if all N are permanently deferred (wrong
   // connector, pacing, etc.) nothing else is ever examined — race_lost forever.
+  //
+  // Role-env gaps are known before the cut, so they do not count toward the
+  // window: a page whose candidates no channel can deliver secrets to fetches
+  // the next page, until the window holds candidateLimit runnable candidates
+  // (bounded by ROLE_ENV_WINDOW_MAX_PAGES). Without this a backlog of
+  // undeliverable high-priority tasks (e.g. a role whose secrets live on
+  // another team) fills every window and the runner never sees the work
+  // behind it. Gapped tasks stay in the
+  // list so the loop still defers and reports them; the authoritative
+  // pre-filter below re-runs after backend flips.
   const candidateLimit = Math.min(Math.max(availableSlots * 5, 25), 100);
-  const claimableTasks = await db.query.tasks.findMany({
+  const fetchCandidatePage = (offset: number) => db.query.tasks.findMany({
     where: and(...claimableConditions),
     orderBy: (tasks, { desc, asc }) => [desc(tasks.priority), asc(tasks.createdAt)],
     limit: candidateLimit,
+    offset,
     with: { workspace: true },
   });
+  const claimableTasks: Awaited<ReturnType<typeof fetchCandidatePage>> = [];
+  {
+    const seen = new Set<string>();
+    let runnable = 0;
+    for (let page = 0; page < ROLE_ENV_WINDOW_MAX_PAGES; page++) {
+      const batch = await fetchCandidatePage(page * candidateLimit);
+      const fresh = batch.filter(t => !seen.has(t.id));
+      for (const t of fresh) seen.add(t.id);
+      claimableTasks.push(...fresh);
+      if (batch.length < candidateLimit || taskId) break;
+      const gaps = await runRoleEnvPreFilter(fresh, account.id);
+      runnable += fresh.length - fresh.filter(t => gaps.has(t.id)).length;
+      if (runnable >= candidateLimit) break;
+    }
+  }
 
   if (forceClaim && claimableTasks.some(t => t.id === taskId)) {
     // Which of the lifted SQL gates would have excluded the task. Same
