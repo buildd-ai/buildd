@@ -733,6 +733,10 @@ export interface WorkspaceGitConfig {
 
   // Auto-merge PRs via GitHub's auto-merge feature
   autoMergePR?: boolean;
+
+  // Policy checks before push / create_pr (workflow-state-kernel.md §6.10, S31).
+  // Only `commands` is the runner's; the server reads the rest.
+  preflight?: { commands?: string[] } | null;
 }
 
 // SSE event types

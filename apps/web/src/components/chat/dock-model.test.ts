@@ -3,9 +3,10 @@
  * thing it shows, what a task card in it says, and who is at work on a mission.
  */
 import { describe, expect, it } from 'bun:test';
-import { atWorkRows, dockChoice, needsDockRef, taskDockModel } from './dock-model';
+import { atWorkRows, dockChoice, dockToneForDelivery, needsDockRef, taskDockModel } from './dock-model';
 import type { TaskObjectView } from './objects/object-views';
 import type { BoardTask, MissionBoardModel } from '@/lib/mission-board';
+import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
 
 const mission = { kind: 'mission', id: 'm1', workspaceId: 'ws', fallbackText: 'Mission: M' } as const;
 const needs = { kind: 'task', id: 't1', workspaceId: 'ws', fallbackText: 'Task: T' } as const;
@@ -105,6 +106,19 @@ describe('taskDockModel', () => {
     const done = taskDockModel(view({ status: 'completed' }, { status: 'completed', mergedAt: 5, prNumber: 4 }));
     expect(done.badge).toEqual({ label: 'Landed', tone: 'landed' });
     expect(done.actions).toEqual([]);
+  });
+
+  it('a stalled delivery uses warning tone, not live', () => {
+    const stalled = {
+      stage: 'blocked' as const,
+      state: 'BLOCKED_ON_TRUNK' as const,
+      headline: 'Blocked on base',
+      owner: 'kernel' as const,
+    };
+    const toned = dockToneForDelivery(stalled);
+    expect(toned).not.toBeNull();
+    expect(toned?.tone).not.toBe('live');
+    expect(toned?.tone).toBe('needs');
   });
 });
 

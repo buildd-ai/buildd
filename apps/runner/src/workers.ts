@@ -1,6 +1,6 @@
 import { canonicalToolName } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
-import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
@@ -135,6 +135,8 @@ import {
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
+import { handOffUnproven, isHandOffRefusal } from './hand-off-outcome';
+import { preflightHookEntries } from './preflight-guard';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
@@ -2327,6 +2329,23 @@ export class WorkerManager {
             }],
           }).catch(() => {});
         }
+        // Stale-base warning: the ref this worktree is cut from has drifted
+        // far behind the default branch. Previously console.warn-only (docs/
+        // design/mission-delivery-arc.md P5) — surfaced the same way as the
+        // fallback warning above so it is visible on the dashboard and to
+        // get_error_traces, not just in runner logs nobody tails.
+        if (setupResult.staleBase) {
+          const { ref, defaultBranch: staleDefault, commitsBehind } = setupResult.staleBase;
+          const label = `Base "${ref}" is ${commitsBehind} commits behind origin/${staleDefault} — risk of merge conflicts or CI failures from unrelated upstream changes`;
+          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+          this.buildd.updateWorker(worker.id, {
+            appendErrorTraces: [{
+              pattern: 'worktree_stale_base',
+              excerpt: `${label}. Consider: git fetch origin && git rebase origin/${staleDefault}.`,
+              source: 'git-operations',
+            }],
+          }).catch(() => {});
+        }
         // Dependency install outcome. This used to be unobservable —
         // installWorkspaceDeps returned void — so a worker could run a full
         // budget and report `done` with an empty node_modules and nothing
@@ -2824,9 +2843,18 @@ export class WorkerManager {
     worker.completedAt = Date.now();
 
     const failSpans = buildSubagentSpans(worker.subagentTasks);
+    // S30 (workflow-state-kernel.md §6.6): the output gate refused a session
+    // that ran — its work is not on GitHub, which is not the work failing.
+    const handOff = isHandOffRefusal(refusal)
+      ? handOffUnproven(
+        await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+        worker.commits.length,
+      )
+      : null;
     await this.buildd.updateWorker(worker.id, {
       status: 'failed',
       error: refusal.message,
+      ...(handOff ?? {}),
       serverRefused: true,
       refusal: {
         status: refusal.status,
@@ -4477,6 +4505,14 @@ export class WorkerManager {
                 hooks: [this.hookFactory.createLoopVerificationHook(worker, () => this.runLoopVerification(worker, task, cwd))],
               }]
             : []),
+          // Workspace preflight (workflow-state-kernel.md §6.10, S31): the cheap
+          // checks CI would fail on run before a push or create_pr; a failure
+          // denies that call with the output as the agent's next instruction.
+          // Off unless gitConfig.preflight.commands lists any. Codex has no seam.
+          ...preflightHookEntries({
+            gitConfig, isCodexTask, cwd,
+            milestone: (label) => this.addMilestone(worker, { type: 'status', label, ts: Date.now() }),
+          }) as unknown as Array<{ timeout: number; hooks: HookCallback[] }>,
         ],
         PostToolUse: [
           { hooks: [this.hookFactory.createTeamTrackingHook(worker)] },
@@ -4950,6 +4986,11 @@ export class WorkerManager {
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: errMsg,
+          // S30: an unmet output requirement after work is a hand-off failure, not a failed attempt.
+          ...handOffUnproven(
+            await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+            worker.commits.length,
+          ),
           milestones: worker.milestones,
           resultMeta: {
             closingTurnOutcome: isClosingTurn

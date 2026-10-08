@@ -9,7 +9,7 @@
 import { buildBoardCells, toBoardTaskInput, type BoardExternalDepInput } from './mission-board';
 import type { BlockingTask } from './mission-card-view';
 import type { MissionFeedTaskInput } from './mission-pulse';
-import { stripOrder } from './mission-task-strip';
+import { stripOrder, stripState, type StripState } from './mission-task-strip';
 
 export function feedStripOrder(
   tasks: readonly MissionFeedTaskInput[],
@@ -46,4 +46,20 @@ function externalDepsOf(
     const row = index.get(id);
     return row ? [{ id, title: row.title ?? null, status: row.status, workers: (row.workers ?? []) as BoardExternalDepInput['workers'] }] : [];
   });
+}
+
+/**
+ * Order and the canonical strip state of every cell, from task rows: the list
+ * and Home draw colour, counts and labels from `states` (via `stripTone` /
+ * `stripBucket`), never from their own reading of the raw status. A cancelled
+ * task has no cell and so no state: it is excluded from every count alike.
+ */
+export function taskRowsStripProjection(
+  tasks: readonly TaskRow[],
+  taskIndex?: ReadonlyMap<string, BlockingTask & { title?: string | null }>,
+): { order: string[]; states: Map<string, StripState> } {
+  const rows = tasks.map(t => toBoardTaskInput(t));
+  const model = buildBoardCells({ tasks: rows, externalDeps: taskIndex ? externalDepsOf(tasks, taskIndex) : [] });
+  const order = stripOrder(model);
+  return { order, states: new Map(order.map(id => [id, stripState(model, id)])) };
 }

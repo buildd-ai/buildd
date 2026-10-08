@@ -67,6 +67,7 @@ import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
+import { attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
@@ -1076,6 +1077,11 @@ export async function PATCH(
   if (typeof branch === 'string' && branch.length > 0) updates.branch = branch;
   // Git stats
   if (lastCommitSha !== undefined) updates.lastCommitSha = lastCommitSha;
+  // §6.9 provenance: a repair attempt's reported local head joins its SHA set, so the push that
+  // carries it is recognised as this attempt's by SHA, never by commit author.
+  if (typeof lastCommitSha === 'string' && lastCommitSha && lastCommitSha !== worker.lastCommitSha && worker.taskId) {
+    await recordLocalHead(worker.taskId, lastCommitSha).catch((err) => console.error(`[workflow] recordLocalHead failed for worker ${worker.id}:`, err));
+  }
   if (typeof commitCount === 'number') updates.commitCount = commitCount;
   // Prefer non-zero existing stats over zeros from the runner: if the PR creation route
   // already recorded real diff stats and the runner reports 0 (e.g. wrong git base), keep the real values.
@@ -1493,7 +1499,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, dependsOn: tasks.dependsOn })
+        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, dependsOn: tasks.dependsOn, deliveryId: tasks.deliveryId, deliveryRole: tasks.deliveryRole })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1644,6 +1650,49 @@ export async function PATCH(
       }
     }
 
+    // §9 completion gate (docs/specs/workflow-state-kernel.md): a kernel fix
+    // attempt may not report `completed` while the PR's GitHub head is still
+    // the head its review round was made on. A local commit is never delivery;
+    // without this, a fix that never pushed read as done (#3754).
+    if (isRepairRole(terminalTaskRow[0]?.deliveryRole) && worker.taskId) {
+      const refusal = await fixCompletionGate({
+        task: {
+          id: worker.taskId, workspaceId: worker.workspaceId,
+          deliveryId: terminalTaskRow[0].deliveryId ?? null, deliveryRole: terminalTaskRow[0].deliveryRole ?? null,
+          context: terminalTaskRow[0].context,
+        },
+        localHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+      }).catch((err) => {
+        console.error(`[workflow] completion gate check failed for worker ${worker.id} (allowing; AttemptEnded decides):`, err);
+        return null;
+      });
+      if (refusal) {
+        await applyMetricsOnlyPatch(id, worker, body).catch(() => null);
+        const frictionSignature = fireGateEvent({
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: 'completion refused: delivery_not_advanced',
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: { code: refusal.code, boundHeadSha: refusal.boundHeadSha, liveHeadSha: refusal.liveHeadSha, localHeadSha: refusal.localHeadSha },
+        });
+        return NextResponse.json({
+          error: refusal.error,
+          hint: refusal.hint,
+          code: refusal.code,
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          frictionSignature,
+          boundHeadSha: refusal.boundHeadSha,
+          liveHeadSha: refusal.liveHeadSha,
+          localHeadSha: refusal.localHeadSha,
+        }, { status: 400 });
+      }
+    }
+
     // A bookkeeping task (heartbeats, criteria evaluators, plan-rejection
     // replans — see packages/core/db/schema.ts taskClass) reports its outcome
     // via complete_task's summary/structuredOutput. It never ships a PR or
@@ -1723,6 +1772,7 @@ export async function PATCH(
                     taskClass: terminalTaskRow[0].taskClass,
                     missionId: terminalTaskRow[0].missionId,
                     context: terminalTaskRow[0].context,
+                    dependsOn: terminalTaskRow[0].dependsOn,
                   }
                 : null,
               head: worker.branch,
@@ -2939,6 +2989,8 @@ export async function PATCH(
   }
 
   let shouldAutoRetry = false;
+  /** A kernel review round that broke its output contract: the T27 reason T4 sends (§6.6). */
+  let kernelReviewFailure: 'prose_verdict' | 'no_verdict' | 'infra' | null = null;
   if (status === 'completed' || status === 'failed' || status === 'error') {
     updates.completedAt = new Date();
 
@@ -3299,9 +3351,30 @@ export async function PATCH(
         ? parsedReview.reason
         : null;
 
+      // A review round of a kernel-owned delivery: the contract failure is T27
+      // (docs/specs/workflow-state-kernel.md §6.3, §6.6). A prose verdict is a
+      // failure, never a verdict, so none of the legacy handling below runs for
+      // it — no prose fallback, no same-task requeue, no legacy escalation. T4
+      // further down sends ReviewRoundFailed with this reason, and T27's
+      // bounded re-queue then ESCALATED(review_unavailable) decides what's next.
+      const kernelReviewRound = reviewContractViolation
+        ? await isKernelReviewRound({ deliveryId: reviewTaskRow?.deliveryId ?? null, context: reviewTaskCtx }).catch((err) => {
+            console.error(`[review-contract-enforcement] kernel ownership read failed for task ${worker.taskId}:`, err);
+            return false;
+          })
+        : false;
+      if (kernelReviewRound) {
+        kernelReviewFailure = isSilentStartCompletion
+          ? 'infra'
+          : !malformedVerdictReason && extractVerdictFromProse(body.summary).verdict
+            ? 'prose_verdict'
+            : 'no_verdict';
+      }
+
       // Fallback: if structured output parsing failed and it's due to missing
-      // verdict (not malformed), try to extract from prose summary.
-      if (reviewContractViolation && !malformedVerdictReason && !isSilentStartCompletion) {
+      // verdict (not malformed), try to extract from prose summary. Legacy
+      // reviews only: on a kernel round the prose fallback can only propose.
+      if (reviewContractViolation && !malformedVerdictReason && !isSilentStartCompletion && !kernelReviewRound) {
         const proseExtraction = extractVerdictFromProse(body.summary);
         if (proseExtraction.verdict) {
           const fallbackOutput = constructFallbackStructuredOutput(body.summary, proseExtraction);
@@ -3338,9 +3411,12 @@ export async function PATCH(
       const reviewInfraRetryCount =
         typeof reviewTaskCtx.infraRetryCount === 'number' ? reviewTaskCtx.infraRetryCount : 0;
       if (reviewContractViolation) {
-        const willRequeue = reviewSilentStart
-          ? reviewInfraRetryCount < MAX_INFRA_RETRIES_PATCH
-          : reviewContractRetryCount < MAX_REVIEW_CONTRACT_RETRIES;
+        // A kernel round is re-queued by T27 at the same round, never by the task's own requeue.
+        const willRequeue = kernelReviewRound
+          ? false
+          : reviewSilentStart
+            ? reviewInfraRetryCount < MAX_INFRA_RETRIES_PATCH
+            : reviewContractRetryCount < MAX_REVIEW_CONTRACT_RETRIES;
         console.error(
           `[review-contract-enforcement] task ${worker.taskId} (worker ${id}) ` +
           `overriding completed→${willRequeue ? 'pending (requeue)' : 'failed'}: review task ` +
@@ -3384,6 +3460,9 @@ export async function PATCH(
               'the task outputSchema (verdict / confidence / summary). Review the PR again ' +
               'and return the verdict as structuredOutput.',
           };
+        } else if (kernelReviewRound) {
+          // T27 owns the retry budget and the escalation (review_unavailable);
+          // a legacy reviewer_escalated note beside it would be a second authority.
         } else {
           // Retries exhausted and the reviewer contract is dead for this PR.
           // A reviewer task is dispatched only on the webhook's `opened`
@@ -3934,11 +4013,36 @@ export async function PATCH(
       // BT-7/8/9: Reviewer outcome handling — runs when a reviewer task completes.
       await runStep('reviewer-outcome', async () => {
         // Skip for loop requeue — reviewer logic only applies to terminal completions.
-        if (status !== 'completed' || loop?.kind === 'hold') return;
+        // A kernel round that broke its contract has no verdict to act on (T27 below).
+        if (status !== 'completed' || loop?.kind === 'hold' || kernelReviewFailure) return;
         await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput);
         // AFTER the outcome is applied, so an on=merge callback sees the merge
         // this verdict may just have triggered. Single-fire and best-effort.
         await deliverReviewCallbackIfRequested(taskId, worker.workspaceId);
+      });
+
+      // Workflow kernel T4 (docs/specs/workflow-state-kernel.md §6.5): the owner
+      // or fix attempt of a kernel delivery ended. The kernel decides what is
+      // next (review round, push recovery, re-dispatch, escalation) from a live
+      // GitHub read; an infra requeue is not an attempt end (§5.7 rule 2).
+      await runStep('workflow-attempt-ended', async () => {
+        // A runner hand-off failure says `outcome: 'unproven'` (S30, §6.6); an old runner omits it.
+        const row = terminalTaskRow[0];
+        const end = attemptEndFromPatch({
+          status: (contractViolation || slotFailure ? 'failed' : status) === 'completed' ? 'completed' : 'failed',
+          outcome: body.outcome, localHeadSha: body.localHeadSha, commitCount,
+          fallbackLocalHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+          fallbackCommitCount: worker.commitCount ?? 0,
+        });
+        if (!row?.deliveryId || taskRetryCoversAttemptEnd(end, shouldAutoRetry, row?.deliveryRole ?? null) || loop?.kind === 'hold' || releaseHeld) return;
+        await workflowAttemptEnded({
+          task: { id: taskId, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
+          workerId: id,
+          ...end,
+          source: 'runner',
+          taskRetryBudgetLeft: shouldAutoRetry,
+          ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
+        });
       });
 
       // Notify on task completion/failure — routed to the OWNING team's channel.
@@ -4822,7 +4926,7 @@ async function handleReviewerOutcomeIfNeeded(
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, reviewerTaskId),
-    columns: { id: true, category: true, context: true, missionId: true, title: true, createdAt: true },
+    columns: { id: true, category: true, context: true, missionId: true, title: true, createdAt: true, deliveryId: true },
   });
 
   if (!reviewerTask) return;
@@ -4987,6 +5091,35 @@ async function handleReviewerOutcomeIfNeeded(
       );
   }
 
+  // ── Workflow kernel (docs/specs/workflow-state-kernel.md T6) ────────────
+  // A review round of a kernel delivery: the verdict is recorded against the
+  // round's own head. Only an APPLIED verdict acts; a verdict for a superseded
+  // head or round is kept on its round for audit and does nothing else (no
+  // GitHub review, no fix, no merge). The kernel's effects post the review,
+  // dispatch the fix and raise escalations; the legacy writes below do not run.
+  let kernelOwnsVerdict = false;
+  if (reviewerTask.deliveryId && ctx.workflowRoundId) {
+    kernelOwnsVerdict = true;
+    const kv = await recordReviewVerdict({
+      reviewerTask: { id: reviewerTaskId, deliveryId: reviewerTask.deliveryId, context: ctx },
+      verdict: output.verdict,
+      effectiveVerdict,
+      headSha,
+      confidence: output.confidence,
+    }).catch((err) => {
+      console.error(`[reviewer] workflow kernel could not record the verdict for PR #${prNumber}:`, err);
+      void reportOps({ source: 'workflow-kernel:verdict', severity: 'error', message: `verdict not recorded for PR #${prNumber}`, detail: err instanceof Error ? err.message : String(err) });
+      return null;
+    });
+    if (!kv) return;
+    if (!kv.handled) {
+      kernelOwnsVerdict = false; // released to legacy (kill switch): the legacy path below decides
+    } else if (kv.result.result !== 'applied') {
+      console.log(`[reviewer] PR #${prNumber}: verdict ${output.verdict} at ${headSha.slice(0, 7)} ${kv.result.result} (${kv.result.reason}) — recorded, not applied`);
+      return;
+    }
+  }
+
   // ── Corrected lede ───────────────────────────────────────────────────────
   // Applied HERE, server-side, because the reviewer agent is read-only and
   // never touches the PR — it proposes, this handler applies, the same division
@@ -5057,7 +5190,7 @@ async function handleReviewerOutcomeIfNeeded(
   // postPrReview is idempotent per (PR, head SHA, resulting state), so a forced
   // re-review that reaches the same verdict on the same commit does not stack a
   // second approval.
-  if (effectiveVerdict === 'approve' || effectiveVerdict === 'request-changes') {
+  if (!kernelOwnsVerdict && (effectiveVerdict === 'approve' || effectiveVerdict === 'request-changes')) {
     const reviewPostResult = await postPrReview({
       installationId,
       repoFullName,
@@ -5115,7 +5248,12 @@ async function handleReviewerOutcomeIfNeeded(
     door: 'PATCH /api/workers/[id] (reviewer verdict)',
     pr: { installationId, repoFullName },
   };
-  await reconcileSubjectEvent(verdictEvent);
+  if (!kernelOwnsVerdict) await reconcileSubjectEvent(verdictEvent);
+
+  // Kernel deliveries: the fix dispatch, exhaustion and escalation were the
+  // kernel's effects. Only an approval continues, into the landing doors,
+  // which stay legacy until the landing slice (§14 Slice C).
+  if (kernelOwnsVerdict && effectiveVerdict !== 'approve') return;
 
   switch (effectiveVerdict) {
     case 'approve': {

@@ -35,6 +35,8 @@ import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request'
 import { pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { observeHead, openKernelDelivery } from '@/lib/workflow/seam';
+import { releaseKernelDeliveryForPr } from '@/lib/workflow/authority';
 
 /** The webhook payload shape the dispatch functions read. */
 type WebhookPr = { number: number; head: { sha: string }; html_url: string; base?: { ref: string }; body?: string | null };
@@ -181,6 +183,10 @@ async function maybeDispatchReviewer(
     if (shouldEscalateToHuman) {
       const reason = preflight.shouldEscalate ? preflight.reason : `workspace policy requires human review`;
       console.log(`[reviewer] Pre-flight escalation for PR #${pr.number}: ${reason}`);
+      // A human owns this PR now. If the kernel already opened a delivery for it
+      // (create_pr's door ran first), hand it to legacy so no round is queued
+      // behind the human escalation.
+      await releaseKernelDeliveryForPr(openWorker.workspaceId, repoFullName, pr.number, `pre-flight escalation: ${reason}`);
       if (task.missionId) {
         await db.insert(missionNotes).values({
           missionId: task.missionId,
@@ -233,6 +239,23 @@ async function maybeDispatchReviewer(
       });
       return true;
     }
+
+    // The workflow kernel takes the PR here, at the exact point the legacy path
+    // would dispatch its first review (after pre-flight, with a reviewer role).
+    // Its first round is queued when the owner attempt ends; nothing is
+    // dispatched now.
+    const kernel = await openKernelDelivery({
+      workspaceId: openWorker.workspaceId,
+      ownerTaskId: task.id,
+      repoFullName,
+      prNumber: pr.number,
+      installationId,
+      source: 'webhook:opened',
+    }).catch((err) => {
+      console.error(`[reviewer] workflow kernel could not open a delivery for PR #${pr.number}; legacy review dispatch:`, err);
+      return { owned: false };
+    });
+    if (kernel.owned) return true; // handled — skip auto-merge
 
     // iteration/maxIterations are stored in task.context JSONB (not columns)
     const taskCtx = (task.context ?? {}) as Record<string, unknown>;
@@ -513,7 +536,25 @@ export const reviewerSubscribers: readonly AnySubscriber[] = [
   // reviewer against the new head. Without this the review loop never
   // closes; see maybeReDispatchReviewer's doc comment.
   subscriber('reviews', 'pr.synchronized', 'reviewer-redispatch-on-push', async e => {
-    if (e.pr.draft || !e.worker.taskId) return;
+    // A kernel-owned PR: the push is a HeadObserved fact (T3), draft or not — a
+    // draft's head is still the PR's head, and skipping it left the delivery bound
+    // to a stale one (task ddcbe113). The kernel
+    // decides re-review, carry-forward (T13, from its own approved heads, never
+    // the newest reviewer row) and fix supersession; the legacy re-dispatch
+    // below must not run beside it.
+    const kernelHandled = await observeHead({
+      workspaceId: e.worker.workspaceId,
+      repoFullName: e.repoFullName,
+      prNumber: e.pr.number,
+      installationId: e.installationId,
+      hintedHeadSha: e.pr.headSha,
+      source: 'webhook:synchronize',
+    }).catch((err) => {
+      // Ownership could not even be read: behave as before the kernel.
+      console.error(`[reviewer] workflow kernel ownership check failed for PR #${e.pr.number}:`, err);
+      return false;
+    });
+    if (kernelHandled || e.pr.draft || !e.worker.taskId) return;
     await maybeReDispatchReviewer(e.installationId, e.repoFullName, webhookPr(e.pr), { ...e.worker, taskId: e.worker.taskId });
   }),
   // CI went red: hand the PR to retryCiFailureForPr, which files a bounded
