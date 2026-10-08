@@ -265,6 +265,7 @@ describe('Claude Code: attended vs headless', () => {
     expect(normalizeHookEvent('claude', bind, headless)?.interactive).toBe(false);
     expect(normalizeHookEvent('claude', { ...start, hook_event_name: 'UserPromptSubmit' }, headless)?.interactive).toBe(false);
     expect(normalizeHookEvent('claude', { ...start, hook_event_name: 'Stop' }, {})?.interactive).toBe(true);
+    expect(normalizeHookEvent('claude', { ...start, hook_event_name: 'Stop' }, headless)).toMatchObject({ interactive: false, force: true });
     // SessionEnd never needs it.
     expect(normalizeHookEvent('claude', { ...start, hook_event_name: 'SessionEnd', reason: 'other' }, headless)?.interactive).toBeUndefined();
   });
