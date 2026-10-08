@@ -67,6 +67,22 @@ most-specific row. The claim route already applies the team/account/workspace fi
 `anthropic_api_key` / `oauth_token` / `mcp_credential`; `codex_credential` uses the same
 filter plus the precedence pick.
 
+### Who may write a shared credential
+
+Writing or deleting a team-wide, workspace-wide or account-wide credential
+requires a named team permission (`docs/specs/team-permissions.md`), resolved
+through `can()` so a team's permission overrides apply:
+
+- `manage_team_model_keys` — `inference_key`, `decision_key`, `cloudflare_token`.
+- `manage_team_credentials` — every other purpose `/api/secrets` stores, and the
+  workspace Claude/Codex connect, OAuth/device-login and delete routes.
+
+Both default to owner and admin, and to an admin-level API key. `/api/secrets`
+never writes a personal (`userId`) row, so a plain member writes nothing there.
+A `workspaceId` in the body must belong to the target team. Listing stays open
+to members (metadata only, never values). Refreshing an existing Claude/Codex
+credential rotates it in place and stays open to any member of the team.
+
 ### API-token model keys (chat, inference, decision calls)
 
 Server-side model calls spend a metered API key, never a subscription seat. They
@@ -299,7 +315,7 @@ network refresh; concurrent callers get `locked`. This is the same pattern the r
 `userId` all NULL). `encryptedValue` is JSON `{ apiToken, accountId, aiGatewayId? }`,
 validated and normalized by `parseCloudflareCredential`
 (`apps/web/src/lib/cloudflare-credential-shared.ts`) before it is encrypted.
-Set and delete through `/api/secrets` (team owner/admin, or an admin API key);
+Set and delete through `/api/secrets` (`manage_team_model_keys`: team owner/admin by default, or an admin API key);
 `POST /api/secrets/[id]/verify` checks it against Cloudflare's token-verify
 endpoints and records `lastVerifiedAt` / health (a rejection marks it
 `revoked`, a network error leaves health alone). `GET /api/cloudflare/credential`

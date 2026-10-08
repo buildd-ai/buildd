@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { refuseWithoutTeamCredentialAccess } from '@/lib/team-credential-access';
 import { startClaudeOAuthLogin } from '@/lib/claude-oauth-login';
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -16,6 +17,8 @@ export async function POST(_req: NextRequest, { params }: RouteContext) {
 
   const access = await verifyWorkspaceAccess(user.id, id);
   if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  const refused = await refuseWithoutTeamCredentialAccess(user.id, access.teamId);
+  if (refused) return refused;
 
   // verifier/state are single-use, short-lived PKCE material the client echoes back.
   return NextResponse.json(startClaudeOAuthLogin());

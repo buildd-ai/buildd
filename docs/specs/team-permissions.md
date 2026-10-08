@@ -201,7 +201,9 @@ this spec's `last_verified` date.
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
-| `apps/web/src/app/api/secrets/route.ts:103` | team model key | owner, admin, personal team | admin | `manage_team_model_keys` |
+| `apps/web/src/app/api/secrets/route.ts:134` | team model key, Cloudflare token | owner, admin, personal team | admin | `manage_team_model_keys` |
+| `apps/web/src/app/api/secrets/route.ts:134` | any other team-, workspace- or account-wide secret | owner, admin, personal team | admin | `manage_team_credentials` |
+| `apps/web/src/lib/team-credential-access.ts:13` | connect, replace or delete a workspace Claude/Codex credential (refresh stays open to members) | owner, admin, personal team | — | `manage_team_credentials` |
 | `apps/web/src/app/api/inference-keys/route.ts:37` | team-scope inference keys | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/app/api/inference-keys/verify/route.ts:29` | verify a team-scope key | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/app/api/inference-keys/openrouter/start/route.ts:37` | start OpenRouter link | owner, admin, personal team | — | `manage_inference_providers` |
@@ -272,7 +274,6 @@ route moves onto the permission. All are overridable.
 | Permission | Covers | Session | Key |
 |---|---|---|---|
 | `assign_team_roles` | move a member between member and admin (owner moves stay `assign_team_owner`) | owner, admin | — |
-| `manage_team_credentials` | write or delete a team- or workspace-wide agent credential not covered by `manage_team_model_keys`, incl. workspace Claude/Codex credentials | owner, admin | admin |
 | `manage_team_notifications` | team notification settings (Pushover, notify webhook) | owner, admin | admin |
 
 ### Oddities, reproduced not fixed
@@ -304,12 +305,12 @@ route moves onto the permission. All are overridable.
    so it is not in the registry; noted because it reads `role = 'owner'`.
 6. **Writes with no role gate.** For a session, these need only membership:
    deleting an API key (`apps/web/src/app/api/accounts/[id]/route.ts`), editing
-   or deleting a connector, deleting a memory, secrets other than the team
-   model key, a workspace's name/repo/branch/concurrency cap, and the mission,
-   task and schedule admin routes (those hold API keys to admin, but not
-   sessions). Skill CRUD is in this list only for plain skills (`isRole`
-   false); a role needs `manage_agent_roles`. They are not permission
-   decisions today, so they are not in the registry.
+   or deleting a connector, deleting a memory, a workspace's
+   name/repo/branch/concurrency cap, and the mission, task and schedule admin
+   routes (those hold API keys to admin, but not sessions). Skill CRUD is in
+   this list only for plain skills (`isRole` false); a role needs
+   `manage_agent_roles`. They are not permission decisions today, so they are
+   not in the registry.
 7. **Owner-only where admin may be intended.** Deleting a workspace (an admin
    gets 404) and changing any member's role (an admin cannot even move
    member↔admin) are owner-only. Reproduced as `delete_workspace` and
