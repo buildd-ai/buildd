@@ -324,6 +324,7 @@ interface TaskGridProps {
   initiativeMissionIds?: string[];
   /** Local interactive sessions (presence). Never counted as agents. */
   localSessions?: LocalSessionView[];
+  teamName?: string | null;
 }
 
 /**
@@ -347,7 +348,7 @@ export function splitTaskRoots(tasks: GridTask[]): { rootTasks: GridTask[]; chil
   return { rootTasks, childrenByParentId };
 }
 
-export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds, localSessions = [] }: TaskGridProps) {
+export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds, localSessions = [], teamName }: TaskGridProps) {
   const router = useRouter();
 
   const visibleTasks = useMemo(() => {
@@ -612,36 +613,48 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
 
   if (rootTasks.length === 0 && !missionFilter) {
     return (
-      <div className="h-full flex flex-col pt-20 md:pt-8">
-      <InteractiveSessions sessions={localSessions} />
-      <div className="flex-1 flex items-center justify-center p-8">
-        <div className="max-w-md text-center">
-          <div className="w-16 h-16 mx-auto bg-surface-3 rounded-full flex items-center justify-center mb-4">
-            <svg className="w-8 h-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-            </svg>
-          </div>
-          <h2 className="text-xl font-semibold text-text-primary mb-4">No activity</h2>
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <NewWorkLink
-              kind="mission"
-              className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
-            >
-              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-              New Mission
-            </NewWorkLink>
-            <NewWorkLink
-              kind="task"
-              testId="activity-empty-new-task"
-              className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 border border-border-default text-text-primary rounded-md hover:bg-surface-3"
-            >
-              New task
-            </NewWorkLink>
+      <div className="h-full flex flex-col">
+        <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-4">
+          <div className="flex items-baseline justify-between mb-6">
+            <div className="min-w-0">
+              <div className="section-label hidden text-text-muted md:block">
+                Activity{teamName ? ` · ${teamName}` : ''}
+              </div>
+              <h1 className="mt-1.5 font-mono text-[22px] font-semibold tracking-[-0.5px] text-text-primary md:text-[26px]">
+                No activity
+              </h1>
+            </div>
           </div>
         </div>
-      </div>
+        <InteractiveSessions sessions={localSessions} />
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="max-w-md text-center">
+            <div className="w-16 h-16 mx-auto bg-surface-3 rounded-full flex items-center justify-center mb-4">
+              <svg className="w-8 h-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+            </div>
+            <h2 className="text-xl font-semibold text-text-primary mb-4">No activity</h2>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <NewWorkLink
+                kind="mission"
+                className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                New Mission
+              </NewWorkLink>
+              <NewWorkLink
+                kind="task"
+                testId="activity-empty-new-task"
+                className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 border border-border-default text-text-primary rounded-md hover:bg-surface-3"
+              >
+                New task
+              </NewWorkLink>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }

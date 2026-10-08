@@ -5,13 +5,15 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { dagBoard, dagId, DAG_SPECS, type DagSpec } from '@/app/app/dev/fixtures/mission-task-strip-fixtures';
+import { dagBoard, dagId, DAG_SPECS, missionTaskStripFixture, type DagSpec } from '@/app/app/dev/fixtures/mission-task-strip-fixtures';
 import type { MissionBoardModel } from './mission-board';
 import {
-  activeIndices, defaultStripSelection, errorIndices, heldCount, nextOpenIndex, slotMarks, stepIndex,
+  activeIndices, defaultStripSelection, errorIndices, heldCount, nextOpenIndex, openIndices, slotMarks, stepIndex,
   stripBlockerCount, stripCaretLeft, stripKeyTarget, stripMarks, stripOrder, stripOrdinal, stripSelectionReason,
-  stripBucket, stripSlots, stripState, stripTick, stripTone, type StripMark,
+  stripBucket, stripCountsLabel, stripSlotCounts, stripSlots, stripState, stripTick, stripTone, type StripMark,
 } from './mission-task-strip';
+
+const isErrorTone = (s: Parameters<typeof stripTone>[0]) => stripTone(s) === 'error';
 
 /** The strip order as task tokens. */
 function names(spec: DagSpec, model: MissionBoardModel): string[] {
@@ -269,6 +271,18 @@ describe('Next open and the default selection (§9)', () => {
     const done = stripSlots(dagBoard({ tasks: ['A', 'B'], states: { A: 'landed', B: 'landed' } }));
     expect(defaultStripSelection(done)).toBe(done[1].id);
     expect(defaultStripSelection([])).toBeNull();
+  });
+  it('NX-2: the Next-open cycle set is exactly the set the header counts as "open" (states fixture)', () => {
+    const slots = stripSlots(missionTaskStripFixture('states').model);
+    const label = stripCountsLabel(stripSlotCounts(slots));
+    const counted = Number(/(\d+) open/.exec(label)?.[1] ?? 0);
+    const open = openIndices(slots);
+    expect(label).toContain('1 failed');
+    expect(open.length).toBe(counted);
+    // A failed cell is never a Next-open stop: cycling from the only open cell returns to it.
+    for (const i of open) expect(isErrorTone(slots[i].state)).toBe(false);
+    const from = open[0];
+    expect(nextOpenIndex(open, from)).toBe(from);
   });
   it('next open wraps, and is the selection itself when it is the only one', () => {
     expect(nextOpenIndex([2, 4], 2)).toBe(4);

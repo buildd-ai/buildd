@@ -52,7 +52,7 @@ import { findingIsStillThere } from '@buildd/core/visual-fix-label';
 import Dialog from '@/components/ui/Dialog';
 import { Kbd } from '@/components/KeyHints';
 import { taskPageHref } from '@/lib/mission-task-href';
-import { awaitingCapture, cellStanding } from '@/lib/visual-review-model';
+import { awaitingCapture, cellStanding, screensToReview } from '@/lib/visual-review-model';
 import { planShotReviewEffect } from '@/lib/visual-review-outcome';
 import ShotImage, { VERDICT_DOT, VIEWPORT_LABEL } from './ShotImage';
 import VisualShotCompare, { FixStatus, fixTitleText } from './VisualShotCompare';
@@ -438,7 +438,7 @@ function DeckInner({
   const closeNote = useCallback(() => { setNote(null); setGuidance(null); }, []);
 
   // What is left to decide, and the read-only rest, by the server's standing.
-  const remaining = useMemo(() => model.cells.filter(c => !isDone(c)).length, [model.cells, isDone]);
+  const remaining = useMemo(() => screensToReview(model, decided), [model, decided]);
   const [atOpen] = useState(remaining);
   const fine = useMemo(() => model.cells.filter(c => cellStanding(c) === 'fine'), [model.cells]);
   const fixing = useMemo(() => model.cells.filter(c => cellStanding(c) === 'fixing'), [model.cells]);
