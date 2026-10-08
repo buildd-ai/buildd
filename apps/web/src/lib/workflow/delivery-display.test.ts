@@ -178,6 +178,10 @@ const TABLE: Row[] = [
 // Each surface's palette, read back to the canonical tone.
 const CARD_STAGE: Record<DeliveryTone, string> = { needs: 'WAITING_INPUT', live: 'FIXING', stalled: 'STALLED', landed: 'DONE', closed: 'DONE', failed: 'FAILED' };
 const DOCK_TONE: Record<DeliveryTone, string> = { needs: 'needs', live: 'live', stalled: 'needs', landed: 'landed', closed: 'idle', failed: 'needs' };
+const HEADER_TONE: Record<DeliveryTone, string> = {
+  needs: 'border-accent bg-accent', live: 'border-accent bg-accent-soft', stalled: 'border-accent bg-accent-soft',
+  landed: 'border-status-success bg-status-success/10', closed: 'border-status-error bg-status-error/10', failed: 'border-status-error bg-status-error/10',
+};
 const CHAT_TONE: Record<DeliveryTone, string> = { needs: 'attention', live: 'live', stalled: 'neutral', landed: 'ok', closed: 'idle', failed: 'bad' };
 
 // Unrelated titles, so the board never folds one row into another as its retry.
@@ -241,24 +245,19 @@ describe('S17: each canonical state reads the same label, tone and counts on eve
         expect(isActionableChip(chipForDelivery(view, 'MERGE'))).toBe(r.needsYou);
       }
 
-      // HeaderStatusPill: uses deliveryReading label and tone mapping.
-      // Success green is only for landed states (MERGED, SUPERSEDED), not for APPROVED.
-      const headerHtml = renderToStaticMarkup(
-        HeaderStatusPill({
-          status: 'running',
-          merged: false,
-          delivery: { headline: d.headline, owner: view.owner as never, needsYou: r.needsYou, stage: d.stage, detail: d.detail, state: d.state },
-        })
-      );
-      expect(headerHtml).toContain(r.label, `${row.name}: header should contain label "${r.label}"`);
-
-      // Tone: landed (MERGED, SUPERSEDED) is success green; everything else is not.
-      const isLanded = r.tone === 'landed';
-      if (isLanded) {
-        expect(headerHtml).toContain('text-status-success', `${row.name}: landed state should be success green`);
-      } else {
-        expect(headerHtml).not.toContain('text-status-success', `${row.name}: non-landed state should NOT be success green`);
-      }
+      // Task header pill: the reading's label, its tone's palette, and success
+      // green for a landed delivery only, never for an approved PR the
+      // landing path is still merging.
+      const headerHtml = renderToStaticMarkup(HeaderStatusPill({
+        status: 'running', merged: false,
+        delivery: { headline: d.headline, owner: d.owner, needsYou: r.needsYou, stage: d.stage, detail: d.detail, state: d.state },
+      }));
+      expect(headerHtml.replace(/<[^>]+>/g, '')).toBe(r.label);
+      const pillClasses = new Set(headerHtml.match(/class="([^"]*)"/)![1].split(/\s+/));
+      for (const c of HEADER_TONE[r.tone].split(' ')) expect(pillClasses.has(c)).toBe(true);
+      expect(pillClasses.has('text-status-success')).toBe(r.tone === 'landed');
+      expect(pillClasses.has('text-status-error')).toBe(r.tone === 'closed' || r.tone === 'failed');
+      expect(pillClasses.has('whitespace-nowrap')).toBe(false);
     });
   }
 

@@ -2,7 +2,17 @@ import Link from 'next/link';
 import type { PrDisplayState } from '@/lib/pr-presentation';
 import type { ReactNode } from 'react';
 import StatusBadge, { STATUS_LABELS } from '@/components/StatusBadge';
-import { deliveryReading } from '@/lib/workflow/delivery-display';
+import { deliveryReading, type DeliveryTone } from '@/lib/workflow/delivery-display';
+
+/** The header pill's palette, one entry per canonical tone. Success green is for a landed delivery only. */
+const HEADER_TONE: Record<DeliveryTone, string> = {
+  needs: 'text-[var(--on-accent)] border-accent bg-accent',
+  live: 'text-accent-text border-accent bg-accent-soft',
+  stalled: 'text-accent-text border-accent bg-accent-soft',
+  landed: 'text-status-success border-status-success bg-status-success/10',
+  closed: 'text-status-error border-status-error bg-status-error/10',
+  failed: 'text-status-error border-status-error bg-status-error/10',
+};
 
 /** The page header's status: one square pill, loud only when it's on you. */
 /**
@@ -27,41 +37,12 @@ export function HeaderStatusPill({ status, merged, delivery = null }: { status: 
   const dot = (extra = '') => <span className={`w-[7px] h-[7px] flex-shrink-0 bg-current ${extra}`} aria-hidden="true" />;
 
   if (delivery && !merged) {
-    // Use deliveryReading for canonical tone and label mapping.
+    // The canonical reading (S17): every surface's label and tone. Null while
+    // the owner's attempt is still working, which reads live.
     const reading = deliveryReading({ stage: delivery.stage as never, state: delivery.state as never, headline: delivery.headline, owner: delivery.owner as never });
-
-    let toneClasses = '';
-    let shouldPulse = false;
-
-    if (delivery.needsYou) {
-      toneClasses = 'text-[var(--on-accent)] border-accent bg-accent';
-    } else if (reading) {
-      const tone = reading.tone;
-      if (tone === 'needs') {
-        toneClasses = 'text-[var(--on-accent)] border-accent bg-accent';
-      } else if (tone === 'landed') {
-        toneClasses = 'text-status-success border-status-success bg-status-success/10';
-      } else if (tone === 'closed' || tone === 'failed') {
-        toneClasses = 'text-status-error border-status-error bg-status-error/10';
-      } else {
-        // 'live' or 'stalled'
-        toneClasses = 'text-accent-text border-accent bg-accent-soft';
-        shouldPulse = delivery.owner === 'worker' || delivery.owner === 'reviewer';
-      }
-    } else {
-      // fallback to original logic for backward compatibility
-      if (delivery.stage === 'merged') {
-        toneClasses = 'text-status-success border-status-success bg-status-success/10';
-      } else if (delivery.stage === 'failed' || delivery.stage === 'closed' || delivery.stage === 'abandoned') {
-        toneClasses = 'text-status-error border-status-error bg-status-error/10';
-      } else {
-        toneClasses = 'text-accent-text border-accent bg-accent-soft';
-        shouldPulse = delivery.owner === 'worker' || delivery.owner === 'reviewer';
-      }
-    }
-
-    const label = reading?.label ?? delivery.headline;
-    return <span data-owner={delivery.owner} className={`${base} ${toneClasses}`} title={delivery.headline}>{dot(shouldPulse ? 'animate-status-pulse' : '')}{label}</span>;
+    const tone: DeliveryTone = delivery.needsYou ? 'needs' : reading?.tone ?? 'live';
+    const pulse = (tone === 'live' || tone === 'stalled') && (delivery.owner === 'worker' || delivery.owner === 'reviewer');
+    return <span data-owner={delivery.owner} className={`${base} ${HEADER_TONE[tone]}`} title={delivery.headline}>{dot(pulse ? 'animate-status-pulse' : '')}{reading?.label ?? delivery.headline}</span>;
   }
   if (merged) return <span className={`${base} text-status-success border-status-success bg-status-success/10`}>{dot()}Merged</span>;
   switch (status) {
