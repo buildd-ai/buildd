@@ -213,9 +213,11 @@ describe('loadSoftOverlapEvidence: same-file history and predicted size', () => 
     fake.rowsByTable.orchestration_manifest_predictions = [{ expectedSize: { files: 3, minutes: 20, source: 'neighbours', k: 3, n: 3 } }];
     const ev = await src.loadSoftOverlapEvidence({ workspaceId: WS, taskId: TASK, paths: ['a.ts', 'b.ts'] });
     expect(ev.conflictHistory?.files).toEqual([
-      { path: 'a.ts', mergedPrs: 4, conflicted: 1, rate: 0.25 },
-      { path: 'b.ts', mergedPrs: 0, conflicted: 0, rate: null },
+      { path: 'a.ts', mergedPrs: 4, conflicted: 1, rate: 0.25, ci: { lower: 0.046, upper: 0.699 } },
+      { path: 'b.ts', mergedPrs: 0, conflicted: 0, rate: null, ci: null },
     ]);
+    // One file unsampled, the other too small a sample: not callable either way.
+    expect(ev.conflictHistory?.summary).toBe('insufficient');
     expect(ev.predictedChange).toEqual({ files: 3, minutes: 20, source: 'neighbours' });
     const q = render(fake.executes[0]);
     expect(q.sql).toContain('orchestration_touch_labels');

@@ -26,6 +26,15 @@
  * The applying fraction is the committed `CLAIM_HOLD_APPLYING_FRACTION` (no
  * shadow-promotion gate, by owner decision, task 7eb191b9). Setting it to 0
  * is the single rollback switch back to deterministic HOLD.
+ *
+ * Every note carries a risk profile (packages/core/orchestration-claim-risk.ts).
+ * Code decides what code can: a soft overlap whose holder never started, or
+ * that shares only a directory, starts without a model call
+ * (`softOverlapStartVerdict` → `rule_start`; its paths are still acquired
+ * exclusively); a same-file overlap whose files measurably conflict is held
+ * after the evidence read, with a `rule_decided` ledger row and no model call.
+ * Only the ambiguous rest reaches Jev. `CLAIM_RISK_DETERMINISTIC_START = false`
+ * sends the deterministic STARTs back to the model.
  */
 import { after } from 'next/server';
 import { TASK_STATUSES, isTerminalTaskStatus } from '@buildd/shared';
@@ -53,6 +62,8 @@ import {
   type OrchestrationDecisionDeps,
 } from '@buildd/core/orchestration-decision';
 import { intersectPaths, pathsOverlap, REPO_WIDE_SENTINEL, type ManifestOverlapKind } from '@buildd/core/path-overlap';
+import { LIVE_HOLDER_STATUSES, assessClaimOverlapRisk, holderStateOf, type ClaimRiskAssessment } from '@buildd/core/orchestration-claim-decision';
+import { RULE_DECIDED } from '@buildd/core/orchestration-decision';
 import type { AcquireInput, AcquireResult, LeaseRowsRelease, ReleaseResult } from '@buildd/core/path-claim';
 import type { PathReleaseReason } from '@/lib/path-claim-release';
 import type { ClaimDecisionKey } from '@buildd/core/orchestration-claim-source';
@@ -128,6 +139,19 @@ export interface ClaimHoldNote {
   digest: string;
 }
 
+/** A soft overlap's claim-time verdict: the note (when the model may be asked) and the risk profile. */
+export interface SoftOverlapAssessment {
+  note: ClaimHoldNote | null;
+  risk: ClaimRiskAssessment;
+}
+
+/**
+ * Notes remembered per claim response. Bounded so a huge backlog costs
+ * nothing extra, and larger than `CLAIM_HOLD_MAX_PER_CLAIM` so a note that is
+ * skipped as recently asked does not crowd out one that was never asked.
+ */
+export const CLAIM_HOLD_MAX_NOTES = 50;
+
 // ── 1. Collector (synchronous, no I/O) ───────────────────────────────────────
 
 /**
@@ -167,7 +191,9 @@ export class ClaimHoldCollector {
 
   private keep(candidate: ClaimHoldCandidate): ClaimHoldNote {
     const note = { candidate, digest: claimHoldStateDigest(candidate) };
-    if (this.candidates.length < CLAIM_HOLD_MAX_PER_CLAIM) this.candidates.push(note);
+    // Code decided it at claim time: nothing for the model to answer.
+    if (candidate.risk && candidate.risk.route !== 'ask_model') return note;
+    if (this.candidates.length < CLAIM_HOLD_MAX_NOTES) this.candidates.push(note);
     return note;
   }
 
@@ -194,7 +220,8 @@ export class ClaimHoldCollector {
       holder,
     });
     if (!verdict.eligible) return this.skip(verdict.rail);
-    return this.keep(this.candidate(ctx, 'advisory_manifest', 'undeclared', [], [], holder));
+    const c = this.candidate(ctx, 'advisory_manifest', 'undeclared', [], [], holder);
+    return this.keep({ ...c, risk: assessClaimOverlapRisk({ gate: 'advisory_manifest', rail: null, candidatePaths: [], overlapPaths: [], holderState: null, now: ctx.now }) });
   }
 
   /**
@@ -209,6 +236,31 @@ export class ClaimHoldCollector {
     holder: SoftOverlapHolderEntry,
     activeLeases: Map<string, string[]> | undefined,
   ): ClaimHoldNote | null {
+    return this.assessSoftOverlap(ctx, manifest, holder, activeLeases).note;
+  }
+
+  /**
+   * `noteSoftOverlap` plus the risk profile, which the route records on the
+   * deferral and uses to start the low-risk tiers without a model call. A
+   * note that threw is a hard `state_unresolved`: fail closed.
+   */
+  assessSoftOverlap(
+    ctx: ClaimHoldTaskContext,
+    manifest: string[],
+    holder: SoftOverlapHolderEntry,
+    activeLeases: Map<string, string[]> | undefined,
+  ): SoftOverlapAssessment {
+    // Built defensively: this runs in the claim loop for every team, and the
+    // fail-closed answer below must not itself throw on a malformed input.
+    const riskOf = (rail: ClaimHoldRail | null): ClaimRiskAssessment => assessClaimOverlapRisk({
+      gate: 'soft_overlap',
+      rail,
+      overlapKind: holder?.overlapKind ?? 'prefix',
+      candidatePaths: Array.isArray(manifest) ? manifest.filter(p => p !== REPO_WIDE_SENTINEL) : [],
+      overlapPaths: Array.isArray(holder?.overlapPaths) ? holder.overlapPaths : [],
+      holderState: holderStateOf(holder?.workerStatus, LIVE_HOLDER_STATUSES),
+      now: typeof ctx?.now === 'string' ? ctx.now : new Date().toISOString(),
+    });
     try {
       const concrete = manifest.filter(p => p !== REPO_WIDE_SENTINEL);
       const overlapsLiveLease = overlapsOtherLease(ctx.taskId, concrete, activeLeases);
@@ -228,11 +280,18 @@ export class ClaimHoldCollector {
         serializedSurfaces,
         holder: h,
       });
-      if (!verdict.eligible) return this.skip(verdict.rail);
-      return this.keep({ ...this.candidate(ctx, 'soft_overlap', 'declared', concrete, [...holder.overlapPaths], h), overlapKind: holder.overlapKind ?? 'prefix' });
+      if (!verdict.eligible) return { note: this.skip(verdict.rail), risk: riskOf(verdict.rail) };
+      const risk = riskOf(null);
+      const note = this.keep({
+        ...this.candidate(ctx, 'soft_overlap', 'declared', concrete, [...holder.overlapPaths], h),
+        overlapKind: holder.overlapKind ?? 'prefix',
+        risk,
+      });
+      return { note, risk };
     } catch (err) {
       console.warn('[claim] hold/start note failed (skipped):', (err as Error)?.message ?? err);
-      return this.skip('error');
+      this.skip('error');
+      return { note: null, risk: riskOf('state_unresolved') };
     }
   }
 
@@ -284,7 +343,10 @@ export class ClaimHoldCollector {
     }
     const first = blockers[0];
     const holder: ClaimHoldHolder = { taskId: first.taskId, prNumber: first.prNumber, workerStatus: first.workerStatus ?? null, prLifecycle: first.prLifecycle ?? null };
-    return this.keep(this.candidate(ctx, 'open_pr_overlap', 'declared', concrete, overlap, holder));
+    // No effective-scope input yet: the PR's current diff (task c3785f15) is
+    // what would let a disjoint pair start without the model.
+    const risk = assessClaimOverlapRisk({ gate: 'open_pr_overlap', rail: null, candidatePaths: concrete, overlapPaths: overlap, holderState: 'ended', now: ctx.now });
+    return this.keep({ ...this.candidate(ctx, 'open_pr_overlap', 'declared', concrete, overlap, holder), risk });
   }
 
   private candidate(
@@ -362,13 +424,28 @@ const defaultLoadEvidence: NonNullable<ClaimHoldDeps['loadEvidence']> = async (o
 const defaultFindAppliedStart = async (k: ClaimDecisionKey) => (await import('@buildd/core/orchestration-claim-source')).findAppliedStart(k);
 const defaultAcquire = async (input: AcquireInput) => (await import('@buildd/core/path-claim')).acquirePathClaims(input);
 
-/** Ask about each eligible deferral. Never throws. */
+/** Longest-waiting first: a task deferred for hours is asked before one deferred this minute. */
+function byLongestWait(a: ClaimHoldNote, b: ClaimHoldNote): number {
+  const ta = a.candidate.taskCreatedAt ? Date.parse(a.candidate.taskCreatedAt) : Infinity;
+  const tb = b.candidate.taskCreatedAt ? Date.parse(b.candidate.taskCreatedAt) : Infinity;
+  return (Number.isFinite(ta) ? ta : Infinity) - (Number.isFinite(tb) ? tb : Infinity);
+}
+
+/**
+ * Ask about eligible deferrals, longest-waiting first. At most
+ * `CLAIM_HOLD_MAX_PER_CLAIM` decisions run per call; a note skipped as
+ * recently asked (memo or ledger) does not use a slot, so the same handful of
+ * held tasks can no longer starve every task queued behind them. Never throws.
+ */
 export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: ClaimHoldDeps = {}): Promise<void> {
   const decision = deps.decision ?? CLAIM_HOLD_DECISION;
   const now = deps.now ?? (() => Date.now());
   const decide = deps.decide ?? runOrchestrationDecision;
   const resolveAccess = deps.decisionDeps?.resolveAccess ?? defaultResolveAccess;
-  for (const note of notes) {
+  let asked = 0;
+  for (const note of [...notes].sort(byLongestWait)) {
+    if (asked >= CLAIM_HOLD_MAX_PER_CLAIM) break;
+    if (note.candidate.risk && note.candidate.risk.route !== 'ask_model') continue;
     try {
       const c = note.candidate;
       const t = now();
@@ -392,6 +469,7 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
         remember(recentAsks, memoKey, t + RECENT_ASK_TTL_MS);
         continue;
       }
+      asked++;
       const outcome = await decide({
         decision,
         question: 'action',
@@ -414,7 +492,22 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
               ? (deps.loadEvidence ?? defaultLoadEvidence)({ workspaceId: c.workspaceId, taskId: c.taskId, paths: c.overlapPaths })
               : Promise.resolve(null),
           ]);
-          return buildClaimHoldState(c, holder, evidence);
+          // Re-tier with the history just read: a measured high-conflict file
+          // is held in code, recorded as `rule_decided`, with no model call.
+          const risk = c.gate === 'soft_overlap' && evidence?.conflictHistory
+            ? assessClaimOverlapRisk({
+                gate: 'soft_overlap',
+                rail: null,
+                overlapKind: c.overlapKind ?? 'prefix',
+                candidatePaths: c.concretePaths,
+                overlapPaths: c.overlapPaths,
+                holderState: holderStateOf(holder?.workerStatus ?? c.holder.workerStatus, LIVE_HOLDER_STATUSES),
+                history: evidence.conflictHistory,
+                now: c.deferredAt,
+              })
+            : c.risk ?? null;
+          if (risk && risk.route === 'deterministic_hold') return RULE_DECIDED;
+          return buildClaimHoldState(c, holder, evidence, risk);
         },
         isValidAnswer: (v) => v === 'HOLD' || v === 'START',
         cohort: { fraction: grantedFraction(deps, c.gate), unitId: c.taskId },
@@ -488,6 +581,23 @@ export async function gatedStartApplies(note: ClaimHoldNote | null, deps: ClaimH
   } catch {
     return false;
   }
+}
+
+/**
+ * The soft-overlap verdict for one note: `rule_start` when the risk profile
+ * starts it in code (no ledger read), `START` when an applied Jev START exists
+ * for this exact state, else `HOLD`. A null note (a rail refused it, or the
+ * note threw) is always HOLD. Never throws.
+ */
+export async function softOverlapStartVerdict(
+  note: ClaimHoldNote | null,
+  gated: boolean,
+  deps: ClaimHoldDeps = {},
+): Promise<'rule_start' | 'START' | 'HOLD'> {
+  if (!note) return 'HOLD';
+  if (note.candidate.risk?.route === 'deterministic_start') return 'rule_start';
+  if (note.candidate.risk?.route === 'deterministic_hold') return 'HOLD';
+  return gated && await gatedStartApplies(note, deps) ? 'START' : 'HOLD';
 }
 
 export interface GatedStartAcquisition {

@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [packages/core/orchestration-decision.ts, packages/core/orchestration-promotion.ts, packages/core/orchestration-readout.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.ts]
 related: [model-routing-and-tiers, mission-task-lifecycle, live-sibling-conflict-probe]
 keywords: [jev, shadow, gated, applying fraction, cohort, propensity, orchestration_decisions, orchestration_manifest, orchestration_claim, readout, insufficient_n, soft overlap, softOverlaps, partitionOverlapEdges, hold start]
-verified_by: [apps/web/src/lib/hard-overlap-surfaces.test.ts, packages/core/__tests__/orchestration-decision.test.ts, packages/core/__tests__/orchestration-promotion.test.ts, packages/core/__tests__/orchestration-readout.test.ts, packages/core/__tests__/orchestration-claim-decision.test.ts, packages/core/__tests__/path-overlap-edges.test.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts]
+verified_by: [packages/core/__tests__/orchestration-claim-risk.test.ts, packages/core/__tests__/orchestration-claim-risk-eval.test.ts, apps/web/src/lib/hard-overlap-surfaces.test.ts, packages/core/__tests__/orchestration-decision.test.ts, packages/core/__tests__/orchestration-promotion.test.ts, packages/core/__tests__/orchestration-readout.test.ts, packages/core/__tests__/orchestration-claim-decision.test.ts, packages/core/__tests__/path-overlap-edges.test.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts]
 assertions:
   - id: "run-orchestration-decision"
     type: "symbol"
@@ -26,6 +26,14 @@ assertions:
     type: "symbol"
     name: "buildOrchestrationReadout"
     path: "packages/core/orchestration-readout.ts"
+  - id: "assess-claim-overlap-risk"
+    type: "symbol"
+    name: "assessClaimOverlapRisk"
+    path: "packages/core/orchestration-claim-risk.ts"
+  - id: "evaluate-claim-risk-policy"
+    type: "symbol"
+    name: "evaluateClaimRiskPolicy"
+    path: "packages/core/orchestration-claim-risk-eval.ts"
   - id: "release-gated-start"
     type: "symbol"
     name: "releaseGatedStartPaths"
@@ -154,6 +162,42 @@ current manifests.
   `approved`) and the candidate's predicted change size. The overlap kind is
   part of the state digest. A failed evidence read is a decision error: the
   decision falls back to the rule's HOLD without calling the model.
+- Every claim-time advisory deferral is tiered in code first
+  (`assessClaimOverlapRisk`): `hard` (a rail above), `no_effective_overlap`,
+  `low`, `uncertain` or `high`, with a one-sentence rationale, the evidence
+  source and age, and what would change it (`reevaluateOn`). Code decides:
+  a soft overlap whose holder never started, or whose holder's current
+  effective scope (PR diff at the current head, or live leases, read within
+  `EFFECTIVE_SCOPE_MAX_AGE_MS`) is disjoint, is `no_effective_overlap`; a
+  directory-only soft overlap is `low`. Both START without a ledger read or a
+  model call (`rule_start`), still through the exclusive acquisition and every
+  later gate. A fresh pair probe conflict (`PAIR_PROBE_MAX_AGE_MS`, heads
+  current) or file history whose 95% Wilson lower bound is at least
+  `HIGH_CONFLICT_LOWER_BOUND` on at least `MIN_FILE_HISTORY_SAMPLE` merged PRs
+  is `high`: HOLD with no model call, recorded as a `fallback` row with reason
+  `rule_decided`. Missing or stale evidence is `uncertain`, never `high`. Only
+  `uncertain` and `low` same-file, open-PR and scope-undeclared deferrals
+  reach Jev, which sees the tier and its reasons, never the rationale prose.
+  `CLAIM_RISK_DETERMINISTIC_START = false` sends the deterministic STARTs back
+  to the model.
+- Conflict history is judged on intervals, not point rates: a file's summary
+  is `insufficient` until it has a sample and an interval narrow enough to
+  call (`low` needs every shared file's upper bound at or below
+  `LOW_CONFLICT_UPPER_BOUND`).
+- Per claim response at most `CLAIM_HOLD_MAX_PER_CLAIM` decisions run,
+  longest-waiting task first, out of up to `CLAIM_HOLD_MAX_NOTES` notes; a
+  note skipped as recently asked does not use a slot.
+- A START past a soft overlap that wins its claim records a
+  `claim_loop_deferral` `accepted` row, reason `soft_overlap_start`, with
+  `decidedBy` (`rule` or `jev`) and the tier. A held one records `riskTier`,
+  `rationale` and `reevaluateOn` on its `soft_overlap` deferral.
+- Policy changes are measured on the labelled replay set
+  (`evaluateClaimRiskPolicy`, synthetic scenarios in
+  `packages/core/__tests__/fixtures/claim-risk-scenarios.ts`, frozen
+  train/heldout/later splits) against hold-everything and start-unless-hard
+  baselines. A held pair is censored; clean merge, Mergiraf resolution and
+  rebase are cost, not harm; a real conflict, a CI regression, a human
+  intervention and a migration-index collision are harm, each counted apart.
 - Creation never stores a prefix-only overlap, or a same-file overlap off the
   hard surfaces, as a `dependsOn` edge.
 - A force claim past a soft overlap records a `force_soft_overlap` bypass row
@@ -210,6 +254,18 @@ current manifests.
   paths and verdict; WHEN one exists THEN the declared paths are acquired
   exclusively and the claim proceeds; WHEN the holder holds a live lease on
   the files THEN the claim defers regardless.
+- AC-1f: GIVEN a soft overlap that shares only a directory, or whose holder
+  never started, WHEN the claim runs THEN it starts with no ledger lookup and
+  no model call, its declared paths acquired exclusively; GIVEN that
+  acquisition is refused THEN it holds; GIVEN a live lease on the files THEN
+  it is `hard` and holds.
+- AC-1g: GIVEN a same-file soft overlap whose files' history has a 95% lower
+  bound at or above `HIGH_CONFLICT_LOWER_BOUND` WHEN the decision runs THEN no
+  model is called and the row is `fallback` / `rule_decided` with effective
+  HOLD.
+- AC-1h: GIVEN more eligible deferrals than `CLAIM_HOLD_MAX_PER_CLAIM`, some
+  recently asked, WHEN the decisions run THEN the recently asked ones are
+  skipped without using a slot and the rest are asked longest-waiting first.
 - AC-2: GIVEN matching eligible evidence WHEN the deployed definition's
   questions or model differ from the measured one THEN the refusal is
   `fingerprint_mismatch` and the granted fraction is 0.
@@ -242,6 +298,10 @@ current manifests.
   `assignApplyingArm`, `contentFreeLabel`.
 - `packages/core/orchestration-promotion.ts`: `resolveApplyingFraction`,
   `ORCHESTRATION_PROMOTIONS`, `measuredIdentity`, `manifestPickIdentity`.
+- `packages/core/orchestration-claim-risk.ts`: `assessClaimOverlapRisk`,
+  `wilsonInterval`, `judgeFileHistory`, `CLAIM_RISK_DETERMINISTIC_START`;
+  `packages/core/orchestration-claim-risk-eval.ts`:
+  `evaluateClaimRiskPolicy`, `riskProfilePolicy`, `holdAllPolicy`.
 - `packages/core/orchestration-claim-decision.ts`: `CLAIM_HOLD_DECISION`,
   `CLAIM_HOLD_MIN_CONFIDENCE`, `classifyClaimHoldEligibility`,
   `isGatedStartReachable`.
