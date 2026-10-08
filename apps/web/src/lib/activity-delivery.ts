@@ -355,12 +355,21 @@ export const NOT_LANDED_NOW_WINDOW_MS = 48 * 60 * 60 * 1000;
 /** Waiting rows shown per group before they fold into a count. */
 export const WAITING_ROWS_PER_GROUP = 2;
 
-function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, runner: string | null): string {
+/** The current head's audit passed: every counted review and CI gate on it passed. */
+function currentHeadPassed(evidence: readonly EvidenceEntry[]): boolean {
+  const cur = evidence.find((e): e is Extract<EvidenceEntry, { type: 'revision' }> => e.type === 'revision' && e.current);
+  const counted = cur?.gates.filter(g => !g.void) ?? [];
+  return counted.some(g => g.name === 'CI') && counted.some(g => g.name.startsWith('Code review')) && counted.every(g => g.result === 'passed');
+}
+
+function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, runner: string | null, evidence: readonly EvidenceEntry[]): string {
   const pr = prNumber ? `PR #${prNumber}` : 'The PR';
   const rounds = delivery.repairRounds;
   switch (delivery.kind) {
     case 'build': return runner ? `An agent is building it on ${runner}.` : 'An agent is building it.';
-    case 'audit': return delivery.verdict === 'stale' ? `${pr} is open. A verdict arrived for an older head; review runs again on the latest.` : `${pr} is open; review and CI have not both passed on its latest revision.`;
+    case 'audit':
+      if (currentHeadPassed(evidence)) return `Review and CI passed on its latest revision. ${pr} has not merged yet.`;
+      return delivery.verdict === 'stale' ? `${pr} is open. A verdict arrived for an older head; review runs again on the latest.` : `${pr} is open; review and CI have not both passed on its latest revision.`;
     case 'repair': {
       const why = delivery.repairReason ? { ci: 'CI failed', conflict: 'The branch conflicts with its base', review: 'Review asked for changes' }[delivery.repairReason] : 'An audit failed';
       return `${why}. An automatic fix ${d.workers.some(w => LIVE.has(w.status)) ? 'is running' : 'is queued'}${rounds > 0 ? ` (round ${rounds})` : ''}.`;
@@ -379,6 +388,7 @@ function toRow(d: Delivery, delivery: TaskDelivery): NowRow {
   const liveWorker = d.workers.find(w => LIVE.has(w.status)) ?? null;
   const runnerName = liveWorker?.name ?? null;
   const prNumber = owner?.prNumber ?? null;
+  const evidence = buildEvidence(d);
   return {
     id: d.root.id,
     title: d.root.title,
@@ -387,9 +397,9 @@ function toRow(d: Delivery, delivery: TaskDelivery): NowRow {
     live: !!liveWorker,
     runnerName,
     prNumber,
-    line: lineFor(d, delivery, prNumber, runnerName),
+    line: lineFor(d, delivery, prNumber, runnerName, evidence),
     updatedAt: latestAt(d),
-    evidence: buildEvidence(d),
+    evidence,
   };
 }
 

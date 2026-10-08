@@ -16,6 +16,7 @@ import {
   type ActivityNow, type ActivityOutcome, type ActivityScope, type Episode, type EvidenceEntry, type LatestTask, type NowGroup, type NowRow,
 } from '@/lib/activity-delivery';
 import type { LocalSessionView } from '@/lib/local-session-view';
+import { Select } from '@/components/ui/Select';
 import InteractiveSessions from './InteractiveSessions';
 import LocalTime from './LocalTime';
 
@@ -117,13 +118,14 @@ export default function ActivityView({ mode, now, history, latest, nowMs, hrefs,
           <FilterGroup label="Show" options={SCOPES} value={scope} onChange={setScope} />
           <FilterGroup label="Filter" options={OUTCOMES[mode]} value={outcomeKey} onChange={setOutcome} />
           {mode === 'history' && missionOptions.length > 1 && !missionFilter && (
-            <label className="inline-flex min-w-0 items-center gap-2 text-meta text-text-muted">
-              <span className="shrink-0">Mission</span>
-              <select value={mission} onChange={e => setMission(e.target.value)} className="min-h-9 min-w-0 max-w-[220px] border border-border-default bg-transparent px-2 font-mono text-meta text-text-primary">
-                <option value="">Any</option>
-                {missionOptions.map(([id, title]) => <option key={id} value={id}>{title}</option>)}
-              </select>
-            </label>
+            <Select
+              value={mission}
+              onChange={setMission}
+              options={[{ value: '', label: 'Any mission' }, ...missionOptions.map(([id, title]) => ({ value: id, label: title }))]}
+              aria-label="Mission"
+              size="sm"
+              className="min-w-0 max-w-[240px]"
+            />
           )}
         </div>
 
@@ -294,9 +296,9 @@ function EpisodeView({ episode, nowMs }: { episode: Episode; nowMs: number }) {
       )}
       <ol className="ml-1 mt-2 border-l border-border-strong pl-3.5">
         {steps.map((s, i) => (
-          <li key={hidden + i} className="relative grid grid-cols-[48px_minmax(0,1fr)] gap-2 py-0.5">
+          <li key={hidden + i} className="relative grid grid-cols-[4.5rem_minmax(0,1fr)] gap-2 py-0.5">
             <span aria-hidden="true" className={`absolute -left-[18px] top-[9px] h-[7px] w-[7px] bg-current ${TONE_TEXT[s.tone]}`} />
-            <span className="font-mono text-meta tabular-nums text-text-muted">
+            <span className="whitespace-nowrap font-mono text-meta tabular-nums text-text-muted">
               <LocalTime iso={new Date(s.at).toISOString()} fallback={new Date(s.at).toISOString().slice(11, 16)} />
             </span>
             <span className={`text-body ${s.void ? 'text-text-muted line-through' : 'text-text-primary'}`}>{s.text}</span>

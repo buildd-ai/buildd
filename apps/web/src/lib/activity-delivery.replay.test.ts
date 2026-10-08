@@ -147,6 +147,9 @@ describe('replay: audit fails → repair → re-audit → land, on every surface
     const current = row.evidence[0];
     if (current.type !== 'revision') throw new Error('expected a revision first');
     expect(current.gates.filter(g => !g.void).map(g => `${g.name.replace(/ \d+$/, '')}:${g.result}`)).toEqual(['Code review:passed', 'CI:passed']);
+    // The sentence follows the evidence; the chip stays the shared projection's.
+    expect(row.line).toBe('Review and CI passed on its latest revision. PR #34 has not merged yet.');
+    expect(row.delivery.kind).toBe('audit');
   });
 
   it('History keeps one episode for the delivery; its steps only grow at the end', () => {

@@ -22,7 +22,15 @@ export default function ActivityDeliveryFixture() {
   const href = (view: ActivityMode, s = data.step) => `/app/dev/fixtures?state=activity-delivery&step=${s}${view === 'history' ? '&view=history' : ''}`;
 
   return (
-    <div className="h-screen">
+    <div className="flex h-screen flex-col">
+      <nav aria-label="Fixture sequence" data-testid="activity-fixture-steps" className="flex gap-1 overflow-x-auto border-b border-dashed border-border-strong bg-surface-2 px-2 py-1 text-meta">
+        {ACTIVITY_SEQUENCE.map((label, i) => (
+          <a key={label} href={href(mode, i)} aria-current={i === data.step ? 'step' : undefined} className={`shrink-0 whitespace-nowrap px-2 py-1 ${i === data.step ? 'border border-accent text-accent-text' : 'text-text-muted'}`}>
+            {i} · {label}
+          </a>
+        ))}
+      </nav>
+      <div className="min-h-0 flex-1">
       <ActivityView
         key={`${mode}-${data.step}`}
         mode={mode}
@@ -33,13 +41,7 @@ export default function ActivityDeliveryFixture() {
         hrefs={{ now: href('now'), history: href('history') }}
         openRowIds={['fx-t34']}
       />
-      <nav aria-label="Fixture sequence" data-testid="activity-fixture-steps" className="fixed bottom-0 left-0 right-0 z-50 flex gap-1 overflow-x-auto border-t border-dashed border-border-strong bg-surface-2 px-2 py-1 text-meta">
-        {ACTIVITY_SEQUENCE.map((label, i) => (
-          <a key={label} href={href(mode, i)} aria-current={i === data.step ? 'step' : undefined} className={`shrink-0 whitespace-nowrap px-2 py-1 ${i === data.step ? 'border border-accent text-accent-text' : 'text-text-muted'}`}>
-            {i} · {label}
-          </a>
-        ))}
-      </nav>
+      </div>
     </div>
   );
 }
