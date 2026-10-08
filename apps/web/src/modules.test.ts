@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY } from './modules';
+import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY, workflowEffectHandlers } from './modules';
+import { EFFECT_KINDS } from './lib/workflow/commands';
+import { withPrFactEffects } from './lib/workflow/pr-fact-effects';
 import { reviewerDispatchOnOpen } from './lib/reviewer-subscribers';
 import { COMPLETION_SLOTS } from './lib/completion-policy';
 import { moduleOf } from '../../../scripts/module-boundaries';
@@ -90,6 +92,15 @@ describe('composition root', () => {
 
   it('the PR-opened slot is the reviews module\'s reviewer dispatch', () => {
     expect(PR_OPENED_POLICY).toBe(reviewerDispatchOnOpen);
+  });
+
+  // An effect the kernel records with no handler throws on every drain until it goes dead:
+  // Slice C's landing effects (merge_call, verify_merge, ...) shipped composed in the tests'
+  // own handler set but not here, so a kernel-owned PR could never actually merge.
+  it('every workflow effect the kernel can record has a handler in production', () => {
+    const production = withPrFactEffects(workflowEffectHandlers()); // as seam.ts composes it
+    const missing = EFFECT_KINDS.filter(k => typeof production[k] !== 'function');
+    expect(missing).toEqual([]);
   });
 
   it('labels are unique, so a page names exactly one step', () => {

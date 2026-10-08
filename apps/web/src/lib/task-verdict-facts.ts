@@ -10,6 +10,7 @@ import type { CheckSource, TaskVerdict, VerdictCheck, VerdictInput, VerdictOpenA
 import type { TraceOutcomeContext } from './trace-consequence';
 import { latestChecks } from './task-verdict';
 import { parseTaskShippedRecord } from './task-shipped';
+import { prListStatus, type PrDisplayState } from './pr-presentation';
 
 export interface VerdictWorkerRow {
   id: string;
@@ -40,6 +41,12 @@ export interface VerdictFactsInput {
   openAttempt: VerdictOpenAttempt | null;
   openQuestion: boolean;
   inRelease: boolean;
+  /**
+   * The delivery's PR state when the workflow kernel owns the PR
+   * (docs/specs/workflow-state-kernel.md §17.5). When set it wins over the
+   * worker's fact-cache columns.
+   */
+  deliveryPrState?: PrDisplayState | null;
 }
 
 const ms = (v: Date | string | null | undefined): number => {
@@ -133,7 +140,9 @@ export function buildVerdictInput(input: VerdictFactsInput): VerdictInput {
     live: liveWorkerOf(input.workers),
     openQuestion: input.openQuestion,
     pr: prWorker?.prUrl && prWorker.prNumber
-      ? { url: prWorker.prUrl, number: prWorker.prNumber, lifecycle: prWorker.prLifecycleStatus ?? null, merged: !!prWorker.mergedAt }
+      ? input.deliveryPrState
+        ? { url: prWorker.prUrl, number: prWorker.prNumber, lifecycle: prListStatus(input.deliveryPrState), merged: input.deliveryPrState === 'merged' }
+        : { url: prWorker.prUrl, number: prWorker.prNumber, lifecycle: prWorker.prLifecycleStatus ?? null, merged: !!prWorker.mergedAt }
       : null,
     checks: latestChecks(checkSourcesOf(input)),
     openAttempt: input.openAttempt,

@@ -78,7 +78,8 @@ export type CausalLinkSource =
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
   | 'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor'
   | 'task_dispatch_outbox.status'
-  | 'tasks.context.entitlementBlock';
+  | 'tasks.context.entitlementBlock'
+  | 'DeliveryView.lastTransition';
 
 export interface CausalLink {
   /** 1-based position. The chain reads cause → effect, in order. */
@@ -213,6 +214,20 @@ export interface ExplainAnswer {
    * in @buildd/core/backend-policy is the one reader.
    */
   backendRouting?: BackendRoutingDescription;
+  /**
+   * For a task or PR subject whose delivery the workflow kernel owns: the
+   * kernel's reading (workflow-state-kernel §17.5), with the one
+   * family-labelled attempt line the comment and titles also use (§5.7).
+   * Absent for a legacy-owned or PR-less task.
+   */
+  delivery?: {
+    state: string;
+    owner: string;
+    needsYou: boolean;
+    headline: string;
+    detail: string | null;
+    attempts: string | null;
+  };
   derivedFrom: ExplainProvenance;
 }
 

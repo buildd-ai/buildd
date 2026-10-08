@@ -19,6 +19,7 @@ import { continueOnRunnerBlockedReason, deriveLocalStrand } from '@/lib/local-st
 import { strandCtaFor } from '@/lib/mission-list-card';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
+import { getOwnerDeliveryDisplays } from '@/lib/workflow/delivery-view';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { loadFleetCapacity } from '@/lib/home-fleet';
 import { MISSION_DETAIL_WITH } from '@/app/app/(protected)/missions/[id]/mission-page-query';
@@ -46,7 +47,7 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
   // the one auditor-scoped loader. No audit task on the mission: no query.
   const hasAudit = (mission.tasks ?? []).some(t => (t as { roleSlug?: string | null }).roleSlug === VISUAL_AUDITOR_ROLE_SLUG);
 
-  const [roles, humanSteeringNotes, runnerHeartbeats, fleetCapacity, visual] = await Promise.all([
+  const [roles, humanSteeringNotes, runnerHeartbeats, fleetCapacity, visual, deliveries] = await Promise.all([
     (async () => {
       const wsIds = await getUserWorkspaceIds(userId);
       if (wsIds.length === 0) return [] as { slug: string; name: string; color: string }[];
@@ -80,6 +81,8 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
       console.warn('[chat-objects] visual review not loaded:', e instanceof Error ? e.message : e);
       return null;
     }),
+    // §17.5: kernel-owned deliveries read the kernel on the board and AT WORK.
+    getOwnerDeliveryDisplays(taskIds),
   ]);
 
   const allTasks = (mission.tasks || []).slice().sort(
@@ -92,7 +95,7 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
   const board = buildMissionBoard({
     runnerHeartbeats,
     fleetCapacity,
-    tasks: allTasks.map(t => toBoardTaskInput(t as unknown as Parameters<typeof toBoardTaskInput>[0])),
+    tasks: allTasks.map(t => toBoardTaskInput({ ...t, delivery: deliveries.get(t.id) ?? null } as unknown as Parameters<typeof toBoardTaskInput>[0])),
     roles,
     now,
     missionCreatedAt: new Date(m.createdAt).getTime(),

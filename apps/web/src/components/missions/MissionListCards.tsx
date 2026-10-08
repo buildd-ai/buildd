@@ -20,7 +20,7 @@ import type { MissionCardView } from '@/lib/mission-card-view';
 import { nextRunLabel, shortAgo, shortDuration, type ListTone, type MissionListCardModel } from '@/lib/mission-list-card';
 import { STATUS_TONE_EDGE, STATUS_TONE_SQUARE, STATUS_TONE_TEXT } from '@/lib/status-tone';
 import { timeAgo } from '@/lib/mission-helpers';
-import PhaseBar, { CELL_BOX } from './PhaseBar';
+import PhaseBar, { TONE_BOX } from './PhaseBar';
 import ContinueOnRunnerCta from './ContinueOnRunnerCta';
 
 export interface ListCardProps {
@@ -201,7 +201,8 @@ export function ActiveMissionCard({ view, model, workspaceName }: ListCardProps)
             <span className="text-status-warning"><b className="font-semibold">{counts.needsYou}</b> {model.question ? 'question' : 'needs you'}</span>
           )}
           {counts.failed > 0 && <span className="text-status-error"><b className="font-semibold">{counts.failed}</b> failed</span>}
-          {counts.queued > 0 && <span className="text-text-muted">{counts.queued} queued</span>}
+          {counts.open > 0 && <span className="text-text-muted">{counts.open} open</span>}
+          {counts.held > 0 && <span className="text-text-muted">{counts.held} held</span>}
         </div>
         {model.criteria && <CriteriaPips criteria={model.criteria} />}
       </div>
@@ -309,7 +310,7 @@ export function MiniMissionCard({ view, model, workspaceName }: ListCardProps) {
           <>
             <span className="flex h-2.5 w-[120px] gap-[2px]" aria-hidden="true">
               {model.phases.flatMap(p => p.cells).slice(0, 12).map(c => (
-                <span key={c.taskId} className={`flex-1 ${CELL_BOX[c.state]}`} />
+                <span key={c.taskId} className={`flex-1 ${TONE_BOX[c.tone]}`} />
               ))}
             </span>
             <span className="flex items-center gap-2">
