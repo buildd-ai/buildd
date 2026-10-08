@@ -434,6 +434,14 @@ export const CLOUD_EXECUTOR = 'cloud';
  * it with the name. The default covers a Worker deployed before the var.
  */
 export const RUNNER_GROUP_CONTAINER_ENV = 'BUILDD_RUNNER_GROUP';
+
+/**
+ * The model route this run's egress plans to take (`owner_seat` | `metered`),
+ * for the runner to report as its cost basis (docs/specs/real-and-virtual-cost.md).
+ * The container only holds a placeholder key, so it cannot tell by itself.
+ * Must equal CLOUD_MODEL_AUTH_ENV in apps/runner/src/cost-basis.ts.
+ */
+export const CLOUD_MODEL_AUTH_CONTAINER_ENV = 'BUILDD_CLOUD_MODEL_AUTH';
 export const DEFAULT_RUNNER_GROUP = 'buildd-cloud-runner';
 
 /** Prefix of a per-task token (apps/web/src/lib/task-token.ts). */

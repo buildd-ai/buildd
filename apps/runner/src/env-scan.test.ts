@@ -240,9 +240,9 @@ describe('scanEnvironment', () => {
   it('detects installed tools with version', () => {
     mockExecSync.mockImplementation((cmd: string) => {
       if (typeof cmd !== 'string') throw new Error('not found');
-      if (cmd === 'which node') return Buffer.from('/usr/local/bin/node\n');
+      if (cmd === 'command -v node') return Buffer.from('/usr/local/bin/node\n');
       if (cmd === 'node --version') return Buffer.from('v22.1.0\n');
-      if (cmd === 'which git') return Buffer.from('/usr/bin/git\n');
+      if (cmd === 'command -v git') return Buffer.from('/usr/bin/git\n');
       if (cmd === 'git --version') return Buffer.from('git version 2.43.0\n');
       throw new Error('not found');
     });
@@ -257,7 +257,7 @@ describe('scanEnvironment', () => {
   it('detects tool without version when --version fails', () => {
     mockExecSync.mockImplementation((cmd: string) => {
       if (typeof cmd !== 'string') throw new Error('not found');
-      if (cmd === 'which docker') return Buffer.from('/usr/bin/docker\n');
+      if (cmd === 'command -v docker') return Buffer.from('/usr/bin/docker\n');
       if (cmd === 'docker --version') throw new Error('timeout');
       throw new Error('not found');
     });
@@ -405,7 +405,7 @@ describe('scanEnvironment', () => {
   it('supports extraTools via ScanConfig', () => {
     mockExecSync.mockImplementation((cmd: string) => {
       if (typeof cmd !== 'string') throw new Error('not found');
-      if (cmd === 'which my-custom-tool') return Buffer.from('/usr/bin/my-custom-tool\n');
+      if (cmd === 'command -v my-custom-tool') return Buffer.from('/usr/bin/my-custom-tool\n');
       if (cmd === 'my-custom-tool --version') return Buffer.from('1.0.0\n');
       throw new Error('not found');
     });

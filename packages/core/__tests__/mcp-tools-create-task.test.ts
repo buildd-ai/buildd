@@ -759,6 +759,16 @@ describe('create_task — kind/complexity routing inputs', () => {
     }
   });
 
+  it.each([['feature'], ['test']])('rejects a category value (%s) passed as kind', async (kind) => {
+    await expect(handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Task', description: 'd', kind },
+      createMockContext(),
+    )).rejects.toThrow(/kind must be one of/);
+    expect(mockApi).not.toHaveBeenCalled();
+  });
+
   it('rejects an invalid kind instead of silently dropping it', async () => {
     await expect(handleBuilddAction(
       mockApi as unknown as ApiFn,

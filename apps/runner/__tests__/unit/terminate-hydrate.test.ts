@@ -716,7 +716,10 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       defaultQueryBehavior = { type: 'success', messages: successMessages() };
 
       await manager.sendMessage('w-th-1', 'One more thing');
-      await new Promise(r => setTimeout(r, 300));
+      // Poll rather than sleep a fixed time: loaded CI runners are slower than 300ms
+      for (let i = 0; i < 100 && statuses[statuses.length - 1] !== 'done'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       // Should have transitioned through working
       expect(statuses).toContain('working');
@@ -745,7 +748,9 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       ];
 
       await manager.sendMessage('w-th-1', 'Follow up');
-      await new Promise(r => setTimeout(r, 500));
+      for (let i = 0; i < 100 && statuses[statuses.length - 1] !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       expect(statuses).toContain('working');
       expect(statuses[statuses.length - 1]).toBe('error');

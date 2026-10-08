@@ -3967,6 +3967,45 @@ describe('POST /api/workers/claim', () => {
       expect(lastTaskSetPayload.context?.model).toBe(tierModel('budget'));
     });
 
+    // Regression: a category value ('feature', 'test') stored as tasks.kind
+    // used to throw inside BASELINE[kind][complexity] and 500 every claim whose
+    // candidate set held it — a head-of-line blocker for the runner.
+    it.each([['feature'], ['test'], ['constructor']])('a candidate with kind=%s claims as engineering instead of returning 500', async (badKind) => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 3,
+        type: 'user',
+        authType: 'api',
+        maxCostPerDay: '100',
+        totalCost: '5',
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([{
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'organizer-filed step',
+        kind: badKind,
+        complexity: 'simple',
+        priority: 0,
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+      }]);
+      mockClaimSuccess();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers.length).toBe(1);
+      // engineering/simple → budget tier, same as a valid engineering kind.
+      expect(lastTaskSetPayload.predictedModel).toBe(tierModel('budget'));
+    });
+
     it('downshifts engineering/complex to sonnet when daily budget > 70%', async () => {
       mockAuthenticateApiKey.mockResolvedValue({
         id: 'account-1',
@@ -9224,6 +9263,32 @@ describe('claim route: interactive session marker', () => {
     await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
     expect(insertedRunner()).toBe('mcp');
   });
+
+  /** The claimed_by_user_id the conditional worker INSERT carried. */
+  function insertedClaimer(): unknown {
+    const insert = (mockDbExecute.mock.calls as any[]).map(c => c[0]).find((q: any) =>
+      Array.isArray(q?.strings) && q.strings.join('').includes('INSERT INTO'));
+    expect(insert.strings.join('')).toContain('claimed_by_user_id');
+    // values: workers, task_id, workspace_id, account_id, name, runner, branch, claimed_by_user_id
+    return insert?.values?.[7];
+  }
+
+  // An OAuth session resolves to its team's shared account, so the worker
+  // records the authenticated person who claimed it: PATCH /api/workers/[id]
+  // lets only that person's session act as the worker.
+  it('a claim by an OAuth session records the authenticated session user on the worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth', sessionUserId: 'user-1' });
+    // The signed marker is not the source: a marker naming someone else changes nothing.
+    const marker = signInteractiveSession({ accountId: 'account-1', userId: 'user-2' });
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer eyJ.a.b', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
+    expect(insertedClaimer()).toBe('user-1');
+  });
+
+  it('a bld_ key claim records no session user, even with a marker that names one', async () => {
+    const marker = signInteractiveSession({ accountId: 'account-1', userId: 'user-1' });
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
+    expect(insertedClaimer()).toBeNull();
+  });
 });
 
 describe('hold/start at claim (§5b): decided after the response, applied on the next claim', () => {
@@ -9250,6 +9315,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       // The decision runs after the response; nothing is on the ledger yet.
       findAppliedStart: async () => false,
       loadHolder: async () => ({ title: 'Holder', workerStatus: 'completed', lastActivityAt: null, prLifecycle: 'ci_green', baseStale: false }),
+      loadEvidence: async () => ({ conflictHistory: { summary: 'no_history', maxRate: null, files: [] }, predictedChange: null }),
       decisionDeps: {
         resolveAccess: async () => ({ ok: true, apiKey: 'k', model: JEV }) as any,
         call: (async () => ({
@@ -9561,7 +9627,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     });
   });
 
-  describe('soft overlap (prefix-only declared overlap, never a dependsOn edge)', () => {
+  describe('soft overlap (same-file or prefix declared overlap, never a dependsOn edge)', () => {
     const acquired: any[] = [];
     const soft = (entries: any[], pathManifest: string[] = ['apps/web/src/lib/']) => task({
       pathManifest,
@@ -9619,9 +9685,26 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       expect(on.rows).toHaveLength(0);
     });
 
-    it('a legacy inferred edge on the same file holds deterministically: Jev is never asked', async () => {
+    it('a same-file overlap with no applied START holds, and Jev is asked with the same_file kind', async () => {
+      mockFireDeferralEvent.mockClear();
+      const on = await claimWith(withStart(false), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
+      expect(on.body.workers).toHaveLength(0);
+      expect(on.rows).toHaveLength(1);
+      expect(on.rows[0]).toMatchObject({ candidatePolicyVersion: 'ch1.soft_overlap', taskId: 'task-1' });
+      const ledger = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap');
+      expect(ledger.detail).toMatchObject({ holderTaskId: 'holder-1', verdict: 'HOLD', overlapKind: 'same_file' });
+    });
+
+    it('a same-file overlap with no conflict history and an applied Jev START runs (legacy edges too)', async () => {
       softHoldersTest.rows = new Map([['holder-1', holderRow({ status: 'pending', workerStatus: null })]]);
       const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'legacy_inferred' }], ['apps/web/src/lib/widget.ts'])] }));
+      expect(on.body.workers).toHaveLength(1);
+      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
+    });
+
+    it('a same-file overlap on a migration path holds deterministically: Jev is never asked', async () => {
+      softHoldersTest.rows = new Map([['holder-1', holderRow({ pathManifest: ['packages/core/drizzle/0300_x.sql'] })]]);
+      const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['packages/core/drizzle/0300_x.sql'])] }));
       expect(on.body.workers).toHaveLength(0);
       expect(on.rows).toHaveLength(0);
       expect(acquired).toHaveLength(0);

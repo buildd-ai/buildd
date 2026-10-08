@@ -395,6 +395,77 @@ export async function POST(req: NextRequest) {
       })
       .returning();
 
+    // Every new auto mission gets a check-in (heartbeat) schedule by default.
+    // Events plan its next step as work finishes; the check-in is the hourly
+    // stuck check that dispatches the organizer only when that chain broke
+    // (lib/mission-stuck.ts), so it costs no model call otherwise.
+    // `isHeartbeat: false` opts out. A UI-created manual mission (no explicit
+    // cron/heartbeat) gets none: manual means the owner starts things.
+    // API-created missions keep their existing default (heartbeat ON).
+    const uiCreatedManual = !apiAccount && !cronExpression && isHeartbeat === undefined
+      && effectiveOrchestrationMode === 'manual';
+    const effectiveHeartbeat = uiCreatedManual ? false : (isHeartbeat !== false);
+    const effectiveCron = cronExpression || (effectiveHeartbeat ? DEFAULT_HEARTBEAT_CRON : null);
+
+    // neon-http has no interactive transactions, so the schedule is created
+    // BEFORE any outward side effect (branch, feed notes) and a failure here
+    // deletes the mission row: otherwise the client sees a 500, retries, and
+    // ends up with duplicate missions.
+    let createdScheduleId: string | null = null;
+    if (effectiveCron) {
+    try {
+        // Mission crons run on the team's wall clock: "every morning" has to mean
+        // morning where the team is. Existing schedules keep their stored zone.
+        const scheduleTimezone = await getTeamTimezone(teamId);
+        const nextRunAt = laterStartAt(computeNextRunAt(effectiveCron, scheduleTimezone), deferredStart.startAt);
+        const templateContext: Record<string, unknown> = {};
+        if (skillSlugs?.length) templateContext.skillSlugs = skillSlugs;
+        if (outputSchema) templateContext.outputSchema = outputSchema;
+        if (model) templateContext.model = model;
+        if (effectiveHeartbeat) {
+          templateContext.heartbeat = true;
+          templateContext.heartbeatChecklist = heartbeatChecklist || organizerChecklist();
+        }
+        if (activeHoursStart != null) templateContext.activeHoursStart = activeHoursStart;
+        if (activeHoursEnd != null) templateContext.activeHoursEnd = activeHoursEnd;
+        if (activeHoursTimezone) templateContext.activeHoursTimezone = activeHoursTimezone;
+
+        const [schedule] = await db
+          .insert(taskSchedules)
+          .values({
+            workspaceId: resolvedWorkspaceId,
+            name: `Mission: ${title}`,
+            cronExpression: effectiveCron,
+            timezone: scheduleTimezone,
+            taskTemplate: {
+              title: `Mission: ${title}`,
+              mode: 'planning',
+              priority: priority || 0,
+              ...(Object.keys(templateContext).length > 0 ? { context: templateContext } : {}),
+            },
+            nextRunAt,
+            createdByUserId: user?.id || null,
+          })
+          .returning();
+        createdScheduleId = schedule.id;
+
+        await db
+          .update(missions)
+          .set({ scheduleId: schedule.id, updatedAt: new Date() })
+          .where(eq(missions.id, mission.id));
+
+        mission.scheduleId = schedule.id;
+    } catch (err) {
+      if (createdScheduleId) {
+        await db.delete(taskSchedules).where(eq(taskSchedules.id, createdScheduleId))
+          .catch(e => console.error('[missions/post] Failed to roll back schedule:', e));
+      }
+      await db.delete(missions).where(eq(missions.id, mission.id))
+        .catch(e => console.error('[missions/post] Failed to roll back mission:', e));
+      throw err;
+    }
+    }
+
     // A mission-branch mission must never exist in the enabled-but-inert state: generate the
     // working branch name and ensure the ref on the remote in this same operation, rather than
     // waiting for the organizer's first pass (see the two-manual-PATCH workaround this replaces).
@@ -440,61 +511,6 @@ export async function POST(req: NextRequest) {
           actor,
         }).catch(e => console.error('[missions/post] Failed to emit integration-branch note:', e));
       }
-    }
-
-    // Every new auto mission gets a check-in (heartbeat) schedule by default.
-    // Events plan its next step as work finishes; the check-in is the hourly
-    // stuck check that dispatches the organizer only when that chain broke
-    // (lib/mission-stuck.ts), so it costs no model call otherwise.
-    // `isHeartbeat: false` opts out. A UI-created manual mission (no explicit
-    // cron/heartbeat) gets none: manual means the owner starts things.
-    // API-created missions keep their existing default (heartbeat ON).
-    const uiCreatedManual = !apiAccount && !cronExpression && isHeartbeat === undefined
-      && effectiveOrchestrationMode === 'manual';
-    const effectiveHeartbeat = uiCreatedManual ? false : (isHeartbeat !== false);
-    const effectiveCron = cronExpression || (effectiveHeartbeat ? DEFAULT_HEARTBEAT_CRON : null);
-
-    if (effectiveCron) {
-      // Mission crons run on the team's wall clock: "every morning" has to mean
-      // morning where the team is. Existing schedules keep their stored zone.
-      const scheduleTimezone = await getTeamTimezone(teamId);
-      const nextRunAt = laterStartAt(computeNextRunAt(effectiveCron, scheduleTimezone), deferredStart.startAt);
-      const templateContext: Record<string, unknown> = {};
-      if (skillSlugs?.length) templateContext.skillSlugs = skillSlugs;
-      if (outputSchema) templateContext.outputSchema = outputSchema;
-      if (model) templateContext.model = model;
-      if (effectiveHeartbeat) {
-        templateContext.heartbeat = true;
-        templateContext.heartbeatChecklist = heartbeatChecklist || organizerChecklist();
-      }
-      if (activeHoursStart != null) templateContext.activeHoursStart = activeHoursStart;
-      if (activeHoursEnd != null) templateContext.activeHoursEnd = activeHoursEnd;
-      if (activeHoursTimezone) templateContext.activeHoursTimezone = activeHoursTimezone;
-
-      const [schedule] = await db
-        .insert(taskSchedules)
-        .values({
-          workspaceId: resolvedWorkspaceId,
-          name: `Mission: ${title}`,
-          cronExpression: effectiveCron,
-          timezone: scheduleTimezone,
-          taskTemplate: {
-            title: `Mission: ${title}`,
-            mode: 'planning',
-            priority: priority || 0,
-            ...(Object.keys(templateContext).length > 0 ? { context: templateContext } : {}),
-          },
-          nextRunAt,
-          createdByUserId: user?.id || null,
-        })
-        .returning();
-
-      await db
-        .update(missions)
-        .set({ scheduleId: schedule.id, updatedAt: new Date() })
-        .where(eq(missions.id, mission.id));
-
-      mission.scheduleId = schedule.id;
     }
 
     // Auto-start the organizer only when the mission is born active, heartbeat is not disabled,
