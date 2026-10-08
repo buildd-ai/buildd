@@ -554,8 +554,19 @@ function Tile({ task: t, model, now, span, link, popSide, compact = false, visua
     const chip = t.pr && t.status !== 'running' ? <PrChip task={t} /> : t.pr && t.pr.state !== 'open' ? <PrChip task={t} /> : null;
     // A live tile says what it is doing (the current action, else the elapsed
     // strip) and for how long — or nothing: no empty second line under the title.
+    // A failed tile says so in words, not by its red bar alone.
+    const failedLine = t.status === 'failed'
+      ? (
+        <span data-testid="board-tile-failed" className="flex min-w-0 flex-1 items-center gap-1.5 truncate">
+          <span className="font-bold uppercase tracking-[1px] text-[11px] md:text-[10.5px] text-status-error">Failed</span>
+          {t.failureKind === 'verification' && <span className="truncate text-text-secondary">· the audit rejected it</span>}
+        </span>
+      )
+      : null;
     const lead = visualStuck
       ? <span data-testid="board-tile-visual-stuck" className="min-w-0 flex-1 truncate text-status-warning">{visualStuck}</span>
+      : failedLine
+      ? failedLine
       : live && t.currentAction
       ? <span data-testid="board-tile-action" className="min-w-0 flex-1 truncate text-text-secondary">{t.currentAction}</span>
       : live && t.startedAt != null
@@ -564,7 +575,7 @@ function Tile({ task: t, model, now, span, link, popSide, compact = false, visua
     const elapsed = live && t.startedAt != null
       ? <span className="font-medium tabular-nums text-text-secondary">{formatAge(now - t.startedAt)}</span>
       : null;
-    body = lead || chip || elapsed || !live ? (
+    body = lead || chip || elapsed ? (
       <div data-testid="board-tile-body" className="flex min-h-[18px] items-center gap-2.5 font-mono text-[12px] md:text-[11.5px] text-text-muted">
         {lead ?? <span className="flex-1" />}
         {chip}
