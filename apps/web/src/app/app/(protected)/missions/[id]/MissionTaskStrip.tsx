@@ -37,7 +37,7 @@ import { formatAge, type BoardTask, type MissionBoardModel } from '@/lib/mission
 import { taskPageHref } from '@/lib/mission-task-href';
 import { taskActionPhase, type MissionExecutor } from '@/lib/task-actions';
 import {
-  activeIndices, DENSE_STRIP_CELLS, defaultStripSelection, heldIndices, nextOpenIndex,
+  DENSE_STRIP_CELLS, defaultStripSelection, errorIndices, heldIndices, nextOpenIndex, openIndices,
   slotIndexOf, slotMarks, stepIndex, stripBlockerCount, stripCaretLeft, stripMarks, stripOrdinal, stripSelectionReason,
   stripCountsLabel, stripSlotCounts, stripSlots, stripTick, stripTone, type StripSlot, type StripState, type StripTone,
 } from '@/lib/mission-task-strip';
@@ -110,18 +110,20 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
     return s.kind === 'fold' ? `+${s.taskIds.length}` : stripTick(i);
   };
   const marks = slotMarks(slots, selection.marks, sel);
-  // Next open cycles through active cells only (NX-1); held ones are skipped.
-  const active = activeIndices(slots);
-  // Failed is its own bucket (TONE-1): "N open" never silently counts a
-  // failed cell as open, the same confusion the strip's own fill once had.
+  // Next open cycles through open cells only (NX-1): held ones are skipped,
+  // and so are failed ones. Failed is its own bucket (TONE-1): "N open" never
+  // counts a failed cell, so the cycle must not visit one either (NX-2).
+  const open = openIndices(slots);
+  const failedAt = errorIndices(slots);
   const counts = stripSlotCounts(slots);
   const held = counts.held;
-  const target = active.length > 0 ? nextOpenIndex(active, sel) : (heldIndices(slots)[0] ?? null);
+  const target = open.length > 0 ? nextOpenIndex(open, sel) : (failedAt[0] ?? heldIndices(slots)[0] ?? null);
   const tone = stripTone(slot.state);
   const caret = stripCaretLeft(sel, n);
-  const nextOpenLabel = active.length === 0
-    ? (held > 0 ? `Nothing open · ${held} held` : 'All tasks landed')
-    : target === sel ? `Only open task · ${stripTick(sel)}` : `Next open · ${stripTick(target!)}`;
+  const nextOpenLabel = open.length > 0
+    ? (target === sel ? `Only open task · ${stripTick(sel)}` : `Next open · ${stripTick(target!)}`)
+    : counts.failed > 0 ? `Nothing open · ${counts.failed} failed`
+    : held > 0 ? `Nothing open · ${held} held` : 'All tasks landed';
   const gap = n > DENSE_STRIP_CELLS ? '[--strip-gap:1px]' : `[--strip-gap:4px] ${compact ? '' : 'md:[--strip-gap:6px]'}`;
   const openJumpLabel = stripCountsLabel(counts);
 
@@ -129,7 +131,7 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
     <div data-testid="landed-strip-band" data-cells={n} className={`flex flex-col gap-1.5 ${gap}`}>
       <div className="flex min-h-11 items-center justify-between">
         <SectionLabel>Landed</SectionLabel>
-        {(active.length > 0 || held > 0) && (
+        {(open.length > 0 || counts.failed > 0 || held > 0) && (
           <button
             type="button"
             data-testid="landed-strip-open-jump"
