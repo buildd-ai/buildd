@@ -13,7 +13,7 @@ const usd = (n: number) => `$${n.toFixed(2)}`;
 export function CostByBasis({ split }: { split: Split }) {
   const shown = BASIS_KEYS.filter(k => k === 'real' || k === 'virtual' || split.total[k].workers > 0);
   if (BASIS_KEYS.every(k => split.total[k].workers === 0)) return null;
-  const cols = 'grid grid-cols-[minmax(0,1fr)_4.5rem_4.5rem_4.5rem] gap-2';
+  const cols = 'grid grid-cols-[minmax(0,1fr)_4.5rem_4.5rem_4.5rem] sm:grid-cols-[minmax(0,1fr)_5.5rem_6.5rem_5.5rem] gap-2';
   return (
     <section className="mt-5 card p-4" data-testid="insights-cost-basis">
       <h2 className="text-title font-semibold">Cost</h2>

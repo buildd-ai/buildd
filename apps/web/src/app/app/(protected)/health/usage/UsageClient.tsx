@@ -567,7 +567,7 @@ function CostBasisSection({ byBasis }: { byBasis: UsageStats['byBasis'] }) {
   const { total, byExecutor } = byBasis;
   if (BASIS_KEYS.every(k => total[k].workers === 0)) return null;
   const shown = BASIS_KEYS.filter(k => k === 'real' || k === 'virtual' || total[k].workers > 0);
-  const cols = 'grid grid-cols-[minmax(0,1fr)_4.5rem_4.5rem_4.5rem] gap-2';
+  const cols = 'grid grid-cols-[minmax(0,1fr)_4.5rem_4.5rem_4.5rem] sm:grid-cols-[minmax(0,1fr)_5.5rem_6.5rem_5.5rem] gap-2';
   return (
     <section data-testid="usage-cost-basis" className="mb-6">
       <h2 className="section-label mb-3">Cost</h2>
