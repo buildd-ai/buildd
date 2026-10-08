@@ -37,7 +37,9 @@ mock.module('@/lib/mcp-oauth', () => ({
   registerClient: mockRegisterClient,
   getCallbackUrl: mockGetCallbackUrl,
 }));
-mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: mockResolveConnectorIcon }));
+const mockScheduleStaleIconRefresh = mock((_rows: unknown[]) => {});
+mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: mockResolveConnectorIcon, resolveConnectorIconData: mockResolveConnectorIcon }));
+mock.module('@/lib/connector-icon-refresh', () => ({ scheduleStaleIconRefresh: mockScheduleStaleIconRefresh }));
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({ set: mockSecretsProviderSet }),
   encrypt: mockEncrypt,
@@ -140,6 +142,16 @@ describe('GET /api/connectors', () => {
     // Role picker renders transport + authMode badges from the list response.
     expect(data.connectors[0].transport).toBe('http');
     expect(data.connectors[0].authMode).toBe('oauth');
+  });
+
+  it('schedules a lazy icon lookup for the listed rows', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindMany.mockResolvedValue([
+      { id: 'conn-1', name: 'Test', url: 'https://mcp.example.com', authMode: 'oauth', transport: 'http', iconUrl: null, iconCheckedAt: null },
+    ]);
+    mockScheduleStaleIconRefresh.mockClear();
+    await GET(makeGetReq());
+    expect((mockScheduleStaleIconRefresh.mock.calls.at(-1)?.[0] as any[]).map(r => r.id)).toEqual(['conn-1']);
   });
 
   it('defaults the list to the active-team cookie, not the first team', async () => {
@@ -340,7 +352,7 @@ describe('POST /api/connectors', () => {
 
   it('stores the resolved icon on create', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockResolveConnectorIcon.mockResolvedValue('https://custom.dev/logo.png');
+    mockResolveConnectorIcon.mockResolvedValue('data:image/png;base64,AA');
     let captured: any;
     mockConnectorsInsert.mockReturnValue({
       values: mock((v: any) => { captured = v; return {
@@ -349,8 +361,16 @@ describe('POST /api/connectors', () => {
     });
     const res = await POST(makePostReq({ name: 'Custom', url: 'https://mcp.custom.dev/mcp' }));
     expect(res.status).toBe(201);
-    expect(mockResolveConnectorIcon).toHaveBeenCalledWith('https://mcp.custom.dev/mcp');
-    expect(captured.iconUrl).toBe('https://custom.dev/logo.png');
+    expect(mockResolveConnectorIcon).toHaveBeenCalledWith('https://mcp.custom.dev/mcp', { headers: undefined });
+    expect(captured.iconUrl).toBe('data:image/png;base64,AA');
+    expect(captured.iconCheckedAt).toBeInstanceOf(Date);
+  });
+
+  it('probes initialize with the header credential for a header-auth connector', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(makePostReq({ name: 'Keyed', url: 'https://mcp.custom.dev/mcp', authMode: 'header', headerName: 'X-API-Key', headerValue: 'k' }));
+    expect(res.status).toBe(201);
+    expect(mockResolveConnectorIcon).toHaveBeenCalledWith('https://mcp.custom.dev/mcp', { headers: { 'X-API-Key': 'k' } });
   });
 
   it('still creates the connector when icon resolution fails', async () => {
