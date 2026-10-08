@@ -45,11 +45,12 @@ export function splitPortfolio(rows: readonly PortfolioRow[], now: number) {
 
 export type PortfolioSort = 'attention' | 'recent' | 'closest' | 'priority';
 
-export const PORTFOLIO_SORTS: ReadonlyArray<{ key: PortfolioSort; label: string }> = [
-  { key: 'attention', label: 'Needs attention' },
-  { key: 'recent', label: 'Recently advanced' },
-  { key: 'closest', label: 'Closest to landing' },
-  { key: 'priority', label: 'Priority' },
+/** `label` is what the select shows, kept short so it fits beside Search at phone width; `title` is the full meaning. */
+export const PORTFOLIO_SORTS: ReadonlyArray<{ key: PortfolioSort; label: string; title: string }> = [
+  { key: 'attention', label: 'Attention', title: 'Needs attention' },
+  { key: 'recent', label: 'Recent', title: 'Recently advanced' },
+  { key: 'closest', label: 'Closest', title: 'Closest to landing' },
+  { key: 'priority', label: 'Priority', title: 'Priority' },
 ];
 
 /** Most attention-worthy first. Same order the projection uses to pick a mission's chip. */
