@@ -20,6 +20,7 @@ import {
   type MissionCardView,
 } from './mission-card-view';
 import type { MissionOrigin } from './mission-task-href';
+import type { DeliveryView } from './workflow/projections';
 
 /** Task columns a card reads (pulse, feed state, situation, health, schedule timing). */
 export const MISSION_CARD_TASK_COLUMNS = {
@@ -56,6 +57,8 @@ export async function loadMissionCardViews(
     now?: number;
     summaries?: ReadonlyMap<string, MissionCardSummary>;
     taskIndex?: ReadonlyMap<string, BlockingTask>;
+    /** S35: the caller's `getDeliveryViewsForTasks(failedDeliverableTaskIds(rows))`. */
+    deliveryViews?: ReadonlyMap<string, DeliveryView> | null;
   },
 ): Promise<Map<string, MissionCardView>> {
   const visible = rows.slice(0, MISSION_CARD_VIEW_CAP);
@@ -78,6 +81,7 @@ export async function loadMissionCardViews(
       : null;
     views.set(row.id, buildMissionCardView(row, {
       from: opts.from, now, flightStrip, summary: opts.summaries?.get(row.id), taskIndex: opts.taskIndex,
+      deliveryViews: opts.deliveryViews,
     }));
   }
   return views;

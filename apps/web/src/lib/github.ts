@@ -64,7 +64,7 @@ export async function githubApi(installationId: number, path: string, options: R
     throw new Error(`GitHub API error: ${response.status} ${error}`);
   }
 
-  // Handle 204 No Content (e.g., repository_dispatch)
+  // Handle 204 No Content
   if (response.status === 204) {
     return null;
   }
@@ -241,6 +241,37 @@ export async function mergePullRequest(
     indeterminate: true,
     status: response.status,
   };
+}
+
+/**
+ * Mark a draft pull request ready for review — the undraft half of early
+ * release's stacking mechanics (docs/design/early-release.md). GitHub's REST
+ * API has no endpoint for this; only the GraphQL mutation does, and that
+ * mutation takes the PR's GraphQL node id rather than its number, so this
+ * reads the PR via REST first to get it.
+ *
+ * A PR that is already not a draft (redelivered webhook, or a human already
+ * marked it ready) is a no-op success, not an error.
+ */
+export async function markPullRequestReadyForReview(
+  installationId: number,
+  repoFullName: string,
+  prNumber: number,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  try {
+    const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+    if (!pr?.draft) return { ok: true };
+    const nodeId = pr.node_id;
+    if (!nodeId) return { ok: false, message: `PR #${prNumber} on ${repoFullName} has no node_id` };
+    await githubGraphQL(
+      installationId,
+      `mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { id } } }`,
+      { id: nodeId },
+    );
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /**
@@ -453,60 +484,4 @@ export interface GitHubIssuesEvent {
   installation?: {
     id: number;
   };
-}
-
-// Dispatch a repository_dispatch event to trigger GitHub Actions workflows
-/**
- * The repository_dispatch body a task wake sends. Shared by the in-app send
- * below and the Dispatch transport's GitHub Actions grant
- * (lib/dispatch-resolve.ts), so the workflow sees the same event either way.
- */
-export function repositoryDispatchBody(task: { id: string; title: string; workspaceId: string; mode?: string; priority?: number }) {
-  return {
-    event_type: 'buildd-task',
-    client_payload: {
-      task_id: task.id,
-      title: task.title,
-      workspace_id: task.workspaceId,
-      mode: task.mode || 'execution',
-      priority: task.priority || 0,
-    },
-  };
-}
-
-export async function dispatchToGitHubActions(
-  installationId: number,
-  repoFullName: string,
-  task: {
-    id: string;
-    title: string;
-    description: string | null;
-    workspaceId: string;
-    mode?: string;
-    priority?: number;
-  }
-): Promise<boolean> {
-  if (!isGitHubAppConfigured()) {
-    return false;
-  }
-
-  try {
-    const [owner, repo] = repoFullName.split('/');
-    if (!owner || !repo) {
-      console.error(`Invalid repo full name: ${repoFullName}`);
-      return false;
-    }
-
-    await githubApi(installationId, `/repos/${owner}/${repo}/dispatches`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(repositoryDispatchBody(task)),
-    });
-
-    console.log(`Task ${task.id} dispatched to GitHub Actions: ${repoFullName}`);
-    return true;
-  } catch (error) {
-    console.error(`GitHub Actions dispatch failed for ${repoFullName}:`, error);
-    return false;
-  }
 }

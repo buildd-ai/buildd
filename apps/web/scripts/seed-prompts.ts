@@ -117,39 +117,20 @@ export function reportPromptSeed(outcome: SeedOutcome, strict: boolean, log: (m:
   }
 }
 
-/** A read-only installation token for one repo, from the deployment's GitHub App. */
-async function githubAppTokenForRepo(repo: string): Promise<string | null> {
-  const key = process.env.GITHUB_APP_PRIVATE_KEY_BASE64 || process.env.GITHUB_APP_PRIVATE_KEY;
-  if (!process.env.GITHUB_APP_ID || !key) return null;
-  const { generateAppJWT } = await import('@buildd/core/github-installation-auth');
-  const jwt = generateAppJWT();
-  const headers = { Authorization: `Bearer ${jwt}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
-  const inst = await fetch(`https://api.github.com/repos/${repo}/installation`, { headers });
-  if (inst.status === 404) return null;
-  if (!inst.ok) throw new Error(`installation lookup ${inst.status}`);
-  const { id } = (await inst.json()) as { id: number };
-  const res = await fetch(`https://api.github.com/app/installations/${id}/access_tokens`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ repositories: [repo.split('/')[1]], permissions: { contents: 'read' } }),
-  });
-  if (!res.ok) throw new Error(`installation token ${res.status}`);
-  return ((await res.json()) as { token: string }).token;
-}
-
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const strict = args.includes('--strict');
   const dir = args.includes('--dir') ? args[args.indexOf('--dir') + 1] : undefined;
-  const [{ listPromptCatalog }, source] = await Promise.all([
+  const [{ listPromptCatalog }, source, { githubAppTokenForRepo }] = await Promise.all([
     import('../src/lib/prompt-catalog'),
     import('@buildd/core/prompt-seed-source'),
+    import('../src/lib/prompts-repo'),
   ]);
   const outcome = await runPromptSeed({
     env: process.env,
     dir,
     catalog: listPromptCatalog,
-    appToken: githubAppTokenForRepo,
+    appToken: repo => githubAppTokenForRepo(repo),
     readRows: source.readPromptRows,
     apply: source.applyPromptSeed,
     writeMarker: source.writePromptSeedMarker,

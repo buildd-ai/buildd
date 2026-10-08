@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { normalizeOptions, unifyWorkerQuestion, unifyNoteQuestion, linkQuestionNote } from './question-hero';
+import { isContextFree } from '@buildd/core/human-attention';
 
 const note = {
   id: 'n1',
@@ -139,5 +140,26 @@ describe('question brief', () => {
   test('an old question without a brief is unchanged', () => {
     const q = unifyWorkerQuestion({ type: 'question', prompt: 'Which?', options: ['A', 'B'] }, null);
     expect(q).toEqual({ headline: 'Which?', body: null, noteId: null, options: [{ label: 'A', recommended: false }, { label: 'B', recommended: false }] });
+  });
+});
+
+describe('unifyWorkerQuestion: never a context-free card', () => {
+  const ERROR = 'needs_input: Visual QA cannot boot the app: the mission migration is below the migration high-water mark. I re-ran the capture twice. How should I proceed?';
+
+  test('a question parked without its brief gets the context back from the worker error', () => {
+    const q = unifyWorkerQuestion({ type: 'question', prompt: 'How should I proceed?', options: [] }, null, { workerError: ERROR });
+    expect(q.headline).toBe('How should I proceed?');
+    expect(q.context).toContain('high-water mark');
+    expect(isContextFree({ prompt: q.headline, context: q.context, options: q.options })).toBe(false);
+  });
+
+  test('the brief context wins over the error', () => {
+    const q = unifyWorkerQuestion({ type: 'question', prompt: 'How should I proceed?', context: 'Own words.' }, null, { workerError: ERROR });
+    expect(q.context).toBe('Own words.');
+  });
+
+  test('with nothing else, the task title says where it was asked', () => {
+    const q = unifyWorkerQuestion({ type: 'question', prompt: 'How should I proceed?' }, null, { taskTitle: 'Surface audit' });
+    expect(q.context).toBe('Asked while working on "Surface audit".');
   });
 });

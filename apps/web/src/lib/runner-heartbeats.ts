@@ -11,7 +11,7 @@ import {
   type RunnerHeartbeat,
 } from './runner-heartbeats-shared';
 import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } from './runner-display';
-import { RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
+import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity } from '@buildd/shared';
 
 // Pure helpers and types live in ./runner-heartbeats-shared so client
 // components can import them without pulling `@buildd/core/db` (and its
@@ -143,7 +143,7 @@ export async function loadRunnerHeartbeats(workerRows: readonly RunnerWorkerLike
  * returns null, which the model reads as "unknown" and never as "no runner".
  */
 export async function loadBrowserRunnerHeartbeats(
-  workspace: { id: string } & ReachWorkspace,
+  workspace: { id: string; gitConfig?: unknown; webhookConfig?: { enabled?: unknown; events?: unknown } | null } & ReachWorkspace,
   now: number,
 ): Promise<BrowserRunnerHeartbeat[] | null> {
   try {
@@ -151,6 +151,7 @@ export async function loadBrowserRunnerHeartbeats(
     const hbs = await db
       .select({
         accountId: workerHeartbeats.accountId,
+        localUiUrl: workerHeartbeats.localUiUrl,
         lastHeartbeatAt: workerHeartbeats.lastHeartbeatAt,
         environment: workerHeartbeats.environment,
         accountTeamId: accounts.teamId,
@@ -167,9 +168,13 @@ export async function loadBrowserRunnerHeartbeats(
     const linkOf = new Map(links.map(l => [l.accountId, l]));
     return hbs.map(h => ({
       accountId: h.accountId,
+      localUiUrl: h.localUiUrl,
       lastHeartbeatAt: h.lastHeartbeatAt,
       environment: (h.environment as { envKeys?: string[] } | null) ?? null,
-      workspaceIds: accountReachesWorkspace({ teamId: h.accountTeamId }, workspace, linkOf.get(h.accountId) ?? null, 'canClaim')
+      workspaceIds: (() => {
+        const executor = resolveWorkspaceExecutor(workspace.gitConfig as Parameters<typeof resolveWorkspaceExecutor>[0], workspace.webhookConfig).executor;
+        return executor === 'any' || (runnerFleetIdentity({ localUiUrl: h.localUiUrl, environment: h.environment }).executor ?? 'host') === executor;
+      })() && accountReachesWorkspace({ teamId: h.accountTeamId }, workspace, linkOf.get(h.accountId) ?? null, 'canClaim')
         ? [workspace.id]
         : [],
     }));

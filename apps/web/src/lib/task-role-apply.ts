@@ -7,7 +7,8 @@
  * writes that answer — once, and only while nothing else has touched the role:
  *
  *   UPDATE tasks SET role_slug = $slug, context = context || {roleInferred}
- *   WHERE id = $id AND role_slug IS NULL AND status = 'pending' AND claimed_at IS NULL
+ *   WHERE id = $id AND (role_slug IS NULL OR roleInferred.source = 'kind')
+ *     AND status = 'pending' AND claimed_at IS NULL
  *
  * No rows back is `lost_race` (claimed or edited first) and nothing else
  * happens. Below the threshold, an answer outside the candidate set, a model
@@ -56,6 +57,8 @@ export function taskRoleMinConfidence(): number {
 /** `tasks.context.roleInferred`: what wrote the role, and on what evidence. */
 export interface RoleInferredStamp {
   slug: string;
+  /** What chose it: the decision model (absent on older rows), or the kind default (task-role-default.ts). */
+  source?: 'decision' | 'kind';
   confidence: number;
   model: string;
   /** How many roles the model chose between. */
@@ -80,7 +83,7 @@ export type WriteInferredRole = (taskId: string, stamp: RoleInferredStamp) => Pr
 async function dbWriteInferredRole(taskId: string, stamp: RoleInferredStamp): Promise<boolean> {
   const { db } = await import('@buildd/core/db');
   const { tasks } = await import('@buildd/core/db/schema');
-  const { and, eq, isNull, sql } = await import('drizzle-orm');
+  const { and, eq, isNull, or, sql } = await import('drizzle-orm');
   // One atomic UPDATE … WHERE (neon-http has no interactive transactions), no read first.
   const rows = await db.update(tasks)
     .set({
@@ -90,13 +93,21 @@ async function dbWriteInferredRole(taskId: string, stamp: RoleInferredStamp): Pr
     })
     .where(and(
       eq(tasks.id, taskId),
-      isNull(tasks.roleSlug),
+      // Empty, or only the kind default (task-role-default.ts): a stated role is never replaced.
+      or(isNull(tasks.roleSlug), sql`${tasks.context}->'roleInferred'->>'source' = 'kind'`),
       eq(tasks.status, 'pending'),
       isNull(tasks.claimedAt),
     ))
     .returning({ id: tasks.id });
   return rows.length > 0;
 }
+
+/** Shadow outcomes that made no call, and the ledger reason each is recorded under. */
+const SKIP_REASONS: Partial<Record<TaskRoleShadowResult['outcome'], string>> = {
+  too_few_candidates: 'insufficient_candidates',
+  sensitive: 'sensitive_workspace',
+  no_key: 'no_key',
+};
 
 export type RecordDecisionFn = (input: DecisionLedgerInput) => Promise<void>;
 
@@ -105,7 +116,26 @@ async function dbRecordDecision(input: DecisionLedgerInput): Promise<void> {
   await recordDecision(input);
 }
 
+export type SkipRowExistsFn = (taskId: string, capability: string, reason: string) => Promise<boolean>;
+
+async function dbSkipRowExists(taskId: string, capability: string, reason: string): Promise<boolean> {
+  const { db } = await import('@buildd/core/db');
+  const { decisionRecords } = await import('@buildd/core/db/schema');
+  const { and, eq } = await import('drizzle-orm');
+  const rows = await db.select({ id: decisionRecords.id }).from(decisionRecords)
+    .where(and(
+      eq(decisionRecords.taskId, taskId),
+      eq(decisionRecords.capability, capability),
+      eq(decisionRecords.reason, reason),
+      eq(decisionRecords.status, 'fallback'),
+    ))
+    .limit(1);
+  return rows.length > 0;
+}
+
 export interface ApplyDeps {
+  /** True when a skip row for this task + reason is already recorded. A failed check records anyway. */
+  skipRowExists?: SkipRowExistsFn;
   write?: WriteInferredRole;
   minConfidence?: number;
   isMeasuredModel?: (model: string) => boolean;
@@ -157,10 +187,46 @@ export async function applyTaskRoleDecision(
       ...extra,
     });
   };
+  /** The stated role is the rule's answer; agreement is an observational label, not ground truth. */
+  const recordStatedSample = async (record: NonNullable<TaskRoleShadowResult['record']>): Promise<void> => {
+    const stated = record.stated ?? input.statedRoleSlug ?? null;
+    const row = {
+      model: record.model, promptVersion: record.v, ruleAnswer: stated, verdict: record.decision,
+      confidence: record.confidence, applied: false, status: 'suggested' as const,
+      latencyMs: record.latencyMs, inputTokens: record.inputTokens, costUsd: record.costUsd,
+    };
+    await ledger(record.fingerprint, { ...row, reason: 'stated_role_sample', appliedAnswer: stated });
+    await recordKind(record);
+  };
+  /** The kind sub-answer is recorded only: a task's kind is a stated fact. */
+  const recordKind = async (record: NonNullable<TaskRoleShadowResult['record']>): Promise<void> => {
+    if (record.kindDecision === null) return;
+    await ledger(record.fingerprint, {
+      subjectType: 'task_kind', subjectId: input.taskId,
+      model: record.model, promptVersion: record.v,
+      ruleAnswer: record.kindHeuristic, verdict: record.kindDecision, confidence: record.kindConfidence,
+      applied: false, status: 'suggested', reason: 'kind_observed',
+    });
+  };
   try {
     if (!shadow.applyEnabled) return { outcome: 'not_enabled' };
-    // Never overwrite a caller-supplied role, and a stated-role look is a label sample.
-    if (input.statedRoleSlug || shadow.record?.stated) return { outcome: 'stated' };
+    // Never overwrite a caller-supplied role. A stated-role look is a label sample:
+    // recorded for agreement, never applied.
+    if (input.statedRoleSlug || shadow.record?.stated) {
+      if (shadow.outcome === 'logged' && shadow.record) await recordStatedSample(shadow.record);
+      return { outcome: 'stated' };
+    }
+    // Skips before any call was made still leave a content-free row, so zero rows means zero traffic.
+    const skipReason = SKIP_REASONS[shadow.outcome];
+    if (skipReason) {
+      // `decision_records` has no uniqueness on task/capability/reason, so a retry would double-write.
+      let seen = false;
+      try {
+        seen = !!input.teamId && await (deps.skipRowExists ?? dbSkipRowExists)(input.taskId, TASK_ROLE_CAPABILITY, skipReason);
+      } catch { /* a failed check costs at worst a duplicate row */ }
+      if (!seen) await ledger(shadow.fingerprint ?? `skip:${skipReason}`, { status: 'fallback', reason: skipReason });
+      return { outcome: emit('no_decision', { shadow: shadow.outcome }) };
+    }
     const record = shadow.record;
     if (shadow.outcome !== 'logged' || !record || !record.decision || record.confidence === null) {
       await ledger(shadow.fingerprint, { status: 'fallback', reason: shadow.outcome, promptVersion: null, model: record?.model ?? null });
@@ -169,6 +235,7 @@ export async function applyTaskRoleDecision(
     // Never write a slug the claim filter would reject: only a slug from the
     // candidate set the shadow built (which already excludes explicit roles).
     const slug = record.decision;
+    await recordKind(record);
     const base: Partial<DecisionLedgerInput> = {
       promptVersion: record.v, model: record.model, verdict: slug, confidence: record.confidence,
     };
@@ -194,6 +261,7 @@ export async function applyTaskRoleDecision(
     }
 
     const stamp: RoleInferredStamp = {
+      source: 'decision',
       slug,
       confidence: record.confidence,
       model: record.model,
@@ -242,3 +310,7 @@ export function scheduleTaskRoleRouting(
     void run();
   }
 }
+
+// The kind default (task-role-default.ts) is part of role routing; the task
+// create route reaches it through this module, its one role-routing entry.
+export { kindDefaultCandidates, kindDefaultRole, kindDefaultStamp } from './task-role-default';

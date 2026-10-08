@@ -18,6 +18,19 @@
  *       Self-contained. `baseUrl` is the Anthropic-compatible root;
  *       `/v1/messages` is appended by the client.
  *
+ * Either shape may carry `"appliesTo": ["<workspace id>", …]` on the team-wide
+ * row: the endpoint then applies to those workspaces only (absent = all).
+ *
+ * Either shape may also carry `"capabilities": { "toolSearch"?: boolean }`:
+ * what the endpoint's wire protocol supports beyond plain Messages calls.
+ * `toolSearch` is Claude's deferred MCP/tool loading (ToolSearch +
+ * `tool_reference` blocks), which Claude Code turns off by itself whenever
+ * ANTHROPIC_BASE_URL is not Anthropic. Effective value per kind
+ * (`effectiveToolSearch`): `openrouter` on unless explicitly false;
+ * `gateway` and `anthropic-compatible` off unless explicitly true. The runner
+ * sets ENABLE_TOOL_SEARCH=true for a Claude run only when the endpoint that
+ * won for that task says so.
+ *
  * ## Precedence
  *
  * The endpoint is a model credential ranked against `anthropic_api_key`,
@@ -67,14 +80,43 @@ export type AgentEndpointAuthHeader = 'authorization' | 'x-api-key';
 /** Alias map: native model id → the name the proxy serves it under. */
 export type AgentModelMap = Record<string, string>;
 
+/**
+ * Protocol capabilities an endpoint is configured with. Absent key = the
+ * kind's default (`effectiveToolSearch`). Stored only when set explicitly.
+ */
+export interface AgentEndpointCapabilities {
+  /** Anthropic deferred tool loading (ToolSearch / `tool_reference`) passes through. */
+  toolSearch?: boolean;
+}
+
+/**
+ * Whether Claude runs through this endpoint get deferred tool loading. OpenRouter
+ * supports ToolSearch / `tool_reference`, so it is on unless turned off. A
+ * LiteLLM gateway or a custom URL may or may not pass the semantics through,
+ * so it is off unless turned on.
+ */
+export function effectiveToolSearch(kind: AgentEndpointKind, capabilities?: AgentEndpointCapabilities | null): boolean {
+  const explicit = capabilities?.toolSearch;
+  if (typeof explicit === 'boolean') return explicit;
+  return kind === 'openrouter';
+}
+
+/**
+ * `appliesTo` (team-wide row only): the workspace ids this endpoint applies
+ * to. Absent = every workspace in the team. A workspace-scoped row ignores it:
+ * that row is its own workspace's. Ids that no longer belong to the team are
+ * simply never matched (and dropped by the settings readback).
+ */
 export type AgentEndpointBlob =
-  | { kind: 'gateway'; agentBaseUrl?: string; models?: AgentModelMap }
+  | { kind: 'gateway'; agentBaseUrl?: string; models?: AgentModelMap; appliesTo?: string[]; capabilities?: AgentEndpointCapabilities }
   | {
       kind: 'openrouter' | 'anthropic-compatible';
       baseUrl: string;
       apiKey: string;
       authHeader: AgentEndpointAuthHeader;
       models?: AgentModelMap;
+      appliesTo?: string[];
+      capabilities?: AgentEndpointCapabilities;
     };
 
 /** What a run authenticates with once a blob is resolved. */
@@ -93,6 +135,8 @@ export interface AgentEndpointRoute {
    * what tells the runner to fail a Codex task clearly instead of guessing.
    */
   openAiBaseUrl?: string;
+  /** Effective deferred tool loading for Claude runs (`effectiveToolSearch`). */
+  toolSearch: boolean;
 }
 
 export type AgentEndpointScope = 'workspace' | 'team';
@@ -124,6 +168,55 @@ function parseModels(raw: unknown): { ok: true; models?: AgentModelMap } | { ok:
   return { ok: true, models: Object.keys(out).length > 0 ? out : undefined };
 }
 
+/** Most workspaces one list may name; far above any real team. */
+export const MAX_APPLIES_TO = 500;
+
+/** `appliesTo`: absent/null = all workspaces; else a non-empty list of ids, trimmed and de-duplicated. */
+export function parseAppliesTo(raw: unknown): { ok: true; appliesTo?: string[] } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true };
+  if (!Array.isArray(raw)) return { ok: false, error: 'appliesTo must be a list of workspace ids, or null for all workspaces.' };
+  const out: string[] = [];
+  for (const v of raw) {
+    const id = typeof v === 'string' ? v.trim() : '';
+    if (!id || /\s/.test(id)) return { ok: false, error: 'appliesTo must be a list of workspace ids.' };
+    if (!out.includes(id)) out.push(id);
+  }
+  if (out.length === 0) return { ok: false, error: 'Choose at least one workspace, or apply it to all workspaces.' };
+  if (out.length > MAX_APPLIES_TO) return { ok: false, error: `appliesTo names at most ${MAX_APPLIES_TO} workspaces.` };
+  return { ok: true, appliesTo: out };
+}
+
+/**
+ * Whether a stored row applies to this workspace. A workspace-scoped row
+ * (`rowWorkspaceId` set) is that workspace's own, so it always does (the
+ * ranking already dropped other workspaces' rows). A team row applies
+ * everywhere unless it carries `appliesTo`; then only to the listed
+ * workspaces, and never to a lookup that names no workspace.
+ */
+export function endpointAppliesTo(
+  blob: { appliesTo?: readonly string[] },
+  rowWorkspaceId: string | null | undefined,
+  workspaceId: string | null | undefined,
+): boolean {
+  if (rowWorkspaceId) return true;
+  if (!blob.appliesTo) return true;
+  return !!workspaceId && blob.appliesTo.includes(workspaceId);
+}
+
+/** `capabilities`: absent/null = kind defaults; else an object of known boolean flags. */
+export function parseCapabilities(raw: unknown): { ok: true; capabilities?: AgentEndpointCapabilities } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true };
+  if (!isRecord(raw)) return { ok: false, error: 'capabilities must be an object.' };
+  const out: AgentEndpointCapabilities = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (k !== 'toolSearch') return { ok: false, error: `Unknown endpoint capability: ${k}.` };
+    if (v === undefined || v === null) continue;
+    if (typeof v !== 'boolean') return { ok: false, error: 'capabilities.toolSearch must be true or false.' };
+    out.toolSearch = v;
+  }
+  return { ok: true, capabilities: Object.keys(out).length > 0 ? out : undefined };
+}
+
 function parseAuthHeader(raw: unknown): AgentEndpointAuthHeader | null {
   if (raw === undefined || raw === null || raw === '') return 'authorization';
   if (raw === 'authorization' || raw === 'x-api-key') return raw;
@@ -142,6 +235,10 @@ export function validateAgentEndpointInput(input: unknown): Validated {
   }
   const models = parseModels(input.models);
   if (models.ok === false) return { ok: false, error: models.error };
+  const scope = parseAppliesTo(input.appliesTo);
+  if (scope.ok === false) return { ok: false, error: scope.error };
+  const caps = parseCapabilities(input.capabilities);
+  if (caps.ok === false) return { ok: false, error: caps.error };
 
   if (kind === 'gateway') {
     if (input.apiKey !== undefined || input.baseUrl !== undefined) {
@@ -155,6 +252,8 @@ export function validateAgentEndpointInput(input: unknown): Validated {
       blob.agentBaseUrl = normalizeGatewayUrl(input.agentBaseUrl);
     }
     if (models.models) blob.models = models.models;
+    if (scope.appliesTo) blob.appliesTo = scope.appliesTo;
+    if (caps.capabilities) blob.capabilities = caps.capabilities;
     return { ok: true, blob };
   }
 
@@ -170,6 +269,8 @@ export function validateAgentEndpointInput(input: unknown): Validated {
   if (!authHeader) return { ok: false, error: 'authHeader must be authorization or x-api-key.' };
   const blob: AgentEndpointBlob = { kind: kind as 'openrouter' | 'anthropic-compatible', baseUrl: normalizeGatewayUrl(rawUrl), apiKey, authHeader };
   if (models.models) blob.models = models.models;
+  if (scope.appliesTo) blob.appliesTo = scope.appliesTo;
+  if (caps.capabilities) blob.capabilities = caps.capabilities;
   return { ok: true, blob };
 }
 
@@ -219,6 +320,7 @@ export function resolveEndpointFromBlob(blob: AgentEndpointBlob, gateway: LiteLL
       authHeader: 'authorization',
       models: blob.models ?? {},
       openAiBaseUrl: openAiBaseUrlFor('gateway', baseUrl, gateway.baseURL),
+      toolSearch: effectiveToolSearch('gateway', blob.capabilities),
     };
   }
   return {
@@ -228,6 +330,7 @@ export function resolveEndpointFromBlob(blob: AgentEndpointBlob, gateway: LiteLL
     authHeader: blob.authHeader,
     models: blob.models ?? {},
     openAiBaseUrl: openAiBaseUrlFor(blob.kind, blob.baseUrl, undefined),
+    toolSearch: effectiveToolSearch(blob.kind, blob.capabilities),
   };
 }
 
@@ -326,7 +429,8 @@ export function rankEndpointRows<T extends { workspaceId: string | null; account
 
 /**
  * The endpoint for this team (and workspace): a workspace row first, then the
- * team's; revoked rows skipped, newest first. A `kind: gateway` reference
+ * team's (only when its `appliesTo` is absent or lists this workspace);
+ * revoked rows skipped, newest first. A `kind: gateway` reference
  * resolves against the gateway at the same scope or broader. Null when there
  * is none or it can't be decrypted/parsed. Never throws.
  */
@@ -351,6 +455,8 @@ export async function resolveAgentEndpoint(opts: { teamId: string; workspaceId?:
       try {
         const blob = parseAgentEndpointBlob(decrypt(r.encryptedValue));
         if (!blob) continue;
+        // A team row narrowed to some workspaces: not this one.
+        if (!endpointAppliesTo(blob, r.workspaceId, opts.workspaceId)) continue;
         const scope: AgentEndpointScope = r.workspaceId ? 'workspace' : 'team';
         let gateway: LiteLLMGateway | null = null;
         if (blob.kind === 'gateway') {

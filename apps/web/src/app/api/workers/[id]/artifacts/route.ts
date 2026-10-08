@@ -10,6 +10,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { appBaseUrl } from '@/lib/app-url';
 import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
+import { isRunReportKey, recordRunnerUsageFromReport } from '@/lib/hosted-runner-usage-store';
 
 
 // POST /api/workers/[id]/artifacts - Create (or upsert by key) an artifact for a worker
@@ -103,6 +104,18 @@ export async function POST(
   };
 
   const baseUrl = appBaseUrl();
+
+  // A cloud run report: keep this attempt's hosted runner time. The report
+  // artifact below is one per worker (a resumed attempt overwrites it), the
+  // usage row is one per attempt. Best-effort; never fails the write.
+  if (isRunReportKey(key) && worker.workspaceId) {
+    await recordRunnerUsageFromReport({
+      workspaceId: worker.workspaceId,
+      workerId: id,
+      taskId: worker.taskId ?? null,
+      report: (metadata as { report?: unknown } | null | undefined)?.report,
+    });
+  }
 
   // If key is provided, try to upsert by (workspaceId, key)
   if (key && typeof key === 'string' && worker.workspaceId) {

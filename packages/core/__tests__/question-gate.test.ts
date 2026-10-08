@@ -5,6 +5,7 @@ import {
   DEFAULT_QUESTION_GATE_MIN_CONFIDENCE,
   defaultQuestionGateConfig,
   detectHardRail,
+  detectIrreversibleAction,
   fingerprintOf,
   gateQuestion,
   parseQuestionGateConfig,
@@ -218,5 +219,56 @@ describe('fingerprintOf', () => {
   it('is deterministic and sensitive to its input', () => {
     expect(fingerprintOf({ a: 1 })).toBe(fingerprintOf({ a: 1 }));
     expect(fingerprintOf({ a: 1 })).not.toBe(fingerprintOf({ a: 2 }));
+  });
+});
+
+describe('detectIrreversibleAction', () => {
+  const positives: Array<[string, string]> = [
+    ['merge', 'Merge it now'],
+    ['merge', 'Merge the PR into main'],
+    ['merge', 'merge #123'],
+    ['release', 'Cut a release today'],
+    ['release', 'Release v1.4.0'],
+    ['ship', 'Ship it'],
+    ['ship', 'Ship to production'],
+    ['deploy', 'Deploy it'],
+    ['deploy', 'Deploy to prod'],
+    ['delete', 'Delete the branch'],
+    ['delete', 'Drop the table'],
+    ['delete', 'drop column legacy_id'],
+    ['force push', 'Force push over the remote'],
+    ['force push', 'git push --force'],
+    ['close pr', 'Close the PR'],
+    ['cancel', 'Cancel the mission'],
+    ['cancel', 'Cancel this task'],
+    ['rollback', 'Roll back the deploy'],
+    ['rollback', 'Rollback to the previous build'],
+    ['revoke', 'Revoke the access token'],
+    ['rotate', 'Rotate the signing secret'],
+    ['rotate', 'rotate the API key'],
+  ];
+  for (const [verb, text] of positives) {
+    it(`${verb}: "${text}"`, () => expect(detectIrreversibleAction([text])).toBe(true));
+  }
+
+  const negatives = [
+    'Should we merge the two lists before sorting?',
+    'Park; resume after release',
+    'Use local time',
+    'Delete the unused import',
+    'Close the modal when the user clicks outside',
+    'Cancel the debounce timer on unmount',
+    'Drop the first element of the array',
+    'Rotate the image 90 degrees',
+    'Revert to the previous variable name',
+    'Deploy script lives in scripts/',
+  ];
+  for (const text of negatives) {
+    it(`not flagged: "${text}"`, () => expect(detectIrreversibleAction([text])).toBe(false));
+  }
+
+  it('checks every text given, ignores empty ones', () => {
+    expect(detectIrreversibleAction([undefined, null, '', 'Local or UTC?', 'Merge it now'])).toBe(true);
+    expect(detectIrreversibleAction([])).toBe(false);
   });
 });

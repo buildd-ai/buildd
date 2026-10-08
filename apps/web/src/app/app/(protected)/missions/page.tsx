@@ -14,6 +14,7 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import {
   buildMissionCardView,
   countActiveMissions,
+  failedDeliverableTaskIds,
   summarizeMissionForCard,
   type BlockingTask,
   type MissionCardRow,
@@ -28,6 +29,7 @@ import {
   paginateCompletedMissions,
 } from '@/lib/missions-query';
 import { loadHumanSteeringMarksByMission } from '@/lib/mission-steering-notes';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { buildMissionListCard, missionsHeadline, type ListMissionRow } from '@/lib/mission-list-card';
 import { applyStrandChoice } from '@/lib/strand-choice-shadow';
 import { loadWorkerProgress } from '@/lib/worker-progress';
@@ -161,7 +163,7 @@ export default async function MissionsPage({
   // The running cells fill to each live worker's last reported progress.
   const liveWorkerIds = (activeRows as any[]).flatMap(m => (m.tasks || []).flatMap((t: any) =>
     (t.workers || []).filter((w: any) => (LIVE_WORKER_STATUSES as readonly string[]).includes(w.status)).map((w: any) => w.id as string)));
-  const [steeringMarksByMission, progressByWorker] = await Promise.all([
+  const [steeringMarksByMission, progressByWorker, , missionDeliveryViews] = await Promise.all([
     // Rule A-1/A-2: human steering marks (mission_notes, authorType='user') are
     // one batched query across the whole active set, not one per mission.
     loadHumanSteeringMarksByMission(activeRows.map((m: any) => m.id)),
@@ -178,6 +180,9 @@ export default async function MissionsPage({
         });
       }),
     ),
+    // S35: the kernel's reading of every failed deliverable, so a failed
+    // attempt with a live or shipped replacement does not read FAILED.
+    getDeliveryViewsForTasks(failedDeliverableTaskIds(allMissions as MissionCardRow[])),
   ]);
 
   // Rule A-1/A-2: live flight-strip compute for every non-completed mission.
@@ -200,11 +205,12 @@ export default async function MissionsPage({
   const now = Date.now();
   const missionsList: MissionItem[] = allMissions.map((obj) => {
     const row = obj as MissionCardRow;
-    const summary = summarizeMissionForCard(row, { now });
+    const summary = summarizeMissionForCard(row, { now, deliveryViews: missionDeliveryViews });
     const view = buildMissionCardView(row, {
       from: 'missions',
       now,
       summary,
+      deliveryViews: missionDeliveryViews,
       taskIndex: allMissionTaskMap,
       flightStrip: flightStripByMission.get(obj.id) ?? null,
     });
@@ -216,7 +222,7 @@ export default async function MissionsPage({
 
     return {
       view,
-      list: buildMissionListCard(obj as ListMissionRow, view, summary, { now, roleColors, progressByWorker }),
+      list: buildMissionListCard(obj as ListMissionRow, view, summary, { now, roleColors, progressByWorker, taskIndex: allMissionTaskMap }),
       workspaceId: obj.workspaceId || null,
       workspaceName: (obj.workspace as any)?.name || null,
       isHeld: obj.isHeld ?? false,
@@ -291,10 +297,7 @@ export default async function MissionsPage({
 
       {missionsList.length === 0 ? (
         <div className="card p-8 text-center">
-          <p className="text-sm text-text-secondary mb-1">No missions.</p>
-          <p className="text-xs text-text-muted">
-            A mission is a goal your agents work toward.
-          </p>
+          <p className="text-sm text-text-secondary">No missions.</p>
         </div>
       ) : (
         <MissionGrid missions={missionsList} releaseFooters={releaseFooters} slots={maxSeats > 0 ? { live: activeSeats, max: maxSeats } : null} />

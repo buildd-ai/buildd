@@ -16,7 +16,8 @@
  * "checkout") yields a question instead of a preview, and no card.
  */
 
-import { isLiveWorkerStatus, isTerminalTaskStatus } from '@buildd/shared';
+import { isLiveWorkerStatus, isSystemRoleSlug, isTerminalTaskStatus } from '@buildd/shared';
+import { systemRoleIntent, VISUAL_REVIEW_IS_MISSION_SCOPED } from '@/lib/system-role-intent';
 import type { ApiFn } from '@buildd/core/mcp-tools';
 import type { ChatApprovalPreview } from '@buildd/shared';
 import { hashToolInput } from './canonical';
@@ -95,7 +96,7 @@ function taskLabel(t: Obj): string {
 function workerDetail(t: Obj, live: Obj | null): string | undefined {
   if (t?.context?.heldBy) return 'held';
   if (!live) return t?.status ? String(t.status) : undefined;
-  if (live.status === 'waiting_input') return 'waiting for your answer';
+  if (live.status === 'waiting_input') return 'needs input';
   return `running${live.runner ? ` on ${runnerName(live.runner)}` : ''}`;
 }
 
@@ -211,7 +212,7 @@ const answerQuestion: Builder = async (input, env) => {
     input: { ...input, taskId: task.id, workerId: waiting.id },
     preview: {
       v: 1, verb: 'Answer the question on',
-      target: { kind: 'question', id: waiting.id, label: taskLabel(task), detail: 'waiting for your answer', workspaceId: task.workspaceId ?? null },
+      target: { kind: 'question', id: waiting.id, label: taskLabel(task), detail: 'needs input', workspaceId: task.workspaceId ?? null },
       changes, note: 'The agent resumes with this answer.',
       fingerprint: fingerprint(waiting.id, changes, { prompt }),
     },
@@ -237,12 +238,22 @@ async function missionOf(env: PreviewEnv, id: unknown): Promise<Obj | null> {
   try { return await env.read(`/api/missions/${mid}`); } catch { return null; }
 }
 
+/** What chat says instead of filing a visual-auditor task. */
+export function visualReviewNotATask(mission: { id: string; title?: unknown } | null): string {
+  const intent = systemRoleIntent({ roleSlug: 'visual-auditor', missionId: mission?.id ?? null });
+  if (intent?.kind !== 'mission') return `${VISUAL_REVIEW_IS_MISSION_SCOPED} Ask the user which mission to review.`;
+  return `A visual review is not a task to file: it is the mission's own command. Nothing was filed. Tell the user to open "${String(mission!.title ?? 'the mission')}" and press Visual review there: ${intent.href}`;
+}
+
 const createTask: Builder = async (input, env) => {
   // `missionId: null` is the explicit "no mission": it beats the docked mission
   // and the one this conversation filed. Omitted means inherit, and the card says so.
   const standalone = input.missionId === null;
   const mission = standalone ? null : await missionOf(env, input.missionId);
   if (input.missionId && !mission) return question('That mission isn\'t available here. Ask the user which mission the task belongs to.');
+  // A visual review is the mission's own command, never a hand-written
+  // visual-auditor task: that would miss its dependencies, routes and evidence.
+  if (isSystemRoleSlug(str(input.roleSlug))) return question(visualReviewNotATask(mission ? { id: String(mission.id), title: mission.title } : null));
   const dependsOn: string[] = [];
   const depLabels: string[] = [];
   for (const ref of listOf(input.dependsOn)) {

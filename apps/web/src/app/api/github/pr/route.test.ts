@@ -59,10 +59,37 @@ const mockEnsureIntegrationBaseForTaskPr = mock(
   () => Promise.resolve({ usable: true, recreated: false }) as any,
 );
 const mockReportMissionBranchUnresolved = mock(async (_input: any) => {});
+// Workflow kernel landing (lib/workflow/landing.ts; real-SQL cases in
+// apps/web/tests/db/workflow-matrix.test.ts S10/S15/S20). Default: no kernel
+// delivery, so every legacy merge case below runs unchanged.
+const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
+const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+mock.module('@/lib/workflow/landing', () => ({
+  landThroughKernel: mockLandThroughKernel,
+  kernelLandingView: mockKernelLandingView,
+  staleLandingVersion: async () => null,
+}));
+// Slice F: get_pr reads a kernel-owned PR's record from its DeliveryView.
+// Default: no kernel delivery, so every legacy case reads the columns.
+const mockGetDeliveryViewsForTasks = mock(async (..._a: any[]): Promise<Map<string, any>> => new Map());
+mock.module('@/lib/workflow/delivery-view', () => ({
+  getDeliveryViewsForTasks: mockGetDeliveryViewsForTasks,
+  getOwnerDeliveryDisplays: async () => new Map(),
+  kernelReplacedFailedTaskIds: async () => new Set(),
+  replacedFailedTaskIds: () => new Set(),
+}));
 mock.module('@/lib/mission-integration-branch', () => ({
   ensureIntegrationBaseForTaskPr: mockEnsureIntegrationBaseForTaskPr,
   missionBranchRemedy: (reason: string) => `remedy for ${reason}`,
   reportMissionBranchUnresolved: mockReportMissionBranchUnresolved,
+}));
+
+// Early release's stacking mechanics: does a start_stacked release exist for
+// this (dependent, base) pair? Default: no — the module's own tests cover the
+// lookup itself; here only whether create_pr acts on the answer.
+const mockFindStackedReleaseForBase = mock(() => Promise.resolve(false));
+mock.module('@/lib/early-release-stacking', () => ({
+  findStackedReleaseForBase: mockFindStackedReleaseForBase,
 }));
 
 // Mocks for the mission-integration-branch auto-review feature
@@ -86,8 +113,10 @@ mock.module('@/lib/ci-failure-excerpts', () => ({
 }));
 
 // Mock github
+const mockGithubGraphQL = mock(async (..._args: unknown[]) => ({}));
 mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
+  githubGraphQL: mockGithubGraphQL,
   mergePullRequest: mockMergePullRequest,
   githubAppBotLogin: () => 'buildd[bot]',
 }));
@@ -184,7 +213,7 @@ mock.module('@/lib/dispatch-authority', () => ({
   enqueueTaskDispatch: async () => {},
   drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
   deliverTaskDispatch: async () => 'pusher',
-  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
   webhookWants: () => false,
   primaryCause: (_causes: string[], fallback: string) => fallback,
   DISPATCH_DUE_QUEUE: 'dispatch',
@@ -224,6 +253,27 @@ mock.module('@/lib/surface-ordering-door', () => ({
   checkSurfaceOrder: mockCheckSurfaceOrder,
   mergeInSurfaceSlot: mockMergeInSurfaceSlot,
 }));
+
+// The PR fact funnel: the one writer of mergedAt / prLifecycleStatus.
+// Terminal-wins is proven on real Postgres (apps/web/tests/db/pr-facts.test.ts);
+// here we assert the fact this merge door hands over. drizzle-orm is stubbed
+// above, so the real module (raw SQL) is not spread in.
+const recordedFacts: Array<{ target: unknown; fact: any; opts?: unknown }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: any, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return [{ id: 'w-1', taskId: 'task-1', workspaceId: 'ws-1', previousStatus: 'pr_open' }];
+  },
+}));
+beforeEach(() => { recordedFacts.length = 0; });
+
+/** The merge door stamped exactly one merged fact on this worker, at the door's own instant. */
+function expectMergedFactFor(workerId: string) {
+  expect(recordedFacts).toHaveLength(1);
+  expect(recordedFacts[0]!.target).toEqual({ workerId });
+  expect(recordedFacts[0]!.fact.kind).toBe('merged');
+  expect(recordedFacts[0]!.fact.mergedAt).toBeInstanceOf(Date);
+}
 
 // Import handler AFTER mocks
 const mockCloseAncestorRetryPrs = mock(async (_opts: any) => [] as any[]);
@@ -300,6 +350,8 @@ describe('POST /api/github/pr', () => {
     mockPickReviewerRole.mockReturnValue({ role: 'reviewer', source: 'policy' });
     mockListWorkspaceRoles.mockReset();
     mockListWorkspaceRoles.mockResolvedValue([{ slug: 'reviewer', isRole: true }]);
+    mockFindStackedReleaseForBase.mockReset();
+    mockFindStackedReleaseForBase.mockResolvedValue(false);
 
     // Restore default chain mock for update
     mockWorkersUpdate.mockReturnValue({
@@ -432,6 +484,55 @@ describe('POST /api/github/pr', () => {
     const data = await res.json();
     expect(data.ok).toBe(true);
     expect(data.pr.number).toBe(42);
+  });
+
+  // S31 (workflow-state-kernel.md §6.10 tier 1): create_pr runs CI's prose scan
+  // before the PR exists, on workspaces that opt in, and refuses with the reason.
+  describe('preflight: the No Production Data prose scan (S31)', () => {
+    const fakeUuid = ['aaaaaaaa', 'bbbb', 'cccc', 'dddd', 'eeeeeeeeeeee'].join('-');
+    const optedIn = { ...WORKSPACE_OK, gitConfig: { preflight: { prProseScan: true } } };
+    const post = (body: Record<string, unknown>, workspace: Record<string, unknown> = optedIn) => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValueOnce({ id: 'w-1', accountId: 'account-1', taskId: null, name: 'test-worker', workspace });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce([]);
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+      return POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', head: 'feature-branch', ...body } }));
+    };
+
+    it('refuses a body CI would reject, naming the line and category, never the value; nothing reaches GitHub', async () => {
+      const res = await post({ title: 'fix: thing', lede: 'Fixes the thing.', body: `## Notes\nCloses task ${fakeUuid}.` });
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.code).toBe('preflight_failed');
+      // Scanned as CI will see it: the composed body, lede block first, so the line is the composed one.
+      expect(data.preflight.check).toBe('no_prod_data_prose');
+      expect(data.preflight.findings).toEqual([{ where: 'PR body', line: 6, category: 'UUID' }]);
+      expect(data.error).toContain('PR body line 6: possible UUID');
+      expect(JSON.stringify(data)).not.toContain(fakeUuid);
+      expect(mockGithubApi).not.toHaveBeenCalled();
+    });
+
+    it('scans the title and the lede too', async () => {
+      const res = await post({ title: `fix: ${fakeUuid}`, lede: 'This fixed it for 9 teams.' });
+      expect(res.status).toBe(400);
+      expect((await res.json()).preflight.findings.map((f: { where: string }) => f.where)).toEqual(['PR title', 'PR body']);
+    });
+
+    it('a clean body opens the PR', async () => {
+      const res = await post({ title: 'fix: thing', lede: 'Fixes the thing.', body: 'Task `8237cfa9`.' });
+      expect(res.status).toBe(200);
+    });
+
+    it('off by default: a workspace that did not opt in is not scanned', async () => {
+      const res = await post({ title: 'fix: thing', lede: 'Fixes the thing.', body: `Closes ${fakeUuid}.` }, WORKSPACE_OK);
+      expect(res.status).toBe(200);
+    });
+
+    it('honours the same allow marker CI does', async () => {
+      const res = await post({ title: 'docs', lede: 'Documents the rule.', body: `no-prod-data: allow documenting the rule\n${fakeUuid}` });
+      expect(res.status).toBe(200);
+    });
   });
 
   // Test (b): token with no access to the workspace (different team) → 403
@@ -593,6 +694,69 @@ describe('POST /api/github/pr', () => {
     expect(data.pr.title).toBe('My PR');
   });
 
+  // `autoMergeEnabled` in the response must say what the merge gate will do,
+  // which is decided by the resolved merge policy — never by the inert legacy
+  // `autoMergeOnGreenCI` / `autoMergePR` flags (no gate reads them).
+  describe('autoMergeEnabled follows the resolved merge policy, not the legacy flags', () => {
+    async function createWith(opts: { gitConfig: Record<string, unknown>; mission?: Record<string, unknown> | null; requiresReview?: boolean }) {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1',
+        accountId: 'account-1',
+        name: 'test-worker',
+        workspace: { ...WORKSPACE_OK, gitConfig: opts.gitConfig },
+        ...(opts.mission || opts.requiresReview
+          ? { taskId: 'task-1', task: { id: 'task-1', title: 'T', missionId: opts.mission ? 'mission-1' : null, requiresReview: opts.requiresReview ?? false } }
+          : {}),
+      });
+      if (opts.mission) mockMissionsFindFirst.mockResolvedValue(opts.mission);
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValue({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'My PR',
+        base: { ref: 'main' },
+      });
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+      }));
+      expect(res.status).toBe(200);
+      return res.json();
+    }
+
+    it('is absent when the workspace policy is human, even with autoMergeOnGreenCI: true stored', async () => {
+      const data = await createWith({ gitConfig: { autoMergeOnGreenCI: true, mergePolicy: { tier: 'human' } } });
+      expect(data.autoMergeEnabled).toBeUndefined();
+    });
+
+    it('is true under the default auto-threshold policy, even with autoMergeOnGreenCI: false stored', async () => {
+      const data = await createWith({ gitConfig: { autoMergeOnGreenCI: false } });
+      expect(data.autoMergeEnabled).toBe(true);
+    });
+
+    it('is absent under an agent-review workspace policy', async () => {
+      const data = await createWith({
+        gitConfig: { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } },
+      });
+      expect(data.autoMergeEnabled).toBeUndefined();
+    });
+
+    it('is absent when the task requires review', async () => {
+      const data = await createWith({ gitConfig: {}, requiresReview: true });
+      expect(data.autoMergeEnabled).toBeUndefined();
+    });
+
+    it('is absent when the mission policy is human', async () => {
+      const data = await createWith({
+        gitConfig: {},
+        mission: { mergePolicy: { tier: 'human' }, workingBranch: null, integrationBranchEnabled: false },
+      });
+      expect(data.autoMergeEnabled).toBeUndefined();
+    });
+  });
+
   it('updates worker with PR URL after creation', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
@@ -717,6 +881,7 @@ describe('POST /api/github/pr', () => {
         title: 'My PR',
         head: 'buildd/t-1-do-thing',
         prUrl: 'https://github.com/owner/repo/pull/42',
+        prNumber: 42,
       },
     });
     const res = await POST(req);
@@ -858,6 +1023,144 @@ describe('POST /api/github/pr', () => {
         const res = await post({ head: OWN, prUrl: 'https://github.com/owner/repo/pull/9' });
         expect(res.status).toBe(200);
         expect((await res.json()).pr.number).toBe(9);
+      });
+    });
+
+    // A worker claimed from an interactive/local MCP session (workers.runner
+    // === 'mcp', set only after interactive-session.ts's HMAC check passes at
+    // claim) may open its PR from a branch it actually pushed to, even when it
+    // differs from the generated name claim_task handed it — as long as no
+    // other worker already holds that exact name. Closes the friction cluster
+    // (tasks e38e4b1a / 30381a54) where this always fell back to a manual
+    // gh-pr-create + correct_task_result workaround.
+    describe('interactive session, a custom head (interactive_head)', () => {
+      const CUSTOM = 'ci/private-prompt-evals';
+      const interactiveWorker = (o: Record<string, unknown> = {}) => agentWorker({ runner: 'mcp', ...o });
+
+      it('accepts a custom head nobody else holds, and records it as the worker’s own branch', async () => {
+        mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+        mockWorkersFindMany.mockReturnValue([]);
+        const payloads = captureUpdatePayloads();
+
+        const res = await post({ head: CUSTOM });
+
+        expect(res.status).toBe(200);
+        expect(opened()).toBe(true);
+        const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+        expect(JSON.parse((createCall as any[])[2].body).head).toBe(CUSTOM);
+        expect(payloads.some(p => p.branch === CUSTOM)).toBe(true);
+      });
+
+      it('refuses a custom head a live worker on another task already holds, and says whose', async () => {
+        mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+        mockWorkersFindMany.mockReturnValue([{ id: 'w-2', taskId: 'other-task-id', status: 'running', prUrl: null }]);
+
+        const res = await post({ head: CUSTOM });
+
+        expect(res.status).toBe(403);
+        const data = await res.json();
+        expect(data.code).toBe('head_claimed');
+        expect(data.error).toContain('other-ta');
+        expect(opened()).toBe(false);
+      });
+
+      it('refuses a custom head a dead worker on another task already shipped a PR from', async () => {
+        mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+        mockWorkersFindMany.mockReturnValue([
+          { id: 'w-2', taskId: 'other-task-id', status: 'completed', prUrl: 'https://github.com/owner/repo/pull/5' },
+        ]);
+
+        const res = await post({ head: CUSTOM });
+
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_claimed');
+        expect(opened()).toBe(false);
+      });
+
+      it('a background runner’s worker cannot use a custom head, even with the name free', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker({ runner: 'host' }));
+        mockWorkersFindMany.mockReturnValue([]);
+
+        const res = await post({ head: CUSTOM });
+
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+        expect(mockWorkersFindMany).not.toHaveBeenCalled();
+      });
+
+      it('an unverified mcp claim cannot use a custom head either (client-forged runner: "mcp" without the server marker)', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker({ runner: 'mcp-unverified' }));
+        mockWorkersFindMany.mockReturnValue([]);
+
+        const res = await post({ head: CUSTOM });
+
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+      });
+
+      it('still refuses the protected default branch as head', async () => {
+        mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+        mockWorkersFindMany.mockReturnValue([]);
+
+        const res = await post({ head: 'main' });
+
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('protected_head');
+      });
+
+      it('a mission-branch task still gets its PR based on the integration branch, not the custom head', async () => {
+        mockWorkersFindFirst.mockResolvedValue(interactiveWorker({
+          task: { id: TASK_ID, title: 'feat: own thing', description: '', context: {}, dependsOn: [], missionId: 'obj-1', taskClass: 'work' },
+        }));
+        mockWorkersFindMany.mockReturnValue([]);
+        mockMissionsFindFirst.mockResolvedValue({ workingBranch: 'mission/checkout-arc-1a2b3c4d', integrationBranchEnabled: true });
+
+        const res = await post({ head: CUSTOM });
+
+        expect(res.status).toBe(200);
+        const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+        const body = JSON.parse((createCall as any[])[2].body);
+        expect(body.head).toBe(CUSTOM);
+        expect(body.base).toBe('mission/checkout-arc-1a2b3c4d');
+      });
+    });
+
+    // Having the mission integration branch as the task's base proves nothing
+    // about a head. A worker provisioned onto that branch itself (before claim
+    // stopped handing it out) must not claim an arbitrary head, and create_pr
+    // must not rebind workers.branch to a head it never proved.
+    describe('worker sitting on its mission integration branch', () => {
+      const INTEGRATION = 'mission/checkout-arc-1a2b3c4d';
+      const UNRELATED = 'task/no-id-in-name';
+      const onIntegration = () => agentWorker({
+        branch: INTEGRATION,
+        task: { id: TASK_ID, title: 'feat: own thing', description: '', context: { baseBranch: INTEGRATION }, dependsOn: [], missionId: 'obj-1', taskClass: 'work' },
+      });
+
+      beforeEach(() => {
+        mockMissionsFindFirst.mockResolvedValue({ workingBranch: INTEGRATION, integrationBranchEnabled: true });
+        mockWorkersFindMany.mockReturnValue([]);
+      });
+
+      it('fresh create: refuses an unrelated head as head_not_owned and leaves workers.branch alone', async () => {
+        mockWorkersFindFirst.mockResolvedValue(onIntegration());
+        const payloads = captureUpdatePayloads();
+        const res = await post({ head: UNRELATED });
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+        expect(opened()).toBe(false);
+        expect(payloads.some(p => 'branch' in p)).toBe(false);
+      });
+
+      it('adoption: refuses a PR whose real head is unrelated and leaves workers.branch alone', async () => {
+        mockWorkersFindFirst.mockResolvedValue(onIntegration());
+        mockGithubApi.mockImplementation((_i: number, path: string) =>
+          Promise.resolve(path === '/repos/owner/repo/pulls/9' ? { number: 9, head: { ref: UNRELATED }, base: { ref: INTEGRATION } } : null));
+        const payloads = captureUpdatePayloads();
+        const res = await post({ head: UNRELATED, prUrl: 'https://github.com/owner/repo/pull/9' });
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+        expect(payloads.some(p => 'branch' in p)).toBe(false);
       });
     });
   });
@@ -1154,10 +1457,18 @@ describe('POST /api/github/pr', () => {
     });
 
     it('respects a stacked-phase task’s predecessor base instead of forcing the integration branch', async () => {
-      const predecessorBranch = 'buildd/predecessor00-earlier-thing';
+      const predecessorId = '9f8e7d6c-1111-2222-3333-444444444444';
+      const predecessorBranch = `buildd/${predecessorId.slice(0, 8)}-earlier-thing`;
       mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
       mockWorkersFindFirst.mockResolvedValue(taskWorker({
-        task: { id: 't-2', missionId: 'obj-1', title: 'Second phase', taskClass: 'work', context: { baseBranch: predecessorBranch } },
+        task: {
+          id: 't-2',
+          missionId: 'obj-1',
+          title: 'Second phase',
+          taskClass: 'work',
+          context: { baseBranch: predecessorBranch },
+          dependsOn: [predecessorId],
+        },
       }));
       mockGithubReposFindFirst.mockResolvedValue(REPO);
       optedInMission();
@@ -1174,6 +1485,80 @@ describe('POST /api/github/pr', () => {
       const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
       const body = JSON.parse((createCall as any[])[2].body);
       expect(body.base).toBe(predecessorBranch);
+    });
+
+    // Early release's stacking mechanics (docs/design/early-release.md): a
+    // `start_stacked` dependent opens its PR as a draft against the upstream's
+    // branch, since the upstream might still change before it merges. The
+    // base itself resolves exactly like the plan-step stacked-phase case
+    // above (f965170a's dependsOn verification covers both); this test is
+    // about the one thing early release adds — forcing draft: true.
+    it('opens the dependent’s PR as a draft when its base is an early-release stacked branch', async () => {
+      const upstreamId = 'ab12cd34-5555-6666-7777-888899990000';
+      const upstreamBranch = `buildd/${upstreamId.slice(0, 8)}-upstream-thing`;
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({
+        taskId: 't-2',
+        task: {
+          id: 't-2',
+          missionId: 'obj-1',
+          title: 'Dependent thing',
+          taskClass: 'work',
+          context: { baseBranch: upstreamBranch },
+          dependsOn: [upstreamId],
+        },
+      }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockFindStackedReleaseForBase.mockImplementation((taskId: string, base: string) =>
+        Promise.resolve(taskId === 't-2' && base === upstreamBranch));
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+      const body = JSON.parse((createCall as any[])[2].body);
+      expect(body.base).toBe(upstreamBranch);
+      expect(body.draft).toBe(true);
+    });
+
+    it('does not force a draft when no early-release release matches the resolved base', async () => {
+      const predecessorId = '9f8e7d6c-1111-2222-3333-444444444444';
+      const predecessorBranch = `buildd/${predecessorId.slice(0, 8)}-earlier-thing`;
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({
+        task: {
+          id: 't-2',
+          missionId: 'obj-1',
+          title: 'Second phase',
+          taskClass: 'work',
+          context: { baseBranch: predecessorBranch },
+          dependsOn: [predecessorId],
+        },
+      }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      // Default mock already resolves false — this is a plan-step stack, not
+      // an early-release one.
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+      const body = JSON.parse((createCall as any[])[2].body);
+      expect(body.draft).toBe(false);
     });
 
     it('resolves a recovery task (context.baseBranch === head) to the integration base', async () => {
@@ -1233,6 +1618,7 @@ describe('POST /api/github/pr', () => {
         body: {
           workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing',
           base: 'dev', prUrl: 'https://github.com/owner/repo/pull/42',
+          prNumber: 42,
         },
       });
       const res = await POST(req);
@@ -1259,6 +1645,7 @@ describe('POST /api/github/pr', () => {
         body: {
           workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing',
           base: 'dev', prUrl: 'https://github.com/owner/repo/pull/42',
+          prNumber: 42,
         },
       });
       const res = await POST(req);
@@ -1290,6 +1677,7 @@ describe('POST /api/github/pr', () => {
         body: {
           workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing',
           base: INTEGRATION_BRANCH, prUrl: 'https://github.com/owner/repo/pull/42',
+          prNumber: 42,
         },
       });
       const res = await POST(req);
@@ -1307,6 +1695,7 @@ describe('POST /api/github/pr', () => {
         body: {
           workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing',
           base: 'dev', prUrl: 'https://github.com/owner/repo/pull/42',
+          prNumber: 42,
         },
       });
       const res = await POST(req);
@@ -1326,6 +1715,7 @@ describe('POST /api/github/pr', () => {
         body: {
           workerId: 'w-1', title: 'Checkout arc', head: INTEGRATION_BRANCH,
           base: 'dev', prUrl: 'https://github.com/owner/repo/pull/42',
+          prNumber: 42,
         },
       });
       const res = await POST(req);
@@ -1348,6 +1738,7 @@ describe('POST /api/github/pr', () => {
         body: {
           workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing',
           base: INTEGRATION_BRANCH, prUrl: 'https://github.com/owner/repo/pull/42',
+          prNumber: 42,
         },
       });
       const res = await POST(req);
@@ -1370,6 +1761,7 @@ describe('POST /api/github/pr', () => {
         body: {
           workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing',
           base: 'dev', prUrl: 'https://github.com/owner/repo/pull/42',
+          prNumber: 42,
         },
       });
       const res = await POST(req);
@@ -1400,6 +1792,7 @@ describe('POST /api/github/pr', () => {
         body: {
           workerId: 'w-1', title: 'My PR', head: 'feature-branch',
           prUrl: 'https://github.com/owner/repo/pull/42',
+          prNumber: 42,
         },
       });
       const res = await POST(req);
@@ -1443,6 +1836,7 @@ describe('POST /api/github/pr', () => {
         body: {
           workerId: 'w-1', title: 'My PR', head: 'feature-branch',
           prUrl: 'https://github.com/owner/repo/pull/2600',
+          prNumber: 2600,
         },
       });
       const res = await POST(req);
@@ -2894,6 +3288,7 @@ describe('POST /api/github/pr', () => {
           head: WORKER_BRANCH,
           base: INTEGRATION_BRANCH,
           prUrl: 'https://github.com/owner/repo/pull/42',
+          prNumber: 42,
         },
       });
       const res = await POST(req);
@@ -3005,6 +3400,7 @@ describe('PATCH /api/github/pr', () => {
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
+      prNumber: 42,
       workspace: { teamId: 'team-1', githubRepoId: null, githubInstallationId: null },
     });
     const req = createPatchRequest({
@@ -3022,6 +3418,7 @@ describe('PATCH /api/github/pr', () => {
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
+      prNumber: 42,
       workspace: WORKSPACE_OK,
     });
     mockGithubReposFindFirst.mockResolvedValue(null);
@@ -3035,11 +3432,33 @@ describe('PATCH /api/github/pr', () => {
     expect(data.error).toBe('GitHub repo not found');
   });
 
+  it('draft:false marks a draft PR ready via GraphQL without closing it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', accountId: 'account-1', prNumber: 42, workspace: WORKSPACE_OK });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubGraphQL.mockClear();
+    mockGithubApi.mockResolvedValue({
+      number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'T', draft: true, node_id: 'PR_node',
+    });
+
+    const res = await PATCH(createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, draft: false },
+    }));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).pr.state).toBe('open');
+    expect(mockGithubGraphQL).toHaveBeenCalledTimes(1);
+    expect(String(mockGithubGraphQL.mock.calls[0][1])).toContain('markPullRequestReadyForReview');
+    expect(mockGithubApi).toHaveBeenCalledTimes(1); // read only, no state:closed PATCH
+  });
+
   it('closes PR successfully and returns closed PR data', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
+      prNumber: 42,
       workspace: WORKSPACE_OK,
     });
     mockGithubReposFindFirst.mockResolvedValue(REPO);
@@ -3069,6 +3488,7 @@ describe('PATCH /api/github/pr', () => {
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
+      prNumber: 71,
       workspace: WORKSPACE_OK,
     });
     mockGithubReposFindFirst.mockResolvedValue(REPO);
@@ -3099,6 +3519,7 @@ describe('PATCH /api/github/pr', () => {
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
+      prNumber: 42,
       workspace: WORKSPACE_OK,
     });
     mockGithubReposFindFirst.mockResolvedValue(REPO);
@@ -3114,6 +3535,59 @@ describe('PATCH /api/github/pr', () => {
     const data = await res.json();
     expect(data.error).toContain('403');
   });
+
+  // update_pr: passing `body` rewrites the PR body via the GitHub App token
+  // instead of closing the PR — the sanctioned path around the GitHub
+  // connector's update_pull_request 403 (see mcp-tools.ts `update_pr`).
+  it('returns 400 when body is not a string', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, body: 123 },
+    });
+    const res = await PATCH(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('body must be a string');
+  });
+
+  it('updates PR body successfully and returns the updated PR data', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      prNumber: 42,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValue({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'open',
+      title: 'Old feature PR',
+    });
+
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, body: 'Corrected body with no screenshot URL.' },
+    });
+    const res = await PATCH(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.pr.number).toBe(42);
+    expect(data.pr.state).toBe('open');
+
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+    const [, path, options] = mockGithubApi.mock.calls[0];
+    expect(path).toBe('/repos/owner/repo/pulls/42');
+    expect(options.method).toBe('PATCH');
+    const parsedBody = JSON.parse(options.body);
+    expect(parsedBody.body).toBe('Corrected body with no screenshot URL.');
+    expect(parsedBody.state).toBeUndefined();
+  });
+
 });
 
 // ── PUT /api/github/pr (merge) ────────────────────────────────────────────────
@@ -3247,7 +3721,7 @@ describe('PUT /api/github/pr', () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
-      accountId: 'account-1',
+      accountId: 'account-1', prNumber: 42,
       workspace: { teamId: 'team-1', githubRepoId: null, githubInstallationId: null },
     });
     const req = createPutRequest({
@@ -3264,7 +3738,7 @@ describe('PUT /api/github/pr', () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
-      accountId: 'account-1',
+      accountId: 'account-1', prNumber: 42,
       workspace: WORKSPACE_OK,
     });
     mockGithubReposFindFirst.mockResolvedValue(null);
@@ -3286,6 +3760,7 @@ describe('PUT /api/github/pr', () => {
         accountId: 'account-1',
         taskId: 'task-1',
         prUrl: 'https://github.com/owner/repo/pull/42',
+        prNumber: 42,
         workspace: WORKSPACE_OK,
       });
       mockGithubReposFindFirst.mockResolvedValue(REPO);
@@ -3307,6 +3782,64 @@ describe('PUT /api/github/pr', () => {
       const res = await put();
       expect((await res.json()).merged).toBe(false);
       expect(mockWorkersUpdate).not.toHaveBeenCalled();
+      expect(recordedFacts).toHaveLength(0);
+    });
+
+    // Workflow kernel (workflow-state-kernel.md §14 Slice C): a kernel-owned PR is merged by the
+    // kernel (T15/T16) and its post-merge work is the kernel's; a stale version is a 409 (S20).
+    describe('kernel-owned PR (Slice C)', () => {
+      const current = { state: 'APPROVED', version: 7, head: 'sha-42', round: 1 };
+      const putV = (version?: number) => PUT(createPutRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', prNumber: 42, ...(version !== undefined ? { version } : {}) },
+      }));
+      beforeEach(() => {
+        mockLandThroughKernel.mockReset();
+        mockKernelLandingView.mockReset();
+        mockKernelLandingView.mockResolvedValue({ deliveryId: 'd-1', current });
+      });
+      afterAll(() => {
+        mockKernelLandingView.mockReset();
+        mockKernelLandingView.mockResolvedValue(null);
+        mockLandThroughKernel.mockReset();
+        mockLandThroughKernel.mockResolvedValue(null);
+      });
+
+      it('S20: a stale version is a 409 with the current view; no policy rail runs and nothing merges', async () => {
+        workerOk();
+        const res = await putV(6);
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ merged: false, stale: true, reason: 'version_moved', current });
+        expect(mockLandThroughKernel).not.toHaveBeenCalled();
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+        expect(mockReadPrReviewStatus).not.toHaveBeenCalled();
+      });
+
+      it('merges through the kernel, pinned to the checked head; the door stamps nothing', async () => {
+        workerOk();
+        mockLandThroughKernel.mockResolvedValue({ merged: true, outcome: 'merged', reason: 'merged', message: 'merged', mergeCommitSha: 'M1', current: { ...current, state: 'MERGED' }, result: null });
+        const res = await putV(7);
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ ok: true, merged: true, pr: { number: 42, mergeCommitSha: 'M1' } });
+        expect(mockLandThroughKernel.mock.calls[0]![0]).toMatchObject({
+          repoFullName: 'owner/repo', prNumber: 42, headSha: 'sha-42', door: 'merge_pr', actor: 'agent:w-1', mergeMethod: 'squash', expectedVersion: 7,
+        });
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+        expect(recordedFacts).toHaveLength(0);
+      });
+
+      it('a kernel refusal is a 409 carrying the current view; a refresh it queued is a 202', async () => {
+        workerOk();
+        mockLandThroughKernel.mockResolvedValue({ merged: false, outcome: 'rejected', reason: 'state_not_allowed', message: 'not approved', mergeCommitSha: null, current: { ...current, state: 'AWAITING_REVIEW' }, result: null });
+        let res = await putV();
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ merged: false, kernel: { outcome: 'rejected', reason: 'state_not_allowed' }, current: { state: 'AWAITING_REVIEW' } });
+        mockLandThroughKernel.mockResolvedValue({ merged: false, outcome: 'behind', reason: 'behind', message: 'behind', mergeCommitSha: null, current: { ...current, state: 'REPAIRING' }, result: null });
+        res = await putV();
+        expect(res.status).toBe(202);
+        expect(await res.json()).toMatchObject({ merged: false, branchUpdated: true });
+        expect(recordedFacts).toHaveLength(0);
+      });
     });
 
     describe('landing function (gitConfig.landing.mode=enforce)', () => {
@@ -3315,6 +3848,7 @@ describe('PUT /api/github/pr', () => {
         workerOk();
         mockWorkersFindFirst.mockResolvedValue({
           id: 'w-1', accountId: 'account-1', taskId: 'task-1', prUrl: 'https://github.com/owner/repo/pull/42',
+          prNumber: 42,
           workspace: { ...WORKSPACE_OK, id: 'ws-1', gitConfig: { mergePolicy, ...ENFORCE } },
         });
       }
@@ -3346,7 +3880,7 @@ describe('PUT /api/github/pr', () => {
         });
         // The merge is landPr's, never a second one from the route.
         expect(mockMergePullRequest).not.toHaveBeenCalled();
-        expect(mockWorkersUpdate).toHaveBeenCalled();
+        expectMergedFactFor('w-1');
       });
 
       it('behind base: the branch is refreshed with a marker; 202, nothing more asked of the caller', async () => {
@@ -3411,7 +3945,7 @@ describe('PUT /api/github/pr', () => {
       // verdict, so this cannot be satisfied by making the PR cleaner.
       workerOk();
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        id: 'w-1', accountId: 'account-1', prNumber: 42, taskId: 'task-1',
         workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } } },
       });
 
@@ -3427,7 +3961,7 @@ describe('PUT /api/github/pr', () => {
 
     function agentReviewWorker(agentReview: Record<string, unknown> = { reviewerRole: 'reviewer' }) {
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        id: 'w-1', accountId: 'account-1', prNumber: 42, taskId: 'task-1',
         workspace: { ...WORKSPACE_OK, id: 'ws-1', gitConfig: { mergePolicy: { tier: 'agent-review', agentReview } } },
       });
     }
@@ -3547,7 +4081,7 @@ describe('PUT /api/github/pr', () => {
     it("refuses under 'human'", async () => {
       workerOk();
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        id: 'w-1', accountId: 'account-1', prNumber: 42, taskId: 'task-1',
         workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'human' } } },
       });
 
@@ -3592,7 +4126,7 @@ describe('PUT /api/github/pr', () => {
     it('refuses when the PR touches a configured deny path', async () => {
       workerOk();
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        id: 'w-1', accountId: 'account-1', prNumber: 42, taskId: 'task-1',
         workspace: {
           ...WORKSPACE_OK,
           gitConfig: { mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: ['packages/core/db/'] } } },
@@ -3747,7 +4281,7 @@ describe('PUT /api/github/pr', () => {
       it('a worker with no task keeps the old direct update when the semantic check is off', async () => {
         workerOk();
         mockWorkersFindFirst.mockResolvedValue({
-          id: 'w-1', accountId: 'account-1', taskId: null, prUrl: 'https://github.com/owner/repo/pull/42', workspace: WORKSPACE_OK,
+          id: 'w-1', accountId: 'account-1', prNumber: 42, taskId: null, prUrl: 'https://github.com/owner/repo/pull/42', workspace: WORKSPACE_OK,
         });
         const calls = behindGithub(() => Promise.resolve({ message: 'Updating pull request branch.' }));
 
@@ -3763,6 +4297,7 @@ describe('PUT /api/github/pr', () => {
         workerOk();
         mockWorkersFindFirst.mockResolvedValue({
           id: 'w-1', accountId: 'account-1', taskId: null, prUrl: 'https://github.com/owner/repo/pull/42',
+          prNumber: 42,
           workspace: { ...WORKSPACE_OK, gitConfig: { ...(WORKSPACE_OK as any).gitConfig, semanticRefresh: 'enforce' } },
         });
         const calls = behindGithub(() => Promise.resolve({}));
@@ -3771,6 +4306,52 @@ describe('PUT /api/github/pr', () => {
 
         expect(res.status).toBe(403);
         expect(calls).not.toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+      });
+
+      // Final kernel audit (task b6a62a4e): the refresh here pushed to a kernel-owned PR with no
+      // `refresh_branch` effect. For a kernel PR the kernel owns the refresh (T12 `behind`, or T16
+      // when its own merge call is refused as behind), so this door pushes nothing.
+      describe('kernel-owned PR', () => {
+        beforeEach(() => {
+          mockKernelLandingView.mockReset();
+          mockKernelLandingView.mockResolvedValue({ deliveryId: 'd-1', current: { state: 'APPROVED', version: 7, head: 'sha-42', round: 1 } });
+        });
+        afterAll(() => {
+          mockKernelLandingView.mockReset();
+          mockKernelLandingView.mockResolvedValue(null);
+        });
+
+        it('does not refresh the branch: no base-refresh, no update-branch, no merge', async () => {
+          workerOk();
+          mockTasksFindFirst.mockResolvedValue({ id: 'task-1', requiresReview: false, missionId: 'm-1', context: {} });
+          const calls = behindGithub(() => Promise.resolve({ message: 'Updating pull request branch.' }));
+
+          const res = await put();
+
+          expect(res.status).toBe(409);
+          const data = await res.json();
+          expect(data.error).toContain('behind');
+          expect(data.kernelOwned).toBe(true);
+          expect(data.branchUpdated).toBeUndefined();
+          expect(mockRefreshBehindPr).not.toHaveBeenCalled();
+          expect(calls).not.toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+          expect(mockMergePullRequest).not.toHaveBeenCalled();
+        });
+
+        it('a taskless worker on a kernel PR gets no direct update either', async () => {
+          workerOk();
+          mockWorkersFindFirst.mockResolvedValue({
+            id: 'w-1', accountId: 'account-1', prNumber: 42, taskId: null, prUrl: 'https://github.com/owner/repo/pull/42', workspace: WORKSPACE_OK,
+          });
+          const calls = behindGithub(() => Promise.resolve({ message: 'Updating pull request branch.' }));
+
+          const res = await put();
+
+          expect(res.status).toBe(409);
+          expect((await res.json()).branchUpdated).toBeUndefined();
+          expect(calls).not.toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+          expect(mockRefreshBehindPr).not.toHaveBeenCalled();
+        });
       });
 
       it.each([
@@ -3833,7 +4414,7 @@ describe('PUT /api/github/pr', () => {
         workerOk();
         mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin', scopes: TOKEN_PRESETS[preset].scopes, workspaceIds: null });
         mockWorkersFindFirst.mockResolvedValue({
-          id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+          id: 'w-1', accountId: 'account-1', prNumber: 42, taskId: 'task-1',
           workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'human' } } },
         });
 
@@ -3853,7 +4434,7 @@ describe('PUT /api/github/pr', () => {
       workerOk();
       mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        id: 'w-1', accountId: 'account-1', prNumber: 42, taskId: 'task-1',
         workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'human' } } },
       });
 
@@ -3874,6 +4455,7 @@ describe('PUT /api/github/pr', () => {
         id: 'w-1', accountId: 'account-1', taskId: 'task-1',
         mergedAt: new Date('2026-09-01T00:00:00Z'),
         prUrl: 'https://github.com/owner/repo/pull/42',
+        prNumber: 42,
         workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'human' } } },
       });
 
@@ -3902,6 +4484,7 @@ describe('PUT /api/github/pr', () => {
       mockWorkersFindFirst.mockResolvedValue({
         id: 'w-1', accountId: 'account-1', taskId: 'task-1',
         prUrl: 'https://github.com/owner/repo/pull/42',
+        prNumber: 42,
         workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } } },
       });
       mockTasksFindFirst.mockResolvedValue({
@@ -3963,6 +4546,7 @@ describe('PUT /api/github/pr', () => {
       id: 'w-1',
       accountId: 'account-1',
       prUrl: 'https://github.com/owner/repo/pull/42',
+      prNumber: 42,
       workspace: WORKSPACE_OK,
     });
     mockGithubReposFindFirst.mockResolvedValue(REPO);
@@ -3987,8 +4571,7 @@ describe('PUT /api/github/pr', () => {
     expect(data.ok).toBe(true);
     expect(data.merged).toBe(true);
     expect(data.pr.number).toBe(42);
-    expect(capturedSetData.mergedAt).toBeInstanceOf(Date);
-    expect(capturedSetData.prLifecycleStatus).toBe('merged');
+    expectMergedFactFor('w-1');
     expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'squash', 'sha-42');
   });
 
@@ -3996,7 +4579,7 @@ describe('PUT /api/github/pr', () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
-      accountId: 'account-1',
+      accountId: 'account-1', prNumber: 42,
       prUrl: null,
       workspace: WORKSPACE_OK,
     });
@@ -4016,7 +4599,7 @@ describe('PUT /api/github/pr', () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
-      accountId: 'account-1',
+      accountId: 'account-1', prNumber: 42,
       prUrl: null,
       workspace: WORKSPACE_OK,
     });
@@ -4039,7 +4622,7 @@ describe('PUT /api/github/pr', () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
-      accountId: 'account-1',
+      accountId: 'account-1', prNumber: 42,
       prUrl: null,
       workspace: WORKSPACE_OK,
     });
@@ -4168,8 +4751,7 @@ describe('PUT /api/github/pr', () => {
     const data = await res.json();
     expect(data.merged).toBe(true);
     // mergedAt must be stamped on the resolved worker
-    expect(capturedSetData.mergedAt).toBeInstanceOf(Date);
-    expect(capturedSetData.prLifecycleStatus).toBe('merged');
+    expectMergedFactFor('w-resolved');
   });
 
   it('returns 404 when prNumber-only resolve finds no matching worker', async () => {
@@ -4194,6 +4776,7 @@ describe('PUT /api/github/pr', () => {
       id: 'w-1',
       accountId: 'account-1',
       prUrl: 'https://github.com/owner/repo/pull/1870',
+      prNumber: 1870,
       mergedAt: new Date('2026-08-28T10:00:00Z'),
       prLifecycleStatus: 'merged',
       workspace: WORKSPACE_OK,
@@ -4228,6 +4811,7 @@ describe('PUT /api/github/pr', () => {
       id: 'w-1',
       accountId: 'account-1',
       prUrl: 'https://github.com/owner/repo/pull/55',
+      prNumber: 55,
       mergedAt: null,
       prLifecycleStatus: 'merged',
       workspace: WORKSPACE_OK,
@@ -4298,6 +4882,7 @@ describe('PUT /api/github/pr', () => {
         accountId: 'account-1',
         taskId: 't-own',
         prUrl: 'https://github.com/owner/repo/pull/42',
+        prNumber: 42,
         workspace: WORKSPACE_OK,
       });
       mockGithubReposFindFirst.mockResolvedValue(REPO);
@@ -4380,6 +4965,7 @@ describe('PUT /api/github/pr', () => {
       mockWorkersFindFirst.mockResolvedValue({
         id: 'w-1', accountId: 'account-1', taskId: 't-2',
         prUrl: 'https://github.com/owner/repo/pull/42',
+        prNumber: 42,
         workspace: WORKSPACE_OK,
       });
       mockGithubReposFindFirst.mockResolvedValue(REPO);
@@ -4433,6 +5019,7 @@ describe('PUT /api/github/pr', () => {
       mockWorkersFindFirst.mockResolvedValue({
         id: 'w-1', accountId: 'account-1', taskId: null,
         prUrl: 'https://github.com/owner/repo/pull/42',
+        prNumber: 42,
         workspace: WORKSPACE_OK,
       });
       mockGithubReposFindFirst.mockResolvedValue(REPO);
@@ -4501,6 +5088,7 @@ describe('PUT /api/github/pr', () => {
       mockWorkersFindFirst.mockResolvedValue({
         id: 'w-1', accountId: 'account-1', taskId: 'task-1',
         prUrl: 'https://github.com/owner/repo/pull/42',
+        prNumber: 42,
         workspace: { ...WORKSPACE_OK, id: 'ws-1', gitConfig: { mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } } } },
       });
       mockGithubReposFindFirst.mockResolvedValue(REPO);
@@ -5130,6 +5718,37 @@ describe('GET /api/github/pr', () => {
     expect(data.pr.mergedVia).toBeNull();
   });
 
+  it('Slice F: a kernel-owned PR reads its merge and supersession from the delivery, not the worker columns', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    // The columns contradict the delivery on purpose: a stale merged lifecycle and an old edge.
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-k', accountId: 'account-1', taskId: 'task-k', prNumber: 778,
+      prUrl: 'https://github.com/owner/repo/pull/778',
+      mergedAt: null, prLifecycleStatus: 'merged',
+      supersededByPrNumber: 1, supersededByPrUrl: 'stale', supersededReason: 'stale',
+      lastCommitSha: null, workspace: WORKSPACE_OK,
+    });
+    mockGetDeliveryViewsForTasks.mockResolvedValueOnce(new Map([['task-k', {
+      prNumber: 778, state: 'SUPERSEDED', mergedAt: null,
+      supersededBy: { prNumber: 790, url: 'https://github.com/owner/repo/pull/790', reason: 'reopened on a fresh branch' },
+    }]]));
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 778, title: 'old attempt', body: null, state: 'closed', merged: false, merged_at: null,
+      closed_at: '2026-08-27T09:00:00Z', html_url: 'https://github.com/owner/repo/pull/778',
+      head: { sha: 'h' }, base: { ref: 'dev' }, additions: 1, deletions: 1, changed_files: 1,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]);
+
+    const data = await (await GET(createGetRequest('w-k', 778))).json();
+    expect(mockGetDeliveryViewsForTasks).toHaveBeenCalledWith(['task-k']);
+    // The column's 'merged' would have read merged; the delivery says superseded, so closed-unmerged.
+    expect(data.pr.state).toBe('closed_unmerged');
+    expect(data.pr.supersededByPrNumber).toBe(790);
+    expect(data.pr.supersededReason).toBe('reopened on a fresh branch');
+  });
+
   it('merged PR by prNumber (no workerId) returns 200 with merged state', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
@@ -5725,6 +6344,74 @@ describe('Retry PR body generation', () => {
     // the old "resume failed; new branch" line rather than appending beside it.
     expect(patchedBody).toBe('Original body\n\n---\n_Attempt 2/3 — updated this PR._');
   });
+
+  it('replaces a stale dedup body with freshly supplied content instead of only stamping the footer', async () => {
+    const taskId = 'ccccdddd-eeee-ffff-0000-111122223333';
+
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      taskId,
+      prUrl: null,
+      prNumber: null,
+      name: 'test-worker',
+      workspace: WORKSPACE_OK,
+      task: { missionId: null, parentTaskId: null, title: null, context: { iteration: 1, maxIterations: 3 } },
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    // An existing PR left over from the previous attempt, carrying stale
+    // verification notes and a stale attempt footer.
+    mockGithubApi.mockResolvedValueOnce([
+      {
+        number: 88,
+        html_url: 'https://github.com/owner/repo/pull/88',
+        state: 'open',
+        title: 'Fix: retry',
+        body: 'Stale verification notes from attempt 1.\n\n---\n_Attempt 1/3 — resume failed; new branch._',
+        additions: 5,
+        deletions: 2,
+        changed_files: 1,
+      },
+    ]);
+
+    let patchedBody = '';
+    mockGithubApi.mockImplementation(async (installationId: any, path: string, opts?: any) => {
+      if (path.includes('/pulls') && opts?.method === 'PATCH') {
+        patchedBody = JSON.parse(opts.body).body;
+      }
+      return {
+        number: 88,
+        html_url: 'https://github.com/owner/repo/pull/88',
+        state: 'open',
+        title: 'Fix: retry',
+        body: patchedBody,
+        base: { sha: 'basesha', ref: 'main' },
+      };
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        workerId: 'w-1',
+        title: 'Fix: retry',
+        head: 'retry-branch',
+        lede: 'Verified against the new screenshots.',
+        body: 'Fresh verification notes: screenshot at https://example.com/shot2.png',
+      },
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+
+    // The fresh body (and lede) replace the stale stored content — not
+    // appended beneath it — and the footer still advances to attempt 2/3.
+    expect(patchedBody).toContain('Fresh verification notes: screenshot at https://example.com/shot2.png');
+    expect(patchedBody).not.toContain('Stale verification notes from attempt 1.');
+    expect(patchedBody).toContain('Verified against the new screenshots.');
+    expect(patchedBody).toContain('_Attempt 2/3 — updated this PR._');
+  });
 });
 
 // ── The lede leads the PR body ───────────────────────────────────────────────
@@ -5881,6 +6568,7 @@ describe('POST /api/github/pr — lede', () => {
         title: 'feat: opened with gh',
         head: 'feature-branch',
         prUrl: 'https://github.com/owner/repo/pull/99',
+        prNumber: 99,
       },
     }));
 
@@ -6050,5 +6738,180 @@ describe('create_pr — retry supersession', () => {
       expect(openedPrs()).toHaveLength(0);
       expect(mockCloseAncestorRetryPrs).not.toHaveBeenCalled();
     });
+  });
+});
+
+// A per-task token (cloud container, and self-hosted agents once they carry
+// one) may close, merge and request review only for the PR its own run
+// opened, and read PRs only in its own workspace.
+describe('per-task token on close / merge / get', () => {
+  const SCOPED = { ...ACCOUNT, level: 'worker', taskScope: { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+  const ownWorker = (o: Record<string, unknown> = {}) => ({
+    id: 'w-own', accountId: 'account-1', taskId: 'task-own', workspaceId: 'ws-1', prNumber: 42, name: 'w',
+    workspace: { ...WORKSPACE_OK, id: 'ws-1' }, ...o,
+  });
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValue({ number: 42, state: 'closed', html_url: 'https://github.com/owner/repo/pull/42' });
+    mockWorkersFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGetTeamWorkspaceIds.mockReset();
+    mockMergePullRequest.mockClear();
+  });
+
+  const githubWrites = () => mockGithubApi.mock.calls.filter((c: any[]) => (c[2] as { method?: string } | undefined)?.method);
+
+  it('closes its own PR', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker());
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 42 } }));
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses to close another PR through its own worker, before calling GitHub', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker());
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 7 } }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('A task token may close only its own PR');
+    expect(githubWrites()).toEqual([]);
+  });
+
+  it('refuses to close another task’s PR on the same team', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker({ id: 'w-other', taskId: 'task-other', prNumber: 7 }));
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-other', prNumber: 7 } }));
+    expect(res.status).toBe(403);
+    expect(githubWrites()).toEqual([]);
+  });
+
+  it('refuses to merge another task’s PR, before the merge policy runs', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker({ id: 'w-other', taskId: 'task-other', prNumber: 7 }));
+    const res = await PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-other', prNumber: 7 } }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('A task token may merge only its own PR');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('lets its own PR through to the merge policy', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker());
+    const res = await PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 42 } }));
+    expect((await res.json()).error).not.toBe('A task token may merge only its own PR');
+  });
+
+  it('reads a PR in its own workspace', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker({ id: 'w-sibling', taskId: 'task-sibling', prNumber: 9 }));
+    const res = await GET(createGetRequest('w-sibling', 9));
+    expect(res.status).not.toBe(404);
+  });
+
+  it('cannot read a PR in another workspace of the team', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker({ id: 'w-x', taskId: 'task-x', workspaceId: 'ws-2', workspace: { ...WORKSPACE_OK, id: 'ws-2' } }));
+    const res = await GET(createGetRequest('w-x', 9));
+    expect(res.status).toBe(404);
+  });
+
+  it('updates the body of its own PR', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker());
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 42, body: 'corrected body' } }));
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses to update another PR’s body through its own worker, before calling GitHub', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker());
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 7, body: 'corrected body' } }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('A task token may update only its own PR');
+    expect(githubWrites()).toEqual([]);
+  });
+});
+
+// An agent run on its runner's key (an orchestration-free session whose token
+// mint failed, or an older runner) is held to the same rule a task token is:
+// close or merge only a PR its task owns.
+describe('agent run on the runner key — close / merge', () => {
+  const runWorker = (task: Record<string, unknown> = {}, o: Record<string, unknown> = {}) => ({
+    id: 'w-run', accountId: 'account-1', taskId: 'task-run', workspaceId: 'ws-1', prNumber: 42, name: 'w',
+    workspace: { ...WORKSPACE_OK, id: 'ws-1' },
+    task: { id: 'task-run', title: 'feat: own thing', description: '', context: {}, roleSlug: 'builder', mode: 'execution', ...task },
+    ...o,
+  });
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValue({ number: 7, state: 'closed', html_url: 'https://github.com/owner/repo/pull/7' });
+    mockWorkersFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockMergePullRequest.mockClear();
+  });
+
+  const close = (prNumber: number) => PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-run', prNumber } }));
+  const merge = (prNumber: number) => PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-run', prNumber } }));
+
+  it('refuses to close a PR its task does not name, before calling GitHub', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker());
+    const res = await close(7);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('may close only its own PR (#42)');
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('closes a PR its task names', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'Close superseded PR #7' }));
+    expect((await close(7)).status).toBe(200);
+  });
+
+  it('lets an organizer task close a PR of another task on its own mission', async () => {
+    mockWorkersFindFirst
+      .mockResolvedValueOnce(runWorker({ roleSlug: 'organizer', missionId: 'mission-1' }))
+      .mockResolvedValueOnce({ id: 'w-sibling', task: { missionId: 'mission-1' } });
+    expect((await close(7)).status).toBe(200);
+  });
+
+  it('refuses an organizer task closing another mission’s PR, before calling GitHub', async () => {
+    mockWorkersFindFirst
+      .mockResolvedValueOnce(runWorker({ roleSlug: 'organizer', missionId: 'mission-1' }))
+      .mockResolvedValueOnce({ id: 'w-elsewhere', task: { missionId: 'mission-2' } });
+    const res = await close(7);
+    expect(res.status).toBe(403);
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('refuses to merge a PR its task does not name, before the merge policy runs', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker());
+    const res = await merge(7);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('may merge only its own PR (#42)');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('lets a merge of a PR its task names through to the merge policy', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'Review and merge the green PRs (#7 first)' }));
+    expect((await (await merge(7)).json()).error ?? '').not.toContain('may merge only its own PR');
+  });
+
+  it('leaves a teammate’s close alone', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'person-1', teamId: 'team-1' });
+    mockWorkersFindFirst.mockResolvedValue(runWorker());
+    expect((await close(7)).status).toBe(200);
+  });
+
+  const updateBody = (prNumber: number) => PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-run', prNumber, body: 'corrected body' } }));
+
+  it('refuses to update the body of a PR its task does not name, before calling GitHub', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker());
+    const res = await updateBody(7);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('may update only its own PR (#42)');
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('updates the body of a PR its task names', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'fix: PR #7 body correction' }));
+    expect((await updateBody(7)).status).toBe(200);
   });
 });

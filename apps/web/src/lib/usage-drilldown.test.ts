@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'bun:test';
 import { computeUsageStats, type UsageWorkerRow } from './usage-stats';
-import type { CbmHealthSummary } from './cbm-insight';
 import {
   buildCodeNavigationPanel,
   buildShellPanel,
@@ -9,7 +8,6 @@ import {
   costProxyTokens,
   formatDelta,
   healthHref,
-  indexAdoptionLine,
   isCodeNavigationTool,
   MIN_DELTA_TASKS,
   resolveDrilldownWindow,
@@ -37,7 +35,7 @@ const worker = (over: Partial<UsageWorkerRow> & { counts?: Record<string, number
   };
 };
 
-/** A pre-histogram worker: counts reconstructed from CBM counters, never Bash. */
+/** A pre-histogram worker: counts reconstructed from the legacy `cbm` Read/Grep/Glob counters, never Bash. */
 const derivedWorker = (over: Partial<UsageWorkerRow> = {}): UsageWorkerRow =>
   worker({
     resultMeta: { cbm: { readCount: 6, grepCount: 2, globCount: 0, toolCalls: {}, totalCbmCalls: 0 } } as any,
@@ -45,33 +43,6 @@ const derivedWorker = (over: Partial<UsageWorkerRow> = {}): UsageWorkerRow =>
   });
 
 const statsOf = (rows: UsageWorkerRow[]) => computeUsageStats(rows, 'none');
-
-const cbm = (over: Partial<CbmHealthSummary> = {}): CbmHealthSummary => ({
-  tracked: 20,
-  activeCount: 16,
-  adoptionRate: 0.5,
-  totalGraphCalls: 40,
-  zeroCallTasks: 8,
-  state: 'partial',
-  warmStartRate: 1,
-  warmStarts: 16,
-  indexAttempted: 0,
-  indexFailed: 0,
-  indexFailureRate: null,
-  topIndexFailReason: null,
-  eligibleFallbackRate: 0,
-  byDesignSkips: {},
-  binaryAbsent: 0,
-  mountUnavailable: 0,
-  avgFileAccessOnActive: 12,
-  avgGraphCallsOnActive: 2.5,
-  inputTokenDeltaPct: null,
-  fileAccessDeltaPct: null,
-  deltasSuppressedBecause: null,
-  topTools: [],
-  tools: { sessions: 0, totalCalls: 0, tools: [] },
-  ...over,
-});
 
 describe('resolveDrilldownWindow', () => {
   it('clamps a 24h header window to 7d and says so', () => {
@@ -118,8 +89,8 @@ describe('links', () => {
 });
 
 describe('isCodeNavigationTool', () => {
-  it('covers Read, Grep, Glob and every codebase-graph tool', () => {
-    for (const name of ['Read', 'Grep', 'Glob', 'mcp__codebase-memory__search_graph', 'mcp__codebase-memory__trace_path']) {
+  it('covers Read, Grep and Glob', () => {
+    for (const name of ['Read', 'Grep', 'Glob']) {
       expect(isCodeNavigationTool(name)).toBe(true);
     }
   });
@@ -138,7 +109,7 @@ describe('isCodeNavigationTool', () => {
 describe('buildCodeNavigationPanel', () => {
   const current = statsOf([
     worker({ workerId: 'a', taskId: 't-1', counts: { Read: 10, Grep: 4, Bash: 20 } }),
-    worker({ workerId: 'b', taskId: 't-2', counts: { Read: 6, 'mcp__codebase-memory__search_graph': 2, Bash: 5 } }),
+    worker({ workerId: 'b', taskId: 't-2', counts: { Read: 6, Glob: 2, Bash: 5 } }),
   ]);
 
   it('states per-task rates over TASKS, folding a retried task’s attempts into one', () => {
@@ -155,7 +126,7 @@ describe('buildCodeNavigationPanel', () => {
   it('leaves Bash out entirely', () => {
     const panel = buildCodeNavigationPanel(current, null, '7d');
     expect(panel.rows.map(r => r.name)).not.toContain('Bash');
-    expect(panel.rows.map(r => r.name).sort()).toEqual(['Grep', 'Read', 'mcp__codebase-memory__search_graph']);
+    expect(panel.rows.map(r => r.name).sort()).toEqual(['Glob', 'Grep', 'Read']);
   });
 
   it('takes the delta on calls per task, not on raw calls', () => {
@@ -261,30 +232,6 @@ describe('buildShellPanel', () => {
   });
 });
 
-describe('indexAdoptionLine', () => {
-  it('counts sessions and never says "task"', () => {
-    const line = indexAdoptionLine(cbm(), '7d');
-    expect(line.n).toBe(8);
-    expect(line.sessions).toBe(16);
-    expect(line.label).toBe(
-      'Graph queried in 8 of 16 sessions where it was available (7d, completed sessions only)',
-    );
-    expect(line.shortLabel).toBe('Index adoption · 50% · 8/16 CBM-enabled sessions');
-    expect(line.label.toLowerCase()).not.toContain('task');
-    expect(line.shortLabel.toLowerCase()).not.toContain('task');
-  });
-
-  it('renders an unavailable state with a reason, never 0%', () => {
-    for (const summary of [null, cbm({ activeCount: 0, adoptionRate: null, zeroCallTasks: 0 })]) {
-      const line = indexAdoptionLine(summary, '30d');
-      expect(line.available).toBe(false);
-      expect(line.rate).toBeNull();
-      expect(line.unavailableReason).toBeTruthy();
-      expect(line.shortLabel).not.toContain('0%');
-    }
-  });
-});
-
 describe('cost', () => {
   it('has no proxy to offer when no task recorded tokens either', () => {
     const stats = statsOf([worker({ inputTokens: 0, outputTokens: 0, turns: 0, counts: { Read: 1 } })]);
@@ -330,7 +277,7 @@ describe('formatDelta', () => {
 });
 
 describe('buildUsageDrilldownView', () => {
-  it('is task-keyed everywhere except the adoption line, which declares itself', () => {
+  it('is task-keyed everywhere', () => {
     const current = statsOf([
       worker({ workerId: 'a', taskId: 't-1', counts: { Read: 10, Bash: 3 } }),
       worker({ workerId: 'b', taskId: 't-1', counts: { Read: 5 } }),
@@ -341,7 +288,6 @@ describe('buildUsageDrilldownView', () => {
       current,
       previous: null,
       scan: { rows: 3, limit: 5000, truncated: false, completeSince: '2026-08-27T00:00:00.000Z' },
-      cbm: cbm(),
     });
 
     expect(view.window).toBe('7d');
@@ -349,33 +295,28 @@ describe('buildUsageDrilldownView', () => {
     // Three workers, two tasks.
     expect(view.tasks).toBe(2);
     expect(view.totals.workers).toBe(3);
-    // The adoption line keeps its own, larger population.
-    expect(view.adoption.sessions).toBe(16);
   });
 });
 
 describe('buildUsageDrilldownView — fine-grained breakdowns', () => {
-  it('carries the Bash breakdown from the usage rollup and the CBM tool list from the session summary', () => {
+  it('carries the Bash breakdown from the usage rollup', () => {
     const v = buildUsageDrilldownView({
       resolution: resolveDrilldownWindow('7d'),
       current: computeUsageStats([]),
       previous: null,
       scan: { rows: 0, limit: 5000, truncated: false, completeSince: '2026-09-01T00:00:00.000Z' },
-      cbm: cbm({ activeCount: 2, tools: { sessions: 2, totalCalls: 3, tools: [{ tool: 'search_graph', calls: 3, sessions: 2, share: 1 }] } }),
     });
     expect(v.bashBuckets.classifiedCalls).toBe(0);
     expect(v.searchShapes.codeSearchCalls).toBe(0);
-    expect(v.cbmTools?.tools[0].tool).toBe('search_graph');
   });
+});
 
-  it('has no CBM tool list when no session had the graph', () => {
-    const v = buildUsageDrilldownView({
-      resolution: resolveDrilldownWindow('7d'),
-      current: computeUsageStats([]),
-      previous: null,
-      scan: { rows: 0, limit: 5000, truncated: false, completeSince: '2026-09-01T00:00:00.000Z' },
-      cbm: null,
-    });
-    expect(v.cbmTools).toBeNull();
+describe('formatUsd', () => {
+  it('prints zero as $0.00 so it lines up with the other cost cells', async () => {
+    const { formatUsd } = await import('./usage-drilldown');
+    expect(formatUsd(0)).toBe('$0.00');
+    expect(formatUsd(6.17)).toBe('$6.17');
+    // A sub-dollar per-task median keeps its third decimal: $0.399 is a real reading.
+    expect(formatUsd(0.399)).toBe('$0.399');
   });
 });

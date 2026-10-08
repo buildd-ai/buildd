@@ -11,6 +11,7 @@
  *
  *   api.anthropic.com        -> per resolveModelRoute: an Anthropic-compatible proxy such as
  *                               LiteLLM (`Authorization: Bearer <proxy key>` or `x-api-key`),
+ *                               the deployer's own Claude token when set (owner-seat.ts; `Authorization: Bearer`),
  *                               or AI Gateway (`cf-aig-authorization: Bearer <gateway token>`);
  *                               only MODEL_API_ROUTES, anything else is refused (403)
  *   github.com (git https)   -> `Authorization: Basic x-access-token:<installation token>`
@@ -22,6 +23,7 @@
  *
  * Design: docs/design/cloudflare-sandbox-runner.md, Components 4.
  */
+import { ownerSeatToken, withOauthBeta, type ModelAuth, type OwnerSeatEnv } from './owner-seat';
 
 export const ANTHROPIC_HOST = 'api.anthropic.com';
 export const AI_GATEWAY_HOST = 'gateway.ai.cloudflare.com';
@@ -53,7 +55,7 @@ export const CONTAINER_CREDENTIAL_HEADERS = [
 // ── Config ────────────────────────────────────────────────────────────────────
 
 /** Worker vars/secrets the handler reads. See README "Egress credentials". */
-export interface EgressEnv {
+export interface EgressEnv extends OwnerSeatEnv {
   AI_GATEWAY_ACCOUNT_ID?: string;
   AI_GATEWAY_ID?: string;
   /** Secret. Sent as `cf-aig-authorization`; the Anthropic key itself lives in AI Gateway. */
@@ -80,6 +82,7 @@ export type ModelRoute =
   | { kind: 'gateway'; baseUrl: string; token: string }
   | { kind: 'proxy'; baseUrl: string; key: string; authHeader: ModelProxyAuthHeader; mapModel?: (id: string) => string }
   | { kind: 'direct'; apiKey: string }
+  | { kind: 'owner_seat'; token: string }
   | { kind: 'unconfigured'; reason: string };
 
 const GATEWAY_SEGMENT_RE = /^[A-Za-z0-9_-]{1,128}$/;
@@ -203,6 +206,17 @@ export function needsServerModelEndpoint(env: EgressEnv): boolean {
  * refused rather than forwarded with the container's placeholder key. With
  * `server` omitted or null the result is exactly the pre-endpoint one.
  */
+/**
+ * Which credential kind the egress will pay this run's model calls with, by
+ * the same route resolution it applies per request: the owner seat route is
+ * `owner_seat`, every other route is metered. Null when the team endpoint
+ * lookup is unavailable, so no route can be planned.
+ */
+export function plannedModelAuth(env: EgressEnv, server: ServerModelEndpointState): ModelAuth | null {
+  if (server === 'unavailable') return null;
+  return resolveModelRoute(env, server ?? undefined).kind === 'owner_seat' ? 'owner_seat' : 'metered';
+}
+
 export function resolveModelRoute(env: EgressEnv, server?: ServerModelEndpointState): ModelRoute {
   if (directAllowed(env)) {
     return { kind: 'direct', apiKey: env.ANTHROPIC_DIRECT_API_KEY! };
@@ -225,6 +239,11 @@ export function resolveModelRoute(env: EgressEnv, server?: ServerModelEndpointSt
   if (server === 'unavailable') {
     return { kind: 'unconfigured', reason: 'the team agent model endpoint is temporarily unavailable' };
   }
+  // The deployer's own Claude token (owner-seat.ts) applies only where the
+  // effective route is the default Anthropic one: no operator proxy and no team
+  // endpoint or Anthropic key (all handled above). It replaces the AI Gateway.
+  const seat = !server ? ownerSeatToken(env) : null;
+  if (seat) return { kind: 'owner_seat', token: seat };
   if (server) {
     const route: ModelRoute = { kind: 'proxy', baseUrl: server.baseUrl, key: server.key, authHeader: server.authHeader };
     if (server.kind === 'openrouter' || (server.models && Object.keys(server.models).length > 0)) {
@@ -255,6 +274,8 @@ export interface GithubGrant {
   repo: string;
   /** The task's workspace, as buildd knows it. Keys the snapshot store (snapshots.ts). */
   workspaceId?: string;
+  /** The workspace's warm snapshot cap, resolved and bounded by buildd; absent when it sets none. */
+  warmSnapshotMaxBytes?: number;
   /**
    * Branch names a direct `git push` must never target (the workspace trunk,
    * its release branch, and the repo's own GitHub default branch) — computed
@@ -265,15 +286,25 @@ export interface GithubGrant {
    * merge blocks below apply regardless.
    */
   protectedBranches?: string[];
+  /**
+   * The only branches this task may move: its worker's own branch (and the
+   * task's shared working branch, when it has one), minus `protectedBranches`
+   * — set by `/api/runner/github-token`. When present and non-empty, the push
+   * allow-list below applies: pushes and ref-writing REST/GraphQL calls that
+   * touch any other ref are refused, and an unreadable push is refused too.
+   * Absent (an older buildd server): only the deny-list above applies.
+   */
+  pushableBranches?: string[];
 }
 
 // ── Classification ────────────────────────────────────────────────────────────
 
-export type EgressKind = 'anthropic' | 'github' | 'snapshot' | 'passthrough';
+export type EgressKind = 'anthropic' | 'github' | 'snapshot' | 'browser' | 'passthrough';
 
 export function classifyEgressHost(hostname: string): EgressKind {
   const host = hostname.toLowerCase().replace(/\.$/, '');
   if (host === ANTHROPIC_HOST) return 'anthropic';
+  if (host === 'buildd-browser.invalid') return 'browser';
   if (host === SNAPSHOT_HOST_NAME) return 'snapshot';
   if ((GITHUB_HOSTS as readonly string[]).includes(host)) return 'github';
   return 'passthrough';
@@ -345,7 +376,7 @@ export function modelApiPathAllowed(method: string | undefined, rawUrl: string):
 }
 
 /** Why a request was refused (run-report.ts REJECT_REASONS). */
-export type RejectReason = 'path' | 'unconfigured' | 'plain_http' | 'port' | 'unparseable' | 'merge_blocked' | 'other';
+export type RejectReason = 'path' | 'unconfigured' | 'plain_http' | 'port' | 'unparseable' | 'merge_blocked' | 'push_not_allowed' | 'other';
 
 /** Where a refused api.anthropic.com request was going, as a fixed label (no raw path leaves the handler). */
 export type RejectedPathLabel = 'api_hello' | 'event_logging' | 'oauth' | 'claude_code_api' | 'other_api' | 'files' | 'batches' | 'other_v1' | 'other';
@@ -369,7 +400,7 @@ export type EgressDecision =
   /** Answered by the handler itself; nothing leaves the Worker. */
   | { action: 'respond'; status: number }
   | {
-      action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'github_basic' | 'github_bearer' | 'otlp' | 'none';
+      action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'owner_seat' | 'github_basic' | 'github_bearer' | 'otlp' | 'none';
       /** Set for a message request to a team endpoint with a model mapping: the egress handler rewrites the body's `model`. */
       mapModel?: (id: string) => string;
       /** GitHub only: why our credential did not go with this forward (counted in the run report). */
@@ -514,6 +545,156 @@ export function pushedProtectedBranch(bodyPeek: string | undefined, protectedBra
   return parseReceivePackPushedBranches(bodyPeek).find((b) => protectedBranches.includes(b)) ?? null;
 }
 
+// ── Push allow-list ───────────────────────────────────────────────────────────
+//
+// GitHub cannot scope an installation token to a branch: `contents:write`
+// moves every ref in the repo. When the grant names `pushableBranches`, the
+// checks below narrow that to the task's own branch. Unlike the deny-list
+// above they fail CLOSED: a push or ref write whose target cannot be read is
+// refused, never guessed at. Reads, PR calls and git object creation (blobs,
+// trees, commits, tag objects) are untouched; only ref moves are judged.
+
+/** A ref this task may move: `refs/heads/<b>` with `<b>` in the allow-list. Tags and every other ref namespace never are. */
+export function isPushableRef(ref: string, pushable: readonly string[]): boolean {
+  return ref.startsWith('refs/heads/') && pushable.includes(ref.slice('refs/heads/'.length));
+}
+
+/**
+ * Every ref a `git-receive-pack` body updates, read strictly: each pkt-line
+ * before the flush-pkt must be a `shallow <oid>` line (a push from a shallow
+ * clone) or an `<old-oid> <new-oid> <ref>` command. Anything else — an empty
+ * or missing body, a compressed one, a prefix cut off before the flush-pkt, a
+ * signed-push certificate — is `null`: unreadable. A bare flush-pkt (git's
+ * auth probe ahead of a large push) reads as zero refs.
+ */
+export function parseReceivePackRefs(bodyPeek: string | undefined): string[] | null {
+  if (!bodyPeek) return null;
+  const refs: string[] = [];
+  let i = 0;
+  while (i + 4 <= bodyPeek.length) {
+    const lenHex = bodyPeek.slice(i, i + 4);
+    if (!/^[0-9a-fA-F]{4}$/.test(lenHex)) return null;
+    const len = parseInt(lenHex, 16);
+    if (len === 0) return refs;
+    if (len <= 4 || i + len > bodyPeek.length) return null;
+    let line = bodyPeek.slice(i + 4, i + len);
+    if (line.endsWith('\n')) line = line.slice(0, -1);
+    i += len;
+    if (/^shallow (?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(line)) continue;
+    const m = /^(?:[0-9a-f]{40}|[0-9a-f]{64}) (?:[0-9a-f]{40}|[0-9a-f]{64}) ([^\0\s]+)(?:\0[\s\S]*)?$/.exec(line);
+    if (!m) return null;
+    refs.push(m[1]!);
+  }
+  return null; // no flush-pkt within the peek
+}
+
+/** Why a push is refused under the allow-list (the first ref outside it, or that the body was unreadable), or null when every updated ref is pushable. */
+export function pushOutsideAllowList(bodyPeek: string | undefined, pushable: readonly string[]): string | null {
+  const refs = parseReceivePackRefs(bodyPeek);
+  if (refs === null) return 'an unreadable push';
+  const bad = refs.find((r) => !isPushableRef(r, pushable));
+  return bad ? `'${bad}'` : null;
+}
+
+/**
+ * How a REST call on `api.github.com/repos/<owner>/<repo>/...` moves a ref, or
+ * null when it moves none:
+ *   - `path`: the ref is in the URL (`/git/refs/<ref>`)
+ *   - `body`: the ref is a JSON body field (`ref` is fully qualified; `branch`
+ *     and `base` are branch names, and a missing one means the default branch)
+ *   - `refuse`: the target ref cannot be told from the request alone
+ *     (branch rename, a PR's update-branch, release create/edit, which can
+ *     create a tag ref), or the path does not decode
+ * The path is percent-decoded and slash-collapsed first, and route segments
+ * match case-insensitively, so a spelling GitHub would still route is judged.
+ */
+export type RepoRefWrite =
+  | { check: 'path'; ref: string }
+  | { check: 'body'; field: 'ref' | 'branch' | 'base' }
+  | { check: 'refuse' };
+
+export function classifyRepoRefWrite(method: string | undefined, pathname: string): RepoRefWrite | null {
+  const verb = (method ?? '').toUpperCase();
+  if (verb === 'GET' || verb === 'HEAD' || verb === 'OPTIONS') return null;
+  if (!/^\/+repos\//i.test(pathname)) return null;
+  let p: string;
+  try {
+    p = decodeURIComponent(pathname);
+  } catch {
+    return { check: 'refuse' };
+  }
+  p = p.replace(/\/{2,}/g, '/').replace(/\/$/, '');
+  const rest = /^\/repos\/[^/]+\/[^/]+\/(.+)$/i.exec(p)?.[1];
+  if (!rest) return null;
+  if (/^git\/refs$/i.test(rest)) return verb === 'POST' ? { check: 'body', field: 'ref' } : null;
+  const ref = /^git\/refs\/(.+)$/i.exec(rest)?.[1];
+  if (ref) return { check: 'path', ref: `refs/${ref}` };
+  if (/^contents(?:\/.*)?$/i.test(rest)) return verb === 'PUT' || verb === 'DELETE' ? { check: 'body', field: 'branch' } : null;
+  if (/^merges$/i.test(rest)) return verb === 'POST' ? { check: 'body', field: 'base' } : null;
+  if (/^merge-upstream$/i.test(rest)) return verb === 'POST' ? { check: 'body', field: 'branch' } : null;
+  if (/^branches\/.+\/rename$/i.test(rest)) return { check: 'refuse' };
+  if (/^pulls\/[^/]+\/update-branch$/i.test(rest)) return { check: 'refuse' };
+  if (/^releases$/i.test(rest)) return verb === 'POST' ? { check: 'refuse' } : null;
+  if (/^releases\/[^/]+$/i.test(rest)) return verb === 'PATCH' ? { check: 'refuse' } : null;
+  return null;
+}
+
+function parseJsonObject(text: string | undefined): Record<string, unknown> | null {
+  if (!text) return null;
+  try {
+    const v: unknown = JSON.parse(text);
+    return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null;
+  } catch {
+    return null; // not JSON, or a prefix cut off by the peek bound
+  }
+}
+
+/** Why a REST ref write is refused under the allow-list, or null when it targets a pushable branch. */
+export function repoRefWriteOutsideAllowList(write: RepoRefWrite, bodyPeek: string | undefined, pushable: readonly string[]): string | null {
+  if (write.check === 'refuse') return 'this ref operation';
+  if (write.check === 'path') return isPushableRef(write.ref, pushable) ? null : `'${write.ref}'`;
+  const body = parseJsonObject(bodyPeek);
+  if (!body) return 'an unreadable request body';
+  const value = body[write.field];
+  if (typeof value !== 'string' || !value) return write.field === 'ref' ? 'a ref write with no ref' : 'the default branch';
+  const ref = write.field === 'ref' ? value : value.startsWith('refs/heads/') ? value : `refs/heads/${value}`;
+  return isPushableRef(ref, pushable) ? null : `'${ref}'`;
+}
+
+/**
+ * GraphQL mutations that move a ref. Several name the ref only by an opaque
+ * node id (`updateRef`, `deleteRef`, a `createCommitOnBranch` branch id), so
+ * the target cannot be read from the request: under the allow-list these are
+ * refused by name, outright, whatever branch they name. Pushing with git is
+ * unaffected.
+ */
+export const REF_GRAPHQL_MUTATIONS = [
+  'createRef', 'updateRef', 'updateRefs', 'deleteRef', 'createCommitOnBranch',
+  'mergeBranch', 'updatePullRequestBranch', 'revertPullRequest', 'createLinkedBranch',
+] as const;
+
+/**
+ * Why a GraphQL request is refused under the allow-list, or null. The body
+ * must parse as a JSON object with a string `query` (an unreadable or
+ * truncated body is refused), and the mutation names are matched against both
+ * the raw text and the decoded `query`, so a JSON string escape does not hide
+ * one. The merge mutations are re-checked on the decoded query for the same
+ * reason.
+ */
+export function graphqlOutsideAllowList(bodyPeek: string | undefined): { reason: RejectReason; what: string } | null {
+  const query = parseJsonObject(bodyPeek)?.query;
+  if (typeof query !== 'string') return { reason: 'push_not_allowed', what: 'an unreadable GraphQL request' };
+  if (graphqlMutationBlocked(query)) return { reason: 'merge_blocked', what: 'a merge mutation' };
+  for (const name of REF_GRAPHQL_MUTATIONS) {
+    const re = new RegExp(`\\b${name}\\b`);
+    if (re.test(query) || re.test(bodyPeek ?? '')) return { reason: 'push_not_allowed', what: `the ${name} mutation` };
+  }
+  return null;
+}
+
+const pushNotAllowedMessage = (what: string, pushable: readonly string[]): string =>
+  `${what} is outside this task's branch on this egress — agents may update only ${pushable.map((b) => `'${b}'`).join(', ')}; open a PR from it and land it with buildd's merge_pr MCP action`;
+
 /**
  * Whether egress.ts should peek this request's body before deciding: a
  * GraphQL call to api.github.com, or a push to github.com. Both bound how
@@ -521,8 +702,10 @@ export function pushedProtectedBranch(bodyPeek: string | undefined, protectedBra
  * forwarded untouched with no peek at all.
  */
 export function needsGithubBodyPeek(hostname: string, method: string | undefined, pathname: string): boolean {
-  if ((method ?? '').toUpperCase() !== 'POST') return false;
   const host = hostname.toLowerCase();
+  // A REST ref write whose target ref is a body field (push allow-list).
+  if (host === 'api.github.com' && classifyRepoRefWrite(method, pathname)?.check === 'body') return true;
+  if ((method ?? '').toUpperCase() !== 'POST') return false;
   if (host === 'api.github.com') return pathname === '/graphql';
   if (host === 'github.com') return pathname.endsWith('/git-receive-pack');
   return false;
@@ -578,6 +761,7 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
   if (kind === 'passthrough') return { action: 'passthrough' };
   // Served in the Worker by the snapshot store; forwarding it would send the
   // container's snapshot bytes to whatever that name resolves to.
+  if (kind === 'browser') return { action: 'reject', status: 404, message: 'the browser host is not forwarded', reason: 'other' };
   if (kind === 'snapshot') return { action: 'reject', status: 404, message: 'the snapshot host is not forwarded', reason: 'other' };
 
   // Credentialed hosts are HTTPS only: a plaintext request is refused rather
@@ -615,6 +799,12 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
       headers.set('x-api-key', route.apiKey);
       return { action: 'forward', url: url.toString(), headers, injected: 'direct' };
     }
+    if (route.kind === 'owner_seat') {
+      // Container credentials are already stripped; the seat is the only one added.
+      headers.set('authorization', `Bearer ${route.token}`);
+      headers.set('anthropic-beta', withOauthBeta(headers.get('anthropic-beta')));
+      return { action: 'forward', url: url.toString(), headers, injected: 'owner_seat' };
+    }
     if (route.kind === 'proxy') {
       // Container credentials are already stripped; this is the only one added.
       headers.set(route.authHeader, route.authHeader === 'authorization' ? `Bearer ${route.key}` : route.key);
@@ -640,6 +830,26 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
   if (usable && url.hostname.toLowerCase() === 'github.com' && (req.method ?? '').toUpperCase() === 'POST' && url.pathname.endsWith('/git-receive-pack')) {
     const branch = pushedProtectedBranch(req.bodyPeek, usable.protectedBranches);
     if (branch) return { action: 'reject', status: 403, message: pushBlockedMessage(branch), reason: 'merge_blocked' };
+  }
+  const pushable = usable?.pushableBranches?.length ? usable.pushableBranches : null;
+  if (pushable) {
+    const host = url.hostname.toLowerCase();
+    const verb = (req.method ?? '').toUpperCase();
+    let refused: { reason: RejectReason; what: string } | null = null;
+    if (host === 'github.com' && verb === 'POST' && url.pathname.endsWith('/git-receive-pack')) {
+      const what = pushOutsideAllowList(req.bodyPeek, pushable);
+      if (what) refused = { reason: 'push_not_allowed', what };
+    } else if (host === 'api.github.com' && url.pathname === '/graphql' && verb === 'POST') {
+      refused = graphqlOutsideAllowList(req.bodyPeek);
+    } else if (host === 'api.github.com') {
+      const write = classifyRepoRefWrite(req.method, url.pathname);
+      const what = write ? repoRefWriteOutsideAllowList(write, req.bodyPeek, pushable) : null;
+      if (what) refused = { reason: 'push_not_allowed', what };
+    }
+    if (refused) {
+      const message = refused.reason === 'merge_blocked' ? MERGE_VIA_BUILDD_MESSAGE : pushNotAllowedMessage(refused.what, pushable);
+      return { action: 'reject', status: 403, message, reason: refused.reason };
+    }
   }
   const auth = usable ? githubAuthFor(url, usable) : 'none';
   if (usable && auth === 'github_basic') {
@@ -756,10 +966,17 @@ export function parseGithubGrant(body: unknown): GithubGrant {
   const ws = (b as { workspaceId?: unknown } | null)?.workspaceId;
   const grant: GithubGrant = { token, expiresAt, owner, repo };
   if (typeof ws === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(ws)) grant.workspaceId = ws;
+  const cap = (b as { warmSnapshotMaxBytes?: unknown } | null)?.warmSnapshotMaxBytes;
+  if (typeof cap === 'number' && Number.isSafeInteger(cap) && cap > 0) grant.warmSnapshotMaxBytes = cap;
   const rawProtected = (b as { protectedBranches?: unknown } | null)?.protectedBranches;
   if (Array.isArray(rawProtected)) {
     const branches = rawProtected.filter((v): v is string => typeof v === 'string' && v.length > 0 && v.length <= 255).slice(0, 50);
     if (branches.length > 0) grant.protectedBranches = branches;
+  }
+  const rawPushable = (b as { pushableBranches?: unknown } | null)?.pushableBranches;
+  if (Array.isArray(rawPushable)) {
+    const branches = rawPushable.filter((v): v is string => typeof v === 'string' && v.length > 0 && v.length <= 255).slice(0, 50);
+    if (branches.length > 0) grant.pushableBranches = branches;
   }
   return grant;
 }

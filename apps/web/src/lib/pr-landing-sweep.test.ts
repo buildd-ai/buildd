@@ -13,6 +13,7 @@ import {
   LANDING_CI_WAIT_MS,
   LANDING_FIX_PICKUP_MS,
   LANDING_RETRY_MS,
+  LANDING_CYCLE_COOLDOWN_MS,
   type LandingSweepDeps,
   type LandingTarget,
   type PeekedPr,
@@ -140,6 +141,11 @@ describe('due member encoding', () => {
 });
 
 describe('nextLookAt', () => {
+  // A spent refresh cycle is still the platform's to land: it comes back when
+  // the cooldown lets landPr start a new cycle, instead of leaving the queue.
+  it.each(['refresh_exhausted', 'refresh_unsafe'] as const)('%s comes back after the cycle cooldown', (cause) => {
+    expect(nextLookAt({ kind: 'needs_human', cause, reason: 'x' }, T0)).toBe(T0 + LANDING_CYCLE_COOLDOWN_MS);
+  });
   it('merged leaves the queue', () => {
     expect(nextLookAt(merged(), T0)).toBeNull();
   });
@@ -540,5 +546,79 @@ describe('runLandingSweep — empty', () => {
     const res = await runLandingSweep({ source: 'due' }, makeDeps());
     expect(res).toMatchObject({ enumerated: 0, processed: 0, errors: 0, deferred: 0, truncated: false });
     expect(calls.peek).toEqual([]);
+  });
+});
+
+// Every webhook for these PRs is lost: no green check suite, no review
+// verdict, no conflict event. The only thing that moves them is the sweep,
+// floor then due queue, on its own clock. Each converges with exactly one
+// piece of work filed for it (landPr's own tests pin which decision each
+// state gets; here the world answers the way landPr does).
+describe('runLandingSweep — missed webhooks converge on the next sweeps', () => {
+  /** Drain the due queue the way the gated tick does: whatever is due by `at`. */
+  const dueTick = async (deps: LandingSweepDeps, at: number) => {
+    clock = at;
+    dueMembers = [...dueStore].filter(([, t]) => t <= at).map(([m]) => m);
+    return runLandingSweep({ source: 'due' }, deps);
+  };
+
+  it('a never-reviewed green PR (#3654 shape) gets one review request, then lands once the verdict is in', async () => {
+    let review: 'not_requested' | 'queued' | 'approved' = 'not_requested';
+    let reviewRequests = 0;
+    addPr(3654, () => {
+      if (review === 'approved') return merged();
+      if (review === 'queued') return { kind: 'waiting_ci', headSha: 'head1' };
+      reviewRequests++;
+      review = 'queued';
+      return { kind: 'needs_fix', fix: 're_review', reason: 'no review was ever requested', taskId: 'review-1' };
+    });
+    const deps = makeDeps();
+
+    await runLandingSweep({ source: 'floor' }, deps);
+    expect(reviewRequests).toBe(1);
+    expect(dueStore.get(dueMember(ref(3654)))).toBe(T0 + LANDING_FIX_PICKUP_MS);
+
+    // The reviewer approves; its verdict webhook is lost too.
+    review = 'approved';
+    const res = await dueTick(deps, T0 + LANDING_FIX_PICKUP_MS);
+    expect(res.merged).toBe(1);
+    expect(reviewRequests).toBe(1);
+    expect(dueStore.has(dueMember(ref(3654)))).toBe(false);
+  });
+
+  it('a conflicting PR (#3502 shape) gets one repair, and lands after the repair pushes', async () => {
+    let repairs = 0;
+    let resolved = false;
+    addPr(3502, () => {
+      if (resolved) return merged();
+      repairs++;
+      return { kind: 'needs_fix', fix: 'conflict', reason: 'PR has conflicts (mergeable_state: dirty)', taskId: 'repair-1' };
+    });
+    const deps = makeDeps();
+
+    await runLandingSweep({ source: 'floor' }, deps);
+    expect(repairs).toBe(1);
+
+    // The repair pushed a merge commit; the synchronize webhook is lost.
+    resolved = true;
+    prs.get(3502)!.headSha = 'head2';
+    const res = await dueTick(deps, T0 + LANDING_FIX_PICKUP_MS);
+    expect(res.merged).toBe(1);
+    expect(calls.land.at(-1)!.eventHeadSha).toBe('head2');
+  });
+
+  it('a lost due-queue entry costs one floor interval, not the PR', async () => {
+    let review: 'not_requested' | 'approved' = 'not_requested';
+    addPr(3654, () => {
+      if (review === 'approved') return merged();
+      review = 'approved';
+      return { kind: 'needs_fix', fix: 're_review', reason: 'no review was ever requested', taskId: 'review-1' };
+    });
+    const deps = makeDeps();
+    await runLandingSweep({ source: 'floor' }, deps);
+    dueStore.clear();
+    expect((await dueTick(deps, T0 + LANDING_FIX_PICKUP_MS)).processed).toBe(0);
+    clock = T0 + 60 * 60_000;
+    expect((await runLandingSweep({ source: 'floor' }, deps)).merged).toBe(1);
   });
 });

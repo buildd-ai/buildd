@@ -51,7 +51,7 @@ describe('all work merged, mission PR open', () => {
     const view = deriveMissionStateView(workFinishedMissionPrOpen);
 
     expect(view.kind).toBe('awaiting_merge');
-    expect(view.situation.headline).toBe('Waiting on you to merge the mission PR #4242.');
+    expect(view.situation.headline).toBe('Mission PR #4242 ready to merge.');
     expect(view.situation.focus?.kind).toBe('merge');
     expect(view.situation.nextAction).toContain('Merge the mission PR');
   });
@@ -87,7 +87,7 @@ describe('Part 2 — guidance survives a wrong state read', () => {
     const merge = factOfKind(view.outstanding, 'merge');
     if (merge.kind !== 'merge') throw new Error('unreachable');
     expect(merge.missionPr).toBe(true);
-    expect(view.situation.headline).toBe('Running (1 agent). Waiting on you to merge the mission PR #4242.');
+    expect(view.situation.headline).toBe('Running (1 agent). Mission PR #4242 ready to merge.');
     expect(view.situation.nextAction).toContain('Merge the mission PR');
   });
 
@@ -273,7 +273,7 @@ describe('degraded input — a caller that could not afford the full derivations
 
     expect(view.kind).toBe('awaiting_merge');
     expect(view.situation.derivedFrom).toBe('workers.prUrl + workers.mergedAt');
-    expect(view.situation.headline).toBe('Waiting on you to merge the mission PR #77.');
+    expect(view.situation.headline).toBe('Mission PR #77 ready to merge.');
   });
 
   it('stays quiet about a mission PR that has not opened yet — no completion decision to say the work is even done', () => {

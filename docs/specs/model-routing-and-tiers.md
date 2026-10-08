@@ -2,11 +2,11 @@
 title: Model Routing and Tiers
 status: active
 owner: max
-last_verified: 2026-09-27
+last_verified: 2026-10-05
 summary: A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 domain: tasks
-surfaces: [packages/core/model-router.ts, packages/core/role-model-routing.ts, packages/core/model-tier-registry.ts, apps/web/src/app/api/workers/claim/route.ts]
-related: [provider-failover, mcp-connectors-and-roles, usage-and-cost-accounting, external-cron-triggers]
+surfaces: [packages/core/model-router.ts, packages/core/model-tier-registry.ts, packages/core/model-policy.ts, apps/web/src/app/api/workers/claim/route.ts]
+related: [model-policy, provider-failover, mcp-connectors-and-roles, usage-and-cost-accounting, external-cron-triggers]
 verified_by: [packages/core/__tests__/model-router.test.ts, packages/core/__tests__/role-model-routing.test.ts, packages/core/__tests__/model-tier-registry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/models/route.test.ts, packages/core/__tests__/routing-analytics.test.ts]
 keywords: [model_tier_registry, predicted_model, model_aliases, system_cache, task_outcomes, downshift, role floor, routing_paused, catalogComplete]
 supersedes: []
@@ -79,6 +79,13 @@ evaluate by hand.
 - A role whose model comes from **inference** (`context.roleInferred` present)
   contributes nothing to the model — not a pin, not a floor. Only a stated role
   moves the model (`knowledge-base: buildd/design/role-routing.md` §4.1).
+- A task created with no role gets its kind's default role when the workspace
+  has that role as a routable candidate (engineering → builder, research →
+  researcher, writing → writer, analysis → analyst, coordination → organizer;
+  `apps/web/src/lib/task-role-default.ts`). It is stamped
+  `context.roleInferred` with `source: 'kind'`, so it follows the rule above,
+  and the decision model may replace it while the task is unclaimed. A stated
+  role is never replaced.
 - A role's `model` is a **floor, never a cap**: the clamp only fires when the
   computed tier is *below* it (`model-router.ts:152-157`). A role pinned to
   `opus`/`premium` therefore defeats every downshift the budget and spike gates
@@ -163,30 +170,42 @@ resolution, which the runner reads from task context and workspace gitConfig
 
 ## Tier registry resolution
 
-**Capability statement**: `premium`/`standard`/`budget` MUST resolve to a
-concrete `(provider, model)` through one chain — workspace override, team
-default, code default — so retargeting a tier is a row write, not a deploy.
+**Capability statement**: `premium-plus`/`premium`/`standard`/`budget` MUST
+resolve to a concrete `(provider, model)` through one resolver — the
+standalone model policy (`docs/specs/model-policy.md`) over the team's registry
+— so retargeting a tier is a row write, not a deploy.
 
 **Invariants**:
-- `resolveTierEntry(tier, teamId, workspaceId)` returns the first match of:
-  the `model_tier_registry` row for `(team, workspace, tier)`, the row for
-  `(team, NULL, tier)`, then `TIER_DEFAULTS[tier]`. The returned entry carries
-  `source: 'workspace' | 'team' | 'default'`, so a caller can always tell which
-  level answered (`packages/core/model-tier-registry.ts:57-111`).
+- `resolveTierEntry(tier, teamId, workspaceId, surface)` loads the team's
+  `model_tier_registry` rows as a `ModelPolicy` (`registryModelPolicy`,
+  `packages/core/model-policy.ts`: team rows → `tiers`, team surface rows →
+  `surfaces`, workspace rows → `overrides`) and resolves it with the kit's
+  `pickRoute`: workspace+surface → workspace → team+surface → team. A tier the
+  registry leaves unset goes to the policy service when one is configured
+  (`BUILDD_MODEL_POLICY_URL`/`_TOKEN`; `source: 'policy'`), then the catalog
+  pick, then the bundled policy (`TIER_DEFAULTS`, derived from
+  `DEFAULT_MODEL_POLICY`). The entry carries `source` and `policy`
+  (`version`, `planId`, decision layer, surface). `agent` resolves as the
+  protocol's `coding`, `chat` as `chat`.
+- No call site indexes `TIER_DEFAULTS` or reads registry rows to pick a model
+  on its own (`packages/core/__tests__/model-policy-authority.test.ts`); code
+  defaults come from `bundledTierEntry`. An exact model id pin is the one
+  escape hatch; a shorthand pin (`opus`/`sonnet`/`haiku`) is a tier request
+  (`shorthandPinTier`).
 - At most one row exists per `(team_id, workspace_id, tier)` — enforced by the
   `model_tier_registry_unique` index (`packages/core/db/schema.ts:2246`). The
   API upserts by explicit read-then-write because `workspace_id IS NULL` does
   not participate in a plain `ON CONFLICT` match
   (`apps/web/src/app/api/model-tiers/route.ts:109-144`).
-- Entries are cached in-process for 60s keyed by `${teamId}:${workspaceId}`;
-  every registry write calls `invalidateTierCache`, which flushes the team-wide
-  key and the named workspace key (`model-tier-registry.ts:32-47`,
-  `model-tiers/route.ts:146` and `:204`). A tier change therefore reaches
-  already-queued tasks within one cache window.
-- A registry read failure MUST NOT block dispatch: `resolveTierEntry` swallows
-  the DB error and returns `TIER_DEFAULTS[tier]`
-  (`model-tier-registry.ts:106-110`). `resolveTierEntrySync` is the same answer
-  with no DB dependency, for contexts that cannot await.
+- A team's rows (its policy document) are cached in-process for 60s keyed by
+  team; every registry write calls `invalidateTierCache`, which flushes that
+  team. A tier change therefore reaches already-queued tasks within one cache
+  window.
+- A registry read failure or a policy-service outage MUST NOT block dispatch:
+  `resolveTierEntry` swallows the DB error, and a failed service resolve backs
+  off for 30s and serves its last good answer (no planId), then the catalog
+  and the bundled policy. `resolveTierEntrySync` is the bundled answer with no
+  DB dependency, for contexts that cannot await.
 - All three `TIER_DEFAULTS` entries are `provider: 'anthropic'`
   (`packages/core/model-tier-defaults.ts:20-24`) — the last-resort fallback
   never routes a team to a provider it has not configured.
@@ -220,7 +239,9 @@ default, code default — so retargeting a tier is a row write, not a deploy.
 **Code surface**: `packages/core/model-tier-registry.ts`
 (`resolveTierEntry`, `resolveAllTiers`, `invalidateTierCache`,
 `resolveTierEntrySync`, `mapRouterAlias`),
-`packages/core/model-tier-defaults.ts` (`TIER_DEFAULTS`, `TierEntry`),
+`packages/core/model-policy.ts` (`registryModelPolicy`, `resolveRegistryTier`,
+`resolveRemoteTier`),
+`packages/core/model-tier-defaults.ts` (`TIER_DEFAULTS`, `bundledTierEntry`, `TierEntry`),
 `packages/core/db/schema.ts:2234-2248` (`modelTierRegistry`),
 `apps/web/src/app/api/model-tiers/route.ts` (GET/POST/DELETE),
 `packages/core/mcp-tools.ts:4020-4074` (`manage_model_tiers`),
@@ -356,6 +377,13 @@ matrix can be argued about with data rather than taste.
   outcome. It is skipped entirely when the completion is an auto-retry, so a
   retried task contributes one row, not one per attempt
   (`apps/web/src/app/api/workers/[id]/route.ts:1614-1629`).
+- The row's `outcome` is the task's FINAL status, not the one the worker
+  reported: a contract guard or a completion-policy slot (loop exhausted,
+  release failed) that fails a reported completion records `failed`. A release
+  held for CI records nothing from the worker PATCH; the PATCH keeps the row on
+  `tasks.context.heldReleaseOutcome`, and the release PR's CI resolution
+  records it with the release's outcome
+  (`apps/web/src/lib/routing-analytics-subscribers.ts`).
 - The row copies `kind`, `complexity`, `classified_by` and `predicted_model`
   from the task row rather than trusting the caller
   (`packages/core/routing-analytics.ts:45-74`).

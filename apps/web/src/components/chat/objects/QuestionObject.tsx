@@ -58,18 +58,18 @@ export function QuestionCard({ objRef, view, variant = 'card' }: { objRef: Build
   const finalAnswer = view.answer ?? null;
   if (!view.open && !outcome) {
     return (
-      <article data-testid="object-card" data-kind="question" data-state="answered" className="border-2 border-border-default bg-card px-4 py-3">
-        <div className="flex items-center gap-2 font-mono text-[11px] font-bold uppercase tracking-[2px] text-text-muted">
-          <span className="text-status-success">✓</span>
-          {`${view.askerLabel} · answered`}
-          {view.scope && <span className="ml-auto normal-case tracking-[1px] font-normal">{view.scope}</span>}
-        </div>
-        <p className="mt-1.5 font-mono text-[14px] font-semibold text-text-primary [overflow-wrap:anywhere]">{view.question.headline}</p>
-        {finalAnswer && <p className="mt-1 font-mono text-[12.5px] text-text-secondary [overflow-wrap:anywhere]">{`Answer: ${finalAnswer}`}</p>}
-        <Link href={taskPageHref({ taskId: view.taskId, missionId: view.missionId })} className="mt-2 inline-block font-mono text-[11.5px] text-accent-text hover:underline">
+      <details data-testid="object-card" data-kind="question" data-state="answered" className="group border-2 border-border-default bg-card px-4 py-3">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 font-mono text-meta text-text-muted [&::-webkit-details-marker]:hidden">
+          <span className="group-open:rotate-90" aria-hidden="true">▸</span>
+          Past question
+          {view.scope && <span className="ml-auto">{view.scope}</span>}
+        </summary>
+        <p className="mt-1.5 font-mono text-title font-semibold text-text-primary [overflow-wrap:anywhere]">{view.question.headline}</p>
+        <p className="mt-1 font-mono text-body text-text-secondary [overflow-wrap:anywhere]">{finalAnswer ? `Answer: ${finalAnswer}` : 'Not answered'}</p>
+        <Link href={taskPageHref({ taskId: view.taskId, missionId: view.missionId })} className="mt-2 inline-block font-mono text-meta text-accent-text hover:underline">
           Open task →
         </Link>
-      </article>
+      </details>
     );
   }
 

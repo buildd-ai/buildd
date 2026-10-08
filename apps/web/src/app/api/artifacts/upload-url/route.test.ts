@@ -67,9 +67,14 @@ mock.module('@buildd/core/db/schema', () => ({
   // Column stubs (not bare strings) so the lookups' predicates are observable.
   tasks: { id: 'tasks.id' },
   missions: { id: 'missions.id' },
+  // lib/task-token-auth's account lookup.
+  accounts: { id: 'accounts.id' },
 }));
 
+// The rest of crypto stays real: lib/task-token (via task-token-auth) hashes and signs with it.
+const realCrypto = { ...(await import('crypto')) };
 mock.module('crypto', () => ({
+  ...realCrypto,
   randomBytes: () => ({ toString: () => 'share-token' }),
   randomUUID: () => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
 }));
@@ -420,6 +425,32 @@ describe('POST /api/artifacts/upload-url', () => {
       expect(mockInsertValues.mock.calls[0][0].missionId).toBeNull();
       // No task on the worker → no task lookup.
       expect(mockTasksFindFirst).not.toHaveBeenCalled();
+    });
+  });
+  describe('per-task token', () => {
+    const SCOPED = { id: 'account-1', level: 'worker', scopes: null, taskScope: { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+
+    it("signs an upload for its own task's worker", async () => {
+      mockAuthenticateApiKey.mockResolvedValue(SCOPED as any);
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-own' } as any);
+      const res = await POST(req(validBody()));
+      expect(res.status).toBe(200);
+      expect(mockInsertValues).toHaveBeenCalledTimes(1);
+    });
+
+    it("is refused another task's worker of the same account, before anything is written or signed", async () => {
+      mockAuthenticateApiKey.mockResolvedValue(SCOPED as any);
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-2', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-other' } as any);
+      const res = await POST(req(validBody({ workerId: 'worker-2' })));
+      expect(res.status).toBe(403);
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(mockGenerateSizedUploadUrl).not.toHaveBeenCalled();
+    });
+
+    it('an account key still uploads for any of its own workers', async () => {
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-2', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-other' } as any);
+      const res = await POST(req(validBody({ workerId: 'worker-2' })));
+      expect(res.status).toBe(200);
     });
   });
 });

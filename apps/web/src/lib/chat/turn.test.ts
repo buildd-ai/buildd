@@ -95,6 +95,7 @@ function harness(opts: { key?: boolean; model?: MockLanguageModelV4; limits?: ()
     now: () => new Date('2026-09-26T21:30:00Z'),
     allowedToolGroups: new Set(opts.allowedGroups ?? []) as any,
     limits: opts.limits ?? (async () => ({ ok: true as const, budgetWarning: false })),
+    permissionOverrides: async () => ({}),
     route: opts.route ?? (async () => ({ tier: 'standard' as const, allowWrites: true, source: 'fallback' as const })),
     routingAccess: async () => ({ ok: false as const, error: { kind: 'missing_key' as const } }),
     resolveModel: async (o: any) => { resolveCalls.push(o); tiersAsked.push(o.tier); return (opts.key ?? true)
@@ -612,7 +613,7 @@ describe('limits', () => {
     });
     await turn(userMsg('hello'));
     const saved = messages.find(m => m.role === 'user')!;
-    expect(saved.usage).toEqual({ inputTokens: 40, outputTokens: 4, costUsd: 0.0007 });
+    expect(saved.usage).toEqual({ inputTokens: 40, outputTokens: 4, costUsd: 0.0007, turn: { ref: 'client-1' } });
   });
 
   it('the routing record is saved under usage.routing, with the spend; nothing of the message', async () => {
@@ -627,7 +628,7 @@ describe('limits', () => {
     });
     await turn(userMsg('SECRET-MESSAGE-TEXT hello'));
     const saved = messages.find(m => m.role === 'user')!;
-    expect(saved.usage).toEqual({ inputTokens: 40, outputTokens: 4, costUsd: 0.0007, routing });
+    expect(saved.usage).toEqual({ inputTokens: 40, outputTokens: 4, costUsd: 0.0007, routing, turn: { ref: 'client-1' } });
     expect(JSON.stringify(saved.usage)).not.toContain('SECRET');
   });
 
@@ -637,7 +638,14 @@ describe('limits', () => {
     const { turn } = harness({ model, route: async () => ({ tier: 'standard', allowWrites: true, source: 'fallback', routing }) });
     await turn(userMsg('hello'));
     const saved = messages.find(m => m.role === 'user')!;
-    expect(saved.usage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: null, routing });
+    expect(saved.usage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: null, routing, turn: { ref: 'client-1' } });
+  });
+
+  it('the client\'s id for the user message is kept under usage.turn.ref, so its visible-answer signal can find the row', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, route: async () => ({ tier: 'standard', allowWrites: true, source: 'fallback' }) });
+    await turn(userMsg('hello'));
+    expect(messages.find(m => m.role === 'user')!.usage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: null, turn: { ref: 'client-1' } });
   });
 });
 
@@ -1201,11 +1209,11 @@ describe('workspace scope: all workspaces by default, routed per turn', () => {
     } as any);
     await turn(userMsg('what changed in docs-site?'));
     expect(asked[0].previousWorkspaceId).toBeUndefined();
-    expect(messages.find(m => m.role === 'user')!.usage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: null, routedWorkspaceId: 'ws-2' });
+    expect(messages.find(m => m.role === 'user')!.usage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: null, routedWorkspaceId: 'ws-2', turn: { ref: 'client-1' } });
     await turn(userMsg('and last week?'));
     expect(asked[1].previousWorkspaceId).toBe('ws-2');
-    // An unrouted turn saves nothing, so stickiness ends there.
-    expect(messages.filter(m => m.role === 'user').at(-1)!.usage).toBeNull();
+    // An unrouted turn saves no workspace (only its turn ref), so stickiness ends there.
+    expect(messages.filter(m => m.role === 'user').at(-1)!.usage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: null, turn: { ref: 'client-1' } });
   });
 });
 
@@ -1394,5 +1402,25 @@ describe('the turn\'s wall clock', () => {
     expect(seen[0].toolChoice?.type).not.toBe('none');
     expect(seen[1].toolChoice).toEqual({ type: 'none' });
     expect(JSON.stringify(seen[1].prompt)).toContain('Do not call any more tools');
+  });
+});
+
+describe("a turn's canonical answer (task b4f273ac)", () => {
+  it('the next turn is routed with the previous turn\'s final answer, not the hypothesis it wrote before its tools ran', async () => {
+    messages = [{
+      id: 'a-prev', conversationId: 'conv-1', role: 'assistant', createdAt: new Date(),
+      parts: [
+        { type: 'step-start' },
+        { type: 'text', text: 'A fix is already queued; checking why it has not been claimed.', state: 'done' },
+        { type: 'tool-list_tasks', toolCallId: 'c1', state: 'output-available', input: {}, output: {} },
+        { type: 'step-start' },
+        { type: 'text', text: 'No fix is queued: the task is held on an open question.', state: 'done' },
+      ],
+    }];
+    const seen: any[] = [];
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, route: async (a?: any) => { seen.push(a); return { tier: 'standard', allowWrites: true, source: 'fallback' }; } });
+    await turn(userMsg('so who answers it?'));
+    expect(seen[0].previous).toBe('No fix is queued: the task is held on an open question.');
   });
 });

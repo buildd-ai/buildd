@@ -29,7 +29,7 @@ mock.module('drizzle-orm', () => ({
   isNull: (c: unknown) => ({ isNull: c }),
   desc: (c: unknown) => c,
 }));
-mock.module('@buildd/core/db/schema', () => ({
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   evidenceBackends: new Proxy({}, { get: (_t, p) => `evidenceBackends.${String(p)}` }),
   workspaces: new Proxy({}, { get: (_t, p) => `workspaces.${String(p)}` }),
 }));
@@ -37,7 +37,7 @@ mock.module('@buildd/core/config', () => ({ config: { storageBucket: 'default-bu
 mock.module('@buildd/core/secrets', () => ({ getSecretsProvider: () => ({ set: mockSet, delete: mockDeleteSecret }) }));
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       evidenceBackends: {
         findMany: async () => listRows,
         findFirst: async () => existingBackend,

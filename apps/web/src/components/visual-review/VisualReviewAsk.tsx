@@ -13,7 +13,7 @@
  */
 import { useState } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
-import { describeVisualPhase } from '@/lib/visual-review-model';
+import { describeVisualPhase, screensToReview } from '@/lib/visual-review-model';
 import { BTN_BASE, BTN_PRIMARY, BTN_SECONDARY, BTN_SIZE } from './review-ui';
 
 export type AnswerTarget = { workerId: string; taskId: string };
@@ -99,11 +99,11 @@ export default function VisualReviewAsk({ model, onReview, onAnswer, answerOptio
   if (model.phase !== 'needs_you') return null;
   const reason = model.needsYou?.reason ?? (model.summary.awaitingHuman > 0 ? 'unsure' : 'round_cap');
   const copy = describeVisualPhase(model);
-  const n = model.summary.awaitingHuman;
+  const n = screensToReview(model);
   const target = model.needsYou?.workerId && model.needsYou?.taskId
     ? { workerId: model.needsYou.workerId, taskId: model.needsYou.taskId }
     : null;
-  const heading = reason === 'question' ? 'The visual audit asks' : reason === 'unsure' ? 'Screens need your eyes' : 'Visual issues: your call';
+  const heading = reason === 'question' ? 'The visual audit asks' : reason === 'unsure' ? 'Screens to check' : 'Visual issues: decision needed';
 
   return (
     <section

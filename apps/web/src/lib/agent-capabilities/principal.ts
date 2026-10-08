@@ -30,6 +30,8 @@ export interface AgentPrincipal {
    */
   via: 'dispatch' | 'runner_key' | 'task_token' | 'worker_account';
   workerId: string;
+  /** The worker's checked-out branch, when the loader read it (the dispatch loader does). */
+  workerBranch?: string | null;
   taskId: string;
   workspaceId: string;
   teamId: string | null;

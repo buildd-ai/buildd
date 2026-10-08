@@ -96,7 +96,7 @@ describe('get_visual_review', () => {
     const out = res.content[0].text;
     expect(out).toContain(`Visual review of "Desktop chat v3" (mission ${MISSION}, completed)`);
     expect(out).toContain(`round 1: completed (task ${AUDIT}): Checked one route.`);
-    expect(out).toContain('1 screen needs your review.');
+    expect(out).toContain('1 screen to review.');
     expect(out).toContain(`${BASE}/app/artifacts/${SHOT}`);
     expect(out).toContain(`${BASE}/api/artifacts/${SHOT}/download`);
   });
@@ -124,7 +124,7 @@ describe('get_visual_review', () => {
     const { api } = apiOf((e) => e.includes('/artifacts?') ? new Error('API error: 500') : missionsRoute(e));
     const res = await handleBuilddAction(api, 'get_visual_review', { missionId: MISSION }, ctx());
     expect(res.isError).toBeFalsy();
-    expect(res.content[0].text).toContain('1 screen needs your review.');
+    expect(res.content[0].text).toContain('1 screen to review.');
     expect(res.content[0].text).not.toMatch(/Other visual evidence/);
   });
 

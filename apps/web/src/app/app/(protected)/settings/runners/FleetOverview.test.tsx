@@ -49,13 +49,13 @@ describe('FleetOverview', () => {
     // Home's slot meter, one square per slot.
     expect(html).toContain('aria-label="2 of 4 slots in use"');
     // Home's label vocabulary.
-    expect(t).toContain('Fleet · 2 runners × 4 slots');
+    expect(t).toContain('Runners · 2 runners × 4 slots');
   });
 
   it('headlines busy of capacity, and counts offline runners', () => {
     const f = fleet([runner('a', 'runner-1', 3, 4), runner('b', 'runner-2', 0, 4, false)]);
     expect(fleetOverviewHeadline(f).map(p => p.text).join('')).toBe('3 of 4 slots busy. 1 offline.');
-    expect(fleetOverviewHeadline(fleet([runner('a', 'runner-1', 0, 5)])).map(p => p.text).join('')).toBe('Fleet idle. 5 slots free.');
+    expect(fleetOverviewHeadline(fleet([runner('a', 'runner-1', 0, 5)])).map(p => p.text).join('')).toBe('No agents working. 5 slots free.');
     expect(fleetOverviewHeadline(fleet([runner('a', 'runner-1', 0, 2, false)])).map(p => p.text).join('')).toBe('All runners offline.');
     expect(fleetOverviewHeadline(fleet([])).map(p => p.text).join('')).toBe('No runners online.');
     expect(fleetOverviewHeadline(fleet([]), 'Team 1').map(p => p.text).join('')).toBe('No runners online for Team 1.');
@@ -76,12 +76,12 @@ describe('FleetOverview', () => {
     expect(t).not.toContain('3 /3 busy');
     // The host runner keeps its slot meter.
     expect(t).toContain('1 /4 busy');
-    expect(t).toContain('Fleet · 1 runner × 4 slots + 1 elastic group');
+    expect(t).toContain('Runners · 1 runner × 4 slots + 1 elastic group');
   });
 
   it('flags a runner whose agent is waiting on you', () => {
     const html = renderToStaticMarkup(<FleetOverview fleet={fleet([runner('a', 'runner-1', 1, 2, true, true)])} />);
-    expect(text(html)).toContain('1 waiting on you');
+    expect(text(html)).toContain('1 need input');
   });
 
   it('with no runners, says how to start one and still shows the cloud row', () => {

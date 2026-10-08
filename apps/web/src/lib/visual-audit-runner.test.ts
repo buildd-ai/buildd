@@ -41,3 +41,17 @@ describe('browserRunnerOnline', () => {
     expect(browserRunnerOnline([], 'ws-1', NOW)).toBe(false);
   });
 });
+
+
+describe('workspace browser executor routing', () => {
+  it('a host browser does not make cloud-only visual work claimable', () => {
+    expect(browserRunnerOnline([hb()], 'ws-1', NOW, 'cloud')).toBe(false);
+  });
+  it('a successfully probed cloud browser is eligible only for cloud or any workspaces', () => {
+    const cloud = hb({ localUiUrl: 'headless://cloud/once/test-task', environment: { envKeys: ['browser'], fleet: { executor: 'cloud' } } });
+    expect(browserRunnerOnline([cloud], 'ws-1', NOW, 'cloud')).toBe(true);
+    expect(browserRunnerOnline([cloud], 'ws-1', NOW, 'host')).toBe(false);
+    expect(browserRunnerOnline([cloud], 'ws-1', NOW, 'any')).toBe(true);
+    expect(browserRunnerOnline([hb({ ...cloud, environment: { envKeys: [], fleet: { executor: 'cloud' } } })], 'ws-1', NOW, 'cloud')).toBe(false);
+  });
+});

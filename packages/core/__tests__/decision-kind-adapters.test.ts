@@ -40,7 +40,7 @@ describe('registration', () => {
     expect(ids).toContain('buildd.post_session_triage');
     expect(ids).toContain('buildd.scout_probe_selection');
     expect(postSessionTriageKind.binding).toMatchObject({ capability: 'post_session_triage', mode: 'live' });
-    expect(scoutProbeSelectionKind.binding).toMatchObject({ capability: 'scout_probe_selection', mode: 'shadow' });
+    expect(scoutProbeSelectionKind.binding).toMatchObject({ capability: 'scout_probe_selection', mode: 'live' });
     expect(OPT_IN_CAPABILITIES).toContain('scout_probe_selection');
   });
 
@@ -118,6 +118,16 @@ describe('overrides and fallbacks are each kind\'s own', () => {
     expect(await run(probe({ supported: false, mustRun: true }))).toMatchObject({ decision: 'unsupported', reasonCode: 'executor_unsupported', source: 'rule' });
     expect(await run(probe({ mustRun: true, budgetRemaining: 0 }))).toMatchObject({ decision: 'run', reasonCode: 'must_run', source: 'rule' });
     expect(await run(probe({ budgetRemaining: 0 }))).toMatchObject({ decision: 'defer', reasonCode: 'budget_exhausted', source: 'rule' });
+  });
+
+  it('scout: must-run probes ignore the model in every mode', async () => {
+    let asked = 0;
+    const cheap = { provider: 'p', model: 'm', isMeasured: () => true, invoke: async () => { asked++; throw new Error('must not be asked'); } };
+    for (const mode of ['live', 'shadow'] as const) {
+      const r = await runDecisionKind(scoutProbeSelectionKind, { features: probe({ mustRun: true, touchesChangedPaths: false }) }, { mode, cheap: cheap as never });
+      expect(r).toMatchObject({ decision: 'run', source: 'rule', reasonCode: 'must_run', attempts: [] });
+    }
+    expect(asked).toBe(0);
   });
 
   it('scout: fallback leans toward coverage, and defers what it cannot read', async () => {

@@ -13,8 +13,10 @@ mock.module('@buildd/core/db', () => ({ db: { query: { workspaces: { findMany: w
 mock.module('@/lib/coordination-stats-query', () => ({ fetchCoordinationStats: metrics }));
 const decisionStats = mock(async () => ({ decisions: { total: 7 } }));
 mock.module('@/lib/orchestration-decision-stats-query', () => ({ fetchOrchestrationDecisionStats: decisionStats }));
+const earlyRelease = mock(async () => ({ rework: { released: 0 } }));
+mock.module('@/lib/early-release-metrics', () => ({ fetchEarlyReleaseStats: earlyRelease }));
 const { GET } = await import('./route');
-beforeEach(() => { user.mockResolvedValue(null); account.mockResolvedValue(null); metrics.mockClear(); decisionStats.mockClear(); });
+beforeEach(() => { user.mockResolvedValue(null); account.mockResolvedValue(null); metrics.mockClear(); decisionStats.mockClear(); earlyRelease.mockClear(); });
 const req = (query = '') => new NextRequest(`http://localhost/api/stats/coordination${query}`);
 it('requires authentication', async () => { expect((await GET(req())).status).toBe(401); });
 it('rejects inaccessible workspaces before reading metrics', async () => {
@@ -87,4 +89,44 @@ it('keeps the decision ledger behind the same workspace scoping', async () => {
  user.mockResolvedValue({ id: 'user' });
  expect((await GET(req('?workspace=other&metric=orchestrationDecisions'))).status).toBe(404);
  expect(decisionStats).not.toHaveBeenCalled();
+});
+
+it('adds the early-release measure to the full report and serves it alone on request', async () => {
+ user.mockResolvedValue({ id: 'user' });
+ const full = await (await GET(req('?workspace=ws'))).json();
+ expect(full.earlyRelease).toEqual({ rework: { released: 0 } });
+ expect(full.manifestCoverage).toEqual({ total: 0 });
+ expect(earlyRelease).toHaveBeenCalledWith({ workspaceIds: ['ws'], missionId: undefined, window: '7d' });
+ metrics.mockClear();
+ const alone = await (await GET(req('?metric=earlyRelease'))).json();
+ expect(alone).toEqual({ rework: { released: 0 } });
+ expect(metrics).not.toHaveBeenCalled();
+});
+
+// A per-task token reads coordination stats only for its own task's workspace.
+const SCOPED = { id: 'account', level: 'worker', scopes: null, workspaceIds: null, teamId: 'team', taskScope: { taskId: 'task-own', workspaceId: 'ws', expiresAt: Date.now() + 60_000 } };
+const scopedReq = (query = '') => new NextRequest(`http://localhost/api/stats/coordination${query}`, { headers: { authorization: 'Bearer bld_test' } });
+it('narrows an unfiltered per-task token report to its own workspace', async () => {
+ account.mockResolvedValue(SCOPED);
+ workspaces.mockResolvedValueOnce([{ id: 'ws' }, { id: 'ws-2' }]);
+ expect((await GET(scopedReq())).status).toBe(200);
+ expect(metrics).toHaveBeenCalledWith({ workspaceIds: ['ws'], missionId: undefined, window: '7d' });
+});
+it('serves a per-task token its own workspace, decision ledger included', async () => {
+ account.mockResolvedValue(SCOPED);
+ workspaces.mockResolvedValueOnce([{ id: 'ws' }, { id: 'ws-2' }]);
+ expect((await GET(scopedReq('?workspace=ws&metric=orchestrationDecisions'))).status).toBe(200);
+ expect(decisionStats).toHaveBeenCalledWith({ workspaceIds: ['ws'], missionId: undefined, window: '7d' });
+});
+it('404s a per-task token asking for another workspace on its team', async () => {
+ account.mockResolvedValue(SCOPED);
+ workspaces.mockResolvedValueOnce([{ id: 'ws' }, { id: 'ws-2' }]);
+ expect((await GET(scopedReq('?workspace=ws-2'))).status).toBe(404);
+ expect(metrics).not.toHaveBeenCalled();
+});
+it('an account key still reads every workspace on its team', async () => {
+ account.mockResolvedValue({ id: 'account', level: 'worker', teamId: 'team' });
+ workspaces.mockResolvedValueOnce([{ id: 'ws' }, { id: 'ws-2' }]);
+ expect((await GET(scopedReq())).status).toBe(200);
+ expect(metrics).toHaveBeenCalledWith({ workspaceIds: ['ws', 'ws-2'], missionId: undefined, window: '7d' });
 });

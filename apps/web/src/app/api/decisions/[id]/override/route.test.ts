@@ -21,6 +21,11 @@ mock.module('@buildd/core/decision-ledger', () => ({
   recordHumanOverride: async (id: string, override: unknown, by: string) => { overrideCalls.push({ id, override, by }); },
 }));
 
+let outcomeCalls: unknown[] = [];
+mock.module('@buildd/core/decision-outcomes', () => ({
+  labelDecisionOutcome: async (i: unknown) => { outcomeCalls.push(i); return { ok: true, results: [] }; },
+}));
+
 import { POST } from './route';
 
 const req = (body: unknown, apiKey: string | null = null) =>
@@ -36,6 +41,7 @@ beforeEach(() => {
   record = { id: DECISION_ID, teamId: 'team-1' };
   teamIds = ['team-1'];
   overrideCalls = [];
+  outcomeCalls = [];
 });
 
 describe('POST /api/decisions/[id]/override', () => {
@@ -72,6 +78,7 @@ describe('POST /api/decisions/[id]/override', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, decisionId: DECISION_ID });
     expect(overrideCalls).toEqual([{ id: DECISION_ID, override: { answer: 'UTC', reason: 'customers are mostly US-based' }, by: 'user-1' }]);
+    expect(outcomeCalls).toEqual([{ teamId: 'team-1', decisionRecordId: DECISION_ID, source: 'human', label: 'overridden' }]);
   });
 
   it('drops a blank reason', async () => {
