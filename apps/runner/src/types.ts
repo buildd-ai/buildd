@@ -1,7 +1,7 @@
 import type { RoleBundle, RoleConfig, RoleInstructions } from './roles.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
 import type { BashCommandCounts } from './bash-classify.js';
-import type { RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
+import type { DerivedFileRule, RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -264,6 +264,11 @@ export interface LocalWorker {
    */
   prBaseRef?: string;
   /**
+   * What the runner's pre-agent base merge did on a conflict retry (merged, or
+   * left in progress with the real conflicts). Appended to the system prompt.
+   */
+  derivedMergeNote?: string;
+  /**
    * Set when the worker's environment was provisioned but degraded — today only
    * by a dependency install that failed for a non-structural reason (drift,
    * timeout, unknown) on an auto-detected repo, where failing closed on a guess
@@ -289,9 +294,23 @@ export interface LocalWorker {
   // never reset mid-worker, or two builds would collide on buildIndex.
   promptBuildIndex?: number;
   // Paths written while path-claim endpoint was unreachable (timeout/error). Flushed
-  // on the next successful claim call. Also included in update_progress PATCH body so
-  // the server can register them retroactively if the hook never recovers.
+  // on the next successful claim call. Runner-local only: the working-set
+  // tracker (below) is what tells the server about every edit, hook or not.
   pendingPaths?: string[];
+  /**
+   * Authoritative working set (working-set.ts): the task-owned file set from
+   * git with its generation, what the server has acknowledged holding, and the
+   * holders blocking the rest. Persisted so a restart replays from it.
+   */
+  workingSet?: import('./working-set').WorkingSetState;
+  /**
+   * Ship checkpoints whose coverage could not be proven, not yet reported to
+   * the server (the server was unreachable at the time, by definition).
+   * Drained by the next successful sync.
+   */
+  pendingShipReports?: import('@buildd/shared').ShipCheckpointReport[];
+  /** Coverage-unknown milestones already posted, so a retried ship does not repeat them. Transient. */
+  shipCoverageMilestones?: string[];
   /**
    * Workspace `gitConfig.pathClaimEnforcement`, resolved at session start.
    * Absent = advisory (the default). See path-claim-enforcement.ts.
@@ -309,6 +328,10 @@ export interface LocalWorker {
   pathClaimDegraded?: number;
   /** How many of `pathClaimDegraded` the server has been told about (the next sync sends the delta). */
   pathClaimDegradedReported?: number;
+  /** `pathClaimDegraded` split by cause, so the server can tell a timeout from a network/5xx error. */
+  pathClaimDegradedByCause?: { timeout: number; error: number };
+  /** The `pathClaimDegradedByCause` totals the server has been told about. */
+  pathClaimDegradedByCauseReported?: { timeout: number; error: number };
   /** Last time the sweep refreshed the base ref with a fetch (ms epoch). */
   pathSweepBaseFetchedAt?: number;
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
@@ -375,6 +398,8 @@ export interface LocalWorker {
   modelEndpoint?: import('@buildd/shared').ClaimModelEndpoint;
   // The claim withheld a winning endpoint because this runner has a per-machine provider.
   modelEndpointIgnored?: boolean;
+  // Cloud claim: the endpoint behind egress lacks ToolSearch pass-through (ENABLE_TOOL_SEARCH=false).
+  toolSearchDisabled?: boolean;
   // Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
   // 'scoped': only the task-scoped token (agent-github-credentials.ts). A mode, not a secret.
   githubCredentials?: { mode: 'scoped' | 'runner' };
@@ -641,6 +666,10 @@ export interface BuilddTask {
 
 // Git workflow configuration (matches server schema)
 export interface WorkspaceGitConfig {
+  /** Files regenerated instead of merged (packages/shared DerivedFileRule; see merge-drivers.ts). */
+  derivedFiles?: DerivedFileRule[];
+  /** Register mergiraf as a structural merge driver in this runner's clones. */
+  mergiraf?: boolean;
   // Branching
   defaultBranch: string;
   branchingStrategy: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
@@ -708,6 +737,10 @@ export interface WorkspaceGitConfig {
 
   // Auto-merge PRs via GitHub's auto-merge feature
   autoMergePR?: boolean;
+
+  // Policy checks before push / create_pr (workflow-state-kernel.md §6.10, S31).
+  // Only `commands` is the runner's; the server reads the rest.
+  preflight?: { commands?: string[] } | null;
 }
 
 // SSE event types

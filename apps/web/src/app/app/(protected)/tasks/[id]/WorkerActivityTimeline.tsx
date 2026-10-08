@@ -1,18 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import { useDisplayTimezone } from '@/components/DisplayTimezone';
-import { formatInZone } from '@/lib/zoned-time';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
-import { buildTape, touchedFiles, countToolCalls, type TouchedRow } from './task-activity';
+import { buildTape, countToolCalls } from './task-activity';
+import { buildMilestoneLog, isNarrationMilestone, type LogEntry } from './milestone-log';
 
 // `label` is optional on purpose: workspaces with dataClass 'sensitive' have their
 // milestone labels stripped server-side (apps/web/src/app/api/workers/[id]/route.ts),
 // so rows arrive as { type, ts } only. Declaring it required made every row renderer
 // dereference undefined and crash the whole task page.
 type Milestone = WorkerMilestone;
-
-type LabelledMilestone = Milestone & { label: string };
 
 const TYPE_FALLBACK_LABELS: Record<Milestone['type'], string> = {
   phase: 'Phase',
@@ -84,74 +81,6 @@ export function ageLabel(ms: number): string {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
-function splitPath(p: string): [string, string] {
-  const i = p.replace(/\/+$/, '').lastIndexOf('/');
-  return i >= 0 ? [p.slice(0, i + 1), p.slice(i + 1)] : ['', p];
-}
-
-const GLYPHS: Record<TouchedRow['kind'], { ch: string; cls: string; title: string }> = {
-  new: { ch: '+', cls: 'border-2 border-accent text-accent-text', title: 'New file' },
-  edit: { ch: 'E', cls: 'bg-accent text-[var(--on-accent)]', title: 'Edited' },
-  run: { ch: '$', cls: 'bg-text-primary text-surface-1', title: 'Command' },
-  read: { ch: 'R', cls: 'border border-border-strong text-text-muted', title: 'Read' },
-};
-
-function DiffCells({ add, rem }: { add: number; rem: number }) {
-  const total = add + rem;
-  if (total <= 0) return null;
-  const green = Math.min(5, Math.max(add > 0 ? 1 : 0, Math.round((add / total) * 5)));
-  return (
-    <span className="inline-flex gap-[2px]" aria-hidden="true">
-      {Array.from({ length: 5 }, (_, i) => (
-        <span key={i} className={`w-[6px] h-[12px] ${i < green ? 'bg-status-success' : 'bg-status-error'}`} />
-      ))}
-    </span>
-  );
-}
-
-function TouchedRowView({ row, nowMs, latest }: { row: TouchedRow; nowMs: number; latest: boolean }) {
-  const g = GLYPHS[row.kind];
-  const [dir, base] = row.path ? splitPath(row.path) : ['', ''];
-  const known = row.add != null || row.rem != null;
-  return (
-    <div
-      data-testid="worker-touched-row"
-      data-kind={row.kind}
-      className={`flex items-center gap-3 px-3 md:px-4 min-h-11 md:min-h-12 border-b border-border-default last:border-b-0 ${latest ? 'bg-accent-soft' : ''}`}
-    >
-      <span title={g.title} className={`w-6 h-6 shrink-0 grid place-items-center font-mono text-[11px] font-bold ${g.cls}`}>{g.ch}</span>
-      {/* Middle truncation: the directory gives way first, the file name last. */}
-      <span className="flex flex-1 min-w-0 items-baseline font-mono text-body">
-        {row.kind === 'run' ? (
-          <span className="min-w-0 truncate text-text-primary">$ {collapseWorkspacePath(row.cmd ?? '')}</span>
-        ) : (
-          <>
-            <span className="min-w-0 truncate text-text-muted">{dir}</span>
-            <span className="shrink-0 max-w-full truncate text-text-primary">{base}</span>
-          </>
-        )}
-        {row.count > 1 && row.kind !== 'read' && (
-          <span className="ml-2 shrink-0 text-chip text-text-muted tabular-nums">×{row.count}</span>
-        )}
-      </span>
-      <span className="hidden sm:flex items-center gap-2 shrink-0 font-mono text-[12px] tabular-nums">
-        {row.kind === 'read' ? (
-          <span className="text-text-muted">{row.count > 1 ? `read ×${row.count}` : 'read'}</span>
-        ) : known && row.kind !== 'run' ? (
-          <>
-            {(row.add ?? 0) > 0 && <span className="text-status-success">+{row.add}</span>}
-            {(row.rem ?? 0) > 0 && <span className="text-status-error">&minus;{row.rem}</span>}
-            <DiffCells add={row.add ?? 0} rem={row.rem ?? 0} />
-          </>
-        ) : null}
-      </span>
-      <span className="w-10 text-right shrink-0 font-mono text-[12px] text-text-muted tabular-nums" suppressHydrationWarning>
-        {ageLabel(nowMs - row.lastTs)}
-      </span>
-    </div>
-  );
-}
-
 export function ActivityTape({
   milestones,
   startMs,
@@ -174,10 +103,11 @@ export function ActivityTape({
         // A marker and its time, not the reported percent (a stream of them,
         // 40 70 30 90, is noise) and not the label: a label wide enough to read
         // ran over the neighbouring markers, and the Now strip names the latest.
+        // Narration ("Now I'll…") gets no hover text, as it gets no log row.
         return (
           <div
             key={`${f.pos}-${i}`}
-            title={f.label || undefined}
+            title={f.label && !isNarrationMilestone(f.label) ? f.label : undefined}
             className="absolute top-0 font-mono text-[11px] whitespace-nowrap"
             style={{ left: `${f.pos * 100}%`, transform: flip ? 'translateX(-100%)' : undefined }}
           >
@@ -220,38 +150,6 @@ export function ActivityTape({
   );
 }
 
-export function TouchedList({ milestones, nowMs }: { milestones: Milestone[]; nowMs: number }) {
-  const [showReads, setShowReads] = useState(false);
-  const { rows, reads } = touchedFiles(milestones);
-  if (rows.length === 0 && reads.length === 0) return null;
-  // One read stays visible so the list shows what the agent is consulting;
-  // the rest fold away (reads outnumber edits by a wide margin).
-  const visibleReads = showReads ? reads : reads.slice(0, 1);
-  const hidden = reads.length - visibleReads.length;
-  const list = [...rows, ...visibleReads];
-  return (
-    <div data-testid="worker-touched" className="mt-6">
-      <div className="flex items-baseline justify-between border-b border-border-default pb-2 mb-3">
-        <span className="section-label">Touched</span>
-        {reads.length > 1 && (
-          <button
-            type="button"
-            onClick={() => setShowReads(!showReads)}
-            className="font-mono text-[11px] uppercase tracking-[2px] text-text-muted hover:text-text-primary min-h-11 md:min-h-0"
-          >
-            {showReads ? 'Hide reads' : `+ ${hidden} reads hidden · show all`}
-          </button>
-        )}
-      </div>
-      <div className="border-2 border-border-strong bg-card">
-        {list.map((r, i) => (
-          <TouchedRowView key={`${r.kind}-${r.path ?? r.cmd}-${i}`} row={r} nowMs={nowMs} latest={i === 0 && r.kind !== 'read'} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
 export default function WorkerActivityTimeline({
   milestones,
   currentAction,
@@ -261,7 +159,6 @@ export default function WorkerActivityTimeline({
   live = false,
 }: WorkerActivityTimelineProps) {
   const [expanded, setExpanded] = useState(false);
-  const displayTz = useDisplayTimezone();
 
   if (!milestones.length && !currentAction) {
     return null;
@@ -274,30 +171,13 @@ export default function WorkerActivityTimeline({
   const endMs = live ? nowMs : Number.isFinite(lastTs) ? Math.max(lastTs, startMs + 1) : nowMs;
   const toolCalls = countToolCalls(milestones);
 
-  // Guarantee a label before dispatching to the row renderers (see milestoneLabel).
-  const labelledMilestones = milestones.map(
-    (m) => ({ ...m, label: milestoneLabel(m) }) as LabelledMilestone
-  );
+  // The log: outcome milestones only, newest first, each with how long it
+  // took. Narration is dropped and tool calls fold under the milestone they
+  // happened in (see milestone-log.ts). The tape above is the heartbeat.
+  const entries = buildMilestoneLog(milestones, { nowMs, live });
+  const visibleEntries = expanded ? entries : entries.slice(0, maxVisible);
+  const hasMore = entries.length > maxVisible;
 
-  // The log: every milestone, newest first. The tape and Touched list are the
-  // summary; this is the record, one tap away.
-  const sortedMilestones = [...labelledMilestones].sort((a, b) => b.ts - a.ts);
-  const visibleMilestones = expanded ? sortedMilestones : sortedMilestones.slice(0, maxVisible);
-  const hasMore = sortedMilestones.length > maxVisible;
-
-  const formatTime = (ts: number) => {
-    const diffMs = nowMs - ts;
-    const diffMins = Math.floor(diffMs / 60000);
-
-    if (diffMins < 1) return 'just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    const diffHours = Math.floor(diffMins / 60);
-    if (diffHours < 24) return `${diffHours}h ago`;
-    return displayTz ? formatInZone(ts, displayTz, 'date') : '';
-  };
-
-  // Rows without structured tool data (older runners, sensitive workspaces)
-  // produce no tape; the log then opens by default so nothing is hidden.
   const hasTape = milestones.some(m => m.type === 'action' || (m.type === 'status' && !!m.label?.trim()));
 
   return (
@@ -316,31 +196,20 @@ export default function WorkerActivityTimeline({
       </div>
 
       <ActivityTape milestones={milestones} startMs={startMs} nowMs={endMs} live={live} />
-      <TouchedList milestones={milestones} nowMs={nowMs} />
 
-      {visibleMilestones.length > 0 && (
-        <details className="mt-5 group" data-testid="worker-activity-log" open={!hasTape}>
+      {visibleEntries.length > 0 && (
+        <details className="mt-5 group" data-testid="worker-activity-log" open>
           <summary className="cursor-pointer select-none font-mono text-[11px] uppercase tracking-[2px] text-text-muted hover:text-text-secondary min-h-11 md:min-h-0 flex items-center gap-2">
             <span className="group-open:rotate-90 transition-transform" aria-hidden="true">▸</span>
-            Log · {sortedMilestones.length} {sortedMilestones.length === 1 ? 'entry' : 'entries'}
+            Log · {entries.length} {entries.length === 1 ? 'milestone' : 'milestones'}
           </summary>
           <div className="space-y-1.5 mt-3">
-            {visibleMilestones.map((milestone, i) => (
-              <div key={`${milestone.ts}-${i}`}>
-                {milestone.type === 'phase' ? (
-                  <PhaseRow
-                    milestone={milestone}
-                    currentAction={i === 0 && milestone.pending ? currentAction : undefined}
-                    formatTime={formatTime}
-                  />
-                ) : milestone.type === 'checkpoint' ? (
-                  <CheckpointRow milestone={milestone} formatTime={formatTime} />
-                ) : milestone.type === 'action' ? (
-                  <ActionRow milestone={milestone} formatTime={formatTime} />
-                ) : (
-                  <StatusRow milestone={milestone} formatTime={formatTime} />
-                )}
-              </div>
+            {visibleEntries.map((entry, i) => (
+              <LogEntryRow
+                key={`${entry.startMs}-${i}`}
+                entry={entry}
+                currentAction={i === 0 && entry.endMs == null ? currentAction : undefined}
+              />
             ))}
           </div>
           {hasMore && (
@@ -348,7 +217,7 @@ export default function WorkerActivityTimeline({
               onClick={() => setExpanded(!expanded)}
               className="mt-2 text-xs text-accent-text hover:underline min-h-11 md:min-h-0"
             >
-              {expanded ? 'Show less' : `Show ${sortedMilestones.length - maxVisible} more…`}
+              {expanded ? 'Show less' : `Show ${entries.length - maxVisible} more…`}
             </button>
           )}
         </details>
@@ -357,199 +226,121 @@ export default function WorkerActivityTimeline({
   );
 }
 
-function PhaseRow({
-  milestone,
-  currentAction,
-  formatTime,
-}: {
-  milestone: Extract<LabelledMilestone, { type: 'phase' }>;
-  currentAction?: string | null;
-  formatTime: (ts: number) => string;
-}) {
+type EntryTone = 'error' | 'success' | 'warning' | 'neutral';
+
+/** The glyph and tone for a log entry, by type and (for status rows) label. */
+export function entryGlyph(m: { type: string; label?: string; event?: string; pending?: boolean }): { ch: string; tone: EntryTone } {
+  if (m.type === 'checkpoint') {
+    if (m.event === 'task_error') return { ch: '!', tone: 'error' };
+    if (m.event === 'task_completed') return { ch: '+', tone: 'success' };
+    return { ch: '#', tone: 'neutral' };
+  }
+  if (m.type === 'phase') return { ch: '>', tone: 'neutral' };
+  const lower = (m.label ?? '').toLowerCase();
+  if (lower.includes('commit')) return { ch: '>', tone: 'neutral' };
+  if (lower.includes('error') || lower.includes('fail') || lower.startsWith('🛑')) return { ch: '!', tone: 'error' };
+  if (lower.includes('complete') || lower.includes('done') || lower.includes('pass')) return { ch: '+', tone: 'success' };
+  if (lower.includes('plan')) return { ch: '~', tone: 'neutral' };
+  if (lower.includes('question') || lower.includes('user:')) return { ch: '?', tone: 'neutral' };
+  if (lower.includes('config changed')) return { ch: 'c', tone: 'warning' };
+  if (lower.includes('skill')) return { ch: '*', tone: 'neutral' };
+  return { ch: '-', tone: 'neutral' };
+}
+
+const TONE_GLYPH: Record<EntryTone, string> = {
+  error: 'text-status-error',
+  success: 'text-status-success',
+  warning: 'text-status-warning',
+  neutral: 'text-text-muted',
+};
+const TONE_TEXT: Record<EntryTone, string> = {
+  error: 'text-status-error font-medium',
+  success: 'text-text-primary',
+  warning: 'text-status-warning',
+  neutral: 'text-text-primary',
+};
+
+function LogEntryRow({ entry, currentAction }: { entry: LogEntry; currentAction?: string | null }) {
   const [rowExpanded, setRowExpanded] = useState(false);
-  const isLong = milestone.label.length > 40;
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const m = entry.milestone;
+  const label = milestoneLabel(m);
+  const open = entry.endMs == null;
+  const glyph = entryGlyph(m as Parameters<typeof entryGlyph>[0]);
+  const canOpenTools = entry.tools.length > 0;
 
   return (
-    <div
-      className={`flex items-start gap-2 py-1 cursor-pointer ${
-        !milestone.pending
-          ? 'pl-1.5 border-l-2 border-border-default bg-surface-3/30 '
-          : ''
-      }`}
-      onClick={() => setRowExpanded(!rowExpanded)}
-    >
-      <span className="mt-1 flex-shrink-0">
-        {milestone.pending ? (
-          <span className="relative flex h-2.5 w-2.5">
-            <span className="animate-ping absolute inline-flex h-full w-full bg-status-running opacity-75" />
-            <span className="relative inline-flex h-2.5 w-2.5 bg-status-running" />
-          </span>
-        ) : (
-          <span className="inline-flex h-2.5 w-2.5 bg-text-muted" />
-        )}
-      </span>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-baseline gap-2">
-          <span className={`text-sm ${rowExpanded ? 'break-all' : 'truncate'} ${milestone.pending ? 'text-status-running font-medium' : 'text-text-primary'}`}>
-            {milestone.label}
-          </span>
-          <span className="font-mono text-[11px] md:text-[10px] bg-surface-3 px-1 py-0.5 flex-shrink-0 text-text-muted">
-            {milestone.toolCount}&nbsp;tool{milestone.toolCount !== 1 ? 's' : ''}
-          </span>
-          <span className="text-xs text-text-muted flex-shrink-0">
-            {formatTime(milestone.ts)}
-          </span>
-          {isLong && (
-            <span className="text-text-muted text-[11px] md:text-[10px] flex-shrink-0">
-              {rowExpanded ? '▾' : '▸'}
+    <div data-testid="worker-log-entry" data-open={open ? 'true' : undefined}>
+      <div className="flex items-start gap-2 py-1 text-sm">
+        <span className={`w-5 text-center flex-shrink-0 font-mono text-xs mt-0.5 ${open ? 'text-status-running' : TONE_GLYPH[glyph.tone]}`} aria-hidden="true">
+          {open ? <span className="inline-block w-2 h-2 bg-status-running animate-status-pulse" /> : glyph.ch}
+        </span>
+        <button
+          type="button"
+          onClick={() => setRowExpanded(!rowExpanded)}
+          className={`flex-1 min-w-0 text-left ${rowExpanded ? 'break-words' : 'line-clamp-2'} ${TONE_TEXT[glyph.tone]}`}
+        >
+          {/* The label only: a self-reported percent per row read as a field of
+              numbers that went backwards (40, 70, 30, 90) on older agents. */}
+          {label}
+        </button>
+        {entry.toolCount > 0 && (
+          canOpenTools ? (
+            <button
+              type="button"
+              data-testid="worker-log-tools-chip"
+              aria-expanded={toolsOpen}
+              onClick={() => setToolsOpen(!toolsOpen)}
+              className="font-mono text-[11px] md:text-[10px] bg-surface-3 px-1 py-0.5 flex-shrink-0 text-text-muted hover:text-text-primary min-h-11 md:min-h-0"
+            >
+              {entry.toolCount}&nbsp;tool{entry.toolCount !== 1 ? 's' : ''} {toolsOpen ? '▾' : '▸'}
+            </button>
+          ) : (
+            <span data-testid="worker-log-tools-chip" className="font-mono text-[11px] md:text-[10px] bg-surface-3 px-1 py-0.5 flex-shrink-0 text-text-muted">
+              {entry.toolCount}&nbsp;tool{entry.toolCount !== 1 ? 's' : ''}
             </span>
-          )}
+          )
+        )}
+        {entry.durationLabel && (
+          <span data-testid="worker-log-duration" className={`font-mono text-xs flex-shrink-0 tabular-nums ${open ? 'text-status-running' : 'text-text-muted'}`} suppressHydrationWarning>
+            {entry.durationLabel}
+          </span>
+        )}
+      </div>
+      {open && currentAction && (
+        <p className="ml-7 text-xs text-text-secondary truncate">{collapseWorkspacePath(currentAction)}</p>
+      )}
+      {toolsOpen && (
+        <div data-testid="worker-log-tools" className="mt-0.5 mb-1">
+          {entry.tools.map((t, i) => (
+            <ToolRow key={`${t.ts}-${i}`} label={milestoneLabel(t)} />
+          ))}
         </div>
-        {/* Show currentAction as sub-line for live phase with path collapsed */}
-        {milestone.pending && currentAction && (
-          <p className="text-xs text-text-secondary truncate mt-0.5">
-            {collapseWorkspacePath(currentAction)}
-          </p>
-        )}
-      </div>
+      )}
     </div>
   );
 }
 
-function StatusRow({
-  milestone,
-  formatTime,
-}: {
-  milestone: Extract<LabelledMilestone, { type: 'status' | 'plan' }>;
-  formatTime: (ts: number) => string;
-}) {
+function ToolRow({ label }: { label: string }) {
   const [rowExpanded, setRowExpanded] = useState(false);
-
-  const getIcon = (label: string) => {
-    const lower = (label ?? '').toLowerCase();
-    if (lower.includes('commit')) return '>';
-    if (lower.includes('error') || lower.includes('fail') || lower.startsWith('🛑')) return '!';
-    if (lower.includes('complete') || lower.includes('done')) return '+';
-    if (lower.includes('plan')) return '~';
-    if (lower.includes('question') || lower.includes('user:')) return '?';
-    if (lower.includes('config changed')) return 'c';
-    if (lower.includes('skill')) return '*';
-    return '-';
-  };
-
-  const icon = getIcon(milestone.label);
-  const isError = icon === '!';
-  const isComplete = icon === '+';
-  const isConfigChange = icon === 'c';
-  const isLong = milestone.label.length > 80;
-
-  return (
-    <div
-      className="flex items-start gap-2 py-1 text-sm cursor-pointer"
-      onClick={() => setRowExpanded(!rowExpanded)}
-    >
-      <span className={`w-5 text-center flex-shrink-0 font-mono text-xs mt-0.5 ${
-        isError ? 'text-status-error' : isComplete ? 'text-status-success' : isConfigChange ? 'text-status-warning' : 'text-text-muted'
-      }`}>
-        {icon}
-      </span>
-      <span className={`flex-1 min-w-0 ${!isError && !rowExpanded ? 'line-clamp-2' : ''} ${
-        isError ? 'text-status-error font-medium' : isConfigChange ? 'text-status-warning' : 'text-text-secondary'
-      }`}>
-        {/* The label only: a self-reported percent per row read as a field of
-            numbers that went backwards (40, 70, 30, 90) on older agents. */}
-        {milestone.label}
-      </span>
-      <div className="flex items-center gap-1 flex-shrink-0">
-        {isLong && (
-          <span className="text-text-muted text-[11px] md:text-[10px]">
-            {rowExpanded ? '▾' : '▸'}
-          </span>
-        )}
-        <span className="text-xs text-text-muted">
-          {formatTime(milestone.ts)}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function CheckpointRow({
-  milestone,
-  formatTime,
-}: {
-  milestone: Extract<LabelledMilestone, { type: 'checkpoint' }>;
-  formatTime: (ts: number) => string;
-}) {
-  const [rowExpanded, setRowExpanded] = useState(false);
-  const isError = milestone.event === 'task_error';
-  const isComplete = milestone.event === 'task_completed';
-  const isLong = milestone.label.length > 50;
-
-  return (
-    <div
-      className="flex items-start gap-2 py-1 text-sm cursor-pointer"
-      onClick={() => setRowExpanded(!rowExpanded)}
-    >
-      <span className={`w-5 text-center flex-shrink-0 font-mono text-xs mt-0.5 ${
-        isError ? 'text-status-error' : isComplete ? 'text-status-success' : 'text-primary'
-      }`}>
-        {isError ? '!' : isComplete ? '+' : '#'}
-      </span>
-      <span className={`flex-1 min-w-0 font-medium ${rowExpanded ? '' : 'line-clamp-2'} ${
-        isError ? 'text-status-error' : isComplete ? 'text-status-success' : 'text-text-primary'
-      }`}>
-        {milestone.label}
-      </span>
-      <div className="flex items-center gap-1 flex-shrink-0">
-        {isLong && (
-          <span className="text-text-muted text-[11px] md:text-[10px]">
-            {rowExpanded ? '▾' : '▸'}
-          </span>
-        )}
-        <span className="text-xs text-text-muted">
-          {formatTime(milestone.ts)}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function ActionRow({
-  milestone,
-  formatTime,
-}: {
-  milestone: Extract<LabelledMilestone, { type: 'action' }>;
-  formatTime: (ts: number) => string;
-}) {
-  const [rowExpanded, setRowExpanded] = useState(false);
-  const collapsed = collapseWorkspacePath(milestone.label);
+  const collapsed = collapseWorkspacePath(label);
   const truncated = middleTruncate(collapsed, 60);
-  const isLong = collapsed !== truncated || milestone.label !== collapsed;
+  const isLong = collapsed !== truncated || label !== collapsed;
 
   return (
     <div
-      className="flex items-start gap-2 py-0.5 ml-5 text-xs cursor-pointer"
+      className="flex items-start gap-2 py-0.5 ml-7 text-xs cursor-pointer"
       onClick={() => setRowExpanded(!rowExpanded)}
     >
-      <span className="w-4 text-center flex-shrink-0 font-mono text-text-muted mt-0.5">
-        $
-      </span>
+      <span className="w-4 text-center flex-shrink-0 font-mono text-text-muted mt-0.5">$</span>
       <span className={`flex-1 min-w-0 font-mono text-[11px] bg-surface-3/50 px-1 ${
         rowExpanded ? 'text-text-secondary whitespace-pre-wrap break-all' : 'text-text-muted truncate'
       }`}>
-        {rowExpanded ? milestone.label : truncated}
+        {rowExpanded ? label : truncated}
       </span>
-      <div className="flex items-center gap-1 flex-shrink-0">
-        {isLong && (
-          <span className="text-text-muted text-[11px] md:text-[10px]">
-            {rowExpanded ? '▾' : '▸'}
-          </span>
-        )}
-        <span className="text-[11px] md:text-[10px] text-text-muted/60">
-          {formatTime(milestone.ts)}
-        </span>
-      </div>
+      {isLong && (
+        <span className="text-text-muted text-[11px] md:text-[10px] flex-shrink-0">{rowExpanded ? '▾' : '▸'}</span>
+      )}
     </div>
   );
 }

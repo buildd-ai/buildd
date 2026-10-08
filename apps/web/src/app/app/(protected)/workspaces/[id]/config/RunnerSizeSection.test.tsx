@@ -22,6 +22,13 @@ describe('RunnerSizeSection', () => {
     expect(html).toContain('Set on this workspace.');
   });
 
+  it('shows this month on the runner under the size line', () => {
+    const html = render({ monthLine: 'This month: 9.1 h on the runner, counted as 18.2 h' });
+    expect(html).toContain('data-testid="workspace-runner-month"');
+    expect(html).toContain('This month: 9.1 h on the runner, counted as 18.2 h');
+    expect(render()).not.toContain('workspace-runner-month');
+  });
+
   it('shows automatic when nothing is stored', () => {
     expect(render()).toContain('Automatic');
   });

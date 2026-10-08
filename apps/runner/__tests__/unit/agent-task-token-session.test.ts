@@ -10,11 +10,13 @@
  * Harness: SDK `query` stubbed, options
  * captured; the backend factory is wrapped to capture the Codex env.
  */
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import { tmpdir } from 'os';
 import type { LocalUIConfig } from '../../src/types';
 import * as realBackends from '../../src/backends/index.js';
 import * as realSessionLogger from '../../src/session-logger';
 import * as realEvidenceWriter from '../../src/evidence-writer';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 
 const RUNNER_KEY = 'bld_runnerkey_session_abcdefghijklmnop';
 const TOKEN_A = 'bldt_sessionA.sigA_abcdefghijklmnopqrstu';
@@ -76,13 +78,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -218,7 +220,7 @@ async function runTask(manager: InstanceType<typeof WorkerManager>, workerId: st
   mockClaimTask.mockImplementation(async () => ({ workers: [{
     id: workerId,
     branch: `buildd/${workerId}`,
-    worktreePath: '/tmp/test-workspace',
+    worktreePath: getTestWorkspace(),
     task,
     ...(backend === 'codex' ? { codexCredential: { credentialType: 'api_key', apiKey: 'sk-test-codex', expiresAt: null } } : {}),
   }] }));
@@ -239,7 +241,12 @@ describe('agent buildd MCP auth uses a per-task token', () => {
   let manager: InstanceType<typeof WorkerManager>;
   const savedEnv = process.env.BUILDD_AGENT_TASK_TOKEN;
 
+  afterAll(() => {
+    cleanupTestWorkspace();
+  });
+
   beforeEach(() => {
+    initTestWorkspace();
     lastQueryOpts = null;
     allQueryOpts.length = 0;
     mintCalls.length = 0;
@@ -354,7 +361,7 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     const worker = (manager as any).workers.get('w-tt-resume');
     expect(worker).toBeDefined();
     // Resume and follow-up both go through startSession with a resume id.
-    await (manager as any).startSession(worker, '/tmp/test-workspace', task, 'sess-w-tt-resume');
+    await (manager as any).startSession(worker, getTestWorkspace(), task, 'sess-w-tt-resume');
     expect(mintCalls.length).toBeGreaterThan(mintsBefore);
     const resumed = allQueryOpts[queriesBefore];
     expect(resumed?.options?.resume).toBe('sess-w-tt-resume');

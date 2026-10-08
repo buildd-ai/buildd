@@ -88,6 +88,36 @@ describe('verifyPrOwnership — shapes a task owns', () => {
 
 // ── refused shapes ────────────────────────────────────────────────────────────
 
+// A mission task's worker branch is its own generated head; the integration
+// branch is only its base. Having the right base proves nothing about a head,
+// so a worker that somehow sits on the integration branch itself (provisioned
+// before claim stopped handing it out) gets no blanket exception: it owns the
+// heads every other worker owns, and nothing else.
+describe('verifyPrOwnership — mission task on an integration base', () => {
+  const missionTask = { context: { baseBranch: 'mission/integration' } };
+
+  it('owns its generated task head', async () => {
+    const v = await verify(input({ head: 'buildd/aaaa1111-fix-thing', task: missionTask }));
+    expect(v).toEqual({ owned: true, basis: 'own_branch' });
+  });
+
+  it('refuses an unrelated head with no task id, even when no other worker holds it', async () => {
+    const v = await verify(input({ head: 'task/no-id-in-name', task: missionTask, otherHeadHolders: [] }));
+    expect(v).toMatchObject({ owned: false, reasonCode: 'head_not_owned' });
+  });
+
+  it('a worker sitting on the integration branch itself gains no ownership of other heads', async () => {
+    const onBase = (head: string) => input({ head, workerBranch: 'mission/integration', task: missionTask, otherHeadHolders: [] });
+    expect(await verify(onBase('task/no-id-in-name'))).toMatchObject({ owned: false, reasonCode: 'head_not_owned' });
+    expect(await verify(onBase('buildd/dddd4444-someone-else'))).toMatchObject({ owned: false, reasonCode: 'head_not_owned' });
+  });
+
+  it('a worker sitting on the integration branch still owns a head carrying its own task id', async () => {
+    const v = await verify(input({ head: 'buildd/aaaa1111-cut', workerBranch: 'mission/integration', task: missionTask }));
+    expect(v).toEqual({ owned: true, basis: 'task_lineage' });
+  });
+});
+
 describe('verifyPrOwnership — refused', () => {
   it('another, unrelated task’s branch', async () => {
     const v = await verify(input({ head: 'buildd/dddd4444-someone-else', prNumber: 9 }));

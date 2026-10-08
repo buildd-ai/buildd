@@ -13,6 +13,8 @@
  */
 
 import { describe, test, expect, beforeAll, beforeEach, mock, afterAll, afterEach } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 import { WAITING_WORKTREE_TTL_MS } from '../../src/worktree-utils';
 import { __setGitOpsDeps, __resetGitOpsDeps } from '../../src/git-operations';
@@ -60,13 +62,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -197,7 +199,19 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
     mockUnpushedCount = '0';
   });
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     mockCleanupWorktree.mockClear();
     mockExistsSync = (p: string) => p === sharedPath;
   });

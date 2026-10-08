@@ -535,6 +535,14 @@ describe('runOnce afterRun hook (warm-repo refresh)', () => {
     expect(await runOnce({ taskId: TASK_ID }, d)).toBe(EXIT_CLAIM_REFUSED);
     expect(seen).toEqual([]);
   });
+
+  test('run_end is marked once the outcome is known, before the after-run step (a lease waits on it)', async () => {
+    const { wm, calls } = fakeManager({ statuses: ['working', 'done'] });
+    const { d } = deps(wm, { emitRunEnd: () => { calls.push('runEnd'); }, afterRun: async () => { calls.push('afterRun'); } });
+    await runOnce({ taskId: TASK_ID }, d);
+    expect(calls.filter(c => c === 'runEnd')).toHaveLength(1);
+    expect(calls.indexOf('runEnd')).toBeLessThan(calls.indexOf('afterRun'));
+  });
 });
 
 describe('classifyClaimFailure', () => {
@@ -559,7 +567,7 @@ describe('classifyClaimFailure', () => {
   });
 
   test('a managed-runner entitlement block is a deferral (retry later), never a refusal or failure', () => {
-    for (const code of ['managed_concurrency', 'managed_runner_hours']) {
+    for (const code of ['managed_concurrency', 'managed_runner_hours', 'hosted_runner_hours']) {
       const err = Object.assign(new Error('rejected'), { claimError: 'server_rejected', claimReason: 'all_candidates_deferred', claimTaskExclusionCode: code });
       expect(classifyClaimFailure(err)).toBe('deferred');
     }

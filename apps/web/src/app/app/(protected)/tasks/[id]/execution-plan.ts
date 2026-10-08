@@ -83,3 +83,13 @@ export function descriptionDuplicatesSummary(
   const [short, long] = a.length <= b.length ? [a, b] : [b, a];
   return long.includes(short) && short.length >= long.length * COPY_RATIO;
 }
+
+/**
+ * Whether a chain is worth showing as an execution plan. A single phase is
+ * not a plan: either it is this task (a self-loop) or it is some other task
+ * (e.g. a friction report filed during this run), which shown as "the plan"
+ * reads as if this task were a step of it.
+ */
+export function isMeaningfulPlan(chain: ReadonlyArray<{ id: string }>): boolean {
+  return chain.length > 1;
+}

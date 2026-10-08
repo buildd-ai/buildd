@@ -56,6 +56,13 @@ describe('POST /api/runner/task-token', () => {
     expect(mockVerifyAccess).toHaveBeenCalledWith('acct-1', WORKSPACE_ID, 'canClaim');
   });
 
+  it('echoes the stored role and ignores caller-provided browser authority', async () => {
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: WORKSPACE_ID, roleSlug: 'builder' });
+    expect(await (await POST(req({ taskId: TASK_ID, roleSlug: 'visual-auditor' }))).json()).toMatchObject({ roleSlug: 'builder' });
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: WORKSPACE_ID, roleSlug: 'visual-auditor' });
+    expect(await (await POST(req({ taskId: TASK_ID }))).json()).toMatchObject({ roleSlug: 'visual-auditor' });
+  });
+
   it('passes the request to auth, so a capability-scoped runner key is checked rather than refused', async () => {
     // authenticateApiKey returns null for any key with scopes when it gets no
     // request to check them against; the cloud runner's dispatcher key is

@@ -189,6 +189,31 @@ export function taskScopeAllowsWorkerPr(
 }
 
 /**
+ * True when the caller is a task token whose OWN task names `prNumber` (title,
+ * description, context, or the PR its retry is bound to; `taskNamesPr`), on a
+ * PR in its own workspace. The rule is the caller's task, never the PR owner's:
+ * a task does not gain a PR because the task that opened it names it
+ * (docs/specs/workflow-state-kernel.md §17.1, the PR #3754 case).
+ */
+export async function taskScopeTaskNamesPr(
+  account: { taskScope?: TaskScope },
+  pr: { workspaceId: string | null | undefined; prNumber: number },
+): Promise<boolean> {
+  const scope = account.taskScope;
+  if (!scope || !pr.workspaceId || pr.workspaceId !== scope.workspaceId) return false;
+  const task = await db.query.tasks.findFirst({
+    where: (t, { eq: eqOp }) => eqOp(t.id, scope.taskId),
+    columns: {
+      id: true, workspaceId: true, title: true, description: true, context: true,
+      reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true,
+    },
+  });
+  if (!task || task.workspaceId !== scope.workspaceId) return false;
+  const { taskNamesPr } = await import('./agent-capabilities/pr-ownership');
+  return taskNamesPr(task, pr.prNumber);
+}
+
+/**
  * The mission of a task token's own task, and that mission's initiative.
  * One read; null when the task is gone or not in the token's workspace. The
  * `where` callback keeps this module off the schema's table exports.

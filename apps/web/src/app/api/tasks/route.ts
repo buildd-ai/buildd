@@ -24,9 +24,9 @@ import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label'
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
 import { autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
 import { listReachableWorkspaceIds, resolveWorkspaceAccess } from '@/lib/workspace-access';
-import { isAdvisoryManifest, shouldSerializeByManifest, hasConcretePathManifest } from '@buildd/core/path-overlap';
+import { isAdvisoryManifest, hasConcretePathManifest, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
-import { resolveAnchorInjections } from '@/lib/change-intent';
+import { overlapTouchesSerializedSurface, resolveAnchorInjections } from '@/lib/change-intent';
 import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { parseLoopConfig } from '@buildd/core/loop-config';
@@ -592,7 +592,12 @@ export async function POST(req: NextRequest) {
     // A per-task token files work only onto its own task's mission, never
     // another mission on the team, whatever its level.
     if (missionId && apiAccount && !(await taskScopeAllowsMission(apiAccount, missionId))) {
-      return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+      return NextResponse.json(
+        {
+          error: "A task token may create tasks only in its own task's mission. This mission exists on your team but is outside your token's scope; ask a person or an organizer to file the task.",
+        },
+        { status: 403 },
+      );
     }
     const subjectPolicy = resolveSubjectPolicy(targetWorkspace.gitConfig?.subjectPolicy);
 
@@ -714,7 +719,7 @@ export async function POST(req: NextRequest) {
     // record the repo-wide sentinel ['**'] to mark "scope undeclared".
     //
     // The sentinel is ADVISORY ONLY. It does NOT drive dependsOn serialization —
-    // the auto-dependsOn pass below uses shouldSerializeByManifest(), which
+    // the auto-dependsOn pass below uses partitionOverlapEdges(), which
     // refuses to mint an edge when either side carries '**' (matching the
     // claim-time gates: findBlockingPr() and the path_claims layer-2 backstop
     // both skip the sentinel). Treating it as a hard dependency turned
@@ -772,20 +777,24 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Auto-add dependsOn edges for path-overlap serialization.
-    // If this task declares a CONCRETE pathManifest and other active/pending tasks
-    // in the same workspace declare concrete manifests that share paths, we must
-    // run them sequentially to prevent conflicting PRs (regression: PRs #1126/#1129).
+    // Path-overlap serialization against in-flight tasks (regression: PRs
+    // #1126/#1129), split into HARD and SOFT by `partitionOverlapEdges`:
+    //  - hard (a stored dependsOn edge): the same file on both sides, a
+    //    migration/schema path, or a workspace serialized surface;
+    //  - soft (scheduling evidence on pathDeclaration.softOverlaps, never an
+    //    edge): directory-prefix-only overlap. The claim route holds on it
+    //    while the other task is in flight unless HOLD/START says START, and
+    //    live path leases still stop simultaneous edits.
+    // Turning every prefix overlap into an edge queued honest broad scope
+    // (`scripts/`) behind every task under it, until each one merged.
     //
-    // shouldSerializeByManifest() (not pathsOverlap()) is the gate: a repo-wide
-    // sentinel on either side produces NO edge, because the claim-time gates treat
-    // '**' as advisory and would never honour such an edge anyway. Caller-supplied
-    // dependsOn is copied in first and never modified — only inferred edges are
-    // subject to this rule.
+    // A repo-wide sentinel on either side produces nothing (advisory). Caller-
+    // supplied dependsOn is copied in first and never modified.
     let resolvedDependsOn: string[] = Array.isArray(dependsOn) ? [...dependsOn] : [];
     // Recorded on pathDeclaration so a later narrowing can tell these apart
     // from caller-supplied edges, which must never be removed.
     const inferredDependsOn: string[] = [];
+    let softOverlaps: SoftOverlapEdge[] = [];
     if (pathManifest && pathManifest.length > 0 && !isAdvisoryManifest(pathManifest)) {
       const existingDepsSet = new Set(resolvedDependsOn);
       const inFlightTasks = await db.query.tasks.findMany({
@@ -796,14 +805,21 @@ export async function POST(req: NextRequest) {
         ),
         columns: { id: true, pathManifest: true },
       });
-      for (const t of inFlightTasks) {
-        if (existingDepsSet.has(t.id)) continue;
-        if (shouldSerializeByManifest(pathManifest, t.pathManifest as string[] | null)) {
-          resolvedDependsOn.push(t.id);
-          inferredDependsOn.push(t.id);
-          existingDepsSet.add(t.id);
-        }
+      const overlapGitConfig = targetWorkspace.gitConfig ?? null;
+      const split = partitionOverlapEdges(
+        pathManifest,
+        inFlightTasks.map(t => ({ id: t.id, pathManifest: t.pathManifest as string[] | null })),
+        {
+          skip: (id) => existingDepsSet.has(id),
+          isSerialized: (paths) => overlapTouchesSerializedSurface(paths, overlapGitConfig),
+        },
+      );
+      for (const id of split.hard) {
+        resolvedDependsOn.push(id);
+        inferredDependsOn.push(id);
+        existingDepsSet.add(id);
       }
+      softOverlaps = split.soft;
     }
 
     // Resolve creator context using the service
@@ -1466,6 +1482,8 @@ export async function POST(req: NextRequest) {
             source: 'creation' as const,
             snapshotAt: new Date().toISOString(),
             ...(inferredDependsOn.length > 0 ? { inferredDependsOn } : {}),
+            overlapPolicy: 'v2' as const,
+            ...(softOverlaps.length > 0 ? { softOverlaps } : {}),
           },
         } : {}),
         ...(TIERS.includes(rawTier as Tier) ? { tier: rawTier as Tier } : {}),

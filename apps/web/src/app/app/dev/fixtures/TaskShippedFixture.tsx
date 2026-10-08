@@ -9,7 +9,8 @@
 import { useEffect, useState } from 'react';
 import PrCard, { CommitChecksList } from '@/components/task/PrCard';
 import { visualReviewSketch } from '@/lib/visual-review-model.fixtures';
-import { TaskShippedBody, TaskShippedTitle } from '../../(protected)/tasks/[id]/TaskShippedHeader';
+import { TaskShippedBody, TaskShippedDetails, TaskShippedTitle } from '../../(protected)/tasks/[id]/TaskShippedHeader';
+import TaskVerdictBlock from '../../(protected)/tasks/[id]/TaskVerdictBlock';
 import {
   COMMIT_CHECKS_VARIANTS,
   FIXTURE_HERO_SHOTS,
@@ -20,6 +21,7 @@ import {
   fixtureOutcome,
   parseCommitChecksVariant,
   parseTaskShippedVariant,
+  taskShippedFixtureVerdict,
   taskShippedFixtureView,
   type CommitChecksVariant,
   type TaskShippedVariant,
@@ -48,21 +50,26 @@ export function TaskShippedFixture() {
   if (!variant) return <div className="min-h-screen bg-surface-1" />;
   const view = taskShippedFixtureView(variant);
   const merged = variant === 'merged-shots';
+  const verdict = taskShippedFixtureVerdict(variant);
   return (
     <div className="min-h-screen bg-surface-1 p-4 md:p-8" data-testid="task-shipped-fixture" data-variant={variant}>
       <div className="max-w-[1000px]">
         <VariantLinks state="task-shipped" variants={TASK_SHIPPED_VARIANTS} current={variant} />
         <div className="mb-5 md:mb-6">
-          <TaskShippedTitle view={view} title={FIXTURE_TASK_TITLE} status="completed" />
+          <TaskShippedTitle view={view} title={FIXTURE_TASK_TITLE} />
         </div>
-        <TaskShippedBody view={view} runDetails={FIXTURE_RUN_DETAILS} artifactHref={() => '#'} shotSrc={shotSrc} />
-        <PrCard
-          prUrl="https://github.com/example/app/pull/1234"
-          prNumber={1234}
-          prLifecycleStatus={merged ? 'merged' : 'ci_green'}
-          outcome={fixtureOutcome(variant)}
-          hideAction
-        />
+        <TaskVerdictBlock verdict={verdict} decision={null} displayStatus="completed" />
+        <TaskShippedBody view={view} artifactHref={() => '#'} shotSrc={shotSrc} />
+        <div className="mb-8">
+          <PrCard
+            prUrl="https://github.com/example/app/pull/1234"
+            prNumber={1234}
+            prLifecycleStatus={merged ? 'merged' : variant === 'blocked' ? 'ci_failed' : 'ci_green'}
+            outcome={fixtureOutcome(variant)}
+            hideAction
+          />
+        </div>
+        <TaskShippedDetails view={view} runDetails={FIXTURE_RUN_DETAILS} />
       </div>
     </div>
   );

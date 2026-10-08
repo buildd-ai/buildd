@@ -150,11 +150,11 @@ describe('PrCard under the What shipped header', () => {
   });
 });
 
-describe('Checks by commit on a phone', () => {
+describe('Checks inside the PR history', () => {
   const pass = (name: string) => ({ name, status: 'completed', conclusion: 'success', detailsUrl: null });
   const withCommits = (commits: PrOutcome['commits']) => ({ ...outcome([{ add: 1, rem: 0, files: 1 }]), commits });
 
-  it('collapses an all-green attempt to one row and keeps the desktop chips', () => {
+  it('collapses an all-green attempt to one row, inside PR history (no separate checks section)', () => {
     const html = render({
       prLifecycleStatus: 'ci_green',
       outcome: withCommits([{ attempt: 1, sha: '69786bc', state: 'passed', failure: null, runs: Array.from({ length: 9 }, (_, i) => pass(`check ${i}`)) }]),
@@ -163,9 +163,11 @@ describe('Checks by commit on a phone', () => {
     expect(html).toContain('Attempt 1</span> · <span class="text-text-primary">69786bc</span>');
     expect(html).toContain('✓ 9 checks passed');
     expect(html).toContain('data-open="false"');
-    // Collapsed: no mobile rows mounted; the desktop list is untouched.
+    // Collapsed: no rows mounted, and one timeline at every width.
     expect(html).not.toContain('data-testid="pr-check-row"');
-    expect(html).toContain('data-testid="pr-commit-checks"');
+    expect(html).not.toContain('data-testid="pr-commit-checks"');
+    expect(html).not.toContain('Checks by commit');
+    expect(html.indexOf('data-testid="pr-history"')).toBeLessThan(html.indexOf('data-testid="pr-commit-checks-mobile"'));
   });
 
   it('opens a failed attempt as full-width rows, failure first, linking its log', () => {
@@ -181,5 +183,16 @@ describe('Checks by commit on a phone', () => {
     expect(rows).toEqual(['failed', 'passed']);
     expect(html).toContain('href="https://ci/unit"');
     expect(html).toContain('min-h-11');
+  });
+});
+
+describe('a no-diff attempt', () => {
+  it('says what it did instead of "+0 −0 · 0 files"', () => {
+    const html = render({
+      prLifecycleStatus: 'ci_failed',
+      outcome: { ...outcome([{ add: 5, rem: 1, files: 2 }, { add: 0, rem: 0, files: 0, actions: ['Edited PR body'] }]) },
+    });
+    expect(html).toContain('Attempt 2 (fix) · Edited PR body');
+    expect(html).not.toContain('Attempt 2 (fix) · +0 −0 · 0 files');
   });
 });

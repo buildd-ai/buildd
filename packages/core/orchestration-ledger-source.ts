@@ -9,7 +9,7 @@
  *
  * Everything here is best-effort and never throws into a request path.
  */
-import { and, desc, eq, gte, inArray, isNotNull, lt } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, lt, notInArray } from 'drizzle-orm';
 import { db } from './db/client';
 import {
   gateEvents,
@@ -104,12 +104,20 @@ export function decidedTaskWhere(opts: { taskId: string; workspaceId: string }) 
   return and(eq(orchestrationDecisions.taskId, opts.taskId), eq(orchestrationDecisions.workspaceId, opts.workspaceId));
 }
 
+/**
+ * The task-verdict rows (apps/web/src/lib/task-verdict-decision.ts) share this
+ * ledger so `get_decision_stats` shows them, but they are not orchestration
+ * decisions and have no place in the conflict outcome join.
+ */
+export const NON_ORCHESTRATION_CAPABILITIES = ['task_verdict'] as const;
+
 export function decisionsWhere(opts: { workspaceId: string; since: Date; until: Date; decisionId?: string }) {
   return and(
     eq(orchestrationDecisions.workspaceId, opts.workspaceId),
     gte(orchestrationDecisions.createdAt, opts.since),
     lt(orchestrationDecisions.createdAt, opts.until),
     ...(opts.decisionId ? [eq(orchestrationDecisions.decisionId, opts.decisionId)] : []),
+    notInArray(orchestrationDecisions.capability, [...NON_ORCHESTRATION_CAPABILITIES]),
   );
 }
 

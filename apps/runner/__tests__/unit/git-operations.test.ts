@@ -206,21 +206,50 @@ describe('setupWorktree', () => {
     });
   });
 
-  test('in a cloud container, brackets the install with install_start / install_end phase lines', async () => {
+  test('cloud checks out and installs in the clone, emitting materialization and install phases', async () => {
     const prev = process.env.BUILDD_EXECUTOR;
     const origLog = console.log;
     const lines: string[] = [];
     process.env.BUILDD_EXECUTOR = 'cloud';
+    existsSyncMap['/repo/bun.lock'] = true;
+    const ordering: string[] = [];
+    __setGitOpsDeps({
+      execSync: ((cmd: string, opts: Record<string, unknown>) => {
+        if (cmd.includes('git checkout')) ordering.push('checkout');
+        return mockExecSync(cmd, opts);
+      }) as any,
+      execFile: ((...args: Parameters<typeof mockExecFile>) => {
+        if (args[0] === 'bun' && args[1][0] === 'install') ordering.push('install');
+        return mockExecFile(...args);
+      }) as any,
+      existsSync: (p: string) => existsSyncMap[p] ?? false,
+      mkdirSync: () => {},
+      readFileSync: () => '# exclude\n' as any,
+      appendFileSync: () => {},
+      rmSync: () => {},
+    });
     console.log = (...a: unknown[]) => { lines.push(a.map(String).join(' ')); };
     try {
       failBunInstall = { frozen: true, unfrozen: true }; // emitted even when the install fails
-      await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-1');
+      const result = await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-1');
+      expect(result?.path).toBe('/repo');
     } finally {
       console.log = origLog;
       if (prev === undefined) delete process.env.BUILDD_EXECUTOR; else process.env.BUILDD_EXECUTOR = prev;
     }
     const phases = lines.filter(l => l.startsWith('BUILDD_PHASE=')).map(l => l.split(' ')[0]);
-    expect(phases).toEqual(['BUILDD_PHASE=install_start', 'BUILDD_PHASE=install_end']);
+    expect(phases).toEqual([
+      'BUILDD_PHASE=worktree_start', 'BUILDD_PHASE=worktree_end',
+      'BUILDD_PHASE=install_start', 'BUILDD_PHASE=install_end',
+    ]);
+    expect(lines).toContain('BUILDD_WORKTREE_MODE=clone');
+    expect(ordering).toEqual(['checkout', 'install', 'install']);
+    const installs = fileCalls.filter(c => c.file === 'bun' && c.args[0] === 'install');
+    expect(installs).toHaveLength(2);
+    expect(installs.every(c => c.opts.cwd === '/repo')).toBe(true);
+    expect(syncCalls.some(c => c.cmd.startsWith('git checkout -B '))).toBe(true);
+    expect(syncCalls.some(c => c.cmd.includes('git fetch origin'))).toBe(false);
+    expect(syncCalls.some(c => c.cmd.includes('git worktree add'))).toBe(false);
   });
 
   test('outside a cloud container no phase lines are printed', async () => {
@@ -464,6 +493,13 @@ describe('setupWorktree', () => {
     expect(staleWarn).toBeTruthy();
     // The log line says WHAT it measured, so a wrong-tree measurement is visible.
     expect(staleWarn).toContain('origin/buildd/prior-task-branch');
+    // Previously console.warn-only — now also returned so the caller (workers.ts)
+    // can surface it as an error trace instead of a runner-log-only line.
+    expect(result?.staleBase).toEqual({
+      ref: 'origin/buildd/prior-task-branch',
+      defaultBranch: 'main',
+      commitsBehind: 25,
+    });
   });
 
   test('stale-base guard: no warn when the base is within tolerance', async () => {
@@ -472,11 +508,12 @@ describe('setupWorktree', () => {
       return mockExecSync(cmd, opts);
     };
 
-    const { warns } = await captureWarns(() =>
+    const { result, warns } = await captureWarns(() =>
       withExecSync(freshExecSync, () => setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-ok')),
     );
 
     expect(warns.find(w => w.toLowerCase().includes('behind'))).toBeUndefined();
+    expect(result?.staleBase).toBeUndefined();
   });
 
   // ─── Base-branch shapes (B10) ─────────────────────────────────────────────

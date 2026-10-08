@@ -156,3 +156,49 @@ describe('describeConflictReason', () => {
     expect(describeConflictReason({ errorType: 'ci_failure' })).toBeNull();
   });
 });
+
+// S37: a live conflict fix that stalled is still THE remediation. The card says
+// it stalled and offers to run that fix, never "Fixing..." forever, never a new one.
+describe('S37 — stalled live conflict fix', () => {
+  it('reads "Conflict fix stalled" with Run fix on the existing task, still agent-handled', () => {
+    const item = card({ conflictRetryTaskId: 'retry-2', conflictRetryIteration: 1, remediationStalled: 'the conflict fix has waited 42m with no runner claim', conflictReason: 'Migration 0235 collides with another change' });
+    expect(item.chip).toBe('RESOLVING');
+    expect(isActionableChip(item.chip)).toBe(false);
+    const view = describeMergeBlocker(item)!;
+    expect(view.state).toBe('Conflict fix stalled');
+    expect(view.reason).toBe('the conflict fix has waited 42m with no runner claim');
+    expect(view.action).toEqual({ kind: 'view_task', label: 'Run fix', taskId: 'retry-2' });
+    expect(view.details.some((d) => d === view.reason)).toBe(false);
+    expect(view.details[0]).toBe('Migration 0235 collides with another change');
+  });
+  it('a live fix that has not stalled keeps "Resolving merge conflict"', () => {
+    const view = describeMergeBlocker(card({ conflictRetryTaskId: 'retry-2', remediationStalled: null }))!;
+    expect(view.state).toBe('Resolving merge conflict');
+  });
+  it('dedupes conflictReason when it equals the stall text', () => {
+    const item = card({
+      conflictRetryTaskId: 'retry-2',
+      conflictRetryIteration: 1,
+      remediationStalled: 'Migration 0235 collides with another change',
+      conflictReason: 'Migration 0235 collides with another change'
+    });
+    const view = describeMergeBlocker(item)!;
+    expect(view.state).toBe('Conflict fix stalled');
+    expect(view.reason).toBe('Migration 0235 collides with another change');
+    expect(view.details.some((d) => d === view.reason)).toBe(false);
+    expect(view.details[0]).toBe('Automatic fix attempt 1');
+  });
+  it('dedupes conflictReason when it contains the stall text', () => {
+    const item = card({
+      conflictRetryTaskId: 'retry-2',
+      conflictRetryIteration: 1,
+      remediationStalled: 'Migration 0235 collides',
+      conflictReason: 'Migration 0235 collides with another change'
+    });
+    const view = describeMergeBlocker(item)!;
+    expect(view.state).toBe('Conflict fix stalled');
+    expect(view.reason).toBe('Migration 0235 collides');
+    expect(view.details.some((d) => d === view.reason)).toBe(false);
+    expect(view.details.some((d) => d.includes(view.reason))).toBe(false);
+  });
+});

@@ -13,6 +13,7 @@ import { findTaskRole } from '@/app/app/(protected)/tasks/[id]/role-lookup';
 import { deriveNow, type Milestone } from '@/app/app/(protected)/tasks/[id]/task-activity';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import type { TaskObjectView } from '@/components/chat/objects/object-views';
+import { getOwnerDeliveryDisplays } from '@/lib/workflow/delivery-view';
 
 const epoch = (v: Date | string | null | undefined): number | null => {
   if (!v) return null;
@@ -66,7 +67,7 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
   });
   if (!task) return null;
 
-  const [access, latest, role, runs] = await Promise.all([
+  const [access, latest, role, runs, deliveries] = await Promise.all([
     verifyWorkspaceAccess(userId, task.workspaceId),
     db.query.workers.findFirst({
       where: eq(workers.taskId, taskId),
@@ -79,6 +80,8 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
     }),
     findTaskRole({ workspaceId: task.workspaceId, teamId: (task.workspace as { teamId?: string } | null)?.teamId, slug: task.roleSlug }),
     db.select({ n: count() }).from(workers).where(eq(workers.taskId, taskId)).then(r => Number(r[0]?.n ?? 0)).catch(() => null),
+    // §17.5: a kernel-owned delivery's reading, not the worker's PR columns.
+    getOwnerDeliveryDisplays([taskId]),
   ]);
   if (!access) return null;
 
@@ -121,6 +124,7 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
       updatedAt: epoch(latest.updatedAt),
     } : null,
     now,
+    delivery: deliveries.get(task.id) ?? null,
     attempts: runs ?? (latest ? 1 : 0),
     waitingPrompt: latest?.waitingFor?.prompt ?? null,
     error: latest?.error ?? null,

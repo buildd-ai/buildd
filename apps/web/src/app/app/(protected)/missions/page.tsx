@@ -14,6 +14,7 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import {
   buildMissionCardView,
   countActiveMissions,
+  failedDeliverableTaskIds,
   summarizeMissionForCard,
   type BlockingTask,
   type MissionCardRow,
@@ -28,6 +29,7 @@ import {
   paginateCompletedMissions,
 } from '@/lib/missions-query';
 import { loadHumanSteeringMarksByMission } from '@/lib/mission-steering-notes';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { buildMissionListCard, missionsHeadline, type ListMissionRow } from '@/lib/mission-list-card';
 import { applyStrandChoice } from '@/lib/strand-choice-shadow';
 import { loadTeamRoleColors } from '@/lib/role-colors';
@@ -157,7 +159,7 @@ export default async function MissionsPage({
   // produces, so they are one wait rather than two. The release footers are
   // themselves 3 deep per workspace.
   const releaseFooters: Record<string, ReleaseFooterData> = {};
-  const [steeringMarksByMission] = await Promise.all([
+  const [steeringMarksByMission, , missionDeliveryViews] = await Promise.all([
     // Rule A-1/A-2: human steering marks (mission_notes, authorType='user') are
     // one batched query across the whole active set, not one per mission.
     loadHumanSteeringMarksByMission(activeRows.map((m: any) => m.id)),
@@ -173,6 +175,9 @@ export default async function MissionsPage({
         });
       }),
     ),
+    // S35: the kernel's reading of every failed deliverable, so a failed
+    // attempt with a live or shipped replacement does not read FAILED.
+    getDeliveryViewsForTasks(failedDeliverableTaskIds(allMissions as MissionCardRow[])),
   ]);
 
   // Rule A-1/A-2: live flight-strip compute for every non-completed mission.
@@ -195,11 +200,12 @@ export default async function MissionsPage({
   const now = Date.now();
   const missionsList: MissionItem[] = allMissions.map((obj) => {
     const row = obj as MissionCardRow;
-    const summary = summarizeMissionForCard(row, { now });
+    const summary = summarizeMissionForCard(row, { now, deliveryViews: missionDeliveryViews });
     const view = buildMissionCardView(row, {
       from: 'missions',
       now,
       summary,
+      deliveryViews: missionDeliveryViews,
       taskIndex: allMissionTaskMap,
       flightStrip: flightStripByMission.get(obj.id) ?? null,
     });

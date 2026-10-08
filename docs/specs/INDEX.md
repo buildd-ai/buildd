@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (58)
+## Active (59)
 
 ### auth (7)
 
@@ -25,7 +25,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### billing (2)
 
-- [Managed-Runner Entitlements](./managed-runner-entitlements.md) · @builder — verified 2026-10-06
+- [Managed-Runner Entitlements](./managed-runner-entitlements.md) · @builder — verified 2026-10-07
   A Buildd-managed runner claim MUST leave a task queued, never failed, when the team's plan limit on parallel managed runs or monthly runner-hours is reached, and MUST start it once the limit lifts.
 - [Usage & Cost Accounting](./usage-and-cost-accounting.md) · @max — verified 2026-08-30
   Worker usage MUST be recorded only from the worker's own report and attributed to one task, team-month and provider pool, and a budget-blocked claim MUST answer budget_exhausted with a reset time, not race_lost.
@@ -54,8 +54,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### mcp (2)
 
-- [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-09-30
-  The MCP server at /api/mcp MUST expose buildd, recall, learn and the deprecated buildd_memory over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate actions by token privilege.
+- [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-10-07
+  /api/mcp MUST serve the buildd_<group> action tools (legacy buildd only to runners predating them), recall and learn over stateless Streamable HTTP, Bearer-authenticate every call and gate actions by privilege.
 - [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-09-05
   Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 
@@ -79,11 +79,11 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Release Flow](./release-flow.md) · @max — verified 2026-07-18
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
-### runners (8)
+### runners (9)
 
 - [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-09-29
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
-- [Checkpoint Sweeps and Edit-Claim Enforcement](./checkpoint-sweeps.md) · @max — verified 2026-10-01
+- [Checkpoint Sweeps and Edit-Claim Enforcement](./checkpoint-sweeps.md) · @max — verified 2026-10-07
   Runners MUST sweep worktree changes against the resolved PR base at checkpoints and offer them for exclusive acquisition; under enforcement a confirmed collision MUST deny or defer.
 - [Cloud Egress Merge Guard](./cloud-egress-merge-guard.md) · @max — verified 2026-10-05
   The cloud egress handler MUST refuse a direct GitHub PR merge, a push to a protected branch, and (under an allow-list) any ref move outside the task's own branch, before attaching its token.
@@ -95,6 +95,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 - [Runner Liveness](./runner-liveness.md) · @max — verified 2026-09-29
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
+- [Provider-Backed Browser for Visual Review](./visual-qa-browser-providers.md) · @max — verified 2026-10-07
+  The visual-auditor role is eligible only after a selected browser provider proves usable; a cloud browser reaches registered container-local services through a task-scoped CDP relay.
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-07
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
@@ -133,17 +135,17 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A behind-only PR MUST be refreshed agent-free via a head-pinned branch update; only a verified textual conflict dispatches a conflict agent, and an unknown semantic verdict never clears a merge.
 - [Claim Ordering (Batch Planner)](./claim-ordering.md) · @max — verified 2026-10-04
   The claim route MUST order auto-claims through planClaimBatch only when a workspace opts in, MUST never co-schedule across a hard edge, and MUST use predicted scope only above pinned, evidence-backed thresholds.
-- [Decision Kinds (First-Party Adapters and Migration Seam)](./decision-kinds.md) · @max — verified 2026-10-03
+- [Decision Kinds (First-Party Adapters and Migration Seam)](./decision-kinds.md) · @max — verified 2026-10-07
   A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-07
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 - [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-10-05
   A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 - [Orchestration Decisions (Shadow and Promotion Guard)](./orchestration-decisions-shadow.md) · @max — verified 2026-10-03
-  Creation-manifest and claim hold/start decisions MUST only record suggestions unless a committed readout promotion grants a cohort, and MUST fall back to the deterministic rule on every failure.
-- [Path Claim Ownership](./path-claim-ownership.md) · @max — verified 2026-10-01
-  Edit leases MUST be acquired exclusively per workspace, narrowed only by their owner, released on terminal status, and reconciled to a PR's pinned actual diff without ever treating missing data as an empty diff.
-- [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-09-01
+  Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a confident Jev START to its three advisory gates only; both MUST fall back to the rule on failure.
+- [Path Claim Ownership](./path-claim-ownership.md) · @max — verified 2026-10-07
+  Edit leases MUST be held exclusively per workspace, kept equal to a task's current owned file set by a delta/ACK protocol, proven complete before any ship (fail closed), and handed to the open PR when the worker ends.
+- [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-10-07
   The PR lifecycle status shown on every surface MUST reflect live GitHub CI state within one read cycle, with terminal states (merged/closed) never overwritten by later CI events.
 - [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
@@ -154,11 +156,11 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ## Draft (3)
 
+- [Real and Virtual Cost](./real-and-virtual-cost.md) · @max — verified 2026-10-07
+  Every worker's tokens and cost MUST carry a basis, real (charged per token) or virtual (list-price value of plan usage), and every rollup MUST report the two separately rather than as one sum.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Provider-Backed Browser for Visual Review](./visual-qa-browser-providers.md) · @max — verified 2026-10-05
-  The visual-auditor role MUST be eligible exactly when a selected browser provider (local Chromium or a Cloudflare session) proves it works, and MUST be able to review a Buildd service booted inside its own sandbox.
-- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-06
+- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-07
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 
 ## Superseded (2)

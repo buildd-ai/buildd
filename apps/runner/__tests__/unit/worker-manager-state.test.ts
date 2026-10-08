@@ -8,7 +8,9 @@
  * Run: bun test apps/runner/__tests__/unit/worker-manager-state.test.ts
  */
 
-import { describe, test, expect, beforeEach, mock, afterEach, setDefaultTimeout } from 'bun:test';
+import { describe, test, expect, beforeEach, mock, afterEach, setDefaultTimeout, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 
 // CI runners are slower — give tests more room than the 5s default
 setDefaultTimeout(15_000);
@@ -113,13 +115,13 @@ mock.module('../../src/buildd', () => ({
 // Mock workspace resolver
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -203,6 +205,16 @@ function makeTask() {
 }
 
 // Collect events emitted by WorkerManager (snapshots worker state since object is shared by reference)
+/**
+ * Poll until `done()` holds (or give up after `timeoutMs`). A fixed sleep
+ * races the mocked session on a loaded CI host; the assertions that follow
+ * still report the real failure if it never happens.
+ */
+async function waitFor(done: () => boolean, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!done() && Date.now() < deadline) await new Promise(r => setTimeout(r, 25));
+}
+
 function collectEvents(manager: InstanceType<typeof WorkerManager>) {
   const events: any[] = [];
   manager.onEvent((e: any) => {
@@ -230,7 +242,19 @@ describe('WorkerManager — state transitions', () => {
     manager?.destroy();
   });
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     mockMessages = [];
     mockMessagesQueue = [];
     mockQueryPrompts = [];
@@ -290,7 +314,7 @@ describe('WorkerManager — state transitions', () => {
       const events = collectEvents(manager);
 
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 100));
+      await waitFor(() => events.some((e: any) => e.type === 'worker_update' && e.worker?.waitingFor?.type === 'question'));
 
       const questionEvents = events.filter(
         (e: any) => e.type === 'worker_update' && e.worker?.waitingFor?.type === 'question'
@@ -330,11 +354,10 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 100));
+      const isQuestionSync = (call: any[]) => call[1]?.status === 'waiting_input' && call[1]?.waitingFor?.type === 'question';
+      await waitFor(() => mockUpdateWorker.mock.calls.some(isQuestionSync));
 
-      const questionSyncCalls = mockUpdateWorker.mock.calls.filter(
-        (call: any[]) => call[1]?.status === 'waiting_input' && call[1]?.waitingFor?.type === 'question'
-      );
+      const questionSyncCalls = mockUpdateWorker.mock.calls.filter(isQuestionSync);
       expect(questionSyncCalls.length).toBeGreaterThanOrEqual(1);
     });
   });
@@ -358,7 +381,7 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 150));
+      await waitFor(() => manager.getWorker('w-done-1')?.status === 'done');
 
       const worker = manager.getWorker('w-done-1');
       expect(worker?.status).toBe('done');
@@ -385,7 +408,7 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 150));
+      await waitFor(() => mockUpdateWorker.mock.calls.some((call: any[]) => call[1]?.status === 'completed'));
 
       const completedCalls = mockUpdateWorker.mock.calls.filter(
         (call: any[]) => call[1]?.status === 'completed'
@@ -413,7 +436,7 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 150));
+      await waitFor(() => manager.getWorker('w-sess-track')?.sessionId === 'sess-track-123');
 
       const worker = manager.getWorker('w-sess-track');
       expect(worker?.sessionId).toBe('sess-track-123');
@@ -453,7 +476,7 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 150));
+      await waitFor(() => manager.getWorker('w-phase')?.status === 'done');
 
       const worker = manager.getWorker('w-phase');
       // Should have phase milestones
@@ -663,7 +686,9 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      await waitFor(() => mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'waiting_input'
+      ).length >= 2);
 
       // Should have synced waiting_input status at least twice: the transient
       // sync before abort, and the post-loop cleanup — both preserve status

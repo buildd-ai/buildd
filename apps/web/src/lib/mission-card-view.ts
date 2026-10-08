@@ -26,6 +26,8 @@ import {
   isDeliverableTask,
   type MissionFlightStripData,
 } from '@buildd/core/mission-helpers';
+import type { DeliveryView } from './workflow/projections';
+import { replacedFailedTaskIds } from './workflow/delivery-display';
 import {
   deriveMissionStateView,
   missionNeedsYou,
@@ -285,14 +287,32 @@ export function missionCardProgress(tasks: readonly MissionCardTaskRow[]): { don
   return { done, total, progress: total > 0 ? Math.round((done / total) * 100) : 0 };
 }
 
+/**
+ * The task ids a card surface loads DeliveryViews for (S35): every failed
+ * deliverable across the given missions. One `getDeliveryViewsForTasks` call
+ * per surface, passed as `deliveryViews` to the card builders.
+ */
+export function failedDeliverableTaskIds(rows: readonly Pick<MissionCardRow, 'tasks'>[]): string[] {
+  return rows.flatMap(r => (r.tasks ?? []).filter(t => t.status === 'failed' && isDeliverableTask(t as any)).map(t => t.id));
+}
+
 /** Most cards one surface builds in a request (Home, the list). */
 export const MISSION_CARD_VIEW_CAP = 30;
 
 /**
  * `liveWorkers`: an exact count from a batched query. The nested worker
  * relation is capped per task, so counting it can miss a live re-claim.
+ * `deliveryViews`: the kernel's DeliveryViews for this mission's failed
+ * deliverables (`failedDeliverableTaskIds`, loaded with
+ * `getDeliveryViewsForTasks`). S35: a failed task they mark as replaced work
+ * (`replacedFailedTaskIds`) is neither a FAILING health signal nor a failed
+ * task in the card's state, the same reading the mission page makes. Absent,
+ * or empty after a read error: every failed task counts (legacy reading).
  */
-export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: number; liveWorkers?: number } = {}): MissionCardSummary {
+export function summarizeMissionForCard(
+  row: MissionCardRow,
+  opts: { now?: number; liveWorkers?: number; deliveryViews?: ReadonlyMap<string, DeliveryView> | null } = {},
+): MissionCardSummary {
   const now = opts.now ?? Date.now();
   const tasks = row.tasks ?? [];
   const schedule = row.schedule ?? null;
@@ -324,14 +344,17 @@ export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: numbe
   if (pendingUserScheduledAt) lastDeferralReason = null;
 
   const pending = hasPendingDeliverableWork(tasks as any);
+  const replaced = opts.deliveryViews
+    ? replacedFailedTaskIds(opts.deliveryViews, tasks.filter(t => t.status === 'failed').map(t => t.id))
+    : new Set<string>();
   const healthState = deriveTaskHealthSignal(
     { dependsOnMissionId: row.dependsOnMissionId, dependencyMetAt: row.dependencyMetAt, heartbeatWaitingUntil },
-    tasks as any,
+    (replaced.size > 0 ? tasks.map(t => (replaced.has(t.id) ? { ...t, superseded: true } : t)) : tasks) as any,
   );
   // The card's state — chip, situation, and whether the next step is yours —
   // is derived once, here, so the group the header counts and the chip the
   // card shows cannot come from two derivations (F1, D2).
-  const state = deriveCardState(row, { liveWorkers, progress, healthState, hasPendingDeliverableWork: pending, now });
+  const state = deriveCardState(row, { liveWorkers, progress, healthState, hasPendingDeliverableWork: pending, now, replaced });
   const health = deriveMissionHealth({
     status: row.status,
     activeAgents: liveWorkers,
@@ -437,11 +460,12 @@ export function cardLocalStrand(row: MissionCardRow, now: number): LocalStrand |
 /**
  * The card's `deriveMissionStateView` input, from the loaded row. A card has
  * no completion decision (`canCompleteMission`): the open-task, failed-task and
- * unmerged-PR facts come straight off the task and worker rows.
+ * unmerged-PR facts come straight off the task and worker rows. S35: a failed
+ * task in `replaced` (the kernel's replaced work) is not a failed task.
  */
 function deriveCardState(
   row: MissionCardRow,
-  s: { liveWorkers: number; progress: number; healthState: Health; hasPendingDeliverableWork: boolean; now: number },
+  s: { liveWorkers: number; progress: number; healthState: Health; hasPendingDeliverableWork: boolean; now: number; replaced: ReadonlySet<string> },
 ): MissionStateView {
   const tasks = row.tasks ?? [];
   const deliverables = tasks.filter(t => isDeliverableTask(t as any));
@@ -483,7 +507,7 @@ function deriveCardState(
       })),
     localStrand: strand ? { ...strand, flipBlockedReason: continueOnRunnerBlockedReason({ status: row.status, workspaceId: row.workspaceId }) } : null,
     failedTasks: deliverables
-      .filter(t => t.status === 'failed')
+      .filter(t => t.status === 'failed' && !s.replaced.has(t.id))
       // No `infra`: it only matters with a completion decision, which a card never has.
       .map(t => ({ id: t.id, title: t.title })),
     // Cards run no completion decision, so `mergeFact`'s "rows only" path is
@@ -554,6 +578,8 @@ export interface BuildMissionCardViewOptions {
    */
   taskIndex?: ReadonlyMap<string, BlockingTask>;
   flightStrip?: MissionFlightStripData | null;
+  /** S35: see `summarizeMissionForCard`. Used only when `summary` is absent. */
+  deliveryViews?: ReadonlyMap<string, DeliveryView> | null;
 }
 
 const ms = (d: DateLike) => (d == null ? NaN : new Date(d).getTime());
@@ -625,7 +651,7 @@ function hasFlightStripActivity(data: MissionFlightStripData | null | undefined)
 export function buildMissionCardView(row: MissionCardRow, opts: BuildMissionCardViewOptions): MissionCardView {
   const now = opts.now ?? Date.now();
   const tasks = row.tasks ?? [];
-  const summary = opts.summary ?? summarizeMissionForCard(row, { now });
+  const summary = opts.summary ?? summarizeMissionForCard(row, { now, deliveryViews: opts.deliveryViews });
   // ── One chip, one sentence: the detail header's accessor (D2), derived once
   // in the summary so the group and the chip agree (F1). ──
   const state = summary.state;

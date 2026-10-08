@@ -48,6 +48,8 @@ export type InferenceCapability =
   | 'endpoint_model_match'
   | 'question_gate'
   | 'post_session_triage'
+  | 'task_verdict'
+  | 'early_release'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -223,6 +225,26 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Session quality triage',
     description: 'After an agent session ends, a decision model reads counts and outcomes (never code or text) and picks which sessions deserve a closer look. Never changes the task or its PR.',
     costHint: '~$0.00005 per session',
+  },
+  // Task verdict (apps/web/src/lib/task-verdict-decision.ts). Runs on a task
+  // state change only (CI result, attempt end, PR event, worker terminal),
+  // never on a page load, over the structured record (no transcripts).
+  task_verdict: {
+    id: 'task_verdict',
+    kind: 'built_in',
+    label: 'Task verdict wording',
+    description: 'When a task\'s state changes, a decision model words its one-line verdict, picks which actions to offer, and sorts agent errors into real failures and exploration noise. The record always decides the state itself.',
+    costHint: '~$0.00005 per state change',
+  },
+  // Early release (apps/web/src/lib/early-release-decision.ts). Live once on:
+  // a confident model answer may start a dependent before its upstream merges.
+  // The deterministic release rules apply without it; every failure waits.
+  early_release: {
+    id: 'early_release',
+    kind: 'opt_in',
+    label: 'Early release',
+    description: 'When a task waits on another task\'s pull request, a decision model says whether it can safely start now instead of waiting for the merge. Anything it is unsure about waits.',
+    costHint: '~$0.00003 per waiting task',
   },
   chat: {
     id: 'chat',

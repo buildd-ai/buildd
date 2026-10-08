@@ -185,9 +185,19 @@ describe('the guard sees the files it polices', () => {
     expect(moduleOf('apps/web/src/lib/subscriptions.ts')).toBe('notifications');
     expect(moduleOf('apps/web/src/lib/path-claim-release.ts')).toBe('core');
     expect(moduleOf('apps/web/src/lib/credential-health.ts')).toBe('core');
+    // Trace parsing and task-page error presentation belong to the core run record,
+    // rather than the knowledge retrieval or health analytics modules.
+    expect(moduleOf('packages/core/bash-failure-trace.ts')).toBe('core');
+    expect(moduleOf('apps/web/src/app/app/(protected)/tasks/[id]/error-evidence.ts')).toBe('core');
     // Ops paging is core infrastructure every layer uses, not the health module.
     expect(moduleOf('packages/core/report-ops.ts')).toBe('core');
     expect(moduleOf('apps/web/src/app/api/cron/maintenance/route.ts')).toBe('core');
+    // The hosted-runner allowance gates the claim, so its store is core; usage analytics is not.
+    expect(moduleOf('apps/web/src/lib/hosted-runner-usage-store.ts')).toBe('core');
+    expect(moduleOf('apps/web/src/lib/usage-stats.ts')).toBe('health-quality');
+    // The question gate is core; the repair filer it recovers through is a decisions module behind a slot.
+    expect(moduleOf('apps/web/src/lib/question-gate-check.ts')).toBe('core');
+    expect(moduleOf('apps/web/src/lib/recoverable-blocker-repair.ts')).toBe('jev-decisions');
   });
 
   test('the scan finds the hot spot it exists to shrink', () => {

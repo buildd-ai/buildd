@@ -86,6 +86,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   sessionCwd: true,
   worktreeBaseRef: true,
   prBaseRef: true,
+  derivedMergeNote: true,
   envDegraded: true,
   checkpoints: true,
   checkpointEvents: true,
@@ -95,11 +96,16 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   pendingPromptCompositionEvents: true,
   promptBuildIndex: true,
   pendingPaths: true,
+  workingSet: true,
+  pendingShipReports: true,
+  shipCoverageMilestones: true,
   pathClaimMode: true,
   pathCollision: true,
   pathCollisionDeferring: true,
   pathClaimDegraded: true,
   pathClaimDegradedReported: true,
+  pathClaimDegradedByCause: true,
+  pathClaimDegradedByCauseReported: true,
   pathSweepBaseFetchedAt: true,
   lastAssistantMessage: true,
   tokenTally: true,
@@ -129,6 +135,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   modelCapabilities: true,
   roleEnvMissing: true,
   modelEndpointIgnored: true,
+  toolSearchDisabled: true,
   githubCredentials: true, // a mode marker; the token itself is never on the worker
 
   // Withheld — see WITHHELD_WORKER_FIELDS.

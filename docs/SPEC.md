@@ -413,6 +413,11 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   silently falling back to local Codex auth. Host-runner only; cloud-runner
   Codex support is a separate, unimplemented gap (`POST
   /api/runner/model-endpoint` 404s a Codex task outright).
+  **Deferred tool loading**: the row's `capabilities.toolSearch` (OpenRouter
+  on by default, gateway and custom URL off unless set) tells a host runner
+  to set `ENABLE_TOOL_SEARCH=true` for a Claude run through the winning
+  endpoint — per run, never runner-global (`effectiveToolSearch`,
+  `applyModelEnv`).
 - **Decision model** — `teams.decision_model` (`packages/core/decision-model.ts`):
   null = Jev on OpenRouter; otherwise any chat model via OpenRouter or the gateway,
   with confidence from token logprobs (`@builddai/ai-kit/decide` chat endpoint).

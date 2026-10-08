@@ -21,13 +21,13 @@ for (const failure of ['prerequisite', 'measurement'] as const) {
         evaluate: async () => {}, screenshot: async ({path}) => writeFileSync(path, 'shot'),
         ariaSnapshot: async () => 'Fixture' };
       mock.module('playwright', () => ({ chromium: { launch: async () => ({
-        newContext: async () => ({ newPage: async () => page }), close: async () => {}
+        newContext: async () => ({ newPage: async () => page }), close: async () => {}, version: () => 'mock'
       }) } }));
     `);
     try {
       const child = Bun.spawn(['bun', '--preload', preload, 'scripts/qa/capture.ts'], {
         cwd: join(import.meta.dir, '../..'),
-        env: { ...process.env, QA_NO_LOGIN: '1', CAPTURE_FAILURE: failure, QA_BASE_URL: 'http://localhost:3000', QA_OUTPUT: output, QA_VIEWPORT: '360x780', QA_PLAN: JSON.stringify([{route:'/fixture', states:[{ key:'layout', steps:[{ action:'waitFor', selector: failure === 'prerequisite' ? 'testid:missing' : 'testid:scenario', timeoutMs:50 }, { action:'assertLayout' }] }]}]) },
+        env: { ...process.env, BUILDD_BROWSER_PROVIDER: 'local', QA_NO_LOGIN: '1', CAPTURE_FAILURE: failure, QA_BASE_URL: 'http://localhost:3000', QA_OUTPUT: output, QA_VIEWPORT: '360x780', QA_PLAN: JSON.stringify([{route:'/fixture', states:[{ key:'layout', steps:[{ action:'waitFor', selector: failure === 'prerequisite' ? 'testid:missing' : 'testid:scenario', timeoutMs:50 }, { action:'assertLayout' }] }]}]) },
         stdout:'pipe', stderr:'pipe',
       });
       const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);

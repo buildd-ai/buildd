@@ -4,7 +4,7 @@
  * the container is reset (container-reset.ts), and the next task's clone is
  * grown from the kept packs and handed to setupWorktree.
  *
- * The next task must get a worktree (a reused clone is as good as a fresh one
+ * The next task must run in the clone (a reused clone is as good as a fresh one
  * for setupWorktree), must not pay the warm restore (the kept packs are its
  * repo), and must see nothing the previous task planted: no ~/PLANTED_* file,
  * no global git identity, no global or repo hooks.
@@ -169,13 +169,15 @@ afterEach(() => {
 });
 
 describe('reset → next task: setupWorktree in the reused clone', () => {
-  test('builder then reviewer then builder: each reused clone gets its worktree, from the kept packs, with nothing planted', async () => {
-    // ── Task 1 (fresh container): cloud clone, builder worktree, push, plant ──
+  test('builder then reviewer then builder: each reused clone runs in place, from the kept packs, with nothing planted', async () => {
+    // ── Task 1 (fresh container): cloud clone, builder checkout, push, plant ──
     const first = acquire();
     expect(first.h.restores).toBe(1);
     expect(git(first.path, 'rev-parse', '--is-shallow-repository')).toBe('true');
     const builder = await setupWorktree(first.path, 'buildd/aaaa1111-feature', 'dev', 'w-builder-11111111', {});
     expect(builder).not.toBeNull();
+    expect(builder!.path).toBe(first.path);
+    expect(fs.existsSync(join(first.path, '.buildd-worktrees'))).toBe(false);
     commitAndPush(builder!.path, 'feature.txt', 'buildd/aaaa1111-feature');
     plant(builder!.path);
 
@@ -203,6 +205,8 @@ describe('reset → next task: setupWorktree in the reused clone', () => {
       resumeBranch: 'buildd/aaaa1111-feature', baseBranch: 'buildd/aaaa1111-feature',
     });
     expect(reviewer).not.toBeNull();
+    expect(reviewer!.path).toBe(second.path);
+    expect(fs.existsSync(join(second.path, '.buildd-worktrees'))).toBe(false);
     expect(git(reviewer!.path, 'rev-parse', 'HEAD')).toBe(git(origin, 'rev-parse', 'buildd/aaaa1111-feature'));
     assertNothingPlanted(reviewer!.path);
     plant(reviewer!.path);
@@ -215,6 +219,8 @@ describe('reset → next task: setupWorktree in the reused clone', () => {
     expect(lines).toContain('BUILDD_REPO_SOURCE=reuse');
     const next = await setupWorktree(third.path, 'buildd/cccc3333-next', 'dev', 'w-next-33333333', { baseBranch: 'mission/x' });
     expect(next).not.toBeNull();
+    expect(next!.path).toBe(third.path);
+    expect(fs.existsSync(join(third.path, '.buildd-worktrees'))).toBe(false);
     expect(next!.base).toBe('origin/mission/x');
     assertNothingPlanted(next!.path);
   });
@@ -253,10 +259,106 @@ describe('reset → next task: setupWorktree in the reused clone', () => {
   });
 });
 
+describe('the seed fetches only what origin added', () => {
+  /** A tree big enough that a full depth-1 pack and an incremental one are far apart: 300 incompressible files. */
+  function growOrigin(): string {
+    const other = join(dir, 'grow');
+    git(dir, 'clone', '-q', '--branch', 'dev', url, other);
+    for (let i = 0; i < 300; i++) fs.writeFileSync(join(other, `big-${i}.bin`), cp.execFileSync('head', ['-c', '1024', '/dev/urandom']));
+    git(other, 'add', '.');
+    git(other, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'big tree');
+    git(other, 'push', '-q', 'origin', 'HEAD:refs/heads/dev');
+    return other;
+  }
+  const metric = (name: string): number | null => {
+    const l = [...lines].reverse().find(x => x.startsWith(`BUILDD_METRIC=${name} `));
+    return l ? Number(l.split(' ')[1]) : null;
+  };
+  // The task's own fetch. Its detached `git maintenance --auto` would race
+  // the reset here; in a container the reset kills it first.
+  const fetchInTask = (repo: string) => git(repo, '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', 'fetch', '-q', 'origin');
+  const haveRefs = (repo: string) => git(repo, 'for-each-ref', '--format=%(refname)', 'refs/buildd/');
+
+  test('origin unchanged: no fetch at all, nothing transferred', () => {
+    growOrigin();
+    acquire();
+    reset();
+    lines = [];
+    const second = acquire();
+    expect(lines).toContain('BUILDD_REPO_SOURCE=reuse');
+    expect(metric('reuse_fetch_skipped')).toBe(1);
+    expect(metric('restore_reuse_bytes')).toBe(0);
+    // Not the clone's size on disk: nothing was cloned.
+    expect(metric('clone_bytes')).toBeNull();
+    expect(git(second.path, 'rev-parse', 'origin/dev')).toBe(git(origin, 'rev-parse', 'dev'));
+    expect(haveRefs(second.path)).toBe('');
+    expect(git(second.path, 'fsck', '--connectivity-only', '--no-dangling')).toBe('');
+  });
+
+  test('origin moved: only the new objects come, not the whole tree', () => {
+    const other = growOrigin();
+    acquire();
+    reset();
+    commitAndPush(other, 'moved.txt', 'dev');
+    lines = [];
+    const second = acquire();
+    expect(metric('reuse_fetch_skipped')).toBe(0);
+    const bytes = metric('restore_reuse_bytes');
+    expect(bytes).not.toBeNull();
+    // The 300 KiB tree stays; one commit, one tree and one blob come.
+    expect(bytes!).toBeLessThan(64 * 1024);
+    expect(git(second.path, 'rev-parse', 'origin/dev')).toBe(git(origin, 'rev-parse', 'dev'));
+    expect(fs.existsSync(join(second.path, 'moved.txt'))).toBe(true);
+    expect(haveRefs(second.path)).toBe('');
+  });
+
+  test("origin's tip was a loose object the reset dropped: the kept commits still negotiate", () => {
+    const other = growOrigin();
+    const first = acquire();
+    // During the first task origin moves, and the task's own small fetch
+    // lands loose (under fetch.unpackLimit): the tip the clone's refs name is
+    // not in any pack the reset keeps.
+    commitAndPush(other, 'during.txt', 'dev');
+    fetchInTask(first.path);
+    expect(git(first.path, 'count-objects')).not.toMatch(/^0 objects/);
+    reset();
+    lines = [];
+    const second = acquire();
+    const bytes = metric('restore_reuse_bytes');
+    expect(bytes).not.toBeNull();
+    expect(bytes!).toBeLessThan(64 * 1024);
+    expect(git(second.path, 'rev-parse', 'origin/dev')).toBe(git(origin, 'rev-parse', 'dev'));
+    expect(git(second.path, 'fsck', '--connectivity-only', '--no-dangling')).toBe('');
+  });
+
+  test('a kept commit whose objects are gone is never offered: the seed stays complete', () => {
+    const other = growOrigin();
+    const first = acquire();
+    // Small fetch (loose, dropped by the reset), then a big one whose pack
+    // leans on it: the big pack's commit names a parent and trees that are
+    // not kept. Offering it as a have would leave the seed incomplete.
+    commitAndPush(other, 'small.txt', 'dev');
+    fetchInTask(first.path);
+    for (let i = 0; i < 150; i++) fs.writeFileSync(join(other, `more-${i}.txt`), `${i}\n`);
+    git(other, 'add', '.');
+    git(other, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'more');
+    git(other, 'push', '-q', 'origin', 'HEAD:refs/heads/dev');
+    fetchInTask(first.path);
+    reset();
+    lines = [];
+    const second = acquire();
+    expect(lines).toContain('BUILDD_REPO_SOURCE=reuse');
+    expect(git(second.path, 'rev-parse', 'origin/dev')).toBe(git(origin, 'rev-parse', 'dev'));
+    expect(git(second.path, 'fsck', '--connectivity-only', '--no-dangling')).toBe('');
+    expect(git(second.path, 'status', '--porcelain')).toBe('');
+  });
+});
+
 describe('a worktree that cannot be set up says why', () => {
   test('git\'s reason is kept for the start failure, once', async () => {
     const first = acquire();
-    // Something sits where the worktrees go.
+    process.env.BUILDD_EXECUTOR = 'host';
+    // Something sits where the host worktrees go.
     fs.writeFileSync(join(first.path, '.buildd-worktrees'), 'not a directory');
     const r = await setupWorktree(first.path, 'buildd/dddd4444-x', 'dev', 'w-fail-44444444', {});
     expect(r).toBeNull();

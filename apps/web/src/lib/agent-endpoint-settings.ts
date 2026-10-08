@@ -28,6 +28,7 @@ import {
 } from '@buildd/core/agent-endpoint-models';
 import {
   AGENT_ENDPOINT_PURPOSE,
+  effectiveToolSearch,
   mapAgentModel,
   parseAgentEndpointBlob,
   parseAppliesTo,
@@ -65,6 +66,13 @@ export interface MaskedAgentEndpoint {
   models: AgentModelMap;
   /** Every model buildd asks this endpoint for, its tiers, and the name sent (read-only view). */
   mapping: EndpointModelMapping[];
+  /**
+   * Claude deferred MCP/tool loading through this endpoint: the effective
+   * value (`effectiveToolSearch`), and whether it was set explicitly rather
+   * than taken from the kind's default (OpenRouter on, others off).
+   */
+  toolSearch: boolean;
+  toolSearchExplicit: boolean;
   /** Last four characters of the key in use (the gateway's key for `kind: gateway`). */
   last4: string;
   /** `kind: gateway`: whether the referenced gateway currently resolves. */
@@ -191,14 +199,14 @@ function sameModels(a: AgentModelMap, b: AgentModelMap): boolean {
 }
 
 /**
- * Two rows route identically: same kind, Anthropic root, key, header and
- * aliases. Only then is a per-workspace copy redundant with the team row; any
+ * Two rows route identically: same kind, Anthropic root, key, header,
+ * aliases and effective tool search. Only then is a per-workspace copy redundant with the team row; any
  * difference (a key, a URL, an alias, a gateway that resolves elsewhere) keeps it.
  */
 function sameRoute(a: AgentEndpointRoute | null, b: AgentEndpointRoute | null): boolean {
   if (!a || !b) return false;
   return a.kind === b.kind && a.baseUrl === b.baseUrl && a.apiKey === b.apiKey &&
-    a.authHeader === b.authHeader && sameModels(a.models, b.models);
+    a.authHeader === b.authHeader && sameModels(a.models, b.models) && a.toolSearch === b.toolSearch;
 }
 
 /**
@@ -247,6 +255,8 @@ export async function listTeamAgentEndpoints(teamId: string): Promise<MaskedAgen
       authHeader: route?.authHeader ?? 'authorization',
       models: blob?.models ?? {},
       mapping: blob ? mappingFor(blob, tierModels.wanted) : [],
+      toolSearch: blob ? effectiveToolSearch(blob.kind, blob.capabilities) : false,
+      toolSearchExplicit: typeof blob?.capabilities?.toolSearch === 'boolean',
       last4: route ? maskKeyLast4(route.apiKey) : '',
       gatewayMissing: blob?.kind === 'gateway' && !gateway,
       health: (r.healthStatus as EndpointHealth) ?? 'unknown',
@@ -402,6 +412,12 @@ export async function setTeamAgentEndpoint(
     }
     const filled = withStoredKey(rest, stored);
     if (!filled) return { ok: false, status: 400, error: 'Enter the key for this endpoint.' };
+    // Capabilities: the call's when it names them (null = the kind's
+    // defaults), else the saved row's for the same kind, so re-saving never
+    // silently flips deferred tool loading.
+    if (filled.capabilities === undefined && stored?.capabilities && stored.kind === filled.kind) {
+      filled.capabilities = stored.capabilities;
+    }
     endpoint = filled;
   }
   const v = validateAgentEndpointInput(endpoint);
@@ -466,6 +482,8 @@ export async function setTeamAgentEndpoint(
       authHeader: route.authHeader,
       models: blob.models ?? {},
       mapping: mappingFor(blob, tierModels.wanted),
+      toolSearch: route.toolSearch,
+      toolSearchExplicit: typeof blob.capabilities?.toolSearch === 'boolean',
       last4: maskKeyLast4(route.apiKey),
       gatewayMissing: false,
       health: check.health,

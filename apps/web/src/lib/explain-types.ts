@@ -76,7 +76,12 @@ export type CausalLinkSource =
   | 'tasks.subjectPrNumber + workers.mergedAt'
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber'
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
-  | 'task_dispatch_outbox.status';
+  | 'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor'
+  | 'task_dispatch_outbox.status'
+  | 'tasks.context.entitlementBlock'
+  | 'tasks.pathDeclaration.softOverlaps + gate_events'
+  | 'gate_events.detail'
+  | 'DeliveryView.lastTransition';
 
 export interface CausalLink {
   /** 1-based position. The chain reads cause → effect, in order. */
@@ -133,6 +138,8 @@ export interface GateHistoryEntry {
   reason: string;
   consecutiveDeferrals: number | null;
   firstDeferredAt: string | null;
+  /** Who held the task and on what, when the row recorded it (coordination gates). */
+  holder?: import('./explain-coordination').CoordinationGateDetail;
 }
 
 export interface ExplainSubject {
@@ -193,11 +200,23 @@ export interface ExplainAnswer {
    */
   evidenceObjects?: InlineEvidenceObject[];
   /**
+   * A pending task held by coordination: each holder with the edge kind
+   * (declared / inferred dependency, soft overlap, path lease, open PR), the
+   * overlapping paths and the hold/start verdict. Task scope only.
+   */
+  coordination?: { holds: import('./explain-coordination').CoordinationHold[] };
+  /**
    * For a task subject: what its runs were given and refused (repo access,
    * buildd tokens, PR actions), oldest first, repeats folded. Absent when
    * nothing was recorded. From agent_capability_decisions.
    */
   access?: import('./agent-capabilities/access-log').AccessItem[];
+  /**
+   * Task scope only: the task verdict (lib/task-verdict.ts), the same one the
+   * task page leads with: state, one-sentence headline, the fact behind it
+   * and up to three actions, with any cached decision-model wording applied.
+   */
+  verdict?: Pick<import('./task-verdict').TaskVerdict, 'state' | 'headline' | 'cause' | 'actions' | 'wordedBy'>;
   /**
    * Why the task runs (or last ran) on a backend other than the one it was
    * filed with: a claim-time flip (budget failover, provider toggle) or a
@@ -205,6 +224,20 @@ export interface ExplainAnswer {
    * in @buildd/core/backend-policy is the one reader.
    */
   backendRouting?: BackendRoutingDescription;
+  /**
+   * For a task or PR subject whose delivery the workflow kernel owns: the
+   * kernel's reading (workflow-state-kernel §17.5), with the one
+   * family-labelled attempt line the comment and titles also use (§5.7).
+   * Absent for a legacy-owned or PR-less task.
+   */
+  delivery?: {
+    state: string;
+    owner: string;
+    needsYou: boolean;
+    headline: string;
+    detail: string | null;
+    attempts: string | null;
+  };
   derivedFrom: ExplainProvenance;
 }
 

@@ -20,6 +20,12 @@
  *                   interactive-session.ts), when no OTHER worker already
  *                   holds that exact name live or with a PR of its own
  *
+ * Having the right base proves nothing about a head. A mission task's head is
+ * its own generated branch (claim never hands out a pinned head equal to the
+ * task's base — see `pinnedHeadBranch` in @buildd/core/branch-names), so
+ * there is no "cut from the integration branch" basis: ownership is
+ * established at claim, not inferred at create_pr.
+ *
  * A protected head (trunk, release branches, the repo's default branch) is
  * owned only as the worker's own branch: naming a release PR in a task does
  * not make it this task's deliverable.
@@ -95,8 +101,8 @@ export interface PrOwnershipInput {
    */
   interactiveWorker?: boolean;
   /**
-   * Other workers already recorded on `head` — only consulted when
-   * `interactiveWorker` is true and no cheaper basis matched. Fetch with one
+   * Other workers already recorded on `head` — only consulted for
+   * `interactive_head`, when no cheaper basis matched. Fetch with one
    * branch-equality query in the same workspace; omit otherwise.
    */
   otherHeadHolders?: readonly InteractiveHeadHolder[];
@@ -137,6 +143,14 @@ function claimingHolder(
   return holders.find(h => isLiveWorkerStatus(h.status) || (h.hasPr && h.taskId !== selfTaskId)) ?? null;
 }
 
+function headClaimed(head: string, holder: InteractiveHeadHolder): PrOwnershipVerdict {
+  return {
+    owned: false,
+    reasonCode: 'head_claimed',
+    error: `Refusing to record a PR whose head '${head}' is already in use by another worker${holder.taskId ? ` (task ${holder.taskId.slice(0, 8)})` : ''}. Push to a branch name nobody else is using, or use the branch claim_task assigned this worker.`,
+  };
+}
+
 function refuse(reasonCode: 'protected_head' | 'head_not_owned', head: string): PrOwnershipVerdict {
   return {
     owned: false,
@@ -171,11 +185,7 @@ export async function verifyPrOwnership(input: PrOwnershipInput, loadLineage: Lo
   if (input.interactiveWorker) {
     const holder = claimingHolder(input.otherHeadHolders ?? [], task.id);
     if (!holder) return { owned: true, basis: 'interactive_head' };
-    return {
-      owned: false,
-      reasonCode: 'head_claimed',
-      error: `Refusing to record a PR whose head '${head}' is already in use by another worker${holder.taskId ? ` (task ${holder.taskId.slice(0, 8)})` : ''}. Push to a branch name nobody else is using, or use the branch claim_task assigned this worker.`,
-    };
+    return headClaimed(head, holder);
   }
 
   return refuse('head_not_owned', head);
