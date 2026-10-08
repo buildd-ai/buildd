@@ -1,23 +1,169 @@
 name: Release
 
-# Delegates to the reusable workflow in buildd-ai/.github so release
-# logic stays in one place across the org. Local `bun run release`
-# still uses scripts/release.sh in this repo for offline-friendly
-# shipping; the two are intended to stay in sync.
+# Two release flows live here, and the repo variable RELEASE_CANDIDATE_CUT picks
+# one. Flipping it is the cutover; flipping it back is the rollback.
+#
+#   unset / anything else  → legacy: promote CHANGELOG on dev, then the org's
+#                            reusable workflow bumps versions ON dev and opens or
+#                            updates the dev → main PR (whose head moves with dev).
+#   "enabled"              → frozen candidates: scripts/release-candidate.ts cuts
+#                            release/vX.Y.Z from ONE captured dev SHA, puts the
+#                            version + CHANGELOG commit only on that branch, and
+#                            opens release/vX.Y.Z → main. dev is never written to.
+#
+# A `dry_run` dispatch always takes the candidate path and changes nothing, so the
+# new flow can be rehearsed before the variable is flipped.
+#
+# The captured SHA is `github.sha`: the dev head when this run was triggered. A
+# re-run of the same run reuses it, so a re-run cannot pick up a dev that moved.
+# Local `bun run release` dispatches this same workflow; `bun run
+# release:candidate -- cut --dry-run --source origin/dev` runs the same engine
+# from a workstation.
 
 on:
   workflow_dispatch:
     inputs:
       force:
-        description: 'Open the release PR even if no feat/fix commits since last tag'
+        description: 'Cut even if there are no feat/fix commits since the last tag'
         required: false
         default: 'false'
+      dry_run:
+        description: 'Candidate flow only: compute and print the candidate, push and open nothing'
+        required: false
+        default: 'false'
+      amend:
+        description: 'Candidate flow only: re-cut the OPEN candidate (vX.Y.Z) from this run''s dev SHA. Voids its checks and approvals. Leave empty for a normal cut.'
+        required: false
+        default: ''
+      amend_confirm:
+        description: 'Type the amend version again to confirm'
+        required: false
+        default: ''
   schedule:
     - cron: '0 9 * * *'
 
+# One cut at a time, across schedule, dispatch and re-runs. Never cancelled: a
+# cut that is half done (branch pushed, PR not yet open) must be allowed to end.
+concurrency:
+  group: release-cut
+  cancel-in-progress: false
+
+permissions: {}
+
 jobs:
+  mode:
+    name: Resolve release flow
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      flow: ${{ steps.flow.outputs.flow }}
+    steps:
+      - id: flow
+        env:
+          SWITCH: ${{ vars.RELEASE_CANDIDATE_CUT }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          AMEND: ${{ inputs.amend }}
+        run: |
+          if [ "$SWITCH" = "enabled" ] || [ "$DRY_RUN" = "true" ]; then
+            echo "flow=candidate" >> "$GITHUB_OUTPUT"
+            echo "Release flow: frozen candidate (RELEASE_CANDIDATE_CUT=${SWITCH:-unset}, dry_run=${DRY_RUN:-false})"
+          elif [ -n "$AMEND" ]; then
+            echo "::error::amend is a frozen-candidate operation, and RELEASE_CANDIDATE_CUT is not enabled. Nothing was changed."
+            exit 1
+          else
+            echo "flow=legacy" >> "$GITHUB_OUTPUT"
+            echo "Release flow: legacy dev → main (set the repo variable RELEASE_CANDIDATE_CUT=enabled to switch)"
+          fi
+
+  # ── Frozen candidate ───────────────────────────────────────────────────────
+  cut:
+    name: Cut release candidate
+    needs: mode
+    if: needs.mode.outputs.flow == 'candidate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Pushes release/v* (never dev or main) and opens/edits the release PR.
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Guard the trigger
+        id: guard
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          # A dispatch on any other ref would capture that ref's SHA; the engine
+          # also refuses a SHA that is not on dev, this just says why sooner.
+          if [ "$REF" != "refs/heads/dev" ]; then
+            echo "::error::Run the Release workflow on dev (got $REF). A candidate is cut only from dev."
+            exit 1
+          fi
+          # Scheduled cuts are weekday-only, so a candidate never appears
+          # unattended on a weekend. A manual dispatch is always honoured.
+          if [ "$EVENT" = "schedule" ] && [ "$(date -u +%u)" -gt 5 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Weekend: the scheduled cut is skipped. Dispatch the workflow to cut anyway."
+          fi
+
+      # App-authored pushes and PRs trigger CI; GITHUB_TOKEN-authored ones do
+      # not. Without the App the candidate still opens, but its checks will not
+      # start on their own (and a missing required check blocks the merge).
+      - name: Mint release App token
+        id: app-token
+        if: steps.guard.outputs.skip != 'true' && vars.RELEASE_APP_ID != '' && inputs.dry_run != 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        if: steps.guard.outputs.skip != 'true'
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token || github.token }}
+
+      - name: Setup Bun
+        if: steps.guard.outputs.skip != 'true'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Cut or amend the candidate
+        id: cut
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token != '' }}
+          SOURCE_SHA: ${{ github.sha }}
+          FORCE: ${{ inputs.force }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          AMEND: ${{ inputs.amend }}
+          AMEND_CONFIRM: ${{ inputs.amend_confirm }}
+          PACKAGE_FILES: 'apps/runner/package.json apps/web/package.json packages/core/package.json packages/shared/package.json'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ "$APP_TOKEN" != "true" ] && [ "$DRY_RUN" != "true" ]; then
+            echo "::warning::No release App token (vars.RELEASE_APP_ID + secrets.RELEASE_APP_PRIVATE_KEY): CI will not start on its own for a candidate opened with GITHUB_TOKEN."
+          fi
+          args=(--source "$SOURCE_SHA" --package-files "$PACKAGE_FILES")
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          if [ -n "$AMEND" ]; then
+            bun scripts/release-candidate.ts amend --candidate "$AMEND" --confirm "$AMEND_CONFIRM" "${args[@]}"
+            exit $?
+          fi
+          if [ "$FORCE" = "true" ]; then args+=(--force); fi
+          bun scripts/release-candidate.ts cut "${args[@]}"
+
+  # ── Legacy dev → main ──────────────────────────────────────────────────────
   prepare-changelog:
     name: Promote CHANGELOG
+    needs: mode
+    if: needs.mode.outputs.flow == 'legacy'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -93,7 +239,8 @@ jobs:
           fi
 
   release:
-    needs: prepare-changelog
+    needs: [mode, prepare-changelog]
+    if: needs.mode.outputs.flow == 'legacy'
     # The reusable workflow pushes a version-bump commit and opens the release
     # PR, so it declares contents:write + pull-requests:write. A called workflow
     # cannot exceed the caller's token permissions, and this repo's default
