@@ -5347,6 +5347,110 @@ describe('PATCH /api/workers/[id]', () => {
       expect(data.hint).toBe('create_pr');
     });
 
+    // The task asked for work that had already landed in another task's PR,
+    // which its text never names, so the referenced-PR fallback above cannot
+    // see it, and adopting it would make this worker own someone else's PR.
+    // `alreadyShippedIn` names the PR; the gate checks it is merged in the
+    // linked repo and records it on the result, never on the worker row.
+    describe('pr_required + alreadyShippedIn', () => {
+      const shippedTask = {
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'fix(conflict-retry): verify a real conflict before dispatching',
+        description: 'Re-check the base tip before dispatching an agent.',
+      };
+      let capturedTaskSet: any;
+      let workerSets: any[];
+
+      beforeEach(() => {
+        capturedTaskSet = null;
+        workerSets = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            capturedTaskSet = updates;
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => {
+            workerSets.push(u);
+            return { where: mock(() => ({ returning: mock(() => [{ ...baseWorker, status: 'completed' }]) })) };
+          }),
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockTasksFindFirst.mockResolvedValue(shippedTask);
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+        mockGithubReposFindFirst.mockResolvedValue({
+          id: 'repo-1', fullName: 'org/repo', installation: { installationId: 123 },
+        });
+      });
+
+      const githubPr = (merged: boolean) => mockGithubApi.mockImplementation((_i: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]);
+        if (path === '/repos/org/repo/pulls/3851') {
+          return Promise.resolve({
+            number: 3851, merged, html_url: 'https://github.com/org/repo/pull/3851',
+            head: { ref: 'buildd/aaaa1111-another-task' }, base: { ref: 'dev' },
+          });
+        }
+        return Promise.resolve(null);
+      });
+
+      const complete = (extra: Record<string, unknown>) => PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Already shipped in #3851; verified on dev.', summarySource: 'agent', ...extra },
+      }), { params: mockParams });
+
+      it('a merged PR completes the task and is recorded on the result, not the worker', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+        githubPr(true);
+
+        const res = await complete({ alreadyShippedIn: 3851 });
+
+        expect(res.status).toBe(200);
+        expect(capturedTaskSet?.result?.alreadyShippedIn).toEqual({
+          prNumber: 3851, prUrl: 'https://github.com/org/repo/pull/3851',
+        });
+        expect(workerSets.some(u => u.prNumber === 3851 || u.prUrl)).toBe(false);
+      });
+
+      it('an unmerged PR still refuses, and says why', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+        githubPr(false);
+
+        const res = await complete({ alreadyShippedIn: 3851 });
+
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('#3851');
+        expect(data.error).toContain('not merged');
+      });
+
+      it('own commits on the branch need discardEdits too, so they are not stranded silently', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 1 });
+        githubPr(true);
+
+        const refused = await complete({ alreadyShippedIn: 3851 });
+        expect(refused.status).toBe(400);
+        expect((await refused.json()).error).toContain('discardEdits');
+
+        const accepted = await complete({ alreadyShippedIn: 3851, discardEdits: 'duplicate of tests already on dev' });
+        expect(accepted.status).toBe(200);
+        expect(capturedTaskSet?.result?.alreadyShippedIn?.prNumber).toBe(3851);
+      });
+
+      it('the plain pr_required refusal points at alreadyShippedIn', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+        githubPr(true);
+
+        const res = await complete({});
+
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toContain('alreadyShippedIn');
+      });
+    });
+
     // C17: the gate's predicate was a single-column eq(artifacts.workerId, id).
     // Mission artifacts are inserted with workerId NULL by construction (see
     // api/missions/[id]/artifacts/route.ts), and MCP create_artifact with a
