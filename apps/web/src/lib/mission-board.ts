@@ -642,6 +642,9 @@ export interface BoardCells {
   labelOf: Map<string, { scope: string | null; label: string }>;
 }
 
+/** `s` as one sentence: a period added only when it does not already end in . ! or ?. */
+const sentence = (s: string) => (/[.!?]$/.test(s.trimEnd()) ? s.trimEnd() : `${s.trimEnd()}.`);
+
 export function buildBoardCells(
   input: Pick<MissionBoardInput, 'tasks' | 'roles' | 'runnerHeartbeats' | 'externalDeps'>,
 ): BoardCells {
@@ -709,7 +712,7 @@ export function buildBoardCells(
       phaseKey: phaseKeyOf(t),
       status,
       kernelReason: t.delivery && t.delivery.stage !== 'working'
-        ? (t.delivery.detail ? `${t.delivery.headline}: ${t.delivery.detail}.` : `${t.delivery.headline}.`)
+        ? sentence(t.delivery.detail ? `${t.delivery.headline}: ${t.delivery.detail}` : t.delivery.headline)
         : null,
       delivery: boardDeliveryReading(r),
       runner: activeWorker ? displayOf(activeWorker)?.name ?? null : null,
