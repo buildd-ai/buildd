@@ -104,51 +104,59 @@ export function MissionGrid({
             data-testid="portfolio-sort"
             value={sort}
             onChange={e => setSort(e.target.value as PortfolioSort)}
-            className="min-h-11 max-w-[46%] shrink-0 border-2 border-border-strong bg-card px-2 font-mono text-[13px] text-text-primary md:min-h-9"
+            className="min-h-11 shrink-0 border-2 border-border-strong bg-card px-2 font-mono text-[13px] text-text-primary md:min-h-9"
           >
-            {PORTFOLIO_SORTS.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+            {PORTFOLIO_SORTS.map(s => <option key={s.key} value={s.key} title={s.title}>{s.label}</option>)}
           </select>
         </div>
-        <div
-          role="group"
-          aria-label="Filter missions"
-          data-testid="portfolio-filters"
-          className="flex min-w-0 gap-1.5 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        >
-          {PORTFOLIO_STATUS_FILTERS.map(f => {
-            const on = status === f.key;
-            return (
-              <button
-                key={f.key}
-                type="button"
-                aria-pressed={on}
-                title={f.title}
-                data-testid="portfolio-filter"
-                data-filter={f.key}
-                onClick={() => setStatus(f.key)}
-                className={`flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap px-2.5 font-mono text-[12px] ${
-                  on ? 'border-2 border-border-strong font-semibold text-text-primary' : 'border border-border-default text-text-secondary'
-                }`}
-              >
-                {f.label}<span className="text-text-muted">{filterCounts[f.key]}</span>
-              </button>
-            );
-          })}
-          {workspaces.length > 1 && (
-            <>
-              <label className="sr-only" htmlFor="portfolio-workspace">Workspace</label>
-              <select
-                id="portfolio-workspace"
-                data-testid="portfolio-workspace"
-                value={workspaceId}
-                onChange={e => setWorkspaceId(e.target.value)}
-                className="min-h-9 max-w-[180px] shrink-0 border border-border-default bg-card px-2 font-mono text-[12px] text-text-secondary"
-              >
-                <option value="">All workspaces</option>
-                {workspaces.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
-              </select>
-            </>
-          )}
+        <div className="relative min-w-0">
+          <div
+            role="group"
+            aria-label="Filter missions"
+            data-testid="portfolio-filters"
+            className="flex min-w-0 gap-1.5 overflow-x-auto pb-1 pr-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:pr-0"
+          >
+            {PORTFOLIO_STATUS_FILTERS.map(f => {
+              const on = status === f.key;
+              return (
+                <button
+                  key={f.key}
+                  type="button"
+                  aria-pressed={on}
+                  title={f.title}
+                  data-testid="portfolio-filter"
+                  data-filter={f.key}
+                  onClick={() => setStatus(f.key)}
+                  className={`flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap px-2.5 font-mono text-[12px] ${
+                    on ? 'border-2 border-border-strong font-semibold text-text-primary' : 'border border-border-default text-text-secondary'
+                  }`}
+                >
+                  {f.label}<span className="text-text-muted">{filterCounts[f.key]}</span>
+                </button>
+              );
+            })}
+            {workspaces.length > 1 && (
+              <>
+                <label className="sr-only" htmlFor="portfolio-workspace">Workspace</label>
+                <select
+                  id="portfolio-workspace"
+                  data-testid="portfolio-workspace"
+                  value={workspaceId}
+                  onChange={e => setWorkspaceId(e.target.value)}
+                  className="min-h-9 max-w-[180px] shrink-0 border border-border-default bg-card px-2 font-mono text-[12px] text-text-secondary"
+                >
+                  <option value="">All workspaces</option>
+                  {workspaces.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                </select>
+              </>
+            )}
+          </div>
+          {/* The chips scroll sideways on phones; the fade says there is more past the edge. */}
+          <div
+            aria-hidden="true"
+            data-testid="portfolio-filters-fade"
+            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-surface-1 to-transparent md:hidden"
+          />
         </div>
       </div>
 
