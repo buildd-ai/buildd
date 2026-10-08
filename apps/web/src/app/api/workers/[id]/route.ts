@@ -19,7 +19,9 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam, notifyTeamOf } from '@/lib/notify';
-import { markHoldDue, resolveHold, type HoldResolution } from '@/lib/question-hold';
+import { markHoldDue, type HoldResolution } from '@/lib/question-hold';
+import { disposeParkedWaitingFor } from '@/lib/park-disposition';
+import { gateEnabledFromGitConfig, hardRailContextFromGitConfig } from '@/lib/question-gate-check';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { emit } from '@/lib/core-emit';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
@@ -84,7 +86,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import type { LoopVerdict } from '@/lib/completion-policy';
 import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
-import { COMPLETION_POLICIES } from '@/modules';
+import { COMPLETION_POLICIES, RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { reportWorkerModelIncident } from '@/lib/model-compatibility-incident';
@@ -574,6 +576,9 @@ async function recordPostSupersessionError(
 }
 
 // GET /api/workers/[id] - Get worker details
+/** The `waitingFor` fields a sensitive workspace keeps: no prose, only what Needs You admission and hold resurfacing read. */
+const SENSITIVE_PARK_FIELDS: ReadonlySet<string> = new Set(['disposition', 'dispositionBy', 'gateOutcome', 'rail', 'repairTaskId']);
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -1146,6 +1151,8 @@ export async function PATCH(
   }
   // Set when the incoming question carries a `hold` tag; null = an ordinary ask.
   let hold: HoldResolution | null = null;
+  // Whether this PATCH's park may reach a person now (lib/park-disposition.ts).
+  let parkAdmitted = false;
   // Waiting state — sensitive: store type only, drop prompt prose
   if (waitingFor !== undefined) {
     // Contract violation: the agent stopped and asked, but stated no real
@@ -1161,33 +1168,63 @@ export async function PATCH(
     const briefed = waitingFor !== null && waitingFor?.type === 'question'
       ? withSanitizedBrief(waitingFor)
       : waitingFor;
-    // A held question (lib/question-hold.ts): the server decides whether the
-    // runner's `hold` tag stands — never on a hard rail, a sensitive
-    // workspace or with the gate off — and bounds its deadline.
+    // Needs You admission (lib/park-disposition.ts): every park is stamped
+    // with a human-attention disposition before it is stored — the gate's
+    // own (`ask`, or a `hold` lib/question-hold.ts decides whether to honour),
+    // or the server's re-check of an untagged park (an older runner, a failed
+    // gate call): hard rails, then stage 0, which routes a recoverable
+    // platform blocker to a repair task instead of a person.
     let stored = briefed;
-    if (briefed && briefed.type === 'question' && (briefed as { disposition?: unknown }).disposition === 'hold') {
-      const holdTask = worker.taskId
-        ? await db.query.tasks.findFirst({ where: eq(tasks.id, worker.taskId), columns: { pathManifest: true } })
+    if (briefed) {
+      const parkTask = worker.taskId
+        ? await db.query.tasks.findFirst({ where: eq(tasks.id, worker.taskId), columns: { title: true, pathManifest: true, missionId: true } })
         : null;
-      hold = resolveHold({
+      const gitConfig = wsForSensitivity?.gitConfig ?? null;
+      const parked = await disposeParkedWaitingFor({
         waitingFor: briefed as Record<string, unknown>,
         stored: worker.waitingFor as Record<string, unknown> | null,
+        scope: worker.taskId && wsForSensitivity?.teamId
+          ? {
+              teamId: wsForSensitivity.teamId,
+              workspaceId: worker.workspaceId,
+              accountId: worker.accountId ?? null,
+              taskId: worker.taskId,
+              missionId: parkTask?.missionId ?? null,
+              workerId: id,
+              taskTitle: parkTask?.title ?? null,
+              sensitive: isSensitive,
+              gateEnabled: gateEnabledFromGitConfig(gitConfig),
+              hardRail: { ...hardRailContextFromGitConfig(gitConfig), pathManifest: parkTask?.pathManifest ?? null },
+            }
+          : null,
+        gitConfig,
         sensitive: isSensitive,
-        gitConfig: wsForSensitivity?.gitConfig ?? null,
-        pathManifest: holdTask?.pathManifest ?? null,
+        pathManifest: parkTask?.pathManifest ?? null,
         nowMs: Date.now(),
+        repairTaskExists: async (repairId) => isUuid(repairId) && !!(await db.query.tasks.findFirst({
+          where: and(eq(tasks.id, repairId), eq(tasks.workspaceId, worker.workspaceId)),
+          columns: { id: true },
+        })),
+        deps: { fileRepair: RECOVERABLE_BLOCKER_REPAIR },
       });
-      stored = hold.waitingFor as typeof briefed;
+      hold = parked.hold;
+      parkAdmitted = parked.admitted;
+      stored = parked.waitingFor as typeof briefed;
     }
+    // Sensitive: no prose, but the disposition fields are not prose and must
+    // survive — Needs You admission reads them.
+    const sensitiveStored = stored
+      ? Object.fromEntries(Object.entries(stored).filter(([k]) => SENSITIVE_PARK_FIELDS.has(k)))
+      : null;
     updates.waitingFor = (isSensitive && waitingFor !== null)
-      ? { type: waitingFor.type, ...(isContentlessQuestion ? { contractViolation: true } : {}) }
+      ? { ...sensitiveStored, type: waitingFor.type, ...(isContentlessQuestion ? { contractViolation: true } : {}) }
       : (stored !== null && isContentlessQuestion ? { ...stored, contractViolation: true } : stored);
   }
   // Notification when agent needs input — sensitive: generic message only.
-  // Team Pushover channel + the originating chat conversation. A held question
-  // is not notified now: the resurface sweep notifies it at its deadline if it
-  // is still unanswered (lib/question-hold.ts).
-  if (waitingFor?.type === 'question' && !hold?.held) {
+  // Team Pushover channel + the originating chat conversation. Only an
+  // admitted park notifies: a held question is notified by the resurface
+  // sweep at its deadline (lib/question-hold.ts), a recovered one never.
+  if (waitingFor?.type === 'question' && parkAdmitted) {
     const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
     // Short by design: the question, one line of context, the recommended default.
     const note = questionNotificationText(
@@ -4311,8 +4348,9 @@ export async function PATCH(
   // worker write landed, so a conflicted PATCH records nothing. The key is per
   // question, so the runner re-sending the same waitingFor writes one row.
   // Fire-and-forget: emit never throws, and the ledger write adds no latency.
-  // A held question records nothing now; the resurface pass records it.
-  if (waitingFor?.type === 'question' && worker.taskId && !hold?.held) {
+  // Only an admitted park: a held question records nothing now (the resurface
+  // pass records it), a recovered one never.
+  if (waitingFor?.type === 'question' && worker.taskId && parkAdmitted) {
     void emit({ type: 'task.needs_input', taskId: worker.taskId, workerId: id, prompt: waitingFor.prompt });
   }
   // A held question's deadline, for the resurface sweep's gated tick. After

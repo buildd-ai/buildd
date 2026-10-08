@@ -69,6 +69,7 @@
     "./runner-health": "./runner-health.ts",
     "./question-brief": "./question-brief.ts",
     "./human-attention": "./human-attention.ts",
+    "./needs-you-admission": "./needs-you-admission.ts",
     "./question-gate": "./question-gate.ts",
     "./question-gate-decision": "./question-gate-decision.ts",
     "./question-gate-source": "./question-gate-source.ts",

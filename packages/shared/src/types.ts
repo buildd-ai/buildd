@@ -936,6 +936,24 @@ export interface WaitingFor {
   recommended?: QuestionRecommendation;
   /** Deterministic origin facts the runner adds. */
   where?: QuestionWhere;
+  /**
+   * Human-attention disposition (packages/core/needs-you-admission.ts), stamped
+   * by the worker PATCH route on every park: only `ask` (or a `hold` past its
+   * `resurfaceAt`) is admitted to Needs You. A runner may send `ask`/`hold`
+   * from its question-gate reply, or `recovered` with a `repairTaskId` the
+   * server verifies; anything else is re-checked server-side.
+   */
+  disposition?: 'ask' | 'hold' | 'recovered';
+  dispositionBy?: 'gate' | 'server_recheck' | 'permission';
+  /** The question gate's outcome that produced the disposition, when the gate did. */
+  gateOutcome?: string;
+  /** The hard rail that forced an `ask`. */
+  rail?: string;
+  /** The repair task that owns a `recovered` park. */
+  repairTaskId?: string;
+  holdReason?: string;
+  /** ISO timestamp a `hold` is surfaced at. */
+  resurfaceAt?: string;
 }
 
 /** Normalize mixed options (string[] or WaitingForOption[]) to WaitingForOption[] */

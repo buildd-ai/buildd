@@ -28,8 +28,16 @@ export interface WaitingFor {
   context?: string;
   recommended?: { label: string; reason?: string };
   where?: { taskTitle?: string; branch?: string; file?: string };
-  /** Set only to `'hold'` — Jev held this question rather than asking outright (question-gate.ts). */
-  disposition?: 'hold';
+  /**
+   * The question gate's human-attention disposition (packages/core/needs-you-admission.ts):
+   * `ask`, `hold` (Jev held it), or `recovered` (a repair task owns it). Absent when no gate
+   * reply exists — the server then re-checks the park itself.
+   */
+  disposition?: 'ask' | 'hold' | 'recovered';
+  /** The gate outcome behind `disposition`, the rail that forced an ask, the repair task of a recovered park. */
+  gateOutcome?: string;
+  rail?: string;
+  repairTaskId?: string;
   holdReason?: string;
   /** ISO timestamp; see question-gate.ts `HOLD_RESURFACE_MS`. */
   resurfaceAt?: string;

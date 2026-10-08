@@ -15,9 +15,10 @@
  *  - `decide` — Jev picked an option; the answer becomes the AskUserQuestion
  *    tool result and the agent continues — this does NOT count against the
  *    pushback cap, it is a final answer, not a request to rewrite.
- *  - `send` — park as `waiting_input`, same as always; a `hold` disposition
- *    tags the parked `waitingFor`, and the server then parks it without a
- *    notification until its deadline (apps/web/src/lib/question-hold.ts).
+ *  - `send` — park as `waiting_input`, same as always, tagged with the gate's
+ *    disposition (`gateTagged`): a `hold` parks without a notification until
+ *    its deadline (apps/web/src/lib/question-hold.ts); an `ask` is what admits
+ *    it to Needs You (packages/core/needs-you-admission.ts).
  * Any failure sends the question unchanged.
  */
 import { deriveQuestionBrief } from '@buildd/core/question-brief';
@@ -87,6 +88,9 @@ export function questionPayload(w: WaitingFor): Record<string, unknown> {
     ...(w.recommended ? { recommended: w.recommended } : {}),
     ...(w.where ? { where: w.where } : {}),
     ...(w.disposition ? { disposition: w.disposition } : {}),
+    ...(w.gateOutcome ? { gateOutcome: w.gateOutcome } : {}),
+    ...(w.rail ? { rail: w.rail } : {}),
+    ...(w.repairTaskId ? { repairTaskId: w.repairTaskId } : {}),
     ...(w.holdReason ? { holdReason: w.holdReason } : {}),
     ...(w.resurfaceAt ? { resurfaceAt: w.resurfaceAt } : {}),
   };
@@ -105,14 +109,31 @@ export interface QuestionChecker {
   ): Promise<QuestionGateReply>;
 }
 
-/** The parked question, tagged with the gate's `hold` fields when the reply disposed to hold. */
-export function holdTagged(question: WaitingFor, reply?: QuestionGateReply | null): WaitingFor {
-  if (reply?.disposition !== 'hold') return question;
+/**
+ * The parked question, tagged with the gate's human-attention disposition so
+ * the server admits it to Needs You as the gate said (apps/web/src/lib/park-disposition.ts):
+ * `hold` with its fields, `recovered` with its repair task, otherwise `ask`
+ * with the gate's outcome and rail. No reply (no gate, or the call failed):
+ * untagged, and the server re-checks it itself.
+ */
+export function gateTagged(question: WaitingFor, reply?: QuestionGateReply | null): WaitingFor {
+  if (!reply) return question;
+  if (reply.disposition === 'hold') {
+    return {
+      ...question,
+      disposition: 'hold',
+      ...(reply.holdReason ? { holdReason: reply.holdReason } : {}),
+      ...(reply.resurfaceAt ? { resurfaceAt: reply.resurfaceAt } : {}),
+    };
+  }
+  if (reply.outcome === 'recovered' && reply.repairTaskId) {
+    return { ...question, disposition: 'recovered', gateOutcome: reply.outcome, repairTaskId: reply.repairTaskId };
+  }
   return {
     ...question,
-    disposition: 'hold',
-    ...(reply.holdReason ? { holdReason: reply.holdReason } : {}),
-    ...(reply.resurfaceAt ? { resurfaceAt: reply.resurfaceAt } : {}),
+    disposition: 'ask',
+    gateOutcome: reply.outcome,
+    ...(reply.rail ? { rail: reply.rail } : {}),
   };
 }
 

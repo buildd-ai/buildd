@@ -2833,8 +2833,95 @@ describe('PATCH /api/workers/[id]', () => {
       await park(['packages/core/drizzle/0001_add_column.sql']);
       expect(askedSomeone()).toBe(true);
       expect(ledgered()).toBe(true);
-      expect(capturedSet.waitingFor.disposition).toBeUndefined();
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'ask', rail: 'migration' });
       expect(capturedSet.waitingFor.resurfaceAt).toBeUndefined();
+    });
+  });
+
+  // Needs You admission (lib/park-disposition.ts, @buildd/core/needs-you-admission):
+  // no park is stored without a human-attention disposition, and only an
+  // admitted one notifies.
+  describe('park disposition', () => {
+    const TEAM_WS = { dataClass: null, teamId: 'team-1', gitConfig: null };
+    const REPAIR_ID = 'abcdef12-0000-4000-8000-000000000000';
+    let capturedSet: any;
+    async function parkWith(waitingFor: Record<string, unknown>, opts: { pathManifest?: string[]; stored?: unknown } = {}) {
+      capturedSet = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'waiting_input', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) };
+        }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null, waitingFor: opts.stored ?? null });
+      mockWorkspacesFindFirst.mockResolvedValue(TEAM_WS as any);
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', title: 'Visual QA', missionId: 'mission-1', pathManifest: opts.pathManifest ?? ['apps/web/src/lib/export.ts'] } as any);
+      mockNotifySubject.mockClear();
+      mockRecordEvent.mockClear();
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'waiting_input', waitingFor },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+    }
+    const askedSomeone = () => mockNotifySubject.mock.calls.some((c: any) => c[1] === 'needsAttention');
+    const ledgered = () => mockRecordEvent.mock.calls.some((c: any) => c[0]?.type === 'task.needs_input');
+    const BLOCKER = {
+      type: 'question',
+      prompt: 'Should I skip visual QA?',
+      context: 'Visual QA cannot boot the app: the mission migration is below the migration high-water mark.',
+      options: [{ label: 'Skip visual QA' }, { label: 'Wait' }],
+    };
+
+    afterEach(() => { mockWorkspacesFindFirst.mockResolvedValue(null); });
+
+    it('a legacy-runner park (no gate disposition) describing a recoverable blocker self-routes: repair task owns it, nobody asked', async () => {
+      // The real filer runs against the mocked db: its live-repair lookup
+      // returns a row, so the repair is reused rather than inserted.
+      await parkWith(BLOCKER);
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'recovered', dispositionBy: 'server_recheck', gateOutcome: 'recovered' });
+      expect(typeof capturedSet.waitingFor.repairTaskId).toBe('string');
+      expect(askedSomeone()).toBe(false);
+      expect(ledgered()).toBe(false);
+    });
+
+    it('a re-send of a question the server already disposed reuses it and files nothing twice', async () => {
+      await parkWith(BLOCKER, { stored: { ...BLOCKER, disposition: 'recovered', dispositionBy: 'server_recheck', repairTaskId: REPAIR_ID } });
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'recovered', repairTaskId: REPAIR_ID });
+      expect(askedSomeone()).toBe(false);
+    });
+
+    it('a hard-rail legacy park still asks, even when it reads like a recoverable blocker', async () => {
+      await parkWith(BLOCKER, { pathManifest: ['packages/core/drizzle/0001_add_column.sql'] });
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'ask', dispositionBy: 'server_recheck', rail: 'migration' });
+      expect(capturedSet.waitingFor.repairTaskId).toBeUndefined();
+      expect(askedSomeone()).toBe(true);
+      expect(ledgered()).toBe(true);
+    });
+
+    it('a real decision from a legacy runner is stamped ask and notifies', async () => {
+      await parkWith({ type: 'question', prompt: 'Should the export use CSV or JSON?', options: [{ label: 'CSV' }, { label: 'JSON' }] });
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'ask', dispositionBy: 'server_recheck' });
+      expect(askedSomeone()).toBe(true);
+    });
+
+    it('a gate-tagged ask is kept as the gate said, with its outcome', async () => {
+      await parkWith({ type: 'question', prompt: 'CSV or JSON?', disposition: 'ask', gateOutcome: 'asked', rail: 'bogus' });
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'ask', dispositionBy: 'gate', gateOutcome: 'asked' });
+      expect(capturedSet.waitingFor.rail).toBeUndefined();
+    });
+
+    it('a permission prompt carries a disposition before it renders', async () => {
+      await parkWith({ type: 'permission', prompt: 'Permission required for Bash: rm -rf dist', options: ['Allow once', 'Deny'] });
+      expect(capturedSet.waitingFor).toMatchObject({ type: 'permission', disposition: 'ask', dispositionBy: 'permission' });
+    });
+
+    it('a runner-tagged recovered park whose repair task is not in this workspace is re-checked, not trusted', async () => {
+      await parkWith({ type: 'question', prompt: 'Which export format?', disposition: 'recovered', repairTaskId: 'not-a-uuid' });
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'ask', dispositionBy: 'server_recheck' });
+      expect(capturedSet.waitingFor.repairTaskId).toBeUndefined();
     });
   });
 
@@ -11261,7 +11348,8 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(capturedSet.waitingFor).toEqual({ type: 'question' });
+      // No prose — but the disposition survives: Needs You admission reads it.
+      expect(capturedSet.waitingFor).toEqual({ type: 'question', disposition: 'ask', dispositionBy: 'server_recheck' });
       expect(capturedSet.waitingFor.prompt).toBeUndefined();
     });
 

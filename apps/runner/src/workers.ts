@@ -150,7 +150,7 @@ import {
 } from './bwrap-mount-allowlist';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 import { asksAQuestion } from './ask-user-question.js';
-import { holdTagged, questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
+import { gateTagged, questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
 import type { QuestionGateReply } from '@buildd/core/question-gate';
 import { QUESTION_GATE_RUNNER_TIMEOUT_MS } from '@buildd/core/question-gate';
 import {
@@ -2901,7 +2901,7 @@ export class WorkerManager {
     const firstQuestion = questions?.[0];
     const questionText = firstQuestion?.question || 'Awaiting input';
     console.log(`[Worker ${worker.id}] AskUserQuestion detected — toolUseId=${toolUseId}, question="${questionText.slice(0, 60)}"`);
-    const question = holdTagged(questionFromToolInput(worker, input, toolUseId), gateReply);
+    const question = gateTagged(questionFromToolInput(worker, input, toolUseId), gateReply);
     worker.waitingFor = question;
     worker.currentAction = questionHeader(input) || 'Question';
     this.addMilestone(worker, { type: 'status', label: `Question: ${questionHeader(input) || 'Awaiting input'}`, ts: Date.now() });
@@ -3025,14 +3025,19 @@ export class WorkerManager {
     label: SessionEndLabel,
     disposition: 'ask' | 'hold',
     note: string,
+    gateReply?: QuestionGateReply,
   ): Promise<void> {
-    sessionLog(worker.id, 'info', 'session_end_park', `label=${label} disposition=${disposition}`, worker.taskId);
-    const question: WaitingFor = {
+    sessionLog(worker.id, 'info', 'session_end_park', `label=${label} disposition=${gateReply?.disposition ?? disposition}`, worker.taskId);
+    const base: WaitingFor = {
       type: 'question',
       prompt: 'This session ended without delivering anything, and nothing here decided it for you.',
       context: `Classified as: ${label}. ${note}`.trim(),
-      ...(disposition === 'hold' ? { disposition: 'hold' as const, holdReason: note } : {}),
     };
+    // The gate's own disposition when it answered (so a recovered blocker is
+    // not admitted to Needs You); with no reply the server re-checks the park.
+    const question: WaitingFor = gateReply
+      ? gateTagged(base, gateReply)
+      : disposition === 'hold' ? { ...base, disposition: 'hold', holdReason: note } : base;
     worker.waitingFor = question;
     worker.status = 'waiting';
     worker.currentAction = 'Needs a person';
@@ -3063,7 +3068,7 @@ export class WorkerManager {
     task: BuilddTask,
   ): Promise<
     | { action: 'retry' | 'fail'; text: string }
-    | { action: 'park'; disposition: 'ask' | 'hold'; text: string }
+    | { action: 'park'; disposition: 'ask' | 'hold'; text: string; reply?: QuestionGateReply }
   > {
     const diagnosis = (worker.lastAssistantMessage || '').trim().slice(0, 300);
     const input = genuinelyBlockedQuestionInput(diagnosis || undefined);
@@ -3095,10 +3100,12 @@ export class WorkerManager {
     // error, or a `decide` on neither offered option) fails open to a
     // human-facing park — the only gate reply this mechanism ever treats as
     // "apply the decision without a person" is an actual `decide` on one of
-    // the two options above.
+    // the two options above. A `recovered` reply still parks, but tagged
+    // with its repair task (`gateTagged`), so it never reaches Needs You.
     return {
       action: 'park',
       disposition: reply.disposition === 'hold' ? 'hold' : 'ask',
+      reply,
       text: reply.reason || (reply.disposition === 'hold' ? 'Held — it did not look urgent enough to interrupt someone right now.' : 'Nothing here decided it, so a person should.'),
     };
   }
@@ -4990,7 +4997,7 @@ export class WorkerManager {
             if (label === 'genuinely_blocked') {
               const routed = await this.routeGenuinelyBlocked(worker, task);
               if (routed.action === 'park') {
-                await this.parkSessionEnd(worker, label, routed.disposition, routed.text);
+                await this.parkSessionEnd(worker, label, routed.disposition, routed.text, routed.reply);
                 return;
               }
               if (routed.action === 'retry') {
