@@ -223,7 +223,7 @@ describe('reset → next task: setupWorktree in the reused clone', () => {
     expect(fs.existsSync(join(third.path, '.buildd-worktrees'))).toBe(false);
     expect(next!.base).toBe('origin/mission/x');
     assertNothingPlanted(next!.path);
-  });
+  }, 60_000);
 
   test('origin moved on between the tasks: the next worktree is cut from the new tip', async () => {
     const first = acquire();

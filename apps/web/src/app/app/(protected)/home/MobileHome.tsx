@@ -84,8 +84,13 @@ function AttentionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key
 
 export interface HomeFlightRow { key: string; title: string; agent: string; href: string; age: string; fixing: boolean }
 
-export function MobileHome({ items: serverItems, ask, live, capacity, mergedToday, inCi, shipped, flight, timeZone }: {
-  items: HomeAttentionItem[]; ask: ReactNode; live: number; capacity: number; mergedToday: number; inCi: number;
+export function MobileHome({ items: serverItems, ask, setup = null, runnerConnected, live, capacity, mergedToday, inCi, shipped, flight, timeZone }: {
+  items: HomeAttentionItem[]; ask: ReactNode;
+  /** The getting-started checklist while it applies: the phone's next step for a new team. */
+  setup?: ReactNode;
+  /** false when the team has no runner: there is no fleet to be working without you. */
+  runnerConnected?: boolean;
+  live: number; capacity: number; mergedToday: number; inCi: number;
   shipped: HomeShippedMission[]; flight: HomeFlightRow[]; timeZone?: string | null;
 }) {
   const [done, setDone] = useState<Record<string, string>>({});
@@ -97,7 +102,7 @@ export function MobileHome({ items: serverItems, ask, live, capacity, mergedToda
   const items = useMemo(() => admitWaitingTasks(serverItems, waiting, needsInputTaskHref), [serverItems, waiting]);
   useHideNeedsInputBannerOnPhone(true);
   const open = items.filter(i => !done[i.key]);
-  const copy = homeAttentionCopy(open);
+  const copy = homeAttentionCopy(open, { runnerConnected });
   useEffect(() => { publishHomeAttentionCount(copy.count); }, [copy.count]);
   const m = shipped[0];
   return <div data-testid="phone-home" className="md:hidden text-text-primary">
@@ -105,9 +110,10 @@ export function MobileHome({ items: serverItems, ask, live, capacity, mergedToda
     <h1 className="font-voice text-display font-medium normal-case tracking-normal">{copy.headline}</h1>
     <p className="mb-6 mt-2 font-voice text-lede italic text-text-secondary">{copy.subline}</p>
     {ask}
+    {setup}
     <section className="mb-8"><div className="mb-3 flex items-center justify-between"><h2 className="section-label">Needs you</h2><span data-testid="phone-needs-you-count" className="text-meta text-text-muted">{copy.count} open</span></div>
       <div className="space-y-4">{items.map(item => done[item.key] ? <p key={item.key} className="flex gap-2 border-b border-border-default py-3 text-body"><i className="mt-1 h-2 w-2 shrink-0 bg-status-success" /><Link href={item.href}>{done[item.key]} · {item.title}</Link></p> : <AttentionCard key={item.key} item={item} onDone={(key, label) => setDone(prev => ({ ...prev, [key]: label }))} />)}</div>
-      {copy.count === 0 && <p className="border border-border-default p-4 font-convo text-body text-text-secondary">All clear. Buildd will reach you when something needs a decision.</p>}
+      {copy.count === 0 && !setup && <p className="border border-border-default p-4 font-convo text-body text-text-secondary">All clear. Buildd will reach you when something needs a decision.</p>}
     </section>
     <section className="mb-8"><h2 className="section-label mb-3">Just shipped</h2>{m ? <article className="border border-border-default bg-[var(--chat-surface)] p-4"><div className="flex justify-between gap-2 text-meta"><span className="flex items-center gap-2 text-status-success"><i className="h-2 w-2 bg-status-success" />shipped {new Date(m.completedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', ...(timeZone ? { timeZone } : {}) })}</span>{m.criteria && <span>{m.criteria.passed}/{m.criteria.total} criteria</span>}</div><h3 className="mt-3 text-title font-bold">{m.title}</h3><dl className="mt-4 grid grid-cols-3 gap-3 border-t border-border-default pt-3">{[[m.prs, 'PRs merged'], ...shippedDurationFacts(m)].slice(0, 3).map(([value, label]) => <div key={label}><dt className="text-meta text-text-muted">{label}</dt><dd className="text-heading">{value}</dd></div>)}</dl><Link className="mt-3 inline-flex min-h-11 items-center text-body" href={shippedSummaryHref(m.href)}>Read summary →</Link></article> : <p className="font-convo text-body text-text-muted">Nothing shipped today.</p>}</section>
     <section><div className="mb-3 flex justify-between"><h2 className="section-label">In flight</h2><span className="text-meta text-text-muted">{flight.length} running</span></div><div className="border-t border-border-default">{flight.slice(0, 4).map(row => <Link key={row.key} href={row.href} className="flex min-h-14 items-center gap-3 border-b border-border-default py-2"><i className={`h-2 w-2 shrink-0 ${row.fixing ? 'bg-status-error' : 'bg-text-primary'}`} /><span className="min-w-0 flex-1"><span className="block truncate font-convo text-title font-medium">{row.title}</span><span className="text-meta text-text-muted">{row.agent}</span></span><span className="text-meta text-text-muted">{row.age}</span></Link>)}</div><Link href="/app/tasks" className="inline-flex min-h-11 items-center text-body text-text-secondary">All {flight.length} in Activity →</Link></section>
