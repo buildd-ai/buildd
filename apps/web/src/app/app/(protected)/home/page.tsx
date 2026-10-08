@@ -45,6 +45,7 @@ import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup'
 import { SwipeProvider } from '@/components/SwipeableRow';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
+import * as missionHelpers from '@buildd/core/mission-helpers';
 import { crossedMilestone } from '@buildd/core/mission-helpers';
 import { InterruptReviewButton } from './InterruptReviewButton';
 import HomeAutoRefresh from './HomeAutoRefresh';
@@ -585,7 +586,7 @@ export default async function HomePage({
               id: m.id, title: m.title, status: m.status, href: `/app/missions/${m.id}`,
               isHeld: m.isHeld, integrationBranch: m.integrationBranchEnabled === true,
               tasks: m.tasks as unknown as Parameters<typeof projectMissionDelivery>[0]['tasks'],
-            }),
+            }, missionHelpers),
             status: m.status,
             liveAgents: liveWorkerCounts.get(m.id) ?? 0,
           }));

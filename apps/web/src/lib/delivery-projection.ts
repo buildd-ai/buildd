@@ -19,7 +19,7 @@
  * from today's worker/PR fields. When the kernel lands, `projectKernelState` is
  * the single seam to swap in; nothing downstream changes.
  */
-import { computeMissionProgress, deriveTaskType, isAttempt } from '@buildd/core/mission-helpers';
+import type { computeMissionProgress, deriveTaskType, isAttempt } from '@buildd/core/mission-helpers';
 import { prShipState } from '@buildd/core/pr-shipped';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 
@@ -308,15 +308,27 @@ export interface MissionDelivery {
 const MISSION_PRIORITY: readonly DeliveryKind[] = ['needs', 'notlanded', 'unavailable', 'repair', 'audit', 'landing', 'build', 'waiting', 'held', 'planning', 'landed'];
 const OPEN_MISSION_STATUSES = new Set(['active', 'paused', 'budget_exhausted']);
 
+/**
+ * The missions module's task rules, passed in by the caller: this file is core
+ * and core never imports a module (scripts/module-boundaries.test.ts). Callers
+ * pass `@buildd/core/mission-helpers` itself, so the counts match every surface.
+ */
+export interface MissionTaskRules {
+  computeMissionProgress: typeof computeMissionProgress;
+  deriveTaskType: typeof deriveTaskType;
+  isAttempt: typeof isAttempt;
+}
+
 /** A reviewer run is audit, not repair. */
-const isRepairAttempt = (t: MissionTaskRow) => {
-  const type = deriveTaskType(t);
+const isRepairAttempt = (rules: MissionTaskRules) => (t: MissionTaskRow) => {
+  const type = rules.deriveTaskType(t);
   return type !== 'review' && type !== 'review-retry';
 };
 /** Platform signals filed by agents; never the face of a mission outcome. */
 const isFriction = (t: { title: string }) => /^\[friction\]/i.test(t.title.trim());
 
-export function projectMissionDelivery(m: MissionDeliveryInput): MissionDelivery {
+export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTaskRules): MissionDelivery {
+  const { computeMissionProgress, isAttempt } = rules;
   const progress = computeMissionProgress(m.tasks.map(t => ({ ...t, dependsOn: undefined, workers: (t.workers ?? []).map(w => ({ ...w })) })));
   const attempts = new Map<string, MissionTaskRow[]>();
   for (const t of m.tasks) {
@@ -330,7 +342,7 @@ export function projectMissionDelivery(m: MissionDeliveryInput): MissionDelivery
     const workers = [...(t.workers ?? []), ...kids.flatMap(k => k.workers ?? [])];
     // An attempt that succeeded resolves the parent (computeMissionProgress's best-status rule).
     const status = kids.some(k => k.status === 'completed') && t.status === 'failed' ? 'completed' : t.status;
-    return { t, workers, status, repairRounds: kids.filter(isRepairAttempt).length };
+    return { t, workers, status, repairRounds: kids.filter(isRepairAttempt(rules)).length };
   });
   const landedIds = new Set<string>();
   const deliveries = first.map(({ t, workers, status, repairRounds }) => {

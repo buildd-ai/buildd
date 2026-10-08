@@ -6,7 +6,10 @@
  * an agent-done task landed before its PR merges, and never ask a person.
  */
 import { describe, expect, it } from 'bun:test';
-import { projectMissionDelivery, projectTaskDelivery, type DeliveryKind, type MissionTaskRow, type ReviewEvidence, type TaskDeliveryInput } from './delivery-projection';
+import { projectMissionDelivery as project, projectTaskDelivery, type DeliveryKind, type MissionTaskRow, type ReviewEvidence, type TaskDeliveryInput } from './delivery-projection';
+import * as missionHelpers from '@buildd/core/mission-helpers';
+
+const projectMissionDelivery = (m: Parameters<typeof project>[0]) => project(m, missionHelpers);
 
 const PR = 'https://github.com/example/project/pull/34';
 

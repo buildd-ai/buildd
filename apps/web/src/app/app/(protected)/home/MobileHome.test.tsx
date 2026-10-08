@@ -5,7 +5,9 @@ const { MobileHome } = await import('./MobileHome');
 const { deriveHomeAttention: derive } = await import('@/lib/home-attention');
 const { isActionableChip } = await import('@/lib/action-queue');
 const deriveHomeAttention = (input: Omit<Parameters<typeof derive>[0], 'isActionable'>) => derive({ ...input, isActionable: isActionableChip });
-const { projectMissionDelivery, selectHomeMilestones } = await import('@/lib/delivery-projection');
+const { projectMissionDelivery: project, selectHomeMilestones } = await import('@/lib/delivery-projection');
+const missionHelpers = await import('@buildd/core/mission-helpers');
+const projectMissionDelivery = (m: Parameters<typeof project>[0]) => project(m, missionHelpers);
 const PR = 'https://github.com/example/project/pull/1';
 const deliveries = [
   projectMissionDelivery({ id: 'm-audit', title: 'Typo-tolerant search', status: 'active', href: '/app/missions/m-audit', tasks: [

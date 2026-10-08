@@ -5,13 +5,16 @@ import {
   deliveryCounts,
   deliveryStageIndex,
   projectKernelState,
-  projectMissionDelivery,
+  projectMissionDelivery as project,
   projectTaskDelivery,
   repairBadge,
   selectHomeMilestones,
   type MissionDeliveryInput,
   type MissionTaskRow,
 } from './delivery-projection';
+import * as missionHelpers from '@buildd/core/mission-helpers';
+
+const projectMissionDelivery = (m: Parameters<typeof project>[0]) => project(m, missionHelpers);
 
 const PR = 'https://github.com/example/project/pull/1';
 
