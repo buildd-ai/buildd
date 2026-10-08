@@ -500,7 +500,7 @@ describe('Error Handling', () => {
       }] }));
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      for (let i = 0; i < 100 && manager.getWorker('w-cap-ctx')?.status !== 'error'; i++) await new Promise(r => setTimeout(r, 50));
 
       expect(manager.getWorker('w-cap-ctx')?.status).toBe('error');
       expect(Object.keys((manager as any).contextBreaker.snapshot())).toEqual([]);
