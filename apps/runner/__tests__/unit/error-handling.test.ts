@@ -524,7 +524,8 @@ describe('Error Handling', () => {
         lastQueryOptions = null;
         manager = new WorkerManager(makeConfig({ maxBudgetUsd: 5 } as any));
         await manager.claimAndStart(makeTask());
-        await new Promise(r => setTimeout(r, 200));
+        // Poll rather than sleep a fixed 200ms: session setup is slower on loaded CI runners.
+        for (let i = 0; i < 100 && lastQueryOptions === null; i++) await new Promise(r => setTimeout(r, 50));
         expect(lastQueryOptions).not.toBeNull();
         return lastQueryOptions;
       }

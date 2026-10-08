@@ -4717,9 +4717,27 @@ export async function handleBuilddAction(
 
       const totalsParts = [`${fmtTokens(t.inputTokens)} in / ${fmtTokens(t.outputTokens)} out`];
       if (t.cacheReadTokens > 0) totalsParts.push(`${fmtTokens(t.cacheReadTokens)} cache read`);
-      if (t.costUsd > 0) totalsParts.push(`$${t.costUsd.toFixed(2)}`);
+      // With a basis split, the dollar total is only ever printed as "combined"
+      // next to it (docs/specs/real-and-virtual-cost.md).
+      const basisSplit = data.byBasis?.total;
+      if (t.costUsd > 0) totalsParts.push(basisSplit ? `$${t.costUsd.toFixed(2)} combined` : `$${t.costUsd.toFixed(2)}`);
       totalsParts.push(`${t.turns} turns`, `${t.toolCalls} tool calls`);
       lines.push(`Totals: ${totalsParts.join(' · ')}`);
+      const basisLine = (split: any): string | null => {
+        if (!split) return null;
+        const parts: string[] = [];
+        if (split.real?.costUsd > 0) parts.push(`real $${split.real.costUsd.toFixed(2)}`);
+        if (split.virtual?.costUsd > 0) parts.push(`virtual $${split.virtual.costUsd.toFixed(2)} (list price)`);
+        if (split.mixed?.costUsd > 0) parts.push(`mixed $${split.mixed.costUsd.toFixed(2)}`);
+        if (split.unknown?.workers > 0) parts.push(`basis not reported $${(split.unknown.costUsd ?? 0).toFixed(2)} (${split.unknown.workers} worker(s))`);
+        return parts.length > 0 ? parts.join(' · ') : null;
+      };
+      const totalBasis = basisLine(basisSplit);
+      if (totalBasis) lines.push(`Cost: ${totalBasis}`);
+      for (const [key, label] of [['interactive', 'Interactive'], ['runner', 'Runners']] as const) {
+        const line = basisLine(data.byBasis?.byExecutor?.[key]);
+        if (line) lines.push(`  ${label}: ${line}`);
+      }
 
       const perTaskParts: string[] = [];
       const inputDist = dist(p?.inputTokens);
