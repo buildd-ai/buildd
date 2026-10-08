@@ -7,21 +7,13 @@ superseded_reason: >
   organizer only when the deterministic stuck check (isMissionStuck) holds.
   That answers this doc's question ("does this cycle need the organizer?")
   without a model call, so the triage call site was removed from the
-  schedules cron and the heartbeat_triage experiment concluded. The module,
-  the looks table and the experiment kind stay until a follow-up drops them,
-  so the concluded experiment's readout still works.
+  schedules cron and the heartbeat_triage experiment concluded. The triage
+  module and its arm-resolution helpers are deleted; the experiment kind, the
+  looks table and the readout stay so existing experiments remain readable.
 # Structural conformance only; passing does not certify every prose invariant.
-# Still present: the triage look, the experiment kind, the looks table and the
-# readout. Its call site in the schedules cron is gone (see superseded_reason).
+# Still present: the experiment kind's arm decision, the looks table and the
+# readout. The triage look itself is deleted (see superseded_reason).
 assertions:
-  - id: "triage-look"
-    type: "symbol"
-    name: "triageHeartbeat"
-    path: "apps/web/src/lib/heartbeat-triage.ts"
-  - id: "triage-gate"
-    type: "symbol"
-    name: "gateHeartbeatTriage"
-    path: "apps/web/src/lib/heartbeat-triage.ts"
   - id: "experiment-arm"
     type: "symbol"
     name: "decideHeartbeatTriageArm"

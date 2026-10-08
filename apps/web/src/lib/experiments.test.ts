@@ -44,12 +44,14 @@ describe('visibility', () => {
 });
 
 describe('parseCreateExperiment', () => {
-  it('heartbeat_triage: accepted, gets its own default config, and has NO implicit share', () => {
-    const noShare = parseCreateExperiment({ key: 'triage-skip', title: 'Triage skips', kind: 'heartbeat_triage' });
-    expect(!noShare.ok && noShare.error).toContain('treatmentFraction is required');
-    const r = parseCreateExperiment({ key: 'triage-skip', title: 'Triage skips', kind: 'heartbeat_triage', treatmentFraction: 0.3 });
-    expect(r.ok && r.value.kind).toBe('heartbeat_triage');
-    expect(r.ok && (r.value.config as any)).toMatchObject({ arms: { control: 'shadow', treatment: 'skip_on_confident_wait' }, waitMinConfidence: 0.9 });
+  it.each(['heartbeat_triage', 'question_gate'])('%s: new experiments are refused with a retirement message', (kind) => {
+    const r = parseCreateExperiment({ key: 'retired', title: 'Retired', kind, treatmentFraction: 0.3 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.status).toBe(400);
+      expect(r.error).toContain(kind);
+      expect(r.error).toContain('retired');
+    }
   });
 
   // The codebase-memory graph was removed, and with it the cbm_access kind.
@@ -94,6 +96,17 @@ describe('parseCreateExperiment', () => {
     const r = parseCreateExperiment({ key: 'k', title: 't', status: 'running' });
     expect(r.ok).toBe(true);
     if (r.ok) expect('status' in r.value).toBe(false);
+  });
+});
+
+describe('planExperimentPatch — retired kinds', () => {
+  const base = { status: 'draft', treatmentFraction: 0.5, policyVersion: 1, config: {}, startedAt: null, decision: null } as const;
+  it.each(['heartbeat_triage', 'question_gate'] as const)('%s cannot be started, but can be concluded', (kind) => {
+    const start = planExperimentPatch({ ...base, kind }, { status: 'running' }, NOW);
+    expect(start.ok).toBe(false);
+    if (!start.ok) expect(start.error).toContain('retired');
+    const done = planExperimentPatch({ ...base, kind }, { status: 'concluded', decision: 'retired' }, NOW);
+    expect(done.ok).toBe(true);
   });
 });
 
