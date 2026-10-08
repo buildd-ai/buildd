@@ -59,6 +59,16 @@ describe('splitPortfolio', () => {
     expect(olderDone.map(r => r.delivery.id)).toEqual(['done-old']);
     expect(COMPLETED_HISTORY_WINDOW_MS).toBe(7 * 86_400_000);
   });
+
+  it('files archived missions with history, so the open list matches the open counter', () => {
+    const archived = row('archived', [landedTask('a')], { status: 'archived', completedAt: null });
+    const rows = [...ALL, archived];
+    const { open, recentDone, olderDone } = splitPortfolio(rows, NOW);
+    expect(open.map(r => r.delivery.id)).not.toContain('archived');
+    expect(olderDone.map(r => r.delivery.id)).toContain('archived');
+    expect(recentDone.map(r => r.delivery.id)).not.toContain('archived');
+    expect(open.length).toBe(portfolioCounts(rows, { live: 0, max: 0 }).openMissions);
+  });
 });
 
 describe('sortPortfolio', () => {

@@ -33,7 +33,9 @@ export const COMPLETED_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export function splitPortfolio(rows: readonly PortfolioRow[], now: number) {
   const open: PortfolioRow[] = [];
   const done: PortfolioRow[] = [];
-  for (const r of rows) (r.status === 'completed' ? done : open).push(r);
+  // The projection's own `open` flag, the one the header counter reads: an
+  // archived mission is history, not an open row the counter skips.
+  for (const r of rows) (r.delivery.open ? open : done).push(r);
   done.sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0) || a.delivery.id.localeCompare(b.delivery.id));
   const recent = (r: PortfolioRow) => r.completedAt != null && now - r.completedAt < COMPLETED_HISTORY_WINDOW_MS;
   return { open, recentDone: done.filter(recent), olderDone: done.filter(r => !recent(r)) };
