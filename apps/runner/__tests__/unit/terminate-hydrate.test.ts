@@ -432,8 +432,11 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       const result = await manager.sendMessage('w-th-1', 'Please also add tests');
       expect(result).toBe(true);
 
-      // Wait for both layers to attempt
-      await new Promise(r => setTimeout(r, 500));
+      // Wait for both layers to attempt. Poll rather than sleep a fixed time:
+      // loaded CI runners are slower than 500ms
+      for (let i = 0; i < 100 && (queryCallCount < 2 || worker.status !== 'done'); i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       // Should have called query twice: Layer 1 (resume) + Layer 2 (reconstruction)
       expect(queryCallCount).toBeGreaterThanOrEqual(2);
