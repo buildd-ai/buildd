@@ -16,6 +16,7 @@ const { boardFixture } = await import('@/lib/mission-board.fixtures');
 const { buildVisualReviewFixtureModel } = await import('@/lib/visual-review-model.fixtures');
 const { cellStanding, describeVisualPhase, screensToReview } = await import('@/lib/visual-review-model');
 const { CanvasContext } = await import('@/components/chat/canvas-context');
+const { missionTaskStripFixture } = await import('@/app/app/dev/fixtures/mission-task-strip-fixtures');
 
 const render = (moment: Parameters<typeof boardFixture>[0], extra: Record<string, unknown> = {}) =>
   renderToStaticMarkup(<MissionBoard model={boardFixture(moment)} missionId="mission-1" {...extra} />);
@@ -536,5 +537,26 @@ describe('MissionBoard — Steer', () => {
       </CanvasContext.Provider>,
     );
     expect(html).not.toContain('steer-trigger');
+  });
+});
+
+// Regression (surface audit, mission-task-strip&variant=states): the failed,
+// PR-less tile had a red bar and an empty second row. Only colour said it
+// failed, while the strip drawer said "FAILED".
+describe('MissionBoard — a failed tile says so in words', () => {
+  const html = renderToStaticMarkup(<MissionBoard model={missionTaskStripFixture('states').model} missionId="mission-1" />);
+  const tiles = html.split('data-testid="board-tile"').slice(1).map(t => t.split('data-testid="board-tile"')[0]);
+  const failed = tiles.find(t => t.startsWith(' data-status="failed"')) ?? '';
+
+  it('the failed, PR-less tile carries the word "Failed"', () => {
+    expect(failed).not.toBe('');
+    expect(failed).toContain('data-testid="board-tile-failed"');
+    expect(failed).toContain('>Failed<');
+  });
+
+  it('no tile renders an empty board-tile-body row', () => {
+    for (const m of html.matchAll(/data-testid="board-tile-body"[^>]*>([\s\S]*?)<\/div>/g)) {
+      expect(m[1].replace(/<span class="flex-1"><\/span>/g, '').trim()).not.toBe('');
+    }
   });
 });
