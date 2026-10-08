@@ -6,6 +6,7 @@
  */
 
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
+import { compareWorkersChrono, newestFirst } from '@/lib/attempt-order';
 /** Task statuses of a retry that is still going to touch the PR. */
 const LIVE_ATTEMPT_STATUSES = new Set<string>(OPEN_TASK_STATUSES);
 
@@ -47,7 +48,10 @@ export function lineageWorkerHistory<W extends { id: string; createdAt: Date }>(
     for (const worker of a.workers) rows.push({ worker, attemptLabel: `attempt ${i + 2} · CI fix` });
   });
   const seen = new Set<string>();
-  return rows
-    .filter(r => (seen.has(r.worker.id) ? false : (seen.add(r.worker.id), true)))
-    .sort((a, b) => b.worker.createdAt.getTime() - a.worker.createdAt.getTime());
+  // Newest first by (createdAt, id): rows created in the same instant keep one
+  // order across renders and status flips (§3.2).
+  return newestFirst(
+    rows.filter(r => (seen.has(r.worker.id) ? false : (seen.add(r.worker.id), true))),
+    (a, b) => compareWorkersChrono(a.worker, b.worker),
+  );
 }

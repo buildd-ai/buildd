@@ -231,3 +231,31 @@ describe('a sign-in failure reads in plain words — tasks/[id]/page.tsx', () =>
     expect(pageSource).toContain('<TaskEvidenceCard status={task.status} result={task.result} workerError={taskWorkers[0]?.error ?? null} backend={taskBackend} />');
   });
 });
+
+// C-5 (attempt ordering): every worker/task list the page reads is ordered by
+// immutable columns with an id tiebreak, so two rows created in the same instant
+// never swap between renders, and the selections derived from them (latest,
+// active, PR worker, attempt numbering) never flip.
+describe('deterministic attempt order — tasks/[id]/page.tsx', () => {
+  it('never orders workers by createdAt without an id tiebreak', () => {
+    expect(pageSource).not.toMatch(/orderBy:\s*desc\(workers\.createdAt\)\s*[,}]/);
+    expect(pageSource).not.toMatch(/orderBy:\s*\[\s*desc\(workers\.createdAt\)\s*\]/);
+    const withTiebreak = pageSource.match(/orderBy:\s*\[desc\(workers\.createdAt\), desc\(workers\.id\)\]/g) ?? [];
+    expect(withTiebreak.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('never orders tasks by createdAt without an id tiebreak', () => {
+    expect(pageSource).not.toMatch(/orderBy:\s*asc\(tasks\.createdAt\)\s*[,}]/);
+    expect(pageSource).toMatch(/subTasks:\s*\{\s*columns:\s*\{[^}]*\},\s*orderBy:\s*\[asc\(tasks\.createdAt\), asc\(tasks\.id\)\]/);
+  });
+
+  it('picks latest / active / PR worker from the shared comparator, not from row order', () => {
+    expect(pageSource).toContain("from '@/lib/attempt-order'");
+    expect(pageSource).toContain('selectTaskWorkers(');
+    expect(pageSource).not.toMatch(/taskWorkers\.find\(w => w\.prUrl && w\.prNumber\)/);
+  });
+
+  it('numbers CI-retry attempts in task chrono order', () => {
+    expect(pageSource).toContain('oldestFirst(ciAttemptRows, compareTasksChrono)');
+  });
+});

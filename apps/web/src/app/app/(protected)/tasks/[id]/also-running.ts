@@ -9,9 +9,12 @@
 import { deriveRunEvidence, type RunEvidenceInput } from '@buildd/core/run-evidence';
 import { taskDisplayLabel } from '@buildd/core/task-label';
 import { taskPageHref } from '@/lib/mission-task-href';
+import { compareWorkersChrono, oldestFirst } from '@/lib/attempt-order';
 import type { PeerTask } from './TaskSidePanel';
 
-interface PeerWorkerRow extends Omit<RunEvidenceInput, 'milestones'> {
+interface PeerWorkerRow extends Omit<RunEvidenceInput, 'milestones' | 'createdAt'> {
+  id: string;
+  createdAt: Date;
   status: string;
   milestones: unknown;
   task: { id: string; title: string; label?: string | null; outputRequirement?: string | null; missionId: string | null } | null;
@@ -27,6 +30,9 @@ interface PeerWorkerRow extends Omit<RunEvidenceInput, 'milestones'> {
  *   specific relation to this task.
  * - Every row is drawn with the Board's scope + short label, so a raw
  *   "RESEARCH: …" title reads the same as a "feat(x): …" one.
+ * - Rows render oldest worker first by (createdAt, id). The loader picks *which*
+ *   peers by `updatedAt`, which every runner sync bumps; ordering by it made the
+ *   list reshuffle while it was being read.
  */
 export function sidePanelPeers(
   rows: readonly PeerWorkerRow[],
@@ -34,7 +40,7 @@ export function sidePanelPeers(
 ): PeerTask[] {
   const seen = new Set<string>();
   const out: PeerTask[] = [];
-  for (const w of rows) {
+  for (const w of oldestFirst(rows, compareWorkersChrono)) {
     const t = w.task;
     if (!t) continue;
     if (opts.missionId && t.missionId !== opts.missionId) continue;

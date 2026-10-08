@@ -11,7 +11,7 @@ import { DISPATCHABLE_BACKENDS, backendLabel, describeBackendRouting, isBackendP
 import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
-import { ARTIFACT_TYPES, isArtifactType, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
+import { ARTIFACT_TYPES, isArtifactType, isTerminalWorkerStatus, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-health-report';
 import type { DispatchHistoryEntry } from './dispatch-outbox';
@@ -6100,14 +6100,17 @@ export async function handleBuilddAction(
       // so checking task.status causes false-negatives for tasks that are actively
       // being worked on.
       const task = await api(`/api/tasks/${params.taskId}?include=workers`);
-      const allWorkers: any[] = Array.isArray(task.workers) ? task.workers : [];
-      // 'error' is terminal for the check-in route: it rejects that worker's next
-      // PATCH, so a queued message would never be collected. Selecting an errored
-      // worker as "the active one" produced a cheerful "queued for delivery on
-      // next worker check-in" for a check-in that can never happen.
-      const liveWorker = allWorkers.find(
-        (w) => w.status !== 'completed' && w.status !== 'failed' && w.status !== 'error',
-      );
+      // Newest first by (createdAt, id), whatever order the API listed them in:
+      // with two live rows created in the same instant the pick must not flip.
+      const workerTime = (w: any) => { const t = Date.parse(w?.createdAt ?? ''); return Number.isFinite(t) ? t : 0; };
+      const allWorkers: any[] = (Array.isArray(task.workers) ? task.workers.slice() : [])
+        .sort((a: any, b: any) => workerTime(b) - workerTime(a) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+      // Every terminal status is terminal here, superseded included. 'error' in
+      // particular: the check-in route rejects that worker's next PATCH, so a
+      // queued message would never be collected. Selecting an errored worker as
+      // "the active one" produced a cheerful "queued for delivery on next worker
+      // check-in" for a check-in that can never happen.
+      const liveWorker = allWorkers.find((w) => !isTerminalWorkerStatus(w.status));
       const erroredWorker = allWorkers.find((w) => w.status === 'error');
       const isUrgent = params.priority === 'urgent';
       // Urgent goes over Pusher, which can still reach a session the runner holds

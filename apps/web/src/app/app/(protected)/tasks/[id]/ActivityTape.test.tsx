@@ -30,3 +30,16 @@ describe('ActivityTape axis', () => {
     expect(end![1]).not.toContain('now');
   });
 });
+
+// Regression (360px screenshot, run-activity fixture): at ~290px the 75% label
+// sat under the end label and printed "30:40:00". Below md it gives way.
+describe('ActivityTape axis below md', () => {
+  it('hides the three-quarter label under md so it cannot collide with the end label', () => {
+    const T0 = 1_700_000_000_000;
+    const html = renderToStaticMarkup(<ActivityTape milestones={[{ type: 'action', label: 'Edit a.ts', ts: T0 + 60_000 } as never]} startMs={T0} nowMs={T0 + 2_400_000} live />);
+    const labels = [...html.matchAll(/<span data-axis="(\d)" class="([^"]+)"/g)].map(m => [m[1], m[2]]);
+    expect(labels.map(l => l[0])).toEqual(['0', '1', '2', '3']);
+    expect(labels[3][1]).toContain('hidden md:inline');
+    for (const [, cls] of labels.slice(0, 3)) expect(cls).not.toContain('hidden');
+  });
+});

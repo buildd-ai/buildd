@@ -3,8 +3,8 @@
  * the DOM. Layout (overflow at 360px, 44px tap targets) cannot be measured here;
  * scripts/qa/plans/run-activity.json asserts it in a real browser.
  *
- * Lifecycle and steering assertions use the merged mission components. The
- * remaining ordering assertion is activated when step C lands. Runs in its
+ * Lifecycle, steering and attempt-ordering assertions use the merged mission
+ * components. Runs in its
  * own process (scripts/run-unit-tests.ts), so the globals stay here.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
@@ -27,6 +27,7 @@ mock.module('@/lib/pusher-client', () => ({
 const { default: RunActivityFixture } = await import('./RunActivityFixture');
 const {
   ATTEMPT_FLIP,
+  attemptTie,
   FAILED_ERROR,
   LEGACY_LATEST_HEADLINE,
   LEGACY_PERCENT_STREAM,
@@ -147,5 +148,37 @@ describe('attempts with equal timestamps', () => {
     expect(order()).toEqual(before);
   });
 
-  test.todo('C: the same order for every permutation of the input (createdAt, then id)');
+  test('the same order for every permutation of the input (createdAt, then id)', async () => {
+    const s = await mount('attempts-tie');
+    const rendered = [...s.querySelectorAll('[data-worker-id]')].map(r => r.getAttribute('data-worker-id'));
+    // All three share one instant, so the id decides: newest-first is id descending.
+    expect(rendered).toEqual(['attempt-c', 'attempt-b', 'attempt-a']);
+    const { lineageWorkerHistory } = await import('../../(protected)/tasks/[id]/lineage-status');
+    const [a] = attemptTie.own;
+    const [b, c] = attemptTie.attempts.map(x => x.workers[0]);
+    for (const perm of [[b, c], [c, b]]) {
+      expect(lineageWorkerHistory([a], perm.map(w => ({ workers: [w] }))).map(r => r.worker.id)).toEqual(rendered as string[]);
+    }
+  });
+});
+
+// §4 M-2 / C-6: below md the rail is a summary + a 44px disclosure; opening it
+// lists every phase the md+ rail shows, labelled, with its state.
+describe('evidence rail below md', () => {
+  test('the disclosure opens the full labelled list of the phases the md+ rail shows', async () => {
+    const s = await mount('legacy-percent-stream');
+    const compact = s.querySelector('[data-testid="run-evidence-compact"]')!;
+    expect(compact).not.toBeNull();
+    const toggle = compact.querySelector<HTMLButtonElement>('button')!;
+    expect(toggle.className).toContain('min-h-11');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(text(compact)).toMatch(/· \d+ of \d+/);
+    await act(async () => { toggle.click(); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const phasesOf = (sel: string) => [...s.querySelectorAll(`${sel} li[data-phase]`)].map(li => `${li.getAttribute('data-phase')}:${li.getAttribute('data-state')}`);
+    const listed = phasesOf('[data-testid="run-evidence-list"]');
+    expect(listed.length).toBeGreaterThan(0);
+    expect(listed).toEqual(phasesOf('[data-testid="run-evidence-rail"]'));
+    for (const li of s.querySelectorAll('[data-testid="run-evidence-list"] li')) expect(li.className).toContain('min-h-11');
+  });
 });
