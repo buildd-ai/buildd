@@ -1111,6 +1111,37 @@ describe('S9–S15', () => {
     expect(reviewersCreated.length).toBe(1);
   });
 
+  // The live shape that stranded approved, green PRs: no "require up to date" protection, so GitHub
+  // says `clean` for a PR behind its base. Landing's freshness rail saw behind_by > 0 and asked for a
+  // refresh; T12 read `clean` as not_conflicting, every sweep, with no update-branch call. Ancestry
+  // decides instead: the base tip missing from the head is behind, and refresh_branch runs once.
+  test('S15 (refresh_branch, unprotected base): GitHub says clean but the head lacks the base tip → one pinned refresh, approval carried', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    gh.mergeable = 'clean';
+    gh.baseHead = 'B9';
+    updateBranch({ merged: 'R1' });
+    expect(await conflictDoor(o, { behindOnly: true })).toMatchObject({ dispatched: true, branchUpdated: true });
+    expect(ghWrites.filter((w) => w.path.endsWith('/update-branch')).map((w) => w.body)).toEqual([{ expected_head_sha: 'H1' }]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'R1', approvedHeads: ['H1', 'R1'] });
+    expect(reviewersCreated.length).toBe(1);
+    // The refreshed head carries the base tip: the same door is now a no-op, not a second refresh.
+    gh.ancestors.R1 = ['H1', 'B9'];
+    expect(await conflictDoor(o, { behindOnly: true })).toMatchObject({ dispatched: false, alreadyUpToDate: true });
+    expect(ghWrites.filter((w) => w.path.endsWith('/update-branch')).length).toBe(1);
+  });
+
+  test('S15 (refresh_branch, unprotected base): a head that already contains the base tip is not refreshed', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    gh.mergeable = 'clean';
+    gh.baseHead = 'B0';
+    gh.ancestors.H1 = ['B0'];
+    expect(await conflictDoor(o, { behindOnly: true })).toMatchObject({ dispatched: false, alreadyUpToDate: true });
+    expect(updateBranchCalls).toEqual([]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H1' });
+  });
+
   // Slice C: a door's real merge call answered "behind" is T16, and refresh_branch runs the
   // pinned update-branch (pr-branch-update.ts) with its expected_head (§6.7). Our own refresh
   // carries the approval forward, the next door lands it; the treadmill cap still bounds it.
