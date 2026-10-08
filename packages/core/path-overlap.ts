@@ -279,7 +279,11 @@ export function classifyManifestOverlap(
   if (paths.some(isMigrationPath)) return { kind: 'migration', paths };
   const setB = new Set(b.map(stripTrailingSep));
   const exact = [...new Set(a.map(stripTrailingSep))].filter(p => setB.has(p) && isFileShapedPath(p));
-  if (exact.length > 0) return { kind: 'exact_file', paths: exact };
+  // `paths` is ALWAYS the full intersection (prefix + exact): a pair that shares
+  // a file can also share a serialized directory, and the hard-surface check
+  // must see that directory too (`seq-dir/` vs `seq-dir/0042.ts` plus a shared
+  // `src/a.ts` is hard, as it was before same-file overlap went soft).
+  if (exact.length > 0) return { kind: 'exact_file', paths: [...exact, ...paths.filter(p => !exact.includes(p))] };
   return { kind: 'prefix', paths };
 }
 
@@ -338,15 +342,24 @@ export function partitionOverlapEdges(
   const soft: SoftOverlapEdge[] = [];
   if (!manifest?.length || isAdvisoryManifest(manifest)) return { hard, soft };
   const maxSoft = opts.maxSoft ?? MAX_SOFT_OVERLAPS_PER_TASK;
+  const candidates: SoftOverlapEdge[] = [];
   for (const o of others) {
     if (opts.skip?.(o.id)) continue;
     const overlap = classifyManifestOverlap(manifest, o.pathManifest ?? null);
     if (overlap.kind === 'none') continue;
     if (isHardOverlapKind(overlap.kind) || opts.isSerialized?.(overlap.paths, overlap.kind)) {
       if (!hard.includes(o.id)) hard.push(o.id);
-    } else if (soft.length < maxSoft && !soft.some(s => s.taskId === o.id)) {
-      soft.push({ taskId: o.id, paths: overlap.paths.slice(0, MAX_SOFT_OVERLAP_PATHS), kind: overlap.kind === 'exact_file' ? 'same_file' : 'prefix' });
+    } else if (!candidates.some(s => s.taskId === o.id)) {
+      candidates.push({ taskId: o.id, paths: overlap.paths.slice(0, MAX_SOFT_OVERLAP_PATHS), kind: overlap.kind === 'exact_file' ? 'same_file' : 'prefix' });
     }
+  }
+  // Same-file pairs take the soft budget first (they are the riskier evidence),
+  // then prefix pairs, each in input order. Anything past the budget is HARD:
+  // a pair with no stored evidence would otherwise run unheld (fail closed).
+  const ordered = [...candidates.filter(c => c.kind === 'same_file'), ...candidates.filter(c => c.kind !== 'same_file')];
+  for (const c of ordered) {
+    if (soft.length < maxSoft) soft.push(c);
+    else if (!hard.includes(c.taskId)) hard.push(c.taskId);
   }
   return { hard, soft };
 }

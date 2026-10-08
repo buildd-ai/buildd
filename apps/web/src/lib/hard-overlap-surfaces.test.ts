@@ -9,6 +9,7 @@ import {
   overlapIsHard as overlapIsHardWith,
 } from './hard-overlap-surfaces';
 import { resolveSerializedSurfaces } from './surface-ordering-config';
+import { classifyManifestOverlap } from '@buildd/core/path-overlap';
 
 const resolveHardOverlapSurfaces = (paths: string[], gitConfig: any) => resolveWith(paths, gitConfig, resolveSerializedSurfaces);
 const isHardOverlapSurface = (paths: string[], gitConfig: any) => isHardWith(paths, gitConfig, resolveSerializedSurfaces);
@@ -86,5 +87,14 @@ describe('overlapIsHard: generated and hotspot files are hard only for a same-fi
   it('an ordinary same-file overlap is soft; a malformed config is hard', () => {
     expect(overlapIsHard(['apps/web/src/lib/x.ts'], 'exact_file', gitConfig)).toBe(false);
     expect(overlapIsHard(['apps/web/src/lib/x.ts'], 'exact_file', { overlapHotspots: 'x' } as any)).toBe(true);
+  });
+});
+
+describe('review finding: a same-file pair is judged on its whole overlap', () => {
+  it('A: seq-dir/ + src/a.ts vs B: seq-dir/0042.ts + src/a.ts stays hard on a serialized seq-dir', () => {
+    const cfg = { sequenceNamespaces: [{ label: 'seq', dir: 'seq-dir/', anchorFile: 'seq-dir/meta.json', serialize: true }] } as any;
+    const o = classifyManifestOverlap(['seq-dir/', 'src/a.ts'], ['seq-dir/0042.ts', 'src/a.ts']);
+    expect(o.kind).toBe('exact_file');
+    expect(overlapIsHard(o.paths, o.kind, cfg)).toBe(true);
   });
 });
