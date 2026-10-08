@@ -6,7 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { checkConnectorRouting } from '@/app/api/workers/claim/connector-gate';
 
-export type ConnectorHealthStatus = 'ok' | 'auth_expired' | 'server_unreachable' | 'not_configured';
+export type ConnectorHealthStatus = 'ok' | 'auth_expired' | 'server_unreachable' | 'not_configured' | 'blocked';
 
 export interface ConnectorHealthEntry {
   connectorId: string;
@@ -16,6 +16,7 @@ export interface ConnectorHealthEntry {
 
 function modeToStatus(mode: string): ConnectorHealthStatus {
   if (mode === 'never_mounted') return 'not_configured';
+  if (mode === 'blocked_by_policy') return 'blocked';
   if (mode === 'expired_or_revoked') return 'auth_expired';
   if (mode === 'transient') return 'server_unreachable';
   return 'not_configured';

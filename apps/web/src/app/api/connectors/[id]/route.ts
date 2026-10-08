@@ -131,6 +131,7 @@ export async function PATCH(
           const dcrResult = await registerClient(
             discovered.authorizationServer.registration_endpoint,
             getCallbackUrl(req.nextUrl.origin),
+            { grantTypesSupported: discovered.authorizationServer.grant_types_supported },
           );
           updates.clientId = dcrResult.client_id;
           if (dcrResult.client_secret) {
