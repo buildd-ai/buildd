@@ -9,13 +9,18 @@ const mockDiscoverAndRegisterDeps = {
   register: mock(async () => ({ client_id: 'cid', client_secret: 'csecret' })),
 };
 
+class FakeRejected extends Error {
+  constructor(readonly needsApprovedClient: boolean, readonly description: string | null = null) { super('DCR failed'); }
+}
 mock.module('@/lib/mcp-oauth', () => ({
+  ClientRegistrationRejectedError: FakeRejected,
   discoverOAuthMetadata: mockDiscoverAndRegisterDeps.discover,
   registerClient: mockDiscoverAndRegisterDeps.register,
   getCallbackUrl: (o: string) => `${o}/api/connectors/callback`,
 }));
 mock.module('@buildd/core/secrets', () => ({ encrypt: (v: string) => `enc:${v}` }));
-mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: async () => 'https://resolved/icon.png' }));
+const mockIconData = mock(async (_url: string, opts?: { preferred?: string | null }) => (opts?.preferred ? 'data:image/png;base64,PREF' : 'data:image/png;base64,RES'));
+mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: async () => 'https://resolved/icon.png', resolveConnectorIconData: mockIconData }));
 mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ op: 'eq', a, b }),
   and: (...args: any[]) => ({ op: 'and', args }),
@@ -44,7 +49,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-const { ensureCatalogConnector, preinstallForTeam, applyPreinstalledToWorkspace, discoverAndRegister } = await import('./connector-provision');
+const { ensureCatalogConnector, preinstallForTeam, applyPreinstalledToWorkspace, discoverAndRegister, registrationRefusalBody } = await import('./connector-provision');
 
 const entry = (over: any = {}) => ({
   id: null, source: 'builtin', policy: 'preinstalled', slug: 'neon', name: 'Neon', url: 'https://mcp.neon.tech/mcp',
@@ -57,7 +62,38 @@ describe('discoverAndRegister', () => {
   it('registers a client and encrypts its secret', async () => {
     const r = await discoverAndRegister('https://mcp.x', 'https://buildd.dev');
     expect(r).toMatchObject({ authMode: 'oauth', clientId: 'cid', encryptedClientSecret: 'enc:csecret' });
-    expect(mockDiscoverAndRegisterDeps.register).toHaveBeenCalledWith('https://as/reg', 'https://buildd.dev/api/connectors/callback');
+    expect(mockDiscoverAndRegisterDeps.register).toHaveBeenCalledWith('https://as/reg', 'https://buildd.dev/api/connectors/callback', { grantTypesSupported: undefined });
+  });
+
+  it("passes the AS's supported grant types so refresh_token is registered when offered", async () => {
+    mockDiscoverAndRegisterDeps.discover.mockResolvedValueOnce({
+      authMode: 'oauth',
+      authorizationServer: { registration_endpoint: 'https://as/reg', grant_types_supported: ['authorization_code', 'refresh_token'] },
+    } as any);
+    await discoverAndRegister('https://mcp.axiom.co/mcp', 'https://buildd.dev');
+    expect(mockDiscoverAndRegisterDeps.register).toHaveBeenLastCalledWith('https://as/reg', 'https://buildd.dev/api/connectors/callback', {
+      grantTypesSupported: ['authorization_code', 'refresh_token'],
+    });
+  });
+});
+
+describe('registrationRefusalBody', () => {
+  it("uses the catalog's Vercel guidance for Vercel's approved-clients-only refusal", () => {
+    const body = registrationRefusalBody(new FakeRejected(true), 'https://mcp.vercel.com/');
+    expect(body?.error).toBe('needs_approved_client');
+    expect(body?.message).toContain('Vercel');
+    expect(body?.actionUrl).toContain('vercel.com/docs');
+  });
+
+  it('names the host and the provider reason for an unlisted server', () => {
+    const body = registrationRefusalBody(new FakeRejected(true, 'redirect not approved'), 'https://mcp.example.org/mcp');
+    expect(body?.message).toContain('mcp.example.org');
+    expect(body?.message).toContain('redirect not approved');
+  });
+
+  it('returns null for outages and unrelated errors, leaving the generic error', () => {
+    expect(registrationRefusalBody(new FakeRejected(false), 'https://mcp.vercel.com')).toBeNull();
+    expect(registrationRefusalBody(new Error('ECONNRESET'), 'https://mcp.vercel.com')).toBeNull();
   });
 });
 
@@ -73,7 +109,8 @@ describe('ensureCatalogConnector', () => {
     owned.push({ id: 'c-other', teamId: 't2', name: 'Neon', url: 'https://mcp.neon.tech/mcp' });
     const c = await ensureCatalogConnector('t1', entry() as any, 'https://buildd.dev');
     expect(c.id).toBe('conn-new');
-    expect(inserted[0]).toMatchObject({ teamId: 't1', name: 'Neon', authMode: 'oauth', clientId: 'cid', iconUrl: 'https://neon/icon.ico' });
+    expect(inserted[0]).toMatchObject({ teamId: 't1', name: 'Neon', authMode: 'oauth', clientId: 'cid', iconUrl: 'data:image/png;base64,PREF' });
+    expect(mockIconData.mock.calls.at(-1)?.[1]).toEqual({ preferred: 'https://neon/icon.ico' });
   });
 
   it('creates a no-auth entry without discovery', async () => {

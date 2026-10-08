@@ -25,6 +25,8 @@ const REPO = join(import.meta.dir, '../../../..');
 const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative|MissionTask|MissionTaskRead|Delegated)\(|\.taskScope\b|authorizeWorkerPrCapability\(|callerOwnsWorker\(/;
 
 const OPTED_IN = [
+  // Its own worker only (taskScopeAllowsWorker + taskScopeAllowsWorkspace); spend also needs a live model.inference grant.
+  'apps/web/src/app/api/agent-capabilities/model-inference/route.ts',
   'apps/web/src/app/api/artifacts/[artifactId]/route.ts',
   'apps/web/src/app/api/artifacts/upload-url/route.ts',
   'apps/web/src/app/api/connectors/mounted/route.ts',

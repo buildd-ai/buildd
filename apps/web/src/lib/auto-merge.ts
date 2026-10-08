@@ -16,6 +16,7 @@ import { notifyTeamOf } from '@/lib/notify';
 import type { MergePolicy } from '@buildd/shared';
 import { isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
+import { effectiveDeltaFiles, refreshDeltaBase, resolveMergeMethod } from '@/lib/integration-refresh';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { policyValue } from '@/lib/policy-overrides';
@@ -40,6 +41,7 @@ import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-do
 import { checkBaseRefreshHold } from '@/lib/base-refresh';
 import { dispatchStaleApprovalReReview } from '@/lib/stale-approval-re-review';
 import type { DispatchConflictRetryResult } from '@/lib/conflict-retry';
+import { refreshCause } from '@/lib/refresh-cause';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 
 /**
@@ -292,6 +294,15 @@ export async function evaluateAutoMergeSafety(
     return { ok: false, reason: 'malformed PR files response' };
   }
 
+  // An integration-refresh PR is judged on what it adds on top of trunk, not on
+  // the trunk history its stale fork point makes GitHub list (integration-refresh.ts).
+  // Mission-authored schema and migration changes stay in that delta.
+  const deltaBase = await refreshDeltaBaseForTask(opts?.taskId ?? null, opts?.gitConfig ?? null);
+  if (deltaBase) {
+    const delta = await effectiveDeltaFiles(installationId, repoFullName, deltaBase, headSha);
+    if (delta) files = delta;
+  }
+
   if (denyPaths.length > 0) {
     const hits = files.flatMap((file) =>
       denyPaths
@@ -331,6 +342,7 @@ export async function evaluateAutoMergeSafety(
       prNumber,
       headSha,
       files,
+      ...(deltaBase ? { deltaBase } : {}),
     });
     if (!migrationSafety.safe) {
       return { ok: false, reason: migrationSafety.reason };
@@ -815,12 +827,10 @@ export async function tryAutoMergeWorkerPr(params: {
     return { merged: false, reason: mergeGate.reason };
   }
 
-  // mission-branch-refresh.ts marks its conflict-resolution task's PR this way:
-  // it IS the merge commit that catches the integration branch up with dev, so
-  // squashing it would drop that ancestry and the same conflict would reappear
-  // on the very next refresh.
-  const requireMergeCommit = (mergingTask?.context as Record<string, unknown> | null)?.requireMergeCommit === true;
-  const mergeMethod = requireMergeCommit ? 'merge' : 'squash';
+  // An integration-refresh PR IS the merge commit that catches the mission
+  // branch up with dev; squashing it would drop that ancestry and the same
+  // conflict would reappear on the very next refresh (integration-refresh.ts).
+  const mergeMethod = resolveMergeMethod(mergingTask?.context);
   // Every rail passed. For a kernel-owned PR this door is only an adapter: the
   // kernel lands it (LandingRequested → merge_call → MergeCallResult) and owns
   // what follows — the post-merge work, and the refresh or conflict repair a
@@ -903,12 +913,19 @@ export async function tryAutoMergeWorkerPr(params: {
 export function describeUnfiledRefreshOutcome(res: DispatchConflictRetryResult): {
   refreshOutcome: string;
   reason: string;
-  page: 'refresh_failed' | 'semantic_unverified' | null;
+  page: 'refresh_failed' | 'refresh_exhausted' | 'semantic_unverified' | null;
 } {
+  if (res.refreshExhausted && res.refreshTreadmill !== undefined) {
+    return {
+      refreshOutcome: 'refresh_exhausted',
+      reason: `the base kept moving after ${res.refreshTreadmill} refreshes (${refreshCause(res)})`,
+      page: 'refresh_exhausted',
+    };
+  }
   if (res.refreshExhausted) {
     return {
       refreshOutcome: 'refresh_exhausted',
-      reason: `updating the branch kept failing (${res.refreshFailure ?? 'unknown'}), not a conflict; retries are used up`,
+      reason: `updating the branch kept failing (${refreshCause(res)}), not a conflict; retries are used up`,
       page: 'refresh_failed',
     };
   }
@@ -927,8 +944,9 @@ export function describeUnfiledRefreshOutcome(res: DispatchConflictRetryResult):
   }
   if (res.headChanged) return { refreshOutcome: 'head_changed', reason: 'the PR head moved before the refresh; the new head re-evaluates', page: null };
   if (res.refreshInFlight) return { refreshOutcome: 'refresh_in_flight', reason: 'another refresh of this PR is in flight', page: null };
+  if (res.refreshQueued) return { refreshOutcome: 'refresh_queued', reason: 'a branch refresh is queued; the new head re-evaluates', page: null };
   if (res.refreshDeferred) {
-    return { refreshOutcome: 'refresh_deferred', reason: `updating the branch failed (${res.refreshFailure ?? 'unknown'}), not a conflict; will retry`, page: null };
+    return { refreshOutcome: 'refresh_deferred', reason: `updating the branch failed (${refreshCause(res)}), not a conflict; will retry`, page: null };
   }
   if (res.semanticDeferred) return { refreshOutcome: 'semantic_deferred', reason: 'semantic overlap with the base is not yet verified; will recheck', page: null };
   if (res.alreadyUpToDate) return { refreshOutcome: 'already_up_to_date', reason: 'the branch already has every base commit', page: null };
@@ -994,6 +1012,20 @@ async function recordUnfiledRefreshOutcome(
  * PR" — every gate then applies exactly as it did before Option A′, and a bound
  * merge is refused outright.
  */
+/** The trunk a refresh task's PR is measured against; null for any other task. Never throws. */
+async function refreshDeltaBaseForTask(
+  taskId: string | null,
+  gitConfig: WorkspaceGitConfig | null,
+): Promise<string | null> {
+  if (!taskId) return null;
+  try {
+    const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { context: true } });
+    return refreshDeltaBase(task?.context, gitConfig);
+  } catch {
+    return null;
+  }
+}
+
 export async function loadMissionIntegrationFields(
   taskId: string | null,
 ): Promise<MissionIntegrationFields | null> {

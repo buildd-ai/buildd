@@ -4,9 +4,9 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (60)
+## Active (62)
 
-### auth (7)
+### auth (8)
 
 - [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-05
   An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
@@ -18,9 +18,11 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
 - [Deployment Actions](./deployment-actions.md) · @max — verified 2026-10-05
   A deploy MUST run server-side with a credential named by reference, authorized against the task role's workspace grant or an admin key, audited before use, never returning the credential.
+- [Model Inference Agent Capability](./model-inference-agent-capability.md) · @max — verified 2026-10-08
+  A running agent MUST get a brokered decision-model answer only under a live task-scoped model.inference grant and a reserved budget, never seeing a key or choosing an endpoint, and failing closed.
 - [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-10-05
   buildd's OAuth provider surface MUST issue only workspace-scoped PKCE-protected tokens to registered clients, and its JWKS MUST publish the public half of every key that can verify a buildd assertion.
-- [Team Permissions](./team-permissions.md) · @max — verified 2026-10-04
+- [Team Permissions](./team-permissions.md) · @max — verified 2026-10-08
   Every team-scoped permission decision MUST resolve through one named-permission registry that maps each permission to its team roles and minimum API-key level, failing closed.
 
 ### billing (2)
@@ -30,10 +32,12 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Usage & Cost Accounting](./usage-and-cost-accounting.md) · @max — verified 2026-08-30
   Worker usage MUST be recorded only from the worker's own report and attributed to one task, team-month and provider pool, and a budget-blocked claim MUST answer budget_exhausted with a reset time, not race_lost.
 
-### integrations (5)
+### integrations (6)
 
 - [External Cron Triggers](./external-cron-triggers.md) · @max — verified 2026-10-05
   Every /api/cron/* route MUST have exactly one trigger whose cadence is declared in version control, so a route that never fires is a reviewable diff rather than a silent production gap.
+- [GitHub Repository Access Remediation](./github-repo-access.md) · @max — verified 2026-10-08
+  When Buildd's GitHub App cannot act on a workspace's existing repo, every PR door MUST refuse with a typed reason and fix, surface it once to whoever can fix it, and resume the waiting task once access is verified.
 - [Model Policy Cells and the Dial](./model-policy-cells.md) · @max — verified 2026-10-07
   Each tier x surface cell MUST serve its primary until the team's own graded coding outcomes show an alternate keeps up within the dial's tolerance, and MUST revert, recorded, when it slips.
 - [Standalone Model Policy](./model-policy.md) · @max — verified 2026-10-05
@@ -56,7 +60,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-10-07
   /api/mcp MUST serve the buildd_<group> action tools (legacy buildd only to runners predating them), recall and learn over stateless Streamable HTTP, Bearer-authenticate every call and gate actions by privilege.
-- [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-09-05
+- [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-10-08
   Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 
 ### missions (3)

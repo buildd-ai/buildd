@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import SettingsSection from '../SettingsSection';
 import { Select } from '@/components/ui/Select';
 import { ConnectorIcon } from '@/components/ConnectorIcon';
-import { CATALOG_POLICIES, type CatalogPolicy, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
+import { CATALOG_POLICIES, type CatalogPolicy, type ConnectorClientSupport, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
 
 const SOURCE_LABEL: Record<ResolvedCatalogEntry['source'], string> = {
   builtin: 'Built-in',
@@ -73,13 +73,16 @@ export default function CatalogSection() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ slug: entry.slug, policy }),
       });
-      const data = await res.json().catch(() => ({})) as { message?: string; error?: string };
+      const data = await res.json().catch(() => ({})) as { message?: string; error?: string; retainedConnectorIds?: string[] };
       if (!res.ok) {
         setMessage({ type: 'err', text: data.message || data.error || `Could not update ${entry.name}.` });
         return;
       }
       setEntries((prev) => prev.map((e) => (e.slug === entry.slug ? { ...e, policy } : e)));
       if (policy === 'preinstalled') setMessage({ type: 'ok', text: `${entry.name} is now in every workspace.` });
+      if (policy === 'blocked' && data.retainedConnectorIds?.length) {
+        setMessage({ type: 'ok', text: `Agents can no longer use ${entry.name}. Your saved connection is kept, so unblocking restores it.` });
+      }
     } catch {
       setMessage({ type: 'err', text: `Could not update ${entry.name}.` });
     } finally {
@@ -146,6 +149,12 @@ export default function CatalogSection() {
                       Added to every workspace. Roles still choose which connectors they use.
                     </div>
                   )}
+                  {entry.policy === 'blocked' && (
+                    <div className="text-xs text-text-secondary mt-1">
+                      Agents can&apos;t use it, even where it&apos;s already connected. Connections are kept.
+                    </div>
+                  )}
+                  {entry.clientSupport && <ClientSupportNote support={entry.clientSupport} />}
                 </div>
               </div>
               <div className="flex items-center gap-2 sm:flex-shrink-0 sm:justify-end">
@@ -182,6 +191,18 @@ export default function CatalogSection() {
         ))}
       </div>
     </SettingsSection>
+  );
+}
+
+/** The provider won't let buildd sign in yet: say so, and where the owner fixes it. */
+export function ClientSupportNote({ support }: { support: ConnectorClientSupport }) {
+  return (
+    <div className="text-xs text-status-warning mt-1" data-testid="connector-client-support">
+      {support.detail}{' '}
+      <a href={support.actionUrl} target="_blank" rel="noreferrer" className="underline">
+        {support.actionLabel}
+      </a>
+    </div>
   );
 }
 
