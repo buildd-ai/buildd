@@ -324,6 +324,12 @@ const renumberMigration: EffectHandler = async (e) => {
  * be there. Unknown fails toward doing the work.
  */
 async function agentIsOwed(b: Bound, repairKind: string): Promise<{ owed: boolean; reason?: string }> {
+  if (repairKind === 'migration_split') {
+    // Owed while the head still mixes EXPAND and CONTRACT; unknown fails toward doing the work.
+    const inspect = deps.inspect ?? (await import('@/lib/migration-inspector')).inspectPullRequestMigrations;
+    const safety = await inspect({ installationId: b.repo.installationId, repoFullName: b.d.repoFullName!, prNumber: b.d.prNumber!, headSha: b.attempt.boundHeadSha!, files: [], baseRef: b.live.baseRef });
+    return safety.safe || !safety.mixedSplit ? { owed: false, reason: 'split_resolved' } : { owed: true };
+  }
   if (repairKind === 'migration') {
     const inspect = deps.inspect ?? (await import('@/lib/migration-inspector')).inspectPullRequestMigrations;
     const safety = await inspect({ installationId: b.repo.installationId, repoFullName: b.d.repoFullName!, prNumber: b.d.prNumber!, headSha: b.attempt.boundHeadSha!, files: [], baseRef: b.live.baseRef });
@@ -355,7 +361,7 @@ const dispatchConflictFix: EffectHandler = async (e) => {
   if (!owner || !workspace || !prw?.branch) return { outcome: 'skipped:missing_context' };
   const headSha = b.attempt.boundHeadSha!;
   const refusal = (e.payload.refusal ?? null) as { semanticConflict?: unknown } | null;
-  const collision = b.attempt.family === 'migration' ? await collisionOf(b.d.id, e.payload) : null;
+  const collision = b.attempt.family === 'migration' && repairKind !== 'migration_split' ? await collisionOf(b.d.id, e.payload) : null;
   const { buildConflictRetryTask } = await import('@/lib/conflict-retry');
   const built = buildConflictRetryTask({
     originalTask: {
@@ -369,6 +375,7 @@ const dispatchConflictFix: EffectHandler = async (e) => {
     repoFullName: b.d.repoFullName!,
     maxConflictIterations: Math.max(b.attempt.maxAttempts, b.attempt.attemptNo),
     ...(collision ? { migrationCollision: collision } : {}),
+    ...(repairKind === 'migration_split' ? { migrationSplit: { reason: String((e.payload.detail as { reason?: string } | null)?.reason ?? '') } } : {}),
     ...(refusal?.semanticConflict ? { semanticConflict: refusal.semanticConflict as never } : {}),
   });
   if (!built) return { outcome: 'skipped:not_buildable' };

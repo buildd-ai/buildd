@@ -183,6 +183,11 @@ export interface ConflictRetryInput {
    */
   migrationCollision?: MigrationCollision;
   /**
+   * The PR mixes safe EXPAND and CONTRACT migrations: the task splits it in
+   * two (additive half stays, destructive half moves to a follow-up PR).
+   */
+  migrationSplit?: { reason: string };
+  /**
    * The open PR's actual head/base refs. When `headRef` differs from the
    * worker's own branch (e.g. the PR is a mission integration PR the retry is
    * bound to), `create_pr` will 409 on a fresh PR from the worker branch, so
@@ -225,7 +230,7 @@ export interface ConflictRetryTask {
  * Returns null when retries are exhausted or disabled (maxConflictIterations === 0).
  */
 export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?: string | null }): ConflictRetryTask | null {
-  const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision, semanticConflict, prRefs, conflictBasis } = params;
+  const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision, migrationSplit, semanticConflict, prRefs, conflictBasis } = params;
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 0;
@@ -251,10 +256,12 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
 
   return {
     title: formatAttemptTitle('builder', originalTask.title, {
-      reason: migrationCollision ? 'migration collision' : semanticConflict ? 'semantic overlap' : 'after conflict',
+      reason: migrationSplit ? 'split migrations' : migrationCollision ? 'migration collision' : semanticConflict ? 'semantic overlap' : 'after conflict',
       iteration: nextIteration,
     }),
-    description: migrationCollision
+    description: migrationSplit
+      ? buildMigrationSplitDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, migrationSplit.reason)
+      : migrationCollision
       ? buildMigrationCollisionDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, migrationCollision, prRefs ?? null)
       : semanticConflict
         ? buildSemanticConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, semanticConflict)
@@ -271,7 +278,14 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
       baseBranch: worker.branch,
       resumeBranch: worker.branch,
       // Structured failure context
-      failureContext: migrationCollision
+      failureContext: migrationSplit
+        ? {
+            summary: `PR #${worker.prNumber} mixes additive (EXPAND) and destructive (CONTRACT) migrations. Split it: keep the additive half here, move the destructive half to a follow-up PR.`,
+            errorType: 'migration_split' as const,
+            prNumber: worker.prNumber,
+            headSha,
+          }
+        : migrationCollision
         ? {
             summary: `PR #${worker.prNumber}'s migration ${migrationCollision.file} collides with open PR #${migrationCollision.otherPrNumber}'s migration ${migrationCollision.otherFile}. Renumber off the colliding slot.`,
             errorType: 'migration_collision' as const,
@@ -387,6 +401,27 @@ A clean git merge does not mean the two changes agree. This is a semantic confli
 PR: ${prUrl}
 
 ${task.description ? `## Original Task Description\n\n${task.description}` : ''}`;
+}
+
+function buildMigrationSplitDescription(
+  task: ConflictRetryInput['originalTask'],
+  worker: ConflictRetryInput['worker'],
+  repoFullName: string,
+  iteration: number,
+  maxIterations: number,
+  reason: string,
+): string {
+  const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
+  return `PR #${worker.prNumber} (${prUrl}) for "${task.title}" mixes additive (EXPAND) and destructive (CONTRACT) migrations, so it cannot land as one PR. ${reason}
+
+**Attempt ${iteration} of ${maxIterations}.**
+
+## Instructions
+
+1. You are on branch \`${worker.branch}\`. Keep ONLY the additive (EXPAND) migration and the code that needs it on this branch; regenerate the migration if removing the destructive statements leaves it inconsistent (\`cd packages/core && bun db:generate\`).
+2. Move the destructive (CONTRACT) statements out of this PR. Do not delete the intent: note it in the PR description as a follow-up that lands once nothing reads the old column/table.
+3. Do not weaken any check, and do not add the destructive SQL back under another name.
+4. Push to the existing branch; the PR is re-reviewed at the new head.`;
 }
 
 function buildMigrationCollisionDescription(

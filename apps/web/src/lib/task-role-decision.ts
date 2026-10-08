@@ -175,7 +175,7 @@ export function filterRoleCandidates(
 
 /**
  * True when a role's connectors cannot be used in the workspace:
- * `never_mounted` or `expired_or_revoked`, as `checkConnectorRouting` classifies
+ * `never_mounted`, `blocked_by_policy` or `expired_or_revoked`, as `checkConnectorRouting` classifies
  * them, without its HTTP probe (§3.3).
  */
 export type ConnectorsUnusable = (slug: string, workspaceId: string, teamId: string) => Promise<boolean>;
@@ -183,7 +183,7 @@ export type ConnectorsUnusable = (slug: string, workspaceId: string, teamId: str
 async function dbConnectorsUnusable(slug: string, workspaceId: string, teamId: string): Promise<boolean> {
   const { checkConnectorRouting } = await import('@/app/api/workers/claim/connector-gate');
   const failures = await checkConnectorRouting(slug, workspaceId, teamId, { probe: false });
-  return !!failures?.some(f => f.mode === 'never_mounted' || f.mode === 'expired_or_revoked');
+  return !!failures?.some(f => f.mode === 'never_mounted' || f.mode === 'blocked_by_policy' || f.mode === 'expired_or_revoked');
 }
 
 export type LoadRoles = (teamId: string, workspaceId: string) => Promise<RoleRow[]>;
