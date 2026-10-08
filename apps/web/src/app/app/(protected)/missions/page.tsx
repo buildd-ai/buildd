@@ -182,7 +182,8 @@ export default async function MissionsPage({
           <div className="section-label hidden text-text-muted md:block">
             {team?.name ?? 'Team'}
           </div>
-          <h1 data-testid="missions-headline" className="mt-1.5 font-mono text-[22px] font-semibold tracking-[-0.5px] text-text-primary md:text-[26px]">
+          {/* The mobile header already reads "Missions · Team"; show the h1 from md up only. */}
+          <h1 data-testid="missions-headline" className="sr-only md:not-sr-only md:mt-1.5 font-mono text-[22px] font-semibold tracking-[-0.5px] text-text-primary md:text-[26px]">
             Missions
           </h1>
         </div>
