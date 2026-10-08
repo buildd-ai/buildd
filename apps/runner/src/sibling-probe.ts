@@ -12,6 +12,12 @@
  * that registered mergiraf as a merge driver already applies it inside
  * merge-tree; the explicit pass covers clones that did not.)
  *
+ * The fetch never touches the agent's state: `--no-write-fetch-head` leaves
+ * FETCH_HEAD alone, the sibling's branch lands in a private ref
+ * (`refs/buildd/probe/<probeId>`, deleted afterwards), and the server-supplied
+ * branch name and probe id are validated before any git command runs, with
+ * `--` ending option parsing wherever git takes a user-supplied argument.
+ *
  * Async throughout (a fetch can take seconds; the sync loop must not block).
  * Never throws: every failure is an `error` result for the server to record.
  */
@@ -27,6 +33,22 @@ const MERGE_TIMEOUT_MS = 60_000;
 const MERGIRAF_TIMEOUT_MS = 30_000;
 const MAX_CONFLICTS = 100;
 const MAX_HUNKS = 20;
+const PROBE_REF_PREFIX = 'refs/buildd/probe/';
+
+/**
+ * A branch name safe to hand to git: the `git check-ref-format --branch`
+ * rules that matter here, plus no leading `-` (never read as an option) and
+ * nothing outside a conservative character set.
+ */
+export function isSafeBranchName(name: unknown): name is string {
+  if (typeof name !== 'string' || name.length === 0 || name.length > 255) return false;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(name)) return false;
+  if (name.includes('..') || name.includes('//') || name.endsWith('/') || name.endsWith('.') || name.endsWith('.lock')) return false;
+  return name.split('/').every(c => c.length > 0 && !c.startsWith('.') && !c.endsWith('.lock'));
+}
+
+const isSafeProbeId = (id: unknown): id is string => typeof id === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(id);
+const isSha = (v: string): boolean => /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(v);
 
 export interface SiblingProbeOptions {
   /** Resolved mergiraf binary; `undefined` looks it up, `null` means absent. */
@@ -118,14 +140,22 @@ async function mergirafResolves(cwd: string, mergiraf: string, path: string, sta
 
 export async function runSiblingProbe(cwd: string, req: SiblingProbeRequest, opts: SiblingProbeOptions = {}): Promise<SiblingProbeResult> {
   const base: Pick<SiblingProbeResult, 'probeId'> = { probeId: req.probeId };
+  if (!isSafeProbeId(req.probeId)) return { ...base, outcome: 'error', error: 'invalid probe id' };
+  if (!isSafeBranchName(req.otherBranch)) return { ...base, outcome: 'error', error: 'invalid branch name' };
+  const privateRef = `${PROBE_REF_PREFIX}${req.probeId}`;
+  let fetched = false;
   try {
     let otherRef = opts.otherRef;
     if (!otherRef) {
-      await git(cwd, ['fetch', '--no-tags', '--quiet', 'origin', req.otherBranch], FETCH_TIMEOUT_MS);
-      otherRef = 'FETCH_HEAD';
+      // Into a private ref, never FETCH_HEAD: the agent may be mid-`git diff ...FETCH_HEAD`.
+      fetched = true;
+      await git(cwd, ['fetch', '--no-tags', '--quiet', '--no-write-fetch-head', '--', 'origin', `+refs/heads/${req.otherBranch}:${privateRef}`], FETCH_TIMEOUT_MS);
+      otherRef = privateRef;
     }
-    const headSha = (await git(cwd, ['rev-parse', 'HEAD'])).trim();
-    const otherSha = (await git(cwd, ['rev-parse', otherRef])).trim();
+    const headSha = (await git(cwd, ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}'])).trim();
+    const otherSha = (await git(cwd, ['rev-parse', '--verify', '--end-of-options', `${otherRef}^{commit}`])).trim();
+    // Both are now plain object ids, so nothing below can be read as an option.
+    if (!isSha(headSha) || !isSha(otherSha)) throw new Error('rev-parse did not return a commit id');
 
     let out: string;
     try {
@@ -158,6 +188,8 @@ export async function runSiblingProbe(cwd: string, req: SiblingProbeRequest, opt
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
     return { ...base, outcome: 'error', error: String(e.stderr || e.message || err).trim().slice(0, 300) };
+  } finally {
+    if (fetched) await git(cwd, ['update-ref', '-d', '--', privateRef]).catch(() => {});
   }
 }
 

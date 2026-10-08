@@ -1,9 +1,9 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { conflictHunks, enqueueSiblingProbes, findMergirafBinary, parseMergeTreeOutput, runSiblingProbe } from '../../src/sibling-probe';
+import { conflictHunks, enqueueSiblingProbes, findMergirafBinary, isSafeBranchName, parseMergeTreeOutput, runSiblingProbe } from '../../src/sibling-probe';
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
@@ -86,6 +86,92 @@ describe('runSiblingProbe', () => {
     const r = await runSiblingProbe(dir, { ...req(), otherBranch: 'nope' }, { otherRef: 'nope' });
     expect(r.outcome).toBe('error');
     expect(r.error).toBeTruthy();
+  });
+});
+
+describe('review finding: the fetch never touches the agent\'s FETCH_HEAD and never trusts the branch name', () => {
+  /** `repo()` with an `origin` remote (the repo itself) so the real fetch path runs. */
+  function repoWithOrigin(base: string, mine: string, theirs: string): string {
+    const dir = repo(base, mine, theirs);
+    git(dir, 'remote', 'add', 'origin', dir);
+    writeFileSync(join(dir, '.git', 'FETCH_HEAD'), 'agent-owned-sentinel\n');
+    return dir;
+  }
+  const fetchHead = (dir: string) => readFileSync(join(dir, '.git', 'FETCH_HEAD'), 'utf-8');
+  const probeRefs = (dir: string) => git(dir, 'for-each-ref', '--format=%(refname)', 'refs/buildd/probe/');
+
+  test('fetches into a private ref, leaves FETCH_HEAD alone, and cleans the ref up', async () => {
+    const dir = repoWithOrigin('export const x = 1;\n', 'export const x = 2;\n', 'export const x = 3;\n');
+    const r = await runSiblingProbe(dir, { ...req(), probeId: '6f1c2b0e-9d7a-4c1e-8f00-000000000001' });
+    expect(r.outcome).toBe('conflict');
+    expect(r.otherSha).toBe(git(dir, 'rev-parse', 'theirs'));
+    expect(fetchHead(dir)).toBe('agent-owned-sentinel\n');
+    expect(probeRefs(dir)).toBe('');
+  });
+
+  test.each([
+    '--upload-pack=touch /tmp/pwned',
+    '-x',
+    'a..b',
+    'has space',
+    'refs/heads/x:refs/heads/y',
+    'x\nmain',
+    '',
+  ])('a branch name like %p is refused before any git runs', async (otherBranch) => {
+    const dir = repoWithOrigin('a\n', 'b\n', 'c\n');
+    const r = await runSiblingProbe(dir, { ...req(), otherBranch });
+    expect(r.outcome).toBe('error');
+    expect(r.error).toContain('invalid');
+    expect(fetchHead(dir)).toBe('agent-owned-sentinel\n');
+    expect(probeRefs(dir)).toBe('');
+  });
+
+  test('a probe id that is not a plain token is refused', async () => {
+    const dir = repoWithOrigin('a\n', 'b\n', 'c\n');
+    const r = await runSiblingProbe(dir, { ...req(), probeId: '../../heads/main' });
+    expect(r.outcome).toBe('error');
+    expect(r.error).toContain('invalid');
+  });
+
+  test('isSafeBranchName accepts ordinary branch names', () => {
+    expect(isSafeBranchName('buildd/1141e62e-feat-coordination-same-file-ov')).toBe(true);
+    expect(isSafeBranchName('mission/x_y.z')).toBe(true);
+    expect(isSafeBranchName('-rf')).toBe(false);
+    expect(isSafeBranchName('a/../b')).toBe(false);
+    expect(isSafeBranchName('x.lock')).toBe(false);
+  });
+});
+
+describe('review finding: the mergiraf path runs in CI with a stub driver', () => {
+  function stub(exitCode: number): { path: string; log: string } {
+    const d = mkdtempSync(join(tmpdir(), 'mergiraf-stub-'));
+    dirs.push(d);
+    const log = join(d, 'calls.log');
+    const path = join(d, 'mergiraf');
+    writeFileSync(path, `#!/bin/sh\necho "$@" >> '${log}'\nexit ${exitCode}\n`);
+    chmodSync(path, 0o755);
+    return { path, log };
+  }
+  const importsBase = 'import { a } from "./a";\n\nexport const x = 1;\n';
+  const importsMine = 'import { a } from "./a";\nimport { b } from "./b";\n\nexport const x = 1;\n';
+  const importsTheirs = 'import { a } from "./a";\nimport { c } from "./c";\n\nexport const x = 1;\n';
+
+  test('a driver that merges cleanly (exit 0) makes it mergiraf_resolved, called with the three stages', async () => {
+    const s = stub(0);
+    const dir = repo(importsBase, importsMine, importsTheirs);
+    const r = await runSiblingProbe(dir, req(true), { otherRef: 'theirs', mergirafPath: s.path });
+    expect(r.outcome).toBe('mergiraf_resolved');
+    expect(r.resolvedByMergiraf).toEqual(['m.ts']);
+    const call = readFileSync(s.log, 'utf-8').trim();
+    expect(call).toMatch(/^merge -p m\.ts -o \S+out\.m\.ts \S+base\.m\.ts \S+ours\.m\.ts \S+theirs\.m\.ts$/);
+  });
+
+  test('a driver that leaves conflicts (non-zero) keeps it a conflict', async () => {
+    const s = stub(1);
+    const dir = repo(importsBase, importsMine, importsTheirs);
+    const r = await runSiblingProbe(dir, req(true), { otherRef: 'theirs', mergirafPath: s.path });
+    expect(r.outcome).toBe('conflict');
+    expect(r.conflicts?.map(c => c.path)).toEqual(['m.ts']);
   });
 });
 
