@@ -54,7 +54,7 @@ import { db } from './db';
 import { secrets, teams } from './db/schema';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { decrypt } from './secrets';
-import { isInferenceKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
+import { effectiveKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
 import { ROUTES, routeAuthHeaders } from '@builddai/ai-kit/models/routes';
 
 import { PERSONAL_KEY_PROVIDERS, isPersonalKeyProvider, providerKeyCapability, type PersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
@@ -72,8 +72,8 @@ export { INFERENCE_KEY_POLICIES, isInferenceKeyPolicy, policyAllowsOwnKey, type 
  */
 export async function loadInferenceKeyPolicy(teamId: string): Promise<InferenceKeyPolicy> {
   try {
-    const row = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { inferenceKeyPolicy: true } });
-    return isInferenceKeyPolicy(row?.inferenceKeyPolicy) ? row.inferenceKeyPolicy : 'team_or_own';
+    const row = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { inferenceKeyPolicy: true, credentialPolicy: true } });
+    return effectiveKeyPolicy(row) ?? 'team_or_own';
   } catch {
     return 'team_or_own';
   }

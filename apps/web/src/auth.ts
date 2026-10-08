@@ -172,6 +172,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
           maxConcurrentWorkers: 10,
           teamId: team.id,
+          createdByUserId: newUser.id,
         }).returning({ id: accounts.id, type: accounts.type, teamId: accounts.teamId });
 
         const [workspace] = await db.insert(workspaces).values({

@@ -8,7 +8,7 @@ import { and, asc, desc, eq, gte, inArray, max } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missions, tasks, teams, workspaces } from '@buildd/core/db/schema';
 import { resolveTimezone } from '@buildd/core/timezone';
-import { isInferenceKeyPolicy } from '@buildd/core/inference-key-policy';
+import { effectiveKeyPolicy } from '@buildd/core/inference-key-policy';
 import { requireSessionUser, type CurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserTeamRole, resolveActiveTeamId } from '@/lib/team-access';
 import type { TurnUser } from './turn';
@@ -34,7 +34,7 @@ export async function loadTeamChatSettings(teamId: string) {
   const team = await db.query.teams.findFirst({
     where: eq(teams.id, teamId),
     columns: {
-      timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true, inferenceKeyPolicy: true,
+      timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true, inferenceKeyPolicy: true, credentialPolicy: true,
       inferenceFeatureModes: true, decisionModel: true,
     },
   });
@@ -43,9 +43,9 @@ export async function loadTeamChatSettings(teamId: string) {
     // NULL here means "not set": limits.resolveChatBudgets applies the defaults.
     dailyBudgetUsd: team?.chatDailyBudgetUsd != null ? Number(team.chatDailyBudgetUsd) : null,
     userDailyBudgetUsd: team?.chatUserDailyBudgetUsd != null ? Number(team.chatUserDailyBudgetUsd) : null,
-    keyPolicy: isInferenceKeyPolicy(team?.inferenceKeyPolicy) ? team.inferenceKeyPolicy : null,
+    keyPolicy: effectiveKeyPolicy(team),
     // For the routing call's policy check (resolveDecisionAccess), so it needn't re-read the team.
-    decisionTeam: team ? { inferenceFeatureModes: team.inferenceFeatureModes, decisionModel: team.decisionModel, inferenceKeyPolicy: team.inferenceKeyPolicy } : null,
+    decisionTeam: team ? { inferenceFeatureModes: team.inferenceFeatureModes, decisionModel: team.decisionModel, inferenceKeyPolicy: team.inferenceKeyPolicy, credentialPolicy: team.credentialPolicy } : null,
   };
 }
 
