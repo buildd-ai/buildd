@@ -56,6 +56,7 @@ mock.module('@/lib/team-access', () => ({
   resolveAccountTeamIds: async (_u: unknown, account: { teamId: string } | null) => (account ? [account.teamId] : []),
 }));
 mock.module('@buildd/core/decision-ledger', () => ({
+  DECISION_LEDGER_MAX_ROWS: 500,
   readDecisionLedgerPage: ledger,
   summarizeDecisionLedger: (rows: unknown[]) => ({ total: rows.length }),
 }));
