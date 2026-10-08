@@ -8,6 +8,9 @@
  * build` and `next dev` both stay quiet). `client-boundary.test.ts` guards it.
  */
 
+import { derivePrDisplayState } from './pr-presentation';
+import { deliveryReading, type DeliveryReadingInput, type DeliveryTone } from './workflow/delivery-display';
+
 // ─── Stage enum ───────────────────────────────────────────────────────────────
 
 export type Stage =
@@ -18,6 +21,8 @@ export type Stage =
   | 'RUNNING'
   | 'WAITING_INPUT'
   | 'REVIEWING'    // agent review is in progress (caller must set explicitly)
+  | 'FIXING'       // kernel-owned PR moving under a non-human owner (fix, repair, review, push recovery, merge); its label is the delivery's
+  | 'STALLED'      // kernel-owned PR the platform owns but is not moving on its own (a stalled conflict fix, a red base)
   | 'OPEN'         // PR open, no CI signal yet
   | 'CI'           // CI in progress (ci_running)
   | 'CI_FAILING'   // CI completed with at least one failure (ci_failed)
@@ -48,6 +53,54 @@ export interface StageInput {
    * it — another unclaimable-but-looks-queued state.
    */
   isMissionBudgetExhausted?: boolean;
+  /**
+   * The kernel's reading of this task's delivery, when the task is the OWNER
+   * of a kernel-owned delivery (workflow-state-kernel §17.5). It replaces the
+   * PR branch below: a kernel-owned PR's stage never reads the fact-cache
+   * columns. Absent for legacy-owned and PR-less tasks.
+   */
+  delivery?: DeliveryReadingInput | null;
+}
+
+/**
+ * The chip palette for a delivery's canonical tone (`deliveryReading`). The
+ * one table: the chip's words are the reading's label, never a stage name.
+ */
+export const STAGE_FOR_DELIVERY_TONE: Record<DeliveryTone, Stage> = {
+  needs: 'WAITING_INPUT',
+  live: 'FIXING',
+  stalled: 'STALLED',
+  landed: 'DONE',
+  closed: 'DONE',
+  failed: 'FAILED',
+};
+
+/**
+ * A kernel-owned delivery's stage in the chip vocabulary. Null for
+ * `working`: the delivery waits on the owner's own attempt, so the task's
+ * execution state (running, queued) is the truthful reading.
+ */
+export function stageForDelivery(d: DeliveryReadingInput): Stage | null {
+  const r = deliveryReading(d);
+  return r ? STAGE_FOR_DELIVERY_TONE[r.tone] : null;
+}
+
+/**
+ * `deriveStage` plus the chip's words: the delivery's canonical label when
+ * the kernel decided the stage, else null (the stage's own label stands).
+ */
+export function deriveStageReading(input: StageInput): { stage: Stage; label: string | null } {
+  const stage = deriveStage(input);
+  const r = input.delivery && kernelDecides(input) ? deliveryReading(input.delivery) : null;
+  return { stage, label: r ? r.label : null };
+}
+
+/** The kernel's reading wins unless a live worker or its own question leads. */
+function kernelDecides({ taskStatus, workerStatus }: StageInput): boolean {
+  if (taskStatus === 'cancelled') return false;
+  if (workerStatus === 'waiting_input' && taskStatus !== 'failed') return false;
+  const workerLive = workerStatus === 'running' || workerStatus === 'starting' || workerStatus === 'idle';
+  return !(workerLive && taskStatus !== 'failed');
 }
 
 /**
@@ -57,26 +110,32 @@ export interface StageInput {
  * context should override to REVIEWING when an agent review is in progress.
  */
 export function deriveStage(input: StageInput): Stage {
-  const { taskStatus, workerStatus, prUrl, prLifecycleStatus, mergedAt, isBlocked, isSubjectDead, isMissionBudgetExhausted } = input;
+  const { taskStatus, workerStatus, prUrl, prLifecycleStatus, mergedAt, isBlocked, isSubjectDead, isMissionBudgetExhausted, delivery } = input;
 
-  if (taskStatus === 'failed') return 'FAILED';
   if (taskStatus === 'cancelled') return 'CANCELLED';
 
-  // Live worker phase
-  if (workerStatus === 'waiting_input') return 'WAITING_INPUT';
-  if (workerStatus === 'running' || workerStatus === 'starting' || workerStatus === 'idle') {
-    return 'RUNNING';
-  }
+  // Live worker phase. A worker's own question stays a question (§13.2 dev. 3).
+  const workerLive = workerStatus === 'running' || workerStatus === 'starting' || workerStatus === 'idle';
+  if (workerStatus === 'waiting_input' && taskStatus !== 'failed') return 'WAITING_INPUT';
+  if (workerLive && taskStatus !== 'failed') return 'RUNNING';
 
-  // Completed task with PR
+  // Kernel-owned delivery: its stage, not the columns, and not a failed
+  // owner attempt the delivery has already carried past (S35).
+  const kernelStage = delivery ? stageForDelivery(delivery) : null;
+  if (kernelStage) return kernelStage;
+
+  if (taskStatus === 'failed') return 'FAILED';
+
+  // Completed task with PR (legacy-owned): the one fact-cache mapping.
   if (taskStatus === 'completed' && prUrl) {
-    const isMerged = !!mergedAt || prLifecycleStatus === 'merged';
-    const isClosed = prLifecycleStatus === 'closed';
-    if (isMerged || isClosed) return 'DONE';
-    if (prLifecycleStatus === 'ci_running') return 'CI';
-    if (prLifecycleStatus === 'ci_failed') return 'CI_FAILING';
-    if (prLifecycleStatus === 'ci_green') return 'MERGE';
-    return 'OPEN';
+    switch (derivePrDisplayState(prLifecycleStatus, mergedAt)) {
+      case 'merged':
+      case 'closed': return 'DONE';
+      case 'ci_running': return 'CI';
+      case 'ci_failed': return 'CI_FAILING';
+      case 'ci_passed': return 'MERGE';
+      default: return 'OPEN';
+    }
   }
 
   if (taskStatus === 'completed') return 'DONE';

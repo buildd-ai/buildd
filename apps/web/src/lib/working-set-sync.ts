@@ -10,7 +10,7 @@
  *
  * Also owns the bounded observed-touch SAMPLE (`workers.observedTouches`):
  * what the dashboard shows, never what coordination is decided on. Hitting its
- * cap is an `observation_truncated` advisory, fired once per worker, not a
+ * cap is an `observation_truncated` advisory, one per task, not a
  * degradation of anything.
  */
 import type { PathCollisionNotice, ShipCheckpointReport, WorkingSetAck, WorkingSetDelta } from '@buildd/shared';
@@ -206,9 +206,16 @@ export async function applyWorkingSetSync(input: ApplyWorkingSetInput): Promise<
 
 // ── Ledger rows ──────────────────────────────────────────────────────────────
 
-/** The one-per-worker advisory that the observed SAMPLE is truncated. */
+/**
+ * Repeats of the truncation advisory for one task coalesce for this long: in
+ * practice one row per task, however many workers (retries, resumes) cross
+ * the cap. It was one row per worker, which read as a per-claim warning.
+ */
+export const OBSERVATION_TRUNCATED_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** The one-per-task advisory that the observed SAMPLE is truncated. */
 export function fireObservationTruncated(worker: { id: string; workspaceId: string | null; taskId: string | null }, update: ObservedSampleUpdate): void {
-  fireGateEvent({
+  const event = {
     gate: GATE_SLUGS.PATH_CLAIM,
     surface: WORKER_PATCH_SURFACE,
     outcome: 'warned',
@@ -218,7 +225,9 @@ export function fireObservationTruncated(worker: { id: string; workspaceId: stri
     workerId: worker.id,
     callerOrigin: 'worker',
     detail: { signal: 'observation_truncated', cap: OBSERVED_TOUCHES_CAP, dropped: update.dropped },
-  });
+  } as const;
+  if (!worker.taskId) { fireGateEvent(event); return; }
+  fireRepeatGateEvent(event, { key: { taskId: worker.taskId }, windowMs: OBSERVATION_TRUNCATED_WINDOW_MS });
 }
 
 /**

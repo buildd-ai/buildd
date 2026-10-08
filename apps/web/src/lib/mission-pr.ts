@@ -41,6 +41,7 @@ import {
 } from '@buildd/core/db/schema';
 import { and, eq, gte, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
+import { recordPrFact } from '@buildd/core/pr-facts';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 import {
@@ -660,13 +661,13 @@ export async function openMissionIntegrationPr(
       prUrl,
       prNumber,
       prBaseRef: recordedBaseRef,
-      prLifecycleStatus: 'pr_open',
       ...(stats ? { filesChanged: stats.reviewable.files } : {}),
       ...(stats ? { linesAdded: stats.reviewable.additions } : {}),
       ...(stats ? { linesRemoved: stats.reviewable.deletions } : {}),
       updatedAt: new Date(),
     })
     .where(eq(workers.id, ownerWorker.id));
+  await recordPrFact({ workerId: ownerWorker.id }, { kind: 'open' });
 
   await claimMissionPrimaryPr(missionId, prNumber, prUrl, {
     baseRef: recordedBaseRef,
@@ -805,11 +806,10 @@ async function adoptMergedMissionPr(args: {
       prUrl: pr.html_url,
       prNumber: pr.number,
       prBaseRef: recordedBaseRef,
-      prLifecycleStatus: 'merged',
-      mergedAt,
       updatedAt: new Date(),
     })
     .where(eq(workers.id, ownerWorker.id));
+  await recordPrFact({ workerId: ownerWorker.id }, { kind: 'merged', mergedAt });
 
   await claimMissionPrimaryPr(missionId, pr.number, pr.html_url, {
     baseRef: recordedBaseRef,

@@ -18,7 +18,7 @@ import { fireGateEvent, GATE_SLUGS } from './gate-ledger';
 // ── Surface matching ─────────────────────────────────────────────────────────
 
 export { matchesSurface } from './surface-ordering-config';
-import { matchesSurface } from './surface-ordering-config';
+import { matchesSurface, resolveSerializedSurfaces } from './surface-ordering-config';
 
 /**
  * Given a list of file paths and the workspace gitConfig, returns the surfaces
@@ -44,6 +44,20 @@ export function resolveMatchedSurfaces(
 }
 
 // ── Sequence-namespace anchor injection ──────────────────────────────────────
+
+/**
+ * Do these overlapping paths touch a workspace serialized surface? Used by the
+ * creation-time hard/soft overlap split (`partitionOverlapEdges`): a
+ * serialized surface makes even a prefix-only overlap a hard edge. A
+ * malformed surface config reads as serialized (fail toward the hard edge).
+ */
+export function overlapTouchesSerializedSurface(paths: string[], gitConfig: WorkspaceGitConfig | null | undefined): boolean {
+  try {
+    return resolveSerializedSurfaces(paths, gitConfig).length > 0;
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Given a task's pathManifest and the workspace gitConfig, returns additional

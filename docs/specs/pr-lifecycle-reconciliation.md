@@ -2,7 +2,7 @@
 title: PR Lifecycle Reconciliation
 status: active
 owner: max
-last_verified: 2026-09-01
+last_verified: 2026-10-07
 summary: The PR lifecycle status shown on every surface MUST reflect live GitHub CI state within one read cycle, with terminal states (merged/closed) never overwritten by later CI events.
 domain: tasks
 surfaces: [apps/web/src/lib/pr-state-refresh.ts, apps/web/src/lib/pr-presentation.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/components/TaskCard.tsx]
@@ -16,9 +16,9 @@ assertions:
     type: "symbol"
     name: "refreshStaleWorkers"
     path: "apps/web/src/lib/pr-state-refresh.ts"
-  - id: "derive-pr-lifecycle"
+  - id: "pr-pill-vocabulary"
     type: "symbol"
-    name: "derivePrLifecycle"
+    name: "PR_PILL"
     path: "apps/web/src/lib/pr-presentation.ts"
   - id: "pr-reconciliation-tests"
     type: "test_file"
@@ -29,7 +29,7 @@ assertions:
 
 ### I-1: All CI states render as CI badges
 
-Every `prLifecycleStatus` value in the CI set (`ci_running`, `ci_failed`, `ci_green`) MUST have an entry in every `PR_LIFECYCLE` map. No CI state may fall through to the `Open` fallback. Code surfaces: `pr-presentation.ts#PR_LIFECYCLE` and `TaskCard.tsx#PR_LIFECYCLE`.
+Every `prLifecycleStatus` value in the CI set (`ci_running`, `ci_failed`, `ci_green`) MUST map to a CI display state, and every display state MUST have a pill. No CI state may fall through to the `Open` fallback. There is one pill map, `pr-presentation.ts#PR_PILL`, keyed by `PrDisplayState`; the duplicate maps were retired by workflow-state-kernel Slice E. A kernel-owned PR's display state comes from its delivery (`resolvePrDisplayState`), not from this column.
 
 ### I-2: Terminal state wins
 

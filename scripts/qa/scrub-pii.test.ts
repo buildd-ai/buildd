@@ -164,14 +164,17 @@ const SAFE: Record<string, string[]> = {
     'chat_retro', // { lessons, proposals } booleans (apps/web/src/lib/chat-retro/settings.ts)
     'permission_overrides', // permission names -> team role names, both fixed sets (lib/permission-registry.ts)
     'plan', 'billing_status', // fixed vocabularies (packages/core/entitlements.ts); stripe ids are wiped
-    'managed_runner_plan'], // { plan: fixed plan id, numeric limits, 'block'|'allow' } (lib/entitlements/plans.ts)
+    'managed_runner_plan', // { plan: fixed plan id, numeric limits, 'block'|'allow' } (lib/entitlements/plans.ts)
+    'model_upgrade_policy'], // { mode: fixed vocabulary, soakHours, ISO times, setBy: a row id } (packages/core/model-upgrade-policy.ts)
   team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
     'chat_composer_prefs'], // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
   users: ['timezone'],
+  workspaces: ['model_upgrade_policy'], // same shape as teams.model_upgrade_policy
   // Scopes are a fixed vocabulary; workspace restrictions contain only row references.
   accounts: ['monthly_cost_month', 'budget_alerts_sent', 'scopes', 'workspace_ids'],
   missions: ['status', // MissionStatusValue (@buildd/shared)
-    'context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint'],
+    'context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint',
+    'branch_refresh_head_sha'], // a git SHA, same class as last_notified_sha
   initiatives: ['context_artifact_ids'],
   tasks: [
     'status', 'required_capabilities', 'heartbeat_tick_anchor', 'ci_retry_head_sha',
@@ -237,6 +240,7 @@ const SAFE: Record<string, string[]> = {
   surface_reservations: ['head_sha', 'base_sha'],
   dark_check_alerts: ['check_name'],
   releases: ['head_sha', 'previous_sha', 'version'],
+  dependency_releases: ['reason_code'], // stable machine code naming the matched rule
   release_tasks: ['commit_sha'],
   // exit_cause is NOT safe: normalizeErrorSignature() keeps words from the
   // error text, and the scrub guard caught identifying text surviving there.
@@ -290,7 +294,7 @@ describe('scrub-pii.sql covers the schema', () => {
       workspaces: ['name', 'repo', 'local_path', 'memory', 'projects'],
       github_repos: ['full_name', 'name', 'owner', 'html_url', 'description'],
       github_installations: ['account_login'],
-      missions: ['title', 'description', 'working_branch', 'primary_pr_url', 'goal_criteria'],
+      missions: ['title', 'description', 'working_branch', 'primary_pr_url', 'goal_criteria', 'branch_refresh_lease_token'],
       initiatives: ['title', 'description', 'kpis'],
       tasks: ['title', 'description', 'context', 'result', 'external_url', 'subject_branch'],
       workers: ['branch', 'pr_url', 'current_action', 'waiting_for', 'error', 'milestones', 'result_meta', 'runner'],
