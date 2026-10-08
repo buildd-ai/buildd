@@ -3585,14 +3585,24 @@ describe('POST /api/workers/claim', () => {
         });
       });
 
-      it("executor 'cloud': the endpoint is never resolved or attached", async () => {
+      it("executor 'cloud': the endpoint is never attached; only a non-secret toolSearchDisabled marker", async () => {
         await withEncryptionKey(async () => {
           setupTeamWithEveryCredential();
           mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint }));
           const data = await claimWith({ executor: 'cloud' });
-          expect(mockResolveAgentModelRoute).not.toHaveBeenCalled();
           expect(data.workers[0].modelEndpoint).toBeUndefined();
+          expect(data.workers[0].toolSearchDisabled).toBe(true);
           expect(JSON.stringify(data)).not.toContain('sk-endpoint-example');
+        });
+      });
+
+      it("executor 'cloud': an endpoint that passes ToolSearch through adds no marker", async () => {
+        await withEncryptionKey(async () => {
+          setupTeamWithEveryCredential();
+          mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint: { ...endpoint, toolSearch: true } }));
+          const data = await claimWith({ executor: 'cloud' });
+          expect(data.workers[0].modelEndpoint).toBeUndefined();
+          expect('toolSearchDisabled' in data.workers[0]).toBe(false);
         });
       });
     });
@@ -3955,6 +3965,45 @@ describe('POST /api/workers/claim', () => {
       // engineering/simple → haiku (baseline matrix)
       expect(lastTaskSetPayload.predictedModel).toBe(tierModel('budget'));
       expect(lastTaskSetPayload.context?.model).toBe(tierModel('budget'));
+    });
+
+    // Regression: a category value ('feature', 'test') stored as tasks.kind
+    // used to throw inside BASELINE[kind][complexity] and 500 every claim whose
+    // candidate set held it — a head-of-line blocker for the runner.
+    it.each([['feature'], ['test'], ['constructor']])('a candidate with kind=%s claims as engineering instead of returning 500', async (badKind) => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 3,
+        type: 'user',
+        authType: 'api',
+        maxCostPerDay: '100',
+        totalCost: '5',
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([{
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'organizer-filed step',
+        kind: badKind,
+        complexity: 'simple',
+        priority: 0,
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+      }]);
+      mockClaimSuccess();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers.length).toBe(1);
+      // engineering/simple → budget tier, same as a valid engineering kind.
+      expect(lastTaskSetPayload.predictedModel).toBe(tierModel('budget'));
     });
 
     it('downshifts engineering/complex to sonnet when daily budget > 70%', async () => {

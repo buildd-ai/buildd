@@ -337,7 +337,8 @@ describe('seedCloneFromKept', () => {
     const w = makeWorld();
     expect(resetContainer(w.paths, deps(w)).ok).toBe(true);
     const kept = keptDirForClone({ BUILDD_EXECUTOR: 'cloud', HOME: w.paths.home }, w.clone)!;
-    expect(seedCloneFromKept(w.clone, `file://${w.origin}`, kept, { defaultBranch: 'main', fetchOrigin: () => 'offline', log: () => {} })).toBe(false);
+    // Origin unreachable: ls-remote cannot show its tip is kept, so the fetch runs, and fails.
+    expect(seedCloneFromKept(w.clone, `file://${w.origin}-gone`, kept, { defaultBranch: 'main', fetchOrigin: () => 'offline', log: () => {} })).toBe(false);
     expect(existsSync(w.clone)).toBe(false);
   });
 

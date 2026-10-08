@@ -576,3 +576,22 @@ describe('shouldUseClaudeCredential: the Claude credential never rides along to 
     expect(src).toContain('if (modelEnv.error) {');
   });
 });
+
+describe('cloud run: claim says the endpoint behind egress lacks ToolSearch', () => {
+  test('default Anthropic route in the container: ENABLE_TOOL_SEARCH=false', () => {
+    const got = run({ ANTHROPIC_API_KEY: 'placeholder' }, { toolSearchDisabled: true });
+    expect(got.env.ENABLE_TOOL_SEARCH).toBe('false');
+    expect(got.endpoint).toBe('anthropic');
+  });
+
+  test('absent marker leaves Claude Code\'s default; an inherited value is not trusted', () => {
+    expect('ENABLE_TOOL_SEARCH' in run({}, {}).env).toBe(false);
+    expect('ENABLE_TOOL_SEARCH' in run({ ENABLE_TOOL_SEARCH: 'false' }, {}).env).toBe(false);
+  });
+
+  test('not applied to Codex, nor over a delivered team endpoint', () => {
+    expect('ENABLE_TOOL_SEARCH' in run({}, { toolSearchDisabled: true, isCodexTask: true }).env).toBe(false);
+    const team = run({}, { toolSearchDisabled: true, modelEndpoint: { ...gatewayEndpoint, toolSearch: true } });
+    expect(team.env.ENABLE_TOOL_SEARCH).toBe('true');
+  });
+});
