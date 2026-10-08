@@ -686,7 +686,9 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      await waitFor(() => mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'waiting_input'
+      ).length >= 2);
 
       // Should have synced waiting_input status at least twice: the transient
       // sync before abort, and the post-loop cleanup — both preserve status

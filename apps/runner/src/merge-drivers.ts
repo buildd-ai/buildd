@@ -10,7 +10,8 @@
  *
  * For a conflict retry, `mergeBaseWithDerivedFiles` does the merge before the
  * agent starts: derived-only conflicts come out as a finished merge commit with
- * the regenerated files in it; mixed ones leave the merge in progress with only
+ * the regenerated files in it, which `finishDerivedMerge` verifies and pushes so
+ * no agent session runs at all; mixed ones leave the merge in progress with only
  * the real conflicts unresolved, and the owed commands for the agent to run.
  *
  * Deliberately no "concatenate both sides" rule (`merge=union`): replayed
@@ -18,14 +19,19 @@
  * often than it was right. Real text conflicts stay with the agent.
  */
 
-import { execFileSync, execSync } from 'child_process';
+import { exec, execFileSync, execSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, isAbsolute, join } from 'path';
+import { promisify } from 'util';
 import type { NormalizedDerivedFileRule } from '@buildd/shared';
 
 export { normalizeDerivedFiles, type NormalizedDerivedFileRule } from '@buildd/shared';
 
+const pexec = promisify(exec);
+
 const REGENERATE_TIMEOUT_MS = 5 * 60_000;
+const VERIFY_TIMEOUT_MS = 15 * 60_000;
+const PUSH_TIMEOUT_MS = 2 * 60_000;
 const PENDING_FILE = 'buildd-derived-pending';
 const BLOCK_START = '# >>> buildd derived files (managed by the buildd runner) >>>';
 const BLOCK_END = '# <<< buildd derived files <<<';
@@ -241,6 +247,69 @@ export function mergeBaseWithDerivedFiles(
   return { ...result, status: 'merged', regenerated: commands };
 }
 
+// ── Finish without an agent ──────────────────────────────────────────────────
+
+export interface DerivedFinishResult {
+  /** pushed: the merge commit is on the remote branch. Anything else: nothing was pushed. */
+  status: 'pushed' | 'verify_failed' | 'push_failed';
+  /** The verification command that ran, or null when there was none. */
+  verification: string | null;
+  headSha?: string;
+  error?: string;
+}
+
+/** The workspace verification a mechanical finish runs: the task's `verificationCommand`, if any. */
+export function derivedMergeVerificationCommand(context: Record<string, unknown> | null | undefined): string | null {
+  const command = context?.verificationCommand;
+  return typeof command === 'string' && command.trim() ? command.trim() : null;
+}
+
+function lastLines(text: string, n = 20): string {
+  return text.trim().split('\n').slice(-n).join('\n');
+}
+
+/**
+ * Verify and push a merge `mergeBaseWithDerivedFiles` finished, so a
+ * derived-only conflict retry never needs an agent. Never force-pushes: a
+ * branch that moved on the remote is reported, and the agent takes over.
+ */
+export async function finishDerivedMerge(
+  worktreePath: string,
+  branch: string,
+  opts: { verificationCommand: string | null; verifyTimeoutMs?: number },
+): Promise<DerivedFinishResult> {
+  const verification = opts.verificationCommand;
+  if (verification) {
+    try {
+      await pexec(verification, {
+        cwd: worktreePath,
+        timeout: opts.verifyTimeoutMs ?? VERIFY_TIMEOUT_MS,
+        encoding: 'utf-8',
+        maxBuffer: 16 * 1024 * 1024,
+        shell: '/bin/sh',
+      });
+    } catch (err) {
+      const e = err as { stdout?: string; stderr?: string; message?: string };
+      const out = lastLines(`${e.stdout ?? ''}\n${e.stderr ?? ''}`) || String(e.message ?? err);
+      return { status: 'verify_failed', verification, error: out };
+    }
+    // What gets pushed must be what was verified.
+    const dirty = tryGit(worktreePath, ['status', '--porcelain', '--untracked-files=no']);
+    if (!dirty.ok || dirty.out) {
+      return { status: 'verify_failed', verification, error: `verification changed tracked files: ${dirty.out}` };
+    }
+  }
+  const head = tryGit(worktreePath, ['rev-parse', 'HEAD']);
+  if (!head.ok) return { status: 'push_failed', verification, error: head.out };
+  try {
+    git(worktreePath, ['push', '--no-verify', '-q', 'origin', `HEAD:refs/heads/${branch}`], PUSH_TIMEOUT_MS);
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string };
+    return { status: 'push_failed', verification, error: lastLines(e.stderr ?? '') || String(e.message ?? err) };
+  }
+  return { status: 'pushed', verification, headSha: head.out };
+}
+
 // ── Task wiring ──────────────────────────────────────────────────────────────
 
 /** A conflict retry that merges its base (not a migration renumber). */
@@ -267,6 +336,27 @@ export function formatDerivedMergeNote(result: DerivedMergeResult, baseRef: stri
     return `\n\n## Merge in progress\nThe runner started merging \`${baseRef}\` into this branch. Do not abort it or merge again. These files still conflict and need resolving on the merits:\n${files}${regen}`;
   }
   return null;
+}
+
+/** The completion summary for a conflict retry the runner finished itself. */
+export function formatDerivedMergeSummary(merge: DerivedMergeResult, baseRef: string, finish: DerivedFinishResult): string {
+  const regen = merge.regenerated.length
+    ? ` Derived files regenerated with: ${merge.regenerated.map(c => `\`${c}\``).join(', ')}.`
+    : ' No derived file needed regenerating.';
+  const verified = finish.verification
+    ? ` Verified with \`${finish.verification}\`.`
+    : ' No verification command is set for this task, so none ran; CI checks the pushed branch.';
+  return `Merged \`${baseRef}\` into the branch and pushed it${finish.headSha ? ` (${finish.headSha.slice(0, 12)})` : ''}; ` +
+    `every conflict was in a derived file, so the runner finished this retry with no agent session.${regen}${verified}`;
+}
+
+/** Appended to the merge note when the runner could not finish on its own. */
+export function formatDerivedFinishFallback(finish: DerivedFinishResult): string {
+  const why = finish.status === 'verify_failed'
+    ? `Verification${finish.verification ? ` (\`${finish.verification}\`)` : ''} failed`
+    : 'The push failed';
+  return `\n\nThe runner tried to finish this without you and stopped: ${why}, so the merge is not pushed. ` +
+    `Output:\n\`\`\`\n${(finish.error ?? '').slice(0, 2000)}\n\`\`\``;
 }
 
 
