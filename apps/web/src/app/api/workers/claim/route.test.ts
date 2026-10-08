@@ -422,6 +422,8 @@ const realHoldStart = { ...(await import('./hold-start-shadow')) };
 const holdStartOff = () => ({
   hasRecent: async () => false,
   loadHolder: async () => null,
+  // Live gated START (task 7eb191b9): no applied START is on the ledger unless a test says so.
+  findAppliedStart: async () => false,
   decisionDeps: {
     resolveAccess: async () => ({ ok: false, error: { kind: 'capability_disabled', message: 'off' } }) as any,
     record: async () => {},
@@ -441,6 +443,17 @@ mock.module('./hold-start-shadow', () => ({
   gatedStartApplies: (n: any) => realHoldStart.gatedStartApplies(n, holdStartTest.deps),
   acquireGatedStartPaths: (i: any) => realHoldStart.acquireGatedStartPaths(i, holdStartTest.deps),
   releaseGatedStartPaths: (i: any) => realHoldStart.releaseGatedStartPaths(i, holdStartTest.deps),
+}));
+
+// Soft-overlap holders (./soft-overlap-store): read only when a candidate
+// carries pathDeclaration.softOverlaps. Default: none known.
+const softHoldersTest = { rows: new Map<string, any>() as Map<string, any> | Error, calls: 0 };
+mock.module('./soft-overlap-store', () => ({
+  loadSoftOverlapHolders: async (_ids: string[]) => {
+    softHoldersTest.calls++;
+    if (softHoldersTest.rows instanceof Error) throw softHoldersTest.rows;
+    return softHoldersTest.rows;
+  },
 }));
 
 // Managed-runner entitlement: the real check over injectable usage numbers.
@@ -483,7 +496,6 @@ import { POST } from './route';
 import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-workspace-links-plan';
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
-import { claimHoldIdentity } from '@buildd/core/orchestration-promotion';
 
 function createMockRequest(options: {
   headers?: Record<string, string>;
@@ -6695,6 +6707,59 @@ describe('entity catalog injection at claim time', () => {
       expect(data.diagnostics.reason).toBe('all_candidates_deferred');
       expect(data.diagnostics.deferrals.connector_mismatch).toBe(2);
     });
+
+    // A backlog of tasks whose role secrets live on another team can fill
+    // every window; the over-fetch above does not help once the undeliverable
+    // prefix is longer than the window itself.
+    it('fetches past a full window of role-env-gapped tasks and claims the runnable task behind them', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api',
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+
+      // maxTasks=1 → candidateLimit=25; all 25 window slots are gapped.
+      const gapped = Array.from({ length: 25 }, (_, i) => ({
+        id: `gapped-${i}`, workspaceId: 'ws-1', title: `Email task ${i}`,
+        roleSlug: 'email-agent', priority: 9,
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      }));
+      const clean = {
+        id: 'task-clean', workspaceId: 'ws-1', title: 'Clean task',
+        roleSlug: null, priority: 1,
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      };
+      const allTasks = [...gapped, clean];
+      // Candidate pages honour limit/offset like the DB; every other tasks query is empty.
+      mockTasksFindMany.mockImplementation(((opts: any) => Promise.resolve(
+        typeof opts?.offset === 'number' ? allTasks.slice(opts.offset, opts.offset + opts.limit) : [],
+      )) as any);
+      mockRunRoleEnvPreFilter.mockImplementation(async (tasks: any[]) => new Map(
+        tasks.filter(t => t.id.startsWith('gapped-')).map(t => [t.id, { roleSlug: 'email-agent', missing: ['TENANT_ID'] }]),
+      ));
+
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-clean' }]) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-clean', task_id: 'task-clean', branch: 'buildd/test', status: 'idle' }],
+      }));
+
+      try {
+        const res = await POST(createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { runner: 'test-runner', maxTasks: 1 },
+        }));
+
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.workers).toHaveLength(1);
+        expect(data.workers[0].taskId).toBe('task-clean');
+      } finally {
+        mockRunRoleEnvPreFilter.mockImplementation(() => Promise.resolve(new Map()));
+      }
+    });
   });
   // OAuth budget pacing (packages/core/oauth-budget.ts). Seat auth reports no
   // cost, so pressure is learned from past exhaustion episodes. Its only effect
@@ -9008,6 +9073,29 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(event.detail.bypassed.sort()).toEqual(['deps_blocked', 'path_overlap']);
   });
 
+  it('force past a soft overlap: claimed, and the human START is recorded with the holder and paths as calibration data', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    softHoldersTest.rows = new Map([['holder-1', { id: 'holder-1', status: 'in_progress', pathManifest: ['apps/web/src/lib/widget.ts'], workerStatus: 'running', title: 'Holder' }]]);
+    mockTasksFindMany
+      .mockResolvedValueOnce(forceTarget())
+      .mockResolvedValueOnce([task({
+        pathManifest: ['apps/web/src/lib/'],
+        pathDeclaration: { declared: ['apps/web/src/lib/'], source: 'creation', snapshotAt: 'x', overlapPolicy: 'v2', softOverlaps: [{ taskId: 'holder-1', paths: [], kind: 'prefix' }] },
+      })]);
+    const ctx = claimedContext();
+
+    try {
+      const data = await (await claim({ runner: 'mcp', forceOverride: true }, interactiveHeaders('user-9'))).json();
+      expect(data.workers).toHaveLength(1);
+      expect(ctx().forceClaim.bypassed).toContain('soft_overlap');
+      const forced = bypassEvents().find((e: any) => e.reason === 'force_soft_overlap');
+      expect(forced).toMatchObject({ taskId: 'task-1', workerId: 'worker-1', detail: { holderTaskId: 'holder-1', calibration: 'human_force', verdict: 'HOLD', overlapKind: 'prefix' } });
+      expect(forced.detail.paths).toContain('apps/web/src/lib/widget.ts');
+    } finally {
+      softHoldersTest.rows = new Map();
+    }
+  });
+
   it('an ordinary claim drops a previous claim\'s force audit', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account('admin'));
     mockTasksFindMany.mockResolvedValueOnce([task({ context: { forceClaim: { at: 'x', accountId: 'a', userId: null, bypassed: ['deps_blocked'] } } })]);
@@ -9128,7 +9216,7 @@ describe('claim route: interactive session marker', () => {
   });
 });
 
-describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
+describe('hold/start at claim (§5b): decided after the response, applied on the next claim', () => {
   const JEV = 'typesafe/jev-1.13-20260917';
   const GATED = defineD({
     id: 'buildd.orchestration_claim_hold',
@@ -9138,16 +9226,19 @@ describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
     minConfidence: 0.8,
   });
 
-  // Synthetic readout evidence for GATED: the promotion guard grants nothing without it.
-  const PROMOTED = ['ch1.open_pr_overlap', 'ch1.advisory_manifest'].map(candidatePolicyVersion => ({
-    decisionId: GATED.id, candidatePolicyVersion, measuredFingerprint: claimHoldIdentity(GATED),
-    verdict: 'eligible_for_gated' as const, threshold: 0.8, maxApplyingFraction: 1, readoutRef: 'synthetic',
-  }));
+  const SHADOW = defineD({
+    id: 'buildd.orchestration_claim_hold',
+    promptVersion: 'test-shadow',
+    questions: { action: choiceQ({ question: 'q' }, { HOLD: 'h', START: 's' }) },
+    mode: 'shadow',
+  });
 
   const rows: any[] = [];
   function holdStartOn(over: Record<string, any> = {}) {
     return {
       hasRecent: async () => false,
+      // The decision runs after the response; nothing is on the ledger yet.
+      findAppliedStart: async () => false,
       loadHolder: async () => ({ title: 'Holder', workerStatus: 'completed', lastActivityAt: null, prLifecycle: 'ci_green', baseStale: false }),
       decisionDeps: {
         resolveAccess: async () => ({ ok: true, apiKey: 'k', model: JEV }) as any,
@@ -9255,7 +9346,7 @@ describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
   afterEach(() => { holdStartTest.deps = holdStartOff(); });
 
   for (const [name, setup] of Object.entries(scenarios)) {
-    it(`${name}: the claim response is identical with the capability on and off, and only "on" records a shadow row`, async () => {
+    it(`${name}: the claim response is identical with the capability on and off, and only "on" records a decision row`, async () => {
       const off = await claimWith(holdStartOff(), setup);
       const on = await claimWith(holdStartOn(), setup);
       expect(on.status).toBe(off.status);
@@ -9267,15 +9358,16 @@ describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
         capability: 'orchestration_claim',
         ruleVerdict: 'HOLD',
         suggested: 'START',
-        effective: 'HOLD',
-        applied: false,
-        status: 'suggested',
-        reason: 'shadow',
+        // Live: a confident Jev START is applied on the ledger. It only lets
+        // the NEXT claim for the same state through; this response held.
+        effective: 'START',
+        applied: true,
+        mode: 'gated',
         taskId: 'task-1',
         workspaceId: 'ws-1',
         teamId: 'team-1',
         prNumber: null,
-        experimentArm: 'observe',
+        experimentArm: 'apply',
         propensity: 1,
         candidatePolicyVersion: name === 'advisoryManifest' ? 'ch1.advisory_manifest' : 'ch1.open_pr_overlap',
       });
@@ -9374,19 +9466,18 @@ describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
     expect(on.scheduled).toBe(0);
   });
 
-  it('as shipped, the gated START lookup is never made', async () => {
+  it('rolled back (zero applying fraction), the gated START lookup is never made', async () => {
     let lookups = 0;
-    const on = await claimWith(holdStartOn({ findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
+    const on = await claimWith(holdStartOn({ applyingFraction: 0, findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
     expect(on.body.workers).toHaveLength(0);
     expect(lookups).toBe(0);
   });
 
-  describe('gated START, when reached (not reachable as shipped)', () => {
+  describe('gated START (live)', () => {
     const acquired: any[] = [];
     const gated = (over: Record<string, any> = {}) => holdStartOn({
       decision: GATED,
       applyingFraction: 1,
-      promotions: PROMOTED,
       findAppliedStart: async () => true,
       acquire: async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: input.paths, insertedIds: input.paths.map((_: string, i: number) => `lease-${i}`), blocked: [], pathManifest: null, revision: 1 }; },
       ...over,
@@ -9399,9 +9490,14 @@ describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
       expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
     });
 
-    it('without readout evidence the requested cohort is refused: no lookup, the hold stands', async () => {
+    it('as shipped (default definition and fraction) an applied START on the ledger lets the claim through', async () => {
+      const on = await claimWith(gated({ decision: undefined, applyingFraction: undefined }), scenarios.openPrAfterWorkerEnded);
+      expect(on.body.workers).toHaveLength(1);
+    });
+
+    it('a shadow definition never applies: no lookup, the hold stands', async () => {
       let lookups = 0;
-      const on = await claimWith(gated({ promotions: [], findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
+      const on = await claimWith(gated({ decision: SHADOW, findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
       expect(on.body.workers).toHaveLength(0);
       expect(lookups).toBe(0);
       expect(acquired).toHaveLength(0);
@@ -9452,6 +9548,85 @@ describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
       expect(capped.body.workers).toHaveLength(0);
       expect(capped.body.diagnostics?.deferrals?.mission_concurrent).toBe(1);
       expect(acquired).toHaveLength(1);
+    });
+  });
+
+  describe('soft overlap (prefix-only declared overlap, never a dependsOn edge)', () => {
+    const acquired: any[] = [];
+    const soft = (entries: any[], pathManifest: string[] = ['apps/web/src/lib/']) => task({
+      pathManifest,
+      pathDeclaration: { declared: pathManifest, source: 'creation', snapshotAt: 'x', overlapPolicy: 'v2', softOverlaps: entries },
+    });
+    const holderRow = (over: Record<string, unknown> = {}) => ({ id: 'holder-1', status: 'in_progress', pathManifest: ['apps/web/src/lib/widget.ts'], workerStatus: 'running', title: 'Holder', ...over });
+    const withStart = (applied: boolean, over: Record<string, any> = {}) => holdStartOn({
+      findAppliedStart: async () => applied,
+      acquire: async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: input.paths, insertedIds: input.paths.map((_: string, i: number) => `lease-${i}`), blocked: [], pathManifest: null, revision: 1 }; },
+      ...over,
+    });
+    beforeEach(() => { acquired.length = 0; softHoldersTest.rows = new Map([['holder-1', holderRow()]]); softHoldersTest.calls = 0; });
+    afterEach(() => { softHoldersTest.rows = new Map(); });
+
+    it('Jev HOLD (no applied START): the task waits, the decision is asked, and the wait is on the gate ledger', async () => {
+      mockFireDeferralEvent.mockClear();
+      const on = await claimWith(withStart(false, {
+        decisionDeps: { ...holdStartOn().decisionDeps, call: (async () => ({ ok: true, answers: { action: { choice: 'HOLD', confidence: 0.99, distribution: {} } }, model: JEV, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 1, attempts: 1 })) as any },
+      }), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }])] }));
+      expect(on.body.workers).toHaveLength(0);
+      expect(on.body.diagnostics?.deferrals?.soft_overlap).toBe(1);
+      expect(on.rows).toHaveLength(1);
+      expect(on.rows[0]).toMatchObject({ candidatePolicyVersion: 'ch1.soft_overlap', effective: 'HOLD', taskId: 'task-1' });
+      const ledger = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap');
+      expect(ledger).toMatchObject({ outcome: 'deferred', taskId: 'task-1', detail: { holderTaskId: 'holder-1', verdict: 'HOLD' } });
+      expect(ledger.detail.paths).toContain('apps/web/src/lib/widget.ts');
+    });
+
+    it('Jev START (applied for this state): the task runs, its declared paths acquired exclusively first', async () => {
+      const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }])] }));
+      expect(on.body.workers).toHaveLength(1);
+      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/'], declare: true }]);
+    });
+
+    it('a live lease on the actual files still wins over an applied START', async () => {
+      const on = await claimWith(withStart(true), () => arm({
+        tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }])],
+        leases: new Map([['holder-1', ['apps/web/src/lib/widget.ts']]]),
+      }));
+      expect(on.body.workers).toHaveLength(0);
+      expect(acquired).toHaveLength(0);
+    });
+
+    it('a decision error fails closed: the task holds', async () => {
+      const on = await claimWith(withStart(false, { findAppliedStart: async () => { throw new Error('ledger down'); } }), () => arm({ tasks: [soft([{ taskId: 'holder-1' }])] }));
+      expect(on.body.workers).toHaveLength(0);
+      expect(on.body.diagnostics?.deferrals?.soft_overlap).toBe(1);
+    });
+
+    it('an unreadable holder set fails closed to a deterministic hold', async () => {
+      softHoldersTest.rows = new Error('db down');
+      const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1' }])] }));
+      expect(on.body.workers).toHaveLength(0);
+      expect(on.body.diagnostics?.deferrals?.soft_overlap).toBe(1);
+      expect(on.rows).toHaveLength(0);
+    });
+
+    it('a legacy inferred edge on the same file holds deterministically: Jev is never asked', async () => {
+      softHoldersTest.rows = new Map([['holder-1', holderRow({ status: 'pending', workerStatus: null })]]);
+      const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'legacy_inferred' }], ['apps/web/src/lib/widget.ts'])] }));
+      expect(on.body.workers).toHaveLength(0);
+      expect(on.rows).toHaveLength(0);
+      expect(acquired).toHaveLength(0);
+    });
+
+    it('a finished holder releases the soft overlap: the task runs with nothing asked', async () => {
+      softHoldersTest.rows = new Map([['holder-1', holderRow({ status: 'completed', workerStatus: 'completed' })]]);
+      const on = await claimWith(withStart(false), () => arm({ tasks: [soft([{ taskId: 'holder-1' }])] }));
+      expect(on.body.workers).toHaveLength(1);
+      expect(on.rows).toHaveLength(0);
+    });
+
+    it('a task with no soft overlaps never reads holders', async () => {
+      await claimWith(withStart(false), () => arm({ tasks: [task()] }));
+      expect(softHoldersTest.calls).toBe(0);
     });
   });
 });

@@ -1772,6 +1772,7 @@ export async function PATCH(
                     taskClass: terminalTaskRow[0].taskClass,
                     missionId: terminalTaskRow[0].missionId,
                     context: terminalTaskRow[0].context,
+                    dependsOn: terminalTaskRow[0].dependsOn,
                   }
                 : null,
               head: worker.branch,

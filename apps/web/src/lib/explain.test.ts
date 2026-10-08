@@ -475,6 +475,55 @@ describe('explainTask', () => {
     }
   });
 
+  it('a task held on a soft overlap names who holds what and the hold/start verdict', async () => {
+    missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+    taskRows = [
+      task({
+        id: 'task-1', status: 'pending', pathManifest: ['scripts/'],
+        pathDeclaration: { declared: ['scripts/'], source: 'creation', snapshotAt: 'x', overlapPolicy: 'v2', softOverlaps: [{ taskId: 'holder-1', paths: [], kind: 'prefix' }] },
+      }),
+      task({ id: 'holder-1', status: 'in_progress', title: 'Rewrite the test runner', pathManifest: ['scripts/run-unit-tests.ts'], missionId: 'mission-x' }),
+    ];
+    gateEventRows = [{
+      taskId: 'task-1', gate: 'claim_loop_deferral', outcome: 'deferred', reason: 'soft_overlap',
+      occurredAt: new Date('2026-01-03T00:00:00.000Z'),
+      detail: { holderTaskId: 'holder-1', paths: ['scripts', 'scripts/run-unit-tests.ts'], verdict: 'HOLD', overlapKind: 'prefix', consecutiveDeferrals: 4 },
+    }];
+    try {
+      const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+      expect(answer.coordination?.holds).toEqual([expect.objectContaining({
+        edge: 'soft_overlap', holderTaskId: 'holder-1', holderTitle: 'Rewrite the test runner', verdict: 'HOLD',
+        paths: ['scripts', 'scripts/run-unit-tests.ts'],
+      })]);
+      const link = answer.because.find(l => l.refs.taskId === 'holder-1');
+      expect(link?.claim).toContain('Rewrite the test runner');
+      expect(link?.claim).toContain('HOLD');
+      expect(answer.gateHistory[0].holder).toMatchObject({ holderTaskId: 'holder-1', verdict: 'HOLD' });
+      expect(answer.because.map(l => l.order)).toEqual(answer.because.map((_, i) => i + 1));
+    } finally {
+      gateEventRows = [];
+    }
+  });
+
+  it('a task held on a live path lease names the lease holder', async () => {
+    missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+    taskRows = [
+      task({ id: 'task-1', status: 'pending', pathManifest: ['apps/web/src/lib/x.ts'] }),
+      task({ id: 'lease-1', status: 'in_progress', title: 'Lease holder', pathManifest: ['apps/web/src/lib/x.ts'], missionId: 'mission-x' }),
+    ];
+    gateEventRows = [{
+      taskId: 'task-1', gate: 'claim_loop_deferral', outcome: 'deferred', reason: 'path_overlap',
+      occurredAt: new Date('2026-01-03T00:00:00.000Z'), detail: { blockingTaskId: 'lease-1', prNumber: null, prUrl: null },
+    }];
+    try {
+      const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+      expect(answer.coordination?.holds[0]).toMatchObject({ edge: 'path_lease', holderTaskId: 'lease-1', paths: ['apps/web/src/lib/x.ts'] });
+      expect(answer.because.some(l => l.claim.includes('live path lease held by task lease-1'))).toBe(true);
+    } finally {
+      gateEventRows = [];
+    }
+  });
+
   it('a task that is not pending never reads its wake', async () => {
     taskRows = [task({ id: 'task-1', status: 'completed' })];
     mockLatestDispatchForTask.mockClear();

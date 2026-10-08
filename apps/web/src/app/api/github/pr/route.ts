@@ -5,7 +5,7 @@ import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { eq, and, ne, isNull, isNotNull, inArray } from 'drizzle-orm';
-import { githubApi, githubAppBotLogin, mergePullRequest } from '@/lib/github';
+import { githubApi, githubGraphQL, githubAppBotLogin, mergePullRequest } from '@/lib/github';
 import { rankPrComments } from '@/lib/pr-comments';
 // One implementation of the primary-PR claim and of "what counts as trunk",
 // shared with the mission-PR opener. Two copies of a base-ref rule is how
@@ -66,6 +66,7 @@ import { ATTEMPT_FOOTER_PATTERN, checkFreshRetryPr, freshRetryPrRefusal, retryAt
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
+import { findStackedReleaseForBase } from '@/lib/early-release-stacking';
 
 
 /**
@@ -1100,6 +1101,13 @@ export async function POST(req: NextRequest) {
 
     // Create the PR via GitHub API
     const effectiveBase = prBase.base ?? 'main';
+    // Early release's stacking mechanics (docs/design/early-release.md): a
+    // `start_stacked` dependent's PR targets its upstream's own branch, not a
+    // merge candidate yet, so it opens as a draft regardless of what the
+    // caller asked for — the upstream might still change before it merges.
+    // The webhook un-drafts it once the upstream actually lands
+    // (`undraftStackedDependents`, called from the merge handler).
+    const earlyReleaseStacked = await findStackedReleaseForBase(worker.taskId, effectiveBase);
     let prData: any;
     try {
       prData = await githubApi(
@@ -1113,7 +1121,7 @@ export async function POST(req: NextRequest) {
             body: effectivePrBody,
             head,
             base: effectiveBase,
-            draft: draft || false,
+            draft: draft || earlyReleaseStacked || false,
           }),
         }
       );
@@ -1345,12 +1353,16 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const requestBody = await req.json();
-    const { workerId, prNumber, body: newPrBody } = requestBody;
+    const { workerId, prNumber, body: newPrBody, draft: draftUpdate } = requestBody;
     // Presence of `body` switches this call from closing the PR to rewriting
     // its body — the two things this route's only caller set ever needed
     // from a bare PATCH. See update_pr in mcp-tools.ts.
     const isBodyUpdate = newPrBody !== undefined;
-    const capability = isBodyUpdate ? 'pr.update_body' as const : 'pr.close' as const;
+    // `draft: false` marks a draft PR ready for review (GraphQL only; the REST
+    // PATCH cannot flip it). `draft: true` is not supported.
+    const isReadyUpdate = !isBodyUpdate && draftUpdate === false;
+    const capability = isReadyUpdate ? 'pr.mark_ready' as const
+      : isBodyUpdate ? 'pr.update_body' as const : 'pr.close' as const;
 
     if (!workerId) {
       return NextResponse.json({ error: 'workerId required' }, { status: 400 });
@@ -1400,6 +1412,24 @@ export async function PATCH(req: NextRequest) {
     }
 
     void recordCapabilityDecision({ capability, decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}` });
+    if (isReadyUpdate) {
+      const current = await githubApi(
+        repo.installation.installationId,
+        `/repos/${repo.fullName}/pulls/${prNumber}`,
+      );
+      if (current.draft && current.node_id) {
+        await githubGraphQL(
+          repo.installation.installationId,
+          'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { number isDraft } } }',
+          { id: current.node_id },
+        );
+      }
+      return NextResponse.json({
+        ok: true,
+        pr: { number: current.number, url: current.html_url, state: current.state, title: current.title, draft: false },
+      });
+    }
+
     const prData = await githubApi(
       repo.installation.installationId,
       `/repos/${repo.fullName}/pulls/${prNumber}`,

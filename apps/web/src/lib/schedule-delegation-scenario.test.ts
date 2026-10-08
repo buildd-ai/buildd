@@ -60,7 +60,7 @@ mock.module('@buildd/core/decision-ledger', () => ({
   summarizeDecisionLedger: (rows: unknown[]) => ({ total: rows.length }),
 }));
 mock.module('@/lib/orchestration-decision-stats-query', () => ({ fetchOrchestrationDecisionStats: decisionStats }));
-mock.module('@/lib/coordination-stats-query', () => ({ fetchCoordinationStats: async () => ({}) }));
+mock.module('@/lib/coordination-stats-query', () => ({ fetchCoordinationStats: async () => ({}), coordinationFilters: () => ({}) }));
 
 const { mintTaskToken } = await import('./task-token');
 const { authenticateTaskScopedCaller, taskScopeAllowsDelegated, isDelegatedReach } = await import('./task-token-auth');

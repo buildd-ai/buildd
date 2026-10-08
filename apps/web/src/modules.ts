@@ -33,6 +33,7 @@ import { withSupersessionEffects } from '@/lib/workflow/supersession-effects';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
 import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
 import { releaseSubscribers } from '@/lib/release/subscribers';
+import { earlyReleaseSubscribers } from '@/lib/early-release-subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
 import { notificationSubscribers } from '@/lib/notification-subscribers';
 import { roleSubscribers } from '@/lib/default-roles-subscribers';
@@ -49,6 +50,7 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...reviewSubscribers,
   // pr.merged: the release record is kicked off before the ledger write.
   ...releaseSubscribers,
+  ...earlyReleaseSubscribers,
   // Before notifications: on a completion the chat post was kicked off first.
   ...chatSubscribers,
   ...notificationSubscribers,

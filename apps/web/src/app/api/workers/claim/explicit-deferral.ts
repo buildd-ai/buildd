@@ -39,6 +39,18 @@ export function describeExplicitDeferral(
         detail: `It declares no file scope and its mission already has a scope-undeclared task in flight${peer ? ` (${peer})` : ''}; only one runs at a time. Wait for that task, or re-create this one with a pathManifest (or outputRequirement 'artifact_required' / 'none' if it edits no files).`,
       };
     }
+    case 'soft_overlap': {
+      const holder = str(detail.holderTaskId);
+      const paths = Array.isArray(detail.paths) ? (detail.paths as unknown[]).filter((p): p is string => typeof p === 'string').slice(0, 5) : [];
+      const verdict = str(detail.verdict);
+      const why = verdict === 'deterministic_hold'
+        ? `the overlap is ${str(detail.overlapKind) ?? 'hard'}, so it waits deterministically`
+        : `the hold/start decision said ${verdict ?? 'HOLD'}`;
+      return {
+        code: reason,
+        detail: `Its declared scope overlaps in-flight task ${holder ?? '(unknown)'}${paths.length ? ` on ${paths.join(', ')}` : ''}, and ${why}. It starts when that task finishes or a START is decided. ${FORCE_HINT}`,
+      };
+    }
     case 'mission_budget':
       return { code: reason, detail: 'Its mission is budget_exhausted. Raise the mission budget to resume it.' };
     case 'mission_concurrent': {

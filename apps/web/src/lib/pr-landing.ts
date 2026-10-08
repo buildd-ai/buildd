@@ -915,13 +915,13 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   }
 
   // ── 7. Mission PR lifecycle, then the merge ─────────────────────────────────
-  let mergingTask: { id: string; title: string; taskClass: string | null; missionId: string | null } | null = null;
+  let mergingTask: { id: string; title: string; taskClass: string | null; missionId: string | null; context: unknown } | null = null;
   if (owner.taskId) {
     try {
       mergingTask =
         (await db.query.tasks.findFirst({
           where: eq(tasks.id, owner.taskId),
-          columns: { id: true, title: true, taskClass: true, missionId: true },
+          columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
         })) ?? null;
     } catch (err) {
       console.warn(`[pr-landing] could not read task ${owner.taskId}:`, errMessage(err));
@@ -934,6 +934,12 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
 
   if (!act) return done({ kind: 'merged', sha: liveHead }, 'every rail passed; this PR would merge now');
 
+  // See the matching note in auto-merge.ts: mission-branch-refresh.ts's
+  // conflict-resolution task IS the merge commit that catches a mission's
+  // integration branch up with dev, and squashing it would drop that
+  // ancestry — the same conflict would reappear on the next refresh.
+  const requireMergeCommit = (mergingTask?.context as Record<string, unknown> | null)?.requireMergeCommit === true;
+  const mergeMethod = requireMergeCommit ? 'merge' : (input.mergeMethod ?? 'squash');
   // Every rail above passed. A kernel-owned PR is merged by the kernel (T15 →
   // merge_call → T16 → verify_merge → PrMerged), which also owns the
   // post-merge work; any other PR merges here as before.
@@ -943,11 +949,11 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       workspaceId, installationId, repoFullName, prNumber, headSha: liveHead,
       door: `land_pr:${input.door}`,
       actor: actor.kind === 'human' ? `human:${actor.userId ?? 'unknown'}` : actor.kind === 'agent' ? `agent:${actor.workerId ?? 'unknown'}` : `system:${input.door}`,
-      mergeMethod: input.mergeMethod ?? 'squash',
+      mergeMethod,
       ...(override.verdict ? { override: { reason: 'a person merged past the review verdict' } } : {}),
       ...(input.expectedVersion !== undefined ? { expectedVersion: input.expectedVersion } : {}),
     });
-    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, input.mergeMethod ?? 'squash', liveHead) };
+    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHead) };
   });
   if ('refused' in slotted) return waiting(slotted.refused, { waitingOn: 'surface_slot' });
   if (slotted.result.kernel) return kernelLanded(slotted.result.kernel);

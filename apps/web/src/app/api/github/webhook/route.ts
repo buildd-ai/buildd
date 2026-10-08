@@ -14,6 +14,7 @@ import { isMissionPrTask, looksLikeMissionIntegrationBranch, resolveTaskPrBase }
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { detachInteractiveWorkersOfEndedTasks } from '@/lib/interactive-detach';
+import { otherOpenPrsOfTask } from '@/lib/task-open-prs';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { enqueueMergedPrIngestJobs, enqueuePushIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
 import { resolvePolicy } from '@/lib/merge-policy';
@@ -632,6 +633,8 @@ async function handlePullRequestEvent(event: {
     base?: { ref: string; sha?: string };
     html_url: string;
     mergeable?: boolean | null;
+    additions?: number;
+    deletions?: number;
   };
   installation?: { id: number };
   repository: { full_name: string; default_branch?: string };
@@ -663,7 +666,7 @@ async function handlePullRequestEvent(event: {
       const retargetCandidate = await db.query.workers.findFirst({
         where: workerOwnsPr(repository.full_name, pr.number),
         columns: { id: true, workspaceId: true, taskId: true, prBaseRef: true },
-        with: { task: { columns: { id: true, title: true, taskClass: true, missionId: true, context: true } } },
+        with: { task: { columns: { id: true, title: true, taskClass: true, missionId: true, context: true, dependsOn: true } } },
       });
 
       const rebased = await db
@@ -868,6 +871,21 @@ async function handlePullRequestEvent(event: {
         maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, false).catch(() => {});
         return;
       }
+    }
+
+    // Early release (docs/design/early-release.md): the upstream task's own PR
+    // just became visible for review (raised, or un-drafted) — check every
+    // PENDING task that depends on it. Workspace-gated inside the dispatcher
+    // itself (gitConfig.earlyRelease.mode), so the DB read below is the only
+    // cost for a workspace that has not opted in.
+    if (!pr.draft && event.installation && (action === 'opened' || action === 'ready_for_review') && openWorker?.taskId) {
+      await emit({
+        type: 'pr.review_ready',
+        installationId: event.installation.id,
+        repoFullName: repository.full_name,
+        pr: { number: pr.number, headRef: pr.head.ref, additions: pr.additions ?? null, deletions: pr.deletions ?? null },
+        worker: { id: openWorker.id, workspaceId: openWorker.workspaceId, taskId: openWorker.taskId },
+      });
     }
 
     // A freshly-opened (or un-drafted) PR on a repo with NO CI: auto-merge here,
@@ -1129,6 +1147,9 @@ async function handlePullRequestEvent(event: {
     });
 
     if (matchingTask && matchingTask.status !== 'completed') {
+      // Same rule as runMergedPrWork: a task with other open PRs is not done.
+      const openSiblingPrs = await otherOpenPrsOfTask(matchingTask.id, { prUrl: prUrlFor(repository.full_name, pr.number) });
+      if (openSiblingPrs.length > 0) return;
       // Row-guarded for the same reason as the worker-match path above.
       const [flipped] = await db
         .update(tasks)

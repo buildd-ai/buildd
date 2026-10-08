@@ -345,6 +345,13 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 |---|---|---|---|---|
 | 70 | `pr-landing.ts:landPr` | `pr_landing` | deferred / rejected / warned / accepted | the landing decision; `deferred` = a wait with an owner (branch update in flight, checks pending, fix queued), `rejected` = a human is needed, `warned` = shadow, `accepted` = merged |
 
+### Early release of dependents (`docs/design/early-release.md`)
+
+| Site | Gate | Outcome | Meaning |
+|------|------|---------|---------|
+| early-release decision (rule or decision model) | `early_release` | accepted / deferred | One row per `dependency_releases` decision: `accepted` = `start_now` / `start_stacked`, `deferred` = `wait`; `detail.source` = rule / model / fallback, `detail.reasonCode`. |
+| early-release reconciler (`lib/early-release-reconciler.ts`) | `early_release` | accepted / warned / rejected | Re-checks a non-revoked release against the upstream's current state on every `pr-reconcile` tick: `accepted` = checked and cleared (no overlap, or already resolved), `warned` = the dependent's branch was refreshed from a (possibly redirected) base, `rejected` = escalated to a `missionNotes` question rather than auto-cancelling the dependent. `detail.releaseId`/`upstreamTaskId`/`upstreamPrNumber` identify the row; never revokes it. |
+
 ### Coordination telemetry additions
 
 | Site | Gate | Outcome | Meaning |
@@ -358,6 +365,7 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 | `apps/web/src/app/api/tasks/route.ts:POST` | `decomposition_refused` | rejected | Re-checks, at the moment the organizer's own planning task tries to create a non-retry child, whether sibling tasks were pre-filed against the mission after that planning task was created. `runMission()`'s own pre-filed-task detection only runs once, inside the SAME request that creates the mission — too early to see tasks a creator files right after. `detail.preFiledTaskIds`, `detail.organizerTaskId`; persists `missions.decompositionSkipped=true` and a mission note on the first trip. Exempt: manual-orchestration missions, and any create with an explicit `parentTaskId` (a retry naming the failing task). |
 | `apps/web/src/lib/workflow/dead-effects.ts:escalateDeadEffect` | `workflow_effect_dead` | stranded / warned | A workflow-kernel effect went `dead` after its last retry (§10.3). `stranded` = a critical effect (`merge_call`, `verify_merge`, `push_recovery`, `post_review`, `dispatch_fix`, `dispatch_review`): the kernel applied `EffectDead`, moving the delivery to ESCALATED unless it had already left the state that owed the effect (`detail.applied`, `detail.result`). `warned` = a non-critical effect; nothing escalates. `detail.kind`, `detail.deliveryId`, `detail.dedupeKey`. |
 | `apps/web/src/lib/base-advance-notice-store.ts:recordNotice` | `base_advance_notice` | warned | Advisory. A merged PR or a push landed on a live worker's base and touched files in its scope (observed touches ∪ declared `pathManifest`, prefix-aware, `**` never matches), so one rebase instruction was queued on the instruct path. Never the authoring worker. Debounced per worker+base: changes inside the window fold into the row (`detail.coalesced`, `detail.coalescedChanges`). `detail.baseRef`, `prNumber`, `sha`, `overlappingFiles`, `source` (pull_request / push), `strategy` (rebase / merge). Denominator for comparing conflict rates of notified and un-notified workers. |
+| `apps/web/src/lib/mission-branch-refresh.ts:refreshMissionIntegrationBranch` | `mission_branch_refresh` | accepted / stranded | Keeping a mission's integration branch current with dev (docs/design/mission-delivery-arc.md P5, superseded). `accepted` = GitHub's merges API landed dev cleanly, a merge commit, no agent. `stranded` = a 409 conflict dispatched the one conflict-resolution task this mission is allowed to have open at a time (`detail.conflictTaskId`), or one was already open and nothing new was dispatched (`detail.dispatched: false`). A clean skip (already current, single-flight lease held, mission's own PR already merged, mission terminal) writes no row — only an actual merge attempt or a conflict is worth a ledger line. |
 
 `get_manifest_coverage`, `get_path_claim_stats` and `get_decision_stats` read aggregate REST metrics.
 Use `get_failure_analytics` with `family=gate` and
