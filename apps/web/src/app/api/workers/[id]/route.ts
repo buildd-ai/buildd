@@ -93,7 +93,7 @@ import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { isReadOnlyReview } from '@/lib/read-only-review';
-import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
+import { schedulePrScopeReconcile, scheduleHandoffScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import { acquireObservedPaths } from '@buildd/core/path-claim';
 import {
   parseWorkingSetDelta,
@@ -4483,10 +4483,14 @@ export async function PATCH(
     // go, or a manifest-less task's PR would be invisible to every later
     // claim. Merge/close releases that scope with the PR.
     if (releaseReason === 'pending_merge' && worker.workspaceId) {
+      const handoffPrNumber = (updated.prNumber ?? worker.prNumber ?? null) as number | null;
       await handoffPrScope({
         workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: id,
-        prNumber: (updated.prNumber ?? worker.prNumber ?? null) as number | null,
+        prNumber: handoffPrNumber,
       });
+      // The worker is terminal now, so the reconciler may narrow the scope it
+      // just widened to the PR's diff (scheduleHandoffScopeReconcile in lib/pr-scope-reconcile-trigger).
+      await scheduleHandoffScopeReconcile({ workspaceId: worker.workspaceId, prNumber: handoffPrNumber });
     }
     await releaseAndNotify(worker.taskId, releaseReason);
   }
