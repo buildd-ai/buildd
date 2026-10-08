@@ -117,6 +117,12 @@ export interface ClaimHoldGroupSummary {
   decisions: number;
   tasks: number;
   suggestions: { HOLD: number; START: number; none: number };
+  /**
+   * Why each row ended as it did, `status:reason` (`applied:-`,
+   * `suggested:below_threshold`, `fallback:rule_decided`, ...). Keeps a code
+   * decision, a model answer that was not applied and a model failure apart.
+   */
+  outcomes: Record<string, number>;
   appliedStarts: number;
   meanPropensity: number | null;
   startSafety: { observedUnsafe: number; observedSafe: number; censored: number; missing: number };
@@ -164,6 +170,7 @@ export function summarizeClaimHoldReadout(input: ClaimHoldReadoutInput): ClaimHo
   for (const rows of groups.values()) {
     const first = rows[0];
     const suggestions = { HOLD: 0, START: 0, none: 0 };
+    const outcomes: Record<string, number> = {};
     const safety = { observedUnsafe: 0, observedSafe: 0, censored: 0, missing: 0 };
     const separate = { conflictCreated: 0, collision: 0, mergeBaseRefusal: 0 };
     let appliedStarts = 0;
@@ -171,6 +178,8 @@ export function summarizeClaimHoldReadout(input: ClaimHoldReadoutInput): ClaimHo
     for (const d of rows) {
       if (d.suggested === 'HOLD' || d.suggested === 'START') suggestions[d.suggested]++;
       else suggestions.none++;
+      const key = `${d.status}:${d.reason ?? '-'}`;
+      outcomes[key] = (outcomes[key] ?? 0) + 1;
       propensitySum += d.propensity;
       const l = labels.get(d.id)!;
       if (l.startedAtDecision) appliedStarts++;
@@ -225,6 +234,7 @@ export function summarizeClaimHoldReadout(input: ClaimHoldReadoutInput): ClaimHo
       decisions: rows.length,
       tasks: firstByTask.size,
       suggestions,
+      outcomes,
       appliedStarts,
       meanPropensity: rows.length ? propensitySum / rows.length : null,
       startSafety: safety,

@@ -9646,20 +9646,50 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       mockFireDeferralEvent.mockClear();
       const on = await claimWith(withStart(false, {
         decisionDeps: { ...holdStartOn().decisionDeps, call: (async () => ({ ok: true, answers: { action: { choice: 'HOLD', confidence: 0.99, distribution: {} } }, model: JEV, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 1, attempts: 1 })) as any },
-      }), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }])] }));
+      }), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
       expect(on.body.workers).toHaveLength(0);
       expect(on.body.diagnostics?.deferrals?.soft_overlap).toBe(1);
       expect(on.rows).toHaveLength(1);
       expect(on.rows[0]).toMatchObject({ candidatePolicyVersion: 'ch1.soft_overlap', effective: 'HOLD', taskId: 'task-1' });
       const ledger = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap');
-      expect(ledger).toMatchObject({ outcome: 'deferred', taskId: 'task-1', detail: { holderTaskId: 'holder-1', verdict: 'HOLD' } });
+      expect(ledger).toMatchObject({ outcome: 'deferred', taskId: 'task-1', detail: { holderTaskId: 'holder-1', verdict: 'HOLD', riskTier: 'uncertain' } });
       expect(ledger.detail.paths).toContain('apps/web/src/lib/widget.ts');
+      expect(typeof ledger.detail.rationale).toBe('string');
+      expect(ledger.detail.reevaluateOn).toContain('model_answer');
     });
 
-    it('Jev START (applied for this state): the task runs, its declared paths acquired exclusively first', async () => {
-      const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }])] }));
+    it('Jev START (applied for this state): the task runs, its declared paths acquired exclusively first, recorded as decided by Jev', async () => {
+      mockFireGateEvent.mockClear();
+      const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
       expect(on.body.workers).toHaveLength(1);
+      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
+      const started = (mockFireGateEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap_start');
+      expect(started).toMatchObject({ outcome: 'accepted', taskId: 'task-1', detail: { holderTaskId: 'holder-1', decidedBy: 'jev', riskTier: 'uncertain' } });
+    });
+
+    it('a directory-only overlap starts in code: no ledger lookup, no model call, paths acquired, recorded as decided by rule', async () => {
+      mockFireGateEvent.mockClear();
+      let lookups = 0;
+      const on = await claimWith(withStart(false, { findAppliedStart: async () => { lookups++; return false; } }), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }])] }));
+      expect(on.body.workers).toHaveLength(1);
+      expect(lookups).toBe(0);
+      expect(on.rows).toHaveLength(0);
       expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/'], declare: true }]);
+      const started = (mockFireGateEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap_start');
+      expect(started).toMatchObject({ outcome: 'accepted', detail: { decidedBy: 'rule', riskTier: 'low' } });
+    });
+
+    it('a holder that never started does not strand the candidate, even on the same file', async () => {
+      softHoldersTest.rows = new Map([['holder-1', holderRow({ status: 'pending', workerStatus: null })]]);
+      const on = await claimWith(withStart(false), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
+      expect(on.body.workers).toHaveLength(1);
+      expect(on.rows).toHaveLength(0);
+      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
+    });
+
+    it('a rule START whose exclusive acquisition is refused holds: no ghost START', async () => {
+      const on = await claimWith(withStart(false, { acquire: async () => ({ kind: 'acquired', inserted: [], insertedIds: [], blocked: ['apps/web/src/lib/widget.ts'], pathManifest: null, revision: 1 }) }), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }])] }));
+      expect(on.body.workers).toHaveLength(0);
     });
 
     it('a live lease on the actual files still wins over an applied START', async () => {
@@ -9672,7 +9702,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     });
 
     it('a decision error fails closed: the task holds', async () => {
-      const on = await claimWith(withStart(false, { findAppliedStart: async () => { throw new Error('ledger down'); } }), () => arm({ tasks: [soft([{ taskId: 'holder-1' }])] }));
+      const on = await claimWith(withStart(false, { findAppliedStart: async () => { throw new Error('ledger down'); } }), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
       expect(on.body.workers).toHaveLength(0);
       expect(on.body.diagnostics?.deferrals?.soft_overlap).toBe(1);
     });

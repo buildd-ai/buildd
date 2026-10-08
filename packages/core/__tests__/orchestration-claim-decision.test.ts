@@ -215,7 +215,7 @@ describe('same-file soft overlap: the inputs Jev decides with', () => {
   });
 
   it('bumps the prompt version for the new inputs', () => {
-    expect(CLAIM_HOLD_PROMPT_VERSION).toBe('ch3');
+    expect(CLAIM_HOLD_PROMPT_VERSION).toBe('ch4');
   });
 
   it('the digest distinguishes a same-file overlap from a prefix one on the same paths', () => {
@@ -234,7 +234,7 @@ describe('same-file soft overlap: the inputs Jev decides with', () => {
   it('summarizeFileConflictHistory: no merged PRs on a file reads as no_history, not as safe or unsafe', () => {
     const h = summarizeFileConflictHistory(['apps/web/src/lib/x.ts'], []);
     expect(h.summary).toBe('no_history');
-    expect(h.files).toEqual([{ path: 'apps/web/src/lib/x.ts', mergedPrs: 0, conflicted: 0, rate: null }]);
+    expect(h.files).toEqual([{ path: 'apps/web/src/lib/x.ts', mergedPrs: 0, conflicted: 0, rate: null, ci: null }]);
   });
 
   it('summarizeFileConflictHistory reports the per-file rate and the worst file', () => {
@@ -244,8 +244,11 @@ describe('same-file soft overlap: the inputs Jev decides with', () => {
     ]);
     expect(h.files.map(f => f.rate)).toEqual([0.1, 0.5]);
     expect(h.maxRate).toBe(0.5);
-    expect(h.summary).toBe('high');
-    expect(summarizeFileConflictHistory(['a.ts'], [{ path: 'a.ts', mergedPrs: 20, conflicted: 1 }]).summary).toBe('low');
+    // 2 of 4 is a point rate of 0.5 on too small a sample to call.
+    expect(h.summary).toBe('insufficient');
+    expect(summarizeFileConflictHistory(['a.ts'], [{ path: 'a.ts', mergedPrs: 10, conflicted: 7 }]).summary).toBe('high');
+    expect(summarizeFileConflictHistory(['a.ts'], [{ path: 'a.ts', mergedPrs: 20, conflicted: 1 }]).summary).toBe('insufficient');
+    expect(summarizeFileConflictHistory(['a.ts'], [{ path: 'a.ts', mergedPrs: 40, conflicted: 1 }]).summary).toBe('low');
   });
 
   it('the state names the overlap kind, holder stage, conflict history and predicted change size', () => {
@@ -267,5 +270,13 @@ describe('same-file soft overlap: the inputs Jev decides with', () => {
     expect(s.conflictHistory).toEqual({ summary: 'unknown' });
     expect(s.candidate.predictedChange).toEqual({ source: 'declared_paths', files: 1 });
     expect(s.holder.stage).toBe('unknown');
+    expect(s.risk).toEqual({ tier: 'unknown' });
+  });
+
+  it('the state carries the risk tier code computed, as tier and short reasons only', () => {
+    const risk = { tier: 'uncertain' as const, route: 'ask_model' as const, reasons: ['same_file' as const, 'history_missing' as const], rationale: 'prose the model must not see', evidence: { source: 'declared_overlap' as const, ageMinutes: null }, reevaluateOn: [] };
+    const s = buildClaimHoldState(sameFile({ risk }), null) as any;
+    expect(s.risk).toEqual({ tier: 'uncertain', reasons: ['same_file', 'history_missing'] });
+    expect(JSON.stringify(s)).not.toContain('prose the model must not see');
   });
 });

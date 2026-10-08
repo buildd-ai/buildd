@@ -125,6 +125,7 @@ import {
   gatedStartReachable,
   releaseGatedStartPaths,
   scheduleClaimHoldShadow,
+  softOverlapStartVerdict,
   touchesHardOverlapSurface,
   type ClaimHoldTaskContext,
 } from './hold-start-shadow';
@@ -1663,6 +1664,10 @@ export async function POST(req: NextRequest) {
     // Soft overlaps a force claim went past: recorded with its outcome as
     // calibration data (human force, not a model label).
     const softOverlapForced: Array<Record<string, unknown>> = [];
+    // Soft overlaps a START went past (rule or Jev): recorded once the claim
+    // wins, so the outcome join can grade a started pair and the dashboard can
+    // say who decided.
+    const softOverlapStarted: Array<Record<string, unknown>> = [];
     // Captured before any provider-toggle/budget-failover flip below can mutate
     // (task as any).backend, so the Codex single-flight check further down tests
     // what this task WAS ASSIGNED, not what it may have just been flipped to.
@@ -1832,10 +1837,12 @@ export async function POST(req: NextRequest) {
       // scope overlaps this one's on the same file or by directory prefix, or a
       // pre-v2 inferred edge. Never a dependsOn edge. A migration / hard-surface
       // (serialized, generated, hotspot) / unknown-state entry holds
-      // deterministically; a same-file or prefix one holds unless an applied
-      // Jev START exists for this exact state, and
-      // the START's declared paths are then acquired exclusively before the
-      // claim (a live lease wins). Forced: bypassed and recorded.
+      // deterministically. The rest is tiered (orchestration-claim-risk): a
+      // holder that never started, or a directory-only overlap, starts in code
+      // (`rule_start`); a same-file one holds unless an applied Jev START
+      // exists for this exact state. Either START's declared paths are then
+      // acquired exclusively before the claim (a live lease wins). Forced:
+      // bypassed and recorded.
       const softVerdicts = softHolderIds.size > 0
         ? evaluateSoftOverlaps(task as any, softHolders, {
             isHardSurface: (paths, kind) => touchesHardOverlapSurface(paths, kind, (task as any).workspace?.gitConfig ?? null),
@@ -1845,17 +1852,28 @@ export async function POST(req: NextRequest) {
       for (const v of softVerdicts) {
         // The rule's verdict: deterministic for a hard overlap, HOLD for a
         // same-file or prefix one until an applied Jev START says otherwise.
-        let verdict: 'deterministic_hold' | 'HOLD' | 'START' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
+        let verdict: 'deterministic_hold' | 'HOLD' | 'START' | 'rule_start' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
+        let risk: { tier: string; rationale: string; reasons: string[]; reevaluateOn: string[] } | null =
+          v.kind === 'deterministic' ? { tier: 'hard', rationale: `Held: ${v.overlapKind.replace('_', ' ')} overlap.`, reasons: [v.overlapKind], reevaluateOn: ['holder_terminal'] } : null;
         if (v.kind === 'advisory' && !forced) {
           const holdCtx = holdStartContext(task, forced);
-          const note = holdCtx
-            ? holdStart.noteSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, overlapKind: v.overlapKind, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId))
+          const assessed = holdCtx
+            ? holdStart.assessSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, overlapKind: v.overlapKind, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId))
             : null;
-          verdict = holdStartGated && note && await gatedStartApplies(note) ? 'START' : 'HOLD';
+          if (assessed) risk = assessed.risk;
+          verdict = await softOverlapStartVerdict(assessed?.note ?? null, holdStartGated);
         }
-        if (verdict === 'START') {
-          console.log(`[claim] gated_start: task ${task.id} past soft overlap with ${v.holderTaskId}; acquiring its paths`);
+        if (verdict === 'START' || verdict === 'rule_start') {
+          console.log(`[claim] ${verdict === 'rule_start' ? 'rule_start' : 'gated_start'}: task ${task.id} past soft overlap with ${v.holderTaskId} (${risk?.tier ?? 'unknown'}); acquiring its paths`);
           gatedStartPaths = concreteManifest;
+          softOverlapStarted.push({
+            holderTaskId: v.holderTaskId,
+            paths: v.paths.slice(0, 10),
+            overlapKind: v.overlapKind,
+            decidedBy: verdict === 'rule_start' ? 'rule' : 'jev',
+            riskTier: risk?.tier ?? null,
+            reasons: risk?.reasons.slice(0, 4) ?? [],
+          });
           continue;
         }
         const detail = {
@@ -1863,6 +1881,8 @@ export async function POST(req: NextRequest) {
           paths: v.paths.slice(0, 10),
           verdict,
           overlapKind: v.overlapKind,
+          // The tier and why, for explain/the dashboard; what would change it.
+          ...(risk ? { riskTier: risk.tier, rationale: risk.rationale, reevaluateOn: risk.reevaluateOn } : {}),
         };
         if (forced) {
           softOverlapForced.push(detail);
@@ -2828,6 +2848,22 @@ export async function POST(req: NextRequest) {
       branch,
       task: task as any,
     });
+    // A START past a soft overlap (rule or Jev): one accepted row per holder,
+    // the started half of the HOLD/START evaluation set.
+    for (const s of softOverlapStarted) {
+      fireGateEvent({
+        gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+        surface: 'POST /api/workers/claim',
+        outcome: 'accepted',
+        reason: 'soft_overlap_start',
+        taskId: task.id,
+        workspaceId: task.workspaceId,
+        missionId: (task as any).missionId ?? null,
+        workerId: worker.id,
+        callerOrigin: gateCallerOrigin({ apiAccount: account }),
+        detail: { ...s, startedAt: now.toISOString() },
+      });
+    }
     if (forced) {
       fireGateEvent({
         gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
