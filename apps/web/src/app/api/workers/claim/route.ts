@@ -125,7 +125,7 @@ import {
   gatedStartReachable,
   releaseGatedStartPaths,
   scheduleClaimHoldShadow,
-  touchesSerializedSurface,
+  touchesHardOverlapSurface,
   type ClaimHoldTaskContext,
 } from './hold-start-shadow';
 import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from './soft-overlap-gate';
@@ -1829,26 +1829,27 @@ export async function POST(req: NextRequest) {
       }
 
       // Soft overlap (./soft-overlap-gate): an in-flight task whose declared
-      // scope overlaps this one's only by directory prefix, or a pre-v2
-      // inferred edge. Never a dependsOn edge. A same-file / migration /
-      // serialized / unknown-state entry holds deterministically; a prefix-only
-      // one holds unless an applied Jev START exists for this exact state, and
+      // scope overlaps this one's on the same file or by directory prefix, or a
+      // pre-v2 inferred edge. Never a dependsOn edge. A migration / hard-surface
+      // (serialized, generated, hotspot) / unknown-state entry holds
+      // deterministically; a same-file or prefix one holds unless an applied
+      // Jev START exists for this exact state, and
       // the START's declared paths are then acquired exclusively before the
       // claim (a live lease wins). Forced: bypassed and recorded.
       const softVerdicts = softHolderIds.size > 0
         ? evaluateSoftOverlaps(task as any, softHolders, {
-            isSerialized: (paths) => touchesSerializedSurface(paths, (task as any).workspace?.gitConfig ?? null),
+            isHardSurface: (paths, kind) => touchesHardOverlapSurface(paths, kind, (task as any).workspace?.gitConfig ?? null),
           })
         : [];
       let softHeld = false;
       for (const v of softVerdicts) {
         // The rule's verdict: deterministic for a hard overlap, HOLD for a
-        // prefix-only one until an applied Jev START says otherwise.
+        // same-file or prefix one until an applied Jev START says otherwise.
         let verdict: 'deterministic_hold' | 'HOLD' | 'START' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
         if (v.kind === 'advisory' && !forced) {
           const holdCtx = holdStartContext(task, forced);
           const note = holdCtx
-            ? holdStart.noteSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId))
+            ? holdStart.noteSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, overlapKind: v.overlapKind, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId))
             : null;
           verdict = holdStartGated && note && await gatedStartApplies(note) ? 'START' : 'HOLD';
         }
@@ -1861,7 +1862,7 @@ export async function POST(req: NextRequest) {
           holderTaskId: v.holderTaskId,
           paths: v.paths.slice(0, 10),
           verdict,
-          overlapKind: v.kind === 'deterministic' ? v.overlapKind : 'prefix',
+          overlapKind: v.overlapKind,
         };
         if (forced) {
           softOverlapForced.push(detail);

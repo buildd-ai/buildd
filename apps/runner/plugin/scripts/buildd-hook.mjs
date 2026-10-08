@@ -16,7 +16,9 @@
 // four token counts, the timestamp and how many tool_use blocks it had. Message
 // text, tool inputs and outputs are never kept or sent. The cumulative counts
 // per claimed task ride on the touch/end request. BUILDD_HOOK_USAGE=0 turns
-// this off.
+// this off. With the usage goes how it was charged (`costBasis`: real, virtual
+// or unknown), read from the client's own environment and config the way the
+// client picks its credential; only that one word is sent.
 //
 // It never breaks the agent loop: every failure (no key, buildd down, non-2xx,
 // bad payload, timeout) is swallowed and the script exits 0. MCP stays the
@@ -351,6 +353,93 @@ export function buildBody(client, n, repo, usage = null) {
   };
 }
 
+// ── Cost basis ───────────────────────────────────────────────────────────────
+//
+// How the session's usage was charged (docs/specs/real-and-virtual-cost.md):
+// `real` (per token: an API key, a bearer token, a cloud provider, a gateway),
+// `virtual` (a subscription login, valued at list price) or `unknown`. The
+// transcript does not record the credential, so this walks Claude Code's own
+// authentication precedence (code.claude.com/docs/en/authentication) and stops
+// at the first credential the client would use. Only the resulting word leaves
+// this machine; no key, token or config value is read into the body or logged.
+
+const truthy = (v) => typeof v === 'string' && v !== '' && v !== '0' && v.toLowerCase() !== 'false';
+const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+
+function anthropicHost(url) {
+  try { return new URL(url).hostname.endsWith('anthropic.com'); } catch { return false; }
+}
+
+/**
+ * Pure: the basis for these inputs.
+ * - `globalConfig`: the client's `.claude.json` (login and API-key approvals)
+ * - `settings` / `managedSettings`: parsed settings files, any order
+ * - `profilePresent`: an active Anthropic profile file exists
+ */
+export function costBasisFor({ env = {}, globalConfig = null, settings = [], managedSettings = [], profilePresent = false }) {
+  const cfg = isObj(globalConfig) ? globalConfig : {};
+  const managed = managedSettings.filter(isObj);
+  const all = [...settings.filter(isObj), ...managed];
+  // A required gateway sign-in outranks every other source; it routes to a cloud provider.
+  if (managed.some(m => m.forceLoginMethod === 'gateway' || typeof m.forceLoginGatewayUrl === 'string')) return 'real';
+  if (['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'].some(k => truthy(env[k]))) return 'real';
+  if (truthy(env.ANTHROPIC_AUTH_TOKEN)) return 'real';
+  if (truthy(env.ANTHROPIC_API_KEY)) {
+    // Non-interactive (-p, SDK) sessions always use the key. An interactive
+    // one asks once and remembers the key's last 20 characters.
+    if (typeof env.CLAUDE_CODE_ENTRYPOINT === 'string' && env.CLAUDE_CODE_ENTRYPOINT.startsWith('sdk')) return 'real';
+    const tail = env.ANTHROPIC_API_KEY.slice(-20);
+    const r = isObj(cfg.customApiKeyResponses) ? cfg.customApiKeyResponses : {};
+    if (Array.isArray(r.approved) && r.approved.includes(tail)) return 'real';
+    if (!(Array.isArray(r.rejected) && r.rejected.includes(tail))) return 'unknown';
+  }
+  if (all.some(s => typeof s.apiKeyHelper === 'string' && s.apiKeyHelper !== '')) return 'real';
+  let basis;
+  if (truthy(env.CLAUDE_CODE_OAUTH_TOKEN)) basis = 'virtual';
+  else if (truthy(env.ANTHROPIC_PROFILE) || (truthy(env.ANTHROPIC_FEDERATION_RULE_ID) && truthy(env.ANTHROPIC_ORGANIZATION_ID))) return 'real';
+  else if (profilePresent) return 'unknown';
+  else if (typeof cfg.primaryApiKey === 'string' && cfg.primaryApiKey !== '') return 'real';
+  else if (isObj(cfg.oauthAccount)) basis = 'virtual';
+  else return 'unknown';
+  // A subscription credential sent somewhere other than Anthropic: the hook
+  // cannot tell how that endpoint charges.
+  if (truthy(env.ANTHROPIC_BASE_URL) && !anthropicHost(env.ANTHROPIC_BASE_URL)) return 'unknown';
+  return basis;
+}
+
+/** Managed settings locations (code.claude.com/docs/en/settings). */
+export const MANAGED_SETTINGS_PATHS = [
+  '/Library/Application Support/ClaudeCode/managed-settings.json',
+  '/etc/claude-code/managed-settings.json',
+  'C:\\Program Files\\ClaudeCode\\managed-settings.json',
+];
+
+function readJson(path) {
+  if (!existsSync(path)) return null;
+  return JSON.parse(readFileSync(path, 'utf8'));
+}
+
+/** Reads the client's config once and classifies it. Any error is `unknown`. */
+export function sessionCostBasis(env = process.env, home = homedir(), cwd = process.cwd(), managedPaths = MANAGED_SETTINGS_PATHS) {
+  try {
+    const configDir = env.CLAUDE_CONFIG_DIR || join(home, '.claude');
+    const globalConfig = readJson(env.CLAUDE_CONFIG_DIR ? join(env.CLAUDE_CONFIG_DIR, '.claude.json') : join(home, '.claude.json'));
+    const root = gitRoot(cwd) ?? cwd;
+    const settings = [
+      join(configDir, 'settings.json'),
+      join(root, '.claude', 'settings.json'),
+      join(root, '.claude', 'settings.local.json'),
+    ].map(readJson).filter(Boolean);
+    const managedSettings = managedPaths.map(p => { try { return readJson(p); } catch { return null; } }).filter(Boolean);
+    const anthropicDir = env.ANTHROPIC_CONFIG_DIR || join(home, '.config', 'anthropic');
+    const profilePresent = existsSync(join(anthropicDir, 'active_config')) || existsSync(join(anthropicDir, 'configs', 'default'));
+    return costBasisFor({ env, globalConfig, settings, managedSettings, profilePresent });
+  } catch (err) {
+    debug('cost basis unreadable', err?.message ?? err);
+    return 'unknown';
+  }
+}
+
 // ── Session usage ────────────────────────────────────────────────────────────
 
 /** At most this much new transcript is read per file per hook run; the rest next time. */
@@ -575,7 +664,7 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
     try {
       const c = collectUsage(state.usage, payload?.transcript_path, claimsNow, state.claimedAt);
       usageState = c.usage;
-      if (c.report.length > 0) usageReport = { workers: c.report };
+      if (c.report.length > 0) usageReport = { workers: c.report, costBasis: sessionCostBasis(env, homedir(), n.cwd) };
     } catch (err) {
       debug('usage read failed', err?.message ?? err);
     }

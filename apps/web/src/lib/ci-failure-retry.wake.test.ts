@@ -165,17 +165,46 @@ describe('retryCiFailureForPr on a kernel-owned PR (§5.7, T10)', () => {
 });
 
 describe('legacy CI budget: allocation is consumption, never author or context.iteration', () => {
-  it('an owner context.iteration does not shorten or extend the budget; the filed rows do', async () => {
-    kernelSeen = { handled: false };
+  beforeEach(() => {
+    mockWakeTask.mockClear();
+    mockAnnounceTaskCreated.mockClear();
     insertedRows = [];
     failedJobNames = ['Build'];
+    kernelSeen = { handled: false };
+    mockObserveCiFailure.mockClear();
+    gateEvents.length = 0;
     workerRow = {
       id: 'w1', branch: 'buildd/x', prNumber: 7, prLifecycleStatus: 'open',
       task: { id: 't1', title: 'Do it', description: null, workspaceId: 'ws1', missionId: null, status: 'completed', context: { iteration: 9 }, result: null },
     };
+  });
+
+  it('an owner context.iteration does not shorten or extend the budget; the filed rows do', async () => {
     const out = await retryCiFailureForPr(input);
     expect(out.kind).toBe('dispatched');
     expect(insertedRows[0].context).toMatchObject({ iteration: 1 });
     expect(insertedRows[0].context.foreign_head_sha).toBeUndefined();
+  });
+
+  it('Visual QA-only failure is skipped and does not create a CI-fix task', async () => {
+    failedJobNames = ['Visual QA — spec-driven page audit'];
+    const out = await retryCiFailureForPr(input);
+    expect(out.kind).toBe('skipped');
+    expect((out as { reason: string }).reason).toBe('advisory_only');
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('non-Visual-QA failure still creates a CI-fix task', async () => {
+    failedJobNames = ['Build'];
+    const out = await retryCiFailureForPr(input);
+    expect(out.kind).toBe('dispatched');
+    expect(mockWakeTask.mock.calls.length).toBe(1);
+  });
+
+  it('Visual QA mixed with non-Visual-QA failure creates a CI-fix task', async () => {
+    failedJobNames = ['Visual QA — spec-driven page audit', 'Build'];
+    const out = await retryCiFailureForPr(input);
+    expect(out.kind).toBe('dispatched');
+    expect(mockWakeTask.mock.calls.length).toBe(1);
   });
 });

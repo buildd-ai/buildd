@@ -6,7 +6,8 @@ import type { FlowSeries, FlowWindow } from '@/lib/insights-flow';
 import { FLOW_WINDOWS } from '@/lib/insights-flow';
 import { FlowChart } from '@/components/insights/FlowChart';
 import { formatHours } from '@/components/insights/flow-chart-model';
-import { usageByRole } from '@/components/insights/usage-model';
+import { usageByBasis, usageByRole } from '@/components/insights/usage-model';
+import { CostByBasis } from '@/components/insights/CostByBasis';
 import { InsightsStats } from '@/components/insights/InsightsStats';
 
 interface Props {
@@ -50,6 +51,8 @@ export function InsightsClient({ series, window }: Props) {
         )}
       </section>
 
+      <CostByBasis split={usageByBasis(series.usage ?? [])} />
+
       {roles.length > 0 && (
         <section className="mt-5 card p-4" data-testid="insights-roles">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -58,14 +61,14 @@ export function InsightsClient({ series, window }: Props) {
               {(['tokens', 'hours'] as const).map(m => <button key={m} className="btn min-h-[44px] text-meta" aria-pressed={measure === m} onClick={() => setMeasure(m)}>{m === 'tokens' ? 'Tokens' : 'Time'}</button>)}
             </div>
           </div>
-          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto_4.5rem] gap-2 text-meta text-text-muted"><span>Role / tier</span><span className="text-right">{measure === 'tokens' ? 'Tokens' : 'Time'}</span><span className="text-right">Cost ($)</span></div>
+          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto_4rem_4rem] gap-2 text-meta text-text-muted"><span>Role / tier</span><span className="text-right">{measure === 'tokens' ? 'Tokens' : 'Time'}</span><span className="text-right">Real ($)</span><span className="text-right">Plan ($)</span></div>
           <ul className="mt-2 space-y-4">
             {roles.map(r => (
               <li key={r.role} className="text-meta">
-                <div className="grid grid-cols-[minmax(0,1fr)_auto_4.5rem] gap-2 font-semibold"><span className="break-words">{r.role}</span><span className="text-right">{measure === 'tokens' ? formatTokens(r.tokens) : formatHours(r.hours)}</span><span className="text-right">${r.costUsd.toFixed(2)}</span></div>
+                <div className="grid grid-cols-[minmax(0,1fr)_auto_4rem_4rem] gap-2 font-semibold"><span className="break-words">{r.role}</span><span className="text-right">{measure === 'tokens' ? formatTokens(r.tokens) : formatHours(r.hours)}</span><span className="text-right">${r.realUsd.toFixed(2)}</span><span className="text-right">${r.virtualUsd.toFixed(2)}</span></div>
                 <div className="mt-1 h-2 bg-surface-3" aria-hidden><span className="block h-2" style={{ width: `${r[measure] / maxRole * 100}%`, background: 'var(--flow-running)' }} /></div>
                 <ul className="mt-2 space-y-1 text-text-secondary">
-                  {r.tiers.map(t => <li key={t.tier} className="grid grid-cols-[minmax(0,1fr)_auto_4.5rem] gap-2"><span className="break-words">{t.tier}</span><span className="text-right">{measure === 'tokens' ? formatTokens(t.tokens) : formatHours(t.hours)}</span><span className="text-right">${t.costUsd.toFixed(2)}</span></li>)}
+                  {r.tiers.map(t => <li key={t.tier} className="grid grid-cols-[minmax(0,1fr)_auto_4rem_4rem] gap-2"><span className="break-words">{t.tier}</span><span className="text-right">{measure === 'tokens' ? formatTokens(t.tokens) : formatHours(t.hours)}</span><span className="text-right">${t.realUsd.toFixed(2)}</span><span className="text-right">${t.virtualUsd.toFixed(2)}</span></li>)}
                 </ul>
               </li>
             ))}
