@@ -379,6 +379,65 @@ describe('restore before clone', () => {
     expect(readFileSync(join(cacheDir, 'is-number@7.0.0', 'index.js'), 'utf-8')).toBe('module.exports = 1;\n');
   });
 
+  test('deferCache: the clone is ready before the cache is; the cache restores in the background and the upload waits for the deps work', async () => {
+    const first = session();
+    cloneThrough(first, 'ws-seed');
+    await first.refresh('completed');
+    pushCommit('LATER.md', 'landed after the snapshot\n');
+    lines = [];
+
+    // A cache download held open until the test lets it go.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const base = store.transport();
+    const transport: SnapshotTransport = { ...base, pipeToAsync: async (p, c, a) => { await gate; return base.pipeTo(p, c, a); } };
+    const cacheDir = join(dir, 'bg-cache');
+    let deferred: Promise<void> | null = null;
+    let depsDone!: () => void;
+    const deps = new Promise<void>((r) => { depsDone = r; });
+    const s = new WarmRepoSession({
+      ...session({ cacheDir }).d, transport, deferCache: true,
+      onDeferredCache: (p) => { deferred = p; },
+      awaitDeps: () => deps,
+    });
+    const path = cloneThrough(s);
+
+    // Checked out and fetched, cache still downloading.
+    expect(git(path, 'rev-parse', 'origin/main')).toBe(git(seedClone, 'rev-parse', 'HEAD'));
+    expect(deferred).not.toBeNull();
+    expect(existsSync(join(cacheDir, 'is-number@7.0.0'))).toBe(false);
+    expect(phaseNames()).toEqual(['restore_warm_start', 'restore_warm_end', 'restore_cache_start', 'fetch_start', 'fetch_end']);
+
+    release();
+    await deferred;
+    expect(readFileSync(join(cacheDir, 'is-number@7.0.0', 'index.js'), 'utf-8')).toBe('module.exports = 1;\n');
+    expect(phaseNames().at(-1)).toBe('restore_cache_end');
+    expect(s.result).toMatchObject({ source: 'warm', restoredCacheBytes: dirSizeBytes(cacheDir) });
+
+    // The run end: the refresh does not measure the cache, let alone upload
+    // it, until the install behind the session has settled.
+    const callsBefore = store.calls.length;
+    let refreshed = false;
+    const refresh = s.refresh('completed').then(() => { refreshed = true; });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(refreshed).toBe(false);
+    expect(store.calls.length).toBe(callsBefore);
+    depsDone();
+    await refresh;
+    expect(refreshed).toBe(true);
+  });
+
+  test('deferCache off (resume, host): the cache restore stays inline', async () => {
+    const first = session();
+    cloneThrough(first, 'ws-seed');
+    await first.refresh('completed');
+    let called = false;
+    const cacheDir = join(dir, 'inline-cache');
+    cloneThrough(new WarmRepoSession({ ...session({ cacheDir }).d, onDeferredCache: () => { called = true; } }));
+    expect(called).toBe(false);
+    expect(existsSync(join(cacheDir, 'is-number@7.0.0'))).toBe(true);
+  });
+
   test('records the snapshot tip it restored (before the fetch) under WARM_BASE_REF, so a park bundle can be built against it', async () => {
     const first = session();
     cloneThrough(first, 'ws-seed');
