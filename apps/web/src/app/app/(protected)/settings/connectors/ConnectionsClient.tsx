@@ -17,7 +17,18 @@ interface Connector {
   shared?: boolean;
   ownerTeamName?: string | null;
   iconUrl?: string | null;
+  /** The team's catalog policy blocks it: kept installed, but agents cannot use it. */
+  blockedByPolicy?: boolean;
 }
+
+/** Plain-language text for the codes /api/connectors/callback redirects with. */
+const OAUTH_ERROR_TEXT: Record<string, string> = {
+  blocked_by_policy: "This connector is blocked by your team's connector policy, so it can't be connected. A team admin can unblock it under Catalog.",
+  forbidden: 'Only a team admin can connect a team connector.',
+  session_mismatch: 'Sign-in changed during the connection. Start Connect again from this page.',
+  token_exchange_failed: "The provider didn't accept the sign-in. Try Connect again.",
+  invalid_token_audience: 'The provider issued a token for a different server. Check the connector URL.',
+};
 
 interface Team {
   id: string;
@@ -146,7 +157,7 @@ export default function ConnectionsClient({
     if (connectedId) {
       setMessage({ type: 'success', text: 'Connected.' });
     } else if (errorMsg) {
-      setMessage({ type: 'error', text: `OAuth error: ${errorMsg.replace(/_/g, ' ')}` });
+      setMessage({ type: 'error', text: OAUTH_ERROR_TEXT[errorMsg] ?? `OAuth error: ${errorMsg.replace(/_/g, ' ')}` });
     }
   }, [connectedId, errorMsg]);
 
@@ -160,7 +171,7 @@ export default function ConnectionsClient({
         window.location.href = data.authorizationUrl;
       } else {
         const err = await res.json();
-        setMessage({ type: 'error', text: err.error || 'Failed to start OAuth flow' });
+        setMessage({ type: 'error', text: err.message || err.error || 'Failed to start OAuth flow' });
       }
     } catch {
       setMessage({ type: 'error', text: 'Failed to start OAuth flow' });
@@ -411,6 +422,14 @@ export default function ConnectionsClient({
                     <ConnectorIcon name={connector.name} iconUrl={connector.iconUrl} size={18} />
                     <span className="font-medium text-text-primary">{connector.name}</span>
                     <StatusBadge authMode={connector.authMode} status={connector.status} />
+                    {connector.blockedByPolicy && (
+                      <span
+                        className="text-xs px-2 py-0.5 rounded font-mono bg-status-error/10 text-status-error border border-status-error/30"
+                        data-testid={`connector-blocked-${connector.id}`}
+                      >
+                        Blocked
+                      </span>
+                    )}
                     {connector.shared && (
                       <span className="text-xs px-2 py-0.5 rounded font-mono bg-primary/10 text-primary border border-primary/30">
                         Shared by {connector.ownerTeamName || 'another team'}
@@ -423,6 +442,11 @@ export default function ConnectionsClient({
                   {/* Reach — make scope visible at a glance instead of hidden behind "Sharing".
                       Owned connectors are available to all workspaces in the owning team;
                       cross-team access is granted explicitly via the Sharing panel. */}
+                  {connector.blockedByPolicy && (
+                    <div className="text-[11px] text-status-error mt-1">
+                      Blocked by team policy. Agents can&apos;t use it; the saved connection is kept. A team admin can unblock it under Catalog.
+                    </div>
+                  )}
                   {!connector.shared && (
                     <div className="text-[11px] text-text-muted mt-1">
                       Available to all workspaces in this team · share with other teams via Sharing
@@ -432,7 +456,7 @@ export default function ConnectionsClient({
                 {/* Grantees only enable per workspace / opt roles in — no config,
                     credential, or sharing controls on a shared-in connector (spec §1b). */}
                 <div className="flex gap-2 flex-wrap sm:flex-shrink-0 sm:justify-end">
-                  {!connector.shared && connector.authMode === 'oauth' && connector.status === 'expired' && (
+                  {!connector.shared && !connector.blockedByPolicy && connector.authMode === 'oauth' && connector.status === 'expired' && (
                     <button
                       onClick={() => handleConnect(connector)}
                       disabled={connecting === connector.id}
@@ -441,7 +465,7 @@ export default function ConnectionsClient({
                       {connecting === connector.id ? 'Redirecting…' : 'Reconnect'}
                     </button>
                   )}
-                  {!connector.shared && connector.authMode === 'oauth' && connector.status === 'not_connected' && (
+                  {!connector.shared && !connector.blockedByPolicy && connector.authMode === 'oauth' && connector.status === 'not_connected' && (
                     <button
                       onClick={() => handleConnect(connector)}
                       disabled={connecting === connector.id}

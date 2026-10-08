@@ -311,8 +311,14 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                           <span className="text-sm font-medium text-text-primary">{entry.name}</span>
                           {added && <span className="text-xs font-mono text-status-success">Added</span>}
                           {entry.policy === 'preinstalled' && <span className="text-xs font-mono text-text-muted">Preinstalled</span>}
+                          {entry.clientSupport && <span className="text-xs font-mono text-status-warning">Needs approval</span>}
                         </span>
                         <span className="block text-xs text-text-muted mt-0.5">{entry.description}</span>
+                        {entry.clientSupport && (
+                          <span className="block text-xs text-status-warning mt-1" data-testid={`connector-catalog-${entry.slug}-client-support`}>
+                            {entry.clientSupport.detail}
+                          </span>
+                        )}
                       </span>
                     </button>
                   );
