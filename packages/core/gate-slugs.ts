@@ -75,6 +75,13 @@ export const GATE_SLUGS = {
    * protected head; or a PR outside the workspace's linked repo).
    */
   PR_OWNERSHIP: 'pr_ownership',
+  /**
+   * create_pr / get_pr / merge_pr / update_pr — the GitHub App cannot act on
+   * the workspace's repo (installation missing, repo not selected, suspended,
+   * permission not granted, workspace not linked). Reason is the
+   * RepoAccessReason; see lib/github-repo-access.ts.
+   */
+  GITHUB_REPO_ACCESS: 'github_repo_access',
   /** merge_pr — workspace merge policy, and the admin `force` bypass. */
   MERGE_POLICY: 'merge_policy',
   /** merge_pr — mission-PR branch-lifecycle wait. */

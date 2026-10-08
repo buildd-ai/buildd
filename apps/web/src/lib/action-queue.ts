@@ -2,6 +2,7 @@ import type { HumanPrReview } from './reviewer-gate';
 import type { CiGate } from './ci-gate';
 import { resolveStaleGate, type StaleGate } from './pr-freshness';
 import { explainProviderAuthFailure } from './provider-auth-failure';
+import { readGithubAccessBlock, repoAccessSettingsPath } from './github-repo-access';
 import { attemptFailureCounts, type DeliveryView } from './workflow/projections';
 
 /**
@@ -781,6 +782,9 @@ export interface FailedTaskCandidate {
   workerError: string | null;
   missionId: string | null;
   missionTitle: string | null;
+  workspaceId?: string | null;
+  /** `tasks.context` — carries `githubAccessBlock` when a PR door refused for GitHub access. */
+  context?: unknown;
 }
 
 /**
@@ -790,10 +794,30 @@ export interface FailedTaskCandidate {
  * the queue as soon as it is pending again. A failure with no owner-fixable
  * cause stays on the task page; Home only asks for what the owner can act on.
  */
-export function buildFailedTaskItems(candidates: FailedTaskCandidate[]): WaitingOnYouRawItem[] {
+export function buildFailedTaskItems(
+  candidates: FailedTaskCandidate[],
+  opts: {
+    /**
+     * Workspaces whose GitHub access this person can fix (manage_workspace_settings).
+     * A task waiting on GitHub access is shown only to them — once per
+     * workspace, however many tasks are waiting — so the ask lands on the
+     * responsible admin instead of on everyone, once per task. Omitted: none.
+     */
+    githubAccessFixableWorkspaceIds?: ReadonlySet<string>;
+  } = {},
+): WaitingOnYouRawItem[] {
   const items: WaitingOnYouRawItem[] = [];
+  const accessWaiting = new Map<string, { first: FailedTaskCandidate; repo: string | null; count: number }>();
   for (const c of candidates) {
     if (c.status !== 'failed') continue;
+    const block = readGithubAccessBlock(c.context);
+    if (block && !block.resumedAt && c.workspaceId) {
+      if (!opts.githubAccessFixableWorkspaceIds?.has(c.workspaceId)) continue;
+      const cur = accessWaiting.get(c.workspaceId);
+      if (cur) cur.count++;
+      else accessWaiting.set(c.workspaceId, { first: c, repo: block.repo, count: 1 });
+      continue;
+    }
     const cause = explainProviderAuthFailure(c.workerError, c.backend);
     if (!cause) continue;
     items.push({
@@ -805,6 +829,19 @@ export function buildFailedTaskItems(candidates: FailedTaskCandidate[]): Waiting
       failureMessage: cause.message,
       fixHref: cause.href,
       fixLabel: cause.linkLabel,
+    });
+  }
+  for (const [workspaceId, { first, repo, count }] of accessWaiting) {
+    const what = count > 1 ? `${count} tasks are` : 'This task is';
+    items.push({
+      kind: 'failed',
+      taskId: first.taskId,
+      taskTitle: first.title,
+      missionId: first.missionId,
+      missionTitle: first.missionTitle,
+      failureMessage: `Buildd can’t reach ${repo ?? 'this workspace’s GitHub repository'}. ${what} waiting for GitHub access and will resume on their own once it is granted.`,
+      fixHref: repoAccessSettingsPath(workspaceId),
+      fixLabel: 'Fix GitHub access',
     });
   }
   return items;
