@@ -34,18 +34,40 @@ describe('ciLifecycleFromSuites', () => {
   // A workflow file that fails to parse fails before any job exists. But a
   // newer passing suite supersedes an older failing one: when a PR body is
   // edited, a new workflow run is triggered, creating a new suite. The old
-  // suite's failure should not override the new suite's pass.
-  it('old failing suite + new passing suite: newer passing suite wins', () => {
+  // suite's failure should not override the new suite's pass. Only applies
+  // when suites are from the same workflow (same app.id).
+  it('same workflow: old failing + new passing suite', () => {
     expect(ciLifecycleFromSuites([
-      { status: 'completed', conclusion: 'failure', latest_check_runs_count: 0, updated_at: '2026-01-01T00:00:00Z' },
-      { status: 'completed', conclusion: 'success', latest_check_runs_count: 5, updated_at: '2026-01-01T00:02:00Z' },
+      { status: 'completed', conclusion: 'failure', latest_check_runs_count: 0, updated_at: '2026-01-01T00:00:00Z', app: { id: 1 } },
+      { status: 'completed', conclusion: 'success', latest_check_runs_count: 5, updated_at: '2026-01-01T00:02:00Z', app: { id: 1 } },
     ])).toBe('ci_green');
   });
 
-  it('old passing suite + new failing suite: newer failing suite loses', () => {
+  it('same workflow: old passing + new failing suite', () => {
     expect(ciLifecycleFromSuites([
-      { status: 'completed', conclusion: 'success', latest_check_runs_count: 5, updated_at: '2026-01-01T00:00:00Z' },
-      { status: 'completed', conclusion: 'failure', latest_check_runs_count: 0, updated_at: '2026-01-01T00:02:00Z' },
+      { status: 'completed', conclusion: 'success', latest_check_runs_count: 5, updated_at: '2026-01-01T00:00:00Z', app: { id: 1 } },
+      { status: 'completed', conclusion: 'failure', latest_check_runs_count: 0, updated_at: '2026-01-01T00:02:00Z', app: { id: 1 } },
+    ])).toBe('ci_failed');
+  });
+
+  it('different workflows: failure in one never masked by pass in another', () => {
+    expect(ciLifecycleFromSuites([
+      { status: 'completed', conclusion: 'failure', latest_check_runs_count: 0, updated_at: '2026-01-01T10:00:00Z', app: { id: 1 } },
+      { status: 'completed', conclusion: 'success', latest_check_runs_count: 5, updated_at: '2026-01-01T10:05:00Z', app: { id: 2 } },
+    ])).toBe('ci_failed');
+  });
+
+  it('same-timestamp different workflows: both kept', () => {
+    expect(ciLifecycleFromSuites([
+      { status: 'completed', conclusion: 'failure', latest_check_runs_count: 0, updated_at: '2026-01-01T10:00:00Z', app: { id: 1 } },
+      { status: 'completed', conclusion: 'success', latest_check_runs_count: 5, updated_at: '2026-01-01T10:00:00Z', app: { id: 2 } },
+    ])).toBe('ci_failed');
+  });
+
+  it('cannot order same-name runs: both kept, fail closed', () => {
+    expect(ciLifecycleFromSuites([
+      { status: 'completed', conclusion: 'failure', latest_check_runs_count: 0, app: { id: 1 } },
+      { status: 'completed', conclusion: 'success', latest_check_runs_count: 5, app: { id: 1 } },
     ])).toBe('ci_failed');
   });
 

@@ -11,16 +11,39 @@
  * parse fails before any job exists).
  *
  * When a PR body is edited, a new workflow run is triggered on the same head
- * SHA, creating a new suite. The old suite's failure must not override the new
- * suite's pass, so only the most recent completed suites (by updated_at) are
- * considered for the failure check.
+ * SHA, creating a new suite per workflow. The old suite's failure must not
+ * override the new suite's pass, so we deduplicate per workflow/app, keeping
+ * only the newest suite per app. A pass on one workflow never masks a failure
+ * on another.
  */
 
 export type CiLifecycle = 'ci_green' | 'ci_failed' | 'ci_running';
 
-interface Suite { status: string; conclusion: string | null; latest_check_runs_count?: number; updated_at?: string | null }
+interface Suite { status: string; conclusion: string | null; latest_check_runs_count?: number; updated_at?: string | null; app?: { id?: number } | null }
 
 const PASSED = new Set(['success', 'skipped', 'neutral']);
+
+function isNewer(a: Suite, b: Suite): boolean | null {
+  if (typeof a.app?.id === 'number' && typeof b.app?.id === 'number' && a.app.id !== b.app.id) return null;
+  if (a.updated_at && b.updated_at) return Date.parse(a.updated_at) > Date.parse(b.updated_at);
+  return null;
+}
+
+export function latestSuitePerApp<T extends Suite>(suites: T[]): T[] {
+  const kept: T[] = [];
+  for (const suite of suites) {
+    const appId = suite.app?.id;
+    const i = kept.findIndex((k) => k.app?.id === appId);
+    if (i === -1) {
+      kept.push(suite);
+      continue;
+    }
+    const newer = isNewer(suite, kept[i]);
+    if (newer === true) kept[i] = suite;
+    else if (newer === null) kept.push(suite);
+  }
+  return kept;
+}
 
 export function ciLifecycleFromSuites(suites: readonly Suite[] | undefined | null): CiLifecycle | null {
   const all = suites ?? [];
@@ -30,17 +53,7 @@ export function ciLifecycleFromSuites(suites: readonly Suite[] | undefined | nul
 
   if (running.length > 0) return 'ci_running';
 
-  // Filter completed suites to only the most recent ones (by updated_at).
-  // When multiple suites have updated_at, keep only those at the max time.
-  // This prevents old failures from overriding new passes when a PR body edit
-  // triggers a new workflow run on the same head.
-  let completedToJudge = completed;
-  const timestampedCompleted = completed.filter(s => s.updated_at);
-  if (timestampedCompleted.length > 0) {
-    const maxTime = Math.max(...timestampedCompleted.map(s => Date.parse(s.updated_at!)));
-    completedToJudge = completed.filter(s => !s.updated_at || Date.parse(s.updated_at) === maxTime);
-  }
-
+  const completedToJudge = latestSuitePerApp(completed);
   if (completedToJudge.some(s => !PASSED.has(s.conclusion ?? ''))) return 'ci_failed';
   if (completed.length === 0) return null;
   return unstartedEmpty.length > 0 ? 'ci_running' : 'ci_green';
