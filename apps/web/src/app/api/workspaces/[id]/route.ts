@@ -366,6 +366,12 @@ export async function PATCH(
           }
         }
       }
+      if ('overlapHotspots' in gitConfig) {
+        const hs = (gitConfig as Record<string, unknown>).overlapHotspots;
+        if (hs !== null && (!Array.isArray(hs) || hs.length > 200 || !hs.every((h) => typeof h === 'string' && h.trim().length > 0 && h.trim() !== '**'))) {
+          return NextResponse.json({ error: 'gitConfig.overlapHotspots must be null or a list (at most 200) of non-empty paths or dir/** patterns; a repo-wide pattern is not a hotspot' }, { status: 400 });
+        }
+      }
       if ('mergiraf' in gitConfig) {
         const on = (gitConfig as Record<string, unknown>).mergiraf;
         if (on !== null && typeof on !== 'boolean') {
