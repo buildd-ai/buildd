@@ -2,13 +2,13 @@
 title: Team Permissions
 status: active
 owner: max
-last_verified: 2026-10-04
+last_verified: 2026-10-08
 summary: Every team-scoped permission decision MUST resolve through one named-permission registry that maps each permission to its team roles and minimum API-key level, failing closed.
 domain: auth
 surfaces: [apps/web/src/lib/permissions.ts, apps/web/src/lib/permission-registry.ts, apps/web/src/lib/team-access.ts, apps/web/src/lib/key-level-policy.ts]
 related: [team-namespace-scoping, auth-oauth-boundaries]
 keywords: [owner, admin, member, team role, api key level, ADMIN_ROLES, canCallerAdminTeam, permission registry, rbac]
-verified_by: [apps/web/src/lib/permissions.test.ts, apps/web/src/lib/permission-overrides.test.ts, apps/web/src/app/api/teams/[id]/permissions/route.test.ts, apps/web/src/lib/team-access-team-scope.test.ts]
+verified_by: [apps/web/src/lib/permissions.test.ts, apps/web/src/lib/permission-overrides.test.ts, apps/web/src/lib/migrate-access.test.ts, apps/web/src/app/api/teams/[id]/permissions/route.test.ts, apps/web/src/lib/team-access-team-scope.test.ts]
 supersedes: []
 assertions:
   - id: "permission-registry"
@@ -227,7 +227,7 @@ this spec's `last_verified` date.
 | `apps/web/src/app/app/(protected)/workspaces/[id]/config/page.tsx:80` | UI: config admin sections | owner, admin | — | `manage_workspace_settings` |
 | `apps/web/src/app/app/(protected)/workspaces/[id]/page.tsx:156` | UI: connect a repo | owner, admin | — | `manage_workspace_settings` |
 | `apps/web/src/app/app/(protected)/settings/workspaces/rows.ts:30` | UI: teams a workspace can be created in | owner, admin, personal team | — | `manage_workspace_settings` |
-| `apps/web/src/lib/migrate-access.ts:44` | migrate a workspace (both teams) | owner, admin (see oddity 1) | admin (route policy) | `migrate_workspace` |
+| `apps/web/src/lib/migrate-access.ts:46` | migrate a workspace (both teams) | owner, admin, personal team | admin (route policy) | `migrate_workspace` |
 | `apps/web/src/app/api/github/installations/[id]/route.ts:41` | disconnect a GitHub installation | via the line below | — | `manage_github_installation` |
 | `apps/web/src/lib/github-installation-access.ts:70` | manage a GitHub installation | owner, admin, personal team, or the installer | — | `manage_github_installation` |
 | `apps/web/src/app/api/workspaces/[id]/memory/[memoryId]/route.ts:111` | review memories | owner, admin | admin, or `admin`/`knowledge:admin` scope | `review_memory` |
@@ -256,11 +256,25 @@ this spec's `last_verified` date.
 | `apps/web/src/app/api/evidence-backends/[id]/verify/route.ts:34` | verify a backend | owner, admin | admin | `manage_evidence_backends` |
 | `apps/web/src/lib/experiments.ts:48` | `isExperimentAdmin`: create/start/pause/conclude, see admin-only | owner, admin | admin (`apps/web/src/lib/experiment-access.ts:72`) | `run_experiments` |
 
+### Registered ahead of their call sites
+
+Named so routes can adopt them; each row's call sites are filled in as the
+route moves onto the permission. All are overridable.
+
+| Permission | Covers | Session | Key |
+|---|---|---|---|
+| `assign_team_roles` | move a member between member and admin (owner moves stay `assign_team_owner`) | owner, admin | — |
+| `manage_team_credentials` | write or delete a team- or workspace-wide agent credential not covered by `manage_team_model_keys`, incl. workspace Claude/Codex credentials | owner, admin | admin |
+| `manage_team_notifications` | team notification settings (Pushover, notify webhook) | owner, admin | admin |
+| `create_workspace` | create a workspace in the team | owner, admin | admin |
+| `manage_agent_roles` | create, edit and delete agent roles and their workspace overrides (operator grant, MCP servers, required env vars, connectors) | owner, admin | admin |
+
 ### Oddities, reproduced not fixed
 
-1. **Absent membership passes.** The connector and migration helpers named
-   isTeamAdmin return `membership?.role !== 'member'`, so a user with no
-   membership row in the team passes. The routes scope `teamId` to the user's
+1. **Absent membership passes.** The connector helpers named isTeamAdmin
+   return `membership?.role !== 'member'`, so a user with no membership row in
+   the team passes. (The migration helper of the same name now resolves through
+   `can` and fails closed, keeping only the personal-team fallback.) The routes scope `teamId` to the user's
    teams first, so in practice only the personal team reaches this — which the
    registry also treats as owned — but the helpers themselves fail open.
 2. **Connector key level is enforced upstream.** The connector routes do no
