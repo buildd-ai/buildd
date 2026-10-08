@@ -4,7 +4,24 @@ import { NextRequest } from 'next/server';
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
-const mockGetUserAdminTeamIds = mock(() => Promise.resolve([] as string[]));
+// Named permissions the signed-in user holds, per team. Stands in for the role
+// grant plus the team's overrides that `can` resolves; an API key holds a
+// permission in its own team when its level is admin (both are admin-level).
+let sessionGrants: Record<string, string[]> = {};
+const grant = (teamIds: string[], permissions = ['manage_team_credentials', 'manage_team_model_keys']) => {
+  sessionGrants = Object.fromEntries(permissions.map(p => [p, teamIds]));
+};
+const mockCan = mock(async (caller: any, permission: string, teamId: string) =>
+  caller.kind === 'account'
+    ? caller.level === 'admin' && caller.teamId === teamId
+    : (sessionGrants[permission] ?? []).includes(teamId));
+mock.module('@/lib/permissions', () => ({ can: mockCan }));
+
+// A body workspaceId must belong to the target team.
+const mockWorkspaceFindFirst = mock(() => Promise.resolve({ id: 'ws-1' } as any));
+mock.module('@buildd/core/db', () => ({
+  db: { query: { workspaces: { findFirst: mockWorkspaceFindFirst } } },
+}));
 // POST now uses provider.replaceScoped (replace-on-store), not set(null, …).
 const mockSecretsReplaceScoped = mock(() => Promise.resolve('secret-1'));
 const mockSecretsSet = mock(() => Promise.resolve('secret-1'));
@@ -17,7 +34,6 @@ mock.module('@/lib/auth-helpers', () => ({
 
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
-  getUserAdminTeamIds: mockGetUserAdminTeamIds,
 }));
 
 // API-key callers resolve through the shared auth helper.
@@ -63,8 +79,7 @@ describe('POST /api/secrets', () => {
     // Default: authenticated user with a team
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockGetUserAdminTeamIds.mockReset();
-    mockGetUserAdminTeamIds.mockResolvedValue(['team-1']);
+    grant(['team-1']);
     mockSecretsReplaceScoped.mockResolvedValue('secret-1');
     mockRequeue.mockReset();
     mockRequeue.mockResolvedValue({ requeued: [], skippedOverCap: 0 });
@@ -325,15 +340,14 @@ describe('team model keys need a team admin', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockGetUserTeamIds.mockReset();
-    mockGetUserAdminTeamIds.mockReset();
-    mockSecretsReplaceScoped.mockReset();
+        mockSecretsReplaceScoped.mockReset();
     mockSecretsList.mockReset();
     mockSecretsDelete.mockReset();
     mockAccountsFindFirst.mockReset();
     mockAccountsFindFirst.mockResolvedValue(null);
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockGetUserAdminTeamIds.mockResolvedValue([]); // a plain member
+    grant([]); // a plain member
     mockSecretsReplaceScoped.mockResolvedValue('secret-1');
   });
 
@@ -366,7 +380,7 @@ describe('team model keys need a team admin', () => {
   }
 
   it('lets a team admin store and delete a team model key', async () => {
-    mockGetUserAdminTeamIds.mockResolvedValue(['team-1']);
+    grant(['team-1']);
     const put = await POST(createPostRequest({ value: 'sk-or-v1-abcdefghijklmnop', purpose: 'inference_key', label: 'openrouter' }));
     expect(put.status).toBe(200);
     mockSecretsList.mockResolvedValue([{ id: 'sec-team', purpose: 'inference_key', teamId: 'team-1' }]);
@@ -377,14 +391,158 @@ describe('team model keys need a team admin', () => {
 
   it('holds the admin check to the target team, not any team the caller admins', async () => {
     mockGetUserTeamIds.mockResolvedValue(['team-1', 'team-2']);
-    mockGetUserAdminTeamIds.mockResolvedValue(['team-2']);
+    grant(['team-2']);
     const res = await POST(createPostRequest({ value: 'sk-or-v1-abcdefghijklmnop', purpose: 'inference_key', label: 'openrouter', teamId: 'team-1' }));
     expect(res.status).toBe(403);
   });
 
-  it('still lets a member store other purposes', async () => {
-    const res = await POST(createPostRequest({ value: 'val', purpose: 'custom' }));
+});
+
+// Writing a team-wide or workspace-wide credential requires
+// manage_team_credentials in the target team. Personal rows are never written
+// here (see below), so a plain member writes nothing through this route.
+describe('shared credentials need manage_team_credentials', () => {
+  const apiReq = (method: 'POST' | 'DELETE', body?: any, qs = '') =>
+    new NextRequest(`http://localhost:3000/api/secrets${qs}`, {
+      method,
+      headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer bld_test' }),
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+  const deleteReq = (id: string) => new NextRequest(`http://localhost:3000/api/secrets?id=${id}`, { method: 'DELETE' });
+
+  const SHARED: Array<[string, string, string | undefined]> = [
+    ['anthropic_api_key', 'sk-ant-api03-xxx', undefined],
+    ['oauth_token', 'sk-ant-oat01-xxx', undefined],
+    ['claude_credential', '{"access_token":"a","refresh_token":"b"}', undefined],
+    ['openai_api_key', 'sk-proj-xxx', undefined],
+    ['mcp_credential', 'v', 'GITHUB_TOKEN'],
+    ['vercel_token', 'v', undefined],
+    ['webhook_token', 'v', undefined],
+    ['role_env_secret', 'v', 'NPM_TOKEN'],
+    ['custom', 'v', undefined],
+  ];
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockSecretsReplaceScoped.mockReset();
+    mockSecretsList.mockReset();
+    mockSecretsDelete.mockReset();
+    mockAccountsFindFirst.mockReset();
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockWorkspaceFindFirst.mockReset();
+    mockWorkspaceFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockCan.mockClear();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    grant([]); // a plain member
+    mockSecretsReplaceScoped.mockResolvedValue('secret-1');
+  });
+
+  for (const [purpose, value, label] of SHARED) {
+    it(`refuses a member writing a team-wide ${purpose}`, async () => {
+      const res = await POST(createPostRequest({ value, purpose, label }));
+      expect(res.status).toBe(403);
+      expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+    });
+
+    it(`refuses a member writing a workspace-wide ${purpose}`, async () => {
+      const res = await POST(createPostRequest({ value, purpose, label, workspaceId: 'ws-1' }));
+      expect(res.status).toBe(403);
+      expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+    });
+
+    it(`refuses a member deleting a team ${purpose}`, async () => {
+      mockSecretsList.mockResolvedValue([{ id: 'sec-team', purpose, teamId: 'team-1' }]);
+      const res = await DELETE(deleteReq('sec-team'));
+      expect(res.status).toBe(403);
+      expect(mockSecretsDelete).not.toHaveBeenCalled();
+    });
+
+    it(`lets a holder of manage_team_credentials write and delete a ${purpose}`, async () => {
+      grant(['team-1'], ['manage_team_credentials']);
+      const put = await POST(createPostRequest({ value, purpose, label }));
+      expect(put.status).toBe(200);
+      expect(mockSecretsReplaceScoped).toHaveBeenCalledTimes(1);
+      mockSecretsList.mockResolvedValue([{ id: 'sec-team', purpose, teamId: 'team-1' }]);
+      const del = await DELETE(deleteReq('sec-team'));
+      expect(del.status).toBe(200);
+      expect(mockSecretsDelete).toHaveBeenCalledWith('sec-team');
+    });
+  }
+
+  it('asks for manage_team_credentials, not the model-key permission, for an agent credential', async () => {
+    grant(['team-1'], ['manage_team_model_keys']);
+    const res = await POST(createPostRequest({ value: 'sk-ant-api03-xxx', purpose: 'anthropic_api_key' }));
+    expect(res.status).toBe(403);
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+    expect(mockCan).toHaveBeenCalledWith({ kind: 'user', userId: 'user-1' }, 'manage_team_credentials', 'team-1');
+  });
+
+  it('asks for manage_team_model_keys, not manage_team_credentials, for a model key', async () => {
+    grant(['team-1'], ['manage_team_credentials']);
+    const res = await POST(createPostRequest({ value: 'sk-or-v1-abc', purpose: 'decision_key' }));
+    expect(res.status).toBe(403);
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+    expect(mockCan).toHaveBeenCalledWith({ kind: 'user', userId: 'user-1' }, 'manage_team_model_keys', 'team-1');
+  });
+
+  it('holds the permission to the target team, not any team the caller manages', async () => {
+    mockGetUserTeamIds.mockResolvedValue(['team-1', 'team-2']);
+    grant(['team-2']);
+    const res = await POST(createPostRequest({ value: 'v', purpose: 'custom', teamId: 'team-1' }));
+    expect(res.status).toBe(403);
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+  });
+
+  it('refuses a worker-level API key writing a shared credential', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-w', teamId: 'team-1', level: 'worker' });
+    const res = await POST(apiReq('POST', { value: 'v', purpose: 'mcp_credential', label: 'GITHUB_TOKEN' }));
+    expect(res.status).toBe(403);
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+  });
+
+  it('refuses a worker-level API key deleting a shared credential', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-w', teamId: 'team-1', level: 'worker' });
+    mockSecretsList.mockResolvedValue([{ id: 'sec-team', purpose: 'mcp_credential', teamId: 'team-1' }]);
+    const res = await DELETE(apiReq('DELETE', undefined, '?id=sec-team'));
+    expect(res.status).toBe(403);
+    expect(mockSecretsDelete).not.toHaveBeenCalled();
+  });
+
+  it('lets an admin-level API key write a shared credential (what MCP manage_secrets sends)', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-a', teamId: 'team-1', level: 'admin' });
+    const res = await POST(apiReq('POST', { value: 'v', purpose: 'mcp_credential', label: 'GITHUB_TOKEN' }));
     expect(res.status).toBe(200);
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledTimes(1);
+    expect(mockCan).toHaveBeenCalledWith(
+      { kind: 'account', accountId: 'acct-a', teamId: 'team-1', level: 'admin' },
+      'manage_team_credentials',
+      'team-1',
+    );
+  });
+
+  it('404s a workspaceId outside the target team, without writing', async () => {
+    grant(['team-1']);
+    mockWorkspaceFindFirst.mockResolvedValue(null);
+    const res = await POST(createPostRequest({ value: 'v', purpose: 'custom', workspaceId: 'ws-other-team' }));
+    expect(res.status).toBe(404);
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+  });
+
+  it('stores a workspace-wide row when the workspace is in the team', async () => {
+    grant(['team-1']);
+    const res = await POST(createPostRequest({ value: 'v', purpose: 'custom', workspaceId: 'ws-1' }));
+    expect(res.status).toBe(200);
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('v', expect.objectContaining({ teamId: 'team-1', workspaceId: 'ws-1' }));
+  });
+
+  it('404s a delete of a row the caller cannot see', async () => {
+    grant(['team-1']);
+    mockSecretsList.mockResolvedValue([{ id: 'sec-other', purpose: 'custom', teamId: 'team-1' }]);
+    const res = await DELETE(deleteReq('sec-missing'));
+    expect(res.status).toBe(404);
+    expect(mockSecretsDelete).not.toHaveBeenCalled();
   });
 });
 
@@ -396,11 +554,10 @@ describe('POST /api/secrets never creates a personal row', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockGetUserTeamIds.mockReset();
-    mockGetUserAdminTeamIds.mockReset();
-    mockSecretsReplaceScoped.mockReset();
+        mockSecretsReplaceScoped.mockReset();
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockGetUserAdminTeamIds.mockResolvedValue(['team-1']);
+    grant(['team-1']);
     mockSecretsReplaceScoped.mockResolvedValue('secret-1');
   });
 
@@ -500,13 +657,12 @@ describe('POST /api/secrets (cloudflare_token)', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockGetUserTeamIds.mockReset();
-    mockGetUserAdminTeamIds.mockReset();
-    mockSecretsReplaceScoped.mockReset();
+        mockSecretsReplaceScoped.mockReset();
     mockAccountsFindFirst.mockReset();
     mockAccountsFindFirst.mockResolvedValue(null);
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockGetUserAdminTeamIds.mockResolvedValue(['team-1']);
+    grant(['team-1']);
     mockSecretsReplaceScoped.mockResolvedValue('secret-cf');
   });
 
@@ -539,7 +695,7 @@ describe('POST /api/secrets (cloudflare_token)', () => {
   });
 
   it('refuses a non-admin team member', async () => {
-    mockGetUserAdminTeamIds.mockResolvedValue([]);
+    grant([]);
     const res = await POST(createPostRequest({ value: JSON.stringify({ apiToken: TOKEN, accountId: ACCOUNT }), purpose: 'cloudflare_token' }));
     expect(res.status).toBe(403);
     expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
@@ -561,8 +717,7 @@ describe('DELETE /api/secrets (cloudflare_token)', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockGetUserTeamIds.mockReset();
-    mockGetUserAdminTeamIds.mockReset();
-    mockSecretsList.mockReset();
+        mockSecretsList.mockReset();
     mockSecretsDelete.mockReset();
     mockAccountsFindFirst.mockReset();
     mockAccountsFindFirst.mockResolvedValue(null);
@@ -572,14 +727,14 @@ describe('DELETE /api/secrets (cloudflare_token)', () => {
   });
 
   it('refuses a non-admin member', async () => {
-    mockGetUserAdminTeamIds.mockResolvedValue([]);
+    grant([]);
     const res = await DELETE(new NextRequest('http://localhost:3000/api/secrets?id=sec-cf', { method: 'DELETE' }));
     expect(res.status).toBe(403);
     expect(mockSecretsDelete).not.toHaveBeenCalled();
   });
 
   it('lets a team admin delete it', async () => {
-    mockGetUserAdminTeamIds.mockResolvedValue(['team-1']);
+    grant(['team-1']);
     const res = await DELETE(new NextRequest('http://localhost:3000/api/secrets?id=sec-cf', { method: 'DELETE' }));
     expect(res.status).toBe(200);
     expect(mockSecretsDelete).toHaveBeenCalledWith('sec-cf');
