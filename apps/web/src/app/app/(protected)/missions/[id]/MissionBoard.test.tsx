@@ -14,6 +14,7 @@ const { renderToStaticMarkup } = await import('react-dom/server');
 const { default: MissionBoard } = await import('./MissionBoard');
 const { boardFixture } = await import('@/lib/mission-board.fixtures');
 const { buildVisualReviewFixtureModel } = await import('@/lib/visual-review-model.fixtures');
+const { cellStanding, describeVisualPhase, screensToReview } = await import('@/lib/visual-review-model');
 const { CanvasContext } = await import('@/components/chat/canvas-context');
 const { missionTaskStripFixture } = await import('@/app/app/dev/fixtures/mission-task-strip-fixtures');
 
@@ -354,11 +355,31 @@ describe('MissionBoard — visual review (docs/design/visual-qa-human-review.md)
     const visual = visualAs('guide', 'needs_you', { needsYou: 'unsure', scenario: 'deck' });
     const html = render('running', { visual });
     const cell = html.split('data-testid="needs-you-cell"')[1]?.split('</div>')[0] ?? '';
-    expect(text(cell)).toContain(String(visual.summary.awaitingHuman));
-    expect(text(html)).toContain(`${visual.summary.awaitingHuman} ${visual.summary.awaitingHuman === 1 ? 'screen' : 'screens'} to review`);
+    const n = screensToReview(visual);
+    expect(text(cell)).toContain(String(n));
+    expect(text(html)).toContain(`${n} ${n === 1 ? 'screen' : 'screens'} to review`);
     expect(html).toContain('data-testid="visual-review-ask"');
     // Before the columns, beside the other asks.
     expect(html.indexOf('data-testid="visual-review-ask"')).toBeLessThan(html.indexOf('data-testid="mission-board-columns"'));
+  });
+
+  // Regression (surface audit, mission-board-visual): the band said "1 screen
+  // to review" and the Ask "Review 1", then the deck opened on "2 TO REVIEW".
+  // The board counted unsure shots; the deck counts every cell waiting on a
+  // person (an unsure shot and a merged fix's new screenshot). One count now.
+  it('Needs you, its caption and the Ask button count what the deck counts', () => {
+    const visual = visualAs('guide', 'needs_you', { needsYou: 'unsure', scenario: 'deck' });
+    const deck = visual.cells.filter(c => cellStanding(c) === 'to_review').length;
+    expect(deck).toBe(2);
+    expect(screensToReview(visual)).toBe(deck);
+    const html = render('running', { visual });
+    const cell = html.split('data-testid="needs-you-cell"')[1]?.split('</div>')[0] ?? '';
+    expect(text(cell)).toContain(String(deck));
+    expect(text(html)).toContain(`${deck} screens to review`);
+    const ask = html.split('data-testid="visual-review-ask-review"')[1]?.split('</button>')[0] ?? '';
+    expect(text(ask)).toContain(`Review ${deck}`);
+    // The Screens row's label too.
+    expect(describeVisualPhase(visual).label).toBe(`${deck} to review`);
   });
 
   it('a question the auditor\'s worker asks is the board\'s own ask: not a second card', () => {

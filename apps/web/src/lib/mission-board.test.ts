@@ -15,6 +15,7 @@ import { boardTaskLabel } from './mission-board-label';
 import { taskDisplayLabel } from '@buildd/core/task-label';
 import { WORK_KIND_GLYPHS } from './task-presentation';
 import { buildVisualReviewFixtureModel } from './visual-review-model.fixtures';
+import { screensToReview } from './visual-review-model';
 
 // Illustrative fixtures only — no real mission or task data.
 const T0 = Date.UTC(2026, 0, 1, 12, 0, 0);
@@ -423,8 +424,9 @@ describe('buildMissionBoard: the visual review (docs/design/visual-qa-human-revi
     ]);
     expect(m.needsYou).toEqual(['q']);
     const visual = buildVisualReviewFixtureModel('needs_you', { needsYou: 'unsure', scenario: 'deck' });
-    expect(visual.summary.awaitingHuman).toBeGreaterThan(0);
-    expect(boardNeedsYouCount(m, visual)).toBe(1 + visual.summary.awaitingHuman);
+    expect(screensToReview(visual)).toBeGreaterThan(0);
+    // The deck's count, not the unsure-only awaitingHuman (they differ here).
+    expect(boardNeedsYouCount(m, visual)).toBe(1 + screensToReview(visual));
   });
 
   it('no visual model, or nothing awaiting: only the waiting tasks count', () => {

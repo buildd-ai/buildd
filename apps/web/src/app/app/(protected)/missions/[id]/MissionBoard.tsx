@@ -35,6 +35,7 @@ import { MissionStripContext, createMissionStripStore, type MissionStripValue } 
 import type { MissionExecutor } from '@/lib/task-actions';
 import { stripOrder } from '@/lib/mission-task-strip';
 import type { DeliveryTone } from '@/lib/workflow/delivery-display';
+import { screensToReview } from '@/lib/visual-review-model';
 import { LandedStrip, type LandedStripProps, type StripFocus } from './MissionTaskStrip';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
 import {
@@ -239,7 +240,8 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
 }) {
   const needs = boardNeedsYouCount(model, visual);
   const first = model.needsYou.length ? model.tasks[model.needsYou[0]] : null;
-  const awaiting = visual?.summary.awaitingHuman ?? 0;
+  // The deck's own count (screensToReview), so the caption and the deck agree.
+  const awaiting = visual ? screensToReview(visual) : 0;
   const needsCaption = first
     ? first.delivery
       ? `${first.scope ?? first.label} · ${first.delivery.label.toLowerCase()}${model.needsYou.length > 1 ? ` · +${model.needsYou.length - 1}` : ''}`
