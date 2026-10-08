@@ -201,7 +201,24 @@ async function runSession(
   const task = makeTask(overrides);
   mockClaimTask.mockImplementation(async () => ({ workers: [{ id: workerId, branch: 'buildd/test', task }] }));
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 300));
+  // A fixed sleep is flaky on loaded CI: the session may not have started yet.
+  // Wait for the backend to be created, then for update traffic to go quiet.
+  const deadline = Date.now() + 10_000;
+  while (createBackendCalls.length === 0 && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 25));
+  }
+  let lastCount = -1;
+  let quietSince = Date.now();
+  while (Date.now() < deadline) {
+    const count = updateCalls.length + createBackendCalls.length;
+    if (count !== lastCount) {
+      lastCount = count;
+      quietSince = Date.now();
+    } else if (Date.now() - quietSince >= 300) {
+      break;
+    }
+    await new Promise(r => setTimeout(r, 25));
+  }
 }
 
 function assistantText(text: string) {

@@ -22,6 +22,10 @@ mock.module('drizzle-orm', () => ({
 }));
 const mockCatalog = mock(() => Promise.resolve([] as unknown[]));
 mock.module('../model-catalog-cache', () => ({ getCachedOpenRouterCatalog: mockCatalog }));
+mock.module('../model-certification-store', () => ({ getModelCertifications: () => Promise.resolve(new Map()) }));
+mock.module('../model-upgrade-policy-store', () => ({
+  loadUpgradePolicy: () => Promise.resolve({ policy: { mode: 'latest-compatible' }, source: 'default' }),
+}));
 
 const { resolveTierEntry, invalidateTierCache, TIER_DEFAULTS, TIERS } = await import('../model-tier-registry');
 const policy = await import('../model-policy');

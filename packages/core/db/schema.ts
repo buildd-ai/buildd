@@ -140,6 +140,11 @@ export const teams = pgTable('teams', {
   // Admin policy: a new conversation starts at min(person's last tier, the
   // default tier above) — reset down to it, never up. Off = the person's last tier.
   chatCapNewSessionTier: boolean('chat_cap_new_session_tier').notNull().default(false),
+  // How this team's catalog-resolved tiers advance to newly certified models:
+  // { mode: 'latest-compatible' | 'soak' | 'manual', soakHours?, adoptedThrough?,
+  // setBy?, setAt? }. NULL = latest-compatible. A workspace's own value wins.
+  // Read only through packages/core/model-upgrade-policy.ts (readUpgradePolicy).
+  modelUpgradePolicy: jsonb('model_upgrade_policy').$type<import('../model-upgrade-policy').ModelUpgradePolicy | null>(),
   // Chat session retros (experiment, apps/web/src/lib/chat-retro/). Opt-in per
   // team: NULL or a missing key = off. `lessons` records content-free lesson
   // rows in chat_retros; `proposals` (requires lessons) lets the daily pass
@@ -1008,6 +1013,8 @@ export const workspaces = pgTable('workspaces', {
 
   // Git workflow configuration
   gitConfig: jsonb('git_config').$type<WorkspaceGitConfig>(),
+  // Workspace override of teams.modelUpgradePolicy. NULL = inherit the team's.
+  modelUpgradePolicy: jsonb('model_upgrade_policy').$type<import('../model-upgrade-policy').ModelUpgradePolicy | null>(),
   configStatus: text('config_status').default('unconfigured').notNull().$type<'unconfigured' | 'admin_confirmed'>(),
 
   // Webhook configuration for external agent dispatch (OpenClaw, etc.)

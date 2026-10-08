@@ -18,7 +18,7 @@ import { db } from '@buildd/core/db';
 import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
-import { VISUAL_AUDITOR_ROLE_SLUG, type SkillModel } from '@buildd/shared';
+import { BUILDD_ACTION_TOOL_NAMES, LEGACY_BUILDD_ACTION_TOOL, VISUAL_AUDITOR_ROLE_SLUG, type SkillModel } from '@buildd/shared';
 import { registerTextPrompt, resolvePromptEntry, resolvedPromptVersion } from '@buildd/core/prompts';
 import { OPERATOR_ROLE_SLUG } from './permission-registry';
 import type { RoleOverride } from './policy-overrides';
@@ -29,6 +29,15 @@ const BUILDD_MCP = {
   url: 'https://buildd.dev/api/mcp',
   headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' },
 };
+
+/**
+ * A role that may call any buildd action lists every action tool: each group
+ * tool (`mcp__buildd__buildd_<group>`, the standard surface) and the legacy
+ * `mcp__buildd__buildd`, which only a runner predating group tools is still
+ * served. Subagent `tools` take exact names, so no wildcard. Drop the legacy
+ * name with the legacy surface (apps/web/src/app/api/mcp/tools.ts).
+ */
+const BUILDD_ACTION_TOOLS: readonly string[] = BUILDD_ACTION_TOOL_NAMES;
 
 /**
  * Choice criteria for role inference (knowledge-base: buildd/design/role-routing.md §2). This
@@ -462,9 +471,9 @@ If a near-duplicate exists, update it instead of creating a new entry.
     color: '#A855F7',
     model: 'sonnet',
     isRole: true,
-    allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'mcp__buildd__buildd_analytics', 'mcp__buildd__buildd_work', 'mcp__buildd__recall', 'mcp__buildd__learn'],
+    allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'mcp__buildd__buildd_analytics', 'mcp__buildd__buildd_work', LEGACY_BUILDD_ACTION_TOOL, 'mcp__buildd__recall', 'mcp__buildd__learn'],
     canDelegateTo: ['researcher', 'writer'],
-    mcpServers: { buildd: { ...BUILDD_MCP, url: 'https://buildd.dev/api/mcp?tools=groups' } },
+    mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
     routing: {
       whenToUse: 'Pulls data, metrics or usage numbers by query or API and reports what they show, with the query, sample size and time range.',
@@ -536,7 +545,7 @@ If a near-duplicate exists, update it instead of creating a new entry.
     model: 'sonnet',
     isRole: true as const,
     allowedTools: [
-      'mcp__buildd__buildd',     // read task/artifact context — read-only
+      ...BUILDD_ACTION_TOOLS,     // read task/artifact context — read-only
     ],
     canDelegateTo: [] as string[],
     mcpServers: { buildd: BUILDD_MCP },
@@ -799,7 +808,7 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // workflow or run shoot.sh, not to edit. No Write/Edit. AskUserQuestion is
     // the boot-failure parking path. Like every role's allowedTools this is
     // enforced only on the useSkillAgents subagent path.
-    allowedTools: ['Read', 'Grep', 'Glob', 'Bash', 'AskUserQuestion', 'mcp__buildd__buildd'],
+    allowedTools: ['Read', 'Grep', 'Glob', 'Bash', 'AskUserQuestion', ...BUILDD_ACTION_TOOLS],
     canDelegateTo: [],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
@@ -879,7 +888,7 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // for a normal main-agent role it is descriptive, which is why the omission was
     // not what blocked spec_compare. The actual blocker was action-level gating —
     // spec_compare sat in adminActions and is now in workerActions.
-    allowedTools: ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'mcp__buildd__buildd'],
+    allowedTools: ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', ...BUILDD_ACTION_TOOLS],
     canDelegateTo: [],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
@@ -921,7 +930,7 @@ If a near-duplicate exists, update it instead of creating a new entry.
     color: '#65A30D',
     model: 'sonnet',
     isRole: true,
-    allowedTools: ['Read', 'Grep', 'Glob', 'Bash', 'mcp__buildd__buildd'],
+    allowedTools: ['Read', 'Grep', 'Glob', 'Bash', ...BUILDD_ACTION_TOOLS],
     canDelegateTo: [],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },

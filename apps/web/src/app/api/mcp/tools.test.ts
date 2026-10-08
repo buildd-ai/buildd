@@ -348,26 +348,30 @@ describe('routeGroupToolCall', () => {
 });
 
 describe('surface choice and instructions', () => {
-  it('legacy is the default for every session; groups is opt-in', () => {
-    expect(mcpToolSurfaceFor({})).toBe('legacy');
+  it('groups is the standard surface for every session that is not a runner worker', () => {
+    expect(mcpToolSurfaceFor({})).toBe('groups');
+    expect(mcpToolSurfaceFor({ workerParam: null })).toBe('groups');
+    expect(mcpToolSurfaceFor({ workerParam: '' })).toBe('groups');
+  });
+
+  it('a runner worker session gets groups only when its runner supports them', () => {
+    expect(mcpToolSurfaceFor({ workerParam: 'w', runnerSupportsGroupTools: true })).toBe('groups');
+    // A runner that predates group tools (or one that cannot be identified) keeps legacy.
+    expect(mcpToolSurfaceFor({ workerParam: 'w', runnerSupportsGroupTools: false })).toBe('legacy');
+    expect(mcpToolSurfaceFor({ workerParam: 'w', runnerSupportsGroupTools: null })).toBe('legacy');
     expect(mcpToolSurfaceFor({ workerParam: 'w' })).toBe('legacy');
-    expect(mcpToolSurfaceFor({ toolsParam: 'bogus' })).toBe('legacy');
-    expect(mcpToolSurfaceFor({ toolsParam: 'legacy' })).toBe('legacy');
-    expect(mcpToolSurfaceFor({ toolsParam: 'groups' })).toBe('groups');
-    expect(mcpToolSurfaceFor({ workerParam: 'w', toolsParam: 'groups' })).toBe('groups');
   });
 
-  it('the server default flag moves non-worker sessions to groups, never runner workers', () => {
-    expect(mcpToolSurfaceFor({ serverDefault: 'groups' })).toBe('groups');
-    expect(mcpToolSurfaceFor({ serverDefault: 'groups', workerParam: 'w' })).toBe('legacy');
-    expect(mcpToolSurfaceFor({ serverDefault: 'groups', toolsParam: 'legacy' })).toBe('legacy');
-    expect(mcpToolSurfaceFor({ serverDefault: 'bogus' })).toBe('legacy');
+  it('takes no client or server opt-in: the surface is not a URL or env choice', () => {
+    // The old ?tools= / BUILDD_MCP_TOOL_SURFACE inputs no longer exist; extra keys change nothing.
+    expect(mcpToolSurfaceFor({ workerParam: 'w', toolsParam: 'groups', serverDefault: 'groups' } as never)).toBe('legacy');
+    expect(mcpToolSurfaceFor({ toolsParam: 'legacy', serverDefault: 'legacy' } as never)).toBe('groups');
   });
 
-  it('listMcpTools and the instructions default to legacy', () => {
-    expect(toolNames({ accountLevel: 'admin', isSensitive: false })).toContain('buildd');
-    expect(toolNames({ accountLevel: 'admin', isSensitive: false })).not.toContain('buildd_tasks');
-    expect(mcpServerInstructions('admin')).toBe(mcpServerInstructions('admin', 'legacy'));
+  it('listMcpTools and the instructions default to groups', () => {
+    expect(toolNames({ accountLevel: 'admin', isSensitive: false })).toContain('buildd_tasks');
+    expect(toolNames({ accountLevel: 'admin', isSensitive: false })).not.toContain('buildd');
+    expect(mcpServerInstructions('admin')).toBe(mcpServerInstructions('admin', 'groups'));
   });
 
   it('groups instructions name the reachable group tools and help', () => {
