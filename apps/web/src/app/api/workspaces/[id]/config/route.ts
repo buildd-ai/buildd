@@ -8,7 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { roleHas } from '@/lib/permissions';
+import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName } from '@buildd/shared';
 
@@ -145,7 +145,7 @@ async function verifyWriteAccess(
     if (user && !apiAccount) {
         const access = await verifyWorkspaceAccess(user.id, workspaceId);
         if (!access) return 'not_found';
-        return roleHas(access.role, 'manage_workspace_settings') ? 'ok' : 'forbidden';
+        return roleHas(access.role, 'manage_workspace_settings', await getTeamPermissionOverrides(access.teamId)) ? 'ok' : 'forbidden';
     }
     if (apiAccount) {
         const ws = await db.query.workspaces.findFirst({
@@ -438,7 +438,9 @@ export async function POST(
         if (typeof body.extendedContext === 'boolean') gitConfig.extendedContext = body.extendedContext;
         // enforceGreenCI — surfaced via the workspace CI policy toggle
         if (typeof body.enforceGreenCI === 'boolean') gitConfig.enforceGreenCI = body.enforceGreenCI;
-        if (typeof body.autoMergeOnGreenCI === 'boolean') gitConfig.autoMergeOnGreenCI = body.autoMergeOnGreenCI;
+        // `autoMergeOnGreenCI` is deliberately NOT written. No merge gate reads it —
+        // `resolvePolicy` decides from mergePolicy — so accepting it would let a
+        // save record a setting that does nothing. A stored value stays as-is.
         // Prose goal-criteria grader (validated above). Absent keeps the existing
         // value; 'auto' and null clear it, because missing already means auto.
         if (body.criteriaGrader !== undefined) {

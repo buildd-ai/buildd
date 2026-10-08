@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { missionNotes, tasks, workspaces } from '@buildd/core/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import {
   SURFACE_AUDIT_WAIVER_NOTE_TITLE,
   isRenderedSurfaceChange,
@@ -51,6 +51,26 @@ async function hasWaiver(missionId: string): Promise<boolean> {
     limit: 20,
   });
   return notes.some(n => (n.authorType === 'user' || n.authorType === 'mcp') && (n.body ?? '').trim().length > 0);
+}
+
+/**
+ * The newest waiver a person recorded (the mission page shows it): reason,
+ * who set it and when. Null when none. Same person-only rule as `hasWaiver`.
+ */
+export async function loadSurfaceAuditWaiver(
+  missionId: string,
+): Promise<{ reason: string; actorLabel: string | null; at: string } | null> {
+  const notes = await db.query.missionNotes.findMany({
+    where: and(eq(missionNotes.missionId, missionId), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE)),
+    columns: { authorType: true, body: true, actorLabel: true, createdAt: true },
+    orderBy: [desc(missionNotes.createdAt)],
+    limit: 20,
+  });
+  const latest = notes
+    .filter(n => (n.authorType === 'user' || n.authorType === 'mcp') && (n.body ?? '').trim().length > 0)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+  if (!latest) return null;
+  return { reason: (latest.body ?? '').trim(), actorLabel: latest.actorLabel ?? null, at: new Date(latest.createdAt).toISOString() };
 }
 
 async function repoFor(workspaceId: string): Promise<{ installationId: number; fullName: string } | null> {

@@ -95,11 +95,35 @@ describe('mission base guard — exemptions (unchanged from the derivation)', ()
   });
 
   it('exempts a stacked-plan phase: its base is the predecessor task’s branch', () => {
-    const predecessor = 'buildd/predecessor00-earlier-thing';
-    const guard = taskGuard({ context: { baseBranch: predecessor } });
+    const predecessorId = '9f8e7d6c-1111-2222-3333-444444444444';
+    const predecessor = `buildd/${predecessorId.slice(0, 8)}-earlier-thing`;
+    const guard = taskGuard({ context: { baseBranch: predecessor }, dependsOn: [predecessorId] });
     expect(guard.isStackedPhase).toBe(true);
     expect(guard.enforced).toBe(false);
     expect(guard.allows(predecessor)).toBe(true);
+  });
+
+  // Early release's stacking mechanics (docs/design/early-release.md): a
+  // `start_stacked` decision writes the upstream task's own branch into the
+  // dependent's context.baseBranch — the dependent already names the
+  // upstream in dependsOn, which is the same shape a plan-step predecessor
+  // produces, so it is exempt for exactly the same reason without any
+  // early-release-specific code in this guard.
+  it('exempts an early-release stacked dependent: its base is the upstream task’s own branch', () => {
+    const upstreamId = 'ab12cd34-5555-6666-7777-888899990000';
+    const upstreamBranch = `buildd/${upstreamId.slice(0, 8)}-upstream-thing`;
+    const guard = taskGuard({ context: { baseBranch: upstreamBranch }, dependsOn: [upstreamId] });
+    expect(guard.isStackedPhase).toBe(true);
+    expect(guard.enforced).toBe(false);
+    expect(guard.allows(upstreamBranch)).toBe(true);
+  });
+
+  it('does NOT exempt a baseBranch shaped like a predecessor branch with no dependsOn edge naming it', () => {
+    const predecessor = 'buildd/9f8e7d6c-earlier-thing';
+    const guard = taskGuard({ context: { baseBranch: predecessor } });
+    expect(guard.isStackedPhase).toBe(false);
+    expect(guard.enforced).toBe(true);
+    expect(guard.allows(TRUNK)).toBe(false);
   });
 
   it('does NOT exempt a recovery task, whose context.baseBranch is its own head', () => {

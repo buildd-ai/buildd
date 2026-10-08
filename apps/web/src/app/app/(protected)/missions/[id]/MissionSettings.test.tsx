@@ -149,6 +149,12 @@ describe('quick-add role picker', () => {
     ]);
   });
 
+  it('never offers the system-only visual auditor (a visual review is the mission\'s own command)', () => {
+    const withAuditor = [...ROLES, { slug: 'visual-auditor', name: 'Visual auditor', color: '#222' }];
+    expect(quickAddRoleOptions(withAuditor).map(o => o.value)).toEqual(['', 'builder', 'writer']);
+    expect(render({ displayState: 'active', roles: [withAuditor[2]] })).not.toContain('quick-task-role');
+  });
+
   it('renders no picker when the workspace has no roles', () => {
     expect(render({ displayState: 'active', roles: [] })).not.toContain('quick-task-role');
   });
@@ -162,5 +168,24 @@ describe('quick-add role picker', () => {
     const body = quickAddTaskBody({ title: 'Fix the thing', workspaceId: 'ws-1', missionId: 'm-1', roleSlug: '' });
     expect(body).toEqual({ title: 'Fix the thing', workspaceId: 'ws-1', missionId: 'm-1' });
     expect('roleSlug' in body).toBe(false);
+  });
+});
+
+describe('where the mission runs is switchable both ways', () => {
+  const menu = (html: string) => html.slice(html.indexOf('data-testid="mission-capability-menu"'));
+
+  it('a local mission offers "Run on runners"', () => {
+    const html = render({ displayState: 'active', executor: 'local' });
+    expect(menu(html)).toContain('data-testid="mission-executor-toggle"');
+    expect(menu(html)).toContain('Run on runners');
+  });
+
+  it('a runner mission offers "Run locally"', () => {
+    const html = render({ displayState: 'active', executor: 'runner' });
+    expect(menu(html)).toContain('Run locally');
+  });
+
+  it('offers nothing when the executor is not known', () => {
+    expect(render({ displayState: 'active' })).not.toContain('mission-executor-toggle');
   });
 });

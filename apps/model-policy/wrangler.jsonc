@@ -1,0 +1,34 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "model-policy",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // No account_id. The usual deploy is scripts/deploy.ts: buildd uploads the
+  // bundle server-side with the team's stored Cloudflare credential, so the
+  // account is the credential's and no token reaches the deploying machine.
+  // Deploying with wrangler directly, bind a wrangler profile to this
+  // directory (`bunx wrangler auth activate <profile> apps/model-policy`), so
+  // a deploy can never land on whichever account the shell is logged in to.
+  //
+  // "name" is the deploy action's project; compatibility_date/flags are sent
+  // with the upload.
+  //
+  // Served on a Custom Domain in the same account's zone, like Dispatch.
+  // buildd is the first consumer (its web app points at this host). workers.dev stays
+  // off: one public hostname, gated by policy tokens.
+  "routes": [{ "pattern": "policy.buildd.dev", "custom_domain": true }],
+  "workers_dev": false,
+
+  // Secret (wrangler secret put POLICY_TOKENS): `id:token[,id:token]`, each
+  // token at least 24 characters. A policy token authorises resolve and
+  // outcome reports only. This Worker holds no provider key and no buildd
+  // credential, and must not: apps call providers with their own.
+  //
+  // MODEL_POLICY is the policy document (JSON, `ModelPolicy` from
+  // @builddai/ai-kit/policy). Set it with `wrangler secret put MODEL_POLICY`
+  // or `--var` so a deploy does not wipe a dashboard edit. Missing or invalid,
+  // /v1/resolve answers 503 and clients serve their own fallback.
+}

@@ -13,6 +13,12 @@
  * Turning `lessons` off also turns `proposals` off and deletes the team's
  * existing lessons (`deleteLessons`).
  *
+ * Account dogfood (`users.chat_retro_dogfood_at`): a person who turned it on
+ * keeps both switches on for every team they own, now and later. While a team
+ * has such an owner its effective settings are lessons + proposals whatever is
+ * stored, and a per-team patch that would turn either off is refused rather
+ * than saved and ignored. Every other team keeps the opt-in above.
+ *
  * `CHAT_RETRO_ENABLED=0` is the global kill switch: nothing runs for any team,
  * whatever it opted into. Unset (or any other value) = opted-in teams run.
  *
@@ -34,6 +40,16 @@ export function readChatRetroSettings(raw: unknown): ChatRetroSettings {
   return { lessons, proposals: lessons && r.proposals === true };
 }
 
+export const CHAT_RETRO_DOGFOOD: Readonly<ChatRetroSettings> = Object.freeze({ lessons: true, proposals: true });
+
+/** What the daily pass acts on: a team with a dogfood owner is always fully on. */
+export function effectiveChatRetroSettings(stored: ChatRetroSettings, dogfood: boolean): ChatRetroSettings {
+  return dogfood ? { ...CHAT_RETRO_DOGFOOD } : { ...stored };
+}
+
+export const CHAT_RETRO_DOGFOOD_LOCKED =
+  'Chat retros are enabled by account dogfood for this team: an owner keeps lessons and suggestions on for every team they own, so they cannot be turned off here.';
+
 /** Global kill switch. Only `CHAT_RETRO_ENABLED=0` turns the experiment off everywhere. */
 export function chatRetroGloballyEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return (env.CHAT_RETRO_ENABLED ?? '').trim() !== '0';
@@ -41,13 +57,15 @@ export function chatRetroGloballyEnabled(env: Record<string, string | undefined>
 
 export type ChatRetroPatchResult =
   | { ok: true; next: ChatRetroSettings; deleteLessons: boolean }
-  | { ok: false; error: string };
+  | { ok: false; error: string; locked?: true };
 
 /**
  * Apply a PATCH body `{ lessons?, proposals? }` to the current settings.
- * Unknown keys are rejected so a typo cannot read as "saved".
+ * Unknown keys are rejected so a typo cannot read as "saved". With `dogfood`
+ * (the team has a dogfood owner) anything that would turn a switch off is
+ * refused with `locked`.
  */
-export function applyChatRetroPatch(current: ChatRetroSettings, body: unknown): ChatRetroPatchResult {
+export function applyChatRetroPatch(current: ChatRetroSettings, body: unknown, opts: { dogfood?: boolean } = {}): ChatRetroPatchResult {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: 'Body must be an object: { lessons?: boolean, proposals?: boolean }' };
   }
@@ -65,6 +83,11 @@ export function applyChatRetroPatch(current: ChatRetroSettings, body: unknown): 
   if (!lessons) {
     if (b.proposals === true) return { ok: false, error: 'proposals require lessons: turn lessons on too' };
     proposals = false;
+  }
+  if (opts.dogfood) {
+    // Refused, not silently overridden: the effective policy stays on.
+    if (!lessons || !proposals) return { ok: false, error: CHAT_RETRO_DOGFOOD_LOCKED, locked: true };
+    return { ok: true, next: { ...CHAT_RETRO_DOGFOOD }, deleteLessons: false };
   }
   return { ok: true, next: { lessons, proposals }, deleteLessons: !lessons };
 }

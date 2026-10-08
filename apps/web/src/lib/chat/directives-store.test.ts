@@ -165,9 +165,17 @@ describe('directives store: the per-person cap holds under concurrent saves', ()
     const { join } = await import('node:path');
     const { MAX_DIRECTIVES_PER_USER } = await import('@buildd/core/chat-directives');
     const dir = join(import.meta.dir, '../../../../../packages/core/drizzle');
-    const file = readdirSync(dir).find(f => f.endsWith('_chat_directives_per_user_cap.sql'));
+    // Newest migration defining the trigger: since the squash that is the
+    // pg_dump baseline, which schema-qualifies names (`public.chat_directives`).
+    const file = readdirSync(dir)
+      .filter(f => f.endsWith('.sql'))
+      .sort()
+      .reverse()
+      .find(f => readFileSync(join(dir, f), 'utf8').includes('chat_directives_enforce_cap'));
     expect(file).toBeDefined();
-    const text = norm(readFileSync(join(dir, file!), 'utf8').replace(/--[^\n]*/g, '')).toLowerCase();
+    const text = norm(readFileSync(join(dir, file!), 'utf8').replace(/--[^\n]*/g, ''))
+      .toLowerCase()
+      .replace(/\bpublic\./g, '');
     expect(text).toContain('before insert on chat_directives');
     expect(text).toContain('for each row');
     expect(text).toMatch(/pg_advisory_xact_lock\([^;]*new\.user_id/);

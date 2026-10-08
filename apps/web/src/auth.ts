@@ -3,11 +3,13 @@ import Google from 'next-auth/providers/google';
 import GitHub from 'next-auth/providers/github';
 import Credentials from 'next-auth/providers/credentials';
 import { db } from '@buildd/core/db';
-import { users, accounts, workspaces, teams, teamMembers, teamInvitations } from '@buildd/core/db/schema';
+import { users, accounts, accountWorkspaces, workspaces, teams, teamMembers, teamInvitations } from '@buildd/core/db/schema';
+import { planPersonalWorkspaceLinks } from '@/lib/personal-workspace-links-plan';
 import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
-import { seedDefaultRolesForTeam } from '@/lib/default-roles';
+import { emit } from '@/lib/core-emit';
+import { checkSeatForNewMember } from '@/lib/billing/seats';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 
@@ -158,13 +160,11 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           role: 'owner',
         });
 
-        // Seed default roles for the new team (fire-and-forget)
-        seedDefaultRolesForTeam(team.id).catch(err =>
-          console.error('Failed to seed default roles for new team:', err)
-        );
+        // The roles module seeds the default roles (fire-and-forget).
+        await emit({ type: 'team.created', teamId: team.id });
 
         const plaintextKey = generateApiKey();
-        await db.insert(accounts).values({
+        const [account] = await db.insert(accounts).values({
           name: `${user.name || user.email}'s Account`,
           type: 'user',
           authType: 'oauth',
@@ -172,12 +172,27 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
           maxConcurrentWorkers: 10,
           teamId: team.id,
-        });
+        }).returning({ id: accounts.id, type: accounts.type, teamId: accounts.teamId });
 
-        await db.insert(workspaces).values({
+        const [workspace] = await db.insert(workspaces).values({
           name: 'My Workspace',
           teamId: team.id,
-        });
+        }).returning({ id: workspaces.id, teamId: workspaces.teamId, accessMode: workspaces.accessMode });
+
+        // "My Workspace" is restricted (the schema default), which admits an
+        // account only through a link — so link the user's own account, or
+        // their first task waits for a runner that can never claim it.
+        if (account && workspace) {
+          const links = planPersonalWorkspaceLinks({
+            userId: newUser.id,
+            // The user was just made this team's owner, above.
+            canManageTeamKeys: true,
+            team,
+            account: { ...account, workspaceIds: null },
+            teamWorkspaces: [workspace],
+          });
+          if (links.length > 0) await db.insert(accountWorkspaces).values(links).onConflictDoNothing();
+        }
 
         // Auto-accept any pending invitations for this email
         const pendingInvites = await db.query.teamInvitations.findMany({
@@ -189,6 +204,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
         for (const invite of pendingInvites) {
           if (new Date(invite.expiresAt) > new Date()) {
+            // Seat limit (no-op while BILLING_ENFORCED is off): a full team's
+            // invitation stays pending rather than joining past its seats.
+            if (!(await checkSeatForNewMember(invite.teamId, { countPending: false })).ok) continue;
             await db.insert(teamMembers).values({
               teamId: invite.teamId,
               userId: newUser.id,

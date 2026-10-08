@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import { buildDelegateOptions } from '@/lib/delegate-options';
+import { DEFAULT_ROLES, seedDefaultRolesForTeam } from '@/lib/default-roles';
 import { TeamRoleEditor } from './TeamRoleEditor';
 
 export const dynamic = 'force-dynamic';
@@ -27,13 +28,30 @@ export default async function TeamRoleSettingsPage({
   if (teamIds.length === 0) notFound();
 
   // Find the team-level role by slug
-  const teamRole = await db.query.workspaceSkills.findFirst({
+  const findTeamRole = () => db.query.workspaceSkills.findFirst({
     where: and(
       eq(workspaceSkills.slug, slug),
       isNull(workspaceSkills.workspaceId),
       inArray(workspaceSkills.teamId, teamIds),
     ),
   });
+  let teamRole = await findTeamRole();
+
+  // A default role slug added after a team was created (e.g. Operator,
+  // PR #3622) never reaches that team's rows on its own — seeding only runs
+  // at team creation. seedDefaultRolesForTeam is onConflictDoNothing per
+  // (teamId, slug), so calling it here is safe and brings every one of the
+  // user's teams up to date lazily, instead of 404ing a role that exists in
+  // code but was never inserted for this team.
+  if (!teamRole && teamIds.length > 0 && DEFAULT_ROLES.some(r => r.slug === slug)) {
+    try {
+      await Promise.all(teamIds.map(teamId => seedDefaultRolesForTeam(teamId)));
+      teamRole = await findTeamRole();
+    } catch {
+      // Read-only database (e.g. visual-QA's DISABLE_WRITES clone): fall
+      // through to the existing not-found handling below.
+    }
+  }
 
   if (!teamRole) {
     // Fall back: check if there's a workspace-scoped role (legacy)

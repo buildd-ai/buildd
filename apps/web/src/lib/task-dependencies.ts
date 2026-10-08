@@ -12,6 +12,7 @@ import { enqueueReadyDependents } from '@buildd/core/dispatch-dependents';
 import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
 import { isBookkeeping } from '@buildd/core/mission-helpers';
+import type { PathDeclaration } from '@buildd/shared';
 
 /**
  * Result of interpreting `structuredOutput.plan`. Organizer heartbeats
@@ -696,6 +697,17 @@ export async function checkDependsOnResolved(
 /**
  * Cascade failure to tasks that depend on the failed task.
  * Auto-fails dependent tasks and recursively resolves them (triggering further cascades).
+ *
+ * Exception: an edge minted by the path-overlap auto-dependsOn pass (POST
+ * /api/tasks — recorded on the dependent's `pathDeclaration.inferredDependsOn`,
+ * never in the caller's own `dependsOn`) is a serialization mutex, not a real
+ * dependency — it means "don't run these two at once because their declared
+ * paths overlapped", not "this task needs that task's output". The failed
+ * task produced nothing the dependent could be missing, so the paths it was
+ * contending for are no longer contended: release the edge instead of
+ * cascading a failure the dependent never earned (it may never even have
+ * started). A caller-declared edge to the same failed task still cascades
+ * normally.
  */
 async function cascadeDependencyFailure(
   failedTaskId: string
@@ -707,6 +719,8 @@ async function cascadeDependencyFailure(
       title: tasks.title,
       workspaceId: tasks.workspaceId,
       status: tasks.status,
+      dependsOn: tasks.dependsOn,
+      pathDeclaration: tasks.pathDeclaration,
     })
     .from(tasks)
     .where(
@@ -727,6 +741,41 @@ async function cascadeDependencyFailure(
   const failedTitle = failedTask?.title || failedTaskId;
 
   for (const task of dependentTasks) {
+    const pathDeclaration = task.pathDeclaration as PathDeclaration | null;
+    const isPathOverlapOnly = pathDeclaration?.inferredDependsOn?.includes(failedTaskId) ?? false;
+
+    if (isPathOverlapOnly && pathDeclaration) {
+      const remainingDependsOn = ((task.dependsOn as string[] | null) ?? []).filter(
+        (id) => id !== failedTaskId
+      );
+      const remainingInferred = (pathDeclaration.inferredDependsOn ?? []).filter(
+        (id) => id !== failedTaskId
+      );
+      await db
+        .update(tasks)
+        .set({
+          dependsOn: remainingDependsOn,
+          pathDeclaration: { ...pathDeclaration, inferredDependsOn: remainingInferred },
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, task.id));
+
+      if (remainingDependsOn.length === 0) {
+        // No deps left at all — fully clear now, the same signal
+        // checkDependsOnResolved fires for a genuinely completed dependency.
+        await triggerEvent(
+          channels.workspace(task.workspaceId),
+          events.TASK_UNBLOCKED,
+          { taskId: task.id, resolvedDependency: failedTaskId }
+        );
+      }
+      // Harmless even if other declared deps still block it — the claim
+      // route's own gate decides; this just lets it be reconsidered sooner
+      // than the reconciliation sweep would.
+      await wakeTask(task.id, 'dependency.satisfied');
+      continue;
+    }
+
     // Auto-fail the dependent task
     await db
       .update(tasks)

@@ -6,27 +6,26 @@
  * Three pieces, each built so the hottest path in the system cannot slow
  * down or change behaviour by default:
  *
- *  1. `ClaimHoldCollector`: called synchronously at the two advisory
+ *  1. `ClaimHoldCollector`: called synchronously at the three advisory
  *     deferrals in the dispatch loop (scope-undeclared serialization, layer 1
- *     open-PR overlap). It runs the deterministic rails and remembers eligible
- *     deferrals. No I/O, and the loop still `continue`s exactly as before.
+ *     open-PR overlap, soft same-file or prefix overlap). It runs the deterministic
+ *     rails and remembers eligible deferrals. No I/O, and the loop still
+ *     `continue`s exactly as before.
  *  2. `scheduleClaimHoldShadow`: registers the decisions with `after()`, so
  *     they run once the response is sent. Never awaited by the route; a model
  *     call can never hold a claim response.
  *  3. `gatedStartApplies` / `acquireGatedStartPaths`: the gated START path.
- *     Wired, but `isGatedStartReachable()` is false as shipped (shadow
- *     definition, zero applying fraction), so the route never reaches the
- *     ledger lookup. When reached, START relaxes only the named advisory gate;
+ *     Live (gated definition, full applying fraction): an applied Jev START
+ *     recorded for the same claim-time state lets the NEXT claim past the one
+ *     named advisory gate. START relaxes only that gate;
  *     declared paths are still acquired through the exclusive primitive
  *     before the claim, and every later gate still runs. A START that then
  *     loses the atomic claim gives back the leases it took
  *     (`releaseGatedStartPaths`).
  *
- * The applying fraction is never read raw: it goes through the promotion
- * guard (`resolveApplyingFraction`, packages/core/orchestration-promotion.ts),
- * which returns zero unless a readout found the exact measured definition
- * `eligible_for_gated` for the gate's candidate policy. No such evidence is
- * recorded, so a requested fraction alone cannot open the cohort.
+ * The applying fraction is the committed `CLAIM_HOLD_APPLYING_FRACTION` (no
+ * shadow-promotion gate, by owner decision, task 7eb191b9). Setting it to 0
+ * is the single rollback switch back to deterministic HOLD.
  */
 import { after } from 'next/server';
 import { TASK_STATUSES, isTerminalTaskStatus } from '@buildd/shared';
@@ -44,6 +43,7 @@ import {
   classifyClaimHoldEligibility,
   isGatedStartReachable,
   type ClaimHoldCandidate,
+  type ClaimHoldEvidence,
   type ClaimHoldHolder,
   type ClaimHoldHolderState,
   type ClaimHoldRail,
@@ -52,27 +52,27 @@ import {
   runOrchestrationDecision,
   type OrchestrationDecisionDeps,
 } from '@buildd/core/orchestration-decision';
-import { resolveApplyingFraction, type PromotionEvidence } from '@buildd/core/orchestration-promotion';
-import { intersectPaths, pathsOverlap, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { intersectPaths, pathsOverlap, REPO_WIDE_SENTINEL, type ManifestOverlapKind } from '@buildd/core/path-overlap';
 import type { AcquireInput, AcquireResult, LeaseRowsRelease, ReleaseResult } from '@buildd/core/path-claim';
 import type { PathReleaseReason } from '@/lib/path-claim-release';
 import type { ClaimDecisionKey } from '@buildd/core/orchestration-claim-source';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { resolveSerializedSurfaces } from '@/lib/surface-ordering-config';
+import { overlapIsHard, resolveHardOverlapSurfaces } from '@/lib/hard-overlap-surfaces';
 
 type ClaimHoldDecision = Decision<typeof CLAIM_HOLD_QUESTIONS>;
 
 export interface ClaimHoldDeps {
   /** Override the definition (tests; Step I's readout of a candidate policy). */
   decision?: ClaimHoldDecision;
-  /** The REQUESTED fraction. The promotion guard decides what is granted. */
+  /** Override the applying fraction (tests; 0 = rolled back). Default `CLAIM_HOLD_APPLYING_FRACTION`. */
   applyingFraction?: number;
-  /** Default: the committed `ORCHESTRATION_PROMOTIONS` (empty). */
-  promotions?: readonly PromotionEvidence[];
   decide?: typeof runOrchestrationDecision;
   decisionDeps?: OrchestrationDecisionDeps;
   hasRecent?: (k: ClaimDecisionKey) => Promise<boolean>;
   loadHolder?: (opts: { workspaceId: string; taskId: string | null; prNumber: number | null }) => Promise<ClaimHoldHolderState | null>;
+  /** Same-file evidence for a soft overlap (conflict history, predicted size). Throws → HOLD. Default `loadSoftOverlapEvidence`. */
+  loadEvidence?: (opts: { workspaceId: string; taskId: string; paths: string[] }) => Promise<ClaimHoldEvidence>;
   findAppliedStart?: (k: ClaimDecisionKey) => Promise<boolean>;
   acquire?: (input: AcquireInput) => Promise<AcquireResult>;
   /** Give back exactly the rows one acquisition inserted. Default `releaseLeaseRows`. */
@@ -112,12 +112,43 @@ export interface OpenPrHolderEntry {
   prLifecycle?: string | null;
 }
 
+/** An in-flight task whose declared scope overlaps the candidate's only softly. */
+export interface SoftOverlapHolderEntry {
+  taskId: string;
+  /** The overlapping paths (both sides), as classified at claim time. */
+  overlapPaths: string[];
+  /** Same file on both sides, or only a directory. Default `prefix`. */
+  overlapKind?: 'same_file' | 'prefix';
+  /** The holder's newest worker status, or null when it has not started. */
+  workerStatus: string | null;
+}
+
 export interface ClaimHoldNote {
   candidate: ClaimHoldCandidate;
   digest: string;
 }
 
 // ── 1. Collector (synchronous, no I/O) ───────────────────────────────────────
+
+/**
+ * Do these paths touch a workspace hard surface (serialized namespace,
+ * generated file, explicit hotspot)? Fails closed (true) on a malformed
+ * config. Shared with the claim route's soft-overlap gate so the route reaches
+ * the surface config through this one edge.
+ */
+export function touchesHardOverlapSurface(paths: string[], kind: ManifestOverlapKind, gitConfig: WorkspaceGitConfig | null | undefined): boolean {
+  return overlapIsHard(paths, kind, gitConfig, resolveSerializedSurfaces);
+}
+
+/** Does `concrete` overlap a live exclusive lease held by a task other than `selfId`? */
+function overlapsOtherLease(selfId: string, concrete: string[], activeLeases: Map<string, string[]> | undefined): boolean {
+  for (const [holderTaskId, held] of activeLeases ?? []) {
+    if (holderTaskId === selfId) continue;
+    const heldConcrete = held.filter(p => p !== REPO_WIDE_SENTINEL);
+    if (heldConcrete.length > 0 && pathsOverlap(concrete, heldConcrete)) return true;
+  }
+  return false;
+}
 
 export class ClaimHoldCollector {
   readonly candidates: ClaimHoldNote[] = [];
@@ -167,6 +198,45 @@ export class ClaimHoldCollector {
   }
 
   /**
+   * The soft-overlap gate deferred this task: its declared scope shares a file
+   * or a directory with an in-flight task's. The candidate must not overlap a
+   * live lease held by another task, a hard surface (serialized, generated,
+   * hotspot: reported on the `serialized_surface` rail) or a migration path.
+   */
+  noteSoftOverlap(
+    ctx: ClaimHoldTaskContext,
+    manifest: string[],
+    holder: SoftOverlapHolderEntry,
+    activeLeases: Map<string, string[]> | undefined,
+  ): ClaimHoldNote | null {
+    try {
+      const concrete = manifest.filter(p => p !== REPO_WIDE_SENTINEL);
+      const overlapsLiveLease = overlapsOtherLease(ctx.taskId, concrete, activeLeases);
+      // Generated files and hotspots are hard only for a same-file overlap (overlapIsHard).
+      const surfacePaths = [...concrete, ...holder.overlapPaths];
+      const serializedSurfaces = holder.overlapKind === 'same_file'
+        ? resolveHardOverlapSurfaces(surfacePaths, ctx.gitConfig, resolveSerializedSurfaces)
+        : resolveSerializedSurfaces(surfacePaths, ctx.gitConfig);
+      const h: ClaimHoldHolder = { taskId: holder.taskId, prNumber: null, workerStatus: holder.workerStatus, prLifecycle: null };
+      const verdict = classifyClaimHoldEligibility({
+        gate: 'soft_overlap',
+        forced: ctx.forced,
+        leaseReadFailed: ctx.leaseReadFailed,
+        concretePaths: concrete,
+        overlapPaths: holder.overlapPaths,
+        overlapsLiveLease,
+        serializedSurfaces,
+        holder: h,
+      });
+      if (!verdict.eligible) return this.skip(verdict.rail);
+      return this.keep({ ...this.candidate(ctx, 'soft_overlap', 'declared', concrete, [...holder.overlapPaths], h), overlapKind: holder.overlapKind ?? 'prefix' });
+    } catch (err) {
+      console.warn('[claim] hold/start note failed (skipped):', (err as Error)?.message ?? err);
+      return this.skip('error');
+    }
+  }
+
+  /**
    * Layer 1 deferred this task: its manifest overlaps open PRs. Every
    * overlapping PR must clear the rails, not just the first one reported, and
    * the candidate must not overlap any live lease held by another task.
@@ -195,12 +265,7 @@ export class ClaimHoldCollector {
     const blockers = openPrs.filter(p => p.pathManifest?.length && intersectPaths(concrete, p.pathManifest).length > 0);
     if (blockers.length === 0) return this.skip('no_overlap_data');
 
-    let overlapsLiveLease = false;
-    for (const [holderTaskId, held] of activeLeases ?? []) {
-      if (holderTaskId === ctx.taskId) continue;
-      const heldConcrete = held.filter(p => p !== REPO_WIDE_SENTINEL);
-      if (heldConcrete.length > 0 && pathsOverlap(concrete, heldConcrete)) { overlapsLiveLease = true; break; }
-    }
+    const overlapsLiveLease = overlapsOtherLease(ctx.taskId, concrete, activeLeases);
     const overlap = [...new Set(blockers.flatMap(b => intersectPaths(concrete, b.pathManifest ?? [])))];
     const serializedSurfaces = resolveSerializedSurfaces([...concrete, ...overlap], ctx.gitConfig);
 
@@ -292,6 +357,8 @@ const defaultResolveAccess: NonNullable<OrchestrationDecisionDeps['resolveAccess
 const defaultHasRecent = async (k: ClaimDecisionKey) => (await import('@buildd/core/orchestration-claim-source')).hasRecentClaimDecision(k);
 const defaultLoadHolder: NonNullable<ClaimHoldDeps['loadHolder']> = async (opts) =>
   (await import('@buildd/core/orchestration-claim-source')).loadClaimHolderState(opts);
+const defaultLoadEvidence: NonNullable<ClaimHoldDeps['loadEvidence']> = async (opts) =>
+  (await import('@buildd/core/orchestration-claim-source')).loadSoftOverlapEvidence(opts);
 const defaultFindAppliedStart = async (k: ClaimDecisionKey) => (await import('@buildd/core/orchestration-claim-source')).findAppliedStart(k);
 const defaultAcquire = async (input: AcquireInput) => (await import('@buildd/core/path-claim')).acquirePathClaims(input);
 
@@ -339,9 +406,16 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
         },
         ruleVerdict: 'HOLD',
         candidatePolicy: { version: claimHoldCandidatePolicyVersion(c.gate), digest: note.digest, count: CLAIM_HOLD_LABELS.length },
-        buildState: async () => buildClaimHoldState(c, await (deps.loadHolder ?? defaultLoadHolder)({
-          workspaceId: c.workspaceId, taskId: c.holder.taskId, prNumber: c.holder.prNumber,
-        })),
+        // A failed evidence read throws here, and the adapter falls back to HOLD.
+        buildState: async () => {
+          const [holder, evidence] = await Promise.all([
+            (deps.loadHolder ?? defaultLoadHolder)({ workspaceId: c.workspaceId, taskId: c.holder.taskId, prNumber: c.holder.prNumber }),
+            c.gate === 'soft_overlap'
+              ? (deps.loadEvidence ?? defaultLoadEvidence)({ workspaceId: c.workspaceId, taskId: c.taskId, paths: c.overlapPaths })
+              : Promise.resolve(null),
+          ]);
+          return buildClaimHoldState(c, holder, evidence);
+        },
         isValidAnswer: (v) => v === 'HOLD' || v === 'START',
         cohort: { fraction: grantedFraction(deps, c.gate), unitId: c.taskId },
         // The access just resolved is reused, so the adapter does not read the team again.
@@ -380,26 +454,20 @@ export function scheduleClaimHoldShadow(collector: ClaimHoldCollector, deps: Cla
   }
 }
 
-// ── 3. Gated START (unreachable as shipped) ──────────────────────────────────
+// ── 3. Gated START ───────────────────────────────────────────────────────────
 
-const GATES: readonly ClaimHoldCandidate['gate'][] = ['advisory_manifest', 'open_pr_overlap'];
+const GATES: readonly ClaimHoldCandidate['gate'][] = ['advisory_manifest', 'open_pr_overlap', 'soft_overlap'];
 
-/** The applying fraction the promotion guard grants for one gate's candidate policy. */
-export function grantedFraction(deps: ClaimHoldDeps, gate: ClaimHoldCandidate['gate']): number {
-  try {
-    return resolveApplyingFraction({
-      decision: deps.decision ?? CLAIM_HOLD_DECISION,
-      question: 'action',
-      candidatePolicyVersion: claimHoldCandidatePolicyVersion(gate),
-      requestedFraction: deps.applyingFraction ?? CLAIM_HOLD_APPLYING_FRACTION,
-      promotions: deps.promotions,
-    }).fraction;
-  } catch {
-    return 0;
-  }
+/**
+ * The applying fraction for a gate: the committed switch, clamped to [0, 1].
+ * Zero (or anything unusable) means rolled back: deterministic HOLD.
+ */
+export function grantedFraction(deps: ClaimHoldDeps, _gate: ClaimHoldCandidate['gate']): number {
+  const f = deps.applyingFraction ?? CLAIM_HOLD_APPLYING_FRACTION;
+  return typeof f === 'number' && Number.isFinite(f) && f > 0 ? Math.min(1, f) : 0;
 }
 
-/** Is the gated START path live at all? Cheap, synchronous, false as shipped. */
+/** Is the gated START path live at all? Cheap, synchronous; false once rolled back. */
 export function gatedStartReachable(deps: ClaimHoldDeps = {}): boolean {
   const decision = deps.decision ?? CLAIM_HOLD_DECISION;
   return GATES.some(g => isGatedStartReachable(decision, grantedFraction(deps, g)));

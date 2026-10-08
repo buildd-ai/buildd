@@ -99,6 +99,17 @@ describe('Landed strip', () => {
     expect(drawer().querySelector('[data-testid="task-action-zone"]')?.getAttribute('data-actions')).toBe('claim_hint run_now');
   });
 
+  it('the drawer is one column: the title takes the full width and the actions sit below it', async () => {
+    await mount(missionTaskStripFixture('mid-open'));
+    // A side column for the actions squeezed the title to a word or two per
+    // line in the band's half-width Landed cell (and an `auto` track once
+    // starved it to nothing), so there is no column split at any width.
+    expect(drawer().className).not.toMatch(/grid-cols/);
+    const title = drawer().querySelector('[aria-live="polite"]')!;
+    const open = drawer().querySelector('[data-testid="landed-strip-drawer-open"]')!;
+    expect(title.compareDocumentPosition(open) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('selects the last task when everything landed', async () => {
     await mount(missionTaskStripFixture('all-landed'));
     expect(pressed()).toBe(9);
@@ -154,16 +165,68 @@ describe('Landed strip', () => {
     expect(drawer().querySelector('[data-testid="landed-strip-drawer-reason"]')?.textContent).toBe('The accessor said this.');
   });
 
-  it('the situation affordance selects its cell and focuses the drawer; no second CTA', async () => {
+  it('the situation affordance selects its cell and focuses the drawer; no second CTA, and never says "Open" for a scroll', async () => {
     const f = missionTaskStripFixture('states');
     await mount(f, null, <SituationTaskAffordance label="Open the failed task" href="/x" taskId={stripFixtureId(4)} />);
     expect(container.querySelector('[data-testid="mission-primary-action"]')).toBeNull();
     const pointer = container.querySelector<HTMLElement>('[data-testid="mission-primary-action-strip"]')!;
     // Dependency order: the blocked task sits right after the queued task it waits on.
-    expect(pointer.textContent).toContain('Open the failed task · 03');
+    // The control only scrolls and focuses — it never navigates — so it is
+    // never labelled "Open", which promises the reader they will land somewhere.
+    expect(pointer.textContent).toContain('Jump to the failed task · 03');
+    expect(pointer.textContent).not.toContain('Open');
     await click(pointer);
     expect(drawer().dataset.taskRef).toBe(stripFixtureId(4));
     expect(document.activeElement).toBe(drawer());
+  });
+
+  it('TONE-1: a failed cell\'s tick digit, outline and the header count all agree — none of them read "open"', async () => {
+    const f = missionTaskStripFixture('states');
+    await mount(f);
+    // Strip order: 01 landed, 02 ready (queued on a runner), 03 blocked (waits
+    // on 02), 04 failed — the fixture's own doc comment.
+    const failedCell = cells()[3];
+    expect(failedCell.dataset.status).toBe('failed');
+    expect(failedCell.className).toContain('border-status-error');
+    expect(failedCell.className).not.toContain('border-accent');
+
+    const failedTick = ticks()[3];
+    expect(failedTick.dataset.tone).toBe('error');
+    expect(failedTick.className).toContain('text-status-error');
+    expect(failedTick.className).not.toContain('text-accent-text');
+
+    // The genuinely-open cell (ready, index 1) reads neutral, never error.
+    const openTick = ticks()[1];
+    expect(openTick.dataset.tone).toBe('open');
+    expect(openTick.className).toContain('text-text-secondary');
+    expect(openTick.className).not.toContain('text-status-error');
+
+    // 02 is open, 03 is held (blocked on 02), 04 is failed: the header must
+    // name the failed one apart from "open" instead of folding it in.
+    const jump = container.querySelector<HTMLElement>('[data-testid="landed-strip-open-jump"]')!;
+    expect(jump.textContent).toBe('1 open · 1 failed · 1 held ›');
+  });
+
+  it('selecting a held task keeps its held state (gray, never mustard) while raw status stays blocked', async () => {
+    const spec = {
+      tasks: ['01', '02', '03', '04', '05', '06', '07', '08'],
+      edges: { '06': ['05'], '07': ['06'], '08': ['07'] },
+      states: { '01': 'landed', '02': 'failed', '03': 'failed', '04': 'failed' } as const,
+    };
+    const model = dagBoard(spec);
+    await mount({ model, executor: 'runner' });
+    const cell = cells().find(c => c.dataset.taskRef === dagId(spec, '08'))!;
+    await click(cell);
+    expect(cell.getAttribute('aria-pressed')).toBe('true');
+    expect(cell.className).toContain('outline-text-primary'); // selection ring only
+    expect(cell.className).toContain('fleet-hatch'); // fill still the held texture
+    expect(cell.className).not.toContain('border-accent');
+    expect(cell.className).not.toContain('border-status-error');
+    const d = drawer();
+    expect(d.className).toContain('border-[var(--fleet-border-mid)]');
+    expect(d.className).not.toContain('border-accent');
+    expect(model.tasks[dagId(spec, '08')].status).toBe('blocked');
+    expect(container.querySelector('[data-testid="landed-strip-open-jump"]')!.textContent).toBe('1 open · 3 failed · 3 held ›');
   });
 
   it('AC-7: ready, blocked and queued cells carry three different fills', async () => {

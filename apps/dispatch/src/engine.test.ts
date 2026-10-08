@@ -18,7 +18,10 @@ import { SCOPE_KEY, T0, envelope, harness, sqliteStore } from './test-support';
 
 const WEBHOOK = 'buildd:ws:ws-test:webhook';
 const WAKE = 'buildd:ws:ws-test:runner-wake';
-const GHA = 'buildd:ws:ws-test:github-actions';
+// A generic side delivery (`also`): an http-typed target. No producer routes one today.
+const SIDE = 'buildd:ws:ws-test:http';
+// The target type GitHub Actions used, before it was removed. Old queued intents may still name it.
+const OLD_GHA = 'buildd:ws:ws-test:github-actions';
 const iso = (ms: number) => new Date(ms).toISOString();
 
 describe('publish', () => {
@@ -150,20 +153,32 @@ describe('alarm loop', () => {
 
   test('also steps fire on the first attempt only', async () => {
     const h = harness();
-    h.producer.resolveAnswer = { decision: 'deliver', payload: { p: 1 }, grant: { url: 'https://gh.example/repos/o/r/dispatches', headers: { Authorization: 'Bearer x' } } };
+    h.producer.resolveAnswer = { decision: 'deliver', payload: { p: 1 }, grant: { url: 'https://side.example/x', headers: { Authorization: 'Bearer x' } } };
     h.producer.relayAnswer = new Error('relay_http_503');
-    const e = envelope({ target: { steps: [{ target: WAKE, mode: 'first' }, { target: GHA, mode: 'also' }] } });
+    const e = envelope({ target: { steps: [{ target: WAKE, mode: 'first' }, { target: SIDE, mode: 'also' }] } });
     await h.engine.publish(SCOPE_KEY, [e]);
 
     await h.runToAlarm();
     expect(h.outbound.calls).toHaveLength(1);
-    expect(h.producer.resolveCalls).toEqual([{ id: e.id, attempt: 1, target: GHA }]);
+    expect(h.producer.resolveCalls).toEqual([{ id: e.id, attempt: 1, target: SIDE }]);
 
     h.producer.relayAnswer = { outcome: 'delivered', via: 'pusher' };
     await h.runNextDue();
     expect(h.producer.relayCalls.map(c => c.attempt)).toEqual([1, 2]);
     expect(h.outbound.calls).toHaveLength(1);
     expect(h.intent(e.id)?.state).toBe('delivered');
+  });
+
+  test('an old intent with a github-actions step: that step declines unknown_target without a resolve, the wake still delivers', async () => {
+    const h = harness();
+    const e = envelope({ target: { steps: [{ target: OLD_GHA, mode: 'first', resolve: true }, { target: WAKE, mode: 'first' }, { target: OLD_GHA, mode: 'also', resolve: true }] } });
+    await h.engine.publish(SCOPE_KEY, [e]);
+    await h.runToAlarm();
+    expect(h.producer.resolveCalls).toEqual([]);
+    expect(h.outbound.calls).toHaveLength(0);
+    expect(h.producer.relayCalls.map(c => c.target)).toEqual([WAKE]);
+    expect(h.intent(e.id)?.state).toBe('delivered');
+    expect(h.engine.detail(e.id)?.targets.find(t => t.target === OLD_GHA)).toMatchObject({ lastDetail: 'unknown_target' });
   });
 
   test('a throw retries on retryDelayMs, then fails after MAX_DELIVERY_ATTEMPTS', async () => {
@@ -465,12 +480,12 @@ describe('grants and dry-run', () => {
   });
 
   test('dry-run types resolve and record the decision without an outbound POST', async () => {
-    const h = harness({ dryRun: ['http', 'github-repository-dispatch'] });
+    const h = harness({ dryRun: ['http'] });
     h.producer.resolveAnswer = { decision: 'deliver', payload: {}, grant: { url: 'https://hook.example/x', headers: {} } };
-    const e = envelope({ target: { steps: [{ target: WEBHOOK, mode: 'first' }, { target: GHA, mode: 'also' }] } });
+    const e = envelope({ target: { steps: [{ target: WEBHOOK, mode: 'first' }, { target: SIDE, mode: 'also' }] } });
     await h.engine.publish(SCOPE_KEY, [e]);
     await h.runToAlarm();
-    expect(h.producer.resolveCalls.map(c => c.target)).toEqual([WEBHOOK, GHA]);
+    expect(h.producer.resolveCalls.map(c => c.target)).toEqual([WEBHOOK, SIDE]);
     expect(h.outbound.calls).toHaveLength(0);
     expect(h.pendingReceipts()).toEqual([{ id: e.id, attempt: 1, event: 'delivered', via: 'dry-run:http:deliver', at: iso(T0) }]);
   });
@@ -505,8 +520,8 @@ describe('inspection', () => {
 
   test('a delivered intent reports the first step that delivered, not an also step', async () => {
     const h = harness();
-    h.producer.resolveAnswer = { decision: 'deliver', payload: {}, grant: { url: 'https://gh.example/repos/o/r/dispatches', headers: {} } };
-    const e = envelope({ target: { steps: [{ target: WAKE, mode: 'first' }, { target: GHA, mode: 'also' }] } });
+    h.producer.resolveAnswer = { decision: 'deliver', payload: {}, grant: { url: 'https://side.example/x', headers: {} } };
+    const e = envelope({ target: { steps: [{ target: WAKE, mode: 'first' }, { target: SIDE, mode: 'also' }] } });
     await h.engine.publish(SCOPE_KEY, [e]);
     h.clock.advance(5_000);
     await h.runToAlarm();
@@ -522,11 +537,11 @@ describe('inspection', () => {
     await h.engine.publish(SCOPE_KEY, [skip]);
     await h.runToAlarm();
 
-    h.producer.resolveAnswer = (req) => (req.target === GHA
-      ? { decision: 'deliver', payload: {}, grant: { url: 'https://gh.example/repos/o/r/dispatches', headers: {} } }
+    h.producer.resolveAnswer = (req) => (req.target === SIDE
+      ? { decision: 'deliver', payload: {}, grant: { url: 'https://side.example/x', headers: {} } }
       : { decision: 'decline', why: 'no_webhook' });
     h.producer.relayAnswer = { outcome: 'declined', why: 'no_runner' };
-    const none = envelope({ target: { steps: [{ target: WEBHOOK, mode: 'first', resolve: true }, { target: WAKE, mode: 'first' }, { target: GHA, mode: 'also' }] } });
+    const none = envelope({ target: { steps: [{ target: WEBHOOK, mode: 'first', resolve: true }, { target: WAKE, mode: 'first' }, { target: SIDE, mode: 'also' }] } });
     await h.engine.publish(SCOPE_KEY, [none]);
     await h.runNextDue();
 

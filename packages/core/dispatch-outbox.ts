@@ -26,6 +26,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { db } from './db';
 import { MAX_DELIVERY_ATTEMPTS, retryDelayMs } from '@buildd/dispatch-contract';
+import type { DispatchTeamHealth } from './dispatch-health-report';
 
 /**
  * What kind of delivery an intent is. Buildd's policy decides what should
@@ -70,6 +71,9 @@ export const DISPATCH_CAUSES = [
   'task.unblocked',
   'credential.restored',
   'mission.released',
+  // A worker going terminal freed a concurrency slot the claim route denied
+  // this task for; see apps/web/src/lib/capacity-freed-wake.ts.
+  'capacity.freed',
   // A non-work intent Buildd's policy raised (human_action, notification, …).
   'policy.requested',
 ] as const;
@@ -97,6 +101,7 @@ const CAUSE_PRECEDENCE: DispatchCause[] = [
   'budget.available',
   'credential.restored',
   'mission.released',
+  'capacity.freed',
   'task.unblocked',
   'start_at.reached',
   'task.requeued',
@@ -422,7 +427,17 @@ export interface DispatchOutboxHealth {
   unacked: number;
   /** Handed off, due over an hour ago, and still no terminal receipt. */
   orphaned: number;
+  /**
+   * Unacked rows that outlived the in-app fallback: created and due over
+   * UNACKED_STALE_MINUTES ago, never acked, never taken back. The drain takes
+   * an unacked row once it is due and past PUBLISH_GRACE_MS, so one still
+   * here after the floor's drain means the fallback did not happen.
+   */
+  unackedStale: number;
 }
+
+/** See DispatchOutboxHealth.unackedStale. Well past PUBLISH_GRACE_MS plus one drain. */
+export const UNACKED_STALE_MINUTES = 5;
 
 /** Everything a reconciler needs to see: due-but-undelivered, stuck, failed, unacked and orphaned rows. */
 export async function dispatchOutboxHealth(): Promise<DispatchOutboxHealth> {
@@ -430,7 +445,7 @@ export async function dispatchOutboxHealth(): Promise<DispatchOutboxHealth> {
   const r = rowsOf(result)[0] ?? {};
   return {
     overdue: Number(r.overdue ?? 0), stuck: Number(r.stuck ?? 0), failed: Number(r.failed ?? 0),
-    unacked: Number(r.unacked ?? 0), orphaned: Number(r.orphaned ?? 0),
+    unacked: Number(r.unacked ?? 0), orphaned: Number(r.orphaned ?? 0), unackedStale: Number(r.unacked_stale ?? 0),
   };
 }
 
@@ -443,8 +458,100 @@ SELECT
   count(*) FILTER (WHERE o.status = 'pending' AND o.handed_off_at IS NULL AND o.intent = 'work_execution'
     AND o.created_at < now() - interval '1 minute' AND w.dispatch_transport = 'dispatch'
     AND NOT ${sql.raw(FALLEN_BACK_SQL)}) AS unacked,
-  count(*) FILTER (WHERE o.status = 'handed_off' AND o.not_before < now() - interval '1 hour') AS orphaned
+  count(*) FILTER (WHERE o.status = 'handed_off' AND o.not_before < now() - interval '1 hour') AS orphaned,
+  count(*) FILTER (WHERE ${sql.raw(UNACKED_STALE_SQL)}) AS unacked_stale
 FROM task_dispatch_outbox o LEFT JOIN workspaces w ON w.id = o.workspace_id`;
+}
+
+/** Row `o` (joined to workspace `w`) is unacked past the fallback. See DispatchOutboxHealth.unackedStale. */
+const UNACKED_STALE_SQL = `o.status = 'pending' AND o.handed_off_at IS NULL AND o.intent = 'work_execution'
+    AND o.created_at < now() - interval '${UNACKED_STALE_MINUTES} minutes'
+    AND o.not_before < now() - interval '${UNACKED_STALE_MINUTES} minutes'
+    AND w.dispatch_transport = 'dispatch' AND NOT ${FALLEN_BACK_SQL}`;
+
+/**
+ * One team's (or one workspace's) outbox, for dispatch_health and the
+ * /app/health Dispatch section (apps/web/src/lib/dispatch-health.ts). Postgres
+ * only: receipts project the Worker's outcomes onto these rows, so the table
+ * already mirrors Dispatch's state and no Worker call is needed to count it.
+ */
+export type { DispatchTeamHealth };
+
+export function dispatchTeamHealthSql(workspaceIds: readonly string[]): SQL {
+  const args = { ws: [...workspaceIds] };
+  return sql`-- dispatch_outbox:team_health
+WITH args AS (SELECT ${JSON.stringify(args)}::jsonb AS a),
+scoped AS (
+  SELECT o.status, o.not_before, o.last_attempt_at, o.delivered_at, o.updated_at,
+    COALESCE(o.delivered_via, 'unknown') AS via,
+    (${sql.raw(UNACKED_STALE_SQL)}) AS is_unacked_stale,
+    (o.status = 'pending' AND o.handed_off_at IS NULL AND o.intent = 'work_execution'
+      AND o.created_at < now() - interval '1 minute' AND w.dispatch_transport = 'dispatch'
+      AND NOT ${sql.raw(FALLEN_BACK_SQL)}) AS is_unacked
+  FROM task_dispatch_outbox o JOIN workspaces w ON w.id = o.workspace_id
+  WHERE o.workspace_id IN (SELECT jsonb_array_elements_text(a->'ws')::uuid FROM args)
+    AND (o.status IN ('pending', 'delivering', 'handed_off') OR o.updated_at > now() - interval '1 day')
+),
+counts AS (
+  SELECT
+    count(*) FILTER (WHERE status = 'pending') AS pending,
+    count(*) FILTER (WHERE status = 'pending' AND not_before <= now()) AS due,
+    count(*) FILTER (WHERE status = 'pending' AND not_before < now() - interval '5 minutes') AS overdue,
+    count(*) FILTER (WHERE status = 'delivering') AS delivering,
+    count(*) FILTER (WHERE status = 'delivering' AND last_attempt_at < now() - interval '5 minutes') AS stuck,
+    count(*) FILTER (WHERE status = 'handed_off') AS handed_off,
+    count(*) FILTER (WHERE is_unacked) AS unacked,
+    count(*) FILTER (WHERE is_unacked_stale) AS unacked_stale,
+    count(*) FILTER (WHERE status = 'handed_off' AND not_before < now() - interval '1 hour') AS orphaned,
+    count(*) FILTER (WHERE status = 'failed' AND updated_at > now() - interval '1 day') AS failed_24h,
+    count(*) FILTER (WHERE status = 'delivered' AND COALESCE(delivered_at, updated_at) > now() - interval '1 day') AS delivered_24h
+  FROM scoped
+),
+by_via AS (
+  SELECT COALESCE(jsonb_object_agg(via, n), '{}'::jsonb) AS delivered_via FROM (
+    SELECT via, count(*) AS n FROM scoped
+    WHERE status = 'delivered' AND COALESCE(delivered_at, updated_at) > now() - interval '1 day'
+    GROUP BY via
+  ) v
+),
+latency AS (
+  SELECT
+    percentile_cont(0.5) WITHIN GROUP (ORDER BY ms) AS p50,
+    percentile_cont(0.95) WITHIN GROUP (ORDER BY ms) AS p95,
+    count(*) AS samples
+  FROM (
+    SELECT GREATEST(0, extract(epoch FROM (delivered_at - not_before)) * 1000) AS ms FROM scoped
+    WHERE status = 'delivered' AND delivered_at > now() - interval '1 day'
+      AND via NOT IN ('merged_into_pending', 'expired')
+  ) l
+)
+SELECT * FROM counts, by_via, latency`;
+}
+
+const num = (v: unknown): number => Number(v ?? 0) || 0;
+const numOrNull = (v: unknown): number | null => (v === null || v === undefined ? null : Math.round(Number(v)));
+
+/** Parse one dispatchTeamHealthSql row. Exported for the render test. */
+export function parseDispatchTeamHealth(r: Record<string, unknown> | undefined): DispatchTeamHealth {
+  const row = r ?? {};
+  const rawVia = typeof row.delivered_via === 'string' ? JSON.parse(row.delivered_via) : row.delivered_via;
+  const deliveredVia: Record<string, number> = {};
+  if (rawVia && typeof rawVia === 'object') {
+    for (const [k, v] of Object.entries(rawVia as Record<string, unknown>)) deliveredVia[k] = num(v);
+  }
+  return {
+    pending: num(row.pending), due: num(row.due), overdue: num(row.overdue),
+    delivering: num(row.delivering), stuck: num(row.stuck), handedOff: num(row.handed_off),
+    unacked: num(row.unacked), unackedStale: num(row.unacked_stale), orphaned: num(row.orphaned),
+    failed24h: num(row.failed_24h), delivered24h: num(row.delivered_24h), deliveredVia,
+    latencyMs: { p50: numOrNull(row.p50), p95: numOrNull(row.p95), samples: num(row.samples) },
+  };
+}
+
+export async function dispatchTeamHealth(workspaceIds: readonly string[]): Promise<DispatchTeamHealth> {
+  if (workspaceIds.length === 0) return parseDispatchTeamHealth(undefined);
+  const result = await db.execute(dispatchTeamHealthSql(workspaceIds));
+  return parseDispatchTeamHealth(rowsOf(result)[0]);
 }
 
 /** Delivered/failed rows older than this are pruned by the task-archive sweep. */
@@ -460,11 +567,56 @@ WITH gone AS (
   return Number(rowsOf(result)[0]?.n ?? 0);
 }
 
-/** The intent trail for one task, oldest first — the "why did it (not) start" read. */
-export async function dispatchHistoryForTask(taskId: string, limit = 50) {
-  const result = await db.execute(sql`-- dispatch_outbox:history
-SELECT id, intent, cause, causes, status, not_before, attempt_count, delivered_at, delivered_via, last_error, created_at,
-  transport, handed_off_at
-FROM task_dispatch_outbox WHERE task_id = ${taskId}::uuid ORDER BY created_at LIMIT ${limit}`);
-  return rowsOf(result);
+/** The newest intent for one task, for explain's "is the wake stuck?" link. */
+export function latestDispatchForTaskSql(taskId: string): SQL {
+  return sql`-- dispatch_outbox:latest_for_task
+SELECT id, status, not_before, attempt_count, last_error, transport, handed_off_at, delivered_via, created_at
+FROM task_dispatch_outbox WHERE task_id = ${taskId}::uuid ORDER BY created_at DESC, id DESC LIMIT 1`;
+}
+
+export async function latestDispatchForTask(taskId: string): Promise<Record<string, unknown> | null> {
+  return rowsOf(await db.execute(latestDispatchForTaskSql(taskId)))[0] ?? null;
+}
+
+export interface DispatchHistoryEntry {
+  id: string;
+  intent: string;
+  cause: string;
+  causes: string[];
+  status: string;
+  transport: string;
+  notBefore: string | null;
+  handedOffAt: string | null;
+  deliveredAt: string | null;
+  deliveredVia: string | null;
+  attemptCount: number;
+  lastError: string | null;
+  createdAt: string | null;
+}
+
+const iso = (v: unknown): string | null => (v === null || v === undefined ? null : new Date(v as string).toISOString());
+
+export function toDispatchHistoryEntry(r: Record<string, unknown>): DispatchHistoryEntry {
+  const causes = Array.isArray(r.causes) ? r.causes : typeof r.causes === 'string' ? JSON.parse(r.causes) : [];
+  return {
+    id: String(r.id), intent: String(r.intent ?? 'work_execution'), cause: String(r.cause), causes: causes.map(String),
+    status: String(r.status), transport: String(r.transport ?? 'in_app'),
+    notBefore: iso(r.not_before), handedOffAt: iso(r.handed_off_at), deliveredAt: iso(r.delivered_at),
+    deliveredVia: (r.delivered_via as string | null) ?? null, attemptCount: Number(r.attempt_count ?? 0),
+    lastError: (r.last_error as string | null) ?? null, createdAt: iso(r.created_at),
+  };
+}
+
+/** The newest `limit` intents for one task, oldest first — the "why did it (not) start" read. */
+export function dispatchHistoryForTaskSql(taskId: string, limit = 50): SQL {
+  return sql`-- dispatch_outbox:history
+SELECT * FROM (
+  SELECT id, intent, cause, causes, status, not_before, attempt_count, delivered_at, delivered_via, last_error, created_at,
+    transport, handed_off_at
+  FROM task_dispatch_outbox WHERE task_id = ${taskId}::uuid ORDER BY created_at DESC, id DESC LIMIT ${limit}
+) h ORDER BY created_at, id`;
+}
+
+export async function dispatchHistoryForTask(taskId: string, limit = 50): Promise<DispatchHistoryEntry[]> {
+  return rowsOf(await db.execute(dispatchHistoryForTaskSql(taskId, limit))).map(toDispatchHistoryEntry);
 }

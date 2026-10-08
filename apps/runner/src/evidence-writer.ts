@@ -107,6 +107,8 @@ export const CLAIM_FIELD_SECRET_CLASSIFICATION: Record<string, 'secret' | 'not_s
   // Team agent model endpoint: authToken is a credential the agent env carries.
   modelEndpoint: 'secret',
   modelEndpointIgnored: 'not_secret',
+  // A per-run ENABLE_TOOL_SEARCH=false marker, not a credential.
+  toolSearchDisabled: 'not_secret',
   // A mode marker. The task-scoped token is fetched later, never on the claim;
   // its ghs_ shape is caught by the redactor's generic token pattern.
   githubCredentials: 'not_secret',
@@ -117,7 +119,6 @@ export const CLAIM_FIELD_SECRET_CLASSIFICATION: Record<string, 'secret' | 'not_s
   roleEnvSecrets: 'secret',
   roleEnvMissing: 'not_secret',
   skillBundles: 'secret',
-  cbmExperiment: 'not_secret',
   questionGate: 'not_secret',
 };
 
@@ -179,10 +180,13 @@ function promptTextValues(worker: WorkerSecretChannels): Array<{ label: string; 
 export function buildWorkerSecretValues(
   runnerApiKey: string | undefined,
   worker: WorkerSecretChannels,
+  /** The per-task token minted for this session's agent (agent-task-token.ts). */
+  agentTaskToken?: string,
 ): Array<{ label: string; value: string }> {
   const cx = worker.codexCredential;
   return [
     { label: 'BUILDD_API_KEY', value: runnerApiKey },
+    { label: 'agentTaskToken', value: agentTaskToken },
     ...Object.entries(worker.mcpSecrets ?? {}).map(([label, value]) => ({ label, value })),
     ...Object.entries(worker.roleEnvSecrets ?? {}).map(([label, value]) => ({ label, value })),
     { label: 'serverApiKey', value: worker.serverApiKey },

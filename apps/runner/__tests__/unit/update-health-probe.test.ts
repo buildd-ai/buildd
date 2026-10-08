@@ -48,7 +48,7 @@ describe('buildHealthProbeSpawn — invocation shape', () => {
   // launcher's own cwd and entry path.
   test('invokes the same entry path the launcher does', () => {
     const spawn = buildHealthProbeSpawn(base);
-    expect(spawn.cmd).toEqual(['bun', 'run', RUNNER_ENTRY, '--debug']);
+    expect(spawn.cmd).toEqual(['bun', '--no-env-file', 'run', RUNNER_ENTRY, '--debug']);
     expect(RUNNER_ENTRY).toBe('apps/runner/src/index.ts');
   });
 

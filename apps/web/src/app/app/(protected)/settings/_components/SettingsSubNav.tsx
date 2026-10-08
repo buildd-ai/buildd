@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { SETTINGS_INDEX_HREF, SETTINGS_NAV, settingsItemFor } from '@/lib/settings-nav';
+import { SETTINGS_INDEX_HREF, settingsItemFor, settingsNavFor } from '@/lib/settings-nav';
 
 /**
  * Desktop settings sub-nav: a second column beside the 56px icon rail.
@@ -12,7 +12,7 @@ import { SETTINGS_INDEX_HREF, SETTINGS_NAV, settingsItemFor } from '@/lib/settin
  * every section one click away and shows where you are. Phones get the list and
  * detail pattern instead (the index page is the list), so this is md+ only.
  */
-export default function SettingsSubNav() {
+export default function SettingsSubNav({ billing = false }: { billing?: boolean }) {
   const pathname = usePathname();
   const active = settingsItemFor(pathname);
 
@@ -33,7 +33,7 @@ export default function SettingsSubNav() {
           Settings
         </Link>
         <div className="space-y-5">
-          {SETTINGS_NAV.map((group) => (
+          {settingsNavFor({ billing }).map((group) => (
             <div key={group.label}>
               <div className="section-label px-2 mb-1.5">{group.label}</div>
               <ul className="space-y-0.5">

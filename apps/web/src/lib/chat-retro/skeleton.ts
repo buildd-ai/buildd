@@ -9,8 +9,9 @@
  */
 import { createHash } from 'node:crypto';
 import { TURN_STOPPED_NOTE } from '@/lib/chat/turn-deadline';
-import type { CandidateKind } from './vocab';
-import { TOOL_NAME_PATTERN } from './vocab';
+import type { CandidateKind, VisibleCandidateKind } from './vocab';
+import { TOOL_NAME_PATTERN, VISIBLE_CANDIDATE_KINDS } from './vocab';
+import { classifyVisibleAnswers } from './visible-answer';
 
 /** A conversation goes into a window only once it has been quiet this long. */
 export const RETRO_IDLE_MIN = 30;
@@ -36,7 +37,8 @@ export interface RetroMessage {
   parts: Array<{ type: string; [key: string]: unknown }>;
   tier: string | null;
   createdAt: Date;
-  usage: { inputTokens?: number; outputTokens?: number; costUsd?: number | null; routing?: { outcome?: string } } | null;
+  /** `turn` is the client's content-free turn signal (lib/chat/turn-signal.ts), on user messages. */
+  usage: { inputTokens?: number; outputTokens?: number; costUsd?: number | null; routing?: { outcome?: string }; turn?: unknown } | null;
 }
 
 export interface RetroWindowInput {
@@ -45,6 +47,11 @@ export interface RetroWindowInput {
   thumbsDown: Map<string, string | null>;
   /** Message ids carrying a denied approval. */
   deniedApprovalMessageIds: Set<string>;
+  /**
+   * The window was cut at RETRO_MAX_WINDOW_MESSAGES: its last user turn's
+   * answer may be in the next window, so it is not called unanswered.
+   */
+  truncated?: boolean;
 }
 
 export interface ToolCallSummary {
@@ -68,6 +75,8 @@ export interface Turn {
   thumbsDown: boolean;
   thumbsReason: string | null;
   deniedApproval: boolean;
+  /** A visible-answer finding on this turn (./visible-answer.ts), labelled by code. */
+  visible: { kind: VisibleCandidateKind; conf: number } | null;
   tools: ToolCallSummary[];
   /** User turns only; never persisted. */
   userText: string;
@@ -81,6 +90,8 @@ export interface Candidate {
   messageId: string;
   tokens: number;
   toolName: string | null;
+  /** Code's confidence, for code-labelled kinds (visible-answer ones). */
+  conf?: number;
 }
 
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
@@ -116,6 +127,10 @@ function textOf(parts: RetroMessage['parts']): string {
 
 /** One turn per user or assistant message, in order. Event messages are dropped. */
 export function buildTurns(input: RetroWindowInput): Turn[] {
+  const visible = new Map(
+    classifyVisibleAnswers(input.messages, { lastMayContinue: input.truncated ?? input.messages.length >= RETRO_MAX_WINDOW_MESSAGES })
+      .map(f => [f.messageId, { kind: f.kind, conf: f.conf }]),
+  );
   const turns: Turn[] = [];
   for (const m of input.messages) {
     if (m.role !== 'user' && m.role !== 'assistant') continue;
@@ -147,6 +162,7 @@ export function buildTurns(input: RetroWindowInput): Turn[] {
       thumbsDown: input.thumbsDown.has(m.id),
       thumbsReason: input.thumbsDown.get(m.id) ?? null,
       deniedApproval: input.deniedApprovalMessageIds.has(m.id),
+      visible: visible.get(m.id) ?? null,
       tools,
       userText: m.role === 'user' ? text.replace(/\s+/g, ' ').trim().slice(0, USER_TEXT_CHARS) : '',
     });
@@ -154,7 +170,12 @@ export function buildTurns(input: RetroWindowInput): Turn[] {
   return turns;
 }
 
-/** Code-detected waste candidates, at most RETRO_MAX_CANDIDATES, largest first. */
+const isVisibleKind = (k: CandidateKind) => (VISIBLE_CANDIDATE_KINDS as readonly string[]).includes(k);
+
+/**
+ * Code-detected waste candidates, at most RETRO_MAX_CANDIDATES: the
+ * visible-answer findings always, then the largest.
+ */
 export function detectCandidates(turns: Turn[]): Candidate[] {
   const found: Omit<Candidate, 'id'>[] = [];
   const seenCalls = new Set<string>();
@@ -166,6 +187,7 @@ export function detectCandidates(turns: Turn[]): Candidate[] {
     if (t.routingOutcome?.startsWith('error:')) found.push({ ...base, kind: 'routing_error', tokens: turnTokens, toolName: null });
     if (t.thumbsDown) found.push({ ...base, kind: 'thumbs_down', tokens: turnTokens, toolName: mainTool });
     if (t.deniedApproval) found.push({ ...base, kind: 'denied_approval', tokens: turnTokens, toolName: mainTool });
+    if (t.visible) found.push({ ...base, kind: t.visible.kind, tokens: Math.max(turnTokens, 1), toolName: null, conf: t.visible.conf });
     for (const c of t.tools) {
       const key = `${c.name}:${c.argHash}`;
       if (seenCalls.has(key)) found.push({ ...base, kind: 'repeat_call', tokens: Math.max(c.resultTokens, 1), toolName: c.name });
@@ -175,7 +197,7 @@ export function detectCandidates(turns: Turn[]): Candidate[] {
   }
   return found
     .map((c, i) => ({ c, i }))
-    .sort((a, b) => b.c.tokens - a.c.tokens || a.i - b.i)
+    .sort((a, b) => Number(isVisibleKind(b.c.kind)) - Number(isVisibleKind(a.c.kind)) || b.c.tokens - a.c.tokens || a.i - b.i)
     .slice(0, RETRO_MAX_CANDIDATES)
     .sort((a, b) => a.c.turn - b.c.turn || a.i - b.i)
     .map(({ c }, id) => ({ ...c, id }));
@@ -202,13 +224,20 @@ export function windowTotals(turns: Turn[]): WindowTotals {
 /**
  * The deterministic pre-filter. A window is trivial (skipped, no model call)
  * when ALL hold: fewer than 2 user turns; no stopped turn, routing error,
- * thumbs-down or denied approval; input under RETRO_MIN_TOKENS.
+ * thumbs-down, denied approval or visible-answer finding; input under
+ * RETRO_MIN_TOKENS. A first question nobody saw answered is never trivial.
  */
 export function isTrivialWindow(turns: Turn[]): boolean {
   const totals = windowTotals(turns);
-  const signal = turns.some(t => t.stopped || t.thumbsDown || t.deniedApproval || t.routingOutcome?.startsWith('error:'));
+  const signal = turns.some(t => t.stopped || t.thumbsDown || t.deniedApproval || t.visible || t.routingOutcome?.startsWith('error:'));
   return totals.userTurns < 2 && !signal && totals.inputTokens < RETRO_MIN_TOKENS;
 }
+
+const VISIBLE_NOTE: Record<VisibleCandidateKind, string> = {
+  no_output: 'answer=none_saved',
+  render_gap: 'answer=saved_not_shown',
+  blank_retry: 'retry_after_blank',
+};
 
 function renderTurn(t: Turn, flags: Map<number, Candidate[]>): string {
   const head = `#${t.index} ${t.role}${t.tier ? ` tier=${t.tier}` : ''} in=${t.inputTokens} out=${t.outputTokens}`;
@@ -217,6 +246,7 @@ function renderTurn(t: Turn, flags: Map<number, Candidate[]>): string {
   if (t.stopped) extra.push('stopped=time_limit');
   if (t.thumbsDown) extra.push(`thumbs_down=${t.thumbsReason ?? 'no_reason'}`);
   if (t.deniedApproval) extra.push('approval=denied');
+  if (t.visible) extra.push(VISIBLE_NOTE[t.visible.kind]);
   const cands = flags.get(t.index);
   if (cands) extra.push(`flagged=${cands.map(c => `turn_${c.id}:${c.kind}`).join(',')}`);
   const body = t.role === 'user'

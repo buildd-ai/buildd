@@ -37,7 +37,7 @@
  * never rendered.
  */
 
-import { recordEvent, prMergedEvent } from '@/lib/subscriptions';
+import { emit } from '@/lib/core-emit';
 import { db } from '@buildd/core/db';
 import { missions, workers, workspaces } from '@buildd/core/db/schema';
 import { and, isNull, isNotNull, eq, or, notInArray, sql } from 'drizzle-orm';
@@ -49,6 +49,7 @@ import {
 } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl, resolvePrRepo } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
+import { recordPrFact } from '@buildd/core/pr-facts';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import {
   TIER_SLA_MS,
@@ -92,31 +93,35 @@ export async function refreshWorkerMergeStateIfStale(
 
     if (pr.merged && pr.merged_at) {
       const now = new Date();
+      // Every row carrying this PR (a retry attempt that adopted it too), through
+      // the fact funnel; see lib/pr-merge-stamp.
+      await stampPrMergedOnAllRows({ prUrl: worker.prUrl, prNumber: worker.prNumber, mergedAt: pr.merged_at });
       await db.update(workers)
-        .set({
-          mergedAt: new Date(pr.merged_at),
-          prLifecycleStatus: 'merged',
-          prLastCheckedAt: now,
-          prLastVerifiedAt: now,
-          prCheckFailureCount: 0,
-          updatedAt: now,
-        })
+        .set({ prLastCheckedAt: now, prLastVerifiedAt: now, prCheckFailureCount: 0, updatedAt: now })
         .where(eq(workers.id, worker.id));
-      // Any other row carrying this PR (a retry attempt that adopted it) is
-      // merged too; see lib/pr-merge-stamp.
-      await stampPrMergedOnAllRows({
-        prUrl: worker.prUrl,
-        prNumber: worker.prNumber,
-        mergedAt: new Date(pr.merged_at),
-      });
       // Same dedupe key as the webhook: a merge it already reported writes nothing.
-      await recordEvent(prMergedEvent({ repoFullName: repo, prNumber: worker.prNumber, url: worker.prUrl }));
+      await emit({ type: 'pr.merged', repoFullName: repo, prNumber: worker.prNumber, url: worker.prUrl });
       return true;
     }
     return false;
   } catch (err) {
     console.warn(`[pr-reconcile] refreshWorkerMergeStateIfStale worker ${worker.id} PR #${worker.prNumber}:`, err);
     return false;
+  }
+}
+
+/**
+ * §11: a sweep that finds a merge or close GitHub never delivered imports it
+ * into the kernel too, for a kernel-owned PR (T17 / T18 from the kernel's own
+ * live read). A no-op for any PR without a kernel delivery; never fatal.
+ */
+async function importClosureToKernel(workspaceId: string | null | undefined, repoFullName: string, prNumber: number, installationId: number): Promise<void> {
+  if (!workspaceId) return;
+  try {
+    const { observePrState } = await import('@/lib/workflow/seam');
+    await observePrState({ workspaceId, repoFullName, prNumber, installationId, source: 'sweep:pr-reconcile' });
+  } catch (err) {
+    console.error(`[pr-reconcile] kernel close import failed for ${repoFullName}#${prNumber}:`, err);
   }
 }
 
@@ -326,16 +331,8 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     const prOpenedAt = worker.completedAt ?? worker.createdAt ?? null;
     const terminal = shouldMarkUnresolvable({ failureCount, prOpenedAt, now: new Date() });
 
-    await recordCheck(worker.id, {
-      prCheckFailureCount: failureCount,
-      ...(terminal
-        ? {
-            prLifecycleStatus: 'unresolvable' as const,
-            prUnresolvableReason: reason,
-            updatedAt: new Date(),
-          }
-        : {}),
-    }).catch(() => {});
+    await recordCheck(worker.id, { prCheckFailureCount: failureCount }).catch(() => {});
+    if (terminal) await recordPrFact({ workerId: worker.id }, { kind: 'unresolvable', reason }).catch(() => {});
 
     if (terminal) {
       result.unresolvable++;
@@ -436,23 +433,20 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
         ) as { state: string; merged: boolean; merged_at: string | null; mergeable_state: string | null };
 
         if (pr.merged && pr.merged_at) {
-          await recordCheck(worker.id, {
-            mergedAt: new Date(pr.merged_at),
-            prLifecycleStatus: 'merged',
-            prCheckFailureCount: 0,
-            updatedAt: new Date(),
-          }, { verified: true });
-          result.stamped++;
-          // Same dedupe key as the webhook: a merge it already reported writes nothing.
-          await recordEvent(prMergedEvent({ repoFullName: repo, prNumber: worker.prNumber, url: worker.prUrl }));
-          // The merge belongs to the PR: stamp any other row carrying it (a
-          // retry attempt that adopted the PR number) and nudge their tasks'
-          // dependents too. See lib/pr-merge-stamp.
-          const siblings = await stampPrMergedOnAllRows({
+          // The merge belongs to the PR: one fact stamps this row and any other
+          // carrying it (a retry attempt that adopted the PR number), whose
+          // tasks' dependents are nudged too. See lib/pr-merge-stamp.
+          const siblings = (await stampPrMergedOnAllRows({
             prUrl: worker.prUrl,
             prNumber: worker.prNumber,
-            mergedAt: new Date(pr.merged_at),
-          });
+            mergedAt: pr.merged_at,
+          })).filter((s) => s.id !== worker.id);
+          await recordCheck(worker.id, { prCheckFailureCount: 0, updatedAt: new Date() }, { verified: true });
+          // A lost webhook: the kernel-owned delivery imports the same fact (§11).
+          await importClosureToKernel(worker.workspaceId, repo, worker.prNumber, installationId);
+          result.stamped++;
+          // Same dedupe key as the webhook: a merge it already reported writes nothing.
+          await emit({ type: 'pr.merged', repoFullName: repo, prNumber: worker.prNumber, url: worker.prUrl });
           for (const s of siblings) {
             if (s.taskId && s.taskId !== worker.taskId) {
               await notifyDependents(s.taskId).catch(err =>
@@ -517,11 +511,9 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
           // later PR on a serialized surface would wait on it forever.
           await settleSurfaceIntents(worker.workspaceId, worker.prNumber);
         } else if (pr.state === 'closed') {
-          await recordCheck(worker.id, {
-            prLifecycleStatus: 'closed',
-            prCheckFailureCount: 0,
-            updatedAt: new Date(),
-          }, { verified: true });
+          await recordPrFact({ workerId: worker.id }, { kind: 'closed' });
+          await recordCheck(worker.id, { prCheckFailureCount: 0, updatedAt: new Date() }, { verified: true });
+          await importClosureToKernel(worker.workspaceId, repo, worker.prNumber, installationId);
           result.closed++;
           // Matches dead-pr-shutdown, which sweeps on the closed path in the
           // event-driven flow: a PR closed unmerged strands its anchors too.
@@ -544,12 +536,8 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
           // never overwrite an existing conflictDetectedAt — matching the
           // webhook's own guard.
           const newlyConflicted = pr.mergeable_state === 'dirty' && !worker.conflictDetectedAt;
-          await recordCheck(worker.id, {
-            prCheckFailureCount: 0,
-            ...(newlyConflicted
-              ? { conflictDetectedAt: new Date(), prLifecycleStatus: 'conflict' as const }
-              : {}),
-          }, { verified: true });
+          if (newlyConflicted) await recordPrFact({ workerId: worker.id }, { kind: 'conflict' });
+          await recordCheck(worker.id, { prCheckFailureCount: 0 }, { verified: true });
           if (newlyConflicted) result.conflictsDetected++;
           result.skipped++;
         }

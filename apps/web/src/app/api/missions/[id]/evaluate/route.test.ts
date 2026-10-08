@@ -16,6 +16,8 @@ let noteCountRows: any[] = [{ value: 0 }];
 let currentUser: any = { id: 'u-1', email: 'max@example.com' };
 let apiAccountRow: any = null;
 let linkRow: any = null;
+// A per-task token's own task, as the scope helper reads it.
+let ownTaskRow: any = null;
 
 const mockEvaluateCriteriaNow = mock((_id: string, _opts: any) => Promise.resolve({
   evaluatedAt: '2026-08-29T12:00:00.000Z',
@@ -49,6 +51,7 @@ mock.module('@buildd/core/db', () => ({
       missions: { findFirst: () => Promise.resolve(missionRow) },
       workspaces: { findFirst: () => Promise.resolve(workspaceRow) },
       accountWorkspaces: { findFirst: () => Promise.resolve(linkRow) },
+      tasks: { findFirst: () => Promise.resolve(ownTaskRow) },
     },
     select: () => ({ from: () => ({ where: () => Promise.resolve(noteCountRows) }) }),
   },
@@ -91,6 +94,7 @@ function reset() {
   };
   workspaceRow = { accessMode: 'team' };
   linkRow = null;
+  ownTaskRow = null;
   noteCountRows = [{ value: 0 }];
   currentUser = { id: 'u-1', email: 'max@example.com' };
   apiAccountRow = null;
@@ -263,6 +267,40 @@ describe('GET /api/missions/[id]/evaluate', () => {
     const res = await GET(get(), { params: makeParams('a1b2c3d4') });
     expect(res.status).toBe(404);
     expect((await res.json()).error).toContain('UUID');
+    expect(mockEvaluateCriteriaNow).not.toHaveBeenCalled();
+  });
+});
+
+describe('/api/missions/[id]/evaluate — per-task token', () => {
+  const MISSION = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const taskScope = { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 };
+  beforeEach(() => {
+    reset();
+    currentUser = null;
+    ownTaskRow = { missionId: MISSION, workspaceId: 'ws-1', mission: { initiativeId: null } };
+    // An earlier test leaves evaluation throwing.
+    mockEvaluateCriteriaNow.mockImplementation(() => Promise.resolve({ overall: 'UNVERIFIED', criteria: [] }) as any);
+  });
+
+  it("an orchestration (admin) token evaluates and reads its own task's mission", async () => {
+    apiAccountRow = { id: 'acct-1', level: 'admin', scopes: null, taskScope };
+    expect((await POST(post(), { params: makeParams(MISSION) })).status).toBe(200);
+    expect(mockEvaluateCriteriaNow).toHaveBeenCalled();
+    expect((await GET(get(), { params: makeParams(MISSION) })).status).toBe(200);
+  });
+
+  it('an orchestration token is refused another mission', async () => {
+    apiAccountRow = { id: 'acct-1', level: 'admin', scopes: null, taskScope };
+    ownTaskRow = { missionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', workspaceId: 'ws-1', mission: { initiativeId: null } };
+    expect((await POST(post(), { params: makeParams(MISSION) })).status).toBe(404);
+    expect((await GET(get(), { params: makeParams(MISSION) })).status).toBe(404);
+    expect(mockEvaluateCriteriaNow).not.toHaveBeenCalled();
+  });
+
+  it('a worker-level task token is refused even its own mission', async () => {
+    apiAccountRow = { id: 'acct-1', level: 'worker', scopes: null, taskScope };
+    expect((await POST(post(), { params: makeParams(MISSION) })).status).toBe(404);
+    expect((await GET(get(), { params: makeParams(MISSION) })).status).toBe(404);
     expect(mockEvaluateCriteriaNow).not.toHaveBeenCalled();
   });
 });

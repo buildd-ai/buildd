@@ -25,6 +25,11 @@
  * - `turnFold`: once the turn is done its steps and tool rows fold to one line
  *   ("Did 6 steps · filed 2 tasks", feed-model.ts `turnFoldSummary`) that
  *   unfolds on tap, so the answer is what a finished turn shows.
+ * - `answer="replace"`: a turn has one answer, its latest prose. What the
+ *   model writes early in a long turn shows straight away, and the final
+ *   answer replaces it in place once it comes, so a finished turn reads as
+ *   what the agent concluded, not every belief it held on the way. Earlier
+ *   prose stays in the stored parts (and the model's history), off screen.
  *
  * Conversation is soft on desktop; on a phone the person's message is a
  * raised square block. Fleet objects stay hard and square
@@ -55,11 +60,12 @@ export interface ChatAgent {
 export function AgentAvatar({ agent, size = 'md' }: { agent: ChatAgent; size?: 'xs' | 'sm' | 'md' }) {
   const dim = size === 'xs' ? 'h-5 w-5 text-[11px]' : size === 'sm' ? 'h-7 w-7 text-[13px]' : 'h-9 w-9 text-[15px]';
   const isBuildd = agent.name === 'buildd';
+  const color = isBuildd ? null : agent.color;
   return (
     <span
       aria-hidden="true"
-      className={`grid shrink-0 place-items-center font-mono font-bold text-white ${dim} ${agent.color ? '' : 'bg-text-primary'}`}
-      style={agent.color ? { background: agent.color } : undefined}
+      className={`grid shrink-0 place-items-center font-mono font-bold ${dim} ${color ? 'text-white' : 'bg-text-primary text-surface-1'}`}
+      style={color ? { background: color } : undefined}
     >
       {isBuildd ? '✳' : agent.name.charAt(0).toUpperCase()}
     </span>
@@ -320,6 +326,7 @@ export default function ChatFeed({
         thinkingName={`${agent.name.charAt(0).toUpperCase()}${agent.name.slice(1)} is working`}
         renderPinnedStep={pinnedObjects}
         turnFold={turnFold}
+        answer="replace"
       />
     </div>
   );

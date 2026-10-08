@@ -16,6 +16,10 @@
 #
 # Usage:
 #   scripts/check-no-prod-data-local.sh [base-ref] [--body FILE] [--title FILE]
+#                                    [--staged] [--message-file FILE]
+#
+# --staged scans the index (merge-base..staged tree) rather than committed HEAD;
+# --message-file adds a candidate commit message. CI scans committed HEAD.
 #
 # base-ref defaults to the nearest of origin/dev and origin/mission/*: the
 # candidate with the fewest commits between it and HEAD. A task branch cut from
@@ -32,7 +36,8 @@ RESOLVE_ONLY=0
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --body|--title) ARGS+=("$1" "$2"); shift 2 ;;
+    --body|--title|--message-file) ARGS+=("$1" "$2"); shift 2 ;;
+    --staged) ARGS+=("$1"); shift ;;
     --resolve-only) RESOLVE_ONLY=1; shift ;;
     *) BASE_REF="$1"; shift ;;
   esac

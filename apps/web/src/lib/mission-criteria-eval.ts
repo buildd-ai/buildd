@@ -18,6 +18,8 @@ import { resolveCriteriaWorkerEval, type WorkerEvalCriterionInput } from './miss
 import { applyReviewerFindings } from './criteria-reviewer-findings';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { openMissionIntegrationPr } from './mission-pr';
+import { withDeliveryShip } from '@buildd/core/pr-shipped';
+import { deliveryShipsForPrs, shipKey } from '@/lib/workflow/delivery-ship';
 import { registerTemplatePrompt, registerTextPrompt } from '@buildd/core/prompts';
 
 /**
@@ -329,6 +331,7 @@ export async function evaluateCriteriaNow(
 
   let missionWorkers: Array<{
     taskId: string | null;
+    workspaceId: string | null;
     mergedAt: Date | null;
     prUrl: string | null;
     branch: string;
@@ -347,11 +350,13 @@ export async function evaluateCriteriaNow(
       // `prLifecycleStatus` + `supersededByPrNumber` feed the shared shipped
       // predicate `canCompleteMission` uses, so the two cannot disagree.
       columns: {
-        taskId: true, mergedAt: true, prUrl: true, branch: true, prBaseRef: true, prNumber: true,
+        taskId: true, workspaceId: true, mergedAt: true, prUrl: true, branch: true, prBaseRef: true, prNumber: true,
         prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true,
       },
     });
   }
+
+  const ships = await deliveryShipsForPrs(missionWorkers);
 
   const missionArtifacts = await db.query.artifacts.findMany({
     where: eq(artifacts.missionId, missionId),
@@ -368,7 +373,8 @@ export async function evaluateCriteriaNow(
     criteria,
     {
       tasks: missionTasks,
-      workers: missionWorkers.map(w => ({
+      // A kernel-owned PR answers from its delivery (Slice D, §17.3), like canCompleteMission.
+      workers: missionWorkers.map(w => withDeliveryShip({
         taskId: w.taskId,
         mergedAt: w.mergedAt,
         prUrl: w.prUrl,
@@ -377,7 +383,7 @@ export async function evaluateCriteriaNow(
         supersededByPrNumber: w.supersededByPrNumber,
         branchName: w.branch,
         prBaseRef: w.prBaseRef,
-      })),
+      }, ships.get(shipKey(w.workspaceId, w.prUrl) ?? ''))),
       artifacts: missionArtifacts.map(a => ({ key: a.key, type: a.type })),
       evaluatedBy: opts.evaluatedBy,
     }

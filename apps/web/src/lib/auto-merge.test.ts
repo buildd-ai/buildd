@@ -6,6 +6,16 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 // mockNotify sees the payload; mockNotifySubject sees who it was routed to.
 const mockNotify = mock((_payload: unknown) => {});
 const mockNotifySubject = mock((_subject: unknown, _event: unknown) => {});
+// Workflow kernel landing (lib/workflow/landing.ts; real-SQL cases in
+// apps/web/tests/db/workflow-matrix.test.ts S10/S15/S20). Default: no kernel
+// delivery, so every legacy merge case below runs unchanged.
+const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
+const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+mock.module('@/lib/workflow/landing', () => ({
+  landThroughKernel: mockLandThroughKernel,
+  kernelLandingView: mockKernelLandingView,
+  staleLandingVersion: async () => null,
+}));
 mock.module('@/lib/notify', () => ({
   notifyTeamOf: async (subject: unknown, event: unknown, payload: unknown) => {
     mockNotifySubject(subject, event);
@@ -534,6 +544,28 @@ describe('evaluateAutoMergeSafety migration operation-class gate (unconditional)
       reason: 'touches protected path (.github/workflows/build.yml)',
     });
     expect(mockInspectPullRequestMigrations).not.toHaveBeenCalled();
+  });
+
+  it('ignores a deny-path hit that exists only in a stale PR files snapshot', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      // stale snapshot still lists the workflow file
+      .mockResolvedValueOnce([
+        { filename: '.github/workflows/build.yml', additions: 2, deletions: 0 },
+        { filename: 'apps/web/src/app/page.tsx', additions: 5, deletions: 2 },
+      ])
+      // live PR read, then live compare without the workflow file
+      .mockResolvedValueOnce({ base: { ref: 'dev' } })
+      .mockResolvedValueOnce({ files: [{ filename: 'apps/web/src/app/page.tsx' }] })
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    mockInspectPullRequestMigrations.mockReset();
+    const policy: MergePolicy = {
+      tier: 'auto-threshold',
+      threshold: { denyPaths: ['.github/workflows/'] },
+    };
+    const res = await evaluateAutoMergeSafety(...params, policy);
+    expect(res.reason ?? '').not.toMatch(/protected path/);
   });
 });
 
@@ -1591,6 +1623,39 @@ describe('tryAutoMergeWorkerPr — mission-PR branch-lifecycle gate (P3)', () =>
       `/repos/buildd-ai/buildd/git/refs/heads/${encodeURIComponent(MISSION_BRANCH)}`,
       expect.objectContaining({ method: 'DELETE' }),
     );
+  });
+
+  // Slice C (workflow-state-kernel.md §14): for a kernel-owned PR this door is an adapter. The
+  // rails run unchanged; the kernel merges (T15/T16) and finalizes the mission branch as its
+  // own post-merge effect, so the door neither calls GitHub's merge nor deletes the branch.
+  it('a kernel-owned PR is landed by the kernel: no direct merge, no branch deletion here', async () => {
+    mockFindFirst = mock(() => missionPrTask) as any;
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: MISSION_BRANCH } });
+    mockTasksFindMany = mock(() => [{ id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' }]) as any;
+    mockWorkersFindMany = mock(() => [
+      { taskId: 't-2', prUrl: 'u2', prNumber: 7, prBaseRef: MISSION_BRANCH, mergedAt: new Date(), prLifecycleStatus: 'merged', startedAt: new Date(), createdAt: new Date() },
+    ]) as any;
+    mockMissionsFindFirst = mock(() => optedInMission) as any;
+    mockMergePullRequest.mockClear();
+    const calls: any[] = [];
+
+    const res = await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: 'task-owner', workspaceId: 'ws-1' },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+      landThroughKernel: async (i) => { calls.push(i); return { merged: true, outcome: 'merged', reason: 'merged', message: 'merged', mergeCommitSha: 'M1', current: { state: 'MERGED', version: 9, head: 'head-sha', round: 1 }, result: null }; },
+    });
+
+    expect(res).toEqual({ merged: true });
+    expect(calls).toEqual([expect.objectContaining({ workspaceId: 'ws-1', installationId: 1, repoFullName: 'buildd-ai/buildd', prNumber: 42, headSha: 'head-sha', door: 'auto_merge', actor: 'system:auto_merge' })]);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(mockGithubApi).not.toHaveBeenCalledWith(1, expect.stringContaining('/git/refs/heads/'), expect.objectContaining({ method: 'DELETE' }));
   });
 });
 

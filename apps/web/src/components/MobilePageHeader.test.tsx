@@ -108,7 +108,7 @@ describe('MobilePageHeader', () => {
       workspaces: [{ id: 'ws-1', name: 'Example Workspace' }],
     });
     const leftCluster = html.indexOf('flex-1 min-w-0');
-    const rightCluster = html.indexOf('gap-2 shrink-0');
+    const rightCluster = html.indexOf('shrink-0 items-center gap-2');
     // Left cluster (with flex-1) should come before right cluster (with shrink-0)
     expect(leftCluster).toBeLessThan(rightCluster);
   });
@@ -143,5 +143,22 @@ describe('MobilePageHeader banner stack', () => {
     } finally {
       pathname = '/app/settings/connectors';
     }
+  });
+});
+
+describe('MobilePageHeader shell geometry', () => {
+  it('every top-level route renders the same shell classes', () => {
+    const shells = ['/app/home', '/app/chat', '/app/missions', '/app/tasks', '/app/health'].map(p => {
+      pathname = p;
+      const html = render({ teams: TEAMS, currentTeamId: 't1', userInitial: 'M' });
+      return html.match(/data-testid="mobile-page-header" class="([^"]*)"/)?.[1];
+    });
+    expect(shells[0]).toContain('h-14');
+    expect(new Set(shells).size).toBe(1);
+  });
+
+  it('Chat exposes a slot for its crumbs', () => {
+    pathname = '/app/chat';
+    expect(render({ teams: TEAMS, currentTeamId: 't1' })).toContain('id="mobile-top-bar-slot"');
   });
 });

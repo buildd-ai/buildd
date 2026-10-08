@@ -15,6 +15,7 @@ export function productionDeps(deadlineAt: number): PassDeps {
   return {
     now: () => new Date(),
     deadlineAt,
+    reconcileAccountDogfood: () => store.reconcileAccountDogfood(),
     listOptedInTeams: store.listOptedInTeams,
     listPendingConversations: store.listPendingConversations,
     loadWindow: store.loadWindow,

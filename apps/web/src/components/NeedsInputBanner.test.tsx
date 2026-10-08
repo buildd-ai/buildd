@@ -43,7 +43,7 @@ describe('NeedsInputBanner — the question open in its own sheet', () => {
       const html = render([waiting('q1', 'feat(checkout): pay in currency'), waiting('q2', 'docs: billing guide')]);
       expect(html).toContain('Billing guide');
       expect(html).not.toContain('ay in currency');
-      expect(html).toContain('needs your input');
+      expect(html).toContain('needs input');
       expect(html).not.toContain('2 tasks');
     } finally { release(); }
   });
@@ -53,12 +53,12 @@ describe('NeedsInputBanner — the question open in its own sheet', () => {
     try {
       expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toBe('');
     } finally { release(); }
-    expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toContain('needs your input');
+    expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toContain('needs input');
   });
 
   it('renders again once the sheet is closed', () => {
     hideNeedsInputFor('q1')();
-    expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toContain('needs your input');
+    expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toContain('needs input');
   });
 });
 
@@ -81,7 +81,7 @@ describe('NeedsInputBanner — names the task as the task page does', () => {
 
   it('joins two waiting tasks without an em dash', () => {
     const html = render([waiting('q1', 'fix: a'), waiting('q2', 'fix: b')]);
-    expect(html).toContain('2 tasks need your input');
+    expect(html).toContain('2 tasks need input');
     expect(html).not.toContain('\u2014');
   });
 });
@@ -124,12 +124,12 @@ describe('NeedsInputBanner: an answer is on its way', () => {
     expect(html).toContain('data-testid="global-answer-sent-banner"');
     expect(html).toContain('Answer sent, waiting for the agent');
     expect(html).toContain('Pay in currency');
-    expect(html).not.toContain('needs your input');
+    expect(html).not.toContain('needs input');
   });
 
   it('a task still waiting takes the banner; the answered one is not counted', () => {
     const html = render([task('q1', 'fix: a', true), task('q2', 'fix: b')]);
-    expect(html).toContain('needs your input');
+    expect(html).toContain('needs input');
     expect(html).toContain('B');
     expect(html).not.toContain('2 tasks');
     expect(html).not.toContain('Answer sent');

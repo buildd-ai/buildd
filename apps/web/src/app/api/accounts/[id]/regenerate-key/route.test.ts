@@ -20,7 +20,7 @@ mock.module('@/lib/api-auth', () => ({
 }));
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: { accounts: { findFirst: mockAccountsFindFirst } },
+    query: { teams: { findFirst: async () => null }, accounts: { findFirst: mockAccountsFindFirst } },
     update: () => ({ set: mockUpdateSet }),
   },
 }));

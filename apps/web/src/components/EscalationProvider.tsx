@@ -3,6 +3,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import { createEscalationRefresher } from '@/lib/realtime-throttle';
+import { demandCatchUp, subscribeCatchUp } from '@/lib/app-freshness';
 
 interface EscalationContextValue {
   count: number;
@@ -55,6 +56,7 @@ export function EscalationProvider({ workspaceIds, children }: Props) {
     const refresher = createEscalationRefresher({
       fetch: () => { fetchCount(); },
       isHidden: () => document.visibilityState === 'hidden',
+      onMissed: () => demandCatchUp('missed'),
     });
 
     const channels = workspaceIds.map(id => `${CHANNEL_PREFIX}workspace-${id}`);
@@ -67,15 +69,14 @@ export function EscalationProvider({ workspaceIds, children }: Props) {
       return { channelName: ch, channel };
     });
 
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') refresher.onVisible();
-    };
-    document.addEventListener('visibilitychange', onVisibility);
+    // Resume / reconnect / pull: the shell's coordinator bounds these
+    // (lib/app-freshness.ts) and fires whether or not an event was seen.
+    const unsubscribeCatchUp = subscribeCatchUp(() => { fetchCount(); });
 
     // Channels are shared with the other layout providers, so this handler must
     // be unbound explicitly — releasing the subscription no longer drops it.
     return () => {
-      document.removeEventListener('visibilitychange', onVisibility);
+      unsubscribeCatchUp();
       refresher.dispose();
       for (const { channelName, channel } of bound) {
         for (const [event, handler] of handlers) channel?.unbind(event, handler);

@@ -722,3 +722,74 @@ describe('GET /api/health/failures — family=gate landing metrics', () => {
     expect(mockGetLandingMetrics).not.toHaveBeenCalled();
   });
 });
+
+describe('GET /api/health/failures — per-task token', () => {
+  const OWN = '00000000-0000-0000-0000-0000000000a1';
+  const OTHER = '00000000-0000-0000-0000-0000000000a2';
+  const scoped = authedAccount({ taskScope: { taskId: 'task-1', workspaceId: OWN, expiresAt: Date.now() + 60_000 } });
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockGetFailureAnalytics.mockReset();
+    mockGetFailureSignatureMatch.mockReset();
+    mockGetFailureSignatureMatch.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(scoped);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: OWN }, { id: OTHER }]);
+    mockGetFailureAnalytics.mockResolvedValue(EMPTY_ANALYTICS);
+  });
+
+  it('narrows a team-wide request to its own task’s workspace', async () => {
+    const res = await GET(makeRequest(`${URL_BASE}?error=boom`));
+    expect(res.status).toBe(200);
+    expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([OWN]);
+    // The friction-dedupe lookup is answered over the same narrowed scope.
+    expect((mockGetFailureSignatureMatch.mock.calls[0] as any[])[0]).toEqual([OWN]);
+  });
+
+  it('reads its own workspace when named', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ id: OWN, teamId: TEAM_ID });
+    const res = await GET(makeRequest(`${URL_BASE}?workspaceId=${OWN}`));
+    expect(res.status).toBe(200);
+    expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([OWN]);
+  });
+
+  it('404s another workspace in its team, without aggregating', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ id: OTHER, teamId: TEAM_ID });
+    const res = await GET(makeRequest(`${URL_BASE}?workspaceId=${OTHER}`));
+    expect(res.status).toBe(404);
+    expect(mockGetFailureAnalytics).not.toHaveBeenCalled();
+  });
+
+  it('reads a workspace its schedule delegates analytics:read on, when named; never by default', async () => {
+    const delegated = authedAccount({ taskScope: {
+      taskId: 'task-1', workspaceId: OWN, expiresAt: Date.now() + 60_000,
+      delegations: [{ workspaceId: OTHER, capabilities: ['analytics:read'] }],
+    } });
+    mockAuthenticateApiKey.mockResolvedValue(delegated);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: OTHER, teamId: TEAM_ID });
+    const res = await GET(makeRequest(`${URL_BASE}?workspaceId=${OTHER}&family=gate`));
+    expect(res.status).toBe(200);
+    expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([OTHER]);
+    mockGetFailureAnalytics.mockClear();
+    await GET(makeRequest(`${URL_BASE}?error=boom`));
+    expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([OWN]);
+  });
+
+  it('a tasks:create-only delegation does not open analytics', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(authedAccount({ taskScope: {
+      taskId: 'task-1', workspaceId: OWN, expiresAt: Date.now() + 60_000,
+      delegations: [{ workspaceId: OTHER, capabilities: ['tasks:create'] }],
+    } }));
+    mockWorkspacesFindFirst.mockResolvedValue({ id: OTHER, teamId: TEAM_ID });
+    expect((await GET(makeRequest(`${URL_BASE}?workspaceId=${OTHER}`))).status).toBe(404);
+    expect(mockGetFailureAnalytics).not.toHaveBeenCalled();
+  });
+
+  it('leaves an account key unchanged: team-wide by default', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(authedAccount());
+    await GET(makeRequest(URL_BASE));
+    expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([OWN, OTHER]);
+  });
+});

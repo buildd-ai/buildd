@@ -9,9 +9,15 @@
  *
  * Both require `Authorization: Bearer <DISPATCH_TOKEN>`, the token set in the
  * workspace's webhookConfig.
+ *
+ * Two agent classes, one per container size (runner-class.ts). A dispatch
+ * goes to the class buildd names for the task (`resolveSize`); a resume to the
+ * class whose agent parked that worker; GET and kill to whichever class holds
+ * the task's latest run.
  */
 import { isValidTaskId, type DispatchRequest, type RunState } from './lifecycle';
 import type { DispatchResult, ScheduleDispatchResult } from './supervisor';
+import { FALLBACK_DECISION, type RunnerSize, type RunnerSizeDecision } from './runner-class';
 
 /**
  * How far ahead a `task.scheduled` may point. buildd sends nothing further
@@ -42,13 +48,54 @@ export interface DispatcherEnv {
 export interface AgentHandle {
   dispatch(request?: DispatchRequest): Promise<DispatchResult>;
   /** `task.scheduled`: start a run at `notBefore` (epoch ms); a past one starts now. */
-  scheduleDispatch(notBefore: number): Promise<ScheduleDispatchResult>;
+  scheduleDispatch(notBefore: number, runnerSize?: RunnerSizeDecision): Promise<ScheduleDispatchResult>;
   getRunState(): Promise<RunState>;
   /** Destroy the task's container, as an OOM kill or platform stop would. */
   killContainer(): Promise<{ killed: boolean }>;
 }
 
-export type GetAgent = (taskId: string) => Promise<AgentHandle>;
+/** The task's agent in one class. `size` absent: standard. */
+export type GetAgent = (taskId: string, size?: RunnerSize) => Promise<AgentHandle>;
+
+/** buildd's answer to "which class" (runner-class.ts fetchRunnerSize). Never throws. */
+export type ResolveSize = (taskId: string, workerId?: string) => Promise<RunnerSizeDecision>;
+
+export interface HandlerOptions {
+  /** Absent: every task is standard (the single-class behaviour). */
+  resolveSize?: ResolveSize;
+}
+
+const otherSize = (size: RunnerSize): RunnerSize => (size === 'large' ? 'standard' : 'large');
+const isLive = (s: RunState) => s.status === 'starting' || s.status === 'running';
+
+/**
+ * Which class holds the task's latest run: a live one first, else the later
+ * start, else standard. For GET and kill, which have no size to go by.
+ */
+async function agentWithLatestRun(getAgent: GetAgent, taskId: string): Promise<{ agent: AgentHandle; state: RunState }> {
+  const standard = await getAgent(taskId, 'standard');
+  const stdState = await standard.getRunState();
+  if (isLive(stdState)) return { agent: standard, state: stdState };
+  const large = await getAgent(taskId, 'large');
+  const largeState = await large.getRunState();
+  if (isLive(largeState) || (largeState.startedAt ?? 0) > (stdState.startedAt ?? 0)) return { agent: large, state: largeState };
+  return { agent: standard, state: stdState };
+}
+
+/**
+ * A resume must reach the agent that parked the worker, whatever buildd says
+ * now (its answer is a first guess: the class may have changed since the park,
+ * or buildd may not have answered). The other class is asked only when the
+ * guess does not hold it.
+ */
+async function agentForResume(getAgent: GetAgent, taskId: string, workerId: string, guess: RunnerSize): Promise<{ agent: AgentHandle; size: RunnerSize }> {
+  const parks = (s: RunState) => s.status === 'exited' && s.outcome === 'parked' && s.workerId === workerId;
+  const first = await getAgent(taskId, guess);
+  if (parks(await first.getRunState())) return { agent: first, size: guess };
+  const other = await getAgent(taskId, otherSize(guess));
+  if (parks(await other.getRunState())) return { agent: other, size: otherSize(guess) };
+  return { agent: first, size: guess };
+}
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -92,7 +139,9 @@ export async function handleRequest(
   env: DispatcherEnv,
   getAgent: GetAgent,
   now: () => number = () => Date.now(),
+  opts: HandlerOptions = {},
 ): Promise<Response> {
+  const resolveSize: ResolveSize = opts.resolveSize ?? (async () => FALLBACK_DECISION);
   const url = new URL(request.url);
   const isDispatch = url.pathname === '/dispatch';
   const taskMatch = /^\/tasks\/([^/]+)$/.exec(url.pathname);
@@ -128,8 +177,9 @@ export async function handleRequest(
       if (notBefore - now() > SCHEDULE_MAX_AHEAD_MS + SCHEDULE_CLOCK_SKEW_MS) {
         return json({ error: 'not_before_too_far' }, 400);
       }
-      const agent = await getAgent(taskId);
-      return json({ taskId, ...(await agent.scheduleDispatch(notBefore)) }, 202);
+      const runnerSize = await resolveSize(taskId);
+      const agent = await getAgent(taskId, runnerSize.size);
+      return json({ taskId, runnerSize: runnerSize.size, ...(await agent.scheduleDispatch(notBefore, runnerSize)) }, 202);
     }
     const dispatchRequest: DispatchRequest = {};
     if (b.event === 'task.resume') {
@@ -138,11 +188,22 @@ export async function handleRequest(
       dispatchRequest.resumeWorkerId = b.workerId;
     }
 
-    const agent = await getAgent(taskId);
+    // The class comes from buildd (runner size route), never from the body.
+    const runnerSize = await resolveSize(taskId, dispatchRequest.resumeWorkerId);
+    let agent: AgentHandle;
+    let size = runnerSize.size;
+    if (dispatchRequest.resumeWorkerId) {
+      ({ agent, size } = await agentForResume(getAgent, taskId, dispatchRequest.resumeWorkerId, runnerSize.size));
+    } else {
+      agent = await getAgent(taskId, size);
+    }
+    dispatchRequest.runnerSize = size === runnerSize.size ? runnerSize : { size, source: 'pinned', reason: null };
+    // Container reuse keys on the workspace buildd named (container-lease.ts), never the body's.
+    if (!dispatchRequest.resumeWorkerId && runnerSize.workspaceId) dispatchRequest.workspaceId = runnerSize.workspaceId;
     const result = await agent.dispatch(dispatchRequest);
     // 202 for a duplicate too: buildd treats a non-2xx as "webhook failed" and
     // falls back to Pusher, which would let a polling runner race this one.
-    return json({ taskId, ...result }, 202);
+    return json({ taskId, runnerSize: size, ...result }, 202);
   }
 
   if (killMatch) {
@@ -154,7 +215,7 @@ export async function handleRequest(
       return json({ error: 'invalid_task_id' }, 400);
     }
     if (!isValidTaskId(killId)) return json({ error: 'invalid_task_id' }, 400);
-    const agent = await getAgent(killId);
+    const { agent } = await agentWithLatestRun(getAgent, killId);
     return json({ taskId: killId, ...(await agent.killContainer()) }, 200);
   }
 
@@ -166,6 +227,6 @@ export async function handleRequest(
     return json({ error: 'invalid_task_id' }, 400);
   }
   if (!isValidTaskId(taskId)) return json({ error: 'invalid_task_id' }, 400);
-  const agent = await getAgent(taskId);
-  return json(await agent.getRunState(), 200);
+  const { state } = await agentWithLatestRun(getAgent, taskId);
+  return json(state, 200);
 }

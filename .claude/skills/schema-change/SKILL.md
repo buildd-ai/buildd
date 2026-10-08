@@ -83,8 +83,30 @@ introspects the live schema and throws `BackfillContradictedError` if the DDL is
 genuinely absent. So a collision is a **loud failed deploy**, not a missing
 column. That is why it must be fixed before merging, not discovered after.
 
-Do not try to "fix" the handful of historical below-mark journal entries. They
-predate the guard and production has their DDL.
+One exception, on a throwaway database only: `visual-qa.yml` sets
+`MIGRATION_CI_CLONE_APPLY_ABSENT=1` (honoured only in GitHub Actions) so a
+mission branch's below-mark migration whose DDL is **wholly** absent is executed
+on the prod clone instead of refused. Partly present DDL still fails there, and
+prod deploys never see the flag.
+
+## The squashed baseline
+
+Every migration released up to `v0.284.0` (through `0250_shallow_bushwacker`)
+lives in one file, `drizzle/0000_baseline.sql`: a `pg_dump` of the schema, with
+`"baseline": true` and 0250's `when` in the journal. The old files and
+snapshots are in git history before the squash. Read them with
+`git show v0.284.0:packages/core/drizzle/<file>.sql`, not from the tree.
+
+- **Never edit the baseline.** It runs only on an empty tracking table, which
+  means fresh DBs: CI, demo, local Docker. Every released DB skips it. A change
+  belongs in a new migration, as always.
+- New migrations keep numbering after the last journal `idx`, not after the
+  file count. `db:generate` does this for you, so `0254` follows `0253`.
+- A DB with tracking rows whose newest row is older than the baseline's `when`
+  fails with `PreBaselineDatabaseError`. Migrate it with `v0.284.0` first, or
+  start it fresh. Do not hand-insert tracking rows to get past it.
+- To squash again later, cut only at a migration that is on `main`. Prod has to
+  hold that migration's row, or every released DB would hit the error above.
 
 ## Dropping a table or column
 

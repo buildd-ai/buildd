@@ -99,4 +99,24 @@ describe('GET /api/connectors/mounted', () => {
     const body = await res.json();
     expect(body.error).toBe('workspace_not_found');
   });
+
+  describe('per-task token', () => {
+    const scoped = (workspaceId: string) => ({
+      id: 'acc-1', level: 'worker', teamId: 'team-1', taskScope: { taskId: 't-1', workspaceId, expiresAt: Date.now() + 60_000 },
+    });
+
+    it('lists connectors mounted in its own task’s workspace', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(scoped(WORKSPACE_ID));
+      const res = await GET(makeRequest());
+      expect(res.status).toBe(200);
+      expect(mockListMountedConnectors).toHaveBeenCalledWith(WORKSPACE_ID);
+    });
+
+    it('404s another workspace the account reaches, without listing it', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(scoped('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'));
+      const res = await GET(makeRequest());
+      expect(res.status).toBe(404);
+      expect(mockListMountedConnectors).not.toHaveBeenCalled();
+    });
+  });
 });

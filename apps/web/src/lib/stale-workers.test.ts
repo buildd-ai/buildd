@@ -106,6 +106,12 @@ mock.module('@/lib/worker-deliverables', () => ({
   getLatestWorkerArtifactWithStructuredOutput: mockGetLatestWorkerArtifactWithStructuredOutput,
 }));
 
+// Workflow kernel (lib/workflow/*; real-SQL suite in apps/web/tests/db/workflow-seam.test.ts).
+let kernelOwned: string | null = null;
+mock.module('@/lib/workflow/authority', () => ({ kernelDeliveryById: async () => kernelOwned }));
+const mockWorkflowAttemptEnded = mock(async (_p: any) => ({ handled: true }));
+mock.module('@/lib/workflow/seam', () => ({ attemptEnded: mockWorkflowAttemptEnded }));
+
 // Every requeue and continuation here wakes through the dispatch authority.
 // Full export surface: mock.module is process-global.
 const mockAnnounceTaskCreated = mock(async (_task: any, _workspace: any) => {});
@@ -118,7 +124,7 @@ mock.module('@/lib/dispatch-authority', () => ({
   enqueueTaskDispatch: mock(async () => {}),
   drainDispatchOutbox: mock(async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 })),
   deliverTaskDispatch: mock(async () => 'pusher'),
-  routeForCause: mock(() => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false })),
+  routeForCause: mock(() => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false })),
   webhookWants: mock(() => false),
   primaryCause: mock((_c: unknown, fallback: unknown) => fallback),
   reseedDispatchTimer: mock(async () => {}),
@@ -230,6 +236,67 @@ describe('cleanupStuckWaitingInput', () => {
     expect(workerUpdateSet).not.toBeNull();
     expect(workerUpdateSet.status).toBe('failed');
     expect(workerUpdateSet.exitCause).toBe('needs_input');
+  });
+
+  it('ends a kernel fix attempt through the seam (lost) and files no unlinked clone', async () => {
+    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: { type: 'question', prompt: 'q' } },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', title: 'Fix', description: 'd', priority: 0, context: { workflowAttemptId: 'a1' },
+      deliveryId: 'd1', deliveryRole: 'review_fix', requiredCapabilities: [], missionId: null,
+    });
+    kernelOwned = 'd1';
+    mockWorkflowAttemptEnded.mockClear();
+    mockTasksInsert.mockClear();
+    try {
+      const result = await cleanupStuckWaitingInput('account-1');
+      expect(result.retriedTasks).toBe(0);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({
+        task: { id: 'task-1', deliveryId: 'd1', deliveryRole: 'review_fix' },
+        workerId: 'w1',
+        status: 'lost',
+      });
+    } finally {
+      kernelOwned = null;
+    }
+  });
+
+  // Final kernel audit (task 708a55c0): the sweep sent localHeadSha null and
+  // commitCount 0 whatever the worker had, so the reducer read an owner attempt
+  // with unpushed commits as safe and handed the remote head to review instead
+  // of AWAITING_PUSH (§9, AC-10). It now passes what the worker reported.
+  it('passes a kernel owner attempt\'s local head and commit count to the seam', async () => {
+    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: { type: 'question', prompt: 'q' }, lastCommitSha: 'local-h2', commitCount: 3 },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', title: 'Build', description: 'd', priority: 0, context: {},
+      deliveryId: 'd1', deliveryRole: 'owner', requiredCapabilities: [], missionId: null,
+    });
+    kernelOwned = 'd1';
+    mockWorkflowAttemptEnded.mockClear();
+    mockWorkersFindMany.mockClear();
+    try {
+      await cleanupStuckWaitingInput('account-1');
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({
+        task: { id: 'task-1', deliveryId: 'd1', deliveryRole: 'owner' },
+        workerId: 'w1',
+        status: 'lost',
+        localHeadSha: 'local-h2',
+        commitCount: 3,
+      });
+      // The query must select them, or the values above never reach the seam in production.
+      const cols = (mockWorkersFindMany.mock.calls[0] as any[])[0]?.columns ?? {};
+      expect(cols).toMatchObject({ lastCommitSha: true, commitCount: true });
+    } finally {
+      kernelOwned = null;
+    }
   });
 
   it('does not touch waiting_input workers under 24 hours old', async () => {
@@ -983,6 +1050,64 @@ describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () =
     expect(taskUpdateSet.result.prUrl).toBe('https://github.com/org/repo/pull/1591');
     expect(taskUpdateSet.result.prNumber).toBe(1591);
     expect(taskUpdateSet.result.reaperAutoCompleted).toBe(true);
+  });
+
+  it('S9: a kernel attempt with only local commits is never promoted to completed (§9)', async () => {
+    kernelOwned = 'delivery-1';
+    try {
+      mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+      mockWorkersFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'w-k', taskId: 'task-k', prUrl: 'https://github.com/org/repo/pull/7', prNumber: 7, commitCount: 2, branch: 'buildd/k', error: null }])
+        .mockResolvedValue([]); // no other live workers; no prior failed workers (so: an infra requeue)
+      mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-k', workspaceId: 'ws-1' }]);
+      mockTasksFindFirst.mockResolvedValue({ status: 'assigned', category: 'bug', context: { workflowAttemptId: 'a1' }, deliveryId: 'delivery-1', deliveryRole: 'fix', parentTaskId: null });
+      mockCheckWorkerDeliverables.mockReturnValue({ hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'PR #7, 2 commits' });
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({ set: mock((vals: any) => { sets.push(vals); return { where: mock(() => Promise.resolve()) }; }) });
+
+      await cleanupStaleWorkers('account-1');
+
+      expect(sets.some((v) => v.status === 'completed')).toBe(false);
+      expect(sets.some((v) => v.result?.reaperAutoCompleted)).toBe(false);
+      // An infra requeue resumes the same branch; it is not an attempt end (§5.7 rule 2).
+      expect(sets.some((v) => v.status === 'pending' && v.context?.resumeBranch === 'buildd/k')).toBe(true);
+    } finally {
+      kernelOwned = null;
+      mockTasksFindFirst.mockReset();
+      mockWorkersFindMany.mockReset();
+    }
+  });
+
+  it('S9: a kernel attempt the reaper ends for good reports AttemptEnded(lost) to the kernel', async () => {
+    kernelOwned = 'delivery-1';
+    mockWorkflowAttemptEnded.mockClear();
+    try {
+      mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+      mockWorkersFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'w-k', taskId: 'task-k', prUrl: null, prNumber: null, commitCount: 1, branch: 'buildd/k', error: null }])
+        .mockResolvedValueOnce([])
+        // resolveStaleTask: failed workers already at the retry cap → permanent fail
+        .mockResolvedValue([{ id: 'f1', exitCause: null }, { id: 'f2', exitCause: null }, { id: 'f3', exitCause: null }]);
+      mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-k', workspaceId: 'ws-1' }]);
+      mockTasksFindFirst
+        .mockResolvedValueOnce({ status: 'assigned', category: 'bug', context: { workflowAttemptId: 'a1' }, deliveryId: 'delivery-1', deliveryRole: 'fix' })
+        .mockResolvedValue({ status: 'failed', parentTaskId: null });
+      mockCheckWorkerDeliverables.mockReturnValue({ hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: '1 commit' });
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+      await cleanupStaleWorkers('account-1');
+
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({
+        task: { id: 'task-k', deliveryId: 'delivery-1', deliveryRole: 'fix' }, workerId: 'w-k', status: 'lost', localHeadSha: null,
+      });
+    } finally {
+      kernelOwned = null;
+      mockTasksFindFirst.mockReset();
+      mockWorkersFindMany.mockReset();
+    }
   });
 
   it('promotes task to completed when heartbeat-expired worker has artifact but no PR', async () => {

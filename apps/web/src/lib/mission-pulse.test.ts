@@ -155,15 +155,20 @@ describe('deriveFeedTaskState — a just-green PR is still merging (shared with 
 });
 
 describe('deriveFeedTaskState', () => {
+  it('ignores a stale waiting worker and open note on a finished task', () => {
+    const task = t('done', { status: 'completed', worker: { status: 'waiting_input', prLifecycleStatus: 'closed' } });
+    expect(deriveFeedTaskState({ task, attempts: [] }, { openQuestions: new Map([['done', new Date()]]) }).needsYou).toBeNull();
+  });
+
   const row = (task: MissionFeedTaskInput, attempts: MissionFeedTaskInput[] = []) => ({ task, attempts });
 
   it('waiting_input needs you', () => {
     expect(deriveFeedTaskState(row(t('a', { status: 'in_progress', worker: { status: 'waiting_input' } })))).toMatchObject({ state: 'needs_you', needsYou: 'input' });
   });
   it('an open mission question or decision naming the task needs you', () => {
-    const q = t('q', { status: 'completed' });
+    const q = t('q', { status: 'in_progress', worker: { status: 'waiting_input' } });
     expect(deriveFeedTaskState(row(q), { openQuestions: new Map([['q', new Date()]]) }).needsYou).toBe('question');
-    expect(deriveFeedTaskState(row(q), { openDecisions: new Map([['q', new Date()]]) }).needsYou).toBe('decision');
+    expect(deriveFeedTaskState(row(t('q')), { openDecisions: new Map([['q', new Date()]]) }).needsYou).toBe('decision');
   });
   it('a completed task with an open PR awaits your merge; merged is done', () => {
     expect(deriveFeedTaskState(row(t('a', { status: 'completed', worker: { status: 'completed', prNumber: 7 } }))).needsYou).toBe('pr');

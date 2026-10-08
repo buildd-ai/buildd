@@ -1,6 +1,6 @@
 {
   "name": "@builddai/ai-kit",
-  "version": "0.17.0",
+  "version": "0.20.0",
   "description": "Chat contract, tool permissions, model plans and Jev decisions for apps that use buildd's model economy",
   "license": "Apache-2.0",
   "type": "module",
@@ -21,7 +21,10 @@
     "tool-permissions"
   ],
   "exports": {
+    "./models/provider-keys": "./src/models/provider-keys.ts",
+    "./models/routes": "./src/models/routes.ts",
     "./models": "./src/models/index.ts",
+    "./policy": "./src/policy/index.ts",
     "./decide": "./src/decide/index.ts",
     "./chat/contract": "./src/chat/contract/index.ts",
     "./chat/server": "./src/chat/server/index.ts",

@@ -1,1 +1,0 @@
-ALTER TABLE "artifacts" ADD COLUMN "visibility" text DEFAULT 'private' NOT NULL;

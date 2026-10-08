@@ -13,7 +13,11 @@ import { signLandingActionToken, type LandingAction } from '@/lib/landing-action
 
 /** A fix task nobody claimed or pushed from within this long is the operator's problem. */
 export const FIX_PICKUP_BOUND_MS = 30 * 60_000;
-/** Approved + green and still not merged after this long, whatever the outcome says. */
+/**
+ * Still not merged and no landing progress for this long, whatever the outcome says.
+ * Measured from the last progress (see `progressFingerprint`), not from when the
+ * PR was first held: a refreshed head with CI running is a PR landing, not a stuck one.
+ */
 export const INVARIANT_ALARM_MS = 45 * 60_000;
 
 /** `needs_human:<cause>` | `fix_stuck:<fix>` | `invariant`. */
@@ -23,7 +27,8 @@ export type PageReason = string;
 const UNPAGED_CAUSES: ReadonlySet<HumanCause> = new Set(['human_tier', 'landing_error', 'github_unreadable', 'pr_closed']);
 
 const CAUSE_WORDS: Partial<Record<HumanCause, string>> = {
-  refresh_exhausted: 'it lost the race to the base branch',
+  refresh_exhausted: 'it lost the race to the base branch (retrying next cycle)',
+  refresh_unsafe: 'the base keeps changing the same files (retrying next cycle)',
   refresh_failed: 'its branch could not be updated from the base (not a conflict)',
   semantic_unverified: 'it and the base edit the same files and the overlap could not be verified',
   fix_exhausted: 'the automatic fixes ran out of attempts',
@@ -72,6 +77,7 @@ type Override = { verdict?: boolean; size?: boolean; freshness?: boolean };
 /** The override `landPr` honours for a "merge anyway" on this cause, or null when a person may not override it. */
 const MERGE_ANYWAY: Record<string, Override> = {
   'needs_human:refresh_exhausted': { freshness: true },
+  'needs_human:refresh_unsafe': { freshness: true },
   'needs_human:size_cap': { size: true },
   'needs_human:blocking_verdict': { verdict: true },
   'needs_human:low_confidence': { verdict: true },
@@ -139,7 +145,15 @@ export interface LandingAlertInput {
   taskId: string | null;
   outcome: LandingOutcome;
   approvedAt?: string | null;
+  /** The check-run state landing read on `headSha`; null/absent when it did not get that far. */
+  checks?: ChecksState | null;
+  /** The reason landing gave for this outcome, so a stuck page can name what it is waiting on. */
+  outcomeReason?: string | null;
+  /** For re-reading the live head just before a send. */
+  installationId?: number;
 }
+
+export type ChecksState = 'green' | 'pending' | 'red';
 
 export interface PagePayload {
   title: string;
@@ -153,6 +167,15 @@ export interface LandingAlertDeps {
   now: () => number;
   /** The ISO time a named clock first started for this task. `startIfAbsent` starts it now; absent and not starting → null. */
   observe: (taskId: string, key: string, nowIso: string, startIfAbsent: boolean) => Promise<string | null>;
+  /**
+   * The ISO time the landing state last changed: records `fingerprint` as current
+   * and returns when it became current (now, when it differs from the stored one).
+   */
+  markProgress: (taskId: string, fingerprint: string, nowIso: string) => Promise<string>;
+  /** When the newest review round on the PR was dispatched or concluded (epoch ms), or null. */
+  lastReviewAt?: (workspaceId: string, prNumber: number) => Promise<number | null>;
+  /** The PR's head right now, or null when it cannot be read. A page for any other head is stale. */
+  readLiveHead?: (input: LandingAlertInput) => Promise<string | null>;
   /** Whether any page was already sent for this head (`<workspace>:<pr>:<head>:` prefix). */
   hasPagedHead: (taskId: string, headPrefix: string) => Promise<boolean>;
   /** Atomic claim: true for exactly one caller per key. */
@@ -184,8 +207,37 @@ export function plainReason(reason: PageReason): string {
   const [family, detail = ''] = reason.split(':');
   if (family === 'fix_stuck') return FIX_WORDS[detail as FixKind] ?? 'its fix was not picked up';
   if (family === 'needs_human') return CAUSE_WORDS[detail as HumanCause] ?? 'it needs a person';
-  return 'approved and green, still not merged';
+  return 'landing has stopped making progress';
 }
+
+/**
+ * What counts as landing progress, as one comparable string: the head landing
+ * is working on (a refresh's new head, not the one it replaced), the coarse
+ * stage, and the newest review round. Any of these changing restarts the
+ * invariant clock. `updating_branch` and `waiting_ci` are one stage: both are
+ * "this head is waiting on its checks", so flipping between them is not progress.
+ */
+export function progressFingerprint(outcome: LandingOutcome, headSha: string, reviewAt: number | null): string {
+  const stage =
+    outcome.kind === 'needs_fix' ? `fix:${outcome.fix}`
+      : outcome.kind === 'needs_human' ? `human:${outcome.cause}`
+        : 'waiting';
+  return `${headSha}|${stage}|${reviewAt ?? ''}`;
+}
+
+/** The head an outcome is about: a refresh has moved on to the head it produced. */
+const workingHead = (input: LandingAlertInput): string =>
+  input.outcome.kind === 'updating_branch' && input.outcome.newHeadSha ? input.outcome.newHeadSha : input.headSha;
+
+/** Live check state for the copy: only what landing observed on this head, never assumed green. */
+function checksFor(input: LandingAlertInput): ChecksState | null {
+  if (input.outcome.kind === 'needs_fix' && input.outcome.fix === 'ci_fix') return 'red';
+  // A refresh pushed a new head: its checks have only just started.
+  if (input.outcome.kind === 'updating_branch') return 'pending';
+  return input.checks ?? null;
+}
+
+const CHECK_WORDS: Record<ChecksState, string> = { green: 'checks green', pending: 'checks pending', red: 'checks red' };
 
 export function buildLandingPageCopy(i: {
   prNumber: number;
@@ -194,16 +246,21 @@ export function buildLandingPageCopy(i: {
   detail: string;
   approvedAgeMs?: number | null;
   stuckMs: number;
+  checks?: ChecksState | null;
+  /** Time since the last landing progress; shown when it differs from `stuckMs`. */
+  quietMs?: number | null;
 }): { title: string; message: string } {
-  const red = i.reason === 'fix_stuck:ci_fix';
+  const checks = i.reason === 'fix_stuck:ci_fix' ? 'red' : (i.checks ?? null);
+  const quiet = i.quietMs != null && i.quietMs >= 60_000 && formatDuration(i.quietMs) !== formatDuration(i.stuckMs) ? i.quietMs : null;
   const facts = [
     i.approvedAgeMs != null && i.approvedAgeMs >= 60_000 ? `Approved ${formatDuration(i.approvedAgeMs)} ago` : null,
-    red ? 'checks red' : 'checks green',
+    checks ? CHECK_WORDS[checks] : null,
     i.stuckMs >= 60_000 ? `stuck ${formatDuration(i.stuckMs)}` : null,
+    quiet != null ? `no progress for ${formatDuration(quiet)}` : null,
   ].filter(Boolean);
   return {
     title: `PR #${i.prNumber} won't land: ${plainReason(i.reason)}`,
-    message: [i.prTitle ?? `PR #${i.prNumber}`, `${facts.join(' · ')}.`, i.detail].join('\n'),
+    message: [i.prTitle ?? `PR #${i.prNumber}`, facts.length ? `${facts.join(' · ')}.` : null, i.detail].filter(Boolean).join('\n'),
   };
 }
 
@@ -225,31 +282,54 @@ export async function alertOnLanding(input: LandingAlertInput, deps: LandingAler
 
     const nowMs = deps.now();
     const nowIso = new Date(nowMs).toISOString();
+    const head = workingHead(input);
+    const keyed = { ...input, headSha: head };
     const heldSince = Date.parse((await deps.observe(taskId, 'held', nowIso, true)) ?? nowIso);
     const stuckMs = Math.max(0, nowMs - (Number.isFinite(heldSince) ? heldSince : nowMs));
     const approvedAgeMs = input.approvedAt && Number.isFinite(Date.parse(input.approvedAt)) ? nowMs - Date.parse(input.approvedAt) : null;
+    const reviewAt = deps.lastReviewAt ? await deps.lastReviewAt(input.workspaceId, input.prNumber).catch(() => null) : null;
+    const progressSince = Date.parse(await deps.markProgress(taskId, progressFingerprint(outcome, head, reviewAt), nowIso));
+    const quietMs = Math.max(0, nowMs - (Number.isFinite(progressSince) ? progressSince : nowMs));
 
     let reason = reasonOf(outcome);
     let detail = outcome.kind === 'needs_human' || outcome.kind === 'needs_fix' ? outcome.reason : '';
     let priority: 0 | 1 = 0;
 
     if (outcome.kind === 'needs_fix') {
-      const since = Date.parse((await deps.observe(taskId, `fix:${input.headSha}`, nowIso, true)) ?? nowIso);
+      const since = Date.parse((await deps.observe(taskId, `fix:${head}`, nowIso, true)) ?? nowIso);
       if (nowMs - since < FIX_PICKUP_BOUND_MS) reason = null;
     }
 
     if (!reason) {
-      if (stuckMs < INVARIANT_ALARM_MS) return;
-      if (await deps.hasPagedHead(taskId, headPrefix(input))) return;
+      // A progressing PR is never paged, however long it has been held overall.
+      if (quietMs < INVARIANT_ALARM_MS) return;
+      if (await deps.hasPagedHead(taskId, headPrefix(keyed))) return;
       reason = 'invariant';
       priority = 1;
-      detail = 'No landing outcome has explained why it is still open.';
+      const waitingOn = input.outcomeReason?.trim().replace(/\.+$/, '');
+      detail = `Nothing has moved on this commit for ${formatDuration(quietMs)}${waitingOn ? `. Last landing check: ${waitingOn}` : ''}.`;
     }
 
-    if (!(await deps.claimKey(taskId, pageKey(input, reason)))) return;
+    // The decision is about `head`. If the PR moved since, this advice is stale:
+    // the new head gets its own landing pass, and its own page if it earns one.
+    if (deps.readLiveHead) {
+      const live = await deps.readLiveHead(input).catch(() => null);
+      if (live && live !== head) return;
+    }
+
+    if (!(await deps.claimKey(taskId, pageKey(keyed, reason)))) return;
 
     const plan = actionsForReason(reason);
-    const copy = buildLandingPageCopy({ prNumber: input.prNumber, prTitle: input.prTitle, reason, detail, approvedAgeMs, stuckMs });
+    const copy = buildLandingPageCopy({
+      prNumber: input.prNumber,
+      prTitle: input.prTitle,
+      reason,
+      detail,
+      approvedAgeMs,
+      stuckMs,
+      checks: checksFor(input),
+      quietMs: reason === 'invariant' ? quietMs : null,
+    });
     const base = `${deps.appUrl().replace(/\/$/, '')}/app/prs/${input.prNumber}/act`;
     if (plan.primary === 'review_on_github') {
       // Nothing for buildd to run: one tap should open the diff itself.
@@ -260,7 +340,7 @@ export async function alertOnLanding(input: LandingAlertInput, deps: LandingAler
       return;
     }
     const token = signLandingActionToken(
-      { workspaceId: input.workspaceId, prNumber: input.prNumber, headSha: input.headSha, action: plan.primary, reason },
+      { workspaceId: input.workspaceId, prNumber: input.prNumber, headSha: head, action: plan.primary, reason, taskId },
       nowMs,
     );
     await deps.send(
