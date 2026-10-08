@@ -223,6 +223,8 @@ this spec's `last_verified` date.
 |---|---|---|---|---|
 | `apps/web/src/app/api/workspaces/[id]/config/route.ts:147` | write workspace config | owner, admin | admin | `manage_workspace_settings` |
 | `apps/web/src/app/api/workspaces/[id]/route.ts:218` | PATCH git config, access mode, data class, connector gate, webhook | owner, admin | admin (route policy) | `manage_workspace_settings` |
+| `apps/web/src/app/api/workspaces/[id]/settings/route.ts:53` | PATCH work tracker config | owner, admin | admin | `manage_workspace_settings` |
+| `apps/web/src/app/api/workspaces/route.ts:217` | POST create a workspace in the target team (a member is refused, not moved to their personal team) | owner, admin, personal team | admin | `create_workspace` |
 | `apps/web/src/app/api/workspaces/[id]/route.ts:453` | DELETE workspace | owner | — | `delete_workspace` |
 | `apps/web/src/app/app/(protected)/workspaces/[id]/config/page.tsx:80` | UI: config admin sections | owner, admin | — | `manage_workspace_settings` |
 | `apps/web/src/app/app/(protected)/workspaces/[id]/page.tsx:156` | UI: connect a repo | owner, admin | — | `manage_workspace_settings` |
@@ -250,6 +252,12 @@ this spec's `last_verified` date.
 | `apps/web/src/app/api/connectors/route.ts:162` | create a connector | owner, admin (oddity 1) | admin (route policy, oddity 2) | `manage_connectors` |
 | `apps/web/src/app/api/connectors/[id]/shares/route.ts:75` | manage connector shares | owner, admin (oddity 1) | admin (route policy, oddity 2) | `manage_connectors` |
 | `apps/web/src/app/api/connectors/[id]/transfer/route.ts:83` | transfer a connector (both teams) | owner, admin (oddity 1) | admin (route policy, oddity 2) | `manage_connectors` |
+| `apps/web/src/app/api/workspaces/[id]/connectors/route.ts:136` | enable or disable a connector in a workspace | owner, admin | admin (in-route) | `manage_connectors` |
+| `apps/web/src/app/api/roles/route.ts:108` | create a team-level role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/roles/[id]/route.ts:47` | edit or delete a role, or make a skill one | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/roles/[id]/overrides/route.ts:81` | write a role's workspace override | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/workspaces/[id]/skills/route.ts:57` | create or upsert a workspace role (skill CRUD, `isRole`) | owner, admin | admin (in-route) | `manage_agent_roles` |
+| `apps/web/src/app/api/workspaces/[id]/skills/[skillId]/route.ts:55` | edit or delete a workspace role, or make a skill one | owner, admin | admin (in-route) | `manage_agent_roles` |
 | `apps/web/src/app/api/evidence-backends/route.ts:56` | create a backend | owner, admin | admin | `manage_evidence_backends` |
 | `apps/web/src/app/api/evidence-backends/[id]/route.ts:56` | edit a backend | owner, admin | admin | `manage_evidence_backends` |
 | `apps/web/src/app/api/evidence-backends/[id]/route.ts:99` | delete a backend | owner, admin | admin | `manage_evidence_backends` |
@@ -266,8 +274,6 @@ route moves onto the permission. All are overridable.
 | `assign_team_roles` | move a member between member and admin (owner moves stay `assign_team_owner`) | owner, admin | — |
 | `manage_team_credentials` | write or delete a team- or workspace-wide agent credential not covered by `manage_team_model_keys`, incl. workspace Claude/Codex credentials | owner, admin | admin |
 | `manage_team_notifications` | team notification settings (Pushover, notify webhook) | owner, admin | admin |
-| `create_workspace` | create a workspace in the team | owner, admin | admin |
-| `manage_agent_roles` | create, edit and delete agent roles and their workspace overrides (operator grant, MCP servers, required env vars, connectors) | owner, admin | admin |
 
 ### Oddities, reproduced not fixed
 
@@ -299,9 +305,11 @@ route moves onto the permission. All are overridable.
 6. **Writes with no role gate.** For a session, these need only membership:
    deleting an API key (`apps/web/src/app/api/accounts/[id]/route.ts`), editing
    or deleting a connector, deleting a memory, secrets other than the team
-   model key, a workspace's name/repo/branch, and the mission, task, schedule
-   and skill admin routes (those hold API keys to admin, but not sessions).
-   They are not permission decisions today, so they are not in the registry.
+   model key, a workspace's name/repo/branch/concurrency cap, and the mission,
+   task and schedule admin routes (those hold API keys to admin, but not
+   sessions). Skill CRUD is in this list only for plain skills (`isRole`
+   false); a role needs `manage_agent_roles`. They are not permission
+   decisions today, so they are not in the registry.
 7. **Owner-only where admin may be intended.** Deleting a workspace (an admin
    gets 404) and changing any member's role (an admin cannot even move
    member↔admin) are owner-only. Reproduced as `delete_workspace` and

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { roleHas } from '@/lib/permission-registry';
 
 const mockGetCurrentUser = mock(() => null as any);
 const mockWorkspaceSkillsFindFirst = mock(() => null as any);
@@ -19,6 +20,13 @@ mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
   verifyAccountWorkspaceAccess: mock(() => Promise.resolve(false)),
 }));
+
+// The caller's role per team; `can` resolves through the real registry.
+// Existing cases run as the team owner.
+let teamRoles: Record<string, string> = { team1: 'owner' };
+const mockCan = mock(async (caller: any, permission: any, teamId: string) =>
+  caller.kind === 'user' && roleHas(teamRoles[teamId], permission, {}));
+mock.module('@/lib/permissions', () => ({ can: mockCan }));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -298,4 +306,47 @@ describe('POST /api/roles/[id]/overrides', () => {
     const setValues = mockSet.mock.calls[0][0] as { metadata: Record<string, any> };
     expect(setValues.metadata).toEqual({ routing: { disabled: true }, operator: { enabled: true, capabilities: ['deployments:write'] } });
   });
+});
+
+// manage_agent_roles (docs/specs/team-permissions.md)
+describe('POST /api/roles/[id]/overrides: manage_agent_roles', () => {
+  const ID = TEAM_ROLE.id;
+  let values: ReturnType<typeof mock>;
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
+    mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
+    mockWorkspaceSkillsFindFirst.mockReset();
+    mockWorkspaceSkillsFindFirst
+      .mockImplementationOnce(() => Promise.resolve(TEAM_ROLE))
+      .mockImplementationOnce(() => Promise.resolve(null));
+    values = mock(() => ({ returning: mock(() => Promise.resolve([{ ...TEAM_ROLE, id: 'o1', workspaceId: 'ws1' }])) }));
+    mockWorkspaceSkillsInsert.mockReset();
+    mockWorkspaceSkillsInsert.mockReturnValue({ values });
+    mockWorkspaceSkillsUpdate.mockReset();
+  });
+
+  const post = () => POST(new NextRequest(`http://localhost/api/roles/${ID}/overrides`, {
+    method: 'POST',
+    body: JSON.stringify({ workspaceId: 'ws1', allowedTools: ['Read'] }),
+  }), { params: Promise.resolve({ id: ID }) });
+
+  it('refuses a team member and writes nothing', async () => {
+    teamRoles = { team1: 'member' };
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect(values).not.toHaveBeenCalled();
+    expect(mockWorkspaceSkillsUpdate).not.toHaveBeenCalled();
+    expect(mockCan).toHaveBeenCalledWith({ kind: 'user', userId: 'user1' }, 'manage_agent_roles', 'team1');
+  });
+
+  for (const role of ['owner', 'admin']) {
+    it(`lets a team ${role} write an override`, async () => {
+      teamRoles = { team1: role };
+      const res = await post();
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledTimes(1);
+    });
+  }
 });
