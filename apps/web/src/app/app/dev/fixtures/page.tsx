@@ -31,6 +31,7 @@ import RunnerSizeFixture from './RunnerSizeFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
 import HostedRunnerFixture from './HostedRunnerFixture';
 import InteractiveSessionsFixture from './InteractiveSessionsFixture';
+import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
     OPERATOR_ACCESS_FIXTURE_STATE,
@@ -56,6 +57,7 @@ import {
     FAILURE_KINDS_FIXTURE_STATE,
     DELIVERY_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
+    SURFACE_AUDIT_WAIVER_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
     visualReviewFixtureLinks,
@@ -95,6 +97,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_TASK_STRIP_FIXTURE_STATE) {
         return <MissionTaskStripFixture />;
+    }
+
+    if (state === SURFACE_AUDIT_WAIVER_FIXTURE_STATE) {
+        return <SurfaceAuditWaiverFixture />;
     }
 
     if (state === MISSION_LIST_EXECUTOR_FIXTURE_STATE) {
