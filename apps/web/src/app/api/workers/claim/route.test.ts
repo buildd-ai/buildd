@@ -5658,6 +5658,47 @@ describe('path-overlap claim guard', () => {
     expect(data.workers).toHaveLength(0);
   });
 
+  // The live shape (PR #3983): a trunk → mission refresh PR whose task manifest
+  // grew to every trunk file its merge touched. It changes nothing on trunk, so
+  // a trunk-bound task on one of those files is not waiting on it
+  // (./open-pr-landing-base).
+  describe('open PR into a different landing base', () => {
+    const MISSION_BRANCH = 'mission/example-integration-1a2b3c4d';
+    const trunkTask = () => ({
+      ...taskWithManifest(['apps/web/src/app/api/workers/claim/route.ts']),
+      workspace: { id: 'ws-1', gitConfig: { defaultBranch: 'dev' }, teamId: 'team-1' },
+    });
+    const refreshManifest = ['apps/web/src/app/api/workers/claim/route.ts', 'apps/web/src/lib/pr-landing.ts', 'packages/core/mcp-tools.ts'];
+
+    async function claimWith(prBaseRef: string) {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+      mockWorkersFindMany
+        .mockResolvedValueOnce([]) // active workers
+        .mockResolvedValueOnce([
+          { workspaceId: 'ws-1', taskId: 'refresh-task', prNumber: 3983, prUrl: 'https://github.com/org/repo/pull/3983', branch: 'buildd/refresh', prBaseRef, status: 'completed', prLifecycleStatus: 'open' },
+        ]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([trunkTask()])
+        .mockResolvedValueOnce([{ id: 'refresh-task', pathManifest: refreshManifest }]);
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      expect(res.status).toBe(200);
+      return res.json();
+    }
+
+    it('claims a trunk-bound task despite a refresh PR into a mission branch listing its file', async () => {
+      const data = await claimWith(MISSION_BRANCH);
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].taskId).toBe('task-1');
+    });
+
+    it('still defers when the same PR targets trunk', async () => {
+      const data = await claimWith('dev');
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+    });
+  });
+
   it('claims a task when its pathManifest does NOT overlap any open PR', async () => {
     mockAuthenticateApiKey.mockResolvedValue(apiAccount());
     setupForClaim();

@@ -117,6 +117,7 @@ import {
   type MissionInFlightRow,
   type PlannerSignals,
 } from './claim-plan-input';
+import { candidateLandingBase, partitionOpenPrsByLandingBase, workspaceTrunk } from './open-pr-landing-base';
 import { effectiveBackendOf, fireClaimPlanRecord, fireOrderedBehind, loadPlannerSignals } from './claim-plan-store';
 import {
   ClaimHoldCollector,
@@ -1757,7 +1758,15 @@ export async function POST(req: NextRequest) {
       const openPrTasks = openPrTasksByWorkspace.get(task.workspaceId) ?? [];
       // Own PRs (its earlier worker's, the PR a fix attempt fixes, its subject
       // PR) and PRs stacked on them never block it — see splitOwnOpenPrs.
-      const filterOpenPrTasks = splitOwnOpenPrs(task, openPrTasks).others;
+      // A PR into a different landing base (a trunk → mission refresh, for a
+      // trunk-bound task) changes nothing this task lands on — see
+      // ./open-pr-landing-base.
+      const taskMission = (task as any).missionId ? missionClaimMap.get((task as any).missionId) : null;
+      const trunk = workspaceTrunk(task.workspace?.gitConfig);
+      const filterOpenPrTasks = partitionOpenPrsByLandingBase(
+        { base: candidateLandingBase({ task: task as any, mission: taskMission, trunk }), trunk, manifest: taskManifest },
+        splitOwnOpenPrs(task, openPrTasks).others,
+      ).sameBase;
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
       // Note the deferral (no I/O). An applied gated START for this exact
       // state relaxes ONLY this layer; layer 2 and every
