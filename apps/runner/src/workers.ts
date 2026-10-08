@@ -29,6 +29,7 @@ import {
 // `cleanupWorktree` is deliberately NOT imported: every teardown path in this
 // file goes through removeWorktreeIfUnowned so no site can force-remove a
 // directory a live worker is sitting in. See git-operations.ts.
+import { checkpointWorktree } from './worktree-archive';
 import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
@@ -2734,9 +2735,34 @@ export class WorkerManager {
       : isSessionBudgetCap ? ('skipped:session_budget_capped' as const)
       : isSteeringDeliveryCrash ? ('skipped:infra_failure' as const)
       : closingTurnOutcome;
+    // A usage/session-limit death leaves the agent's whole session in the
+    // worktree, usually uncommitted. Save it before anything can remove the
+    // tree, and say where it went in the error so the next attempt resumes.
+    let recoveryRef: string | undefined;
+    if (isBudgetError && worker.worktreePath && worker.branch && existsSync(worker.worktreePath)) {
+      const cp = await checkpointWorktree({
+        worktreePath: worker.worktreePath,
+        branch: worker.branch,
+        workerId: worker.id,
+        reason: 'usage limit',
+      });
+      if (cp.kind === 'pushed' || cp.kind === 'archived') {
+        recoveryRef = cp.ref;
+        worker.recoveryRef = cp.ref;
+        if (cp.kind === 'pushed') worker.commits.push({ sha: cp.sha, message: 'wip: checkpoint after usage limit' });
+        worker.error = `${worker.error} [work preserved: ${cp.ref}]`;
+        sessionLog(worker.id, 'info', 'recovery_checkpoint', `Preserved work at ${cp.ref}`, worker.taskId);
+      } else if (cp.kind === 'failed') {
+        // Quiet-loss risk: the tree stays (removal archives or refuses), but
+        // nothing was written. Make that visible rather than silent.
+        worker.error = `${worker.error} [work NOT checkpointed: ${cp.error}]`;
+        sessionLog(worker.id, 'warn', 'recovery_checkpoint_failed', cp.error, worker.taskId);
+      }
+    }
     const errorPayload = {
       status: 'failed',
       error: worker.error,
+      ...(recoveryRef && worker.commits.length > 0 && { lastCommitSha: worker.commits[worker.commits.length - 1].sha }),
       ...this.terminalAttributionPayload(worker),
       ...(isBudgetError && { budgetExhausted: true }),
       ...(isSessionBudgetCap && { sessionBudgetCapped: true }),
@@ -2749,6 +2775,7 @@ export class WorkerManager {
       resultMeta: {
         ...(provisionFailure ? { provisionFailure } : {}),
         ...(mcpPreflightFailures ? { mcpPreflightFailures } : {}),
+        ...(recoveryRef ? { recoveryRef } : {}),
         closingTurnOutcome: resolvedOutcome,
       },
       ...spanPayload,
@@ -4039,6 +4066,7 @@ export class WorkerManager {
         resumeBranch: (task.context as any)?.resumeBranch,
         lastCommitSha: (task.context as any)?.lastCommitSha,
         failureContext: (task.context as any)?.failureContext,
+        recoveryRef: (task.context as any)?.recoveryRef,
         defaultBranch: gitConfig?.defaultBranch || 'main',
       });
       if (retryContinuitySection) {

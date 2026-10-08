@@ -154,6 +154,8 @@ export interface RetryContinuityOptions {
   lastCommitSha?: unknown;
   /** The prior attempt's failure context (string or `{ summary }`). */
   failureContext?: unknown;
+  /** Where the prior attempt's last work was checkpointed, from `context.recoveryRef`. */
+  recoveryRef?: unknown;
   /** The workspace default branch (e.g. `dev`/`main`) — required, always in scope. */
   defaultBranch: string;
 }
@@ -190,6 +192,7 @@ export function buildRetryContinuitySection(
       ? rawFailureCtx
       : (rawFailureCtx as { summary?: string } | undefined | null)?.summary;
 
+  const recoveryRef = typeof opts.recoveryRef === 'string' && opts.recoveryRef ? opts.recoveryRef : undefined;
   const sha = lastCommitSha ?? `origin/${resumeBranch}`;
   const failureLine = failureSummary ? [`3. The prior attempt failed with: ${failureSummary}`] : [];
   const decideStep = failureSummary ? '4' : '3';
@@ -199,6 +202,9 @@ export function buildRetryContinuitySection(
     '## Prior Attempt — Assess Before Starting',
     '',
     'A previous agent attempt left commits on this branch. Before editing any file:',
+    ...(recoveryRef
+      ? ['', `That attempt was cut off by a usage limit and its work was checkpointed at \`${recoveryRef}\` (a WIP commit). Resume from it — do not redo it.`]
+      : []),
     '',
     `1. Run \`git log --oneline origin/${resumeBranch}..HEAD\` to see what this attempt has already done.`,
     `   (If the worktree is already on \`${resumeBranch}\`, run \`git log --oneline ${sha}~1..HEAD\` instead.)`,

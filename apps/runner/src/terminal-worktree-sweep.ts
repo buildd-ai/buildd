@@ -19,10 +19,8 @@
  */
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
-import { mkdtemp } from 'fs/promises';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { existsSync, rmSync } from 'fs';
+import { archiveWorktreeWork } from './worktree-archive';
 import { isRunnerWorktreePath, WORKTREE_DIR_MARKER } from './worktree-utils';
 
 const execFileAsync = promisify(execFile);
@@ -85,37 +83,6 @@ export function mainRepoFor(worktreePath: string): string {
   return idx > 0 ? worktreePath.slice(0, idx) : worktreePath;
 }
 
-/** Commits at HEAD not on any remote. Fail-closed: an unanswerable probe is "yes". */
-async function hasUnpushedCommits(worktreePath: string): Promise<boolean> {
-  try {
-    return Number((await git(worktreePath, ['rev-list', '--count', 'HEAD', '--not', '--remotes'])).trim()) > 0;
-  } catch {
-    return true;
-  }
-}
-
-/**
- * Uncommitted work as a binary patch against HEAD: tracked edits AND
- * untracked, non-ignored files (a new source file the agent never `git add`ed
- * is work; node_modules and build output are gitignored). Built in a
- * throwaway index so the worktree's own index is never touched. Returns ''
- * for none, null if it could not be read (the caller keeps the tree).
- */
-async function uncommittedPatch(worktreePath: string): Promise<string | null> {
-  const tmp = await mkdtemp(join(tmpdir(), 'buildd-sweep-index-'));
-  try {
-    const env = { ...process.env, GIT_INDEX_FILE: join(tmp, 'index') };
-    await git(worktreePath, ['read-tree', 'HEAD'], env);
-    await git(worktreePath, ['add', '-A'], env);
-    const diff = await git(worktreePath, ['diff', '--cached', '--binary', 'HEAD'], env);
-    return diff.trim() ? diff : '';
-  } catch {
-    return null;
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-}
-
 async function remove(repoPath: string, worktreePath: string): Promise<void> {
   try {
     await git(repoPath, ['worktree', 'remove', '--force', worktreePath]);
@@ -152,26 +119,16 @@ export async function sweepTerminalWorktrees(opts: SweepTerminalWorktreesOptions
     }
     examined++;
 
-    const unpushed = await hasUnpushedCommits(path);
-    const patch = await uncommittedPatch(path);
-    const needsArchive = unpushed || patch !== '';
-
-    if (needsArchive) {
-      try {
-        mkdirSync(opts.archiveDir, { recursive: true });
-        if (unpushed) {
-          await git(path, ['bundle', 'create', join(opts.archiveDir, `${rec.id}.bundle`), 'HEAD', '--not', '--remotes']);
-        }
-        if (patch === null) throw new Error('could not read uncommitted changes');
-        if (patch) writeFileSync(join(opts.archiveDir, `${rec.id}.patch`), patch);
-      } catch (err) {
-        console.warn(
-          `[worktree-sweep] keeping ${path} (worker ${rec.id}): archive failed — ` +
-          (err instanceof Error ? err.message.split('\n')[0] : String(err)),
-        );
-        results.push({ id: rec.id, outcome: 'kept' });
-        continue;
-      }
+    let needsArchive = false;
+    try {
+      needsArchive = (await archiveWorktreeWork(path, rec.id, opts.archiveDir)).archived;
+    } catch (err) {
+      console.warn(
+        `[worktree-sweep] keeping ${path} (worker ${rec.id}): archive failed — ` +
+        (err instanceof Error ? err.message.split('\n')[0] : String(err)),
+      );
+      results.push({ id: rec.id, outcome: 'kept' });
+      continue;
     }
 
     // The archive steps awaited git; re-check before the destructive step.

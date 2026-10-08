@@ -978,6 +978,12 @@ export interface ResultMeta {
    */
   provisionFailure?: { code: string; phase: string; message: string };
   /**
+   * Where an abnormally terminated worker's work went: `origin/<branch>@<sha>`
+   * (WIP checkpoint pushed to the task branch) or `archive:<path>` on the runner.
+   * The retry's context carries it so the next attempt resumes, not restarts.
+   */
+  recoveryRef?: string;
+  /**
    * Every tool_use in the session counted by exact tool name (`Bash`, `Edit`,
    * `mcp__buildd__buildd`, …), written by the runner at terminal state. Counts,
    * not events — unlike `workers.mcpCalls` this is never truncated.

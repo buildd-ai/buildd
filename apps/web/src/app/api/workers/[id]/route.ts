@@ -3279,6 +3279,7 @@ export async function PATCH(
             ...taskCtxForRetry,
             resumeBranch: worker.branch,
             ...(worker.lastCommitSha ? { lastCommitSha: worker.lastCommitSha } : {}),
+            ...(typeof resultMeta?.recoveryRef === 'string' ? { recoveryRef: resultMeta.recoveryRef } : {}),
             failureContext: {
               // Sensitive: drop prose summary, keep errorType code only
               summary: isSensitive
