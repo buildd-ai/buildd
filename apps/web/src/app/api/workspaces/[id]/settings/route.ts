@@ -6,6 +6,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveEarlyReleaseMode } from '@/lib/early-release-mode';
+import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 
 async function resolveAuth(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -32,6 +34,26 @@ async function verifyAccess(auth: { user: any; apiAccount: any }, workspaceId: s
     return Boolean(ws && ws.teamId === apiAccount.teamId);
   }
   return false;
+}
+
+/**
+ * Writing the work tracker is manage_workspace_settings: owner/admin of the
+ * workspace's team for a session, an admin-level key of that team. Reach is
+ * checked first, so a caller who cannot see the workspace still gets a 404.
+ */
+async function verifyWriteAccess(
+  auth: { user: any; apiAccount: any },
+  workspaceId: string,
+  req: NextRequest,
+): Promise<'ok' | 'forbidden' | 'not_found'> {
+  const { user, apiAccount } = auth;
+  if (user && !apiAccount) {
+    const access = await verifyWorkspaceAccess(user.id, workspaceId);
+    if (!access) return 'not_found';
+    return roleHas(access.role, 'manage_workspace_settings', await getTeamPermissionOverrides(access.teamId)) ? 'ok' : 'forbidden';
+  }
+  if (!(await verifyAccess(auth, workspaceId))) return 'not_found';
+  return hasTokenRouteAdminAccess(apiAccount, req) ? 'ok' : 'forbidden';
 }
 
 // GET /api/workspaces/[id]/settings — retrieve workTrackerConfig and the resolved early-release mode
@@ -83,9 +105,12 @@ export async function PATCH(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const hasAccess = await verifyAccess(auth, id);
-  if (!hasAccess) {
+  const write = await verifyWriteAccess(auth, id, req);
+  if (write === 'not_found') {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  }
+  if (write === 'forbidden') {
+    return NextResponse.json({ error: 'Requires workspace admin' }, { status: 403 });
   }
 
   let body: unknown;
