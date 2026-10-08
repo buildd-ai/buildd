@@ -122,8 +122,8 @@ function Headline({ text }: { text: string }) {
         {text}
       </p>
       {(clipped || full) && (
-        <button type="button" onClick={() => setFull(f => !f)} aria-expanded={full}
-          className="min-h-11 md:min-h-0 md:mt-1 font-mono text-chip uppercase tracking-[1.5px] text-text-secondary hover:text-text-primary">
+        <button type="button" onClick={() => setFull(f => !f)} aria-expanded={full} data-testid="worker-now-headline-more"
+          className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 md:mt-1 text-left font-mono text-chip uppercase tracking-[1.5px] text-text-secondary hover:text-text-primary">
           {full ? 'less' : 'more'}
         </button>
       )}

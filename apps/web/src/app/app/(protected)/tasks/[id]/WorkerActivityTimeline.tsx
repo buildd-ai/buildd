@@ -278,7 +278,7 @@ function LogEntryRow({ entry, currentAction }: { entry: LogEntry; currentAction?
         <button
           type="button"
           onClick={() => setRowExpanded(!rowExpanded)}
-          className={`flex-1 min-w-0 text-left ${rowExpanded ? 'break-words' : 'line-clamp-2'} ${TONE_TEXT[glyph.tone]}`}
+          className={`flex-1 min-w-0 min-h-11 md:min-h-0 text-left ${rowExpanded ? 'break-words' : 'line-clamp-2'} ${TONE_TEXT[glyph.tone]}`}
         >
           {/* The label only: a self-reported percent per row read as a field of
               numbers that went backwards (40, 70, 30, 90) on older agents. */}
