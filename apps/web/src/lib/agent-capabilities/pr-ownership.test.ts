@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { branchCarriesTaskId, needsHeadHolders, ownershipApplies, verifyPrOwnership, type PrOwnershipInput } from './pr-ownership';
+import { branchCarriesTaskId, ownershipApplies, verifyPrOwnership, type PrOwnershipInput } from './pr-ownership';
 
 // ── fixtures (illustrative) ───────────────────────────────────────────────────
 
@@ -88,53 +88,33 @@ describe('verifyPrOwnership — shapes a task owns', () => {
 
 // ── refused shapes ────────────────────────────────────────────────────────────
 
-describe('verifyPrOwnership — worker assigned the mission branch', () => {
-  const assigned = (o: Partial<PrOwnershipInput> = {}) => input({
-    head: 'task/no-id-in-name',
-    workerBranch: 'mission/integration',
-    task: { context: { baseBranch: 'mission/integration' } },
-    ...o,
+// A mission task's worker branch is its own generated head; the integration
+// branch is only its base. Having the right base proves nothing about a head,
+// so a worker that somehow sits on the integration branch itself (provisioned
+// before claim stopped handing it out) gets no blanket exception: it owns the
+// heads every other worker owns, and nothing else.
+describe('verifyPrOwnership — mission task on an integration base', () => {
+  const missionTask = { context: { baseBranch: 'mission/integration' } };
+
+  it('owns its generated task head', async () => {
+    const v = await verify(input({ head: 'buildd/aaaa1111-fix-thing', task: missionTask }));
+    expect(v).toEqual({ owned: true, basis: 'own_branch' });
   });
 
-  it('owns a task branch cut from the assigned integration branch', async () => {
-    expect(await verify(assigned())).toEqual({ owned: true, basis: 'cut_from_assigned_base' });
-  });
-
-  it('owns its own task-id branch via lineage first', async () => {
-    expect(await verify(assigned({ head: 'buildd/aaaa1111-cut' }))).toEqual({ owned: true, basis: 'task_lineage' });
-  });
-
-  it('refuses another task’s branch', async () => {
-    const v = await verify(assigned({ head: 'buildd/dddd4444-someone-else' }));
+  it('refuses an unrelated head with no task id, even when no other worker holds it', async () => {
+    const v = await verify(input({ head: 'task/no-id-in-name', task: missionTask, otherHeadHolders: [] }));
     expect(v).toMatchObject({ owned: false, reasonCode: 'head_not_owned' });
   });
 
-  it('refuses a head another live worker holds', async () => {
-    const v = await verify(assigned({ otherHeadHolders: [{ workerId: 'w2', taskId: DEP_ID, status: 'running', hasPr: false }] }));
-    expect(v).toMatchObject({ owned: false, reasonCode: 'head_claimed' });
+  it('a worker sitting on the integration branch itself gains no ownership of other heads', async () => {
+    const onBase = (head: string) => input({ head, workerBranch: 'mission/integration', task: missionTask, otherHeadHolders: [] });
+    expect(await verify(onBase('task/no-id-in-name'))).toMatchObject({ owned: false, reasonCode: 'head_not_owned' });
+    expect(await verify(onBase('buildd/dddd4444-someone-else'))).toMatchObject({ owned: false, reasonCode: 'head_not_owned' });
   });
 
-  it('refuses a head another task already opened a PR from', async () => {
-    const v = await verify(assigned({ otherHeadHolders: [{ workerId: 'w2', taskId: DEP_ID, status: 'completed', hasPr: true }] }));
-    expect(v).toMatchObject({ owned: false, reasonCode: 'head_claimed' });
-  });
-
-  it('still refuses a protected head', async () => {
-    expect(await verify(assigned({ head: 'dev' }))).toMatchObject({ owned: false, reasonCode: 'protected_head' });
-  });
-
-  it('does not apply when the worker branch is not the task base', async () => {
-    const v = await verify(input({ head: 'task/no-id-in-name', workerBranch: 'buildd/aaaa1111-x', task: { context: { baseBranch: 'mission/integration' } } }));
-    expect(v.owned).toBe(false);
-  });
-});
-
-describe('needsHeadHolders', () => {
-  it('interactive sessions and workers assigned their task base', () => {
-    expect(needsHeadHolders(true, 'x', null)).toBe(true);
-    expect(needsHeadHolders(false, 'mission/m', { id: TASK_ID, context: { baseBranch: 'mission/m' } })).toBe(true);
-    expect(needsHeadHolders(false, 'buildd/aaaa1111-x', { id: TASK_ID, context: { baseBranch: 'mission/m' } })).toBe(false);
-    expect(needsHeadHolders(false, null, { id: TASK_ID, context: {} })).toBe(false);
+  it('a worker sitting on the integration branch still owns a head carrying its own task id', async () => {
+    const v = await verify(input({ head: 'buildd/aaaa1111-cut', workerBranch: 'mission/integration', task: missionTask }));
+    expect(v).toEqual({ owned: true, basis: 'task_lineage' });
   });
 });
 

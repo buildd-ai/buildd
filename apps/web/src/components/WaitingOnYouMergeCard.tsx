@@ -282,7 +282,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
             {!optimistic && mergeState === 'idle' && missionMergeBlocked && (
               <span
                 title={item.missionMergeBlockedReason ?? undefined}
-                className="inline-flex items-center gap-1 text-meta font-medium text-text-muted cursor-not-allowed opacity-60 px-2.5 py-0.5 border border-border-default rounded"
+                className="min-h-11 md:min-h-0 inline-flex items-center gap-1 text-meta font-medium text-text-muted cursor-not-allowed opacity-60 px-2.5 py-0.5 border border-border-default rounded"
               >
                 Merge
               </span>
@@ -290,7 +290,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
             {!optimistic && mergeState === 'idle' && !missionMergeBlocked && (
               <button
                 onClick={() => setMergeState('confirming')}
-                className="inline-flex items-center gap-1 text-meta font-medium text-white bg-accent hover:bg-accent/90 transition-colors px-2.5 py-0.5 rounded"
+                className="min-h-11 md:min-h-0 inline-flex items-center gap-1 text-meta font-medium text-white bg-accent hover:bg-accent/90 transition-colors px-2.5 py-0.5 rounded"
               >
                 <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M12 5v14m-7-7l7 7 7-7" />
@@ -351,18 +351,18 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
 
       {/* Confirm strip: full-width below the title, only when confirming */}
       {!optimistic && !missionMergeBlocked && mergeState === 'confirming' && item.prNumber != null && (
-        <div className="mt-2 pt-2 border-t border-primary/20 flex items-center justify-between gap-2">
-          <span className="text-meta text-text-secondary min-w-0">{confirmMsg}</span>
+        <div className="mt-2 pt-2 border-t border-primary/20 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-meta text-text-secondary min-w-0 flex-1 basis-56">{confirmMsg}</span>
           <div className="flex items-center gap-2 flex-shrink-0">
             <button
               onClick={() => setMergeState('idle')}
-              className="text-meta font-medium text-text-muted hover:text-text-secondary transition-colors px-2 py-0.5 border border-border-default rounded"
+              className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-text-muted hover:text-text-secondary transition-colors px-2 py-0.5 border border-border-default rounded"
             >
               Cancel
             </button>
             <button
               onClick={() => handleMerge()}
-              className="text-meta font-medium text-white bg-status-success hover:bg-status-success/90 transition-colors px-2.5 py-0.5 rounded"
+              className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-white bg-status-success hover:bg-status-success/90 transition-colors px-2.5 py-0.5 rounded"
             >
               Confirm Merge
             </button>
@@ -383,20 +383,20 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
                 href={item.prUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-meta font-medium text-accent-text hover:underline"
+                className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-accent-text hover:underline"
               >
                 Open PR
               </a>
             )}
             <button
               onClick={() => handleMerge({ override: true })}
-              className="text-meta text-text-muted hover:text-text-secondary underline"
+              className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
             >
               Merge anyway
             </button>
             <button
               onClick={() => setMergeState('idle')}
-              className="text-meta text-text-muted hover:text-text-secondary underline"
+              className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
             >
               Dismiss
             </button>
@@ -409,19 +409,19 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
       {!optimistic && mergeState === 'pending' && (
         <div className="mt-2 flex items-center gap-1.5" data-testid="merge-card-pending">
           <Spinner size="xs" className="flex-shrink-0" aria-label="Waiting on checks or review" />
-          <span className="text-meta text-text-secondary min-w-0">{errorMsg}</span>
+          <span className="text-meta text-text-secondary min-w-0 flex-1 basis-56">{errorMsg}</span>
         </div>
       )}
 
       {/* Error strip */}
       {!optimistic && mergeState === 'error' && (
-        <div className="mt-2 flex items-center justify-between gap-2">
-          <span className="text-meta text-status-error min-w-0">{errorMsg}</span>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-meta text-status-error min-w-0 flex-1 basis-56">{errorMsg}</span>
           <div className="flex items-center gap-2 flex-shrink-0">
             {retrySafe ? (
               <button
                 onClick={() => handleMerge()}
-                className="text-meta text-text-muted hover:text-text-secondary underline"
+                className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
               >
                 Retry
               </button>
@@ -431,7 +431,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
                   href={item.prUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-meta font-medium text-accent-text hover:underline"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-accent-text hover:underline"
                 >
                   Check PR
                 </a>
@@ -439,7 +439,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
             )}
             <button
               onClick={() => setMergeState('idle')}
-              className="text-meta text-text-muted hover:text-text-secondary underline"
+              className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
             >
               Dismiss
             </button>
@@ -458,7 +458,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
             {optimistic.taskId && (
               <Link
                 href={actionCardTaskLink(item, { taskId: optimistic.taskId, page: true })}
-                className="text-meta font-medium text-accent-text hover:underline"
+                className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-accent-text hover:underline"
               >
                 View task
               </Link>
@@ -468,7 +468,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
                 href={item.prUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-meta text-text-muted hover:text-text-secondary underline"
+                className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
               >
                 Abandon PR
               </a>
@@ -492,7 +492,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
                 href={item.prUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-meta font-medium text-accent-text hover:underline"
+                className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-accent-text hover:underline"
               >
                 Resolve conflicts on GitHub
               </a>
@@ -502,7 +502,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
                 href={item.prUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-meta text-text-muted hover:text-text-secondary underline"
+                className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
               >
                 Abandon PR
               </a>

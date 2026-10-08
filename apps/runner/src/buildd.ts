@@ -295,6 +295,13 @@ export class BuilddClient {
      */
     costUsd?: number;
     /**
+     * How this session's usage was charged: `real` (per token: API key, team
+     * endpoint) or `virtual` (a subscription login, valued at list price).
+     * Sent with every report that carries usage; the server records `unknown`
+     * when it is absent (docs/specs/real-and-virtual-cost.md).
+     */
+    costBasis?: 'real' | 'virtual' | 'unknown';
+    /**
      * The model the session actually ran on. Feeds task_outcomes.actual_model.
      * Optional: an older runner simply omits it and the server falls back to
      * deriving it from resultMeta.
@@ -357,6 +364,9 @@ export class BuilddClient {
     verificationEvidence?: Record<string, unknown>;
     // Structured output (for structured_predicate evaluation by server)
     structuredOutput?: Record<string, unknown>;
+    // A conflict retry the runner finished with no agent (merge-drivers.ts finishDerivedMerge).
+    derivedMergeFinish?: import('@buildd/shared').DerivedMergeFinishReport;
+    summarySource?: 'agent' | 'fallback';
     // Subagent spans — terminal-only flush (completed/failed/error). Never sent on hot path.
     subagentSpans?: Array<{
       taskId: string;
@@ -395,6 +405,10 @@ export class BuilddClient {
     shipCheckpoints?: import('@buildd/shared').ShipCheckpointReport[];
     /** Legacy pre-push/completion sweep flag (servers before `workingSet`). */
     checkpointSweep?: boolean;
+    /** This runner runs live sibling conflict probes (sibling-probe.ts); the server hands them out only then. */
+    siblingProbe?: boolean;
+    /** Results of probes the server handed out on an earlier sync. */
+    siblingProbeResults?: import('@buildd/shared').SiblingProbeResult[];
     /**
      * Sent with a `Deferred:` failure when enforce-mode path claims found a
      * collision: the colliding path, its holder and the checkpoint written. The

@@ -99,7 +99,7 @@ import {
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
-import { attachAgentEndpoints, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
+import { attachAgentEndpoints, attachCloudToolSearchHint, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
 import { resolveClaudeModelRoute, routeUsesOauthSeat, type ClaudeModelRoute } from './claude-model-route';
 import { attachGitHubCredentialModes } from './github-credential-injection';
 import { AGENT_GITHUB_TOKEN_ROLLOUT_ENV, parseAgentGitHubRollout } from '@buildd/core/agent-github-credentials';
@@ -125,7 +125,7 @@ import {
   gatedStartReachable,
   releaseGatedStartPaths,
   scheduleClaimHoldShadow,
-  touchesSerializedSurface,
+  touchesHardOverlapSurface,
   type ClaimHoldTaskContext,
 } from './hold-start-shadow';
 import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from './soft-overlap-gate';
@@ -1829,26 +1829,27 @@ export async function POST(req: NextRequest) {
       }
 
       // Soft overlap (./soft-overlap-gate): an in-flight task whose declared
-      // scope overlaps this one's only by directory prefix, or a pre-v2
-      // inferred edge. Never a dependsOn edge. A same-file / migration /
-      // serialized / unknown-state entry holds deterministically; a prefix-only
-      // one holds unless an applied Jev START exists for this exact state, and
+      // scope overlaps this one's on the same file or by directory prefix, or a
+      // pre-v2 inferred edge. Never a dependsOn edge. A migration / hard-surface
+      // (serialized, generated, hotspot) / unknown-state entry holds
+      // deterministically; a same-file or prefix one holds unless an applied
+      // Jev START exists for this exact state, and
       // the START's declared paths are then acquired exclusively before the
       // claim (a live lease wins). Forced: bypassed and recorded.
       const softVerdicts = softHolderIds.size > 0
         ? evaluateSoftOverlaps(task as any, softHolders, {
-            isSerialized: (paths) => touchesSerializedSurface(paths, (task as any).workspace?.gitConfig ?? null),
+            isHardSurface: (paths, kind) => touchesHardOverlapSurface(paths, kind, (task as any).workspace?.gitConfig ?? null),
           })
         : [];
       let softHeld = false;
       for (const v of softVerdicts) {
         // The rule's verdict: deterministic for a hard overlap, HOLD for a
-        // prefix-only one until an applied Jev START says otherwise.
+        // same-file or prefix one until an applied Jev START says otherwise.
         let verdict: 'deterministic_hold' | 'HOLD' | 'START' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
         if (v.kind === 'advisory' && !forced) {
           const holdCtx = holdStartContext(task, forced);
           const note = holdCtx
-            ? holdStart.noteSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId))
+            ? holdStart.noteSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, overlapKind: v.overlapKind, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId))
             : null;
           verdict = holdStartGated && note && await gatedStartApplies(note) ? 'START' : 'HOLD';
         }
@@ -1861,7 +1862,7 @@ export async function POST(req: NextRequest) {
           holderTaskId: v.holderTaskId,
           paths: v.paths.slice(0, 10),
           verdict,
-          overlapKind: v.kind === 'deterministic' ? v.overlapKind : 'prefix',
+          overlapKind: v.overlapKind,
         };
         if (forced) {
           softOverlapForced.push(detail);
@@ -2694,8 +2695,9 @@ export async function POST(req: NextRequest) {
       defaultBranch?: string;
     } | null;
 
-    // Shared mission branch (set by runMission) takes precedence — all mission
-    // tasks push to the same branch so a single PR tracks the mission's work.
+    // A pinned shared head (context.headBranch) takes precedence, except one
+    // equal to the task's own base: an integration-branch mission child bases
+    // on the mission branch and works on its own generated task head.
     //
     // The rule itself lives in @buildd/core/branch-names because approve-plan
     // has to predict this exact name when it resolves a stacked baseBranch ref;
@@ -2705,6 +2707,7 @@ export async function POST(req: NextRequest) {
       title: task.title,
       gitConfig,
       sharedHeadBranch: (patchedContext as Record<string, unknown> | null)?.headBranch,
+      baseBranch: (patchedContext as Record<string, unknown> | null)?.baseBranch,
     });
 
     // Atomic conditional insert: only creates worker if under concurrency limit
@@ -2729,11 +2732,16 @@ export async function POST(req: NextRequest) {
     // neon-http, db.batch runs as one non-interactive transaction, so the lock
     // is held exactly for this insert's duration and is safe without
     // db.transaction()'s interactive-session requirement.
+    // The authenticated OAuth session user, never the client-relayed session
+    // marker: an OAuth session acts as its team's shared account, so this is
+    // what PATCH /api/workers/[id] matches to let only the claimer act as the
+    // worker (lib/worker-owner.ts). NULL for a bld_ key.
+    const claimedByUserId = (account as { sessionUserId?: string | null }).sessionUserId ?? null;
     const [, insertResult] = await db.batch([
       db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('workers_claim_concurrency'), hashtext(${account.id}::text))`),
       db.execute(sql`
-        INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status)
-        SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle'
+        INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status, claimed_by_user_id)
+        SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle', ${claimedByUserId}::uuid
         WHERE EXISTS (
           SELECT 1 FROM ${tasks} t_claim
           WHERE t_claim.id = ${task.id}
@@ -3160,6 +3168,7 @@ export async function POST(req: NextRequest) {
         codexBaseUrlOverride: body.codexBaseUrlOverride === true,
         runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
       });
+  if (cloudExecutor) await attachCloudToolSearchHint(claimedWorkers, filteredTasks, account.id);
   if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, endpointWorkers);
 
   // Which GitHub credentials the agent gets: a mode marker only, gated on the

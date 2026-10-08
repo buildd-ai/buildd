@@ -765,6 +765,15 @@ describe('dispatchConflictRetry', () => {
       expect(mockFireGateEvent.mock.calls.some((c) => c[0].reason === 'conflict_false_positive')).toBe(true);
     });
 
+    it('no GitHub installation: the recheck cannot run, so the agent is dispatched as today', async () => {
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: null });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: true, taskId: 'new-task-id' });
+      expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
+    });
+
     it('a real textual conflict dispatches the conflict agent as today', async () => {
       mockUpdateBehindPrBranch.mockResolvedValue({ kind: 'conflict', reason: '422 merge conflict' });
 
@@ -973,9 +982,20 @@ describe('dispatchConflictRetry', () => {
     });
   });
 
-  it('populates dependsOn when a sibling task declares the same file', async () => {
+  it('a sibling declaring the same file is soft same_file evidence, decided at claim', async () => {
     mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['apps/web/src/lib/foo.ts'], missionId: 'mission-1' });
     mockTaskFindMany.mockResolvedValue([{ id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] }]);
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toBeUndefined();
+    expect(capturedInsertValues.pathDeclaration).toMatchObject({ overlapPolicy: 'v2', softOverlaps: [{ taskId: 'sibling-task-id', kind: 'same_file' }] });
+  });
+
+  it('populates dependsOn when a sibling task declares the same migration file', async () => {
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['packages/core/drizzle/0400_x.sql'], missionId: 'mission-1' });
+    mockTaskFindMany.mockResolvedValue([{ id: 'sibling-task-id', pathManifest: ['packages/core/drizzle/0400_x.sql'] }]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
 
@@ -1070,12 +1090,12 @@ describe('dispatchConflictRetry', () => {
   it('conflict retry with a concrete manifest ignores wildcard siblings but keeps real overlaps', async () => {
     mockTaskFindFirst.mockResolvedValue({
       ...MOCK_TASK,
-      pathManifest: ['apps/web/src/lib/foo.ts'],
+      pathManifest: ['packages/core/drizzle/0400_x.sql'],
       missionId: 'mission-1',
     });
     mockTaskFindMany.mockResolvedValue([
       { id: 'wildcard-sibling', pathManifest: ['**'] },
-      { id: 'overlapping-sibling', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      { id: 'overlapping-sibling', pathManifest: ['packages/core/drizzle/0400_x.sql'] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
@@ -1085,17 +1105,18 @@ describe('dispatchConflictRetry', () => {
   });
 
   it('does not depend on a task that is already downstream of the original task, directly or transitively, but still depends on an unrelated overlapping task', async () => {
-    const pathManifest = ['apps/web/src/lib/foo.ts', 'apps/web/src/lib/bar.ts', 'apps/web/src/lib/baz.ts'];
+    // Migration files: a hard overlap, so the edges are real dependsOn candidates.
+    const pathManifest = ['packages/core/drizzle/foo.sql', 'packages/core/drizzle/bar.sql', 'packages/core/drizzle/baz.sql'];
     mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
     mockTaskFindMany.mockResolvedValue([
       { id: 'task-id', pathManifest, dependsOn: [] },
       // S: overlaps and already depends directly on the original task.
-      { id: 'downstream-direct', pathManifest: ['apps/web/src/lib/foo.ts'], dependsOn: ['task-id'] },
+      { id: 'downstream-direct', pathManifest: ['packages/core/drizzle/foo.sql'], dependsOn: ['task-id'] },
       // S2: overlaps and depends on the original task transitively, through X.
-      { id: 'downstream-transitive', pathManifest: ['apps/web/src/lib/bar.ts'], dependsOn: ['intermediate'] },
+      { id: 'downstream-transitive', pathManifest: ['packages/core/drizzle/bar.sql'], dependsOn: ['intermediate'] },
       { id: 'intermediate', pathManifest: null, dependsOn: ['task-id'] },
       // U: overlaps but has no relationship to the original task.
-      { id: 'unrelated-overlap', pathManifest: ['apps/web/src/lib/baz.ts'], dependsOn: [] },
+      { id: 'unrelated-overlap', pathManifest: ['packages/core/drizzle/baz.sql'], dependsOn: [] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);

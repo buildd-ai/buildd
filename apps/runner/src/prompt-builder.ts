@@ -605,7 +605,7 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
       'Do NOT call create_task — the system creates tasks from your plan automatically.' +
       (authorsShipped ? `\n\n${shippedPromptText('planning')}` : '');
   } else if (outputReq === 'pr_required') {
-    outputRequirementContent = '## Output Requirement\nThis task **requires a PR**. Make your changes, commit, push, and create a PR via `buildd` action: create_pr before completing.' +
+    outputRequirementContent = '## Output Requirement\nThis task **requires a PR**. Make your changes, commit, push, and create a PR via `buildd` action: create_pr before completing. If you find the work already landed in a merged PR this task does not own, call complete_task with `alreadyShippedIn` set to that PR number instead.' +
       // A fixed outputSchema (a reviewer verdict, say) would reject the extra key.
       (!task.outputSchema ? `\n\n${taskShippedPromptText()}` : '');
   } else if (outputReq === 'artifact_required') {

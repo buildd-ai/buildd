@@ -822,6 +822,12 @@ mock.module('@/lib/chat/mission-events', () => ({
   postQuestionEvent: mock(async (...args: unknown[]) => { fanout.push(['postQuestionEvent', ...args]); }),
 }));
 
+const siblingProbeCalls: any[] = [];
+let siblingProbeReply: any[] = [];
+mock.module('@/lib/sibling-conflict-probe-store', () => ({
+  siblingProbeHeartbeat: async (input: any) => { siblingProbeCalls.push(input); return siblingProbeReply; },
+}));
+
 import { GET, PATCH } from './route';
 import { composeBodyWithLede, extractLede } from '@buildd/core/pr-lede';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -1532,6 +1538,60 @@ describe('PATCH /api/workers/[id]', () => {
       expect(written.lastCommitSha).toBe('abc1234');
     });
 
+    // docs/specs/real-and-virtual-cost.md: the basis is whatever the reporter
+    // says, combined atomically in SQL; absent reads as unknown.
+    describe('cost basis', () => {
+      const metricsWorker = {
+        id: 'worker-1', accountId: 'account-1', status: 'completed', error: null,
+        workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null, resultMeta: null,
+        costUsd: '0', inputTokens: 0, outputTokens: 0, turns: 3, costBasis: null,
+      };
+      const send = (body: Record<string, unknown>) => PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body,
+      }), { params: mockParams });
+      const basisValues = (v: any) => (v?.costBasis?.values ?? []).filter((x: unknown) => typeof x === 'string');
+
+      beforeEach(() => {
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockWorkersFindFirst.mockResolvedValue(metricsWorker);
+        captureUpdates();
+      });
+
+      it('writes the reported basis with usage', async () => {
+        const res = await send({ metricsOnly: true, inputTokens: 10, outputTokens: 2, costUsd: 0.5, costBasis: 'real' });
+        expect(res.status).toBe(200);
+        expect(basisValues(metricsSets[0])).toContain('real');
+      });
+
+      it('records unknown when usage arrives with no basis', async () => {
+        await send({ metricsOnly: true, inputTokens: 10, outputTokens: 2 });
+        expect(basisValues(metricsSets[0])[0]).toBe('unknown');
+      });
+
+      it('leaves the basis alone when the report carries no usage', async () => {
+        await send({ metricsOnly: true, lastCommitSha: 'abc1234' });
+        expect(metricsSets[0]?.costBasis).toBeUndefined();
+      });
+
+      it('rejects a basis that is not one of the four with 400 and writes nothing', async () => {
+        const res = await send({ metricsOnly: true, inputTokens: 10, costBasis: 'oauth' });
+        expect(res.status).toBe(400);
+        expect(metricsSets.length).toBe(0);
+      });
+
+      it('marks a server-estimated cost as estimated without changing the basis', async () => {
+        await send({
+          metricsOnly: true, costUsd: 0, inputTokens: 1_000_000, outputTokens: 100_000, costBasis: 'virtual',
+          actualModel: 'claude-sonnet-4-20250514',
+          resultMeta: { totalUsage: { inputTokens: 1_000_000, outputTokens: 100_000 } },
+        });
+        const written = metricsSets[0];
+        expect(Number(written.costUsd)).toBeGreaterThan(0);
+        expect((written.resultMeta as any).costEstimated).toBe(true);
+        expect(basisValues(written)).toContain('virtual');
+      });
+    });
+
     it('does not revive status, error or turns through a metrics-only PATCH', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({
@@ -1875,6 +1935,33 @@ describe('PATCH /api/workers/[id]', () => {
       await PATCH(req, { params: mockParams });
 
       expect(mockRecordOrchestrationTouchLabel).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('live sibling conflict probe wiring', () => {
+    it('passes results, support and moved touches through, and returns the probes to run', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+        pendingInstructions: null, milestones: [], observedTouches: ['apps/web/a.ts'],
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running' }]) })) })),
+      });
+      siblingProbeCalls.length = 0;
+      siblingProbeReply = [{ probeId: 'p1', otherBranch: 'buildd/x', sharedFiles: ['a.ts'], mergiraf: false }];
+      const results = [{ probeId: 'p0', outcome: 'clean' }];
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { touchedPaths: ['apps/web/c.ts'], siblingProbe: true, siblingProbeResults: results },
+      }), { params: mockParams });
+
+      expect(siblingProbeCalls).toHaveLength(1);
+      expect(siblingProbeCalls[0]).toMatchObject({ results, supportsProbe: true, touchesMoved: true, terminal: false });
+      expect((await res.json()).siblingProbes).toEqual(siblingProbeReply);
+      siblingProbeReply = [];
     });
   });
 
@@ -5140,7 +5227,9 @@ describe('PATCH /api/workers/[id]', () => {
       });
 
       it('records a person’s session report as given', async () => {
-        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', sessionUserId: 'user-1' });
+        // A session acts only as a worker it claimed (lib/worker-owner.ts).
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', sessionUserId: 'user-1' });
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, claimedByUserId: 'user-1' });
         const res = await patch({ prUrl: 'https://github.com/org/repo/pull/50' });
         expect(res.status).toBe(200);
         expect(workerSets.some(u => u.prUrl === 'https://github.com/org/repo/pull/50')).toBe(true);
@@ -5347,6 +5436,110 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(400);
       const data = await res.json();
       expect(data.hint).toBe('create_pr');
+    });
+
+    // The task asked for work that had already landed in another task's PR,
+    // which its text never names, so the referenced-PR fallback above cannot
+    // see it, and adopting it would make this worker own someone else's PR.
+    // `alreadyShippedIn` names the PR; the gate checks it is merged in the
+    // linked repo and records it on the result, never on the worker row.
+    describe('pr_required + alreadyShippedIn', () => {
+      const shippedTask = {
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'fix(conflict-retry): verify a real conflict before dispatching',
+        description: 'Re-check the base tip before dispatching an agent.',
+      };
+      let capturedTaskSet: any;
+      let workerSets: any[];
+
+      beforeEach(() => {
+        capturedTaskSet = null;
+        workerSets = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            capturedTaskSet = updates;
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => {
+            workerSets.push(u);
+            return { where: mock(() => ({ returning: mock(() => [{ ...baseWorker, status: 'completed' }]) })) };
+          }),
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockTasksFindFirst.mockResolvedValue(shippedTask);
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+        mockGithubReposFindFirst.mockResolvedValue({
+          id: 'repo-1', fullName: 'org/repo', installation: { installationId: 123 },
+        });
+      });
+
+      const githubPr = (merged: boolean) => mockGithubApi.mockImplementation((_i: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]);
+        if (path === '/repos/org/repo/pulls/3851') {
+          return Promise.resolve({
+            number: 3851, merged, html_url: 'https://github.com/org/repo/pull/3851',
+            head: { ref: 'buildd/aaaa1111-another-task' }, base: { ref: 'dev' },
+          });
+        }
+        return Promise.resolve(null);
+      });
+
+      const complete = (extra: Record<string, unknown>) => PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Already shipped in #3851; verified on dev.', summarySource: 'agent', ...extra },
+      }), { params: mockParams });
+
+      it('a merged PR completes the task and is recorded on the result, not the worker', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+        githubPr(true);
+
+        const res = await complete({ alreadyShippedIn: 3851 });
+
+        expect(res.status).toBe(200);
+        expect(capturedTaskSet?.result?.alreadyShippedIn).toEqual({
+          prNumber: 3851, prUrl: 'https://github.com/org/repo/pull/3851',
+        });
+        expect(workerSets.some(u => u.prNumber === 3851 || u.prUrl)).toBe(false);
+      });
+
+      it('an unmerged PR still refuses, and says why', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+        githubPr(false);
+
+        const res = await complete({ alreadyShippedIn: 3851 });
+
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('#3851');
+        expect(data.error).toContain('not merged');
+      });
+
+      it('own commits on the branch need discardEdits too, so they are not stranded silently', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 1 });
+        githubPr(true);
+
+        const refused = await complete({ alreadyShippedIn: 3851 });
+        expect(refused.status).toBe(400);
+        expect((await refused.json()).error).toContain('discardEdits');
+
+        const accepted = await complete({ alreadyShippedIn: 3851, discardEdits: 'duplicate of tests already on dev' });
+        expect(accepted.status).toBe(200);
+        expect(capturedTaskSet?.result?.alreadyShippedIn?.prNumber).toBe(3851);
+      });
+
+      it('the plain pr_required refusal points at alreadyShippedIn', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+        githubPr(true);
+
+        const res = await complete({});
+
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toContain('alreadyShippedIn');
+      });
     });
 
     // C17: the gate's predicate was a single-column eq(artifacts.workerId, id).
@@ -7692,6 +7885,32 @@ describe('PATCH /api/workers/[id]', () => {
         const getSet = setupCompletion({}, POOL, {}, { context: { tenantContext: { tenantId: 'tenant-a' } } });
         await PATCH(completion(), { params: mockParams });
         expect(getSet()).toBeNull();
+      });
+
+      // Real usage was charged per token, not drawn from the plan.
+      it('does not count a session that reports a real basis', async () => {
+        const getSet = setupCompletion({}, POOL);
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', costUsd: 10, costBasis: 'real' },
+        }), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect(getSet()).toBeNull();
+      });
+
+      it('does not count a worker already recorded as real when the terminal report has no basis', async () => {
+        const getSet = setupCompletion({}, POOL, { costBasis: 'real' });
+        await PATCH(completion(), { params: mockParams });
+        expect(getSet()).toBeNull();
+      });
+
+      it('counts a session that reports a virtual basis, as before', async () => {
+        const getSet = setupCompletion({}, POOL);
+        await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', costUsd: 10, costBasis: 'virtual' },
+        }), { params: mockParams });
+        expect(parseFloat(getSet().monthlyCostUsd)).toBeCloseTo(55, 6);
       });
 
       it('still writes the cost onto the worker row for an excluded session', async () => {
@@ -16674,5 +16893,102 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
     expect(runnerOutcomes()).toEqual(['completed']);
     expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached completed' }]]);
     expect(evidenceWrites()).toHaveLength(1);
+  });
+});
+
+// An OAuth MCP session resolves to an account its whole team shares, so the
+// account alone cannot say which member claimed a worker. The claim records the
+// session user (workers.claimedByUserId) and only that user's session, on that
+// account, passes the owner check. Nothing here widens who may write a worker:
+// no team-membership fallback, and a missing team or workspace id is a 403.
+describe('PATCH /api/workers/[id] — OAuth session owner check', () => {
+  const sessionWorker = {
+    id: 'worker-1',
+    accountId: 'account-1',
+    taskId: 'task-1',
+    workspaceId: 'ws-1',
+    runner: 'mcp',
+    status: 'running',
+    claimedByUserId: 'user-a',
+    milestones: [],
+    pendingInstructions: 'Rebase onto the new base',
+    instructionHistory: [],
+    supportsInstructionAck: false,
+  };
+  const session = (userId: string, extra: Record<string, unknown> = {}) => ({
+    id: 'account-1', teamId: 'team-1', type: 'user', authType: 'oauth', level: 'worker', sessionUserId: userId, ...extra,
+  });
+
+  function setup(account: any, worker: any = sessionWorker) {
+    mockAuthenticateApiKey.mockResolvedValue(account);
+    mockWorkersFindFirst.mockResolvedValue(worker);
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+        })),
+      })),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockWorkersFindMany.mockResolvedValue([]);
+  }
+
+  function patch() {
+    return PATCH(
+      createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer eyJ.session.jwt' }, body: { status: 'running', progress: 10 } }),
+      { params: mockParams },
+    );
+  }
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockMissionNotesFindMany.mockReset();
+    mockMissionNotesFindMany.mockResolvedValue([]);
+  });
+
+  it('the OAuth session that claimed gets 200 and its pending instructions', async () => {
+    setup(session('user-a'));
+    const res = await patch();
+    expect(res.status).toBe(200);
+    expect((await res.json()).instructions).toBe('Rebase onto the new base');
+  });
+
+  it('another OAuth user in the same team, resolving to the same account, gets 403', async () => {
+    setup(session('user-b'));
+    const res = await patch();
+    expect(res.status).toBe(403);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('an admin OAuth session that did not claim gets 403', async () => {
+    setup(session('user-b', { level: 'admin' }));
+    expect((await patch()).status).toBe(403);
+  });
+
+  it('an admin bld_ key that did not claim gets 403, on another account or the shared one', async () => {
+    setup({ id: 'account-2', teamId: 'team-1', authType: 'api', level: 'admin' });
+    expect((await patch()).status).toBe(403);
+    setup({ id: 'account-1', teamId: 'team-1', authType: 'api', level: 'admin' });
+    expect((await patch()).status).toBe(403);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('a session with no team id gets 403', async () => {
+    setup(session('user-a', { teamId: null }));
+    expect((await patch()).status).toBe(403);
+  });
+
+  it('a session on a worker with no workspace id gets 403', async () => {
+    setup(session('user-a'), { ...sessionWorker, workspaceId: null });
+    expect((await patch()).status).toBe(403);
+  });
+
+  it('the bld_ key path is unchanged: the claiming account gets 200', async () => {
+    setup({ id: 'account-1', authType: 'api', level: 'worker' }, { ...sessionWorker, runner: 'runner-1', claimedByUserId: null });
+    expect((await patch()).status).toBe(200);
   });
 });

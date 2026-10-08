@@ -11,7 +11,8 @@ import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -29,6 +30,7 @@ import { recordOrchestrationTouchLabel } from '@buildd/core/orchestration-ledger
 import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-prices';
 import { applyBudgetUsage, countsTowardAgentSdkCreditPool } from '@buildd/core/budget-alerts';
+import { combineCostBasis, costBasisWrite, parseCostBasis, type CostBasis } from '@buildd/core/cost-basis';
 import { lineageStamp } from '@/lib/attempt-lineage';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
@@ -69,6 +71,8 @@ import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
+import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
@@ -248,10 +252,24 @@ async function workerConflictResponse(id: string, extra?: Record<string, unknown
  *  - The write is a compare-and-swap on the status that was read, so a row
  *    moving underneath it yields a retryable conflict rather than a stale write.
  */
+/**
+ * Does this report carry usage? Only then does it say anything about the
+ * worker's cost basis (docs/specs/real-and-virtual-cost.md).
+ */
+function reportCarriesUsage(body: Record<string, any>): boolean {
+  const pos = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+  if (pos(body.costUsd) || pos(body.inputTokens) || pos(body.outputTokens)) return true;
+  const meta = body.resultMeta;
+  if (!meta || typeof meta !== 'object') return false;
+  if (meta.totalUsage && typeof meta.totalUsage === 'object') return true;
+  return !!meta.modelUsage && typeof meta.modelUsage === 'object' && Object.keys(meta.modelUsage).length > 0;
+}
+
 async function applyMetricsOnlyPatch(
   id: string,
   worker: typeof workers.$inferSelect,
   body: Record<string, any>,
+  reportedBasis: CostBasis | null,
 ) {
   if (isNonReactivatableError(worker.error)) {
     const artifactCount = await getWorkerDeliverableArtifactCount(id);
@@ -319,6 +337,13 @@ async function applyMetricsOnlyPatch(
   }
   const cost = raise(effectiveCost, Number(worker.costUsd ?? 0));
   if (cost !== null) updates.costUsd = cost.toString();
+  if (cost !== null && !(reportedCost > 0)) {
+    mergedMeta = { ...mergedMeta, costEstimated: true };
+    updates.resultMeta = mergedMeta as unknown as typeof updates.resultMeta;
+  }
+  if (reportCarriesUsage(body)) {
+    updates.costBasis = costBasisWrite(reportedBasis ?? 'unknown') as unknown as CostBasis;
+  }
   const inTokens = raise(body.inputTokens, worker.inputTokens);
   if (inTokens !== null) updates.inputTokens = inTokens;
   const outTokens = raise(body.outputTokens, worker.outputTokens);
@@ -596,7 +621,9 @@ export async function GET(
     return NextResponse.json(redacted());
   }
 
-  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
+  // Only the claiming principal: the account for a bld_ key, the session user
+  // for an OAuth session (lib/worker-owner.ts). No team fallback; fails closed.
+  if (!callerOwnsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -631,7 +658,9 @@ export async function PATCH(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
+  // Only the claiming principal: the account for a bld_ key, the session user
+  // for an OAuth session (lib/worker-owner.ts). No team fallback; fails closed.
+  if (!callerOwnsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -686,13 +715,23 @@ export async function PATCH(
   const rawWorkerMessagesDelivered: unknown = body.workerMessagesDelivered;
   body = redactSecretsInBody(body, secretValues);
 
+  const basisParse = parseCostBasis(body.costBasis);
+  if (!basisParse.ok) {
+    return NextResponse.json({
+      error: 'invalid_cost_basis',
+      message: 'costBasis must be one of real, virtual, mixed, unknown.',
+    }, { status: 400 });
+  }
+  const reportedBasis = basisParse.basis;
+  const carriesUsage = reportCarriesUsage(body);
+
   // Metrics-only write: measurement about a session, no state transition. Must
   // be handled BEFORE the terminal guard below — a terminal worker is exactly
   // the case it exists for (the agent completed the task itself via the MCP, so
   // the runner's terminal PATCH lands on an already-completed row). See
   // applyMetricsOnlyPatch for what it may and may not write.
   if (body.metricsOnly === true) {
-    return await applyMetricsOnlyPatch(id, worker, body);
+    return await applyMetricsOnlyPatch(id, worker, body, reportedBasis);
   }
 
   // Check if worker was already terminated (reassigned/failed)
@@ -822,6 +861,10 @@ export async function PATCH(
     // success exit for the 'auto' output-requirement gate below, distinct from
     // the `error` param (which marks the task failed).
     discardEdits,
+    // complete_task's claim that a pr_required task's work already landed in
+    // a merged PR it does not own. Checked against GitHub by the
+    // outputRequirement gate below, never trusted as given.
+    alreadyShippedIn,
     // SDK result metadata
     resultMeta,
     // Transient subagent progress (not persisted — forwarded via Pusher only)
@@ -865,6 +908,10 @@ export async function PATCH(
     // Distinguishes a terminal record's outcome ('crashed') from an ordinary
     // agent-reported failure, since both arrive as status: 'failed'.
     crashReconciled,
+    // Live sibling conflict probe (lib/sibling-conflict-probe.ts): results of
+    // the merge-tree probes this runner was handed, and whether it can run them.
+    siblingProbeResults,
+    siblingProbe: supportsSiblingProbe,
   } = body;
   let status = reportedStatus;
   let error = reportedError;
@@ -918,6 +965,7 @@ export async function PATCH(
   if (status) updates.status = status;
   if (error !== undefined) updates.error = error;
   if (typeof costUsd === 'number') updates.costUsd = costUsd.toString();
+  if (carriesUsage) updates.costBasis = costBasisWrite(reportedBasis ?? 'unknown') as unknown as CostBasis;
   if (typeof inputTokens === 'number') updates.inputTokens = inputTokens;
   if (typeof outputTokens === 'number') updates.outputTokens = outputTokens;
   if (typeof turns === 'number') updates.turns = turns;
@@ -1273,6 +1321,9 @@ export async function PATCH(
   // release gate so a branch-merge workspace config does not flip the task to
   // failed because the worker branch was never pushed to the remote.
   let skipRelease = false;
+  // Set by the pr_required gate when `alreadyShippedIn` names a PR GitHub
+  // confirms merged; snapshotted onto tasks.result for audit.
+  let alreadyShipped: { prNumber: number; prUrl: string } | null = null;
   // Lifted out of the outputRequirement block below (which only runs when
   // outputReq !== 'none') so the planning-contract guard can see a PR that was
   // auto-detected from GitHub even on a task with no output requirement.
@@ -1314,6 +1365,8 @@ export async function PATCH(
         // positive cost (reportedCost > 0 means line 387 already set the right value).
         if (effectiveCost > 0 && reportedCost <= 0) {
           updates.costUsd = effectiveCost.toString();
+          const metaBase = (updates.resultMeta ?? worker.resultMeta ?? {}) as Record<string, unknown>;
+          updates.resultMeta = { ...metaBase, costEstimated: true } as unknown as typeof updates.resultMeta;
         }
 
         // Codex and tenant-credential spend are billed elsewhere, so they do
@@ -1324,6 +1377,11 @@ export async function PATCH(
           backend: poolTaskRow?.backend ?? null,
           authType: account.authType,
           tenantId: ((poolTaskRow?.context as Record<string, unknown> | null)?.tenantContext as { tenantId?: string } | undefined)?.tenantId ?? null,
+          // The basis the row holds after this report, by the same rule the
+          // SQL write applies.
+          costBasis: carriesUsage
+            ? combineCostBasis((worker.costBasis as CostBasis | null) ?? null, reportedBasis ?? 'unknown')
+            : (worker.costBasis as CostBasis | null) ?? null,
         });
 
         if (effectiveCost > 0 && countsTowardPool) {
@@ -1667,7 +1725,7 @@ export async function PATCH(
         return null;
       });
       if (refusal) {
-        await applyMetricsOnlyPatch(id, worker, body).catch(() => null);
+        await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
         const frictionSignature = fireGateEvent({
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
@@ -1902,6 +1960,42 @@ export async function PATCH(
         }
       }
 
+      // pr_required, already shipped: the work the task asks for landed in a
+      // merged PR the task neither owns nor names (another task got there
+      // first). The caller names it with `alreadyShippedIn`; it counts only if
+      // GitHub says it is merged in the linked repo. It is recorded on the
+      // task result, not adopted onto this worker: the PR belongs to another
+      // task, and this worker taking it over would confuse that PR's own
+      // merge, supersession and shutdown handling.
+      let alreadyShippedRefusal: string | null = null;
+      const shippedPrNumber = alreadyShippedIn == null
+        ? null
+        : Number(String(alreadyShippedIn).trim().replace(/^#/, ''));
+      if (outputReq === 'pr_required' && !hasPR && shippedPrNumber !== null) {
+        if (!Number.isInteger(shippedPrNumber) || shippedPrNumber <= 0) {
+          alreadyShippedRefusal = `alreadyShippedIn must be a PR number, got ${JSON.stringify(alreadyShippedIn)}.`;
+        } else if (!repoWithInstallation) {
+          alreadyShippedRefusal = `PR #${shippedPrNumber} cannot be verified: this workspace has no linked GitHub repo with the app installed.`;
+        } else {
+          try {
+            const pr = await githubApi(
+              repoWithInstallation.installation.installationId,
+              `/repos/${repoWithInstallation.fullName}/pulls/${shippedPrNumber}`,
+            );
+            if (pr?.merged) {
+              alreadyShipped = {
+                prNumber: shippedPrNumber,
+                prUrl: typeof pr.html_url === 'string' ? pr.html_url : `https://github.com/${repoWithInstallation.fullName}/pull/${shippedPrNumber}`,
+              };
+            } else {
+              alreadyShippedRefusal = `PR #${shippedPrNumber} in ${repoWithInstallation.fullName} is not merged, so it does not show the work shipped.`;
+            }
+          } catch {
+            alreadyShippedRefusal = `PR #${shippedPrNumber} could not be read from ${repoWithInstallation.fullName}.`;
+          }
+        }
+      }
+
       // Standing ask from the outputRequirement-rejection bug: a gate-rejected
       // completion used to discard the agent's summary/structuredOutput with
       // zero persistence — a 60-turn run's only record was a 400 in the
@@ -1917,7 +2011,7 @@ export async function PATCH(
         // refusal. `applyMetricsOnlyPatch` writes measurement only (see its own
         // doc) — it cannot resurrect this worker or rewrite its outcome, so
         // running it ahead of a hard refusal is safe.
-        await applyMetricsOnlyPatch(id, worker, body).catch(() => null);
+        await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
 
         // The gate row and the preserved payload are written from the same
         // place on purpose: every arm of this gate refuses through here, so a
@@ -2009,7 +2103,7 @@ export async function PATCH(
         filesChanged: Math.max(filesChanged ?? 0, worker.filesChanged ?? 0),
         dirtyWorktree: effectiveDirtyWorktree,
         observedTouches: sessionObservedTouches,
-        hasPR, mergedAt: worker.mergedAt, discardEdits,
+        hasPR: hasPR || !!alreadyShipped, mergedAt: worker.mergedAt, discardEdits,
         summary: body.summary, summarySource: body.summarySource,
       }) && !(await hasDeliverableArtifact(true))) {
         const frictionSignature = await persistRejectedCompletionPayload('silent_completion');
@@ -2092,17 +2186,48 @@ export async function PATCH(
 
       // pr_required: always require a PR (regardless of commits)
       if (outputReq === 'pr_required' && !hasPR && !evidenceIsDeliverable) {
-        const frictionSignature = await persistRejectedCompletionPayload('pr_required');
-        return NextResponse.json({
-          error: 'This task requires a pull request before completing. Use create_pr to open one.',
-          hint: 'create_pr',
-          // Machine-readable identity of the refusal, so the runner reports
-          // this as the output-gate decision it is instead of unwinding into
-          // its crash handler. Same slug the gate_events row above carries —
-          // one vocabulary, not two.
+        // A merged PR elsewhere does not ship this worker's own edits, so they
+        // need the same explicit discard the `auto` arm asks for.
+        const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
+        const strandsOwnEdits = (effectiveCommits > 0 || effectiveDirtyWorktree) && !discardReason;
+        if (!alreadyShipped || strandsOwnEdits) {
+          const frictionSignature = await persistRejectedCompletionPayload('pr_required');
+          const error = alreadyShipped
+            ? `PR #${alreadyShipped.prNumber} is merged, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
+            : alreadyShippedRefusal
+              ? `This task requires a pull request before completing. ${alreadyShippedRefusal}`
+              : 'This task requires a pull request before completing. Use create_pr to open one. If the work already landed in a merged PR this task does not own, call complete_task with `alreadyShippedIn` set to that PR number.';
+          return NextResponse.json({
+            error,
+            hint: 'create_pr',
+            // Machine-readable identity of the refusal, so the runner reports
+            // this as the output-gate decision it is instead of unwinding into
+            // its crash handler. Same slug the gate_events row above carries —
+            // one vocabulary, not two.
+            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+            frictionSignature,
+          }, { status: 400 });
+        }
+        fireGateEvent({
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
-          frictionSignature,
-        }, { status: 400 });
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'accepted',
+          reason: 'completion accepted under pr_required: work already shipped in a merged PR',
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: {
+            outputRequirement: 'pr_required',
+            alreadyShippedIn: alreadyShipped.prNumber,
+            commits: effectiveCommits,
+            dirtyWorktree: effectiveDirtyWorktree,
+            ...(discardReason ? { discardEdits: discardReason.slice(0, 500) } : {}),
+          },
+        });
+        // Nothing of this worker's own branch is meant to ship.
+        skipRelease = true;
       }
 
       // artifact_required: require PR or artifact (regardless of commits)
@@ -3634,6 +3759,9 @@ export async function PATCH(
           ...(typeof discardEdits === 'string' && discardEdits.trim() && {
             discardedEdits: isSensitive ? 'edits discarded' : discardEdits.trim(),
           }),
+          // The merged PR the pr_required gate accepted as carrying this
+          // task's work (see `alreadyShippedIn` above).
+          ...(alreadyShipped && { alreadyShippedIn: alreadyShipped }),
         };
 
         // Snapshot unique MCP servers into task result
@@ -4227,6 +4355,16 @@ export async function PATCH(
       summaryProvenance: body.summarySource === 'agent' || body.summarySource === 'fallback' ? body.summarySource : null,
     });
   }
+
+  // A conflict retry the runner finished itself (derived files only, no agent).
+  // After the write landed, so a refused completion is never counted.
+  const derivedMergeEvent = derivedMergeGateEvent(status, body.derivedMergeFinish, {
+    workspaceId: worker.workspaceId,
+    missionId: taskMissionId,
+    taskId: worker.taskId,
+    workerId: worker.id,
+  });
+  if (derivedMergeEvent) fireGateEvent(derivedMergeEvent);
 
   // The worker's terminal write landed. Module reactions: memory use labels
   // (lib/knowledge-subscribers.ts), scheduled after the response. The first
@@ -4862,6 +5000,19 @@ export async function PATCH(
 
   const allInstructions = [pendingInstructions, noteInstructions].filter(Boolean).join('') || undefined;
 
+  // Live sibling conflict probe: apply results, mark the workspace due on new
+  // touches, hand this runner its probes. Never throws.
+  const siblingProbes = worker.workspaceId
+    ? await siblingProbeHeartbeat({
+        workerId: id,
+        workspaceId: worker.workspaceId,
+        results: siblingProbeResults,
+        supportsProbe: supportsSiblingProbe === true,
+        touchesMoved: reportedTouches.length > 0,
+        terminal: isTerminalStatus,
+      })
+    : [];
+
   // Return worker with any pending instructions, worker-to-worker messages, and output warnings
   return jsonResponse({
     ...updated,
@@ -4874,6 +5025,7 @@ export async function PATCH(
     // The working-set ACK: what this delta leased, released or found held,
     // and whether coverage is complete for its generation.
     ...(workingSetAck ? { workingSetAck } : {}),
+    ...(siblingProbes.length > 0 ? { siblingProbes } : {}),
   }, undefined, { route: req.nextUrl.pathname });
 }
 

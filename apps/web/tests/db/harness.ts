@@ -53,16 +53,25 @@ export async function seedTask(workspaceId: string, opts: {
   title?: string;
   pathManifest?: string[] | null;
   dependsOn?: string[];
+  missionId?: string | null;
 } = {}): Promise<string> {
   const [t] = await q<{ id: string }>(sql`
-    INSERT INTO tasks (workspace_id, title, status, start_at, path_manifest, depends_on)
+    INSERT INTO tasks (workspace_id, title, status, start_at, path_manifest, depends_on, mission_id)
     VALUES (
       ${workspaceId}::uuid, ${opts.title ?? `task-${uniq()}`}, ${opts.status ?? 'pending'},
       ${opts.startAt?.toISOString() ?? null}::timestamptz,
       ${opts.pathManifest ? JSON.stringify(opts.pathManifest) : null}::jsonb,
-      ${JSON.stringify(opts.dependsOn ?? [])}::jsonb
+      ${JSON.stringify(opts.dependsOn ?? [])}::jsonb,
+      ${opts.missionId ?? null}::uuid
     ) RETURNING id`);
   return t.id;
+}
+
+export async function seedMission(teamId: string, workspaceId: string): Promise<string> {
+  const [m] = await q<{ id: string }>(sql`
+    INSERT INTO missions (team_id, workspace_id, title) VALUES (${teamId}::uuid, ${workspaceId}::uuid, ${`m-${uniq()}`})
+    RETURNING id`);
+  return m.id;
 }
 
 export async function outboxFor(taskId: string) {

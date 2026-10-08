@@ -190,6 +190,8 @@ export const GATE_SLUGS = {
    * `warned` = shadow semantic verdict or a moved head; `rejected` = attempts
    * exhausted, with an operational diagnostic posted. A textual conflict is
    * never recorded here as an operational failure — it goes to the conflict agent.
+   * Also `accepted` with `detail.stage: 'derived_merge'`: a conflict retry the
+   * runner finished itself because every conflict was in a derived file.
    */
   BASE_REFRESH: 'base_refresh',
   /**
@@ -230,6 +232,17 @@ export const GATE_SLUGS = {
    * The denominator for "do notified workers conflict less".
    */
   BASE_ADVANCE_NOTICE: 'base_advance_notice',
+  /**
+   * Live sibling conflict probe (`lib/sibling-conflict-probe.ts`): two live
+   * workers' observed touches share a file, so one runner ran `git merge-tree`
+   * between the two branch heads (mergiraf on the conflicted files when the
+   * workspace enables it). ADVISORY: nothing is blocked. `warned` = a real
+   * conflict, both workers told once per conflicting pair of heads
+   * (`detail.notified`, `detail.debounced`; `detail.suppressed` when the
+   * kernel owns a side); `accepted` = clean, or resolved structurally by
+   * mergiraf. Compared against conflict retries to measure early warning.
+   */
+  SIBLING_CONFLICT_PROBE: 'sibling_conflict_probe',
   /**
    * Keeping a mission's integration branch current with dev
    * (`lib/mission-branch-refresh.ts`, docs/design/mission-delivery-arc.md P5,

@@ -592,7 +592,12 @@ export async function POST(req: NextRequest) {
     // A per-task token files work only onto its own task's mission, never
     // another mission on the team, whatever its level.
     if (missionId && apiAccount && !(await taskScopeAllowsMission(apiAccount, missionId))) {
-      return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+      return NextResponse.json(
+        {
+          error: "A task token may create tasks only in its own task's mission. This mission exists on your team but is outside your token's scope; ask a person or an organizer to file the task.",
+        },
+        { status: 403 },
+      );
     }
     const subjectPolicy = resolveSubjectPolicy(targetWorkspace.gitConfig?.subjectPolicy);
 
@@ -774,10 +779,11 @@ export async function POST(req: NextRequest) {
 
     // Path-overlap serialization against in-flight tasks (regression: PRs
     // #1126/#1129), split into HARD and SOFT by `partitionOverlapEdges`:
-    //  - hard (a stored dependsOn edge): the same file on both sides, a
-    //    migration/schema path, or a workspace serialized surface;
+    //  - hard (a stored dependsOn edge): a migration/schema path, a workspace
+    //    serialized surface, or the same file when it is generated or an
+    //    explicit hotspot (lib/hard-overlap-surfaces.ts);
     //  - soft (scheduling evidence on pathDeclaration.softOverlaps, never an
-    //    edge): directory-prefix-only overlap. The claim route holds on it
+    //    edge): any other same-file or directory-prefix overlap. The claim route holds on it
     //    while the other task is in flight unless HOLD/START says START, and
     //    live path leases still stop simultaneous edits.
     // Turning every prefix overlap into an edge queued honest broad scope
@@ -806,7 +812,7 @@ export async function POST(req: NextRequest) {
         inFlightTasks.map(t => ({ id: t.id, pathManifest: t.pathManifest as string[] | null })),
         {
           skip: (id) => existingDepsSet.has(id),
-          isSerialized: (paths) => overlapTouchesSerializedSurface(paths, overlapGitConfig),
+          isSerialized: (paths, kind) => overlapTouchesSerializedSurface(paths, overlapGitConfig, kind),
         },
       );
       for (const id of split.hard) {

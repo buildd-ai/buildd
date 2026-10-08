@@ -328,6 +328,8 @@ export interface RunOnceDeps {
    * refresh (warm-repo.ts). Best effort; a throw is logged and ignored.
    */
   afterRun?(outcome: Outcome): Promise<void>;
+  /** BUILDD_PHASE=run_end (phase-lines.ts): the outcome is known and only the runner's tail is left. */
+  emitRunEnd?(): void;
   /**
    * Resumable runs: park this waiting worker (flush, upload the park bundle,
    * mark it parked). True means parked and the process should exit. Absent
@@ -395,6 +397,8 @@ async function superviseWorker(workerId: string, d: RunOnceDeps, opts: { parkArm
     await wm.abort(workerId, `No input received within ${mins} minutes (--once max wait)`).catch(() => {});
   }
   d.log(`[once] worker ${workerId} finished: ${outcome}`);
+  // Only the tail is left (a parked run keeps its container for the resume).
+  if (outcome !== 'parked') d.emitRunEnd?.();
   await d.afterRun?.(outcome).catch(err => d.log(`[once] after-run step failed: ${err instanceof Error ? err.message : err}`));
   if (outcome === 'parked') {
     d.log(`${PARKED_LINE_PREFIX}${workerId}`);
@@ -699,6 +703,7 @@ export async function runOnceFromCli(opts: {
     flushOutbox: async () => ({ remaining: await flushOutboxWithRetry(outbox) }),
     shutdown: async () => { stopBrowserShim(); if (!cloud) await credentialBroker.shutdown(); },
     afterRun: async (outcome) => warm?.refresh(outcome),
+    emitRunEnd: () => emitPhase('run_end'),
     ...(parking ? {
       park: async (workerId: string) => {
         const w = wm.getWorker(workerId);

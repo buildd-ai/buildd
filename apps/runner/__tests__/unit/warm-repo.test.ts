@@ -14,6 +14,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { randomBytes } from 'crypto';
 import { join } from 'path';
 import {
+  DEFERRED_UPLOAD_FILE,
+  parseDeferredUpload,
   WARM_FETCH_REFRESH_BYTES,
   WARM_MAX_AGE_MS,
   WARM_BASE_REF,
@@ -158,8 +160,9 @@ let seedClone: string;
 let store: FakeStore;
 let lines: string[];
 
-function session(opts: { cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number; zstd?: boolean; log?: (m: string) => void; reusedContainer?: boolean } = {}) {
+function session(opts: { deferUpload?: boolean; cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number; zstd?: boolean; log?: (m: string) => void; reusedContainer?: boolean } = {}) {
   return new WarmRepoSession({
+    ...(opts.deferUpload ? { deferUpload: true } : {}),
     ...(opts.reusedContainer !== undefined ? { reusedContainer: opts.reusedContainer } : {}),
     ...(opts.zstd !== undefined ? { zstd: opts.zstd } : {}),
     ...(opts.maxBundleBytes !== undefined ? { maxBundleBytes: opts.maxBundleBytes } : {}),
@@ -519,6 +522,58 @@ describe('restore before clone', () => {
     cloneThrough(session());
     expect(store.calls).toEqual([]);
     expect(lines).toEqual([]);
+  });
+});
+
+describe('lease containers defer the upload to when the container is released', () => {
+  test('the run records the upload it is due and makes none; the release uploads it', async () => {
+    const run = session({ deferUpload: true });
+    const path = cloneThrough(run);
+    await run.refresh('failed');
+    expect(store.calls.filter(c => !c.startsWith('GET'))).toEqual([]);
+    expect(lines).toContain('BUILDD_WARM_UPLOAD=deferred');
+    expect(phaseNames()).not.toContain('warm_upload_start');
+    expect(JSON.parse(readFileSync(join(dir, 'tmp', DEFERRED_UPLOAD_FILE), 'utf-8'))).toEqual({ clonePath: path, decision: 'seed' });
+
+    lines = [];
+    // `buildd-once --upload-warm`: a fresh process, the same tmpDir.
+    expect(await session().uploadDeferred()).toBe(true);
+    expect(store.manifests).toHaveLength(1);
+    expect(store.manifests[0]!.defaultBranch).toBe('main');
+    expect(phaseNames()).toEqual(['warm_upload_start', 'warm_upload_end']);
+    expect(existsSync(join(dir, 'tmp', DEFERRED_UPLOAD_FILE))).toBe(false);
+    // Once only.
+    expect(await session().uploadDeferred()).toBe(false);
+    expect(store.manifests).toHaveLength(1);
+  });
+
+  test('nothing due: nothing recorded, no line', async () => {
+    const seed = session(); cloneThrough(seed, 'ws-seed'); await seed.refresh('completed');
+    const run = session({ deferUpload: true });
+    cloneThrough(run);
+    lines = [];
+    await run.refresh('completed');
+    expect(lines.some(l => l.startsWith('BUILDD_WARM_UPLOAD='))).toBe(false);
+    expect(existsSync(join(dir, 'tmp', DEFERRED_UPLOAD_FILE))).toBe(false);
+    expect(await session().uploadDeferred()).toBe(false);
+    expect(store.manifests).toHaveLength(1);
+  });
+
+  test('a record that is not well formed is dropped, never acted on', async () => {
+    mkdirSync(join(dir, 'tmp'), { recursive: true });
+    for (const bad of ['{', '{"clonePath":"relative","decision":"seed"}', '{"clonePath":"/x","decision":"upload"}', '{"clonePath":"/x","decision":"refresh","reason":"other"}']) {
+      writeFileSync(join(dir, 'tmp', DEFERRED_UPLOAD_FILE), bad);
+      expect(await session().uploadDeferred()).toBe(false);
+      expect(existsSync(join(dir, 'tmp', DEFERRED_UPLOAD_FILE))).toBe(false);
+    }
+    expect(store.calls.filter(c => !c.startsWith('GET'))).toEqual([]);
+    expect(parseDeferredUpload({ clonePath: '/x', decision: 'refresh', reason: 'age' })).toEqual({ clonePath: '/x', decision: 'refresh', reason: 'age' });
+  });
+
+  test('a clone seeded from a reused container\'s kept packs reports no clone bytes', () => {
+    const s = session();
+    s.cloneHooks().afterSeed!(join(dir, 'seed'));
+    expect(metric('clone_bytes')).toBeUndefined();
   });
 });
 
