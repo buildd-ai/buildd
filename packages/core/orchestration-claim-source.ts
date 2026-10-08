@@ -12,11 +12,13 @@
  */
 import { and, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { db } from './db/client';
-import { orchestrationDecisions, orchestrationManifestPredictions, reviewFeedback, tasks, workers } from './db/schema';
+import { gateEvents, orchestrationDecisions, orchestrationManifestPredictions, reviewFeedback, tasks, workers } from './db/schema';
+import { GATE_SLUGS } from './gate-events';
 import { CLAIM_HOLD_DECISION, deriveHolderStage, summarizeFileConflictHistory } from './orchestration-claim-decision';
 import type { ClaimHoldEvidence, ClaimHoldHolderState, FileConflictCount } from './orchestration-claim-decision';
 import type { ClaimDecisionForReadout, ClaimHoldReadoutInput, TaskStartForReadout } from './orchestration-claim-readout';
 import { labelDecisionOutcomes } from './orchestration-outcomes';
+import type { SiblingProbeEventForReadout, SoftStartForReadout, SoftStartReadoutInput } from './orchestration-soft-start-readout';
 
 export const CLAIM_HOLD_CAPABILITY = 'orchestration_claim';
 
@@ -259,4 +261,67 @@ export async function loadClaimHoldReadoutInput(opts: { workspaceId: string; sin
       .map((r): TaskStartForReadout => ({ taskId: r.taskId, startedAt: r.createdAt })),
     windowEnd: opts.until,
   };
+}
+
+export const SOFT_START_REASON = 'soft_overlap_start';
+
+export function softStartEventsWhere(opts: { workspaceId: string; since: Date; until: Date }) {
+  return and(
+    eq(gateEvents.workspaceId, opts.workspaceId),
+    eq(gateEvents.gate, GATE_SLUGS.CLAIM_LOOP_DEFERRAL),
+    eq(gateEvents.outcome, 'accepted'),
+    eq(gateEvents.reason, SOFT_START_REASON),
+    gte(gateEvents.occurredAt, opts.since),
+    lt(gateEvents.occurredAt, opts.until),
+  );
+}
+
+export function siblingProbeEventsWhere(opts: { workspaceId: string; since: Date; until: Date }) {
+  return and(
+    eq(gateEvents.workspaceId, opts.workspaceId),
+    eq(gateEvents.gate, GATE_SLUGS.SIBLING_CONFLICT_PROBE),
+    gte(gateEvents.occurredAt, opts.since),
+    lt(gateEvents.occurredAt, opts.until),
+  );
+}
+
+/**
+ * Soft-overlap STARTs (rule or Jev) in a window, with the labeller's inputs for
+ * the started tasks (the same join the Jev decisions use) and the sibling
+ * probes of the same workspace, for `summarizeSoftStartReadout`.
+ */
+export async function loadSoftStartReadoutInput(opts: { workspaceId: string; since: Date; until: Date }): Promise<SoftStartReadoutInput> {
+  const rows = await db.select({
+    id: gateEvents.id,
+    taskId: gateEvents.taskId,
+    workspaceId: gateEvents.workspaceId,
+    occurredAt: gateEvents.occurredAt,
+    detail: gateEvents.detail,
+  }).from(gateEvents).where(softStartEventsWhere(opts)).limit(CLAIM_HOLD_READOUT_MAX_DECISIONS);
+  const starts: SoftStartForReadout[] = (rows as Array<{ id: string; taskId: string | null; workspaceId: string | null; occurredAt: Date; detail: Record<string, unknown> | null }>)
+    .flatMap((r) => {
+      if (!r.taskId || !r.workspaceId) return [];
+      const d = r.detail ?? {};
+      return [{
+        id: r.id,
+        taskId: r.taskId,
+        workspaceId: r.workspaceId,
+        holderTaskId: typeof d.holderTaskId === 'string' ? d.holderTaskId : null,
+        decidedBy: d.decidedBy === 'jev' ? 'jev' as const : 'rule' as const,
+        riskTier: typeof d.riskTier === 'string' ? d.riskTier : null,
+        startedAt: r.occurredAt,
+      }];
+    });
+  const empty = { tasks: [], labels: [], prs: [], conflictTasks: [], gateEvents: [] };
+  if (starts.length === 0) return { starts, outcome: empty, probes: [], windowEnd: opts.until };
+  const { loadOutcomeJoinFor } = await import('./orchestration-ledger-source');
+  const [join, probeRows] = await Promise.all([
+    loadOutcomeJoinFor(starts.map(s => ({
+      id: s.id, taskId: s.taskId, workspaceId: s.workspaceId, prNumber: null, headSha: null, baseRef: null, createdAt: s.startedAt,
+    })), opts),
+    db.select({ workspaceId: gateEvents.workspaceId, taskId: gateEvents.taskId, occurredAt: gateEvents.occurredAt, detail: gateEvents.detail })
+      .from(gateEvents).where(siblingProbeEventsWhere({ workspaceId: opts.workspaceId, since: opts.since, until: new Date() })),
+  ]);
+  const { decisions: _decisions, ...outcome } = join;
+  return { starts, outcome, probes: probeRows as SiblingProbeEventForReadout[], windowEnd: opts.until };
 }

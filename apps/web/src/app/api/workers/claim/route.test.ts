@@ -445,9 +445,23 @@ mock.module('./hold-start-shadow', () => ({
   }),
   gatedStartReachable: () => realHoldStart.gatedStartReachable(holdStartTest.deps),
   gatedStartApplies: (n: any) => realHoldStart.gatedStartApplies(n, holdStartTest.deps),
+  openPrStartVerdict: (n: any, g: boolean) => realHoldStart.openPrStartVerdict(n, g, holdStartTest.deps),
   acquireGatedStartPaths: (i: any) => realHoldStart.acquireGatedStartPaths(i, holdStartTest.deps),
   releaseGatedStartPaths: (i: any) => realHoldStart.releaseGatedStartPaths(i, holdStartTest.deps),
 }));
+
+// The holders' PR diffs at head and the pair probe are read before the
+// synchronous collector runs. Default: nothing known, so no other test here
+// sees any change.
+const riskEvidenceTest = { prScopes: new Map<number, any>(), probe: null as any, scopeCalls: [] as number[][] };
+mock.module('@/lib/claim-pr-diff-scope', () => ({
+  defaultPrDiffScopeDeps: async () => ({}),
+  prefetchPrDiffScopes: async (input: { prNumbers: number[] }) => {
+    riskEvidenceTest.scopeCalls.push(input.prNumbers);
+    return new Map(input.prNumbers.flatMap(n => (riskEvidenceTest.prScopes.has(n) ? [[n, riskEvidenceTest.prScopes.get(n)] as const] : [])));
+  },
+}));
+mock.module('@/lib/sibling-pair-probe', () => ({ loadPairProbeEvidence: async () => riskEvidenceTest.probe }));
 
 // Soft-overlap holders (./soft-overlap-store): read only when a candidate
 // carries pathDeclaration.softOverlaps. Default: none known.
@@ -9616,6 +9630,82 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       expect(on.body.workers).toHaveLength(1);
     });
 
+    // The stale mission-refresh shape: the holder's task manifest was inherited
+    // (older or broader than what its PR changes), so layer 1 lists a file the
+    // PR's diff at head does not touch.
+    describe('open PR whose current diff is disjoint (pr_diff_at_head)', () => {
+      const NOW = new Date().toISOString();
+      const diff = (paths: string[], headSha = 'head-1', currentHeadSha = headSha) => ({ paths, headSha, currentHeadSha, observedAt: NOW });
+      beforeEach(() => { riskEvidenceTest.prScopes = new Map(); riskEvidenceTest.probe = null; riskEvidenceTest.scopeCalls = []; });
+      afterEach(() => { riskEvidenceTest.prScopes = new Map(); riskEvidenceTest.probe = null; });
+
+      it('starts in code: no ledger lookup, no model call, paths acquired exclusively first', async () => {
+        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/unrelated.ts']));
+        let lookups = 0;
+        const on = await claimWith(gated({ findAppliedStart: async () => { lookups++; return false; } }), scenarios.openPrAfterWorkerEnded);
+        expect(on.body.workers).toHaveLength(1);
+        expect(lookups).toBe(0);
+        expect(on.rows).toHaveLength(0);
+        expect(riskEvidenceTest.scopeCalls).toEqual([[41]]);
+        expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
+      });
+
+      it('goes back to Jev once the head moves: the diff read at the old head no longer counts', async () => {
+        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/unrelated.ts'], 'head-1', 'head-2'));
+        const on = await claimWith(gated({ findAppliedStart: async () => false }), scenarios.openPrAfterWorkerEnded);
+        expect(on.body.workers).toHaveLength(0);
+        expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+        expect(on.rows).toHaveLength(1);
+        expect(acquired).toHaveLength(0);
+      });
+
+      it('holds for Jev when the diff is unknown (nothing cached, read failed)', async () => {
+        const on = await claimWith(gated({ findAppliedStart: async () => false }), scenarios.openPrAfterWorkerEnded);
+        expect(on.body.workers).toHaveLength(0);
+        expect(on.rows).toHaveLength(1);
+      });
+
+      it('holds when the current diff still touches the candidate\'s file', async () => {
+        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/widget.ts']));
+        const on = await claimWith(gated({ findAppliedStart: async () => false }), scenarios.openPrAfterWorkerEnded);
+        expect(on.body.workers).toHaveLength(0);
+        expect(on.rows).toHaveLength(1);
+      });
+
+      it('a failed exclusive acquisition keeps the hold, like the soft path', async () => {
+        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/unrelated.ts']));
+        const on = await claimWith(gated({ acquire: async () => ({ kind: 'conflict', conflict: {}, blocked: [] }) }), scenarios.openPrAfterWorkerEnded);
+        expect(on.body.workers).toHaveLength(0);
+        expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+      });
+
+      it('a live lease on the actual files still wins over a disjoint diff', async () => {
+        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/unrelated.ts']));
+        const on = await claimWith(gated(), () => arm({
+          tasks: [task()],
+          openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+          prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+          leases: new Map([['task-9', ['apps/web/src/lib/widget.ts']]]),
+        }));
+        expect(on.body.workers).toHaveLength(0);
+        expect(acquired).toHaveLength(0);
+      });
+
+      it('a real conflict probe of the pair holds in code, naming the files, even with a disjoint-looking record', async () => {
+        riskEvidenceTest.probe = { outcome: 'conflict', conflictFiles: ['apps/web/src/lib/widget.ts'], probedAt: NOW, headsCurrent: true };
+        const on = await claimWith(gated({ findAppliedStart: async () => true }), () => arm({
+          tasks: [task({ conflictRetryPrNumber: 99 })],
+          openPrs: [
+            { workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', branch: 'holder', status: 'completed', prLifecycleStatus: 'ci_green' },
+            { workspaceId: 'ws-1', taskId: 'task-1', prNumber: 99, prUrl: 'https://example.test/pull/99', branch: 'own', status: 'completed', prLifecycleStatus: 'ci_green' },
+          ],
+          prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }, { id: 'task-1', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+        }));
+        expect(on.body.workers).toHaveLength(0);
+        expect(on.rows).toHaveLength(0);
+      });
+    });
+
     it('a shadow definition never applies: no lookup, the hold stands', async () => {
       let lookups = 0;
       const on = await claimWith(gated({ decision: SHADOW, findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
@@ -9722,6 +9812,23 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/'], declare: true }]);
       const started = (mockFireGateEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap_start');
       expect(started).toMatchObject({ outcome: 'accepted', detail: { decidedBy: 'rule', riskTier: 'low' } });
+    });
+
+    it('a retry whose branch conflicts with the live holder in a pair probe holds in code: Jev is not asked, the files are named', async () => {
+      mockFireDeferralEvent.mockClear();
+      riskEvidenceTest.probe = { outcome: 'conflict', conflictFiles: ['apps/web/src/lib/widget.ts'], probedAt: new Date().toISOString(), headsCurrent: true };
+      try {
+        const on = await claimWith(withStart(true), () => arm({
+          tasks: [{ ...soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts']), conflictRetryPrNumber: 99 }],
+          openPrs: [{ workspaceId: 'ws-1', taskId: 'task-1', prNumber: 99, prUrl: 'https://example.test/pull/99', branch: 'own-branch', status: 'completed', prLifecycleStatus: 'ci_green' }],
+          prManifests: [{ id: 'task-1', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+        }));
+        expect(on.body.workers).toHaveLength(0);
+        expect(on.rows).toHaveLength(0);
+        const ledger = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap');
+        expect(ledger).toMatchObject({ detail: { riskTier: 'high' } });
+        expect(ledger.detail.rationale).toContain('apps/web/src/lib/widget.ts');
+      } finally { riskEvidenceTest.probe = null; }
     });
 
     it('a holder that never started does not strand the candidate, even on the same file', async () => {
