@@ -3717,6 +3717,21 @@ describe('POST /api/tasks', () => {
       expect(data.error).toContain('kind must be one of');
     });
 
+    it.each([['feature'], ['test'], ['constructor']])('rejects category-shaped kind=%s with a 400 so it never reaches the router', async (kind) => {
+      setupKindAuth();
+      captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-1', title: 'Task', kind },
+      }));
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('kind must be one of');
+    });
+
     it('rejects an invalid complexity with a 400 instead of dropping it', async () => {
       setupKindAuth();
       captureInsert();
