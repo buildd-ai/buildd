@@ -582,9 +582,19 @@ export interface DispatchConflictRetryResult {
   refreshInFlight?: boolean;
   /** update-branch failed operationally; a later event or sweep retries (bounded). */
   refreshDeferred?: boolean;
-  /** Operational failures hit their bound; a diagnostic was posted. */
+  /**
+   * The kernel's mechanical refresh is queued or running (it may already have
+   * pushed): not a failure. Landing re-reads on the new head's event.
+   */
+  refreshQueued?: boolean;
+  /** Operational failures hit their bound (or the kernel escalated the refresh); a diagnostic was posted. */
   refreshExhausted?: boolean;
+  /** Set when the kernel's treadmill bound escalated: how many refreshes the base outran. */
+  refreshTreadmill?: number;
+  /** Legacy path: the classified update-branch failure. The kernel path has none. */
   refreshFailure?: BranchUpdateFailure | null;
+  /** Why, in words: the raw GitHub error (legacy) or the kernel's escalation detail. */
+  refreshReason?: string | null;
   /** Semantic clearance unknown; a later event or sweep rechecks (bounded). */
   semanticDeferred?: boolean;
   /** Semantic clearance could not be verified within the bound; a diagnostic was posted. */
@@ -620,17 +630,28 @@ export function kernelConflictOutcome(seen: ConflictSeen): DispatchConflictRetry
     const to = r.decision.toState;
     if (to === 'ESCALATED') {
       const reason = r.decision.patch.stateReason;
-      return reason === 'landing_needs_human'
-        ? { dispatched: false, refreshExhausted: true, kernel }
-        : { dispatched: false, exhausted: true, kernel };
+      if (reason !== 'landing_needs_human') return { dispatched: false, exhausted: true, kernel };
+      const notify = (r.decision.effects ?? []).find((e) => e.kind === 'notify');
+      const detail = typeof notify?.payload?.detail === 'string' ? notify.payload.detail : null;
+      const refreshes = r.decision.evidence?.refreshes;
+      return {
+        dispatched: false, refreshExhausted: true, kernel,
+        refreshReason: detail ?? 'the kernel escalated the refresh to a person (landing_needs_human)',
+        ...(typeof refreshes === 'number' ? { refreshTreadmill: refreshes } : {}),
+      };
     }
     if (a?.mode === 'agent') return { dispatched: true, ...(a.taskId ? { taskId: a.taskId } : {}), kernel };
     if (a?.mode === 'mechanical') {
       if (a.outcome === 'delivered') return { dispatched: true, branchUpdated: true, kernel };
       if (a.status === 'skipped') return { dispatched: false, alreadyUpToDate: true, kernel };
-      if (a.status === 'queued') return { dispatched: false, refreshDeferred: true, kernel };
+      if (a.status === 'queued') return { dispatched: false, refreshQueued: true, kernel };
       // The mechanical row ended failed: what followed (an agent, an escalation) is in `state`.
-      if (state === 'ESCALATED') return { dispatched: false, refreshExhausted: true, kernel };
+      if (state === 'ESCALATED') {
+        return {
+          dispatched: false, refreshExhausted: true, kernel,
+          refreshReason: `the kernel's mechanical refresh ended failed and the delivery escalated (${seen.after?.stateReason ?? 'no reason recorded'})`,
+        };
+      }
     }
     // The inline drain moved the delivery on (an agent attempt now bound, or a fresh round).
     return { dispatched: state === 'REPAIRING', kernel };
@@ -927,9 +948,9 @@ export async function dispatchConflictRetry(
         return { dispatched: false, refreshInFlight: true };
       case 'deferred':
         console.warn(`[conflict-retry] update-branch ${refresh.failure} on PR #${prNumber} (attempt ${refresh.attempts}) — deferred, no agent: ${refresh.reason}`);
-        return { dispatched: false, refreshDeferred: true, refreshFailure: refresh.failure };
+        return { dispatched: false, refreshDeferred: true, refreshFailure: refresh.failure, refreshReason: refresh.reason };
       case 'exhausted':
-        return { dispatched: false, refreshExhausted: true, refreshFailure: refresh.failure };
+        return { dispatched: false, refreshExhausted: true, refreshFailure: refresh.failure, refreshReason: refresh.reason };
       case 'semantic_deferred':
         return { dispatched: false, semanticDeferred: true };
       case 'semantic_unverified':

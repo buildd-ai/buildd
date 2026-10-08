@@ -472,7 +472,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      for (let i = 0; i < 100 && manager.getWorker('w-budget')?.status !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      await new Promise(r => setTimeout(r, 50));
 
       const worker = manager.getWorker('w-budget');
       expect(worker?.status).toBe('error');

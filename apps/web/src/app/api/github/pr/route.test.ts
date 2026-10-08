@@ -4066,6 +4066,23 @@ describe('PUT /api/github/pr', () => {
         expect(mockMergePullRequest).not.toHaveBeenCalled();
       });
 
+      it('an ESCALATED delivery wait does not promise an automatic merge', async () => {
+        enforceWorker({ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } });
+        mockLandPr.mockImplementation(async () => ({
+          kind: 'waiting_ci', headSha: 'head-sha', needsPerson: true,
+          reason: 'the delivery is ESCALATED; the kernel lands it only once APPROVED (T15)',
+        }));
+
+        const res = await put();
+
+        const data = await res.json();
+        expect(data.merged).toBe(false);
+        expect(data.needsPerson).toBe(true);
+        expect(data.hint).not.toContain('merges automatically');
+        expect(data.hint).not.toContain('No further merge_pr call');
+        expect(data.hint).toMatch(/request_pr_review/);
+      });
+
       it('a human decision is a 403 naming the cause', async () => {
         enforceWorker({ tier: 'human' });
         mockLandPr.mockImplementation(async () => ({ kind: 'needs_human', cause: 'human_tier', reason: 'this workspace merges by human decision' }));
