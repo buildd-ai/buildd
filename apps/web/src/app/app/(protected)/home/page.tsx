@@ -45,6 +45,7 @@ import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup'
 import { SwipeProvider } from '@/components/SwipeableRow';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
+import * as missionHelpers from '@buildd/core/mission-helpers';
 import { crossedMilestone } from '@buildd/core/mission-helpers';
 import { InterruptReviewButton } from './InterruptReviewButton';
 import HomeAutoRefresh from './HomeAutoRefresh';
@@ -68,7 +69,9 @@ import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { ActionQueueCard } from './ActionQueueCard';
 import { StatStrip } from './StatStrip';
-import { MobileHome, type HomeFlightRow } from './MobileHome';
+import { MobileHome } from './MobileHome';
+import { DeliveryMilestones } from './DeliveryMilestones';
+import { countQuietMissions, deliveryCounts, projectMissionDelivery, selectHomeMilestones, type MissionDelivery } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
 import { FleetStrip } from './FleetStrip';
 import { ActivityTicker } from './ActivityTicker';
@@ -284,6 +287,8 @@ export default async function HomePage({
   let fleetData: HomeFleetData | null = null;
   let homeMissionRows: HomeMissionRow[] = [];
   let phoneMissionRows: HomeMissionRow[] = [];
+  // The shared delivery projection, one per non-archived mission (lib/delivery-projection.ts).
+  let missionDeliveries: Array<{ delivery: MissionDelivery; status: string; liveAgents: number }> = [];
   let heldMissions: HomeHeldMission[] = [];
   let shippedMissions: HomeShippedMission[] = [];
   let missionTotal = 0;
@@ -575,6 +580,16 @@ export default async function HomePage({
               .groupBy(tasks.missionId);
             for (const r of liveRows) if (r.missionId) liveWorkerCounts.set(r.missionId, r.n);
           }
+
+          missionDeliveries = allMissions.map(m => ({
+            delivery: projectMissionDelivery({
+              id: m.id, title: m.title, status: m.status, href: `/app/missions/${m.id}`,
+              isHeld: m.isHeld, integrationBranch: m.integrationBranchEnabled === true,
+              tasks: m.tasks as unknown as Parameters<typeof projectMissionDelivery>[0]['tasks'],
+            }, missionHelpers),
+            status: m.status,
+            liveAgents: liveWorkerCounts.get(m.id) ?? 0,
+          }));
 
           const nowMs = Date.now();
           const summaries = new Map<string, MissionCardSummary>();
@@ -2090,21 +2105,10 @@ export default async function HomePage({
     .map(r => ({ slug: r.slug, name: r.name, color: r.color ?? null }));
 
   const { items: phoneAttention } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
-  const phoneFlight = new Map<string, HomeFlightRow>();
-  const flightLabels: Record<string, string> = { FIXING_CI: 'fixing tests', CI_RUNNING: 'tests running', FIXING_SPEC: 'updating docs', RESOLVING: 'resolving conflicts', FIXING_REVIEW: 'applying review', REVIEW_RUNNING: 'reviewing', AUTO_MERGE: 'merging' };
-  for (const item of inFlightItems) {
-    const key = item.taskId ?? item.subjectKey;
-    phoneFlight.set(key, { key, title: item.taskTitle ?? item.missionTitle ?? 'Work in progress', agent: flightLabels[item.chip] ?? 'agent working', href: actionCardTaskLink(item), age: '', fixing: item.chip === 'FIXING_CI' });
-  }
-  for (const item of activeItems) {
-    if (item.workerStatus === 'waiting_input') continue;
-    const key = item.taskId;
-    if (!phoneFlight.has(key)) phoneFlight.set(key, { key, title: item.taskTitle, agent: item.roleSlug ?? 'agent', href: homeTaskHref({ missionId: item.missionId, taskId: item.taskId, from: 'home', mode: 'sheet' }), age: item.startedAt ? timeAgo(item.startedAt) : '', fixing: false });
-  }
-  for (const item of [...agentReviewingPrs, ...reviewQueuedPrs]) {
-    const key = item.taskId;
-    if (!phoneFlight.has(key)) phoneFlight.set(key, { key, title: item.taskTitle ?? 'Changes in review', agent: 'reviewing', href: actionCardTaskLink(item), age: '', fixing: false });
-  }
+  const counts = deliveryCounts({ missions: missionDeliveries, liveAgents: live, capacity: fleetData?.fleet.capacity ?? 0 });
+  const deliveries = missionDeliveries.map(d => d.delivery);
+  const milestones = selectHomeMilestones(deliveries);
+  const quietMissions = countQuietMissions(deliveries);
   const phoneAsk = chatPlacement.kind === 'chat' && chatTeamId
     ? <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={[]} initialWorkspaceId={wsFilter ?? null} phoneInbox />
     : <Link href={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : '/app/chat'} className="mb-7 flex min-h-12 items-center justify-between border border-border-strong bg-[var(--chat-surface)] pl-3 font-convo text-lede text-text-muted"><span>Describe the work, or ask…</span><span className="flex min-h-12 w-14 items-center justify-center border-l border-border-strong bg-accent text-[var(--on-accent)]">↑</span></Link>;
@@ -2123,7 +2127,7 @@ export default async function HomePage({
           <ModelUpgradeNotice teamId={modelUpgradeTeamId} />
         </div>
       )}
-      <MobileHome items={phoneAttention} ask={phoneAsk} live={live} capacity={fleetData?.fleet.capacity ?? 0} mergedToday={stats?.mergedToday ?? 0} inCi={stats?.prsInCi.length ?? 0} shipped={shippedMissions} flight={[...phoneFlight.values()]} timeZone={teamTz} />
+      <MobileHome items={phoneAttention} ask={phoneAsk} counts={counts} milestones={milestones} quietMissions={quietMissions} shipped={shippedMissions} timeZone={teamTz} />
       <div className="mx-auto hidden max-w-[1320px] md:block">
         <header className="mb-5 flex flex-col gap-3 md:mb-6 md:flex-row md:items-end md:justify-between">
           <div className="min-w-0">
@@ -2404,6 +2408,7 @@ export default async function HomePage({
               )}
               {resolvedEscalations.length > 0 && <ResolvedEscalationsGroup items={resolvedEscalations} />}
             </NeedsYouStack>
+            <DeliveryMilestones missions={milestones} openMissions={counts.openMissions} />
 
             </div>
             <div className="order-last min-w-0 xl:order-none">
