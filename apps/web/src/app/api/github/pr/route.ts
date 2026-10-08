@@ -1539,7 +1539,7 @@ function mergePrLandingResponse(
         ok: false,
         merged: false,
         landing: outcome,
-        message: `Not mergeable yet: waiting on ${outcome.headSha ? `head ${outcome.headSha.slice(0, 7)}` : 'the PR head'}.`,
+        message: `Not mergeable yet: waiting on ${outcome.headSha ? `head ${outcome.headSha.slice(0, 7)}` : 'the PR head'}${outcome.reason ? `: ${outcome.reason}` : ''}.`,
         hint: 'It merges automatically when the pending checks or review finish green. No further merge_pr call is needed.',
         pr: prRef,
       }, { status: 202 });

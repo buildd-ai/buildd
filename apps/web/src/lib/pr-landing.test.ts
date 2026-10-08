@@ -502,7 +502,7 @@ describe('landPr — merge', () => {
 
   it('does not act on an event for a head that is no longer live', async () => {
     const out = await land({ eventHeadSha: 'old-head' });
-    expect(out).toEqual({ kind: 'waiting_ci', headSha: 'head1' });
+    expect(out).toMatchObject({ kind: 'waiting_ci', headSha: 'head1' });
     expect(mockMergePullRequest).not.toHaveBeenCalled();
     expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
     expect(landingEvents()).toHaveLength(0);
@@ -650,7 +650,7 @@ describe('landPr — review verdict', () => {
   it('waits while a reviewer is working, without paging', async () => {
     verdict = 'in_flight';
     const out = await land();
-    expect(out).toEqual({ kind: 'waiting_ci', headSha: 'head1' });
+    expect(out).toMatchObject({ kind: 'waiting_ci', headSha: 'head1' });
     expect(landingEvents()[0].outcome).toBe('deferred');
   });
 
@@ -857,7 +857,7 @@ describe('landPr — tier', () => {
 describe('landPr — safety rails', () => {
   it('pending CI waits', async () => {
     gh.checkRuns = [{ name: 'build', status: 'in_progress', conclusion: null }];
-    expect(await land()).toEqual({ kind: 'waiting_ci', headSha: 'head1' });
+    expect(await land()).toMatchObject({ kind: 'waiting_ci', headSha: 'head1', reason: expect.any(String) });
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
@@ -1271,7 +1271,7 @@ describe('landPr — merge call failures', () => {
 
   it('"head modified" means a newer head exists; its own event re-drives', async () => {
     mockMergePullRequest.mockImplementation(async () => ({ merged: false, message: 'Head branch was modified. Review and try the merge again.' }));
-    expect(await land()).toEqual({ kind: 'waiting_ci', headSha: 'head1' });
+    expect(await land()).toMatchObject({ kind: 'waiting_ci', headSha: 'head1' });
     expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
   });
 
@@ -1297,7 +1297,7 @@ describe('landPr — merge call failures', () => {
 
   it('an indeterminate answer where the PR is still open waits for the backstop', async () => {
     mockMergePullRequest.mockImplementation(async () => ({ merged: false, message: 'Could not reach GitHub', indeterminate: true }));
-    expect(await land()).toEqual({ kind: 'waiting_ci', headSha: 'head1' });
+    expect(await land()).toMatchObject({ kind: 'waiting_ci', headSha: 'head1' });
   });
 });
 
