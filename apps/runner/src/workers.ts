@@ -1946,7 +1946,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; toolSearchDisabled?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role bundle; `overlay` = merge its .mcp.json into the session cwd once the worktree exists. */
@@ -2081,6 +2081,7 @@ export class WorkerManager {
       console.log(`[Worker ${claimedWorker.id}] Received team agent model endpoint (${claimedWorker.modelEndpoint.kind})`);
     }
     if (claimedWorker.modelEndpointIgnored) worker.modelEndpointIgnored = true;
+    if (claimedWorker.toolSearchDisabled) worker.toolSearchDisabled = true;
     if (claimedWorker.githubCredentials?.mode === 'scoped' || claimedWorker.githubCredentials?.mode === 'runner') {
       worker.githubCredentials = { mode: claimedWorker.githubCredentials.mode };
     }
@@ -3551,6 +3552,7 @@ export class WorkerManager {
         trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
         modelEndpoint: worker.modelEndpoint,
         teamEndpointWithheld: worker.modelEndpointIgnored,
+        toolSearchDisabled: worker.toolSearchDisabled,
         budgetModel: bundledTierEntry('budget').model,
       });
       // Preflight: a Codex task whose team agent model endpoint has no
