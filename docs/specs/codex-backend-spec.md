@@ -7,7 +7,7 @@ summary: The Codex worker backend MUST drive the shared worker loop by mapping C
 domain: runners
 surfaces: [apps/runner/src/backends/codex-backend.ts, apps/runner/src/backends/codex-events.ts, apps/runner/src/workers.ts, apps/runner/src/codex-auth.ts]
 related: [provider-failover, credential-isolation, runner-liveness]
-keywords: [mapcodexeventtosdkmessages, agents.md, codex_home, resumethreadid, model_reasoning_effort, sandboxmode, mcp_servers, stdiomcpservers, codebase-memory]
+keywords: [mapcodexeventtosdkmessages, agents.md, codex_home, resumethreadid, model_reasoning_effort, sandboxmode, mcp_servers]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -73,7 +73,7 @@ assertions:
 
 > **INV-5 (failures are dual-emitted).** A failed command or MCP call emits **both** the `assistant` `tool_use` and a `user` `tool_result{is_error}`. *Reason:* error-trace + MCP-failure tracking consume the `user`/`tool_result` shape. *Guard:* `codex-events.test.ts`.
 
-> **INV-6 (mcp arguments carried through).** `mcp_tool_call.arguments` is passed as `tool_use.input` when present. The SDK `.d.ts` omits `arguments`, but the CLI JSONL emits it (verified, §10). *Reason:* the output-requirement gate matches `mcp__buildd__buildd` calls by `input.action` (e.g. `create_pr`). *Guard:* `codex-events.test.ts` mcp case.
+> **INV-6 (mcp arguments carried through).** `mcp_tool_call.arguments` is passed as `tool_use.input` when present. The SDK `.d.ts` omits `arguments`, but the CLI JSONL emits it (verified, §10). *Reason:* the output-requirement gate matches buildd action-tool calls (`isBuilddActionTool`) by `input.action` (e.g. `create_pr`). *Guard:* `codex-events.test.ts` mcp case.
 
 > **INV-7 (todo_list is not a tool_use).** `todo_list` items map to `[]`. *Reason:* repeated todo updates would trip `detectRepetitiveToolCalls`. The live todo still surfaces via channel-1 progress.
 
@@ -133,7 +133,7 @@ The SDK exposes no approval/effort/sandbox-policy thread options, so these are w
 
 > **INV-20 (sandbox mapping).** buildd permission policy + `task.kind` → Codex `sandboxMode` (`read-only` | `workspace-write`; default `workspace-write`). Dangerous-bash blocking relies on the **Codex sandbox**, not buildd's PreToolUse hook (which we cannot reach on Codex — see INV-21). *Guard:* `sandbox-inference.test.ts`.
 
-> **INV-21 (stdio MCP servers — the codebase graph).** `writeCodexMcpConfig` takes `stdioMcpServers` and emits a `command`/`args`/`env` table per entry, which is how `codebase-memory` reaches a Codex worker (`docs/specs/codebase-memory-graph.md` CBM-27). *Reason:* `ThreadOptions` has no `mcpServers` field, so config.toml is the only injection point, and buildd's writer previously modelled HTTP servers only — every stdio connector was skipped with a warning, which is why Codex tasks had no graph. A nested `[mcp_servers.<name>.env]` table MUST come after that server's scalar keys or TOML scopes them into it and `--strict-config` rejects the file. *Guard:* `codex-mcp-config.test.ts`.
+> **INV-21 (retired).** Covered stdio MCP server injection into `config.toml`, whose only user was the code graph; both were removed.
 
 > **INV-22 (no reachable hook seam).** buildd's PreToolUse/PostToolUse steering has no Codex equivalent **through the SDK**: `@openai/codex-sdk` surfaces no hook configuration. Standing instructions in `AGENTS.md` are therefore the only steering channel, and anything expressed as a hook on Claude must be re-expressed as instructions for Codex. Note the codex CLI itself *does* ship a hook engine (PreToolUse among others, behind a `[features] hooks` flag plus a trust hash) and it fires under non-interactive `codex exec`; whether it can be driven via the SDK's `--config` passthrough is **unverified**. That is the future path to hook parity — do not claim Codex "has no hooks".
 

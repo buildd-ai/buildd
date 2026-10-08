@@ -498,3 +498,24 @@ describe('eligibleFixTaskIds', () => {
     ], opts)]).toEqual([]);
   });
 });
+
+
+describe('provider-backed screenshot evidence', () => {
+  for (const failure of [
+    { providerError: 'session_lost' },
+    { browser: { provider: 'cloudflare', probe: { ok: false } } },
+    { browser: { probe: { ok: true } } },
+  ]) {
+    it(`rejects provider failure ${JSON.stringify(failure)} even beside good shots`, () => {
+      const shots = [shot('a', qa('/x', 'mobile')), shot('b', qa('/x', 'desktop')), shot('failed', qa('/x', 'mobile', failure))];
+      const v = evaluateVisualAuditEvidence({ requiredRoutes: ['/x'], shots, uploadedIds: new Set(['a', 'b', 'failed']), linkedFixTaskIds: new Set() });
+      expect(v.ok).toBe(false);
+      expect(formatVisualEvidenceRejection(v)).toContain('browser provider');
+    });
+  }
+  it('accepts a healthy cloud provider screenshot with the historical capture contract', () => {
+    const browser = { provider: 'cloudflare', probe: { ok: true } };
+    const shots = [shot('a', qa('/x', 'mobile', { browser })), shot('b', qa('/x', 'desktop', { browser }))];
+    expect(evaluateVisualAuditEvidence({ requiredRoutes: ['/x'], shots, uploadedIds: new Set(['a', 'b']), linkedFixTaskIds: new Set() }).ok).toBe(true);
+  });
+});

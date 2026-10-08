@@ -134,9 +134,15 @@ describe('resolveDispatchPrincipal', () => {
   it('resolves the live worker as an agent_run principal', async () => {
     const r = await resolveDispatchPrincipal(ACCOUNT, input);
     expect(r.ok && r.principal).toEqual({
-      kind: 'agent_run', via: 'dispatch', workerId: 'worker-1', taskId: 'task-1',
+      kind: 'agent_run', via: 'dispatch', workerId: 'worker-1', workerBranch: null, taskId: 'task-1',
       workspaceId: 'ws-1', teamId: 'team-1', accountId: 'account-1',
     });
+  });
+
+  it("carries the resolved worker's branch (the egress push allow-list)", async () => {
+    mockWorkersFindMany.mockResolvedValue([worker({ branch: 'buildd/task0001-x' })]);
+    const r = await resolveDispatchPrincipal(ACCOUNT, input);
+    expect(r.ok && r.principal.workerBranch).toBe('buildd/task0001-x');
   });
 
   it('refuses a task whose workspace row does not match its workspaceId', async () => {

@@ -70,8 +70,10 @@ describe('AC-18: mission page query shape', () => {
     expect(MISSION_TASKS_WITH.with.workers.with.artifacts.columns).toBe(MISSION_ARTIFACT_COLUMNS);
   });
 
-  it('page.tsx uses the shared shape for both mission reads and inlines no heavy column', () => {
-    expect(PAGE.split('with: MISSION_DETAIL_WITH').length - 1).toBe(2);
+  it('page.tsx uses the shared shape for its mission read and inlines no heavy column', () => {
+    // One read: the read-through PR fact import runs after the response, so the
+    // page no longer re-reads the mission it just refreshed (workflow kernel §11).
+    expect(PAGE.split('with: MISSION_DETAIL_WITH').length - 1).toBe(1);
     expect(PAGE).not.toMatch(/\bcontent:\s*true/);
     expect(PAGE).not.toMatch(/\bresult:\s*true/);
     expect(PAGE).not.toMatch(/\bcontext:\s*true/);

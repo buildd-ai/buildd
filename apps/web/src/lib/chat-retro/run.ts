@@ -13,7 +13,7 @@ import {
   type RetroWindowInput,
 } from './skeleton';
 import {
-  buildQuestions, failedLesson, judgedLesson, skippedLesson,
+  buildQuestions, failedLesson, judgedLesson, skippedLesson, withVisibleAnswer,
   type LessonRow, type RetroQuestions, type WindowRef,
 } from './lesson';
 import {
@@ -36,7 +36,18 @@ export interface PassDeps {
   env?: Record<string, string | undefined>;
   now: () => Date;
   deadlineAt: number;
-  listOptedInTeams: () => Promise<Array<{ teamId: string; settings: ChatRetroSettings }>>;
+  /**
+   * `dogfood`: the team runs buildd's own dogfood policy, so a high-confidence
+   * visible-answer failure files on its first occurrence (./proposals.ts,
+   * rankClusters). Absent = an ordinary opted-in team.
+   */
+  /**
+   * Account dogfood sync (./store.ts reconcileAccountDogfood): owners of the
+   * configured dogfood teams get it, and their teams' stored settings follow.
+   * Runs after the kill switch, before the team list. Optional for tests.
+   */
+  reconcileAccountDogfood?: () => Promise<{ activatedUsers: number; syncedTeams: number }>;
+  listOptedInTeams: () => Promise<Array<{ teamId: string; settings: ChatRetroSettings; dogfood?: boolean }>>;
   listPendingConversations: (teamId: string, now: Date, limit: number) => Promise<Array<{ id: string; workspaceId: string | null; dataClass: string | null }>>;
   loadWindow: (teamId: string, conversationId: string) => Promise<RetroWindowInput>;
   judgedToday: (teamId: string, now: Date) => Promise<number>;
@@ -67,13 +78,15 @@ export interface PassCounts {
   deferred: number;
   noWorkspace: number;
   pruned: number;
+  dogfoodActivated: number;
+  dogfoodSynced: number;
   errors: number;
   jevCostUsd: number;
 }
 
 const zero = (): PassCounts => ({
   disabled: false, teams: 0, windows: 0, judged: 0, skipped: 0, failed: 0,
-  filed: 0, appended: 0, muted: 0, deferred: 0, noWorkspace: 0, pruned: 0, errors: 0, jevCostUsd: 0,
+  filed: 0, appended: 0, muted: 0, deferred: 0, noWorkspace: 0, pruned: 0, dogfoodActivated: 0, dogfoodSynced: 0, errors: 0, jevCostUsd: 0,
 });
 
 export async function runChatRetroPass(deps: PassDeps): Promise<PassCounts> {
@@ -83,12 +96,19 @@ export async function runChatRetroPass(deps: PassDeps): Promise<PassCounts> {
   const timeLeft = () => deps.deadlineAt - Date.now() > RETRO_DEADLINE_MARGIN_MS;
 
   try { counts.pruned = await deps.pruneExpiredLessons(now); } catch { counts.errors++; }
+  if (deps.reconcileAccountDogfood) {
+    try {
+      const r = await deps.reconcileAccountDogfood();
+      counts.dogfoodActivated = r?.activatedUsers ?? 0;
+      counts.dogfoodSynced = r?.syncedTeams ?? 0;
+    } catch { counts.errors++; }
+  }
 
   const teams = await deps.listOptedInTeams();
   counts.teams = teams.length;
   let runBudget = RETRO_MAX_PER_RUN;
 
-  for (const { teamId, settings } of teams) {
+  for (const { teamId, settings, dogfood } of teams) {
     if (!settings.lessons) continue;
     try {
       let judgedBudget = Math.max(0, RETRO_MAX_PER_TEAM_DAY - await deps.judgedToday(teamId, now));
@@ -110,14 +130,17 @@ export async function runChatRetroPass(deps: PassDeps): Promise<PassCounts> {
         };
         const turns = buildTurns(input);
         const totals = windowTotals(turns);
+        // Visible-answer findings are code's, so a window the model does not
+        // judge still keeps them (never a sensitive one: nothing is read there).
+        let candidates: ReturnType<typeof detectCandidates> = [];
         const skip = (reason: Parameters<typeof skippedLesson>[2], stateTokens: number | null = null) => {
-          rows.push(skippedLesson(ref, totals, reason, stateTokens));
+          rows.push(withVisibleAnswer(skippedLesson(ref, totals, reason, stateTokens), candidates));
           counts.skipped++;
         };
         if (conv.dataClass === 'sensitive') { skip('sensitive'); continue; }
         if (isTrivialWindow(turns)) { skip('trivial'); continue; }
+        candidates = detectCandidates(turns);
         if (judgedBudget <= 0) { skip('team_cap'); continue; }
-        const candidates = detectCandidates(turns);
         const rendered = renderState(turns, candidates);
         if (!rendered) { skip('state_budget'); continue; }
 
@@ -127,13 +150,13 @@ export async function runChatRetroPass(deps: PassDeps): Promise<PassCounts> {
         try {
           result = await deps.decide({ teamId, workspaceId: conv.workspaceId, state: rendered.state, questions, onUsage: r => { receipts.push(r); } });
         } catch {
-          rows.push(failedLesson(ref, totals, 'threw', rendered.tokens, null));
+          rows.push(withVisibleAnswer(failedLesson(ref, totals, 'threw', rendered.tokens, null), candidates));
           counts.failed++;
           continue;
         }
         if (!result.ok) {
           // Never retried: the watermark advances, a lost lesson costs less than re-billing it daily.
-          rows.push(failedLesson(ref, totals, result.error.kind, rendered.tokens, result.latencyMs));
+          rows.push(withVisibleAnswer(failedLesson(ref, totals, result.error.kind, rendered.tokens, result.latencyMs), candidates));
           counts.failed++;
           continue;
         }
@@ -154,7 +177,7 @@ export async function runChatRetroPass(deps: PassDeps): Promise<PassCounts> {
 
     if (!settings.proposals) continue;
     try {
-      await proposeForTeam(teamId, now, deps, counts);
+      await proposeForTeam(teamId, now, deps, counts, { dogfood: dogfood === true });
     } catch (err) {
       counts.errors++;
       console.error(`[chat-retro] proposal pass failed for a team:`, err instanceof Error ? err.message : err);
@@ -163,8 +186,8 @@ export async function runChatRetroPass(deps: PassDeps): Promise<PassCounts> {
   return counts;
 }
 
-async function proposeForTeam(teamId: string, now: Date, deps: PassDeps, counts: PassCounts): Promise<ProposalAction[]> {
-  const ranked = rankClusters(await deps.loadClusters(teamId, now));
+async function proposeForTeam(teamId: string, now: Date, deps: PassDeps, counts: PassCounts, opts: { dogfood: boolean }): Promise<ProposalAction[]> {
+  const ranked = rankClusters(await deps.loadClusters(teamId, now), opts);
   if (ranked.length === 0) return [];
   const priors = new Map<string, PriorFiling | null>();
   for (const c of ranked) {

@@ -12,8 +12,10 @@
  * credential-cache.test.ts; this file covers the WorkerManager wiring.
  */
 
-import { describe, test, expect, mock, setDefaultTimeout } from 'bun:test';
+import { describe, test, expect, mock, setDefaultTimeout, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
 import type { LocalUIConfig } from '../../src/types';
+import { cleanupTestWorkspace } from '../test-workspace';
 
 // CI runners are slower than local; give construction + async claim headroom.
 setDefaultTimeout(30_000);
@@ -138,6 +140,10 @@ describe('teamKeyOf', () => {
 });
 
 describe('gate: poll even with no local credentials', () => {
+  afterAll(() => {
+    cleanupTestWorkspace();
+  });
+
   test('claimPendingTasks calls the claim endpoint when the runner has no local creds', async () => {
     const mgr: any = new WorkerManager(makeConfig());
     // Simulate a runner with zero local credentials.
@@ -164,6 +170,10 @@ describe('gate: poll even with no local credentials', () => {
 });
 
 describe('burn-loop guard: auth failure pauses + backs off + resumes', () => {
+  afterAll(() => {
+    cleanupTestWorkspace();
+  });
+
   test('handleAuthFailure pauses claims, escalates backoff, invalidates cache, then resumes', async () => {
     const mgr: any = new WorkerManager(makeConfig());
     mgr.hasCredentials = false;

@@ -18,6 +18,7 @@
  * `buildParamsDescription` and is served on demand by the `help` action.
  */
 import { allActions, buildParamsDescription, type BuilddAction } from './mcp-tools';
+import { BUILDD_MCP_TOOL_GROUPS } from '@buildd/shared';
 
 /** Chat's tool groups. `notifications` has chat-native tools only. */
 export const CHAT_AREAS = ['missions', 'tasks', 'workers', 'prs', 'memory', 'schedules', 'artifacts', 'notifications', 'admin'] as const;
@@ -50,6 +51,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   explain: 'workers',
   get_error_traces: 'workers',
   get_failure_analytics: 'workers',
+  dispatch_health: 'workers',
   list_incidents: 'workers',
   get_budget_forecast: 'workers',
   get_usage_stats: 'workers',
@@ -65,6 +67,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   get_pr_review: 'prs',
   merge_pr: 'prs',
   close_pr: 'prs',
+  update_pr: 'prs',
   request_pr_review: 'prs',
   list_releases: 'prs',
   get_release: 'prs',
@@ -107,12 +110,14 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   emit_event: 'work',
   upload_artifact: 'work',
   get_page_source: 'work',
+  deploy: 'work',
   record_pr_supersession: 'work',
   post_note: 'work',
   suggest_schedule_update: 'work',
 };
 
-export const MCP_TOOL_GROUPS = ['missions', 'tasks', 'work', 'prs', 'runners', 'analytics', 'artifacts', 'schedules', 'admin'] as const;
+/** Declared in @buildd/shared so tool-name matching needs no action registry. */
+export const MCP_TOOL_GROUPS = BUILDD_MCP_TOOL_GROUPS;
 export type McpToolGroup = (typeof MCP_TOOL_GROUPS)[number];
 
 const AREA_TO_MCP_GROUP: Record<ActionArea, McpToolGroup | null> = {
@@ -133,6 +138,7 @@ const MCP_GROUP_OVERRIDES: Partial<Record<BuilddAction, McpToolGroup>> = {
   explain: 'analytics',
   get_error_traces: 'analytics',
   get_failure_analytics: 'analytics',
+  dispatch_health: 'analytics',
   list_incidents: 'analytics',
   read_evidence: 'analytics',
   get_budget_forecast: 'analytics',
@@ -200,6 +206,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'record events', actions: ['emit_event', 'query_events'] },
       { text: 'write artifacts', actions: ['create_artifact', 'upload_artifact'] },
       { text: 'audit page source', actions: ['get_page_source'] },
+      { text: 'deploy as the Platform Operator', actions: ['deploy'] },
       { text: 'open the PR', actions: ['create_pr', 'record_pr_supersession'] },
       { text: 'suggest a schedule change', actions: ['suggest_schedule_update'] },
       { text: 'complete', actions: ['complete_task'] },
@@ -207,7 +214,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   prs: {
     parts: [
-      { text: 'pull requests', actions: ['list_prs', 'get_pr', 'merge_pr', 'close_pr'] },
+      { text: 'pull requests', actions: ['list_prs', 'get_pr', 'merge_pr', 'close_pr', 'update_pr'] },
       { text: 'reviews', actions: ['get_pr_review', 'request_pr_review'] },
       { text: 'releases', actions: ['list_releases', 'get_release', 'release_status'] },
     ],
@@ -216,10 +223,10 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
     parts: [
       { text: 'coordination stats', actions: ['get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] },
       { text: 'stuck work', actions: ['explain'] },
-      { text: 'errors, run logs', actions: ['get_error_traces', 'get_failure_analytics', 'read_evidence'] },
-      { text: 'failure incidents', actions: ['list_incidents'] },
+      { text: 'errors, run logs, incidents', actions: ['get_error_traces', 'get_failure_analytics', 'list_incidents', 'read_evidence'] },
       { text: 'budget, usage', actions: ['get_budget_forecast', 'get_usage_stats'] },
       { text: 'runners', actions: ['list_runners'] },
+      { text: 'dispatch', actions: ['dispatch_health'] },
     ],
   },
   runners: {
@@ -282,10 +289,11 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   approve_plan: 'approve a planning task',
   reject_plan: 'reject a plan with feedback',
   send_agent_message: 'steer the agent running a task',
-  explain: 'what a task, mission, workspace or PR waits on, with evidence',
+  explain: 'task/mission/workspace/PR blockers and evidence',
   get_error_traces: 'errors caught from agent tool output',
   get_failure_analytics: 'failure patterns; error= finds a known one',
-  list_incidents: 'known failure incidents',
+  dispatch_health: 'task delivery: verdict, outbox counts, latency',
+  list_incidents: 'failure incidents',
   get_budget_forecast: 'session pressure, budget burn',
   get_usage_stats: 'token, cost and turn stats',
   get_manifest_coverage: 'coverage by scope and kind',
@@ -295,11 +303,12 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   list_runners: 'slots, branch, build, heartbeat',
   read_evidence: 'stored run logs',
   get_pr: 'PR state, CI, reviews, body',
-  list_prs: 'open PRs (conflicts and red CI first), or merged ones',
+  list_prs: 'open PRs (conflicts/red CI first) or merged',
   get_pr_review: 'where a PR review stands',
   merge_pr: 'merge a PR',
   close_pr: 'close a PR',
-  request_pr_review: 'hand a PR to a reviewer agent',
+  update_pr: 'replace a PR\'s body',
+  request_pr_review: 'dispatch PR review',
   list_releases: 'releases, newest first',
   get_release: 'one release with its tasks',
   release_status: 'what a release would ship and whether CI is green',
@@ -336,6 +345,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   create_artifact: 'save an artifact (report, analysis, link...)',
   upload_artifact: 'get an upload URL for a file artifact',
   get_page_source: 'sandbox or preview URL for visual audit',
+  deploy: 'Operator deploy with a credential you never see',
   record_pr_supersession: 'record that a closed PR was superseded',
   post_note: 'post a note or question to the task feed',
   suggest_schedule_update: 'propose a change to your schedule',
@@ -347,9 +357,9 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  * `…` means more exist, see help.
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
-  create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, label?, category?, startAt?, startIn?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
-  register_skill: '{name, content, slug?, workspaceId?, description?, isRole?, model?, allowedTools?, connectorRefs?, defaultBackend?, whenToUse?, notFor?, …}',
-  update_skill: '{slug, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, connectorRefs?, defaultBackend?, whenToUse?, notFor?, …}',
+  create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
+  register_skill: '{name, content, slug?, workspaceId?, description?, isRole?, model?, allowedTools?, connectorRefs?, defaultBackend?, …}',
+  update_skill: '{slug, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, connectorRefs?, defaultBackend?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
   manage_evidence_backends: '{action, backendId?, …}',
   read_evidence: '{taskId?|prNumber?, grep?, …}',
@@ -502,14 +512,14 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
       { text: 'Update: pending|completed|failed|cancelled (stops worker)', actions: ['update_task'] },
     ]),
     param('limit', num, [{ text: 'Default 5, max 50', actions: ['list_tasks'] }]),
-    param('include', { type: 'array', items: { type: 'string', enum: ['workers', 'artifacts', 'scheduling'] } }, [{ text: 'Default both', actions: ['get_task'] }]),
+    param('include', { type: 'array', items: { type: 'string', enum: ['workers', 'artifacts', 'scheduling', 'dispatch'] } }, [{ text: 'Default workers+artifacts', actions: ['get_task'] }]),
     param('fullDescription', bool, [{ text: 'Full text', actions: ['get_task'] }]),
     param('title', str, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
     param('priority', num, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
   ],
   analytics: [
     param('workspaceId', str, [
-      { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'get_failure_analytics', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] },
+      { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'get_failure_analytics', 'dispatch_health', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] },
       { text: 'list_runners: says if a browser runner is online', actions: ['list_runners'] },
     ]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['explain', 'get_error_traces'] }]),
@@ -517,13 +527,14 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('window', { type: 'string', enum: ['24h', '7d', '30d'] }, [{ text: 'Window (default 7d)', actions: ['get_usage_stats', 'get_failure_analytics', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] }]),
     param('family', { type: 'string', enum: ['gate'] }, [{ text: 'Gate ledger, including changeIntent warnings', actions: ['get_failure_analytics'] }]),
     param('errorPrefix', str, [{ text: 'Literal reason/signature prefix', actions: ['get_failure_analytics'] }]),
+    param('capability', str, [{ text: 'Ledger rows, e.g. question_gate', actions: ['get_decision_stats'] }]),
   ],
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors'] }]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
   ],
   prs: [
-    param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'get_pr_review', 'request_pr_review'] }]),
+    param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'update_pr', 'get_pr_review', 'request_pr_review'] }]),
   ],
   artifacts: [
     param('artifactId', str, [{ text: 'Artifact UUID', actions: ['get_artifact', 'update_artifact'] }]),
@@ -531,6 +542,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   ],
   schedules: [
     param('scheduleId', str, [{ text: 'Schedule UUID', actions: ['update_schedule', 'delete_schedule'] }]),
+    param('delegation', { type: 'object' }, [{ text: 'Cross-workspace grant', actions: ['update_schedule'] }]),
   ],
   work: [],
   admin: [],

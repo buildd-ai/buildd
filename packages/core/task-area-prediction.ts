@@ -442,17 +442,11 @@ export function readTaskAreaHint(context: unknown): TaskAreaContextHint | null {
  * Written as an explicitly advisory hint, because that is what it is: an agent
  * that reads this as a scope declaration will stop looking outside it, and the
  * prediction is a union over other people's diffs. The wording exists to make
- * the block useful for narrowing a `codebase-memory` or `recall` query without
+ * the block useful for narrowing a `recall` query or a file search without
  * licensing "these are the files I am allowed to change".
- *
- * `cbmAvailable: false` drops the graph from that sentence. A task in the
- * CBM-withheld arm of the cbm_access experiment has no codebase-memory tools,
- * and telling it to query one is steering toward a tool it does not have.
  */
-export function renderTaskAreaBlock(hint: TaskAreaContextHint, opts: { cbmAvailable?: boolean } = {}): string {
-  const narrow = opts.cbmAvailable === false
-    ? 'to narrow a `recall` query or your first file search, then verify. If the'
-    : 'to narrow a `codebase-memory` or `recall` query first, then verify. If the';
+export function renderTaskAreaBlock(hint: TaskAreaContextHint): string {
+  const narrow = 'to narrow a `recall` query or your first file search, then verify. If the';
   const sourceLabel = hint.source === 'diff'
     ? 'what those tasks actually changed'
     : 'the file scopes those tasks declared';

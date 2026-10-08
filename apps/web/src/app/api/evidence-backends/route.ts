@@ -29,7 +29,7 @@ import {
 } from '@/lib/evidence-backend';
 import { parseCreateEvidenceBackend } from '@/lib/evidence-backend-input';
 import { filterReachableEvidenceBackends, viewerReachesWorkspace } from '@/lib/evidence-backend-access';
-import { roleHas } from '@/lib/permissions';
+import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 
 export async function GET(req: NextRequest) {
   const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
@@ -41,14 +41,14 @@ export async function GET(req: NextRequest) {
     orderBy: [desc(evidenceBackends.createdAt)],
   });
   const visible = await filterReachableEvidenceBackends(viewer, rows);
-  return NextResponse.json({ backends: visible.map(toEvidenceBackendDTO), canManage: roleHas(viewer.role, 'manage_evidence_backends') });
+  return NextResponse.json({ backends: visible.map(toEvidenceBackendDTO), canManage: roleHas(viewer.role, 'manage_evidence_backends', await getTeamPermissionOverrides(viewer.teamId)) });
 }
 
 export async function POST(req: NextRequest) {
   const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });
   const { viewer } = who;
-  if (!roleHas(viewer.role, 'manage_evidence_backends')) {
+  if (!roleHas(viewer.role, 'manage_evidence_backends', await getTeamPermissionOverrides(viewer.teamId))) {
     return NextResponse.json({ error: 'Configuring evidence storage requires team admin or owner' }, { status: 403 });
   }
 

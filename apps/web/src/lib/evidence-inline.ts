@@ -52,14 +52,16 @@ export async function loadInlineEvidence(
       limit: INLINE_EVIDENCE_LIMIT,
       columns: { id: true, taskId: true, kind: true, bytes: true, uploadState: true, createdAt: true },
     });
-    list = rows.map((r) => ({
+    // The predicate matches on task lineage, so task_id is set on every row
+    // (the one-owner CHECK); the filter only narrows the type.
+    list = rows.flatMap((r) => (r.taskId ? [{
       id: r.id,
       taskId: r.taskId,
       kind: r.kind,
       bytes: r.bytes,
       uploadState: r.uploadState,
       createdAt: new Date(r.createdAt).toISOString(),
-    }));
+    }] : []));
   } catch (err) {
     console.error('[evidence-inline] list failed', err instanceof Error ? err.message : err);
     return [];

@@ -55,7 +55,7 @@ describe('describeLastCheck', () => {
     ['heartbeat_waiting', 'waiting on a pause or retry'],
     ['heartbeat_blocked', 'waiting on the mission it depends on'],
     ['heartbeat_criteria_blocked', 'waiting on the goal criteria'],
-    ['criteria_escalated', 'waiting on your decision'],
+    ['criteria_escalated', 'decision needed'],
     ['budget_exhausted', 'waiting on budget'],
     ['active_hours', 'waiting for quiet hours to end'],
     ['concurrent_cap', 'waiting on a free slot'],

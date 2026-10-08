@@ -39,6 +39,18 @@ export function describeExplicitDeferral(
         detail: `It declares no file scope and its mission already has a scope-undeclared task in flight${peer ? ` (${peer})` : ''}; only one runs at a time. Wait for that task, or re-create this one with a pathManifest (or outputRequirement 'artifact_required' / 'none' if it edits no files).`,
       };
     }
+    case 'soft_overlap': {
+      const holder = str(detail.holderTaskId);
+      const paths = Array.isArray(detail.paths) ? (detail.paths as unknown[]).filter((p): p is string => typeof p === 'string').slice(0, 5) : [];
+      const verdict = str(detail.verdict);
+      const why = verdict === 'deterministic_hold'
+        ? `the overlap is ${str(detail.overlapKind) ?? 'hard'}, so it waits deterministically`
+        : `the hold/start decision said ${verdict ?? 'HOLD'}`;
+      return {
+        code: reason,
+        detail: `Its declared scope overlaps in-flight task ${holder ?? '(unknown)'}${paths.length ? ` on ${paths.join(', ')}` : ''}, and ${why}. It starts when that task finishes or a START is decided. ${FORCE_HINT}`,
+      };
+    }
     case 'mission_budget':
       return { code: reason, detail: 'Its mission is budget_exhausted. Raise the mission budget to resume it.' };
     case 'mission_concurrent': {
@@ -79,6 +91,13 @@ export function describeExplicitDeferral(
         code: reason,
         detail: 'Another fix attempt for the same PR is already open, so this one was cancelled rather than started beside it: one retry lineage updates one PR.',
       };
+    case 'fix_not_needed': {
+      const why = str(detail.reason);
+      return {
+        code: reason,
+        detail: `The review fix was revalidated at claim and is no longer needed${why ? ` (${why})` : ''}; it was skipped, not failed.`,
+      };
+    }
     case 'ordered_behind': {
       const blocker = str(detail.blockedBy);
       return {
@@ -104,6 +123,30 @@ export function describeExplicitDeferral(
       return {
         code: reason,
         detail: `${role ? `Its role '${role}'` : 'Its workspace'} declares env ${missing.length > 0 ? missing.join(', ') : 'vars'} that no secret supplies. Add a role_env_secret under the mapped label (or remove the declaration), and it is claimable on the next poll.`,
+      };
+    }
+    case 'managed_concurrency': {
+      const active = num(detail.active);
+      const limit = num(detail.limit);
+      return {
+        code: reason,
+        detail: `The team's plan allows ${limit ?? 'a fixed number of'} managed runs at once${active !== null ? ` and ${active} are active` : ''}. It stays queued and starts automatically when one finishes.`,
+      };
+    }
+    case 'managed_runner_hours': {
+      const at = str(detail.resetsAt);
+      return {
+        code: reason,
+        detail: `The team's monthly managed runner-hours are used up. It stays queued and starts automatically when the allowance refills${at ? ` (${at})` : ''} or grows.`,
+      };
+    }
+    case 'hosted_runner_hours': {
+      const at = str(detail.resetsAt);
+      const used = num(detail.used);
+      const limit = num(detail.limit);
+      return {
+        code: reason,
+        detail: `Hosted runner allowance used${used !== null && limit !== null ? ` (${used} of ${limit} counted hours this month)` : ''}. It stays queued and starts automatically when the allowance refills${at ? ` (${at})` : ''} or grows, or a runner of your own can take it.`,
       };
     }
   }

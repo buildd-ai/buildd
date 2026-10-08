@@ -3,7 +3,7 @@
  *
  * A 23-day audit found five signals that were structurally incapable of
  * reporting a problem — not noisy, not badly tuned, unable to trip at all
- * (CBM health predicate, the claim-loop stranding detector, `supportedModels()`
+ * (a since-removed code-graph health predicate, the claim-loop stranding detector, `supportedModels()`
  * capability validation, the 24h worker TTL, and a disk-space alert in the
  * infrastructure repo). Each one read as "covered" — a predicate existed, a
  * threshold existed, an alert path existed — while producing zero true
@@ -27,7 +27,7 @@
 /**
  * The exact marker a fire-test must carry, immediately above the `it`/`test`
  * block that proves a registered signal fires, followed by the entry's slug
- * (e.g. `${SIGNAL_FIRE_MARKER_PREFIX} cbm-fleet-health`).
+ * (e.g. `${SIGNAL_FIRE_MARKER_PREFIX} claim-loop-stranding`).
  *
  * Kept as the single literal definition of the marker text on purpose: the
  * coverage test that scans for it imports this constant rather than
@@ -94,21 +94,6 @@ export interface SignalRegistryEntry {
 }
 
 export const SIGNAL_REGISTRY: SignalRegistryEntry[] = [
-  {
-    slug: 'cbm-fleet-health',
-    name: 'CBM fleet health predicate',
-    watches: 'Whether the last CBM_FLEET_THRESHOLD terminal workers in a workspace all report an unhealthy CBM outcome',
-    threshold:
-      "CBM_FLEET_THRESHOLD (5) consecutive terminal workers unhealthy — outcome='disabled' OR " +
-      "(outcome='enforced' AND bootstrapResult='failed'). Previously only outcome='disabled' counted, " +
-      "so a fleet where every index bootstrap failed reported 100% healthy (bootstrapResult is set " +
-      'unconditionally to enforced once CBM mounts, independent of whether indexing succeeded).',
-    location: 'packages/core/cbm-health.ts#detectCbmFleetDisabled',
-    fireTest: {
-      file: 'packages/core/__tests__/cbm-health.test.ts',
-      title: 'fires when enforced workers all report a failed index bootstrap',
-    },
-  },
   {
     slug: 'claim-loop-stranding',
     name: 'Claim-loop stranding detector',
@@ -327,6 +312,17 @@ export const CRON_JOB_REGISTRY: CronJobRegistryEntry[] = [
     notifyTest: {
       file: 'apps/web/src/app/api/cron/experiment-health/route.test.ts',
       title: 'sends one alert naming each unhealthy experiment and its findings',
+    },
+  },
+  {
+    slug: 'failure-pattern-sentinel',
+    job: 'failure-pattern-sentinel',
+    name: 'Failure Pattern Sentinel backstop sweep',
+    changedPolarity: 'findings',
+    changedMeaning: 'incidents opened or updated this run (a systemic pattern found), not work performed',
+    notifyTest: {
+      file: 'apps/web/src/lib/failure-pattern-sweep.test.ts',
+      title: 'opens one incident, pages, and files a fix task for a critical pattern',
     },
   },
   {

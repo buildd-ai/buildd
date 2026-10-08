@@ -5,9 +5,10 @@ import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { authenticateApiKey } from '@/lib/api-auth';
-import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { authenticateTaskScopedCaller, isOrchestrationTaskToken, taskScopeAllowsMissionTask } from '@/lib/task-token-auth';
+import { holdsInWorkspace } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { isInteractiveWorker } from '@/lib/interactive-worker-liveness';
 import {
   appendInstructionHistory,
   enqueuePendingInstruction,
@@ -39,13 +40,17 @@ export async function POST(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
-  // Must have session auth OR admin-level API token
+  // Must have session auth OR admin-level API token, or be an orchestration
+  // task's admin per-task token, which may steer only the workers of tasks on
+  // its own task's mission (checked below). hasTokenRouteAdminAccess is false
+  // for any task token.
   const hasSessionAuth = !!user;
   const hasAdminToken = hasTokenRouteAdminAccess(apiAccount, req);
+  const orchestrationToken = !!apiAccount && isOrchestrationTaskToken(apiAccount);
 
-  if (!hasSessionAuth && !hasAdminToken) {
+  if (!hasSessionAuth && !hasAdminToken && !orchestrationToken) {
     return NextResponse.json(
       { error: 'Unauthorized - requires session auth or admin-level API token' },
       { status: 401 }
@@ -54,7 +59,10 @@ export async function POST(
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
-    with: { workspace: { columns: { dataClass: true, teamId: true } } },
+    with: {
+      workspace: { columns: { dataClass: true, teamId: true } },
+      task: { columns: { id: true, workspaceId: true, missionId: true } },
+    },
   });
 
   if (!worker) {
@@ -64,9 +72,12 @@ export async function POST(
   // The caller must be able to administer the worker's workspace: an
   // admin-level key belonging to the workspace's team, or a session user with
   // admin/owner role in it. Anything else sees "not found".
-  const canAdminister = hasAdminToken
-    ? apiAccount!.teamId === worker.workspace?.teamId
-    : !!(await verifyWorkspaceAccess(user!.id, worker.workspaceId, 'admin'));
+  const canAdminister = orchestrationToken
+    ? !!worker.task && worker.workspaceId === apiAccount!.taskScope!.workspaceId
+      && await taskScopeAllowsMissionTask(apiAccount!, worker.task)
+    : hasAdminToken
+      ? apiAccount!.teamId === worker.workspace?.teamId
+      : await holdsInWorkspace(user!.id, worker.workspaceId, 'steer_workers');
   if (!canAdminister) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
@@ -115,7 +126,12 @@ export async function POST(
   // delivery (and can be trusted not to double-inject a message that arrived
   // both over Pusher and over the queue). Older runners get exactly the old
   // behaviour: Pusher only, optimistically recorded as delivered.
-  const ackCapable = (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true;
+  //
+  // An interactive worker (claim_task, runner = 'mcp') counts as one from the
+  // start: no runner listens on Pusher for it, its session reads only the
+  // queue (update_progress, which acknowledges), so the queue is its only path.
+  const ackCapable = (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true
+    || isInteractiveWorker((worker as { runner?: string | null }).runner);
 
   // Terminal-but-urgent: Pusher only — a queued copy could never be collected.
   const queueable = !isUnreachableWorkerStatus(worker.status) && (!isUrgent || ackCapable);

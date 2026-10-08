@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { choice, defineDecision, JEV_MODEL } from '@builddai/ai-kit/decide';
 import type { OrchestrationDecisionDeps, OrchestrationDecisionRow } from '@buildd/core/orchestration-decision';
-import { claimHoldIdentity, type PromotionEvidence } from '@buildd/core/orchestration-promotion';
 import {
   ClaimHoldCollector,
   acquireGatedStartPaths,
@@ -55,16 +54,7 @@ const pr = (over: Record<string, unknown> = {}) => ({
 const QUESTIONS = { action: choice({ question: 'q' }, { HOLD: 'h', START: 's' }) };
 const GATED = defineDecision({ id: 'buildd.orchestration_claim_hold', promptVersion: 'test-gated', questions: QUESTIONS, mode: 'gated', minConfidence: 0.8 });
 
-/** Synthetic readout evidence for GATED, for both advisory gates. */
-const PROMOTED: PromotionEvidence[] = ['ch1.open_pr_overlap', 'ch1.advisory_manifest'].map(candidatePolicyVersion => ({
-  decisionId: GATED.id,
-  candidatePolicyVersion,
-  measuredFingerprint: claimHoldIdentity(GATED),
-  verdict: 'eligible_for_gated' as const,
-  threshold: 0.8,
-  maxApplyingFraction: 1,
-  readoutRef: 'synthetic',
-}));
+const SHADOW = defineDecision({ id: 'buildd.orchestration_claim_hold', promptVersion: 'test-shadow', questions: QUESTIONS, mode: 'shadow' });
 
 function decisionDeps(over: Partial<OrchestrationDecisionDeps> & { rows?: OrchestrationDecisionRow[]; label?: string; model?: string } = {}) {
   const rows = over.rows ?? [];
@@ -169,6 +159,122 @@ describe('ClaimHoldCollector.noteOpenPrOverlap: deterministic rails', () => {
   });
 });
 
+describe('ClaimHoldCollector.noteSoftOverlap: prefix-only declared overlap', () => {
+  const holder = (over: Record<string, unknown> = {}) => ({ taskId: HOLDER, overlapPaths: ['scripts', 'scripts/run-unit-tests.ts'], workerStatus: 'running', ...over });
+
+  it('records an eligible soft overlap, even with a live holder', () => {
+    const c = new ClaimHoldCollector();
+    const note = c.noteSoftOverlap(ctx(), ['scripts/'], holder(), new Map());
+    expect(note?.candidate).toMatchObject({ gate: 'soft_overlap', scope: 'declared', overlapPaths: ['scripts', 'scripts/run-unit-tests.ts'], holder: { taskId: HOLDER, prNumber: null, workerStatus: 'running' } });
+  });
+
+  it('a live lease held by another task on the scope wins: not asked', () => {
+    const c = new ClaimHoldCollector();
+    expect(c.noteSoftOverlap(ctx(), ['scripts/'], holder(), new Map([[HOLDER, ['scripts/run-unit-tests.ts']]]))).toBeNull();
+    expect(c.skipped).toEqual({ live_lease: 1 });
+  });
+
+  it('a migration or serialized overlap is not asked', () => {
+    const c = new ClaimHoldCollector();
+    expect(c.noteSoftOverlap(ctx(), ['packages/core/'], holder({ overlapPaths: ['packages/core/drizzle'] }), new Map())).toBeNull();
+    const gitConfig = { conflictSurfaces: [{ label: 'scripts', pattern: 'scripts', serialize: true }] } as any;
+    expect(c.noteSoftOverlap(ctx({ gitConfig }), ['scripts/'], holder(), new Map())).toBeNull();
+    expect(c.skipped).toEqual({ migration: 1, serialized_surface: 1 });
+  });
+
+  it('never throws', () => {
+    const c = new ClaimHoldCollector();
+    expect(() => c.noteSoftOverlap(null as any, ['scripts/'], holder(), new Map())).not.toThrow();
+    expect(c.skipped.error).toBe(1);
+  });
+
+  it('a same-file overlap is asked, carrying the same_file kind into the candidate and its digest', () => {
+    const c = new ClaimHoldCollector();
+    const same = c.noteSoftOverlap(ctx(), ['scripts/run-unit-tests.ts'], holder({ overlapPaths: ['scripts/run-unit-tests.ts'], overlapKind: 'same_file' }), new Map());
+    const prefix = new ClaimHoldCollector().noteSoftOverlap(ctx(), ['scripts/run-unit-tests.ts'], holder({ overlapPaths: ['scripts/run-unit-tests.ts'], overlapKind: 'prefix' }), new Map());
+    expect(same?.candidate.overlapKind).toBe('same_file');
+    expect(same?.digest).not.toBe(prefix?.digest);
+  });
+
+  it('a generated file or an explicit hotspot is a hard surface: not asked', () => {
+    const c = new ClaimHoldCollector();
+    expect(c.noteSoftOverlap(ctx(), ['docs/specs/INDEX.md'], holder({ overlapPaths: ['docs/specs/INDEX.md'], overlapKind: 'same_file' }), new Map())).toBeNull();
+    const gitConfig = { overlapHotspots: ['scripts/run-unit-tests.ts'] } as any;
+    expect(c.noteSoftOverlap(ctx({ gitConfig }), ['scripts/run-unit-tests.ts'], holder({ overlapPaths: ['scripts/run-unit-tests.ts'], overlapKind: 'same_file' }), new Map())).toBeNull();
+    expect(c.skipped).toEqual({ serialized_surface: 2 });
+  });
+});
+
+describe('runClaimHoldShadow: same-file soft overlap', () => {
+  const sameFileNote = () => {
+    const c = new ClaimHoldCollector();
+    c.noteSoftOverlap(ctx(), ['apps/web/src/lib/x.ts'], { taskId: HOLDER, overlapPaths: ['apps/web/src/lib/x.ts'], overlapKind: 'same_file', workerStatus: 'running' }, new Map());
+    return c;
+  };
+
+  // The model's answer is not under test (a stub that says START proves
+  // nothing about the model). What is: the deterministic inputs the decision
+  // is handed, and that every failure path holds.
+  const noHistoryHarness = (call: any) => {
+    const evidenceCalls: any[] = [];
+    const h = harness({
+      loadHolder: async () => ({ title: 'Other', workerStatus: 'running', lastActivityAt: '2026-09-30T11:59:00.000Z', prLifecycle: null, baseStale: null, stage: 'just_started' }),
+      loadEvidence: async (opts) => {
+        evidenceCalls.push(opts);
+        return { conflictHistory: { summary: 'no_history', maxRate: null, files: [{ path: 'apps/web/src/lib/x.ts', mergedPrs: 0, conflicted: 0, rate: null }] }, predictedChange: { files: 2, minutes: 15, source: 'neighbours' } };
+      },
+    }, decisionDeps({ call }));
+    return { h, evidenceCalls };
+  };
+
+  it('no conflict history: the decision is handed the overlap kind, no_history, the holder stage and the predicted size', async () => {
+    const c = sameFileNote();
+    let seen: any = null;
+    const { h, evidenceCalls } = noHistoryHarness(async (args: any) => {
+      seen = args.state;
+      return { ok: true, answers: { action: { choice: 'HOLD', confidence: 0.5, distribution: {} } }, model: JEV_MODEL, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 1, attempts: 1 };
+    });
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(evidenceCalls).toEqual([{ workspaceId: WS, taskId: TASK, paths: ['apps/web/src/lib/x.ts'] }]);
+    expect(seen.overlap.kind).toBe('same_file');
+    expect(seen.conflictHistory).toEqual({ summary: 'no_history', maxRate: null, files: [{ path: 'apps/web/src/lib/x.ts', mergedPrs: 0, conflicted: 0, rate: null }] });
+    expect(seen.holder.stage).toBe('just_started');
+    expect(seen.candidate.predictedChange).toEqual({ files: 2, minutes: 15, source: 'neighbours' });
+    expect(h.rows[0]).toMatchObject({ candidatePolicyVersion: 'ch1.soft_overlap' });
+  });
+
+  it('no conflict history and the decision call fails: HOLD, recorded as a fallback (fail closed)', async () => {
+    const c = sameFileNote();
+    const { h } = noHistoryHarness(async () => { throw new Error('provider down'); });
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(h.rows[0]).toMatchObject({ status: 'fallback', effective: 'HOLD', applied: false });
+  });
+
+  it('no conflict history and a low-confidence START: HOLD, not applied', async () => {
+    const c = sameFileNote();
+    const { h } = noHistoryHarness(async () => ({ ok: true, answers: { action: { choice: 'START', confidence: 0.3, distribution: {} } }, model: JEV_MODEL, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 1, attempts: 1 }));
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(h.rows[0]).toMatchObject({ effective: 'HOLD', applied: false });
+  });
+
+  it('a failed evidence read is a decision error: HOLD, recorded as a fallback, no model call', async () => {
+    const c = sameFileNote();
+    const h = harness({ loadEvidence: async () => { throw new Error('db down'); } });
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(h.counts().calls).toBe(0);
+    expect(h.rows[0]).toMatchObject({ status: 'fallback', effective: 'HOLD', applied: false });
+  });
+
+  it('open-PR overlaps do not read same-file evidence', async () => {
+    const c = new ClaimHoldCollector();
+    c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
+    let called = 0;
+    const h = harness({ loadEvidence: async () => { called++; return { conflictHistory: null, predictedChange: null }; } });
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(called).toBe(0);
+  });
+});
+
 describe('ClaimHoldCollector never throws into the claim loop', () => {
   const malformed: Array<[string, any]> = [
     ['conflictSurfaces is an object', { conflictSurfaces: { label: 'x', pattern: 'apps', serialize: true } }],
@@ -212,11 +318,11 @@ describe('ClaimHoldCollector.noteAdvisoryManifest', () => {
   });
 });
 
-describe('runClaimHoldShadow: shadow records, never applies', () => {
-  it('records the rule verdict and the suggestion, content-free, with the cohort draw', async () => {
+describe('runClaimHoldShadow: records every decision; only a confident Jev START applies', () => {
+  it('a shadow definition records the rule verdict and the suggestion, content-free, with the cohort draw', async () => {
     const c = new ClaimHoldCollector();
     c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
-    const h = harness();
+    const h = harness({ decision: SHADOW });
     await runClaimHoldShadow(c.candidates, h.deps);
     expect(h.rows).toHaveLength(1);
     const row = h.rows[0];
@@ -236,9 +342,6 @@ describe('runClaimHoldShadow: shadow records, never applies', () => {
       taskId: TASK,
       workspaceId: WS,
       prNumber: null,
-      experimentArm: 'observe',
-      propensity: 1,
-      applyingFraction: 0,
     });
     expect(JSON.stringify(row)).not.toContain('widget');
     expect(JSON.stringify(row)).not.toContain('Add the widget');
@@ -248,7 +351,7 @@ describe('runClaimHoldShadow: shadow records, never applies', () => {
     const c = new ClaimHoldCollector();
     c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
     const dd = decisionDeps({ model: 'openai/gpt-x' });
-    const h = harness({ decision: GATED, applyingFraction: 1, promotions: PROMOTED }, dd);
+    const h = harness({ decision: GATED, applyingFraction: 1 }, dd);
     await runClaimHoldShadow(c.candidates, h.deps);
     expect(h.rows[0]).toMatchObject({ applied: false, status: 'suggested', reason: 'non_jev', model: 'openai/gpt-x' });
   });
@@ -256,35 +359,55 @@ describe('runClaimHoldShadow: shadow records, never applies', () => {
   it('Jev under a reached gated policy with the task in the cohort is the only applied START', async () => {
     const c = new ClaimHoldCollector();
     c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
-    const h = harness({ decision: GATED, applyingFraction: 1, promotions: PROMOTED });
+    const h = harness({ decision: GATED, applyingFraction: 1 });
     await runClaimHoldShadow(c.candidates, h.deps);
     expect(h.rows[0]).toMatchObject({ applied: true, effective: 'START', experimentArm: 'apply', propensity: 1 });
   });
 
-  it('a requested cohort without readout evidence resolves to zero: recorded, never applied', async () => {
+  it('as shipped (no overrides) a confident Jev START applies: no promotion gate', async () => {
     const c = new ClaimHoldCollector();
     c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
-    const h = harness({ decision: GATED, applyingFraction: 1 });
+    const h = harness();
     await runClaimHoldShadow(c.candidates, h.deps);
-    expect(h.rows[0]).toMatchObject({ applied: false, effective: 'HOLD', experimentArm: 'observe', applyingFraction: 0, reason: 'not_in_cohort' });
+    expect(h.rows[0]).toMatchObject({ mode: 'gated', applied: true, effective: 'START', experimentArm: 'apply', applyingFraction: 1 });
+    expect(gatedStartReachable()).toBe(true);
   });
 
-  it('evidence measured on another definition (fingerprint mismatch) resolves to zero', async () => {
+  it('a Jev START below the threshold is recorded, never applied: the task holds', async () => {
     const c = new ClaimHoldCollector();
     c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
-    const stale = PROMOTED.map(e => ({ ...e, measuredFingerprint: '000000000000' }));
-    const h = harness({ decision: GATED, applyingFraction: 1, promotions: stale });
+    const dd = decisionDeps({
+      call: (async () => ({ ok: true, answers: { action: { choice: 'START', confidence: 0.6, distribution: {} } }, model: JEV_MODEL, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 1, attempts: 1 })) as any,
+    });
+    const h = harness({}, dd);
     await runClaimHoldShadow(c.candidates, h.deps);
-    expect(h.rows[0]).toMatchObject({ applied: false, applyingFraction: 0 });
+    expect(h.rows[0]).toMatchObject({ applied: false, effective: 'HOLD', suggested: 'START' });
+  });
+
+  it('a Jev HOLD applies as HOLD: the task keeps waiting', async () => {
+    const c = new ClaimHoldCollector();
+    c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
+    const h = harness({}, decisionDeps({ label: 'HOLD' }));
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(h.rows[0]).toMatchObject({ effective: 'HOLD' });
+  });
+
+  it('a decision error (provider down) fails closed to HOLD', async () => {
+    const c = new ClaimHoldCollector();
+    c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
+    const dd = decisionDeps({ call: (async () => { throw new Error('provider down'); }) as any });
+    const h = harness({}, dd);
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(h.rows[0]).toMatchObject({ status: 'fallback', effective: 'HOLD', applied: false });
   });
 
   it('rolling the requested fraction back to zero stops application even with evidence', async () => {
     const c = new ClaimHoldCollector();
     c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
-    const h = harness({ decision: GATED, applyingFraction: 0, promotions: PROMOTED });
+    const h = harness({ decision: GATED, applyingFraction: 0 });
     await runClaimHoldShadow(c.candidates, h.deps);
     expect(h.rows[0]).toMatchObject({ applied: false, applyingFraction: 0, experimentArm: 'observe' });
-    expect(gatedStartReachable({ decision: GATED, applyingFraction: 0, promotions: PROMOTED })).toBe(false);
+    expect(gatedStartReachable({ decision: GATED, applyingFraction: 0 })).toBe(false);
   });
 
   it('a state-read failure falls back to the rule and is recorded as retrieval_error', async () => {
@@ -394,16 +517,20 @@ describe('gated START', () => {
     return c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map())!;
   };
 
-  it('as shipped it is unreachable: no ledger lookup, always holds', async () => {
+  it('rolled back (zero fraction) it is unreachable: no ledger lookup, always holds', async () => {
     let lookups = 0;
-    expect(await gatedStartApplies(note(), { findAppliedStart: async () => { lookups++; return true; } })).toBe(false);
+    expect(await gatedStartApplies(note(), { applyingFraction: 0, findAppliedStart: async () => { lookups++; return true; } })).toBe(false);
     expect(lookups).toBe(0);
+  });
+
+  it('as shipped it applies an applied START from the ledger', async () => {
+    expect(await gatedStartApplies(note(), { findAppliedStart: async () => true })).toBe(true);
   });
 
   it('when reached, it applies only for an applied START on the same state digest', async () => {
     const keys: any[] = [];
     const n = note();
-    const deps: ClaimHoldDeps = { decision: GATED, applyingFraction: 0.1, promotions: PROMOTED, findAppliedStart: async (k) => { keys.push(k); return true; }, now: () => Date.parse('2026-09-30T12:00:00Z') };
+    const deps: ClaimHoldDeps = { decision: GATED, applyingFraction: 0.1, findAppliedStart: async (k) => { keys.push(k); return true; }, now: () => Date.parse('2026-09-30T12:00:00Z') };
     expect(await gatedStartApplies(n, deps)).toBe(true);
     expect(keys[0]).toMatchObject({ workspaceId: WS, taskId: TASK, decisionId: GATED.id, fingerprint: GATED.fingerprint, candidateDigest: n.digest });
     expect(keys[0].since.toISOString()).toBe('2026-09-30T11:50:00.000Z');
@@ -411,12 +538,12 @@ describe('gated START', () => {
   });
 
   it('a lookup error holds', async () => {
-    expect(await gatedStartApplies(note(), { decision: GATED, applyingFraction: 1, promotions: PROMOTED, findAppliedStart: async () => { throw new Error('x'); } })).toBe(false);
+    expect(await gatedStartApplies(note(), { decision: GATED, applyingFraction: 1, findAppliedStart: async () => { throw new Error('x'); } })).toBe(false);
   });
 
-  it('a gated definition with a requested cohort but no evidence stays unreachable: no ledger lookup', async () => {
+  it('a shadow definition stays unreachable whatever the fraction: no ledger lookup', async () => {
     let lookups = 0;
-    const deps: ClaimHoldDeps = { decision: GATED, applyingFraction: 1, findAppliedStart: async () => { lookups++; return true; } };
+    const deps: ClaimHoldDeps = { decision: SHADOW, applyingFraction: 1, findAppliedStart: async () => { lookups++; return true; } };
     expect(gatedStartReachable(deps)).toBe(false);
     expect(await gatedStartApplies(note(), deps)).toBe(false);
     expect(lookups).toBe(0);

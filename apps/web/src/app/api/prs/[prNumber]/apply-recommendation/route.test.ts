@@ -28,7 +28,7 @@ mock.module('@/lib/dispatch-authority', () => ({
   enqueueTaskDispatch: async () => {},
   drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
   deliverTaskDispatch: async () => 'pusher',
-  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
   webhookWants: () => false,
   primaryCause: (_causes: string[], fallback: string) => fallback,
   DISPATCH_DUE_QUEUE: 'dispatch',
@@ -37,6 +37,10 @@ mock.module('@/lib/dispatch-authority', () => ({
 }));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
 mock.module('@/lib/escalation-supersession', () => ({ supersedeAncestorEscalations: mockSupersedeAncestorEscalations }));
+// Workflow kernel (lib/workflow/seam.ts): default, the PR is legacy-owned and every case below runs unchanged.
+const mockKernelDeliveryOfPr = mock(async (_p: any): Promise<any> => null);
+const mockApplyThroughKernel = mock(async (_p: any): Promise<any> => null);
+mock.module('@/lib/workflow/seam', () => ({ kernelDeliveryOfPr: mockKernelDeliveryOfPr, applyRecommendationThroughKernel: mockApplyThroughKernel }));
 
 const TASKS_TABLE = { __name: 'tasks' };
 const MISSION_NOTES_TABLE = { __name: 'missionNotes' };
@@ -133,6 +137,105 @@ describe('POST /api/prs/[prNumber]/apply-recommendation', () => {
     mockAppendPrActivity.mockReset();
     mockSupersedeAncestorEscalations.mockReset();
     mockPerformLandingAction.mockReset();
+    mockKernelDeliveryOfPr.mockReset();
+    mockKernelDeliveryOfPr.mockResolvedValue(null);
+    mockApplyThroughKernel.mockReset();
+    mockApplyThroughKernel.mockResolvedValue(null);
+  });
+
+  // Task eee04322 (T23): on a kernel-owned PR, Apply is HumanResolve(apply_recommendation).
+  // The kernel files the fix (trigger=human ledger row, its own dispatch_fix); the route
+  // files nothing on the legacy path and only reports what the kernel did.
+  describe('kernel-owned PR (T23 HumanResolve)', () => {
+    const kernelOwned = { deliveryId: 'd-1', state: 'ESCALATED', stateReason: 'review_escalated', version: 7 };
+    const current = { state: 'CHANGES_REQUESTED', stateReason: null, version: 9, head: 'abc123', round: 2 };
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+      mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+      mockKernelDeliveryOfPr.mockResolvedValue(kernelOwned);
+    });
+
+    it('dispatches the fix through the kernel with the reviewer recommendation as instructions; nothing on the legacy path', async () => {
+      mockApplyThroughKernel.mockResolvedValue({
+        result: { result: 'applied', transitionId: 'tr-1', deliveryId: 'd-1', version: 8, decision: {} },
+        current,
+        attempt: { id: 'a-1', attemptNo: 1, maxAttempts: 3, taskId: 'kernel-fix-1' },
+      });
+      const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1', version: 7 });
+      const res = await POST(req, ctx);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ ok: true, dispatched: true, kernel: true, taskId: 'kernel-fix-1', attempt: { attemptNo: 1 } });
+      expect(mockApplyThroughKernel.mock.calls[0][0]).toEqual({
+        workspaceId: 'ws-1', prNumber: 42, actor: 'human:u-1', expectedVersion: 7,
+        instructions: 'Guard the null-overwrite in heartbeat/route.ts.',
+      });
+      // The legacy insert, announce and wake never ran: the kernel's dispatch_fix owns the task.
+      expect(mockTasksValues).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
+      // The escalation card closes and the decision is on the mission feed.
+      expect(mockSupersedeAncestorEscalations).toHaveBeenCalledWith(expect.anything(), 't-1', 42);
+      expect(mockMissionNotesValues.mock.calls[0][0]).toMatchObject({ missionId: 'mis-1', type: 'decision', authorType: 'user' });
+    });
+
+    it('corrections are the authoritative instruction', async () => {
+      mockApplyThroughKernel.mockResolvedValue({
+        result: { result: 'applied', transitionId: 'tr-1', deliveryId: 'd-1', version: 8, decision: {} },
+        current, attempt: { id: 'a-1', attemptNo: 1, maxAttempts: 3, taskId: 'kernel-fix-1' },
+      });
+      const [req, ctx] = makeRequest('42', { corrections: '  Regenerate the migration instead.  ' });
+      await POST(req, ctx);
+      expect(mockApplyThroughKernel.mock.calls[0][0]).toMatchObject({ instructions: 'Regenerate the migration instead.', expectedVersion: undefined });
+    });
+
+    it('works without an escalation note: the kernel carries the reviewer round output itself', async () => {
+      mockMissionNotesFindMany.mockResolvedValue([]);
+      mockApplyThroughKernel.mockResolvedValue({
+        result: { result: 'applied', transitionId: 'tr-1', deliveryId: 'd-1', version: 8, decision: {} },
+        current, attempt: { id: 'a-1', attemptNo: 1, maxAttempts: 3, taskId: 'kernel-fix-1' },
+      });
+      const [req, ctx] = makeRequest();
+      const res = await POST(req, ctx);
+      expect(res.status).toBe(200);
+      expect(mockApplyThroughKernel.mock.calls[0][0]).toMatchObject({ instructions: null });
+    });
+
+    it('a stale version is a 409 with the current view, and resolves nothing', async () => {
+      const now = { state: 'AWAITING_REVIEW', stateReason: null, version: 11, head: 'def456', round: 3 };
+      mockApplyThroughKernel.mockResolvedValue({
+        result: { result: 'stale', reason: 'version_moved', current: { state: 'AWAITING_REVIEW', version: 11, head: 'def456', round: 3 } },
+        current: now, attempt: null,
+      });
+      const [req, ctx] = makeRequest('42', { version: 7 });
+      const res = await POST(req, ctx);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ stale: true, reason: 'version_moved', kernel: true, current: now });
+      expect(mockTasksValues).not.toHaveBeenCalled();
+      expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
+      expect(mockMissionNotesValues).not.toHaveBeenCalled();
+    });
+
+    it('a kernel refusal is a 409 naming the reason', async () => {
+      mockApplyThroughKernel.mockResolvedValue({
+        result: { result: 'rejected', reason: 'no_review_at_head', current: { state: 'ESCALATED', version: 7, head: 'abc123', round: 0 } },
+        current: { state: 'ESCALATED', stateReason: 'push_undeliverable', version: 7, head: 'abc123', round: 0 }, attempt: null,
+      });
+      const [req, ctx] = makeRequest();
+      const res = await POST(req, ctx);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ reason: 'no_review_at_head', kernel: true });
+      expect(mockTasksValues).not.toHaveBeenCalled();
+      expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
+    });
+
+    it('a legacy PR never reaches the kernel door', async () => {
+      mockKernelDeliveryOfPr.mockResolvedValue(null);
+      const [req, ctx] = makeRequest();
+      const res = await POST(req, ctx);
+      expect(res.status).toBe(200);
+      expect(mockApplyThroughKernel).not.toHaveBeenCalled();
+      expect(mockTasksValues).toHaveBeenCalled();
+    });
   });
 
   it('returns 401 when unauthenticated', async () => {

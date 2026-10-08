@@ -16,10 +16,6 @@
  *    creation; its diff paths come from `pr` corpus chunks stamped before the
  *    same cutoff. At creation time this is trivially true; it matters for any
  *    replay over historical tasks, which reuses this exact code path.
- *  - **CBM**: a bounded adapter seam. codebase-memory runs only on runners (a
- *    stdio server per worktree) and the server has no revision-pinned index —
- *    the Step E finding (apps/web/src/lib/semantic-refresh.ts). The server
- *    adapter therefore answers `unavailable`.
  *  - **Tree-pinned** (knowledge-base: buildd/design/jev-scheduling.md §1d):
  *    the repository tree at the task's base commit, read through the
  *    workspace installation as the knowledge-ingest fallback does and cached
@@ -68,7 +64,6 @@ import {
   predictionUnknownScope,
   resolvePickCap,
   runRepeatedManifestChoice,
-  type CbmCandidateResult,
   type ManifestCandidateSet,
   type ManifestPick,
   type NeighbourEvidence,
@@ -83,41 +78,10 @@ const FAILED_STATUSES: ReadonlySet<string> = new Set<string>(FAILED_WORKER_STATU
 
 /** Neighbour retrieval config: the task-area defaults, diff source, a little wider. Not the experiment's runtime config. */
 export const MANIFEST_NEIGHBOUR_CONFIG: TaskAreaConfig = { ...TASK_AREA_FALLBACK, topK: 10, pathSource: 'diff' };
-/** Bound on CBM paths requested per prediction. */
-export const MANIFEST_CBM_CANDIDATE_LIMIT = 64;
 /** Bound on corpus-ranked files requested per prediction (tree-pinned source). */
 export const MANIFEST_TREE_RANKED_LIMIT = 64;
 /** Task text sent to the model, per field. */
 export const MANIFEST_STATE_DESCRIPTION_CHARS = 1_500;
-
-// ── CBM adapter seam ─────────────────────────────────────────────────────────
-
-export interface CbmCandidateRequest {
-  workspaceId: string;
-  /** The revision candidates must exist at (base ref/SHA). Null ⇒ nothing pinned. */
-  revision: string | null;
-  seedText: string;
-  limit: number;
-  signal?: AbortSignal;
-}
-
-export interface CbmCandidateAdapter {
-  lookup(req: CbmCandidateRequest): Promise<CbmCandidateResult>;
-}
-
-export const UNAVAILABLE_CBM_CANDIDATE_ADAPTER: CbmCandidateAdapter = {
-  async lookup() {
-    return {
-      status: 'unavailable',
-      reason: 'no revision-pinned codebase index is reachable from the server (codebase-memory runs on runners only)',
-    };
-  },
-};
-
-/** The adapter the deployed server uses. A provider answering at the requested revision is the one change needed. */
-export function getServerCbmCandidateAdapter(): CbmCandidateAdapter {
-  return UNAVAILABLE_CBM_CANDIDATE_ADAPTER;
-}
 
 // ── Tree-pinned candidate source (jev-scheduling §1d) ────────────────────────
 
@@ -385,7 +349,6 @@ export interface CreationManifestDeps {
   onReceipt?: OrchestrationDecisionDeps['onReceipt'];
   recordPrediction?: (row: ManifestPredictionRow) => Promise<void>;
   loadNeighbours?: (args: { workspaceId: string; taskId: string; seedText: string; cutoff: Date; signal: AbortSignal }) => Promise<NeighbourEvidence[]>;
-  cbm?: CbmCandidateAdapter;
   /** Default: `getServerTreeCandidateAdapter()`. */
   tree?: TreeCandidateAdapter;
   /** Expected size from the same neighbours (jev-scheduling §3). Default: `estimateTaskSize`. */
@@ -411,8 +374,6 @@ const isConcreteDeclaration = (m: readonly string[] | null | undefined) =>
   Array.isArray(m) && hasConcretePathManifest(m.filter((p): p is string => typeof p === 'string'));
 
 const RETRIEVAL_DEADLINE = Symbol('retrieval_deadline');
-
-const EMPTY_UNAVAILABLE: CbmCandidateResult = { status: 'unavailable', reason: 'not consulted' };
 
 /**
  * How sure the model is of the whole selected set (jev-scheduling §3): the
@@ -501,7 +462,7 @@ export async function predictCreationManifest(
     }
     if (!access.ok && access.error.kind === 'capability_disabled') return { skipped: 'capability_disabled' };
 
-    const emptyCandidates = buildManifestCandidates({ cutoff: input.createdAt, neighbours: [], cbm: EMPTY_UNAVAILABLE });
+    const emptyCandidates = buildManifestCandidates({ cutoff: input.createdAt, neighbours: [] });
     if (!access.ok) {
       // Opted in, no key: record the miss; spend nothing on retrieval.
       const row = rowOf(emptyCandidates, null, 'missing_key', []);
@@ -513,38 +474,15 @@ export async function predictCreationManifest(
     const controller = new AbortController();
     const retrieval = (async () => {
       const loadNeighbours = deps.loadNeighbours ?? (async (a) => loadNeighbourEvidence(await defaultStore(), a));
-      const cbm = deps.cbm ?? getServerCbmCandidateAdapter();
       const tree = deps.tree ?? getServerTreeCandidateAdapter();
-      const estimateSize = deps.estimateSize ?? ((a) => estimateTaskSize(a));
-      const [[neighbours, expectedSize], cbmResult, treeResult] = await Promise.all([
+      // Neighbours and tree retrieval race against the deadline; size estimation is separate
+      const [neighbours, treeResult] = await Promise.all([
         loadNeighbours({ workspaceId: input.workspaceId, taskId: input.taskId, seedText, cutoff: input.createdAt, signal: controller.signal })
-          .catch((err) => { console.warn('[manifest-prediction] neighbour lookup failed:', (err as Error)?.message ?? err); return [] as NeighbourEvidence[]; })
-          // The size reads the same neighbours: no second retrieval. Fewer
-          // than k ⇒ the Jev S/M/L bucket fallback (jev-scheduling §3).
-          .then(async (found): Promise<[NeighbourEvidence[], ExpectedTaskSize | null]> => [
-            found,
-            await estimateExpectedSize({
-              workspaceId: input.workspaceId,
-              taskId: input.taskId,
-              seedText,
-              cutoff: input.createdAt,
-              neighbourTaskIds: found.map(n => n.taskId),
-              signal: controller.signal,
-              teamId: input.teamId,
-              missionId: input.missionId ?? null,
-              accountId: input.accountId ?? null,
-              userId: input.userId ?? null,
-              title: input.title,
-              description: input.description ?? null,
-            }, { estimateSize, ...deps.sizeBucketDeps })
-              .catch((err) => { console.warn('[manifest-prediction] size estimate failed:', (err as Error)?.message ?? err); return null; }),
-          ]),
-        cbm.lookup({ workspaceId: input.workspaceId, revision: input.baseRef ?? null, seedText, limit: MANIFEST_CBM_CANDIDATE_LIMIT, signal: controller.signal })
-          .catch((err): CbmCandidateResult => ({ status: 'unavailable', reason: `adapter error: ${String((err as Error)?.message ?? err).slice(0, 120)}` })),
+          .catch((err) => { console.warn('[manifest-prediction] neighbour lookup failed:', (err as Error)?.message ?? err); return [] as NeighbourEvidence[]; }),
         tree.lookup({ workspaceId: input.workspaceId, baseRef: input.baseRef ?? null, seedText, limit: MANIFEST_TREE_RANKED_LIMIT, signal: controller.signal })
           .catch((err): TreeCandidateResult => ({ status: 'unavailable', reason: `adapter error: ${String((err as Error)?.message ?? err).slice(0, 120)}` })),
       ]);
-      return { neighbours, expectedSize, cbmResult, treeResult };
+      return { neighbours, treeResult };
     })();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const raced = await Promise.race([
@@ -559,8 +497,33 @@ export async function predictCreationManifest(
       return { row };
     }
 
-    const { neighbours, expectedSize, cbmResult, treeResult } = raced;
-    const candidates = buildManifestCandidates({ cutoff: input.createdAt, neighbours, cbm: cbmResult, tree: treeResult, namedPaths: regexPaths });
+    const { neighbours, treeResult } = raced;
+    // Size estimation runs after neighbours are resolved, with its own short deadline
+    // so a slow size estimate never turns a successful retrieval into retrieval_deadline
+    const estimateSize = deps.estimateSize ?? ((a) => estimateTaskSize(a));
+    const sizeController = new AbortController();
+    const sizeTimer = setTimeout(() => sizeController.abort(), Math.max(0, remaining()));
+    let expectedSize: ExpectedTaskSize | null = null;
+    try {
+      expectedSize = await estimateExpectedSize({
+        workspaceId: input.workspaceId,
+        taskId: input.taskId,
+        seedText,
+        cutoff: input.createdAt,
+        neighbourTaskIds: neighbours.map(n => n.taskId),
+        signal: sizeController.signal,
+        teamId: input.teamId,
+        missionId: input.missionId ?? null,
+        accountId: input.accountId ?? null,
+        userId: input.userId ?? null,
+        title: input.title,
+        description: input.description ?? null,
+      }, { estimateSize, ...deps.sizeBucketDeps })
+        .catch((err) => { console.warn('[manifest-prediction] size estimate failed:', (err as Error)?.message ?? err); return null; });
+    } finally {
+      clearTimeout(sizeTimer);
+    }
+    const candidates = buildManifestCandidates({ cutoff: input.createdAt, neighbours, tree: treeResult, namedPaths: regexPaths });
     // Same-task neighbour-union baseline over the same leakage-filtered neighbours.
     const pastNeighbours = neighbours
       .filter(n => n.completedAt && n.completedAt.getTime() < input.createdAt.getTime())

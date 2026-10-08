@@ -22,6 +22,7 @@ mock.module('fs', () => ({
 }));
 
 import { scanEnvironment, checkBrowserCapability, checkBwrapSupport, type ScanConfig } from './env-scan';
+import { CAPABILITY_MCP_GROUP_TOOLS } from '@buildd/shared';
 import { resetBrowserCapabilityCache } from './browser-capability';
 
 describe('checkBwrapSupport', () => {
@@ -211,6 +212,12 @@ describe('scanEnvironment', () => {
     expect(env.scannedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
+  it('always advertises the MCP group-tools capability', () => {
+    // The MCP server serves a worker session the group tools only when its
+    // runner advertised this; this build matches buildd actions on them.
+    expect(scanEnvironment().envKeys).toContain(CAPABILITY_MCP_GROUP_TOOLS);
+  });
+
   it('includes "browser" in envKeys when headless Chromium is available', () => {
     mockExecSync.mockImplementation((cmd: string) => {
       if (cmd === 'which chromium') return Buffer.from('/usr/bin/chromium\n');
@@ -233,9 +240,9 @@ describe('scanEnvironment', () => {
   it('detects installed tools with version', () => {
     mockExecSync.mockImplementation((cmd: string) => {
       if (typeof cmd !== 'string') throw new Error('not found');
-      if (cmd === 'which node') return Buffer.from('/usr/local/bin/node\n');
+      if (cmd === 'command -v node') return Buffer.from('/usr/local/bin/node\n');
       if (cmd === 'node --version') return Buffer.from('v22.1.0\n');
-      if (cmd === 'which git') return Buffer.from('/usr/bin/git\n');
+      if (cmd === 'command -v git') return Buffer.from('/usr/bin/git\n');
       if (cmd === 'git --version') return Buffer.from('git version 2.43.0\n');
       throw new Error('not found');
     });
@@ -250,7 +257,7 @@ describe('scanEnvironment', () => {
   it('detects tool without version when --version fails', () => {
     mockExecSync.mockImplementation((cmd: string) => {
       if (typeof cmd !== 'string') throw new Error('not found');
-      if (cmd === 'which docker') return Buffer.from('/usr/bin/docker\n');
+      if (cmd === 'command -v docker') return Buffer.from('/usr/bin/docker\n');
       if (cmd === 'docker --version') throw new Error('timeout');
       throw new Error('not found');
     });
@@ -280,6 +287,26 @@ describe('scanEnvironment', () => {
       else process.env.ANTHROPIC_API_KEY = original;
       if (originalDb === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = originalDb;
+    }
+  });
+
+  it('advertises a plain codex login in ~/.codex as local Codex auth (no CODEX_HOME needed)', () => {
+    const originalCodexHome = process.env.CODEX_HOME;
+    const originalSeat = process.env.BUILDD_HOST_SEAT;
+    const originalImpl = mockExistsSync.getMockImplementation();
+    delete process.env.CODEX_HOME;
+    try {
+      mockExistsSync.mockImplementation((p: string) => String(p).endsWith('/.codex/auth.json'));
+      expect(scanEnvironment().envKeys).toContain('CODEX_HOME');
+      mockExistsSync.mockImplementation(() => false);
+      expect(scanEnvironment().envKeys).not.toContain('CODEX_HOME');
+      mockExistsSync.mockImplementation((p: string) => String(p).endsWith('/.codex/auth.json'));
+      process.env.BUILDD_HOST_SEAT = 'off';
+      expect(scanEnvironment().envKeys).not.toContain('CODEX_HOME');
+    } finally {
+      if (originalImpl) mockExistsSync.mockImplementation(originalImpl);
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = originalCodexHome;
+      if (originalSeat === undefined) delete process.env.BUILDD_HOST_SEAT; else process.env.BUILDD_HOST_SEAT = originalSeat;
     }
   });
 
@@ -378,7 +405,7 @@ describe('scanEnvironment', () => {
   it('supports extraTools via ScanConfig', () => {
     mockExecSync.mockImplementation((cmd: string) => {
       if (typeof cmd !== 'string') throw new Error('not found');
-      if (cmd === 'which my-custom-tool') return Buffer.from('/usr/bin/my-custom-tool\n');
+      if (cmd === 'command -v my-custom-tool') return Buffer.from('/usr/bin/my-custom-tool\n');
       if (cmd === 'my-custom-tool --version') return Buffer.from('1.0.0\n');
       throw new Error('not found');
     });

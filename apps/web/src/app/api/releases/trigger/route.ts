@@ -7,7 +7,8 @@ import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { resolveReleaseTarget } from '@/lib/release/target';
 import { recordAndDispatchRelease } from '@/lib/release/record';
 import { detectArchetype } from '@buildd/core/release-archetype';
-import { getCallerAdminTeamIds } from '@/lib/team-access';
+
+import { teamIdsWhere } from '@/lib/permissions';
 
 /**
  * Trigger a release on a workspace's repo. The workspace declares HOW it
@@ -47,14 +48,14 @@ async function resolveAuth(
   if (apiKey) {
     const account = await authenticateApiKey(apiKey, req);
     if (!account) return { authenticated: false, adminTeamIds: [], triggeredBy: 'agent' };
-    const adminTeamIds = await getCallerAdminTeamIds({
+    const adminTeamIds = await teamIdsWhere({
       kind: 'account', accountId: account.id, teamId: account.teamId, level: hasTokenRouteAdminAccess(account, req) ? 'admin' : account.level,
-    });
+    }, 'manage_releases');
     return { authenticated: true, adminTeamIds, triggeredBy: 'agent' };
   }
   const user = await getCurrentUser();
   if (!user) return { authenticated: false, adminTeamIds: [], triggeredBy: 'user' };
-  const adminTeamIds = await getCallerAdminTeamIds({ kind: 'user', userId: user.id });
+  const adminTeamIds = await teamIdsWhere({ kind: 'user', userId: user.id }, 'manage_releases');
   return { authenticated: true, adminTeamIds, triggeredBy: 'user' };
 }
 

@@ -1,1 +1,0 @@
-ALTER TABLE "workers" ADD COLUMN "conflict_detected_at" timestamp with time zone;

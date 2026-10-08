@@ -217,3 +217,33 @@ describe('team key policy', () => {
     expect(replaceScoped).toHaveBeenCalled();
   });
 });
+
+describe('route capability listing', () => {
+  for (const provider of ['anthropic', 'openai', 'openrouter'] as const) {
+    it(`lists ${provider} alone with capability metadata and caller-owned status`, async () => {
+      rows = [row({ label: provider }), row({ label: provider, id: 'mine', userId: 'u-1' })];
+      const result = await listProviderKeys('t', 'u-1', false);
+      const card = result.providers.find(p => p.provider === provider)!;
+      expect(card).toMatchObject({ capability: { id: provider, personalKeys: true }, team: { provider, scope: 'team' }, mine: { provider, scope: 'user' }, membersWithOwnKey: null });
+      expect(result.capabilities!.find(p => p.id === 'litellm')?.personalKeys).toBe(false);
+      expect(result.providers.some(p => (p.provider as string) === 'litellm')).toBe(false);
+    });
+  }
+});
+
+describe('mixed provider configurations', () => {
+  it('lists every configured provider independently, preserving masking and ownership', async () => {
+    rows = ['anthropic', 'openai', 'openrouter'].flatMap(label => [
+      row({ id: `${label}-team`, label, encryptedValue: `enc:illustrative-${label}-team-key-1234` }),
+      row({ id: `${label}-mine`, label, userId: 'u-1', encryptedValue: `enc:illustrative-${label}-personal-key-5678` }),
+      row({ id: `${label}-other`, label, userId: 'u-2', encryptedValue: `enc:illustrative-${label}-other-key-9012` }),
+    ]);
+    const result = await listProviderKeys('t', 'u-1', true);
+    for (const p of result.providers) {
+      expect(p.team).toMatchObject({ provider: p.provider, scope: 'team', last4: '1234' });
+      expect(p.mine).toMatchObject({ id: `${p.provider}-mine`, scope: 'user', last4: '5678' });
+      expect(p.membersWithOwnKey).toBe(2);
+    }
+    expect(JSON.stringify(result)).not.toContain('illustrative-');
+  });
+});

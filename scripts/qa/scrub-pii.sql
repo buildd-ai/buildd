@@ -7,7 +7,9 @@
 -- Every text/varchar/json(b) column of every table in packages/core/db/schema.ts
 -- is either rewritten here, wiped with its table, or listed as structurally safe
 -- (ids, hashes, enums, timestamps) in scripts/qa/scrub-pii.test.ts. That test
--- fails when a new column is added without a decision.
+-- fails when a new column is added without a decision. Columns the clone has
+-- but this checkout does not (prod ahead of the branch) are overwritten by the
+-- last block, from the list passed as -v known.
 --
 -- Placeholders are deterministic (row number / md5 of the old value) and roughly
 -- length-preserving so layout stays realistic. Ids, statuses, timestamps, counts
@@ -214,6 +216,10 @@ DELETE FROM secrets;             -- cascades credential_leases
 -- evidence objects hold real bucket paths; wiped like credentials.
 DELETE FROM evidence_objects;    -- cascades to anything referencing objects
 DELETE FROM evidence_backends;   -- cascades to anything referencing backends
+-- Team-private catalog entries name a team's own (often internal) MCP servers;
+-- platform rows (team_id NULL) are buildd's public presets and stay.
+DELETE FROM connector_catalog_entries WHERE team_id IS NOT NULL;
+DELETE FROM connector_catalog_team_policies;
 -- Agent chat: every message part is tenant-authored text or tool output over
 -- it. Chat renders from fixtures in QA; missions.conversation_id sets null.
 DELETE FROM conversation_approvals;
@@ -221,6 +227,8 @@ DELETE FROM conversation_messages;
 DELETE FROM conversations;
 -- Standing rules are text a person wrote about how they work; wiped like chat.
 DELETE FROM chat_directives;
+DELETE FROM local_sessions;         -- presence of people's local coding sessions (repo, client)
+DELETE FROM presence_tokens;        -- people's machine names; a clone's tokens can't verify anyway
 DELETE FROM device_codes;
 DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;
@@ -229,28 +237,55 @@ DELETE FROM system_cache;
 DELETE FROM prompts;              -- private prompt text; the clone runs on public defaults
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
+-- Who deployed what with which credential reference: an audit trail, not app state.
+DELETE FROM deployment_audit_events;
+-- Stripe webhook idempotency ledger: event ids are Stripe-side identifiers.
+DELETE FROM stripe_events;
+-- Capability decisions: per-run grant/PR audit; resources name repos and PRs.
+DELETE FROM agent_capability_decisions;
+-- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.
+DELETE FROM task_dispatch_outbox;
 -- Failure incident ledger: titles and evidence refs echo task/PR titles and
 -- error text; derived from gate_events and worker failures, wiped with them.
 DELETE FROM failure_incidents;
--- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.
-DELETE FROM task_dispatch_outbox;
+-- Workflow kernel ledger: facts, transitions and effects carry repo names, PR
+-- heads and evidence payloads. Children first (effects reference transitions).
+DELETE FROM workflow_effects;
+DELETE FROM workflow_transitions;
+DELETE FROM workflow_facts;
+DELETE FROM workflow_review_rounds;
+DELETE FROM workflow_attempts;
+DELETE FROM workflow_deliveries;
+DELETE FROM trunk_incidents;
 DELETE FROM watcher_events;
 -- Watches and their ledger: payloads carry task/PR titles and repo names.
 DELETE FROM notification_deliveries;
 DELETE FROM subscriptions;
 DELETE FROM action_queue_snoozes;
 DELETE FROM task_area_prediction_events;
+-- Post-session quality ledgers: findings carry analyser prose, runs carry
+-- collection error text.
+DELETE FROM post_session_findings;
+DELETE FROM post_session_runs;
 -- Orchestration decision ledger: touch labels carry file paths.
 DELETE FROM orchestration_manifest_predictions;
 DELETE FROM orchestration_touch_labels;
 DELETE FROM orchestration_decisions;
 DELETE FROM orchestration_overlap_answers;
+-- Live sibling conflict probes: shared and conflicted file paths.
+DELETE FROM sibling_probes;
 -- Model decision ledger: reasons can be prose and human overrides free-form.
 DELETE FROM decision_outcomes;
 DELETE FROM decision_challenger_runs;
+DELETE FROM prompt_eval_results;
+DELETE FROM prompt_eval_runs;
 DELETE FROM decision_records;
 DELETE FROM review_feedback;
 DELETE FROM spec_discrepancies;
+-- Quality Scout ledger: refs, observed output and evidence refs are repo text.
+DELETE FROM quality_scout_findings;
+DELETE FROM quality_scout_probes;
+DELETE FROM quality_scout_runs;
 TRUNCATE knowledge_chunks, knowledge_entities, entity_aliases, chunk_entities,
   pending_entity_refs, knowledge_edges, knowledge_ingest_jobs, pr_reverts;
 
@@ -288,7 +323,9 @@ UPDATE team_invitations SET
 
 UPDATE teams t SET
   name = 'Team ' || s.n,
-  slug = 'team-' || s.n
+  slug = 'team-' || s.n,
+  stripe_customer_id = NULL,
+  stripe_subscription_id = NULL
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM teams) s WHERE t.id = s.id;
 
 UPDATE accounts a SET
@@ -345,7 +382,8 @@ UPDATE connectors c SET
   client_id = NULL,
   encrypted_client_secret = NULL,
   assertion_audience = pg_temp.qa_url(c.assertion_audience),
-  assertion_token_endpoint = pg_temp.qa_url(c.assertion_token_endpoint)
+  assertion_token_endpoint = pg_temp.qa_url(c.assertion_token_endpoint),
+  icon_url = NULL -- derived from the (scrubbed) url's host
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM connectors) s WHERE c.id = s.id;
 
 -- Unique per (account_id, local_ui_url): one host per row, never a constant.
@@ -367,6 +405,8 @@ UPDATE initiatives i SET
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM initiatives) s WHERE i.id = s.id;
 
 UPDATE missions m SET
+  branch_refresh_lease_token = NULL,
+  branch_refresh_lease_until = NULL,
   title = pg_temp.qa_title('Mission', s.n, m.title),
   description = pg_temp.qa_text(m.description),
   working_branch = CASE WHEN m.working_branch IS NULL THEN NULL ELSE 'buildd/' || left(md5(m.id::text), 8) || '-mission-' || s.n END,
@@ -559,6 +599,10 @@ UPDATE surface_reservations SET
   repo_full_name = pg_temp.qa_hash('org-1/repo-', repo_full_name),
   base_ref = pg_temp.qa_branch(base_ref);
 
+UPDATE dependency_releases SET
+  base_branch = pg_temp.qa_branch(base_branch),
+  revoked_reason = pg_temp.qa_text(revoked_reason);
+
 UPDATE path_claims SET
   path = pg_temp.qa_hash('path/', path);
 
@@ -572,6 +616,62 @@ UPDATE migration_log SET
   error = pg_temp.qa_text(error),
   detail = pg_temp.qa_json(detail);
 
+-- ---------------------------------------------------------------------------
+-- Prod ahead of this checkout
+-- ---------------------------------------------------------------------------
+
+-- The clone is prod's schema plus this branch's migrations. A branch cut before
+-- a table or column reached prod (a mission branch lagging dev) has no decision
+-- for it above, and the coverage test cannot see it: it only reads this
+-- checkout's schema.ts. That is how post_session_runs.facts reached the guard.
+-- -v known lists this checkout's text-like columns (scripts/qa/known-columns.ts);
+-- every other text-like column is invisible to this checkout's app, so it is
+-- overwritten outright: NULL where allowed, else a per-row md5 (unique-safe).
+-- An unset -v known leaves `:'known'` literal, a syntax error (fail closed).
+SET qa.known = :'known';
+
+DO $unknown$
+DECLARE
+  known text[] := string_to_array(btrim(coalesce(current_setting('qa.known', true), '')), ',');
+  r record;
+  val text;
+  wiped text[] := '{}';
+BEGIN
+  IF NOT coalesce('tasks.title' = ANY (known), false) THEN
+    RAISE EXCEPTION 'scrub: known-column list (-v known) is empty or malformed';
+  END IF;
+  FOR r IN
+    SELECT c.table_name::text AS t, c.column_name::text AS col, c.data_type::text AS dt,
+      c.is_nullable = 'YES' AS nullable, c.character_maximum_length AS maxlen
+    FROM information_schema.columns c
+    JOIN information_schema.tables tb
+      ON tb.table_schema = c.table_schema AND tb.table_name = c.table_name
+    WHERE c.table_schema = 'public'
+      AND tb.table_type = 'BASE TABLE'
+      AND c.is_generated = 'NEVER'
+      AND (c.data_type IN ('text', 'character varying', 'character', 'json', 'jsonb')
+           OR (c.data_type = 'ARRAY' AND c.udt_name IN ('_text', '_varchar')))
+      AND NOT ((c.table_name || '.' || c.column_name) = ANY (known))
+    ORDER BY 1, 2
+  LOOP
+    val := CASE
+      WHEN r.nullable THEN 'NULL'
+      WHEN r.dt IN ('json', 'jsonb') THEN format('to_jsonb(''x'' || md5(%I::text))::%s', r.col, r.dt)
+      WHEN r.dt = 'ARRAY' THEN format('ARRAY[''x'' || md5(%I::text)]', r.col)
+      ELSE format('left(''x'' || md5(%I::text), %s)', r.col, coalesce(r.maxlen, 33))
+    END;
+    EXECUTE format('UPDATE %I SET %I = %s WHERE %I IS NOT NULL', r.t, r.col, val, r.col);
+    wiped := wiped || (r.t || '.' || r.col);
+  END LOOP;
+  -- Schema names only (public code), never values.
+  IF cardinality(wiped) > 0 THEN
+    RAISE NOTICE 'scrub: overwrote % column(s) this checkout has no schema for (branch behind prod): %',
+      cardinality(wiped), array_to_string(wiped, ', ');
+  END IF;
+END
+$unknown$;
+
+RESET qa.known;
 RESET qa.ids;
 
 COMMIT;

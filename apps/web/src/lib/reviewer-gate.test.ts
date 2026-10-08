@@ -473,6 +473,25 @@ describe('reviewer stall facts', () => {
     expect(result.reason).toContain('2026-09-01T11:58:00Z');
     expect(result.reason).not.toMatch(/contention|backoff|likely/i);
   });
+  // A wake claim the WHERE dropped reports only `no_pending_tasks` as its
+  // reason; the gate that did it is in the stamped exclusion. The PR #3678
+  // reviewer read "seats 0/10 … no_pending_tasks" for hours while the
+  // workspace cap was refusing it on every wake.
+  it('names the exact gate when the claim stamped one, not the coarse no_pending_tasks', () => {
+    const result = resolveReviewerGate(baseInput({
+      reviewerTask: {
+        ...reviewerTask,
+        context: {
+          ...reviewerTask.context,
+          lastClaimAttemptExclusion: { code: 'workspace_cap', detail: 'The workspace is at its concurrent-task cap.' },
+        },
+      },
+      stallFacts: { seats: { inProgress: 0, maxConcurrentTasks: 10 }, budgetPauses: [] },
+    }));
+    expect(result.actor).toBe('human');
+    expect(result.reason).toContain('claimable: last attempt no, workspace_cap');
+    expect(result.reason).not.toContain('no_pending_tasks');
+  });
   it('missing evidence remains unknown, including claimability without a stamp', () => {
     const result = resolveReviewerGate(baseInput({ reviewerTask: { ...reviewerTask, context: {} } }));
     expect(result.reason).toContain('seats unknown');
@@ -616,7 +635,7 @@ describe('deriveStoredVerdictFallback — the mission-less "no recorded verdict"
       reviewerTask: { status: 'completed', hasLiveWorker: false, createdAt: NOW },
     }));
     expect(gate.actor).toBe('human');
-    expect(gate.reason).toBe('Review finished with no recorded verdict · needs your review');
+    expect(gate.reason).toBe('Review finished with no recorded verdict · review needed');
   });
 
   it('an existing note wins outright — the fallback never overrides real note evidence', () => {

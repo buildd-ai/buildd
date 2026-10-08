@@ -114,6 +114,15 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaces: {},
 }));
 
+const mockCheckEntitlement = mock(async (_teamId: string) => null as any);
+mock.module('@/lib/entitlements/managed-runner', () => ({
+  checkManagedRunnerEntitlement: mockCheckEntitlement,
+}));
+const mockCheckHosted = mock(async (_teamId: string) => null as any);
+mock.module('@/lib/hosted-runner-usage-store', () => ({
+  checkHostedRunnerAllowance: mockCheckHosted,
+}));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 
@@ -872,6 +881,81 @@ describe('POST /api/tasks/[id]/start', () => {
     const data = await response.json();
     expect(data.gateReason).toBe('workspace_cap_reached');
     expect(data.queuePosition).toBe(0);
+  });
+
+  describe('managed-runner entitlement', () => {
+    const blockedTask = (context: Record<string, unknown> | null) => ({
+      id: 'task-123',
+      title: 'Queued Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context,
+      mode: null,
+      priority: null,
+      startAt: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+    });
+    const concurrencyBlock = { kind: 'concurrency', key: 'managed_runner.concurrency', active: 3, limit: 3, scope: 'individual' };
+
+    beforeEach(() => {
+      mockCheckEntitlement.mockReset();
+      mockCheckEntitlement.mockResolvedValue(null);
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    });
+
+    it('a task a managed runner deferred, still at 3/3: 422 entitlement_blocked, queued and not failed', async () => {
+      mockTasksFindFirst.mockResolvedValue(blockedTask({ entitlementBlock: concurrencyBlock }));
+      mockCheckEntitlement.mockResolvedValue(concurrencyBlock);
+
+      const response = await callHandler(createMockRequest(), 'task-123');
+      expect(response.status).toBe(422);
+      const data = await response.json();
+      expect(data.gateReason).toBe('entitlement_blocked');
+      expect(data.blockClass).toBe('entitlement');
+      expect(data.canForce).toBe(false);
+      expect(data.entitlement).toMatchObject({ kind: 'concurrency', active: 3, limit: 3 });
+      expect(mockCheckEntitlement).toHaveBeenCalledWith('team-1');
+      // Nothing written: the task is left pending exactly as it was.
+      expect(mockDbUpdate.set).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
+    });
+
+    it('a stamped task whose limit has lifted starts without anyone retrying it by hand', async () => {
+      mockTasksFindFirst.mockResolvedValue(blockedTask({ entitlementBlock: concurrencyBlock }));
+      mockCheckEntitlement.mockResolvedValue(null);
+
+      const response = await callHandler(createMockRequest(), 'task-123');
+      expect(response.status).toBe(200);
+      expect(mockWakeTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('a hosted runner hold is re-checked against the hosted allowance, and refused while it is used', async () => {
+      const hosted = { kind: 'hosted_runner', key: 'hosted_runner.hours', unit: 'counted_runner_hours', used: 50, limit: 50, resetsAt: '2026-11-01T00:00:00.000Z' };
+      mockTasksFindFirst.mockResolvedValue(blockedTask({ entitlementBlock: hosted }));
+      mockCheckHosted.mockReset();
+      mockCheckHosted.mockResolvedValue(hosted);
+
+      const response = await callHandler(createMockRequest(), 'task-123');
+      expect(response.status).toBe(422);
+      const data = await response.json();
+      expect(data.gateReason).toBe('entitlement_blocked');
+      expect(data.entitlement).toMatchObject({ kind: 'hosted_runner', used: 50, limit: 50 });
+      expect(data.error).toContain('hosted runner allowance used');
+      expect(mockCheckHosted).toHaveBeenCalledWith('team-1');
+      expect(mockCheckEntitlement).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
+    });
+
+    it('never consults the entitlement for a task no managed runner deferred (self-hosted)', async () => {
+      mockTasksFindFirst.mockResolvedValue(blockedTask({}));
+      const response = await callHandler(createMockRequest(), 'task-123');
+      expect(response.status).toBe(200);
+      expect(mockCheckEntitlement).not.toHaveBeenCalled();
+    });
   });
 
   it('capExempt=true bypasses workspace cap and writes context.capExempt', async () => {

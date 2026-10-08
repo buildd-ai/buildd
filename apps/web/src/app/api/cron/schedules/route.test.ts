@@ -146,7 +146,7 @@ mock.module('@/lib/dispatch-authority', () => ({
   enqueueTaskDispatch: async () => {},
   drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
   deliverTaskDispatch: async () => 'pusher',
-  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
   webhookWants: () => false,
   primaryCause: (_causes: string[], fallback: string) => fallback,
   DISPATCH_DUE_QUEUE: 'dispatch',
@@ -377,18 +377,19 @@ describe('GET /api/cron/schedules', () => {
     mockWorkersFindMany.mockResolvedValue([]);
   });
 
-  it('alerts via reportOps when a runner heartbeat goes stale even with no active workers', async () => {
-    // Idle-but-wedged runner: heartbeat is stale but it has no running workers,
-    // so the orphan-failover finds nothing. We must still alert.
+  it('leaves stale runner heartbeats to the core maintenance cron', async () => {
+    // Stale-worker cleanup (and its runner-offline alert) moved to
+    // /api/cron/maintenance so a core-only cron profile keeps it. The tick must
+    // not run it too, or it would run twice an hour. Covered there:
+    // cron/maintenance/stale-workers.test.ts.
     mockWorkerHeartbeatsFindMany.mockResolvedValue([{ id: 'hb-1', accountId: 'acct-1' }]);
-    mockWorkersFindMany.mockResolvedValue([]); // no orphaned workers
+    mockWorkersFindMany.mockResolvedValue([]);
 
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);
 
-    const call = mockReportOps.mock.calls.find((c: any[]) => c[0]?.source === 'runner-offline');
-    expect(call).toBeTruthy();
-    expect(call[0].severity).toBe('error');
+    expect(mockReportOps.mock.calls.find((c: any[]) => c[0]?.source === 'runner-offline')).toBeUndefined();
+    expect(mockWorkerHeartbeatsFindMany).not.toHaveBeenCalled();
   });
 
   it('should resolve workspace from mission when schedule.workspaceId is null', async () => {

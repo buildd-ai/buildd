@@ -29,7 +29,7 @@ mock.module('@buildd/core/db', () => ({
     query: {
       connectors: { findFirst: mockConnectorsFindFirst },
       connectorShares: { findFirst: mockSharesFindFirst, findMany: mockSharesFindMany },
-      teams: { findMany: mockTeamsFindMany },
+      teams: { findMany: mockTeamsFindMany, findFirst: async () => null },
       teamMembers: { findFirst: mockTeamMembersFindFirst },
     },
     insert: (table: any) => ({

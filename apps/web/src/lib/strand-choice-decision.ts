@@ -5,16 +5,10 @@
  * only — quiet time, claimable work and its roles, dependency state, PR
  * states. Never a title, a description, a note or a diff.
  *
- * Shadow first (docs/design/decision-calls.md): with the team's
- * `mission_strand_choice` capability on, the pick and its confidence are
- * logged as a `[decision-shadow]` line and change nothing. Once a readout
- * justifies it, `STRAND_CHOICE_MODE` moves to `gated` in code, and even then
- * the pick can only ORDER the two buttons (`strandButtonOrder`). It never
- * flips the executor; a person always taps.
- *
- * The person's tap is the label: `strandLabelLine` writes a `[decision-label]`
- * line the label route logs, keyed the same way as the shadow line, so a
- * per-label readout can join them later. Graduation itself is out of scope.
+ * Gated advice can only order the two buttons; a person always taps and the
+ * executor never changes here. Rollback: set STRAND_CHOICE_MODE to 'shadow'.
+ * Every attempt is recorded in the ledger; human taps are observational
+ * labels because button order can bias the choice.
  *
  * Fails open by construction: disabled, no key, a sensitive workspace, a
  * timeout, an error or a throw all return null, which is today's order.
@@ -33,22 +27,21 @@ import { deriveFeedPrState } from './mission-pulse';
 import { unmetDependencyIds, type DependencyRow } from './mission-helpers';
 import type { LocalStrand } from './local-strand';
 import { registerPromptedQuestions } from '@buildd/core/prompted-decision';
+import { isJevModel } from '@buildd/core/decision-model';
+import { recordDecision, type DecisionLedgerInput } from '@buildd/core/decision-ledger';
 
 export const STRAND_CHOICE_CAPABILITY = 'mission_strand_choice' as const;
 export const STRAND_CHOICE_DECISION_ID = 'mission_strand_choice';
 export const DECISION_SHADOW_LOG_PREFIX = '[decision-shadow]';
 export const DECISION_LABEL_LOG_PREFIX = '[decision-label]';
 export const STRAND_CHOICE_TIMEOUT_MS = 3_000;
-/** Proposed; set from the shadow readout before `gated`. */
+/** Starting threshold for reversible button ordering. */
 export const STRAND_CHOICE_MIN_CONFIDENCE = 0.85;
 /** Bump when the question, a definition or the state shape changes. */
 export const STRAND_CHOICE_PROMPT_VERSION = 'ms1';
 
-/**
- * `shadow`: log only. `gated`: a confident pick orders the buttons. Raised in
- * code, in its own PR, after the readout — never by configuration.
- */
-export const STRAND_CHOICE_MODE: 'shadow' | 'gated' = 'shadow';
+/** Rollback requires only changing this constant to 'shadow'. */
+export const STRAND_CHOICE_MODE: 'shadow' | 'gated' = 'gated';
 
 export const STRAND_CHOICE_LABELS = ['continue-on-runner', 'wait-for-local', 'blocked-on-deps'] as const;
 export type StrandChoiceLabel = typeof STRAND_CHOICE_LABELS[number];
@@ -208,6 +201,7 @@ type ResolveAccess = (opts: {
 
 export interface StrandChoiceDeps {
   decide?: DecideFn;
+  recordDecision?: (input: DecisionLedgerInput) => Promise<string | null>;
   resolveAccess?: ResolveAccess;
   recordReceipt?: (receipt: DecisionReceipt, scope: { teamId: string; accountId: string | null }) => Promise<void>;
   cache?: Map<string, StrandChoice>;
@@ -224,8 +218,19 @@ const sharedCache = new Map<string, StrandChoice>();
 export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandChoiceDeps = {}): Promise<StrandChoice | null> {
   const log = deps.log ?? ((line: string) => console.log(line));
   const cache = deps.cache ?? sharedCache;
+  const record = deps.recordDecision ?? recordDecision;
+  const fallback = async (reason: string, latencyMs?: number) => {
+    await record({
+      teamId: facts.teamId, workspaceId: facts.workspaceId, missionId: facts.missionId,
+      capability: STRAND_CHOICE_CAPABILITY, fingerprint: strandChoiceCacheKey(facts),
+      promptVersion: currentPrompt().promptVersion, minConfidence: STRAND_CHOICE_MIN_CONFIDENCE,
+      confidence: null, verdict: null, ruleAnswer: 'runner-first', appliedAnswer: 'runner-first',
+      applied: false, status: 'fallback', reason, latencyMs,
+    });
+    return null;
+  };
   try {
-    if (facts.dataClass === 'sensitive') return null;
+    if (facts.dataClass === 'sensitive') return await fallback('sensitive');
     const key = strandChoiceCacheKey(facts);
     const hit = cache.get(key);
     if (hit) return hit;
@@ -239,7 +244,7 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
       accountId: facts.accountId ?? null,
       userId: facts.userId ?? null,
     });
-    if (!access.ok) return null;
+    if (!access.ok) return await fallback(access.error.kind);
 
     const scope = { teamId: facts.teamId, accountId: facts.accountId ?? null };
     const recordReceipt = deps.recordReceipt ?? (async (receipt, s) => {
@@ -266,7 +271,7 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
     const mission = facts.missionId.slice(0, 8);
     if (!res.ok) {
       log(`${DECISION_SHADOW_LOG_PREFIX} ${JSON.stringify({ site: 'mission_strand', mission, error: res.error.kind, latencyMs: res.latencyMs })}`);
-      return null;
+      return await fallback(res.error.kind, res.latencyMs);
     }
     const { choice, confidence } = res.answers.pick;
     // Ids, labels and numbers only.
@@ -282,7 +287,36 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
       inputTokens: res.usage?.inputTokens ?? null,
       costUsd: res.usage?.costUsd ?? null,
     })}`);
-    if (!(STRAND_CHOICE_LABELS as readonly string[]).includes(choice)) return null;
+    if (!(STRAND_CHOICE_LABELS as readonly string[]).includes(choice)) return await fallback('invalid_choice');
+    if (!isJevModel(res.model)) return await fallback('non_jev');
+
+    const isConfidentWaitForLocal = choice === 'wait-for-local' && confidence >= STRAND_CHOICE_MIN_CONFIDENCE;
+    const applied = STRAND_CHOICE_MODE === 'gated' && isConfidentWaitForLocal;
+    const appliedAnswer = applied ? choice : 'runner-first';
+    const status = applied ? 'applied' : 'suggested';
+
+    // Record the decision to the ledger
+    await record({
+      teamId: facts.teamId,
+      workspaceId: facts.workspaceId,
+      missionId: facts.missionId,
+      capability: STRAND_CHOICE_CAPABILITY,
+      fingerprint: key,
+      promptVersion: currentPrompt().promptVersion,
+      model: res.model,
+      minConfidence: STRAND_CHOICE_MIN_CONFIDENCE,
+      confidence,
+      verdict: choice,
+      ruleAnswer: 'runner-first',
+      appliedAnswer,
+      applied,
+      status,
+      reason: isConfidentWaitForLocal ? undefined : 'below_threshold',
+      latencyMs: res.latencyMs,
+      inputTokens: res.usage?.inputTokens ?? null,
+      costUsd: res.usage?.costUsd ?? null,
+    });
+
     const out: StrandChoice = { pick: choice as StrandChoiceLabel, confidence };
     if (cache.size >= MAX_CACHE_ENTRIES) {
       const oldest = cache.keys().next().value;
@@ -292,8 +326,15 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
     return out;
   } catch (err) {
     console.error(`${DECISION_SHADOW_LOG_PREFIX} mission_strand failed (non-fatal, card unchanged):`, err);
-    return null;
+    return await fallback('exception');
   }
+}
+
+/** Peek at the cache without awaiting or making calls. Returns cached pick if present, null if miss. */
+export function peekStrandChoiceCache(facts: StrandChoiceFacts, cache?: Map<string, StrandChoice>): StrandChoice | null {
+  const key = strandChoiceCacheKey(facts);
+  const c = cache ?? sharedCache;
+  return c.get(key) ?? null;
 }
 
 export type StrandButtonOrder = 'runner-first' | 'local-first';

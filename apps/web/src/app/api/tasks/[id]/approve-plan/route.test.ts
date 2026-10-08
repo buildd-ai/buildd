@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 
 // The trigger-hint batch needs a real driver; here it runs the write as-is and
 // records the hint (behaviour against Postgres: apps/web/tests/db/dispatch-outbox.test.ts).
@@ -23,10 +23,11 @@ mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
 
+let mockApiAccount: any = { id: 'account-1', type: 'user' };
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: async (apiKey: string | null) => {
     if (!apiKey) return null;
-    return { id: 'account-1', type: 'user' };
+    return mockApiAccount;
   },
 }));
 
@@ -480,5 +481,73 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     // Verify only the non-duplicate step was inserted
     expect(mockInsertValues).toHaveLength(1);
     expect(mockInsertValues[0].title).toBe('Deploy');
+  });
+});
+
+describe('POST /api/tasks/[id]/approve-plan — per-task token', () => {
+  const PLAN_TASK = '44444444-4444-4444-8444-444444444444';
+  const OWN_TASK = '55555555-5555-4555-8555-555555555555';
+  const taskScope = { taskId: OWN_TASK, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 };
+  const planRow = (over: Record<string, unknown> = {}) => ({
+    id: PLAN_TASK, mode: 'planning', status: 'completed', workspaceId: 'ws-1', missionId: 'm-1',
+    parentTaskId: null, priority: 1, context: {}, description: 'Plan',
+    result: { structuredOutput: { plan: [{ ref: 'step-1', title: 'Do it', description: 'Work' }] } },
+    workspace: { id: 'ws-1' }, ...over,
+  });
+  let row: any;
+  const approve = () => callHandler(POST, createMockRequest({ headers: { Authorization: 'Bearer bld_key' } }), PLAN_TASK);
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockInsertValues = [];
+    mockUpdateSetCalls = [];
+    insertCount = 0;
+    row = planRow();
+    mockTasksFindFirst.mockReset();
+    // The route's read of the plan, and the scope helper's read of the token's own task.
+    mockTasksFindFirst.mockImplementation(async (args: any) =>
+      args?.with?.mission?.columns?.initiativeId ? { missionId: 'm-1', workspaceId: 'ws-1', mission: { initiativeId: null } } : row);
+  });
+
+  afterAll(() => { mockApiAccount = { id: 'account-1', type: 'user' }; });
+
+  it("approves a plan on its own task's mission for an orchestration (admin) token", async () => {
+    mockApiAccount = { id: 'account-1', level: 'admin', scopes: null, taskScope };
+    const res = await approve();
+    expect(res.status).toBe(200);
+    expect(mockInsertValues).toHaveLength(1);
+  });
+
+  it('refuses a worker-level task token, even on its own mission', async () => {
+    mockApiAccount = { id: 'account-1', level: 'worker', scopes: null, taskScope };
+    expect((await approve()).status).toBe(404);
+    expect(mockInsertValues).toHaveLength(0);
+  });
+
+  it('refuses an admin token a plan on another mission, in another workspace, or on no mission', async () => {
+    mockApiAccount = { id: 'account-1', level: 'admin', scopes: null, taskScope };
+    for (const over of [{ missionId: 'm-2' }, { workspaceId: 'ws-2' }, { missionId: null }]) {
+      row = planRow(over);
+      expect((await approve()).status).toBe(404);
+    }
+    expect(mockInsertValues).toHaveLength(0);
+  });
+
+  it('refuses an admin token its own plan', async () => {
+    mockApiAccount = { id: 'account-1', level: 'admin', scopes: null, taskScope: { ...taskScope, taskId: PLAN_TASK } };
+    expect((await approve()).status).toBe(404);
+    expect(mockInsertValues).toHaveLength(0);
+  });
+
+  it("refuses an admin token a plan marked for a person's review", async () => {
+    mockApiAccount = { id: 'account-1', level: 'admin', scopes: null, taskScope };
+    row = planRow({ context: { requiresPlanApproval: true } });
+    expect((await approve()).status).toBe(403);
+    expect(mockInsertValues).toHaveLength(0);
   });
 });

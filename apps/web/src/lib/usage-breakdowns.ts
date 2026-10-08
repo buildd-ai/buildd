@@ -1,10 +1,10 @@
 /**
  * The fine-grained breakdowns the runner already records, folded for display:
- * Bash intent buckets, code-search pattern shapes, per-tool codebase-graph
- * calls, and the full tool list grouped by MCP server.
+ * Bash intent buckets, code-search pattern shapes, and the full tool list
+ * grouped by MCP server.
  *
  * Nothing here is new capture. Each block reads a field that is already
- * persisted on the worker row and states its OWN population, because the four
+ * persisted on the worker row and states its OWN population, because the three
  * do not share one:
  *
  *  - Bash buckets / search shapes come from `resultMeta.bashCommandCounts`,
@@ -12,9 +12,6 @@
  *    over `coverage.histogram` tasks — never over all tasks, and with no
  *    cross-window delta (same rule as the shell panel: that population's
  *    composition moves as older workers age out).
- *  - CBM per-tool calls come from `resultMeta.cbm.toolCalls` on CBM-enabled
- *    COMPLETED worker sessions — the index-adoption line's population, which is
- *    session-keyed, not task-keyed.
  *  - The grouped tool list is the existing task-keyed `tools.byTool`, with its
  *    existing `≥` coverage marking.
  *
@@ -173,65 +170,18 @@ export function buildBashBreakdown(tasks: Array<{ bash: TaskBashCounts; bashCall
   };
 }
 
-// ── Codebase-graph per-tool ──────────────────────────────────────────────────
-
-export interface CbmToolRow {
-  tool: string;
-  calls: number;
-  /** Sessions that called it at least once. */
-  sessions: number;
-  /** 0–1, of `totalCalls`. */
-  share: number;
-}
-
-export interface CbmToolsBlock {
-  /** CBM-enabled completed sessions — the index-adoption denominator. */
-  sessions: number;
-  /** Sum of every row's calls. */
-  totalCalls: number;
-  tools: CbmToolRow[];
-}
-
-/**
- * Every codebase-graph tool, over the same CBM-enabled completed sessions as
- * the index-adoption line. SESSION-keyed: a retried task counts once per
- * attempt, which is why it sits beside that line and not in a task-keyed panel.
- */
-export function buildCbmToolsBlock(
-  activeSessions: Array<{ toolCalls?: Record<string, number> | null }>,
-): CbmToolsBlock {
-  const calls: Record<string, number> = {};
-  const sessions: Record<string, number> = {};
-  for (const s of activeSessions) {
-    for (const [tool, n] of Object.entries(s.toolCalls ?? {})) {
-      if (!(typeof n === 'number' && n > 0)) continue;
-      calls[tool] = (calls[tool] ?? 0) + n;
-      sessions[tool] = (sessions[tool] ?? 0) + 1;
-    }
-  }
-  const totalCalls = Object.values(calls).reduce((a, b) => a + b, 0);
-  return {
-    sessions: activeSessions.length,
-    totalCalls,
-    tools: Object.entries(calls)
-      .map(([tool, n]) => ({ tool, calls: n, sessions: sessions[tool] ?? 0, share: totalCalls > 0 ? n / totalCalls : 0 }))
-      .sort((a, b) => b.calls - a.calls || a.tool.localeCompare(b.tool)),
-  };
-}
-
 // ── Tools grouped by server ──────────────────────────────────────────────────
 
-export type ToolGroupKey = 'built-in' | 'buildd' | 'codebase-memory' | 'other-mcp' | 'overflow';
+export type ToolGroupKey = 'built-in' | 'buildd' | 'other-mcp' | 'overflow';
 
 export const TOOL_GROUP_LABELS: Record<ToolGroupKey, string> = {
   'built-in': 'Built-in',
   buildd: 'buildd',
-  'codebase-memory': 'codebase-memory',
   'other-mcp': 'Other MCP',
   overflow: 'Unattributed overflow',
 };
 
-const GROUP_ORDER: ToolGroupKey[] = ['built-in', 'buildd', 'codebase-memory', 'other-mcp', 'overflow'];
+const GROUP_ORDER: ToolGroupKey[] = ['built-in', 'buildd', 'other-mcp', 'overflow'];
 
 export function toolGroupOf(name: string): ToolGroupKey {
   // The runner's cardinality-overflow key: real calls with no recoverable name.
@@ -239,7 +189,6 @@ export function toolGroupOf(name: string): ToolGroupKey {
   if (!name.startsWith('mcp__')) return 'built-in';
   const server = name.split('__')[1];
   if (server === 'buildd') return 'buildd';
-  if (server === 'codebase-memory') return 'codebase-memory';
   return 'other-mcp';
 }
 

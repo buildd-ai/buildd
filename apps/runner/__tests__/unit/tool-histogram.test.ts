@@ -1,9 +1,8 @@
 /**
  * Unit tests for the per-worker tool-call histogram (src/tool-metrics.ts).
  *
- * Regression target: before this, only mcp__codebase-memory__* and
- * Read/Grep/Glob were counted, so Bash/Edit/Write/Task and non-CBM MCP servers
- * never reached the server at all.
+ * Regression target: before this, only a narrow slice of tools was counted,
+ * so Bash/Edit/Write/Task and most MCP servers never reached the server at all.
  */
 
 import { describe, test, expect } from 'bun:test';
@@ -15,7 +14,7 @@ import {
 } from '../../src/tool-metrics';
 
 describe('recordToolCall', () => {
-  test('counts built-in tools that the CBM counters ignored', () => {
+  test('counts built-in tools', () => {
     const counts: Record<string, number> = {};
     for (const t of ['Bash', 'Edit', 'Bash', 'Write', 'Task', 'Bash']) {
       recordToolCall(counts, t);
@@ -28,11 +27,11 @@ describe('recordToolCall', () => {
     recordToolCall(counts, 'mcp__buildd__buildd');
     recordToolCall(counts, 'mcp__buildd__recall');
     recordToolCall(counts, 'mcp__buildd__buildd');
-    recordToolCall(counts, 'mcp__codebase-memory__search_code');
+    recordToolCall(counts, 'mcp__github__search_code');
     expect(counts).toEqual({
       'mcp__buildd__buildd': 2,
       'mcp__buildd__recall': 1,
-      'mcp__codebase-memory__search_code': 1,
+      'mcp__github__search_code': 1,
     });
   });
 

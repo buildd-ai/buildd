@@ -117,3 +117,41 @@ describe('GET /api/workspaces/[id]/error-traces', () => {
     expect(body.patterns).toEqual([]);
   });
 });
+
+describe('GET /api/workspaces/[id]/error-traces — per-task token', () => {
+  const OTHER = '00000000-0000-4000-8000-0000000000bb';
+  const scoped = (workspaceId: string) => ({
+    id: 'acct-1', level: 'worker', taskScope: { taskId: 'task-1', workspaceId, expiresAt: Date.now() + 60_000 },
+  });
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockRows.mockReset();
+    mockRows.mockResolvedValue([]);
+    mockSelect.mockClear();
+  });
+
+  it('reads the rollup of its own task’s workspace', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(scoped(WS));
+    const res = await GET(req('', { authorization: 'Bearer bld_x' }), params());
+    expect(res.status).toBe(200);
+    expect(mockSelect).toHaveBeenCalled();
+  });
+
+  it('404s on another workspace its account can reach, without querying traces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(scoped(OTHER));
+    const res = await GET(req('', { authorization: 'Bearer bld_x' }), params());
+    expect(res.status).toBe(404);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it('leaves an account key unchanged: any workspace it can reach', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1' });
+    const res = await GET(req('', { authorization: 'Bearer bld_x' }), params());
+    expect(res.status).toBe(200);
+  });
+});

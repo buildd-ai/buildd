@@ -22,19 +22,6 @@ const STATE: Record<PrObjectView['state'], { text: string; cls: string }> = {
   closed: { text: 'closed', cls: 'text-text-muted' },
 };
 
-/** The stored lifecycle the task page's PR card reads, from the object's state. */
-export function lifecycleOf(state: PrObjectView['state']): string {
-  switch (state) {
-    case 'merged': return 'merged';
-    case 'ci_failed': return 'ci_failed';
-    case 'conflict': return 'conflict';
-    case 'ci_passed': return 'ci_green';
-    case 'ci_running': return 'ci_pending';
-    case 'closed': return 'closed';
-    default: return 'open';
-  }
-}
-
 export function PrRow({ objRef, view, flush = false }: { objRef: BuilddObjectRef; view: PrObjectView; flush?: boolean }) {
   const actions = useChatActions();
   const st = STATE[view.state];
@@ -73,7 +60,7 @@ export function PrPane({ view, variant = 'pane' }: { view: PrObjectView; variant
           <PrCard
             prUrl={view.url}
             prNumber={view.number}
-            prLifecycleStatus={lifecycleOf(view.state)}
+            prState={view.state}
             linesAdded={view.linesAdded}
             linesRemoved={view.linesRemoved}
             ciChecks={null}

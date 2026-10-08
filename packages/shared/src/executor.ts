@@ -106,3 +106,23 @@ export function resolveWorkspaceExecutor(
   if (isCloudDispatchWebhook(webhookConfig)) return { executor: 'cloud', source: 'dispatch_webhook' };
   return { executor: 'any', source: 'default' };
 }
+
+/**
+ * An orchestration task: one that coordinates other tasks' work rather than
+ * doing its own. It uses admin-level buildd actions (manage_missions,
+ * approve_plan/reject_plan) and may tidy up sibling tasks' PRs, so per-run
+ * restrictions that bind an ordinary agent run do not apply to it. Signals,
+ * all on the task row:
+ *  - roleSlug 'organizer' (the default mission orchestrator role);
+ *  - mode 'planning' (planning tasks feed approve_plan/reject_plan);
+ *  - context.heartbeat (an organizer check-in; mission-run can move it off
+ *    the 'organizer' role).
+ * Shared by the runner (which keeps the runner key for these sessions) and
+ * the server (which exempts them from own-PR-only close/merge).
+ */
+export function isOrchestrationTask(task: { roleSlug?: string | null; mode?: string | null; context?: unknown } | null | undefined): boolean {
+  if (!task) return false;
+  if (task.roleSlug === 'organizer') return true;
+  if (task.mode === 'planning') return true;
+  return (task.context as { heartbeat?: unknown } | null | undefined)?.heartbeat === true;
+}

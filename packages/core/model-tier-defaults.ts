@@ -3,8 +3,16 @@
  * No DB dependencies — safe to import from any context (runner, web, tests).
  *
  * These are the LAST RESORT — a team that has configured their registry never sees them.
- * The authoritative source of truth is the model_tier_registry table.
+ * The authoritative source of truth is the model_tier_registry table, resolved
+ * through the standalone model policy (`model-policy.ts`).
+ *
+ * The defaults themselves are not written here: they are the policy's bundled
+ * fallback (`DEFAULT_MODEL_POLICY`, @builddai/ai-kit/policy), read through its
+ * resolver. One list of tier models, one resolver.
  */
+
+import { resolveModelPolicy } from '@builddai/ai-kit/policy';
+import type { TierPolicyMeta } from './model-policy';
 
 export type Tier = 'premium-plus' | 'premium' | 'standard' | 'budget';
 
@@ -35,11 +43,18 @@ export interface TierEntry {
    * 'catalog' means no registry row exists for this tier and the live catalog
    * picked the newest in-band release — the self-healing path. 'default'
    * means even the catalog had nothing (empty/failed fetch), so the
-   * hand-maintained fallback applies.
+   * hand-maintained fallback applies. 'policy' means the remote policy
+   * service answered for a tier the registry leaves unset.
    */
-  source?: 'workspace' | 'team' | 'default' | 'catalog';
+  source?: 'workspace' | 'team' | 'default' | 'catalog' | 'policy';
   /** Set when the row that served this entry is scoped to one surface. */
   surface?: TierSurface;
+  /**
+   * The model-policy decision behind this entry (model-policy.ts): which
+   * policy version answered, from which layer, and the planId to report
+   * outcomes against when a policy service issued it.
+   */
+  policy?: TierPolicyMeta;
 }
 
 /**
@@ -55,18 +70,32 @@ export function isTierSurface(v: unknown): v is TierSurface {
   return v === 'agent' || v === 'chat';
 }
 
-export const TIER_DEFAULTS: Record<Tier, TierEntry> = {
-  // Opt-in only: nothing routes here on its own. The kind×complexity matrix in
-  // model-router.ts tops out at `premium`, so premium-plus is reached solely by
-  // an explicit `tier` on a task or a role. Fable is ~2x premium per token.
-  'premium-plus': { provider: 'anthropic', model: 'claude-fable-5-1',      source: 'default' },
-  premium:        { provider: 'anthropic', model: 'claude-opus-5',         source: 'default' },
-  standard:       { provider: 'anthropic', model: 'claude-sonnet-5',       source: 'default' },
-  budget:         { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', source: 'default' },
-};
+/**
+ * A tier's bundled default: what the policy answers with no registry row, no
+ * policy service and no catalog pick. Callers that need a code-level default
+ * (the runner's sync fallback, the dispatch guard's last resort) ask this
+ * rather than indexing a table of models of their own.
+ */
+export function bundledTierEntry(tier: Tier, surface: TierSurface = 'agent'): TierEntry {
+  const d = resolveModelPolicy(null, { surface: surface === 'agent' ? 'coding' : 'chat', tier });
+  return {
+    provider: d.provider as TierProvider,
+    model: d.model,
+    ...(d.effort ? { defaultEffort: d.effort } : {}),
+    source: 'default',
+  };
+}
 
-// Which model backs a tier is a policy call, so it is hand-maintained here and
-// in `model_tier_registry` — `GET /v1/models` lists what exists, not what we
+// Opt-in only: nothing routes to premium-plus on its own. The kind×complexity
+// matrix in model-router.ts tops out at `premium`, so premium-plus is reached
+// solely by an explicit `tier` on a task or a role. Fable is ~2x premium per token.
+export const TIER_DEFAULTS: Record<Tier, TierEntry> = Object.freeze(
+  Object.fromEntries(TIERS.map((t) => [t, Object.freeze(bundledTierEntry(t))])),
+) as Record<Tier, TierEntry>;
+
+// Which model backs a tier is a policy call, so it is hand-maintained in the
+// policy's bundled fallback (packages/ai-kit/src/policy/defaults.ts) and in
+// `model_tier_registry` — `GET /v1/models` lists what exists, not what we
 // should route to. `auditTierModels` (model-tier-liveness.ts) checks the choice
 // against that list instead, because the choice can go stale silently: standard
 // sat on `claude-sonnet-4-6` after `claude-sonnet-5` shipped CHEAPER

@@ -40,6 +40,21 @@ mock.module('@/lib/github', () => ({
 }));
 
 // ── Fake DB ──────────────────────────────────────────────────────────────────
+// Plan knowledge-base cap: the gate's own logic is covered in
+// packages/core billing-limits; here, which docs it refuses is the test's choice.
+let refuseDocs = new Set<string>();
+mock.module('@buildd/core/billing-limits', () => ({
+  admitDocsWithinCap: async (_ws: string, paths: string[]) => {
+    const refused = paths.filter(p => refuseDocs.has(p));
+    return {
+      admitted: paths.filter(p => !refuseDocs.has(p)),
+      refused,
+      cap: refused.length > 0 ? 50 : null,
+      message: refused.length > 0 ? 'cap reached — Settings → Billing' : null,
+    };
+  },
+}));
+
 import { knowledgeIngestJobs, githubRepos, workspaces, workers } from '@buildd/core/db/schema';
 
 type Row = Record<string, any>;
@@ -191,6 +206,7 @@ function resetAll() {
   namespaces = ['ws-1:code'];
   deleteBySourceCalls = [];
   upsertCalls = [];
+  refuseDocs = new Set();
 }
 
 function finalUpdate(): Row | undefined {
@@ -871,5 +887,56 @@ describe('push ingest', () => {
       expect(upsertCalls).toHaveLength(0);
       expect(insertCalls.some(c => c.values.scope === 'full')).toBe(true);
     });
+  });
+});
+
+describe('plan knowledge-base cap', () => {
+  beforeEach(resetAll);
+
+  it('PR diff job: a refused new doc is not written; code and other docs still are', async () => {
+    prFilePages = [[
+      { filename: 'src/app.ts', status: 'modified' },
+      { filename: 'docs/kept.md', status: 'modified' },
+      { filename: 'docs/new.md', status: 'added' },
+    ]];
+    contentsByPath = {
+      'src/app.ts': { content: 'export const app = 1;' },
+      'docs/kept.md': { content: '# Kept' },
+      'docs/new.md': { content: '# New' },
+    };
+    refuseDocs = new Set(['docs/new.md']);
+
+    const out = await runDiffIngestJob('job-1');
+    expect(out.claimed && out.status).toBe('done');
+    const docsWritten = upsertCalls.filter(c => c.namespace === 'ws-1:docs').flatMap(c => c.chunks.map((ch: any) => ch.id));
+    expect(docsWritten).toEqual(['docs/kept.md#1']);
+    expect(upsertCalls.some(c => c.namespace === 'ws-1:code')).toBe(true);
+    // Nothing already stored is deleted on account of the cap.
+    expect(deleteBySourceCalls.some(c => c.sourcePath === 'docs/new.md')).toBe(false);
+    expect(finalUpdate()?.stats).toMatchObject({
+      filesIngested: 2,
+      filesRefusedByPlan: 1,
+      planLimitMessage: 'cap reached — Settings → Billing',
+    });
+  });
+
+  it('push job: a refused new doc is not written and the job still finishes', async () => {
+    claimResult = [{ ...baseJob, trigger: 'push', prNumber: null, sha: 'push-sha-1', changedFiles: ['docs/a.md', 'docs/b.md'] }];
+    contentsByPath = { 'docs/a.md': { content: '# A' }, 'docs/b.md': { content: '# B' } };
+    refuseDocs = new Set(['docs/b.md']);
+
+    const out = await runDiffIngestJob('job-1');
+    expect(out.claimed && out.status).toBe('done');
+    expect(upsertCalls.flatMap(c => c.chunks.map((ch: any) => ch.id))).toEqual(['docs/a.md#1']);
+    expect(finalUpdate()?.stats).toMatchObject({ filesIngested: 1, filesRefusedByPlan: 1 });
+  });
+
+  it('nothing refused: stats say so and carry no message', async () => {
+    claimResult = [{ ...baseJob, trigger: 'push', prNumber: null, sha: 'push-sha-1', changedFiles: ['docs/a.md'] }];
+    contentsByPath = { 'docs/a.md': { content: '# A' } };
+    await runDiffIngestJob('job-1');
+    const stats = finalUpdate()?.stats as any;
+    expect(stats.filesRefusedByPlan).toBe(0);
+    expect(stats.planLimitMessage).toBeUndefined();
   });
 });

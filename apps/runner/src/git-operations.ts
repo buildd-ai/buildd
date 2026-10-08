@@ -5,7 +5,7 @@
 
 import * as cp from 'child_process';
 import * as fs from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import {
   resolveWorktreeBase,
   clearResumeContext,
@@ -25,8 +25,8 @@ import { detectInstallPlans, resolveManifest, MANIFEST_PATH } from './env-verify
 import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
 import { describePrimaryCloneDrift } from './worktree-confinement';
 import { diagnoseRegistryAuth, type RegistryAuthDiagnosis } from './install-diagnosis';
-import { emitPhase } from './phase-lines';
-import { branchOfRemoteRef, ensureRemoteBranch, type GitCwdRun, type RemoteBranchResult } from './git-clone';
+import { emitPhase, emitWorktreeMode } from './phase-lines';
+import { branchOfRemoteRef, ensureRemoteBranch, isCloudExecutor, type GitCwdRun, type RemoteBranchResult } from './git-clone';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
 // touching bun's mock.module registry (which is shared across parallel workers
@@ -392,7 +392,7 @@ export interface SetupWorktreeResult {
    * resolveWorktreeBase settled on after probing the remote, including any
    * fallback it took.
    *
-   * Returned because the codebase-memory seed is keyed on it. A caller that
+   * Returned so callers read the real base. A caller that
    * re-derived this instead would be re-implementing the base decision, and
    * branch-names.ts documents what hand-mirroring that rule already cost once —
    * a predicted ref that never existed, failing silently.
@@ -412,7 +412,7 @@ export interface SetupWorktreeResult {
   /** Set when a resume/base candidate resolved to a branch that cannot be the
    *  worktree's own checkout — the repo default branch, or a branch another
    *  worktree already holds. The task's own `branch` was used instead, so the
-   *  worker keeps its isolated worktree (and CBM) instead of failing setup and
+   *  worker keeps its isolated worktree instead of failing setup and
    *  degrading into the shared repo root. `holder` is the worktree that owns the
    *  branch, when known. */
   sharedBranch?: {
@@ -420,6 +420,14 @@ export interface SetupWorktreeResult {
     reason: 'default_branch' | 'checked_out' | 'mission_branch';
     holder?: string;
   };
+  /**
+   * Set when `base` is more than 10 commits behind `origin/<defaultBranch>` at
+   * setup time. Previously `console.warn`-only (a line nobody but someone
+   * tailing runner logs would ever see) — returned now so the caller can
+   * surface it the same way it already surfaces `fallback`: an appended error
+   * trace on the worker, visible on the dashboard and to `get_error_traces`.
+   */
+  staleBase?: { ref: string; defaultBranch: string; commitsBehind: number };
 }
 
 /**
@@ -508,6 +516,20 @@ function isShallowClone(repoPath: string): boolean {
   }
 }
 
+/** Why setupWorktree last returned null, per worker: git's own text, for the start failure. */
+const setupWorktreeErrors = new Map<string, string>();
+
+/**
+ * Why setupWorktree last returned null for `workerId` (trimmed), once. The
+ * caller fails the worker with it, so the task says what git refused instead
+ * of only that it did.
+ */
+export function takeSetupWorktreeError(workerId: string): string | undefined {
+  const why = setupWorktreeErrors.get(workerId);
+  setupWorktreeErrors.delete(workerId);
+  return why;
+}
+
 function safeWorktreeDirName(branch: string): string {
   return branch.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
@@ -540,6 +562,7 @@ export async function setupWorktree(
    */
   resumeLineage?: ResumeLineage & { onHolderReleased?: (holderWorkerId: string) => void },
 ): Promise<SetupWorktreeResult | null> {
+  const cloud = isCloudExecutor(process.env);
   const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
 
   // Worktrees live in .buildd-worktrees/ inside the repo
@@ -551,25 +574,25 @@ export async function setupWorktree(
   // branches. Recomputed from the RESOLVED branch after the candidate ladder
   // below, which is what closes that collision at the source; also reassigned
   // when this path turns out to be occupied.
-  let worktreePath = join(worktreeBase, safeBranch);
+  let worktreePath = cloud ? repoPath : join(worktreeBase, safeBranch);
 
   try {
     // Ensure worktree base directory exists
-    mkdirSync(worktreeBase, { recursive: true });
+    if (!cloud) mkdirSync(worktreeBase, { recursive: true });
 
     // Add .buildd-worktrees to .git/info/exclude if not already there
     const excludePath = join(repoPath, '.git', 'info', 'exclude');
-    if (existsSync(excludePath)) {
+    if (!cloud && existsSync(excludePath)) {
       const excludeContent = readFileSync(excludePath, 'utf-8');
       if (!excludeContent.includes('.buildd-worktrees')) {
         appendFileSync(excludePath, '\n.buildd-worktrees\n');
       }
     }
 
-    // Fetch latest from remote
-    console.log(`[Worker ${workerId}] Fetching latest from remote...`);
+    // Cloud acquisition already fetched the default; candidate refs are fetched by name.
+    if (!cloud) console.log(`[Worker ${workerId}] Fetching latest from remote...`);
     try {
-      execSync('git fetch origin', execOpts);
+      if (!cloud) execSync('git fetch origin', execOpts);
     } catch (err) {
       console.warn(`[Worker ${workerId}] git fetch failed (continuing with local state):`, err instanceof Error ? err.message : err);
     }
@@ -577,7 +600,7 @@ export async function setupWorktree(
     // The primary clone should be a pristine base that nobody works in. If it
     // is dirty or off its branch, something has been working in the shared
     // checkout — say so loudly. Never reset it: it may hold unpushed work.
-    warnOnPrimaryCloneDrift(repoPath, defaultBranch, workerId);
+    if (!cloud) warnOnPrimaryCloneDrift(repoPath, defaultBranch, workerId);
 
     // Clean up stale worktree at this path if it exists.
     //
@@ -633,7 +656,7 @@ export async function setupWorktree(
       return candidate;
     };
 
-    worktreePath = reclaimOrDivert(worktreePath);
+    if (!cloud) worktreePath = reclaimOrDivert(worktreePath);
 
     // Determine if there is a resume candidate from prior attempt context —
     // i.e. a branch to check out and push to DIRECTLY, as opposed to a base to
@@ -805,6 +828,7 @@ export async function setupWorktree(
     // Non-blocking and advisory, deliberately: it never changes the base, never
     // fails setup, and the log line names the ref it measured so a wrong-tree
     // measurement is visible next time instead of inferred.
+    let staleBase: SetupWorktreeResult['staleBase'];
     try {
       const behindStr = execSync(
         `git rev-list --count "${base}..origin/${defaultBranch}"`,
@@ -818,6 +842,7 @@ export async function setupWorktree(
           `Consider running: git fetch origin && git rebase origin/${defaultBranch} before pushing. ` +
           `Past CI retry chains were caused by this kind of staleness.`,
         );
+        staleBase = { ref: base, defaultBranch, commitsBehind };
       }
     } catch {
       // Non-fatal: git rev-list can fail for repos with no remote or when the
@@ -836,6 +861,10 @@ export async function setupWorktree(
     // AFTER the stale-worktree cleanup above so a path we just reclaimed isn't
     // counted as a holder.
     const branchOwners = listBranchOwners(execOpts);
+    // The single-task cloud clone is our session, not another branch holder.
+    if (cloud) for (const [name, path] of branchOwners) {
+      if (resolve(path) === resolve(repoPath)) branchOwners.delete(name);
+    }
 
     // Mission-integration guard: a task must NEVER work directly on the mission
     // integration branch. When context.baseBranch is a mission integration branch
@@ -869,7 +898,7 @@ export async function setupWorktree(
     // exists" / "cannot delete branch 'X' used by worktree at …".  Tasks whose
     // context carried baseBranch:"dev" used to hit exactly that: every
     // concurrent worker but one failed setup and was silently degraded into the
-    // shared role-clone root (no fs isolation, no CBM).  Fall back to the task's
+    // shared role-clone root (no fs isolation).  Fall back to the task's
     // own branch, which is unique per task, and report it.
     //
     // This also covers the mission-integration case: when the branch parameter
@@ -1019,7 +1048,7 @@ export async function setupWorktree(
     // across the attempts that resume it, so keying the directory on it would
     // reintroduce the same collision from the other side. `uniqueBranch` embeds
     // the worker id, so it is unique per attempt by construction.
-    if (actualBranch === uniqueBranch && uniqueBranch !== branch) {
+    if (!cloud && actualBranch === uniqueBranch && uniqueBranch !== branch) {
       const divertedPath = join(worktreeBase, safeWorktreeDirName(actualBranch));
       if (divertedPath !== worktreePath) {
         // Through the same guard as the first reclaim — a recompute must not
@@ -1095,9 +1124,12 @@ export async function setupWorktree(
           `origin/${defaultBranch} or origin/${candidate}, so it carries commits pushed nowhere else.`;
         console.warn(`[Worker ${workerId}] ${detail}`);
         sessionLog(workerId, 'warn', 'stale_branch_preserved_unpushed', detail);
-      } catch {
-        // Rename failed (e.g. the branch vanished between the checks above and
-        // here) — nothing left to preserve.
+      } catch (err) {
+        // Host -b fails if the ref remains. Cloud -B would overwrite it: fail
+        // closed when the target still holds work we could not preserve.
+        if (cloud && candidate === actualBranch && localBranchExists(candidate)) {
+          throw new Error(`Cannot preserve unpushed branch "${candidate}" before checkout: ${errMessage(err)}`);
+        }
       }
     }
 
@@ -1106,8 +1138,14 @@ export async function setupWorktree(
     // emits right after this call on every successful worker start. The
     // failure branch below still gets full stderr text via err.message —
     // piping only stops it from also going to the real log stream.
+    emitPhase('worktree_start');
+    emitWorktreeMode(cloud ? 'clone' : 'worktree');
     try {
-      if (checkoutExistingBranch) {
+      if (cloud) {
+        execSync(checkoutExistingBranch
+          ? `git checkout "${actualBranch}"`
+          : `git checkout -B "${actualBranch}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+      } else if (checkoutExistingBranch) {
         execSync(`git worktree add "${worktreePath}" "${actualBranch}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
       } else {
         execSync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -1121,8 +1159,10 @@ export async function setupWorktree(
         ? `branch "${actualBranch}" is already checked out in worktree ${holder}`
         : `branch "${actualBranch}" could not be created at ${worktreePath}`;
       throw new Error(
-        `git worktree add failed: ${detail} (base ${base}): ${err instanceof Error ? err.message : String(err)}`,
+        `${cloud ? 'git checkout' : 'git worktree add'} failed: ${detail} (base ${base}): ${err instanceof Error ? err.message : String(err)}`,
       );
+    } finally {
+      emitPhase('worktree_end');
     }
 
     // Register the repo's shared git hooks in this worktree. The package.json
@@ -1167,12 +1207,14 @@ export async function setupWorktree(
       install,
       ...(fallback ? { fallback } : {}),
       ...(sharedBranch ? { sharedBranch } : {}),
+      ...(staleBase ? { staleBase } : {}),
     };
   } catch (err) {
     console.error(`[Worker ${workerId}] Failed to set up worktree:`, err instanceof Error ? err.message : err);
+    setupWorktreeErrors.set(workerId, (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim().slice(0, 400));
     // Clean up partial worktree
     try {
-      if (existsSync(worktreePath)) {
+      if (!cloud && existsSync(worktreePath)) {
         rmSync(worktreePath, { recursive: true, force: true });
       }
       execSync('git worktree prune', { ...execOpts, timeout: 5000 });
@@ -1186,6 +1228,7 @@ export async function setupWorktree(
  * Removes the worktree directory and prunes git worktree metadata.
  */
 export async function cleanupWorktree(repoPath: string, worktreePath: string, workerId: string) {
+  if (resolve(repoPath) === resolve(worktreePath)) return;
   if (_cleanupSpy) return _cleanupSpy(repoPath, worktreePath, workerId);
   const execOpts = { cwd: repoPath, timeout: 10000, encoding: 'utf-8' as const };
 
@@ -1204,7 +1247,7 @@ export async function cleanupWorktree(repoPath: string, worktreePath: string, wo
 /** Why a worktree removal was refused, when it was. */
 export type WorktreeRemovalOutcome =
   | { removed: true }
-  | { removed: false; reason: 'owned_by_live_worker' | 'unpushed_commits' };
+  | { removed: false; reason: 'owned_by_live_worker' | 'unpushed_commits' | 'primary_clone' };
 
 export interface RemoveWorktreeOptions {
   repoPath: string;
@@ -1243,6 +1286,7 @@ function hasUnpushedCommits(repoPath: string, branch: string | undefined): boole
 /** Shared gate for both the async and sync removal entry points. */
 function removalRefusal(opts: RemoveWorktreeOptions): WorktreeRemovalOutcome | null {
   const { repoPath, worktreePath, workerId, workers } = opts;
+  if (resolve(repoPath) === resolve(worktreePath)) return { removed: false, reason: 'primary_clone' };
   if (isWorktreePathOwnedByOtherLiveWorker(workers, worktreePath, workerId)) {
     const msg = `Refused to remove worktree ${worktreePath}: owned by another live worker`;
     sessionLog(workerId, 'warn', 'worktree_removal_skipped_owned', msg);
@@ -1318,7 +1362,13 @@ export async function collectGitStats(
 ): Promise<GitStats> {
   if (!cwd) return {};
 
-  const opts = { cwd, timeout: 5000, encoding: 'utf-8' as const };
+  // cwd is the worker's own live worktree; this can run while the agent is
+  // still staging/committing there. `diff`/`status` below would otherwise
+  // opportunistically rewrite the on-disk index to cache fresh stat info,
+  // taking index.lock and racing the agent's own git calls for it.
+  // GIT_OPTIONAL_LOCKS=0 skips that write-back without changing any output
+  // read here.
+  const opts = { cwd, timeout: 5000, encoding: 'utf-8' as const, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } };
   const stats: Record<string, number | string | boolean | undefined> = {};
 
   // Resolve the ref this worktree's own commits are measured against.

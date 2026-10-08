@@ -7,7 +7,6 @@
  * A new prompt-bearing module must be imported here (or in the web catalog);
  * `apps/web/src/lib/prompt-catalog.test.ts` fails otherwise.
  */
-import './cbm-injection-decision';
 import './memory-decisions';
 import './orchestration-claim-decision';
 import './orchestration-overlap-decision';
@@ -15,6 +14,7 @@ import './question-gate-decision';
 import './task-size-bucket-decision';
 import './decision-kind-post-session-triage';
 import './decision-kind-scout-probe-selection';
+import './decision-kind-failure-incident-triage';
 import './decision-kind-failure-incident-triage';
 import './manifest-prediction';
 

@@ -23,6 +23,9 @@ name: Cron Sync
 #
 # Requires repo secrets: CRONJOB_API_KEY, CRON_SECRET (must match Vercel prod).
 # Optional: CRON_TARGET_BASE_URL (defaults to https://buildd.dev).
+# Optional repo variable: CRON_PROFILES, a comma-separated profile list
+# (`core,ops`, `module:missions`, `module:*`). Unset schedules every job in the
+# manifest, which is what buildd.dev runs. See cron-manifest.json.
 
 on:
   deployment_status: {}
@@ -78,6 +81,7 @@ jobs:
           CRONJOB_API_KEY: ${{ secrets.CRONJOB_API_KEY }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           CRON_TARGET_BASE_URL: ${{ secrets.CRON_TARGET_BASE_URL }}
+          CRON_PROFILES: ${{ vars.CRON_PROFILES }}
         run: |
           if [ -z "$CRONJOB_API_KEY" ] || [ -z "$CRON_SECRET" ]; then
             echo "::error::CRONJOB_API_KEY / CRON_SECRET not set as repo secrets — cannot sync the external cron scheduler"

@@ -389,3 +389,44 @@ describe('create_task — status line reflects actual task state', () => {
     expect(result.content[0].text).not.toContain('Assigned');
   });
 });
+
+// An agent editing its own task's description is the active worker: there is
+// no one to deliver the change to, and a task token could not reach the
+// instruct route anyway.
+describe('update_task — the caller’s own worker', () => {
+  it('does not instruct the caller’s own worker, and does not warn', async () => {
+    const api = mock();
+    api
+      .mockResolvedValueOnce(UPDATED_TASK)
+      .mockResolvedValueOnce(TASK_WITH_RUNNING_WORKER)
+      .mockResolvedValue({ id: 'note-1' });
+
+    const result = await handleBuilddAction(
+      api as unknown as ApiFn,
+      'update_task',
+      { taskId: TASK_ID, description: 'Clarified' },
+      { ...ctx, workerId: 'worker-abc' },
+    );
+
+    expect(api.mock.calls.some(([endpoint]: [string]) => endpoint.includes('/instruct'))).toBe(false);
+    expect(result.content[0].text).not.toContain('WARNING');
+  });
+
+  it('still instructs another active worker on the task', async () => {
+    const api = mock();
+    api
+      .mockResolvedValueOnce(UPDATED_TASK)
+      .mockResolvedValueOnce(TASK_WITH_RUNNING_WORKER)
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValue({ id: 'note-1' });
+
+    await handleBuilddAction(
+      api as unknown as ApiFn,
+      'update_task',
+      { taskId: TASK_ID, description: 'Clarified' },
+      { ...ctx, workerId: 'worker-someone-else' },
+    );
+
+    expect(api.mock.calls.some(([endpoint]: [string]) => endpoint.includes('/api/workers/worker-abc/instruct'))).toBe(true);
+  });
+});

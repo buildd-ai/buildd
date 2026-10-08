@@ -81,7 +81,7 @@ describe('percentile / distribution', () => {
 describe('serverOf', () => {
   test('splits the MCP server out of the tool name', () => {
     expect(serverOf('mcp__buildd__recall')).toBe('buildd');
-    expect(serverOf('mcp__codebase-memory__search_code')).toBe('codebase-memory');
+    expect(serverOf('mcp__github__get_pr')).toBe('github');
   });
 
   test('built-in tools bucket together', () => {
@@ -107,7 +107,7 @@ describe('toolCountsForWorker', () => {
     expect(result.counts).toEqual({ Bash: 12, Read: 30, 'mcp__buildd__buildd': 4 });
   });
 
-  test('falls back to mcpCalls + CBM counters for pre-histogram workers', () => {
+  test('falls back to mcpCalls + legacy cbm counters for pre-histogram workers', () => {
     const result = toolCountsForWorker(row({
       resultMeta: {
         stopReason: null, durationMs: 0, durationApiMs: 0, numTurns: 0, modelUsage: {},
@@ -268,14 +268,14 @@ describe('computeUsageStats', () => {
         taskId: 't1',
         resultMeta: {
           stopReason: null, durationMs: 0, durationApiMs: 0, numTurns: 0, modelUsage: {},
-          toolCounts: { Read: 10, Bash: 5, 'mcp__buildd__buildd': 4, 'mcp__codebase-memory__search_code': 3 },
+          toolCounts: { Read: 10, Bash: 5, 'mcp__buildd__buildd': 4, 'mcp__github__get_pr': 3 },
         },
       }),
     ]);
     const byServer = Object.fromEntries(stats.tools.byServer.map(s => [s.server, s.calls]));
     expect(byServer[BUILT_IN_SERVER]).toBe(15);
     expect(byServer['buildd']).toBe(4);
-    expect(byServer['codebase-memory']).toBe(3);
+    expect(byServer['github']).toBe(3);
   });
 
   test('overflow bucket is counted in byTool but attributed to no server', () => {
@@ -483,14 +483,14 @@ describe('zero-value tasks', () => {
     expect(stats.totals.inputTokens).toBe(3_000_000);
   });
 
-  test('cost reads unavailable on a seat-auth window, never $0.00 per task', () => {
+  test('cost reads unavailable on a window with no recorded cost, never $0.00 per task', () => {
     const stats = computeUsageStats([
       row({ taskId: 'a', inputTokens: 500_000, costUsd: '0' }),
       row({ taskId: 'b', inputTokens: 700_000, costUsd: '0' }),
     ]);
     expect(stats.perTask.costUsd.kind).toBe('unavailable');
     expect(stats.perTask.costUsd.kind === 'unavailable' && stats.perTask.costUsd.detail)
-      .toMatch(/seat-based/);
+      .toMatch(/recorded a cost/);
     // Tokens are still measured — one metric being absent doesn't sink the rest.
     expect(dist(stats.perTask.inputTokens).median).toBe(500_000);
     expect(stats.perTask.contributing.costUsd).toBe(0);
@@ -1010,5 +1010,37 @@ describe('creationSource histogram', () => {
     // Cost rollup is untouched: one task, full combined cost.
     expect(stats.totals.tasks).toBe(1);
     expect(stats.totals.inputTokens).toBe(10000);
+  });
+});
+
+// docs/specs/real-and-virtual-cost.md: real and virtual are reported side by
+// side, unknown on its own, and interactive work separable from runner work.
+describe('cost basis split', () => {
+  test('totals real, virtual and unknown separately', () => {
+    const stats = computeUsageStats([
+      row({ costBasis: 'real', costUsd: '2', inputTokens: 10, outputTokens: 1 }),
+      row({ taskId: 'task-2', costBasis: 'virtual', costUsd: '5', inputTokens: 100, outputTokens: 10 }),
+      row({ taskId: 'task-3', costBasis: null, costUsd: '1', inputTokens: 1, outputTokens: 1 }),
+      row({ taskId: 'task-4', costBasis: null, costUsd: '0', inputTokens: 0, outputTokens: 0 }),
+    ]);
+    expect(stats.byBasis.total.real).toEqual({ workers: 1, inputTokens: 10, outputTokens: 1, costUsd: 2 });
+    expect(stats.byBasis.total.virtual.costUsd).toBe(5);
+    expect(stats.byBasis.total.unknown).toEqual({ workers: 1, inputTokens: 1, outputTokens: 1, costUsd: 1 });
+    expect(stats.byBasis.total.mixed.workers).toBe(0);
+  });
+
+  test('keeps interactive sessions apart from runner work in the split', () => {
+    const stats = computeUsageStats([
+      row({ costBasis: 'virtual', costUsd: '3', runner: 'mcp' }),
+      row({ taskId: 'task-2', costBasis: 'virtual', costUsd: '4', runner: 'http://localhost:8766' }),
+    ]);
+    expect(stats.byBasis.byExecutor.interactive.virtual.costUsd).toBe(3);
+    expect(stats.byBasis.byExecutor.runner.virtual.costUsd).toBe(4);
+  });
+
+  test('no cost anywhere still reads unavailable, without blaming an auth type', () => {
+    const stats = computeUsageStats([row({ costUsd: '0' })]);
+    expect(stats.perTask.costUsd.kind).toBe('unavailable');
+    expect((stats.perTask.costUsd as any).detail).not.toMatch(/seat|oauth/i);
   });
 });
