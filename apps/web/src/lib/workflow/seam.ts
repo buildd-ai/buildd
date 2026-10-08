@@ -951,6 +951,25 @@ export function isMergeableNow(state: string | null | undefined): boolean {
   return state === 'clean' || state === 'unstable' || state === 'has_hooks' || state === 'blocked';
 }
 
+/**
+ * T12's reading of a live PR. GitHub reports `mergeable_state: behind` only
+ * under branch protection that requires an up-to-date branch; without it a PR
+ * many commits behind its base reads `clean`. So a door that saw the PR behind
+ * (landing's freshness rail, a merge refused as out of date) is answered by
+ * ancestry, not by that state: the base tip missing from the head is `behind`.
+ * `baseContained` null = not read; false = the base tip is not in the head.
+ */
+export function conflictReading(
+  state: string | null | undefined,
+  hint: 'dirty' | 'behind',
+  baseContained: boolean | null,
+): ConflictSeen['mergeable'] {
+  if (state === 'dirty') return 'dirty';
+  if (state === 'behind') return 'behind';
+  if (!isMergeableNow(state)) return 'unknown';
+  return hint === 'behind' && baseContained === false ? 'behind' : 'clean';
+}
+
 export interface ConflictSeen {
   handled: true;
   result: CommandResult;
@@ -995,7 +1014,12 @@ export async function observeConflict(p: {
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.source}:conflict`, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
   const state = live.mergeableState ?? null;
-  const mergeable: ConflictSeen['mergeable'] = state === 'dirty' ? 'dirty' : state === 'behind' ? 'behind' : isMergeableNow(state) ? 'clean' : 'unknown';
+  // Only a behind-hinted door on a mergeable PR pays for the ancestry read.
+  const baseTip = p.hint === 'behind' && isMergeableNow(state) && live.baseRef && reader.branchHead && reader.contains
+    ? await reader.branchHead(p.repoFullName, live.baseRef)
+    : null;
+  const baseContained = baseTip ? await reader.contains!(p.repoFullName, baseTip, live.headSha) : null;
+  const mergeable = conflictReading(state, p.hint, baseContained);
   if (mergeable === 'clean' && !p.migrationCollision) return none('not_conflicting', 'clean');
   let maxAgent = p.maxAgentAttempts;
   if (p.humanInitiated) {
