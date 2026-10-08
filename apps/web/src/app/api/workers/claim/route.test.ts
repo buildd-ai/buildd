@@ -3585,14 +3585,24 @@ describe('POST /api/workers/claim', () => {
         });
       });
 
-      it("executor 'cloud': the endpoint is never resolved or attached", async () => {
+      it("executor 'cloud': the endpoint is never attached; only a non-secret toolSearchDisabled marker", async () => {
         await withEncryptionKey(async () => {
           setupTeamWithEveryCredential();
           mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint }));
           const data = await claimWith({ executor: 'cloud' });
-          expect(mockResolveAgentModelRoute).not.toHaveBeenCalled();
           expect(data.workers[0].modelEndpoint).toBeUndefined();
+          expect(data.workers[0].toolSearchDisabled).toBe(true);
           expect(JSON.stringify(data)).not.toContain('sk-endpoint-example');
+        });
+      });
+
+      it("executor 'cloud': an endpoint that passes ToolSearch through adds no marker", async () => {
+        await withEncryptionKey(async () => {
+          setupTeamWithEveryCredential();
+          mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint: { ...endpoint, toolSearch: true } }));
+          const data = await claimWith({ executor: 'cloud' });
+          expect(data.workers[0].modelEndpoint).toBeUndefined();
+          expect('toolSearchDisabled' in data.workers[0]).toBe(false);
         });
       });
     });
@@ -6706,6 +6716,59 @@ describe('entity catalog injection at claim time', () => {
       expect(data.workers).toHaveLength(0);
       expect(data.diagnostics.reason).toBe('all_candidates_deferred');
       expect(data.diagnostics.deferrals.connector_mismatch).toBe(2);
+    });
+
+    // A backlog of tasks whose role secrets live on another team can fill
+    // every window; the over-fetch above does not help once the undeliverable
+    // prefix is longer than the window itself.
+    it('fetches past a full window of role-env-gapped tasks and claims the runnable task behind them', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api',
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+
+      // maxTasks=1 → candidateLimit=25; all 25 window slots are gapped.
+      const gapped = Array.from({ length: 25 }, (_, i) => ({
+        id: `gapped-${i}`, workspaceId: 'ws-1', title: `Email task ${i}`,
+        roleSlug: 'email-agent', priority: 9,
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      }));
+      const clean = {
+        id: 'task-clean', workspaceId: 'ws-1', title: 'Clean task',
+        roleSlug: null, priority: 1,
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      };
+      const allTasks = [...gapped, clean];
+      // Candidate pages honour limit/offset like the DB; every other tasks query is empty.
+      mockTasksFindMany.mockImplementation(((opts: any) => Promise.resolve(
+        typeof opts?.offset === 'number' ? allTasks.slice(opts.offset, opts.offset + opts.limit) : [],
+      )) as any);
+      mockRunRoleEnvPreFilter.mockImplementation(async (tasks: any[]) => new Map(
+        tasks.filter(t => t.id.startsWith('gapped-')).map(t => [t.id, { roleSlug: 'email-agent', missing: ['TENANT_ID'] }]),
+      ));
+
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-clean' }]) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-clean', task_id: 'task-clean', branch: 'buildd/test', status: 'idle' }],
+      }));
+
+      try {
+        const res = await POST(createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { runner: 'test-runner', maxTasks: 1 },
+        }));
+
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.workers).toHaveLength(1);
+        expect(data.workers[0].taskId).toBe('task-clean');
+      } finally {
+        mockRunRoleEnvPreFilter.mockImplementation(() => Promise.resolve(new Map()));
+      }
     });
   });
   // OAuth budget pacing (packages/core/oauth-budget.ts). Seat auth reports no

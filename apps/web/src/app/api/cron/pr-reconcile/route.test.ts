@@ -18,6 +18,12 @@ mock.module('@/lib/dead-zone-sweep', () => ({
   sweepDeadZonePrs: mockDeadZone,
 }));
 
+const BRANCH_REFRESH_ZERO = { scanned: 0, merged: 0, conflicts: 0, skipped: 0, errors: 0 };
+const mockBranchRefreshSweep = mock(() => Promise.resolve(BRANCH_REFRESH_ZERO));
+mock.module('@/lib/mission-branch-refresh', () => ({
+  sweepMissionBranchRefresh: mockBranchRefreshSweep,
+}));
+
 const LINEAGE_ZERO = { candidates: 0, closed: 0, stranded: 0, skipped: 0 };
 const mockLineageSweep = mock(() => Promise.resolve(LINEAGE_ZERO));
 mock.module('@/lib/retry-pr-supersession', () => ({
@@ -28,6 +34,12 @@ const CLOSED_ZERO = { candidates: 0, recorded: 0, suggested: 0, none: 0, skipped
 const mockClosedPrSweep = mock(() => Promise.resolve(CLOSED_ZERO as any));
 mock.module('@/lib/pr-supersession-detect', () => ({
   sweepClosedUnsupersededPrs: mockClosedPrSweep,
+}));
+
+const EARLY_RELEASE_ZERO = { enumerated: 0, processed: 0, refreshed: 0, escalated: 0, ignored: 0, skipped: 0, errors: 0 };
+const mockEarlyRelease = mock(() => Promise.resolve(EARLY_RELEASE_ZERO));
+mock.module('@/lib/early-release-reconciler', () => ({
+  reconcileEarlyReleases: mockEarlyRelease,
 }));
 
 // The two sweeps below were unmocked too, so they queried the live database.
@@ -106,6 +118,8 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockMissionPrSweep.mockReset();
     mockMissionPrSweep.mockResolvedValue(MISSION_ZERO);
     mockDeadZone.mockReset();
+    mockBranchRefreshSweep.mockReset();
+    mockBranchRefreshSweep.mockResolvedValue(BRANCH_REFRESH_ZERO);
     mockLineageSweep.mockReset();
     mockLineageSweep.mockResolvedValue(LINEAGE_ZERO);
     mockClosedPrSweep.mockReset();
@@ -118,6 +132,8 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockRefreshRedrive.mockResolvedValue(REDRIVE_ZERO);
     mockCiRedSweep.mockReset();
     mockCiRedSweep.mockResolvedValue(CI_RED_ZERO);
+    mockEarlyRelease.mockReset();
+    mockEarlyRelease.mockResolvedValue(EARLY_RELEASE_ZERO);
     dueCount = 0;
     process.env.CRON_SECRET = 'test-secret';
   });
@@ -502,5 +518,29 @@ describe('GET /api/cron/pr-reconcile', () => {
       expect((await GET(makeRequest(undefined, GATED))).status).toBe(401);
       expect(mockCiRedSweep).not.toHaveBeenCalled();
     });
+  });
+
+  // ── Early-release reconciler ───────────────────────────────────────────────
+  //
+  // Re-checks every non-revoked early-release decision against the upstream
+  // PR's current state (lib/early-release-reconciler.ts).
+
+  it('runs the early-release reconciler hourly and reports it', async () => {
+    mockEarlyRelease.mockResolvedValue({ ...EARLY_RELEASE_ZERO, enumerated: 2, processed: 2, refreshed: 1, escalated: 1 });
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    expect(mockEarlyRelease).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    expect(body.earlyRelease).toMatchObject({ refreshed: 1, escalated: 1 });
+  });
+
+  it('an early-release reconciler failure does not discard merge-state healing', async () => {
+    mockReconcile.mockResolvedValue({ total: 4, stamped: 2, closed: 0, skipped: 2, errors: 0 });
+    mockEarlyRelease.mockRejectedValue(new Error('early-release query failed'));
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.reconcile.stamped).toBe(2);
+    expect(body.earlyRelease.error).toContain('early-release query failed');
   });
 });

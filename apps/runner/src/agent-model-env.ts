@@ -65,6 +65,13 @@ export interface ModelEnvInput {
   modelEndpoint?: ClaimModelEndpoint;
   /** The claim said an endpoint won but withheld its key (this runner reported an override). */
   teamEndpointWithheld?: boolean;
+  /**
+   * Cloud run: the claim says the endpoint behind the dispatcher's egress does
+   * not pass ToolSearch through. Claude Code in the container thinks it talks
+   * to Anthropic and would keep it on, so ENABLE_TOOL_SEARCH=false is set.
+   * Claude only; ignored when a team endpoint or per-machine provider applies.
+   */
+  toolSearchDisabled?: boolean;
   /** Native budget model; mapped through the endpoint into ANTHROPIC_DEFAULT_HAIKU_MODEL. */
   budgetModel?: string;
   /**
@@ -245,6 +252,7 @@ export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput)
       env.CLAUDE_CODE_OAUTH_TOKEN = tenantOauthToken;
       injected.push('tenantOauthToken');
     }
+    if (!isCodexTask && input.toolSearchDisabled && endpoint === 'anthropic') env[TOOL_SEARCH_ENV] = 'false';
     return { env, endpoint, baseUrlOrigin, injected, withheld, teamEndpointIgnored, toolSearch: false, ...(hostSeat ? { hostSeatUsed: true } : {}) };
   }
 

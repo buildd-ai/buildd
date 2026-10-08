@@ -49,7 +49,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { pidsToStop, type ProcInfo } from './run-once';
 import { resolveBuilddHome } from './buildd-home';
-import { emitPhase, emitRepoSource } from './phase-lines';
+import { emitMetric, emitPhase, emitRepoSource } from './phase-lines';
 
 /** Printed on success, last line: the agent reads it next to exit code 0. */
 export const RESET_OK_LINE = 'BUILDD_RESET=ok';
@@ -319,9 +319,59 @@ export interface SeedOptions {
   lineOpts?: Parameters<typeof emitPhase>[1];
 }
 
-function git(cwd: string, args: string[], timeoutMs = 10 * 60 * 1000): { ok: boolean; out: string; err: string } {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: timeoutMs });
+function git(cwd: string, args: string[], o: { timeoutMs?: number; input?: string } = {}): { ok: boolean; out: string; err: string } {
+  const r = spawnSync('git', args, {
+    cwd, encoding: 'utf-8', stdio: [o.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    timeout: o.timeoutMs ?? 10 * 60 * 1000, maxBuffer: 64 * 1024 * 1024,
+    ...(o.input === undefined ? {} : { input: o.input }),
+  });
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim().slice(-300) };
+}
+
+/** Where the seed's temporary negotiation refs live; none is left after the seed. */
+const HAVE_REF_PREFIX = 'refs/buildd/reuse-have/';
+/** At most this many kept commits are offered to origin as haves. */
+const MAX_HAVES = 32;
+
+/** Bytes git keeps for objects (loose + packed), as warm-repo.ts objectBytes counts them. */
+function objectBytesOf(repo: string): number {
+  let kib = 0;
+  for (const line of git(repo, ['count-objects', '-v']).out.split('\n')) {
+    const m = /^(size|size-pack): (\d+)$/.exec(line.trim());
+    if (m) kib += Number(m[2]);
+  }
+  return kib * 1024;
+}
+
+/**
+ * The kept commits worth offering origin as haves: those no other kept
+ * commit names as a parent (the tips the previous clone had, whatever its
+ * refs said), the hinted tip first, each one complete. A commit whose
+ * history or trees lean on objects the reset did not keep (they were loose)
+ * is never offered: origin would then leave out objects the seed does not
+ * have. Checked cumulatively, so the shared history is walked once.
+ */
+function completeHeads(clonePath: string, hint: string | null): string[] {
+  const listed = git(clonePath, ['cat-file', '--batch-all-objects', '--batch-check=%(objecttype) %(objectname)']);
+  const commits = listed.out.split('\n').filter(l => l.startsWith('commit ')).map(l => l.slice('commit '.length));
+  if (!listed.ok || commits.length === 0) return [];
+  // Newest first; a shallow commit's missing parents are not named.
+  const walked = git(clonePath, ['rev-list', '--no-walk', '--parents', '--stdin'], { input: `${commits.join('\n')}\n` });
+  if (!walked.ok) return [];
+  const rows = walked.out.split('\n').map(l => l.split(' ')).filter(r => r[0]);
+  const parents = new Set(rows.flatMap(r => r.slice(1)));
+  const heads = rows.map(r => r[0]!).filter(c => !parents.has(c));
+  const ordered = hint && heads.includes(hint) ? [hint, ...heads.filter(h => h !== hint)] : heads;
+  const ok: string[] = [];
+  for (const head of ordered) {
+    if (ok.length >= MAX_HAVES) break;
+    if (git(clonePath, ['rev-list', '--objects', '--quiet', head, ...(ok.length ? ['--not', ...ok] : [])]).ok) ok.push(head);
+  }
+  return ok;
+}
+
+function setRefs(clonePath: string, lines: string[]): void {
+  if (lines.length) git(clonePath, ['update-ref', '--stdin'], { input: `${lines.join('\n')}\n` });
 }
 
 /**
@@ -335,8 +385,13 @@ function git(cwd: string, args: string[], timeoutMs = 10 * 60 * 1000): { ok: boo
  * when the kept clone was. Not like a warm restore: there is no snapshot tip
  * (WARM_BASE_REF), so a park bundle is built against origin, as after a clone.
  *
- * BUILDD_PHASE=restore_reuse_start/_end around it and BUILDD_REPO_SOURCE=reuse
- * on success, for the run report.
+ * Origin is asked for what it added only: the fetch negotiates with the kept
+ * commits (temporary refs under HAVE_REF_PREFIX, deleted after), and does not
+ * run at all when `git ls-remote` shows origin's tip is already kept.
+ *
+ * BUILDD_PHASE=restore_reuse_start/_end around it, BUILDD_REPO_SOURCE=reuse on
+ * success, and the metrics restore_reuse_bytes (what the fetch brought) and
+ * reuse_fetch_skipped, for the run report.
  */
 export function seedCloneFromKept(clonePath: string, cloneUrl: string, keptDir: string, o: SeedOptions): boolean {
   if (!existsSync(join(keptDir, 'pack'))) return false;
@@ -385,15 +440,30 @@ function seed(clonePath: string, cloneUrl: string, keptDir: string, o: SeedOptio
       packs++;
     }
     if (packs === 0) return failWith('no packs kept');
-    // A hint only: fetch negotiation starts from it, and fsck below checks
-    // whatever origin answers is complete.
-    if (tip && git(clonePath, ['cat-file', '-e', `${tip}^{commit}`]).ok) {
-      git(clonePath, ['update-ref', `refs/remotes/origin/${branch}`, tip]);
-    }
     if (!git(clonePath, ['remote', 'add', '-t', branch, 'origin', cloneUrl]).ok) return failWith('remote add failed');
-    const fetchError = o.fetchOrigin(clonePath);
-    if (fetchError) return failWith(`fetch failed: ${fetchError}`);
     const head = `refs/remotes/origin/${branch}`;
+    // What the fetch negotiates with. The seed has no refs, and without
+    // haves origin sends the whole tree again. The hint is not enough on its
+    // own: the tip it names is often a loose object (a small fetch during the
+    // previous task) the reset did not keep. Only complete commits are
+    // offered, and fsck below checks whatever origin answers anyway.
+    const haves = completeHeads(clonePath, tip);
+    // Origin's tip already here, complete: nothing to fetch.
+    const remote = git(clonePath, ['ls-remote', '--exit-code', 'origin', `refs/heads/${branch}`], { timeoutMs: 60_000 });
+    const remoteTip = remote.ok ? remote.out.split(/\s+/)[0] ?? '' : '';
+    const skipFetch = HEX_OID_RE.test(remoteTip)
+      && (haves.includes(remoteTip) || git(clonePath, ['rev-list', '--objects', '--quiet', remoteTip]).ok);
+    const before = objectBytesOf(clonePath);
+    if (skipFetch) {
+      if (!git(clonePath, ['update-ref', head, remoteTip]).ok) return failWith('update-ref failed');
+    } else {
+      setRefs(clonePath, haves.map((oid, i) => `create ${HAVE_REF_PREFIX}${i} ${oid}`));
+      const fetchError = o.fetchOrigin(clonePath);
+      setRefs(clonePath, haves.map((_, i) => `delete ${HAVE_REF_PREFIX}${i}`));
+      if (fetchError) return failWith(`fetch failed: ${fetchError}`);
+    }
+    emitMetric('reuse_fetch_skipped', skipFetch ? 1 : 0, o.lineOpts);
+    emitMetric('restore_reuse_bytes', Math.max(0, objectBytesOf(clonePath) - before), o.lineOpts);
     if (!git(clonePath, ['rev-parse', '--verify', '-q', head]).ok) return failWith(`origin has no ${branch}`);
     const fsck = git(clonePath, ['fsck', '--connectivity-only', '--no-dangling']);
     if (!fsck.ok) return failWith(`fsck --connectivity-only failed: ${fsck.err}`);

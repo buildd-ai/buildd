@@ -28,6 +28,20 @@
  * the reset the next task grows its clone from the packs the reset kept and
  * keeps the dependency cache on disk: no snapshot or cache restore.
  *
+ * The container is free the moment its run ends: a lease run defers its warm
+ * snapshot upload (the kept container IS the warm state) to when the lease
+ * lets the container go at the end of the window, and skips it when the next
+ * task takes the container over (its reset wipes the record).
+ *
+ * The next task is often dispatched the moment buildd sees the previous one
+ * complete, while that run is still in its tail (the runner's last reports
+ * and exit; BUILDD_PHASE=run_end marks it). Such a lease answers `tail`, and
+ * the router waits for it to go warm, at most LEASE_TAIL_WAIT_MS, before it
+ * takes an idle slot or runs the task in its own agent: a fresh container
+ * costs this workspace far more than the wait. The wait is not made on
+ * buildd's webhook (it must be answered fast; worker-agent.ts accepts the
+ * dispatch first and routes it in the background).
+ *
  * What reuse saved is measured, not estimated: a reused run's own prep time
  * (prepMsOf) against the prep time of the fresh run that started the
  * container (the workspace's fresh-container baseline). Negative when the
@@ -53,6 +67,11 @@ export const DEFAULT_REUSE_SLOTS = 2;
  * path (supervisor.ts start_deferred) as before.
  */
 export const MAX_INSTANCES: Record<RunnerSize, number> = { standard: 10, large: 4 };
+/** How long a dispatch waits for a lease in its tail to go warm. */
+export const LEASE_TAIL_WAIT_MS = 30 * 1000;
+export const LEASE_TAIL_POLL_MS = 2 * 1000;
+/** How long the deferred warm upload may run before the container is destroyed anyway. */
+export const WARM_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
 export interface ReuseEnv {
   CONTAINER_REUSE?: string;
@@ -115,6 +134,8 @@ export interface WarmContainer {
    * when that run did not measure it.
    */
   baselinePrepMs: number | null;
+  /** That run deferred its warm snapshot upload: made at expiry, skipped on a handover. */
+  uploadPending?: boolean;
 }
 
 /**
@@ -125,13 +146,13 @@ export interface WarmContainer {
  * `prepMs` and `savedMs` are filled in when the report is assembled.
  */
 export type ReusedContainer =
-  | { fromTaskId: string; idleMs: number; baselinePrepMs: number | null; resetMs?: number | null; prepMs?: number | null; savedMs?: number | null }
+  | { fromTaskId: string; idleMs: number; baselinePrepMs: number | null; resetMs?: number | null; prepMs?: number | null; savedMs?: number | null; uploadSkipped?: boolean }
   | { fromTaskId: string; idleMs: number; fallback: 'reset_failed'; resetMs?: number | null };
 
 export type LeaseClaimDecision =
   | { claim: 'warm'; warm: WarmContainer }
   | { claim: 'cold' }
-  | { claim: 'busy'; reason: 'live' | 'parked' | 'scheduled' | 'wrong_lease' };
+  | { claim: 'busy'; reason: 'live' | 'tail' | 'uploading' | 'parked' | 'scheduled' | 'wrong_lease' };
 
 /**
  * Whether a lease agent can take `taskId` now, and how. Busy while a run is
@@ -144,7 +165,12 @@ export function decideLeaseClaim(
   a: { key: LeaseKey; workspaceId: string; size: RunnerSize; now: number; windowMs: number; containerRunning: boolean },
 ): LeaseClaimDecision {
   if (a.key.workspaceId !== a.workspaceId || a.key.size !== a.size) return { claim: 'busy', reason: 'wrong_lease' };
+  // Outcome known, only the runner's tail left: warm (or not) in moments.
+  if (state.status === 'running' && typeof state.timings?.runnerPhases?.run_end === 'number') return { claim: 'busy', reason: 'tail' };
   if (state.status === 'starting' || state.status === 'running') return { claim: 'busy', reason: 'live' };
+  // The deferred upload before the container goes; one stuck past its
+  // timeout (the agent restarted under it) no longer holds the lease.
+  if (state.warmUploadSince !== undefined && a.now - state.warmUploadSince < WARM_UPLOAD_TIMEOUT_MS) return { claim: 'busy', reason: 'uploading' };
   if (state.status === 'exited' && state.outcome === 'parked') return { claim: 'busy', reason: 'parked' };
   if (state.scheduleId) return { claim: 'busy', reason: 'scheduled' };
   const w = state.warm;
@@ -160,19 +186,19 @@ export function keepsContainerWarm(outcome: RunState['outcome'] | undefined): bo
 }
 
 /**
- * What a run spent before its repo was ready: dispatch to claim (container
- * start, or the reset of a reused one, then the runner's start and claim),
- * then whichever way the repo got onto the disk (clone; warm restore, its
- * cache restore and fetch; or the seed from kept packs). The steps never
- * overlap. Null when dispatch to claim was not measured: without it two
- * runs are not comparable.
+ * What a run spent before its repo was ready: any wait for a lease in its
+ * tail, then dispatch to claim (container start, or the reset of a reused
+ * one, then the runner's start and claim). The repo steps (clone; warm
+ * restore, its cache restore and fetch; or the seed from kept packs) are
+ * inside the claim: the runner resolves the workspace, and so gets its repo
+ * onto the disk, before it prints the claim line. They are not added again.
+ * Null when dispatch to claim was not measured: without it two runs are not
+ * comparable.
  */
 export function prepMsOf(durationsMs: Partial<Record<string, number | null>> | undefined): number | null {
   const d = durationsMs;
   if (!d || typeof d.containerStart !== 'number' || typeof d.toClaim !== 'number') return null;
-  const parts = [d.containerStart, d.toClaim, d.clone, d.restoreWarm, d.restoreCache, d.fetch, d.restoreReuse]
-    .filter((v): v is number => typeof v === 'number' && v >= 0);
-  return parts.reduce((a, b) => a + b, 0);
+  return (typeof d.leaseWait === 'number' && d.leaseWait > 0 ? d.leaseWait : 0) + d.containerStart + d.toClaim;
 }
 
 /** Sent to a lease agent. `taskId` and `workspaceId` are the router's, from buildd. */
@@ -185,32 +211,69 @@ export interface LeasedDispatchRequest extends DispatchRequest {
 
 export type LeasedDispatchResult =
   | { accepted: true; attempt: number; reused: boolean }
-  | { accepted: false; reason: 'already_live' | 'not_parked' | 'busy' | 'not_warm'; attempt: number; status: RunState['status'] };
+  | { accepted: false; reason: 'already_live' | 'not_parked' | 'busy' | 'tail' | 'not_warm'; attempt: number; status: RunState['status'] };
 
 export interface LeaseHandle {
   dispatchLeased(request: LeasedDispatchRequest): Promise<LeasedDispatchResult>;
 }
 
+export type Routed = { lease: string; result: LeasedDispatchResult & { accepted: true } };
+
+interface RouteDeps { getLease(name: string): Promise<LeaseHandle>; log(message: string): void }
+interface RouteArgs { taskId: string; workspaceId: string; size: RunnerSize; slots: number; request: DispatchRequest }
+
+async function offer(d: RouteDeps, a: RouteArgs, name: string, warmOnly: boolean): Promise<LeasedDispatchResult | null> {
+  try {
+    const lease = await d.getLease(name);
+    return await lease.dispatchLeased({ ...a.request, taskId: a.taskId, workspaceId: a.workspaceId, ...(warmOnly ? { warmOnly } : {}) });
+  } catch (err) {
+    d.log(`[cloud-runner] task ${a.taskId}: lease ${name} unreachable: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
 /**
- * Find a lease for the task: every slot's warm container first, then any idle
- * slot. Null when none takes it; the caller then runs the task in its own
- * agent. Never throws: a lease that cannot be reached is skipped.
+ * Find a lease for the task: every slot's warm container first, then (unless
+ * `warmOnly`) any idle slot. Else `lease` null, with the slots that answered
+ * `tail` (worth waiting for: waitForTailLease); the caller then runs the task
+ * in its own agent. Never throws: a lease that cannot be reached is skipped.
  */
-export async function routeToLease(
-  d: { getLease(name: string): Promise<LeaseHandle>; log(message: string): void },
-  a: { taskId: string; workspaceId: string; size: RunnerSize; slots: number; request: DispatchRequest },
-): Promise<{ lease: string; result: LeasedDispatchResult & { accepted: true } } | null> {
-  for (const warmOnly of [true, false]) {
+export async function routeToLease(d: RouteDeps, a: RouteArgs & { warmOnly?: boolean }): Promise<Routed | { lease: null; tails: string[] }> {
+  const tails: string[] = [];
+  for (const warmOnly of a.warmOnly ? [true] : [true, false]) {
     for (let slot = 0; slot < a.slots; slot++) {
       const name = leaseName(a.workspaceId, a.size, slot);
-      try {
-        const lease = await d.getLease(name);
-        const result = await lease.dispatchLeased({ ...a.request, taskId: a.taskId, workspaceId: a.workspaceId, ...(warmOnly ? { warmOnly } : {}) });
-        if (result.accepted) return { lease: name, result };
-      } catch (err) {
-        d.log(`[cloud-runner] task ${a.taskId}: lease ${name} unreachable: ${err instanceof Error ? err.message : String(err)}`);
-      }
+      const result = await offer(d, a, name, warmOnly);
+      if (result?.accepted) return { lease: name, result };
+      if (warmOnly && result?.reason === 'tail') tails.push(name);
     }
+  }
+  return { lease: null, tails };
+}
+
+/**
+ * Wait, at most `maxWaitMs` from `since`, for one of the leases in their tail to go warm,
+ * and take it. A lease that leaves its tail without going warm (a park, a
+ * crash, another task took it) is dropped at once; null when none is left
+ * or the time is up.
+ */
+export async function waitForTailLease(
+  d: RouteDeps & { sleep(ms: number): Promise<void>; now(): number },
+  a: RouteArgs & { tails: string[]; maxWaitMs?: number; pollMs?: number; since?: number },
+): Promise<Routed | null> {
+  const since = a.since ?? d.now();
+  const deadline = since + (a.maxWaitMs ?? LEASE_TAIL_WAIT_MS);
+  let tails = [...a.tails];
+  while (tails.length && d.now() < deadline) {
+    await d.sleep(Math.min(a.pollMs ?? LEASE_TAIL_POLL_MS, Math.max(0, deadline - d.now())));
+    const still: string[] = [];
+    for (const name of tails) {
+      // The run report's durationsMs.leaseWait: the wait until this offer.
+      const result = await offer(d, { ...a, request: { ...a.request, leaseWaitMs: d.now() - since } }, name, true);
+      if (result?.accepted) return { lease: name, result };
+      if (result?.reason === 'tail') still.push(name);
+    }
+    tails = still;
   }
   return null;
 }

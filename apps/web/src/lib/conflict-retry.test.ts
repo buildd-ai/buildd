@@ -765,6 +765,15 @@ describe('dispatchConflictRetry', () => {
       expect(mockFireGateEvent.mock.calls.some((c) => c[0].reason === 'conflict_false_positive')).toBe(true);
     });
 
+    it('no GitHub installation: the recheck cannot run, so the agent is dispatched as today', async () => {
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: null });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: true, taskId: 'new-task-id' });
+      expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
+    });
+
     it('a real textual conflict dispatches the conflict agent as today', async () => {
       mockUpdateBehindPrBranch.mockResolvedValue({ kind: 'conflict', reason: '422 merge conflict' });
 
