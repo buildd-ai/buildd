@@ -28,7 +28,7 @@ import type { TaskObjectView } from '@/components/chat/objects/object-views';
 const MIN = 60_000;
 // Relative to now, so every "12m ago" reads like a live page. Floored to the
 // minute, so the server render and the client's hydration agree.
-const NOW = new Date(Math.floor(Date.now() / MIN) * MIN);
+export const NOW = new Date(Math.floor(Date.now() / MIN) * MIN);
 
 const delivery = (o: Partial<DeliverySnapshot>): DeliverySnapshot => ({
   id: 'fx-d', workspaceId: 'fx-ws', ownerTaskId: 'fx-t', repoFullName: 'acme/widgets', prNumber: 412, baseRef: 'dev',
@@ -40,7 +40,7 @@ const delivery = (o: Partial<DeliverySnapshot>): DeliverySnapshot => ({
 
 interface Case { key: string; title: string; prNumber: number; input: DeliveryViewInput }
 
-const CASES: Case[] = [
+export const CASES: Case[] = [
   {
     key: 'awaiting-push', title: 'fix(auth): check the caller task, not the owner', prNumber: 412,
     input: { view: { delivery: delivery({ id: 'd1', ownerTaskId: 't1', prNumber: 412, state: 'AWAITING_PUSH' }), rounds: [], attempts: [] } },
@@ -69,9 +69,9 @@ const CASES: Case[] = [
   },
 ];
 
-const views = new Map<string, DeliveryView>(CASES.map((c) => [c.input.view.delivery!.ownerTaskId, deriveDeliveryView(c.input)!]));
+export const views = new Map<string, DeliveryView>(CASES.map((c) => [c.input.view.delivery!.ownerTaskId, deriveDeliveryView(c.input)!]));
 
-const raw = (c: Case): EscalationRawItem => ({
+export const raw = (c: Case): EscalationRawItem => ({
   workerId: `w-${c.key}`, taskId: c.input.view.delivery!.ownerTaskId, taskTitle: c.title, workspaceId: 'fx-ws', workspaceName: 'acme',
   prNumber: c.prNumber, prUrl: `https://github.com/acme/widgets/pull/${c.prNumber}`, policyTier: 'agent-review',
   escalationReason: null, waitingMinutes: 12, prOpenedAt: new Date(NOW.getTime() - 90 * MIN), prLifecycleVerifiedAt: NOW,
@@ -93,7 +93,7 @@ const LIST_CASES: Case[] = [
   },
 ];
 const fxId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
-const listDisplays = LIST_CASES.map((c, i) => ({ c, id: fxId(i + 1), d: toDeliveryDisplay(deriveDeliveryView(c.input)!) }));
+export const listDisplays = LIST_CASES.map((c, i) => ({ c, id: fxId(i + 1), d: toDeliveryDisplay(deriveDeliveryView(c.input)!) }));
 const prUrl = (n: number) => `https://github.com/acme/widgets/pull/${n}`;
 
 /** The worker columns say "CI green" on every row on purpose: no surface may echo them. */
@@ -110,7 +110,7 @@ const boardTask = ({ c, id, d }: (typeof listDisplays)[number], i: number, now: 
   };
 };
 
-const chatView = ({ c, id, d }: (typeof listDisplays)[number]): TaskObjectView => ({
+export const chatView = ({ c, id, d }: (typeof listDisplays)[number]): TaskObjectView => ({
   kind: 'task', id, workspaceId: 'fx-ws', title: c.title, scope: c.title.match(/\(([^)]+)\)/)?.[1] ?? null, label: c.title.replace(/^[a-z]+\([^)]*\):\s*/, ''),
   status: 'completed', roleName: 'Builder', roleColor: null, missionId: null, missionTitle: 'Workflow kernel', now: null, renderedAt: NOW.getTime(), delivery: d,
   worker: {
