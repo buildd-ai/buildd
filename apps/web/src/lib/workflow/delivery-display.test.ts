@@ -7,6 +7,7 @@
  * reads the worker's fact-cache columns for a kernel-owned delivery.
  */
 import { describe, expect, test } from 'bun:test';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { deriveDeliveryView, deliveryPrState } from './projections';
 import { deliveryReading, deliverySettled, deliveryShipped, ownerDeliveryDisplays, replacedFailedTaskIds, toDeliveryDisplay, type DeliveryDisplay, type DeliveryTone } from './delivery-display';
 import { DELIVERY_STATES, type DeliverySnapshot, type DeliveryState } from './types';
@@ -22,6 +23,7 @@ import { resolvePrDisplayState } from '../pr-presentation';
 import { dockToneForDelivery, taskDockModel } from '@/components/chat/dock-model';
 import { taskState, taskStateForDelivery } from '@/components/chat/objects/TaskObject';
 import type { TaskObjectView } from '@/components/chat/objects/object-views';
+import { HeaderStatusPill } from '@/app/app/(protected)/tasks/[id]/TaskSidePanel';
 
 const D = (o: Partial<DeliverySnapshot> = {}): DeliverySnapshot => ({
   id: 'd1', workspaceId: 'w1', ownerTaskId: 't1', repoFullName: 'acme/widgets', prNumber: 7, baseRef: 'dev',
@@ -237,6 +239,25 @@ describe('S17: each canonical state reads the same label, tone and counts on eve
       if (d.state === 'APPROVED') {
         expect(chipForDelivery(view, 'REVIEW')).toBe(r.needsYou ? 'MERGE' : 'AUTO_MERGE');
         expect(isActionableChip(chipForDelivery(view, 'MERGE'))).toBe(r.needsYou);
+      }
+
+      // HeaderStatusPill: uses deliveryReading label and tone mapping.
+      // Success green is only for landed states (MERGED, SUPERSEDED), not for APPROVED.
+      const headerHtml = renderToStaticMarkup(
+        HeaderStatusPill({
+          status: 'running',
+          merged: false,
+          delivery: { headline: d.headline, owner: view.owner as never, needsYou: r.needsYou, stage: d.stage, detail: d.detail, state: d.state },
+        })
+      );
+      expect(headerHtml).toContain(r.label, `${row.name}: header should contain label "${r.label}"`);
+
+      // Tone: landed (MERGED, SUPERSEDED) is success green; everything else is not.
+      const isLanded = r.tone === 'landed';
+      if (isLanded) {
+        expect(headerHtml).toContain('text-status-success', `${row.name}: landed state should be success green`);
+      } else {
+        expect(headerHtml).not.toContain('text-status-success', `${row.name}: non-landed state should NOT be success green`);
       }
     });
   }
