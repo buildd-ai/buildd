@@ -6,6 +6,7 @@ import { canAccessTokenRoute } from './token-route-policy';
 import { TTLCache } from './cache';
 import * as tokensModule from './oauth/tokens';
 import { levelForTeamRole } from './oauth/session-level';
+import { findTeamSessionAccount } from './oauth/session-account';
 import { getCachedApiKey, setCachedApiKey, invalidateCachedApiKey } from './redis';
 import { isTaskToken } from './task-token';
 import { isPresenceToken } from './presence-token';
@@ -80,9 +81,10 @@ const oauthAccountCache = new TTLCache<CachedAccount>({
  *
  * Account resolution: the `accounts` table has no column linking an account
  * to an individual user (no userId/ownerId/createdBy), so a session resolves
- * to its team's `type='user'` account — the row /api/oauth/token provisions.
- * Per-user account attribution would need a schema change; the level, which
- * is what gates actions, comes from the caller's own membership row.
+ * to one of its team's `type='user'` accounts, picked deterministically
+ * (lib/oauth/session-account.ts). The level, which gates actions, comes from
+ * the caller's own membership row; the person, which gates acting as a
+ * claimed worker, is sessionUserId (lib/worker-owner.ts).
  */
 async function authenticateOauthJwt(jwt: string) {
   const claims = await tokensModule.verifyAccessTokenAnyAudience(jwt);
@@ -107,9 +109,9 @@ async function authenticateOauthJwt(jwt: string) {
   });
   if (!membership) return null;
 
-  const account = await db.query.accounts.findFirst({
-    where: and(eq(accounts.teamId, workspace.teamId), eq(accounts.type, 'user')),
-  });
+  // Deterministic: the same token must act as the same account on every
+  // request, or a session is refused on the workers it claimed.
+  const account = await findTeamSessionAccount(workspace.teamId);
   if (!account) return null;
 
   // sessionUserId: the person behind this session. The account is shared by

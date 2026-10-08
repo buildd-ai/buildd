@@ -2732,11 +2732,16 @@ export async function POST(req: NextRequest) {
     // neon-http, db.batch runs as one non-interactive transaction, so the lock
     // is held exactly for this insert's duration and is safe without
     // db.transaction()'s interactive-session requirement.
+    // The authenticated OAuth session user, never the client-relayed session
+    // marker: an OAuth session acts as its team's shared account, so this is
+    // what PATCH /api/workers/[id] matches to let only the claimer act as the
+    // worker (lib/worker-owner.ts). NULL for a bld_ key.
+    const claimedByUserId = (account as { sessionUserId?: string | null }).sessionUserId ?? null;
     const [, insertResult] = await db.batch([
       db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('workers_claim_concurrency'), hashtext(${account.id}::text))`),
       db.execute(sql`
-        INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status)
-        SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle'
+        INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status, claimed_by_user_id)
+        SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle', ${claimedByUserId}::uuid
         WHERE EXISTS (
           SELECT 1 FROM ${tasks} t_claim
           WHERE t_claim.id = ${task.id}
