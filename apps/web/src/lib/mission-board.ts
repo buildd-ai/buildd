@@ -15,7 +15,8 @@
  * milestone the agent reported. The runner slot an agent held is derived from
  * start/end overlap (`assignSlots`), since no column records it.
  */
-import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import { TERMINAL_TASK_STATUSES, type VisualReviewModel } from '@buildd/shared';
+import { screensToReview } from './visual-review-model';
 import { assignSlots, occupiedSlots } from '@/components/fleet/slot-lanes-layout';
 import { groupTasksByPhase } from './flight-strip-nav';
 import {
@@ -1021,15 +1022,18 @@ export function concurrencyBins(bars: readonly Pick<MissionLaneBar, 'start' | 'e
 }
 
 /**
- * The band's Needs-you number: the waiting tasks, plus the screens the visual
- * audit wants a human to judge (docs/design/visual-qa-human-review.md, "Where
+ * The band's Needs-you number: the waiting tasks, plus the screens waiting in
+ * the review deck (`screensToReview`, the deck's own count) (docs/design/visual-qa-human-review.md, "Where
  * it shows"), plus one for an open round-cap question. The auditor's own
  * question parks its worker, so it is already a waiting task and not added.
  */
 export function boardNeedsYouCount(
   model: Pick<MissionBoardModel, 'needsYou'>,
-  visual: { summary: { awaitingHuman: number }; needsYou?: { reason: string } | null } | null | undefined,
+  visual: (Pick<VisualReviewModel, 'cells'> & { needsYou?: { reason: string } | null }) | null | undefined,
 ): number {
   if (!visual) return model.needsYou.length;
-  return model.needsYou.length + visual.summary.awaitingHuman + (visual.needsYou?.reason === 'round_cap' ? 1 : 0);
+  // A round-cap decision is about the issue screens the deck already counts;
+  // it adds one only when no screen is in the deck to carry it.
+  const screens = screensToReview(visual);
+  return model.needsYou.length + Math.max(screens, visual.needsYou?.reason === 'round_cap' ? 1 : 0);
 }
