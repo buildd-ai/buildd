@@ -17,6 +17,11 @@ const mockDiscoverOAuthMetadata = mock(() => Promise.resolve({ authMode: 'none' 
 const mockRegisterClient = mock(() => Promise.resolve({ client_id: 'c1' }));
 const mockGetCallbackUrl = mock(() => 'https://app.example.com/api/connectors/callback');
 const mockEncrypt = mock((v: string) => `enc:${v}`);
+class FakeRegistrationRejected extends Error {}
+const mockRegistrationRefusalBody = mock((err: unknown) =>
+  err instanceof FakeRegistrationRejected
+    ? { error: 'needs_approved_client' as const, message: 'Vercel only lets MCP clients it has reviewed sign in.', actionUrl: 'https://vercel.com/docs' }
+    : null);
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
@@ -26,6 +31,7 @@ mock.module('@/lib/mcp-oauth', () => ({
   registerClient: mockRegisterClient,
   getCallbackUrl: mockGetCallbackUrl,
 }));
+mock.module('@/lib/connector-provision', () => ({ registrationRefusalBody: mockRegistrationRefusalBody }));
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({ set: mockSecretsProviderSet, delete: mockSecretsProviderDelete }),
   encrypt: mockEncrypt,
@@ -189,6 +195,24 @@ describe('PATCH /api/connectors/[id]', () => {
     expect(res.status).toBe(200);
     expect(captured.assertionAudience).toBe('https://cue.buildd.dev/api/mcp');
     expect(captured.assertionTokenEndpoint).toBe('https://cue.buildd.dev/api/oauth/token');
+  });
+
+  // Reconnect re-runs DCR; a provider that only admits approved clients (Vercel)
+  // used to surface as a bare 500 "Failed to update connector".
+  it('returns 422 needs_approved_client when rediscovery DCR is refused', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindFirst.mockResolvedValue({ ...CONNECTOR, url: 'https://mcp.vercel.com', clientId: null });
+    mockDiscoverOAuthMetadata.mockResolvedValue({
+      authMode: 'oauth',
+      authorizationServer: { registration_endpoint: 'https://api.vercel.com/login/oauth/register' },
+    } as any);
+    mockRegisterClient.mockRejectedValueOnce(new FakeRegistrationRejected('DCR failed (400)'));
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { rediscover: true }), { params: PARAMS });
+    expect(res.status).toBe(422);
+    const data = await res.json();
+    expect(data.error).toBe('needs_approved_client');
+    expect(data.actionUrl).toMatch(/^https:\/\/vercel\.com\//);
+    expect(mockConnectorsUpdate).not.toHaveBeenCalled();
   });
 });
 
