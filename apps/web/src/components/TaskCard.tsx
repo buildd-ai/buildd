@@ -413,7 +413,7 @@ export function TaskCard({
   // Tiers 1–4, sparkline optional.
   if (density === 'row') {
     return (
-      <div className="relative group flex items-start gap-3 px-3 py-2.5 min-w-0 border-b border-border-default last:border-b-0 bg-surface-1 hover:bg-surface-3 transition-colors" data-testid="task-card" data-status={displayStatus}>
+      <div className="relative group flex flex-wrap md:flex-nowrap items-start gap-x-3 gap-y-1.5 px-3 py-2.5 min-w-0 border-b border-border-default last:border-b-0 bg-surface-1 hover:bg-surface-3 transition-colors" data-testid="task-card" data-status={displayStatus}>
         {/* Link overlay */}
         <Link href={href} className="absolute inset-0 z-0" aria-label={title} />
 
@@ -464,8 +464,10 @@ export function TaskCard({
 
         </div>
 
-        {/* Right — health + provenance */}
-        <div className="shrink-0 flex flex-col items-end gap-1 pointer-events-none">
+        {/* Right — health + provenance. One layout, two shapes: below md it is
+            a full-width line under the title (indented past the chain strip),
+            so the title keeps the row's width; from md it is the side column. */}
+        <div data-testid="task-card-meta" className="w-full md:w-auto shrink-0 flex flex-row flex-wrap items-center gap-x-2.5 gap-y-1 pl-7 md:pl-0 md:flex-col md:flex-nowrap md:items-end md:gap-1 pointer-events-none">
           <div className="flex items-center gap-2">
             <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} label={stageLabel} />
             {displayStatus === 'running' && <span className="pointer-events-auto"><SteerButton taskId={id} /></span>}
@@ -478,7 +480,7 @@ export function TaskCard({
           </span>
 
           {/* T3 — sparkline + attempt */}
-          <div className="flex items-end gap-2">
+          <div className="flex items-end gap-2 empty:hidden">
             {intensity && intensity.sparkline.length > 0 && (
               <Sparkline data={intensity.sparkline} tier={intensity.tier} />
             )}

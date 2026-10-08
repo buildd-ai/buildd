@@ -1099,7 +1099,7 @@ export async function dispatchConflictRetry(
           // subject, a structural deadlock rather than real serialization.
           return isDownstreamOf(t.id, taskId, dependsOnById);
         },
-        isSerialized: (paths) => overlapTouchesSerializedSurface(paths, gitConfig),
+        isSerialized: (paths, kind) => overlapTouchesSerializedSurface(paths, gitConfig, kind),
       },
     );
     resolvedDependsOn.push(...split.hard);
