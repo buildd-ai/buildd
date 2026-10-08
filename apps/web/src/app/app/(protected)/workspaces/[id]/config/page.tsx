@@ -10,6 +10,8 @@ import { appBaseUrl } from '@/lib/app-url';
 import { GitConfigForm } from './GitConfigForm';
 import { WorkspaceHealthCard } from './WorkspaceHealthCard';
 import { ReadinessCard } from './ReadinessCard';
+import { RepoAccessCard } from './RepoAccessCard';
+import { getRepoAccessView } from '@/lib/github-repo-access-store';
 import { checkWorkspaceHealth } from '@/lib/workspace-health';
 import ConnectClaudeSection from './ConnectClaudeSection';
 import ReleaseSection from './ReleaseSection';
@@ -64,6 +66,12 @@ export default async function WorkspaceConfigPage({
     });
 
     const userTeams = await getUserTeamsWithDetails(user.id);
+    // Read-only diagnosis; a failure here must not take the settings page down.
+    const repoAccessView = await getRepoAccessView(id, user.id).catch((err) => {
+        console.error('[workspace-config] repo access view failed:', err);
+        return null;
+    });
+    const canManageSettings = roleHas(access.role, 'manage_workspace_settings', overrides);
 
     if (!workspace) {
         notFound();
@@ -111,6 +119,15 @@ export default async function WorkspaceConfigPage({
                 {/* Scaffold and spec routes are admin writes too. */}
                 {roleHas(access.role, 'manage_workspace_settings', overrides) && (
                     <ReadinessCard workspaceId={workspace.id} />
+                )}
+
+                {/* Members see what is missing and who to ask; only admins get Check connection. */}
+                {repoAccessView && (!repoAccessView.ok || canManageSettings) && (
+                    <RepoAccessCard
+                        workspaceId={workspace.id}
+                        initialView={repoAccessView}
+                        canCheck={canManageSettings}
+                    />
                 )}
 
                 <GitConfigForm
