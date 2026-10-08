@@ -33,6 +33,8 @@ interface Props {
   autoVerify: boolean | null;
   readonly?: boolean;
   failingCiPrNumbers?: number[];
+  /** Distinct PRs the mission has opened (passed through to the criteria sheet). */
+  missionPrCount?: number;
   overall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null;
   /**
    * No pill, only the sheet: a terminal mission shows no "Needs verification"
@@ -58,6 +60,7 @@ function MissionVerifiedPillInner({
   autoVerify,
   readonly,
   failingCiPrNumbers,
+  missionPrCount,
   overall,
   sheetOnly = false,
 }: Props) {
@@ -105,6 +108,7 @@ function MissionVerifiedPillInner({
           autoVerify={autoVerify}
           readonly={readonly}
           failingCiPrNumbers={failingCiPrNumbers}
+          missionPrCount={missionPrCount}
         />
       </SideSheet>
     );
@@ -129,6 +133,7 @@ function MissionVerifiedPillInner({
             autoVerify={autoVerify}
             readonly={readonly}
             failingCiPrNumbers={failingCiPrNumbers}
+          missionPrCount={missionPrCount}
           />
         </SideSheet>
       </>
@@ -185,6 +190,7 @@ function MissionVerifiedPillInner({
           autoVerify={autoVerify}
           readonly={readonly}
           failingCiPrNumbers={failingCiPrNumbers}
+          missionPrCount={missionPrCount}
         />
       </SideSheet>
     </>

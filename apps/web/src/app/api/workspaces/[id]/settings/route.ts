@@ -5,6 +5,7 @@ import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { resolveEarlyReleaseMode } from '@/lib/early-release-mode';
 
 async function resolveAuth(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -33,7 +34,7 @@ async function verifyAccess(auth: { user: any; apiAccount: any }, workspaceId: s
   return false;
 }
 
-// GET /api/workspaces/[id]/settings — retrieve workTrackerConfig
+// GET /api/workspaces/[id]/settings — retrieve workTrackerConfig and the resolved early-release mode
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -52,14 +53,18 @@ export async function GET(
   try {
     const workspace = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, id),
-      columns: { workTrackerConfig: true },
+      columns: { workTrackerConfig: true, gitConfig: true },
     });
 
     if (!workspace) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 
-    return NextResponse.json({ workTrackerConfig: workspace.workTrackerConfig ?? null });
+    return NextResponse.json({
+      workTrackerConfig: workspace.workTrackerConfig ?? null,
+      // Resolved, never raw: absent or unrecognized reads as 'off'.
+      earlyRelease: { mode: resolveEarlyReleaseMode(workspace.gitConfig) },
+    });
   } catch (error) {
     console.error('GET workspace settings error:', error);
     return NextResponse.json({ error: 'Failed to fetch settings' }, { status: 500 });

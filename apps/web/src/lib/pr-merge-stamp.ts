@@ -16,37 +16,28 @@
  *    as merged when any sibling saw the merge. This matches
  *    `summarizePrShipStates` / `countDistinctPrs` in `@buildd/core/pr-shipped`.
  */
-import { and, isNull, sql, type SQL } from 'drizzle-orm';
-import { db } from '@buildd/core/db';
+import { sql, type SQL } from 'drizzle-orm';
 import { workers } from '@buildd/core/db/schema';
-import { workerOwnsPrUrl } from '@/lib/repo-scope';
-
-type WorkerUpdate = Partial<typeof workers.$inferInsert>;
+import { recordPrFact, type PrFactBookkeeping } from '@buildd/core/pr-facts';
 
 /**
- * Stamp the merge on every row carrying this PR that has not recorded it yet.
- * Idempotent: rows that already carry `mergedAt` keep their original instant.
- * Returns the rows it stamped, so callers can notify their tasks' dependents.
+ * Stamp the merge on every row carrying this PR that has not recorded it yet,
+ * through the PR fact funnel (`recordPrFact`, docs/specs/workflow-state-kernel.md
+ * §12): rows that already carry `mergedAt` keep their original instant, and
+ * `mergedAt` should be GitHub's `merged_at`. Returns the rows it stamped, so
+ * callers can notify their tasks' dependents.
  */
 export async function stampPrMergedOnAllRows(input: {
   prUrl: string | null | undefined;
   prNumber: number | null | undefined;
-  mergedAt: Date;
-  /** Additional columns to write alongside the merge (verification stamps). */
-  extra?: WorkerUpdate;
+  mergedAt: Date | string;
+  /** Verification stamps written alongside the merge. */
+  bookkeeping?: PrFactBookkeeping;
 }): Promise<Array<{ id: string; taskId: string | null }>> {
   // Never issue an UPDATE we cannot scope to a real PR identity.
   if (!input.prUrl || input.prNumber == null) return [];
-  return db
-    .update(workers)
-    .set({
-      ...input.extra,
-      mergedAt: input.mergedAt,
-      prLifecycleStatus: 'merged',
-      updatedAt: (input.extra?.updatedAt as Date | undefined) ?? new Date(),
-    })
-    .where(and(workerOwnsPrUrl(input.prUrl, input.prNumber), isNull(workers.mergedAt)))
-    .returning({ id: workers.id, taskId: workers.taskId });
+  const rows = await recordPrFact({ prUrl: input.prUrl, prNumber: input.prNumber }, { kind: 'merged', mergedAt: input.mergedAt }, { bookkeeping: input.bookkeeping });
+  return rows.map((r) => ({ id: r.id, taskId: r.taskId }));
 }
 
 /**

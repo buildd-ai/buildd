@@ -128,7 +128,7 @@ mock.module('@/lib/dispatch-authority', () => ({
   enqueueTaskDispatch: async () => {},
   drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
   deliverTaskDispatch: async () => 'pusher',
-  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false }),
   webhookWants: () => false,
   primaryCause: (_causes: string[], fallback: string) => fallback,
   DISPATCH_DUE_QUEUE: 'dispatch',
@@ -145,13 +145,16 @@ mock.module('@/lib/workspace-resolver', () => ({
   resolveWorkspace: mock(() => null),
   autoResolveAccountWorkspace: mock(() => Promise.resolve({ workspaceId: 'ws-1' })),
 }));
+// Creation side effects reach modules through emit(); this file reads lists,
+// so the composition root (and its module graph) stays out.
+mock.module('@/lib/core-emit', () => ({ emit: mock(() => Promise.resolve()) }));
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mock(() => Promise.resolve()),
   channels: { workspace: (id: string) => `workspace-${id}`, task: (id: string) => `task-${id}`, worker: (id: string) => `worker-${id}` },
   events: { TASK_CREATED: 'task:created', TASK_ASSIGNED: 'task:assigned', TASK_CLAIMED: 'task:claimed', TASK_COMPLETED: 'task:completed', TASK_FAILED: 'task:failed', WORKER_STARTED: 'worker:started', WORKER_PROGRESS: 'worker:progress', WORKER_COMPLETED: 'worker:completed', WORKER_FAILED: 'worker:failed' },
 }));
 mock.module('@/lib/pr-state-refresh', () => ({ refreshStaleWorkersForWorkspaces: mock(() => Promise.resolve()) }));
-mock.module('@/lib/change-intent', () => ({ resolveAnchorInjections: mock(() => []) }));
+mock.module('@/lib/change-intent', () => ({ resolveAnchorInjections: mock(() => []), overlapTouchesSerializedSurface: mock(() => false) }));
 mock.module('@/lib/deferred-start', () => _deferredStartMod);
 // Use real intakeSubject (not a stub) so the live binding in route.ts stays correct
 // when route.test.ts runs next. The paginated tests only call GET, so intakeSubject

@@ -4,6 +4,7 @@ import { missionNotes, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, asc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsTask, taskScopeAllowsWorkerId } from '@/lib/task-token-auth';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import { channels, events, triggerEvent } from '@/lib/pusher';
 import type { MissionNoteAuthorType, MissionNoteStatus, MissionNoteType } from '@buildd/shared';
@@ -67,10 +68,14 @@ export async function POST(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token may post notes only on its own task.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (apiAccount && !taskScopeAllowsTask(apiAccount, id)) {
+    return NextResponse.json({ error: 'Task not found' }, { status: 404 });
   }
 
   const task = await resolveTaskAccess(id, user, apiAccount);
@@ -90,13 +95,22 @@ export async function POST(
   if (!title || typeof title !== 'string') {
     return NextResponse.json({ error: 'title is required' }, { status: 400 });
   }
+  // The note's worker is whose next check-in receives the reply: its own only.
+  if (apiAccount && !(await taskScopeAllowsWorkerId(apiAccount, workerId))) {
+    return NextResponse.json({ error: 'A task token may attribute a note only to its own worker' }, { status: 403 });
+  }
 
-  const effectiveAuthorType: MissionNoteAuthorType =
-    authorType && VALID_AUTHOR_TYPES.includes(authorType)
+  // A task token speaks only as an agent: its authorType and status are
+  // forced, silently, whatever the body says. A user-authored note or an
+  // answered question reads as a person's word to everything downstream.
+  const taskToken = !!apiAccount?.taskScope;
+  const effectiveAuthorType: MissionNoteAuthorType = taskToken
+    ? 'agent'
+    : authorType && VALID_AUTHOR_TYPES.includes(authorType)
       ? authorType
       : (apiAccount ? 'agent' : 'user');
   const effectiveStatus: MissionNoteStatus =
-    status && VALID_STATUSES.includes(status)
+    !taskToken && status && VALID_STATUSES.includes(status)
       ? status
       : (type === 'question' ? 'open' : 'answered');
 

@@ -15,6 +15,16 @@ import { reapSession, teardownSession } from './session-teardown';
 import { WORKER_HARD_TIMEOUT_MS } from '@buildd/shared';
 import { sweepWorktreeChanges, refreshBaseRef, type PathCollision } from './path-claim-enforcement';
 import { firstCollision } from './path-collision-defer';
+import {
+  createWorkingSetState,
+  normalizeWorkingSetState,
+  observeWorkingSet,
+  nextWorkingSetDelta,
+  applyWorkingSetAck,
+  readWorkingSetAck,
+} from './working-set';
+import { blockedToCollision } from './ship-checkpoint';
+import { enqueueSiblingProbes } from './sibling-probe';
 
 /**
  * Grace period after a worker's own completion/failure before checkStale()
@@ -80,12 +90,16 @@ const BASE_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
  * With no resolvable base the committed half is left out rather than guessed.
  * Never throws — passive infrastructure.
  */
-function computeTouchedPaths(worktreePath: string, baseRef: string | undefined): { paths: string[]; baseResolved: boolean } {
+function computeTouchedPaths(worktreePath: string, baseRef: string | undefined): { paths: string[]; baseResolved: boolean; complete: boolean } {
   try {
     const sweep = sweepWorktreeChanges(worktreePath, baseRef);
-    return { paths: sweep.paths, baseResolved: sweep.baseResolved };
+    // `complete`: git saw the whole set. A configured base that did not
+    // resolve, or a git error, means a path missing from this sweep is not
+    // evidence it was reverted — the tracker then only adds, never removes.
+    const complete = !sweep.error && (!baseRef || sweep.baseResolved);
+    return { paths: sweep.paths, baseResolved: sweep.baseResolved, complete };
   } catch {
-    return { paths: [], baseResolved: false };
+    return { paths: [], baseResolved: false, complete: false };
   }
 }
 
@@ -104,7 +118,15 @@ function computeTouchedPaths(worktreePath: string, baseRef: string | undefined):
  */
 function computeDirtyWorktree(worktreePath: string): boolean {
   try {
-    const output = execSync('git status --porcelain', { cwd: worktreePath, timeout: 5000 }).toString();
+    // Runs every sync tick against the worker's own live worktree, so it can
+    // race an agent `git add`/`git commit` there for the same index.lock —
+    // GIT_OPTIONAL_LOCKS=0 skips the opportunistic index write-back `status`
+    // would otherwise do, without changing the porcelain output read below.
+    const output = execSync('git status --porcelain', {
+      cwd: worktreePath,
+      timeout: 5000,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    }).toString();
     return output.split('\n').some(line => line.length > 0 && !line.startsWith('??'));
   } catch {
     return false;
@@ -397,12 +419,30 @@ export class WorkerSync {
       if (drainedActionEvents) worker.pendingActionEvents = [];
       if (drainedPromptCompositionEvents) worker.pendingPromptCompositionEvents = [];
 
-      // Passive observed-touches: compute files touched on the branch for §6d.
-      // ~5ms shell call; fail-open (returns [] on error). Only computed when a worktree exists.
+      // Authoritative working set: the task-owned file set from git, tracked
+      // locally with a generation; only the DELTA since the server's last ACK
+      // goes out, one bounded chunk per tick (working-set.ts). The server
+      // leases it. ~5ms shell call; only computed when a worktree exists.
       const touched = worker.worktreePath && existsSync(worker.worktreePath)
         ? computeTouchedPaths(worker.worktreePath, worker.prBaseRef)
         : undefined;
-      const touchedPaths = touched?.paths;
+      const syncNow = Date.now();
+      let workingSetDelta: ReturnType<typeof nextWorkingSetDelta> = null;
+      if (touched) {
+        const state = worker.workingSet = normalizeWorkingSetState(worker.workingSet ?? createWorkingSetState());
+        observeWorkingSet(state, { paths: touched.paths, trustRemovals: touched.complete });
+        workingSetDelta = nextWorkingSetDelta(state, { now: syncNow });
+      }
+      // Diagnostic sample for the dashboard (bounded server-side), and what a
+      // server predating `workingSet` leases from. Never the cumulative list.
+      const touchedPaths = workingSetDelta?.add;
+      // Ship checkpoints whose coverage could not be proven while the server
+      // was unreachable: drained here, restored below if this PATCH fails too.
+      const drainedShipReports = worker.pendingShipReports?.length ? worker.pendingShipReports : null;
+      if (drainedShipReports) worker.pendingShipReports = [];
+      // Live sibling conflict probe results (sibling-probe.ts), same drain/restore.
+      const drainedProbeResults = worker.pendingSiblingProbeResults?.length ? worker.pendingSiblingProbeResults : null;
+      if (drainedProbeResults) worker.pendingSiblingProbeResults = [];
       // Refresh an unresolvable base ref outside the hot hook, throttled and
       // async (never blocks this loop); the next tick measures against it.
       if (touched && !touched.baseResolved && worker.prBaseRef && worker.worktreePath
@@ -416,9 +456,13 @@ export class WorkerSync {
         : undefined;
 
       // Degraded path-claim calls since the last successful sync: the server's
-      // declaration denominator (conflict-aware-orchestration.md §3).
+      // declaration denominator (conflict-aware-orchestration.md §3), split by
+      // cause so a timeout is never reported as a backend outage.
       const degradedTotal = worker.pathClaimDegraded ?? 0;
       const degradedDelta = degradedTotal - (worker.pathClaimDegradedReported ?? 0);
+      const byCause = worker.pathClaimDegradedByCause ?? { timeout: 0, error: 0 };
+      const byCauseReported = worker.pathClaimDegradedByCauseReported ?? { timeout: 0, error: 0 };
+      const byCauseDelta = { timeout: byCause.timeout - byCauseReported.timeout, error: byCause.error - byCauseReported.error };
 
       const update: Parameters<BuilddClient['updateWorker']>[1] = {
         status: worker.status === 'waiting' ? 'waiting_input' : 'running',
@@ -436,14 +480,21 @@ export class WorkerSync {
         ...(drainedErrorTraces ? { appendErrorTraces: drainedErrorTraces } : {}),
         ...(drainedActionEvents ? { appendActionEvents: drainedActionEvents } : {}),
         ...(drainedPromptCompositionEvents ? { appendPromptCompositionEvents: drainedPromptCompositionEvents } : {}),
-        // Paths written while path-claim endpoint was unreachable; server registers retroactively.
-        // Included on every sync while the queue is non-empty — the hook clears it on the next
-        // successful claim call, so this is a safety net, not the primary flush path.
-        ...(worker.pendingPaths?.length ? { pendingPaths: [...worker.pendingPaths] } : {}),
-        // Observed touches from git diff — server accumulates into workers.observedTouches.
+        // The working-set delta (leases) and the same paths as the observed
+        // sample. The hook's own `pendingPaths` queue is runner-local now: a
+        // path written while the claim endpoint was unreachable shows up in the
+        // git sweep and is leased through this delta instead.
+        ...(workingSetDelta ? { workingSet: workingSetDelta } : {}),
         ...(touchedPaths && touchedPaths.length > 0 ? { touchedPaths } : {}),
+        ...(drainedShipReports ? { shipCheckpoints: drainedShipReports } : {}),
+        ...(drainedProbeResults ? { siblingProbeResults: drainedProbeResults } : {}),
+        // This runner can run a merge-tree probe against a live sibling's branch.
+        siblingProbe: true,
         ...(dirtyWorktree !== undefined ? { dirtyWorktree } : {}),
         ...(degradedDelta > 0 ? { pathClaimDegraded: degradedDelta } : {}),
+        ...(byCauseDelta.timeout > 0 || byCauseDelta.error > 0
+          ? { pathClaimDegradedByCause: { ...(byCauseDelta.timeout > 0 ? { timeout: byCauseDelta.timeout } : {}), ...(byCauseDelta.error > 0 ? { error: byCauseDelta.error } : {}) } }
+          : {}),
         // This loop is the one real consumer of the human-instruction queue:
         // it injects `response.instructions` into the live session. Declaring it
         // is what stops every other PATCH (milestones, branch, status) from
@@ -470,15 +521,30 @@ export class WorkerSync {
         if (drainedErrorTraces) worker.pendingErrorTraces = [...drainedErrorTraces, ...(worker.pendingErrorTraces ?? [])];
         if (drainedActionEvents) worker.pendingActionEvents = [...drainedActionEvents, ...(worker.pendingActionEvents ?? [])];
         if (drainedPromptCompositionEvents) worker.pendingPromptCompositionEvents = [...drainedPromptCompositionEvents, ...(worker.pendingPromptCompositionEvents ?? [])];
+        if (drainedShipReports) worker.pendingShipReports = [...drainedShipReports, ...(worker.pendingShipReports ?? [])];
+        if (drainedProbeResults) worker.pendingSiblingProbeResults = [...drainedProbeResults, ...(worker.pendingSiblingProbeResults ?? [])];
         throw err;
       }
 
       worker.pathClaimDegradedReported = degradedTotal;
+      worker.pathClaimDegradedByCauseReported = { ...byCause };
 
+      // Fold the server's ACK into the tracker: what it now holds for us, what
+      // a sibling blocked. No ACK (an older server) leaves the delta pending,
+      // so it is re-offered next tick rather than assumed held.
+      let collision: PathCollision | null = null;
+      if (workingSetDelta && worker.workingSet) {
+        const ack = readWorkingSetAck(response);
+        if (ack) {
+          applyWorkingSetAck(worker.workingSet, workingSetDelta, ack, syncNow);
+          const blocked = worker.workingSet.blocked[0];
+          if (blocked) collision = blockedToCollision(blocked, 'sync', syncNow);
+        }
+      }
       // A path this sync reported is held by another live task. In enforce mode
       // that stops the task (checkpoint + deferral, in WorkerManager); advisory
       // mode leaves it to the §6d overlap message the server already sent.
-      const collision = firstCollision(response, 'sync');
+      collision = collision ?? firstCollision(response, 'sync');
       if (collision) {
         if (worker.pathClaimMode === 'enforce' && !worker.pathCollision) {
           worker.pathCollision = collision;
@@ -531,6 +597,10 @@ export class WorkerSync {
         await this.ctx.abort(worker.id);
         return;
       }
+
+      // Probes the server handed this runner: run in the background, reported next sync.
+      void enqueueSiblingProbes(worker, response?.siblingProbes)?.catch(err =>
+        console.warn(`[Worker ${worker.id}] sibling probe failed:`, err));
 
       // Report human text that reached the session through another path (Pusher
       // command, local /message endpoint) so the server can mark it delivered.
@@ -743,7 +813,7 @@ export class WorkerSync {
       if (worker.status === 'done' || worker.status === 'error') {
         //
         // Two stages. First abort and leave the map entry: the session's own
-        // finally block needs it to clean up credentials/config/CBM dirs, and
+        // finally block needs it to clean up credentials/config dirs, and
         // `reapedAt` tells its catch path not to report a failure. Only if the
         // entry is STILL there a full grace period later (the process ignored
         // the abort, so finally never ran) is it dropped outright.

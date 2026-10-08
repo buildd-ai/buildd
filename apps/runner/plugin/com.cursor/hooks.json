@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [{ "command": "node ./scripts/buildd-hook.mjs cursor", "timeout": 5 }],
+    "afterAgentResponse": [{ "command": "node ./scripts/buildd-hook.mjs cursor", "timeout": 5 }],
+    "stop": [{ "command": "node ./scripts/buildd-hook.mjs cursor", "timeout": 5 }],
+    "afterMCPExecution": [{ "command": "node ./scripts/buildd-hook.mjs cursor", "timeout": 5 }],
+    "sessionEnd": [{ "command": "node ./scripts/buildd-hook.mjs cursor", "timeout": 5 }]
+  }
+}

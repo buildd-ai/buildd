@@ -100,6 +100,28 @@ describe('get_usage_stats', () => {
     expect(out).toMatch(/75% success/);
   });
 
+  // docs/specs/real-and-virtual-cost.md: real and virtual dollars never print
+  // as one unlabelled figure, and unknown usage is named when present.
+  it('prints cost by basis, with the combined figure labelled as combined', async () => {
+    const b = (workers: number, costUsd: number) => ({ workers, inputTokens: 0, outputTokens: 0, costUsd });
+    mockApi.mockResolvedValueOnce({
+      ...statsPayload,
+      byBasis: {
+        total: { real: b(2, 10), virtual: b(10, 30), mixed: b(0, 0), unknown: b(1, 2.5) },
+        byExecutor: {
+          interactive: { real: b(0, 0), virtual: b(3, 8), mixed: b(0, 0), unknown: b(1, 2.5) },
+          runner: { real: b(2, 10), virtual: b(7, 22), mixed: b(0, 0), unknown: b(0, 0) },
+          other: { real: b(0, 0), virtual: b(0, 0), mixed: b(0, 0), unknown: b(0, 0) },
+        },
+      },
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', {}, ctx())).content[0].text;
+    expect(out).toMatch(/Cost: real \$10\.00 · virtual \$30\.00 \(list price\) · basis not reported \$2\.50 \(1 worker\(s\)\)/);
+    expect(out).toMatch(/\$42\.50 combined/);
+    expect(out).toMatch(/Interactive: virtual \$8\.00/);
+    expect(out).not.toMatch(/mixed/);
+  });
+
   it('shows time-to-claim on a role group when the endpoint reports it', async () => {
     const g = { ...statsPayload.groups[0], key: 'builder · inferred', label: 'Builder · inferred', claimLatencyMs: { kind: 'value', value: { mean: 50_000, median: 42_000, p90: 180_000, max: 300_000 } } };
     mockApi.mockResolvedValueOnce({ ...statsPayload, groups: [g] });
@@ -309,10 +331,6 @@ describe('get_usage_stats — fine-grained breakdowns', () => {
       totalCalls: 40, workersWithEvents: 6, workers: 15, capturedSince: '2026-09-03',
       windowPredatesCapture: false, truncated: false,
     },
-    cbmTools: {
-      sessions: 7, totalCalls: 20,
-      tools: [{ tool: 'search_graph', calls: 20, sessions: 5, share: 1 }],
-    },
   };
 
   const run = async (payload: any) => {
@@ -334,7 +352,7 @@ describe('get_usage_stats — fine-grained breakdowns', () => {
     expect(out).toMatch(/code_search: 180 \(50%\)/);
     expect(out).toMatch(/gh: 0 \(0%\)/);
     expect(out).toMatch(/360\/400 Bash calls classified, over 9 task\(s\) with an exact histogram only; no cross-window delta/);
-    expect(out).toMatch(/Search shapes \(of 180 code_search call\(s\); identifier = answerable by a structural index\)/);
+    expect(out).toMatch(/Search shapes \(of 180 code_search call\(s\); identifier = a bare symbol name\)/);
     expect(out).toMatch(/identifier: 90 \(50%\)/);
   });
 
@@ -345,24 +363,16 @@ describe('get_usage_stats — fine-grained breakdowns', () => {
     expect(out).toMatch(/6\/15 worker\(s\) recorded; actions recorded since 2026-09-03, no backfill/);
   });
 
-  it('renders codebase-graph tools as session-keyed', async () => {
-    const out = await run({ ...statsPayload, ...breakdowns });
-    expect(out).toMatch(/search_graph: 20 \(100%\) in 5 session\(s\)/);
-    expect(out).toMatch(/over 7 CBM-enabled completed worker session\(s\); session-keyed/);
-  });
-
   it('says why a breakdown is missing instead of dropping it', async () => {
     const out = await run({
       ...statsPayload,
       bashBuckets: { histogramTasks: 3, classifiedTasks: 0, bashCalls: 12, classifiedCalls: 0, buckets: [] },
       searchShapes: { codeSearchCalls: 0, shapes: [] },
       buildActions: { ...breakdowns.buildActions, actions: [], totalCalls: 0, windowPredatesCapture: true },
-      cbmTools: null,
     });
     expect(out).toMatch(/Bash buckets: none classified/);
     expect(out).toMatch(/buildd actions: none recorded in this window/);
     expect(out).toMatch(/may mean not yet recorded/);
-    expect(out).toMatch(/Codebase-graph tools: no completed session in this window had the graph available/);
   });
 
   it('documents the breakdowns in the action description', () => {

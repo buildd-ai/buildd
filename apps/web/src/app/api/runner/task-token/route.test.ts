@@ -56,6 +56,13 @@ describe('POST /api/runner/task-token', () => {
     expect(mockVerifyAccess).toHaveBeenCalledWith('acct-1', WORKSPACE_ID, 'canClaim');
   });
 
+  it('echoes the stored role and ignores caller-provided browser authority', async () => {
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: WORKSPACE_ID, roleSlug: 'builder' });
+    expect(await (await POST(req({ taskId: TASK_ID, roleSlug: 'visual-auditor' }))).json()).toMatchObject({ roleSlug: 'builder' });
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: WORKSPACE_ID, roleSlug: 'visual-auditor' });
+    expect(await (await POST(req({ taskId: TASK_ID }))).json()).toMatchObject({ roleSlug: 'visual-auditor' });
+  });
+
   it('passes the request to auth, so a capability-scoped runner key is checked rather than refused', async () => {
     // authenticateApiKey returns null for any key with scopes when it gets no
     // request to check them against; the cloud runner's dispatcher key is
@@ -113,5 +120,93 @@ describe('POST /api/runner/task-token', () => {
     delete process.env.NEXTAUTH_SECRET;
     delete process.env.ENCRYPTION_KEY;
     expect((await POST(req({ taskId: TASK_ID }))).status).toBe(503);
+  });
+});
+
+describe('POST /api/runner/task-token — admin level', () => {
+  const ADMIN = { ...ACCOUNT, level: 'admin', scopes: null };
+  const ORG_TASK = {
+    id: TASK_ID, workspaceId: WORKSPACE_ID, roleSlug: 'organizer', mode: 'execution', context: {},
+    workspace: { name: 'app', repo: 'https://github.com/example/app', githubRepoId: null },
+  };
+  beforeEach(() => {
+    process.env.AUTH_SECRET = 'test-secret';
+    mockAuthenticateApiKey.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockVerifyAccess.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(ADMIN);
+    mockTasksFindFirst.mockResolvedValue(ORG_TASK);
+    mockVerifyAccess.mockResolvedValue(true);
+  });
+
+  it('mints an admin token for an orchestration task with an admin key, and says so', async () => {
+    const res = await POST(req({ taskId: TASK_ID, level: 'admin' }));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.level).toBe('admin');
+    expect(verifyTaskToken(data.token)?.level).toBe('admin');
+  });
+
+  it.each([
+    ['a planning task', { roleSlug: 'builder', mode: 'planning', context: {} }],
+    ['a heartbeat', { roleSlug: 'builder', mode: 'execution', context: { heartbeat: true } }],
+  ])('mints one for %s', async (_label, row) => {
+    mockTasksFindFirst.mockResolvedValue({ ...ORG_TASK, ...row });
+    expect((await POST(req({ taskId: TASK_ID, level: 'admin' }))).status).toBe(200);
+  });
+
+  it('mints one for a scoped key with the full admin scope', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin', scopes: ['admin'], workspaceIds: null });
+    expect((await POST(req({ taskId: TASK_ID, level: 'admin' }))).status).toBe(200);
+  });
+
+  it('defaults to worker, and an admin key asking for nothing gets a worker token', async () => {
+    const data = await (await POST(req({ taskId: TASK_ID }))).json();
+    expect(data.level).toBe('worker');
+    expect(verifyTaskToken(data.token)?.level).toBe('worker');
+  });
+
+  it('refuses a worker-level key with a reason, before reading the task', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    const res = await POST(req({ taskId: TASK_ID, level: 'admin' }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('admin key');
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('refuses a scoped key with only some admin capabilities', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      ...ACCOUNT, level: 'worker', workspaceIds: null,
+      scopes: ['tasks:read', 'tasks:write', 'workers:write', 'analytics:read', 'knowledge:write', 'missions:admin', 'tasks:admin', 'workers:admin'],
+    });
+    expect((await POST(req({ taskId: TASK_ID, level: 'admin' }))).status).toBe(403);
+  });
+
+  it('refuses a task that is not an orchestration task, judged from the row and never the request', async () => {
+    mockTasksFindFirst.mockResolvedValue({ ...ORG_TASK, roleSlug: 'builder', mode: 'execution', context: {} });
+    const res = await POST(req({ taskId: TASK_ID, level: 'admin', roleSlug: 'organizer', mode: 'planning', context: { heartbeat: true } }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('orchestration task');
+  });
+
+  it('refuses an orchestration task in a coordination workspace or one with no repo', async () => {
+    mockTasksFindFirst.mockResolvedValue({ ...ORG_TASK, workspace: { name: '__coordination', repo: null, githubRepoId: null } });
+    expect((await POST(req({ taskId: TASK_ID, level: 'admin' }))).status).toBe(403);
+    mockTasksFindFirst.mockResolvedValue({ ...ORG_TASK, workspace: { name: 'notes', repo: null, githubRepoId: null } });
+    expect((await POST(req({ taskId: TASK_ID, level: 'admin' }))).status).toBe(403);
+    mockTasksFindFirst.mockResolvedValue({ ...ORG_TASK, workspace: { name: 'app', repo: null, githubRepoId: 'gh-1' } });
+    expect((await POST(req({ taskId: TASK_ID, level: 'admin' }))).status).toBe(200);
+  });
+
+  it('never mints admin for a task the key could not claim', async () => {
+    mockVerifyAccess.mockResolvedValue(false);
+    expect((await POST(req({ taskId: TASK_ID, level: 'admin' }))).status).toBe(404);
+    mockVerifyAccess.mockResolvedValue(true);
+    mockAuthenticateApiKey.mockResolvedValue({ ...ADMIN, workspaceIds: ['33333333-3333-4333-8333-333333333333'] });
+    expect((await POST(req({ taskId: TASK_ID, level: 'admin' }))).status).toBe(404);
+  });
+
+  it('rejects an unknown level', async () => {
+    expect((await POST(req({ taskId: TASK_ID, level: 'owner' }))).status).toBe(400);
   });
 });

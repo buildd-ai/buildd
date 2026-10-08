@@ -15,6 +15,7 @@ import { githubApi } from '@/lib/github';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { readLandingMarker } from '@/lib/pr-landing-marker';
 import { readPrReviewStatus } from '@/lib/pr-review-request';
+import { kernelLandingView, listApprovedKernelPrs, notKernelOwnedPr } from '@/lib/workflow/seam';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
@@ -38,7 +39,37 @@ import {
 const TERMINAL_LIFECYCLE = [...TERMINAL_PR_LIFECYCLE];
 
 /**
- * Open worker PRs in an `enforce` workspace whose newest review says approve.
+ * Newest-review verdicts the sweep hands to `landPr`. An approve is the PR it
+ * exists for. A blocking verdict is included because it may have gone stale (a
+ * later head, or a sibling PR / migration / conflict state that has since
+ * changed) and `landPr` is the one place that revalidates it — without this a
+ * stale escalation whose webhook was missed blocks forever.
+ */
+export const SWEEP_REVIEW_VERDICTS = ['approve', 'escalate', 'request-changes'] as const;
+/** The review states those verdicts surface as. */
+export const SWEEP_REVIEW_STATES = new Set<string>(['approved', 'escalated', 'changes_requested']);
+
+/**
+ * Which PRs `landPr` can move forward, beyond a verdict it can act on:
+ *  - one that was never sent to review, under `agent-review` — the request was
+ *    lost or never made, and `landPr` sends the workspace reviewer (once per
+ *    head, through the reviewer dedupe);
+ *  - one the reconcile sweep saw conflicting, whatever its review state — a
+ *    conflict is repaired before any verdict matters, and nothing else
+ *    re-drives it once its conflict event has passed.
+ */
+export function sweepAdmits(input: { reviewState: string; tier: string; lifecycle: string | null }): boolean {
+  if (SWEEP_REVIEW_STATES.has(input.reviewState)) return true;
+  if (input.lifecycle === 'conflict') return true;
+  return input.reviewState === 'not_requested' && input.tier === 'agent-review';
+}
+
+/**
+ * Open worker PRs in an `enforce` workspace whose newest review is one of
+ * `SWEEP_REVIEW_VERDICTS`, that have no review at all, or that are conflicting
+ * (`sweepAdmits` narrows these further once the policy is known), or whose
+ * kernel delivery is `APPROVED` (a kernel PR may have no reviewer row at all:
+ * composition or human approval).
  *
  * Deliberately NOT narrowed to lifecycle `ci_green`: a lost green event leaves
  * a PR at `ci_running`, which is the very case this backstop exists for, and
@@ -46,12 +77,14 @@ const TERMINAL_LIFECYCLE = [...TERMINAL_PR_LIFECYCLE];
  * an approval carried across a refresh is judged inside `landPr`.
  */
 async function listFloor(limit: number): Promise<PrRef[]> {
-  const newestReviewVerdict = sql`(
-    SELECT COALESCE(rt.result->>'effectiveVerdict', rt.result->'structuredOutput'->>'verdict')
-    FROM ${tasks} rt
+  // Same predicate as findReviewTaskForPr, so "no review" here is not_requested there.
+  const reviewFor = sql`${tasks} rt
     WHERE rt.workspace_id = ${workers.workspaceId}
       AND rt.category = 'review'
-      AND rt.context->>'prNumber' = ${workers.prNumber}::text
+      AND rt.context->>'prNumber' = ${workers.prNumber}::text`;
+  const newestReviewVerdict = sql`(
+    SELECT COALESCE(rt.result->>'effectiveVerdict', rt.result->'structuredOutput'->>'verdict')
+    FROM ${reviewFor}
     ORDER BY rt.created_at DESC
     LIMIT 1
   )`;
@@ -67,11 +100,23 @@ async function listFloor(limit: number): Promise<PrRef[]> {
           SELECT 1 FROM ${workspaces} w
           WHERE w.id = ${workers.workspaceId} AND w.git_config->'landing'->>'mode' = 'enforce'
         )`,
-        sql`${newestReviewVerdict} = 'approve'`,
+        or(
+          sql`${newestReviewVerdict} IN ('approve', 'escalate', 'request-changes')`,
+          // No verdict yet: legacy PRs only (a kernel PR lands by its delivery, below).
+          and(
+            or(sql`NOT EXISTS (SELECT 1 FROM ${reviewFor})`, eq(workers.prLifecycleStatus, 'conflict')),
+            notKernelOwnedPr(workers.workspaceId, workers.prNumber),
+          ),
+        ),
       ),
     )
     .limit(limit);
-  return rows.flatMap((r) => (r.prNumber === null ? [] : [{ workspaceId: r.workspaceId, prNumber: r.prNumber }]));
+  const legacy = rows.flatMap((r) => (r.prNumber === null ? [] : [{ workspaceId: r.workspaceId, prNumber: r.prNumber }]));
+  // Kernel PRs by their delivery (APPROVED, T15), read through the kernel. resolveTarget
+  // settles which authority owns each candidate, for the exact repo.
+  const kernel = await listApprovedKernelPrs(limit);
+  const seen = new Set(legacy.map((r) => `${r.workspaceId}#${r.prNumber}`));
+  return [...legacy, ...kernel.filter((r) => !seen.has(`${r.workspaceId}#${r.prNumber}`))];
 }
 
 /** One run's bindings. Workspace rows are memoised for the run; nothing outlives it. */
@@ -112,7 +157,7 @@ export function createLandingSweepDeps(): LandingSweepDeps {
           or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, TERMINAL_LIFECYCLE)),
         ),
         orderBy: desc(workers.createdAt),
-        columns: { id: true, taskId: true, prUrl: true, prBaseRef: true },
+        columns: { id: true, taskId: true, prUrl: true, prBaseRef: true, prLifecycleStatus: true },
       });
       if (!worker) return { ok: false, skip: 'no_open_worker' };
 
@@ -133,12 +178,21 @@ export function createLandingSweepDeps(): LandingSweepDeps {
         resolvePolicy(workspace, mission, task ?? null, { baseRef: baseRef ?? worker.prBaseRef });
       if (policyFor(worker.prBaseRef).tier === 'human') return { ok: false, skip: 'human_tier' };
 
-      const review = await readPrReviewStatus({ workspaceId: ref.workspaceId, prNumber: ref.prNumber });
-      if (review.state !== 'approved') return { ok: false, skip: 'not_approved' };
-
       const identity = pickWorkspaceRepoIdentity(workspace);
       const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: identity.fullName });
       if (!repo) return { ok: false, skip: 'no_repo' };
+
+      // A kernel-owned PR has something to land only when its delivery is APPROVED (T15);
+      // the legacy reviewer row neither qualifies nor disqualifies it (task 57e1d5b8).
+      const kernel = await kernelLandingView(ref.workspaceId, repo, ref.prNumber);
+      if (kernel) {
+        if (kernel.current.state !== 'APPROVED') return { ok: false, skip: 'not_approved' };
+      } else {
+        const review = await readPrReviewStatus({ workspaceId: ref.workspaceId, prNumber: ref.prNumber });
+        if (!sweepAdmits({ reviewState: review.state, tier: policyFor(worker.prBaseRef).tier, lifecycle: worker.prLifecycleStatus ?? null })) {
+          return { ok: false, skip: 'not_approved' };
+        }
+      }
       const installationId =
         (repo === identity.fullName ? identity.installationId : null)
         ?? (await installationFor(repo))

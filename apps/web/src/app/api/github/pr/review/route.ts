@@ -14,9 +14,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missions, githubRepos } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace, taskScopeTaskNamesPr, type TaskScope } from '@/lib/task-token-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
@@ -26,6 +26,7 @@ import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/li
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { requestReview as requestKernelReview } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
 import {
@@ -42,7 +43,7 @@ import {
   type PrReviewWaitFor,
 } from '@/lib/pr-review-status';
 
-type Account = { id: string; teamId: string };
+type Account = { id: string; teamId: string; taskScope?: TaskScope };
 
 /**
  * Which workspaces a caller may resolve a PR in. An API key reaches its own
@@ -57,6 +58,12 @@ interface TargetScope {
 }
 
 function accountScope(account: Account): TargetScope {
+  // A per-task token sees only its own task's workspace, and anything outside
+  // it as missing rather than forbidden.
+  if (account.taskScope) {
+    const workspaceId = account.taskScope.workspaceId;
+    return { teamIds: [account.teamId], workspaceIds: async () => [workspaceId], foreignWorkspace: 'not_found' };
+  }
   return {
     teamIds: [account.teamId],
     workspaceIds: () => getTeamWorkspaceIds(account.teamId),
@@ -165,7 +172,8 @@ async function resolveEffectivePolicy(
 }
 
 export async function POST(req: NextRequest) {
-  const account = await authenticateApiKey(req.headers.get('authorization')?.replace('Bearer ', '') || null, req);
+  // A per-task token may ask for review only of its own task's PR.
+  const account = await authenticateTaskScopedCaller(req.headers.get('authorization')?.replace('Bearer ', '') || null, req);
   if (!account) return bad('Invalid API key', 401);
 
   let body: Record<string, unknown>;
@@ -215,6 +223,57 @@ export async function POST(req: NextRequest) {
   }
 
   const existingWorker = await findPrOwningWorker(workspace.id, prNumber);
+  const ownsViaWorker = !!existingWorker && taskScopeAllowsWorkerPr(account, { ...existingWorker, prNumber }, prNumber);
+  // Or a PR the token's OWN task names (a coordination task repairing a PR it never opened),
+  // never one the owner's task names (§17.1 of docs/specs/workflow-state-kernel.md).
+  if (account.taskScope && !ownsViaWorker && !(await taskScopeTaskNamesPr(account, { workspaceId: account.taskScope.workspaceId, prNumber }))) {
+    return bad('A task token may request review only of its own PR, or one its task names', 403);
+  }
+
+  // A PR the workflow kernel owns is reviewed only in kernel rounds: the request
+  // is T5 (ReviewRequested) against the live head. `force` re-reviews a head
+  // that already has a verdict; it never stacks a second reviewer on a round.
+  const kernel = await requestKernelReview({
+    workspaceId: workspace.id, repoFullName: repo.fullName, prNumber, installationId: repo.installationId,
+    forced: body.force === true, actor: body.force === true ? 'force' : `agent:${account.id}`,
+  }).catch((err) => {
+    console.error(`[pr-review] workflow kernel review request failed for PR #${prNumber}:`, err);
+    return null;
+  });
+  if (kernel?.handled) {
+    const r = kernel.result;
+    const accepted = r.result === 'applied'
+      || (r.result === 'rejected' && (r.reason === 'review_in_flight' || r.reason === 'head_already_reviewed'));
+    if (!accepted) return bad(`Review not requested: ${r.reason}`, 409, { code: r.reason, current: r.current, kernel: true });
+    // §8.1: the reviewer that answers is the round's at the live head, never the
+    // newest reviewer row of the PR number (§14 Slice A retired that rule here).
+    const latest = kernel.reviewTaskId
+      ? (await db.query.tasks.findFirst({
+          where: eq(tasks.id, kernel.reviewTaskId),
+          columns: { id: true, status: true, result: true, context: true },
+        })) ?? null
+      : null;
+    if (latest && callbackUrl && r.result === 'applied') {
+      await db.update(tasks)
+        .set({ context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('reviewCallback', ${JSON.stringify({ url: callbackUrl, on: callbackOn })}::jsonb)` })
+        .where(eq(tasks.id, latest.id));
+    }
+    const kernelPolicy = await resolveEffectivePolicy(workspace, null);
+    return NextResponse.json({
+      ok: true,
+      kernel: true,
+      alreadyRequested: r.result !== 'applied',
+      ...(r.result === 'rejected' && r.reason === 'head_already_reviewed' ? { hint: 'this head already has a verdict; pass force to re-review' } : {}),
+      prNumber,
+      reviewTaskId: latest?.id ?? null,
+      taskId: existingWorker?.taskId ?? null,
+      autoMergeExpected: autoMergeExpectedFor(kernelPolicy),
+      callback: callbackUrl && r.result === 'applied' ? { url: callbackUrl, on: callbackOn } : null,
+      status: latest
+        ? derivePrReviewStatus({ reviewTask: latest, worker: existingWorker ?? null, autoMergeExpected: autoMergeExpectedFor(kernelPolicy) })
+        : null,
+    }, { status: r.result === 'applied' ? 201 : 200 });
+  }
   const existingReview = await findReviewTaskForPr(workspace.id, prNumber);
   const inFlight = existingReview?.status === 'pending' || existingReview?.status === 'in_progress';
   const force = body.force === true;
@@ -394,7 +453,7 @@ export async function POST(req: NextRequest) {
       installationId: repo.installationId,
       repoFullName: repo.fullName,
       prNumber,
-      entry: { kind: 'reviewing' },
+      entry: { kind: 'review_queued' },
       workspaceId: workspace.id,
     });
   }
@@ -430,7 +489,8 @@ export async function POST(req: NextRequest) {
 // just `teamId` when given; anything outside 404s. A key, when present, is
 // authoritative and `teamId` is ignored.
 export async function GET(req: NextRequest) {
-  const account = await authenticateApiKey(req.headers.get('authorization')?.replace('Bearer ', '') || null, req);
+  // A per-task token reads reviews only in its own task's workspace (accountScope).
+  const account = await authenticateTaskScopedCaller(req.headers.get('authorization')?.replace('Bearer ', '') || null, req);
   const sessionUser = account ? null : await getCurrentUser();
   if (!account && !sessionUser) return bad('Invalid API key', 401);
 
@@ -452,6 +512,7 @@ export async function GET(req: NextRequest) {
   const target = await resolveTarget(scope, prNumber, url.searchParams.get('workspaceId'));
   if ('error' in target) return bad(target.error, target.status, target.candidates ? { candidates: target.candidates } : {});
   const { workspace } = target;
+  if (account && !taskScopeAllowsWorkspace(account, workspace.id)) return bad('PR not found', 404);
 
   const waitFor: PrReviewWaitFor = url.searchParams.get('waitFor') === 'merge' ? 'merge' : 'verdict';
   const requestedWait = Number(url.searchParams.get('waitSeconds') ?? 0);

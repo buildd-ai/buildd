@@ -170,3 +170,49 @@ describe('GET /api/tasks/[id]/error-traces — evidence', () => {
   });
 });
 
+describe('GET /api/tasks/[id]/error-traces — per-task token', () => {
+  const scoped = { id: 'acct-1', teamId: 't', level: 'worker', taskScope: { taskId: 'task-own', workspaceId: 'ws-mine', expiresAt: Date.now() + 60_000 } };
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(scoped);
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    // The minting account reaches both workspaces; only the token is narrower.
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockTaskFindFirst.mockReset();
+    mockTracesFindMany.mockReset();
+    mockTracesFindMany.mockResolvedValue([]);
+    mockPrefixRows.mockReset();
+    mockPrefixRows.mockResolvedValue([]);
+  });
+
+  it('reads traces of another task in its own workspace', async () => {
+    mockTaskFindFirst.mockResolvedValue({ id: FULL, workspaceId: 'ws-mine', status: 'failed', result: null });
+    const res = await GET(req(FULL), params(FULL));
+    expect(res.status).toBe(200);
+  });
+
+  it('404s on a task in another workspace its account can reach', async () => {
+    mockTaskFindFirst.mockResolvedValue({ id: FULL, workspaceId: 'ws-other', status: 'failed', result: null });
+    const res = await GET(req(FULL), params(FULL));
+    expect(res.status).toBe(404);
+    expect(mockTracesFindMany).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve a prefix to a task in another workspace', async () => {
+    mockPrefixRows.mockResolvedValue([{ id: FULL, title: 'Elsewhere', workspaceId: 'ws-other' }]);
+    const res = await GET(req('abcdef12'), params('abcdef12'));
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(await res.json())).not.toContain('Elsewhere');
+  });
+
+  it('leaves an account key unchanged: any workspace it can reach', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 't' });
+    mockTaskFindFirst.mockResolvedValue({ id: FULL, workspaceId: 'ws-other', status: 'failed', result: null });
+    const res = await GET(req(FULL), params(FULL));
+    expect(res.status).toBe(200);
+  });
+});
+

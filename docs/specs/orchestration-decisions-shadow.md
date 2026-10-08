@@ -2,13 +2,13 @@
 title: Orchestration Decisions (Shadow and Promotion Guard)
 status: active
 owner: max
-last_verified: 2026-10-03
-summary: Creation-manifest and claim hold/start decisions MUST only record suggestions unless a committed readout promotion grants a cohort, and MUST fall back to the deterministic rule on every failure.
+last_verified: 2026-10-08
+summary: Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a confident Jev START to its three advisory gates only; both MUST fall back to the rule on failure.
 domain: tasks
 surfaces: [packages/core/orchestration-decision.ts, packages/core/orchestration-promotion.ts, packages/core/orchestration-readout.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.ts]
-related: [model-routing-and-tiers, mission-task-lifecycle]
-keywords: [jev, shadow, gated, applying fraction, cohort, propensity, orchestration_decisions, orchestration_manifest, orchestration_claim, readout, insufficient_n]
-verified_by: [packages/core/__tests__/orchestration-decision.test.ts, packages/core/__tests__/orchestration-promotion.test.ts, packages/core/__tests__/orchestration-readout.test.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.test.ts]
+related: [model-routing-and-tiers, mission-task-lifecycle, live-sibling-conflict-probe]
+keywords: [jev, shadow, gated, applying fraction, cohort, propensity, orchestration_decisions, orchestration_manifest, orchestration_claim, readout, insufficient_n, soft overlap, softOverlaps, partitionOverlapEdges, hold start]
+verified_by: [apps/web/src/lib/hard-overlap-surfaces.test.ts, packages/core/__tests__/orchestration-decision.test.ts, packages/core/__tests__/orchestration-promotion.test.ts, packages/core/__tests__/orchestration-readout.test.ts, packages/core/__tests__/orchestration-claim-decision.test.ts, packages/core/__tests__/path-overlap-edges.test.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts]
 assertions:
   - id: "run-orchestration-decision"
     type: "symbol"
@@ -30,11 +30,25 @@ assertions:
     type: "symbol"
     name: "releaseGatedStartPaths"
     path: "apps/web/src/app/api/workers/claim/hold-start-shadow.ts"
-  - id: "claim-cohort-through-guard"
-    type: "symbol_reachable"
-    symbol: "resolveApplyingFraction"
-    entry: "apps/web/src/app/api/workers/claim/hold-start-shadow.ts"
-    as: "call"
+  - id: "partition-overlap-edges"
+    type: "symbol"
+    name: "partitionOverlapEdges"
+    path: "packages/core/path-overlap.ts"
+  - id: "soft-overlap-gate"
+    type: "symbol"
+    name: "evaluateSoftOverlaps"
+    path: "apps/web/src/app/api/workers/claim/soft-overlap-gate.ts"
+  - id: "soft-overlap-gate-test"
+    type: "test_file"
+    path: "apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts"
+  - id: "hard-overlap-surfaces"
+    type: "symbol"
+    name: "overlapIsHard"
+    path: "apps/web/src/lib/hard-overlap-surfaces.ts"
+  - id: "soft-overlap-evidence"
+    type: "symbol"
+    name: "loadSoftOverlapEvidence"
+    path: "packages/core/orchestration-claim-source.ts"
   - id: "manifest-cohort-through-guard"
     type: "symbol_reachable"
     symbol: "resolveApplyingFraction"
@@ -48,26 +62,48 @@ assertions:
     path: "packages/core/__tests__/orchestration-readout.test.ts"
 supersedes: []
 ---
-# Orchestration Decisions (Shadow and Promotion Guard)
+# Orchestration Decisions (Shadow, Promotion Guard and Live Hold/Start)
 
 **Capability statement**: Buildd MAY ask a decision model two orchestration
 questions, which files a scope-less task will edit (at creation) and whether
 an advisory-deferred task should start (at claim). It MUST record every answer
-content-free and MUST NOT let an answer change behaviour unless a committed,
-evidence-backed promotion grants an applying cohort for that exact definition.
+content-free. The creation-manifest answer MUST NOT change behaviour unless a
+committed, evidence-backed promotion grants an applying cohort. The claim
+hold/start answer MAY apply, but only a confident Jev START, only to the three
+advisory gates, and never past a deterministic rail.
 
-This contract describes **shadow-only** behaviour. As shipped, no promotion is
-recorded, so every applying fraction resolves to zero and both decisions are
-record-only. See `knowledge-base: buildd/design/conflict-aware-orchestration.md` "Rollout status".
+The creation-manifest decision is **shadow-only** as shipped: no promotion is
+recorded, so its applying fraction resolves to zero. See
+`knowledge-base: buildd/design/conflict-aware-orchestration.md` "Rollout status".
 
-**Relationship to the 2026-10-03 owner decision retiring shadow-first as the
-default decision-call rollout** (`knowledge-base: buildd/design/decision-calls.md`
-Point 2b, "Staying evidence-gated"): that decision does not flip this one live.
-A wrong gated START can produce a real merge collision, so this stays the one
-decision in the table that requires a committed, evidence-backed promotion —
-not a leftover shadow phase nobody got around to graduating, a deliberate
-exception for a decision whose correct confidence threshold cannot be chosen
-responsibly without first measuring it on decisions that already happened.
+**Claim hold/start is live by owner decision** (tasks 7eb191b9, d0db21dd and 1141e62e),
+reversing the earlier "stays evidence-gated" exception: it ships `gated` at a
+conservative starting threshold (`CLAIM_HOLD_MIN_CONFIDENCE`) with every
+eligible deferral in the applying arm, and does not go through the promotion
+guard. Every call is logged so the threshold can be recalibrated from labelled
+outcomes. Rollback is one switch: `CLAIM_HOLD_APPLYING_FRACTION = 0` returns
+every advisory gate to deterministic HOLD.
+
+**Hard vs soft path overlap**: a stored `dependsOn` edge blocks until the
+upstream completes and merges, and is never re-checked. At creation (and on a
+conflict retry) `partitionOverlapEdges` makes an inferred edge only for a
+migration or schema path, or a workspace hard surface (`overlapIsHard`): a
+serialized surface for any overlap, and, for a same-file overlap only, a
+generated file (built-in regenerable or `gitConfig.derivedFiles`) or an
+explicit hotspot (`gitConfig.overlapHotspots`). Every other overlap, same-file
+or prefix-only, is SOFT: recorded as `pathDeclaration.softOverlaps` (the pair,
+the overlapping paths, kind `same_file` or `prefix`), never an edge, and
+decided at claim by hold/start (`soft_overlap` gate). Same-file overlap went
+soft because most task pairs whose merged PRs touched the same file did not
+actually conflict, so a hard hold wasted most of the wait.
+Hardness is judged on the pair's FULL intersection: a pair that shares a file
+and also a serialized directory (`seq-dir/` against `seq-dir/0042.ts`) is
+hard. At most `MAX_SOFT_OVERLAPS_PER_TASK` soft pairs are stored, same-file
+pairs first; an overlap past that budget becomes a hard edge rather than
+running unheld with no evidence (fail closed).
+Migration 0267 moved the pending tasks' pre-split inferred edges into
+`softOverlaps` (kind `legacy_inferred`), reclassified at each claim against the
+current manifests.
 
 **Invariants**:
 
@@ -81,9 +117,12 @@ responsibly without first measuring it on decisions that already happened.
   that answered, and the unit was drawn into the applying arm. A non-Jev team
   model is recorded as a suggestion, never applied, even inside a granted
   cohort.
-- The requested applying fraction (`CLAIM_HOLD_APPLYING_FRACTION`,
-  `MANIFEST_APPLYING_FRACTION`, both zero) is never used raw.
-  `resolveApplyingFraction` grants it only when `ORCHESTRATION_PROMOTIONS`
+- Claim hold/start applies at `CLAIM_HOLD_APPLYING_FRACTION` (1) through
+  `grantedFraction`, which clamps it to [0, 1]; zero or non-finite is rolled
+  back. Its definition is `gated` at `CLAIM_HOLD_MIN_CONFIDENCE`, so a START
+  below the threshold, from a non-Jev model, or any fallback is the rule's HOLD.
+- The creation-manifest fraction (`MANIFEST_APPLYING_FRACTION`, zero) is
+  never used raw. `resolveApplyingFraction` grants it only when `ORCHESTRATION_PROMOTIONS`
   holds `eligible_for_gated` evidence for the same decision id and candidate
   policy, whose measured identity equals the deployed definition's and whose
   threshold equals the deployed `minConfidence`. The grant is capped at the
@@ -93,10 +132,33 @@ responsibly without first measuring it on decisions that already happened.
 - A team that has not opted in to the capability writes no ledger row. An
   opted-in team writes one content-free row per look: labels that are not
   short opaque tokens are stored hashed (`contentFreeLabel`).
-- At claim, only advisory deferrals are asked about. `classifyClaimHoldEligibility`
-  refuses a forced claim, an unresolved lease read, a live lease, a serialized
-  surface, a migration path and a live PR holder before any model sees the
-  task.
+- At claim, only advisory deferrals are asked about: `advisory_manifest`,
+  `open_pr_overlap` (every overlapping PR's worker ended) and `soft_overlap`.
+  `classifyClaimHoldEligibility` refuses a forced claim, an unresolved lease
+  read, a live lease, a serialized surface, a migration path and (open-PR
+  overlap) a live PR holder before any model sees the task. Declared
+  dependencies, pacing, concurrency, caps, budgets and auth are never asked
+  about.
+- An applied START is honoured only for the same claim-time state digest and
+  within its TTL; a ledger read error holds.
+- A soft overlap holds only while its holder is in flight. Reclassified at
+  claim (`evaluateSoftOverlaps`): a migration path or a workspace hard surface
+  is a deterministic hold Jev never sees; a hard-surface check that throws, or
+  a malformed surface config, holds (fail closed); a failed holder read holds
+  every soft entry (fail closed); a finished holder or a vanished overlap
+  releases.
+- For a soft overlap Jev sees the overlap kind (`same_file` or `prefix`), each
+  shared file's conflict history (merged PRs in the last 90 days whose task
+  touched it, and how many needed a conflict retry; `no_history` when none),
+  the holder's stage (`queued`, `just_started`, `working`, `in_review`,
+  `approved`) and the candidate's predicted change size. The overlap kind is
+  part of the state digest. A failed evidence read is a decision error: the
+  decision falls back to the rule's HOLD without calling the model.
+- Creation never stores a prefix-only overlap, or a same-file overlap off the
+  hard surfaces, as a `dependsOn` edge.
+- A force claim past a soft overlap records a `force_soft_overlap` bypass row
+  with the holder, the paths and `calibration: human_force`: human feedback,
+  never a model label.
 - A gated START acquires the task's declared paths through the exclusive
   acquisition primitive before the atomic claim. If the claim is then lost,
   `releaseGatedStartPaths` gives back exactly the lease rows that acquisition
@@ -125,10 +187,29 @@ responsibly without first measuring it on decisions that already happened.
 
 **Acceptance criteria**:
 
-- AC-1: GIVEN a gated claim definition and a requested fraction of 1 WHEN
-  `ORCHESTRATION_PROMOTIONS` holds no matching evidence THEN the granted
-  fraction is 0 and the recorded row has `applying_fraction` 0 and
-  `experiment_arm` `observe`.
+- AC-1: GIVEN a gated definition and a requested fraction of 1 WHEN
+  `resolveApplyingFraction` finds no matching evidence THEN the granted
+  fraction is 0 (the creation-manifest path).
+- AC-1b: GIVEN the shipped claim hold/start definition WHEN Jev answers START
+  at or above the threshold THEN the row is applied with `experiment_arm`
+  `apply`; below the threshold, or on a provider error, the effective verdict
+  is HOLD.
+- AC-1c: GIVEN a new task whose manifest overlaps an in-flight task's by
+  directory prefix, or on the same ordinary file, WHEN it is created THEN no
+  `dependsOn` edge is stored and the pair is recorded in
+  `pathDeclaration.softOverlaps` (kind `prefix` or `same_file`); GIVEN a
+  migration path, or the same generated or hotspot file on both sides, THEN
+  the edge is stored and listed in `inferredDependsOn`.
+- AC-1e: GIVEN a same-file soft overlap whose file has no merged-PR conflict
+  history WHEN Jev answers START at or above the threshold THEN the claim
+  proceeds; GIVEN the same file is a migration path THEN the claim holds
+  deterministically and Jev is never asked; GIVEN the evidence read fails THEN
+  the effective verdict is HOLD with status `fallback`.
+- AC-1d: GIVEN a soft overlap with an in-flight holder WHEN no applied START
+  exists THEN the claim defers with reason `soft_overlap` naming the holder,
+  paths and verdict; WHEN one exists THEN the declared paths are acquired
+  exclusively and the claim proceeds; WHEN the holder holds a live lease on
+  the files THEN the claim defers regardless.
 - AC-2: GIVEN matching eligible evidence WHEN the deployed definition's
   questions or model differ from the measured one THEN the refusal is
   `fingerprint_mismatch` and the granted fraction is 0.
@@ -136,9 +217,8 @@ responsibly without first measuring it on decisions that already happened.
   differs from the measured threshold THEN the refusal is `threshold_mismatch`.
 - AC-4: GIVEN matching eligible evidence with a cohort ceiling WHEN a larger
   fraction is requested THEN the granted fraction equals the ceiling.
-- AC-5: GIVEN matching eligible evidence WHEN the requested fraction is 0 THEN
-  the granted fraction is 0 and the gated START path is unreachable (no ledger
-  lookup).
+- AC-5: GIVEN a requested fraction of 0 THEN the granted fraction is 0 and
+  the gated START path is unreachable (no ledger lookup).
 - AC-6: GIVEN a granted cohort of 1 WHEN a non-Jev model answers START with
   high confidence THEN the outcome is `suggested` with reason `non_jev` and the
   effective verdict is the rule's HOLD.
@@ -163,7 +243,23 @@ responsibly without first measuring it on decisions that already happened.
 - `packages/core/orchestration-promotion.ts`: `resolveApplyingFraction`,
   `ORCHESTRATION_PROMOTIONS`, `measuredIdentity`, `manifestPickIdentity`.
 - `packages/core/orchestration-claim-decision.ts`: `CLAIM_HOLD_DECISION`,
-  `classifyClaimHoldEligibility`, `isGatedStartReachable`.
+  `CLAIM_HOLD_MIN_CONFIDENCE`, `classifyClaimHoldEligibility`,
+  `isGatedStartReachable`.
+- `apps/web/src/lib/hard-overlap-surfaces.ts`: `overlapIsHard`,
+  `resolveHardOverlapSurfaces` (serialized, generated, hotspot); hotspot list
+  validated by PATCH `/api/workspaces/[id]` (`gitConfig.overlapHotspots`).
+- `packages/core/orchestration-claim-decision.ts` /
+  `orchestration-claim-source.ts`: `deriveHolderStage`,
+  `summarizeFileConflictHistory`, `loadSoftOverlapEvidence`.
+- `packages/core/path-overlap.ts`: `classifyManifestOverlap`,
+  `partitionOverlapEdges`, `readSoftOverlaps`; callers POST /api/tasks and
+  `apps/web/src/lib/conflict-retry.ts`.
+- `apps/web/src/app/api/workers/claim/soft-overlap-gate.ts`:
+  `evaluateSoftOverlaps`; holder read in `soft-overlap-store.ts`.
+- `apps/web/src/lib/explain-coordination.ts`: `buildCoordinationHolds`, the
+  explain answer's `coordination.holds` (edge kind, holder, paths, verdict).
+- `packages/core/drizzle/0267_soft_overlap_legacy_edges.sql`: the legacy
+  edge conversion (pending tasks only, idempotent).
 - `apps/web/src/app/api/workers/claim/hold-start-shadow.ts`:
   `ClaimHoldCollector`, `scheduleClaimHoldShadow`, `grantedFraction`,
   `gatedStartApplies`, `acquireGatedStartPaths`, `releaseGatedStartPaths`;
@@ -185,10 +281,10 @@ responsibly without first measuring it on decisions that already happened.
 
 **Out of scope**:
 
-- Any applied orchestration decision in production. Promotion is blocked
-  pending deployed evidence. The `live` mode needs a later successful gated
-  readout.
-- Choosing an exploration cohort for hold/start without outcome evidence.
+- Any applied creation-manifest decision in production. Promotion is blocked
+  pending deployed evidence.
+- Widening hold/start beyond its three advisory gates.
+- Early release of dependents before their upstream merges.
 - The optional overlap-real decision (design §5c).
 - Readout output: it holds workspace data and is a private artifact, never
   committed.

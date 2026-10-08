@@ -8,6 +8,7 @@ import {
   legacySettingsTarget,
   settingsBackHref,
   settingsItemFor,
+  settingsNavFor,
 } from './settings-nav';
 
 const PROTECTED = resolve(import.meta.dir, '../app/app/(protected)');
@@ -44,6 +45,20 @@ describe('SETTINGS_NAV', () => {
 
   it('writes descriptions without em dashes', () => {
     for (const item of SETTINGS_ITEMS) expect(item.description).not.toContain('—');
+  });
+});
+
+describe('settingsNavFor', () => {
+  const ids = (billing: boolean) => settingsNavFor({ billing }).flatMap((g) => g.items.map((i) => i.id));
+
+  it('hides Billing entirely while billing is off', () => {
+    expect(ids(false)).not.toContain('billing');
+    expect(ids(false)).toHaveLength(SETTINGS_ITEMS.length - 1);
+  });
+
+  it('lists Billing under Team, after Budgets, while billing is on', () => {
+    const team = settingsNavFor({ billing: true }).find((g) => g.label === 'Team')!.items.map((i) => i.id);
+    expect(team).toEqual(['team', 'budgets', 'billing']);
   });
 });
 

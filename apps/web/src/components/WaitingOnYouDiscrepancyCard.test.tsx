@@ -86,7 +86,7 @@ describe('WaitingOnYouDiscrepancyCard', () => {
   it('CTA set — contradicted: Flip direction and Accept, unchanged', () => {
     const html = renderToStaticMarkup(<WaitingOnYouDiscrepancyCard item={item({ direction: 'contradicted' })} />);
     expect(ctas(html)).toEqual(['Flip direction', 'Accept']);
-    expect(html).toContain('Contradicted · needs your call');
+    expect(html).toContain('Contradicted · decision needed');
   });
 
   it('CTA set — spec_ahead already promoted: the mission link replaces Promote', () => {

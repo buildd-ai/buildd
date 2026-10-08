@@ -2,8 +2,8 @@
 title: MCP Action Contracts
 status: active
 owner: max
-last_verified: 2026-09-30
-summary: The MCP server at /api/mcp MUST expose buildd, recall, learn and the deprecated buildd_memory over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate actions by token privilege.
+last_verified: 2026-10-07
+summary: /api/mcp MUST serve the buildd_<group> action tools (legacy buildd only to runners predating them), recall and learn over stateless Streamable HTTP, Bearer-authenticate every call and gate actions by privilege.
 domain: mcp
 surfaces: [packages/core/mcp-tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/app/api/github/pr/review/route.ts, apps/web/src/lib/pr-review-status.ts]
 related: [auth-oauth-boundaries, knowledge-store-retrieval, mcp-connectors-and-roles]
@@ -46,10 +46,17 @@ every supported action.
 - `tools/list` on the `groups` surface lists `buildd_<group>` for each group the
   token level has an action in; its `action` enum is those actions plus `help`.
   `buildd` is not listed there but MUST stay callable with the same routing.
-- The `legacy` surface lists `buildd` as before and is the default for every
-  session. `?tools=groups` opts in to the groups surface. The server flag
-  `BUILDD_MCP_TOOL_SURFACE=groups` moves sessions without `?worker=` to groups;
-  runner worker sessions stay legacy. `?tools=legacy|groups` overrides either way.
+- `groups` is the standard surface for every session; no URL parameter or
+  server flag selects a surface. The one exception: a runner worker session
+  (`?worker=`) whose runner has not advertised `CAPABILITY_MCP_GROUP_TOOLS` on
+  its heartbeat (looked up by the worker's account and local UI URL) gets the
+  `legacy` surface, which lists `buildd` alone. Unknown (no URL, no heartbeat,
+  lookup error) counts as not advertised. The legacy surface is a
+  compatibility fallback for runners that predate group tools, to be removed.
+- The runner recognises a buildd action on any action tool name
+  (`isBuilddActionTool`: `mcp__buildd__buildd` or `mcp__buildd__buildd_<group>`)
+  plus `input.action`, never one exact name: `create_pr` arrives on
+  `buildd_work`.
 - A wrong-group action the token level may not call MUST get the same
   not-available-at-your-level error as `help`, not a pointer to a tool the
   level is not shown.
@@ -70,17 +77,23 @@ every supported action.
   `isError: true` naming the action and `params.action`, and run nothing.
 
 **Acceptance criteria**:
-- AC-21: GIVEN a trigger token WHEN tools/list is called with `?tools=groups` THEN the group tools
+- AC-21: GIVEN a trigger token WHEN tools/list is called THEN the group tools
   are exactly `buildd_tasks`, `buildd_work`, `buildd_artifacts`,
   `buildd_schedules`.
 - AC-22: WHEN `buildd_missions` is called with `action: "list_runners"` THEN the
   result is `isError: true` naming `buildd_analytics`.
 - AC-23: WHEN `buildd` is called with any action THEN it dispatches as before.
+- AC-24: GIVEN a worker session whose runner advertised `CAPABILITY_MCP_GROUP_TOOLS`
+  WHEN tools/list is called THEN it lists the group tools and not `buildd`;
+  GIVEN one whose runner did not THEN it lists `buildd` and no group tool,
+  whatever the URL says.
 
 **Analytics contract**:
 - `buildd_analytics` groups explain, errors, failure/gate analytics, budget,
-  usage, runners, manifest coverage and path-claim statistics. The existing
-  Analyst role declares it; aggregate reads remain available at worker level.
+  usage, runners, Dispatch transport health (`dispatch_health {workspaceId?}`,
+  see task-dispatch-authority.md "Observability"), manifest coverage and
+  path-claim statistics. The existing Analyst role declares it; aggregate
+  reads remain available at worker level.
 - `get_manifest_coverage {workspaceId?, missionId?, window?}` reports tasks
   created in the window as concrete, advisory wildcard or missing manifests,
   with a fractional concrete share and workspace/mission/kind breakdowns.
@@ -110,6 +123,8 @@ every supported action.
 - Registry: `packages/core/mcp-tool-groups.ts` — `ACTION_AREA`, `mcpGroupOf`
 - Listing and routing: `apps/web/src/app/api/mcp/tools.ts` — `listMcpTools`,
   `routeGroupToolCall`, `mcpToolSurfaceFor`
+- Old-runner check: `apps/web/src/lib/mcp-request-scope.ts` — `workerRunnerSupportsGroupTools`
+- Runner tool-name match: `packages/shared/src/tool-names.ts` — `isBuilddActionTool`
 
 ---
 

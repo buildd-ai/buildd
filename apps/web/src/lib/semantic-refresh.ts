@@ -20,9 +20,8 @@
  *                         GitHub read failure. NEVER treated as disjoint.
  *  - `head_changed`     — the PR moved under us; re-read, do not judge.
  *
- * Revision coverage. codebase-memory runs on runners (a stdio MCP server in each
- * worker's worktree); nothing on the server can query it, let alone at an exact
- * commit. `getServerSymbolProvider()` therefore returns the unavailable provider,
+ * Revision coverage. No symbol index is reachable from the server, let alone
+ * one that answers at an exact commit. `getServerSymbolProvider()` therefore returns the unavailable provider,
  * so every shared-file refresh reads `unknown` and semantic auto-clearance is in
  * effect disabled — as the design requires when pinned revisions cannot be
  * supplied. Plugging in a provider that answers at the requested revision is the
@@ -95,7 +94,7 @@ export const UNAVAILABLE_SYMBOL_PROVIDER: RevisionSymbolProvider = {
   async lookup() {
     return {
       status: 'unavailable',
-      reason: 'no revision-pinned symbol index is reachable from the server (codebase-memory runs on runners only)',
+      reason: 'no revision-pinned symbol index is reachable from the server',
     };
   },
 };

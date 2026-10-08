@@ -15,6 +15,7 @@ import { boardTaskLabel } from './mission-board-label';
 import { taskDisplayLabel } from '@buildd/core/task-label';
 import { WORK_KIND_GLYPHS } from './task-presentation';
 import { buildVisualReviewFixtureModel } from './visual-review-model.fixtures';
+import { screensToReview } from './visual-review-model';
 
 // Illustrative fixtures only — no real mission or task data.
 const T0 = Date.UTC(2026, 0, 1, 12, 0, 0);
@@ -423,8 +424,9 @@ describe('buildMissionBoard: the visual review (docs/design/visual-qa-human-revi
     ]);
     expect(m.needsYou).toEqual(['q']);
     const visual = buildVisualReviewFixtureModel('needs_you', { needsYou: 'unsure', scenario: 'deck' });
-    expect(visual.summary.awaitingHuman).toBeGreaterThan(0);
-    expect(boardNeedsYouCount(m, visual)).toBe(1 + visual.summary.awaitingHuman);
+    expect(screensToReview(visual)).toBeGreaterThan(0);
+    // The deck's count, not the unsure-only awaitingHuman (they differ here).
+    expect(boardNeedsYouCount(m, visual)).toBe(1 + screensToReview(visual));
   });
 
   it('no visual model, or nothing awaiting: only the waiting tasks count', () => {
@@ -438,5 +440,31 @@ describe('buildMissionBoard: the visual review (docs/design/visual-qa-human-revi
     expect(boardNeedsYouCount(m, buildVisualReviewFixtureModel('needs_you', { needsYou: 'round_cap' }))).toBe(1);
     // The auditor's own question parks its worker: that task is in needsYou, so it is not counted twice.
     expect(boardNeedsYouCount(m, buildVisualReviewFixtureModel('needs_you', { needsYou: 'question' }))).toBe(0);
+  });
+});
+
+// Regression (surface audit, delivery-states cell 05): the drawer read "...
+// confirm the new boundary.." because kernelReason always appended a period.
+describe('buildMissionBoard: the kernel reason is one sentence', () => {
+  const withDelivery = (detail: string | null) => board([task('d', {
+    status: 'in_progress',
+    workers: [worker({ status: 'completed', prNumber: 7, prUrl: 'https://example.invalid/pr/7' })],
+    delivery: {
+      ownerTaskId: 'd', state: 'ESCALATED', stage: 'review', owner: 'human', needsYou: true,
+      headline: 'The reviewer escalated this PR', detail,
+      prNumber: 7, prState: null, attemptLine: null, cta: null,
+    } as unknown as BoardTaskInput['delivery'],
+  })]).tasks.d.kernelReason;
+
+  it('a detail that already ends in a period gets no second one', () => {
+    expect(withDelivery('A person should confirm the new boundary.')).toBe('The reviewer escalated this PR: A person should confirm the new boundary.');
+  });
+  it('a detail ending in ! or ? keeps its own punctuation', () => {
+    expect(withDelivery('Is this right?')).toBe('The reviewer escalated this PR: Is this right?');
+    expect(withDelivery('Check it!')).toBe('The reviewer escalated this PR: Check it!');
+  });
+  it('a bare detail, or none, still ends in one period', () => {
+    expect(withDelivery('confirm the boundary')).toBe('The reviewer escalated this PR: confirm the boundary.');
+    expect(withDelivery(null)).toBe('The reviewer escalated this PR.');
   });
 });

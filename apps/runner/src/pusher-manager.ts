@@ -4,7 +4,6 @@ const Pusher = ('Pusher' in PusherModule ? (PusherModule as any).Pusher : Pusher
 import type { BuilddTask, WorkerCommand, LocalUIConfig, LocalWorker } from './types';
 import type { BuilddClient } from './buildd';
 import { saveWorker as storeSaveWorker } from './worker-store';
-import { refreshCbmSeedForBaseAdvance } from './cbm-enforcement';
 import { logCollapsed } from './log';
 
 // 97% of claim-poll failures on reconnect/startup are the benign
@@ -15,9 +14,33 @@ import { logCollapsed } from './log';
 const CLAIM_POLL_FAILURE_COLLAPSE_WINDOW_MS = 5 * 60_000;
 
 /** A targeted claim the server answered with no_pending_tasks (see WorkerManager.claimAndStart). */
+/** Exclusion codes that do mean someone else has (or finished) the task. */
+const RACE_EXCLUSION_CODES = new Set(['not_found', 'not_pending', 'already_claimed', 'active_worker', 'state_changed']);
+
+type ClaimRejection = {
+  claimError?: unknown;
+  claimReason?: unknown;
+  claimTaskExclusionCode?: unknown;
+  claimTaskExclusionDetail?: unknown;
+};
+
 function isLostClaimRace(err: unknown): boolean {
-  const e = err as { claimError?: unknown; claimReason?: unknown } | null;
-  return !!e && e.claimError === 'server_rejected' && e.claimReason === 'no_pending_tasks';
+  const e = err as ClaimRejection | null;
+  if (!e || e.claimError !== 'server_rejected' || e.claimReason !== 'no_pending_tasks') return false;
+  return typeof e.claimTaskExclusionCode !== 'string' || RACE_EXCLUSION_CODES.has(e.claimTaskExclusionCode);
+}
+
+/**
+ * The claim gate that refused a task we were woken for (e.g. `workspace_cap`),
+ * or null. The claim WHERE drops such a task and answers `no_pending_tasks`,
+ * which reads exactly like a lost race unless the named gate is printed.
+ */
+function claimGateRefusal(err: unknown): { code: string; detail: string | null } | null {
+  const e = err as ClaimRejection | null;
+  if (!e || e.claimError !== 'server_rejected') return null;
+  const code = e.claimTaskExclusionCode;
+  if (typeof code !== 'string' || RACE_EXCLUSION_CODES.has(code)) return null;
+  return { code, detail: typeof e.claimTaskExclusionDetail === 'string' ? e.claimTaskExclusionDetail : null };
 }
 
 type EventHandler = (event: any) => void;
@@ -39,12 +62,6 @@ export interface PusherManagerCallbacks {
   claimPendingTasks: () => Promise<void>;
   claimAndStart: (task: BuilddTask) => Promise<LocalWorker | null>;
   getProbedWorkers: () => Set<string>;
-  /**
-   * Local checkout path for a workspace, or null when this runner has no clone
-   * of it. Needed by `graph:base-advanced`, which names a repo and a base ref
-   * but cannot know where this particular host keeps it.
-   */
-  resolveRepoPath: (workspace: { id: string; name: string; repo?: string | null }) => string | null;
 }
 
 export class PusherManager {
@@ -159,52 +176,12 @@ export class PusherManager {
           channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string | null }) => {
             this.handleTaskAssignment(data);
           });
-          channel.bind('graph:base-advanced', (data: { repoFullName?: string; baseRef?: string }) => {
-            this.handleBaseAdvanced(ws, data);
-          });
           this.workspaceChannels.set(channelName, channel);
           console.log(`Subscribed to ${channelName} for task assignments`);
         }
       }
     } catch (err) {
       console.error('Failed to subscribe to workspace channels:', err);
-    }
-  }
-
-  /**
-   * A mission integration branch advanced: refresh the codebase-graph seed
-   * keyed on that base ref so the next sibling task in the mission does not
-   * build on a pre-merge graph.
-   *
-   * Advisory throughout. The seed also refreshes on the next claim in the
-   * mission, so this only removes the latency — every early return here is a
-   * normal outcome, not a failure, and none of them may throw into the Pusher
-   * callback. The outcome is logged rather than swallowed: a refresh that never
-   * runs should be visible in the runner log instead of inferred from the
-   * fleet being slow.
-   */
-  private handleBaseAdvanced(
-    workspace: { id: string; name: string; repo?: string | null },
-    data: { repoFullName?: string; baseRef?: string },
-  ) {
-    const baseRef = typeof data?.baseRef === 'string' ? data.baseRef : undefined;
-    if (!baseRef) {
-      console.log('[graph:base-advanced] ignored: no baseRef in payload');
-      return;
-    }
-    try {
-      const repoPath = this.callbacks.resolveRepoPath(workspace);
-      if (!repoPath) {
-        // Normal on a runner that holds no clone of this workspace. Every
-        // runner on the workspace channel receives the event; only the ones
-        // with a checkout can act on it.
-        console.log(`[graph:base-advanced] no local checkout for workspace ${workspace.name} — nothing to refresh`);
-        return;
-      }
-      const outcome = refreshCbmSeedForBaseAdvance({ repoPath, baseRef });
-      console.log(`[graph:base-advanced] ${baseRef} in ${repoPath}: ${outcome}`);
-    } catch (err) {
-      console.error('[graph:base-advanced] refresh failed:', err);
     }
   }
 
@@ -263,7 +240,10 @@ export class PusherManager {
       // Losing the race for a broadcast assignment (another runner or our own
       // poll claimed it first) is the expected outcome, not a failure: one
       // info line, no stack. Anything else stays an error.
-      if (isLostClaimRace(err)) {
+      const refusal = claimGateRefusal(err);
+      if (refusal) {
+        console.log(`Assigned task ${task.id} refused by claim gate ${refusal.code}${refusal.detail ? `: ${refusal.detail}` : ''}`);
+      } else if (isLostClaimRace(err)) {
         console.log(`Lost claim race for assigned task ${task.id}: already claimed or no longer pending`);
       } else {
         console.error(`Failed to start assigned task ${task.id}:`, err);

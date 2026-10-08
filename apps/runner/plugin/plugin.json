@@ -1,0 +1,16 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "buildd",
+  "version": "1.0.0",
+  "description": "Make an interactive coding session a first-class buildd presence: the buildd MCP server, a session workflow skill, and lifecycle hooks that report presence (never content) and keep a claimed task alive.",
+  "author": { "name": "buildd", "url": "https://buildd.dev" },
+  "homepage": "https://buildd.dev",
+  "repository": "https://github.com/buildd-ai/buildd",
+  "license": "MIT",
+  "keywords": ["buildd", "mcp", "agents", "tasks"],
+  "extensions": {
+    "com.anthropic.claude-code": { "hooks": "hooks/hooks.json", "manifest": ".claude-plugin/plugin.json" },
+    "com.openai.codex": { "hooks": "com.openai.codex/hooks.json", "requiresHookTrust": true },
+    "com.cursor": { "hooks": "com.cursor/hooks.json" }
+  }
+}

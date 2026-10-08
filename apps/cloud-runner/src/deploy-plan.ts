@@ -9,6 +9,8 @@
  * rotating silently would break the other workspaces.
  */
 import { parseModelProxyAuthHeader, parseModelProxyUrl } from './outbound';
+import { RUNNER_CLASSES } from './runner-class';
+import { DEFAULT_SEAT_CAP, OWNER_SEAT_SECRET } from './owner-seat';
 
 /** Non-secret webhook view, as GET /api/workspaces returns it (token masked). */
 export interface ObservedWebhook {
@@ -55,11 +57,26 @@ export interface DeployInputs {
    * similar). Each field is optional; an empty string counts as not supplied.
    */
   modelProxy?: { url?: string; key?: string; authHeader?: string };
+  /**
+   * `--secrets-only`: leave the Worker's code alone and only put secrets and
+   * set the webhook. Every such step runs server-side with the stored
+   * credential, so the run needs no Cloudflare token on the machine at all.
+   * Refused for a Worker that was never deployed.
+   */
+  skipWorkerDeploy?: boolean;
+  /**
+   * `--owner-seat`: the deployer's own `claude setup-token` value as a Worker
+   * secret on their own Cloudflare account (owner-seat.ts). `token` comes from
+   * the deployer's environment or a prompt; it goes to `wrangler secret put`
+   * and nowhere else (never to buildd, never into the plan's output).
+   */
+  ownerSeat?: { requested: boolean; token?: string };
 }
 
 export type SecretName =
   | 'DISPATCH_TOKEN' | 'BUILDD_SERVER' | 'BUILDD_API_KEY'
-  | 'MODEL_PROXY_URL' | 'MODEL_PROXY_KEY' | 'MODEL_PROXY_AUTH_HEADER';
+  | 'MODEL_PROXY_URL' | 'MODEL_PROXY_KEY' | 'MODEL_PROXY_AUTH_HEADER'
+  | typeof OWNER_SEAT_SECRET;
 
 /** Put with `wrangler secret put` so a later deploy keeps them, but not secret in substance: printed in the plan. */
 const PLAIN_SECRET_NAMES: ReadonlySet<SecretName> = new Set(['BUILDD_SERVER', 'MODEL_PROXY_URL', 'MODEL_PROXY_AUTH_HEADER']);
@@ -120,7 +137,35 @@ export function renderWranglerConfig(base: string, names: DeployNames): string {
   const named = swap(base, /^(\s*"name":\s*)"[^"]*"/m, names.worker, '"name"');
   // The fleet groups this deployment's runs under its Worker name.
   const grouped = swap(named, /("RUNNER_GROUP":\s*)"[^"]*"/m, names.worker, '"RUNNER_GROUP"');
-  return swap(grouped, /("bucket_name":\s*)"[^"]*"/m, names.bucket, '"bucket_name"');
+  const out = swap(grouped, /("bucket_name":\s*)"[^"]*"/m, names.bucket, '"bucket_name"');
+  // A deploy without one of the container classes would strand every task
+  // buildd routes to it.
+  const present = new Set(containerClasses(out).map(c => c.className));
+  for (const cls of Object.values(RUNNER_CLASSES)) {
+    if (!present.has(cls.binding)) throw new Error(`wrangler.jsonc: no container class ${cls.binding}`);
+  }
+  return out;
+}
+
+/** One container class as wrangler.jsonc declares it. */
+export interface ContainerClassSummary {
+  className: string;
+  instanceType: string;
+  maxInstances: number;
+}
+
+/**
+ * The container classes in a wrangler.jsonc text (whole-line `//` comments
+ * allowed, as in the checked-in file), for the plan output and the render
+ * check. Throws on text that is not that.
+ */
+export function containerClasses(configText: string): ContainerClassSummary[] {
+  const cfg = JSON.parse(configText.replace(/^\s*\/\/.*$/gm, '')) as { containers?: Array<{ class_name?: unknown; instance_type?: unknown; max_instances?: unknown }> };
+  return (cfg.containers ?? []).map(c => ({
+    className: String(c.class_name),
+    instanceType: String(c.instance_type),
+    maxInstances: typeof c.max_instances === 'number' ? c.max_instances : 0,
+  }));
 }
 
 export type DeployStep =
@@ -175,8 +220,12 @@ export function planDeploy(i: DeployInputs): DeployPlan {
     return { ok: false, error: 'The runner API key must be a bld_ key.' };
   }
 
+  if (i.skipWorkerDeploy && i.workerSecretNames === null) {
+    return { ok: false, error: 'The Worker has not been deployed yet; run without --secrets-only first.' };
+  }
+
   const secrets = new Set(i.workerSecretNames ?? []);
-  const steps: DeployStep[] = [{ kind: 'ensure_snapshot_bucket' }, { kind: 'wrangler_deploy' }];
+  const steps: DeployStep[] = i.skipWorkerDeploy ? [] : [{ kind: 'ensure_snapshot_bucket' }, { kind: 'wrangler_deploy' }];
   const notes: string[] = [];
 
   // BUILDD_SERVER: not a secret in substance, but kept with the others so a
@@ -203,6 +252,11 @@ export function planDeploy(i: DeployInputs): DeployPlan {
   if (!proxy.ok) return proxy;
   steps.push(...proxy.steps);
   notes.push(...proxy.notes);
+
+  const seat = planOwnerSeat(i.ownerSeat, secrets);
+  if (!seat.ok) return seat;
+  steps.push(...seat.steps);
+  notes.push(...seat.notes);
 
   // DISPATCH_TOKEN.
   const hasToken = secrets.has('DISPATCH_TOKEN');
@@ -250,6 +304,39 @@ export function planDeploy(i: DeployInputs): DeployPlan {
   return { ok: true, steps, notes };
 }
 
+function planOwnerSeat(
+  o: DeployInputs['ownerSeat'],
+  secrets: Set<string>,
+): { ok: true; steps: DeployStep[]; notes: string[] } | { ok: false; error: string } {
+  const has = secrets.has(OWNER_SEAT_SECRET);
+  if (!o?.requested) {
+    return {
+      ok: true,
+      steps: [],
+      notes: has ? [`This Worker has an owner seat (${OWNER_SEAT_SECRET}); \`wrangler secret delete ${OWNER_SEAT_SECRET}\` turns it off.`] : [],
+    };
+  }
+  const token = o.token?.trim();
+  if (!token) {
+    if (has) return { ok: true, steps: [], notes: [`Owner seat unchanged (${OWNER_SEAT_SECRET} is already on the Worker).`] };
+    return {
+      ok: false,
+      error: `--owner-seat needs your own \`claude setup-token\` value: set ${OWNER_SEAT_SECRET} in your environment, or run in a terminal to be prompted. It is stored only as a secret on your Cloudflare Worker.`,
+    };
+  }
+  if (/\s/.test(token) || !token.startsWith('sk-ant-')) {
+    return { ok: false, error: `${OWNER_SEAT_SECRET} does not look like a \`claude setup-token\` value (expected sk-ant-…, no whitespace).` };
+  }
+  return {
+    ok: true,
+    steps: [{ kind: 'put_secret', name: OWNER_SEAT_SECRET, value: token, reason: has ? 'replace owner seat (supplied)' : 'owner seat: your own Claude token, held only on this Worker' }],
+    notes: [
+      'One owner, one token per Worker: every workspace this Worker serves runs on that one subscription. A workspace with its own agent endpoint or Anthropic key keeps using it.',
+      `At most ${DEFAULT_SEAT_CAP} runs use the seat at once (OWNER_SEAT_MAX_CONCURRENT changes it); a usage limit pauses new seat runs until it lifts.`,
+    ],
+  };
+}
+
 function planModelProxy(
   m: NonNullable<DeployInputs['modelProxy']>,
   secrets: Set<string>,
@@ -292,14 +379,17 @@ function planModelProxy(
 }
 
 /** One line per step, secrets redacted, for --dry-run and the run log. */
-export function describePlan(plan: DeployPlan, names: DeployNames = deployNames()): string[] {
+export function describePlan(plan: DeployPlan, names: DeployNames = deployNames(), classes: ContainerClassSummary[] = []): string[] {
+  const classList = classes.length ? `; containers: ${classes.map(c => `${c.className} ${c.instanceType} max ${c.maxInstances}`).join(', ')}` : '';
   if (!plan.ok) return [`error: ${plan.error}`];
   const lines = plan.steps.map((s) => {
     switch (s.kind) {
       case 'ensure_snapshot_bucket':
         return `wrangler r2 bucket create ${names.bucket} (if missing) + lifecycle ${SNAPSHOT_BUCKET.lifecycle.map(r => `${r.prefix} ${r.expireDays}d`).join(', ')}`;
       case 'wrangler_deploy':
-        return names.custom ? `wrangler deploy --name ${names.worker} (apps/cloud-runner, generated config)` : 'wrangler deploy (apps/cloud-runner)';
+        return names.custom
+          ? `wrangler deploy --name ${names.worker} (apps/cloud-runner, generated config${classList})`
+          : `wrangler deploy (apps/cloud-runner${classList})`;
       case 'put_secret':
         return `wrangler secret put ${s.name} = ${PLAIN_SECRET_NAMES.has(s.name) ? s.value : redact(s.value)} (${s.reason})`;
       case 'set_webhook':

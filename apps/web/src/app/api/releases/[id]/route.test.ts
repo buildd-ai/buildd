@@ -129,4 +129,26 @@ describe('GET /api/releases/[id]', () => {
     expect(body.attributedTasks).toHaveLength(1);
     expect(body.attributedTasks[0].prNumber).toBe(42);
   });
+
+  describe('per-task token', () => {
+    const scoped = (workspaceId: string) => ({
+      id: 'acc-1', level: 'worker', teamId: TEAM_ID, taskScope: { taskId: 't-1', workspaceId, expiresAt: Date.now() + 60_000 },
+    });
+
+    beforeEach(() => {
+      mockGetReleaseWithTaskEdges.mockResolvedValue({ release: { id: RELEASE_ID, workspaceId: WORKSPACE_ID, headSha: null, previousSha: null }, edges: [] });
+    });
+
+    it('reads a release of its own task’s workspace', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(scoped(WORKSPACE_ID));
+      expect((await call()).status).toBe(200);
+    });
+
+    it('refuses a release of another workspace of its own team', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(scoped('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'));
+      const res = await call();
+      expect(res.status).toBe(403);
+      expect(mockDbSelect).not.toHaveBeenCalled();
+    });
+  });
 });

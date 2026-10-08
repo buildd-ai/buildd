@@ -33,11 +33,34 @@ export interface TaskBranchNameInput {
   /** `workspaces.gitConfig`, or null/undefined for repo defaults. */
   gitConfig?: BranchNameGitConfig | null;
   /**
-   * A shared branch all of a mission's tasks push to, read from
-   * `context.headBranch` (seeded from `missions.workingBranch`). When present
-   * it wins outright: the task is not given a branch of its own.
+   * A shared branch this task's worker should push to instead of getting a
+   * generated one, read from `context.headBranch`. Usually seeded from
+   * `missions.workingBranch` for a mission's shared integration branch, but
+   * the field itself is generic: `create_task`'s `headBranch` param writes
+   * the same key directly for a one-off task that must land on an existing
+   * branch. When present it wins outright: the task is not given a branch of
+   * its own — unless it equals `baseBranch` (see `pinnedHeadBranch`).
    */
   sharedHeadBranch?: unknown;
+  /** `context.baseBranch` — where the task's PR is based. */
+  baseBranch?: unknown;
+}
+
+/**
+ * The head a task pins via `context.headBranch`, or null.
+ *
+ * A pinned head equal to the task's own `baseBranch` is not a head: a PR
+ * cannot run from a branch into itself. That shape is a mission integration
+ * branch written into both keys (approve-plan did this for every child of an
+ * opted-in mission), and honouring it put every task of the mission on the
+ * mission branch itself, where no head identifies whose work it is. Such a
+ * task gets its own generated head, based on the integration branch.
+ */
+export function pinnedHeadBranch(context: unknown): string | null {
+  if (!context || typeof context !== 'object') return null;
+  const { headBranch, baseBranch } = context as { headBranch?: unknown; baseBranch?: unknown };
+  if (typeof headBranch !== 'string' || headBranch.length === 0) return null;
+  return headBranch === baseBranch ? null : headBranch;
 }
 
 /** Title → branch slug: lowercase, non-alphanumerics collapsed to `-`, 30 chars. */
@@ -52,18 +75,17 @@ export function sanitizeBranchTitle(title: string): string {
  * The branch name a task's worker will check out.
  *
  * Precedence (must stay identical to the claim route's insert):
- *   1. `sharedHeadBranch` — the mission's shared working branch.
+ *   1. `sharedHeadBranch` — a pinned shared head, unless it is `baseBranch`.
  *   2. `branchingStrategy === 'none'` → `task-<id8>` (no slug at all).
  *   3. `useBuildBranch` → `buildd/<id8>-<slug>`, outranking `branchPrefix`.
  *   4. `branchPrefix` → `<prefix><id8>-<slug>`.
  *   5. default → `buildd/<id8>-<slug>`.
  */
 export function generateTaskBranchName(input: TaskBranchNameInput): string {
-  const { taskId, title, gitConfig, sharedHeadBranch } = input;
+  const { taskId, title, gitConfig } = input;
 
-  if (typeof sharedHeadBranch === 'string' && sharedHeadBranch.length > 0) {
-    return sharedHeadBranch;
-  }
+  const sharedHeadBranch = pinnedHeadBranch({ headBranch: input.sharedHeadBranch, baseBranch: input.baseBranch });
+  if (sharedHeadBranch) return sharedHeadBranch;
 
   const taskIdShort = taskId.substring(0, 8);
   if (gitConfig?.branchingStrategy === 'none') return `task-${taskIdShort}`;

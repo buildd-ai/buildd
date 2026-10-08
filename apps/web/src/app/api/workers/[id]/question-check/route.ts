@@ -21,6 +21,7 @@ import { parseQuestionGateRequest } from '@buildd/core/question-gate';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { isUuid } from '@/lib/uuid';
 import { checkQuestion, gateEnabledFromGitConfig, hardRailContextFromGitConfig } from '@/lib/question-gate-check';
+import { RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 10;
@@ -75,6 +76,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       },
     },
     parsed.value,
+    { fileRepair: RECOVERABLE_BLOCKER_REPAIR },
   );
   return NextResponse.json(reply);
 }

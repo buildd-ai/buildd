@@ -62,9 +62,9 @@ async function teamPressurePct(teamId: string): Promise<number | null> {
 
 /**
  * `tasks.kind` is a plain text column — its `$type<>` is compile-time only, so
- * an unrecognised value can reach here. The router indexes `BASELINE[kind]`
- * directly (model-router.ts:114), so an unknown string would throw rather than
- * degrade. Narrow it here and treat anything unrecognised as no signal.
+ * an unrecognised value can reach here. The router itself now routes an
+ * unknown kind as engineering; this probe instead treats anything unrecognised
+ * as no signal, so it never predicts a pause the task's real kind wouldn't.
  */
 const ROUTER_KINDS = new Set<TaskKind>([
   'coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation',

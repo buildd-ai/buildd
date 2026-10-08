@@ -23,7 +23,7 @@ Wire contract: [`packages/dispatch-contract`](../../packages/dispatch-contract).
 | `src/scope-queue.ts` | `ScopeQueue` SQLite DO: wires storage, alarm and secrets into the engine |
 | `src/engine.ts` | The queue: publish/merge, alarm loop, retries, receipts, prune. Runtime-free |
 | `src/producer.ts` | Signed callbacks to buildd: resolve, relay, receipts |
-| `src/adapters/` | `http`, `github-repository-dispatch`, `runner-wake` |
+| `src/adapters/` | `http`, `runner-wake` |
 | `src/config.ts` | Fail-closed config checks, `DRY_RUN_TYPES` |
 
 The runtime-free files are what the Bun tests cover (`bun run test`). The
@@ -67,12 +67,13 @@ One alarm per scope, set to the earliest due intent (or receipt flush).
   `skipped`, receipt `delivered via skipped:all_declined`: a policy answer
   will not change on retry, and this matches today's terminal broadcast.
 - `also` steps run on the first attempt only; their outcome never changes
-  the intent's state.
+  the intent's state. The mode is generic; buildd's route policy uses none
+  today.
 - A throw is retryable: `next_due = now + retryDelayMs(attempt)` (contract),
   an `attempted` receipt, and the retry resumes at the step that threw. After
   `MAX_DELIVERY_ATTEMPTS`, a `failed` receipt.
-- `resolve` (`resolve: true`, and always for `http` and
-  `github-repository-dispatch`): `deliver` (payload + grant), `decline`,
+- `resolve` (`resolve: true`, and always for `http`): `deliver` (payload +
+  grant), `decline`,
   `skip` (closes, `skipped:<why>`), or `reschedule` (re-arm, no attempt
   counted, at least 15 s out). A grant is held in memory for that one step,
   never written to SQLite, receipts or logs.
@@ -88,12 +89,14 @@ One alarm per scope, set to the earliest due intent (or receipt flush).
   target, outcome, latencyMs, latenessMs}`.
 
 Target type: a registered target wins, else the id's last `:` segment
-(`webhook` → `http`, `github-actions` → `github-repository-dispatch`,
-`runner-wake`). Anything else declines `unknown_target`.
+(`webhook` or `http` → `http`, `runner-wake`). Anything else declines
+`unknown_target` without calling resolve. That includes `github-actions`:
+the GitHub Actions adapter was removed, and an intent queued before then
+skips that step and carries on with the rest of its route.
 
-`DRY_RUN_TYPES` (default `http,github-repository-dispatch`, the P1 shadow):
-those types call resolve and record `dry-run:<type>:<decision>` without
-POSTing. An absent var keeps the default; `""` turns dry-run off.
+`DRY_RUN_TYPES` (default `http`, the P1 shadow): those types call resolve
+and record `dry-run:<type>:<decision>` without POSTing. An absent var keeps
+the default; `""` turns dry-run off, which is what `wrangler.jsonc` sets.
 
 ## Config
 
@@ -139,8 +142,9 @@ A Vercel env change does not reach a running deployment.
 - Preview (`stg`) has no `DISPATCH_*` on purpose: the transport is off on
   previews.
 - The deploy token is `CF_DISPATCH_API_TOKEN` / `CF_DISPATCH_ACCOUNT_ID` in
-  Doppler `buildd/dev_ci`, pushed to GitHub Actions with `gh-secret-push`.
-  Never Vercel.
+  Doppler `buildd/dev_ci`, pushed to GitHub Actions repo secrets with
+  `gh-secret-push`. Never Vercel, and never Actions variables: Actions logs
+  in this repo are world-readable. See [Deploy](#deploy).
 
 ## Local development
 
@@ -163,4 +167,32 @@ curl localhost:8787/health
    Doppler to Vercel and redeploy.
 3. Add a custom domain or route, and set `DISPATCH_URL` to it in Doppler
    `prd`. `workers.dev` is blocked on the owner's network.
-4. Deploy: `bun run deploy`. CI deploys with the `dev_ci` token above.
+4. Push the deploy token to GitHub (see [Deploy](#deploy)), then let CI
+   deploy.
+
+## Deploy
+
+CI deploys it: `.github/workflows/deploy-dispatch.yml`.
+
+- **On release.** A push to `main` that touches `apps/dispatch/**` or
+  `packages/dispatch-contract/**` deploys, so the Worker ships with the
+  release that contains its change, like the web app. Merges to `dev` deploy
+  nothing.
+- **Manually.** `gh workflow run deploy-dispatch.yml --ref main`, optionally
+  `-f ref=<tag-or-sha>` to deploy (or roll back to) a specific commit.
+
+The job runs the Worker tests and `tsc`, runs `wrangler deploy` with
+`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` from the repo secrets
+`CF_DISPATCH_API_TOKEN` / `CF_DISPATCH_ACCOUNT_ID`, then fails unless
+`/health` answers `"configured":true`. It fails first, by name, if either
+secret is missing. It never sets `PUBLISH_SECRET` or `CALLBACK_SECRET`; a
+deploy keeps the Worker's existing secrets.
+
+The secrets come from Doppler `buildd/dev_ci`, pushed with
+`~/infrastructure/scripts/gh-secret-push.mjs` (dry run by default; `--apply`
+writes every name on its `buildd` allowlist).
+
+A local deploy still works: `bunx wrangler deploy` here uses the `personal`
+profile bound in Owner setup. The binding lives in your wrangler user config,
+not the repo, and a `CLOUDFLARE_API_TOKEN` in the shell takes precedence over
+it, so unset that first if you mean the profile.

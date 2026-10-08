@@ -17,9 +17,28 @@
  * dotted version the API error names. This map only needs a new entry when a
  * future model raises the floor again — it is not tied to any one SDK release.
  */
+import {
+  certifiedFloor,
+  compareCliVersions,
+  findCertification,
+  isCertified,
+  runnerMeetsCertification,
+  type CertificationMap,
+} from './model-certification';
+
+/**
+ * Static floors, kept as the seed and as the anchor for "recognized": every
+ * model released no later than the newest row here is served without a probe.
+ * A NEWER release no longer needs a row: the certification probe
+ * (model-certification.ts) records its floor without a deploy. Add a row only
+ * to correct a probe, or for a model the catalog cannot see.
+ */
 export const MODEL_MIN_CLI_VERSION: Readonly<Record<string, string>> = {
   'claude-fable-5-1': '2.1.251',
   'claude-opus-5-5': '2.1.280',
+  // Sonnet 5.5 support first shipped in Claude Code 2.1.284:
+  // https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21284
+  'claude-sonnet-5-5': '2.1.284',
 };
 
 /**
@@ -30,22 +49,7 @@ function recordedFloor(model: string): string | undefined {
   return Object.hasOwn(MODEL_MIN_CLI_VERSION, model) ? MODEL_MIN_CLI_VERSION[model] : undefined;
 }
 
-/**
- * Compares two dot-separated numeric version strings, e.g. "2.1.251".
- * Returns -1 if `a` < `b`, 0 if equal, 1 if `a` > `b`. Missing trailing
- * components compare as 0 ("2.1" == "2.1.0").
- */
-export function compareCliVersions(a: string, b: string): number {
-  const partsA = a.split('.').map(Number);
-  const partsB = b.split('.').map(Number);
-  const len = Math.max(partsA.length, partsB.length);
-  for (let i = 0; i < len; i++) {
-    const na = partsA[i] ?? 0;
-    const nb = partsB[i] ?? 0;
-    if (na !== nb) return na < nb ? -1 : 1;
-  }
-  return 0;
-}
+export { compareCliVersions };
 
 export type ModelCapabilityCheck =
   | { ok: true }
@@ -53,6 +57,9 @@ export type ModelCapabilityCheck =
 
 /**
  * Checks whether a runner reporting `runnerCliVersion` can serve `model`.
+ *
+ * The floor is the static table's, else the one certification learned
+ * (`certifications`, see model-certification.ts).
  *
  * Fails OPEN when `model` has no known floor, or when `runnerCliVersion` is
  * missing/unparseable — an old runner build that predates version reporting
@@ -62,8 +69,11 @@ export type ModelCapabilityCheck =
 export function checkModelClientCapability(
   model: string,
   runnerCliVersion: string | null | undefined,
+  certifications?: CertificationMap | null,
 ): ModelCapabilityCheck {
-  const required = recordedFloor(model);
+  const cert = findCertification(certifications, model);
+  // The static row first; a probe-learned floor for a model the table never named.
+  const required = recordedFloor(model) ?? (cert ? certifiedFloor(cert) : null);
   if (!required) return { ok: true };
   if (!runnerCliVersion) return { ok: true };
   if (compareCliVersions(runnerCliVersion, required) >= 0) return { ok: true };
@@ -100,10 +110,13 @@ const releaseDay = (createdSeconds: number) => Math.floor(createdSeconds / 86_40
  *     recorded model's release day. Same-day siblings count as recognized,
  *     matching pickTierModel's day granularity.
  *
+ *   - it has no recorded floor but is centrally certified
+ *     (`options.certifications`) and the runner meets its certified floor.
+ *
  * An unrecognized model is refused whatever CLI the runner reports, because
  * a current CLI proves nothing about a floor that nobody has recorded. The
- * pick falls back to the newest recognized in-band release. To adopt the
- * new model, add it to MODEL_MIN_CLI_VERSION. If no recorded model appears in
+ * pick falls back to the newest recognized in-band release until the
+ * certification probe certifies the new model, with no deploy. If no recorded model appears in
  * the catalog at all, every unrecorded model is unrecognized and the caller
  * lands on TIER_DEFAULTS. An unrecorded model with no release time (the feed
  * omitted `created`, which normalizes to 0) is also refused: missing data is
@@ -118,7 +131,7 @@ const releaseDay = (createdSeconds: number) => Math.floor(createdSeconds / 86_40
  */
 /** Why the catalog check refused a model it has no recorded floor for. */
 export type UnrecognizedModelReason =
-  /** Released after the newest model in MODEL_MIN_CLI_VERSION. */
+  /** Released after the newest model in MODEL_MIN_CLI_VERSION, and not (yet) certified. */
   | 'newer_than_floor_table'
   /** No model in MODEL_MIN_CLI_VERSION appears in the catalog, so nothing anchors "recognized". */
   | 'no_recorded_model_in_catalog'
@@ -128,6 +141,12 @@ export type UnrecognizedModelReason =
 export interface CatalogServabilityOptions {
   /** Called each time an in-band model is refused for having no recorded floor. */
   onUnrecognized?: (id: string, reason: UnrecognizedModelReason) => void;
+  /**
+   * Central certification records. A model the static table does not cover is
+   * servable when certified and the runner meets its certified floor (a missing
+   * runner version fails closed here: the alternative is an older in-band model).
+   */
+  certifications?: CertificationMap | null;
 }
 
 export function makeCatalogServabilityCheck(
@@ -153,6 +172,11 @@ export function makeCatalogServabilityCheck(
     if (!entry) return false;
     const key = floorKey(entry);
     if (key !== null) return checkModelClientCapability(key, runnerCliVersion).ok;
+
+    const cert =
+      findCertification(options?.certifications, entry.id) ??
+      (entry.canonicalId ? findCertification(options?.certifications, entry.canonicalId) : null);
+    if (isCertified(cert)) return runnerMeetsCertification(cert, runnerCliVersion);
 
     let reason: UnrecognizedModelReason | null = null;
     if (newestRecordedDay === -Infinity) reason = 'no_recorded_model_in_catalog';

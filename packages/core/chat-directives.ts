@@ -8,7 +8,13 @@
  * parts that must agree everywhere: the deterministic rule that decides when
  * Jev is absent or unsure, the text a card proposes, and the block a turn loads.
  */
-import { CHAT_TIER_MIN_CONFIDENCE, DIRECTIVE_SCOPE_MIN_CONFIDENCE, type DirectiveScope } from './memory-decisions';
+import {
+  CHAT_TIER_LIVE,
+  CHAT_TIER_MIN_CONFIDENCE,
+  DIRECTIVE_SCOPE_LIVE,
+  DIRECTIVE_SCOPE_MIN_CONFIDENCE,
+  type DirectiveScope,
+} from './memory-decisions';
 
 /** Longest rule a person can save. A rule is a sentence, not a document. */
 export const DIRECTIVE_TEXT_MAX = 280;
@@ -122,13 +128,13 @@ export function proposeDirective(input: {
   judgement: ChatDirectiveJudgement | null;
 }): DirectiveProposal | null {
   const tier = input.judgement?.tier ?? null;
-  const confident = !!tier && tier.confidence >= CHAT_TIER_MIN_CONFIDENCE;
+  const confident = CHAT_TIER_LIVE && !!tier && tier.confidence >= CHAT_TIER_MIN_CONFIDENCE;
   const due = confident ? tier!.choice === 'directive' : keywordDirective(input.message);
   if (!due) return null;
   const text = directiveText(input.message);
   if (!text) return null;
   const scope = input.judgement?.scope ?? null;
-  const suggestedScope: DirectiveScope = input.workspace && scope && scope.confidence >= DIRECTIVE_SCOPE_MIN_CONFIDENCE && scope.choice === 'workspace'
+  const suggestedScope: DirectiveScope = DIRECTIVE_SCOPE_LIVE && input.workspace && scope && scope.confidence >= DIRECTIVE_SCOPE_MIN_CONFIDENCE && scope.choice === 'workspace'
     ? 'workspace'
     : 'everywhere';
   return { text, suggestedScope, source: confident ? 'jev' : 'rule' };

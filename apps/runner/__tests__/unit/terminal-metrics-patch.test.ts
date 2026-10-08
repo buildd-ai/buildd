@@ -2,7 +2,7 @@
  * Terminal metrics must survive the completion path.
  *
  * Two independent defects, both silently dropping everything the terminal
- * PATCH carries (resultMeta with the CBM metrics + tool histogram, token
+ * PATCH carries (resultMeta with the tool histogram, token
  * counts, cost/model attribution, git stats, subagent spans):
  *
  *  1. When the agent completes the task itself through the buildd MCP
@@ -16,7 +16,7 @@
  *     PATCH, which the server accepts on a terminal worker.
  *
  *  2. `const resultMeta = worker.resultMeta || undefined` was captured BEFORE
- *     the CBM / tool-histogram blocks that create `worker.resultMeta` when the
+ *     the tool-histogram block that creates `worker.resultMeta` when the
  *     SDK never emitted a result message. The PATCH spread the stale const, so
  *     on exactly the path whose comment says the metrics "travel with the
  *     completion payload" they were built and then never sent.
@@ -24,7 +24,9 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/terminal-metrics-patch.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 
 // ─── Mocks (same shape as session-model-cost.test.ts) ────────────────────────
@@ -103,13 +105,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -181,16 +183,22 @@ async function runSession(
   const task = makeTask();
   mockClaimTask.mockImplementation(async () => ({ workers: [{ id: workerId, branch: 'buildd/test', task }] }));
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 300));
+  // Poll for the completion update rather than a fixed sleep: a loaded CI
+  // shard can take well over 300ms to finish the session.
+  const deadline = Date.now() + 5000;
+  while (!completionCall() && !metricsCall() && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 25));
+  }
+  await new Promise(r => setTimeout(r, 50));
 }
 
-/** An assistant turn that calls one CBM tool and one ordinary tool. */
+/** An assistant turn that calls one MCP tool and one built-in tool. */
 function toolTurn() {
   return {
     type: 'assistant',
     message: {
       content: [
-        { type: 'tool_use', id: 'tu-1', name: 'mcp__codebase-memory__search_graph', input: { q: 'x' } },
+        { type: 'tool_use', id: 'tu-1', name: 'mcp__github__search_code', input: { q: 'x' } },
         { type: 'tool_use', id: 'tu-2', name: 'Bash', input: { command: 'echo hi' } },
       ],
     },
@@ -231,14 +239,20 @@ describe('completion payload carries the metrics built at completion time', () =
   let manager: InstanceType<typeof WorkerManager>;
 
   beforeEach(resetAll);
+  afterAll(() => {
+
+    cleanupTestWorkspace();
+
+  });
+
   afterEach(() => { manager?.destroy(); });
 
   // The regression: no SDK `result` message means the result handler never set
-  // worker.resultMeta, so the cbm/toolCounts blocks take their `else` branch
+  // worker.resultMeta, so the toolCounts block takes its `else` branch
   // and BUILD worker.resultMeta at completion. A const captured before them is
   // still undefined, and the spread `...(resultMeta && { resultMeta })` sends
   // nothing at all.
-  test('sends cbm + toolCounts when resultMeta started out undefined', async () => {
+  test('sends toolCounts when resultMeta started out undefined', async () => {
     mockMessages = [
       { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-sonnet-4-6' },
       toolTurn(),
@@ -252,14 +266,13 @@ describe('completion payload carries the metrics built at completion time', () =
     const meta = call!.payload.resultMeta as any;
     expect(meta).toBeDefined();
     expect(meta.toolCounts.Bash).toBe(1);
-    expect(meta.cbm).toBeDefined();
-    expect(meta.cbm.totalCbmCalls).toBe(1);
-    expect(meta.cbm.toolCalls.search_graph).toBe(1);
+    expect(meta.toolCounts.mcp__github__search_code).toBe(1);
+    expect(meta.cbm).toBeUndefined();
   });
 
   // Guard the healthy path too: when the SDK did report a result, the same
   // metrics must ride along on the object it created.
-  test('still sends cbm + toolCounts merged into the SDK resultMeta', async () => {
+  test('still sends toolCounts merged into the SDK resultMeta', async () => {
     mockMessages = [
       { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-sonnet-4-6' },
       toolTurn(),
@@ -273,7 +286,7 @@ describe('completion payload carries the metrics built at completion time', () =
     const meta = call!.payload.resultMeta as any;
     expect(meta.numTurns).toBe(4);
     expect(meta.toolCounts.Bash).toBe(1);
-    expect(meta.cbm.totalCbmCalls).toBe(1);
+    expect(meta.toolCounts.mcp__github__search_code).toBe(1);
   });
 });
 
@@ -341,6 +354,47 @@ describe('bash command classification reaches the server', () => {
   });
 });
 
+describe('tool names and file areas are canonical at capture', () => {
+  let manager: InstanceType<typeof WorkerManager>;
+
+  beforeEach(resetAll);
+  afterEach(() => { manager?.destroy(); });
+
+  test('aliases count as one tool, and file tools record their repo area only', async () => {
+    mockMessages = [
+      { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-sonnet-4-6' },
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 't-1', name: 'bash', input: { command: 'git status' } },
+            { type: 'tool_use', id: 't-2', name: 'Bash', input: { command: 'git log -1' } },
+            { type: 'tool_use', id: 't-3', name: 'mcp__codex_apps__buildd.recall', input: { query: 'x' } },
+            { type: 'tool_use', id: 't-4', name: 'Read', input: { file_path: '/tmp/scratch/secret-name.txt' } },
+            { type: 'tool_use', id: 't-5', name: 'Edit', input: { file_path: 'apps/web/src/lib/a.ts' } },
+            { type: 'tool_use', id: 't-6', name: 'Edit', input: { file_path: 'apps/web/src/lib/b.ts' } },
+          ],
+        },
+      },
+      successResult(),
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-area-1');
+
+    const meta = completionCall()!.payload.resultMeta as any;
+    expect(meta.toolCounts.Bash).toBe(2);
+    expect(meta.toolCounts.bash).toBeUndefined();
+    expect(meta.bashCommandCounts.total).toBe(2);
+    expect(meta.toolCounts.mcp__buildd__recall).toBe(1);
+    expect(meta.toolCounts['mcp__codex_apps__buildd.recall']).toBeUndefined();
+    expect(meta.fileToolAreas.Edit).toEqual({ 'apps/web': 2 });
+    expect(meta.fileToolAreas.Read).toEqual({ '(outside the repo)': 1 });
+    // Areas only: no path or file name ever leaves the runner.
+    expect(JSON.stringify(meta.fileToolAreas)).not.toContain('secret-name');
+    expect(JSON.stringify(meta.fileToolAreas)).not.toContain('a.ts');
+  });
+});
+
 // ─── Defect 1: the server already terminalised the worker ────────────────────
 
 describe('terminal metrics after a server-side completion', () => {
@@ -383,7 +437,7 @@ describe('terminal metrics after a server-side completion', () => {
     const meta = metrics!.payload.resultMeta as any;
     expect(meta).toBeDefined();
     expect(meta.numTurns).toBe(4);
-    expect(meta.cbm.totalCbmCalls).toBe(1);
+    expect(meta.toolCounts.mcp__github__search_code).toBe(1);
     expect(meta.toolCounts.Bash).toBe(1);
     // Cost + model attribution rides along — these were 0/NULL for the whole
     // self-completing cohort.
@@ -393,6 +447,33 @@ describe('terminal metrics after a server-side completion', () => {
     expect(metrics!.payload.status).toBeUndefined();
     expect(metrics!.payload.error).toBeUndefined();
     expect(metrics!.payload.summary).toBeUndefined();
+  });
+
+  // docs/specs/real-and-virtual-cost.md: the basis of the credential the run
+  // used rides every usage report, including the metrics-only re-send. A cloud
+  // run's supervisor hint is the deterministic way to pin it here.
+  test('sends the run\'s cost basis on the completion PATCH and its metrics-only re-send', async () => {
+    const prev = process.env.BUILDD_CLOUD_MODEL_AUTH;
+    process.env.BUILDD_CLOUD_MODEL_AUTH = 'owner_seat';
+    try {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-sonnet-4-6' },
+        toolTurn(),
+        successResult(),
+      ];
+      mockUpdateWorker.mockImplementation(async (id: string, payload: any) => {
+        updateCalls.push({ id, payload });
+        if (payload?.status === 'completed') return { error: 'Worker already completed', abort: true, reason: 'completed', actualStatus: 'completed', hasDeliverables: true };
+        return {};
+      });
+      manager = new WorkerManager(makeConfig());
+      await runSession(manager, 'w-basis-1');
+      expect(completionCall()!.payload.costBasis).toBe('virtual');
+      expect(metricsCall()!.payload.costBasis).toBe('virtual');
+    } finally {
+      if (prev === undefined) delete process.env.BUILDD_CLOUD_MODEL_AUTH;
+      else process.env.BUILDD_CLOUD_MODEL_AUTH = prev;
+    }
   });
 
   test('does not send a metrics-only PATCH when the completion PATCH succeeded', async () => {
@@ -430,6 +511,7 @@ describe('metricsOnlyPayload', () => {
       inputTokens: 10,
       outputTokens: 20,
       costUsd: 1.5,
+      costBasis: 'virtual',
       actualModel: 'claude-sonnet-4-6',
       lastCommitSha: 'deadbee',
       commitCount: 2,
@@ -446,6 +528,7 @@ describe('metricsOnlyPayload', () => {
     expect(out.inputTokens).toBe(10);
     expect(out.outputTokens).toBe(20);
     expect(out.costUsd).toBe(1.5);
+    expect(out.costBasis).toBe('virtual');
     expect(out.actualModel).toBe('claude-sonnet-4-6');
     expect(out.lastCommitSha).toBe('deadbee');
     expect(out.commitCount).toBe(2);

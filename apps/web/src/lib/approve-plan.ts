@@ -6,6 +6,7 @@ import { after } from 'next/server';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { generateTaskBranchName, type BranchNameGitConfig } from '@buildd/core/branch-names';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
+import { normalizeTaskKind } from '@buildd/core/model-router';
 import type { PathDeclaration, PlanStep, TaskSubjectAnchor } from '@buildd/shared';
 import { classifyCoordinationIntent, coordinationDedupeKey, extractPrNumbers, type CoordinationIntent } from './coordination-intent';
 import { proposalChildTaskTitle, buildProposalChildDescription } from '@buildd/core/spec-doc-fix';
@@ -363,7 +364,10 @@ export async function approvePlan(
         // the floor — the row it routes and draws stayed NULL. A classified
         // coordination step still wins: that intent is read off the platform's
         // own dedupe classifier, not guessed.
-        ...(step.kind && !intentInfo ? { kind: step.kind, classifiedBy: 'organizer' as const } : {}),
+        // Normalized: a planner that writes a category ('feature', 'test')
+        // where a kind belongs must not store it verbatim — the model router
+        // indexes its matrix by this column at claim time.
+        ...(step.kind && !intentInfo ? { kind: normalizeTaskKind(step.kind) ?? 'engineering', classifiedBy: 'organizer' as const } : {}),
         ...(intentInfo ? {
           kind: 'coordination' as const,
           subjectAnchor: {
@@ -389,7 +393,6 @@ export async function approvePlan(
           ...(emitsPlanSpecPath
             ? { specSource: { specPath: emitsPlanSpecPath, planningTaskId } satisfies SpecSourceContext }
             : {}),
-          ...(mission?.integrationBranchEnabled && mission?.workingBranch ? { headBranch: mission.workingBranch } : {}),
           ...(integrationBase ? { baseBranch: integrationBase } : {}),
         },
       })
@@ -501,15 +504,7 @@ async function wakeReadyChildren(
  *     the claim route's shared mission branch, or the runner's
  *     `<branch>-w<workerId8>` fallback when the requested branch was already
  *     held by another worktree (`git-operations.ts` shared-branch guard).
- *  2. `context.headBranch` — the shared mission working branch (seeded from
- *     `missions.workingBranch`). The claim route uses it verbatim and never
- *     consults the generator, so reading the dependency's persisted context is
- *     how the mission branch is honoured. When a mission has opted into an
- *     integration branch (integrationBranchEnabled=true), all child tasks are
- *     created with headBranch set to the mission's working branch so they all
- *     work on the shared branch. The organizer's planning task does not get
- *     headBranch set (even for A′ missions) — it stays on its own task branch.
- *  3. Only if neither exists: predict, via the SAME generator the claim route
+ *  2. Only if no worker exists yet: predict, via the SAME generator the claim route
  *     calls. This is genuinely unavoidable here — pass 1 has only just created
  *     the dependency, so no worker can exist yet — but it is now one function,
  *     not a copy that can drift.

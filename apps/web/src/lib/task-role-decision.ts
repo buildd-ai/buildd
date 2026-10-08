@@ -418,6 +418,7 @@ export type TaskRoleShadowOutcome =
   | 'not_sampled'
   | 'sensitive'
   | 'disabled'
+  | 'no_key'
   | 'too_few_candidates'
   | 'error';
 
@@ -461,7 +462,6 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
   const log = deps.log ?? ((line: string) => console.log(line));
   try {
     if (input.statedRoleSlug && !inStatedRoleSample(input.taskId)) return { outcome: 'not_sampled' };
-    if (input.dataClass === 'sensitive') return { outcome: 'sensitive' };
 
     // Policy and key first: a team that has not opted in pays no candidate query.
     // A role-less task asks under the apply capability when the team turned it
@@ -474,7 +474,14 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
     let access = input.statedRoleSlug ? null : await resolveAccess({ capability: TASK_ROLE_APPLY_CAPABILITY, ...scope });
     if (access?.ok) capability = TASK_ROLE_APPLY_CAPABILITY;
     else access = await resolveAccess({ capability: TASK_ROLE_CAPABILITY, ...scope });
-    if (!access.ok) return { outcome: 'disabled' };
+    if (!access.ok) {
+      // Opted in but no key: a row, so it reads differently from a capability that is off.
+      return access.error.kind === 'missing_key'
+        ? { outcome: 'no_key', applyEnabled: true, fingerprint: 'skip:no_key' }
+        : { outcome: 'disabled' };
+    }
+    // Past the opt-in check, so the apply step can leave a content-free ledger row for it.
+    if (input.dataClass === 'sensitive') return { outcome: 'sensitive', applyEnabled: true, fingerprint: 'skip:sensitive' };
     // Apply is the default once the capability is on at all: a separate
     // "shadow only" tier no longer exists for this decision (2026-10-03 owner
     // decision). Listing either capability is enough; the rails in
@@ -486,7 +493,7 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
     const state = buildTaskRoleState(input);
     const fingerprint = taskRoleFingerprint({ candidates: candidates.map(c => c.slug), askKind, state });
     const roleQ = buildRoleQuestion(candidates);
-    if (!roleQ) return { outcome: 'too_few_candidates', fingerprint };
+    if (!roleQ) return { outcome: 'too_few_candidates', fingerprint, applyEnabled };
 
     const questions: TaskRoleQuestions = askKind
       ? { role: roleQ.question, kind: currentTaskRolePrompt().value.kind }

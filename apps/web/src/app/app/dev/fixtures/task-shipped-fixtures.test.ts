@@ -8,7 +8,9 @@ import {
   parseCommitChecksVariant,
   parseTaskShippedVariant,
   taskShippedFixtureInput,
+  taskShippedFixtureVerdict,
   taskShippedFixtureView,
+  fixtureOutcome,
 } from './task-shipped-fixtures';
 import { FIXTURE_VIEWS } from './visual-review-fixtures';
 
@@ -18,19 +20,16 @@ describe('task-shipped fixtures', () => {
     expect(FIXTURE_VIEWS).toContain('commit-checks');
   });
 
-  it('each variant shows the state it is named for', () => {
-    const open = taskShippedFixtureView('open');
-    expect(open.action?.label).toBe('Review & merge');
-    expect(open.chips.map(c => c.label)).toContain('Waiting on your merge');
-
-    const merged = taskShippedFixtureView('merged-shots');
-    expect(merged.action).toBeNull();
-    expect(merged.chips.map(c => c.label)).toEqual(['Shipped']);
-    expect(merged.heroShots.length).toBeGreaterThan(0);
-    expect(merged.changeTypeLabel).toBe('On screen');
-
-    expect(taskShippedFixtureView('recovered').hiccup?.label).toBe('One hiccup, already handled');
+  it('each variant leads with the verdict it is named for', () => {
+    expect(taskShippedFixtureVerdict('open')).toMatchObject({ state: 'needs_you', headline: 'Ready to merge · PR #1234' });
+    expect(taskShippedFixtureVerdict('merged-shots').state).toBe('shipped');
+    expect(taskShippedFixtureView('merged-shots').heroShots.length).toBeGreaterThan(0);
+    expect(taskShippedFixtureView('merged-shots').changeTypeLabel).toBe('On screen');
     expect(taskShippedFixtureView('no-lede').lede).toBeNull();
+    const blocked = taskShippedFixtureVerdict('blocked');
+    expect(blocked.state).toBe('blocked');
+    expect(blocked.headline).toBe('PR blocked · 1 check failing: PR body lint');
+    expect(fixtureOutcome('blocked').attempts[1].actions).toEqual(['Edited PR body']);
   });
 
   it('the fixture lede passes the same check a real one must', () => {
