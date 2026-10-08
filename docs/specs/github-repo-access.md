@@ -10,6 +10,33 @@ related: [pr-lifecycle-reconciliation, webhook-dataflow, team-permissions, mcp-a
 keywords: [Workspace not linked to GitHub repo, github_repo_access_required, Repository access required, Connection required, Check connection, Grant GitHub access, Ask a GitHub administrator, repository_selection, Resource not accessible by integration, githubAccessBlock, installation suspended]
 verified_by: [apps/web/src/lib/github-repo-access.test.ts, apps/web/src/lib/github-repo-access-store.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workspaces/[id]/github-access/route.test.ts, apps/web/src/app/api/github/webhook/route.test.ts, apps/web/src/app/api/github/callback/route.test.ts, apps/web/src/lib/action-queue.test.ts, apps/web/src/app/app/(protected)/workspaces/[id]/config/RepoAccessCard.dom.test.tsx]
 supersedes: []
+assertions:
+  - id: "diagnose-repo-access"
+    type: "symbol"
+    name: "diagnoseRepoAccess"
+    path: "apps/web/src/lib/github-repo-access.ts"
+  - id: "repo-access-error-body"
+    type: "symbol"
+    name: "repoAccessErrorBody"
+    path: "apps/web/src/lib/github-repo-access.ts"
+  - id: "pr-doors-gate-on-repo-access"
+    type: "symbol_reachable"
+    symbol: "ensureRepoAccessForPr"
+    entry: "apps/web/src/app/api/github/pr/route.ts"
+    as: "call"
+  - id: "resume-after-installation-change"
+    type: "symbol_reachable"
+    symbol: "resumeAfterInstallationChange"
+    entry: "apps/web/src/app/api/github/webhook/route.ts"
+    as: "call"
+  - id: "check-connection-route"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces/[id]/github-access"
+    file: "apps/web/src/app/api/workspaces/[id]/github-access/route.ts"
+  - id: "repo-access-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/github-repo-access.test.ts"
 ---
 # GitHub Repository Access Remediation
 
