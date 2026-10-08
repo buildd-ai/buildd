@@ -4,11 +4,12 @@
  * write and the `sibling_conflict_probe` gate-ledger record.
  */
 import { db } from '@buildd/core/db';
-import { siblingProbes, workers, workflowDeliveries } from '@buildd/core/db/schema';
+import { siblingProbes, workers } from '@buildd/core/db/schema';
 import { recordGateEvent, GATE_SLUGS } from '@buildd/core/gate-events';
 import { TERMINAL_WORKER_STATUSES, normalizeDerivedFiles } from '@buildd/shared';
 import { and, eq, gt, inArray, isNull, isNotNull, not } from 'drizzle-orm';
 import { queueSystemInstruction } from '@/lib/system-instruction-queue';
+import { kernelOwnedDeliveryStates } from '@/lib/workflow/delivery-view';
 import { markDue } from '@/lib/redis';
 import {
   SIBLING_PROBE_DUE_QUEUE,
@@ -37,7 +38,8 @@ type WorkerRow = {
 };
 
 /**
- * The kernel delivery state each task owns (`workflow_deliveries.owner_task_id`).
+ * The state of the kernel-owned delivery each task owns (read through the
+ * workflow module: `kernelOwnedDeliveryStates`).
  * A task with no delivery is absent from the map. A failed read marks every
  * asked task `UNKNOWN`, which `isKernelOwned` treats as kernel-owned: when we
  * cannot tell, the kernel stays the one authority (fail closed).
@@ -56,13 +58,8 @@ export async function resolveKernelStates(
   }
 }
 
-const loadDeliveryStates = (taskIds: string[]) =>
-  db.select({ ownerTaskId: workflowDeliveries.ownerTaskId, state: workflowDeliveries.state })
-    .from(workflowDeliveries)
-    .where(inArray(workflowDeliveries.ownerTaskId, taskIds));
-
 async function toProbeWorkers(rows: WorkerRow[]): Promise<ProbeWorker[]> {
-  const states = await resolveKernelStates(rows.flatMap(r => (r.taskId ? [r.taskId] : [])), loadDeliveryStates);
+  const states = await resolveKernelStates(rows.flatMap(r => (r.taskId ? [r.taskId] : [])), (ids) => kernelOwnedDeliveryStates(ids));
   return rows.map(r => ({ ...toProbeWorker(r), kernelState: r.taskId ? states.get(r.taskId) ?? null : null }));
 }
 
