@@ -265,6 +265,19 @@ an enum) to allow extension without migrations.
   still refuses. GIVEN the same shape via `create_pr`'s `prUrl` parameter
   instead (registering an externally-created PR), completion succeeds too,
   unrelated to this fallback.
+- AC-3j1: GIVEN `outputRequirement = 'pr_required'` and no PR of the worker's
+  own WHEN `complete_task` is called with `alreadyShippedIn: N` THEN the gate
+  reads PR #N from the workspace's linked repo and, if GitHub reports it
+  `merged`, completion succeeds: `tasks.result.alreadyShippedIn` records
+  `{ prNumber, prUrl }`, an `output_requirement` gate event with outcome
+  `accepted` is written, and the PR is NOT adopted onto the worker row (it
+  belongs to the task that shipped it). This is the exit for a task whose work
+  another task already shipped, where the task text does not name the PR so
+  AC-3j cannot see it. An unmerged, unreadable or non-numeric `N`, or no linked
+  repo, still refuses, and the refusal says which. GIVEN the worker also has
+  commits or a dirty worktree, completion additionally needs `discardEdits`
+  (AC-3e), so its own edits are never stranded silently. The plain `pr_required`
+  refusal names `alreadyShippedIn` so an agent in this position can find it.
 - AC-3k: GIVEN completion with effective `auto` or `pr_required`, an ordinary
   work task of kind engineering, writing or design (or with a concrete manifest),
   no commits, changed files, dirty worktree or observed session touches, and no
