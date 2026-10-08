@@ -461,6 +461,13 @@ describe('setupWorktree', () => {
     expect(staleWarn).toBeTruthy();
     // The log line says WHAT it measured, so a wrong-tree measurement is visible.
     expect(staleWarn).toContain('origin/buildd/prior-task-branch');
+    // Previously console.warn-only — now also returned so the caller (workers.ts)
+    // can surface it as an error trace instead of a runner-log-only line.
+    expect(result?.staleBase).toEqual({
+      ref: 'origin/buildd/prior-task-branch',
+      defaultBranch: 'main',
+      commitsBehind: 25,
+    });
   });
 
   test('stale-base guard: no warn when the base is within tolerance', async () => {
@@ -469,11 +476,12 @@ describe('setupWorktree', () => {
       return mockExecSync(cmd, opts);
     };
 
-    const { warns } = await captureWarns(() =>
+    const { result, warns } = await captureWarns(() =>
       withExecSync(freshExecSync, () => setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-ok')),
     );
 
     expect(warns.find(w => w.toLowerCase().includes('behind'))).toBeUndefined();
+    expect(result?.staleBase).toBeUndefined();
   });
 
   // ─── Base-branch shapes (B10) ─────────────────────────────────────────────

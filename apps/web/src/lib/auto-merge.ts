@@ -752,7 +752,7 @@ export async function tryAutoMergeWorkerPr(params: {
   const mergingTask = worker.taskId
     ? await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
-        columns: { id: true, title: true, taskClass: true, missionId: true },
+        columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
       })
     : null;
   const mergeGate = await guardMissionPrMerge(mergingTask);
@@ -773,8 +773,13 @@ export async function tryAutoMergeWorkerPr(params: {
     return { merged: false, reason: mergeGate.reason };
   }
 
+  // mission-branch-refresh.ts marks its conflict-resolution task's PR this way:
+  // it IS the merge commit that catches the integration branch up with dev, so
+  // squashing it would drop that ancestry and the same conflict would reappear
+  // on the very next refresh.
+  const requireMergeCommit = (mergingTask?.context as Record<string, unknown> | null)?.requireMergeCommit === true;
   const slotted = await mergeInSurfaceSlot(surfaceOrder, () =>
-    mergePullRequest(installationId, repoFullName, prNumber, 'squash', headSha),
+    mergePullRequest(installationId, repoFullName, prNumber, requireMergeCommit ? 'merge' : 'squash', headSha),
   );
   if ('refused' in slotted) {
     console.log(`Auto-merge deferred for ${repoFullName}#${prNumber}: ${slotted.refused}`);

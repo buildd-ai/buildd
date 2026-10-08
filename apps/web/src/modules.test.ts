@@ -53,7 +53,7 @@ describe('composition root', () => {
     expect(byEvent('task.terminal')).toEqual(['knowledge:task-evidence']);
     expect(byEvent('worker.finished')).toEqual(['knowledge:memory-use-labels']);
     expect(byEvent('task.needs_input')).toEqual(['notifications:ledger-task-needs-input']);
-    expect(byEvent('pr.merged')).toEqual(['releases:release-record-prod-merge', 'notifications:ledger-pr-merged']);
+    expect(byEvent('pr.merged')).toEqual(['missions:refresh-mission-integration-branches', 'releases:release-record-prod-merge', 'notifications:ledger-pr-merged']);
     expect(byEvent('task.pr_merge_delivered')).toEqual(['missions:loop-advance-on-merge', 'missions:open-mission-integration-pr']);
     // The mission wakes and dependents unblock before the release trigger.
     expect(byEvent('task.pr_merged')).toEqual([

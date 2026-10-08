@@ -65,3 +65,6 @@ export const COMPLETION_POLICIES: CompletionPolicies = {
  * freshly opened worker PR, and a PR it holds skips core's no-CI auto-merge.
  */
 export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
+
+/** Mission upkeep bound at the composition root for the core cron route. */
+export { sweepMissionBranchRefresh } from '@/lib/mission-branch-refresh';

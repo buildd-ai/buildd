@@ -171,7 +171,8 @@ const SAFE: Record<string, string[]> = {
   // Scopes are a fixed vocabulary; workspace restrictions contain only row references.
   accounts: ['monthly_cost_month', 'budget_alerts_sent', 'scopes', 'workspace_ids'],
   missions: ['status', // MissionStatusValue (@buildd/shared)
-    'context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint'],
+    'context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint',
+    'branch_refresh_head_sha'], // a git SHA, same class as last_notified_sha
   initiatives: ['context_artifact_ids'],
   tasks: [
     'status', 'required_capabilities', 'heartbeat_tick_anchor', 'ci_retry_head_sha',
@@ -288,7 +289,7 @@ describe('scrub-pii.sql covers the schema', () => {
       workspaces: ['name', 'repo', 'local_path', 'memory', 'projects'],
       github_repos: ['full_name', 'name', 'owner', 'html_url', 'description'],
       github_installations: ['account_login'],
-      missions: ['title', 'description', 'working_branch', 'primary_pr_url', 'goal_criteria'],
+      missions: ['title', 'description', 'working_branch', 'primary_pr_url', 'goal_criteria', 'branch_refresh_lease_token'],
       initiatives: ['title', 'description', 'kpis'],
       tasks: ['title', 'description', 'context', 'result', 'external_url', 'subject_branch'],
       workers: ['branch', 'pr_url', 'current_action', 'waiting_for', 'error', 'milestones', 'result_meta', 'runner'],
