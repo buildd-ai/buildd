@@ -1,5 +1,5 @@
 {
-  "id": "c01ab9bf-1533-4cd5-a44e-f18bfc2d3587",
+  "id": "877f3256-7d00-42e9-86dd-ab2209f3a14a",
   "prevId": "94a2b42c-cb90-4832-a3be-6b8d4ea0f74a",
   "version": "7",
   "dialect": "postgresql",
@@ -15154,202 +15154,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.sibling_probes": {
-      "name": "sibling_probes",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pair_key": {
-          "name": "pair_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "worker_a_id": {
-          "name": "worker_a_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "worker_b_id": {
-          "name": "worker_b_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prober_worker_id": {
-          "name": "prober_worker_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "shared_files": {
-          "name": "shared_files",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'requested'"
-        },
-        "requested_at": {
-          "name": "requested_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "dispatched_at": {
-          "name": "dispatched_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "probed_at": {
-          "name": "probed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "conflict_files": {
-          "name": "conflict_files",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "notified_at": {
-          "name": "notified_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "sibling_probes_pair_idx": {
-          "name": "sibling_probes_pair_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "pair_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "sibling_probes_prober_status_idx": {
-          "name": "sibling_probes_prober_status_idx",
-          "columns": [
-            {
-              "expression": "prober_worker_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "sibling_probes_workspace_id_workspaces_id_fk": {
-          "name": "sibling_probes_workspace_id_workspaces_id_fk",
-          "tableFrom": "sibling_probes",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "sibling_probes_worker_a_id_workers_id_fk": {
-          "name": "sibling_probes_worker_a_id_workers_id_fk",
-          "tableFrom": "sibling_probes",
-          "tableTo": "workers",
-          "columnsFrom": [
-            "worker_a_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "sibling_probes_worker_b_id_workers_id_fk": {
-          "name": "sibling_probes_worker_b_id_workers_id_fk",
-          "tableFrom": "sibling_probes",
-          "tableTo": "workers",
-          "columnsFrom": [
-            "worker_b_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "sibling_probes_prober_worker_id_workers_id_fk": {
-          "name": "sibling_probes_prober_worker_id_workers_id_fk",
-          "tableFrom": "sibling_probes",
-          "tableTo": "workers",
-          "columnsFrom": [
-            "prober_worker_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.spec_discrepancies": {
       "name": "spec_discrepancies",
       "schema": "",
@@ -21566,6 +21370,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'0'"
+        },
+        "cost_basis": {
+          "name": "cost_basis",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "input_tokens": {
           "name": "input_tokens",
