@@ -160,6 +160,13 @@ export async function POST(
     return NextResponse.json({ error: 'Target team not found' }, { status: 404 });
   }
 
+  // A share puts the owner team's connector (and its OAuth identity) into the
+  // target team's agents, so the actor must manage that team too — not just
+  // belong to it.
+  if (ctx.auth.type === 'session' && !(await isTeamAdmin(ctx.auth.user.id, targetTeamId))) {
+    return NextResponse.json({ error: 'Only an owner or admin of the target team can share a connector into it.' }, { status: 403 });
+  }
+
   try {
     // Idempotent: re-granting an existing share returns it unchanged.
     const existing = await db.query.connectorShares.findFirst({
