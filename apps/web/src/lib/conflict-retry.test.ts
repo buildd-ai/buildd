@@ -676,9 +676,9 @@ describe('dispatchConflictRetry', () => {
     });
 
     it.each([
-      [{ kind: 'deferred', failure: 'rate_limit', attempts: 1, reason: '429' }, { refreshDeferred: true, refreshFailure: 'rate_limit' }],
-      [{ kind: 'deferred', failure: 'transient', attempts: 2, reason: '502' }, { refreshDeferred: true, refreshFailure: 'transient' }],
-      [{ kind: 'exhausted', failure: 'auth', attempts: 3, reason: '403' }, { refreshExhausted: true, refreshFailure: 'auth' }],
+      [{ kind: 'deferred', failure: 'rate_limit', attempts: 1, reason: '429' }, { refreshDeferred: true, refreshFailure: 'rate_limit', refreshReason: '429' }],
+      [{ kind: 'deferred', failure: 'transient', attempts: 2, reason: '502' }, { refreshDeferred: true, refreshFailure: 'transient', refreshReason: '502' }],
+      [{ kind: 'exhausted', failure: 'auth', attempts: 3, reason: '403' }, { refreshExhausted: true, refreshFailure: 'auth', refreshReason: '403' }],
       [{ kind: 'head_changed', reason: 'moved' }, { headChanged: true }],
       [{ kind: 'in_flight' }, { refreshInFlight: true }],
       [{ kind: 'semantic_deferred', rechecks: 1, reason: 'no index' }, { semanticDeferred: true }],
@@ -1284,7 +1284,40 @@ describe('kernelConflictOutcome', () => {
     expect(kernelConflictOutcome(seen(esc('landing_needs_human')))).toMatchObject({ dispatched: false, refreshExhausted: true });
     expect(kernelConflictOutcome(seen(esc('conflict_exhausted')))).toMatchObject({ dispatched: false, exhausted: true });
     const rep = { result: 'applied', decision: { toState: 'REPAIRING', patch: { stateReason: 'behind' }, attempts: [] } };
-    expect(kernelConflictOutcome(seen(rep, { mode: 'mechanical', status: 'queued', outcome: null }))).toMatchObject({ dispatched: false, refreshDeferred: true });
+    expect(kernelConflictOutcome(seen(rep, { mode: 'mechanical', status: 'queued', outcome: null }))).toMatchObject({ dispatched: false, refreshQueued: true });
     expect(kernelConflictOutcome(seen(rep, { mode: 'mechanical', status: 'skipped', outcome: 'noop' }))).toMatchObject({ dispatched: false, alreadyUpToDate: true });
+  });
+
+  // A queued mechanical refresh already ran (or is running): it is not an
+  // operational failure, and nothing downstream may render it as one.
+  it('a queued mechanical refresh is refreshQueued, never refreshDeferred', () => {
+    const rep = { result: 'applied', decision: { toState: 'REPAIRING', patch: { stateReason: 'behind' }, attempts: [] } };
+    const out = kernelConflictOutcome(seen(rep, { mode: 'mechanical', status: 'queued', outcome: null }));
+    expect(out.refreshQueued).toBe(true);
+    expect(out.refreshDeferred).toBeUndefined();
+  });
+
+  it('the treadmill escalation carries its refresh count and the kernel detail', () => {
+    const treadmill = {
+      result: 'applied',
+      decision: {
+        toState: 'ESCALATED', patch: { stateReason: 'landing_needs_human' }, attempts: [],
+        effects: [{ kind: 'notify', dedupeKey: 'n', payload: { event: 'landing_needs_human', detail: 'base moved 3 times under the approved PR' } }],
+        evidence: { repairKind: 'behind', headSha: 'H1', refreshes: 3 },
+      },
+    };
+    expect(kernelConflictOutcome(seen(treadmill))).toMatchObject({
+      dispatched: false, refreshExhausted: true, refreshTreadmill: 3, refreshReason: 'base moved 3 times under the approved PR',
+    });
+  });
+
+  it('a mechanical refresh that ended failed and escalated names the delivery reason', () => {
+    const rep = { result: 'applied', decision: { toState: 'REPAIRING', patch: { stateReason: 'behind' }, attempts: [] } };
+    const out = kernelConflictOutcome(
+      ({ handled: true, mergeable: 'behind', after: { state: 'ESCALATED', stateReason: 'landing_needs_human', headSha: 'H1' }, attempt: { mode: 'mechanical', status: 'ended', outcome: 'failed' }, result: rep }) as never,
+    );
+    expect(out).toMatchObject({ dispatched: false, refreshExhausted: true });
+    expect(out.refreshReason).toContain('landing_needs_human');
+    expect(out.refreshTreadmill).toBeUndefined();
   });
 });
