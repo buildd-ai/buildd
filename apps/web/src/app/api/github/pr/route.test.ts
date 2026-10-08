@@ -1124,6 +1124,45 @@ describe('POST /api/github/pr', () => {
         expect(body.base).toBe('mission/checkout-arc-1a2b3c4d');
       });
     });
+
+    // Having the mission integration branch as the task's base proves nothing
+    // about a head. A worker provisioned onto that branch itself (before claim
+    // stopped handing it out) must not claim an arbitrary head, and create_pr
+    // must not rebind workers.branch to a head it never proved.
+    describe('worker sitting on its mission integration branch', () => {
+      const INTEGRATION = 'mission/checkout-arc-1a2b3c4d';
+      const UNRELATED = 'task/no-id-in-name';
+      const onIntegration = () => agentWorker({
+        branch: INTEGRATION,
+        task: { id: TASK_ID, title: 'feat: own thing', description: '', context: { baseBranch: INTEGRATION }, dependsOn: [], missionId: 'obj-1', taskClass: 'work' },
+      });
+
+      beforeEach(() => {
+        mockMissionsFindFirst.mockResolvedValue({ workingBranch: INTEGRATION, integrationBranchEnabled: true });
+        mockWorkersFindMany.mockReturnValue([]);
+      });
+
+      it('fresh create: refuses an unrelated head as head_not_owned and leaves workers.branch alone', async () => {
+        mockWorkersFindFirst.mockResolvedValue(onIntegration());
+        const payloads = captureUpdatePayloads();
+        const res = await post({ head: UNRELATED });
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+        expect(opened()).toBe(false);
+        expect(payloads.some(p => 'branch' in p)).toBe(false);
+      });
+
+      it('adoption: refuses a PR whose real head is unrelated and leaves workers.branch alone', async () => {
+        mockWorkersFindFirst.mockResolvedValue(onIntegration());
+        mockGithubApi.mockImplementation((_i: number, path: string) =>
+          Promise.resolve(path === '/repos/owner/repo/pulls/9' ? { number: 9, head: { ref: UNRELATED }, base: { ref: INTEGRATION } } : null));
+        const payloads = captureUpdatePayloads();
+        const res = await post({ head: UNRELATED, prUrl: 'https://github.com/owner/repo/pull/9' });
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+        expect(payloads.some(p => 'branch' in p)).toBe(false);
+      });
+    });
   });
 
   describe('Option A′ — derive, don’t accept (P1)', () => {
