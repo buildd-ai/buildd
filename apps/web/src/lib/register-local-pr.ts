@@ -23,12 +23,15 @@ async function persistLocalPr(input: LocalPrRegistration): Promise<void> {
   ]);
   // Exact branch ownership AND repository scope, with a compare-and-set: never
   // overwrite an already registered PR, nor infer ownership from a task prefix.
-  await db.update(workers).set({
+  const bound = await db.update(workers).set({
     prUrl: input.url, prNumber: input.number, prBaseRef: input.baseRef,
     lastCommitSha: input.headSha, prIsDraft: input.draft,
-    prLifecycleStatus: 'pr_open', prLastVerifiedAt: new Date(), updatedAt: new Date(),
+    prLastVerifiedAt: new Date(), updatedAt: new Date(),
   }).where(and(
     eq(workers.branch, input.branch), isNull(workers.prUrl),
     inArray(workers.workspaceId, db.select({ id: workspaces.id }).from(workspaces).where(workspaceRepoMatches(input.repo))),
-  ));
+  )).returning({ id: workers.id });
+  // The PR's state is a fact on the fact cache (recordPrFact), never a bare write.
+  const { recordPrFact } = await import('@buildd/core/pr-facts');
+  if (bound.length) await recordPrFact({ workerIds: bound.map((b) => b.id) }, { kind: 'open' });
 }

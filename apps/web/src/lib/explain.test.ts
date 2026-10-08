@@ -101,7 +101,7 @@ let browserHeartbeats: Row[] | null = [];
 mock.module('@/lib/runner-heartbeats', () => ({ loadBrowserRunnerHeartbeats: mock(async () => browserHeartbeats) }));
 
 // Imported AFTER the mocks.
-import { explainMission, explainTask, explainPr, explainWorkspace, historyPrStateOf } from './explain';
+import { explainMission, explainTask, explainPr, explainWorkspace, historyPrStateOf, kernelUnmergedPr } from './explain';
 import { summarizeMissionForCard, type MissionCardRow } from './mission-card-view';
 
 const ACTOR = { userId: 'user-1' };
@@ -185,6 +185,28 @@ describe('historyPrStateOf', () => {
     expect(historyPrStateOf(w('closed'))).toBe('closed');
     expect(historyPrStateOf(w('unresolvable'))).toBe('closed');
     expect(historyPrStateOf(w('ci_green'))).toBe('open');
+  });
+  // §17.5 (Slice E): a task that owns a kernel-owned delivery reads the delivery.
+  it('a kernel-owned delivery wins over the worker columns', () => {
+    expect(historyPrStateOf(w('merged'), { prState: 'ci_failed', prNumber: 7 })).toBe('ci_failed');
+    expect(historyPrStateOf(w('ci_failed'), { prState: 'merged', prNumber: 7 })).toBe('merged');
+    expect(historyPrStateOf(undefined, { prState: 'awaiting_ci', prNumber: 7 })).toBe('open');
+  });
+});
+
+describe('kernelUnmergedPr (§17.5: explain\'s state chain reads the delivery)', () => {
+  const task = { id: 't1', title: 'feat: x', status: 'completed' };
+  it('a live delivery is unmerged; a settled one is not', () => {
+    expect(kernelUnmergedPr(task, { prUrl: 'u' }, { state: 'AWAITING_REVIEW', prNumber: 7 })).toEqual([{ taskId: 't1', title: 'feat: x', prNumber: 7, prUrl: 'u' }]);
+    for (const state of ['MERGED', 'SUPERSEDED', 'ABANDONED', 'FAILED'] as const) {
+      expect(kernelUnmergedPr(task, { prUrl: 'u' }, { state, prNumber: 7 })).toEqual([]);
+    }
+  });
+  it('closed with no edge is closed-unsuperseded, whatever the worker column says', () => {
+    expect(kernelUnmergedPr(task, { prUrl: 'u' }, { state: 'CLOSED_UNMERGED', prNumber: 7 })[0]).toMatchObject({ closedUnsuperseded: true });
+  });
+  it('a failed owner attempt whose PR is live still holds the PR open (S35)', () => {
+    expect(kernelUnmergedPr({ ...task, status: 'failed' }, undefined, { state: 'REPAIRING', prNumber: 7 })).toHaveLength(1);
   });
 });
 

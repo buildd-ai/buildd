@@ -521,7 +521,9 @@ ESCALATION IS REQUIRED when:
   a schema change "looks risky" from the diff alone, and do NOT escalate a schema.ts edit just
   because it is present; a change with no generated migration is not a schema change.
 - Your confidence is below the workspace's maxConfidenceThreshold
-- The PR is a release PR (base branch is main or the workspace's prodBranch)
+- The PR is a release PR (base branch is main or the workspace's prodBranch), unless your task
+  context says the composition was verified and this round covers only a novel delta: then review
+  just those paths under the rules here, without the release-PR escalation
 - You find a security-shaped defect where the right fix is itself the open question: an
   auth/authz boundary change, secret handling or exposure, credential/token flow, anything
   trading security against product behavior, or any finding you cannot name a concrete fix for.
