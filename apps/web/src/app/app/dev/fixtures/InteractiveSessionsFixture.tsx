@@ -56,11 +56,11 @@ export function interactiveSessionsFleetFixture(now: number): FleetSnapshot {
   return buildFleetSnapshot(
     [{ id: 'hb-atlas', accountId: 'acct', localUiUrl: url, maxConcurrentWorkers: 4, lastHeartbeatAt: ago(0) }],
     [
-      { id: 'w-runner-1', accountId: 'acct', runner: url, localUiUrl: url, status: 'running', startedAt: ago(18), progress: 40,
+      { id: 'w-runner-1', accountId: 'acct', runner: url, localUiUrl: url, status: 'running', startedAt: ago(18), phase: 'Changes',
         task: { id: 'fixture-task-20', title: 'feat(search): index product tags', roleSlug: 'builder', missionId: null } },
       { id: 'w-1', accountId: 'acct', runner: 'mcp', status: 'running', startedAt: ago(24), updatedAt: ago(1),
         task: { id: 'fixture-task-1', title: 'fix(checkout): total rounding', roleSlug: null, missionId: null } },
-      { id: 'w-3', accountId: 'acct', runner: 'mcp', status: 'running', startedAt: ago(9), updatedAt: ago(0), progress: 60,
+      { id: 'w-3', accountId: 'acct', runner: 'mcp', status: 'running', startedAt: ago(9), updatedAt: ago(0), phase: 'Commit',
         task: { id: 'fixture-task-3', title: 'feat(shipping): cache the quote', roleSlug: null, missionId: null } },
     ],
     { now, sessionsOnline: 5 },
