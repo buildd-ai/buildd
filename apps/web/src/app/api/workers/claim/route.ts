@@ -124,14 +124,19 @@ import {
   acquireGatedStartPaths,
   gatedStartApplies,
   gatedStartReachable,
+  isLiveHolderStatus,
+  openPrStartVerdict,
   releaseGatedStartPaths,
   scheduleClaimHoldShadow,
   softOverlapStartVerdict,
   touchesHardOverlapSurface,
   type ClaimHoldTaskContext,
+  type ClaimRiskEvidence,
 } from './hold-start-shadow';
 import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from './soft-overlap-gate';
 import { loadSoftOverlapHolders } from './soft-overlap-store';
+import { defaultPrDiffScopeDeps, prefetchPrDiffScopes } from '@/lib/claim-pr-diff-scope';
+import { loadPairProbeEvidence } from '@/lib/sibling-pair-probe';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
@@ -1578,6 +1583,31 @@ export async function POST(req: NextRequest) {
     };
   };
 
+  /** The risk evidence for an open-PR overlap, read before the synchronous collector runs. Never throws. */
+  const readOpenPrRiskEvidence = async (
+    t: any,
+    manifest: string[],
+    openPrs: Array<{ prNumber: number | null; pathManifest: string[] | null; workerStatus: string | null; branch: string | null }>,
+    ownPrs: Array<{ branch: string | null }>,
+  ): Promise<ClaimRiskEvidence> => {
+    try {
+      const overlapping = openPrs.filter(p => p.prNumber && p.pathManifest?.length && intersectPaths(manifest, p.pathManifest).length > 0);
+      // A holder with a live worker is a hard rail; its diff cannot change the answer.
+      const askable = overlapping.filter(p => !isLiveHolderStatus(p.workerStatus));
+      if (askable.length === 0 || askable.length !== overlapping.length) return {};
+      const [prScopes, probe] = await Promise.all([
+        prefetchPrDiffScopes({ workspaceId: t.workspaceId, prNumbers: askable.map(p => p.prNumber as number) }, await defaultPrDiffScopeDeps()),
+        askable.length === 1 && ownPrs.find(p => p.branch)?.branch
+          ? loadPairProbeEvidence({ workspaceId: t.workspaceId, candidate: { branch: ownPrs.find(p => p.branch)!.branch }, holder: { branch: askable[0].branch } })
+          : Promise.resolve(null),
+      ]);
+      return { prScopes, probe };
+    } catch (err) {
+      console.warn(`[claim] open-PR risk evidence unavailable for task ${t?.id} (skipped):`, (err as Error)?.message ?? err);
+      return {};
+    }
+  };
+
   // ── Claim-time batch planner (./claim-plan-input, knowledge-base: buildd/design/jev-scheduling.md §5) ──
   // Per workspace, gitConfig.claimPlanner: 'off' leaves everything below
   // exactly as it was — no extra read, no extra write, same walk. 'record'
@@ -1772,10 +1802,18 @@ export async function POST(req: NextRequest) {
       // state relaxes ONLY this layer; layer 2 and every
       // later gate still run, and the paths are acquired exclusively below.
       const holdCtx = blocking && !forced ? holdStartContext(task, forced) : null;
-      const holdNote = holdCtx ? holdStart.noteOpenPrOverlap(holdCtx, taskManifest, filterOpenPrTasks, activePathClaimsByWorkspace.get(task.workspaceId)) : null;
-      if (blocking && holdStartGated && holdNote && await gatedStartApplies(holdNote)) {
-        console.log(`[claim] gated_start: task ${task.id} past open-PR overlap (PR #${blocking.prNumber ?? blocking.prUrl}); acquiring its paths`);
-        gatedStartPaths = holdNote.candidate.concretePaths;
+      // The collector is synchronous and does no I/O, so what it needs is read
+      // here: each overlapping holder's current PR diff, and (for a candidate
+      // that already has a branch) the newest probe of that pair. A read that
+      // fails or times out is absent, which leaves the answer with Jev.
+      const holdEvidence = holdCtx
+        ? await readOpenPrRiskEvidence(task, taskManifest, filterOpenPrTasks, splitOwnOpenPrs(task, openPrTasks).own)
+        : {};
+      const holdNote = holdCtx ? holdStart.noteOpenPrOverlap(holdCtx, taskManifest, filterOpenPrTasks, activePathClaimsByWorkspace.get(task.workspaceId), holdEvidence) : null;
+      const openPrVerdict = blocking && holdNote ? await openPrStartVerdict(holdNote, holdStartGated) : 'HOLD';
+      if (blocking && openPrVerdict !== 'HOLD') {
+        console.log(`[claim] ${openPrVerdict === 'rule_start' ? 'rule_start' : 'gated_start'}: task ${task.id} past open-PR overlap (PR #${blocking.prNumber ?? blocking.prUrl}); acquiring its paths`);
+        gatedStartPaths = holdNote!.candidate.concretePaths;
       } else if (blocking) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
         const blockedByPr = { prNumber: blocking.prNumber ?? null, prUrl: blocking.prUrl ?? null };
@@ -1866,8 +1904,12 @@ export async function POST(req: NextRequest) {
           v.kind === 'deterministic' ? { tier: 'hard', rationale: `Held: ${v.overlapKind.replace('_', ' ')} overlap.`, reasons: [v.overlapKind], reevaluateOn: ['holder_terminal'] } : null;
         if (v.kind === 'advisory' && !forced) {
           const holdCtx = holdStartContext(task, forced);
+          const candidateBranch = splitOwnOpenPrs(task, openPrTasksByWorkspace.get(task.workspaceId) ?? []).own.find(p => p.branch)?.branch ?? null;
+          const probe = holdCtx && candidateBranch
+            ? await loadPairProbeEvidence({ workspaceId: task.workspaceId, candidate: { branch: candidateBranch }, holder: { taskId: v.holderTaskId } })
+            : null;
           const assessed = holdCtx
-            ? holdStart.assessSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, overlapKind: v.overlapKind, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId))
+            ? holdStart.assessSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, overlapKind: v.overlapKind, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId), { probe })
             : null;
           if (assessed) risk = assessed.risk;
           verdict = await softOverlapStartVerdict(assessed?.note ?? null, holdStartGated);
