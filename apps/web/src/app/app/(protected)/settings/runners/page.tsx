@@ -58,7 +58,7 @@ export default async function RunnersSettingsPage() {
       />
       <SettingsSection title="Connections" id="agent-backends" bare>
         <div data-testid="runners-connections" className="card divide-y divide-border-default p-0">
-          <AgentBackendsSection workspaces={workspaces} currentTeamId={currentTeamId} />
+          <AgentBackendsSection workspaces={workspaces} currentTeamId={currentTeamId} manageableTeamIds={[...adminTeamIds]} />
           <CloudflareSection teams={cloudTeams} defaultTeamId={teamId} />
         </div>
       </SettingsSection>
