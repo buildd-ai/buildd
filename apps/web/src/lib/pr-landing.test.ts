@@ -479,6 +479,22 @@ describe('landPr — merge', () => {
     expect(mockMergePullRequest.mock.calls[0]![3]).toBe('rebase');
   });
 
+  it('lands an integration-refresh PR as a merge commit even when the caller asked for squash', async () => {
+    mockFindFirst = mock(() => ({ id: 'task-1', title: 'chore(mission): merge dev', taskClass: 'work', missionId: null, context: { requireMergeCommit: true, refreshTrunk: 'dev' } }) as any);
+    await land({ door: 'merge_pr', mergeMethod: 'squash' });
+    expect(mockMergePullRequest.mock.calls[0]![3]).toBe('merge');
+  });
+
+  it('an integration-refresh PR reaches the kernel as a merge commit too', async () => {
+    mockFindFirst = mock(() => ({ id: 'task-1', title: 't', taskClass: 'work', missionId: null, context: { requireMergeCommit: true } }) as any);
+    const calls: any[] = [];
+    await land({ door: 'merge_pr', mergeMethod: 'squash' }, {
+      ...deps(),
+      landThroughKernel: async (i: any) => { calls.push(i); return { merged: true, outcome: 'merged', mergeCommitSha: 'M', reason: 'x', message: 'm', current: { state: 'APPROVED', version: 3, head: 'head1', round: 1 }, result: null } as any; },
+    });
+    expect(calls[0].mergeMethod).toBe('merge');
+  });
+
   it('is a no-op on a PR that already merged', async () => {
     gh.state = 'closed';
     gh.merged = true;

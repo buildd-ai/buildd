@@ -15,6 +15,8 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 let missionRow: any;
 let tasksById: Record<string, any> = {};
+/** taskId → the worker row carrying its PR (the conflict task's PR). */
+let prWorkerByTaskId: Record<string, { prNumber: number }> = {};
 let nextTaskId = 1;
 const insertedNotes: any[] = [];
 const insertedTasks: any[] = [];
@@ -33,6 +35,7 @@ function resetFixtures() {
     branchRefreshConflictTaskId: null,
   };
   tasksById = {};
+  prWorkerByTaskId = {};
   nextTaskId = 1;
   insertedNotes.length = 0;
   insertedTasks.length = 0;
@@ -85,6 +88,12 @@ mock.module('@buildd/core/db', () => ({
         findMany: (...args: any[]) => mockWorkspacesFindMany(...args),
       },
       githubRepos: { findFirst: (...args: any[]) => mockGithubReposFindFirst(...args) },
+      workers: {
+        findFirst: (args: any) => {
+          const taskId = args?.where?.args?.[0]?.args?.[1];
+          return Promise.resolve(prWorkerByTaskId[taskId] ?? null);
+        },
+      },
       tasks: {
         findFirst: (args: any) => {
           const id = args?.where?.args?.[1];
@@ -139,6 +148,10 @@ function makeUpdateChain(table: any) {
       }
       return { rows: [{ id: missionRow.id }] };
     }
+    if (String(table) === 'tasks') {
+      const id = predicate?.args?.[1];
+      if (tasksById[id] && setVals?.context) tasksById[id] = { ...tasksById[id], context: setVals.context };
+    }
     return { rows: [] };
   };
   const chain: any = {
@@ -191,6 +204,7 @@ mock.module('@buildd/core/db/schema', () => ({
   missions: Object.assign(new String('missions'), Object.fromEntries(['id', 'branchRefreshLeaseUntil', 'branchRefreshLeaseToken', 'branchRefreshConflictTaskId'].map(k => [k, k]))),
   missionNotes: 'missionNotes',
   tasks: 'tasks',
+  workers: { taskId: 'taskId', prNumber: 'prNumber', createdAt: 'createdAt' },
   workspaces: 'workspaces',
   githubRepos: 'githubRepos',
 }));
@@ -200,6 +214,8 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => ({ op: 'and', args }),
   inArray: (...args: any[]) => args,
   isNull: (field: any) => ({ isNull: field }),
+  isNotNull: (field: any) => ({ isNotNull: field }),
+  desc: (field: any) => ({ desc: field }),
   lt: (...args: any[]) => ({ op: 'lt', args }),
   or: (...args: any[]) => ({ op: 'or', args }),
   sql: (...args: any[]) => args,
@@ -457,6 +473,147 @@ describe('refreshMissionIntegrationBranch', () => {
 
     expect(outcome.kind).toBe('merged');
     expect(missionRow.branchRefreshConflictTaskId).toBeNull();
+  });
+
+  it('records what the refresh must prove on the conflict task it dispatches', async () => {
+    mockGithubApi.mockImplementation(((_i: number, path: string) => {
+      if (path.endsWith('/git/ref/heads/dev')) return Promise.resolve({ object: { sha: 'dev-sha-current' } });
+      if (path.endsWith('/git/ref/heads/mission/example-slug-0a1b2c3d')) return Promise.resolve({ object: { sha: 'mission-head-0' } });
+      if (path.endsWith('/merges')) return Promise.reject(githubError(409, 'conflict'));
+      return Promise.resolve(null);
+    }) as any);
+
+    await refreshMissionIntegrationBranch('m-1');
+
+    expect(insertedTasks).toHaveLength(1);
+    expect(insertedTasks[0].context).toMatchObject({
+      requireMergeCommit: true,
+      refreshTrunk: 'dev',
+      refreshTrunkSha: 'dev-sha-current',
+      refreshMissionHeadSha: 'mission-head-0',
+    });
+    expect(insertedTasks[0].description).toContain('dev-sha'.slice(0, 7));
+  });
+
+  describe('settling a finished conflict task by its PR', () => {
+    const BRANCH_HEAD_PATH = '/git/ref/heads/mission/example-slug-0a1b2c3d';
+    /**
+     * GitHub, as far as settlement reads it: dev's head, the PR, the branch head,
+     * and compare statuses keyed by `ancestor...head`.
+     */
+    function github(opts: {
+      devSha?: string;
+      pr?: { state: string; merged: boolean; head: { sha: string } } | Error;
+      branchHead?: string;
+      compare?: Record<string, string>;
+      merges?: () => Promise<any>;
+    }) {
+      const calls = { merges: 0 };
+      mockGithubApi.mockImplementation(((_i: number, path: string) => {
+        if (path.endsWith('/git/ref/heads/dev')) return Promise.resolve({ object: { sha: opts.devSha ?? 'dev-sha-current' } });
+        if (path.endsWith(BRANCH_HEAD_PATH)) return Promise.resolve({ object: { sha: opts.branchHead ?? 'branch-head' } });
+        if (/\/pulls\/\d+$/.test(path)) return opts.pr instanceof Error ? Promise.reject(opts.pr) : Promise.resolve(opts.pr ?? null);
+        const cmp = /\/compare\/(.+)$/.exec(path);
+        if (cmp) {
+          const status = opts.compare?.[cmp[1]];
+          return status ? Promise.resolve({ status }) : Promise.reject(githubError(404, 'no compare'));
+        }
+        if (path.endsWith('/merges')) { calls.merges++; return opts.merges ? opts.merges() : Promise.resolve({ sha: 'merge-sha' }); }
+        return Promise.resolve(null);
+      }) as any);
+      return calls;
+    }
+    const refreshCtx = { requireMergeCommit: true, refreshTrunk: 'dev', refreshTrunkSha: 'dev-at-sync', refreshMissionHeadSha: 'mission-before' };
+
+    beforeEach(() => {
+      missionRow.branchRefreshConflictTaskId = 'task-sync';
+      tasksById['task-sync'] = { id: 'task-sync', status: 'completed', context: { ...refreshCtx } };
+      prWorkerByTaskId['task-sync'] = { prNumber: 4019 };
+    });
+
+    it('coalesces a burst of dev merges and duplicate webhooks into the one task while its PR is open', async () => {
+      const calls = github({ pr: { state: 'open', merged: false, head: { sha: 'pr-head' } } });
+      for (const devSha of ['dev-a', 'dev-b', 'dev-c']) {
+        github({ devSha, pr: { state: 'open', merged: false, head: { sha: 'pr-head' } } });
+        const outcomes = await Promise.all([refreshMissionIntegrationBranch('m-1'), refreshMissionIntegrationBranch('m-1')]);
+        for (const o of outcomes) expect(['conflict_task_open', 'in_flight']).toContain((o as any).reason);
+      }
+      expect(calls.merges).toBe(0);
+      expect(insertedTasks).toHaveLength(0);
+      expect(missionRow.branchRefreshConflictTaskId).toBe('task-sync');
+    });
+
+    it('a merged PR that provably carried dev clears the task and refreshing resumes', async () => {
+      const calls = github({
+        pr: { state: 'closed', merged: true, head: { sha: 'pr-head' } },
+        compare: { 'dev-at-sync...branch-head': 'ahead', 'mission-before...branch-head': 'ahead' },
+      });
+
+      const outcome = await refreshMissionIntegrationBranch('m-1');
+
+      expect(outcome.kind).toBe('merged');
+      expect(calls.merges).toBe(1);
+      expect(missionRow.branchRefreshConflictTaskId).toBeNull();
+      expect(tasksById['task-sync'].context.refreshInvariantViolation).toBeUndefined();
+    });
+
+    it('a squashed refresh PR is reported once, never marks the branch caught up, and opens no replacement', async () => {
+      missionRow.branchRefreshHeadSha = 'dev-older';
+      const squashed = {
+        pr: { state: 'closed', merged: true, head: { sha: 'pr-head' } },
+        compare: { 'dev-at-sync...branch-head': 'diverged', 'mission-before...branch-head': 'ahead' },
+      };
+      const calls = github(squashed);
+
+      const outcomes = [];
+      for (let i = 0; i < 3; i++) outcomes.push(await refreshMissionIntegrationBranch('m-1'));
+
+      for (const o of outcomes) expect(o).toMatchObject({ kind: 'skipped', reason: 'refresh_unverified', conflictTaskId: 'task-sync' });
+      expect((outcomes[0] as any).detail).toContain('does not contain dev dev-at-');
+      expect(calls.merges).toBe(0);
+      expect(insertedTasks).toHaveLength(0);
+      expect(missionRow.branchRefreshConflictTaskId).toBe('task-sync');
+      expect(missionRow.branchRefreshHeadSha).toBe('dev-older');
+      // Visible exactly once: task context, gate ledger, mission feed.
+      expect(tasksById['task-sync'].context.refreshInvariantViolation).toMatchObject({ prNumber: 4019, branchHead: 'branch-head' });
+      expect(gateEvents.filter(e => e.detail?.invariant === 'refresh_ancestry')).toHaveLength(1);
+      const violationNotes = insertedNotes.filter(n => n.title === 'Integration branch refresh did not land');
+      expect(violationNotes).toHaveLength(1);
+      expect(violationNotes[0].body).toContain('Never force-push');
+
+      // A later repair lands a real merge: the same check passes and refreshing resumes.
+      const repaired = github({ ...squashed, branchHead: 'repair-head', compare: { 'dev-at-sync...repair-head': 'ahead', 'mission-before...repair-head': 'ahead' } });
+      const after = await refreshMissionIntegrationBranch('m-1');
+      expect(after.kind).toBe('merged');
+      expect(repaired.merges).toBe(1);
+      expect(missionRow.branchRefreshConflictTaskId).toBeNull();
+    });
+
+    it('a failed GitHub read keeps the task open rather than guessing either way', async () => {
+      github({ pr: { state: 'closed', merged: true, head: { sha: 'pr-head' } }, compare: {} });
+      const outcome = await refreshMissionIntegrationBranch('m-1');
+      expect(outcome).toMatchObject({ kind: 'skipped', reason: 'conflict_task_open' });
+      expect(gateEvents).toHaveLength(0);
+
+      github({ pr: githubError(502, 'bad gateway') });
+      expect(await refreshMissionIntegrationBranch('m-1')).toMatchObject({ kind: 'skipped', reason: 'conflict_task_open' });
+      expect(missionRow.branchRefreshConflictTaskId).toBe('task-sync');
+    });
+
+    it('a PR closed without merging frees the slot, and a still-conflicting branch gets exactly one new task', async () => {
+      const calls = github({
+        pr: { state: 'closed', merged: false, head: { sha: 'pr-head' } },
+        merges: () => Promise.reject(githubError(409, 'conflict')),
+      });
+
+      const first = await refreshMissionIntegrationBranch('m-1');
+      const second = await refreshMissionIntegrationBranch('m-1');
+
+      expect(first.kind).toBe('conflict');
+      expect(second).toMatchObject({ kind: 'skipped', reason: 'conflict_task_open' });
+      expect(insertedTasks).toHaveLength(1);
+      expect(calls.merges).toBe(1);
+    });
   });
 
   it('debounces a concurrent burst: only one caller actually hits the GitHub merges API', async () => {
