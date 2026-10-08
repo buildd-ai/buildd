@@ -10,6 +10,29 @@ related: [orchestration-decisions-shadow, runner-liveness]
 keywords: [sibling_conflict_probe, sibling_probes, merge-tree, mergiraf, early warning, live overlap, rebase notice, pendingInstructions]
 verified_by: [apps/web/src/lib/sibling-conflict-probe.test.ts, apps/web/src/lib/sibling-conflict-probe-store.test.ts, apps/runner/__tests__/unit/sibling-probe.test.ts, apps/web/src/app/api/cron/sibling-probe/route.test.ts, apps/runner/__tests__/unit/env-scan-tools.test.ts]
 supersedes: []
+assertions:
+  - id: "find-sibling-pairs"
+    type: "symbol"
+    name: "findSiblingPairs"
+    path: "apps/web/src/lib/sibling-conflict-probe.ts"
+  - id: "pick-rebaser"
+    type: "symbol"
+    name: "pickRebaser"
+    path: "apps/web/src/lib/sibling-conflict-probe.ts"
+  - id: "apply-probe-result"
+    type: "symbol"
+    name: "applySiblingProbeResult"
+    path: "apps/web/src/lib/sibling-conflict-probe.ts"
+  - id: "runner-merge-tree-probe"
+    type: "symbol"
+    name: "runSiblingProbe"
+    path: "apps/runner/src/sibling-probe.ts"
+  - id: "probe-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/sibling-conflict-probe.test.ts"
+  - id: "runner-probe-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/sibling-probe.test.ts"
 ---
 # Live Sibling Conflict Probe
 
