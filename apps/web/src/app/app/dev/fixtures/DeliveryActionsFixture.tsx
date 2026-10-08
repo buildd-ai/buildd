@@ -32,6 +32,8 @@ export type DeliveryActionFixtureState = (typeof DELIVERY_ACTION_FIXTURE_STATES)
 
 /** The conflict fix the stalled delivery names (DeliveryStatesFixture's remediation). */
 export const REMEDIATION_TASK_ID = 'cf-418';
+/** The PR the stalled conflict fix repairs. */
+const CONFLICT_PR = 418;
 const REMEDIATION_TITLE = 'fix(conflict): resolve PR #418 against dev';
 
 /** Every write answers here: an Apply, a Merge, a Run now. Reads pass through. */
@@ -134,7 +136,7 @@ function RunFixLanding() {
     <section className="space-y-4" data-testid="delivery-run-fix">
       <h2 className="font-mono text-[11px] uppercase tracking-[1.2px] text-text-muted">Task page · where Run fix lands</h2>
       <header className="space-y-1">
-        <p className="font-mono text-[12px] text-text-muted">Queued · conflict fix for PR #418</p>
+        <p className="font-mono text-[12px] text-text-muted">{`Queued · conflict fix for PR #${CONFLICT_PR}`}</p>
         <h1 className="font-mono text-[18px] font-semibold text-text-primary [overflow-wrap:anywhere]">{REMEDIATION_TITLE}</h1>
         <p className="text-body text-text-secondary">The conflict fix has waited 42m with no runner claim.</p>
       </header>
