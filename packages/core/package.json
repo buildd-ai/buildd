@@ -139,6 +139,7 @@
     "./task-size-bucket-source": "./task-size-bucket-source.ts",
     "./task-size-estimate": "./task-size-estimate.ts",
     "./decision-ledger": "./decision-ledger.ts",
+    "./orchestration-decision-ledger": "./orchestration-decision-ledger.ts",
     "./token-delegation": "./token-delegation.ts",
     "./decision-kinds": "./decision-kinds.ts",
     "./decision-policy": "./decision-policy.ts",
